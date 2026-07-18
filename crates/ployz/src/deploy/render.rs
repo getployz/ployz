@@ -336,6 +336,7 @@ impl DeployTree {
                 | OperationKind::MachineAdd
                 | OperationKind::MachineUpdate
                 | OperationKind::MachineStoragePrepare
+                | OperationKind::MachineBuildCachePrune
                 | OperationKind::MachineLifecycle
                 | OperationKind::CoreReplace
                 | OperationKind::CredentialGrant
@@ -378,7 +379,11 @@ impl DeployTree {
             | OperationEvent::MachineStoragePrepareSubmitted { .. }
             | OperationEvent::MachineStoragePreparePreparing { .. }
             | OperationEvent::MachineStoragePrepareCompleted { .. }
-            | OperationEvent::MachineStoragePrepareFailed { .. } => {}
+            | OperationEvent::MachineStoragePrepareFailed { .. }
+            | OperationEvent::MachineBuildCachePruneSubmitted { .. }
+            | OperationEvent::MachineBuildCachePrunePruning { .. }
+            | OperationEvent::MachineBuildCachePruneCompleted { .. }
+            | OperationEvent::MachineBuildCachePruneFailed { .. } => {}
             OperationEvent::ManagedDnsReconcileSubmitted { .. }
             | OperationEvent::ManagedDnsReconcileCompleted { .. }
             | OperationEvent::ManagedDnsReconcileFailed { .. }
@@ -880,6 +885,7 @@ fn render_image_lines(tree: &DeployTree, target: &DeployRequest) -> Vec<TreeLine
                         }
                         DeployOperationFailure::NoUsableMachines { .. }
                         | DeployOperationFailure::PlanningFailed { .. }
+                        | DeployOperationFailure::VolumeAdmissionFailed { .. }
                         | DeployOperationFailure::AutomaticHostnameCollision { .. }
                         | DeployOperationFailure::RuntimeUnavailable { .. }
                         | DeployOperationFailure::VolumeEnsureFailed { .. }

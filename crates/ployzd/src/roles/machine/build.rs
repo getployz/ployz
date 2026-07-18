@@ -4,10 +4,11 @@ use super::execution::build::{
 };
 use super::images::AvailableImageService;
 use super::protocol::{
-    BuildLogSummary, MachineBuildCancelOutcome, MachineBuildCancelRpcOk,
-    MachineBuildCancelRpcRequest, MachineBuildCancelRpcResponse, MachineBuildCleanupOutcome,
-    MachineBuildStartDomainError, MachineBuildStartRpcOk, MachineBuildStartRpcRequest,
-    MachineBuildStartRpcResponse,
+    BuildLogSummary, MachineBuildCachePruneDomainError, MachineBuildCachePruneRpcOk,
+    MachineBuildCachePruneRpcRequest, MachineBuildCachePruneRpcResponse, MachineBuildCancelOutcome,
+    MachineBuildCancelRpcOk, MachineBuildCancelRpcRequest, MachineBuildCancelRpcResponse,
+    MachineBuildCleanupOutcome, MachineBuildStartDomainError, MachineBuildStartRpcOk,
+    MachineBuildStartRpcRequest, MachineBuildStartRpcResponse,
 };
 use super::response::{failure_message, machine_domain_error, machine_success};
 use ployz_core::build::{
@@ -133,6 +134,20 @@ impl MachineBuildRuntime {
             BuildEffects::Docker(effects) => effects.executor.recover_orphans().await,
             #[cfg(test)]
             BuildEffects::Test(_) => Ok(()),
+        }
+    }
+
+    pub(crate) async fn prune_cache(
+        &self,
+    ) -> Result<ployz_core::operation::BuildCachePruneEvidence, BuildExecutionError> {
+        match &self.effects {
+            BuildEffects::Docker(effects) => effects.executor.prune_cache().await,
+            #[cfg(test)]
+            BuildEffects::Test(_) => Ok(ployz_core::operation::BuildCachePruneEvidence {
+                before_available_bytes: 0,
+                reclaimed_bytes: 0,
+                after_available_bytes: 0,
+            }),
         }
     }
 
@@ -648,6 +663,39 @@ pub(crate) async fn handle_build_cancel(
         machine_id,
         outcome,
     }))
+}
+
+pub(crate) async fn handle_build_cache_prune(
+    machine_id: MachineId,
+    runtime: Option<MachineBuildRuntime>,
+    request: NatsServiceRequest,
+) -> NatsServiceResponse {
+    let _request = match decode_json_request::<MachineBuildCachePruneRpcRequest>(&request) {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+    let Some(runtime) = runtime else {
+        return machine_domain_error(MachineBuildCachePruneRpcResponse::DomainError {
+            machine_id,
+            error: MachineBuildCachePruneDomainError::PruneFailed {
+                message: failure_message("machine build runtime is unavailable"),
+            },
+        });
+    };
+    match runtime.prune_cache().await {
+        Ok(evidence) => machine_success(MachineBuildCachePruneRpcResponse::Ok(
+            MachineBuildCachePruneRpcOk {
+                machine_id,
+                evidence,
+            },
+        )),
+        Err(error) => machine_domain_error(MachineBuildCachePruneRpcResponse::DomainError {
+            machine_id,
+            error: MachineBuildCachePruneDomainError::PruneFailed {
+                message: failure_message(error.to_string()),
+            },
+        }),
+    }
 }
 
 #[cfg(test)]

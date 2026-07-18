@@ -96,6 +96,18 @@ pub fn operation_event_subject_suffix(event: &OperationEvent) -> String {
         OperationEvent::MachineStoragePrepareFailed { .. } => {
             "machine.storage_prepare.failed".to_owned()
         }
+        OperationEvent::MachineBuildCachePruneSubmitted { .. } => {
+            "machine.build_cache_prune.submitted".to_owned()
+        }
+        OperationEvent::MachineBuildCachePrunePruning { .. } => {
+            "machine.build_cache_prune.pruning".to_owned()
+        }
+        OperationEvent::MachineBuildCachePruneCompleted { .. } => {
+            "machine.build_cache_prune.completed".to_owned()
+        }
+        OperationEvent::MachineBuildCachePruneFailed { .. } => {
+            "machine.build_cache_prune.failed".to_owned()
+        }
         OperationEvent::MachineLifecycleSubmitted { target, .. } => match target {
             MachineLifecycle::Active => "machine.lifecycle.resume.submitted".to_owned(),
             MachineLifecycle::Draining => "machine.lifecycle.drain.submitted".to_owned(),

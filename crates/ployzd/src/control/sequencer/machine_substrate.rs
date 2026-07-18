@@ -11,7 +11,8 @@ use std::sync::Mutex;
 
 use super::{OperationControllers, SubmitCommandError};
 use crate::control::operation_evidence::{
-    AcceptedMachineStoragePrepareSubmission, AcceptedMachineUpdateSubmission,
+    AcceptedMachineBuildCachePruneSubmission, AcceptedMachineStoragePrepareSubmission,
+    AcceptedMachineUpdateSubmission, MachineBuildCachePruneOperationSubmission,
     MachineStoragePrepareOperationSubmission, MachineUpdateOperationSubmission,
     SubmitOperationError,
 };
@@ -30,12 +31,36 @@ pub struct MachineStoragePrepareSubmitCommand {
     pub requested_pool: Option<ZfsPoolName>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineBuildCachePruneSubmitCommand {
+    pub operation_id: OperationId,
+    pub machine_id: MachineId,
+}
+
 #[derive(Debug, Clone, Default)]
 pub(super) struct MachineSubstrateLocks {
     owners: Arc<Mutex<BTreeMap<MachineId, OperationId>>>,
 }
 
 impl OperationControllers {
+    pub async fn submit_machine_build_cache_prune(
+        &self,
+        command: MachineBuildCachePruneSubmitCommand,
+    ) -> Result<AcceptedMachineBuildCachePruneSubmission, SubmitCommandError> {
+        let machine_id = command.machine_id.clone();
+        let operation_id = command.operation_id.clone();
+        let submitted = self.repository.submit_machine_build_cache_prune(
+            MachineBuildCachePruneOperationSubmission {
+                operation_id: command.operation_id,
+                machine_id: command.machine_id,
+            },
+        );
+        self.submit_with_machine_substrate_lock(machine_id, operation_id, submitted, |accepted| {
+            accepted.should_start_execution
+        })
+        .await
+    }
+
     pub async fn submit_machine_update(
         &self,
         command: MachineUpdateSubmitCommand,

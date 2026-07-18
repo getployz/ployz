@@ -15,7 +15,8 @@ use ployz_sdk_types::{
     DeployReserveRequest, DeployReserved, DeploySubmitError, DeploySubmitRequest,
     IngressConfigureError, IngressConfigureRequest, InitFirstMachineActivateError,
     InitFirstMachineActivateRequest, InitFirstMachineActivated, LogsTailError, LogsTailRequest,
-    LogsTailResult, MachineAddAccepted, MachineAddError, MachineAddRequest, MachineInspectError,
+    LogsTailResult, MachineAddAccepted, MachineAddError, MachineAddRequest,
+    MachineBuildCachePruneError, MachineBuildCachePruneRequest, MachineInspectError,
     MachineInspectRequest, MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed,
     MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported, MachineLifecycleError,
     MachineLifecycleRequest, MachineListError, MachineListRequest, MachineListResult,
@@ -33,12 +34,12 @@ use ployz_sdk_types::{
         BuildCancelApi, BuildSubmitApi, CoreReplaceApi, CoreReplaceReportApi, CredentialAddApi,
         CredentialListApi, CredentialRemoveApi, DeployPreviewApi, DeployReserveApi,
         DeploySubmitApi, IngressConfigureApi, InitFirstMachineActivateApi, LogsTailApi,
-        MachineAddApi, MachineDrainApi, MachineInspectApi, MachineJoinRedeemApi,
-        MachineJoinReportApi, MachineListApi, MachineResumeApi, MachineStoragePrepareApi,
-        MachineUpdateApi, NamespaceRemoveApi, NetworkRepairApi, NetworkResolveApi,
-        NetworkStatusApi, OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi,
-        RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi, ServiceRestartApi, VolumeCreateApi,
-        VolumeListApi, VolumeRemoveApi,
+        MachineAddApi, MachineBuildCachePruneApi, MachineDrainApi, MachineInspectApi,
+        MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi, MachineResumeApi,
+        MachineStoragePrepareApi, MachineUpdateApi, NamespaceRemoveApi, NetworkRepairApi,
+        NetworkResolveApi, NetworkStatusApi, OperationApiContract, OpsListApi, OpsStatusApi,
+        OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi, ServiceRestartApi,
+        VolumeCreateApi, VolumeListApi, VolumeRemoveApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -177,6 +178,13 @@ impl OperationApiClient {
         request: &MachineStoragePrepareRequest,
     ) -> Result<AcceptedOperation, OperationApiClientError<MachineStoragePrepareError>> {
         self.request_api::<MachineStoragePrepareApi>(request).await
+    }
+
+    pub async fn machine_build_cache_prune(
+        &self,
+        request: &MachineBuildCachePruneRequest,
+    ) -> Result<AcceptedOperation, OperationApiClientError<MachineBuildCachePruneError>> {
+        self.request_api::<MachineBuildCachePruneApi>(request).await
     }
 
     pub async fn machine_drain(

@@ -131,6 +131,34 @@ pub enum MachineBuildCancelDomainError {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct MachineBuildCachePruneRpcRequest {
+    pub operation_id: OperationId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachineBuildCachePruneRpcOk {
+    pub machine_id: MachineId,
+    pub evidence: ployz_core::operation::BuildCachePruneEvidence,
+}
+
+impl MachineRpcResponder for MachineBuildCachePruneRpcOk {
+    fn responder_machine_id(&self) -> &MachineId {
+        &self.machine_id
+    }
+}
+
+pub type MachineBuildCachePruneRpcResponse =
+    MachineRpcResponse<MachineBuildCachePruneRpcOk, MachineBuildCachePruneDomainError>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineBuildCachePruneDomainError {
+    PruneFailed { message: FailureMessage },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MachineBuildLogFrame {
     pub operation_id: OperationId,
     pub machine_id: MachineId,

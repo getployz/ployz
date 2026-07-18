@@ -13,9 +13,9 @@ use crate::execution_support::{
     render_api_call, with_cluster_context_from_disk,
 };
 use crate::machine::command::{
-    AcceptedOperationOutput, MachineAddCommand, MachineAddOutput, MachineInspectCommand,
-    MachineInspectOutput, MachineLifecycleCommand, MachineListCommand, MachineListOutput,
-    MachineStoragePrepareCommand, MachineUpdateCommand,
+    AcceptedOperationOutput, MachineAddCommand, MachineAddOutput, MachineBuildCachePruneCommand,
+    MachineInspectCommand, MachineInspectOutput, MachineLifecycleCommand, MachineListCommand,
+    MachineListOutput, MachineStoragePrepareCommand, MachineUpdateCommand,
 };
 use crate::machine::founder::join_template::MachineJoinTemplateCommand;
 use crate::machine::founder::{
@@ -226,6 +226,24 @@ pub(crate) async fn storage_prepare(
     let api = operation_api_client(config).await?;
     let accepted = api
         .machine_storage_prepare(&command.into_request())
+        .await
+        .map_err(api_error)?;
+    if detach {
+        return Ok(PloyzctlExecutionOutput::stdout(
+            AcceptedOperationOutput::from_accepted(accepted).render(),
+        ));
+    }
+    watch_accepted(&api, accepted.operation_id, config).await
+}
+
+pub(crate) async fn build_cache_prune(
+    command: MachineBuildCachePruneCommand,
+    config: &PloyzctlRuntimeConfig,
+) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
+    let detach = command.detach;
+    let api = operation_api_client(config).await?;
+    let accepted = api
+        .machine_build_cache_prune(&command.into_request())
         .await
         .map_err(api_error)?;
     if detach {

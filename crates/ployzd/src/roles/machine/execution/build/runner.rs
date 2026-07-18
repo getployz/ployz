@@ -1,8 +1,8 @@
 use super::ValidatedOciLayout;
 use super::lifecycle::{
     BUILDER_LABEL, CACHE_VOLUME, DOCKER_COMMAND_TIMEOUT, PinnedImageKind, await_buildkit,
-    builder_name, create_builder, pull_exact_image, remove_builder, require_success, run_bounded,
-    run_buildctl, run_prepare,
+    builder_name, create_builder, prune_buildkit_cache, pull_exact_image, remove_builder,
+    require_success, run_bounded, run_buildctl, run_prepare,
 };
 use super::logs::{BuildLogProgress, PublishedLogs};
 use super::oci::{OciLayoutError, OciValidationControl, validate_oci_layout};
@@ -12,16 +12,26 @@ use super::workspace::{
     clean_failed_workspace, prepare_private_directory, prepare_workspace, remove_workspace_tree,
     verify_helper,
 };
+use crate::roles::machine::facts::read_disk_space;
 use crate::roles::machine::protocol::BuildLogSummary;
 use ployz_core::build::{BuildAdapter, GitSource};
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::image::OciPlatform;
-use ployz_core::operation::{BuildPlatformFailure, BuildToolchainEvidence, FailureMessage};
+use ployz_core::operation::{
+    BuildCachePruneEvidence, BuildPlatformFailure, BuildToolchainEvidence, FailureMessage,
+};
 use ployz_nats::service_runtime::NatsClient;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
 use tokio::time::Instant;
+
+const GIB: u64 = 1024 * 1024 * 1024;
+const CACHE_RESERVED_BYTES: u64 = 512 * 1024 * 1024;
+const CACHE_MAX_BYTES: u64 = 10 * GIB;
+const REQUIRED_FREE_BYTES: u64 = 5 * GIB;
+const DISK_PERCENT: u64 = 20;
+const BUILDKIT_CONFIG: &str = "buildkitd.toml";
 
 #[derive(Clone)]
 pub struct DockerBuildExecutor {
@@ -70,6 +80,19 @@ impl DockerBuildExecutor {
         builder_result.and(workspace_result)
     }
 
+    pub(crate) async fn prune_cache(&self) -> Result<BuildCachePruneEvidence, BuildExecutionError> {
+        let _effect_guard = self.effect_guard.acquire().await?;
+        prepare_private_directory(&self.workspace_root).await?;
+        let before = build_disk_space(&self.workspace_root)?;
+        prune_buildkit_cache().await?;
+        let after = build_disk_space(&self.workspace_root)?;
+        Ok(BuildCachePruneEvidence {
+            before_available_bytes: before.available_bytes,
+            reclaimed_bytes: after.available_bytes.saturating_sub(before.available_bytes),
+            after_available_bytes: after.available_bytes,
+        })
+    }
+
     pub async fn execute(
         &self,
         request: BuildExecutionRequest<'_>,
@@ -116,6 +139,12 @@ impl DockerBuildExecutor {
         } = request;
         let workspace = self.workspace(operation_id, platform);
         check_cancelled(cancelled)?;
+        let toolchain = toolchain_for_platform(platform, adapter).map_err(|error| {
+            platform_failure(BuildPlatformFailure::AdapterFailed {
+                message: failure(error.to_string()),
+            })
+        })?;
+        let buildkit_config = self.ensure_host_disk_capacity(&workspace).await?;
         let checkout = checkout_git_source(source, &workspace)
             .await
             .map_err(|error| {
@@ -123,11 +152,6 @@ impl DockerBuildExecutor {
                     message: failure(error.to_string()),
                 })
             })?;
-        let toolchain = toolchain_for_platform(platform, adapter).map_err(|error| {
-            platform_failure(BuildPlatformFailure::AdapterFailed {
-                message: failure(error.to_string()),
-            })
-        })?;
         verify_helper(&toolchain).await?;
         let plan = lower_build_adapter(&checkout, adapter, platform, &workspace, &toolchain)
             .map_err(|error| {
@@ -178,6 +202,7 @@ impl DockerBuildExecutor {
             operation_id,
             platform,
             &workspace,
+            &buildkit_config,
             &toolchain.buildkit_reference,
         )
         .await?;
@@ -233,6 +258,73 @@ impl DockerBuildExecutor {
             .join(operation_id.as_str())
             .join(format!("{}-{}", platform.os(), platform.architecture()))
     }
+
+    async fn ensure_host_disk_capacity(
+        &self,
+        workspace: &Path,
+    ) -> Result<PathBuf, BuildExecutionError> {
+        let mut capacity = build_disk_space(workspace)?;
+        let policy = BuildDiskPolicy::for_capacity(capacity);
+        let config = workspace.join(BUILDKIT_CONFIG);
+        write_buildkit_config(&config, policy).await?;
+        if capacity.available_bytes < policy.required_free_bytes {
+            prune_buildkit_cache().await?;
+            capacity = build_disk_space(workspace)?;
+        }
+        if capacity.available_bytes < policy.required_free_bytes {
+            return Err(platform_failure(
+                BuildPlatformFailure::InsufficientHostDisk {
+                    available_bytes: capacity.available_bytes,
+                    required_free_bytes: policy.required_free_bytes,
+                },
+            ));
+        }
+        Ok(config)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BuildDiskPolicy {
+    cache_reserved_bytes: u64,
+    cache_max_bytes: u64,
+    cache_min_free_bytes: u64,
+    required_free_bytes: u64,
+}
+
+impl BuildDiskPolicy {
+    fn for_capacity(capacity: ployz_core::machine::runtime::MachineDiskSpace) -> Self {
+        let disk_share = capacity.total_bytes.saturating_mul(DISK_PERCENT) / 100;
+        let cache_max_bytes = disk_share.min(CACHE_MAX_BYTES);
+        Self {
+            cache_reserved_bytes: CACHE_RESERVED_BYTES.min(cache_max_bytes),
+            cache_max_bytes,
+            cache_min_free_bytes: REQUIRED_FREE_BYTES.max(disk_share),
+            required_free_bytes: REQUIRED_FREE_BYTES,
+        }
+    }
+}
+
+fn build_disk_space(
+    path: &Path,
+) -> Result<ployz_core::machine::runtime::MachineDiskSpace, BuildExecutionError> {
+    read_disk_space(path)
+        .map_err(|error| infrastructure("read build host disk capacity", error.to_string()))
+}
+
+async fn write_buildkit_config(
+    path: &Path,
+    policy: BuildDiskPolicy,
+) -> Result<(), BuildExecutionError> {
+    tokio::fs::write(path, render_buildkit_config(policy))
+        .await
+        .map_err(|error| infrastructure("write BuildKit configuration", error.to_string()))
+}
+
+fn render_buildkit_config(policy: BuildDiskPolicy) -> String {
+    format!(
+        "[worker.oci]\ngc = true\nreservedSpace = {}\nmaxUsedSpace = {}\nminFreeSpace = {}\n",
+        policy.cache_reserved_bytes, policy.cache_max_bytes, policy.cache_min_free_bytes
+    )
 }
 
 #[derive(Clone, Copy)]
@@ -458,5 +550,49 @@ mod tests {
                 log_summary: actual
             } if actual == log_summary
         ));
+    }
+
+    #[test]
+    fn build_disk_policy_bounds_cache_and_protects_host_space() {
+        let small = BuildDiskPolicy::for_capacity(ployz_core::machine::runtime::MachineDiskSpace {
+            available_bytes: 0,
+            total_bytes: GIB,
+        });
+        assert_eq!(small.cache_max_bytes, GIB / 5);
+        assert_eq!(small.cache_reserved_bytes, GIB / 5);
+        assert_eq!(small.cache_min_free_bytes, 5 * GIB);
+        assert_eq!(small.required_free_bytes, 5 * GIB);
+
+        let large = BuildDiskPolicy::for_capacity(ployz_core::machine::runtime::MachineDiskSpace {
+            available_bytes: 0,
+            total_bytes: 100 * GIB,
+        });
+        assert_eq!(large.cache_reserved_bytes, 512 * 1024 * 1024);
+        assert_eq!(large.cache_max_bytes, 10 * GIB);
+        assert_eq!(large.cache_min_free_bytes, 20 * GIB);
+        assert_eq!(large.required_free_bytes, 5 * GIB);
+    }
+
+    #[test]
+    fn buildkit_config_wires_native_gc_thresholds() {
+        assert_eq!(
+            render_buildkit_config(BuildDiskPolicy {
+                cache_reserved_bytes: 1,
+                cache_max_bytes: 2,
+                cache_min_free_bytes: 3,
+                required_free_bytes: 3,
+            }),
+            "[worker.oci]\ngc = true\nreservedSpace = 1\nmaxUsedSpace = 2\nminFreeSpace = 3\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn prune_disk_evidence_can_start_with_an_absent_workspace() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join("builds");
+        prepare_private_directory(&workspace)
+            .await
+            .expect("prepare workspace");
+        assert!(build_disk_space(&workspace).is_ok());
     }
 }

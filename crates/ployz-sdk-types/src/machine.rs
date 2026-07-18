@@ -46,6 +46,8 @@ pub type MachineInspectResponse = OperationApiResponse<MachineSnapshot, MachineI
 pub type MachineUpdateResponse = OperationApiResponse<AcceptedOperation, MachineUpdateError>;
 pub type MachineStoragePrepareResponse =
     OperationApiResponse<AcceptedOperation, MachineStoragePrepareError>;
+pub type MachineBuildCachePruneResponse =
+    OperationApiResponse<AcceptedOperation, MachineBuildCachePruneError>;
 pub type MachineJoinRedeemResponse =
     OperationApiResponse<MachineJoinRedeemed, MachineJoinRedeemError>;
 
@@ -86,6 +88,13 @@ pub struct MachineStoragePrepareRequest {
     pub machine_id: MachineId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pool: Option<ZfsPoolName>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct MachineBuildCachePruneRequest {
+    pub operation_id: OperationId,
+    pub machine_id: MachineId,
 }
 
 /// One request shape for both lifecycle endpoints: the endpoint carries the
@@ -418,6 +427,26 @@ pub enum MachineStoragePrepareError {
         .operation_id.as_str(),
         .sequence.get()
     )]
+    DuplicateSequenceMismatch {
+        operation_id: OperationId,
+        sequence: EventSequence,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, thiserror::Error)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineBuildCachePruneError {
+    #[error("no such machine {} for operation {}", .machine_id.as_str(), .operation_id.as_str())]
+    NoSuchMachine {
+        operation_id: OperationId,
+        machine_id: MachineId,
+    },
+    #[error("machine build cache prune {} unavailable: {message}", .operation_id.as_str())]
+    Unavailable {
+        operation_id: OperationId,
+        message: String,
+    },
+    #[error("operation {} already recorded a different event at sequence {}", .operation_id.as_str(), .sequence.get())]
     DuplicateSequenceMismatch {
         operation_id: OperationId,
         sequence: EventSequence,

@@ -10,6 +10,7 @@ impl OperationStatus {
             | Self::MachineAdd { id, .. }
             | Self::MachineUpdate { id, .. }
             | Self::MachineStoragePrepare { id, .. }
+            | Self::MachineBuildCachePrune { id, .. }
             | Self::MachineLifecycle { id, .. }
             | Self::CoreReplace { id, .. }
             | Self::CredentialGrant { id, .. }
@@ -32,6 +33,7 @@ impl OperationStatus {
             Self::MachineAdd { .. } => OperationKind::MachineAdd,
             Self::MachineUpdate { .. } => OperationKind::MachineUpdate,
             Self::MachineStoragePrepare { .. } => OperationKind::MachineStoragePrepare,
+            Self::MachineBuildCachePrune { .. } => OperationKind::MachineBuildCachePrune,
             Self::MachineLifecycle { .. } => OperationKind::MachineLifecycle,
             Self::CoreReplace { .. } => OperationKind::CoreReplace,
             Self::CredentialGrant { .. } => OperationKind::CredentialGrant,
@@ -70,6 +72,7 @@ impl OperationStatus {
             Self::MachineAdd { machine_id, .. }
             | Self::MachineUpdate { machine_id, .. }
             | Self::MachineStoragePrepare { machine_id, .. }
+            | Self::MachineBuildCachePrune { machine_id, .. }
             | Self::MachineLifecycle { machine_id, .. }
             | Self::CoreReplace { machine_id, .. } => OperationProgressScope::Machine {
                 machine_id: machine_id.clone(),
@@ -133,6 +136,10 @@ impl OperationStatus {
                 ..
             }
             | Self::MachineStoragePrepare {
+                last_event_sequence,
+                ..
+            }
+            | Self::MachineBuildCachePrune {
                 last_event_sequence,
                 ..
             }

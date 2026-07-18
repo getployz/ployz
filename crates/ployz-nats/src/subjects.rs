@@ -34,6 +34,8 @@ pub const OPERATOR_OPS_WATCH: &str = "plz.v1.rpc.operator.query.ops.watch";
 pub const OPERATOR_INIT_FIRST_MACHINE_ACTIVATE: &str =
     "plz.v1.rpc.operator.command.init.first_machine.activate";
 pub const OPERATOR_MACHINE_ADD: &str = "plz.v1.rpc.operator.command.machine.add";
+pub const OPERATOR_MACHINE_BUILD_CACHE_PRUNE: &str =
+    "plz.v1.rpc.operator.command.machine.build_cache_prune";
 pub const OPERATOR_MACHINE_UPDATE: &str = "plz.v1.rpc.operator.command.machine.update";
 pub const OPERATOR_MACHINE_LIST: &str = "plz.v1.rpc.operator.query.machine.list";
 pub const OPERATOR_MACHINE_INSPECT: &str = "plz.v1.rpc.operator.query.machine.inspect";
@@ -71,6 +73,7 @@ pub enum OperationApiEndpoint {
     DeploySubmit,
     InitFirstMachineActivate,
     MachineAdd,
+    MachineBuildCachePrune,
     MachineUpdate,
     MachineStoragePrepare,
     MachineDrain,
@@ -120,6 +123,7 @@ impl OperationApiEndpoint {
             Self::DeploySubmit => "deploy.submit",
             Self::InitFirstMachineActivate => "init.first_machine.activate",
             Self::MachineAdd => "machine.add",
+            Self::MachineBuildCachePrune => "machine.build_cache_prune",
             Self::MachineUpdate => "machine.update",
             Self::MachineStoragePrepare => "machine.storage_prepare",
             Self::MachineDrain => "machine.drain",
@@ -162,6 +166,7 @@ impl OperationApiEndpoint {
             Self::DeploySubmit => OPERATOR_DEPLOY_SUBMIT,
             Self::InitFirstMachineActivate => OPERATOR_INIT_FIRST_MACHINE_ACTIVATE,
             Self::MachineAdd => OPERATOR_MACHINE_ADD,
+            Self::MachineBuildCachePrune => OPERATOR_MACHINE_BUILD_CACHE_PRUNE,
             Self::MachineUpdate => OPERATOR_MACHINE_UPDATE,
             Self::MachineStoragePrepare => OPERATOR_MACHINE_STORAGE_PREPARE,
             Self::MachineDrain => OPERATOR_MACHINE_DRAIN,
@@ -200,6 +205,7 @@ impl OperationApiEndpoint {
             Self::BuildSubmit
             | Self::DeploySubmit
             | Self::MachineAdd
+            | Self::MachineBuildCachePrune
             | Self::MachineUpdate
             | Self::MachineStoragePrepare
             | Self::MachineDrain
@@ -249,6 +255,7 @@ impl From<ployz_sdk_types::operation_api::OperationApiEndpoint> for OperationApi
             Core::DeploySubmit => Self::DeploySubmit,
             Core::InitFirstMachineActivate => Self::InitFirstMachineActivate,
             Core::MachineAdd => Self::MachineAdd,
+            Core::MachineBuildCachePrune => Self::MachineBuildCachePrune,
             Core::MachineUpdate => Self::MachineUpdate,
             Core::MachineStoragePrepare => Self::MachineStoragePrepare,
             Core::MachineDrain => Self::MachineDrain,
@@ -487,6 +494,7 @@ pub enum MachineServiceEndpoint {
     ImageRemove,
     BuildStart,
     BuildCancel,
+    BuildCachePrune,
     CertificateArtifactStatus,
     CertificateArtifactPush,
     CertificateArtifactRemove,
@@ -535,6 +543,7 @@ impl MachineServiceEndpoint {
             Self::ImageRemove => "container.remove_image",
             Self::BuildStart => "build.start",
             Self::BuildCancel => "build.cancel",
+            Self::BuildCachePrune => "build.cache.prune",
             Self::CertificateArtifactStatus => "certificate.artifact.status",
             Self::CertificateArtifactPush => "certificate.artifact.push",
             Self::CertificateArtifactRemove => "certificate.artifact.remove",
@@ -580,6 +589,7 @@ impl MachineServiceEndpoint {
             | Self::ImageRemove
             | Self::BuildStart
             | Self::BuildCancel
+            | Self::BuildCachePrune
             | Self::CertificateArtifactPush
             | Self::CertificateArtifactRemove
             | Self::CertificateChallengeApply

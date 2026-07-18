@@ -312,7 +312,10 @@ case "${1##*/}" in
   railpack-v0.31.0-x86_64-unknown-linux-musl.tar.gz)
     printf 'f75416cf4c452db2841d864f54dbfd8e4d77f2d4a02b23b87561e7760fa278fd  %s\n' "$1"
     ;;
-  *) exec /usr/bin/sha256sum "$@" ;;
+  *)
+    if [ -x /usr/bin/sha256sum ]; then exec /usr/bin/sha256sum "$@"; fi
+    exec /sbin/sha256sum "$@"
+    ;;
 esac
 "#,
     )
@@ -812,7 +815,10 @@ case "$1" in
   */ployz-dind-railpack.*/*)
     printf '%s  %s\n' f75416cf4c452db2841d864f54dbfd8e4d77f2d4a02b23b87561e7760fa278fd "$1"
     ;;
-  *) exec /usr/bin/sha256sum "$@" ;;
+  *)
+    if [ -x /usr/bin/sha256sum ]; then exec /usr/bin/sha256sum "$@"; fi
+    exec /sbin/sha256sum "$@"
+    ;;
 esac
 "#,
         ),

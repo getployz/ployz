@@ -301,6 +301,17 @@ fn preview_plan_error(
     command: &super::types::DeployPreviewPlanningCommand,
 ) -> DeployPreviewError {
     let unusable_machines = match &error {
+        DeployPlanError::VolumeAdmissionOnMachine {
+            service_id,
+            machine_id,
+            failure,
+        } => {
+            return DeployPreviewError::VolumeAdmissionFailed {
+                service_id: service_id.clone(),
+                machine_id: machine_id.clone(),
+                failure: failure.clone(),
+            };
+        }
         DeployPlanError::NoEligibleMachines { service_id } => command
             .unusable_machines_by_service
             .get(service_id)

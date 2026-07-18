@@ -131,6 +131,10 @@ pub enum BuildPlatformFailure {
         expected: OciPlatform,
         actual: OciPlatform,
     },
+    InsufficientHostDisk {
+        available_bytes: u64,
+        required_free_bytes: u64,
+    },
     SourceFetchFailed {
         message: FailureMessage,
     },
@@ -939,6 +943,22 @@ mod tests {
             BuildLogChunk::try_new("x".repeat(MAX_BUILD_LOG_CHUNK_BYTES + 1)),
             Err(BuildLogChunkError::TooLarge { .. })
         ));
+    }
+
+    #[test]
+    fn insufficient_host_disk_has_actionable_wire_evidence() {
+        let failure = BuildPlatformFailure::InsufficientHostDisk {
+            available_bytes: 1,
+            required_free_bytes: 2,
+        };
+        assert_eq!(
+            serde_json::to_value(failure).expect("serialize failure"),
+            serde_json::json!({
+                "kind": "insufficient_host_disk",
+                "available_bytes": 1,
+                "required_free_bytes": 2
+            })
+        );
     }
 
     fn project_event_from_status(

@@ -295,7 +295,7 @@ pub enum MachineFactsReadError {
     BuildFactsSnapshot(MachineFactsSnapshotError),
 }
 
-fn read_disk_space(path: &Path) -> std::io::Result<MachineDiskSpace> {
+pub(super) fn read_disk_space(path: &Path) -> std::io::Result<MachineDiskSpace> {
     read_existing_path_disk_space(existing_filesystem_path(path))
 }
 

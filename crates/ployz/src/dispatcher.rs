@@ -216,6 +216,9 @@ pub async fn execute_command(
         PloyzctlCommand::MachineStoragePrepare(command) => {
             crate::machine::runtime::storage_prepare(command, config).await
         }
+        PloyzctlCommand::MachineBuildCachePrune(command) => {
+            crate::machine::runtime::build_cache_prune(command, config).await
+        }
         PloyzctlCommand::MachineLifecycle(command) => {
             crate::machine::runtime::lifecycle(command, config).await
         }

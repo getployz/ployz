@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use std::num::NonZeroU16;
 
 use crate::certificate::CertificateProvisionFailure;
-use crate::deploy::VolumeName;
 use crate::deploy::{DeployCleanupContainer, DeployPlan, ImageReference};
+use crate::deploy::{VolumeAdmissionFailure, VolumeName};
 use crate::ids::{
     ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
     OperationId, RouteBindingId, ServiceId,
@@ -288,6 +288,11 @@ pub enum DeployOperationFailure {
         namespace_revision_id: NamespaceRevisionId,
         message: FailureMessage,
     },
+    VolumeAdmissionFailed {
+        service_id: ServiceId,
+        machine_id: MachineId,
+        failure: Box<VolumeAdmissionFailure>,
+    },
     AutomaticHostnameCollision {
         hostname: RouteHostname,
         route_binding_id: RouteBindingId,
@@ -443,9 +448,9 @@ impl DeployOperationFailure {
                     DeployFailureClass::PreconditionRejected
                 }
             }
-            Self::PlanningFailed { .. } | Self::AutomaticHostnameCollision { .. } => {
-                DeployFailureClass::PreconditionRejected
-            }
+            Self::PlanningFailed { .. }
+            | Self::VolumeAdmissionFailed { .. }
+            | Self::AutomaticHostnameCollision { .. } => DeployFailureClass::PreconditionRejected,
             Self::ArtifactUnavailable { .. }
             | Self::ImageResolutionFailed { .. }
             | Self::ImageMissingOnSeed { .. }
@@ -511,6 +516,7 @@ impl DeployOperationFailure {
             } => retained_artifacts,
             Self::NoUsableMachines { .. }
             | Self::PlanningFailed { .. }
+            | Self::VolumeAdmissionFailed { .. }
             | Self::AutomaticHostnameCollision { .. }
             | Self::VolumeEnsureFailed { .. }
             | Self::ImageResolutionFailed { .. }

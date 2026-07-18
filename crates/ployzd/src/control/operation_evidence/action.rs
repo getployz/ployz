@@ -2,6 +2,7 @@ use super::{
     BuildOperationPayload, BuildOperationSubmission, CertOperationPayload, CertOperationSubmission,
     CoreReplaceOperationSubmission, CoreReplacePayload, CredentialGrantOperationSubmission,
     DeployOperationPayload, DeployOperationSubmission, IngressConfigureOperationSubmission,
+    MachineBuildCachePruneOperationSubmission, MachineBuildCachePrunePayload,
     MachineLifecycleOperationSubmission, MachineLifecyclePayload,
     MachineStoragePrepareOperationSubmission, MachineStoragePreparePayload,
     MachineUpdateOperationSubmission, MachineUpdatePayload, ManagedDnsReconcileOperationSubmission,
@@ -296,6 +297,41 @@ impl OperationAction for MachineStoragePrepareOperationSubmission {
             operation_id,
             payload.machine_id.clone(),
             payload.requested_pool.clone(),
+            sequence,
+        )
+    }
+}
+
+impl OperationAction for MachineBuildCachePruneOperationSubmission {
+    type Payload = MachineBuildCachePrunePayload;
+    const KIND: OperationKind = OperationKind::MachineBuildCachePrune;
+
+    fn submitted_event(operation_id: OperationId, payload: Self::Payload) -> OperationEvent {
+        OperationEvent::MachineBuildCachePruneSubmitted {
+            operation_id,
+            machine_id: payload.machine_id,
+        }
+    }
+
+    fn submitted_event_parts(event: OperationEvent) -> Option<(OperationId, Self::Payload)> {
+        let OperationEvent::MachineBuildCachePruneSubmitted {
+            operation_id,
+            machine_id,
+        } = event
+        else {
+            return None;
+        };
+        Some((operation_id, MachineBuildCachePrunePayload { machine_id }))
+    }
+
+    fn accepted_status(
+        operation_id: OperationId,
+        payload: &Self::Payload,
+        sequence: EventSequence,
+    ) -> OperationStatus {
+        OperationStatus::machine_build_cache_prune_accepted(
+            operation_id,
+            payload.machine_id.clone(),
             sequence,
         )
     }

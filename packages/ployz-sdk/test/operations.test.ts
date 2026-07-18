@@ -55,6 +55,7 @@ import type {
   MachineAddAccepted,
   MachineAddResponse,
   MachineAddRequest,
+  MachineBuildCachePruneRequest,
   MachineInspectResponse,
   MachineInspectRequest,
   MachineJoinBundle,
@@ -151,6 +152,24 @@ test("machine update returns an operation handle", async () => {
   assert.deepEqual(transport.machineUpdateRequests, [request]);
   assert.deepEqual(transport.statusRequests, [{ operation_id: "op_123" }]);
   assert.deepEqual(status, defaultFixture().operation_status_snapshot);
+});
+
+test("machine build cache prune returns an operation handle", async () => {
+  const transport = new RecordingTransport(defaultFixture());
+  const client = new PloyzClient(transport);
+
+  const handle = await client.machineBuildCachePrune({
+    operationId: "op_cache_prune_123",
+    machineId: "machine_2",
+  });
+
+  assert.equal(handle.operationId, "op_123");
+  assert.deepEqual(transport.machineBuildCachePruneRequests, [
+    {
+      operation_id: operationId("op_cache_prune_123"),
+      machine_id: machineId("machine_2"),
+    },
+  ]);
 });
 
 test("first-machine activation returns a status-capable operation reference", async () => {
@@ -633,6 +652,15 @@ test("sdk exports the Rust operation API contract registry", () => {
       response: "MachineAddResponse",
     },
     {
+      name: "machine.build_cache_prune",
+      subject: "plz.v1.rpc.operator.command.machine.build_cache_prune",
+      execution: "accepts_operation",
+      request: "MachineBuildCachePruneRequest",
+      success: "AcceptedOperation",
+      error: "MachineBuildCachePruneError",
+      response: "MachineBuildCachePruneResponse",
+    },
+    {
       name: "machine.update",
       subject: "plz.v1.rpc.operator.command.machine.update",
       execution: "accepts_operation",
@@ -922,6 +950,7 @@ class RecordingTransport implements PloyzOperationTransport {
   readonly deployRequests: DeploySubmitRequest[] = [];
   readonly initFirstMachineActivateRequests: InitFirstMachineActivateRequest[] = [];
   readonly machineAddRequests: MachineAddRequest[] = [];
+  readonly machineBuildCachePruneRequests: MachineBuildCachePruneRequest[] = [];
   readonly machineUpdateRequests: MachineUpdateRequest[] = [];
   readonly machineListRequests: MachineListRequest[] = [];
   readonly machineInspectRequests: MachineInspectRequest[] = [];
@@ -993,6 +1022,9 @@ class RecordingTransport implements PloyzOperationTransport {
       case "machine.add":
         this.machineAddRequests.push(request as MachineAddRequest);
         return (this.machineAddResponse ?? { status: "ok", value: this.machineAddAccepted }) as any;
+      case "machine.build_cache_prune":
+        this.machineBuildCachePruneRequests.push(request as MachineBuildCachePruneRequest);
+        return { status: "ok", value: this.accepted } as any;
       case "machine.drain":
       case "machine.resume":
         return { status: "ok", value: this.accepted } as any;

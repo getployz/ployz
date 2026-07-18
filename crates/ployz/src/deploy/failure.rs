@@ -45,7 +45,8 @@ impl<'a> DeployFailureView<'a> {
                     push_unique(&mut machines, &reason.machine_id);
                 }
             }
-            DeployOperationFailure::RuntimeUnavailable { machine_id, .. }
+            DeployOperationFailure::VolumeAdmissionFailed { machine_id, .. }
+            | DeployOperationFailure::RuntimeUnavailable { machine_id, .. }
             | DeployOperationFailure::VolumeEnsureFailed { machine_id, .. }
             | DeployOperationFailure::ContainerStartFailed { machine_id, .. }
             | DeployOperationFailure::ImageResolutionFailed { machine_id, .. }
@@ -208,6 +209,7 @@ impl<'a> DeployFailureView<'a> {
         match self.failure {
             DeployOperationFailure::NoUsableMachines { .. }
             | DeployOperationFailure::PlanningFailed { .. }
+            | DeployOperationFailure::VolumeAdmissionFailed { .. }
             | DeployOperationFailure::AutomaticHostnameCollision { .. }
             | DeployOperationFailure::ImageResolutionFailed { .. }
             | DeployOperationFailure::ArtifactUnavailable { .. }
@@ -247,6 +249,7 @@ impl<'a> DeployFailureView<'a> {
             }
             DeployOperationFailure::NoUsableMachines { .. }
             | DeployOperationFailure::PlanningFailed { .. }
+            | DeployOperationFailure::VolumeAdmissionFailed { .. }
             | DeployOperationFailure::AutomaticHostnameCollision { .. }
             | DeployOperationFailure::RuntimeUnavailable { .. }
             | DeployOperationFailure::VolumeEnsureFailed { .. }
@@ -265,6 +268,7 @@ impl<'a> DeployFailureView<'a> {
             DeployOperationFailure::RouteCutoverFailed { route, .. } => Some(route),
             DeployOperationFailure::NoUsableMachines { .. }
             | DeployOperationFailure::PlanningFailed { .. }
+            | DeployOperationFailure::VolumeAdmissionFailed { .. }
             | DeployOperationFailure::AutomaticHostnameCollision { .. }
             | DeployOperationFailure::ImageResolutionFailed { .. }
             | DeployOperationFailure::ArtifactUnavailable { .. }
@@ -309,6 +313,7 @@ impl<'a> DeployFailureView<'a> {
             )),
             DeployOperationFailure::NoUsableMachines { .. }
             | DeployOperationFailure::PlanningFailed { .. }
+            | DeployOperationFailure::VolumeAdmissionFailed { .. }
             | DeployOperationFailure::AutomaticHostnameCollision { .. }
             | DeployOperationFailure::ImageResolutionFailed { .. }
             | DeployOperationFailure::ArtifactUnavailable { .. }
@@ -331,6 +336,7 @@ impl<'a> DeployFailureView<'a> {
     fn service_id(&self) -> Option<&'a ServiceId> {
         match self.failure {
             DeployOperationFailure::PlanningFailed { service_id, .. }
+            | DeployOperationFailure::VolumeAdmissionFailed { service_id, .. }
             | DeployOperationFailure::ImageResolutionFailed { service_id, .. }
             | DeployOperationFailure::ArtifactUnavailable { service_id, .. }
             | DeployOperationFailure::ImageMissingOnSeed { service_id, .. }
@@ -457,6 +463,15 @@ pub(super) fn failure_cause(target: &DeployRequest, failure: &DeployOperationFai
         DeployOperationFailure::PlanningFailed { message, .. } => {
             format!("deploy planning failed: {}", message.as_str())
         }
+        DeployOperationFailure::VolumeAdmissionFailed {
+            machine_id,
+            failure,
+            ..
+        } => format!(
+            "volume admission failed on {}: {}",
+            machine_id.as_str(),
+            crate::volume::presentation::admission_failure(failure)
+        ),
         DeployOperationFailure::AutomaticHostnameCollision {
             hostname,
             route_binding_id,

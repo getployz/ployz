@@ -79,6 +79,12 @@ pub(crate) fn generate_client_machine_storage_prepare_id(
     generate_client_operation_id("storage_prepare", machine_id.as_str())
 }
 
+pub(crate) fn generate_client_machine_build_cache_prune_id(
+    machine_id: &MachineId,
+) -> Result<ClientGeneratedOperationId, ClientGeneratedIdsError> {
+    generate_client_operation_id("build_cache_prune", machine_id.as_str())
+}
+
 pub(crate) fn generate_client_service_restart_id(
     service_id: &ServiceId,
 ) -> Result<ClientGeneratedOperationId, ClientGeneratedIdsError> {

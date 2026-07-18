@@ -32,6 +32,7 @@ mod events;
 mod ingress_configure;
 mod interruption;
 mod machine_add;
+mod machine_build_cache_prune;
 mod machine_lifecycle;
 mod machine_storage_prepare;
 mod machine_update;
@@ -80,6 +81,10 @@ pub use interruption::{
     OperationInterruptionUncertainWork,
 };
 pub use machine_add::{MachineAddOperationState, MachineAddOperationStateName};
+pub use machine_build_cache_prune::{
+    BuildCachePruneEvidence, MachineBuildCachePruneFailure, MachineBuildCachePruneOperationState,
+    MachineBuildCachePruneTransition,
+};
 pub use machine_lifecycle::{
     MachineLifecycleFailure, MachineLifecycleOperationState, MachineLifecycleTransition,
 };
@@ -139,6 +144,7 @@ pub enum OperationKind {
     Deploy,
     Cert,
     MachineAdd,
+    MachineBuildCachePrune,
     MachineUpdate,
     MachineStoragePrepare,
     MachineLifecycle,
@@ -192,6 +198,12 @@ pub enum OperationStatus {
         #[serde(default = "crate::install::HostPortAssurance::keeper")]
         host_port_assurance: crate::install::HostPortAssurance,
         state: MachineAddOperationState,
+        last_event_sequence: EventSequence,
+    },
+    MachineBuildCachePrune {
+        id: OperationId,
+        machine_id: MachineId,
+        state: MachineBuildCachePruneOperationState,
         last_event_sequence: EventSequence,
     },
     MachineUpdate {
@@ -390,6 +402,20 @@ impl OperationStatus {
     }
 
     #[must_use]
+    pub fn machine_build_cache_prune_accepted(
+        id: OperationId,
+        machine_id: MachineId,
+        event_sequence: EventSequence,
+    ) -> Self {
+        Self::MachineBuildCachePrune {
+            id,
+            machine_id,
+            state: MachineBuildCachePruneOperationState::Accepted,
+            last_event_sequence: event_sequence,
+        }
+    }
+
+    #[must_use]
     pub fn machine_lifecycle_accepted(
         id: OperationId,
         machine_id: MachineId,
@@ -544,6 +570,7 @@ impl OperationStatus {
             Self::MachineAdd { state, .. } => state.is_terminal(),
             Self::MachineUpdate { state, .. } => state.is_terminal(),
             Self::MachineStoragePrepare { state, .. } => state.is_terminal(),
+            Self::MachineBuildCachePrune { state, .. } => state.is_terminal(),
             Self::MachineLifecycle { state, .. } => state.is_terminal(),
             Self::CoreReplace { state, .. } => state.is_terminal(),
             Self::CredentialGrant { state, .. } => state.is_terminal(),
@@ -592,6 +619,16 @@ impl OperationStatus {
             Self::MachineStoragePrepare { state, .. } => OperationOutcome::from_terminal(
                 matches!(state, MachineStoragePrepareOperationState::Completed { .. }),
                 matches!(state, MachineStoragePrepareOperationState::Cancelled { .. }),
+            ),
+            Self::MachineBuildCachePrune { state, .. } => OperationOutcome::from_terminal(
+                matches!(
+                    state,
+                    MachineBuildCachePruneOperationState::Completed { .. }
+                ),
+                matches!(
+                    state,
+                    MachineBuildCachePruneOperationState::Cancelled { .. }
+                ),
             ),
             Self::MachineLifecycle { state, .. } => OperationOutcome::from_terminal(
                 matches!(state, MachineLifecycleOperationState::Completed),

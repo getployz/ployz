@@ -64,27 +64,13 @@ pub(super) fn toolchain_for_platform(
     platform: &OciPlatform,
     adapter: &BuildAdapter,
 ) -> Result<BuildToolchain, BuildPlanError> {
-    if platform.os() != "linux" {
-        return Err(BuildPlanError::UnsupportedPlatform {
-            platform: platform.clone(),
-        });
-    }
     let pins = railpack_pins().map_err(invalid_pin)?;
-    let buildkit = match platform.architecture() {
-        "amd64" => "sha256:2caaaf9bc673a82d5b0a87824f8375e6b2b36b55001dad611230516c724e9fba",
-        "arm64" => "sha256:4eee950fb9d134cbf4e228ea3906eb4c7403323334af013c443302f7b74f2737",
-        _ => {
-            return Err(BuildPlanError::UnsupportedPlatform {
-                platform: platform.clone(),
-            });
-        }
-    };
+    let (buildkit_reference, buildkit_manifest_digest) = buildkit_for_platform(platform)?;
     let railpack = pins
         .for_architecture(platform.architecture())
         .ok_or_else(|| BuildPlanError::UnsupportedPlatform {
             platform: platform.clone(),
         })?;
-    let buildkit_manifest_digest = digest(buildkit)?;
     let frontend_manifest_digest = digest(railpack.frontend_digest())?;
     let adapter = match adapter {
         BuildAdapter::Dockerfile { .. } => BuildAdapterToolchain::Dockerfile,
@@ -103,10 +89,34 @@ pub(super) fn toolchain_for_platform(
         },
     };
     Ok(BuildToolchain {
-        buildkit_reference: format!("moby/buildkit@{buildkit}"),
+        buildkit_reference,
         buildkit_manifest_digest,
         adapter,
     })
+}
+
+pub(super) fn buildkit_for_platform(
+    platform: &OciPlatform,
+) -> Result<(String, OciDigest), BuildPlanError> {
+    if platform.os() != "linux" {
+        return Err(BuildPlanError::UnsupportedPlatform {
+            platform: platform.clone(),
+        });
+    }
+    let buildkit = match platform.architecture() {
+        "amd64" => "sha256:2caaaf9bc673a82d5b0a87824f8375e6b2b36b55001dad611230516c724e9fba",
+        "arm64" => "sha256:4eee950fb9d134cbf4e228ea3906eb4c7403323334af013c443302f7b74f2737",
+        _ => {
+            return Err(BuildPlanError::UnsupportedPlatform {
+                platform: platform.clone(),
+            });
+        }
+    };
+    let buildkit_manifest_digest = digest(buildkit)?;
+    Ok((
+        format!("moby/buildkit@{buildkit}"),
+        buildkit_manifest_digest,
+    ))
 }
 
 pub(super) fn lower_build_adapter(
@@ -270,6 +280,10 @@ mod tests {
         }
     }
 
+    fn workspace(temp: &tempfile::TempDir) -> PathBuf {
+        fs::canonicalize(temp.path()).expect("workspace")
+    }
+
     #[test]
     fn dockerfile_lowers_to_one_native_build_with_verified_commit() {
         let temp = tempfile::tempdir().expect("temp");
@@ -280,8 +294,14 @@ mod tests {
             target: None,
         };
         let toolchain = toolchain_for_platform(&platform, &adapter).expect("toolchain");
-        let plan = lower_build_adapter(&checkout, &adapter, &platform, temp.path(), &toolchain)
-            .expect("plan");
+        let plan = lower_build_adapter(
+            &checkout,
+            &adapter,
+            &platform,
+            &workspace(&temp),
+            &toolchain,
+        )
+        .expect("plan");
         assert!(plan.prepare.is_none());
         assert!(
             plan.buildctl_arguments
@@ -302,8 +322,14 @@ mod tests {
             cache_scope: BuildCacheScope::try_new("scope_01J0Y1").expect("scope"),
         };
         let toolchain = toolchain_for_platform(&platform, &adapter).expect("toolchain");
-        let plan = lower_build_adapter(&checkout, &adapter, &platform, temp.path(), &toolchain)
-            .expect("plan");
+        let plan = lower_build_adapter(
+            &checkout,
+            &adapter,
+            &platform,
+            &workspace(&temp),
+            &toolchain,
+        )
+        .expect("plan");
         let prepare = plan.prepare.expect("prepare");
         assert_eq!(
             prepare.program,

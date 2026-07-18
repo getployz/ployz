@@ -22,6 +22,7 @@ use crate::control::operations::build::BuildOperationDriver;
 use crate::control::operations::credential_grant::CredentialGrantOperation;
 use crate::control::operations::deploy::driver::{DeployOperationDriver, DeployOperationStores};
 use crate::control::operations::ingress_configure::IngressConfigureOperation;
+use crate::control::operations::machine_build_cache_prune::MachineBuildCachePruneOperation;
 use crate::control::operations::machine_lifecycle::MachineLifecycleOperation;
 use crate::control::operations::machine_storage_prepare::MachineStoragePrepareOperation;
 use crate::control::operations::machine_update::MachineUpdateOperation;
@@ -474,6 +475,11 @@ async fn start_control_process_with_client_reload_and_issuer(
     );
     let machine_storage_prepare = MachineStoragePrepareOperation::new(
         controllers.clone(),
+        machine_updater.clone(),
+        task_spawner.clone(),
+    );
+    let machine_build_cache_prune = MachineBuildCachePruneOperation::new(
+        controllers.clone(),
         machine_updater,
         task_spawner.clone(),
     );
@@ -506,6 +512,7 @@ async fn start_control_process_with_client_reload_and_issuer(
                 volume_create,
                 volume_remove,
                 machine_update,
+                machine_build_cache_prune,
                 machine_storage_prepare,
                 machine_lifecycle,
                 machine_mint: machine_mint.clone(),

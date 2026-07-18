@@ -224,6 +224,7 @@ fn record_interrupted_operations_txn(
             "ingress_configure_submitted",
             "machine_update_submitted",
             "machine_storage_prepare_submitted",
+            "machine_build_cache_prune_submitted",
             "machine_lifecycle_submitted",
             "network_repair_submitted",
             "service_restart_submitted",

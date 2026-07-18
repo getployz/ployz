@@ -94,9 +94,10 @@ pub(super) fn build_namespace_volume_plan(
             selected_machine_id: &machine_id,
             storage_testimony: StorageTestimony::NoAnswer,
         })
-        .map_err(|failure| DeployPlanError::VolumeAdmission {
+        .map_err(|failure| DeployPlanError::VolumeAdmissionOnMachine {
             service_id: service.service_id().clone(),
-            failure,
+            machine_id: machine_id.clone(),
+            failure: Box::new(failure),
         })?;
         for volume_name in &mounted {
             assignments
@@ -154,9 +155,10 @@ pub(super) fn build_namespace_volume_plan(
             selected_machine_id: &machine_id,
             storage_testimony: operation_storage_testimony(context.storage_testimony, &machine_id),
         })
-        .map_err(|failure| DeployPlanError::VolumeAdmission {
+        .map_err(|failure| DeployPlanError::VolumeAdmissionOnMachine {
             service_id: service_for_volume(&services, &mounted, target.status_service_id()),
-            failure,
+            machine_id: machine_id.clone(),
+            failure: Box::new(failure),
         })?;
         for decision in decisions {
             ensures.push(decision.desired_pin().clone());

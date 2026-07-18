@@ -303,6 +303,7 @@ const fn operation_kind_name(kind: OperationKind) -> &'static str {
         OperationKind::MachineAdd => "machine-add",
         OperationKind::MachineUpdate => "machine-update",
         OperationKind::MachineStoragePrepare => "machine-storage-prepare",
+        OperationKind::MachineBuildCachePrune => "machine-build-cache-prune",
         OperationKind::MachineLifecycle => "machine-lifecycle",
         OperationKind::CoreReplace => "core-replace",
         OperationKind::CredentialGrant => "credential-grant",
@@ -357,6 +358,9 @@ fn operation_subject(status: &OperationStatus) -> String {
             || format!("machine {} pool automatic", machine_id.as_str()),
             |pool| format!("machine {} pool {}", machine_id.as_str(), pool.as_str()),
         ),
+        OperationStatus::MachineBuildCachePrune { machine_id, .. } => {
+            format!("machine {} build cache", machine_id.as_str())
+        }
         OperationStatus::MachineLifecycle {
             machine_id, target, ..
         } => format!(
@@ -462,6 +466,9 @@ fn operation_state(status: &OperationStatus) -> String {
         OperationStatus::MachineUpdate { state, .. } => machine_update_state(state).to_owned(),
         OperationStatus::MachineStoragePrepare { state, .. } => {
             machine_storage_prepare_state(state).to_owned()
+        }
+        OperationStatus::MachineBuildCachePrune { state, .. } => {
+            machine_build_cache_prune_state(state).to_owned()
         }
         OperationStatus::MachineLifecycle { state, .. } => {
             machine_lifecycle_state(state).to_owned()
@@ -656,6 +663,13 @@ fn status_failure_detail(status: &OperationStatus) -> Option<String> {
             "failure {}",
             machine_storage_prepare_failure(failure)
         )),
+        OperationStatus::MachineBuildCachePrune {
+            state: ployz_sdk_types::MachineBuildCachePruneOperationState::Failed { failure },
+            ..
+        } => Some(format!(
+            "failure {}",
+            machine_build_cache_prune_failure(failure)
+        )),
         OperationStatus::VolumeCreate {
             state: ployz_sdk_types::VolumeCreateOperationState::Failed { failure },
             ..
@@ -669,6 +683,7 @@ fn status_failure_detail(status: &OperationStatus) -> Option<String> {
         | OperationStatus::MachineAdd { .. }
         | OperationStatus::MachineUpdate { .. }
         | OperationStatus::MachineStoragePrepare { .. }
+        | OperationStatus::MachineBuildCachePrune { .. }
         | OperationStatus::MachineLifecycle { .. }
         | OperationStatus::CoreReplace { .. }
         | OperationStatus::CredentialGrant { .. }
@@ -864,6 +879,31 @@ fn machine_storage_prepare_failure(
     }
 }
 
+const fn machine_build_cache_prune_state(
+    state: &ployz_sdk_types::MachineBuildCachePruneOperationState,
+) -> &'static str {
+    match state {
+        ployz_sdk_types::MachineBuildCachePruneOperationState::Accepted => "accepted",
+        ployz_sdk_types::MachineBuildCachePruneOperationState::Pruning => "pruning",
+        ployz_sdk_types::MachineBuildCachePruneOperationState::Completed { .. } => "completed",
+        ployz_sdk_types::MachineBuildCachePruneOperationState::Failed { .. } => "failed",
+        ployz_sdk_types::MachineBuildCachePruneOperationState::Cancelled { .. } => "cancelled",
+        ployz_sdk_types::MachineBuildCachePruneOperationState::Interrupted { .. } => "interrupted",
+    }
+}
+
+fn machine_build_cache_prune_failure(
+    failure: &ployz_sdk_types::MachineBuildCachePruneFailure,
+) -> &str {
+    match failure {
+        ployz_sdk_types::MachineBuildCachePruneFailure::MachineUnavailable { message, .. }
+        | ployz_sdk_types::MachineBuildCachePruneFailure::PruneRejected { message, .. }
+        | ployz_sdk_types::MachineBuildCachePruneFailure::StateCommitFailed { message, .. } => {
+            message.as_str()
+        }
+    }
+}
+
 struct DeployEventRenderContext {
     service_id: Option<ServiceId>,
 }
@@ -920,6 +960,10 @@ impl DeployEventRenderContext {
             | OperationEvent::MachineStoragePreparePreparing { .. }
             | OperationEvent::MachineStoragePrepareCompleted { .. }
             | OperationEvent::MachineStoragePrepareFailed { .. }
+            | OperationEvent::MachineBuildCachePruneSubmitted { .. }
+            | OperationEvent::MachineBuildCachePrunePruning { .. }
+            | OperationEvent::MachineBuildCachePruneCompleted { .. }
+            | OperationEvent::MachineBuildCachePruneFailed { .. }
             | OperationEvent::MachineLifecycleSubmitted { .. }
             | OperationEvent::MachineLifecycleCompleted { .. }
             | OperationEvent::MachineLifecycleFailed { .. }
@@ -1044,6 +1088,20 @@ fn render_replayed_event_text(
             machine_id.as_str(),
             chunk.as_str()
         ),
+        OperationEvent::MachineBuildCachePruneCompleted { evidence, .. } => format!(
+            "{} {} before-available {} reclaimed {} after-available {}",
+            event.sequence.get(),
+            label,
+            evidence.before_available_bytes,
+            evidence.reclaimed_bytes,
+            evidence.after_available_bytes,
+        ),
+        OperationEvent::MachineBuildCachePruneFailed { failure, .. } => format!(
+            "{} {} {}",
+            event.sequence.get(),
+            label,
+            machine_build_cache_prune_failure(failure),
+        ),
         OperationEvent::BuildSubmitted { .. }
         | OperationEvent::BuildPlacementStarted { .. }
         | OperationEvent::BuildPlatformPlaced { .. }
@@ -1087,6 +1145,8 @@ fn render_replayed_event_text(
         | OperationEvent::MachineStoragePreparePreparing { .. }
         | OperationEvent::MachineStoragePrepareCompleted { .. }
         | OperationEvent::MachineStoragePrepareFailed { .. }
+        | OperationEvent::MachineBuildCachePruneSubmitted { .. }
+        | OperationEvent::MachineBuildCachePrunePruning { .. }
         | OperationEvent::MachineLifecycleSubmitted { .. }
         | OperationEvent::MachineLifecycleCompleted { .. }
         | OperationEvent::MachineLifecycleFailed { .. }
@@ -1212,6 +1272,14 @@ fn operation_event_label(event: &OperationEvent) -> &'static str {
             "machine.storage_prepare.completed"
         }
         OperationEvent::MachineStoragePrepareFailed { .. } => "machine.storage_prepare.failed",
+        OperationEvent::MachineBuildCachePruneSubmitted { .. } => {
+            "machine.build_cache_prune.submitted"
+        }
+        OperationEvent::MachineBuildCachePrunePruning { .. } => "machine.build_cache_prune.pruning",
+        OperationEvent::MachineBuildCachePruneCompleted { .. } => {
+            "machine.build_cache_prune.completed"
+        }
+        OperationEvent::MachineBuildCachePruneFailed { .. } => "machine.build_cache_prune.failed",
         OperationEvent::MachineLifecycleSubmitted { .. } => "machine.lifecycle.submitted",
         OperationEvent::MachineLifecycleCompleted { .. } => "machine.lifecycle.completed",
         OperationEvent::MachineLifecycleFailed { .. } => "machine.lifecycle.failed",

@@ -5,7 +5,10 @@ mod machine_substrate;
 
 use ingress::{IngressClaim, deploy_requires_ingress};
 pub use ingress::{IngressConfigureSubmitCommand, IngressConfigureSubmitError};
-pub use machine_substrate::{MachineStoragePrepareSubmitCommand, MachineUpdateSubmitCommand};
+pub use machine_substrate::{
+    MachineBuildCachePruneSubmitCommand, MachineStoragePrepareSubmitCommand,
+    MachineUpdateSubmitCommand,
+};
 
 use crate::control::operation_evidence::{
     AcceptedBuildSubmission, AcceptedDeploySubmission, AcceptedMachineAddSubmission,
