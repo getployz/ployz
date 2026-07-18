@@ -39,7 +39,7 @@ use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
 use ployz_core::operation::MachineAddOperationState;
 use ployz_core::operation::{
     EventSequence, MAX_OPERATION_EVENT_REPLAY_LIMIT, OperationEventReplayLimit,
-    OperationEventReplayRequest, OperationStatus,
+    OperationEventReplayRequest, OperationOutcome, OperationStatus,
 };
 use ployz_nats::connect::NatsClientUrl;
 use ployz_sdk_types::{MachineAddRequest, OpsStatusRequest};
@@ -448,7 +448,7 @@ pub(crate) async fn execute_machine_add_remote(
         ));
     }
 
-    watch_operation_until_terminal(
+    let (_, outcome) = watch_operation_until_terminal(
         &api,
         OperationEventReplayRequest {
             operation_id: operation_id.clone(),
@@ -460,6 +460,17 @@ pub(crate) async fn execute_machine_add_remote(
         config.ops_watch_poll_interval(),
     )
     .await?;
+    match outcome {
+        OperationOutcome::Succeeded => {}
+        OperationOutcome::Failed | OperationOutcome::Cancelled => {
+            return Err(remote_machine_error(
+                RemoteMachineExecutionError::MachineAddNotCompleted {
+                    operation_id,
+                    state: format!("{outcome:?}"),
+                },
+            ));
+        }
+    }
     let snapshot = api
         .ops_status(&OpsStatusRequest {
             operation_id: operation_id.clone(),

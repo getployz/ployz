@@ -22,12 +22,9 @@ use ployz_core::install::{
     InstallSha256Digest, MachineBootstrapUrl, MachineJoinBundle, MachineJoinClusterName,
     MachineJoinMaterial, MachineJoinRuntimeNatsUrl, MachineJoinTrustedNats,
 };
-use ployz_core::machine::MachineAddFailure;
 use ployz_core::nats_config::NatsCaCertificatePem;
 use ployz_core::operation::MachineAddOperationState;
-use ployz_core::operation::{
-    FailureMessage, OperationEventReplayPage, OperationStatus, OperationStatusSnapshot,
-};
+use ployz_core::operation::{OperationEventReplayPage, OperationStatus, OperationStatusSnapshot};
 use ployz_core::roles::{GatewayRole, InstallRolePolicy};
 use ployz_nats::service_runtime::{NatsServiceResponse, start_nats_service};
 use ployz_nats::services::{
@@ -763,7 +760,10 @@ async fn machine_add_remote_submits_installs_and_watches_to_completion() {
             &endpoint(&spec, OperationApiEndpoint::from(OpsWatchApi::ENDPOINT)),
             |_request| async move {
                 let response: OpsWatchResponse = OperationApiResponse::Ok {
-                    value: OperationEventReplayPage::terminal(Vec::new()),
+                    value: OperationEventReplayPage::terminal(
+                        Vec::new(),
+                        ployz_core::operation::OperationOutcome::Succeeded,
+                    ),
                 };
                 NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
             },
@@ -1089,7 +1089,10 @@ async fn machine_add_remote_terminal_failure_does_not_record_machine_ssh() {
             &endpoint(&spec, OperationApiEndpoint::from(OpsWatchApi::ENDPOINT)),
             |_request| async move {
                 let response: OpsWatchResponse = OperationApiResponse::Ok {
-                    value: OperationEventReplayPage::terminal(Vec::new()),
+                    value: OperationEventReplayPage::terminal(
+                        Vec::new(),
+                        ployz_core::operation::OperationOutcome::Failed,
+                    ),
                 };
                 NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
             },
@@ -1109,12 +1112,7 @@ async fn machine_add_remote_terminal_failure_does_not_record_machine_ssh() {
                         name: MachineName::try_new("sg-edge-1").expect("valid machine name"),
                         roles: InstallRolePolicy::install_all(),
                         host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
-                        state: MachineAddOperationState::Failed {
-                            failure: MachineAddFailure::BootstrapFailed {
-                                message: FailureMessage::try_new("join failed")
-                                    .expect("valid failure message"),
-                            },
-                        },
+                        state: MachineAddOperationState::Completed,
                         last_event_sequence: event_sequence(5),
                     }),
                 };

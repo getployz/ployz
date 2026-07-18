@@ -21,7 +21,6 @@ use ployz_nats::connect::{
     NatsClientAuth, NatsClientUrl, NatsClientUrlError, NatsConnectConfig, NatsConnectError,
     NatsTlsTrust, connect_authenticated,
 };
-use ployz_sdk_types::OpsStatusRequest;
 use tokio::time::sleep as async_sleep;
 
 mod client_ids;
@@ -97,7 +96,7 @@ pub(crate) async fn watch_operation_until_terminal(
     request: OperationEventReplayRequest,
     timeout: Duration,
     poll_interval: Duration,
-) -> Result<(Vec<ReplayedOperationEvent>, Option<OperationOutcome>), ExecutionSupportError> {
+) -> Result<(Vec<ReplayedOperationEvent>, OperationOutcome), ExecutionSupportError> {
     watch_operation_until_terminal_with(api, request, timeout, poll_interval, |_| Ok(())).await
 }
 
@@ -107,7 +106,7 @@ pub(crate) async fn watch_operation_until_terminal_with<E>(
     timeout: Duration,
     poll_interval: Duration,
     mut observe_page: impl FnMut(&[ReplayedOperationEvent]) -> Result<(), E>,
-) -> Result<(Vec<ReplayedOperationEvent>, Option<OperationOutcome>), E>
+) -> Result<(Vec<ReplayedOperationEvent>, OperationOutcome), E>
 where
     E: From<ExecutionSupportError>,
 {
@@ -138,10 +137,7 @@ where
                 request.start_sequence = next_start_sequence;
                 continue;
             }
-            OperationEventReplayCursor::Terminal => {
-                let outcome = operation_terminal_outcome(api, &operation_id)
-                    .await
-                    .map_err(E::from)?;
+            OperationEventReplayCursor::Terminal { outcome } => {
                 return Ok((events, outcome));
             }
             OperationEventReplayCursor::CaughtUp => {}
@@ -156,21 +152,6 @@ where
 
         async_sleep(poll_interval).await;
     }
-}
-
-/// The terminal outcome recorded for an operation the event stream reports as
-/// terminal, or `None` if its status snapshot has not caught up yet.
-async fn operation_terminal_outcome(
-    api: &OperationApiClient,
-    operation_id: &OperationId,
-) -> Result<Option<OperationOutcome>, ExecutionSupportError> {
-    let snapshot = api
-        .ops_status(&OpsStatusRequest {
-            operation_id: operation_id.clone(),
-        })
-        .await
-        .map_err(api_error)?;
-    Ok(snapshot.status.terminal_outcome())
 }
 
 fn next_event_sequence(sequence: EventSequence) -> Option<EventSequence> {
