@@ -109,7 +109,7 @@ test("runtime stream snapshot ends initial seed retry", async () => {
   await iterator.return?.();
 });
 
-test("runtime watch drops a stream snapshot buffered before a fresher seed", async () => {
+test("runtime watch preserves a newer stream snapshot received during seeding", async () => {
   const seed = deferred<RuntimeSnapshot>();
   const nats = new WatchNatsConnection([seed.promise]);
   const iterator = new PloyzClient(new PloyzNatsTransport(nats))
@@ -117,8 +117,9 @@ test("runtime watch drops a stream snapshot buffered before a fresher seed", asy
     [Symbol.asyncIterator]();
   const first = iterator.next();
   await tick();
-  nats.subscription.push(message(snapshot(1)));
-  seed.resolve(snapshot(2));
+  nats.subscription.push(message(snapshot(2)));
+  await tick();
+  seed.resolve(snapshot(1));
 
   assert.deepEqual(await first, { done: false, value: snapshot(2) });
   nats.subscription.push(message(snapshot(3)));

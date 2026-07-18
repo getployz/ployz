@@ -227,7 +227,7 @@ export class PloyzNatsTransport {
         while (!cancellation.cancelled && !terminal.value) {
           try {
             const snapshot = await requestSeed();
-            latest = undefined;
+            if (latest !== undefined) return undefined;
             return snapshot;
           } catch (error) {
             if (error === seedInterrupted) return undefined;
