@@ -201,13 +201,7 @@ impl BuildOperationDriver {
                         &request,
                     )
                     .await;
-                if !matches!(
-                    result,
-                    Ok(MachineBuildCancelRpcOk {
-                        outcome: MachineBuildCancelOutcome::NotRunning,
-                        ..
-                    })
-                ) {
+                if !cancel_delivery_should_retry(&result) {
                     break;
                 }
                 let Some(delay) = cancel_retry_delay(tokio::time::Instant::now(), deadline) else {
@@ -591,6 +585,43 @@ impl BuildOperationDriver {
             platform,
             image: ok.image,
         })
+    }
+}
+
+fn cancel_delivery_should_retry(
+    result: &Result<MachineBuildCancelRpcOk, MachineCallError<MachineBuildCancelDomainError>>,
+) -> bool {
+    match result {
+        Ok(MachineBuildCancelRpcOk {
+            machine_id: _,
+            outcome: MachineBuildCancelOutcome::NotRunning,
+        }) => true,
+        Ok(MachineBuildCancelRpcOk {
+            machine_id: _,
+            outcome: MachineBuildCancelOutcome::Requested,
+        })
+        | Err(MachineCallError::Domain(MachineBuildCancelDomainError::CancelFailed {
+            message: _,
+        })) => false,
+        Err(MachineCallError::Unavailable(reason)) => match reason {
+            MachineRuntimeUnavailableReason::RequestTimedOut
+            | MachineRuntimeUnavailableReason::NoResponders
+            | MachineRuntimeUnavailableReason::RequestFailed { message: _ }
+            | MachineRuntimeUnavailableReason::ServiceUnavailable { message: _ }
+            | MachineRuntimeUnavailableReason::ServiceTimedOut { message: _ }
+            | MachineRuntimeUnavailableReason::ServiceInternal { message: _ } => true,
+            MachineRuntimeUnavailableReason::EncodeRequest { message: _ }
+            | MachineRuntimeUnavailableReason::InvalidSubject
+            | MachineRuntimeUnavailableReason::MaxPayloadExceeded
+            | MachineRuntimeUnavailableReason::ServiceBadRequest { message: _ }
+            | MachineRuntimeUnavailableReason::ServiceConflict { message: _ }
+            | MachineRuntimeUnavailableReason::ServiceResponseTooLarge
+            | MachineRuntimeUnavailableReason::MalformedServiceError { message: _ }
+            | MachineRuntimeUnavailableReason::DecodeResponse { message: _ }
+            | MachineRuntimeUnavailableReason::WrongResponder {
+                actual_machine_id: _,
+            } => false,
+        },
     }
 }
 

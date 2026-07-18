@@ -231,7 +231,7 @@ async fn valid_log_is_observed_while_machine_call_is_pending() {
 }
 
 #[test]
-fn not_running_retries_use_one_absolute_deadline() {
+fn retryable_cancel_delivery_results_use_one_absolute_deadline() {
     let now = tokio::time::Instant::now();
     let deadline = now + Duration::from_millis(60);
     assert_eq!(
@@ -246,6 +246,106 @@ fn not_running_retries_use_one_absolute_deadline() {
     assert_eq!(
         cancel_retry_delay(deadline + Duration::from_millis(1), deadline),
         None
+    );
+}
+
+#[test]
+fn cancel_delivery_retries_not_running_and_transient_unavailability() {
+    let machine_id = machine_id("machine-a");
+    let retryable = [
+        Ok(MachineBuildCancelRpcOk {
+            machine_id,
+            outcome: MachineBuildCancelOutcome::NotRunning,
+        }),
+        Err(MachineCallError::Unavailable(
+            MachineRuntimeUnavailableReason::NoResponders,
+        )),
+        Err(MachineCallError::Unavailable(
+            MachineRuntimeUnavailableReason::RequestTimedOut,
+        )),
+        Err(MachineCallError::Unavailable(
+            MachineRuntimeUnavailableReason::RequestFailed {
+                message: "request failed".to_owned(),
+            },
+        )),
+        Err(MachineCallError::Unavailable(
+            MachineRuntimeUnavailableReason::ServiceUnavailable {
+                message: "service unavailable".to_owned(),
+            },
+        )),
+        Err(MachineCallError::Unavailable(
+            MachineRuntimeUnavailableReason::ServiceTimedOut {
+                message: "service timed out".to_owned(),
+            },
+        )),
+        Err(MachineCallError::Unavailable(
+            MachineRuntimeUnavailableReason::ServiceInternal {
+                message: "service internal".to_owned(),
+            },
+        )),
+    ];
+
+    assert!(retryable.iter().all(cancel_delivery_should_retry));
+}
+
+#[test]
+fn cancel_delivery_stops_on_requested_domain_failure_and_permanent_unavailability() {
+    let machine_id = machine_id("machine-a");
+    let permanent = [
+        Ok(MachineBuildCancelRpcOk {
+            machine_id: machine_id.clone(),
+            outcome: MachineBuildCancelOutcome::Requested,
+        }),
+        Err(MachineCallError::Domain(
+            MachineBuildCancelDomainError::CancelFailed {
+                message: FailureMessage::try_new("cancel failed").expect("failure message"),
+            },
+        )),
+        Err(MachineCallError::Unavailable(
+            MachineRuntimeUnavailableReason::EncodeRequest {
+                message: "encode failed".to_owned(),
+            },
+        )),
+        Err(MachineCallError::Unavailable(
+            MachineRuntimeUnavailableReason::InvalidSubject,
+        )),
+        Err(MachineCallError::Unavailable(
+            MachineRuntimeUnavailableReason::MaxPayloadExceeded,
+        )),
+        Err(MachineCallError::Unavailable(
+            MachineRuntimeUnavailableReason::ServiceBadRequest {
+                message: "bad request".to_owned(),
+            },
+        )),
+        Err(MachineCallError::Unavailable(
+            MachineRuntimeUnavailableReason::ServiceConflict {
+                message: "conflict".to_owned(),
+            },
+        )),
+        Err(MachineCallError::Unavailable(
+            MachineRuntimeUnavailableReason::ServiceResponseTooLarge,
+        )),
+        Err(MachineCallError::Unavailable(
+            MachineRuntimeUnavailableReason::MalformedServiceError {
+                message: "malformed error".to_owned(),
+            },
+        )),
+        Err(MachineCallError::Unavailable(
+            MachineRuntimeUnavailableReason::DecodeResponse {
+                message: "decode failed".to_owned(),
+            },
+        )),
+        Err(MachineCallError::Unavailable(
+            MachineRuntimeUnavailableReason::WrongResponder {
+                actual_machine_id: machine_id,
+            },
+        )),
+    ];
+
+    assert!(
+        permanent
+            .iter()
+            .all(|result| !cancel_delivery_should_retry(result))
     );
 }
 
