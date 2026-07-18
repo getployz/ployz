@@ -44,21 +44,62 @@ impl BuildLogProgress {
 
 pub(super) async fn read_output<R: tokio::io::AsyncRead + Unpin>(
     mut reader: R,
-    sender: mpsc::Sender<Vec<u8>>,
+    sender: mpsc::Sender<String>,
 ) {
     let mut buffer = vec![0_u8; MAX_BUILD_LOG_CHUNK_BYTES];
-    loop {
-        let Ok(read) = reader.read(&mut buffer).await else {
-            return;
-        };
+    let mut pending = Vec::new();
+    while let Ok(read) = reader.read(&mut buffer).await {
         if read == 0 {
-            return;
+            break;
         }
         let Some(bytes) = buffer.get(..read) else {
             return;
         };
-        if sender.send(bytes.to_vec()).await.is_err() {
+        pending.extend_from_slice(bytes);
+        let output = take_utf8_output(&mut pending, Utf8Boundary::More);
+        if !output.is_empty() && sender.send(output).await.is_err() {
             return;
+        }
+    }
+    let output = take_utf8_output(&mut pending, Utf8Boundary::End);
+    if !output.is_empty() {
+        let _ = sender.send(output).await;
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Utf8Boundary {
+    More,
+    End,
+}
+
+fn take_utf8_output(pending: &mut Vec<u8>, boundary: Utf8Boundary) -> String {
+    let mut output = String::new();
+    loop {
+        match std::str::from_utf8(pending) {
+            Ok(valid) => {
+                output.push_str(valid);
+                pending.clear();
+                return output;
+            }
+            Err(error) => {
+                let valid_up_to = error.valid_up_to();
+                let Some(valid) = pending.get(..valid_up_to) else {
+                    unreachable!("valid UTF-8 prefix is within the inspected buffer");
+                };
+                output.push_str(&String::from_utf8_lossy(valid));
+                pending.drain(..valid_up_to);
+                if let Some(error_len) = error.error_len() {
+                    output.push('�');
+                    pending.drain(..error_len);
+                    continue;
+                }
+                if matches!(boundary, Utf8Boundary::End) {
+                    output.push_str(&String::from_utf8_lossy(pending));
+                    pending.clear();
+                }
+                return output;
+            }
         }
     }
 }
@@ -99,8 +140,8 @@ impl BuildLogPublisher {
         }
     }
 
-    pub(super) async fn push(&mut self, bytes: &[u8]) -> Result<(), BuildExecutionError> {
-        self.pending.push_str(&String::from_utf8_lossy(bytes));
+    pub(super) async fn push(&mut self, text: &str) -> Result<(), BuildExecutionError> {
+        self.pending.push_str(text);
         let safe = take_redacted_output(&mut self.pending, &self.secret, RedactionBoundary::More);
         self.publish_text(safe).await
     }
@@ -204,6 +245,35 @@ fn char_boundary_at_or_before(value: &str, mut index: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncWriteExt, duplex};
+
+    #[tokio::test]
+    async fn read_output_preserves_utf8_split_across_reads() {
+        let (mut writer, reader) = duplex(1);
+        let (sender, mut receiver) = mpsc::channel(1);
+        let read = tokio::spawn(read_output(reader, sender));
+
+        writer.write_all("€".as_bytes()).await.unwrap();
+        writer.shutdown().await.unwrap();
+
+        assert_eq!(receiver.recv().await.as_deref(), Some("€"));
+        assert_eq!(receiver.recv().await, None);
+        read.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn read_output_lossily_emits_terminal_incomplete_utf8() {
+        let (mut writer, reader) = duplex(1);
+        let (sender, mut receiver) = mpsc::channel(1);
+        let read = tokio::spawn(read_output(reader, sender));
+
+        writer.write_all(&[0xe2, 0x82]).await.unwrap();
+        writer.shutdown().await.unwrap();
+
+        assert_eq!(receiver.recv().await.as_deref(), Some("�"));
+        assert_eq!(receiver.recv().await, None);
+        read.await.unwrap();
+    }
 
     #[test]
     fn streaming_redaction_keeps_a_possible_secret_suffix() {
