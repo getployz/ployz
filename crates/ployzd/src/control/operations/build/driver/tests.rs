@@ -6,20 +6,35 @@ use crate::control::sequencer::{
     BuildSubmitCommand, MachineAddBootstrapConfig, OperationControllers,
 };
 use crate::control::store::CoreStore;
-use crate::roles::machine::protocol::MachineBuildLogFrame;
+use crate::roles::machine::protocol::{
+    MachineBuildLogFrame, MachineBuildStartRpcRequest, MachineBuildStartRpcResponse,
+};
 use crate::tasks::TaskRegistry;
-use ployz_core::build::{BuildAdapter, BuildCacheScope, BuildPlatforms, GitSource};
+use futures_util::StreamExt;
+use ployz_core::build::{
+    BuildAdapter, BuildCacheScope, BuildPlatforms, GitSource, VerifiedGitCommit,
+};
 use ployz_core::deploy::{ImageAvailabilityExpiresAt, PlatformImage};
 use ployz_core::image::{OciDigest, OciPlatform};
-use ployz_core::install::{DEFAULT_MACHINE_BOOTSTRAP_URL, MachineBootstrapUrl};
-use ployz_core::operation::{
-    BuildLogChunk, BuildOperationState, OperationEvent, OperationEventReplayRequest,
+use ployz_core::install::{
+    DEFAULT_MACHINE_BOOTSTRAP_URL, InstallArtifactVersion, InstallSha256Digest, MachineBootstrapUrl,
 };
+use ployz_core::operation::{
+    BuildAdapterToolchainEvidence, BuildLogChunk, BuildOperationState, BuildToolchainEvidence,
+    OperationEvent, OperationEventReplayRequest,
+};
+use ployz_nats::subjects::machine_service;
 use ployz_test_support::ids::{event_replay_limit, event_sequence, machine_id, operation_id};
 
 #[tokio::test]
-async fn mixed_platform_failure_publishes_no_image_index() {
-    let nats = ployz_test_support::nats::TestNats::start().await;
+async fn platform_rpc_failure_records_real_evidence_and_publishes_no_image_index() {
+    let amd64_machine = machine_id("machine_amd64");
+    let arm64_machine = machine_id("machine_arm64");
+    let nats = ployz_test_support::nats::TestNats::start_with_machines(&[
+        amd64_machine.clone(),
+        arm64_machine.clone(),
+    ])
+    .await;
     let store = CoreStore::open_in_memory().await.expect("core store opens");
     let repository = OperationRepository::open(store, nats.controller.clone());
     let controllers = OperationControllers::new(
@@ -32,17 +47,18 @@ async fn mixed_platform_failure_publishes_no_image_index() {
     let amd64 = OciPlatform::try_new("linux", "amd64").expect("amd64 platform");
     let arm64 = OciPlatform::try_new("linux", "arm64").expect("arm64 platform");
     let operation_id = operation_id("build_mixed_platform_failure");
+    let source = GitSource::try_new(
+        "https://example.com/repository.git",
+        "0123456789abcdef0123456789abcdef01234567",
+        "git",
+        "private-token",
+        None::<String>,
+    )
+    .expect("valid git source");
     let accepted = controllers
         .submit_build(BuildSubmitCommand {
             operation_id: operation_id.clone(),
-            source: GitSource::try_new(
-                "https://example.com/repository.git",
-                "0123456789abcdef0123456789abcdef01234567",
-                "git",
-                "private-token",
-                None::<String>,
-            )
-            .expect("valid git source"),
+            source: source.clone(),
             adapter: BuildAdapter::Railpack {
                 cache_scope: BuildCacheScope::try_new("mixed-platform").expect("valid cache scope"),
             },
@@ -60,8 +76,6 @@ async fn mixed_platform_failure_publishes_no_image_index() {
         .await
         .expect("record execution start");
 
-    let amd64_machine = machine_id("machine_amd64");
-    let arm64_machine = machine_id("machine_arm64");
     let completed_image = PlatformImage {
         seed: amd64_machine.clone(),
         manifest_digest: OciDigest::try_new(format!("sha256:{}", "1".repeat(64)))
@@ -78,28 +92,44 @@ async fn mixed_platform_failure_publishes_no_image_index() {
         machine_id: arm64_machine.clone(),
         failure: platform_failure.clone(),
     };
-    repository
-        .record_build_evidence(
-            &operation_id,
-            BuildEvidence::PlatformCompleted {
-                platform: amd64.clone(),
-                machine_id: amd64_machine.clone(),
-                image: completed_image.clone(),
-            },
-        )
-        .await
-        .expect("record completed platform evidence");
-    repository
-        .record_build_evidence(
-            &operation_id,
-            BuildEvidence::PlatformFailed {
-                platform: arm64.clone(),
-                machine_id: arm64_machine.clone(),
+    let verified_commit = VerifiedGitCommit::from_source(&source);
+    let toolchain = BuildToolchainEvidence {
+        buildkit_image: OciDigest::try_new(format!("sha256:{}", "3".repeat(64)))
+            .expect("buildkit digest"),
+        adapter: BuildAdapterToolchainEvidence::Railpack {
+            helper_version: InstallArtifactVersion::try_new("v0.31.0")
+                .expect("railpack helper version"),
+            helper_sha256: InstallSha256Digest::try_new("4".repeat(64))
+                .expect("railpack helper digest"),
+            frontend_image: OciDigest::try_new(format!("sha256:{}", "5".repeat(64)))
+                .expect("railpack frontend digest"),
+        },
+    };
+
+    let amd64_request = start_build_responder(
+        nats.machine_client(&amd64_machine).await,
+        amd64_machine.clone(),
+        MachineBuildStartRpcResponse::Ok(MachineBuildStartRpcOk {
+            machine_id: amd64_machine.clone(),
+            image: completed_image.clone(),
+            verified_commit: verified_commit.clone(),
+            toolchain: toolchain.clone(),
+            log_summary: BuildLogSummary::none(),
+        }),
+    )
+    .await;
+    let arm64_request = start_build_responder(
+        nats.machine_client(&arm64_machine).await,
+        arm64_machine.clone(),
+        MachineBuildStartRpcResponse::DomainError {
+            machine_id: arm64_machine.clone(),
+            error: MachineBuildStartDomainError::PlatformFailed {
                 failure: platform_failure.clone(),
+                log_summary: BuildLogSummary::none(),
             },
-        )
-        .await
-        .expect("record failed platform evidence");
+        },
+    )
+    .await;
 
     let tasks = TaskRegistry::default();
     let driver = BuildOperationDriver::new(
@@ -114,19 +144,34 @@ async fn mixed_platform_failure_publishes_no_image_index() {
         .active
         .start(operation_id.clone(), accepted.submission.start_sequence)
         .await;
+    let outcomes = futures_util::future::join_all([
+        driver.run_platform(&accepted, amd64.clone(), amd64_machine.clone()),
+        driver.run_platform(&accepted, arm64.clone(), arm64_machine.clone()),
+    ])
+    .await;
     let result = driver
-        .finalize_joined_outcomes(
-            &operation_id,
-            vec![
-                Ok(PlatformOutcome::Completed {
-                    platform: amd64.clone(),
-                    image: completed_image.clone(),
-                }),
-                Ok(PlatformOutcome::Failed(operation_failure.clone())),
-            ],
-        )
+        .finalize_joined_outcomes(&operation_id, outcomes)
         .await;
     driver.record_run_result(&operation_id, result).await;
+
+    let (amd64_request, arm64_request) = tokio::time::timeout(Duration::from_secs(2), async {
+        (
+            amd64_request.await.expect("amd64 responder completes"),
+            arm64_request.await.expect("arm64 responder completes"),
+        )
+    })
+    .await
+    .expect("both build responders complete within the test deadline");
+    assert_eq!(amd64_request.operation_id, operation_id);
+    assert_eq!(amd64_request.source, source);
+    assert_eq!(amd64_request.adapter, accepted.submission.adapter);
+    assert_eq!(amd64_request.platform, amd64);
+    assert_eq!(amd64_request.timeout_millis, 30_000);
+    assert_eq!(arm64_request.operation_id, operation_id);
+    assert_eq!(arm64_request.source, accepted.source);
+    assert_eq!(arm64_request.adapter, accepted.submission.adapter);
+    assert_eq!(arm64_request.platform, arm64);
+    assert_eq!(arm64_request.timeout_millis, 30_000);
 
     let snapshot = repository
         .operation_status_snapshot(&operation_id)
@@ -150,12 +195,30 @@ async fn mixed_platform_failure_publishes_no_image_index() {
 
     let replay = repository
         .replay_operation_events(OperationEventReplayRequest {
-            operation_id,
+            operation_id: operation_id.clone(),
             start_sequence: event_sequence(1),
             limit: event_replay_limit(20),
         })
         .await
         .expect("replay build evidence");
+    assert!(replay.events.iter().any(|record| matches!(
+        &record.event,
+        OperationEvent::BuildCommitVerified { platform, machine_id, commit, .. }
+            if platform == &amd64
+                && machine_id == &amd64_machine
+                && commit == &verified_commit
+    )));
+    assert!(replay.events.iter().any(|record| matches!(
+        &record.event,
+        OperationEvent::BuildPlatformToolchainVerified {
+            platform,
+            machine_id,
+            toolchain: actual,
+            ..
+        } if platform == &amd64
+            && machine_id == &amd64_machine
+            && actual == &toolchain
+    )));
     assert!(replay.events.iter().any(|record| matches!(
         &record.event,
         OperationEvent::BuildPlatformCompleted { platform, machine_id, image, .. }
@@ -181,6 +244,40 @@ async fn mixed_platform_failure_publishes_no_image_index() {
             .expect("replay serializes")
             .contains("index_digest")
     );
+}
+
+async fn start_build_responder(
+    client: async_nats::Client,
+    machine_id: MachineId,
+    response: MachineBuildStartRpcResponse,
+) -> tokio::task::JoinHandle<MachineBuildStartRpcRequest> {
+    let mut requests = client
+        .subscribe(machine_service(
+            &machine_id,
+            MachineServiceEndpoint::BuildStart,
+        ))
+        .await
+        .expect("machine subscribes to build start");
+    client
+        .flush()
+        .await
+        .expect("build responder subscription flushes");
+    tokio::spawn(async move {
+        let message = requests.next().await.expect("build request arrives");
+        let request = serde_json::from_slice(&message.payload).expect("build request decodes");
+        let reply = message.reply.expect("build request carries reply subject");
+        client
+            .publish(
+                reply,
+                serde_json::to_vec(&response)
+                    .expect("build response encodes")
+                    .into(),
+            )
+            .await
+            .expect("build response publishes");
+        client.flush().await.expect("build response flushes");
+        request
+    })
 }
 
 #[tokio::test(start_paused = true)]
