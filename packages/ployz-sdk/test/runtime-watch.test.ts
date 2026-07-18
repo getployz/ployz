@@ -127,6 +127,21 @@ test("runtime watch preserves a newer stream snapshot received during seeding", 
   await iterator.return?.();
 });
 
+test("runtime stream snapshot wins the initial seed result handoff", async () => {
+  let nats: WatchNatsConnection;
+  nats = new WatchNatsConnection([
+    responseWithHandoff(snapshot(1), () => nats.subscription.push(message(snapshot(2)))),
+  ]);
+  const iterator = new PloyzClient(new PloyzNatsTransport(nats))
+    .watchRuntime()
+    [Symbol.asyncIterator]();
+
+  assert.deepEqual(await iterator.next(), { done: false, value: snapshot(2) });
+  nats.subscription.push(message(snapshot(3)));
+  assert.deepEqual(await iterator.next(), { done: false, value: snapshot(3) });
+  await iterator.return?.();
+});
+
 test("runtime reconnect seed cannot replace a stream snapshot consumed during seeding", async () => {
   const reconnectSeed = deferred<RuntimeSnapshot>();
   const nats = new WatchNatsConnection([snapshot(1), reconnectSeed.promise]);
@@ -147,6 +162,30 @@ test("runtime reconnect seed cannot replace a stream snapshot consumed during se
   const afterSeed = iterator.next();
   reconnectSeed.resolve(snapshot(3));
   await tick();
+  nats.subscription.push(message(snapshot(5)));
+  assert.deepEqual(await afterSeed, { done: false, value: snapshot(5) });
+  await iterator.return?.();
+});
+
+test("runtime stream snapshot wins the reconnect seed result handoff", async () => {
+  let nats: WatchNatsConnection;
+  nats = new WatchNatsConnection([
+    snapshot(1),
+    responseWithHandoff(snapshot(3), () => nats.subscription.push(message(snapshot(4)))),
+  ]);
+  const iterator = new PloyzClient(new PloyzNatsTransport(nats))
+    .watchRuntime()
+    [Symbol.asyncIterator]();
+  assert.deepEqual(await iterator.next(), { done: false, value: snapshot(1) });
+
+  nats.subscription.push(message(snapshot(2)));
+  await tick();
+  nats.statuses.push({ type: "reconnect" });
+  await tick();
+  assert.equal(nats.requests, 2);
+  assert.deepEqual(await iterator.next(), { done: false, value: snapshot(4) });
+
+  const afterSeed = iterator.next();
   nats.subscription.push(message(snapshot(5)));
   assert.deepEqual(await afterSeed, { done: false, value: snapshot(5) });
   await iterator.return?.();
@@ -330,6 +369,19 @@ function message(value: unknown): PloyzNatsMessage {
 
 function jsonResponse(value: unknown): PloyzNatsResponseMessage {
   return { data: new TextEncoder().encode(JSON.stringify(value)) };
+}
+
+function responseWithHandoff(
+  value: unknown,
+  handoff: () => void,
+): PloyzNatsResponseMessage {
+  const data = new TextEncoder().encode(JSON.stringify(value));
+  return {
+    get data(): Uint8Array {
+      queueMicrotask(handoff);
+      return data;
+    },
+  };
 }
 
 function serviceErrorResponse(code: 500 | 503 | 504): PloyzNatsResponseMessage {
