@@ -292,6 +292,18 @@ configure_acceptance_architecture() {
   esac
 }
 
+dispatch_acceptance_phases() {
+  local managed_runner=$1
+  local zfs_runner=$2
+
+  if [ "$RUN_MANAGED_CAPSTONE" = 1 ]; then
+    "$managed_runner"
+  fi
+  if [ "$RUN_ZFS_CERTIFICATION" = 1 ]; then
+    "$zfs_runner"
+  fi
+}
+
 write_authenticated_git_fixture_program() {
   local core_ipv4=$1
 
@@ -335,10 +347,11 @@ run_real_host_acceptance_regression_test() {
   local cancel_watch_status_guard json_assertion
   local cancel_command_line cancel_status_capture_line cancel_status_guard_line cancel_watch_line
   local cancel_watch_status_capture_line cancel_watch_status_guard_line json_assertion_line
-  local managed_guard managed_deploy_log restart_invisibility_log zfs_invocation
-  local dockerfile_build_log railpack_build_log cancellation_log firewall_log zfs_guard
+  local managed_function managed_deploy_log restart_invisibility_log dispatch_invocation
+  local dockerfile_build_log railpack_build_log cancellation_log firewall_log direct_zfs_invocation
   local dockerfile_build_log_line railpack_build_log_line cancellation_log_line firewall_log_line
-  local managed_guard_line managed_deploy_log_line restart_invisibility_log_line zfs_guard_line zfs_invocation_line
+  local managed_function_line managed_deploy_log_line restart_invisibility_log_line dispatch_invocation_line
+  local acceptance_phase_sequence
   evidence=$(mktemp -d)
   trap 'rm -rf "$evidence"' RETURN
   : > "$evidence/metadata.env"
@@ -388,38 +401,39 @@ run_real_host_acceptance_regression_test() {
   railpack_build_log="log \"building authenticated exact SHA for \${BUILD_ARCHITECTURES_LABEL} with Railpack\""
   cancellation_log='log "cancelling a blocking authenticated build and checking cleanup evidence"'
   firewall_log='log "checking keeper-managed firewall rules"'
-  managed_guard="if [ \"\$RUN_MANAGED_CAPSTONE\" = 1 ]; then"
+  managed_function='run_managed_capstone() {'
   managed_deploy_log='log "deploying image-based Compose app (2 replicas, managed HTTPS URL)"'
   restart_invisibility_log='log "  continuous HTTPS probe saw no interruption"'
-  zfs_guard="if [ \"\$RUN_ZFS_CERTIFICATION\" = 1 ]; then"
-  zfs_invocation='  run_zfs_real_host_certification'
+  dispatch_invocation='dispatch_acceptance_phases run_managed_capstone run_zfs_real_host_certification'
+  direct_zfs_invocation='  run_zfs_real_host_certification'
   [ "$(grep -Fxc "$dockerfile_build_log" "$0")" -eq 1 ]
   [ "$(grep -Fxc "$railpack_build_log" "$0")" -eq 1 ]
   [ "$(grep -Fxc "$cancellation_log" "$0")" -eq 1 ]
   [ "$(grep -Fxc "$firewall_log" "$0")" -eq 1 ]
-  [ "$(grep -Fxc "$managed_guard" "$0")" -eq 1 ]
+  [ "$(grep -Fxc "$managed_function" "$0")" -eq 1 ]
   [ "$(grep -Fxc "$managed_deploy_log" "$0")" -eq 1 ]
   [ "$(grep -Fxc "$restart_invisibility_log" "$0")" -eq 1 ]
-  [ "$(grep -Fxc "$zfs_invocation" "$0")" -eq 1 ]
+  [ "$(grep -Fxc "$dispatch_invocation" "$0")" -eq 1 ]
+  [ "$(grep -Fxc "$direct_zfs_invocation" "$0")" -eq 0 ]
   dockerfile_build_log_line=$(grep -Fnx "$dockerfile_build_log" "$0" | cut -d: -f1)
   railpack_build_log_line=$(grep -Fnx "$railpack_build_log" "$0" | cut -d: -f1)
   cancellation_log_line=$(grep -Fnx "$cancellation_log" "$0" | cut -d: -f1)
   firewall_log_line=$(grep -Fnx "$firewall_log" "$0" | cut -d: -f1)
-  managed_guard_line=$(grep -Fnx "$managed_guard" "$0" | cut -d: -f1)
+  managed_function_line=$(grep -Fnx "$managed_function" "$0" | cut -d: -f1)
   managed_deploy_log_line=$(grep -Fnx "$managed_deploy_log" "$0" | cut -d: -f1)
   restart_invisibility_log_line=$(grep -Fnx "$restart_invisibility_log" "$0" | cut -d: -f1)
-  zfs_invocation_line=$(grep -Fnx "$zfs_invocation" "$0" | cut -d: -f1)
-  zfs_guard_line=$((zfs_invocation_line - 1))
+  dispatch_invocation_line=$(grep -Fnx "$dispatch_invocation" "$0" | cut -d: -f1)
   [ "$dockerfile_build_log_line" -lt "$railpack_build_log_line" ]
   [ "$railpack_build_log_line" -lt "$cancellation_log_line" ]
   [ "$cancellation_log_line" -lt "$firewall_log_line" ]
-  [ "$firewall_log_line" -lt "$managed_guard_line" ]
-  [ "$managed_deploy_log_line" -eq $((managed_guard_line + 1)) ]
-  [ "$(sed -n "$((restart_invisibility_log_line + 1))p" "$0")" = 'fi' ]
-  [ "$zfs_guard_line" -gt "$restart_invisibility_log_line" ]
-  [ "$(sed -n "${zfs_guard_line}p" "$0")" = "$zfs_guard" ]
-  [ "$zfs_invocation_line" -eq $((zfs_guard_line + 1)) ]
-  [ "$(sed -n "$((zfs_invocation_line + 1))p" "$0")" = 'fi' ]
+  [ "$firewall_log_line" -lt "$managed_function_line" ]
+  [ "$managed_deploy_log_line" -eq $((managed_function_line + 1)) ]
+  [ "$(sed -n "$((restart_invisibility_log_line + 1))p" "$0")" = '}' ]
+  [ "$dispatch_invocation_line" -gt "$restart_invisibility_log_line" ]
+  [ "$(sed -n "$((dispatch_invocation_line - 2))p" "$0")" = '}' ]
+  [ -z "$(sed -n "$((dispatch_invocation_line - 1))p" "$0")" ]
+  [ -z "$(sed -n "$((dispatch_invocation_line + 1))p" "$0")" ]
+  [ "$(sed -n "$((dispatch_invocation_line + 2))p" "$0")" = "log \"\$ACCEPTANCE_SUCCESS_MARKER\"" ]
 
   rendered_git_program="$evidence/authenticated-git-fixture.sh"
   write_authenticated_git_fixture_program 192.0.2.1 > "$rendered_git_program"
@@ -477,9 +491,21 @@ run_real_host_acceptance_regression_test() {
   grep -Fx 'storage-alarms none' "$evidence/storage-ready.stdout" >/dev/null
   grep -Fx 'inspect_calls=3' "$evidence/storage-ready.stdout" >/dev/null
 
+  # shellcheck disable=SC2317 # The dispatcher invokes this recorder by name.
+  record_managed_phase() {
+    acceptance_phase_sequence="${acceptance_phase_sequence:+${acceptance_phase_sequence} }managed"
+  }
+  # shellcheck disable=SC2317 # The dispatcher invokes this recorder by name.
+  record_zfs_phase() {
+    acceptance_phase_sequence="${acceptance_phase_sequence:+${acceptance_phase_sequence} }zfs"
+  }
+
   configure_acceptance_architecture 1 1
   [ "$RUN_MANAGED_CAPSTONE" = 0 ]
   [ "$RUN_ZFS_CERTIFICATION" = 1 ]
+  acceptance_phase_sequence=
+  dispatch_acceptance_phases record_managed_phase record_zfs_phase
+  [ "$acceptance_phase_sequence" = zfs ]
   [ "$ACCEPTANCE_ARCHITECTURE_MODE" = amd64-only-non-mixed ]
   [ "$BUILD_PLATFORM_ARGUMENTS" = '--platform linux/amd64' ]
   [ "$BUILD_EXPECTED_PLATFORMS" = linux/amd64 ]
@@ -501,6 +527,9 @@ run_real_host_acceptance_regression_test() {
   configure_acceptance_architecture 1 0
   [ "$RUN_MANAGED_CAPSTONE" = 1 ]
   [ "$RUN_ZFS_CERTIFICATION" = 1 ]
+  acceptance_phase_sequence=
+  dispatch_acceptance_phases record_managed_phase record_zfs_phase
+  [ "$acceptance_phase_sequence" = 'managed zfs' ]
   [ "$ACCEPTANCE_ARCHITECTURE_MODE" = mixed-amd64-arm64 ]
   [ "$BUILD_PLATFORM_ARGUMENTS" = '--platform linux/amd64 --platform linux/arm64' ]
   [ "$BUILD_EXPECTED_PLATFORMS" = linux/amd64,linux/arm64 ]
@@ -515,6 +544,9 @@ run_real_host_acceptance_regression_test() {
   configure_acceptance_architecture 0 0
   [ "$RUN_MANAGED_CAPSTONE" = 1 ]
   [ "$RUN_ZFS_CERTIFICATION" = 0 ]
+  acceptance_phase_sequence=
+  dispatch_acceptance_phases record_managed_phase record_zfs_phase
+  [ "$acceptance_phase_sequence" = managed ]
 
   rescue_root="$evidence/original-root"
   fake_bin="$evidence/bin"
@@ -949,7 +981,7 @@ for port in 53/udp 80/tcp 443/tcp 51820/udp; do
   remote "$EDGE" "ufw status verbose | awk '\$1 != \"${port}\" { next } \$2 == \"(v6)\" { next } { found=1; assured=(\$2 == \"ALLOW\" && \$3 == \"IN\" && \$4 == \"Anywhere\"); exit } END { exit !(found && assured) }'"
 done
 
-if [ "$RUN_MANAGED_CAPSTONE" = 1 ]; then
+run_managed_capstone() {
 log "deploying image-based Compose app (2 replicas, managed HTTPS URL)"
 core 'cat > /tmp/ployz-acceptance.yml <<"YAML"
 name: acceptance
@@ -1034,7 +1066,7 @@ probe_pid=
 rm -rf "$probe_dir"
 probe_dir=
 log "  continuous HTTPS probe saw no interruption"
-fi
+}
 
 core_before_deadline() {
   local deadline=$1
@@ -1550,8 +1582,6 @@ EOF
   log "$ZFS_SUCCESS_MARKER"
 }
 
-if [ "$RUN_ZFS_CERTIFICATION" = 1 ]; then
-  run_zfs_real_host_certification
-fi
+dispatch_acceptance_phases run_managed_capstone run_zfs_real_host_certification
 
 log "$ACCEPTANCE_SUCCESS_MARKER"
