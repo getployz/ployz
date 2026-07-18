@@ -619,7 +619,7 @@ fn zero_pools_physically_allocate_half_the_filesystem_for_owned_pool() {
 }
 
 #[test]
-fn owned_pool_sizing_preserves_host_headroom() {
+fn owned_pool_sizing_preserves_headroom_after_allocation_overhead() {
     let state = tempfile::tempdir().unwrap();
     let mut runner = RecordingRunner::new([
         success(),
@@ -628,10 +628,10 @@ fn owned_pool_sizing_preserves_host_headroom() {
         stdout(""),
         failed("backing file absent"),
         success(),
-        stdout("1B-blocks Avail\n42949672960 19327352832\n"),
+        stdout("1B-blocks Avail\n24566575104 15852343296\n"),
         success(),
         success(),
-        stdout("1B-blocks Avail\n42949672960 8589934592\n"),
+        stdout("1B-blocks Avail\n24566575104 5369753600\n"),
         success(),
         success(),
         failed("dataset absent"),
@@ -652,7 +652,7 @@ fn owned_pool_sizing_preserves_host_headroom() {
 
     assert_eq!(
         invocation(&runner, 8).args,
-        vec!["-l", "10737418240", PLOYZ_OWNED_ZFS_BACKING_FILE]
+        vec!["-l", "10482585600", PLOYZ_OWNED_ZFS_BACKING_FILE]
     );
 }
 

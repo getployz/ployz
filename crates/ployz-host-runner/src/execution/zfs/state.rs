@@ -19,6 +19,7 @@ pub(super) const STORAGE_DIRECTORY: &str = "/var/lib/ployz/zfs";
 const GIBIBYTE: u64 = 1024 * 1024 * 1024;
 const MINIMUM_OWNED_POOL_BYTES: u64 = 8 * GIBIBYTE;
 const MINIMUM_HOST_HEADROOM_BYTES: u64 = 5 * GIBIBYTE;
+const OWNED_POOL_ALLOCATION_CUSHION_BYTES: u64 = 1024 * 1024;
 
 /// Observes the capability prepared by Ployz without importing pools or
 /// changing host storage. The prepared descriptor supplies the pool identity;
@@ -188,7 +189,11 @@ fn prepare_owned_pool(
     )?;
     let [total_bytes, available_bytes] = parse_filesystem_capacity(&output.stdout)?;
     let required_headroom_bytes = MINIMUM_HOST_HEADROOM_BYTES.max(total_bytes / 5);
-    let pool_bytes = (total_bytes / 2).min(available_bytes.saturating_sub(required_headroom_bytes));
+    let pool_bytes = (total_bytes / 2).min(
+        available_bytes
+            .saturating_sub(required_headroom_bytes)
+            .saturating_sub(OWNED_POOL_ALLOCATION_CUSHION_BYTES),
+    );
     if pool_bytes < MINIMUM_OWNED_POOL_BYTES {
         return Err(ZfsEffectError::OwnedPoolTooSmall {
             total_bytes,
