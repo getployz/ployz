@@ -33,6 +33,7 @@ use super::place_build_platforms;
 use super::platform_session::PlatformLogSession;
 
 const BUILD_CANCEL_TIMEOUT: Duration = Duration::from_secs(5);
+const BUILD_CANCEL_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(1);
 
 async fn within_placement_deadline<T>(
     placement: impl Future<Output = Result<T, BuildOperationFailure>>,
@@ -187,28 +188,22 @@ impl BuildOperationDriver {
             };
         futures_util::future::join_all(machines.iter().map(|machine_id| async move {
             let deadline = tokio::time::Instant::now() + BUILD_CANCEL_TIMEOUT;
-            while let Some(remaining) = deadline.checked_duration_since(tokio::time::Instant::now())
-            {
+            deliver_build_cancel_to_machine(deadline, |request_timeout| {
                 let request = MachineBuildCancelRpcRequest {
                     operation_id: operation_id.clone(),
                 };
-                let result =
+                async move {
                     call_machine::<MachineBuildCancelRpcOk, MachineBuildCancelDomainError>(
                         &self.client,
-                        remaining,
+                        request_timeout,
                         machine_id,
                         MachineServiceEndpoint::BuildCancel,
                         &request,
                     )
-                    .await;
-                if !cancel_delivery_should_retry(&result) {
-                    break;
+                    .await
                 }
-                let Some(delay) = cancel_retry_delay(tokio::time::Instant::now(), deadline) else {
-                    break;
-                };
-                tokio::time::sleep(delay).await;
-            }
+            })
+            .await;
         }))
         .await;
         Ok(BuildCancelDisposition::Accepted {
@@ -585,6 +580,27 @@ impl BuildOperationDriver {
             platform,
             image: ok.image,
         })
+    }
+}
+
+async fn deliver_build_cancel_to_machine<Call, CallFuture>(
+    deadline: tokio::time::Instant,
+    mut call: Call,
+) where
+    Call: FnMut(Duration) -> CallFuture,
+    CallFuture: Future<
+        Output = Result<MachineBuildCancelRpcOk, MachineCallError<MachineBuildCancelDomainError>>,
+    >,
+{
+    while let Some(remaining) = deadline.checked_duration_since(tokio::time::Instant::now()) {
+        let result = call(remaining.min(BUILD_CANCEL_ATTEMPT_TIMEOUT)).await;
+        if !cancel_delivery_should_retry(&result) {
+            break;
+        }
+        let Some(delay) = cancel_retry_delay(tokio::time::Instant::now(), deadline) else {
+            break;
+        };
+        tokio::time::sleep(delay).await;
     }
 }
 

@@ -249,6 +249,47 @@ fn retryable_cancel_delivery_results_use_one_absolute_deadline() {
     );
 }
 
+#[tokio::test(start_paused = true)]
+async fn timed_out_cancel_attempt_retries_inside_one_absolute_deadline() {
+    let machine_id = machine_id("machine-a");
+    let attempts = std::cell::Cell::new(0);
+    let observed_timeouts = std::cell::RefCell::new(Vec::new());
+    let started_at = tokio::time::Instant::now();
+    let deadline = started_at + BUILD_CANCEL_TIMEOUT;
+
+    deliver_build_cancel_to_machine(deadline, |timeout| {
+        observed_timeouts.borrow_mut().push(timeout);
+        let attempt = attempts.get();
+        attempts.set(attempt + 1);
+        let machine_id = machine_id.clone();
+        async move {
+            if attempt == 0 {
+                tokio::time::sleep(timeout).await;
+                Err(MachineCallError::Unavailable(
+                    MachineRuntimeUnavailableReason::RequestTimedOut,
+                ))
+            } else {
+                Ok(MachineBuildCancelRpcOk {
+                    machine_id,
+                    outcome: MachineBuildCancelOutcome::Requested,
+                })
+            }
+        }
+    })
+    .await;
+
+    assert_eq!(attempts.get(), 2);
+    assert_eq!(
+        observed_timeouts.into_inner(),
+        vec![BUILD_CANCEL_ATTEMPT_TIMEOUT, BUILD_CANCEL_ATTEMPT_TIMEOUT,]
+    );
+    assert_eq!(
+        tokio::time::Instant::now().duration_since(started_at),
+        BUILD_CANCEL_ATTEMPT_TIMEOUT + Duration::from_millis(25)
+    );
+    assert!(tokio::time::Instant::now() < deadline);
+}
+
 #[test]
 fn cancel_delivery_retries_not_running_and_transient_unavailability() {
     let machine_id = machine_id("machine-a");
