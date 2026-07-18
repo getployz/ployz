@@ -1,4 +1,4 @@
-use super::plan::{BuildAdapterToolchain, BuildToolchain};
+use super::plan::BuildAdapterToolchain;
 use super::runner::{BuildExecutionError, infrastructure, platform_failure};
 use ployz_core::operation::BuildPlatformFailure;
 use sha2::{Digest, Sha256};
@@ -57,12 +57,14 @@ pub(super) async fn clean_failed_workspace<T>(
     }
 }
 
-pub(super) async fn verify_helper(toolchain: &BuildToolchain) -> Result<(), BuildExecutionError> {
+pub(super) async fn verify_helper(
+    adapter_toolchain: &BuildAdapterToolchain,
+) -> Result<(), BuildExecutionError> {
     let BuildAdapterToolchain::Railpack {
         helper_path,
         helper_sha256,
         ..
-    } = &toolchain.adapter
+    } = adapter_toolchain
     else {
         return Ok(());
     };
@@ -111,6 +113,64 @@ fn sha256_file(path: &Path) -> Result<String, BuildExecutionError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn railpack_toolchain(path: &Path, sha256: &str) -> BuildAdapterToolchain {
+        BuildAdapterToolchain::Railpack {
+            helper_path: path.to_owned(),
+            helper_version: ployz_core::install::InstallArtifactVersion::try_new("0.1.0")
+                .expect("version"),
+            helper_sha256: ployz_core::install::InstallSha256Digest::try_new(sha256)
+                .expect("digest"),
+            frontend_reference: "example.invalid/frontend".to_owned(),
+            frontend_manifest_digest: ployz_core::image::OciDigest::try_new(
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            )
+            .expect("frontend digest"),
+        }
+    }
+
+    #[tokio::test]
+    async fn railpack_helper_verification_accepts_matching_file() {
+        let directory = tempfile::tempdir().expect("directory");
+        let helper = directory.path().join("railpack");
+        tokio::fs::write(&helper, b"known helper bytes")
+            .await
+            .expect("helper");
+        let adapter_toolchain = railpack_toolchain(
+            &helper,
+            "0ed285478d3d3aa63a3f4ba6602200f66e7d8bff9496ac6cd6099e2210687e8d",
+        );
+
+        verify_helper(&adapter_toolchain)
+            .await
+            .expect("verified helper");
+    }
+
+    #[tokio::test]
+    async fn railpack_helper_verification_rejects_missing_file() {
+        let directory = tempfile::tempdir().expect("directory");
+        let adapter_toolchain = railpack_toolchain(
+            &directory.path().join("missing"),
+            "0ed285478d3d3aa63a3f4ba6602200f66e7d8bff9496ac6cd6099e2210687e8d",
+        );
+
+        assert!(verify_helper(&adapter_toolchain).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn railpack_helper_verification_rejects_wrong_digest() {
+        let directory = tempfile::tempdir().expect("directory");
+        let helper = directory.path().join("railpack");
+        tokio::fs::write(&helper, b"known helper bytes")
+            .await
+            .expect("helper");
+        let adapter_toolchain = railpack_toolchain(
+            &helper,
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        );
+
+        assert!(verify_helper(&adapter_toolchain).await.is_err());
+    }
 
     #[tokio::test]
     async fn successful_workspace_is_retained_until_image_ingestion() {

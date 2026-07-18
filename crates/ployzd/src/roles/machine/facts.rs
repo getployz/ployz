@@ -36,7 +36,7 @@ pub(crate) struct MachineFactsState<R> {
 #[derive(Clone)]
 pub(crate) struct MachineFactsGetState<R> {
     pub(crate) facts: MachineFactsState<R>,
-    pub(crate) build: MachineBuildCapability,
+    pub(crate) build_runtime_available: bool,
 }
 
 pub(crate) async fn handle_facts_refresh<R>(
@@ -168,16 +168,44 @@ where
     )
     .await
     {
-        Ok(facts) => machine_success(MachineFactsGetRpcResponse::Ok(MachineFactsGetRpcOk {
-            facts,
-            build: state.build,
-        })),
+        Ok(facts) => {
+            let build =
+                build_capability_for_facts(state.build_runtime_available, facts.platform()).await;
+            machine_success(MachineFactsGetRpcResponse::Ok(MachineFactsGetRpcOk {
+                facts,
+                build,
+            }))
+        }
         Err(error) => machine_domain_error(MachineFactsGetRpcResponse::DomainError {
             machine_id,
             error: MachineFactsGetDomainError::GatherFailed {
                 message: failure_message(error.to_string()),
             },
         }),
+    }
+}
+
+async fn build_capability_for_facts(
+    build_runtime_available: bool,
+    platform: &ployz_core::image::OciPlatform,
+) -> MachineBuildCapability {
+    if !build_runtime_available {
+        return MachineBuildCapability::Unavailable;
+    }
+    map_build_capability(
+        build_runtime_available,
+        crate::roles::machine::execution::build::railpack_helper_is_ready(platform).await,
+    )
+}
+
+fn map_build_capability(
+    build_runtime_available: bool,
+    railpack_helper_ready: bool,
+) -> MachineBuildCapability {
+    match (build_runtime_available, railpack_helper_ready) {
+        (false, _) => MachineBuildCapability::Unavailable,
+        (true, false) => MachineBuildCapability::RailpackUnavailable,
+        (true, true) => MachineBuildCapability::Available,
     }
 }
 
@@ -335,5 +363,24 @@ pub(crate) fn observation_state(state: ExistingManagedContainerState) -> Contain
         },
         ExistingManagedContainerState::StartableStopped
         | ExistingManagedContainerState::NotStartable { .. } => ContainerRuntimeState::Exited,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn facts_get_maps_build_and_railpack_readiness() {
+        for (build_runtime_available, railpack_helper_ready, expected) in [
+            (false, true, MachineBuildCapability::Unavailable),
+            (true, false, MachineBuildCapability::RailpackUnavailable),
+            (true, true, MachineBuildCapability::Available),
+        ] {
+            assert_eq!(
+                map_build_capability(build_runtime_available, railpack_helper_ready),
+                expected
+            );
+        }
     }
 }

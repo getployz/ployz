@@ -152,7 +152,7 @@ impl DockerBuildExecutor {
                     message: failure(error.to_string()),
                 })
             })?;
-        verify_helper(&toolchain).await?;
+        verify_helper(&toolchain.adapter).await?;
         let plan = lower_build_adapter(&checkout, adapter, platform, &workspace, &toolchain)
             .map_err(|error| {
                 platform_failure(BuildPlatformFailure::AdapterFailed {
