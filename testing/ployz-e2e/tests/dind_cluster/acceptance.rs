@@ -5,8 +5,6 @@ use ployz::dispatcher::{PloyzctlRuntimeConfig, execute_command};
 use ployz_core::operation::{DeployFailureClass, DeployRunningStage, HealthCheckFailure};
 use support::dind::formation::ProductCliHarness;
 
-const DEFAULT_UMAMI_IMAGE: &str = "ghcr.io/umami-software/umami:postgresql-latest";
-const DEFAULT_POSTGRES_IMAGE: &str = "postgres:15-alpine";
 const ACCEPTANCE_NAMESPACE: &str = "v1_acceptance";
 
 struct DeployedApp {
@@ -498,10 +496,9 @@ fn service_is(container: &ManagedWorkloadContainer, service: &str) -> bool {
 }
 
 fn database_service_compose() -> String {
-    let postgres_image = selected_postgres_image();
     format!(
         r#"  db:
-    image: {postgres_image}
+    image: ${{PLOYZ_DIND_POSTGRES_IMAGE:-postgres:15-alpine}}
     environment:
       POSTGRES_DB: umami
       POSTGRES_USER: umami
@@ -517,24 +514,8 @@ fn database_service_compose() -> String {
     )
 }
 
-fn selected_umami_image() -> String {
-    std::env::var("PLOYZ_DIND_UMAMI_IMAGE")
-        .ok()
-        .filter(|image| !image.is_empty())
-        .unwrap_or_else(|| DEFAULT_UMAMI_IMAGE.to_owned())
-}
-
-fn selected_postgres_image() -> String {
-    std::env::var("PLOYZ_DIND_POSTGRES_IMAGE")
-        .ok()
-        .filter(|image| !image.is_empty())
-        .unwrap_or_else(|| DEFAULT_POSTGRES_IMAGE.to_owned())
-}
-
-fn umami_compose() -> String {
+fn umami_compose() -> &'static str {
     include_str!("../fixtures/v1-acceptance-umami.yaml")
-        .replace(DEFAULT_UMAMI_IMAGE, &selected_umami_image())
-        .replace(DEFAULT_POSTGRES_IMAGE, &selected_postgres_image())
 }
 
 fn bad_deploy_input_compose() -> String {
