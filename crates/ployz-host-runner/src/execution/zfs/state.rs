@@ -24,8 +24,9 @@ const MINIMUM_HOST_HEADROOM_BYTES: u64 = 5 * GIBIBYTE;
 const OWNED_POOL_ALLOCATION_CUSHION_BYTES: u64 = 1024 * 1024;
 
 /// Observes the capability prepared by Ployz without importing pools or
-/// changing host storage. The prepared descriptor supplies the pool identity;
-/// current module and pool state supply the live testimony.
+/// changing host storage. One prepared descriptor supplies the expected pool,
+/// dataset root, and owned backing identity; current module, pool, dataset, and
+/// backing state supply the live testimony.
 pub fn observe_storage_capability(
     runner: &mut impl HostRunnerCommandRunner,
     state_directory: &Path,
@@ -63,6 +64,7 @@ pub fn observe_storage_capability(
             },
         });
     }
+    verify_prepared_storage_state(runner, &state, COMMAND_TIMEOUT)?;
     let capacity = match gather_pool_capacity_for_state(runner, &state) {
         Ok(capacity) => capacity,
         Err(_) => {
@@ -511,6 +513,15 @@ pub(super) fn load_and_verify_with_timeout(
     command_timeout: std::time::Duration,
 ) -> Result<PreparedStorageState, ZfsEffectError> {
     let state = load_prepared_storage_state(state_directory)?;
+    verify_prepared_storage_state(runner, &state, command_timeout)?;
+    Ok(state)
+}
+
+fn verify_prepared_storage_state(
+    runner: &mut impl HostRunnerCommandRunner,
+    state: &PreparedStorageState,
+    command_timeout: std::time::Duration,
+) -> Result<(), ZfsEffectError> {
     checked(
         runner,
         "zpool",
@@ -559,7 +570,7 @@ pub(super) fn load_and_verify_with_timeout(
             });
         }
     }
-    Ok(state)
+    Ok(())
 }
 
 pub(super) fn verify_child(
