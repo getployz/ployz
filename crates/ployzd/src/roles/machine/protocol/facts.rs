@@ -32,6 +32,7 @@ impl MachineRpcResponder for MachineFactsGetRpcOk {
 #[serde(rename_all = "snake_case")]
 pub enum MachineBuildCapability {
     Available,
+    RailpackUnavailable,
     Unavailable,
 }
 
@@ -100,9 +101,10 @@ mod tests {
     }
 
     #[test]
-    fn facts_get_carries_both_build_capability_values() {
+    fn facts_get_carries_every_build_capability_value() {
         for build in [
             MachineBuildCapability::Available,
+            MachineBuildCapability::RailpackUnavailable,
             MachineBuildCapability::Unavailable,
         ] {
             let response = MachineFactsGetRpcOk {

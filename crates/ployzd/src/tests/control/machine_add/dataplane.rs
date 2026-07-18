@@ -179,19 +179,23 @@ async fn first_machine_activation_repairs_completed_operation_without_roster() {
     let runtime = nats.start_control(&config).await;
     let api = nats.api();
 
-    let accepted = machine_add(&api, "op_init_core_1", "idem_init_core_1", "core_1").await;
-    redeem_when_ready(&nats.join_api(), &accepted.join_token).await;
+    let accepted = machine_add(
+        &api,
+        "op_init_machine_1",
+        "idem_init_machine_1",
+        "machine_1",
+    )
+    .await;
+    let redeemed = redeem_when_ready(&nats.join_api(), &accepted.join_token).await;
+    let reserved_subnet = redeemed.endpoint_subnet;
     let repository = operation_repository_for_test(&nats).await;
     repository
         .stage_machine_dataplane(StagedMachineDataplaneState {
-            operation_id: operation_id("op_init_core_1"),
-            machine_id: machine_id("core_1"),
-            endpoint_subnet: ployz_core::network::MachineEndpointSubnet::try_new(
-                ployz_core::network::default_endpoint_subnet(&machine_id("core_1")),
-            )
-            .expect("endpoint subnet"),
+            operation_id: operation_id("op_init_machine_1"),
+            machine_id: machine_id("machine_1"),
+            endpoint_subnet: reserved_subnet.clone(),
             mesh_endpoints: vec!["192.0.2.10:51820".parse().expect("mesh endpoint")],
-            wireguard_public_key: test_wireguard_public_key(&machine_id("core_1")),
+            wireguard_public_key: test_wireguard_public_key(&machine_id("machine_1")),
         })
         .await
         .expect("staged identity survives completed evidence");
@@ -202,9 +206,36 @@ async fn first_machine_activation_repairs_completed_operation_without_roster() {
         .await
         .expect("completion records before activation");
 
+    assert_eq!(
+        repository
+            .live_machine_add_endpoint_subnets()
+            .await
+            .expect("live endpoint subnet reservations read"),
+        vec![reserved_subnet.clone()]
+    );
+    let pending = repository
+        .pending_machine_adds_for_mirror()
+        .await
+        .expect("pending join mirror reads");
+    let [completed] = pending.as_slice() else {
+        panic!("expected completed machine-add to remain recoverable");
+    };
+    assert_eq!(completed.machine_id, machine_id("machine_1"));
+    assert_eq!(completed.endpoint_subnet, reserved_subnet);
+
+    let colliding = machine_add(
+        &api,
+        "op_completed_255",
+        "idem_completed_255",
+        "machine_255",
+    )
+    .await;
+    let colliding = redeem_when_ready(&nats.join_api(), &colliding.join_token).await;
+    assert_ne!(colliding.endpoint_subnet, reserved_subnet);
+
     let activated = api
         .init_first_machine_activate(&InitFirstMachineActivateRequest {
-            machine_id: machine_id("core_1"),
+            machine_id: machine_id("machine_1"),
             roles: InstallRolePolicy::install_all().without_gateway(),
             automatic_hostname_configuration:
                 ployz_core::ingress::AutomaticHostnameConfiguration::Disabled,
@@ -212,8 +243,23 @@ async fn first_machine_activation_repairs_completed_operation_without_roster() {
         })
         .await
         .expect("first-machine activation repairs completed operation");
-    assert_eq!(activated.operation_id, operation_id("op_init_core_1"));
-    assert_eq!(activated.machine_id, machine_id("core_1"));
+    assert_eq!(activated.operation_id, operation_id("op_init_machine_1"));
+    assert_eq!(activated.machine_id, machine_id("machine_1"));
+    assert_eq!(
+        repository
+            .live_machine_add_endpoint_subnets()
+            .await
+            .expect("remaining endpoint subnet reservations read"),
+        vec![colliding.endpoint_subnet.clone()]
+    );
+    let pending = repository
+        .pending_machine_adds_for_mirror()
+        .await
+        .expect("remaining pending joins read");
+    let [remaining] = pending.as_slice() else {
+        panic!("expected only the colliding machine-add to remain pending");
+    };
+    assert_eq!(remaining.machine_id, machine_id("machine_255"));
     let listed = api
         .machine_list(&MachineListRequest {})
         .await
@@ -221,9 +267,10 @@ async fn first_machine_activation_repairs_completed_operation_without_roster() {
     let [active] = listed.machines.as_slice() else {
         panic!("expected repaired active machine");
     };
-    assert_eq!(active.active.machine_id, machine_id("core_1"));
+    assert_eq!(active.active.machine_id, machine_id("machine_1"));
+    assert_eq!(active.active.endpoint_subnet, reserved_subnet);
     assert_eq!(
-        secret_row_count(&nats, "machine_add_submissions", "op_init_core_1"),
+        secret_row_count(&nats, "machine_add_submissions", "op_init_machine_1"),
         0
     );
     let ingress_intent = crate::control::intent::ingress_intent::IngressIntentStore::new(

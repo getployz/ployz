@@ -189,19 +189,12 @@ impl OperationRepository {
     pub async fn live_machine_add_endpoint_subnets(
         &self,
     ) -> Result<Vec<ployz_core::network::MachineEndpointSubnet>, OperationStatusStoreError> {
-        let mut assigned = Vec::new();
-        for submission in self.machine_add_submissions().await? {
-            let Some(OperationStatus::MachineAdd {
-                state:
-                    MachineAddOperationState::Pending { .. } | MachineAddOperationState::Joining { .. },
-                ..
-            }) = self.get(&submission.operation_id).await?
-            else {
-                continue;
-            };
-            assigned.push(submission.identity.endpoint_subnet);
-        }
-        Ok(assigned)
+        Ok(self
+            .pending_machine_adds_for_mirror()
+            .await?
+            .into_iter()
+            .map(|pending| pending.endpoint_subnet)
+            .collect())
     }
 
     pub async fn pending_machine_adds_for_mirror(
@@ -211,7 +204,9 @@ impl OperationRepository {
         for submission in self.machine_add_submissions().await? {
             let Some(OperationStatus::MachineAdd {
                 state:
-                    MachineAddOperationState::Pending { .. } | MachineAddOperationState::Joining { .. },
+                    MachineAddOperationState::Pending { .. }
+                    | MachineAddOperationState::Joining { .. }
+                    | MachineAddOperationState::Completed,
                 ..
             }) = self.get(&submission.operation_id).await?
             else {

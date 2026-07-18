@@ -277,11 +277,7 @@ where
         image_state,
         projection_state,
     } = projection_services;
-    let build_capability = if build_state.is_some() {
-        crate::roles::machine::protocol::MachineBuildCapability::Available
-    } else {
-        crate::roles::machine::protocol::MachineBuildCapability::Unavailable
-    };
+    let build_runtime_available = build_state.is_some();
     let spec = machine_role_service_base(&machine_id);
     let mutation_state = MachineContainerState {
         runner: runner.clone(),
@@ -325,7 +321,7 @@ where
                 endpoint_cache: endpoint_cache.clone(),
                 client: client.clone(),
             },
-            build: build_capability,
+            build_runtime_available,
         },
         handle_facts_get,
     )
