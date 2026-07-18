@@ -1250,19 +1250,7 @@ pub(super) fn routed_deploy_command(replicas: u16) -> DeployExecutionInput {
 }
 
 pub(super) fn routed_deploy_replacing_route_command(replicas: u16) -> DeployExecutionInput {
-    routed_deploy_command_with_stored_routes(
-        replicas,
-        vec![RouteBindingState {
-            id: RouteBindingId::try_new("route_old").expect("valid route binding id"),
-            namespace_id: namespace_id("default"),
-            target: RouteTarget::new(
-                RouteHostname::try_new("old.example.com").expect("valid route hostname"),
-            ),
-            endpoint_port: route_port(8080),
-            service_id: service_id("svc_api"),
-            origin: RouteBindingOrigin::Declared,
-        }],
-    )
+    routed_deploy_command_with_stored_routes(replicas, vec![old_route_binding()])
 }
 
 pub(super) fn unrouted_deploy_removing_route_command(replicas: u16) -> DeployExecutionInput {
@@ -1270,17 +1258,21 @@ pub(super) fn unrouted_deploy_removing_route_command(replicas: u16) -> DeployExe
         target_deploy_request(replicas),
         Vec::new(),
         Vec::new(),
-        vec![RouteBindingState {
-            id: RouteBindingId::try_new("route_old").expect("valid route binding id"),
-            namespace_id: namespace_id("default"),
-            target: RouteTarget::new(
-                RouteHostname::try_new("old.example.com").expect("valid route hostname"),
-            ),
-            endpoint_port: route_port(8080),
-            service_id: service_id("svc_api"),
-            origin: RouteBindingOrigin::Declared,
-        }],
+        vec![old_route_binding()],
     )
+}
+
+fn old_route_binding() -> RouteBindingState {
+    RouteBindingState {
+        id: RouteBindingId::try_new("route_old").expect("valid route binding id"),
+        namespace_id: namespace_id("default"),
+        target: RouteTarget::new(
+            RouteHostname::try_new("old.example.com").expect("valid route hostname"),
+        ),
+        endpoint_port: route_port(8080),
+        service_id: service_id("svc_api"),
+        origin: RouteBindingOrigin::Declared,
+    }
 }
 
 fn routed_deploy_command_with_stored_routes(

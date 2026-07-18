@@ -309,6 +309,17 @@ fn later_phases_can_record_route_cutover_cycles() {
         last_event_sequence: event_sequence(6),
     };
 
+    assert_eq!(
+        project_deploy_transition(
+            &status,
+            DeployTransition::Running {
+                stage: DeployRunningStage::EnsuringCertificates,
+            },
+            event_sequence(7),
+        ),
+        Ok(OperationProjection::AlreadySatisfied)
+    );
+
     for (sequence, stage) in [
         DeployRunningStage::RouteCutover,
         DeployRunningStage::ServingTargetCommit,
