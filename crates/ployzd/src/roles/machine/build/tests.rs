@@ -4,20 +4,24 @@ use std::sync::atomic::Ordering;
 
 pub(super) struct TestBuildEffects {
     pub(super) ingest_started: tokio::sync::Notify,
+    pub(super) prune_started: tokio::sync::Notify,
     pub(super) cleanup_calls: std::sync::atomic::AtomicUsize,
     pub(super) task_active: std::sync::atomic::AtomicBool,
     cleanup_completes: bool,
     observes_cancellation: bool,
+    prune_completes: bool,
 }
 
 impl TestBuildEffects {
     fn new(cleanup_completes: bool) -> Self {
         Self {
             ingest_started: tokio::sync::Notify::new(),
+            prune_started: tokio::sync::Notify::new(),
             cleanup_calls: std::sync::atomic::AtomicUsize::new(0),
             task_active: std::sync::atomic::AtomicBool::new(false),
             cleanup_completes,
             observes_cancellation: false,
+            prune_completes: true,
         }
     }
 
@@ -25,6 +29,13 @@ impl TestBuildEffects {
         Self {
             observes_cancellation: true,
             ..Self::new(cleanup_completes)
+        }
+    }
+
+    fn blocking_prune() -> Self {
+        Self {
+            prune_completes: false,
+            ..Self::new(true)
         }
     }
 
@@ -44,6 +55,20 @@ impl TestBuildEffects {
             });
         }
         std::future::pending().await
+    }
+
+    pub(super) async fn prune_cache(
+        &self,
+    ) -> Result<ployz_core::operation::BuildCachePruneEvidence, BuildExecutionError> {
+        self.prune_started.notify_one();
+        if !self.prune_completes {
+            std::future::pending().await
+        }
+        Ok(ployz_core::operation::BuildCachePruneEvidence {
+            before_available_bytes: 0,
+            reclaimed_bytes: 0,
+            after_available_bytes: 0,
+        })
     }
 
     pub(super) async fn force_cleanup(&self) -> Result<(), BuildExecutionError> {
@@ -294,6 +319,65 @@ async fn cache_prune_waits_for_active_build_cleanup() {
         .await
         .expect("prune proceeds after build cleanup")
         .expect("prune succeeds");
+}
+
+#[tokio::test(start_paused = true)]
+async fn cache_prune_times_out_the_whole_effect_and_releases_the_machine_slot() {
+    let effects = Arc::new(TestBuildEffects::blocking_prune());
+    let runtime = MachineBuildRuntime::new_for_test(
+        MachineId::try_new("machine-a").expect("machine"),
+        effects.clone(),
+    );
+    let prune_runtime = runtime.clone();
+    let prune = tokio::spawn(async move { prune_runtime.prune_cache().await });
+    effects.prune_started.notified().await;
+
+    tokio::time::advance(BUILD_CACHE_PRUNE_MAX_EXECUTION_TIMEOUT).await;
+    tokio::task::yield_now().await;
+
+    assert!(matches!(
+        prune.await.expect("prune task"),
+        Err(BuildExecutionError::Infrastructure {
+            action: "prune build cache",
+            message,
+            ..
+        }) if message == "build cache prune timed out after 600s"
+    ));
+    let _slot = runtime
+        .machine_slot
+        .clone()
+        .try_acquire_owned()
+        .expect("timed-out prune releases the machine slot");
+}
+
+#[tokio::test]
+async fn shutdown_waits_for_the_machine_slot_before_stopping() {
+    let runtime = MachineBuildRuntime::new_for_test(
+        MachineId::try_new("machine-a").expect("machine"),
+        Arc::new(TestBuildEffects::new(true)),
+    );
+    let slot = runtime
+        .machine_slot
+        .clone()
+        .acquire_owned()
+        .await
+        .expect("machine slot");
+    let shutdown_runtime = runtime.clone();
+    let mut shutdown = tokio::spawn(async move { shutdown_runtime.shutdown().await });
+
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(10), &mut shutdown)
+            .await
+            .is_err()
+    );
+    assert!(runtime.lifecycle.state.lock().await.phase == BuildRuntimePhase::ShuttingDown);
+
+    drop(slot);
+    tokio::time::timeout(std::time::Duration::from_secs(1), shutdown)
+        .await
+        .expect("shutdown proceeds after slot release")
+        .expect("shutdown task");
+    assert!(runtime.lifecycle.state.lock().await.phase == BuildRuntimePhase::Stopped);
 }
 
 #[tokio::test(start_paused = true)]
