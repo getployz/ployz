@@ -174,6 +174,8 @@ The descriptor must be `/var/lib/ployz/prepared-storage.json` with owned-image
 origin `/var/lib/ployz/zfs/ployz.img`. The harness records the descriptor hash
 and the backing file's resolved path, filesystem/inode identity, and size, then
 requires them to remain identical after every reboot and during failure.
+Baseline and every healthy reboot also require parseable pool health to be
+exactly `ONLINE`.
 
 The PostgreSQL fixture declares `x-ployz.max-size: 2G`, which is exactly
 2,147,483,648 bytes. The live dataset must report `quota=2147483648` and
@@ -199,9 +201,11 @@ terminated within 15 seconds, so a remote transport timeout cannot extend the
 overall retry-loop deadline. Prove that
 ZFS is imported before Docker starts the workload, the
 same dataset identity and mountpoint exist, the database returns the same row,
-and storage testimony is `ready`. A newly empty database, a different dataset,
-a recreated plain directory, or a manual `zpool import` is a failure even when
-the query later succeeds.
+and a fresh `ployz machine inspect` reports `storage ready pool=<pool>`. The
+harness reissues that inspection within its bounded readiness window; stale or
+wrong-pool output does not satisfy the check. A newly empty database, a
+different dataset, a recreated plain directory, or a manual `zpool import` is
+a failure even when the query later succeeds.
 
 ## Reversible module-failure assertion
 
@@ -248,6 +252,9 @@ On an SSH-reachable host, follow the exact restoration commands recorded in
 owner and mode, verify its hash, run `depmod` for the recorded kernel, and
 verify `modinfo` discovers ZFS before rebooting. The normal path does not need
 to rebuild an initramfs that the preflight proved did not contain ZFS.
+Restoration is safe to retry: an already exact destination is reused, while an
+invalid destination is replaced atomically from the verified backup without
+removing the backup or quarantine evidence.
 
 If SSH is unavailable:
 
