@@ -9,6 +9,7 @@ use crate::roles::machine::protocol::{
 use crate::roles::machine::runner::{
     ExistingManagedContainerState, MachineContainerListError, MachineContainerRunner,
 };
+use crate::roles::machine::volume::STORAGE_HOST_COMMAND_TIMEOUT;
 use crate::roles::machine::volume::observe_storage_capability;
 use ployz_core::ids::MachineId;
 use ployz_core::machine::MachineEndpointObservation;
@@ -24,7 +25,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 const MACHINE_DATA_PATH: &str = "/var/lib/ployz";
-pub(crate) const MACHINE_FACTS_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
+const NON_STORAGE_FACTS_REFRESH_ALLOWANCE: Duration = Duration::from_secs(5);
+pub(crate) const MACHINE_FACTS_REFRESH_TIMEOUT: Duration =
+    STORAGE_HOST_COMMAND_TIMEOUT.saturating_add(NON_STORAGE_FACTS_REFRESH_ALLOWANCE);
 
 #[derive(Clone)]
 pub(crate) struct MachineFactsState<R> {
@@ -369,6 +372,15 @@ pub(crate) fn observation_state(state: ExistingManagedContainerState) -> Contain
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn facts_refresh_budget_includes_storage_and_non_storage_work() {
+        assert_eq!(
+            MACHINE_FACTS_REFRESH_TIMEOUT,
+            STORAGE_HOST_COMMAND_TIMEOUT.saturating_add(Duration::from_secs(5))
+        );
+        assert!(MACHINE_FACTS_REFRESH_TIMEOUT > STORAGE_HOST_COMMAND_TIMEOUT);
+    }
 
     #[test]
     fn facts_get_maps_build_and_railpack_readiness() {

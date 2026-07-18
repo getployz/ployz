@@ -10,7 +10,7 @@ use serde::de::DeserializeOwned;
 use std::process::Stdio;
 use std::time::Duration;
 
-const STORAGE_HOST_COMMAND_TIMEOUT: Duration = Duration::from_secs(4);
+pub(super) const STORAGE_HOST_COMMAND_TIMEOUT: Duration = Duration::from_secs(4);
 const MAX_CONCURRENT_VOLUME_READS: usize = 16;
 const VOLUME_TESTIMONY_COLLECTION_TIMEOUT: Duration = Duration::from_secs(4);
 pub(crate) const VOLUME_TESTIMONY_ENDPOINT_TIMEOUT: Duration = Duration::from_millis(4_500);

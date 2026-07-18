@@ -63,6 +63,7 @@ pub fn observe_storage_capability(
             },
         });
     }
+    let state = load_and_verify(runner, state_directory)?;
     let capacity = match gather_pool_capacity_for_state(runner, &state) {
         Ok(capacity) => capacity,
         Err(_) => {
