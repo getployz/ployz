@@ -7,7 +7,7 @@ use ployz_core::storage::StorageEffectFailure as ZfsEffectError;
 use crate::execution::{HostRunnerCommandOutput, HostRunnerCommandRunner};
 
 pub(super) const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
-pub(super) const INSTALL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+pub(super) const INSTALL_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 
 #[derive(Clone, Copy)]
 pub(super) enum EffectClass {
