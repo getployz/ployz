@@ -3,7 +3,7 @@ use super::plan::{BuildExecutionPlan, PrepareCommand};
 use super::runner::{
     BuildExecutionError, adapter_failure, check_cancelled, infrastructure, platform_failure,
 };
-use ployz_core::build::{BUILD_CACHE_PRUNE_COMMAND_TIMEOUT, GitSource};
+use ployz_core::build::GitSource;
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::image::{OciDigest, OciPlatform};
 use ployz_core::operation::BuildPlatformFailure;
@@ -338,7 +338,7 @@ pub(super) async fn prune_buildkit_cache() -> Result<(), BuildExecutionError> {
             "--filter",
             &format!("name=^{CACHE_VOLUME}$"),
         ],
-        BUILD_CACHE_PRUNE_COMMAND_TIMEOUT,
+        DOCKER_COMMAND_TIMEOUT,
     )
     .await?;
     require_success("inspect BuildKit cache volume", &volume)?;
@@ -348,7 +348,7 @@ pub(super) async fn prune_buildkit_cache() -> Result<(), BuildExecutionError> {
     let removed = run_bounded(
         "docker",
         ["volume", "rm", CACHE_VOLUME],
-        BUILD_CACHE_PRUNE_COMMAND_TIMEOUT,
+        DOCKER_COMMAND_TIMEOUT,
     )
     .await?;
     require_success("remove BuildKit cache volume", &removed)

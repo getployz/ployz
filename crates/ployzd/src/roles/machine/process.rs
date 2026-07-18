@@ -51,8 +51,9 @@ const MACHINE_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const MACHINE_OBSERVATION_INTERVAL: Duration =
     ployz_core::machine::runtime::OBSERVATION_PUBLISH_INTERVAL;
 const MACHINE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(5);
+const MACHINE_SHUTDOWN_TAIL_TIMEOUT: Duration = Duration::from_secs(5);
 const MACHINE_SHUTDOWN_TIMEOUT: Duration =
-    BUILD_CACHE_PRUNE_MAX_EXECUTION_TIMEOUT.saturating_add(Duration::from_secs(5));
+    BUILD_CACHE_PRUNE_MAX_EXECUTION_TIMEOUT.saturating_add(MACHINE_SHUTDOWN_TAIL_TIMEOUT);
 const INTENT_MIRROR_RESUBSCRIBE_DELAY: Duration = Duration::from_secs(5);
 const BUILD_WORKSPACE_ROOT: &str = "/var/lib/ployz/builds";
 
@@ -90,17 +91,33 @@ impl RunningMachineProcess {
             observer.task.abort_handle(),
         ];
         let cleanup = async {
-            if let Some(build_runtime) = build_runtime {
-                build_runtime.shutdown().await;
-            }
-            if let Some(image_registry) = image_registry {
-                image_registry.shutdown().await;
-            }
-            pending_join_mirror.wait().await;
-            projection.wait().await;
-            let _ = (&mut intent_mirror).await;
-            observer.wait().await;
-            machine_service.shutdown().await
+            let build_shutdown = async {
+                if let Some(build_runtime) = build_runtime {
+                    build_runtime.shutdown().await;
+                }
+            };
+            let registry_shutdown = async {
+                if let Some(image_registry) = image_registry {
+                    image_registry.shutdown().await;
+                }
+            };
+            let background_shutdown = async {
+                tokio::join!(
+                    pending_join_mirror.wait(),
+                    projection.wait(),
+                    async {
+                        let _ = (&mut intent_mirror).await;
+                    },
+                    observer.wait(),
+                );
+            };
+            let (_, _, _, service_result) = tokio::join!(
+                build_shutdown,
+                registry_shutdown,
+                background_shutdown,
+                machine_service.shutdown(),
+            );
+            service_result
         };
         bounded_role_shutdown("machine", MACHINE_SHUTDOWN_TIMEOUT, &abort_handles, cleanup).await
     }
@@ -562,7 +579,12 @@ mod tests {
             + ployz_core::build::BUILD_TASK_DRAIN_TIMEOUT
             + ployz_core::build::BUILD_FORCE_CLEANUP_TIMEOUT;
 
-        assert_eq!(MACHINE_SHUTDOWN_TIMEOUT, Duration::from_secs(10 * 60 + 5));
+        assert_eq!(MACHINE_SHUTDOWN_TAIL_TIMEOUT, Duration::from_secs(5));
+        assert_eq!(
+            MACHINE_SHUTDOWN_TIMEOUT,
+            ployz_core::build::BUILD_CACHE_PRUNE_MAX_EXECUTION_TIMEOUT
+                + MACHINE_SHUTDOWN_TAIL_TIMEOUT
+        );
         assert!(
             MACHINE_SHUTDOWN_TIMEOUT > ployz_core::build::BUILD_CACHE_PRUNE_MAX_EXECUTION_TIMEOUT
         );

@@ -34,11 +34,8 @@ pub const BUILD_FORCE_CLEANUP_TIMEOUT: Duration = Duration::from_secs(30);
 pub const BUILD_MAX_MACHINE_RESPONSE_LIFETIME: Duration = BUILD_MAX_EXECUTION_TIMEOUT
     .saturating_add(BUILD_TASK_DRAIN_TIMEOUT)
     .saturating_add(BUILD_FORCE_CLEANUP_TIMEOUT);
-/// Time allowed for one Docker command while pruning build cache.
-pub const BUILD_CACHE_PRUNE_COMMAND_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// Longest build-cache prune execution budget after it acquires the machine slot.
-pub const BUILD_CACHE_PRUNE_MAX_EXECUTION_TIMEOUT: Duration =
-    BUILD_CACHE_PRUNE_COMMAND_TIMEOUT.saturating_add(BUILD_CACHE_PRUNE_COMMAND_TIMEOUT);
+pub const BUILD_CACHE_PRUNE_MAX_EXECUTION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// Longest time a machine prune request can wait for a build and then execute.
 pub const BUILD_CACHE_PRUNE_MAX_MACHINE_RESPONSE_LIFETIME: Duration =
     BUILD_MAX_MACHINE_RESPONSE_LIFETIME.saturating_add(BUILD_CACHE_PRUNE_MAX_EXECUTION_TIMEOUT);
@@ -763,10 +760,6 @@ mod tests {
         assert_eq!(
             BUILD_MAX_MACHINE_RESPONSE_LIFETIME,
             BUILD_MAX_EXECUTION_TIMEOUT + BUILD_TASK_DRAIN_TIMEOUT + BUILD_FORCE_CLEANUP_TIMEOUT
-        );
-        assert_eq!(
-            BUILD_CACHE_PRUNE_COMMAND_TIMEOUT,
-            Duration::from_secs(5 * 60)
         );
         assert_eq!(
             BUILD_CACHE_PRUNE_MAX_EXECUTION_TIMEOUT,
