@@ -22,6 +22,11 @@ candidate.
 - Installed edge tag/manifest: `<release.env evidence>`
 - Clean harness SHA: `<sha; git status evidence>`
 - Harness/script SHA comparison with runtime SHA: `<recorded comparison>`
+- Architecture mode: `<mixed-amd64-arm64 or amd64-only-non-mixed>`
+- edge architecture waiver: `<arm64_provider_capacity_unavailable when used; must match metadata.env>`
+- build platforms: `<linux/amd64,linux/arm64 or linux/amd64 under waiver>`
+- #536 evidence result: `<valid after completed certification>`
+- #391 ARM/native-build result: `<valid or not-applicable; never passed by waiver>`
 - Success marker and exit status: `<location; status>`
 
 Do not record secrets. Redactions must preserve the fact that authenticated
@@ -32,11 +37,11 @@ and public-release paths were used.
 | Role | Provider id | Provider image | OS/version | Native arch | Public/private IP | Guest firewall | Provider firewall ids | SSH key fingerprint | Rescue-console proof |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | core | `<id>` | `<image>` | `Rocky 9 <version>` | `amd64/x86_64` | `<addresses>` | `<firewalld evidence>` | `<ids>` | `<fingerprint>` | `<location>` |
-| edge | `<id>` | `<image>` | `Ubuntu 24.04 <version>` | `arm64/aarch64` | `<addresses>` | `<UFW evidence>` | `<ids>` | `<fingerprint>` | `<location>` |
+| edge | `<id>` | `<image>` | `Ubuntu 24.04 <version>` | `<arm64/aarch64, or amd64/x86_64 only with waiver>` | `<addresses>` | `<UFW evidence>` | `<ids>` | `<fingerprint>` | `<location>` |
 
 - Ephemeral key generated/loaded UTC: `<evidence>`
 - Provider firewall source restrictions: `<rules/evidence>`
-- Destructive consent guards: `<redacted invocation showing all exact names>`
+- Destructive consent guards: `<redacted invocation showing all exact names, including PLOYZ_REAL_HOST_AMD64_EDGE_WAIVER=1 when used>`
 - Initially empty absolute evidence directory: `<proof>`
 
 ## Artifact inventory
@@ -62,8 +67,8 @@ and public-release paths were used.
 | Acceptance item | Assertion | Commands/output | Timing UTC/duration | Evidence location | Result |
 | --- | --- | --- | --- | --- | --- |
 | Public sealed candidate | Immutable tag resolves exactly to runtime SHA; assets verified; alpha promoted; both hosts' installed tags/manifests recorded; runtime contains `2f754ab5cff785fd67cf4c83231f4025ec6ad8ee` | `<evidence>` | `<time>` | `<location>` | [ ] |
-| Fixed mixed-architecture pair | Rocky 9 amd64 core and Ubuntu 24.04 arm64 edge match native kernels and release assets | `<evidence>` | `<time>` | `<location>` | [ ] |
-| Explicit destructive consent | All four exact environment guards accepted; evidence root was absolute and empty | `<evidence>` | `<time>` | `<location>` | [ ] |
+| Host pair and declared mode | Rocky 9 amd64 core plus Ubuntu 24.04 arm64 edge; or, only with the explicit waiver metadata, Ubuntu 24.04 amd64 edge and the distinct non-mixed marker | `<evidence>` | `<time>` | `<location>` | [ ] |
+| Explicit destructive consent | All four required environment guards, plus the conditional amd64-edge waiver guard when used, were accepted; evidence root was absolute and empty | `<evidence>` | `<time>` | `<location>` | [ ] |
 | Storage preparation | Public operation id reaches terminal success; storage is Ready; `/var/lib/ployz/prepared-storage.json`, owned backing file, pool, dataset root, capacity, and mountpoint agree | `<operation/commands>` | `<time>` | `<location>` | [ ] |
 | Real Provisioned Volume | PostgreSQL pin names Rocky; `volume list`, Docker mount and recovery labels, and `zfs list` identify the same `/var/lib/ployz/volumes/...` dataset with exact parseable `quota=2147483648` and `refquota=0` | `<commands>` | `<time>` | `<location>` | [ ] |
 | Pre-reboot row | Unique row is written and read; row marker, dataset, container, pool health, and testimony captured | `<commands>` | `<time>` | `<location>` | [ ] |
@@ -91,14 +96,19 @@ This matrix maps the direct Core/CLI real-host claims relevant to the combined
 gate. It does not substitute for the separate 27-claim hosted-product record in
 [`beta-acceptance.md`](beta-acceptance.md).
 
+For an amd64-edge waiver run, record the ARM edge and both native arm64 build
+rows as `N/A — amd64 edge waiver`; do not check them as passed. Other rows may
+be supported by the run on their own evidence. The waiver makes #536 valid; it
+does not complete #391's mixed-architecture acceptance.
+
 | #391 claim | Required proof | Evidence location | Result |
 | --- | --- | --- | --- |
 | Public installer uses one exact sealed candidate | immutable tag/SHA, assets, channel, installed equality | `<location>` | [ ] |
 | amd64 Rocky core joins | public install and machine operation transcript | `<location>` | [ ] |
-| arm64 Ubuntu edge joins | public install and machine operation transcript | `<location>` | [ ] |
+| arm64 Ubuntu edge joins | public install and machine operation transcript | `<location or N/A — amd64 edge waiver>` | `<pass or N/A — amd64 edge waiver>` |
 | Host firewalls open exactly Ployz ports | provider + firewalld + UFW evidence | `<location>` | [ ] |
-| Dockerfile builds native amd64 and arm64 | exact-commit operation receipt and stable index | `<location>` | [ ] |
-| Railpack builds native amd64 and arm64 | exact-commit operation receipt and stable index | `<location>` | [ ] |
+| Dockerfile builds native amd64 and arm64 | exact-commit operation receipt and stable index | `<location or N/A — amd64 edge waiver>` | `<pass or N/A — amd64 edge waiver>` |
+| Railpack builds native amd64 and arm64 | exact-commit operation receipt and stable index | `<location or N/A — amd64 edge waiver>` | `<pass or N/A — amd64 edge waiver>` |
 | Replicas land on both machines | machine/container testimony | `<location>` | [ ] |
 | Managed HTTPS returns 200 | DNS, TLS, response, timing | `<location>` | [ ] |
 | Cross-machine routing works through both gateways | local-replica-stop probes | `<location>` | [ ] |
@@ -163,4 +173,4 @@ gate. It does not substitute for the separate 27-claim hosted-product record in
 - Secret scan/redaction result: `<command/output/location>`
 - Quarantine copies removed only after recovery/evidence review: `<evidence>`
 - All #536 acceptance rows checked: `<yes>`
-- All relevant #391 rows checked: `<yes>`
+- All relevant #391 rows checked, with ARM/native-build rows explicitly N/A for a waiver run: `<yes>`

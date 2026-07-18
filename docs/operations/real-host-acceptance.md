@@ -133,6 +133,34 @@ PLOYZ_EXPECTED_RUNTIME_SHA="${runtime_sha}" \
   scripts/real-host-acceptance.sh <core-ip> <edge-ip>
 ```
 
+When an Ubuntu ARM host cannot be provisioned, #536's ZFS certification may
+use an Ubuntu 24.04 x86_64 edge with one additional explicit guard:
+
+```sh
+PLOYZ_REAL_HOST_ZFS_CERTIFY=1 \
+PLOYZ_REAL_HOST_AMD64_EDGE_WAIVER=1 \
+PLOYZ_REAL_HOST_EVIDENCE_DIR="${evidence_dir}" \
+PLOYZ_EXPECTED_RELEASE_TAG="${tag}" \
+PLOYZ_EXPECTED_RUNTIME_SHA="${runtime_sha}" \
+  scripts/real-host-acceptance.sh <core-ip> <edge-ip>
+```
+
+The waiver is rejected outside the destructive ZFS certification path. It
+requires Ubuntu 24.04 x86_64, submits and asserts amd64-only Dockerfile and
+Railpack builds, writes
+`edge_arch_waiver=arm64_provider_capacity_unavailable`,
+`architecture_mode=amd64-only-non-mixed`, `build_platforms=linux/amd64`,
+`issue_536_result=valid`, and
+`issue_391_arm_native_build=not-applicable` to `metadata.env`, and emits a
+distinct non-mixed success marker. This is valid evidence for #536's real ZFS
+storage, reboot, failure, and recovery assertions. It does not validate #391's
+ARM edge or native arm64 build claims; record those claims as not applicable,
+not passed. Omitting the waiver preserves the ordinary ARM edge path.
+
+The script records `issue_536_result=valid` only after every ZFS certification
+phase succeeds; a failed run retains the waiver and architecture metadata but
+does not claim a valid #536 result.
+
 These names are the exact script interface. Do not alias, omit, or synthesize
 them in a wrapper. Before accepting destructive consent the script verifies a
 clean harness checkout, the tag-to-runtime-SHA equality, the minimum ancestor,
@@ -158,6 +186,13 @@ them and fill it from those artifacts. A successful run prints:
 
 ```text
 ZFS REAL-HOST CERTIFICATION PASSED
+```
+
+An amd64-edge waiver run instead prints:
+
+```text
+ZFS REAL-HOST CERTIFICATION PASSED: AMD64 EDGE WAIVER (NON-MIXED)
+ACCEPTANCE PASSED: amd64 edge waiver; mixed architecture not certified
 ```
 
 That marker is necessary but not sufficient: inspect every assertion below
