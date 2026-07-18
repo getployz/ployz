@@ -5,11 +5,9 @@ use ployz::dispatcher::{PloyzctlRuntimeConfig, execute_command};
 use ployz_core::operation::{DeployFailureClass, DeployRunningStage, HealthCheckFailure};
 use support::dind::formation::ProductCliHarness;
 
-const POSTGRES_IMAGE: &str = "postgres:15-alpine";
 const ACCEPTANCE_NAMESPACE: &str = "v1_acceptance";
 
 struct DeployedApp {
-    database_deploy: DeployHistoryEntry,
     application: DeployHistoryEntry,
     hostname: String,
 }
@@ -99,13 +97,12 @@ async fn step_2_deploy_real_application(
     history: &DeployHistory,
     compose_path: &Path,
 ) -> DeployedApp {
-    std::fs::write(compose_path, database_deploy_compose())
-        .expect("write Postgres Deploy Compose file");
+    std::fs::write(compose_path, umami_compose()).expect("write Umami Compose file");
     execute_compose(compose_path, config).await;
 
-    let database_entries = history.load().expect("load database Deploy history");
-    let [database_deploy] = database_entries.as_slice() else {
-        panic!("database Deploy must record exactly one history entry");
+    let application_entries = history.load().expect("load application deploy history");
+    let [application] = application_entries.as_slice() else {
+        panic!("full application Deploy must record exactly one history entry");
     };
     let client = connect_core_client(
         core,
@@ -114,25 +111,6 @@ async fn step_2_deploy_real_application(
     )
     .await
     .expect("connect controller for acceptance intent");
-    let database_intent = read_intent(&client, CONNECT_TIMEOUT)
-        .await
-        .expect("read database Deploy intent");
-    let [database_target] = database_intent.serving_target_entries.as_slice() else {
-        panic!("database Deploy must commit one Serving Target entry");
-    };
-    assert_eq!(
-        (&database_target.namespace_id, &database_target.service_id),
-        (&namespace_id(ACCEPTANCE_NAMESPACE), &service_id("db"))
-    );
-
-    std::fs::write(compose_path, umami_compose()).expect("write Umami Compose file");
-    execute_compose(compose_path, config).await;
-
-    let application_entries = history.load().expect("load application deploy history");
-    let [recorded_database_deploy, application] = application_entries.as_slice() else {
-        panic!("database Deploy and full application Deploy must both be recorded");
-    };
-    assert_eq!(recorded_database_deploy, database_deploy);
 
     let all_machines = all_machines(core);
     let workloads = namespace_workloads(core, &all_machines, ACCEPTANCE_NAMESPACE).await;
@@ -189,7 +167,7 @@ async fn step_2_deploy_real_application(
         .iter()
         .filter(|(_, container)| service_is(container, "umami"))
         .collect::<Vec<_>>();
-    let [first_app, _second_app] = app_workloads.as_slice() else {
+    let [_, _] = app_workloads.as_slice() else {
         panic!("Umami must have two replicas: {app_workloads:?}");
     };
     assert!(app_workloads.iter().all(|(_, container)| {
@@ -202,7 +180,16 @@ async fn step_2_deploy_real_application(
                 .iter()
                 .any(|env| env == "APP_SECRET=ployz-v1-acceptance")
     }));
-    assert_service_name_database_reachability(core, first_app.0, &first_app.1).await;
+    let app_on_other_machine = app_workloads
+        .iter()
+        .find(|(machine, _)| machine.name != database_machine.name)
+        .expect("Umami must run on a different machine from Postgres");
+    assert_service_name_database_reachability(
+        core,
+        app_on_other_machine.0,
+        &app_on_other_machine.1,
+    )
+    .await;
 
     let intent = read_intent(&client, CONNECT_TIMEOUT)
         .await
@@ -216,17 +203,9 @@ async fn step_2_deploy_real_application(
         .hostname
         .as_str()
         .to_owned();
-    let response =
-        gateway_https_get_unverified(core.cluster.core().published.gateway_tls, &hostname)
-            .await
-            .expect("Umami answers through public HTTPS");
-    assert!(
-        response.starts_with("HTTP/1.1 200"),
-        "Umami HTTPS response was not successful: {response}"
-    );
+    wait_for_umami_https(core, &hostname).await;
 
     DeployedApp {
-        database_deploy: database_deploy.clone(),
         application: application.clone(),
         hostname,
     }
@@ -334,15 +313,9 @@ async fn step_5_retry_and_rollback(
     std::fs::write(compose_path, bad_deploy_input_compose()).expect("write bad deploy input");
     execute_compose(compose_path, config).await;
     let entries = history.load().expect("load bad deploy-input history");
-    let [
-        recorded_database_deploy,
-        recorded_application,
-        bad_deploy_entry,
-    ] = entries.as_slice()
-    else {
-        panic!("database Deploy, application Deploy, and bad Deploy must be recorded: {entries:?}");
+    let [recorded_application, bad_deploy_entry] = entries.as_slice() else {
+        panic!("application Deploy and bad Deploy must be recorded: {entries:?}");
     };
-    assert_eq!(recorded_database_deploy, &app.database_deploy);
     assert_eq!(recorded_application, &app.application);
     assert_ne!(
         bad_deploy_entry.request.services,
@@ -366,18 +339,9 @@ async fn step_5_retry_and_rollback(
         .expect("acceptance rollback executes");
 
     let entries = history.load().expect("load rollback history");
-    let [
-        recorded_database_deploy,
-        recorded_application,
-        bad_deploy_entry,
-        rollback_entry,
-    ] = entries.as_slice()
-    else {
-        panic!(
-            "rollback must append after database Deploy, application Deploy, and bad Deploy: {entries:?}"
-        );
+    let [recorded_application, bad_deploy_entry, rollback_entry] = entries.as_slice() else {
+        panic!("rollback must append after application Deploy and bad Deploy: {entries:?}");
     };
-    assert_eq!(recorded_database_deploy, &app.database_deploy);
     assert_eq!(recorded_application, &app.application);
     assert_ne!(rollback_entry.operation_id, app.application.operation_id);
     assert_ne!(rollback_entry.operation_id, bad_deploy_entry.operation_id);
@@ -386,14 +350,7 @@ async fn step_5_retry_and_rollback(
         app.application.request.services
     );
 
-    let restored =
-        gateway_https_get_unverified(core.cluster.core().published.gateway_tls, &app.hostname)
-            .await
-            .expect("rolled-back Umami answers through HTTPS");
-    assert!(
-        restored.starts_with("HTTP/1.1 200") && restored.contains("Umami"),
-        "rollback did not restore Umami: {restored}"
-    );
+    wait_for_umami_https(core, &app.hostname).await;
 
     let all_machines = all_machines(core);
     let workloads = namespace_workloads(core, &all_machines, ACCEPTANCE_NAMESPACE).await;
@@ -461,7 +418,6 @@ fn compose_command(path: &Path, detach: bool) -> ployz::commands::PloyzctlComman
         "deploy".to_owned(),
         "-f".to_owned(),
         path.display().to_string(),
-        "--from-registry".to_owned(),
     ];
     if detach {
         args.push("--detach".to_owned());
@@ -525,10 +481,9 @@ fn service_is(container: &ManagedWorkloadContainer, service: &str) -> bool {
         .is_some_and(|value| value == service)
 }
 
-fn database_service_compose() -> String {
-    format!(
-        r#"  db:
-    image: {POSTGRES_IMAGE}
+fn database_service_compose() -> &'static str {
+    r#"  db:
+    image: ${PLOYZ_DIND_POSTGRES_IMAGE:-postgres:15-alpine@sha256:3d0f7584ed7d04e27fa050d6683a74746608faf21f202be78460d679cc56461f}
     environment:
       POSTGRES_DB: umami
       POSTGRES_USER: umami
@@ -541,11 +496,6 @@ fn database_service_compose() -> String {
       timeout: 2s
       retries: 30
 "#
-    )
-}
-
-fn database_deploy_compose() -> &'static str {
-    include_str!("../fixtures/v1-acceptance-database.yaml")
 }
 
 fn umami_compose() -> &'static str {
@@ -634,4 +584,22 @@ async fn assert_service_name_database_reachability(
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
     panic!("Umami could not reach Postgres by service name: {last:?}");
+}
+
+async fn wait_for_umami_https(core: &CoreContext, hostname: &str) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut last = String::from("<no attempt>");
+    while Instant::now() < deadline {
+        match gateway_https_get_unverified(core.cluster.core().published.gateway_tls, hostname)
+            .await
+        {
+            Ok(response) if response.starts_with("HTTP/1.1 200") && response.contains("Umami") => {
+                return;
+            }
+            Ok(response) => last = format!("unexpected response: {response}"),
+            Err(error) => last = error,
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    panic!("Umami did not become ready through HTTPS within 60 seconds: {last}");
 }
