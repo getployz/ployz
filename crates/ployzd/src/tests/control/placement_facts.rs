@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 use std::time::Duration;
 
 use crate::control::role_client::machine::{
@@ -83,8 +82,6 @@ async fn bounded_placement_gather_queries_every_candidate_before_classifying_sil
                     .expect("publish facts response");
                 client.flush().await.expect("flush facts response");
             }
-
-            machine_id
         }));
     }
 
@@ -94,17 +91,16 @@ async fn bounded_placement_gather_queries_every_candidate_before_classifying_sil
         Duration::from_millis(500),
     )
     .await;
-    let queried = tokio::time::timeout(
+    let responder_results = tokio::time::timeout(
         Duration::from_secs(2),
         futures_util::future::join_all(responders),
     )
     .await
-    .expect("every candidate receives a facts request")
-    .into_iter()
-    .map(|result| result.expect("facts responder exits cleanly"))
-    .collect::<BTreeSet<_>>();
+    .expect("every candidate receives a facts request");
+    for result in responder_results {
+        result.expect("facts responder exits cleanly");
+    }
 
-    assert_eq!(queried, machine_ids.iter().cloned().collect());
     assert_eq!(gathered.len(), machine_ids.len());
     for (index, facts) in gathered.into_iter().enumerate() {
         assert_eq!(facts.machine_id, machine_ids[index]);
