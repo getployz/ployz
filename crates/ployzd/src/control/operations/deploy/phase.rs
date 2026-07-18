@@ -504,11 +504,11 @@ where
         .map_err(|source| run.fail(source))?;
     }
 
-    let route_bindings = phase_services
+    let route_bindings: Vec<_> = phase_services
         .iter()
         .flat_map(|service| service.route_binding_states().iter().cloned())
         .collect();
-    let route_binding_removals = command
+    let route_binding_removals: Vec<_> = command
         .route_binding_removals()
         .iter()
         .filter(|binding| {
@@ -518,24 +518,7 @@ where
         })
         .map(|binding| binding.target.clone())
         .collect();
-    if command
-        .services()
-        .iter()
-        .any(|service| !service.route_binding_states().is_empty())
-    {
-        coarse_progress
-            .record(command, ports.recorder, DeployRunningStage::RouteCutover)
-            .await
-            .map_err(|source| run.fail(source))?;
-    }
-    coarse_progress
-        .record(
-            command,
-            ports.recorder,
-            DeployRunningStage::ServingTargetCommit,
-        )
-        .await
-        .map_err(|source| run.fail(source))?;
+    let phase_changes_routes = !route_bindings.is_empty() || !route_binding_removals.is_empty();
     let [first_service, remaining_services @ ..] = phase_services.as_slice() else {
         return Err(run.fail(DeployExecutionError::PlanInconsistent {
             service_id: command.request.status_service_id(),
@@ -556,6 +539,27 @@ where
             .map(|service| service.serving_target_entry_state(&command.request.namespace_id))
             .collect(),
     };
+    if phase_changes_routes {
+        record_running_stage(command, ports.recorder, DeployRunningStage::RouteCutover)
+            .await
+            .map_err(|source| run.fail(source))?;
+        record_running_stage(
+            command,
+            ports.recorder,
+            DeployRunningStage::ServingTargetCommit,
+        )
+        .await
+        .map_err(|source| run.fail(source))?;
+    } else {
+        coarse_progress
+            .record(
+                command,
+                ports.recorder,
+                DeployRunningStage::ServingTargetCommit,
+            )
+            .await
+            .map_err(|source| run.fail(source))?;
+    }
     with_step_timeout(
         command,
         DeployExecutionStep::CommitServingTarget { scope },
