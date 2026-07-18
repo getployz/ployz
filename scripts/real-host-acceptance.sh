@@ -293,9 +293,17 @@ run_real_host_acceptance_regression_test() {
   local evidence failure_output success_output reboot_output recovery_output rescue_root fake_bin
   local module_contents module_sha module_mode module_uid module_gid child_status=0
   local restored_inode ssh_restore_output restore_function_output
+  local git_install_command fixture_log_command git_install_line fixture_log_line
   evidence=$(mktemp -d)
   trap 'rm -rf "$evidence"' RETURN
   : > "$evidence/metadata.env"
+
+  git_install_command='core "timeout 5m dnf install -y git"'
+  fixture_log_command='log "preparing authenticated exact-commit Git build fixture"'
+  [ "$(grep -Fxc "$git_install_command" "$0")" -eq 1 ]
+  git_install_line=$(grep -Fnx "$git_install_command" "$0" | cut -d: -f1)
+  fixture_log_line=$(grep -Fnx "$fixture_log_command" "$0" | cut -d: -f1)
+  [ "$git_install_line" -eq $((fixture_log_line - 1)) ]
 
   failure_output=$("$0" --phase-failure-probe "$evidence" 2>&1) || child_status=$?
   [ "$child_status" -ne 0 ]
@@ -729,6 +737,7 @@ if [ "$ZFS_CERTIFY" = 1 ]; then
     "$edge_installed_tag" "$edge_installed_manifest" >> "$ZFS_EVIDENCE_DIR/metadata.env"
 fi
 
+core "timeout 5m dnf install -y git"
 log "preparing authenticated exact-commit Git build fixture"
 git_fixture_dir=$(mktemp -d)
 scp "${SSH_OPTS[@]}" \
