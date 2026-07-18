@@ -96,7 +96,7 @@ pub(crate) async fn watch_operation_until_terminal(
     request: OperationEventReplayRequest,
     timeout: Duration,
     poll_interval: Duration,
-) -> Result<(Vec<ReplayedOperationEvent>, Option<OperationOutcome>), ExecutionSupportError> {
+) -> Result<(Vec<ReplayedOperationEvent>, OperationOutcome), ExecutionSupportError> {
     watch_operation_until_terminal_with(api, request, timeout, poll_interval, |_| Ok(())).await
 }
 
@@ -106,7 +106,7 @@ pub(crate) async fn watch_operation_until_terminal_with<E>(
     timeout: Duration,
     poll_interval: Duration,
     mut observe_page: impl FnMut(&[ReplayedOperationEvent]) -> Result<(), E>,
-) -> Result<(Vec<ReplayedOperationEvent>, Option<OperationOutcome>), E>
+) -> Result<(Vec<ReplayedOperationEvent>, OperationOutcome), E>
 where
     E: From<ExecutionSupportError>,
 {
@@ -138,7 +138,7 @@ where
                 continue;
             }
             OperationEventReplayCursor::Terminal { outcome } => {
-                return Ok((events, Some(outcome)));
+                return Ok((events, outcome));
             }
             OperationEventReplayCursor::CaughtUp => {}
         }

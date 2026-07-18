@@ -13,10 +13,7 @@ use ployz::machine::operator_context::{
     ClusterContext, ClusterContextMachine, load_cluster_context, save_cluster_context,
 };
 use ployz::ssh::SshTarget;
-use ployz_core::install::MachineJoinRuntimeNatsUrl;
-use ployz_core::operation::{
-    CoreReplaceOperationState, OperationEventReplayPage, OperationStatus, OperationStatusSnapshot,
-};
+use ployz_core::operation::OperationEventReplayPage;
 use ployz_nats::service_runtime::{NatsServiceResponse, start_nats_service};
 use ployz_nats::services::{
     EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceMetadata, ServiceVersion,
@@ -24,11 +21,8 @@ use ployz_nats::services::{
 use ployz_nats::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
 use ployz_sdk_types::{
     AcceptedOperation, CoreReplaceReportRequest, CoreReplaceReportResponse, CoreReplaceReported,
-    CoreReplaceRequest, CoreReplaceResponse, OperationApiResponse, OpsStatusRequest,
-    OpsStatusResponse, OpsWatchResponse,
-    operation_api::{
-        CoreReplaceApi, CoreReplaceReportApi, OperationApiContract, OpsStatusApi, OpsWatchApi,
-    },
+    CoreReplaceRequest, CoreReplaceResponse, OperationApiResponse, OpsWatchResponse,
+    operation_api::{CoreReplaceApi, CoreReplaceReportApi, OperationApiContract, OpsWatchApi},
 };
 use ployz_test_support::fs::make_executable;
 use ployz_test_support::ids::{event_sequence, machine_id};
@@ -304,7 +298,6 @@ async fn core_replace_remote_runs_host_runner_command() {
         OperationApiEndpoint::from(CoreReplaceApi::ENDPOINT),
         OperationApiEndpoint::from(CoreReplaceReportApi::ENDPOINT),
         OperationApiEndpoint::from(OpsWatchApi::ENDPOINT),
-        OperationApiEndpoint::from(OpsStatusApi::ENDPOINT),
     ]);
     let mut runtime = start_nats_service(client.clone(), &spec)
         .await
@@ -378,29 +371,6 @@ async fn core_replace_remote_runs_host_runner_command() {
         )
         .await
         .expect("ops watch endpoint binds");
-    runtime
-        .bind_endpoint(
-            &endpoint(&spec, OperationApiEndpoint::from(OpsStatusApi::ENDPOINT)),
-            |request| async move {
-                let request: OpsStatusRequest =
-                    serde_json::from_slice(&request.payload).expect("status request decodes");
-                let response: OpsStatusResponse = OperationApiResponse::Ok {
-                    value: OperationStatusSnapshot::new(OperationStatus::CoreReplace {
-                        id: request.operation_id,
-                        machine_id: machine_id("machine_2"),
-                        successor_nats_url: MachineJoinRuntimeNatsUrl::try_new(
-                            "tls://203.0.113.20:4222",
-                        )
-                        .expect("valid URL"),
-                        state: CoreReplaceOperationState::Completed,
-                        last_event_sequence: event_sequence(2),
-                    }),
-                };
-                NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
-            },
-        )
-        .await
-        .expect("ops status endpoint binds");
     client.flush().await.expect("service flushes");
 
     let ssh = FakeCoreSsh::new();

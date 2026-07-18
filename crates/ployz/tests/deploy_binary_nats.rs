@@ -10,9 +10,8 @@ use ployz_core::deploy::{
 };
 use ployz_core::ids::{NamespaceId, ServiceId};
 use ployz_core::operation::{
-    DeployCompletionOutcome, DeployOperationFailure, DeployOperationState, OperationEvent,
-    OperationEventReplayPage, OperationOutcome, OperationStatus, OperationStatusSnapshot,
-    ReplayedOperationEvent,
+    DeployCompletionOutcome, DeployOperationFailure, OperationEvent, OperationEventReplayPage,
+    OperationOutcome, ReplayedOperationEvent,
 };
 use ployz_nats::service_runtime::{NatsServiceResponse, start_nats_service};
 use ployz_nats::services::{
@@ -22,10 +21,8 @@ use ployz_nats::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
 use ployz_sdk_types::{
     AcceptedOperation, DeployReservationExpiresAt, DeployReservationId, DeployReserveResponse,
     DeployReserved, DeploySubmitRequest, DeploySubmitResponse, OperationApiResponse,
-    OpsStatusRequest, OpsStatusResponse, OpsWatchResponse,
-    operation_api::{
-        DeployReserveApi, DeploySubmitApi, OperationApiContract, OpsStatusApi, OpsWatchApi,
-    },
+    OpsWatchResponse,
+    operation_api::{DeployReserveApi, DeploySubmitApi, OperationApiContract, OpsWatchApi},
 };
 use ployz_test_support::ids::{
     event_sequence, operation_event_recorded_at, operation_id, service_id,
@@ -166,7 +163,6 @@ async fn binary_rollback_replays_the_selected_pinned_payload_as_a_new_deploy() {
         OperationApiEndpoint::from(DeployReserveApi::ENDPOINT),
         OperationApiEndpoint::from(DeploySubmitApi::ENDPOINT),
         OperationApiEndpoint::from(OpsWatchApi::ENDPOINT),
-        OperationApiEndpoint::from(OpsStatusApi::ENDPOINT),
     ]);
     let reserve_endpoint = endpoint(
         &spec,
@@ -174,7 +170,6 @@ async fn binary_rollback_replays_the_selected_pinned_payload_as_a_new_deploy() {
     );
     let submit_endpoint = endpoint(&spec, OperationApiEndpoint::from(DeploySubmitApi::ENDPOINT));
     let watch_endpoint = endpoint(&spec, OperationApiEndpoint::from(OpsWatchApi::ENDPOINT));
-    let status_endpoint = endpoint(&spec, OperationApiEndpoint::from(OpsStatusApi::ENDPOINT));
     let mut runtime = start_nats_service(client, &spec)
         .await
         .expect("service starts");
@@ -252,23 +247,6 @@ async fn binary_rollback_replays_the_selected_pinned_payload_as_a_new_deploy() {
         })
         .await
         .expect("watch endpoint binds");
-    runtime
-        .bind_endpoint(&status_endpoint, |request| async move {
-            let request: OpsStatusRequest =
-                serde_json::from_slice(&request.payload).expect("status request decodes");
-            assert_eq!(request.operation_id, operation_id("op_rollback"));
-            let response: OpsStatusResponse = OperationApiResponse::Ok {
-                value: OperationStatusSnapshot::new(deploy_status(
-                    "op_rollback",
-                    DeployOperationState::Completed {
-                        outcome: DeployCompletionOutcome::Completed,
-                    },
-                )),
-            };
-            NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
-        })
-        .await
-        .expect("status endpoint binds");
     service_client.flush().await.expect("service flushes");
 
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
@@ -312,7 +290,6 @@ async fn binary_foreground_deploy_exits_non_zero_when_operation_fails() {
         OperationApiEndpoint::from(DeployReserveApi::ENDPOINT),
         OperationApiEndpoint::from(DeploySubmitApi::ENDPOINT),
         OperationApiEndpoint::from(OpsWatchApi::ENDPOINT),
-        OperationApiEndpoint::from(OpsStatusApi::ENDPOINT),
     ]);
     let reserve_endpoint = endpoint(
         &spec,
@@ -320,7 +297,6 @@ async fn binary_foreground_deploy_exits_non_zero_when_operation_fails() {
     );
     let submit_endpoint = endpoint(&spec, OperationApiEndpoint::from(DeploySubmitApi::ENDPOINT));
     let watch_endpoint = endpoint(&spec, OperationApiEndpoint::from(OpsWatchApi::ENDPOINT));
-    let status_endpoint = endpoint(&spec, OperationApiEndpoint::from(OpsStatusApi::ENDPOINT));
     let mut runtime = start_nats_service(client, &spec)
         .await
         .expect("service starts");
@@ -380,25 +356,6 @@ async fn binary_foreground_deploy_exits_non_zero_when_operation_fails() {
         })
         .await
         .expect("watch endpoint binds");
-    runtime
-        .bind_endpoint(&status_endpoint, |request| async move {
-            let request: OpsStatusRequest =
-                serde_json::from_slice(&request.payload).expect("status request decodes");
-            assert_eq!(request.operation_id, operation_id("op_deploy_failed"));
-            let response: OpsStatusResponse = OperationApiResponse::Ok {
-                value: OperationStatusSnapshot::new(deploy_status(
-                    "op_deploy_failed",
-                    DeployOperationState::Failed {
-                        failure: DeployOperationFailure::NoUsableMachines {
-                            reasons: Vec::new(),
-                        },
-                    },
-                )),
-            };
-            NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
-        })
-        .await
-        .expect("status endpoint binds");
     service_client.flush().await.expect("service flushes");
 
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
@@ -493,17 +450,6 @@ const fn endpoint_execution(execution: OperationApiEndpointExecution) -> Endpoin
         OperationApiEndpointExecution::AcceptsOperation => EndpointExecution::AcceptsOperation,
         OperationApiEndpointExecution::MutatesOperation => EndpointExecution::MutatesOperation,
         OperationApiEndpointExecution::Query => EndpointExecution::Query,
-    }
-}
-
-fn deploy_status(operation: &str, state: DeployOperationState) -> OperationStatus {
-    OperationStatus::Deploy {
-        id: operation_id(operation),
-        namespace_id: NamespaceId::try_new("default").expect("valid namespace"),
-        service_id: service_id("svc_api"),
-        origin: None,
-        state,
-        last_event_sequence: event_sequence(2),
     }
 }
 

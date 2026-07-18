@@ -1,12 +1,10 @@
 use std::process::{Command, Output};
 
 use ployz::dispatcher::{PLOYZ_NATS_CA_FILE_ENV, PLOYZ_NATS_NKEY_SEED_FILE_ENV};
-use ployz_core::build::{BuildAdapter, BuildCacheScope, BuildPlatforms, GitSource};
-use ployz_core::image::OciPlatform;
+use ployz_core::build::BuildAdapter;
 use ployz_core::operation::{
-    BuildCleanupEvidence, BuildOperationState, CancellationReason, OperationEvent,
-    OperationEventReplayPage, OperationOutcome, OperationStatus, OperationStatusSnapshot,
-    ReplayedOperationEvent,
+    BuildCleanupEvidence, CancellationReason, OperationEvent, OperationEventReplayPage,
+    OperationOutcome, ReplayedOperationEvent,
 };
 use ployz_nats::service_runtime::{NatsServiceResponse, start_nats_service};
 use ployz_nats::services::{
@@ -15,11 +13,8 @@ use ployz_nats::services::{
 use ployz_nats::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
 use ployz_sdk_types::{
     AcceptedOperation, BuildCancelError, BuildCancelRequest, BuildCancelResponse,
-    BuildSubmitRequest, BuildSubmitResponse, OperationApiResponse, OpsStatusRequest,
-    OpsStatusResponse, OpsWatchResponse,
-    operation_api::{
-        BuildCancelApi, BuildSubmitApi, OperationApiContract, OpsStatusApi, OpsWatchApi,
-    },
+    BuildSubmitRequest, BuildSubmitResponse, OperationApiResponse, OpsWatchResponse,
+    operation_api::{BuildCancelApi, BuildSubmitApi, OperationApiContract, OpsWatchApi},
 };
 use ployz_test_support::ids::{event_sequence, operation_event_recorded_at, operation_id};
 use ployz_test_support::nats::{SecuredTestNats, TestNats};
@@ -139,11 +134,9 @@ async fn binary_build_cancel_follows_the_accepted_operation_to_terminal() {
     let spec = test_api_service(&[
         OperationApiEndpoint::from(BuildCancelApi::ENDPOINT),
         OperationApiEndpoint::from(OpsWatchApi::ENDPOINT),
-        OperationApiEndpoint::from(OpsStatusApi::ENDPOINT),
     ]);
     let cancel_endpoint = endpoint(&spec, OperationApiEndpoint::from(BuildCancelApi::ENDPOINT));
     let watch_endpoint = endpoint(&spec, OperationApiEndpoint::from(OpsWatchApi::ENDPOINT));
-    let status_endpoint = endpoint(&spec, OperationApiEndpoint::from(OpsStatusApi::ENDPOINT));
     let mut runtime = start_nats_service(server.controller.clone(), &spec)
         .await
         .expect("service starts");
@@ -175,17 +168,6 @@ async fn binary_build_cancel_follows_the_accepted_operation_to_terminal() {
         })
         .await
         .expect("watch endpoint binds");
-    runtime
-        .bind_endpoint(&status_endpoint, |request| async move {
-            let request: OpsStatusRequest =
-                serde_json::from_slice(&request.payload).expect("status request decodes");
-            let response: OpsStatusResponse = OperationApiResponse::Ok {
-                value: OperationStatusSnapshot::new(build_cancelled_status(request.operation_id)),
-            };
-            NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
-        })
-        .await
-        .expect("status endpoint binds");
     server.controller.flush().await.expect("service flushes");
 
     let output = build_command(&server.server, &env)
@@ -323,33 +305,6 @@ fn accepted_operation(id: &str) -> AcceptedOperation {
         operation_id: operation_id(id),
         watch_subject: format!("plz.v1.progress.build.operation.{id}.>"),
         start_sequence: event_sequence(1),
-    }
-}
-
-fn build_cancelled_status(id: ployz_core::ids::OperationId) -> OperationStatus {
-    let source = GitSource::try_new(
-        "https://git.example/repo.git",
-        SHA,
-        "builder",
-        SECRET,
-        None::<String>,
-    )
-    .expect("source");
-    OperationStatus::Build {
-        id,
-        source: source.evidence(),
-        adapter: BuildAdapter::Railpack {
-            cache_scope: BuildCacheScope::try_new("test").expect("cache scope"),
-        },
-        platforms: BuildPlatforms::try_new([
-            OciPlatform::try_new("linux", "amd64").expect("platform")
-        ])
-        .expect("platforms"),
-        state: BuildOperationState::Cancelled {
-            reason: cancellation_reason(),
-            cleanup: completed_cleanup(),
-        },
-        last_event_sequence: event_sequence(1),
     }
 }
 
