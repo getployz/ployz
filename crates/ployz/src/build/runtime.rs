@@ -73,7 +73,13 @@ pub(crate) async fn cancel(
         })
         .await
         .map_err(api_error)?;
-    crate::operation::runtime::watch_accepted(&api, accepted.operation_id, config).await
+    crate::operation::runtime::watch_accepted_with_timeout(
+        &api,
+        accepted.operation_id,
+        attached_build_watch_timeout(config),
+        config,
+    )
+    .await
 }
 
 fn attached_build_watch_timeout(config: &PloyzctlRuntimeConfig) -> Duration {
@@ -90,7 +96,7 @@ mod tests {
     use crate::execution_support::DEFAULT_OPS_WATCH_TIMEOUT;
 
     #[test]
-    fn attached_build_uses_build_budget_without_changing_generic_watch_default() {
+    fn attached_build_submit_and_cancel_use_build_budget_without_changing_generic_watch_default() {
         let config = PloyzctlRuntimeConfig::default();
 
         assert_eq!(
@@ -103,7 +109,7 @@ mod tests {
     }
 
     #[test]
-    fn attached_build_honors_explicit_watch_timeout() {
+    fn attached_build_submit_and_cancel_honor_explicit_watch_timeout() {
         let explicit = Duration::from_secs(47);
         let config = PloyzctlRuntimeConfig {
             ops_watch_timeout: Some(explicit),
