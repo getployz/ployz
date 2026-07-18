@@ -208,38 +208,46 @@ pub(super) async fn pull_exact_image(
     require_success("inspect pinned build image", &inspected)?;
     let inspected: InspectedImage = serde_json::from_slice(&inspected.stdout)
         .map_err(|error| infrastructure("decode pinned image digests", error.to_string()))?;
-    if inspected.os != expected_platform.os()
-        || inspected.architecture != expected_platform.architecture()
-    {
-        return Err(platform_failure(BuildPlatformFailure::PlatformMismatch {
-            expected: expected_platform.clone(),
-            actual: OciPlatform::try_new(inspected.os, inspected.architecture).map_err(
-                |error| infrastructure("decode pinned image platform", error.to_string()),
-            )?,
-        }));
+    verify_inspected_image(inspected, expected, expected_platform, kind)
+}
+
+fn verify_inspected_image(
+    inspected: InspectedImage,
+    expected: &OciDigest,
+    expected_platform: &OciPlatform,
+    kind: PinnedImageKind,
+) -> Result<(), BuildExecutionError> {
+    if inspected.os.is_empty() && inspected.architecture.is_empty() {
+        if matches!(kind, PinnedImageKind::Buildkit) {
+            return Err(infrastructure(
+                "decode pinned image platform",
+                "Docker reported no platform for the runnable BuildKit image",
+            ));
+        }
+    } else {
+        let actual = OciPlatform::try_new(inspected.os, inspected.architecture)
+            .map_err(|error| infrastructure("decode pinned image platform", error.to_string()))?;
+        if &actual != expected_platform {
+            return Err(platform_failure(BuildPlatformFailure::PlatformMismatch {
+                expected: expected_platform.clone(),
+                actual,
+            }));
+        }
     }
-    if inspected
-        .repo_digests
-        .iter()
-        .any(|digest| digest.ends_with(expected.as_str()))
-    {
+    let mut reported_digests = inspected.repo_digests.into_iter().filter_map(|reference| {
+        reference
+            .rsplit_once('@')
+            .and_then(|(_, digest)| OciDigest::try_new(digest).ok())
+    });
+    let Some(actual) = reported_digests.next() else {
+        return Err(infrastructure(
+            "inspect pinned build image",
+            "Docker reported no repository digest",
+        ));
+    };
+    if &actual == expected || reported_digests.any(|digest| &digest == expected) {
         return Ok(());
     }
-    let actual = inspected
-        .repo_digests
-        .into_iter()
-        .find_map(|reference| {
-            reference
-                .rsplit_once('@')
-                .map(|(_, digest)| digest.to_owned())
-        })
-        .and_then(|digest| OciDigest::try_new(digest).ok())
-        .ok_or_else(|| {
-            infrastructure(
-                "inspect pinned build image",
-                "Docker reported no repository digest",
-            )
-        })?;
     Err(platform_failure(match kind {
         PinnedImageKind::Buildkit => BuildPlatformFailure::BuildkitDigestMismatch {
             expected: expected.clone(),
@@ -537,6 +545,61 @@ mod tests {
             builder_name(&operation, &platform),
             "ployz-build-build-01-linux-arm64"
         );
+    }
+
+    #[test]
+    fn exact_frontend_digest_accepts_non_runnable_frontend_without_platform_metadata() {
+        let digest = OciDigest::try_new(
+            "sha256:17b4f33fca2b79aba474a400650bb338a32130b5ca40d8bc755cde93f594a95c",
+        )
+        .expect("digest");
+        let platform = OciPlatform::try_new("linux", "arm64").expect("platform");
+        let inspected = InspectedImage {
+            os: String::new(),
+            architecture: String::new(),
+            repo_digests: vec![format!("frontend@{digest}")],
+        };
+
+        verify_inspected_image(inspected, &digest, &platform, PinnedImageKind::Frontend)
+            .expect("digest-selected frontend");
+    }
+
+    #[test]
+    fn runnable_buildkit_image_still_requires_platform_metadata() {
+        let digest = OciDigest::try_new(
+            "sha256:4eee950fb9d134cbf4e228ea3906eb4c7403323334af013c443302f7b74f2737",
+        )
+        .expect("digest");
+        let platform = OciPlatform::try_new("linux", "arm64").expect("platform");
+        let inspected = InspectedImage {
+            os: String::new(),
+            architecture: String::new(),
+            repo_digests: vec![format!("buildkit@{digest}")],
+        };
+
+        let error =
+            verify_inspected_image(inspected, &digest, &platform, PinnedImageKind::Buildkit)
+                .expect_err("runnable image needs a platform");
+        assert!(error.to_string().contains("reported no platform"));
+    }
+
+    #[test]
+    fn malformed_digest_suffix_does_not_satisfy_the_exact_frontend_pin() {
+        let expected = OciDigest::try_new(
+            "sha256:17b4f33fca2b79aba474a400650bb338a32130b5ca40d8bc755cde93f594a95c",
+        )
+        .expect("digest");
+        let platform = OciPlatform::try_new("linux", "arm64").expect("platform");
+        let inspected = InspectedImage {
+            os: String::new(),
+            architecture: String::new(),
+            repo_digests: vec![format!("frontend@not-{expected}")],
+        };
+
+        let error =
+            verify_inspected_image(inspected, &expected, &platform, PinnedImageKind::Frontend)
+                .expect_err("malformed digest is not exact");
+        assert!(error.to_string().contains("no repository digest"));
     }
 
     #[tokio::test]
