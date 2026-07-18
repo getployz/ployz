@@ -127,6 +127,31 @@ test("runtime watch preserves a newer stream snapshot received during seeding", 
   await iterator.return?.();
 });
 
+test("runtime reconnect seed cannot replace a stream snapshot consumed during seeding", async () => {
+  const reconnectSeed = deferred<RuntimeSnapshot>();
+  const nats = new WatchNatsConnection([snapshot(1), reconnectSeed.promise]);
+  const iterator = new PloyzClient(new PloyzNatsTransport(nats))
+    .watchRuntime()
+    [Symbol.asyncIterator]();
+  assert.deepEqual(await iterator.next(), { done: false, value: snapshot(1) });
+
+  nats.subscription.push(message(snapshot(2)));
+  await tick();
+  nats.statuses.push({ type: "reconnect" });
+  await tick();
+  assert.equal(nats.requests, 2);
+  const duringSeed = iterator.next();
+  nats.subscription.push(message(snapshot(4)));
+  assert.deepEqual(await duringSeed, { done: false, value: snapshot(4) });
+
+  const afterSeed = iterator.next();
+  reconnectSeed.resolve(snapshot(3));
+  await tick();
+  nats.subscription.push(message(snapshot(5)));
+  assert.deepEqual(await afterSeed, { done: false, value: snapshot(5) });
+  await iterator.return?.();
+});
+
 test("returning from runtime watch interrupts reconnect retry", async () => {
   const nats = new WatchNatsConnection([snapshot(1), new Error("temporarily disconnected")]);
   const iterator = new PloyzClient(new PloyzNatsTransport(nats))

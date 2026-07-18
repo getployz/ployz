@@ -145,6 +145,7 @@ export class PloyzNatsTransport {
       const subscription = connection.subscribe(RUNTIME_SNAPSHOT_STREAM);
       const statusIterator = connection.status()[Symbol.asyncIterator]();
       let latest: RuntimeSnapshot | undefined;
+      let streamPublicationGeneration = 0;
       const terminal: { value?: { error?: unknown } } = {};
       let wake: (() => void) | undefined;
       let retryWake: (() => void) | undefined;
@@ -223,11 +224,13 @@ export class PloyzNatsTransport {
         };
       };
       const seedUntilSnapshot = async (): Promise<RuntimeSnapshot | undefined> => {
+        latest = undefined;
+        const generation = streamPublicationGeneration;
         let delayMs = RUNTIME_SNAPSHOT_RETRY_INITIAL_MS;
         while (!cancellation.cancelled && !terminal.value) {
           try {
             const snapshot = await requestSeed();
-            if (latest !== undefined) return undefined;
+            if (streamPublicationGeneration !== generation) return undefined;
             return snapshot;
           } catch (error) {
             if (error === seedInterrupted) return undefined;
@@ -244,11 +247,11 @@ export class PloyzNatsTransport {
               throw error;
             }
           }
-          if (latest !== undefined) return undefined;
+          if (streamPublicationGeneration !== generation) return undefined;
           const retry = waitForRetry(delayMs);
           await retry.promise;
           retry.cancel();
-          if (latest !== undefined) return undefined;
+          if (streamPublicationGeneration !== generation) return undefined;
           delayMs = Math.min(delayMs * 2, RUNTIME_SNAPSHOT_RETRY_MAX_MS);
         }
         return undefined;
@@ -258,7 +261,9 @@ export class PloyzNatsTransport {
         try {
           for await (const message of subscription) {
             try {
-              publish(JSON.parse(textDecoder.decode(message.data)) as RuntimeSnapshot);
+              const snapshot = JSON.parse(textDecoder.decode(message.data)) as RuntimeSnapshot;
+              streamPublicationGeneration += 1;
+              publish(snapshot);
             } catch (error) {
               finish(PloyzNatsTransportError.decodeFailed("runtime.snapshot", error));
             }
