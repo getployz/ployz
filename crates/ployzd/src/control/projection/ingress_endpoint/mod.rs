@@ -7,6 +7,7 @@ use futures_util::{FutureExt, StreamExt, stream::FuturesUnordered};
 use ployz_core::ids::MachineId;
 use ployz_core::ingress::{
     IngressEndpointProjection, IngressEndpointProjectionIdentity, IngressEndpointProjectionState,
+    IngressEndpointSet,
 };
 use ployz_core::intent::IntentSnapshot;
 use ployz_core::intent::recovery::ControlPlaneEpoch;
@@ -359,8 +360,14 @@ enum GatherReply {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CandidateOutcome {
     machine_id: MachineId,
-    gateway_replied: bool,
-    public_addresses: Vec<std::net::IpAddr>,
+    state: CandidateEndpointState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CandidateEndpointState {
+    Indecisive,
+    Unavailable,
+    Publishable { endpoints: IngressEndpointSet },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -439,36 +446,38 @@ fn candidate_outcome(
     gateway: Result<ployz_core::machine::GatewayStatusObservation, GatewayStatusReadError>,
     facts: Result<ployz_core::machine::runtime::MachineFactsSnapshot, MachineFactsReadError>,
 ) -> CandidateOutcome {
-    let (gateway_replied, gateway_may_publish) = match gateway {
-        Ok(status) => (
-            true,
-            matches!(
-                status.serving,
-                GatewayServingStatus::Current | GatewayServingStatus::LastKnownGood
-            ),
-        ),
-        Err(_) => (false, false),
+    let state = match gateway {
+        Err(_) => CandidateEndpointState::Indecisive,
+        Ok(status) => match status.serving {
+            GatewayServingStatus::Unavailable => CandidateEndpointState::Unavailable,
+            GatewayServingStatus::Current | GatewayServingStatus::LastKnownGood => {
+                let public_addresses = facts
+                    .ok()
+                    .and_then(|facts| facts.endpoints().cloned())
+                    .map(|endpoints| {
+                        endpoints
+                            .control_endpoints
+                            .into_iter()
+                            .filter(|address| is_public(*address))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let ipv4 = public_addresses.iter().filter_map(|address| match address {
+                    std::net::IpAddr::V4(address) => Some(*address),
+                    std::net::IpAddr::V6(_) => None,
+                });
+                let ipv6 = public_addresses.iter().filter_map(|address| match address {
+                    std::net::IpAddr::V4(_) => None,
+                    std::net::IpAddr::V6(address) => Some(*address),
+                });
+                match IngressEndpointSet::try_new(ipv4, ipv6) {
+                    Ok(endpoints) => CandidateEndpointState::Publishable { endpoints },
+                    Err(_) => CandidateEndpointState::Indecisive,
+                }
+            }
+        },
     };
-    let public_addresses = if gateway_may_publish {
-        facts
-            .ok()
-            .and_then(|facts| facts.endpoints().cloned())
-            .map(|endpoints| {
-                endpoints
-                    .control_endpoints
-                    .into_iter()
-                    .filter(|address| is_public(*address))
-                    .collect()
-            })
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-    CandidateOutcome {
-        machine_id,
-        gateway_replied,
-        public_addresses,
-    }
+    CandidateOutcome { machine_id, state }
 }
 
 async fn publish_changed(
@@ -484,6 +493,135 @@ async fn publish_changed(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ployz_core::image::OciPlatform;
+    use ployz_core::machine::GatewayProcessHealth;
+    use ployz_core::machine::runtime::{
+        MachineContainerObservationSnapshot, MachineDiskSpace, MachineFactsSnapshot,
+    };
+    use ployz_core::machine::testimony::MachineEndpointObservation;
+
+    fn machine_id() -> MachineId {
+        MachineId::try_new("machine_a").expect("machine id")
+    }
+
+    fn gateway(serving: GatewayServingStatus) -> ployz_core::machine::GatewayStatusObservation {
+        ployz_core::machine::GatewayStatusObservation {
+            machine_id: machine_id(),
+            listen_addr: "127.0.0.1:443".parse().expect("listen address"),
+            serving,
+            route_count: 0,
+            process_health: GatewayProcessHealth::default(),
+        }
+    }
+
+    fn facts(control_endpoints: Option<Vec<std::net::IpAddr>>) -> MachineFactsSnapshot {
+        let machine_id = machine_id();
+        let endpoints = control_endpoints.map(|control_endpoints| MachineEndpointObservation {
+            machine_id: machine_id.clone(),
+            control_endpoints,
+            mesh_endpoints: vec!["127.0.0.1:7777".parse().expect("mesh endpoint")],
+        });
+        MachineFactsSnapshot::try_new(
+            machine_id.clone(),
+            MachineContainerObservationSnapshot::try_new(machine_id, std::iter::empty())
+                .expect("container snapshot"),
+            endpoints,
+            MachineDiskSpace {
+                available_bytes: 1,
+                total_bytes: 1,
+            },
+            None,
+            OciPlatform::current(),
+            1,
+        )
+        .expect("machine facts")
+    }
+
+    fn facts_unavailable() -> MachineFactsReadError {
+        MachineFactsReadError::Unavailable {
+            machine_id: machine_id(),
+            reason: MachineRuntimeUnavailableReason::RequestTimedOut,
+        }
+    }
+
+    #[test]
+    fn gateway_read_error_is_indecisive() {
+        let outcome = candidate_outcome(
+            machine_id(),
+            Err(GatewayStatusReadError {
+                machine_id: machine_id(),
+                reason: MachineRuntimeUnavailableReason::RequestTimedOut,
+            }),
+            Ok(facts(Some(vec!["8.8.8.8".parse().expect("address")]))),
+        );
+
+        assert_eq!(outcome.state, CandidateEndpointState::Indecisive);
+    }
+
+    #[test]
+    fn explicit_gateway_unavailability_is_decisive() {
+        let outcome = candidate_outcome(
+            machine_id(),
+            Ok(gateway(GatewayServingStatus::Unavailable)),
+            Err(facts_unavailable()),
+        );
+
+        assert_eq!(outcome.state, CandidateEndpointState::Unavailable);
+    }
+
+    #[test]
+    fn serving_gateway_without_facts_is_indecisive() {
+        let outcome = candidate_outcome(
+            machine_id(),
+            Ok(gateway(GatewayServingStatus::Current)),
+            Err(facts_unavailable()),
+        );
+
+        assert_eq!(outcome.state, CandidateEndpointState::Indecisive);
+    }
+
+    #[test]
+    fn serving_gateway_without_public_control_endpoints_is_indecisive() {
+        for facts in [
+            facts(None),
+            facts(Some(Vec::new())),
+            facts(Some(vec!["10.0.0.1".parse().expect("address")])),
+        ] {
+            let outcome = candidate_outcome(
+                machine_id(),
+                Ok(gateway(GatewayServingStatus::Current)),
+                Ok(facts),
+            );
+
+            assert_eq!(outcome.state, CandidateEndpointState::Indecisive);
+        }
+    }
+
+    #[test]
+    fn serving_gateway_with_public_control_endpoint_is_publishable() {
+        for serving in [
+            GatewayServingStatus::Current,
+            GatewayServingStatus::LastKnownGood,
+        ] {
+            let public_address = "8.8.8.8".parse().expect("address");
+            let outcome = candidate_outcome(
+                machine_id(),
+                Ok(gateway(serving)),
+                Ok(facts(Some(vec![public_address]))),
+            );
+
+            assert_eq!(
+                outcome.state,
+                CandidateEndpointState::Publishable {
+                    endpoints: IngressEndpointSet::try_new(
+                        ["8.8.8.8".parse().expect("IPv4 address")],
+                        [],
+                    )
+                    .expect("endpoint set"),
+                }
+            );
+        }
+    }
 
     #[test]
     fn projection_health_records_failure_and_recovery() {
