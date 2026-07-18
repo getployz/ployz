@@ -11,6 +11,7 @@ use super::deploy::{self, DeployOperationState};
 use super::events::{ClassifiedOperationEvent, OperationSubjectRef};
 use super::ingress_configure::{self, IngressConfigureOperationState};
 use super::machine_add::{self, MachineAddFields, MachineAddOperationState};
+use super::machine_build_cache_prune::{self, MachineBuildCachePruneOperationState};
 use super::machine_lifecycle::{self, MachineLifecycleOperationState};
 use super::machine_storage_prepare::{self, MachineStoragePrepareOperationState};
 use super::machine_update::{self, MachineUpdateOperationState};
@@ -104,6 +105,7 @@ pub enum ProjectionOperationState {
     Deploy(DeployOperationState),
     Cert(CertOperationState),
     MachineAdd(MachineAddOperationState),
+    MachineBuildCachePrune(MachineBuildCachePruneOperationState),
     MachineUpdate(MachineUpdateOperationState),
     MachineStoragePrepare(MachineStoragePrepareOperationState),
     MachineLifecycle(MachineLifecycleOperationState),
@@ -126,6 +128,7 @@ impl ProjectionOperationState {
             Self::Deploy(_) => OperationKind::Deploy,
             Self::Cert(_) => OperationKind::Cert,
             Self::MachineAdd(_) => OperationKind::MachineAdd,
+            Self::MachineBuildCachePrune(_) => OperationKind::MachineBuildCachePrune,
             Self::MachineUpdate(_) => OperationKind::MachineUpdate,
             Self::MachineStoragePrepare(_) => OperationKind::MachineStoragePrepare,
             Self::MachineLifecycle(_) => OperationKind::MachineLifecycle,
@@ -148,6 +151,7 @@ pub(crate) const fn operation_kind_name(kind: OperationKind) -> &'static str {
         OperationKind::Deploy => "deploy",
         OperationKind::Cert => "cert",
         OperationKind::MachineAdd => "machine-add",
+        OperationKind::MachineBuildCachePrune => "machine-build-cache-prune",
         OperationKind::MachineUpdate => "machine-update",
         OperationKind::MachineStoragePrepare => "machine-storage-prepare",
         OperationKind::MachineLifecycle => "machine-lifecycle",
@@ -169,6 +173,9 @@ fn subject_ref_text(subject: &OperationSubjectRef) -> String {
         OperationSubjectRef::Cert(cert_id) => format!("cert {}", cert_id.as_str()),
         OperationSubjectRef::MachineAdd(machine_id) => {
             format!("machine-add {}", machine_id.as_str())
+        }
+        OperationSubjectRef::MachineBuildCachePrune(machine_id) => {
+            format!("machine-build-cache-prune {}", machine_id.as_str())
         }
         OperationSubjectRef::MachineUpdate(machine_id) => {
             format!("machine-update {}", machine_id.as_str())
@@ -396,6 +403,21 @@ pub fn project_operation_event(
                 event_sequence,
             )
         }
+        ClassifiedOperationEvent::MachineBuildCachePrune { event, .. } => {
+            let OperationStatus::MachineBuildCachePrune {
+                id,
+                machine_id,
+                state,
+                ..
+            } = current
+            else {
+                return Err(kind_mismatch(
+                    current,
+                    OperationKind::MachineBuildCachePrune,
+                ));
+            };
+            machine_build_cache_prune::project_event(id, machine_id, state, event, event_sequence)
+        }
         ClassifiedOperationEvent::MachineLifecycle { event, .. } => {
             let OperationStatus::MachineLifecycle {
                 id,
@@ -594,6 +616,14 @@ fn project_operation_interruption(
             ..
         } => {
             *state = MachineStoragePrepareOperationState::interrupted(evidence);
+            *last_event_sequence = event_sequence;
+        }
+        OperationStatus::MachineBuildCachePrune {
+            state,
+            last_event_sequence,
+            ..
+        } => {
+            *state = MachineBuildCachePruneOperationState::interrupted(evidence);
             *last_event_sequence = event_sequence;
         }
         OperationStatus::MachineLifecycle {

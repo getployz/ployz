@@ -162,6 +162,22 @@
       }
     }
   },
+  "deploy_preview_volume_admission_failed_response": {
+    "error": {
+      "error": "volume_admission_failed",
+      "failure": {
+        "free_bytes": 5000,
+        "kind": "capacity_exceeded",
+        "provisioned_used_bytes": 4000,
+        "requested_total_bytes": 10000,
+        "required_headroom_bytes": 10000,
+        "total_bytes": 24000
+      },
+      "machine_id": "machine_2",
+      "service_id": "svc_api"
+    },
+    "status": "domain_error"
+  },
   "deploy_reserve_request": {
     "namespace_id": "default"
   },

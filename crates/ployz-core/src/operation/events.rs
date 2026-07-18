@@ -30,6 +30,9 @@ use super::credential_grant::{
 use super::deploy::{DeployEvent, DeployEvidence, DeployTransition};
 use super::ingress_configure::{IngressConfigureEvent, IngressConfigureTransition};
 use super::machine_add::MachineAddEvent;
+use super::machine_build_cache_prune::{
+    MachineBuildCachePruneEvent, MachineBuildCachePruneTransition,
+};
 use super::machine_lifecycle::{MachineLifecycleEvent, MachineLifecycleTransition};
 use super::machine_storage_prepare::{MachineStoragePrepareEvent, MachineStoragePrepareTransition};
 use super::machine_update::{MachineUpdateEvent, MachineUpdateTransition};
@@ -41,13 +44,14 @@ use super::text::CancellationReason;
 use super::volume_create::{VolumeCreateEvent, VolumeCreateTransition};
 use super::volume_remove::{VolumeRemoveEvent, VolumeRemoveTransition};
 use super::{
-    CertOperationFailure, CertRunningStage, DeployCleanupFailure, DeployCompletionOutcome,
-    DeployOperationFailure, DeployPhaseOutcome, DeployRunningStage, DeployServiceResult,
-    MachineAddOperationState, MachineLifecycleFailure, MachineStoragePrepareFailure,
-    MachineSubstrateVersions, MachineUpdateFailure, NamespaceRemoveFailure,
-    NamespaceRemoveRunningStage, NetworkRepairFailure, NetworkRepairRunningStage, OperationKind,
-    RouteTarget, ServiceRestartFailure, ServiceRestartRunningStage, VolumeCreateFailure,
-    VolumeCreateRequest, VolumeCreateRunningStage, VolumeRemoveFailure, VolumeRemoveRunningStage,
+    BuildCachePruneEvidence, CertOperationFailure, CertRunningStage, DeployCleanupFailure,
+    DeployCompletionOutcome, DeployOperationFailure, DeployPhaseOutcome, DeployRunningStage,
+    DeployServiceResult, MachineAddOperationState, MachineBuildCachePruneFailure,
+    MachineLifecycleFailure, MachineStoragePrepareFailure, MachineSubstrateVersions,
+    MachineUpdateFailure, NamespaceRemoveFailure, NamespaceRemoveRunningStage,
+    NetworkRepairFailure, NetworkRepairRunningStage, OperationKind, RouteTarget,
+    ServiceRestartFailure, ServiceRestartRunningStage, VolumeCreateFailure, VolumeCreateRequest,
+    VolumeCreateRunningStage, VolumeRemoveFailure, VolumeRemoveRunningStage,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,6 +66,9 @@ pub enum OperationSubject {
         cert_id: CertId,
     },
     MachineAdd {
+        machine_id: MachineId,
+    },
+    MachineBuildCachePrune {
         machine_id: MachineId,
     },
     MachineUpdate {
@@ -340,6 +347,24 @@ pub enum OperationEvent {
         machine_id: MachineId,
         failure: MachineStoragePrepareFailure,
     },
+    MachineBuildCachePruneSubmitted {
+        operation_id: OperationId,
+        machine_id: MachineId,
+    },
+    MachineBuildCachePrunePruning {
+        operation_id: OperationId,
+        machine_id: MachineId,
+    },
+    MachineBuildCachePruneCompleted {
+        operation_id: OperationId,
+        machine_id: MachineId,
+        evidence: BuildCachePruneEvidence,
+    },
+    MachineBuildCachePruneFailed {
+        operation_id: OperationId,
+        machine_id: MachineId,
+        failure: MachineBuildCachePruneFailure,
+    },
     MachineLifecycleSubmitted {
         operation_id: OperationId,
         machine_id: MachineId,
@@ -572,6 +597,10 @@ impl OperationEvent {
             | Self::MachineStoragePreparePreparing { operation_id, .. }
             | Self::MachineStoragePrepareCompleted { operation_id, .. }
             | Self::MachineStoragePrepareFailed { operation_id, .. }
+            | Self::MachineBuildCachePruneSubmitted { operation_id, .. }
+            | Self::MachineBuildCachePrunePruning { operation_id, .. }
+            | Self::MachineBuildCachePruneCompleted { operation_id, .. }
+            | Self::MachineBuildCachePruneFailed { operation_id, .. }
             | Self::MachineLifecycleSubmitted { operation_id, .. }
             | Self::MachineLifecycleCompleted { operation_id, .. }
             | Self::MachineLifecycleFailed { operation_id, .. }
@@ -682,6 +711,10 @@ impl OperationEvent {
             | Self::MachineStoragePreparePreparing { .. }
             | Self::MachineStoragePrepareCompleted { .. }
             | Self::MachineStoragePrepareFailed { .. }
+            | Self::MachineBuildCachePruneSubmitted { .. }
+            | Self::MachineBuildCachePrunePruning { .. }
+            | Self::MachineBuildCachePruneCompleted { .. }
+            | Self::MachineBuildCachePruneFailed { .. }
             | Self::MachineLifecycleSubmitted { .. }
             | Self::MachineLifecycleCompleted { .. }
             | Self::MachineLifecycleFailed { .. }
@@ -834,6 +867,10 @@ impl OperationEvent {
             | Self::MachineStoragePreparePreparing { .. }
             | Self::MachineStoragePrepareCompleted { .. }
             | Self::MachineStoragePrepareFailed { .. }
+            | Self::MachineBuildCachePruneSubmitted { .. }
+            | Self::MachineBuildCachePrunePruning { .. }
+            | Self::MachineBuildCachePruneCompleted { .. }
+            | Self::MachineBuildCachePruneFailed { .. }
             | Self::MachineLifecycleSubmitted { .. }
             | Self::MachineLifecycleCompleted { .. }
             | Self::MachineLifecycleFailed { .. }
@@ -892,6 +929,7 @@ pub enum OperationSubjectRef {
     MachineAdd(MachineId),
     MachineUpdate(MachineId),
     MachineStoragePrepare(MachineId),
+    MachineBuildCachePrune(MachineId),
     MachineLifecycle(MachineId),
     CoreReplace(MachineId),
     CredentialGrant,
@@ -923,6 +961,10 @@ pub(super) enum ClassifiedOperationEvent {
     MachineStoragePrepare {
         operation_id: OperationId,
         event: MachineStoragePrepareEvent,
+    },
+    MachineBuildCachePrune {
+        operation_id: OperationId,
+        event: MachineBuildCachePruneEvent,
     },
     MachineLifecycle {
         operation_id: OperationId,
@@ -979,6 +1021,7 @@ impl ClassifiedOperationEvent {
             | Self::MachineAdd { operation_id, .. }
             | Self::MachineUpdate { operation_id, .. }
             | Self::MachineStoragePrepare { operation_id, .. }
+            | Self::MachineBuildCachePrune { operation_id, .. }
             | Self::MachineLifecycle { operation_id, .. }
             | Self::CoreReplace { operation_id, .. }
             | Self::CredentialGrant { operation_id, .. }
@@ -1456,6 +1499,45 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                     transition: MachineStoragePrepareTransition::Failed { failure },
                 },
             },
+            OperationEvent::MachineBuildCachePruneSubmitted {
+                operation_id,
+                machine_id,
+            } => Self::MachineBuildCachePrune {
+                operation_id,
+                event: MachineBuildCachePruneEvent::Submitted { machine_id },
+            },
+            OperationEvent::MachineBuildCachePrunePruning {
+                operation_id,
+                machine_id,
+            } => Self::MachineBuildCachePrune {
+                operation_id,
+                event: MachineBuildCachePruneEvent::Transition {
+                    machine_id,
+                    transition: MachineBuildCachePruneTransition::Pruning,
+                },
+            },
+            OperationEvent::MachineBuildCachePruneCompleted {
+                operation_id,
+                machine_id,
+                evidence,
+            } => Self::MachineBuildCachePrune {
+                operation_id,
+                event: MachineBuildCachePruneEvent::Transition {
+                    machine_id,
+                    transition: MachineBuildCachePruneTransition::Completed { evidence },
+                },
+            },
+            OperationEvent::MachineBuildCachePruneFailed {
+                operation_id,
+                machine_id,
+                failure,
+            } => Self::MachineBuildCachePrune {
+                operation_id,
+                event: MachineBuildCachePruneEvent::Transition {
+                    machine_id,
+                    transition: MachineBuildCachePruneTransition::Failed { failure },
+                },
+            },
             OperationEvent::MachineLifecycleSubmitted {
                 operation_id,
                 machine_id,
@@ -1818,6 +1900,10 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 OperationKind::MachineStoragePrepare => Self::MachineStoragePrepare {
                     operation_id,
                     event: MachineStoragePrepareEvent::Cancelled(reason),
+                },
+                OperationKind::MachineBuildCachePrune => Self::MachineBuildCachePrune {
+                    operation_id,
+                    event: MachineBuildCachePruneEvent::Cancelled(reason),
                 },
                 OperationKind::MachineLifecycle => Self::MachineLifecycle {
                     operation_id,

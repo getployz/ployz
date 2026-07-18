@@ -1,6 +1,8 @@
 //! NATS Service API wiring for machine-local commands.
 
-use super::build::{MachineBuildRuntime, handle_build_cancel, handle_build_start};
+use super::build::{
+    MachineBuildRuntime, handle_build_cache_prune, handle_build_cancel, handle_build_start,
+};
 use super::containers::{
     MachineContainerState, handle_container_inspect, handle_container_remove,
     handle_container_resolve_image, handle_container_restart, handle_container_run,
@@ -300,6 +302,14 @@ where
     bind_machine_endpoint(
         &mut runtime,
         &machine_id,
+        MachineServiceEndpoint::BuildCachePrune,
+        build_state.clone(),
+        handle_build_cache_prune,
+    )
+    .await?;
+    bind_machine_endpoint(
+        &mut runtime,
+        &machine_id,
         MachineServiceEndpoint::BuildCancel,
         build_state,
         handle_build_cancel,
@@ -555,7 +565,7 @@ fn machine_endpoint_policy(endpoint: MachineServiceEndpoint) -> EndpointExecutio
         MachineServiceEndpoint::StoragePrepare => {
             policy.request_timeout = ployz_core::storage::MACHINE_STORAGE_PREPARE_RPC_TIMEOUT;
         }
-        MachineServiceEndpoint::BuildStart => {
+        MachineServiceEndpoint::BuildStart | MachineServiceEndpoint::BuildCachePrune => {
             policy.request_timeout = BUILD_START_ENDPOINT_TIMEOUT;
         }
         MachineServiceEndpoint::VolumeEnsure => {
@@ -665,8 +675,10 @@ mod tests {
     #[test]
     fn build_start_endpoint_covers_the_max_operation_and_cleanup_budget() {
         let policy = machine_endpoint_policy(MachineServiceEndpoint::BuildStart);
+        let prune_policy = machine_endpoint_policy(MachineServiceEndpoint::BuildCachePrune);
 
         assert_eq!(policy.request_timeout, BUILD_START_ENDPOINT_TIMEOUT);
+        assert_eq!(prune_policy.request_timeout, BUILD_START_ENDPOINT_TIMEOUT);
         assert!(policy.request_timeout > ployz_core::build::BUILD_MAX_MACHINE_RESPONSE_LIFETIME);
     }
 

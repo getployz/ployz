@@ -840,14 +840,17 @@ fn plain_declaration_rejects_a_provisioned_pin() {
 
     assert!(matches!(
         plan_single_service(&input),
-        Err(DeployPlanError::VolumeAdmission {
-            failure: VolumeAdmissionFailure::KindConversion {
+        Err(DeployPlanError::VolumeAdmissionOnMachine {
+            machine_id: selected_machine_id,
+            failure,
+            ..
+        })
+        if selected_machine_id == machine_id("machine_a")
+            && matches!(failure.as_ref(), VolumeAdmissionFailure::KindConversion {
                 declaration: VolumeSpec::Plain,
                 pin_kind: ployz_core::intent::VolumeKind::Provisioned { .. },
                 ..
-            },
-            ..
-        })
+            })
     ));
 }
 
@@ -867,14 +870,17 @@ fn provisioned_declaration_rejects_a_plain_pin() {
 
     assert!(matches!(
         plan_single_service(&input),
-        Err(DeployPlanError::VolumeAdmission {
-            failure: VolumeAdmissionFailure::KindConversion {
+        Err(DeployPlanError::VolumeAdmissionOnMachine {
+            machine_id: selected_machine_id,
+            failure,
+            ..
+        })
+        if selected_machine_id == machine_id("machine_a")
+            && matches!(failure.as_ref(), VolumeAdmissionFailure::KindConversion {
                 declaration: VolumeSpec::Provisioned { .. },
                 pin_kind: ployz_core::intent::VolumeKind::Plain,
                 ..
-            },
-            ..
-        })
+            })
     ));
 }
 
@@ -939,13 +945,14 @@ fn provisioned_declaration_rejects_shrinking_a_pinned_maximum() {
 
     assert_eq!(
         plan_single_service(&input),
-        Err(DeployPlanError::VolumeAdmission {
+        Err(DeployPlanError::VolumeAdmissionOnMachine {
             service_id: service_id("svc_api"),
-            failure: VolumeAdmissionFailure::QuotaShrink {
+            machine_id: machine_id("machine_a"),
+            failure: Box::new(VolumeAdmissionFailure::QuotaShrink {
                 volume_name: VolumeName::try_new("data").expect("volume name"),
                 declared_max_size_bytes: VolumeMaxSizeBytes::try_new(512).expect("non-zero size"),
                 pinned_max_size_bytes: VolumeMaxSizeBytes::try_new(1024).expect("non-zero size"),
-            },
+            }),
         })
     );
 }
@@ -1115,16 +1122,19 @@ fn multi_service_provisioned_births_share_one_machine_capacity_snapshot() {
 
     assert!(matches!(
         plan_inputs(vec![api, worker], Vec::new()),
-        Err(DeployPlanError::VolumeAdmission {
-            failure: VolumeAdmissionFailure::CapacityExceeded {
+        Err(DeployPlanError::VolumeAdmissionOnMachine {
+            machine_id: selected_machine_id,
+            failure,
+            ..
+        })
+        if selected_machine_id == machine_id("machine_a")
+            && matches!(failure.as_ref(), VolumeAdmissionFailure::CapacityExceeded {
                 total_bytes: 1_000,
                 provisioned_used_bytes: 0,
                 free_bytes: 1_000,
                 required_headroom_bytes: 1_200,
                 requested_total_bytes: 1_200,
-            },
-            ..
-        })
+            })
     ));
 }
 

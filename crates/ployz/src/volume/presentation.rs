@@ -230,9 +230,17 @@ pub(crate) fn storage_effect_failure(
         StorageEffectFailure::ExplicitPoolAbsent { pool } => {
             format!("explicit ZFS pool {} is not imported", pool.as_str())
         }
-        StorageEffectFailure::SparsePool { message } => {
-            format!("Ployz sparse image pool preparation failed: {message}")
+        StorageEffectFailure::OwnedPool { message } => {
+            format!("Ployz owned image pool preparation failed: {message}")
         }
+        StorageEffectFailure::OwnedPoolTooSmall {
+            total_bytes,
+            available_bytes,
+            required_headroom_bytes,
+            minimum_pool_bytes,
+        } => format!(
+            "Ployz cannot reserve an owned ZFS pool: host total {total_bytes} bytes, available {available_bytes} bytes, required host headroom {required_headroom_bytes} bytes, minimum pool {minimum_pool_bytes} bytes"
+        ),
         StorageEffectFailure::Dataset { message } => {
             format!("ZFS property or dataset effect failed: {message}")
         }

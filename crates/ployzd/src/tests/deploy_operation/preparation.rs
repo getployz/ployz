@@ -5,8 +5,8 @@ use crate::control::operations::deploy::{
 use ployz_core::deploy::{
     ContainerMountPath, DatasetName, DeployCleanupContainer, DeployRequest, DeployRoute,
     DeployRouteTarget, DeployServiceSpec, ImageAvailabilityExpiresAt, ImageReference, ImageSource,
-    PlatformImage, PushedImageReceipt, ReplicaCount, ServiceVolumeMount, VolumeMaxSizeBytes,
-    VolumeName, VolumeSpec, ZfsPoolName,
+    PlatformImage, PushedImageReceipt, ReplicaCount, ServiceVolumeMount, VolumeAdmissionFailure,
+    VolumeMaxSizeBytes, VolumeName, VolumeSpec, ZfsPoolName,
 };
 use ployz_core::ids::{NamespaceRevisionEntryId, RouteBindingId};
 use ployz_core::ingress::{AutomaticHostnameLabel, RouteBindingOrigin};
@@ -291,6 +291,55 @@ fn receipt_platform_rejections_are_scoped_to_the_service_that_requires_them() {
         DeployOperationFailure::NoUsableMachines { reasons }
             if reasons == arm.unusable_machines()
     ));
+}
+
+#[test]
+fn machine_scoped_volume_admission_keeps_typed_operation_failure() {
+    let machine = machine_id("machine_a");
+    let command = prepare_deploy_execution_command(
+        operation_id("op_volume_admission"),
+        deploy_request(),
+        DeployExecutionFacts {
+            machine_platforms: std::collections::BTreeMap::new(),
+            seed_clock_testimony: std::collections::BTreeMap::new(),
+            machine_storage_testimony: std::collections::BTreeMap::new(),
+            unusable_machines: Vec::new(),
+            namespace_route_bindings: Vec::new(),
+            namespace_serving_entries: Vec::new(),
+            namespace_volume_pins: Vec::new(),
+            eligible_machines: vec![machine.clone()],
+            dataplane_members: Vec::new(),
+            observed_machines: Vec::new(),
+            namespace_cleanup_candidates: Vec::new(),
+            automatic_hostname_mode: AutomaticHostnameMode::Disabled,
+            gateway_certificate_targets: Vec::new(),
+            ployz_gateway_certificate_targets: Vec::new(),
+            step_timeout: Duration::from_secs(5),
+        },
+    );
+    let capacity = VolumeAdmissionFailure::CapacityExceeded {
+        total_bytes: 24_000,
+        provisioned_used_bytes: 4_000,
+        free_bytes: 5_000,
+        required_headroom_bytes: 10_000,
+        requested_total_bytes: 10_000,
+    };
+
+    assert_eq!(
+        DeployExecutionError::Plan(
+            ployz_core::deploy::DeployPlanError::VolumeAdmissionOnMachine {
+                service_id: service_id("svc_api"),
+                machine_id: machine.clone(),
+                failure: Box::new(capacity.clone()),
+            }
+        )
+        .deploy_failure(&command, Vec::new()),
+        DeployOperationFailure::VolumeAdmissionFailed {
+            service_id: service_id("svc_api"),
+            machine_id: machine,
+            failure: Box::new(capacity),
+        }
+    );
 }
 
 #[tokio::test]

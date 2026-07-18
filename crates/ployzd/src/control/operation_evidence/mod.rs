@@ -30,6 +30,7 @@ mod dataplane_staging;
 mod deploy;
 mod ingress_configure;
 mod machine_add;
+mod machine_build_cache_prune;
 mod machine_lifecycle;
 mod machine_storage_prepare;
 mod machine_update;

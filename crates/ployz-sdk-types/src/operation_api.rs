@@ -9,7 +9,8 @@ use crate::{
     DeployReserveRequest, DeployReserved, DeploySubmitError, DeploySubmitRequest,
     IngressConfigureError, IngressConfigureRequest, InitFirstMachineActivateError,
     InitFirstMachineActivateRequest, InitFirstMachineActivated, LogsTailError, LogsTailRequest,
-    LogsTailResult, MachineAddAccepted, MachineAddError, MachineAddRequest, MachineInspectError,
+    LogsTailResult, MachineAddAccepted, MachineAddError, MachineAddRequest,
+    MachineBuildCachePruneError, MachineBuildCachePruneRequest, MachineInspectError,
     MachineInspectRequest, MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed,
     MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported, MachineLifecycleError,
     MachineLifecycleRequest, MachineListError, MachineListRequest, MachineListResult,
@@ -36,6 +37,7 @@ pub enum OperationApiEndpoint {
     DeploySubmit,
     InitFirstMachineActivate,
     MachineAdd,
+    MachineBuildCachePrune,
     MachineUpdate,
     MachineStoragePrepare,
     MachineDrain,
@@ -88,6 +90,7 @@ macro_rules! operation_api_contracts {
             $crate::operation_api::DeploySubmitApi,
             $crate::operation_api::InitFirstMachineActivateApi,
             $crate::operation_api::MachineAddApi,
+            $crate::operation_api::MachineBuildCachePruneApi,
             $crate::operation_api::MachineUpdateApi,
             $crate::operation_api::MachineStoragePrepareApi,
             $crate::operation_api::MachineDrainApi,
@@ -227,6 +230,18 @@ impl OperationApiContract for MachineStoragePrepareApi {
 
     const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::MachineStoragePrepare;
     const RESPONSE_ALIAS: &'static str = "MachineStoragePrepareResponse";
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MachineBuildCachePruneApi;
+
+impl OperationApiContract for MachineBuildCachePruneApi {
+    type Request = MachineBuildCachePruneRequest;
+    type Success = AcceptedOperation;
+    type Error = MachineBuildCachePruneError;
+
+    const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::MachineBuildCachePrune;
+    const RESPONSE_ALIAS: &'static str = "MachineBuildCachePruneResponse";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

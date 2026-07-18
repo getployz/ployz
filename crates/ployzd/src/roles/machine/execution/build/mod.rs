@@ -11,5 +11,6 @@ mod workspace;
 pub(crate) use logs::BuildLogProgress;
 pub(crate) use oci::ValidatedOciLayout;
 pub(crate) use runner::{
-    BuildExecutionError, BuildExecutionRequest, BuildExecutionResult, DockerBuildExecutor,
+    BuildCachePruneResult, BuildExecutionError, BuildExecutionRequest, BuildExecutionResult,
+    DockerBuildExecutor,
 };

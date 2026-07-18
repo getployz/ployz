@@ -4,7 +4,8 @@ use ployz_core::deploy::{
     ContainerMountPath, ContainerRuntimeSpec, DatasetName, DatasetNameError, DependencyCondition,
     DeployOrigin, DeployOriginError, DeployPlanningTarget, DeployRequest, DeployServiceSpec,
     ImageReference, ImageSource, ReplicaCount, ServiceDependency, ServiceVolumeMount,
-    VolumeMaxSizeBytes, VolumeName, VolumeSpec, ZfsPoolName, ZfsPoolNameError,
+    VolumeAdmissionFailure, VolumeMaxSizeBytes, VolumeName, VolumeSpec, ZfsPoolName,
+    ZfsPoolNameError,
 };
 use ployz_core::ids::RouteBindingId;
 use ployz_core::intent::{VolumeKind, VolumePinState};
@@ -152,6 +153,31 @@ fn automatic_hostname_collision_failure_keeps_typed_route_identity() {
         })
         .expect("terminal state serializes"),
         r#"{"state":"failed","failure":{"kind":"automatic_hostname_collision","hostname":"api.apps.example.com","route_binding_id":"route_existing"}}"#
+    );
+    assert_eq!(
+        failure.failure_class(),
+        DeployFailureClass::PreconditionRejected
+    );
+    assert!(failure.retained_artifacts().is_empty());
+}
+
+#[test]
+fn volume_admission_failure_keeps_machine_and_capacity_evidence() {
+    let failure = DeployOperationFailure::VolumeAdmissionFailed {
+        service_id: service_id("svc_api"),
+        machine_id: machine_id("machine_7"),
+        failure: Box::new(VolumeAdmissionFailure::CapacityExceeded {
+            total_bytes: 24_000,
+            provisioned_used_bytes: 4_000,
+            free_bytes: 5_000,
+            required_headroom_bytes: 10_000,
+            requested_total_bytes: 10_000,
+        }),
+    };
+
+    assert_eq!(
+        serde_json::to_string(&failure).expect("failure serializes"),
+        r#"{"kind":"volume_admission_failed","service_id":"svc_api","machine_id":"machine_7","failure":{"kind":"capacity_exceeded","total_bytes":24000,"provisioned_used_bytes":4000,"free_bytes":5000,"required_headroom_bytes":10000,"requested_total_bytes":10000}}"#
     );
     assert_eq!(
         failure.failure_class(),

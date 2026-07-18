@@ -544,6 +544,12 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
         InitFirstMachineActivateError,
     >();
     assert_contract::<MachineAddApi, MachineAddRequest, MachineAddAccepted, MachineAddError>();
+    assert_contract::<
+        ployz_sdk_types::operation_api::MachineBuildCachePruneApi,
+        ployz_sdk_types::MachineBuildCachePruneRequest,
+        AcceptedOperation,
+        ployz_sdk_types::MachineBuildCachePruneError,
+    >();
     assert_contract::<MachineUpdateApi, MachineUpdateRequest, AcceptedOperation, MachineUpdateError>(
     );
     assert_contract::<
@@ -663,6 +669,7 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
             OperationApiEndpoint::DeploySubmit,
             OperationApiEndpoint::InitFirstMachineActivate,
             OperationApiEndpoint::MachineAdd,
+            OperationApiEndpoint::MachineBuildCachePrune,
             OperationApiEndpoint::MachineUpdate,
             OperationApiEndpoint::MachineStoragePrepare,
             OperationApiEndpoint::MachineDrain,

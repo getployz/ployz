@@ -13,7 +13,7 @@ pub(super) const INSTALL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 pub(super) enum EffectClass {
     Install,
     PoolList,
-    Sparse,
+    OwnedPool,
     Dataset,
     Destructive,
     Mismatch,
@@ -39,7 +39,7 @@ fn effect_error(class: EffectClass, message: String) -> ZfsEffectError {
     match class {
         EffectClass::Install => ZfsEffectError::Installation { message },
         EffectClass::PoolList => ZfsEffectError::PoolList { message },
-        EffectClass::Sparse => ZfsEffectError::SparsePool { message },
+        EffectClass::OwnedPool => ZfsEffectError::OwnedPool { message },
         EffectClass::Dataset => ZfsEffectError::Dataset { message },
         EffectClass::Destructive => ZfsEffectError::DestructiveEffect { message },
         EffectClass::Mismatch => ZfsEffectError::PreparedStateMismatch { message },
@@ -50,13 +50,4 @@ pub(super) fn parse_u64(label: &str, value: &str) -> Result<u64, ZfsEffectError>
     value.parse().map_err(|error| ZfsEffectError::GatherParse {
         message: format!("{label} {value:?}: {error}"),
     })
-}
-
-pub(super) fn parse_last_u64(label: &str, output: &str) -> Result<u64, ZfsEffectError> {
-    let Some(value) = output.split_whitespace().last() else {
-        return Err(ZfsEffectError::GatherParse {
-            message: format!("{label} output is empty"),
-        });
-    };
-    parse_u64(label, value)
 }

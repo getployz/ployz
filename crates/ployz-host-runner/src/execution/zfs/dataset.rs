@@ -12,8 +12,8 @@ use ployz_core::machine::{
     admit_pool_quota_total,
 };
 use ployz_core::storage::{
-    DATASET_DESTROY_INNER_COMMAND_TIMEOUT, PROVISIONED_VOLUME_MOUNTPOINT, PreparedStorageOrigin,
-    PreparedStorageState, StorageEffectFailure as ZfsEffectError,
+    DATASET_DESTROY_INNER_COMMAND_TIMEOUT, PROVISIONED_VOLUME_MOUNTPOINT, PreparedStorageState,
+    StorageEffectFailure as ZfsEffectError,
 };
 
 use super::command::{COMMAND_TIMEOUT, EffectClass, checked, parse_u64};
@@ -354,29 +354,14 @@ pub(super) fn gather_pool_capacity_for_state(
     runner: &mut impl HostRunnerCommandRunner,
     state: &PreparedStorageState,
 ) -> Result<PoolCapacityFacts, ZfsEffectError> {
-    let (total_bytes, free_bytes) = match state.origin() {
-        PreparedStorageOrigin::OwnedImage { backing_file } => {
-            let path = backing_file.to_string_lossy();
-            let output = checked(
-                runner,
-                "df",
-                &["-B1", "--output=size,avail", &path],
-                COMMAND_TIMEOUT,
-                EffectClass::Dataset,
-            )?;
-            parse_capacity_row("backing filesystem capacity", &output.stdout)?
-        }
-        PreparedStorageOrigin::Adopted => {
-            let output = checked(
-                runner,
-                "zpool",
-                &["list", "-H", "-p", "-o", "size,free", state.pool().as_str()],
-                COMMAND_TIMEOUT,
-                EffectClass::Dataset,
-            )?;
-            parse_capacity_row("pool capacity", &output.stdout)?
-        }
-    };
+    let output = checked(
+        runner,
+        "zpool",
+        &["list", "-H", "-p", "-o", "size,free", state.pool().as_str()],
+        COMMAND_TIMEOUT,
+        EffectClass::Dataset,
+    )?;
+    let (total_bytes, free_bytes) = parse_capacity_row("pool capacity", &output.stdout)?;
     let provisioned_used = checked(
         runner,
         "zfs",

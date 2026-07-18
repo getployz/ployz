@@ -2,14 +2,16 @@
 
 use crate::roles::machine::MachineRuntimeUnavailableReason;
 use crate::roles::machine::protocol::{
-    MachineBuildCapability, MachineContainerInspectDomainError, MachineContainerInspectRpcOk,
-    MachineContainerInspectRpcRequest, MachineContainerRemoveDomainError,
-    MachineContainerRemoveRpcRequest, MachineContainerResolveImageDomainError,
-    MachineContainerResolveImageRpcOk, MachineContainerResolveImageRpcRequest,
-    MachineContainerRestartDomainError, MachineContainerRestartRpcRequest, MachineContainerRpcOk,
-    MachineContainerRunDomainError, MachineContainerRunHookDomainError,
-    MachineContainerRunHookRpcOk, MachineContainerRunHookRpcRequest, MachineContainerRunRpcOk,
-    MachineContainerRunRpcRequest, MachineContainerStopDomainError, MachineContainerStopRpcRequest,
+    MachineBuildCachePruneDomainError, MachineBuildCachePruneRpcOk,
+    MachineBuildCachePruneRpcRequest, MachineBuildCapability, MachineContainerInspectDomainError,
+    MachineContainerInspectRpcOk, MachineContainerInspectRpcRequest,
+    MachineContainerRemoveDomainError, MachineContainerRemoveRpcRequest,
+    MachineContainerResolveImageDomainError, MachineContainerResolveImageRpcOk,
+    MachineContainerResolveImageRpcRequest, MachineContainerRestartDomainError,
+    MachineContainerRestartRpcRequest, MachineContainerRpcOk, MachineContainerRunDomainError,
+    MachineContainerRunHookDomainError, MachineContainerRunHookRpcOk,
+    MachineContainerRunHookRpcRequest, MachineContainerRunRpcOk, MachineContainerRunRpcRequest,
+    MachineContainerStopDomainError, MachineContainerStopRpcRequest,
     MachineDataplaneStatusDomainError, MachineDataplaneStatusRpcOk,
     MachineDataplaneStatusRpcRequest, MachineFactsGetDomainError, MachineFactsGetRpcOk,
     MachineFactsGetRpcRequest, MachineFactsRefreshDomainError, MachineFactsRefreshRpcOk,
@@ -608,6 +610,40 @@ impl NatsMachineSubstrateUpdater {
         .map_err(|error| storage_prepare_error(machine_id, error))
     }
 
+    pub async fn prune_build_cache(
+        &self,
+        machine_id: &MachineId,
+        operation_id: &OperationId,
+    ) -> Result<ployz_core::operation::BuildCachePruneEvidence, MachineBuildCachePruneError> {
+        call_machine::<MachineBuildCachePruneRpcOk, MachineBuildCachePruneDomainError>(
+            &self.client,
+            ployz_core::build::BUILD_START_ENDPOINT_TIMEOUT,
+            machine_id,
+            MachineServiceEndpoint::BuildCachePrune,
+            &MachineBuildCachePruneRpcRequest {
+                operation_id: operation_id.clone(),
+            },
+        )
+        .await
+        .map(|response| ployz_core::operation::BuildCachePruneEvidence {
+            before_available_bytes: response.before_available_bytes,
+            reclaimed_bytes: response.reclaimed_bytes,
+            after_available_bytes: response.after_available_bytes,
+        })
+        .map_err(|error| match error {
+            MachineCallError::Unavailable(reason) => MachineBuildCachePruneError::Unavailable {
+                machine_id: machine_id.clone(),
+                reason,
+            },
+            MachineCallError::Domain(MachineBuildCachePruneDomainError::PruneFailed {
+                message,
+            }) => MachineBuildCachePruneError::PruneFailed {
+                machine_id: machine_id.clone(),
+                message,
+            },
+        })
+    }
+
     pub async fn report_storage_prepare(
         &self,
         machine_id: &MachineId,
@@ -644,6 +680,18 @@ fn storage_prepare_error(
             failure,
         },
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineBuildCachePruneError {
+    Unavailable {
+        machine_id: MachineId,
+        reason: MachineRuntimeUnavailableReason,
+    },
+    PruneFailed {
+        machine_id: MachineId,
+        message: ployz_core::operation::FailureMessage,
+    },
 }
 
 impl MachineSubstrateUpdateError {

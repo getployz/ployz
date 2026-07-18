@@ -94,6 +94,7 @@ import type {
   MachineListError,
   MachineListRequest,
   MachineSnapshot,
+  MachineBuildCachePruneRequest,
   MachineUpdateError,
   MachineUpdateRequest,
   OperationApiResponse,
@@ -169,6 +170,11 @@ export interface PloyzMachineUpdateInput {
   operationId: string;
   machineId: string;
   targetVersion: string;
+}
+
+export interface PloyzMachineBuildCachePruneInput {
+  operationId: string;
+  machineId: string;
 }
 
 export interface PloyzFirstMachineActivateInput {
@@ -248,6 +254,20 @@ export class PloyzClient {
     const accepted = unwrapApiResponse(
       "machine.update",
       await this.#transport.request("machine.update", machineUpdateRequest(input)),
+    );
+    return new OperationHandle(this.#transport, accepted);
+  }
+
+  async machineBuildCachePrune(
+    input: PloyzMachineBuildCachePruneInput,
+  ): Promise<OperationHandle> {
+    const request: MachineBuildCachePruneRequest = {
+      operation_id: operationId(input.operationId),
+      machine_id: machineId(input.machineId),
+    };
+    const accepted = unwrapApiResponse(
+      "machine.build_cache_prune",
+      await this.#transport.request("machine.build_cache_prune", request),
     );
     return new OperationHandle(this.#transport, accepted);
   }

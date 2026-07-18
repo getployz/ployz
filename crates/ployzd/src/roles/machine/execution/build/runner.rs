@@ -1,12 +1,15 @@
 use super::ValidatedOciLayout;
 use super::lifecycle::{
     BUILDER_LABEL, CACHE_VOLUME, DOCKER_COMMAND_TIMEOUT, PinnedImageKind, await_buildkit,
-    builder_name, create_builder, pull_exact_image, remove_builder, require_success, run_bounded,
-    run_buildctl, run_prepare,
+    builder_name, create_builder, prune_buildkit_cache, pull_exact_image, remove_builder,
+    require_success, run_bounded, run_buildctl, run_prepare,
 };
 use super::logs::{BuildLogProgress, PublishedLogs};
 use super::oci::{OciLayoutError, OciValidationControl, validate_oci_layout};
-use super::plan::{BuildAdapterToolchain, lower_build_adapter, toolchain_for_platform};
+use super::plan::{
+    BuildAdapterToolchain, BuildToolchain, buildkit_for_platform, lower_build_adapter,
+    toolchain_for_platform,
+};
 use super::source::checkout_git_source;
 use super::workspace::{
     clean_failed_workspace, prepare_private_directory, prepare_workspace, remove_workspace_tree,
@@ -18,10 +21,17 @@ use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::image::OciPlatform;
 use ployz_core::operation::{BuildPlatformFailure, BuildToolchainEvidence, FailureMessage};
 use ployz_nats::service_runtime::NatsClient;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
 use tokio::time::Instant;
+
+const GIB: u64 = 1024 * 1024 * 1024;
+const CACHE_RESERVED_BYTES: u64 = 512 * 1024 * 1024;
+const CACHE_MAX_BYTES: u64 = 10 * GIB;
+const REQUIRED_FREE_BYTES: u64 = 5 * GIB;
+const DISK_PERCENT: u64 = 20;
+const BUILDKIT_CONFIG: &str = "buildkitd.toml";
 
 #[derive(Clone)]
 pub struct DockerBuildExecutor {
@@ -70,6 +80,26 @@ impl DockerBuildExecutor {
         builder_result.and(workspace_result)
     }
 
+    pub(crate) async fn prune_cache(&self) -> Result<BuildCachePruneResult, BuildExecutionError> {
+        let _effect_guard = self.effect_guard.acquire().await?;
+        prepare_private_directory(&self.workspace_root).await?;
+        let before = read_disk_capacity(&self.workspace_root)?;
+        let policy = BuildDiskPolicy::for_capacity(before);
+        let config = self.workspace_root.join(BUILDKIT_CONFIG);
+        write_buildkit_config(&config, policy).await?;
+        let platform = OciPlatform::current();
+        let (buildkit_reference, _) = buildkit_for_platform(&platform)
+            .map_err(|error| infrastructure("select BuildKit image", error.to_string()))?;
+        let (_cancel_tx, mut cancelled) = watch::channel(false);
+        prune_buildkit_cache(&platform, &config, &buildkit_reference, &mut cancelled).await?;
+        let after = read_disk_capacity(&self.workspace_root)?;
+        Ok(BuildCachePruneResult {
+            before_available_bytes: before.available_bytes,
+            reclaimed_bytes: after.available_bytes.saturating_sub(before.available_bytes),
+            after_available_bytes: after.available_bytes,
+        })
+    }
+
     pub async fn execute(
         &self,
         request: BuildExecutionRequest<'_>,
@@ -116,6 +146,14 @@ impl DockerBuildExecutor {
         } = request;
         let workspace = self.workspace(operation_id, platform);
         check_cancelled(cancelled)?;
+        let toolchain = toolchain_for_platform(platform, adapter).map_err(|error| {
+            platform_failure(BuildPlatformFailure::AdapterFailed {
+                message: failure(error.to_string()),
+            })
+        })?;
+        let buildkit_config = self
+            .ensure_host_disk_capacity(&workspace, platform, &toolchain, cancelled)
+            .await?;
         let checkout = checkout_git_source(source, &workspace)
             .await
             .map_err(|error| {
@@ -123,11 +161,6 @@ impl DockerBuildExecutor {
                     message: failure(error.to_string()),
                 })
             })?;
-        let toolchain = toolchain_for_platform(platform, adapter).map_err(|error| {
-            platform_failure(BuildPlatformFailure::AdapterFailed {
-                message: failure(error.to_string()),
-            })
-        })?;
         verify_helper(&toolchain).await?;
         let plan = lower_build_adapter(&checkout, adapter, platform, &workspace, &toolchain)
             .map_err(|error| {
@@ -178,6 +211,7 @@ impl DockerBuildExecutor {
             operation_id,
             platform,
             &workspace,
+            &buildkit_config,
             &toolchain.buildkit_reference,
         )
         .await?;
@@ -233,6 +267,91 @@ impl DockerBuildExecutor {
             .join(operation_id.as_str())
             .join(format!("{}-{}", platform.os(), platform.architecture()))
     }
+
+    async fn ensure_host_disk_capacity(
+        &self,
+        workspace: &Path,
+        platform: &OciPlatform,
+        toolchain: &BuildToolchain,
+        cancelled: &mut watch::Receiver<bool>,
+    ) -> Result<PathBuf, BuildExecutionError> {
+        let mut capacity = read_disk_capacity(workspace)?;
+        let policy = BuildDiskPolicy::for_capacity(capacity);
+        let config = workspace.join(BUILDKIT_CONFIG);
+        write_buildkit_config(&config, policy).await?;
+        if capacity.available_bytes < policy.required_free_bytes {
+            prune_buildkit_cache(platform, &config, &toolchain.buildkit_reference, cancelled)
+                .await?;
+            capacity = read_disk_capacity(workspace)?;
+        }
+        if capacity.available_bytes < policy.required_free_bytes {
+            return Err(platform_failure(
+                BuildPlatformFailure::InsufficientHostDisk {
+                    available_bytes: capacity.available_bytes,
+                    required_free_bytes: policy.required_free_bytes,
+                },
+            ));
+        }
+        Ok(config)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct DiskCapacity {
+    available_bytes: u64,
+    total_bytes: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BuildDiskPolicy {
+    cache_reserved_bytes: u64,
+    cache_max_bytes: u64,
+    required_free_bytes: u64,
+}
+
+impl BuildDiskPolicy {
+    fn for_capacity(capacity: DiskCapacity) -> Self {
+        let disk_share = capacity.total_bytes.saturating_mul(DISK_PERCENT) / 100;
+        let cache_max_bytes = disk_share.min(CACHE_MAX_BYTES);
+        Self {
+            cache_reserved_bytes: CACHE_RESERVED_BYTES.min(cache_max_bytes),
+            cache_max_bytes,
+            required_free_bytes: REQUIRED_FREE_BYTES.max(disk_share),
+        }
+    }
+}
+
+fn read_disk_capacity(path: &Path) -> Result<DiskCapacity, BuildExecutionError> {
+    let stat = rustix::fs::statvfs(path)
+        .map_err(|error| infrastructure("read build host disk capacity", error.to_string()))?;
+    Ok(DiskCapacity {
+        available_bytes: bytes_from_blocks(stat.f_bavail, stat.f_frsize),
+        total_bytes: bytes_from_blocks(stat.f_blocks, stat.f_frsize),
+    })
+}
+
+fn bytes_from_blocks(blocks: u64, block_size: u64) -> u64 {
+    u64::try_from(u128::from(blocks).saturating_mul(u128::from(block_size))).unwrap_or(u64::MAX)
+}
+
+async fn write_buildkit_config(
+    path: &Path,
+    policy: BuildDiskPolicy,
+) -> Result<(), BuildExecutionError> {
+    let config = format!(
+        "[worker.oci]\ngc = true\nreservedSpace = {}\nmaxUsedSpace = {}\nminFreeSpace = {}\n",
+        policy.cache_reserved_bytes, policy.cache_max_bytes, policy.required_free_bytes
+    );
+    tokio::fs::write(path, config)
+        .await
+        .map_err(|error| infrastructure("write BuildKit configuration", error.to_string()))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BuildCachePruneResult {
+    pub(crate) before_available_bytes: u64,
+    pub(crate) reclaimed_bytes: u64,
+    pub(crate) after_available_bytes: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -458,5 +577,24 @@ mod tests {
                 log_summary: actual
             } if actual == log_summary
         ));
+    }
+
+    #[test]
+    fn build_disk_policy_bounds_cache_and_protects_host_space() {
+        let small = BuildDiskPolicy::for_capacity(DiskCapacity {
+            available_bytes: 0,
+            total_bytes: GIB,
+        });
+        assert_eq!(small.cache_max_bytes, GIB / 5);
+        assert_eq!(small.cache_reserved_bytes, GIB / 5);
+        assert_eq!(small.required_free_bytes, 5 * GIB);
+
+        let large = BuildDiskPolicy::for_capacity(DiskCapacity {
+            available_bytes: 0,
+            total_bytes: 100 * GIB,
+        });
+        assert_eq!(large.cache_reserved_bytes, 512 * 1024 * 1024);
+        assert_eq!(large.cache_max_bytes, 10 * GIB);
+        assert_eq!(large.required_free_bytes, 20 * GIB);
     }
 }

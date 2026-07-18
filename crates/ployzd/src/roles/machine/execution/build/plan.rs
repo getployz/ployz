@@ -70,21 +70,12 @@ pub(super) fn toolchain_for_platform(
         });
     }
     let pins = railpack_pins().map_err(invalid_pin)?;
-    let buildkit = match platform.architecture() {
-        "amd64" => "sha256:2caaaf9bc673a82d5b0a87824f8375e6b2b36b55001dad611230516c724e9fba",
-        "arm64" => "sha256:4eee950fb9d134cbf4e228ea3906eb4c7403323334af013c443302f7b74f2737",
-        _ => {
-            return Err(BuildPlanError::UnsupportedPlatform {
-                platform: platform.clone(),
-            });
-        }
-    };
+    let (buildkit_reference, buildkit_manifest_digest) = buildkit_for_platform(platform)?;
     let railpack = pins
         .for_architecture(platform.architecture())
         .ok_or_else(|| BuildPlanError::UnsupportedPlatform {
             platform: platform.clone(),
         })?;
-    let buildkit_manifest_digest = digest(buildkit)?;
     let frontend_manifest_digest = digest(railpack.frontend_digest())?;
     let adapter = match adapter {
         BuildAdapter::Dockerfile { .. } => BuildAdapterToolchain::Dockerfile,
@@ -103,10 +94,34 @@ pub(super) fn toolchain_for_platform(
         },
     };
     Ok(BuildToolchain {
-        buildkit_reference: format!("moby/buildkit@{buildkit}"),
+        buildkit_reference,
         buildkit_manifest_digest,
         adapter,
     })
+}
+
+pub(super) fn buildkit_for_platform(
+    platform: &OciPlatform,
+) -> Result<(String, OciDigest), BuildPlanError> {
+    if platform.os() != "linux" {
+        return Err(BuildPlanError::UnsupportedPlatform {
+            platform: platform.clone(),
+        });
+    }
+    let buildkit = match platform.architecture() {
+        "amd64" => "sha256:2caaaf9bc673a82d5b0a87824f8375e6b2b36b55001dad611230516c724e9fba",
+        "arm64" => "sha256:4eee950fb9d134cbf4e228ea3906eb4c7403323334af013c443302f7b74f2737",
+        _ => {
+            return Err(BuildPlanError::UnsupportedPlatform {
+                platform: platform.clone(),
+            });
+        }
+    };
+    let buildkit_manifest_digest = digest(buildkit)?;
+    Ok((
+        format!("moby/buildkit@{buildkit}"),
+        buildkit_manifest_digest,
+    ))
 }
 
 pub(super) fn lower_build_adapter(

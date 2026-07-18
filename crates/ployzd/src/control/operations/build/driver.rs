@@ -168,6 +168,7 @@ impl BuildOperationDriver {
                         | Some(OperationStatus::Cert { .. })
                         | Some(OperationStatus::MachineAdd { .. })
                         | Some(OperationStatus::MachineUpdate { .. })
+                        | Some(OperationStatus::MachineBuildCachePrune { .. })
                         | Some(OperationStatus::MachineStoragePrepare { .. })
                         | Some(OperationStatus::MachineLifecycle { .. })
                         | Some(OperationStatus::CoreReplace { .. })

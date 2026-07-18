@@ -574,6 +574,15 @@ impl DeployExecutionError {
                 namespace_revision_id: failure_namespace_revision_id(command),
                 message: failure_message(failure.to_string()),
             },
+            Self::Plan(DeployPlanError::VolumeAdmissionOnMachine {
+                service_id,
+                machine_id,
+                failure,
+            }) => DeployOperationFailure::VolumeAdmissionFailed {
+                service_id: service_id.clone(),
+                machine_id: machine_id.clone(),
+                failure: failure.clone(),
+            },
             Self::Plan(DeployPlanError::UnknownServiceDependency {
                 service_id,
                 dependency,
@@ -970,6 +979,7 @@ fn add_retained_artifacts(failure: &mut DeployOperationFailure, artifacts: Vec<R
             retained_artifacts, ..
         } => retained_artifacts,
         DeployOperationFailure::PlanningFailed { .. }
+        | DeployOperationFailure::VolumeAdmissionFailed { .. }
         | DeployOperationFailure::AutomaticHostnameCollision { .. }
         | DeployOperationFailure::ImageResolutionFailed { .. }
         | DeployOperationFailure::NoUsableMachines { .. }

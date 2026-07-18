@@ -2,12 +2,12 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     BuildOperationState, CredentialGrantOperationState, DeployOperationState, DeployRunningStage,
-    IngressConfigureOperationState, MachineLifecycleOperationState,
-    MachineStoragePrepareOperationState, MachineUpdateOperationState,
-    NamespaceRemoveOperationState, NamespaceRemoveRunningStage, NetworkRepairOperationState,
-    NetworkRepairRunningStage, OperationKind, OperationStatus, ServiceRestartOperationState,
-    ServiceRestartRunningStage, VolumeCreateOperationState, VolumeCreateRunningStage,
-    VolumeRemoveOperationState, VolumeRemoveRunningStage,
+    IngressConfigureOperationState, MachineBuildCachePruneOperationState,
+    MachineLifecycleOperationState, MachineStoragePrepareOperationState,
+    MachineUpdateOperationState, NamespaceRemoveOperationState, NamespaceRemoveRunningStage,
+    NetworkRepairOperationState, NetworkRepairRunningStage, OperationKind, OperationStatus,
+    ServiceRestartOperationState, ServiceRestartRunningStage, VolumeCreateOperationState,
+    VolumeCreateRunningStage, VolumeRemoveOperationState, VolumeRemoveRunningStage,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,6 +48,8 @@ pub enum OperationInterruptionStage {
     MachineUpdateRunning,
     MachineStoragePrepareAccepted,
     MachineStoragePreparePreparing,
+    MachineBuildCachePruneAccepted,
+    MachineBuildCachePrunePruning,
     MachineLifecycleAccepted,
     NetworkRepairAccepted,
     NetworkRepairRunning { stage: NetworkRepairRunningStage },
@@ -75,6 +77,9 @@ impl OperationInterruptionStage {
             }
             Self::MachineStoragePrepareAccepted | Self::MachineStoragePreparePreparing => {
                 OperationKind::MachineStoragePrepare
+            }
+            Self::MachineBuildCachePruneAccepted | Self::MachineBuildCachePrunePruning => {
+                OperationKind::MachineBuildCachePrune
             }
             Self::MachineLifecycleAccepted => OperationKind::MachineLifecycle,
             Self::NetworkRepairAccepted | Self::NetworkRepairRunning { .. } => {
@@ -106,6 +111,8 @@ impl OperationInterruptionStage {
             | Self::MachineUpdateRunning
             | Self::MachineStoragePrepareAccepted
             | Self::MachineStoragePreparePreparing
+            | Self::MachineBuildCachePruneAccepted
+            | Self::MachineBuildCachePrunePruning
             | Self::ServiceRestartAccepted
             | Self::ServiceRestartRunning { .. } => OperationInterruptionUncertainWork::Runtime,
             Self::Deploy { .. }
@@ -134,6 +141,8 @@ impl OperationInterruptionStage {
             | Self::MachineUpdateRunning
             | Self::MachineStoragePrepareAccepted
             | Self::MachineStoragePreparePreparing
+            | Self::MachineBuildCachePruneAccepted
+            | Self::MachineBuildCachePrunePruning
             | Self::MachineLifecycleAccepted
             | Self::NetworkRepairAccepted
             | Self::NetworkRepairRunning { .. }
@@ -283,6 +292,7 @@ impl OperationStatus {
             Self::IngressConfigure { state, .. } => state.interruption_evidence(cause),
             Self::MachineUpdate { state, .. } => state.interruption_evidence(cause),
             Self::MachineStoragePrepare { state, .. } => state.interruption_evidence(cause),
+            Self::MachineBuildCachePrune { state, .. } => state.interruption_evidence(cause),
             Self::MachineLifecycle { state, .. } => state.interruption_evidence(cause),
             Self::NetworkRepair { state, .. } => state.interruption_evidence(cause),
             Self::ServiceRestart { state, .. } => state.interruption_evidence(cause),
@@ -323,6 +333,10 @@ impl OperationStatus {
                 state: MachineStoragePrepareOperationState::Interrupted { evidence },
                 ..
             }
+            | Self::MachineBuildCachePrune {
+                state: MachineBuildCachePruneOperationState::Interrupted { evidence },
+                ..
+            }
             | Self::MachineLifecycle {
                 state: MachineLifecycleOperationState::Interrupted { evidence },
                 ..
@@ -353,6 +367,7 @@ impl OperationStatus {
             | Self::IngressConfigure { .. }
             | Self::MachineUpdate { .. }
             | Self::MachineStoragePrepare { .. }
+            | Self::MachineBuildCachePrune { .. }
             | Self::MachineLifecycle { .. }
             | Self::NetworkRepair { .. }
             | Self::ServiceRestart { .. }

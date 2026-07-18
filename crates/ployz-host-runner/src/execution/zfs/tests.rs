@@ -443,7 +443,7 @@ fn owned_image_pool_without_descriptor_is_refused_as_ambiguous_half_state() {
         runner
             .invocations
             .iter()
-            .all(|call| call.program != "truncate")
+            .all(|call| call.program != "fallocate")
     );
 }
 
@@ -555,7 +555,7 @@ fn rocky_installs_repo_epel_matching_kernel_and_zfs() {
 }
 
 #[test]
-fn zero_pools_create_sparse_owned_pool_from_filesystem_total() {
+fn zero_pools_physically_allocate_half_the_filesystem_for_owned_pool() {
     let state = tempfile::tempdir().unwrap();
     let mut runner = RecordingRunner::new([
         success(),
@@ -563,7 +563,7 @@ fn zero_pools_create_sparse_owned_pool_from_filesystem_total() {
         success(),
         stdout(""),
         success(),
-        stdout("1B-blocks\n1048576\n"),
+        stdout("1B-blocks Avail\n25769803776 23622320128\n"),
         success(),
         success(),
         success(),
@@ -588,10 +588,10 @@ fn zero_pools_create_sparse_owned_pool_from_filesystem_total() {
             backing_file: PathBuf::from(PLOYZ_OWNED_ZFS_BACKING_FILE)
         }
     );
-    assert_eq!(invocation(&runner, 6).program, "truncate");
+    assert_eq!(invocation(&runner, 6).program, "fallocate");
     assert_eq!(
         invocation(&runner, 6).args,
-        vec!["-s", "1048576", PLOYZ_OWNED_ZFS_BACKING_FILE]
+        vec!["-l", "12884901888", PLOYZ_OWNED_ZFS_BACKING_FILE]
     );
     assert_eq!(invocation(&runner, 7).program, "zpool");
     assert_eq!(
@@ -606,7 +606,75 @@ fn zero_pools_create_sparse_owned_pool_from_filesystem_total() {
 }
 
 #[test]
-fn owned_origin_survives_restart_and_selects_filesystem_capacity() {
+fn owned_pool_sizing_preserves_host_headroom() {
+    let state = tempfile::tempdir().unwrap();
+    let mut runner = RecordingRunner::new([
+        success(),
+        success(),
+        success(),
+        stdout(""),
+        success(),
+        stdout("1B-blocks Avail\n42949672960 19327352832\n"),
+        success(),
+        success(),
+        success(),
+        failed("dataset absent"),
+        success(),
+        failed("dataset absent"),
+        success(),
+        success(),
+    ]);
+
+    prepare_storage(
+        &mut runner,
+        &profile("ID=ubuntu\nVERSION_ID=24.04\n"),
+        &PoolSelection::Automatic,
+        state.path(),
+        &state.path().join("docker.service.d"),
+    )
+    .unwrap();
+
+    assert_eq!(
+        invocation(&runner, 6).args,
+        vec!["-l", "10737418240", PLOYZ_OWNED_ZFS_BACKING_FILE]
+    );
+}
+
+#[test]
+fn owned_pool_refuses_less_than_eight_gibibytes_after_headroom() {
+    let state = tempfile::tempdir().unwrap();
+    let mut runner = RecordingRunner::new([
+        success(),
+        success(),
+        success(),
+        stdout(""),
+        success(),
+        stdout("1B-blocks Avail\n25769803776 12884901888\n"),
+    ]);
+
+    let failure = prepare_storage(
+        &mut runner,
+        &profile("ID=ubuntu\nVERSION_ID=24.04\n"),
+        &PoolSelection::Automatic,
+        state.path(),
+        &state.path().join("docker.service.d"),
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        failure,
+        ZfsEffectError::OwnedPoolTooSmall {
+            total_bytes: 25_769_803_776,
+            available_bytes: 12_884_901_888,
+            required_headroom_bytes: 5_368_709_120,
+            minimum_pool_bytes: 8_589_934_592,
+        }
+    );
+    assert_eq!(runner.invocations.len(), 6);
+}
+
+#[test]
+fn owned_origin_survives_restart_and_selects_zpool_capacity() {
     let state = tempfile::tempdir().unwrap();
     persist(
         state.path(),
@@ -618,7 +686,7 @@ fn owned_origin_survives_restart_and_selects_filesystem_capacity() {
         success(),
         stdout(VOLUME_MOUNTPOINT),
         stdout(&format!("  {PLOYZ_OWNED_ZFS_BACKING_FILE}\n")),
-        stdout("Size Avail\n8192 4096\n"),
+        stdout("8192 4096\n"),
         stdout("1024\n"),
         stdout("ployz/ployz/volumes\tnone\n"),
     ]);
@@ -626,10 +694,10 @@ fn owned_origin_survives_restart_and_selects_filesystem_capacity() {
     assert_eq!(facts.total_bytes, 8192);
     assert_eq!(facts.provisioned_used_bytes, 1024);
     assert_eq!(facts.free_bytes, 4096);
-    assert_eq!(invocation(&runner, 3).program, "df");
+    assert_eq!(invocation(&runner, 3).program, "zpool");
     assert_eq!(
         invocation(&runner, 3).args,
-        vec!["-B1", "--output=size,avail", PLOYZ_OWNED_ZFS_BACKING_FILE]
+        vec!["list", "-H", "-p", "-o", "size,free", PLOYZ_OWNED_ZFS_POOL]
     );
 }
 
@@ -672,7 +740,7 @@ fn repeated_prepare_verifies_and_preserves_owned_origin() {
         runner
             .invocations
             .iter()
-            .all(|call| call.program != "truncate")
+            .all(|call| call.program != "fallocate")
     );
     assert!(runner.invocations.iter().all(|call| {
         !(call.program == "zfs" && call.args.first().is_some_and(|arg| arg == "create"))

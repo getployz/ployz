@@ -600,6 +600,16 @@ pub enum DeployPlanError {
         service_id: ServiceId,
         failure: VolumeAdmissionFailure,
     },
+    #[error(
+        "service {} failed volume admission on machine {}: {failure}",
+        .service_id.as_str(),
+        .machine_id.as_str()
+    )]
+    VolumeAdmissionOnMachine {
+        service_id: ServiceId,
+        machine_id: MachineId,
+        failure: Box<VolumeAdmissionFailure>,
+    },
 }
 
 pub fn plan_namespace_deploy(

@@ -9,13 +9,16 @@ use ployz_core::storage::{
     PreparedStorageOrigin, PreparedStorageState, StorageEffectFailure as ZfsEffectError,
 };
 
-use super::command::{COMMAND_TIMEOUT, EffectClass, checked, parse_last_u64};
+use super::command::{COMMAND_TIMEOUT, EffectClass, checked, parse_u64};
 use super::dataset::gather_pool_capacity_for_state;
 use super::preparation::PoolSelection;
 use crate::execution::{FileMode, HostRunnerCommandRunner, write_durable_file};
 
 pub(super) const PREPARED_STORAGE_FILE: &str = "prepared-storage.json";
 pub(super) const STORAGE_DIRECTORY: &str = "/var/lib/ployz/zfs";
+const GIBIBYTE: u64 = 1024 * 1024 * 1024;
+const MINIMUM_OWNED_POOL_BYTES: u64 = 8 * GIBIBYTE;
+const MINIMUM_HOST_HEADROOM_BYTES: u64 = 5 * GIBIBYTE;
 
 /// Observes the capability prepared by Ployz without importing pools or
 /// changing host storage. The prepared descriptor supplies the pool identity;
@@ -169,26 +172,32 @@ fn prepare_owned_pool(
         "install",
         &["-d", "-m", "0700", STORAGE_DIRECTORY],
         COMMAND_TIMEOUT,
-        EffectClass::Sparse,
+        EffectClass::OwnedPool,
     )?;
     let output = checked(
         runner,
         "df",
-        &["-B1", "--output=size", STORAGE_DIRECTORY],
+        &["-B1", "--output=size,avail", STORAGE_DIRECTORY],
         COMMAND_TIMEOUT,
-        EffectClass::Sparse,
+        EffectClass::OwnedPool,
     )?;
-    let logical_size = parse_last_u64("backing filesystem total bytes", &output.stdout)?;
+    let [total_bytes, available_bytes] = parse_filesystem_capacity(&output.stdout)?;
+    let required_headroom_bytes = MINIMUM_HOST_HEADROOM_BYTES.max(total_bytes / 5);
+    let pool_bytes = (total_bytes / 2).min(available_bytes.saturating_sub(required_headroom_bytes));
+    if pool_bytes < MINIMUM_OWNED_POOL_BYTES {
+        return Err(ZfsEffectError::OwnedPoolTooSmall {
+            total_bytes,
+            available_bytes,
+            required_headroom_bytes,
+            minimum_pool_bytes: MINIMUM_OWNED_POOL_BYTES,
+        });
+    }
     checked(
         runner,
-        "truncate",
-        &[
-            "-s",
-            &logical_size.to_string(),
-            PLOYZ_OWNED_ZFS_BACKING_FILE,
-        ],
+        "fallocate",
+        &["-l", &pool_bytes.to_string(), PLOYZ_OWNED_ZFS_BACKING_FILE],
         COMMAND_TIMEOUT,
-        EffectClass::Sparse,
+        EffectClass::OwnedPool,
     )?;
     checked(
         runner,
@@ -200,7 +209,7 @@ fn prepare_owned_pool(
             PLOYZ_OWNED_ZFS_BACKING_FILE,
         ],
         COMMAND_TIMEOUT,
-        EffectClass::Sparse,
+        EffectClass::OwnedPool,
     )?;
     Ok((
         ZfsPoolName::try_new(PLOYZ_OWNED_ZFS_POOL).expect("owned pool constant is valid"),
@@ -208,6 +217,24 @@ fn prepare_owned_pool(
             backing_file: PathBuf::from(PLOYZ_OWNED_ZFS_BACKING_FILE),
         },
     ))
+}
+
+fn parse_filesystem_capacity(output: &str) -> Result<[u64; 2], ZfsEffectError> {
+    let Some(line) = output.lines().rev().find(|line| !line.trim().is_empty()) else {
+        return Err(ZfsEffectError::GatherParse {
+            message: "backing filesystem capacity output is empty".to_owned(),
+        });
+    };
+    let values = line.split_whitespace().collect::<Vec<_>>();
+    let [total, available] = values.as_slice() else {
+        return Err(ZfsEffectError::GatherParse {
+            message: format!("invalid backing filesystem capacity row {line:?}"),
+        });
+    };
+    Ok([
+        parse_u64("backing filesystem total bytes", total)?,
+        parse_u64("backing filesystem available bytes", available)?,
+    ])
 }
 
 pub(super) fn persist_prepared_storage_state(

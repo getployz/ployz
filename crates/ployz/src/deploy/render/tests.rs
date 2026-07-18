@@ -3,7 +3,7 @@ use ployz_core::certificate::{ActiveCertState, CertBundleRef, CertValidAt, CertV
 use ployz_core::deploy::{
     ContainerRuntimeSpec, DeployPhasePlan, DeployPlan, DeployPlanStep, DeployRequest, DeployRoute,
     DeployRouteTarget, DeployServicePlan, DeployServiceSpec, ImageReference, ImageSource,
-    PlatformImage, PushedImageReceipt, ReplicaCount, ReplicaSlot,
+    PlatformImage, PushedImageReceipt, ReplicaCount, ReplicaSlot, VolumeAdmissionFailure,
 };
 use ployz_core::ids::{
     CertId, ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
@@ -844,6 +844,33 @@ fn automatic_hostname_collision_renders_only_typed_route_identity() {
     assert_eq!(
         failure_cause(&single_service_target(), &failure),
         "automatic hostname api.apps.example.com conflicts with route binding route_existing"
+    );
+}
+
+#[test]
+fn volume_admission_failure_renders_machine_and_capacity_evidence() {
+    let failure = DeployOperationFailure::VolumeAdmissionFailed {
+        service_id: service_id("api"),
+        machine_id: machine_id("machine-1"),
+        failure: Box::new(VolumeAdmissionFailure::CapacityExceeded {
+            total_bytes: 24_000,
+            provisioned_used_bytes: 4_000,
+            free_bytes: 5_000,
+            required_headroom_bytes: 10_000,
+            requested_total_bytes: 10_000,
+        }),
+    };
+    let failure_view = DeployFailureView::new(&failure, None);
+
+    assert_eq!(failure_view.service(), "api");
+    assert_eq!(failure_view.render_machines(), "machine machine-1");
+    assert!(matches!(
+        failure_view.safety(),
+        FailureSafety::NothingChanged
+    ));
+    assert_eq!(
+        failure_cause(&single_service_target(), &failure),
+        "volume admission failed on machine-1: quota admission exceeds capacity: total=24000 provisioned-used=4000 free=5000 required-headroom=10000 requested-total=10000"
     );
 }
 

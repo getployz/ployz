@@ -3,6 +3,7 @@
 mod core_replace;
 mod error_map;
 mod first_machine;
+mod machine_build_cache_prune;
 mod machine_join;
 mod machine_storage_prepare;
 mod network_query;
@@ -12,6 +13,7 @@ mod submit;
 
 pub use core_replace::core_replace_report;
 pub use first_machine::init_first_machine_activate;
+pub use machine_build_cache_prune::machine_build_cache_prune;
 pub use machine_join::{machine_join_redeem, machine_join_report};
 pub use machine_storage_prepare::machine_storage_prepare;
 pub use network_query::NetworkQueryService;
@@ -39,6 +41,7 @@ use crate::control::operations::credential_grant::CredentialGrantOperation;
 use crate::control::operations::dataplane_projection_admission::DataplaneProjectionAdmissionOperation;
 use crate::control::operations::deploy::driver::DeployOperationDriver;
 use crate::control::operations::ingress_configure::IngressConfigureOperation;
+use crate::control::operations::machine_build_cache_prune::MachineBuildCachePruneOperation;
 use crate::control::operations::machine_lifecycle::MachineLifecycleOperation;
 use crate::control::operations::machine_storage_prepare::MachineStoragePrepareOperation;
 use crate::control::operations::machine_update::MachineUpdateOperation;
@@ -70,6 +73,7 @@ pub struct OperationWorkers {
     pub volume_create: VolumeCreateOperation,
     pub volume_remove: VolumeRemoveOperation,
     pub machine_update: MachineUpdateOperation,
+    pub machine_build_cache_prune: MachineBuildCachePruneOperation,
     pub machine_storage_prepare: MachineStoragePrepareOperation,
     pub machine_lifecycle: MachineLifecycleOperation,
     pub machine_mint: MachineCredentialMint,
@@ -86,6 +90,7 @@ pub struct OperationApiHandlers {
     volume_create: Arc<VolumeCreateOperation>,
     volume_remove: Arc<VolumeRemoveOperation>,
     machine_update: Arc<MachineUpdateOperation>,
+    machine_build_cache_prune: Arc<MachineBuildCachePruneOperation>,
     machine_storage_prepare: Arc<MachineStoragePrepareOperation>,
     machine_lifecycle: Arc<MachineLifecycleOperation>,
     dataplane_projection_admission: Arc<DataplaneProjectionAdmissionOperation>,
@@ -135,6 +140,7 @@ impl OperationApiHandlers {
             volume_create,
             volume_remove,
             machine_update,
+            machine_build_cache_prune,
             machine_storage_prepare,
             machine_lifecycle,
             machine_mint,
@@ -172,6 +178,7 @@ impl OperationApiHandlers {
             volume_create: Arc::new(volume_create),
             volume_remove: Arc::new(volume_remove),
             machine_update: Arc::new(machine_update),
+            machine_build_cache_prune: Arc::new(machine_build_cache_prune),
             machine_storage_prepare: Arc::new(machine_storage_prepare),
             machine_lifecycle: Arc::new(machine_lifecycle),
             dataplane_projection_admission,
@@ -233,6 +240,10 @@ impl OperationApiHandlers {
 
     pub(crate) fn machine_update(&self) -> &MachineUpdateOperation {
         &self.machine_update
+    }
+
+    pub(crate) fn machine_build_cache_prune(&self) -> &MachineBuildCachePruneOperation {
+        &self.machine_build_cache_prune
     }
 
     pub(crate) fn machine_storage_prepare(&self) -> &MachineStoragePrepareOperation {

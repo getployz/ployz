@@ -300,6 +300,18 @@ fn preview_plan_error(
     error: DeployPlanError,
     command: &super::types::DeployPreviewPlanningCommand,
 ) -> DeployPreviewError {
+    if let DeployPlanError::VolumeAdmissionOnMachine {
+        service_id,
+        machine_id,
+        failure,
+    } = &error
+    {
+        return DeployPreviewError::VolumeAdmissionFailed {
+            service_id: service_id.clone(),
+            machine_id: machine_id.clone(),
+            failure: failure.clone(),
+        };
+    }
     let unusable_machines = match &error {
         DeployPlanError::NoEligibleMachines { service_id } => command
             .unusable_machines_by_service
@@ -312,6 +324,9 @@ fn preview_plan_error(
         | DeployPlanError::HealthyDependencyWithoutHealthcheck { .. }
         | DeployPlanError::ConflictingVolumePins { .. }
         | DeployPlanError::VolumeAdmission { .. } => command.unusable_machines.clone(),
+        DeployPlanError::VolumeAdmissionOnMachine { .. } => {
+            unreachable!("machine-scoped volume admission returned above")
+        }
     };
     planning_failed(error.to_string(), unusable_machines)
 }

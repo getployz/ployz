@@ -51,6 +51,12 @@ fn stage(stage: OperationInterruptionStage) -> String {
         OperationInterruptionStage::MachineStoragePreparePreparing => {
             "machine storage prepare preparing".to_owned()
         }
+        OperationInterruptionStage::MachineBuildCachePruneAccepted => {
+            "machine build cache prune accepted".to_owned()
+        }
+        OperationInterruptionStage::MachineBuildCachePrunePruning => {
+            "machine build cache prune pruning".to_owned()
+        }
         OperationInterruptionStage::MachineLifecycleAccepted => {
             "machine lifecycle accepted".to_owned()
         }

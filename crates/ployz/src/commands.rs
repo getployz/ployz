@@ -44,6 +44,7 @@ pub enum PloyzctlCommand {
     MachineAddRemote(machine::MachineAddRemoteCommand),
     MachineUpdate(machine::MachineUpdateCommand),
     MachineStoragePrepare(machine::MachineStoragePrepareCommand),
+    MachineBuildCachePrune(machine::MachineBuildCachePruneCommand),
     MachineLifecycle(machine::MachineLifecycleCommand),
     MachineList(machine::MachineListCommand),
     MachineInspect(machine::MachineInspectCommand),
@@ -92,6 +93,7 @@ impl PloyzctlCommand {
             Self::MachineAddRemote(_) => Some("machine add"),
             Self::MachineUpdate(_) => Some("machine update"),
             Self::MachineStoragePrepare(_) => Some("machine storage-prepare"),
+            Self::MachineBuildCachePrune(_) => Some("machine build-cache prune"),
             Self::MachineLifecycle(command) => match command.target {
                 MachineLifecycle::Draining => Some("machine drain"),
                 MachineLifecycle::Active => Some("machine resume"),
@@ -249,11 +251,20 @@ enum MachineCli {
     Add(machine::MachineAddRemoteCli),
     Update(machine::MachineUpdateCli),
     StoragePrepare(machine::MachineStoragePrepareCli),
+    BuildCache {
+        #[command(subcommand)]
+        command: MachineBuildCacheCli,
+    },
     Drain(machine::MachineLifecycleCli),
     Resume(machine::MachineLifecycleCli),
     #[command(alias = "ls")]
     List(machine::EmptyCli),
     Inspect(machine::MachineInspectCli),
+}
+
+#[derive(Debug, Subcommand)]
+enum MachineBuildCacheCli {
+    Prune(machine::MachineBuildCachePruneCli),
 }
 
 #[derive(Debug, Subcommand)]
@@ -368,6 +379,10 @@ fn command_from_cli(command: CommandCli) -> Result<PloyzctlCommand, PloyzctlCliE
                 machine::machine_storage_prepare_command(command)
                     .map(PloyzctlCommand::MachineStoragePrepare)
             }
+            MachineCli::BuildCache {
+                command: MachineBuildCacheCli::Prune(command),
+            } => machine::machine_build_cache_prune_command(command)
+                .map(PloyzctlCommand::MachineBuildCachePrune),
             MachineCli::Drain(command) => {
                 machine::machine_lifecycle_command(MachineLifecycle::Draining, command)
                     .map(PloyzctlCommand::MachineLifecycle)

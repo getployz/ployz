@@ -10,6 +10,7 @@ pub mod dataplane_projection_admission;
 pub mod deploy;
 pub mod ingress_configure;
 pub(crate) mod local_execution_admission;
+pub mod machine_build_cache_prune;
 pub mod machine_lifecycle;
 pub mod machine_storage_prepare;
 pub mod machine_update;

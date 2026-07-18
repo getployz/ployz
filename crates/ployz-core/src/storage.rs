@@ -182,8 +182,17 @@ pub enum StorageEffectFailure {
     AmbiguousPools { candidates: Vec<ZfsPoolName> },
     #[error("explicit ZFS pool {pool:?} is not imported")]
     ExplicitPoolAbsent { pool: ZfsPoolName },
-    #[error("Ployz sparse image pool preparation failed: {message}")]
-    SparsePool { message: String },
+    #[error("Ployz owned image pool preparation failed: {message}")]
+    OwnedPool { message: String },
+    #[error(
+        "Ployz owned pool is too small after host headroom: total={total_bytes} available={available_bytes} headroom={required_headroom_bytes} minimum_pool={minimum_pool_bytes}"
+    )]
+    OwnedPoolTooSmall {
+        total_bytes: u64,
+        available_bytes: u64,
+        required_headroom_bytes: u64,
+        minimum_pool_bytes: u64,
+    },
     #[error("ZFS property or dataset effect failed: {message}")]
     Dataset { message: String },
     #[error("prepared storage state is unavailable: {message}")]

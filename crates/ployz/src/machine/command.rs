@@ -16,10 +16,10 @@ use ployz_core::operation::OperationIdempotencyKey;
 use ployz_core::roles::InstallRolePolicy;
 
 use ployz_sdk_types::{
-    AcceptedOperation, MachineAddAccepted, MachineAddRequest, MachineEndpointObservation,
-    MachineInspectRequest, MachineListRequest, MachineListResult, MachineSnapshot,
-    MachineStoragePrepareRequest, MachineTestimony, MachineUpdateRequest, StorageCapability,
-    StorageUnavailableReason, StrandedVolumeReason,
+    AcceptedOperation, MachineAddAccepted, MachineAddRequest, MachineBuildCachePruneRequest,
+    MachineEndpointObservation, MachineInspectRequest, MachineListRequest, MachineListResult,
+    MachineSnapshot, MachineStoragePrepareRequest, MachineTestimony, MachineUpdateRequest,
+    StorageCapability, StorageUnavailableReason, StrandedVolumeReason,
 };
 
 pub use ployz_sdk_types::MachineName;
@@ -29,7 +29,8 @@ pub use ployz_sdk_types::{
 
 use crate::commands::{PloyzctlCliError, invalid_value};
 use crate::execution_support::{
-    generate_client_machine_storage_prepare_id, generate_client_machine_update_id,
+    generate_client_machine_build_cache_prune_id, generate_client_machine_storage_prepare_id,
+    generate_client_machine_update_id,
 };
 use crate::ingress::command::{AutomaticHostnamesCli, DnsTargetCli};
 use crate::machine::bootstrap::{
@@ -792,6 +793,23 @@ pub struct MachineStoragePrepareCommand {
     pub detach: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineBuildCachePruneCommand {
+    pub operation_id: OperationId,
+    pub machine_id: MachineId,
+    pub detach: bool,
+}
+
+impl MachineBuildCachePruneCommand {
+    #[must_use]
+    pub fn into_request(self) -> MachineBuildCachePruneRequest {
+        MachineBuildCachePruneRequest {
+            operation_id: self.operation_id,
+            machine_id: self.machine_id,
+        }
+    }
+}
+
 impl MachineStoragePrepareCommand {
     #[must_use]
     pub fn into_request(self) -> MachineStoragePrepareRequest {
@@ -923,6 +941,21 @@ pub(crate) fn machine_storage_prepare_command(
     })
 }
 
+pub(crate) fn machine_build_cache_prune_command(
+    parsed: MachineBuildCachePruneCli,
+) -> Result<MachineBuildCachePruneCommand, PloyzctlCliError> {
+    let machine_id = MachineId::try_new(parsed.machine_id)
+        .map_err(|error| invalid_value("<machine_id>", error))?;
+    let operation_id = generate_client_machine_build_cache_prune_id(&machine_id)
+        .map_err(|error| invalid_value("<machine_id>", error))?
+        .operation_id;
+    Ok(MachineBuildCachePruneCommand {
+        operation_id,
+        machine_id,
+        detach: parsed.detach,
+    })
+}
+
 #[derive(Debug, Args)]
 pub(crate) struct MachineInspectCli {
     machine_id: String,
@@ -942,6 +975,13 @@ pub(crate) struct MachineStoragePrepareCli {
     machine_id: String,
     #[arg(long)]
     pool: Option<String>,
+    #[arg(long)]
+    detach: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct MachineBuildCachePruneCli {
+    machine_id: String,
     #[arg(long)]
     detach: bool,
 }

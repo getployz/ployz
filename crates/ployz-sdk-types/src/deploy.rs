@@ -88,6 +88,16 @@ pub enum DeployPreviewError {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         unusable_machines: Vec<UnusableMachine>,
     },
+    #[error(
+        "service {} failed volume admission on machine {}: {failure}",
+        .service_id.as_str(),
+        .machine_id.as_str()
+    )]
+    VolumeAdmissionFailed {
+        service_id: ServiceId,
+        machine_id: MachineId,
+        failure: Box<VolumeAdmissionFailure>,
+    },
     #[error("deploy preview image unavailable")]
     ImageUnavailable {
         failure: Box<DeployPreviewImageFailure>,
