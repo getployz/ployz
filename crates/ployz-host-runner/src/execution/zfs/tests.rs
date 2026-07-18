@@ -861,7 +861,9 @@ fn failed_pool_create_cleanup_requires_conclusive_unused_observation() {
             "canonical backing vdev",
             vec![
                 stdout("ployz\n"),
-                pool_status(PLOYZ_OWNED_ZFS_POOL, PLOYZ_OWNED_ZFS_BACKING_FILE),
+                stdout(&format!(
+                    "config:\n\nNAME STATE READ WRITE CKSUM\n{PLOYZ_OWNED_ZFS_POOL} ONLINE 0 0 0\n  mirror-0 ONLINE 0 0 0\n    {PLOYZ_OWNED_ZFS_BACKING_FILE} ONLINE 0 0 0\n    /dev/loop1 ONLINE 0 0 0\n\nerrors: No known data errors\n"
+                )),
             ],
             vec![create(), list(), status()],
             Some("backing file retained"),
@@ -902,6 +904,28 @@ fn failed_pool_create_cleanup_requires_conclusive_unused_observation() {
                 stdout("ployz\n"),
                 stdout(
                     "config:\n\nNAME STATE READ WRITE CKSUM\nother ONLINE 0 0 0\n/dev/loop0 ONLINE 0 0 0\n",
+                ),
+            ],
+            vec![create(), list(), status()],
+            Some("ownership observation was inconclusive"),
+        ),
+        (
+            "root-only successful status",
+            vec![
+                stdout("ployz\n"),
+                stdout(
+                    "config:\n\nNAME STATE READ WRITE CKSUM\nployz ONLINE 0 0 0\n\nerrors: No known data errors\n",
+                ),
+            ],
+            vec![create(), list(), status()],
+            Some("ownership observation was inconclusive"),
+        ),
+        (
+            "malformed vdev row",
+            vec![
+                stdout("ployz\n"),
+                stdout(
+                    "config:\n\nNAME STATE READ WRITE CKSUM\nployz ONLINE 0 0 0\n/dev/loop0 ONLINE 0\n\nerrors: No known data errors\n",
                 ),
             ],
             vec![create(), list(), status()],

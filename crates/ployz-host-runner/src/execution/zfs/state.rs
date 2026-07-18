@@ -312,9 +312,41 @@ fn pool_status_uses_backing_file(
         });
     }
     let backing_file = backing_file.to_string_lossy();
-    Ok(lines
-        .filter_map(|line| line.split_whitespace().next())
-        .any(|path| path == backing_file))
+    let mut vdev_rows = 0;
+    let mut uses_backing_file = false;
+    for row in lines.take_while(|line| !line.trim().is_empty()) {
+        let columns = row.split_whitespace().collect::<Vec<_>>();
+        let [path, _, read, write, checksum, ..] = columns.as_slice() else {
+            return Err(ZfsEffectError::PreparedStateMismatch {
+                message: format!(
+                    "pool status output for {} has an invalid vdev row",
+                    pool.as_str()
+                ),
+            });
+        };
+        if [read, write, checksum]
+            .into_iter()
+            .any(|value| value.parse::<u64>().is_err())
+        {
+            return Err(ZfsEffectError::PreparedStateMismatch {
+                message: format!(
+                    "pool status output for {} has an invalid vdev row",
+                    pool.as_str()
+                ),
+            });
+        }
+        vdev_rows += 1;
+        uses_backing_file |= *path == backing_file;
+    }
+    if vdev_rows == 0 {
+        return Err(ZfsEffectError::PreparedStateMismatch {
+            message: format!(
+                "pool status output for {} has no canonical vdev rows",
+                pool.as_str()
+            ),
+        });
+    }
+    Ok(uses_backing_file)
 }
 
 fn observe_owned_backing_file_use(
