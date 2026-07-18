@@ -249,6 +249,8 @@ fn storage_capability_reports_pool_absence_fault_and_readiness() {
     let mut ready = RecordingRunner::new([
         stdout("tank\n"),
         stdout("ONLINE\n"),
+        stdout("tank\n"),
+        stdout(PROVISIONED_VOLUME_MOUNTPOINT),
         stdout("16384 8192\n"),
         stdout("0\n"),
         stdout("tank/ployz/volumes\tnone\n"),
@@ -282,6 +284,8 @@ fn storage_capability_does_not_report_ready_without_capacity() {
     let mut runner = RecordingRunner::new([
         stdout("tank\n"),
         stdout("ONLINE\n"),
+        stdout("tank\n"),
+        stdout(PROVISIONED_VOLUME_MOUNTPOINT),
         failed("capacity unavailable"),
     ]);
 
@@ -295,6 +299,8 @@ fn storage_capability_does_not_report_ready_without_capacity() {
     let mut parse_failure = RecordingRunner::new([
         stdout("tank\n"),
         stdout("ONLINE\n"),
+        stdout("tank\n"),
+        stdout(PROVISIONED_VOLUME_MOUNTPOINT),
         stdout("8192\n"),
         stdout("NAME QUOTA\ntank/ployz/volumes/not-a-child nope\n"),
     ]);
@@ -304,6 +310,56 @@ fn storage_capability_does_not_report_ready_without_capacity() {
             reason: ployz_core::machine::StorageUnavailableReason::CapacityFactsUnavailable,
         }
     );
+}
+
+#[test]
+fn storage_capability_rejects_adopted_pool_with_wrong_dataset_root_mountpoint() {
+    let state = tempfile::tempdir().unwrap();
+    persist(state.path(), PreparedStorageOrigin::Adopted);
+    let module = state.path().join("zfs");
+    std::fs::create_dir(&module).unwrap();
+    let mut runner = RecordingRunner::new([
+        stdout("tank\n"),
+        stdout("ONLINE\n"),
+        stdout("tank\n"),
+        stdout("/wrong"),
+    ]);
+
+    let error = observe_storage_capability(&mut runner, state.path(), &module).unwrap_err();
+
+    assert!(matches!(
+        error,
+        ZfsEffectError::PreparedStateMismatch { .. }
+    ));
+    assert_eq!(runner.invocations.len(), 4);
+}
+
+#[test]
+fn storage_capability_rejects_owned_pool_with_wrong_backing_identity() {
+    let state = tempfile::tempdir().unwrap();
+    persist(
+        state.path(),
+        PreparedStorageOrigin::OwnedImage {
+            backing_file: PathBuf::from(PLOYZ_OWNED_ZFS_BACKING_FILE),
+        },
+    );
+    let module = state.path().join("zfs");
+    std::fs::create_dir(&module).unwrap();
+    let mut runner = RecordingRunner::new([
+        stdout("ployz\n"),
+        stdout("ONLINE\n"),
+        stdout("ployz\n"),
+        stdout(PROVISIONED_VOLUME_MOUNTPOINT),
+        pool_status(PLOYZ_OWNED_ZFS_POOL, "/var/lib/ployz/zfs/other.img"),
+    ]);
+
+    let error = observe_storage_capability(&mut runner, state.path(), &module).unwrap_err();
+
+    assert!(matches!(
+        error,
+        ZfsEffectError::PreparedStateMismatch { .. }
+    ));
+    assert_eq!(runner.invocations.len(), 5);
 }
 
 #[test]
