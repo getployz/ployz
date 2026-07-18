@@ -600,7 +600,7 @@ for port in 53/udp 4222/tcp 80/tcp 443/tcp 51820/udp; do
   core "firewall-cmd --quiet --query-port=${port} && firewall-cmd --permanent --quiet --query-port=${port}"
 done
 for port in 53/udp 80/tcp 443/tcp 51820/udp; do
-  remote "$EDGE" "ufw status | awk '\$1 != \"${port}\" { next } \$2 == \"(v6)\" { next } { found=1; assured=(\$2 == \"ALLOW\" && \$3 == \"Anywhere\"); exit } END { exit !(found && assured) }'"
+  remote "$EDGE" "ufw status verbose | awk '\$1 != \"${port}\" { next } \$2 == \"(v6)\" { next } { found=1; assured=(\$2 == \"ALLOW\" && \$3 == \"IN\" && \$4 == \"Anywhere\"); exit } END { exit !(found && assured) }'"
 done
 
 log "deploying image-based Compose app (2 replicas, managed HTTPS URL)"
