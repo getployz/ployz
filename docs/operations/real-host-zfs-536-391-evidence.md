@@ -27,6 +27,8 @@ candidate.
 - build platforms: `<linux/amd64,linux/arm64 or linux/amd64 under waiver>`
 - #536 evidence result: `<valid after completed certification>`
 - #391 ARM/native-build result: `<valid or not-applicable; never passed by waiver>`
+- #391 full acceptance result: `<valid or not-certified; waiver must be not-certified>`
+- managed DNS/TLS result: `<valid or not-certified; waiver must be not-certified>`
 - Success marker and exit status: `<location; status>`
 
 Do not record secrets. Redactions must preserve the fact that authenticated
@@ -97,9 +99,12 @@ gate. It does not substitute for the separate 27-claim hosted-product record in
 [`beta-acceptance.md`](beta-acceptance.md).
 
 For an amd64-edge waiver run, record the ARM edge and both native arm64 build
-rows as `N/A — amd64 edge waiver`; do not check them as passed. Other rows may
-be supported by the run on their own evidence. The waiver makes #536 valid; it
-does not complete #391's mixed-architecture acceptance.
+rows as `N/A — amd64 edge waiver`. Also record the replicas, managed HTTPS,
+cross-machine routing, restart-invisibility, and CLI smoke rows as
+`N/A — not certified by ZFS-only waiver`; the ZFS-only wrapper does not run CLI
+smoke. Do not check any of those rows as passed. Other rows may be supported by
+the run on their own evidence. The waiver makes #536 valid; it does not complete
+#391 full acceptance.
 
 | #391 claim | Required proof | Evidence location | Result |
 | --- | --- | --- | --- |
@@ -109,17 +114,17 @@ does not complete #391's mixed-architecture acceptance.
 | Host firewalls open exactly Ployz ports | provider + firewalld + UFW evidence | `<location>` | [ ] |
 | Dockerfile builds native amd64 and arm64 | exact-commit operation receipt and stable index | `<location or N/A — amd64 edge waiver>` | `<pass or N/A — amd64 edge waiver>` |
 | Railpack builds native amd64 and arm64 | exact-commit operation receipt and stable index | `<location or N/A — amd64 edge waiver>` | `<pass or N/A — amd64 edge waiver>` |
-| Replicas land on both machines | machine/container testimony | `<location>` | [ ] |
-| Managed HTTPS returns 200 | DNS, TLS, response, timing | `<location>` | [ ] |
-| Cross-machine routing works through both gateways | local-replica-stop probes | `<location>` | [ ] |
-| Route survives control-daemon restart | uninterrupted probe transcript | `<location>` | [ ] |
+| Replicas land on both machines | machine/container testimony | `<location or N/A — not certified by ZFS-only waiver>` | `<pass or N/A — not certified by ZFS-only waiver>` |
+| Managed HTTPS returns 200 | DNS, TLS, response, timing | `<location or N/A — not certified by ZFS-only waiver>` | `<pass or N/A — not certified by ZFS-only waiver>` |
+| Cross-machine routing works through both gateways | local-replica-stop probes | `<location or N/A — not certified by ZFS-only waiver>` | `<pass or N/A — not certified by ZFS-only waiver>` |
+| Route survives control-daemon restart | uninterrupted probe transcript | `<location or N/A — not certified by ZFS-only waiver>` | `<pass or N/A — not certified by ZFS-only waiver>` |
 | Provisioned Volume is a real ZFS dataset | pin/list/mount/quota/dataset agreement | `<location>` | [ ] |
 | Database row survives a real Rocky reboot | before/after row and same-dataset proof | `<location>` | [ ] |
 | Pool import ordering is correct | systemd boot ordering and no manual import | `<location>` | [ ] |
 | ZFS-module failure is loud and non-destructive | typed testimony, alarm, stopped workload, preserved state | `<location>` | [ ] |
 | Control plane survives storage unavailability | service health and bounded command proof | `<location>` | [ ] |
 | Recovery restores the original data | same dataset and row after restoration | `<location>` | [ ] |
-| CLI smoke path | passing `scripts/cli-smoke-test.sh` command, output, and timing | `<location>` | [ ] |
+| CLI smoke path | passing `scripts/cli-smoke-test.sh` command, output, and timing | `<location or N/A — not certified by ZFS-only waiver>` | `<pass or N/A — not certified by ZFS-only waiver>` |
 
 ## Phase transcript index
 
@@ -128,7 +133,7 @@ does not complete #391's mixed-architecture acceptance.
 | candidate preflight | `<times>` | `<commands>` | `<status>` | `<summary>` | `<location>` |
 | host preflight/install/join | `<times>` | `<commands>` | `<status>` | `<summary>` | `<location>` |
 | native builds/cancellation | `<times>` | `<commands>` | `<status>` | `<summary>` | `<location>` |
-| deploy/network/restart | `<times>` | `<commands>` | `<status>` | `<summary>` | `<location>` |
+| deploy/network/restart | `<times or N/A — ZFS-only waiver>` | `<commands or N/A — ZFS-only waiver>` | `<status or N/A — ZFS-only waiver>` | `<summary or N/A — ZFS-only waiver>` | `<location or N/A — ZFS-only waiver>` |
 | ZFS prepare/PostgreSQL write | `<times>` | `<commands>` | `<status>` | `<summary>` | `<location>` |
 | normal reboot/persistence | `<times>` | `<commands>` | `<status>` | `<summary>` | `<location>` |
 | module inventory/quarantine | `<times>` | `<commands>` | `<status>` | `<summary>` | `<location>` |
@@ -173,4 +178,4 @@ does not complete #391's mixed-architecture acceptance.
 - Secret scan/redaction result: `<command/output/location>`
 - Quarantine copies removed only after recovery/evidence review: `<evidence>`
 - All #536 acceptance rows checked: `<yes>`
-- All relevant #391 rows checked, with ARM/native-build rows explicitly N/A for a waiver run: `<yes>`
+- All relevant #391 rows checked, with ARM/native-build, managed-ingress, routing/restart, and CLI smoke rows explicitly N/A for a waiver run: `<yes>`

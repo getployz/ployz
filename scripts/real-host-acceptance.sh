@@ -252,9 +252,11 @@ REMOTE_RESTORE
 configure_acceptance_architecture() {
   local zfs_certify=$1
   local amd64_edge_waiver=$2
+  RUN_ZFS_CERTIFICATION=$zfs_certify
 
   case "$amd64_edge_waiver" in
     0)
+      RUN_MANAGED_CAPSTONE=1
       ACCEPTANCE_ARCHITECTURE_MODE=mixed-amd64-arm64
       BUILD_PLATFORM_ARGUMENTS='--platform linux/amd64 --platform linux/arm64'
       BUILD_EXPECTED_PLATFORMS='linux/amd64,linux/arm64'
@@ -271,6 +273,7 @@ configure_acceptance_architecture() {
         log "PLOYZ_REAL_HOST_AMD64_EDGE_WAIVER=1 is only valid with PLOYZ_REAL_HOST_ZFS_CERTIFY=1"
         return 1
       fi
+      RUN_MANAGED_CAPSTONE=0
       ACCEPTANCE_ARCHITECTURE_MODE=amd64-only-non-mixed
       BUILD_PLATFORM_ARGUMENTS='--platform linux/amd64'
       BUILD_EXPECTED_PLATFORMS='linux/amd64'
@@ -278,15 +281,27 @@ configure_acceptance_architecture() {
       EDGE_ARCHITECTURE_LABEL='amd64 Ubuntu edge (ZFS waiver)'
       EDGE_ACCEPTED_ARCHITECTURES=x86_64
       ARCHITECTURE_WAIVER_METADATA=$'edge_arch_waiver=arm64_provider_capacity_unavailable\narchitecture_mode=amd64-only-non-mixed\nbuild_platforms=linux/amd64\nissue_391_arm_native_build=not-applicable\n'
-      ARCHITECTURE_RESULT_METADATA=$'issue_536_result=valid\n'
+      ARCHITECTURE_RESULT_METADATA=$'issue_536_result=valid\nissue_391_full_acceptance=not-certified\nmanaged_dns_tls=not-certified\n'
       ZFS_SUCCESS_MARKER='ZFS REAL-HOST CERTIFICATION PASSED: AMD64 EDGE WAIVER (NON-MIXED)'
-      ACCEPTANCE_SUCCESS_MARKER='ACCEPTANCE PASSED: amd64 edge waiver; mixed architecture not certified'
+      ACCEPTANCE_SUCCESS_MARKER='ACCEPTANCE PASSED: ZFS-only under amd64 edge waiver; mixed architecture and managed DNS/TLS not certified'
       ;;
     *)
       log "PLOYZ_REAL_HOST_AMD64_EDGE_WAIVER must be 0 or 1"
       return 1
       ;;
   esac
+}
+
+dispatch_acceptance_phases() {
+  local managed_runner=$1
+  local zfs_runner=$2
+
+  if [ "$RUN_MANAGED_CAPSTONE" = 1 ]; then
+    "$managed_runner"
+  fi
+  if [ "$RUN_ZFS_CERTIFICATION" = 1 ]; then
+    "$zfs_runner"
+  fi
 }
 
 write_authenticated_git_fixture_program() {
@@ -332,6 +347,11 @@ run_real_host_acceptance_regression_test() {
   local cancel_watch_status_guard json_assertion
   local cancel_command_line cancel_status_capture_line cancel_status_guard_line cancel_watch_line
   local cancel_watch_status_capture_line cancel_watch_status_guard_line json_assertion_line
+  local managed_function managed_deploy_log restart_invisibility_log dispatch_invocation
+  local dockerfile_build_log railpack_build_log cancellation_log firewall_log direct_zfs_invocation
+  local dockerfile_build_log_line railpack_build_log_line cancellation_log_line firewall_log_line
+  local managed_function_line managed_deploy_log_line restart_invisibility_log_line dispatch_invocation_line
+  local acceptance_phase_sequence
   evidence=$(mktemp -d)
   trap 'rm -rf "$evidence"' RETURN
   : > "$evidence/metadata.env"
@@ -376,6 +396,44 @@ run_real_host_acceptance_regression_test() {
   [ "$(sed -n "$((cancel_watch_status_capture_line + 1))p" "$0")" = 'set -e' ]
   [ "$cancel_watch_status_guard_line" -eq $((cancel_watch_status_capture_line + 2)) ]
   [ "$json_assertion_line" -gt "$cancel_watch_status_guard_line" ]
+
+  dockerfile_build_log="log \"building authenticated exact SHA for \${BUILD_ARCHITECTURES_LABEL} with Dockerfile\""
+  railpack_build_log="log \"building authenticated exact SHA for \${BUILD_ARCHITECTURES_LABEL} with Railpack\""
+  cancellation_log='log "cancelling a blocking authenticated build and checking cleanup evidence"'
+  firewall_log='log "checking keeper-managed firewall rules"'
+  managed_function='run_managed_capstone() {'
+  managed_deploy_log='log "deploying image-based Compose app (2 replicas, managed HTTPS URL)"'
+  restart_invisibility_log='log "  continuous HTTPS probe saw no interruption"'
+  dispatch_invocation='dispatch_acceptance_phases run_managed_capstone run_zfs_real_host_certification'
+  direct_zfs_invocation='  run_zfs_real_host_certification'
+  [ "$(grep -Fxc "$dockerfile_build_log" "$0")" -eq 1 ]
+  [ "$(grep -Fxc "$railpack_build_log" "$0")" -eq 1 ]
+  [ "$(grep -Fxc "$cancellation_log" "$0")" -eq 1 ]
+  [ "$(grep -Fxc "$firewall_log" "$0")" -eq 1 ]
+  [ "$(grep -Fxc "$managed_function" "$0")" -eq 1 ]
+  [ "$(grep -Fxc "$managed_deploy_log" "$0")" -eq 1 ]
+  [ "$(grep -Fxc "$restart_invisibility_log" "$0")" -eq 1 ]
+  [ "$(grep -Fxc "$dispatch_invocation" "$0")" -eq 1 ]
+  [ "$(grep -Fxc "$direct_zfs_invocation" "$0")" -eq 0 ]
+  dockerfile_build_log_line=$(grep -Fnx "$dockerfile_build_log" "$0" | cut -d: -f1)
+  railpack_build_log_line=$(grep -Fnx "$railpack_build_log" "$0" | cut -d: -f1)
+  cancellation_log_line=$(grep -Fnx "$cancellation_log" "$0" | cut -d: -f1)
+  firewall_log_line=$(grep -Fnx "$firewall_log" "$0" | cut -d: -f1)
+  managed_function_line=$(grep -Fnx "$managed_function" "$0" | cut -d: -f1)
+  managed_deploy_log_line=$(grep -Fnx "$managed_deploy_log" "$0" | cut -d: -f1)
+  restart_invisibility_log_line=$(grep -Fnx "$restart_invisibility_log" "$0" | cut -d: -f1)
+  dispatch_invocation_line=$(grep -Fnx "$dispatch_invocation" "$0" | cut -d: -f1)
+  [ "$dockerfile_build_log_line" -lt "$railpack_build_log_line" ]
+  [ "$railpack_build_log_line" -lt "$cancellation_log_line" ]
+  [ "$cancellation_log_line" -lt "$firewall_log_line" ]
+  [ "$firewall_log_line" -lt "$managed_function_line" ]
+  [ "$managed_deploy_log_line" -eq $((managed_function_line + 1)) ]
+  [ "$(sed -n "$((restart_invisibility_log_line + 1))p" "$0")" = '}' ]
+  [ "$dispatch_invocation_line" -gt "$restart_invisibility_log_line" ]
+  [ "$(sed -n "$((dispatch_invocation_line - 2))p" "$0")" = '}' ]
+  [ -z "$(sed -n "$((dispatch_invocation_line - 1))p" "$0")" ]
+  [ -z "$(sed -n "$((dispatch_invocation_line + 1))p" "$0")" ]
+  [ "$(sed -n "$((dispatch_invocation_line + 2))p" "$0")" = "log \"\$ACCEPTANCE_SUCCESS_MARKER\"" ]
 
   rendered_git_program="$evidence/authenticated-git-fixture.sh"
   write_authenticated_git_fixture_program 192.0.2.1 > "$rendered_git_program"
@@ -433,7 +491,21 @@ run_real_host_acceptance_regression_test() {
   grep -Fx 'storage-alarms none' "$evidence/storage-ready.stdout" >/dev/null
   grep -Fx 'inspect_calls=3' "$evidence/storage-ready.stdout" >/dev/null
 
+  # shellcheck disable=SC2317 # The dispatcher invokes this recorder by name.
+  record_managed_phase() {
+    acceptance_phase_sequence="${acceptance_phase_sequence:+${acceptance_phase_sequence} }managed"
+  }
+  # shellcheck disable=SC2317 # The dispatcher invokes this recorder by name.
+  record_zfs_phase() {
+    acceptance_phase_sequence="${acceptance_phase_sequence:+${acceptance_phase_sequence} }zfs"
+  }
+
   configure_acceptance_architecture 1 1
+  [ "$RUN_MANAGED_CAPSTONE" = 0 ]
+  [ "$RUN_ZFS_CERTIFICATION" = 1 ]
+  acceptance_phase_sequence=
+  dispatch_acceptance_phases record_managed_phase record_zfs_phase
+  [ "$acceptance_phase_sequence" = zfs ]
   [ "$ACCEPTANCE_ARCHITECTURE_MODE" = amd64-only-non-mixed ]
   [ "$BUILD_PLATFORM_ARGUMENTS" = '--platform linux/amd64' ]
   [ "$BUILD_EXPECTED_PLATFORMS" = linux/amd64 ]
@@ -441,11 +513,11 @@ run_real_host_acceptance_regression_test() {
   [ "$EDGE_ARCHITECTURE_LABEL" = 'amd64 Ubuntu edge (ZFS waiver)' ]
   [ "$EDGE_ACCEPTED_ARCHITECTURES" = x86_64 ]
   [ "$ARCHITECTURE_WAIVER_METADATA" = $'edge_arch_waiver=arm64_provider_capacity_unavailable\narchitecture_mode=amd64-only-non-mixed\nbuild_platforms=linux/amd64\nissue_391_arm_native_build=not-applicable\n' ]
-  [ "$ARCHITECTURE_RESULT_METADATA" = $'issue_536_result=valid\n' ]
+  [ "$ARCHITECTURE_RESULT_METADATA" = $'issue_536_result=valid\nissue_391_full_acceptance=not-certified\nmanaged_dns_tls=not-certified\n' ]
   [ "$ZFS_SUCCESS_MARKER" = \
     'ZFS REAL-HOST CERTIFICATION PASSED: AMD64 EDGE WAIVER (NON-MIXED)' ]
   [ "$ACCEPTANCE_SUCCESS_MARKER" = \
-    'ACCEPTANCE PASSED: amd64 edge waiver; mixed architecture not certified' ]
+    'ACCEPTANCE PASSED: ZFS-only under amd64 edge waiver; mixed architecture and managed DNS/TLS not certified' ]
   child_status=0
   configure_acceptance_architecture 0 1 > "$evidence/waiver-without-zfs.stdout" \
     || child_status=$?
@@ -453,6 +525,11 @@ run_real_host_acceptance_regression_test() {
   grep -F 'PLOYZ_REAL_HOST_AMD64_EDGE_WAIVER=1 is only valid with PLOYZ_REAL_HOST_ZFS_CERTIFY=1' \
     "$evidence/waiver-without-zfs.stdout" >/dev/null
   configure_acceptance_architecture 1 0
+  [ "$RUN_MANAGED_CAPSTONE" = 1 ]
+  [ "$RUN_ZFS_CERTIFICATION" = 1 ]
+  acceptance_phase_sequence=
+  dispatch_acceptance_phases record_managed_phase record_zfs_phase
+  [ "$acceptance_phase_sequence" = 'managed zfs' ]
   [ "$ACCEPTANCE_ARCHITECTURE_MODE" = mixed-amd64-arm64 ]
   [ "$BUILD_PLATFORM_ARGUMENTS" = '--platform linux/amd64 --platform linux/arm64' ]
   [ "$BUILD_EXPECTED_PLATFORMS" = linux/amd64,linux/arm64 ]
@@ -464,6 +541,12 @@ run_real_host_acceptance_regression_test() {
   [ "$ZFS_SUCCESS_MARKER" = 'ZFS REAL-HOST CERTIFICATION PASSED' ]
   [ "$ACCEPTANCE_SUCCESS_MARKER" = \
     'ACCEPTANCE PASSED: mixed-arch + firewalld/UFW + public HTTPS' ]
+  configure_acceptance_architecture 0 0
+  [ "$RUN_MANAGED_CAPSTONE" = 1 ]
+  [ "$RUN_ZFS_CERTIFICATION" = 0 ]
+  acceptance_phase_sequence=
+  dispatch_acceptance_phases record_managed_phase record_zfs_phase
+  [ "$acceptance_phase_sequence" = managed ]
 
   rescue_root="$evidence/original-root"
   fake_bin="$evidence/bin"
@@ -636,7 +719,7 @@ if [ "$ZFS_CERTIFY" != 0 ] && [ "$ZFS_CERTIFY" != 1 ]; then
 fi
 configure_acceptance_architecture \
   "$ZFS_CERTIFY" "${PLOYZ_REAL_HOST_AMD64_EDGE_WAIVER:-0}" || exit 1
-if [ "$ZFS_CERTIFY" = 1 ]; then
+if [ "$RUN_ZFS_CERTIFICATION" = 1 ]; then
   [ -n "$ZFS_EVIDENCE_DIR" ] || {
     log "PLOYZ_REAL_HOST_EVIDENCE_DIR is required for ZFS certification"
     exit 1
@@ -736,7 +819,7 @@ core 'grep -qE "^(ID|ID_LIKE)=.*(rhel|fedora|rocky)" /etc/os-release' || {
 remote "$EDGE" 'grep -q "^ID=ubuntu" /etc/os-release' || {
   log "edge must be Ubuntu"; exit 1;
 }
-if [ "$ZFS_CERTIFY" = 1 ]; then
+if [ "$RUN_ZFS_CERTIFICATION" = 1 ]; then
   core 'source /etc/os-release; [ "$ID" = rocky ] && [[ "$VERSION_ID" = 9* ]]' || {
     log "ZFS certification requires Rocky Linux 9 on the core"; exit 1;
   }
@@ -768,7 +851,7 @@ core "ssh-keyscan -T 8 ${CORE} 127.0.0.1 >> ~/.ssh/known_hosts 2>/dev/null"
 log "installing the public alpha CLI on the core"
 core "timeout 10m sh -c 'curl --connect-timeout 20 --max-time 120 -fsSL https://ployz.sh | sh -s -- --channel alpha >/dev/null'"
 log "version: $(core 'grep -h PLOYZ_VERSION /etc/ployz/release.env')"
-if [ "$ZFS_CERTIFY" = 1 ]; then
+if [ "$RUN_ZFS_CERTIFICATION" = 1 ]; then
   curl --connect-timeout 20 --max-time 120 -fsSL https://ployz.sh/channels/alpha.env \
     -o "$ZFS_EVIDENCE_DIR/live-alpha.env"
   live_alpha_tag=$(awk -F= '$1 == "PLOYZ_RELEASE_TAG" { print substr($0, index($0, "=") + 1); exit }' "$ZFS_EVIDENCE_DIR/live-alpha.env")
@@ -804,7 +887,7 @@ t0=$(ts)
 core "timeout 15m ployz machine add root@${EDGE} --name ployz-edge"
 log "TIMING machine-add=$(( $(ts)-t0 ))s"
 core 'ployz machine list'
-if [ "$ZFS_CERTIFY" = 1 ]; then
+if [ "$RUN_ZFS_CERTIFICATION" = 1 ]; then
   edge_installed_tag=$(remote "$EDGE" "awk -F= '\$1 == \"PLOYZ_RELEASE_TAG\" { print substr(\$0, index(\$0, \"=\") + 1); exit }' /etc/ployz/release.env")
   edge_installed_manifest=$(remote "$EDGE" "awk -F= '\$1 == \"PLOYZ_RELEASE_MANIFEST_URL\" { print substr(\$0, index(\$0, \"=\") + 1); exit }' /etc/ployz/release.env")
   [ "$edge_installed_tag" = "$EXPECTED_RELEASE_TAG" ] || {
@@ -898,6 +981,7 @@ for port in 53/udp 80/tcp 443/tcp 51820/udp; do
   remote "$EDGE" "ufw status verbose | awk '\$1 != \"${port}\" { next } \$2 == \"(v6)\" { next } { found=1; assured=(\$2 == \"ALLOW\" && \$3 == \"IN\" && \$4 == \"Anywhere\"); exit } END { exit !(found && assured) }'"
 done
 
+run_managed_capstone() {
 log "deploying image-based Compose app (2 replicas, managed HTTPS URL)"
 core 'cat > /tmp/ployz-acceptance.yml <<"YAML"
 name: acceptance
@@ -982,6 +1066,7 @@ probe_pid=
 rm -rf "$probe_dir"
 probe_dir=
 log "  continuous HTTPS probe saw no interruption"
+}
 
 core_before_deadline() {
   local deadline=$1
@@ -1497,8 +1582,6 @@ EOF
   log "$ZFS_SUCCESS_MARKER"
 }
 
-if [ "$ZFS_CERTIFY" = 1 ]; then
-  run_zfs_real_host_certification
-fi
+dispatch_acceptance_phases run_managed_capstone run_zfs_real_host_certification
 
 log "$ACCEPTANCE_SUCCESS_MARKER"
