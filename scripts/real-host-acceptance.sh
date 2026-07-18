@@ -422,6 +422,10 @@ run_real_host_acceptance_regression_test() {
     > "$evidence/waiver-zfs-success.stdout"
   grep -F 'ZFS REAL-HOST CERTIFICATION PASSED: AMD64 EDGE WAIVER (NON-MIXED)' \
     "$evidence/waiver-zfs-success.stdout" >/dev/null
+  log_acceptance_success_marker "$ACCEPTANCE_ARCHITECTURE_MODE" \
+    > "$evidence/waiver-acceptance-success.stdout"
+  grep -F 'ACCEPTANCE PASSED: amd64 edge waiver; mixed architecture not certified' \
+    "$evidence/waiver-acceptance-success.stdout" >/dev/null
   child_status=0
   configure_acceptance_architecture 0 1 > "$evidence/waiver-without-zfs.stdout" \
     || child_status=$?
@@ -444,6 +448,10 @@ run_real_host_acceptance_regression_test() {
     > "$evidence/mixed-zfs-success.stdout"
   grep -F 'ZFS REAL-HOST CERTIFICATION PASSED' \
     "$evidence/mixed-zfs-success.stdout" >/dev/null
+  log_acceptance_success_marker "$ACCEPTANCE_ARCHITECTURE_MODE" \
+    > "$evidence/mixed-acceptance-success.stdout"
+  grep -F 'ACCEPTANCE PASSED: mixed-arch + firewalld/UFW + public HTTPS' \
+    "$evidence/mixed-acceptance-success.stdout" >/dev/null
 
   rescue_root="$evidence/original-root"
   fake_bin="$evidence/bin"
