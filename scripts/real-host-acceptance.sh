@@ -249,6 +249,38 @@ test "$(modinfo -k "$kernel" -n zfs)" = "$module_path"
 REMOTE_RESTORE
 }
 
+configure_acceptance_architecture() {
+  local zfs_certify=$1
+  local amd64_edge_waiver=$2
+
+  case "$amd64_edge_waiver" in
+    0)
+      ACCEPTANCE_ARCHITECTURE_MODE=mixed-amd64-arm64
+      BUILD_PLATFORM_ARGUMENTS='--platform linux/amd64 --platform linux/arm64'
+      BUILD_EXPECTED_PLATFORMS='linux/amd64,linux/arm64'
+      BUILD_ARCHITECTURES_LABEL='amd64 and arm64'
+      EDGE_ARCHITECTURE_LABEL='arm64 Ubuntu edge'
+      ACCEPTANCE_SUCCESS_MARKER='ACCEPTANCE PASSED: mixed-arch + firewalld/UFW + public HTTPS'
+      ;;
+    1)
+      if [ "$zfs_certify" != 1 ]; then
+        log "PLOYZ_REAL_HOST_AMD64_EDGE_WAIVER=1 is only valid with PLOYZ_REAL_HOST_ZFS_CERTIFY=1"
+        return 1
+      fi
+      ACCEPTANCE_ARCHITECTURE_MODE=amd64-only-non-mixed
+      BUILD_PLATFORM_ARGUMENTS='--platform linux/amd64'
+      BUILD_EXPECTED_PLATFORMS='linux/amd64'
+      BUILD_ARCHITECTURES_LABEL=amd64
+      EDGE_ARCHITECTURE_LABEL='amd64 Ubuntu edge (ZFS waiver)'
+      ACCEPTANCE_SUCCESS_MARKER='ACCEPTANCE PASSED: amd64 edge waiver; mixed architecture not certified'
+      ;;
+    *)
+      log "PLOYZ_REAL_HOST_AMD64_EDGE_WAIVER must be 0 or 1"
+      return 1
+      ;;
+  esac
+}
+
 run_real_host_acceptance_regression_test() {
   local evidence failure_output success_output reboot_output recovery_output rescue_root fake_bin
   local module_contents module_sha module_mode module_uid module_gid child_status=0
@@ -302,6 +334,25 @@ run_real_host_acceptance_regression_test() {
   grep -Fx 'storage ready pool=probe-pool' "$evidence/storage-ready.stdout" >/dev/null
   grep -Fx 'storage-alarms none' "$evidence/storage-ready.stdout" >/dev/null
   grep -Fx 'inspect_calls=3' "$evidence/storage-ready.stdout" >/dev/null
+
+  configure_acceptance_architecture 1 1
+  [ "$ACCEPTANCE_ARCHITECTURE_MODE" = amd64-only-non-mixed ]
+  [ "$BUILD_PLATFORM_ARGUMENTS" = '--platform linux/amd64' ]
+  [ "$BUILD_EXPECTED_PLATFORMS" = linux/amd64 ]
+  [ "$ACCEPTANCE_SUCCESS_MARKER" = \
+    'ACCEPTANCE PASSED: amd64 edge waiver; mixed architecture not certified' ]
+  child_status=0
+  configure_acceptance_architecture 0 1 > "$evidence/waiver-without-zfs.stdout" \
+    || child_status=$?
+  [ "$child_status" -ne 0 ]
+  grep -F 'PLOYZ_REAL_HOST_AMD64_EDGE_WAIVER=1 is only valid with PLOYZ_REAL_HOST_ZFS_CERTIFY=1' \
+    "$evidence/waiver-without-zfs.stdout" >/dev/null
+  configure_acceptance_architecture 1 0
+  [ "$ACCEPTANCE_ARCHITECTURE_MODE" = mixed-amd64-arm64 ]
+  [ "$BUILD_PLATFORM_ARGUMENTS" = '--platform linux/amd64 --platform linux/arm64' ]
+  [ "$BUILD_EXPECTED_PLATFORMS" = linux/amd64,linux/arm64 ]
+  [ "$ACCEPTANCE_SUCCESS_MARKER" = \
+    'ACCEPTANCE PASSED: mixed-arch + firewalld/UFW + public HTTPS' ]
 
   rescue_root="$evidence/original-root"
   fake_bin="$evidence/bin"
@@ -444,6 +495,7 @@ case ${1:-} in
 esac
 
 ZFS_CERTIFY=${PLOYZ_REAL_HOST_ZFS_CERTIFY:-0}
+AMD64_EDGE_WAIVER=${PLOYZ_REAL_HOST_AMD64_EDGE_WAIVER:-0}
 ZFS_EVIDENCE_DIR=${PLOYZ_REAL_HOST_EVIDENCE_DIR:-}
 EXPECTED_RELEASE_TAG=${PLOYZ_EXPECTED_RELEASE_TAG:-}
 EXPECTED_RUNTIME_SHA=${PLOYZ_EXPECTED_RUNTIME_SHA:-}
@@ -472,6 +524,7 @@ if [ "$ZFS_CERTIFY" != 0 ] && [ "$ZFS_CERTIFY" != 1 ]; then
   log "PLOYZ_REAL_HOST_ZFS_CERTIFY must be 0 or 1"
   exit 1
 fi
+configure_acceptance_architecture "$ZFS_CERTIFY" "$AMD64_EDGE_WAIVER" || exit 1
 if [ "$ZFS_CERTIFY" = 1 ]; then
   [ -n "$ZFS_EVIDENCE_DIR" ] || {
     log "PLOYZ_REAL_HOST_EVIDENCE_DIR is required for ZFS certification"
@@ -516,6 +569,12 @@ if [ "$ZFS_CERTIFY" = 1 ]; then
     printf 'core=%s\nedge=%s\n' "$CORE" "$EDGE"
     printf 'release_tag=%s\nruntime_sha=%s\n' "$EXPECTED_RELEASE_TAG" "$EXPECTED_RUNTIME_SHA"
     printf 'harness_sha=%s\nminimum_runtime_sha=%s\n' "$harness_sha" "$MINIMUM_ZFS_RUNTIME_SHA"
+    if [ "$AMD64_EDGE_WAIVER" = 1 ]; then
+      printf 'edge_arch_waiver=arm64_provider_capacity_unavailable\n'
+      printf 'architecture_mode=%s\n' "$ACCEPTANCE_ARCHITECTURE_MODE"
+      printf 'build_platforms=%s\n' "$BUILD_EXPECTED_PLATFORMS"
+      printf 'issue_391_arm_native_build=not-applicable\n'
+    fi
   } > "$ZFS_EVIDENCE_DIR/metadata.env"
   exec > >(tee -a "$ZFS_EVIDENCE_DIR/transcript.log") 2>&1
 fi
@@ -561,7 +620,13 @@ done
 core_arch=$(core 'uname -m')
 edge_arch=$(remote "$EDGE" 'uname -m')
 [ "$core_arch" = x86_64 ] || { log "core must be amd64 (x86_64), got $core_arch"; exit 1; }
-case "$edge_arch" in aarch64|arm64) ;; *) log "edge must be arm64, got $edge_arch"; exit 1;; esac
+if [ "$AMD64_EDGE_WAIVER" = 1 ]; then
+  [ "$edge_arch" = x86_64 ] || {
+    log "ZFS amd64 edge waiver requires x86_64, got $edge_arch"; exit 1;
+  }
+else
+  case "$edge_arch" in aarch64|arm64) ;; *) log "edge must be arm64, got $edge_arch"; exit 1;; esac
+fi
 core 'grep -qE "^(ID|ID_LIKE)=.*(rhel|fedora|rocky)" /etc/os-release' || {
   log "core must be Rocky/RHEL-family"; exit 1;
 }
@@ -631,7 +696,7 @@ core_key=$(core 'cat ~/.ssh/id_ed25519.pub')
 remote "$EDGE" "grep -qF '${core_key}' ~/.ssh/authorized_keys 2>/dev/null || echo '${core_key}' >> ~/.ssh/authorized_keys"
 core "ssh-keyscan -T 8 ${EDGE} >> ~/.ssh/known_hosts 2>/dev/null"
 
-log "machine add (arm64 Ubuntu edge)"
+log "machine add (${EDGE_ARCHITECTURE_LABEL})"
 t0=$(ts)
 core "timeout 15m ployz machine add root@${EDGE} --name ployz-edge"
 log "TIMING machine-add=$(( $(ts)-t0 ))s"
@@ -700,7 +765,8 @@ assert_build_evidence() {
   first_index=$(BUILD_EVENTS="$first" python3 -c 'import json,os; events=[json.loads(line)["event"] for line in os.environ["BUILD_EVENTS"].splitlines() if line]; print(next(event["receipt"]["index_digest"] for event in events if event.get("event") == "build_completed"))')
   second_index=$(BUILD_EVENTS="$second" python3 -c 'import json,os; events=[json.loads(line)["event"] for line in os.environ["BUILD_EVENTS"].splitlines() if line]; print(next(event["receipt"]["index_digest"] for event in events if event.get("event") == "build_completed"))')
   [ -n "$first_index" ] && [ "$first_index" = "$second_index" ] || { log "${operation_id} logical index was empty or unstable"; exit 1; }
-  BUILD_EVENTS="$first" BUILD_COMMIT="$build_commit" BUILD_ADAPTER="$expected_adapter" python3 - <<'PY'
+  BUILD_EVENTS="$first" BUILD_COMMIT="$build_commit" BUILD_ADAPTER="$expected_adapter" \
+    BUILD_EXPECTED_PLATFORMS="$BUILD_EXPECTED_PLATFORMS" python3 - <<'PY'
 import json, os
 events = [json.loads(line)["event"] for line in os.environ["BUILD_EVENTS"].splitlines() if line]
 verified = [event for event in events if event.get("event") == "build_commit_verified"]
@@ -708,18 +774,19 @@ assert any(event["commit"]["commit"] == os.environ["BUILD_COMMIT"] for event in 
 completed = [event for event in events if event.get("event") == "build_completed"]
 assert len(completed) == 1
 platforms = completed[0]["receipt"]["platforms"]
-assert {(item[0]["os"], item[0]["architecture"]) for item in platforms} == {("linux", "amd64"), ("linux", "arm64")}
+expected_platforms = {tuple(platform.split("/", 1)) for platform in os.environ["BUILD_EXPECTED_PLATFORMS"].split(",")}
+assert {(item[0]["os"], item[0]["architecture"]) for item in platforms} == expected_platforms
 submitted = [event for event in events if event.get("event") == "build_submitted"]
 assert len(submitted) == 1 and submitted[0]["adapter"]["adapter"] == os.environ["BUILD_ADAPTER"]
 PY
 }
 
-log "building authenticated exact SHA for amd64 and arm64 with Dockerfile"
-core "set -a; . /tmp/ployz-build-git/secret.env; set +a; timeout 30m ployz build submit --git 'https://${CORE}:9443/repo.git' --commit '${build_commit}' --git-username builder --git-secret-env PLOYZ_BUILD_GIT_SECRET --subdir dockerfile --platform linux/amd64 --platform linux/arm64 --dockerfile Dockerfile --operation-id op_real_host_build_dockerfile"
+log "building authenticated exact SHA for ${BUILD_ARCHITECTURES_LABEL} with Dockerfile"
+core "set -a; . /tmp/ployz-build-git/secret.env; set +a; timeout 30m ployz build submit --git 'https://${CORE}:9443/repo.git' --commit '${build_commit}' --git-username builder --git-secret-env PLOYZ_BUILD_GIT_SECRET --subdir dockerfile ${BUILD_PLATFORM_ARGUMENTS} --dockerfile Dockerfile --operation-id op_real_host_build_dockerfile"
 assert_build_evidence op_real_host_build_dockerfile dockerfile
 
-log "building authenticated exact SHA for amd64 and arm64 with Railpack"
-core "set -a; . /tmp/ployz-build-git/secret.env; set +a; timeout 30m ployz build submit --git 'https://${CORE}:9443/repo.git' --commit '${build_commit}' --git-username builder --git-secret-env PLOYZ_BUILD_GIT_SECRET --subdir railpack --platform linux/amd64 --platform linux/arm64 --railpack --cache-scope real-host-railpack --operation-id op_real_host_build_railpack"
+log "building authenticated exact SHA for ${BUILD_ARCHITECTURES_LABEL} with Railpack"
+core "set -a; . /tmp/ployz-build-git/secret.env; set +a; timeout 30m ployz build submit --git 'https://${CORE}:9443/repo.git' --commit '${build_commit}' --git-username builder --git-secret-env PLOYZ_BUILD_GIT_SECRET --subdir railpack ${BUILD_PLATFORM_ARGUMENTS} --railpack --cache-scope real-host-railpack --operation-id op_real_host_build_railpack"
 assert_build_evidence op_real_host_build_railpack railpack
 
 log "cancelling a blocking authenticated build and checking cleanup evidence"
@@ -1332,6 +1399,9 @@ EOF
   printf 'final_boot_id=%s\nfinal_reboot_seconds=%s\n' \
     "$final_boot_id" "$(( $(ts) - reboot_started ))" >> "$ZFS_EVIDENCE_DIR/metadata.env"
   zfs_phase 09 final-reboot zfs_verify_alarm_cleared
+  if [ "$AMD64_EDGE_WAIVER" = 1 ]; then
+    printf 'issue_536_result=valid\n' >> "$ZFS_EVIDENCE_DIR/metadata.env"
+  fi
   printf 'completed_utc=%s\ntotal_seconds=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(( $(ts) - zfs_started ))" >> "$ZFS_EVIDENCE_DIR/metadata.env"
   checksum_tmp=$(mktemp)
   (
@@ -1341,11 +1411,15 @@ EOF
   )
   mv "$checksum_tmp" "$ZFS_EVIDENCE_DIR/sha256sums"
   zfs_recovery_message=
-  log "ZFS REAL-HOST CERTIFICATION PASSED"
+  if [ "$AMD64_EDGE_WAIVER" = 1 ]; then
+    log "ZFS REAL-HOST CERTIFICATION PASSED: AMD64 EDGE WAIVER (NON-MIXED)"
+  else
+    log "ZFS REAL-HOST CERTIFICATION PASSED"
+  fi
 }
 
 if [ "$ZFS_CERTIFY" = 1 ]; then
   run_zfs_real_host_certification
 fi
 
-log "ACCEPTANCE PASSED: mixed-arch + firewalld/UFW + public HTTPS"
+log "$ACCEPTANCE_SUCCESS_MARKER"
