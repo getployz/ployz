@@ -15,7 +15,7 @@ use ployz_core::machine::MachineCredentialProvisioningStep;
 use ployz_core::operation::{
     DeployCompletionOutcome, DeployRunningStage, EventSequence, OperationEvent,
     OperationEventReplayCursor, OperationEventReplayPage, OperationEventReplayRequest,
-    OperationStatus,
+    OperationOutcome, OperationStatus,
 };
 use ployz_e2e::dind::DindMachine;
 use ployz_nats::connect::{NatsConnectConfig, authenticated_connect_options};
@@ -145,7 +145,7 @@ where
         let page = fetch(start_sequence).await;
         events.extend(page.events.into_iter().map(|event| event.event));
         match page.cursor {
-            OperationEventReplayCursor::Terminal => return events,
+            OperationEventReplayCursor::Terminal { .. } => return events,
             OperationEventReplayCursor::More {
                 next_start_sequence,
             } => {
@@ -187,7 +187,10 @@ mod terminal_replay_tests {
         };
         let mut pages = VecDeque::from([
             OperationEventReplayPage::more((1..=64).map(replayed).collect(), event_sequence(65)),
-            OperationEventReplayPage::terminal((65..=125).map(replayed).collect()),
+            OperationEventReplayPage::terminal(
+                (65..=125).map(replayed).collect(),
+                OperationOutcome::Succeeded,
+            ),
         ]);
         let mut requested_starts = Vec::new();
 
