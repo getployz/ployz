@@ -89,6 +89,37 @@ async fn pingora_shutdown_observes_signal_sent_before_recv() {
     ));
 }
 
+#[tokio::test]
+async fn pingora_thread_observes_completion_sent_before_join() {
+    let mut thread = GatewayPingoraThread::spawn(|| {}).expect("gateway thread spawns");
+
+    tokio::time::timeout(Duration::from_secs(1), thread.join())
+        .await
+        .expect("completed gateway thread joins without waiting");
+}
+
+#[tokio::test]
+async fn bounded_shutdown_detaches_unresponsive_pingora_thread() {
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let mut thread = GatewayPingoraThread::spawn(move || {
+        release_rx.recv().expect("test release sends");
+    })
+    .expect("gateway thread spawns");
+
+    bounded_role_shutdown("gateway-test", Duration::from_millis(10), &[], async {
+        thread.join().await;
+        Ok(())
+    })
+    .await
+    .expect("bounded shutdown falls back successfully");
+
+    assert!(!thread.is_finished());
+    release_tx.send(()).expect("test release sends");
+    tokio::time::timeout(Duration::from_secs(1), thread.join())
+        .await
+        .expect("released gateway thread joins");
+}
+
 #[test]
 fn gateway_status_reads_current_process_state() {
     let mut projector = GatewayProjector::new();
