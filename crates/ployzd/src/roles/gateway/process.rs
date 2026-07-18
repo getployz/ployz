@@ -49,7 +49,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{broadcast, mpsc, oneshot, watch};
+use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
 
 const GATEWAY_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -69,11 +69,10 @@ pub struct RunningGatewayProcess {
     _health: Arc<Mutex<GatewayProcessHealth>>,
     _listen_addr: SocketAddr,
     shutdown: broadcast::Sender<()>,
-    pingora_shutdown: watch::Sender<bool>,
     testimony_cache: RunningRoleTestimonyCache,
     gateway_service: RunningNatsService,
     _certificate_state_guard: Option<tempfile::TempDir>,
-    pingora_thread: GatewayPingoraThread,
+    pingora: RunningPingoraGateway,
     tasks: Vec<JoinHandle<()>>,
 }
 
@@ -81,27 +80,28 @@ impl RunningGatewayProcess {
     pub async fn shutdown(self) -> Result<(), NatsServiceShutdownError> {
         let Self {
             shutdown,
-            pingora_shutdown,
             testimony_cache,
             gateway_service,
             _certificate_state_guard,
-            mut pingora_thread,
+            mut pingora,
             mut tasks,
             ..
         } = self;
         let _ = shutdown.send(());
-        let _ = pingora_shutdown.send(true);
         let abort_handles = tasks
             .iter()
             .map(JoinHandle::abort_handle)
             .collect::<Vec<_>>();
         let cleanup = async {
-            testimony_cache.shutdown().await;
-            let service_shutdown = gateway_service.shutdown().await;
-            for task in &mut tasks {
-                let _ = task.await;
-            }
-            pingora_thread.join().await;
+            let async_cleanup = async {
+                testimony_cache.shutdown().await;
+                let service_shutdown = gateway_service.shutdown().await;
+                for task in &mut tasks {
+                    let _ = task.await;
+                }
+                service_shutdown
+            };
+            let ((), service_shutdown) = tokio::join!(pingora.stop(), async_cleanup);
             service_shutdown
         };
         bounded_role_shutdown("gateway", GATEWAY_SHUTDOWN_TIMEOUT, &abort_handles, cleanup).await
@@ -253,23 +253,15 @@ async fn start_gateway_process_inner(
     let facts = testimony_cache.cache();
     let (shutdown, _) = broadcast::channel(2);
     let mut tasks = Vec::new();
-    if let Some(failover) = failover {
-        tasks.push(spawn_intent_failover_mirror(
-            client.clone(),
-            failover,
-            shutdown.subscribe(),
-        ));
-    }
-    let (pingora_shutdown, pingora_shutdown_rx) = watch::channel(false);
     let pingora_health = Arc::clone(&health);
     let pingora_registry = registry.clone();
-    let mut pingora_thread = match GatewayPingoraThread::spawn(move || {
+    let mut pingora = match RunningPingoraGateway::spawn(move |pingora_shutdown| {
         run_pingora_gateway_server(
             listen_addr,
             listener_port,
             pingora_registry,
             pingora_health,
-            pingora_shutdown_rx,
+            pingora_shutdown,
         );
     }) {
         Ok(thread) => thread,
@@ -279,22 +271,27 @@ async fn start_gateway_process_inner(
             return Err(GatewayProcessError::SpawnPingoraThread { source });
         }
     };
-    if let Err(error) = wait_for_gateway_listener_ready(listen_addr, &pingora_thread).await {
-        let _ = pingora_shutdown.send(true);
-        pingora_thread.join().await;
+    if let Err(error) = wait_for_gateway_listener_ready(listen_addr, &pingora).await {
+        let _ = tokio::time::timeout(GATEWAY_SHUTDOWN_TIMEOUT, pingora.stop()).await;
         let _ = gateway_service.shutdown().await;
         testimony_cache.shutdown().await;
         return Err(error);
     }
     let tls_addr = gateway_tls_listen_addr(listen_addr);
     if tls_addr.port() != 0
-        && let Err(error) = wait_for_gateway_listener_ready(tls_addr, &pingora_thread).await
+        && let Err(error) = wait_for_gateway_listener_ready(tls_addr, &pingora).await
     {
-        let _ = pingora_shutdown.send(true);
-        pingora_thread.join().await;
+        let _ = tokio::time::timeout(GATEWAY_SHUTDOWN_TIMEOUT, pingora.stop()).await;
         let _ = gateway_service.shutdown().await;
         testimony_cache.shutdown().await;
         return Err(error);
+    }
+    if let Some(failover) = failover {
+        tasks.push(spawn_intent_failover_mirror(
+            client.clone(),
+            failover,
+            shutdown.subscribe(),
+        ));
     }
 
     let (refresh_wake, refresh_wake_rx) = mpsc::channel(1);
@@ -359,47 +356,48 @@ async fn start_gateway_process_inner(
         _health: health,
         _listen_addr: listen_addr,
         shutdown,
-        pingora_shutdown,
         testimony_cache,
         gateway_service,
         _certificate_state_guard: certificate_state_guard,
-        pingora_thread,
+        pingora,
         tasks,
     })
 }
 
-struct GatewayPingoraThread {
-    join: Option<std::thread::JoinHandle<()>>,
-    completion: oneshot::Receiver<()>,
+struct RunningPingoraGateway {
+    shutdown: watch::Sender<bool>,
+    thread: Option<std::thread::JoinHandle<()>>,
 }
 
-impl GatewayPingoraThread {
-    fn spawn(run: impl FnOnce() + Send + 'static) -> Result<Self, std::io::Error> {
-        let (completion_tx, completion) = oneshot::channel();
-        let join = std::thread::Builder::new()
+impl RunningPingoraGateway {
+    fn spawn(
+        run: impl FnOnce(watch::Receiver<bool>) + Send + 'static,
+    ) -> Result<Self, std::io::Error> {
+        let (shutdown, shutdown_rx) = watch::channel(false);
+        let thread = std::thread::Builder::new()
             .name("ployzd-gateway-pingora".to_owned())
-            .spawn(move || {
-                run();
-                let _ = completion_tx.send(());
-            })?;
+            .spawn(move || run(shutdown_rx))?;
         Ok(Self {
-            join: Some(join),
-            completion,
+            shutdown,
+            thread: Some(thread),
         })
     }
 
     fn is_finished(&self) -> bool {
-        self.join
+        self.thread
             .as_ref()
             .is_none_or(std::thread::JoinHandle::is_finished)
     }
 
-    async fn join(&mut self) {
-        let _ = (&mut self.completion).await;
-        let Some(join) = self.join.take() else {
+    async fn stop(&mut self) {
+        let _ = self.shutdown.send(true);
+        while !self.is_finished() {
+            tokio::time::sleep(GATEWAY_LISTENER_READY_POLL).await;
+        }
+        let Some(thread) = self.thread.take() else {
             return;
         };
-        let _ = join.join();
+        let _ = thread.join();
     }
 }
 
@@ -795,7 +793,7 @@ async fn resolve_gateway_listen_addr(
 
 async fn wait_for_gateway_listener_ready(
     listen_addr: SocketAddr,
-    pingora_thread: &GatewayPingoraThread,
+    pingora: &RunningPingoraGateway,
 ) -> Result<(), GatewayProcessError> {
     let deadline = tokio::time::Instant::now() + GATEWAY_LISTENER_READY_TIMEOUT;
     loop {
@@ -805,7 +803,7 @@ async fn wait_for_gateway_listener_ready(
         {
             return Ok(());
         }
-        if pingora_thread.is_finished() || tokio::time::Instant::now() >= deadline {
+        if pingora.is_finished() || tokio::time::Instant::now() >= deadline {
             return Err(GatewayProcessError::HttpListenerNotReady {
                 addr: listen_addr,
                 timeout: GATEWAY_LISTENER_READY_TIMEOUT,
