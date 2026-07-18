@@ -7,7 +7,7 @@ use crate::ids::OperationId;
 use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 
 use super::events::OperationEvent;
-use super::{EventSequence, MAX_OPERATION_EVENT_REPLAY_LIMIT};
+use super::{EventSequence, MAX_OPERATION_EVENT_REPLAY_LIMIT, OperationOutcome};
 
 positive_u64_wire_newtype! {
     pub struct OperationEventRecordedAtUnixMs;
@@ -115,10 +115,10 @@ impl OperationEventReplayPage {
     }
 
     #[must_use]
-    pub fn terminal(events: Vec<ReplayedOperationEvent>) -> Self {
+    pub fn terminal(events: Vec<ReplayedOperationEvent>, outcome: OperationOutcome) -> Self {
         Self {
             events,
-            cursor: OperationEventReplayCursor::Terminal,
+            cursor: OperationEventReplayCursor::Terminal { outcome },
         }
     }
 }
@@ -128,7 +128,7 @@ impl OperationEventReplayPage {
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OperationEventReplayCursor {
     CaughtUp,
-    Terminal,
+    Terminal { outcome: OperationOutcome },
     More { next_start_sequence: EventSequence },
 }
 

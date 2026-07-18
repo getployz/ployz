@@ -677,7 +677,9 @@ impl OperationStatus {
 
 /// The three ways an operation can end. Only [`Self::Succeeded`] is a success;
 /// failure and cancellation both mean the operation did not complete its work.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
 pub enum OperationOutcome {
     Succeeded,
     Failed,
