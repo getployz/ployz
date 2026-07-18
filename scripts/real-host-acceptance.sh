@@ -46,6 +46,70 @@ valid_boot_id() {
   [[ "$1" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]
 }
 
+restore_verified_module() {
+  local source=$1
+  local destination=$2
+  local expected_sha=$3
+  local expected_mode=$4
+  local expected_uid=$5
+  local expected_gid=$6
+  local destination_dir temporary=
+
+  test -f "$source"
+  test "$(sha256sum "$source" | awk '{print $1}')" = "$expected_sha"
+  if test -f "$destination" \
+    && test "$(sha256sum "$destination" | awk '{print $1}')" = "$expected_sha" \
+    && test "$(stat -c %a "$destination")" = "$expected_mode" \
+    && test "$(stat -c %u "$destination")" = "$expected_uid" \
+    && test "$(stat -c %g "$destination")" = "$expected_gid"; then
+    return 0
+  fi
+
+  destination_dir=$(dirname -- "$destination")
+  (
+    temporary=$(mktemp "${destination_dir}/.ployz-zfs-module.XXXXXX")
+    trap '[ -z "$temporary" ] || rm -f -- "$temporary"' EXIT
+    cp -- "$source" "$temporary"
+    chown "$expected_uid:$expected_gid" "$temporary"
+    chmod "$expected_mode" "$temporary"
+    test "$(sha256sum "$temporary" | awk '{print $1}')" = "$expected_sha"
+    test "$(stat -c %a "$temporary")" = "$expected_mode"
+    test "$(stat -c %u "$temporary")" = "$expected_uid"
+    test "$(stat -c %g "$temporary")" = "$expected_gid"
+    mv -f -- "$temporary" "$destination"
+    temporary=
+  )
+  test "$(sha256sum "$destination" | awk '{print $1}')" = "$expected_sha"
+  test "$(stat -c %a "$destination")" = "$expected_mode"
+  test "$(stat -c %u "$destination")" = "$expected_uid"
+  test "$(stat -c %g "$destination")" = "$expected_gid"
+}
+
+wait_for_storage_ready_testimony() {
+  local expected_pool=$1
+  local forbidden_alarm_pin=${2:-}
+  local timeout_seconds=${STORAGE_READY_TIMEOUT_SECONDS:-360}
+  local deadline=$((SECONDS + timeout_seconds))
+  local testimony= storage_alarms=
+
+  while (( SECONDS < deadline )); do
+    if testimony=$(core_before_deadline "$deadline" "timeout 12s ployz machine inspect '${core_machine_id}'"); then
+      storage_alarms=$(printf '%s\n' "$testimony" | sed -n 's/^storage-alarms //p')
+      if printf '%s\n' "$testimony" | grep -Fx "storage ready pool=${expected_pool}" >/dev/null \
+        && { [ -z "$forbidden_alarm_pin" ] \
+          || ! printf '%s\n' "$storage_alarms" | tr ',' '\n' | cut -d: -f1 \
+            | grep -Fx "$forbidden_alarm_pin" >/dev/null; }; then
+        printf '%s\n' "$testimony"
+        return 0
+      fi
+    fi
+    sleep_before_deadline "$deadline" 3
+  done
+  printf '%s\n' "$testimony"
+  log "storage testimony did not report ready pool=${expected_pool} without forbidden alarm ${forbidden_alarm_pin:-none} within ${timeout_seconds} seconds"
+  return 1
+}
+
 wait_for_core_reboot() {
   local prior_boot_id=$1
   local deadline_description=${2:-9 minutes}
@@ -83,6 +147,9 @@ write_zfs_recovery_instructions() {
   cat > "$output" <<EOF
 # ZFS module recovery for the original system from root@${CORE} or provider rescue.
   set -euo pipefail
+EOF
+  declare -f restore_verified_module >> "$output"
+  cat >> "$output" <<EOF
   system_root=\${PLOYZ_RECOVERY_MOUNT_ROOT:-/}
   case "\$system_root" in
     /*) ;;
@@ -127,16 +194,10 @@ write_zfs_recovery_instructions() {
   rooted_quarantined_module=\$(system_path "\$quarantined_module")
   test -f "\$rooted_module_backup"
   test -f "\$rooted_quarantined_module"
-  test ! -e "\$rooted_module_path"
   test "\$(sha256sum "\$rooted_module_backup" | awk '{print \$1}')" = "\$expected"
   test "\$(sha256sum "\$rooted_quarantined_module" | awk '{print \$1}')" = "\$expected"
-  cp -a "\$rooted_module_backup" "\$rooted_module_path"
-  chown "\$expected_uid:\$expected_gid" "\$rooted_module_path"
-  chmod "\$expected_mode" "\$rooted_module_path"
-  test "\$(sha256sum "\$rooted_module_path" | awk '{print \$1}')" = "\$expected"
-  test "\$(stat -c %a "\$rooted_module_path")" = "\$expected_mode"
-  test "\$(stat -c %u "\$rooted_module_path")" = "\$expected_uid"
-  test "\$(stat -c %g "\$rooted_module_path")" = "\$expected_gid"
+  restore_verified_module "\$rooted_module_backup" "\$rooted_module_path" \
+    "\$expected" "\$expected_mode" "\$expected_uid" "\$expected_gid"
   if [ "\$system_root" = / ]; then
     depmod -a "\$kernel"
     test "\$(modinfo -k "\$kernel" -n zfs)" = "\$module_path"
@@ -151,9 +212,47 @@ write_zfs_recovery_instructions() {
 EOF
 }
 
+write_zfs_ssh_restore_program() {
+  declare -f restore_verified_module
+  cat <<'REMOTE_RESTORE'
+set -euo pipefail
+manifest=$1
+module_path=$2
+module_backup=$3
+quarantined_module=$4
+
+test -f "$manifest"
+test "$(awk -F= '$1 == "module_path" {print $2}' "$manifest")" = "$module_path"
+test "$(awk -F= '$1 == "backup_path" {print $2}' "$manifest")" = "$module_backup"
+test "$(awk -F= '$1 == "quarantine_path" {print $2}' "$manifest")" = "$quarantined_module"
+expected=$(awk -F= '$1 == "module_sha256" {print $2}' "$manifest")
+expected_mode=$(awk -F= '$1 == "module_mode" {print $2}' "$manifest")
+expected_uid=$(awk -F= '$1 == "module_uid" {print $2}' "$manifest")
+expected_gid=$(awk -F= '$1 == "module_gid" {print $2}' "$manifest")
+expected_machine_id=$(awk -F= '$1 == "machine_id" {print $2}' "$manifest")
+kernel=$(awk -F= '$1 == "kernel" {print $2}' "$manifest")
+test -n "$expected"
+test -n "$expected_mode"
+test -n "$expected_uid"
+test -n "$expected_gid"
+test -n "$expected_machine_id"
+test -n "$kernel"
+test "$(tr -d '\n' < /etc/machine-id)" = "$expected_machine_id"
+test -f "$module_backup"
+test -f "$quarantined_module"
+test "$(sha256sum "$module_backup" | awk '{print $1}')" = "$expected"
+test "$(sha256sum "$quarantined_module" | awk '{print $1}')" = "$expected"
+restore_verified_module "$module_backup" "$module_path" \
+  "$expected" "$expected_mode" "$expected_uid" "$expected_gid"
+depmod -a "$kernel"
+test "$(modinfo -k "$kernel" -n zfs)" = "$module_path"
+REMOTE_RESTORE
+}
+
 run_real_host_acceptance_regression_test() {
   local evidence failure_output success_output reboot_output recovery_output rescue_root fake_bin
   local module_contents module_sha module_mode module_uid module_gid child_status=0
+  local restored_inode ssh_restore_output restore_function_output
   evidence=$(mktemp -d)
   trap 'rm -rf "$evidence"' RETURN
   : > "$evidence/metadata.env"
@@ -190,6 +289,19 @@ run_real_host_acceptance_regression_test() {
   # shellcheck disable=SC2016 # This assertion matches literal generated-shell variables.
   grep -Fx '    test "$(modinfo -k "$kernel" -n zfs)" = "$module_path"' "$recovery_output" >/dev/null
   bash -n "$recovery_output"
+
+  ssh_restore_output="$evidence/ssh-restore-probe.sh"
+  restore_function_output="$evidence/restore-function.sh"
+  write_zfs_ssh_restore_program > "$ssh_restore_output"
+  declare -f restore_verified_module > "$restore_function_output"
+  head -n "$(wc -l < "$restore_function_output")" "$ssh_restore_output" \
+    | cmp -s - "$restore_function_output"
+  bash -n "$ssh_restore_output"
+
+  "$0" --storage-ready-probe > "$evidence/storage-ready.stdout"
+  grep -Fx 'storage ready pool=probe-pool' "$evidence/storage-ready.stdout" >/dev/null
+  grep -Fx 'storage-alarms none' "$evidence/storage-ready.stdout" >/dev/null
+  grep -Fx 'inspect_calls=3' "$evidence/storage-ready.stdout" >/dev/null
 
   rescue_root="$evidence/original-root"
   fake_bin="$evidence/bin"
@@ -240,11 +352,24 @@ EOF
   EXPECTED_RESCUE_ROOT="$rescue_root" CHROOT_LOG="$evidence/chroot.log" \
     PATH="$fake_bin:$PATH" PLOYZ_RECOVERY_MOUNT_ROOT="$rescue_root" bash "$recovery_output" \
     > "$evidence/rescue.stdout"
+  restored_inode=$(stat -c %i "$rescue_root/lib/modules/probe/extra/zfs.ko.xz")
+  EXPECTED_RESCUE_ROOT="$rescue_root" CHROOT_LOG="$evidence/chroot.log" \
+    PATH="$fake_bin:$PATH" PLOYZ_RECOVERY_MOUNT_ROOT="$rescue_root" bash "$recovery_output" \
+    > "$evidence/rescue-retry.stdout"
+  [ "$(stat -c %i "$rescue_root/lib/modules/probe/extra/zfs.ko.xz")" = "$restored_inode" ]
+  printf 'invalid-module\n' > "$rescue_root/lib/modules/probe/extra/zfs.ko.xz"
+  chmod 0600 "$rescue_root/lib/modules/probe/extra/zfs.ko.xz"
+  EXPECTED_RESCUE_ROOT="$rescue_root" CHROOT_LOG="$evidence/chroot.log" \
+    PATH="$fake_bin:$PATH" PLOYZ_RECOVERY_MOUNT_ROOT="$rescue_root" bash "$recovery_output" \
+    > "$evidence/rescue-replacement.stdout"
   grep -Fx 'depmod -a probe' "$evidence/chroot.log" >/dev/null
   grep -Fx 'modinfo -k probe -n zfs' "$evidence/chroot.log" >/dev/null
   grep -Fx "module restored under ${rescue_root}; unmount it and reboot the original system" \
     "$evidence/rescue.stdout" >/dev/null
   grep -Fx "$module_contents" "$rescue_root/lib/modules/probe/extra/zfs.ko.xz" >/dev/null
+  [ "$(stat -c %a "$rescue_root/lib/modules/probe/extra/zfs.ko.xz")" = "$module_mode" ]
+  [ "$(stat -c %u "$rescue_root/lib/modules/probe/extra/zfs.ko.xz")" = "$module_uid" ]
+  [ "$(stat -c %g "$rescue_root/lib/modules/probe/extra/zfs.ko.xz")" = "$module_gid" ]
   printf 'real-host phase regression: PASS\n'
 }
 
@@ -296,6 +421,24 @@ case ${1:-} in
     module_backup=/root/ployz-zfs-recovery-probe/module/lib/modules/probe/extra/zfs.ko.xz
     quarantined_module=/root/ployz-zfs-recovery-probe/quarantined/zfs.ko.xz
     write_zfs_recovery_instructions "$recovery_output"
+    exit 0
+    ;;
+  --storage-ready-probe)
+    core_machine_id=probe-machine
+    STORAGE_READY_TIMEOUT_SECONDS=30
+    storage_ready_probe_calls=$(mktemp)
+    trap 'rm -f "$storage_ready_probe_calls"' EXIT
+    core_before_deadline() {
+      printf 'inspect\n' >> "$storage_ready_probe_calls"
+      case $(wc -l < "$storage_ready_probe_calls") in
+        1) printf 'storage ready pool=stale-pool\nstorage-alarms none\n' ;;
+        2) printf 'storage ready pool=probe-pool\nstorage-alarms probe-ns/probe-volume:zfs-module-missing\n' ;;
+        *) printf 'storage ready pool=probe-pool\nstorage-alarms none\n' ;;
+      esac
+    }
+    sleep_before_deadline() { :; }
+    wait_for_storage_ready_testimony probe-pool probe-ns/probe-volume
+    printf 'inspect_calls=%s\n' "$(wc -l < "$storage_ready_probe_calls")"
     exit 0
     ;;
 esac
@@ -831,6 +974,10 @@ PY
     log "prepared storage backing file does not resolve to ${backing_file_path}"; return 1;
   }
   pool_guid=$(core "zpool get -H -o value guid '${pool}'")
+  pool_health=$(core "zpool get -H -o value health '${pool}'")
+  [ "$pool_health" = ONLINE ] || {
+    log "pool health is ${pool_health}, expected ONLINE"; return 1;
+  }
   dataset_guid=$(core "zfs get -H -o value guid '${dataset}'")
   dataset_mountpoint=$(core "zfs get -H -o value mountpoint '${dataset}'")
   dataset_quota=$(core "zfs get -H -p -o value quota '${dataset}'")
@@ -875,7 +1022,8 @@ PY
     printf 'namespace=%s\nvolume=%s\nservice=%s\n' "$zfs_namespace" "$zfs_volume" "$zfs_service"
     printf 'machine_id=%s\nstorage_operation_id=%s\nstorage_operation_evidence_sha256=%s\npool=%s\ndataset=%s\n' \
       "$core_machine_id" "$storage_operation_id" "$storage_operation_evidence_sha" "$pool" "$dataset"
-    printf 'pool_guid=%s\ndataset_guid=%s\ndataset_mountpoint=%s\n' "$pool_guid" "$dataset_guid" "$dataset_mountpoint"
+    printf 'pool_guid=%s\npool_health=%s\ndataset_guid=%s\ndataset_mountpoint=%s\n' \
+      "$pool_guid" "$pool_health" "$dataset_guid" "$dataset_mountpoint"
     printf 'requested_max_size_bytes=%s\ndataset_quota=%s\ndataset_refquota=%s\n' \
       "$ZFS_REQUESTED_MAX_SIZE_BYTES" "$dataset_quota" "$dataset_refquota"
     printf 'docker_volume_name=%s\ndocker_volume_source=%s\nbind_device=%s\nbaseline_container=%s\n' \
@@ -912,11 +1060,18 @@ zfs_verify_preserved_storage_evidence() {
 }
 
 zfs_verify_reboot_recovery() {
-  local recovered_dataset_quota recovered_dataset_refquota
+  local forbidden_alarm_pin=${1:-}
+  local recovered_dataset_quota recovered_dataset_refquota recovered_pool_health machine_storage
   wait_for_core_api
+  machine_storage=$(wait_for_storage_ready_testimony "$pool" "$forbidden_alarm_pin")
+  printf '%s\n' "$machine_storage"
   zfs_verify_preserved_storage_evidence
   core "zfs_time=\$(systemctl show zfs.target -p ActiveEnterTimestampMonotonic --value); docker_time=\$(systemctl show docker.service -p ActiveEnterTimestampMonotonic --value); after=\$(systemctl show docker.service -p After --value); printf 'zfs_active_us=%s\\ndocker_active_us=%s\\ndocker_after=%s\\n' \"\$zfs_time\" \"\$docker_time\" \"\$after\"; [ \"\$zfs_time\" -gt 0 ] && [ \"\$docker_time\" -gt 0 ] && [ \"\$zfs_time\" -le \"\$docker_time\" ] && printf '%s\\n' \"\$after\" | tr ' ' '\\n' | grep -Fx zfs.target >/dev/null"
   core_with_local_timeout 200s "timeout 3m sh -c 'until zpool list -H -o guid \"${pool}\" | grep -Fx \"${pool_guid}\"; do sleep 2; done'"
+  recovered_pool_health=$(core "zpool get -H -o value health '${pool}'")
+  [ "$recovered_pool_health" = ONLINE ] || {
+    log "pool health after reboot is ${recovered_pool_health}, expected ONLINE"; return 1;
+  }
   [ "$(core "zfs get -H -o value guid '${dataset}'")" = "$dataset_guid" ] || {
     log "dataset GUID changed across reboot"; return 1;
   }
@@ -929,8 +1084,8 @@ zfs_verify_reboot_recovery() {
     log "dataset quota/refquota changed or no longer matches the requested 2 GiB limit"
     return 1
   fi
-  printf 'recovered_dataset_quota=%s\nrecovered_dataset_refquota=%s\n' \
-    "$recovered_dataset_quota" "$recovered_dataset_refquota"
+  printf 'recovered_pool_health=%s\nrecovered_dataset_quota=%s\nrecovered_dataset_refquota=%s\n' \
+    "$recovered_pool_health" "$recovered_dataset_quota" "$recovered_dataset_refquota"
   core "mountpoint -q '${bind_device}' && test -d '${docker_volume_source}'"
   recovered_container=
   local container_deadline=$((SECONDS + 240))
@@ -1111,64 +1266,13 @@ zfs_restore_module() {
   printf -v restore_command 'bash -s -- %q %q %q %q' \
     "$recovery_root/zfs-module-recovery.env" "$module_path" "$module_backup" "$quarantined_module"
   # shellcheck disable=SC2029 # printf %q above makes every remote argument a shell word.
-  timeout --foreground --signal=TERM --kill-after=2s 120s \
-    ssh "${SSH_OPTS[@]}" "root@${CORE}" "$restore_command" <<'REMOTE_RESTORE'
-set -euo pipefail
-manifest=$1
-module_path=$2
-module_backup=$3
-quarantined_module=$4
-
-test -f "$manifest"
-test "$(awk -F= '$1 == "module_path" {print $2}' "$manifest")" = "$module_path"
-test "$(awk -F= '$1 == "backup_path" {print $2}' "$manifest")" = "$module_backup"
-test "$(awk -F= '$1 == "quarantine_path" {print $2}' "$manifest")" = "$quarantined_module"
-expected=$(awk -F= '$1 == "module_sha256" {print $2}' "$manifest")
-expected_mode=$(awk -F= '$1 == "module_mode" {print $2}' "$manifest")
-expected_uid=$(awk -F= '$1 == "module_uid" {print $2}' "$manifest")
-expected_gid=$(awk -F= '$1 == "module_gid" {print $2}' "$manifest")
-expected_machine_id=$(awk -F= '$1 == "machine_id" {print $2}' "$manifest")
-kernel=$(awk -F= '$1 == "kernel" {print $2}' "$manifest")
-test -n "$expected"
-test -n "$expected_mode"
-test -n "$expected_uid"
-test -n "$expected_gid"
-test -n "$expected_machine_id"
-test -n "$kernel"
-test "$(tr -d '\n' < /etc/machine-id)" = "$expected_machine_id"
-test -f "$module_backup"
-test -f "$quarantined_module"
-test "$(sha256sum "$module_backup" | awk '{print $1}')" = "$expected"
-test "$(sha256sum "$quarantined_module" | awk '{print $1}')" = "$expected"
-test ! -e "$module_path"
-cp -a "$module_backup" "$module_path"
-chown "$expected_uid:$expected_gid" "$module_path"
-chmod "$expected_mode" "$module_path"
-test "$(sha256sum "$module_path" | awk '{print $1}')" = "$expected"
-test "$(stat -c %a "$module_path")" = "$expected_mode"
-test "$(stat -c %u "$module_path")" = "$expected_uid"
-test "$(stat -c %g "$module_path")" = "$expected_gid"
-depmod -a "$kernel"
-test "$(modinfo -k "$kernel" -n zfs)" = "$module_path"
-REMOTE_RESTORE
+  write_zfs_ssh_restore_program \
+    | timeout --foreground --signal=TERM --kill-after=2s 120s \
+      ssh "${SSH_OPTS[@]}" "root@${CORE}" "$restore_command"
 }
 
 zfs_verify_alarm_cleared() {
-  wait_for_core_api
-  zfs_verify_reboot_recovery
-  local testimony_deadline=$((SECONDS + 360))
-  while (( SECONDS < testimony_deadline )); do
-    if restored_testimony=$(core_before_deadline "$testimony_deadline" "timeout 12s ployz machine inspect '${core_machine_id}'") \
-      && printf '%s\n' "$restored_testimony" | grep -F "storage ready pool=${pool}" >/dev/null \
-      && ! printf '%s\n' "$restored_testimony" | grep -F "${zfs_namespace}/${zfs_volume}:" >/dev/null; then
-      printf '%s\n' "$restored_testimony"
-      return 0
-    fi
-    sleep_before_deadline "$testimony_deadline" 3
-  done
-  printf '%s\n' "$restored_testimony"
-  log "stranded-volume alarm did not clear"
-  return 1
+  zfs_verify_reboot_recovery "${zfs_namespace}/${zfs_volume}"
 }
 
 run_zfs_real_host_certification() {
