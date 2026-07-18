@@ -12,7 +12,9 @@ use ployz_core::storage::{
 use super::command::{COMMAND_TIMEOUT, EffectClass, checked, parse_u64};
 use super::dataset::gather_pool_capacity_for_state;
 use super::preparation::PoolSelection;
-use crate::execution::{FileMode, HostRunnerCommandRunner, write_durable_file};
+use crate::execution::{
+    FileMode, HostRunnerCommandOutput, HostRunnerCommandRunner, write_durable_file,
+};
 
 pub(super) const PREPARED_STORAGE_FILE: &str = "prepared-storage.json";
 pub(super) const STORAGE_DIRECTORY: &str = "/var/lib/ployz/zfs";
@@ -100,6 +102,11 @@ pub(super) fn imported_pools(
         COMMAND_TIMEOUT,
         EffectClass::PoolList,
     )?;
+    if output.stdout_truncated {
+        return Err(ZfsEffectError::PoolList {
+            message: "imported pool list output was truncated".to_owned(),
+        });
+    }
     let mut pools = output
         .stdout
         .lines()
@@ -150,11 +157,7 @@ fn classify_adopted_pool(
             COMMAND_TIMEOUT,
             EffectClass::Mismatch,
         )?;
-        if status
-            .stdout
-            .lines()
-            .any(|line| line.trim() == PLOYZ_OWNED_ZFS_BACKING_FILE)
-        {
+        if pool_status_uses_backing_file(&status, pool, Path::new(PLOYZ_OWNED_ZFS_BACKING_FILE))? {
             return Err(ZfsEffectError::PreparedStateUnavailable {
                 message: format!(
                     "pool {PLOYZ_OWNED_ZFS_POOL} uses the Ployz backing image but has no prepared storage descriptor"
@@ -260,6 +263,60 @@ enum OwnedBackingFileUse {
     Unused,
 }
 
+enum FailedOwnedPoolCreateDisposition {
+    Cleanup,
+    RetainOwned,
+    RetainInconclusive(ZfsEffectError),
+}
+
+fn pool_status_uses_backing_file(
+    output: &HostRunnerCommandOutput,
+    pool: &ZfsPoolName,
+    backing_file: &Path,
+) -> Result<bool, ZfsEffectError> {
+    if output.stdout_truncated {
+        return Err(ZfsEffectError::PreparedStateMismatch {
+            message: format!("pool status output for {} was truncated", pool.as_str()),
+        });
+    }
+    let mut lines = output.stdout.lines();
+    if lines
+        .find(|line| {
+            line.split_whitespace().collect::<Vec<_>>()
+                == ["NAME", "STATE", "READ", "WRITE", "CKSUM"]
+        })
+        .is_none()
+    {
+        return Err(ZfsEffectError::PreparedStateMismatch {
+            message: format!(
+                "pool status output for {} has no canonical config header",
+                pool.as_str()
+            ),
+        });
+    }
+    let Some(root_row) = lines.find(|line| !line.trim().is_empty()) else {
+        return Err(ZfsEffectError::PreparedStateMismatch {
+            message: format!(
+                "pool status output for {} has no canonical pool row",
+                pool.as_str()
+            ),
+        });
+    };
+    let root_columns = root_row.split_whitespace().collect::<Vec<_>>();
+    if !matches!(root_columns.as_slice(), [name, _, _, _, _, ..] if *name == pool.as_str()) {
+        return Err(ZfsEffectError::PreparedStateMismatch {
+            message: format!(
+                "pool status output for {} has an invalid canonical pool row",
+                pool.as_str()
+            ),
+        });
+    }
+    let backing_file = backing_file.to_string_lossy();
+    Ok(lines
+        .filter_map(|line| line.split_whitespace().next())
+        .any(|path| path == backing_file))
+}
+
 fn observe_owned_backing_file_use(
     runner: &mut impl HostRunnerCommandRunner,
 ) -> Result<OwnedBackingFileUse, ZfsEffectError> {
@@ -274,11 +331,7 @@ fn observe_owned_backing_file_use(
         COMMAND_TIMEOUT,
         EffectClass::OwnedPool,
     )?;
-    if status
-        .stdout
-        .lines()
-        .any(|line| line.trim() == PLOYZ_OWNED_ZFS_BACKING_FILE)
-    {
+    if pool_status_uses_backing_file(&status, &pool, Path::new(PLOYZ_OWNED_ZFS_BACKING_FILE))? {
         return Ok(OwnedBackingFileUse::CanonicalPool);
     }
     Ok(OwnedBackingFileUse::Unused)
@@ -288,16 +341,23 @@ fn cleanup_after_failed_owned_pool_create(
     runner: &mut impl HostRunnerCommandRunner,
     failure: ZfsEffectError,
 ) -> ZfsEffectError {
-    match observe_owned_backing_file_use(runner) {
-        Ok(OwnedBackingFileUse::Unused) => cleanup_new_owned_backing_file(runner, failure),
-        Ok(OwnedBackingFileUse::CanonicalPool) => ZfsEffectError::OwnedPool {
+    let disposition = match observe_owned_backing_file_use(runner) {
+        Ok(OwnedBackingFileUse::Unused) => FailedOwnedPoolCreateDisposition::Cleanup,
+        Ok(OwnedBackingFileUse::CanonicalPool) => FailedOwnedPoolCreateDisposition::RetainOwned,
+        Err(error) => FailedOwnedPoolCreateDisposition::RetainInconclusive(error),
+    };
+    match disposition {
+        FailedOwnedPoolCreateDisposition::Cleanup => {
+            cleanup_new_owned_backing_file(runner, failure)
+        }
+        FailedOwnedPoolCreateDisposition::RetainOwned => ZfsEffectError::OwnedPool {
             message: format!(
                 "{failure}; backing file retained because pool {PLOYZ_OWNED_ZFS_POOL} reports it as a vdev"
             ),
         },
-        Err(observation_failure) => ZfsEffectError::OwnedPool {
+        FailedOwnedPoolCreateDisposition::RetainInconclusive(error) => ZfsEffectError::OwnedPool {
             message: format!(
-                "{failure}; backing file retained because ownership observation failed: {observation_failure}"
+                "{failure}; backing file retained because ownership observation was inconclusive: {error}"
             ),
         },
     }
@@ -450,7 +510,6 @@ pub(super) fn load_and_verify_with_timeout(
         });
     }
     if let PreparedStorageOrigin::OwnedImage { backing_file } = state.origin() {
-        let path = backing_file.to_string_lossy();
         let observed = checked(
             runner,
             "zpool",
@@ -458,7 +517,7 @@ pub(super) fn load_and_verify_with_timeout(
             command_timeout,
             EffectClass::Mismatch,
         )?;
-        if !observed.stdout.lines().any(|line| line.trim() == path) {
+        if !pool_status_uses_backing_file(&observed, state.pool(), backing_file)? {
             return Err(ZfsEffectError::PreparedStateMismatch {
                 message: format!(
                     "owned pool {} does not report backing file {}",

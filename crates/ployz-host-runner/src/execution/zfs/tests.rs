@@ -9,7 +9,7 @@ use ployz_core::operation::FailureMessage;
 use ployz_core::storage::PROVISIONED_VOLUME_MOUNTPOINT;
 
 use super::dataset::{DatasetEnsureLock, dataset_ensure_lock_path};
-use super::state::persist_prepared_storage_state;
+use super::state::{imported_pools, persist_prepared_storage_state};
 use super::*;
 use crate::execution::{HostPlatformProfile, HostRunnerCommandOutput, HostRunnerCommandRunner};
 
@@ -112,6 +112,12 @@ fn truncated_stdout(value: &str) -> HostRunnerCommandOutput {
         stdout_truncated: true,
         ..stdout(value)
     }
+}
+
+fn pool_status(pool: &str, vdev: &str) -> HostRunnerCommandOutput {
+    stdout(&format!(
+        "  pool: {pool}\n state: ONLINE\nconfig:\n\n\tNAME                                      STATE     READ WRITE CKSUM\n\t{pool}                                     ONLINE       0     0     0\n\t  {vdev}  ONLINE       0     0     0\n\nerrors: No known data errors\n"
+    ))
 }
 
 fn mounted_dataset_shape(dataset: &DatasetName) -> HostRunnerCommandOutput {
@@ -393,6 +399,16 @@ fn automatic_multiple_pools_are_sorted_and_refused() {
 }
 
 #[test]
+fn imported_pool_list_rejects_truncated_output_as_pool_list_uncertainty() {
+    let mut runner = RecordingRunner::new([truncated_stdout("ployz\n")]);
+
+    assert!(matches!(
+        imported_pools(&mut runner),
+        Err(ZfsEffectError::PoolList { .. })
+    ));
+}
+
+#[test]
 fn explicit_pool_must_be_imported() {
     let state = tempfile::tempdir().unwrap();
     let mut runner = RecordingRunner::new([success(), success(), success(), stdout("tank\n")]);
@@ -444,7 +460,7 @@ fn owned_image_pool_without_descriptor_is_refused_as_ambiguous_half_state() {
         success(),
         success(),
         stdout("ployz\n"),
-        stdout(&format!("  {PLOYZ_OWNED_ZFS_BACKING_FILE}\n")),
+        pool_status(PLOYZ_OWNED_ZFS_POOL, PLOYZ_OWNED_ZFS_BACKING_FILE),
     ]);
 
     let error = prepare_storage(
@@ -845,7 +861,7 @@ fn failed_pool_create_cleanup_requires_conclusive_unused_observation() {
             "canonical backing vdev",
             vec![
                 stdout("ployz\n"),
-                stdout(&format!("  {PLOYZ_OWNED_ZFS_BACKING_FILE}\n")),
+                pool_status(PLOYZ_OWNED_ZFS_POOL, PLOYZ_OWNED_ZFS_BACKING_FILE),
             ],
             vec![create(), list(), status()],
             Some("backing file retained"),
@@ -854,17 +870,59 @@ fn failed_pool_create_cleanup_requires_conclusive_unused_observation() {
             "failed pool listing",
             vec![failed("pool observation failed")],
             vec![create(), list()],
-            Some("ownership observation failed"),
+            Some("ownership observation was inconclusive"),
         ),
         (
             "malformed pool identity",
             vec![stdout("ployz\ninvalid/pool/name\n")],
             vec![create(), list()],
-            Some("ownership observation failed"),
+            Some("ownership observation was inconclusive"),
+        ),
+        (
+            "truncated pool listing",
+            vec![truncated_stdout("ployz\n")],
+            vec![create(), list()],
+            Some("ownership observation was inconclusive"),
+        ),
+        (
+            "empty successful status",
+            vec![stdout("ployz\n"), stdout("")],
+            vec![create(), list(), status()],
+            Some("ownership observation was inconclusive"),
+        ),
+        (
+            "malformed successful status",
+            vec![stdout("ployz\n"), stdout("pool: ployz\nstate: ONLINE\n")],
+            vec![create(), list(), status()],
+            Some("ownership observation was inconclusive"),
+        ),
+        (
+            "wrong canonical pool row",
+            vec![
+                stdout("ployz\n"),
+                stdout(
+                    "config:\n\nNAME STATE READ WRITE CKSUM\nother ONLINE 0 0 0\n/dev/loop0 ONLINE 0 0 0\n",
+                ),
+            ],
+            vec![create(), list(), status()],
+            Some("ownership observation was inconclusive"),
+        ),
+        (
+            "truncated status",
+            vec![
+                stdout("ployz\n"),
+                truncated_stdout("config:\n\nNAME STATE READ WRITE CKSUM\nployz ONLINE 0 0 0\n"),
+            ],
+            vec![create(), list(), status()],
+            Some("ownership observation was inconclusive"),
         ),
         (
             "other canonical-pool vdev",
-            vec![stdout("ployz\n"), stdout("  /dev/loop0\n"), success()],
+            vec![
+                stdout("ployz\n"),
+                pool_status(PLOYZ_OWNED_ZFS_POOL, "/dev/loop0"),
+                success(),
+            ],
             vec![create(), list(), status(), remove()],
             None,
         ),
@@ -932,7 +990,7 @@ fn owned_origin_survives_restart_and_selects_zpool_capacity() {
     let mut runner = RecordingRunner::new([
         success(),
         stdout(VOLUME_MOUNTPOINT),
-        stdout(&format!("  {PLOYZ_OWNED_ZFS_BACKING_FILE}\n")),
+        pool_status(PLOYZ_OWNED_ZFS_POOL, PLOYZ_OWNED_ZFS_BACKING_FILE),
         stdout("8192 4096\n"),
         stdout("1024\n"),
         stdout("ployz/ployz/volumes\tnone\n"),
@@ -964,7 +1022,7 @@ fn repeated_prepare_verifies_and_preserves_owned_origin() {
         stdout("ployz\n"),
         success(),
         stdout(VOLUME_MOUNTPOINT),
-        stdout(&format!("  {PLOYZ_OWNED_ZFS_BACKING_FILE}\n")),
+        pool_status(PLOYZ_OWNED_ZFS_POOL, PLOYZ_OWNED_ZFS_BACKING_FILE),
         success(),
         stdout("ployz/ployz\tnone\n"),
         stdout(&format!("ployz/ployz/volumes\t{VOLUME_MOUNTPOINT}\n")),
@@ -1471,7 +1529,7 @@ fn owned_image_destroy_uses_five_inner_commands_with_the_destroy_budget() {
     let mut runner = RecordingRunner::new([
         success(),
         stdout(VOLUME_MOUNTPOINT),
-        stdout(PLOYZ_OWNED_ZFS_BACKING_FILE),
+        pool_status(PLOYZ_OWNED_ZFS_POOL, PLOYZ_OWNED_ZFS_BACKING_FILE),
         stdout(&listing),
         success(),
     ]);
