@@ -1,11 +1,11 @@
 //! Convert current cluster facts into a deploy execution command.
 
 use ployz_core::deploy::{
-    DeployCleanupContainer, DeployPlanningInput, DeployPlanningService, DeployPlanningTarget,
-    DeployPreparationInput, DeployRequest, DeployRouteBindingAddition, ExistingReplicaPolicy,
-    PreparedDeploy, RegistryCredential, commit_deploy_route_bindings,
-    namespace_route_binding_removals, namespace_serving_target_removals, prepare_deploy,
-    validate_deploy_route_bindings,
+    DeployCleanupContainer, DeployPlanningInput, DeployPlanningPlacementInput,
+    DeployPlanningService, DeployPlanningTarget, DeployPreparationInput, DeployRequest,
+    DeployRouteBindingAddition, ExistingReplicaPolicy, PreparedDeploy, RegistryCredential,
+    ServiceMode, commit_deploy_route_bindings, namespace_route_binding_removals,
+    namespace_serving_target_removals, prepare_deploy, validate_deploy_route_bindings,
 };
 use ployz_core::ids::{MachineId, OperationId, RouteBindingId, ServiceId};
 use ployz_core::image::OciPlatform;
@@ -165,15 +165,8 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
                 .filter(|binding| binding.service_id == prepared.planning_input.service_id)
                 .cloned()
                 .collect(),
-            volume_pins: prepared.planning_input.volume_pins,
-            candidate_machines: prepared.planning_input.candidate_machines,
-            eligible_machines: prepared.planning_input.eligible_machines,
-            deferred_machines: prepared.planning_input.deferred_machines,
-            draining_machines: prepared.planning_input.draining_machines,
-            equivalent_target_promoted: prepared.planning_input.equivalent_target_promoted,
+            planning_input: prepared.planning_input,
             unusable_machines: prepared.unusable_machines,
-            existing_replicas: prepared.planning_input.existing_replicas,
-            cleanup_candidates: prepared.planning_input.cleanup_candidates,
         })
         .collect::<Vec<_>>();
     let ployz_automatic_hostnames = facts.automatic_hostname_mode.is_ployz();
@@ -262,14 +255,21 @@ fn prepare_deploy_command(
             &facts.machine_storage_testimony,
             &storage_requirement,
         );
-        let is_promoted = service
-            .namespace_revision_entry_id(target.namespace_id())
-            .is_some_and(|entry_id| {
+        let equivalent_entry_id = service.namespace_revision_entry_id(target.namespace_id());
+        let equivalent_entry_promoted = equivalent_entry_id.as_ref().is_some_and(|entry_id| {
+            facts.namespace_serving_entries.iter().any(|entry| {
+                entry.namespace_id == *target.namespace_id()
+                    && entry.service_id == *service.service_id()
+                    && entry.namespace_revision_entry_id == *entry_id
+            })
+        });
+        let equivalent_global_target_promoted =
+            equivalent_entry_id.as_ref().is_some_and(|entry_id| {
                 facts.namespace_serving_entries.iter().any(|entry| {
                     entry.namespace_id == *target.namespace_id()
                         && entry.service_id == *service.service_id()
-                        && entry.namespace_revision_entry_id == entry_id
-                        && entry.mode == service.mode()
+                        && entry.namespace_revision_entry_id == *entry_id
+                        && matches!(entry.mode, ServiceMode::Global)
                 })
             });
         let prepared = prepare_planning_service(
@@ -278,7 +278,10 @@ fn prepare_deploy_command(
             service_eligible_machines,
             &draining_machines,
             facts,
-            existing_replica_policy(is_promoted, reusable_interrupted_operation_ids),
+            existing_replica_policy(
+                equivalent_entry_promoted,
+                reusable_interrupted_operation_ids,
+            ),
         );
         let merged_unusable = merged_unusable_machines(
             &facts.unusable_machines,
@@ -294,8 +297,6 @@ fn prepare_deploy_command(
                 .iter()
                 .map(|machine| machine.machine_id.clone()),
         );
-        candidate_machines.sort();
-        candidate_machines.dedup();
         let deferred_machines = merged_unusable
             .iter()
             .filter(|machine| {
@@ -309,14 +310,22 @@ fn prepare_deploy_command(
         if let Some(entry) = preview_serving_target_entry(target.namespace_id(), service) {
             serving_target_commits.push(entry);
         }
+        let placement = match service.mode() {
+            ServiceMode::Replicated { .. } => DeployPlanningPlacementInput::Replicated {
+                eligible_machines: prepared.eligible_machines,
+            },
+            ServiceMode::Global => DeployPlanningPlacementInput::Global {
+                candidates: candidate_machines,
+                selected: prepared.eligible_machines,
+                deferred: deferred_machines,
+                draining: draining_machines.clone(),
+                equivalent_global_target_promoted,
+            },
+        };
         services.push(PreparedDeployService {
             planning_input: DeployPlanningInput {
                 service_id: service.service_id().clone(),
-                candidate_machines,
-                eligible_machines: prepared.eligible_machines,
-                deferred_machines,
-                draining_machines: draining_machines.clone(),
-                equivalent_target_promoted: is_promoted,
+                placement,
                 existing_replicas: prepared.existing_replicas,
                 cleanup_candidates: prepared.cleanup_candidates,
                 volume_pins: facts.namespace_volume_pins.clone(),

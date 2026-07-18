@@ -746,7 +746,11 @@ fn parse_deploy_runtime(
         unrecognized,
     } = deploy;
     let deploy_path = service_path.field("deploy");
-    let (mode, mode_valid) = parse_deploy_mode(mode, replicas.is_some(), &deploy_path, findings);
+    let (mode, mode_valid) =
+        match parse_deploy_mode(mode, replicas.is_some(), &deploy_path, findings) {
+            Ok(mode) => (mode, true),
+            Err(mode) => (mode, false),
+        };
     push_if_some(
         findings,
         &deploy_path,
@@ -832,27 +836,27 @@ fn parse_deploy_mode(
     replicas_present: bool,
     deploy_path: &ComposePath,
     findings: &mut Vec<ComposeFinding>,
-) -> (ParsedDeployMode, bool) {
+) -> Result<ParsedDeployMode, ParsedDeployMode> {
     let parsed = match mode {
-        None => (ParsedDeployMode::Replicated, true),
-        Some(Value::String(value)) if value == "replicated" => (ParsedDeployMode::Replicated, true),
-        Some(Value::String(value)) if value == "global" => (ParsedDeployMode::Global, true),
+        None => ParsedDeployMode::Replicated,
+        Some(Value::String(value)) if value == "replicated" => ParsedDeployMode::Replicated,
+        Some(Value::String(value)) if value == "global" => ParsedDeployMode::Global,
         Some(_) => {
             findings.push(ComposeFinding::invalid(
                 deploy_path.field("mode"),
                 "mode must be replicated or global",
             ));
-            (ParsedDeployMode::Replicated, false)
+            return Err(ParsedDeployMode::Replicated);
         }
     };
-    if parsed.0 == ParsedDeployMode::Global && replicas_present {
+    if parsed == ParsedDeployMode::Global && replicas_present {
         findings.push(ComposeFinding::invalid(
             deploy_path.field("replicas"),
             "replicas cannot be set when deploy.mode is global",
         ));
-        return (parsed.0, false);
+        return Err(parsed);
     }
-    parsed
+    Ok(parsed)
 }
 
 fn parse_replica_count_value(value: Value) -> Result<u16, String> {

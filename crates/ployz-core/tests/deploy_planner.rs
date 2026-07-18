@@ -2,14 +2,15 @@ use ployz_core::deploy::{
     ContainerCommand, ContainerEntrypoint, ContainerHealthcheck, ContainerHealthcheckTest,
     ContainerMountPath, ContainerRuntimeSpec, DatasetName, DependencyCondition,
     DeployCleanupContainer, DeployPhasePlan, DeployPlan, DeployPlanError, DeployPlanStep,
-    DeployPlanningInput as CoreDeployPlanningInput, DeployPlanningTarget, DeployPreparationInput,
-    DeployRequest, DeployRoute, DeployRouteTarget, DeployServicePlacement, DeployServicePlan,
-    DeployServiceSpec, EnvName, EnvValue, ExistingReplicaCreationGate, ExistingReplicaPolicy,
-    ExistingServiceReplica, HealthcheckShellCommand, ImageReference, ImageSource,
-    ObservedCleanupCandidate, PlatformImage, PreStartHook, PreStartHookStep, PushedImageReceipt,
-    ReplicaCount, ReplicaSlot, ReplicatedReplicaSlot, ServiceDependency, ServiceEnvironment,
-    ServiceMode, ServiceVolumeMount, StopGracePeriod, VolumeAdmissionFailure, VolumeMaxSizeBytes,
-    VolumeName, VolumeSpec, ZfsPoolName, commit_deploy_route_bindings, namespace_revision_id_for,
+    DeployPlanningInput as CoreDeployPlanningInput, DeployPlanningPlacementInput,
+    DeployPlanningTarget, DeployPreparationInput, DeployRequest, DeployRoute, DeployRouteTarget,
+    DeployServicePlacement, DeployServicePlan, DeployServiceSpec, EnvName, EnvValue,
+    ExistingReplicaCreationGate, ExistingReplicaPolicy, ExistingServiceReplica,
+    HealthcheckShellCommand, ImageReference, ImageSource, ObservedCleanupCandidate, PlatformImage,
+    PreStartHook, PreStartHookStep, PushedImageReceipt, ReplicaCount, ReplicaSlot,
+    ReplicatedReplicaSlot, ServiceDependency, ServiceEnvironment, ServiceMode, ServiceVolumeMount,
+    StopGracePeriod, VolumeAdmissionFailure, VolumeMaxSizeBytes, VolumeName, VolumeSpec,
+    ZfsPoolName, commit_deploy_route_bindings, namespace_revision_id_for,
     namespace_route_binding_removals, namespace_serving_target_removals, plan_namespace_deploy,
     prepare_deploy, validate_deploy_route_bindings,
 };
@@ -651,11 +652,9 @@ fn global_service_rejects_volume_mounts() {
 fn namespace_planner_rejects_a_service_id_outside_the_validated_request() {
     let input = CoreDeployPlanningInput {
         service_id: service_id("svc_foreign"),
-        candidate_machines: vec![machine_id("machine_a")],
-        eligible_machines: vec![machine_id("machine_a")],
-        deferred_machines: Vec::new(),
-        draining_machines: Vec::new(),
-        equivalent_target_promoted: false,
+        placement: DeployPlanningPlacementInput::Replicated {
+            eligible_machines: vec![machine_id("machine_a")],
+        },
         existing_replicas: Vec::new(),
         cleanup_candidates: Vec::new(),
         volume_pins: Vec::new(),
@@ -673,6 +672,38 @@ fn namespace_planner_rejects_a_service_id_outside_the_validated_request() {
         ),
         Err(DeployPlanError::UnknownService {
             service_id: service_id("svc_foreign"),
+        })
+    );
+}
+
+#[test]
+fn namespace_planner_rejects_a_mode_and_placement_mismatch() {
+    let request = normalized_services(vec![deploy_request(1)], BTreeMap::new());
+    let input = CoreDeployPlanningInput {
+        service_id: service_id("svc_api"),
+        placement: DeployPlanningPlacementInput::Global {
+            candidates: vec![machine_id("machine_a")],
+            selected: vec![machine_id("machine_a")],
+            deferred: Vec::new(),
+            draining: Vec::new(),
+            equivalent_global_target_promoted: false,
+        },
+        existing_replicas: Vec::new(),
+        cleanup_candidates: Vec::new(),
+        volume_pins: Vec::new(),
+    };
+
+    assert_eq!(
+        plan_namespace_deploy(
+            &request,
+            vec![input],
+            Vec::new(),
+            ployz_core::deploy::DeployPlanningContext {
+                storage_testimony: &BTreeMap::new(),
+            },
+        ),
+        Err(DeployPlanError::PlacementModeMismatch {
+            service_id: service_id("svc_api"),
         })
     );
 }
@@ -1766,16 +1797,26 @@ fn plan_inputs(
         &target,
         inputs
             .into_iter()
-            .map(|input| CoreDeployPlanningInput {
-                service_id: input.service.service_id,
-                candidate_machines: input.candidate_machines,
-                eligible_machines: input.eligible_machines,
-                deferred_machines: input.deferred_machines,
-                draining_machines: input.draining_machines,
-                equivalent_target_promoted: input.equivalent_target_promoted,
-                existing_replicas: input.existing_replicas,
-                cleanup_candidates: input.cleanup_candidates,
-                volume_pins: input.volume_pins,
+            .map(|input| {
+                let placement = match input.service.mode {
+                    ServiceMode::Replicated { .. } => DeployPlanningPlacementInput::Replicated {
+                        eligible_machines: input.eligible_machines,
+                    },
+                    ServiceMode::Global => DeployPlanningPlacementInput::Global {
+                        candidates: input.candidate_machines,
+                        selected: input.eligible_machines,
+                        deferred: input.deferred_machines,
+                        draining: input.draining_machines,
+                        equivalent_global_target_promoted: input.equivalent_target_promoted,
+                    },
+                };
+                CoreDeployPlanningInput {
+                    service_id: input.service.service_id,
+                    placement,
+                    existing_replicas: input.existing_replicas,
+                    cleanup_candidates: input.cleanup_candidates,
+                    volume_pins: input.volume_pins,
+                }
             })
             .collect(),
         cleanup,

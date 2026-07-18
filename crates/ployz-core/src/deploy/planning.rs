@@ -1,20 +1,44 @@
 //! Pure deploy preparation and placement planning.
 
+mod service_planning;
+
 use super::volume_planning::{VolumePlan, build_namespace_volume_plan};
 use super::*;
 use crate::ids::OperationId;
+use service_planning::plan_deploy_service;
+#[cfg(test)]
+use service_planning::replicated_slot;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployPlanningInput {
     pub service_id: ServiceId,
-    pub candidate_machines: Vec<MachineId>,
-    pub eligible_machines: Vec<MachineId>,
-    pub deferred_machines: Vec<crate::operation::UnusableMachine>,
-    pub draining_machines: Vec<MachineId>,
-    pub equivalent_target_promoted: bool,
+    pub placement: DeployPlanningPlacementInput,
     pub existing_replicas: Vec<ExistingServiceReplica>,
     pub cleanup_candidates: Vec<ObservedCleanupCandidate>,
     pub volume_pins: Vec<VolumePinState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeployPlanningPlacementInput {
+    Replicated {
+        eligible_machines: Vec<MachineId>,
+    },
+    Global {
+        candidates: Vec<MachineId>,
+        selected: Vec<MachineId>,
+        deferred: Vec<crate::operation::UnusableMachine>,
+        draining: Vec<MachineId>,
+        equivalent_global_target_promoted: bool,
+    },
+}
+
+impl DeployPlanningInput {
+    pub(crate) fn eligible_machines(&self) -> &[MachineId] {
+        match &self.placement {
+            DeployPlanningPlacementInput::Replicated { eligible_machines } => eligible_machines,
+            DeployPlanningPlacementInput::Global { selected, .. } => selected,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -599,6 +623,8 @@ pub enum DeployPlanError {
     UnknownService { service_id: ServiceId },
     #[error("service {} has no eligible machines", .service_id.as_str())]
     NoEligibleMachines { service_id: ServiceId },
+    #[error("service {} mode does not match its planning placement input", .service_id.as_str())]
+    PlacementModeMismatch { service_id: ServiceId },
     #[error(
         "service {} depends on unknown service {}",
         .service_id.as_str(),
@@ -797,238 +823,6 @@ pub struct DeploySingleServicePlan {
     pub steps: Vec<DeployPlanStep>,
     pub pre_start: Option<PreStartHookStep>,
     pub cleanup_actions: Vec<DeployCleanupAction>,
-}
-
-fn plan_deploy_service(
-    target: &DeployPlanningTarget,
-    input: DeployPlanningInput,
-    volume_plan: &VolumePlan,
-) -> Result<DeploySingleServicePlan, DeployPlanError> {
-    let service = planning_service(target, &input.service_id)?;
-    match service.mode() {
-        ServiceMode::Replicated { replicas } => {
-            plan_replicated_service(service, input, volume_plan, replicas)
-        }
-        ServiceMode::Global => plan_global_service(service, input),
-    }
-}
-
-fn plan_replicated_service(
-    service: &DeployPlanningService,
-    input: DeployPlanningInput,
-    volume_plan: &VolumePlan,
-    replicas: ReplicaCount,
-) -> Result<DeploySingleServicePlan, DeployPlanError> {
-    let volume_placement = volume_plan.placement(&input.service_id)?;
-    let target_replicas = usize::from(replicas.get());
-    let mut existing_replicas = input.existing_replicas;
-    if let Some(machine_id) = &volume_placement.machine_id {
-        existing_replicas.retain(|replica| &replica.machine_id == machine_id);
-    }
-    existing_replicas.sort_by(|left, right| {
-        left.machine_id
-            .cmp(&right.machine_id)
-            .then_with(|| left.container_id.cmp(&right.container_id))
-    });
-    existing_replicas.dedup_by(|left, right| {
-        left.machine_id == right.machine_id && left.container_id == right.container_id
-    });
-    let mut steps = existing_replicas
-        .into_iter()
-        .take(target_replicas)
-        .enumerate()
-        .map(|(index, replica)| DeployPlanStep::UseExistingContainer {
-            machine_id: replica.machine_id,
-            container_id: replica.container_id,
-            slot: replicated_slot((index + 1) as u16),
-        })
-        .collect::<Vec<_>>();
-    let missing_replicas = target_replicas.saturating_sub(steps.len());
-    if missing_replicas > 0 && input.eligible_machines.is_empty() {
-        return Err(DeployPlanError::NoEligibleMachines {
-            service_id: input.service_id,
-        });
-    }
-
-    let existing_replicas = steps.len();
-    let run_machines = volume_placement
-        .machine_id
-        .as_ref()
-        .map(|machine_id| vec![machine_id.clone()])
-        .unwrap_or(input.eligible_machines);
-    steps.extend(
-        run_machines
-            .iter()
-            .cycle()
-            .take(missing_replicas)
-            .enumerate()
-            .map(|(index, machine_id)| {
-                let slot = replicated_slot((existing_replicas + index + 1) as u16);
-                DeployPlanStep::RunContainer {
-                    machine_id: machine_id.clone(),
-                    slot,
-                }
-            }),
-    );
-    let selected_containers = steps
-        .iter()
-        .filter_map(|step| match step {
-            DeployPlanStep::UseExistingContainer { container_id, .. } => Some(container_id),
-            DeployPlanStep::RunContainer { .. } => None,
-        })
-        .collect::<Vec<_>>();
-    let mut cleanup_actions = super::retention::plan_cleanup(
-        input.cleanup_candidates,
-        &selected_containers,
-        service.keep(),
-    );
-    cleanup_actions.sort_by(|left, right| {
-        left.target()
-            .machine_id
-            .cmp(&right.target().machine_id)
-            .then_with(|| left.target().container_id.cmp(&right.target().container_id))
-    });
-    cleanup_actions.dedup_by(|left, right| {
-        left.target().machine_id == right.target().machine_id
-            && left.target().container_id == right.target().container_id
-    });
-    let pre_start = service.pre_start().and_then(|_| {
-        steps.iter().find_map(|step| match step {
-            DeployPlanStep::RunContainer { machine_id, .. } => Some(PreStartHookStep {
-                machine_id: machine_id.clone(),
-            }),
-            DeployPlanStep::UseExistingContainer { .. } => None,
-        })
-    });
-
-    Ok(DeploySingleServicePlan {
-        service_id: input.service_id,
-        placement: DeployServicePlacement::Replicated,
-        steps,
-        pre_start,
-        cleanup_actions,
-    })
-}
-
-fn plan_global_service(
-    service: &DeployPlanningService,
-    mut input: DeployPlanningInput,
-) -> Result<DeploySingleServicePlan, DeployPlanError> {
-    input.candidate_machines.sort();
-    input.candidate_machines.dedup();
-    input.eligible_machines.sort();
-    input.eligible_machines.dedup();
-    input.draining_machines.sort();
-    input.draining_machines.dedup();
-    input
-        .deferred_machines
-        .sort_by(|left, right| left.machine_id.cmp(&right.machine_id));
-    input
-        .deferred_machines
-        .dedup_by(|left, right| left.machine_id == right.machine_id && left.reason == right.reason);
-
-    if input.eligible_machines.is_empty() && !input.equivalent_target_promoted {
-        return Err(DeployPlanError::NoEligibleMachines {
-            service_id: input.service_id,
-        });
-    }
-
-    let selected = input
-        .eligible_machines
-        .iter()
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    let deferred = input
-        .deferred_machines
-        .iter()
-        .map(|machine| machine.machine_id.clone())
-        .collect::<BTreeSet<_>>();
-    input.existing_replicas.sort_by(|left, right| {
-        left.machine_id
-            .cmp(&right.machine_id)
-            .then_with(|| left.container_id.cmp(&right.container_id))
-    });
-    input.existing_replicas.dedup_by(|left, right| {
-        left.machine_id == right.machine_id && left.container_id == right.container_id
-    });
-
-    let mut steps = Vec::with_capacity(selected.len());
-    for machine_id in &input.eligible_machines {
-        if let Some(replica) = input
-            .existing_replicas
-            .iter()
-            .find(|replica| replica.machine_id == *machine_id)
-        {
-            steps.push(DeployPlanStep::UseExistingContainer {
-                machine_id: machine_id.clone(),
-                container_id: replica.container_id.clone(),
-                slot: ReplicaSlot::Global,
-            });
-        } else {
-            steps.push(DeployPlanStep::RunContainer {
-                machine_id: machine_id.clone(),
-                slot: ReplicaSlot::Global,
-            });
-        }
-    }
-
-    input.cleanup_candidates.retain(|candidate| {
-        !deferred.contains(&candidate.target.machine_id)
-            && (selected.contains(&candidate.target.machine_id)
-                || input
-                    .draining_machines
-                    .contains(&candidate.target.machine_id))
-    });
-    let selected_containers = steps
-        .iter()
-        .filter_map(|step| match step {
-            DeployPlanStep::UseExistingContainer { container_id, .. } => Some(container_id),
-            DeployPlanStep::RunContainer { .. } => None,
-        })
-        .collect::<Vec<_>>();
-    let mut cleanup_actions = super::retention::plan_cleanup(
-        input.cleanup_candidates,
-        &selected_containers,
-        service.keep(),
-    );
-    cleanup_actions.sort_by(|left, right| {
-        left.target()
-            .machine_id
-            .cmp(&right.target().machine_id)
-            .then_with(|| left.target().container_id.cmp(&right.target().container_id))
-    });
-    cleanup_actions.dedup_by(|left, right| {
-        left.target().machine_id == right.target().machine_id
-            && left.target().container_id == right.target().container_id
-    });
-    let pre_start = service.pre_start().and_then(|_| {
-        steps.iter().find_map(|step| match step {
-            DeployPlanStep::RunContainer { machine_id, .. } => Some(PreStartHookStep {
-                machine_id: machine_id.clone(),
-            }),
-            DeployPlanStep::UseExistingContainer { .. } => None,
-        })
-    });
-    let placement = DeployServicePlacement::Global {
-        candidates: input.candidate_machines,
-        selected: input.eligible_machines,
-        deferred: input.deferred_machines,
-        draining: input.draining_machines,
-    };
-
-    Ok(DeploySingleServicePlan {
-        service_id: input.service_id,
-        placement,
-        steps,
-        pre_start,
-        cleanup_actions,
-    })
-}
-
-fn replicated_slot(number: u16) -> ReplicaSlot {
-    ReplicaSlot::Replicated {
-        number: ReplicatedReplicaSlot::try_new(number).expect("planner emits positive slots"),
-    }
 }
 
 fn planning_service<'a>(

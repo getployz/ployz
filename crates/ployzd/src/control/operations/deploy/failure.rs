@@ -552,6 +552,13 @@ impl DeployExecutionError {
                     message: failure_message("planning input names a service outside the deploy"),
                 }
             }
+            Self::Plan(DeployPlanError::PlacementModeMismatch { service_id }) => {
+                DeployOperationFailure::PlanningFailed {
+                    service_id: service_id.clone(),
+                    namespace_revision_id: failure_namespace_revision_id(command),
+                    message: failure_message("service mode does not match prepared placement"),
+                }
+            }
             Self::Plan(DeployPlanError::NoEligibleMachines { service_id }) => {
                 DeployOperationFailure::NoUsableMachines {
                     reasons: command

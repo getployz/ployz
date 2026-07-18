@@ -1,7 +1,10 @@
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployPlanningInput, DeployPlanningTarget, DeployRequest,
-    DeployRouteBindingAddition, DeployServiceSpec, ExistingServiceReplica,
-    ObservedCleanupCandidate, RegistryCredential,
+    DeployRouteBindingAddition, DeployServiceSpec, RegistryCredential,
+};
+#[cfg(test)]
+use ployz_core::deploy::{
+    DeployPlanningPlacementInput, ExistingServiceReplica, ObservedCleanupCandidate,
 };
 use ployz_core::ids::{
     ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
@@ -10,7 +13,6 @@ use ployz_core::ids::{
 use ployz_core::image::OciPlatform;
 use ployz_core::intent::RouteBindingState;
 use ployz_core::intent::ServingTargetEntry;
-use ployz_core::intent::VolumePinState;
 use ployz_core::network::DataplaneMember;
 use ployz_core::operation::{
     DeployCompletionOutcome, DeployImageCleanup, FailureMessage, OperatorHint, RetainedArtifact,
@@ -68,15 +70,8 @@ pub struct DeployServiceExecutionCommand {
     pub(super) service: DeployServiceSpec,
     pub(super) registry_credential: Option<RegistryCredential>,
     pub(super) route_commits: Vec<RouteBindingState>,
-    pub(super) volume_pins: Vec<VolumePinState>,
-    pub(super) candidate_machines: Vec<MachineId>,
-    pub(super) eligible_machines: Vec<MachineId>,
-    pub(super) deferred_machines: Vec<ployz_core::operation::UnusableMachine>,
-    pub(super) draining_machines: Vec<MachineId>,
-    pub(super) equivalent_target_promoted: bool,
+    pub(super) planning_input: DeployPlanningInput,
     pub(super) unusable_machines: Vec<ployz_core::operation::UnusableMachine>,
-    pub(super) existing_replicas: Vec<ExistingServiceReplica>,
-    pub(super) cleanup_candidates: Vec<ObservedCleanupCandidate>,
 }
 
 impl DeployExecutionCommand {
@@ -225,19 +220,27 @@ impl DeployServiceExecutionCommand {
     #[must_use]
     #[cfg(test)]
     pub fn existing_replicas(&self) -> &[ExistingServiceReplica] {
-        &self.existing_replicas
+        &self.planning_input.existing_replicas
     }
 
     #[must_use]
     #[cfg(test)]
     pub fn cleanup_candidates(&self) -> &[ObservedCleanupCandidate] {
-        &self.cleanup_candidates
+        &self.planning_input.cleanup_candidates
     }
 
     #[must_use]
     #[cfg(test)]
     pub fn eligible_machines(&self) -> &[MachineId] {
-        &self.eligible_machines
+        match &self.planning_input.placement {
+            DeployPlanningPlacementInput::Replicated { eligible_machines } => eligible_machines,
+            DeployPlanningPlacementInput::Global { selected, .. } => selected,
+        }
+    }
+
+    #[must_use]
+    pub(super) fn planning_input(&self) -> &DeployPlanningInput {
+        &self.planning_input
     }
 
     #[must_use]

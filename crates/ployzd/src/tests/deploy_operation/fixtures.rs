@@ -3,8 +3,8 @@ use ployz_core::deploy::{
     ContainerCommand, ContainerHealthcheck, ContainerHealthcheckTest, ContainerMountPath,
     DatasetName, DependencyCondition, DeployCleanupContainer, DeployRequest, DeployRoute,
     DeployRouteTarget, DeployServiceSpec, HealthcheckShellCommand, ImageReference, PreStartHook,
-    ReplicaCount, ServiceDependency, ServiceVolumeMount, VolumeMaxSizeBytes, VolumeName,
-    VolumeSpec, ZfsPoolName,
+    ReplicaCount, ServiceDependency, ServiceMode, ServiceVolumeMount, VolumeMaxSizeBytes,
+    VolumeName, VolumeSpec, ZfsPoolName,
 };
 use ployz_core::ids::{
     ContainerId, MachineId, NamespaceRevisionEntryId, NamespaceRevisionId, OperationId,
@@ -18,7 +18,7 @@ use ployz_core::machine::runtime::{
 use ployz_core::operation::{
     CertificateProvisionFailure, DeployCleanupFailure, DeployEvidence, DeployRunningStage,
     DeployTransition, FailureMessage, OperatorHint, RetainedArtifact, RouteHostname, RoutePort,
-    RouteTarget,
+    RouteTarget, UnusableMachine,
 };
 pub(crate) use ployz_test_support::containers;
 use ployz_test_support::fixtures::serving_target_entry;
@@ -101,6 +101,12 @@ pub(super) enum RecordedOperation {
     PlanCreated {
         replica_count: usize,
     },
+    GlobalPlacement {
+        candidates: Vec<MachineId>,
+        selected: Vec<MachineId>,
+        deferred: Vec<UnusableMachine>,
+        draining: Vec<MachineId>,
+    },
     ImageAvailabilityVerified,
     HealthCheckStarted,
     ContainerStarted {
@@ -151,6 +157,30 @@ impl DeployOperationRecorder for RecordingOperations {
                         .map(|service| service.steps.len())
                         .sum(),
                 });
+                if let Some(ployz_core::deploy::DeployServicePlacement::Global {
+                    candidates,
+                    selected,
+                    deferred,
+                    draining,
+                }) = plan
+                    .phases
+                    .iter()
+                    .flat_map(|phase| &phase.services)
+                    .map(|service| &service.placement)
+                    .find(|placement| {
+                        matches!(
+                            placement,
+                            ployz_core::deploy::DeployServicePlacement::Global { .. }
+                        )
+                    })
+                {
+                    self.records.push(RecordedOperation::GlobalPlacement {
+                        candidates: candidates.clone(),
+                        selected: selected.clone(),
+                        deferred: deferred.clone(),
+                        draining: draining.clone(),
+                    });
+                }
             }
             DeployEvidence::ImageAvailabilityVerified { .. } => {
                 self.records
@@ -981,6 +1011,40 @@ pub(super) fn deploy_command(replicas: u16) -> DeployExecutionInput {
         replicas,
         vec![machine_id("machine_a"), machine_id("machine_b")],
         Vec::new(),
+    )
+}
+
+pub(super) fn global_deploy_command(
+    eligible_machines: Vec<MachineId>,
+    unusable_machines: Vec<UnusableMachine>,
+    observed_machines: Vec<MachineContainerObservationSnapshot>,
+    namespace_serving_entries: Vec<ServingTargetEntry>,
+) -> DeployExecutionInput {
+    let mut request = target_deploy_request(1);
+    let [service] = request.services.as_mut_slice() else {
+        panic!("one service")
+    };
+    service.mode = ServiceMode::Global;
+    deploy_execution_input(
+        operation_id("op_123"),
+        request,
+        DeployExecutionFacts {
+            machine_platforms: std::collections::BTreeMap::new(),
+            seed_clock_testimony: std::collections::BTreeMap::new(),
+            machine_storage_testimony: std::collections::BTreeMap::new(),
+            unusable_machines,
+            namespace_route_bindings: Vec::new(),
+            namespace_serving_entries,
+            namespace_volume_pins: Vec::new(),
+            dataplane_members: Vec::new(),
+            eligible_machines,
+            namespace_cleanup_candidates: namespace_cleanup_candidates(&observed_machines),
+            observed_machines,
+            automatic_hostname_mode: AutomaticHostnameMode::Disabled,
+            gateway_certificate_targets: Vec::new(),
+            ployz_gateway_certificate_targets: Vec::new(),
+            step_timeout: Duration::from_secs(5),
+        },
     )
 }
 
@@ -1892,7 +1956,7 @@ fn namespace_cleanup_candidates(
     )
 }
 
-fn observed_service_container(
+pub(super) fn observed_service_container(
     machine_id: &str,
     container_id: &str,
     namespace_revision_entry_id: &str,

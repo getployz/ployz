@@ -1,7 +1,8 @@
 use super::*;
 use ployz_core::deploy::{
-    ContainerRuntimeSpec, DeployPhasePlan, DeployRequest, DeployServiceSpec, ImageReference,
-    PlatformImage, PushedImageReceipt, ReplicaCount, ReplicaSlot,
+    ContainerRuntimeSpec, DeployPhasePlan, DeployPlanningInput, DeployPlanningPlacementInput,
+    DeployRequest, DeployServiceSpec, ImageReference, PlatformImage, PushedImageReceipt,
+    ReplicaCount, ReplicaSlot,
 };
 use ployz_core::ids::{MachineId, NamespaceId, NamespaceRevisionId, OperationId, ServiceId};
 use ployz_core::image::{OciDigest, OciPlatform};
@@ -313,15 +314,16 @@ fn pushed_service() -> DeployServiceExecutionCommand {
         },
         registry_credential: None,
         route_commits: Vec::new(),
-        volume_pins: Vec::new(),
-        candidate_machines: Vec::new(),
-        eligible_machines: Vec::new(),
-        deferred_machines: Vec::new(),
-        draining_machines: Vec::new(),
-        equivalent_target_promoted: false,
+        planning_input: DeployPlanningInput {
+            service_id: ServiceId::try_new("api").expect("service id"),
+            placement: DeployPlanningPlacementInput::Replicated {
+                eligible_machines: Vec::new(),
+            },
+            existing_replicas: Vec::new(),
+            cleanup_candidates: Vec::new(),
+            volume_pins: Vec::new(),
+        },
         unusable_machines: Vec::new(),
-        existing_replicas: Vec::new(),
-        cleanup_candidates: Vec::new(),
     }
 }
 

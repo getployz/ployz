@@ -382,7 +382,10 @@ mod tests {
             })
             .expect("supported deploy mode parses");
             assert!(warnings.is_empty());
-            assert_eq!(request.services[0].mode, expected);
+            let [service] = request.services.as_slice() else {
+                panic!("one service")
+            };
+            assert_eq!(service.mode, expected);
         }
     }
 
@@ -397,8 +400,11 @@ mod tests {
         })
         .expect("minimal service parses");
         assert!(warnings.is_empty());
+        let [service] = request.services.as_slice() else {
+            panic!("one service")
+        };
         assert_eq!(
-            request.services[0].mode,
+            service.mode,
             ployz_core::deploy::ServiceMode::Replicated {
                 replicas: ReplicaCount::try_new(1).expect("replicas")
             }

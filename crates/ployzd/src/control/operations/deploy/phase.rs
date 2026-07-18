@@ -299,9 +299,16 @@ where
                     container_id,
                     slot,
                 } => {
-                    let Some(existing) = service.existing_replicas.iter().find(|existing| {
-                        existing.machine_id == *machine_id && existing.container_id == *container_id
-                    }) else {
+                    let Some(existing) =
+                        service
+                            .planning_input
+                            .existing_replicas
+                            .iter()
+                            .find(|existing| {
+                                existing.machine_id == *machine_id
+                                    && existing.container_id == *container_id
+                            })
+                    else {
                         return Err(run.fail_service(
                             DeployExecutionError::PlanInconsistent {
                                 service_id: service.service.service_id.clone(),

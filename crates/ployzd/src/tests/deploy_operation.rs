@@ -12,14 +12,15 @@ use crate::control::operations::deploy::{
 };
 use crate::control::role_client::machine::{MachineClockTestimony, MachineVolumeEnsureError};
 use fixtures::*;
-use ployz_core::deploy::{ContainerCommand, ContainerRestartPolicy, ReplicaCount};
+use ployz_core::deploy::{ContainerCommand, ContainerRestartPolicy, ReplicaCount, ServiceMode};
 use ployz_core::intent::{ServingTargetEntry, VolumePinState};
+use ployz_core::machine::MachineUsabilityReason;
 use ployz_core::machine::runtime::ManagedContainerKind;
 use ployz_core::operation::{
     CertInterruptionStage, CertificateInterruptionNextAction, CertificateProvisionFailure,
     DeployCompletionOutcome, DeployEvidence, DeployOperationFailure, DeployPhaseOutcome,
     DeployRunningStage, DeployServiceResult, DeployTransition, FailureMessage,
-    OperationInterruptionCause, PreStartHookFailure, RouteHostname, RouteTarget,
+    OperationInterruptionCause, PreStartHookFailure, RouteHostname, RouteTarget, UnusableMachine,
 };
 use ployz_test_support::ids::{failure_message, namespace_id};
 use std::sync::Arc;
@@ -169,6 +170,153 @@ async fn deploy_worker_runs_containers_then_completes() {
     assert_eq!(first_request.container.step_id.as_str(), "run_1");
     assert_eq!(*second_machine_id, machine_id("machine_b"));
     assert_eq!(second_request.container.step_id.as_str(), "run_2");
+}
+
+#[tokio::test]
+async fn global_operation_records_full_placement_and_completes_with_deferral_warning() {
+    let unavailable = UnusableMachine {
+        machine_id: machine_id("machine_silent"),
+        reason: MachineUsabilityReason::FactsUnavailable,
+    };
+    let draining = UnusableMachine {
+        machine_id: machine_id("machine_draining"),
+        reason: MachineUsabilityReason::Draining,
+    };
+    let command = global_deploy_command(
+        vec![machine_id("machine_a")],
+        vec![unavailable.clone(), draining],
+        Vec::new(),
+        Vec::new(),
+    );
+    let mut recorder = RecordingOperations::default();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_global"]);
+    let mut health = RecordingHealth::healthy();
+    let mut namespace_state = RecordingNamespaceState::stored();
+
+    execute_deploy(
+        command,
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect("global deploy completes");
+
+    assert!(recorder.records.iter().any(|record| matches!(
+        record,
+        RecordedOperation::GlobalPlacement {
+            candidates,
+            selected,
+            deferred,
+            draining,
+        } if candidates == &vec![
+            machine_id("machine_a"),
+            machine_id("machine_draining"),
+            machine_id("machine_silent"),
+        ] && selected == &vec![machine_id("machine_a")]
+            && deferred == &vec![unavailable.clone()]
+            && draining == &vec![machine_id("machine_draining")]
+    )));
+    assert!(matches!(
+        recorder.records.last(),
+        Some(RecordedOperation::Transition(DeployTransition::Completed {
+            outcome: DeployCompletionOutcome::CompletedWithWarnings,
+        }))
+    ));
+}
+
+#[tokio::test]
+async fn deferred_global_candidate_does_not_authorize_cleanup() {
+    let mut promoted = ployz_test_support::fixtures::serving_target_entry("svc_api", "unused");
+    promoted.namespace_revision_entry_id = target_namespace_revision_entry_id();
+    promoted.mode = ServiceMode::Global;
+    let observation = ployz_core::machine::runtime::MachineContainerObservationSnapshot::try_new(
+        machine_id("machine_silent"),
+        [observed_service_container(
+            "machine_silent",
+            "ctr_old",
+            "entry_old",
+        )],
+    )
+    .expect("valid observation");
+    let command = global_deploy_command(
+        vec![machine_id("machine_a")],
+        vec![UnusableMachine {
+            machine_id: machine_id("machine_silent"),
+            reason: MachineUsabilityReason::FactsUnavailable,
+        }],
+        vec![observation],
+        vec![promoted],
+    );
+    let mut recorder = RecordingOperations::default();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_global"]);
+    let mut health = RecordingHealth::healthy();
+    let mut namespace_state = RecordingNamespaceState::stored();
+
+    execute_deploy(
+        command,
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect("deferred global deploy completes with warning");
+
+    assert_eq!(runtime.requests.len(), 1);
+    assert!(runtime.removals.is_empty());
+    assert!(recorder.records.iter().all(|record| !matches!(
+        record,
+        RecordedOperation::CleanupFinished { removed, .. } if !removed.is_empty()
+    )));
+}
+
+#[tokio::test]
+async fn global_selected_slot_start_failure_preserves_phase_atomicity_and_artifact() {
+    let command = global_deploy_command(
+        vec![machine_id("machine_a"), machine_id("machine_b")],
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    let mut recorder = RecordingOperations::default();
+    let mut runtime = RecordingRuntime::failing_start("ctr_created");
+    let mut health = RecordingHealth::healthy();
+    let mut namespace_state = RecordingNamespaceState::stored();
+
+    let error = execute_deploy(
+        command,
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect_err("global slot failure is terminal");
+
+    assert!(namespace_state.phase_requests.is_empty());
+    assert!(runtime.stops.is_empty());
+    assert!(runtime.removals.is_empty());
+    assert!(matches!(
+        error,
+        DeployExecutionError::Failed {
+            failure,
+            ..
+        } if matches!(failure.as_ref(),
+            DeployOperationFailure::ContainerStartFailed { retained_artifacts, .. }
+                if retained_artifacts == &vec![retained_created_container("machine_a", "ctr_created")]
+        )
+    ));
 }
 
 #[tokio::test]

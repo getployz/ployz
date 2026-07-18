@@ -519,11 +519,9 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
                     &normalized_resolved_target,
                     vec![DeployPlanningInput {
                         service_id: resolved_service_target.service_id,
-                        candidate_machines: vec![machine_id("machine_a")],
-                        eligible_machines: vec![machine_id("machine_a")],
-                        deferred_machines: Vec::new(),
-                        draining_machines: Vec::new(),
-                        equivalent_target_promoted: false,
+                        placement: ployz_core::deploy::DeployPlanningPlacementInput::Replicated {
+                            eligible_machines: vec![machine_id("machine_a")],
+                        },
                         existing_replicas: Vec::new(),
                         cleanup_candidates: Vec::new(),
                         volume_pins: Vec::new(),

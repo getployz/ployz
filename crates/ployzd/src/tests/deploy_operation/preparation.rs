@@ -1,12 +1,12 @@
 use crate::control::operations::deploy::{
     AutomaticHostnameMode, DeployExecutionCommand, DeployExecutionError, DeployExecutionFacts,
-    DeployServiceExecutionCommand, prepare_deploy_execution_command,
+    DeployServiceExecutionCommand, deploy_plan, prepare_deploy_execution_command,
 };
 use ployz_core::deploy::{
     ContainerMountPath, DatasetName, DeployCleanupContainer, DeployRequest, DeployRoute,
     DeployRouteTarget, DeployServiceSpec, ImageAvailabilityExpiresAt, ImageReference, ImageSource,
-    PlatformImage, PushedImageReceipt, ReplicaCount, ServiceVolumeMount, VolumeAdmissionFailure,
-    VolumeMaxSizeBytes, VolumeName, VolumeSpec, ZfsPoolName,
+    PlatformImage, PushedImageReceipt, ReplicaCount, ServiceMode, ServiceVolumeMount,
+    VolumeAdmissionFailure, VolumeMaxSizeBytes, VolumeName, VolumeSpec, ZfsPoolName,
 };
 use ployz_core::ids::{NamespaceRevisionEntryId, RouteBindingId};
 use ployz_core::ingress::{AutomaticHostnameLabel, RouteBindingOrigin};
@@ -156,6 +156,100 @@ async fn reuses_a_matching_running_promoted_target_entry() {
         single_service(&command).existing_replicas(),
         vec![existing_service_replica("machine_a", "ctr_target")]
     );
+}
+
+#[test]
+fn replicated_scale_change_reuses_equivalent_promoted_container() {
+    let mut request = deploy_request();
+    let [service] = request.services.as_mut_slice() else {
+        panic!("one service")
+    };
+    service.mode = ServiceMode::Replicated {
+        replicas: ReplicaCount::try_new(3).expect("replicas"),
+    };
+    let mut promoted = serving_target_entry("svc_api", "unused");
+    promoted.namespace_revision_entry_id = target_namespace_revision_entry_id();
+    promoted.mode = ServiceMode::Replicated {
+        replicas: ReplicaCount::try_new(1).expect("replicas"),
+    };
+    let facts = facts_with_target_observation(vec![machine_id("machine_a")], vec![promoted]);
+
+    let command = prepare_deploy_execution_command(operation_id("op_scale"), request, facts);
+
+    assert_eq!(
+        single_service(&command).existing_replicas(),
+        [ployz_core::deploy::ExistingServiceReplica {
+            machine_id: machine_id("machine_a"),
+            container_id: container_id("ctr_target"),
+            creation_gate: ployz_core::deploy::ExistingReplicaCreationGate::AlreadyPassed,
+        }]
+    );
+}
+
+#[test]
+fn replicated_to_global_reuses_equivalent_container_on_selected_machine() {
+    let mut request = deploy_request();
+    let [service] = request.services.as_mut_slice() else {
+        panic!("one service")
+    };
+    service.mode = ServiceMode::Global;
+    let mut promoted = serving_target_entry("svc_api", "unused");
+    promoted.namespace_revision_entry_id = target_namespace_revision_entry_id();
+    promoted.mode = ServiceMode::Replicated {
+        replicas: ReplicaCount::try_new(1).expect("replicas"),
+    };
+    let facts = facts_with_target_observation(vec![machine_id("machine_a")], vec![promoted]);
+
+    let command = prepare_deploy_execution_command(operation_id("op_global"), request, facts);
+    let plan = deploy_plan(&command).expect("global plan");
+    let [phase] = plan.phases.as_slice() else {
+        panic!("one phase")
+    };
+    let [service] = phase.services.as_slice() else {
+        panic!("one service")
+    };
+    assert!(matches!(
+        service.steps.as_slice(),
+        [ployz_core::deploy::DeployPlanStep::UseExistingContainer {
+            machine_id: step_machine_id,
+            container_id: existing_container_id,
+            slot: ployz_core::deploy::ReplicaSlot::Global,
+        }] if step_machine_id == &machine_id("machine_a")
+            && existing_container_id == &container_id("ctr_target")
+    ));
+}
+
+#[test]
+fn global_empty_exception_requires_an_equivalent_global_serving_target() {
+    let mut request = deploy_request();
+    let [service] = request.services.as_mut_slice() else {
+        panic!("one service")
+    };
+    service.mode = ServiceMode::Global;
+    let mut promoted = serving_target_entry("svc_api", "unused");
+    promoted.namespace_revision_entry_id = target_namespace_revision_entry_id();
+    promoted.mode = ServiceMode::Replicated {
+        replicas: ReplicaCount::try_new(1).expect("replicas"),
+    };
+    let replicated_command = prepare_deploy_execution_command(
+        operation_id("op_switch"),
+        request.clone(),
+        facts_with_target_observation(Vec::new(), vec![promoted.clone()]),
+    );
+    assert!(matches!(
+        deploy_plan(&replicated_command),
+        Err(DeployExecutionError::Plan(
+            ployz_core::deploy::DeployPlanError::NoEligibleMachines { .. }
+        ))
+    ));
+
+    promoted.mode = ServiceMode::Global;
+    let global_command = prepare_deploy_execution_command(
+        operation_id("op_already_global"),
+        request,
+        facts_with_target_observation(Vec::new(), vec![promoted]),
+    );
+    assert!(deploy_plan(&global_command).is_ok());
 }
 
 #[tokio::test]
@@ -719,6 +813,39 @@ fn detached_hostname_recreation_mints_a_fresh_binding_identity() {
     };
 
     assert_ne!(first_binding.id, recreated_binding.id);
+}
+
+fn facts_with_target_observation(
+    eligible_machines: Vec<ployz_core::ids::MachineId>,
+    namespace_serving_entries: Vec<ployz_core::intent::ServingTargetEntry>,
+) -> DeployExecutionFacts {
+    DeployExecutionFacts {
+        machine_platforms: std::collections::BTreeMap::new(),
+        seed_clock_testimony: std::collections::BTreeMap::new(),
+        machine_storage_testimony: std::collections::BTreeMap::new(),
+        unusable_machines: Vec::new(),
+        namespace_route_bindings: Vec::new(),
+        namespace_serving_entries,
+        namespace_volume_pins: Vec::new(),
+        eligible_machines,
+        dataplane_members: Vec::new(),
+        observed_machines: vec![
+            MachineContainerObservationSnapshot::try_new(
+                machine_id("machine_a"),
+                [observed_service_container_with_entry(
+                    "machine_a",
+                    "ctr_target",
+                    target_namespace_revision_entry_id(),
+                )],
+            )
+            .expect("valid observation"),
+        ],
+        namespace_cleanup_candidates: Vec::new(),
+        automatic_hostname_mode: AutomaticHostnameMode::Disabled,
+        gateway_certificate_targets: Vec::new(),
+        ployz_gateway_certificate_targets: Vec::new(),
+        step_timeout: Duration::from_secs(5),
+    }
 }
 
 fn single_service(command: &DeployExecutionCommand) -> &DeployServiceExecutionCommand {
