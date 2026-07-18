@@ -260,6 +260,11 @@ configure_acceptance_architecture() {
       BUILD_EXPECTED_PLATFORMS='linux/amd64,linux/arm64'
       BUILD_ARCHITECTURES_LABEL='amd64 and arm64'
       EDGE_ARCHITECTURE_LABEL='arm64 Ubuntu edge'
+      EDGE_ACCEPTED_ARCHITECTURES='aarch64 arm64'
+      ARCHITECTURE_WAIVER_METADATA=
+      ARCHITECTURE_RESULT_METADATA=
+      ZFS_SUCCESS_MARKER='ZFS REAL-HOST CERTIFICATION PASSED'
+      ACCEPTANCE_SUCCESS_MARKER='ACCEPTANCE PASSED: mixed-arch + firewalld/UFW + public HTTPS'
       ;;
     1)
       if [ "$zfs_certify" != 1 ]; then
@@ -271,6 +276,11 @@ configure_acceptance_architecture() {
       BUILD_EXPECTED_PLATFORMS='linux/amd64'
       BUILD_ARCHITECTURES_LABEL=amd64
       EDGE_ARCHITECTURE_LABEL='amd64 Ubuntu edge (ZFS waiver)'
+      EDGE_ACCEPTED_ARCHITECTURES=x86_64
+      ARCHITECTURE_WAIVER_METADATA=$'edge_arch_waiver=arm64_provider_capacity_unavailable\narchitecture_mode=amd64-only-non-mixed\nbuild_platforms=linux/amd64\nissue_391_arm_native_build=not-applicable\n'
+      ARCHITECTURE_RESULT_METADATA=$'issue_536_result=valid\n'
+      ZFS_SUCCESS_MARKER='ZFS REAL-HOST CERTIFICATION PASSED: AMD64 EDGE WAIVER (NON-MIXED)'
+      ACCEPTANCE_SUCCESS_MARKER='ACCEPTANCE PASSED: amd64 edge waiver; mixed architecture not certified'
       ;;
     *)
       log "PLOYZ_REAL_HOST_AMD64_EDGE_WAIVER must be 0 or 1"
@@ -279,82 +289,10 @@ configure_acceptance_architecture() {
   esac
 }
 
-validate_edge_architecture() {
-  local architecture_mode=$1
-  local edge_arch=$2
-
-  case "$architecture_mode" in
-    mixed-amd64-arm64)
-      case "$edge_arch" in
-        aarch64|arm64) ;;
-        *) log "edge must be arm64, got $edge_arch"; return 1 ;;
-      esac
-      ;;
-    amd64-only-non-mixed)
-      [ "$edge_arch" = x86_64 ] || {
-        log "ZFS amd64 edge waiver requires x86_64, got $edge_arch"
-        return 1
-      }
-      ;;
-    *) log "unknown acceptance architecture mode: $architecture_mode"; return 1 ;;
-  esac
-}
-
-write_architecture_waiver_metadata() {
-  local architecture_mode=$1
-
-  case "$architecture_mode" in
-    mixed-amd64-arm64) ;;
-    amd64-only-non-mixed)
-      printf 'edge_arch_waiver=arm64_provider_capacity_unavailable\n'
-      printf 'architecture_mode=amd64-only-non-mixed\n'
-      printf 'build_platforms=linux/amd64\n'
-      printf 'issue_391_arm_native_build=not-applicable\n'
-      ;;
-    *) log "unknown acceptance architecture mode: $architecture_mode"; return 1 ;;
-  esac
-}
-
-write_architecture_result_metadata() {
-  local architecture_mode=$1
-
-  case "$architecture_mode" in
-    mixed-amd64-arm64) ;;
-    amd64-only-non-mixed) printf 'issue_536_result=valid\n' ;;
-    *) log "unknown acceptance architecture mode: $architecture_mode"; return 1 ;;
-  esac
-}
-
-log_zfs_success_marker() {
-  local architecture_mode=$1
-
-  case "$architecture_mode" in
-    mixed-amd64-arm64) log "ZFS REAL-HOST CERTIFICATION PASSED" ;;
-    amd64-only-non-mixed)
-      log "ZFS REAL-HOST CERTIFICATION PASSED: AMD64 EDGE WAIVER (NON-MIXED)"
-      ;;
-    *) log "unknown acceptance architecture mode: $architecture_mode"; return 1 ;;
-  esac
-}
-
-log_acceptance_success_marker() {
-  local architecture_mode=$1
-
-  case "$architecture_mode" in
-    mixed-amd64-arm64)
-      log "ACCEPTANCE PASSED: mixed-arch + firewalld/UFW + public HTTPS"
-      ;;
-    amd64-only-non-mixed)
-      log "ACCEPTANCE PASSED: amd64 edge waiver; mixed architecture not certified"
-      ;;
-    *) log "unknown acceptance architecture mode: $architecture_mode"; return 1 ;;
-  esac
-}
-
 run_real_host_acceptance_regression_test() {
   local evidence failure_output success_output reboot_output recovery_output rescue_root fake_bin
   local module_contents module_sha module_mode module_uid module_gid child_status=0
-  local restored_inode ssh_restore_output restore_function_output mode_output
+  local restored_inode ssh_restore_output restore_function_output
   evidence=$(mktemp -d)
   trap 'rm -rf "$evidence"' RETURN
   : > "$evidence/metadata.env"
@@ -409,23 +347,15 @@ run_real_host_acceptance_regression_test() {
   [ "$ACCEPTANCE_ARCHITECTURE_MODE" = amd64-only-non-mixed ]
   [ "$BUILD_PLATFORM_ARGUMENTS" = '--platform linux/amd64' ]
   [ "$BUILD_EXPECTED_PLATFORMS" = linux/amd64 ]
-  validate_edge_architecture "$ACCEPTANCE_ARCHITECTURE_MODE" x86_64
-  if validate_edge_architecture "$ACCEPTANCE_ARCHITECTURE_MODE" arm64 \
-    > "$evidence/waiver-arm64.stdout"; then
-    return 1
-  fi
-  mode_output=$(write_architecture_waiver_metadata "$ACCEPTANCE_ARCHITECTURE_MODE")
-  [ "$mode_output" = $'edge_arch_waiver=arm64_provider_capacity_unavailable\narchitecture_mode=amd64-only-non-mixed\nbuild_platforms=linux/amd64\nissue_391_arm_native_build=not-applicable' ]
-  [ "$(write_architecture_result_metadata "$ACCEPTANCE_ARCHITECTURE_MODE")" = \
-    issue_536_result=valid ]
-  log_zfs_success_marker "$ACCEPTANCE_ARCHITECTURE_MODE" \
-    > "$evidence/waiver-zfs-success.stdout"
-  grep -F 'ZFS REAL-HOST CERTIFICATION PASSED: AMD64 EDGE WAIVER (NON-MIXED)' \
-    "$evidence/waiver-zfs-success.stdout" >/dev/null
-  log_acceptance_success_marker "$ACCEPTANCE_ARCHITECTURE_MODE" \
-    > "$evidence/waiver-acceptance-success.stdout"
-  grep -F 'ACCEPTANCE PASSED: amd64 edge waiver; mixed architecture not certified' \
-    "$evidence/waiver-acceptance-success.stdout" >/dev/null
+  [ "$BUILD_ARCHITECTURES_LABEL" = amd64 ]
+  [ "$EDGE_ARCHITECTURE_LABEL" = 'amd64 Ubuntu edge (ZFS waiver)' ]
+  [ "$EDGE_ACCEPTED_ARCHITECTURES" = x86_64 ]
+  [ "$ARCHITECTURE_WAIVER_METADATA" = $'edge_arch_waiver=arm64_provider_capacity_unavailable\narchitecture_mode=amd64-only-non-mixed\nbuild_platforms=linux/amd64\nissue_391_arm_native_build=not-applicable\n' ]
+  [ "$ARCHITECTURE_RESULT_METADATA" = $'issue_536_result=valid\n' ]
+  [ "$ZFS_SUCCESS_MARKER" = \
+    'ZFS REAL-HOST CERTIFICATION PASSED: AMD64 EDGE WAIVER (NON-MIXED)' ]
+  [ "$ACCEPTANCE_SUCCESS_MARKER" = \
+    'ACCEPTANCE PASSED: amd64 edge waiver; mixed architecture not certified' ]
   child_status=0
   configure_acceptance_architecture 0 1 > "$evidence/waiver-without-zfs.stdout" \
     || child_status=$?
@@ -436,22 +366,14 @@ run_real_host_acceptance_regression_test() {
   [ "$ACCEPTANCE_ARCHITECTURE_MODE" = mixed-amd64-arm64 ]
   [ "$BUILD_PLATFORM_ARGUMENTS" = '--platform linux/amd64 --platform linux/arm64' ]
   [ "$BUILD_EXPECTED_PLATFORMS" = linux/amd64,linux/arm64 ]
-  validate_edge_architecture "$ACCEPTANCE_ARCHITECTURE_MODE" arm64
-  validate_edge_architecture "$ACCEPTANCE_ARCHITECTURE_MODE" aarch64
-  if validate_edge_architecture "$ACCEPTANCE_ARCHITECTURE_MODE" x86_64 \
-    > "$evidence/mixed-x86.stdout"; then
-    return 1
-  fi
-  [ -z "$(write_architecture_waiver_metadata "$ACCEPTANCE_ARCHITECTURE_MODE")" ]
-  [ -z "$(write_architecture_result_metadata "$ACCEPTANCE_ARCHITECTURE_MODE")" ]
-  log_zfs_success_marker "$ACCEPTANCE_ARCHITECTURE_MODE" \
-    > "$evidence/mixed-zfs-success.stdout"
-  grep -F 'ZFS REAL-HOST CERTIFICATION PASSED' \
-    "$evidence/mixed-zfs-success.stdout" >/dev/null
-  log_acceptance_success_marker "$ACCEPTANCE_ARCHITECTURE_MODE" \
-    > "$evidence/mixed-acceptance-success.stdout"
-  grep -F 'ACCEPTANCE PASSED: mixed-arch + firewalld/UFW + public HTTPS' \
-    "$evidence/mixed-acceptance-success.stdout" >/dev/null
+  [ "$BUILD_ARCHITECTURES_LABEL" = 'amd64 and arm64' ]
+  [ "$EDGE_ARCHITECTURE_LABEL" = 'arm64 Ubuntu edge' ]
+  [ "$EDGE_ACCEPTED_ARCHITECTURES" = 'aarch64 arm64' ]
+  [ -z "$ARCHITECTURE_WAIVER_METADATA" ]
+  [ -z "$ARCHITECTURE_RESULT_METADATA" ]
+  [ "$ZFS_SUCCESS_MARKER" = 'ZFS REAL-HOST CERTIFICATION PASSED' ]
+  [ "$ACCEPTANCE_SUCCESS_MARKER" = \
+    'ACCEPTANCE PASSED: mixed-arch + firewalld/UFW + public HTTPS' ]
 
   rescue_root="$evidence/original-root"
   fake_bin="$evidence/bin"
@@ -668,7 +590,7 @@ if [ "$ZFS_CERTIFY" = 1 ]; then
     printf 'core=%s\nedge=%s\n' "$CORE" "$EDGE"
     printf 'release_tag=%s\nruntime_sha=%s\n' "$EXPECTED_RELEASE_TAG" "$EXPECTED_RUNTIME_SHA"
     printf 'harness_sha=%s\nminimum_runtime_sha=%s\n' "$harness_sha" "$MINIMUM_ZFS_RUNTIME_SHA"
-    write_architecture_waiver_metadata "$ACCEPTANCE_ARCHITECTURE_MODE"
+    printf '%s' "$ARCHITECTURE_WAIVER_METADATA"
   } > "$ZFS_EVIDENCE_DIR/metadata.env"
   exec > >(tee -a "$ZFS_EVIDENCE_DIR/transcript.log") 2>&1
 fi
@@ -714,7 +636,10 @@ done
 core_arch=$(core 'uname -m')
 edge_arch=$(remote "$EDGE" 'uname -m')
 [ "$core_arch" = x86_64 ] || { log "core must be amd64 (x86_64), got $core_arch"; exit 1; }
-validate_edge_architecture "$ACCEPTANCE_ARCHITECTURE_MODE" "$edge_arch" || exit 1
+case " $EDGE_ACCEPTED_ARCHITECTURES " in
+  *" $edge_arch "*) ;;
+  *) log "edge architecture $edge_arch is not accepted by $ACCEPTANCE_ARCHITECTURE_MODE"; exit 1 ;;
+esac
 core 'grep -qE "^(ID|ID_LIKE)=.*(rhel|fedora|rocky)" /etc/os-release' || {
   log "core must be Rocky/RHEL-family"; exit 1;
 }
@@ -1487,8 +1412,7 @@ EOF
   printf 'final_boot_id=%s\nfinal_reboot_seconds=%s\n' \
     "$final_boot_id" "$(( $(ts) - reboot_started ))" >> "$ZFS_EVIDENCE_DIR/metadata.env"
   zfs_phase 09 final-reboot zfs_verify_alarm_cleared
-  write_architecture_result_metadata "$ACCEPTANCE_ARCHITECTURE_MODE" \
-    >> "$ZFS_EVIDENCE_DIR/metadata.env"
+  printf '%s' "$ARCHITECTURE_RESULT_METADATA" >> "$ZFS_EVIDENCE_DIR/metadata.env"
   printf 'completed_utc=%s\ntotal_seconds=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(( $(ts) - zfs_started ))" >> "$ZFS_EVIDENCE_DIR/metadata.env"
   checksum_tmp=$(mktemp)
   (
@@ -1498,11 +1422,11 @@ EOF
   )
   mv "$checksum_tmp" "$ZFS_EVIDENCE_DIR/sha256sums"
   zfs_recovery_message=
-  log_zfs_success_marker "$ACCEPTANCE_ARCHITECTURE_MODE"
+  log "$ZFS_SUCCESS_MARKER"
 }
 
 if [ "$ZFS_CERTIFY" = 1 ]; then
   run_zfs_real_host_certification
 fi
 
-log_acceptance_success_marker "$ACCEPTANCE_ARCHITECTURE_MODE"
+log "$ACCEPTANCE_SUCCESS_MARKER"
