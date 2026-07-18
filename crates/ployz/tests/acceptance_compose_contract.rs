@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use ployz::deploy::compose::{ComposeInput, UnsupportedFieldMode, parse_deploy_file};
+use ployz_core::deploy::ContainerHealthcheckTest;
 use ployz_test_support::ids::service_id;
 
 const UMAMI_COMPOSE: &str =
@@ -68,7 +69,7 @@ fn umami_waits_for_database_dns_before_starting() {
         2,
         "full acceptance fixture must contain exactly Postgres and Umami"
     );
-    parsed
+    let database = parsed
         .services
         .iter()
         .find(|service| service.service_id == service_id("db"))
@@ -91,4 +92,27 @@ fn umami_waits_for_database_dns_before_starting() {
             .as_slice()
         )
     );
+
+    let database_healthcheck = database
+        .runtime
+        .healthcheck
+        .as_ref()
+        .expect("Postgres healthcheck exists");
+    assert!(matches!(
+        &database_healthcheck.test,
+        ContainerHealthcheckTest::Shell(command)
+            if command.as_str() == "pg_isready -U umami -d umami"
+    ));
+    assert!(database_healthcheck.reports_docker_health());
+
+    let umami_healthcheck = umami
+        .runtime
+        .healthcheck
+        .as_ref()
+        .expect("Umami healthcheck is explicitly disabled");
+    assert!(matches!(
+        &umami_healthcheck.test,
+        ContainerHealthcheckTest::Disable
+    ));
+    assert!(!umami_healthcheck.reports_docker_health());
 }

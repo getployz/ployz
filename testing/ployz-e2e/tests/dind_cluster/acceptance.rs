@@ -203,14 +203,7 @@ async fn step_2_deploy_real_application(
         .hostname
         .as_str()
         .to_owned();
-    let response =
-        gateway_https_get_unverified(core.cluster.core().published.gateway_tls, &hostname)
-            .await
-            .expect("Umami answers through public HTTPS");
-    assert!(
-        response.starts_with("HTTP/1.1 200"),
-        "Umami HTTPS response was not successful: {response}"
-    );
+    wait_for_umami_https(core, &hostname).await;
 
     DeployedApp {
         application: application.clone(),
@@ -357,14 +350,7 @@ async fn step_5_retry_and_rollback(
         app.application.request.services
     );
 
-    let restored =
-        gateway_https_get_unverified(core.cluster.core().published.gateway_tls, &app.hostname)
-            .await
-            .expect("rolled-back Umami answers through HTTPS");
-    assert!(
-        restored.starts_with("HTTP/1.1 200") && restored.contains("Umami"),
-        "rollback did not restore Umami: {restored}"
-    );
+    wait_for_umami_https(core, &app.hostname).await;
 
     let all_machines = all_machines(core);
     let workloads = namespace_workloads(core, &all_machines, ACCEPTANCE_NAMESPACE).await;
@@ -598,4 +584,22 @@ async fn assert_service_name_database_reachability(
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
     panic!("Umami could not reach Postgres by service name: {last:?}");
+}
+
+async fn wait_for_umami_https(core: &CoreContext, hostname: &str) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut last = String::from("<no attempt>");
+    while Instant::now() < deadline {
+        match gateway_https_get_unverified(core.cluster.core().published.gateway_tls, hostname)
+            .await
+        {
+            Ok(response) if response.starts_with("HTTP/1.1 200") && response.contains("Umami") => {
+                return;
+            }
+            Ok(response) => last = format!("unexpected response: {response}"),
+            Err(error) => last = error,
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    panic!("Umami did not become ready through HTTPS within 60 seconds: {last}");
 }

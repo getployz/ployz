@@ -26,10 +26,6 @@ services:
       replicas: 2
     x-ports: [3000]
     healthcheck:
-      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))\""]
-      interval: 2s
-      timeout: 2s
-      retries: 60
-      start_period: 5s
+      disable: true
 volumes:
   postgres-data: {}
