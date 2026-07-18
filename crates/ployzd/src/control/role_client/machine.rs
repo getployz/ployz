@@ -411,6 +411,7 @@ pub(crate) async fn read_machine_placement_facts(
     let mut reads = machine_placement_fact_reads(
         facts_reader,
         machine_lifecycles.into_iter().collect::<Vec<_>>(),
+        MAX_CONCURRENT_MACHINE_READS,
     );
 
     let mut facts = Vec::new();
@@ -427,7 +428,8 @@ pub(crate) async fn read_machine_placement_facts_with_gather_timeout(
     gather_timeout: Duration,
 ) -> Vec<MachinePlacementFacts> {
     let candidates = machine_lifecycles.into_iter().collect::<Vec<_>>();
-    let reads = machine_placement_fact_reads(facts_reader, candidates.clone());
+    let reads =
+        machine_placement_fact_reads(facts_reader, candidates.clone(), candidates.len().max(1));
     collect_machine_placement_facts_until(candidates, reads, gather_timeout).await
 }
 
@@ -462,6 +464,7 @@ async fn collect_machine_placement_facts_until(
 fn machine_placement_fact_reads(
     facts_reader: &NatsMachineFactsReader,
     machine_lifecycles: Vec<(MachineId, MachineLifecycle)>,
+    concurrency: usize,
 ) -> impl futures_util::Stream<Item = MachinePlacementFacts> + '_ {
     stream::iter(machine_lifecycles)
         .map(move |(machine_id, lifecycle)| async move {
@@ -477,7 +480,7 @@ fn machine_placement_fact_reads(
                 answer,
             }
         })
-        .buffer_unordered(MAX_CONCURRENT_MACHINE_READS)
+        .buffer_unordered(concurrency)
 }
 
 fn placement_answer(
@@ -1119,6 +1122,7 @@ mod tests {
     use futures_util::stream;
     use ployz_core::image::OciPlatform;
     use ployz_core::machine::runtime::{MachineContainerObservationSnapshot, MachineDiskSpace};
+    use std::collections::BTreeSet;
 
     #[test]
     fn placement_answer_binds_seed_clock_to_control_gather_start() {
@@ -1206,6 +1210,111 @@ mod tests {
                 assert_eq!(facts.lifecycle, MachineLifecycle::Active);
                 assert!(facts.answer.is_none());
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn bounded_placement_gather_queries_every_candidate_before_classifying_silence() {
+        let candidates = (0_u8..17)
+            .map(|index| {
+                (
+                    MachineId::try_new(format!("machine_{index:02}"))
+                        .expect("candidate machine id"),
+                    MachineLifecycle::Active,
+                )
+            })
+            .collect::<Vec<_>>();
+        let machine_ids = candidates
+            .iter()
+            .map(|(machine_id, _)| machine_id.clone())
+            .collect::<Vec<_>>();
+        let nats = ployz_test_support::nats::TestNats::start_with_machines(&machine_ids).await;
+        let (queried_tx, mut queried_rx) = tokio::sync::mpsc::channel(machine_ids.len());
+        let mut responders = Vec::new();
+
+        for (index, machine_id) in machine_ids.iter().cloned().enumerate() {
+            let client = nats.machine_client(&machine_id).await;
+            let subject = machine_service(&machine_id, MachineServiceEndpoint::FactsGet);
+            let mut subscriber = client
+                .subscribe(subject)
+                .await
+                .expect("subscribe facts service");
+            client
+                .flush()
+                .await
+                .expect("flush facts service subscription");
+            let queried_tx = queried_tx.clone();
+            responders.push(tokio::spawn(async move {
+                let request = subscriber.next().await.expect("facts request");
+                queried_tx
+                    .send(machine_id.clone())
+                    .await
+                    .expect("record queried machine");
+
+                if index < MAX_CONCURRENT_MACHINE_READS {
+                    return;
+                }
+
+                let reply = request.reply.expect("facts request reply subject");
+                let facts = MachineFactsSnapshot::try_new(
+                    machine_id.clone(),
+                    MachineContainerObservationSnapshot::try_new(machine_id.clone(), [])
+                        .expect("containers"),
+                    None,
+                    MachineDiskSpace {
+                        available_bytes: 1,
+                        total_bytes: 2,
+                    },
+                    None,
+                    OciPlatform::try_new("linux", "amd64").expect("platform"),
+                    1_234,
+                )
+                .expect("facts");
+                let response =
+                    MachineRpcResponse::<MachineFactsGetRpcOk, MachineFactsGetDomainError>::Ok(
+                        MachineFactsGetRpcOk {
+                            facts,
+                            build: MachineBuildCapability::Available,
+                        },
+                    );
+                client
+                    .publish(
+                        reply,
+                        serde_json::to_vec(&response)
+                            .expect("facts response serializes")
+                            .into(),
+                    )
+                    .await
+                    .expect("publish facts response");
+                client.flush().await.expect("flush facts response");
+            }));
+        }
+        drop(queried_tx);
+
+        let gathered = read_machine_placement_facts_with_gather_timeout(
+            &NatsMachineFactsReader::new(nats.controller.clone()),
+            candidates,
+            Duration::from_millis(500),
+        )
+        .await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            for responder in responders {
+                responder.await.expect("facts responder exits cleanly");
+            }
+        })
+        .await
+        .expect("every candidate receives a facts request");
+        let queried = std::iter::from_fn(|| queried_rx.try_recv().ok()).collect::<BTreeSet<_>>();
+
+        assert_eq!(queried, machine_ids.iter().cloned().collect());
+        assert_eq!(gathered.len(), machine_ids.len());
+        for (index, facts) in gathered.into_iter().enumerate() {
+            assert_eq!(facts.machine_id, machine_ids[index]);
+            assert_eq!(facts.lifecycle, MachineLifecycle::Active);
+            assert_eq!(
+                facts.answer.is_some(),
+                index == MAX_CONCURRENT_MACHINE_READS
+            );
         }
     }
 }
