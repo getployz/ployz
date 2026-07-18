@@ -988,6 +988,20 @@ pub(super) fn phased_deploy_command(service_ids: &[&str]) -> DeployExecutionInpu
     execution_input_for_request(phased_request(service_ids), Vec::new(), Vec::new())
 }
 
+pub(super) fn phased_deploy_with_routed_later_phase() -> DeployExecutionInput {
+    let mut request = phased_request(&["svc_database", "svc_web"]);
+    let [_, web] = request.services.as_mut_slice() else {
+        panic!("fixture has two services");
+    };
+    web.routes = vec![DeployRoute {
+        target: DeployRouteTarget::Hostname {
+            hostname: RouteHostname::try_new("web.example.com").expect("valid route hostname"),
+        },
+        endpoint_port: route_port(8080),
+    }];
+    execution_input_for_request(request, Vec::new(), Vec::new())
+}
+
 fn phased_request(service_ids: &[&str]) -> DeployRequest {
     let mut request = target_deploy_request(1);
     let template = request.services.remove(0);
@@ -1079,6 +1093,20 @@ fn execution_input_for_request(
     observed_machines: Vec<MachineContainerObservationSnapshot>,
     namespace_serving_entries: Vec<ServingTargetEntry>,
 ) -> DeployExecutionInput {
+    execution_input_for_request_with_routes(
+        request,
+        observed_machines,
+        namespace_serving_entries,
+        Vec::new(),
+    )
+}
+
+fn execution_input_for_request_with_routes(
+    request: DeployRequest,
+    observed_machines: Vec<MachineContainerObservationSnapshot>,
+    namespace_serving_entries: Vec<ServingTargetEntry>,
+    namespace_route_bindings: Vec<RouteBindingState>,
+) -> DeployExecutionInput {
     deploy_execution_input(
         operation_id("op_123"),
         request,
@@ -1087,7 +1115,7 @@ fn execution_input_for_request(
             seed_clock_testimony: std::collections::BTreeMap::new(),
             machine_storage_testimony: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
-            namespace_route_bindings: Vec::new(),
+            namespace_route_bindings,
             namespace_serving_entries,
             namespace_volume_pins: Vec::new(),
             dataplane_members: Vec::new(),
@@ -1224,6 +1252,24 @@ pub(super) fn routed_deploy_command(replicas: u16) -> DeployExecutionInput {
 pub(super) fn routed_deploy_replacing_route_command(replicas: u16) -> DeployExecutionInput {
     routed_deploy_command_with_stored_routes(
         replicas,
+        vec![RouteBindingState {
+            id: RouteBindingId::try_new("route_old").expect("valid route binding id"),
+            namespace_id: namespace_id("default"),
+            target: RouteTarget::new(
+                RouteHostname::try_new("old.example.com").expect("valid route hostname"),
+            ),
+            endpoint_port: route_port(8080),
+            service_id: service_id("svc_api"),
+            origin: RouteBindingOrigin::Declared,
+        }],
+    )
+}
+
+pub(super) fn unrouted_deploy_removing_route_command(replicas: u16) -> DeployExecutionInput {
+    execution_input_for_request_with_routes(
+        target_deploy_request(replicas),
+        Vec::new(),
+        Vec::new(),
         vec![RouteBindingState {
             id: RouteBindingId::try_new("route_old").expect("valid route binding id"),
             namespace_id: namespace_id("default"),

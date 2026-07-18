@@ -1068,6 +1068,13 @@ fn transition_satisfied(current: &DeployOperationState, attempted: &DeployOperat
                 let current_rank = stage_rank(*current);
                 let attempted_rank = stage_rank(*attempted);
                 current_rank > attempted_rank
+                    && !matches!(
+                        (current, attempted),
+                        (
+                            DeployRunningStage::ServingTargetCommit,
+                            DeployRunningStage::RouteCutover
+                        )
+                    )
                     || current_rank == attempted_rank && current == attempted
             }
             DeployOperationState::Accepted
@@ -1209,6 +1216,9 @@ fn stage_is_next(current: DeployRunningStage, attempted: DeployRunningStage) -> 
         ) | (
             DeployRunningStage::RouteCutover,
             DeployRunningStage::ServingTargetCommit
+        ) | (
+            DeployRunningStage::ServingTargetCommit,
+            DeployRunningStage::RouteCutover
         ) | (
             DeployRunningStage::ServingTargetCommit,
             DeployRunningStage::RemovingSupersededContainers
