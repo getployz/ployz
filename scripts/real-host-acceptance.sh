@@ -110,6 +110,46 @@ wait_for_storage_ready_testimony() {
   return 1
 }
 
+wait_for_operation_terminal() {
+  local operation_id=$1
+  local budget_seconds=$2
+  local deadline=$((SECONDS + budget_seconds))
+  local status='' state=''
+
+  while (( SECONDS < deadline )); do
+    if status=$(core_before_deadline "$deadline" "ployz ops status '${operation_id}'"); then
+      state=$(printf '%s\n' "$status" | sed -n 's/^state \([^[:space:]]\+\)$/\1/p')
+      case "$state" in
+        accepted|preparing) ;;
+        completed) return 0 ;;
+        failed|cancelled|interrupted)
+          printf '%s\n' "$status"
+          log "operation ${operation_id} reached terminal state ${state}"
+          return 1
+          ;;
+        '')
+          printf '%s\n' "$status"
+          log "operation ${operation_id} status has no valid state line"
+          return 1
+          ;;
+        *$'\n'*)
+          printf '%s\n' "$status"
+          log "operation ${operation_id} status has ambiguous state lines"
+          return 1
+          ;;
+        *)
+          printf '%s\n' "$status"
+          log "operation ${operation_id} reported unexpected state ${state}"
+          return 1
+          ;;
+      esac
+    fi
+    sleep_before_deadline "$deadline" 3
+  done
+  log "operation ${operation_id} did not reach a terminal state within ${budget_seconds} seconds"
+  return 1
+}
+
 wait_for_core_reboot() {
   local prior_boot_id=$1
   local deadline_description=${2:-9 minutes}
@@ -351,7 +391,7 @@ run_real_host_acceptance_regression_test() {
   local dockerfile_build_log railpack_build_log cancellation_log firewall_log direct_zfs_invocation
   local dockerfile_build_log_line railpack_build_log_line cancellation_log_line firewall_log_line
   local managed_function_line managed_deploy_log_line restart_invisibility_log_line dispatch_invocation_line
-  local acceptance_phase_sequence
+  local acceptance_phase_sequence operation_probe operation_probe_mode
   evidence=$(mktemp -d)
   trap 'rm -rf "$evidence"' RETURN
   : > "$evidence/metadata.env"
@@ -490,6 +530,38 @@ run_real_host_acceptance_regression_test() {
   grep -Fx 'storage ready pool=probe-pool' "$evidence/storage-ready.stdout" >/dev/null
   grep -Fx 'storage-alarms none' "$evidence/storage-ready.stdout" >/dev/null
   grep -Fx 'inspect_calls=3' "$evidence/storage-ready.stdout" >/dev/null
+
+  operation_probe=$("$0" --operation-terminal-probe completed)
+  printf '%s\n' "$operation_probe" | grep -Fx 'probe_status=0' >/dev/null
+  printf '%s\n' "$operation_probe" | grep -Fx 'status_calls=3' >/dev/null
+
+  for operation_probe_mode in terminal-failure missing-state ambiguous-state unexpected-state deadline; do
+    child_status=0
+    operation_probe=$("$0" --operation-terminal-probe "$operation_probe_mode" 2>&1) \
+      || child_status=$?
+    [ "$child_status" -ne 0 ]
+    printf '%s\n' "$operation_probe" | grep -Fx 'probe_status=1' >/dev/null
+    case "$operation_probe_mode" in
+      terminal-failure)
+        printf '%s\n' "$operation_probe" | grep -Fx 'state failed' >/dev/null
+        printf '%s\n' "$operation_probe" | grep -Fx 'operation op_probe reached terminal state failed' >/dev/null
+        printf '%s\n' "$operation_probe" | grep -Fx 'status_calls=2' >/dev/null
+        ;;
+      missing-state)
+        printf '%s\n' "$operation_probe" | grep -Fx 'operation op_probe status has no valid state line' >/dev/null
+        ;;
+      ambiguous-state)
+        printf '%s\n' "$operation_probe" | grep -Fx 'operation op_probe status has ambiguous state lines' >/dev/null
+        ;;
+      unexpected-state)
+        printf '%s\n' "$operation_probe" | grep -Fx 'operation op_probe reported unexpected state running' >/dev/null
+        ;;
+      deadline)
+        printf '%s\n' "$operation_probe" | grep -Fx 'operation op_probe did not reach a terminal state within 5 seconds' >/dev/null
+        printf '%s\n' "$operation_probe" | grep -Fx 'status_calls=1' >/dev/null
+        ;;
+    esac
+  done
 
   # shellcheck disable=SC2317 # The dispatcher invokes this recorder by name.
   record_managed_phase() {
@@ -685,6 +757,43 @@ case ${1:-} in
     wait_for_storage_ready_testimony probe-pool probe-ns/probe-volume
     printf 'inspect_calls=%s\n' "$(wc -l < "$storage_ready_probe_calls")"
     exit 0
+    ;;
+  --operation-terminal-probe)
+    operation_probe_mode=${2:?missing operation terminal probe mode}
+    operation_probe_calls=$(mktemp)
+    trap 'rm -f "$operation_probe_calls"' EXIT
+    : > "$operation_probe_calls"
+    SECONDS=0
+    log() { printf '%s\n' "$*" >&2; }
+    core_before_deadline() {
+      printf 'status\n' >> "$operation_probe_calls"
+      operation_probe_call=$(wc -l < "$operation_probe_calls")
+      case "${operation_probe_mode}:${operation_probe_call}" in
+        completed:1) printf 'operation op_probe\nstate accepted\n' ;;
+        completed:2) printf 'operation op_probe\nstate preparing\n' ;;
+        completed:3) printf 'operation op_probe\nstate completed\n' ;;
+        terminal-failure:1) printf 'operation op_probe\nstate accepted\n' ;;
+        terminal-failure:2) printf 'operation op_probe\nstate failed\nfailure probe\n' ;;
+        terminal-failure:*) printf 'operation op_probe\nstate completed\n' ;;
+        missing-state:*) printf 'operation op_probe\nlast-event 1\n' ;;
+        ambiguous-state:*) printf 'operation op_probe\nstate accepted\nstate completed\n' ;;
+        unexpected-state:*) printf 'operation op_probe\nstate running\n' ;;
+        deadline:*) return 255 ;;
+        *) return 2 ;;
+      esac
+    }
+    sleep_before_deadline() {
+      if [ "$operation_probe_mode" = deadline ]; then
+        SECONDS=$1
+      fi
+    }
+    set +e
+    wait_for_operation_terminal op_probe 5
+    operation_probe_status=$?
+    set -e
+    printf 'probe_status=%s\nstatus_calls=%s\n' \
+      "$operation_probe_status" "$(wc -l < "$operation_probe_calls")"
+    exit "$operation_probe_status"
     ;;
 esac
 
@@ -1120,8 +1229,8 @@ zfs_storage_prepare() {
   printf '%s\n' "$storage_prepare_output"
   storage_operation_id=$(printf '%s\n' "$storage_prepare_output" | awk '/^operation / { print $2; exit }')
   [ -n "$storage_operation_id" ] || { log "storage preparation did not report an operation id"; return 1; }
-  core "timeout 20s ployz ops status '${storage_operation_id}'"
-  storage_operation_evidence=$(core "timeout 20m ployz ops watch '${storage_operation_id}' --json")
+  wait_for_operation_terminal "$storage_operation_id" 1200
+  storage_operation_evidence=$(core "timeout 20s ployz ops watch '${storage_operation_id}' --json")
   printf '%s\n' "$storage_operation_evidence"
   storage_operation_evidence_sha=$(printf '%s' "$storage_operation_evidence" | sha256sum | awk '{print $1}')
   machine_storage=
@@ -1526,7 +1635,7 @@ run_zfs_real_host_certification() {
   install -m 0444 "$REPO_ROOT/scripts/real-host-acceptance.sh" "$ZFS_EVIDENCE_DIR/sealed-harness.sh"
   cat > "$ZFS_EVIDENCE_DIR/commands.log" <<EOF
 Harness source: sealed-harness.sh (${harness_sha})
-01 timeout 2m ployz machine storage-prepare ${core_machine_id} --detach; timeout 20m ployz ops watch OPERATION --json
+01 timeout 2m ployz machine storage-prepare ${core_machine_id} --detach; poll ployz ops status OPERATION to terminal with a 1200s absolute budget; timeout 20s ployz ops watch OPERATION --json terminal replay
 02 ployz volume create ${zfs_namespace} ${zfs_volume} --machine ${core_machine_id} --max-size 2G; ployz deploy -f ${remote_compose}
 03 zpool/zfs GUID, mountpoint, exact quota=2147483648 and refquota=0; docker inspect container/volume; PostgreSQL row query
 04 systemctl reboot; systemd zfs.target-before-docker timestamps; same pool/dataset/quota/refquota/container/volume/bind/row
@@ -1535,7 +1644,7 @@ Harness source: sealed-harness.sh (${harness_sha})
 07 verify backup checksum; restore exact module path; depmod; modinfo
 08 systemctl reboot; same pool/dataset/quota/refquota/container/volume/bind/row; alarm clear
 09 systemctl reboot; repeat full recovery and alarm-clear proof
-Wait budgets use monotonic absolute deadlines: disconnect 120s; reboot return 540s; API/testimony 360s; container 240s; each retry-loop SSH attempt at most 15s.
+Wait budgets use monotonic absolute deadlines: storage operation status poll 1200s with terminal replay 20s; disconnect 120s; reboot return 540s; API/testimony 360s; container 240s; each retry-loop SSH attempt at most 15s.
 Commands containing fixture credentials are intentionally redacted; their bounded outcomes are in the numbered logs.
 EOF
 
