@@ -10,7 +10,8 @@ use serde::de::DeserializeOwned;
 use std::process::Stdio;
 use std::time::Duration;
 
-const STORAGE_HOST_COMMAND_TIMEOUT: Duration = Duration::from_secs(4);
+pub(super) const STORAGE_CAPABILITY_HOST_COMMAND_TIMEOUT: Duration = Duration::from_secs(4);
+const VOLUME_USAGE_HOST_COMMAND_TIMEOUT: Duration = Duration::from_secs(4);
 const MAX_CONCURRENT_VOLUME_READS: usize = 16;
 const VOLUME_TESTIMONY_COLLECTION_TIMEOUT: Duration = Duration::from_secs(4);
 pub(crate) const VOLUME_TESTIMONY_ENDPOINT_TIMEOUT: Duration = Duration::from_millis(4_500);
@@ -86,7 +87,7 @@ pub(super) async fn read_provisioned_volume_usage(
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .kill_on_drop(true);
-    decode_storage_host_command(command, STORAGE_HOST_COMMAND_TIMEOUT).await
+    decode_storage_host_command(command, VOLUME_USAGE_HOST_COMMAND_TIMEOUT).await
 }
 
 pub(crate) async fn handle_volume_testimony<R>(
@@ -244,7 +245,7 @@ async fn run_storage_host_command<T: DeserializeOwned>(subcommand: &str) -> Opti
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .kill_on_drop(true);
-    decode_storage_host_command(command, STORAGE_HOST_COMMAND_TIMEOUT).await
+    decode_storage_host_command(command, STORAGE_CAPABILITY_HOST_COMMAND_TIMEOUT).await
 }
 
 async fn decode_storage_host_command<T: DeserializeOwned>(

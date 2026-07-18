@@ -22,6 +22,7 @@ use ployz_sdk_types::{
     ControlRuntimeProjectionServiceHealth, RuntimeSnapshot,
 };
 use serde::Deserialize;
+use std::collections::BTreeSet;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -483,9 +484,14 @@ async fn run_projection(
 
 fn storage_testimony_machine_ids(intent: &IntentSnapshot) -> Vec<ployz_core::ids::MachineId> {
     intent
-        .active_machines
+        .volume_pins
         .iter()
-        .map(|machine| machine.machine_id.clone())
+        .filter_map(|pin| match pin.kind() {
+            ployz_core::intent::VolumeKind::Plain => None,
+            ployz_core::intent::VolumeKind::Provisioned { .. } => Some(pin.machine_id().clone()),
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
         .collect()
 }
 
@@ -703,6 +709,26 @@ mod tests {
 
         assert!(gather.accept(1, Vec::new()).is_none());
         assert_eq!(gather.accept(2, Vec::new()), Some(Vec::new()));
+    }
+
+    #[test]
+    fn storage_testimony_machine_ids_include_only_unique_provisioned_pin_owners() {
+        let mut cluster_intent = intent(Vec::new());
+        cluster_intent.volume_pins = vec![
+            VolumePinState::plain(
+                ployz_test_support::ids::namespace_id("default"),
+                VolumeName::try_new("plain-data").expect("valid volume name"),
+                machine_id("machine_c"),
+            ),
+            provisioned_pin("cache", "machine_z", "tank"),
+            provisioned_pin("data", "machine_b", "tank"),
+            provisioned_pin("logs", "machine_z", "tank"),
+        ];
+
+        assert_eq!(
+            storage_testimony_machine_ids(&cluster_intent),
+            vec![machine_id("machine_b"), machine_id("machine_z")]
+        );
     }
 
     #[tokio::test]
