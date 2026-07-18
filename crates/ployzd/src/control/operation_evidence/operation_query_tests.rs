@@ -9,7 +9,8 @@ use ployz_core::operation::{
     CertInterruptionStage, CertOperationFailure, CertOperationState,
     CertificateInterruptionNextAction, CertificateProvisionFailure, EventSequence,
     NamespaceRemoveOperationState, NamespaceRemoveRunningStage, NamespaceRemoveTransition,
-    OperationEventReplayRequest, OperationInterruptionCause, OperationStatus,
+    OperationEventReplayCursor, OperationEventReplayRequest, OperationInterruptionCause,
+    OperationOutcome, OperationStatus,
 };
 use ployz_test_support::ids::{event_replay_limit, event_sequence, namespace_id, operation_id};
 use rusqlite::Connection;
@@ -150,6 +151,54 @@ async fn replay_preserves_recorded_timestamps_for_ordered_events() {
         persisted
     );
     assert_eq!(first_replay, second_replay);
+}
+
+#[tokio::test]
+async fn caught_up_terminal_replay_carries_the_stored_status_outcome() {
+    let nats = ployz_test_support::nats::TestNats::start().await;
+    let store = CoreStore::open_in_memory()
+        .await
+        .expect("open operation store");
+    let repository = OperationRepository::open(store, nats.controller);
+    let operation_id = operation_id("op_terminal_replay_outcome");
+
+    repository
+        .submit_namespace_remove(NamespaceRemoveOperationSubmission {
+            operation_id: operation_id.clone(),
+            namespace_id: namespace_id("team-a"),
+        })
+        .await
+        .expect("submit operation");
+    repository
+        .record_namespace_remove_transition(
+            &operation_id,
+            NamespaceRemoveTransition::Running {
+                stage: NamespaceRemoveRunningStage::RemovingRouteBindings,
+            },
+        )
+        .await
+        .expect("record running transition");
+    repository
+        .record_namespace_remove_transition(&operation_id, NamespaceRemoveTransition::Completed)
+        .await
+        .expect("record completed transition");
+
+    let page = repository
+        .replay_operation_events(OperationEventReplayRequest {
+            operation_id,
+            start_sequence: event_sequence(4),
+            limit: event_replay_limit(10),
+        })
+        .await
+        .expect("replay events after terminal event");
+
+    assert!(page.events.is_empty());
+    assert_eq!(
+        page.cursor,
+        OperationEventReplayCursor::Terminal {
+            outcome: OperationOutcome::Succeeded,
+        }
+    );
 }
 
 #[test]

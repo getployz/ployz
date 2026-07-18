@@ -11,7 +11,8 @@ use ployz_core::deploy::{
 use ployz_core::ids::{NamespaceId, ServiceId};
 use ployz_core::operation::{
     DeployCompletionOutcome, DeployOperationFailure, DeployOperationState, OperationEvent,
-    OperationEventReplayPage, OperationStatus, OperationStatusSnapshot, ReplayedOperationEvent,
+    OperationEventReplayPage, OperationOutcome, OperationStatus, OperationStatusSnapshot,
+    ReplayedOperationEvent,
 };
 use ployz_nats::service_runtime::{NatsServiceResponse, start_nats_service};
 use ployz_nats::services::{
@@ -223,25 +224,29 @@ async fn binary_rollback_replays_the_selected_pinned_payload_as_a_new_deploy() {
             assert_eq!(request.operation_id, operation_id("op_rollback"));
             assert_eq!(request.start_sequence, event_sequence(1));
             let response: OpsWatchResponse = OperationApiResponse::Ok {
-                value: OperationEventReplayPage::terminal(vec![
-                    replayed(
-                        1,
-                        OperationEvent::DeploySubmitted {
-                            operation_id: operation_id("op_rollback"),
-                            reservation_id: Some(DeployReservationId::first()),
-                            target: pinned_request(Some(
-                                DeployOrigin::try_new("rollback").expect("valid rollback origin"),
-                            )),
-                        },
-                    ),
-                    replayed(
-                        2,
-                        OperationEvent::DeployCompleted {
-                            operation_id: operation_id("op_rollback"),
-                            outcome: DeployCompletionOutcome::Completed,
-                        },
-                    ),
-                ]),
+                value: OperationEventReplayPage::terminal(
+                    vec![
+                        replayed(
+                            1,
+                            OperationEvent::DeploySubmitted {
+                                operation_id: operation_id("op_rollback"),
+                                reservation_id: Some(DeployReservationId::first()),
+                                target: pinned_request(Some(
+                                    DeployOrigin::try_new("rollback")
+                                        .expect("valid rollback origin"),
+                                )),
+                            },
+                        ),
+                        replayed(
+                            2,
+                            OperationEvent::DeployCompleted {
+                                operation_id: operation_id("op_rollback"),
+                                outcome: DeployCompletionOutcome::Completed,
+                            },
+                        ),
+                    ],
+                    OperationOutcome::Succeeded,
+                ),
             };
             NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
         })
@@ -348,25 +353,28 @@ async fn binary_foreground_deploy_exits_non_zero_when_operation_fails() {
                 serde_json::from_slice(&request.payload).expect("watch request decodes");
             assert_eq!(request.operation_id, operation_id("op_deploy_failed"));
             let response: OpsWatchResponse = OperationApiResponse::Ok {
-                value: OperationEventReplayPage::terminal(vec![
-                    replayed(
-                        1,
-                        OperationEvent::DeploySubmitted {
-                            operation_id: operation_id("op_deploy_failed"),
-                            reservation_id: Some(DeployReservationId::first()),
-                            target: forward_request(),
-                        },
-                    ),
-                    replayed(
-                        2,
-                        OperationEvent::DeployFailed {
-                            operation_id: operation_id("op_deploy_failed"),
-                            failure: DeployOperationFailure::NoUsableMachines {
-                                reasons: Vec::new(),
+                value: OperationEventReplayPage::terminal(
+                    vec![
+                        replayed(
+                            1,
+                            OperationEvent::DeploySubmitted {
+                                operation_id: operation_id("op_deploy_failed"),
+                                reservation_id: Some(DeployReservationId::first()),
+                                target: forward_request(),
                             },
-                        },
-                    ),
-                ]),
+                        ),
+                        replayed(
+                            2,
+                            OperationEvent::DeployFailed {
+                                operation_id: operation_id("op_deploy_failed"),
+                                failure: DeployOperationFailure::NoUsableMachines {
+                                    reasons: Vec::new(),
+                                },
+                            },
+                        ),
+                    ],
+                    OperationOutcome::Failed,
+                ),
             };
             NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
         })

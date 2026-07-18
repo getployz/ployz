@@ -282,7 +282,7 @@ test("replay pages advance through replay cursors", async () => {
     },
     {
       events: [],
-      cursor: { state: "terminal" },
+      cursor: { state: "terminal", outcome: "succeeded" },
     },
   );
   const client = new PloyzClient(transport);
@@ -299,7 +299,10 @@ test("replay pages advance through replay cursors", async () => {
   ]);
   assert.deepEqual(
     pages.map((page) => page.cursor),
-    [{ state: "more", next_start_sequence: "12" }, { state: "terminal" }],
+    [
+      { state: "more", next_start_sequence: "12" },
+      { state: "terminal", outcome: "succeeded" },
+    ],
   );
 });
 

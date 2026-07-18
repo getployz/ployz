@@ -6,9 +6,9 @@ use ployz::dispatcher::{PLOYZ_NATS_CA_FILE_ENV, PLOYZ_NATS_NKEY_SEED_FILE_ENV};
 use ployz_core::deploy::{DeployServiceSpec, ImageReference, ReplicaCount};
 use ployz_core::ids::NamespaceId;
 use ployz_core::operation::{
-    DeployOperationState, ManagedDnsReconcileOperationState, ManagedDnsReconcileSubject,
-    OperationEvent, OperationEventReplayPage, OperationEventReplayRequest, OperationStatus,
-    OperationStatusSnapshot, ReplayedOperationEvent,
+    DeployOperationFailure, ManagedDnsReconcileOperationState, ManagedDnsReconcileSubject,
+    OperationEvent, OperationEventReplayPage, OperationEventReplayRequest, OperationOutcome,
+    OperationStatus, OperationStatusSnapshot, ReplayedOperationEvent,
 };
 use ployz_nats::service_runtime::{NatsServiceResponse, start_nats_service};
 use ployz_nats::services::{
@@ -16,9 +16,8 @@ use ployz_nats::services::{
 };
 use ployz_nats::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
 use ployz_sdk_types::{
-    OperationApiResponse, OpsListRequest, OpsListResponse, OpsListResult, OpsStatusRequest,
-    OpsStatusResponse, OpsWatchResponse,
-    operation_api::{OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi},
+    OperationApiResponse, OpsListRequest, OpsListResponse, OpsListResult, OpsWatchResponse,
+    operation_api::{OperationApiContract, OpsListApi, OpsWatchApi},
 };
 use ployz_test_support::ids::{
     event_sequence, operation_event_recorded_at, operation_id, service_id,
@@ -31,12 +30,8 @@ async fn binary_ops_watch_replays_terminal_event_after_a_caught_up_page() {
     let client = server.controller.clone();
     let env = CliNatsEnv::new(&server.server);
     let service_client = client.clone();
-    let spec = test_api_service(&[
-        OperationApiEndpoint::from(OpsWatchApi::ENDPOINT),
-        OperationApiEndpoint::from(OpsStatusApi::ENDPOINT),
-    ]);
+    let spec = test_api_service(&[OperationApiEndpoint::from(OpsWatchApi::ENDPOINT)]);
     let watch_endpoint = endpoint(&spec, OperationApiEndpoint::from(OpsWatchApi::ENDPOINT));
-    let status_endpoint = endpoint(&spec, OperationApiEndpoint::from(OpsStatusApi::ENDPOINT));
     let watch_calls = Arc::new(AtomicUsize::new(0));
     let mut runtime = start_nats_service(client, &spec)
         .await
@@ -69,14 +64,16 @@ async fn binary_ops_watch_replays_terminal_event_after_a_caught_up_page() {
                         }
                         1 => {
                             assert_eq!(request.start_sequence, event_sequence(2));
-                            OperationEventReplayPage::terminal(vec![replayed(
-                                2,
-                                OperationEvent::DeployCompleted {
-                                    operation_id: operation_id("op_deploy"),
-                                    outcome:
-                                        ployz_core::operation::DeployCompletionOutcome::Completed,
-                                },
-                            )])
+                            OperationEventReplayPage::terminal(
+                                vec![replayed(
+                                    2,
+                                    OperationEvent::DeployCompleted {
+                                        operation_id: operation_id("op_deploy"),
+                                        outcome: ployz_core::operation::DeployCompletionOutcome::Completed,
+                                    },
+                                )],
+                                OperationOutcome::Succeeded,
+                            )
                         }
                         unexpected => panic!("unexpected watch call {unexpected}"),
                     };
@@ -90,28 +87,6 @@ async fn binary_ops_watch_replays_terminal_event_after_a_caught_up_page() {
         .await
         .expect("watch endpoint binds");
 
-    runtime
-        .bind_endpoint(&status_endpoint, |request| async move {
-            let request: OpsStatusRequest =
-                serde_json::from_slice(&request.payload).expect("status request decodes");
-            assert_eq!(request.operation_id, operation_id("op_deploy"));
-
-            let response: OpsStatusResponse = OperationApiResponse::Ok {
-                value: OperationStatusSnapshot::new(OperationStatus::Deploy {
-                    id: operation_id("op_deploy"),
-                    namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
-                    service_id: service_id("svc_api"),
-                    origin: None,
-                    state: DeployOperationState::Completed {
-                        outcome: ployz_core::operation::DeployCompletionOutcome::Completed,
-                    },
-                    last_event_sequence: event_sequence(2),
-                }),
-            };
-            NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
-        })
-        .await
-        .expect("status endpoint binds");
     service_client.flush().await.expect("service flushes");
 
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
@@ -134,6 +109,61 @@ async fn binary_ops_watch_replays_terminal_event_after_a_caught_up_page() {
     assert_eq!(stdout(&output), "1 deploy.submitted\n2 deploy.completed\n");
     assert_eq!(stderr(&output), "");
     assert_eq!(watch_calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn binary_ops_watch_uses_failed_terminal_outcome_without_a_status_endpoint() {
+    let server = TestNats::start().await;
+    let env = CliNatsEnv::new(&server.server);
+    let spec = test_api_service(&[OperationApiEndpoint::from(OpsWatchApi::ENDPOINT)]);
+    let watch_endpoint = endpoint(&spec, OperationApiEndpoint::from(OpsWatchApi::ENDPOINT));
+    let mut runtime = start_nats_service(server.controller.clone(), &spec)
+        .await
+        .expect("service starts");
+
+    runtime
+        .bind_endpoint(&watch_endpoint, |request| async move {
+            let request: OperationEventReplayRequest =
+                serde_json::from_slice(&request.payload).expect("watch request decodes");
+            assert_eq!(request.operation_id, operation_id("op_deploy_failed"));
+            let response: OpsWatchResponse = OperationApiResponse::Ok {
+                value: OperationEventReplayPage::terminal(
+                    vec![replayed(
+                        1,
+                        OperationEvent::DeployFailed {
+                            operation_id: operation_id("op_deploy_failed"),
+                            failure: DeployOperationFailure::NoUsableMachines {
+                                reasons: Vec::new(),
+                            },
+                        },
+                    )],
+                    OperationOutcome::Failed,
+                ),
+            };
+            NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
+        })
+        .await
+        .expect("watch endpoint binds");
+    server.controller.flush().await.expect("service flushes");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--nats")
+        .arg(server.server.client_url().as_str())
+        .env_remove("HOME")
+        .env_remove("XDG_CONFIG_HOME")
+        .env(PLOYZ_NATS_CA_FILE_ENV, server.server.ca_path())
+        .env(PLOYZ_NATS_NKEY_SEED_FILE_ENV, env.user_seed_path())
+        .args(["ops", "watch", "op_deploy_failed"])
+        .output()
+        .expect("ployz binary runs");
+
+    assert!(!output.status.success(), "failed outcome exits non-zero");
+    assert!(
+        stdout(&output).contains("deploy.failed class precondition-rejected"),
+        "failure details render; stdout:\n{}",
+        stdout(&output)
+    );
+    assert_eq!(stderr(&output), "");
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -368,7 +368,10 @@ async fn core_replace_remote_runs_host_runner_command() {
             &endpoint(&spec, OperationApiEndpoint::from(OpsWatchApi::ENDPOINT)),
             |_request| async move {
                 let response: OpsWatchResponse = OperationApiResponse::Ok {
-                    value: OperationEventReplayPage::terminal(Vec::new()),
+                    value: OperationEventReplayPage::terminal(
+                        Vec::new(),
+                        ployz_core::operation::OperationOutcome::Succeeded,
+                    ),
                 };
                 NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
             },

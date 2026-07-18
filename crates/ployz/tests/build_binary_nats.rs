@@ -5,7 +5,8 @@ use ployz_core::build::{BuildAdapter, BuildCacheScope, BuildPlatforms, GitSource
 use ployz_core::image::OciPlatform;
 use ployz_core::operation::{
     BuildCleanupEvidence, BuildOperationState, CancellationReason, OperationEvent,
-    OperationEventReplayPage, OperationStatus, OperationStatusSnapshot, ReplayedOperationEvent,
+    OperationEventReplayPage, OperationOutcome, OperationStatus, OperationStatusSnapshot,
+    ReplayedOperationEvent,
 };
 use ployz_nats::service_runtime::{NatsServiceResponse, start_nats_service};
 use ployz_nats::services::{
@@ -158,14 +159,17 @@ async fn binary_build_cancel_follows_the_accepted_operation_to_terminal() {
     runtime
         .bind_endpoint(&watch_endpoint, |_request| async move {
             let response: OpsWatchResponse = OperationApiResponse::Ok {
-                value: OperationEventReplayPage::terminal(vec![replayed(
-                    1,
-                    OperationEvent::BuildCancelled {
-                        operation_id: operation_id("op_build_cancelled"),
-                        reason: cancellation_reason(),
-                        cleanup: completed_cleanup(),
-                    },
-                )]),
+                value: OperationEventReplayPage::terminal(
+                    vec![replayed(
+                        1,
+                        OperationEvent::BuildCancelled {
+                            operation_id: operation_id("op_build_cancelled"),
+                            reason: cancellation_reason(),
+                            cleanup: completed_cleanup(),
+                        },
+                    )],
+                    OperationOutcome::Cancelled,
+                ),
             };
             NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
         })

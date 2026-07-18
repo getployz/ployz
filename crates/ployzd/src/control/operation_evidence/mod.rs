@@ -13,8 +13,9 @@ use crate::control::store::{CoreStore, CoreStoreError, from_json, query_json, to
 use ployz_core::ids::OperationId;
 use ployz_core::operation::{
     EventSequence, OperationEvent, OperationEventRecordedAtUnixMs, OperationEventReplayCursor,
-    OperationEventReplayLimit, OperationEventReplayPage, OperationProjection, OperationStatus,
-    StatusProjectionError, project_operation_event, validate_fresh_deploy_evidence,
+    OperationEventReplayLimit, OperationEventReplayPage, OperationOutcome, OperationProjection,
+    OperationStatus, StatusProjectionError, project_operation_event,
+    validate_fresh_deploy_evidence,
 };
 use ployz_nats::operation_event_subject::operation_event_subject_suffix;
 use ployz_nats::subjects::{OperationProgressScope, operation_progress_subject};
@@ -371,7 +372,7 @@ fn replay_operation_events_txn(
     if events.len() < page_limit {
         return Ok(finish_replay_page(
             OperationEventReplayPage::caught_up(events),
-            status.is_terminal(),
+            status.terminal_outcome(),
         ));
     }
     let Some(next) = events
@@ -395,14 +396,17 @@ fn replay_operation_events_txn(
     };
     Ok(finish_replay_page(
         OperationEventReplayPage::more(events, next),
-        status.is_terminal(),
+        status.terminal_outcome(),
     ))
 }
 
-fn finish_replay_page(page: OperationEventReplayPage, terminal: bool) -> ReplayTxn {
-    let page = match (page.cursor, terminal) {
-        (OperationEventReplayCursor::CaughtUp, true) => {
-            OperationEventReplayPage::terminal(page.events)
+fn finish_replay_page(
+    page: OperationEventReplayPage,
+    terminal_outcome: Option<OperationOutcome>,
+) -> ReplayTxn {
+    let page = match (page.cursor, terminal_outcome) {
+        (OperationEventReplayCursor::CaughtUp, Some(outcome)) => {
+            OperationEventReplayPage::terminal(page.events, outcome)
         }
         (cursor, _) => OperationEventReplayPage {
             events: page.events,

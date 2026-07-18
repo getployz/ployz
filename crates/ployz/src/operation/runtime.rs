@@ -113,7 +113,7 @@ pub(crate) async fn replay_events(
             OperationEventReplayCursor::More {
                 next_start_sequence,
             } => request.start_sequence = next_start_sequence,
-            OperationEventReplayCursor::CaughtUp | OperationEventReplayCursor::Terminal => {
+            OperationEventReplayCursor::CaughtUp | OperationEventReplayCursor::Terminal { .. } => {
                 return Ok(events);
             }
         }

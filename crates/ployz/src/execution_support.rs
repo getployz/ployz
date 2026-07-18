@@ -21,7 +21,6 @@ use ployz_nats::connect::{
     NatsClientAuth, NatsClientUrl, NatsClientUrlError, NatsConnectConfig, NatsConnectError,
     NatsTlsTrust, connect_authenticated,
 };
-use ployz_sdk_types::OpsStatusRequest;
 use tokio::time::sleep as async_sleep;
 
 mod client_ids;
@@ -138,11 +137,8 @@ where
                 request.start_sequence = next_start_sequence;
                 continue;
             }
-            OperationEventReplayCursor::Terminal => {
-                let outcome = operation_terminal_outcome(api, &operation_id)
-                    .await
-                    .map_err(E::from)?;
-                return Ok((events, outcome));
+            OperationEventReplayCursor::Terminal { outcome } => {
+                return Ok((events, Some(outcome)));
             }
             OperationEventReplayCursor::CaughtUp => {}
         }
@@ -156,21 +152,6 @@ where
 
         async_sleep(poll_interval).await;
     }
-}
-
-/// The terminal outcome recorded for an operation the event stream reports as
-/// terminal, or `None` if its status snapshot has not caught up yet.
-async fn operation_terminal_outcome(
-    api: &OperationApiClient,
-    operation_id: &OperationId,
-) -> Result<Option<OperationOutcome>, ExecutionSupportError> {
-    let snapshot = api
-        .ops_status(&OpsStatusRequest {
-            operation_id: operation_id.clone(),
-        })
-        .await
-        .map_err(api_error)?;
-    Ok(snapshot.status.terminal_outcome())
 }
 
 fn next_event_sequence(sequence: EventSequence) -> Option<EventSequence> {

@@ -763,7 +763,10 @@ async fn machine_add_remote_submits_installs_and_watches_to_completion() {
             &endpoint(&spec, OperationApiEndpoint::from(OpsWatchApi::ENDPOINT)),
             |_request| async move {
                 let response: OpsWatchResponse = OperationApiResponse::Ok {
-                    value: OperationEventReplayPage::terminal(Vec::new()),
+                    value: OperationEventReplayPage::terminal(
+                        Vec::new(),
+                        ployz_core::operation::OperationOutcome::Succeeded,
+                    ),
                 };
                 NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
             },
@@ -1089,7 +1092,10 @@ async fn machine_add_remote_terminal_failure_does_not_record_machine_ssh() {
             &endpoint(&spec, OperationApiEndpoint::from(OpsWatchApi::ENDPOINT)),
             |_request| async move {
                 let response: OpsWatchResponse = OperationApiResponse::Ok {
-                    value: OperationEventReplayPage::terminal(Vec::new()),
+                    value: OperationEventReplayPage::terminal(
+                        Vec::new(),
+                        ployz_core::operation::OperationOutcome::Failed,
+                    ),
                 };
                 NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
             },
