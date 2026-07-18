@@ -22,6 +22,7 @@ use ployz_core::operation::MachineAddOperationState;
 use ployz_core::operation::OperationStatus;
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
 use ployz_nats::permissions::{parse_authorized_users, render_authorized_users};
+use ployz_nats::service_runtime::NatsServiceRequestFailure;
 use ployz_nats::subjects::{OPERATION_PROGRESS_SCOPE, OperationApiEndpoint};
 use ployz_sdk_types::{
     MachineAddAccepted, MachineAddError, MachineAddRequest, MachineJoinRedeemError,
@@ -1049,18 +1050,21 @@ async fn machine_add_result(
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         let attempt_api = OperationApiClient::new(api.nats_client())
             .with_request_timeout(Duration::from_secs(1).min(remaining));
-        match attempt_api.machine_add(request).await {
-            Err(error @ OperationApiClientError::Request { .. }) => {
+        match tokio::time::timeout_at(deadline, attempt_api.machine_add(request)).await {
+            Err(_) => {
+                return Err(OperationApiClientError::Request {
+                    endpoint: OperationApiEndpoint::MachineAdd,
+                    failure: NatsServiceRequestFailure::TimedOut,
+                });
+            }
+            Ok(Err(error @ OperationApiClientError::Request { .. })) => {
                 let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-                if remaining.is_zero() {
-                    return Err(error);
-                }
                 tokio::time::sleep(Duration::from_millis(100).min(remaining)).await;
                 if tokio::time::Instant::now() >= deadline {
                     return Err(error);
                 }
             }
-            settled => return settled,
+            Ok(settled) => return settled,
         }
     }
 }
