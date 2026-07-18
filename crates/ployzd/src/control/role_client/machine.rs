@@ -411,6 +411,7 @@ pub(crate) async fn read_machine_placement_facts(
     let mut reads = machine_placement_fact_reads(
         facts_reader,
         machine_lifecycles.into_iter().collect::<Vec<_>>(),
+        MAX_CONCURRENT_MACHINE_READS,
     );
 
     let mut facts = Vec::new();
@@ -427,7 +428,8 @@ pub(crate) async fn read_machine_placement_facts_with_gather_timeout(
     gather_timeout: Duration,
 ) -> Vec<MachinePlacementFacts> {
     let candidates = machine_lifecycles.into_iter().collect::<Vec<_>>();
-    let reads = machine_placement_fact_reads(facts_reader, candidates.clone());
+    let reads =
+        machine_placement_fact_reads(facts_reader, candidates.clone(), candidates.len().max(1));
     collect_machine_placement_facts_until(candidates, reads, gather_timeout).await
 }
 
@@ -462,6 +464,7 @@ async fn collect_machine_placement_facts_until(
 fn machine_placement_fact_reads(
     facts_reader: &NatsMachineFactsReader,
     machine_lifecycles: Vec<(MachineId, MachineLifecycle)>,
+    concurrency: usize,
 ) -> impl futures_util::Stream<Item = MachinePlacementFacts> + '_ {
     stream::iter(machine_lifecycles)
         .map(move |(machine_id, lifecycle)| async move {
@@ -477,7 +480,7 @@ fn machine_placement_fact_reads(
                 answer,
             }
         })
-        .buffer_unordered(MAX_CONCURRENT_MACHINE_READS)
+        .buffer_unordered(concurrency)
 }
 
 fn placement_answer(
