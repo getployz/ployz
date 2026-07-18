@@ -154,13 +154,19 @@ async fn platform_rpc_failure_records_real_evidence_and_publishes_no_image_index
         .await;
     driver.record_run_result(&operation_id, result).await;
 
-    let amd64_request = amd64_request.await.expect("amd64 responder completes");
+    let (amd64_request, arm64_request) = tokio::time::timeout(Duration::from_secs(2), async {
+        (
+            amd64_request.await.expect("amd64 responder completes"),
+            arm64_request.await.expect("arm64 responder completes"),
+        )
+    })
+    .await
+    .expect("both build responders complete within the test deadline");
     assert_eq!(amd64_request.operation_id, operation_id);
     assert_eq!(amd64_request.source, source);
     assert_eq!(amd64_request.adapter, accepted.submission.adapter);
     assert_eq!(amd64_request.platform, amd64);
     assert_eq!(amd64_request.timeout_millis, 30_000);
-    let arm64_request = arm64_request.await.expect("arm64 responder completes");
     assert_eq!(arm64_request.operation_id, operation_id);
     assert_eq!(arm64_request.source, accepted.source);
     assert_eq!(arm64_request.adapter, accepted.submission.adapter);
