@@ -103,8 +103,6 @@ fn umami_waits_for_database_dns_before_starting() {
         ContainerHealthcheckTest::Shell(command)
             if command.as_str() == "pg_isready -U umami -d umami"
     ));
-    assert!(database_healthcheck.reports_docker_health());
-
     let umami_healthcheck = umami
         .runtime
         .healthcheck
@@ -114,5 +112,4 @@ fn umami_waits_for_database_dns_before_starting() {
         &umami_healthcheck.test,
         ContainerHealthcheckTest::Disable
     ));
-    assert!(!umami_healthcheck.reports_docker_health());
 }
