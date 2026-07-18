@@ -106,9 +106,9 @@ fn managed_host_ports_query_before_open() {
             "systemctl is-active --quiet firewalld.service",
             "systemctl is-active --quiet ufw.service",
             "ufw status",
-            "ufw status",
+            "ufw status verbose",
             "ufw insert 1 allow 53/udp",
-            "ufw status",
+            "ufw status verbose",
             "ufw insert 1 allow 51820/udp",
         ]
     );
