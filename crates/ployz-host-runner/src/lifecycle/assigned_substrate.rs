@@ -21,7 +21,7 @@ pub struct AssignedSubstrateState {
 impl AssignedSubstrateState {
     #[must_use]
     pub fn required_host_ports(&self) -> Vec<AssignedHostPort> {
-        let mut ports = Vec::new();
+        let mut ports = vec![AssignedHostPort::udp(53)];
         if self.assignments.contains(&SubstrateAssignment::NatsServer) {
             ports.push(AssignedHostPort::tcp(4222));
         }
@@ -238,6 +238,10 @@ mod tests {
             state.required_host_ports(),
             vec![
                 AssignedHostPort {
+                    port: 53,
+                    protocol: HostPortProtocol::Udp
+                },
+                AssignedHostPort {
                     port: 80,
                     protocol: HostPortProtocol::Tcp
                 },
@@ -254,6 +258,19 @@ mod tests {
                     protocol: HostPortProtocol::Udp
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn dataplane_without_gateway_still_requires_dns() {
+        let state = AssignedSubstrateState {
+            assignments: [SubstrateAssignment::Dataplane].into(),
+            host_ports: ployz_core::install::HostPortAssurance::Keeper,
+        };
+
+        assert_eq!(
+            state.required_host_ports(),
+            vec![AssignedHostPort::udp(53), AssignedHostPort::udp(51820)]
         );
     }
 }

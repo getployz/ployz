@@ -86,6 +86,8 @@ fn managed_host_ports_query_before_open() {
         succeeded_command("Status: active\n"),
         succeeded_command("Status: active\n"),
         succeeded_command(""),
+        succeeded_command("Status: active\n"),
+        succeeded_command(""),
     ]
     .into();
     let mut effects = HostRunnerLocalEffects::new(local_config(&root, &systemd_dir), runner);
@@ -105,7 +107,9 @@ fn managed_host_ports_query_before_open() {
             "systemctl is-active --quiet ufw.service",
             "ufw status",
             "ufw status",
-            "ufw allow 51820/udp",
+            "ufw insert 1 allow 53/udp",
+            "ufw status",
+            "ufw insert 1 allow 51820/udp",
         ]
     );
 }
