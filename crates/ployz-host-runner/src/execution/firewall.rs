@@ -126,7 +126,9 @@ impl FirewallBackend {
         match self {
             Self::Firewalld => change_firewalld(port, runner, FirewallChange::Open),
             Self::Ufw if query_ufw(port, runner)? => Ok(()),
-            Self::Ufw => require_success(runner, "ufw", &["allow", &render_port(port)]),
+            Self::Ufw => {
+                require_success(runner, "ufw", &["insert", "1", "allow", &render_port(port)])
+            }
             Self::None => Ok(()),
             Self::Unmanaged(name) => Err(unmanaged_firewall(name)),
         }
@@ -197,10 +199,18 @@ fn query_ufw(
         return Err(failure_message(output.failure));
     }
     let port = render_port(port);
-    Ok(output
-        .stdout
-        .lines()
-        .any(|line| line.split_whitespace().next() == Some(port.as_str())))
+    for line in output.stdout.lines() {
+        let mut columns = line.split_whitespace();
+        if columns.next() != Some(port.as_str()) {
+            continue;
+        }
+        let action = columns.next();
+        if action == Some("(v6)") {
+            continue;
+        }
+        return Ok(action == Some("ALLOW") && columns.next() == Some("Anywhere"));
+    }
+    Ok(false)
 }
 
 fn command_probe(
@@ -554,11 +564,67 @@ mod tests {
 
     #[test]
     fn ufw_open_is_idempotent() {
-        let mut runner = RecordingRunner::with_outputs([active("4222/tcp ALLOW Anywhere\n")]);
+        let mut runner =
+            RecordingRunner::with_outputs([active("4222/tcp ALLOW Anywhere # managed\n")]);
         FirewallBackend::Ufw
             .open_with(TCP_4222, &mut runner)
             .expect("open port");
         assert_eq!(runner.calls, vec!["ufw status"]);
+    }
+
+    #[test]
+    fn ufw_open_ignores_deny_and_scoped_allow_rules() {
+        for rule in [
+            "4222/tcp DENY Anywhere\n4222/tcp ALLOW Anywhere\n",
+            "4222/tcp ALLOW 192.0.2.0/24\n4222/tcp ALLOW Anywhere\n",
+        ] {
+            let mut runner = RecordingRunner::with_outputs([active(rule), active("")]);
+            FirewallBackend::Ufw
+                .open_with(TCP_4222, &mut runner)
+                .expect("broad allow opens");
+            assert_eq!(
+                runner.calls,
+                vec!["ufw status", "ufw insert 1 allow 4222/tcp"]
+            );
+        }
+    }
+
+    #[test]
+    fn ufw_open_ignores_v6_only_rule() {
+        let mut runner = RecordingRunner::with_outputs([
+            active("4222/tcp (v6) ALLOW Anywhere (v6)\n"),
+            active(""),
+        ]);
+        FirewallBackend::Ufw
+            .open_with(TCP_4222, &mut runner)
+            .expect("IPv4 broad allow opens");
+        assert_eq!(
+            runner.calls,
+            vec!["ufw status", "ufw insert 1 allow 4222/tcp"]
+        );
+    }
+
+    #[test]
+    fn ufw_open_propagates_query_and_allow_failures() {
+        let mut query_failure = RecordingRunner::with_outputs([command_failure("query failed")]);
+        let error = FirewallBackend::Ufw
+            .open_with(TCP_4222, &mut query_failure)
+            .expect_err("query failure propagates");
+        assert_eq!(error.as_str(), "query failed");
+        assert_eq!(query_failure.calls, vec!["ufw status"]);
+
+        let mut allow_failure = RecordingRunner::with_outputs([
+            active("4222/tcp DENY Anywhere\n"),
+            command_failure("allow failed"),
+        ]);
+        let error = FirewallBackend::Ufw
+            .open_with(TCP_4222, &mut allow_failure)
+            .expect_err("allow failure propagates");
+        assert_eq!(error.as_str(), "allow failed");
+        assert_eq!(
+            allow_failure.calls,
+            vec!["ufw status", "ufw insert 1 allow 4222/tcp"]
+        );
     }
 
     #[test]
