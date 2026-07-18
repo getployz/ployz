@@ -34,6 +34,14 @@ pub const BUILD_FORCE_CLEANUP_TIMEOUT: Duration = Duration::from_secs(30);
 pub const BUILD_MAX_MACHINE_RESPONSE_LIFETIME: Duration = BUILD_MAX_EXECUTION_TIMEOUT
     .saturating_add(BUILD_TASK_DRAIN_TIMEOUT)
     .saturating_add(BUILD_FORCE_CLEANUP_TIMEOUT);
+/// Time allowed for one Docker command while pruning build cache.
+pub const BUILD_CACHE_PRUNE_COMMAND_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+/// Longest build-cache prune execution budget after it acquires the machine slot.
+pub const BUILD_CACHE_PRUNE_MAX_EXECUTION_TIMEOUT: Duration =
+    BUILD_CACHE_PRUNE_COMMAND_TIMEOUT.saturating_add(BUILD_CACHE_PRUNE_COMMAND_TIMEOUT);
+/// Longest time a machine prune request can wait for a build and then execute.
+pub const BUILD_CACHE_PRUNE_MAX_MACHINE_RESPONSE_LIFETIME: Duration =
+    BUILD_MAX_MACHINE_RESPONSE_LIFETIME.saturating_add(BUILD_CACHE_PRUNE_MAX_EXECUTION_TIMEOUT);
 /// Controller margin beyond the machine's maximum response lifetime.
 pub const BUILD_CONTROL_RESPONSE_MARGIN: Duration = Duration::from_secs(5);
 /// Time reserved for terminal operation evidence to reach an attached caller.
@@ -60,9 +68,12 @@ pub const BUILD_MAX_ATTACHED_WATCH_TIMEOUT: Duration = BUILD_MAX_PLACEMENT_TIMEO
 /// Maximum BuildStart handler lifetime.
 pub const BUILD_START_ENDPOINT_TIMEOUT: Duration =
     BUILD_MAX_MACHINE_RESPONSE_LIFETIME.saturating_add(BUILD_ENDPOINT_RESPONSE_MARGIN);
+/// Maximum BuildCachePrune handler lifetime.
+pub const BUILD_CACHE_PRUNE_ENDPOINT_TIMEOUT: Duration =
+    BUILD_CACHE_PRUNE_MAX_MACHINE_RESPONSE_LIFETIME.saturating_add(BUILD_ENDPOINT_RESPONSE_MARGIN);
 /// Lifetime of one request-scoped NATS response grant.
 pub const BUILD_RESPONSE_PERMISSION_EXPIRY: Duration =
-    BUILD_START_ENDPOINT_TIMEOUT.saturating_add(BUILD_RESPONSE_PERMISSION_MARGIN);
+    BUILD_CACHE_PRUNE_ENDPOINT_TIMEOUT.saturating_add(BUILD_RESPONSE_PERMISSION_MARGIN);
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -748,17 +759,43 @@ mod tests {
     }
 
     #[test]
-    fn build_response_budgets_cover_both_cleanup_windows_in_order() {
+    fn build_and_prune_response_budgets_cover_each_stage_in_order() {
         assert_eq!(
             BUILD_MAX_MACHINE_RESPONSE_LIFETIME,
             BUILD_MAX_EXECUTION_TIMEOUT + BUILD_TASK_DRAIN_TIMEOUT + BUILD_FORCE_CLEANUP_TIMEOUT
+        );
+        assert_eq!(
+            BUILD_CACHE_PRUNE_COMMAND_TIMEOUT,
+            Duration::from_secs(5 * 60)
+        );
+        assert_eq!(
+            BUILD_CACHE_PRUNE_MAX_EXECUTION_TIMEOUT,
+            Duration::from_secs(10 * 60)
+        );
+        assert_eq!(
+            BUILD_CACHE_PRUNE_MAX_MACHINE_RESPONSE_LIFETIME,
+            Duration::from_secs(41 * 60)
+        );
+        assert_eq!(
+            BUILD_CACHE_PRUNE_ENDPOINT_TIMEOUT,
+            Duration::from_secs(41 * 60 + 10)
+        );
+        assert_eq!(
+            BUILD_RESPONSE_PERMISSION_EXPIRY,
+            Duration::from_secs(41 * 60 + 15)
         );
         assert!(
             build_control_request_timeout(BUILD_MAX_EXECUTION_TIMEOUT)
                 > BUILD_MAX_MACHINE_RESPONSE_LIFETIME
         );
         assert!(BUILD_START_ENDPOINT_TIMEOUT > BUILD_MAX_MACHINE_RESPONSE_LIFETIME);
-        assert!(BUILD_RESPONSE_PERMISSION_EXPIRY > BUILD_START_ENDPOINT_TIMEOUT);
+        assert!(
+            BUILD_CACHE_PRUNE_MAX_MACHINE_RESPONSE_LIFETIME > BUILD_MAX_MACHINE_RESPONSE_LIFETIME
+        );
+        assert!(
+            BUILD_CACHE_PRUNE_ENDPOINT_TIMEOUT > BUILD_CACHE_PRUNE_MAX_MACHINE_RESPONSE_LIFETIME
+        );
+        assert!(BUILD_RESPONSE_PERMISSION_EXPIRY > BUILD_CACHE_PRUNE_ENDPOINT_TIMEOUT);
     }
 
     #[test]

@@ -296,6 +296,36 @@ async fn cache_prune_waits_for_active_build_cleanup() {
         .expect("prune succeeds");
 }
 
+#[tokio::test]
+async fn shutdown_waits_for_the_machine_slot_before_stopping() {
+    let runtime = MachineBuildRuntime::new_for_test(
+        MachineId::try_new("machine-a").expect("machine"),
+        Arc::new(TestBuildEffects::new(true)),
+    );
+    let slot = runtime
+        .machine_slot
+        .clone()
+        .acquire_owned()
+        .await
+        .expect("machine slot");
+    let shutdown_runtime = runtime.clone();
+    let mut shutdown = tokio::spawn(async move { shutdown_runtime.shutdown().await });
+
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(10), &mut shutdown)
+            .await
+            .is_err()
+    );
+    assert!(runtime.lifecycle.state.lock().await.phase == BuildRuntimePhase::ShuttingDown);
+
+    drop(slot);
+    tokio::time::timeout(std::time::Duration::from_secs(1), shutdown)
+        .await
+        .expect("shutdown proceeds after slot release")
+        .expect("shutdown task");
+    assert!(runtime.lifecycle.state.lock().await.phase == BuildRuntimePhase::Stopped);
+}
+
 #[tokio::test(start_paused = true)]
 async fn shutdown_rejects_cache_prune_waiting_behind_a_build() {
     let effects = Arc::new(TestBuildEffects::new(true));
