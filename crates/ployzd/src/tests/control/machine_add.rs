@@ -1034,25 +1034,35 @@ async fn machine_add_with_assurance(
     .expect("machine add accepts")
 }
 
-/// Send a machine-add, retrying only transient transport (`Request`) timeouts.
+/// Send a machine-add, retrying only transient transport (`Request`) failures.
 /// machine-add is idempotent — the operation id and idempotency key dedupe the
-/// re-send server-side — so a request that times out under a starved CI runner
-/// is safely repeated. A settled result (`Ok`, or a typed `MachineAddError`
-/// domain rejection) is surfaced as soon as it arrives; the retry is bounded
-/// (~20s) so a genuinely wedged runtime still fails the test rather than hanging.
+/// re-send server-side — so an uncertain request under a starved CI runner is
+/// safely repeated. Each request and retry delay share one absolute deadline;
+/// a settled result is surfaced as soon as it arrives.
 async fn machine_add_result(
     api: &OperationApiClient,
     request: &MachineAddRequest,
 ) -> Result<MachineAddAccepted, OperationApiClientError<MachineAddError>> {
-    for _ in 0..200 {
-        match api.machine_add(request).await {
-            Err(OperationApiClientError::Request { .. }) => {
-                tokio::time::sleep(Duration::from_millis(100)).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let attempt_api = OperationApiClient::new(api.nats_client())
+            .with_request_timeout(Duration::from_secs(1).min(remaining));
+        match attempt_api.machine_add(request).await {
+            Err(error @ OperationApiClientError::Request { .. }) => {
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if remaining.is_zero() {
+                    return Err(error);
+                }
+                tokio::time::sleep(Duration::from_millis(100).min(remaining)).await;
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(error);
+                }
             }
             settled => return settled,
         }
     }
-    api.machine_add(request).await
 }
 
 fn public_key_of(seed: &str) -> NatsUserPublicKey {
