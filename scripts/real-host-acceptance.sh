@@ -289,11 +289,45 @@ configure_acceptance_architecture() {
   esac
 }
 
+write_authenticated_git_fixture_program() {
+  local core_ipv4=$1
+
+  cat <<SETUP_GIT
+set -euo pipefail
+rm -rf /tmp/ployz-build-git
+mkdir -p /tmp/ployz-build-git/work/dockerfile /tmp/ployz-build-git/work/railpack /tmp/ployz-build-git/work/slow
+mv /tmp/ployz-authenticated-git-server.py /tmp/ployz-build-git/server.py
+chmod 0700 /tmp/ployz-build-git/server.py
+printf '%s\n' 'FROM alpine:3.20' 'COPY marker /marker' 'CMD ["sh", "-c", "while true; do sleep 600; done"]' > /tmp/ployz-build-git/work/dockerfile/Dockerfile
+printf '%s\n' 'real-host exact Dockerfile commit' > /tmp/ployz-build-git/work/dockerfile/marker
+printf '%s\n' '{"scripts":{"start":"node server.js"},"engines":{"node":"22"}}' > /tmp/ployz-build-git/work/railpack/package.json
+printf '%s\n' 'require("http").createServer((_, res) => res.end("real-host railpack\\n")).listen(process.env.PORT || 3000);' > /tmp/ployz-build-git/work/railpack/server.js
+printf '%s\n' 'FROM alpine:3.20' 'RUN echo blocking-build-start && sleep 600' 'CMD ["true"]' > /tmp/ployz-build-git/work/slow/Dockerfile
+git -C /tmp/ployz-build-git/work init -q -b main
+git -C /tmp/ployz-build-git/work config user.name 'Ployz acceptance'
+git -C /tmp/ployz-build-git/work config user.email 'acceptance@example.invalid'
+git -C /tmp/ployz-build-git/work add .
+GIT_AUTHOR_DATE='2026-01-01T00:00:00Z' GIT_COMMITTER_DATE='2026-01-01T00:00:00Z' git -C /tmp/ployz-build-git/work commit -qm fixture
+git clone -q --bare /tmp/ployz-build-git/work /tmp/ployz-build-git/repo.git
+git -C /tmp/ployz-build-git/repo.git update-server-info
+git -C /tmp/ployz-build-git/work rev-parse HEAD > /tmp/ployz-build-git/commit
+openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj '/CN=${core_ipv4}' -addext 'subjectAltName=IP:${core_ipv4}' -keyout /tmp/ployz-build-git/server.key -out /tmp/ployz-build-git/server.crt >/dev/null 2>&1
+install -m 0644 /tmp/ployz-build-git/server.crt /etc/pki/ca-trust/source/anchors/ployz-build-git.crt
+update-ca-trust
+firewall-cmd --quiet --add-port=9443/tcp
+printf '%s\n' 'PLOYZ_BUILD_GIT_SECRET=build-secret-370' > /tmp/ployz-build-git/secret.env
+chmod 0600 /tmp/ployz-build-git/secret.env
+systemd-run --unit=ployz-real-host-build-git --setenv=GIT_USERNAME=builder --setenv=GIT_PASSWORD=build-secret-370 /usr/bin/python3 /tmp/ployz-build-git/server.py >/dev/null
+for _ in {1..50}; do curl -fsS -u builder:build-secret-370 'https://${core_ipv4}:9443/repo.git/info/refs?service=git-upload-pack' >/dev/null && exit 0; sleep 0.2; done
+exit 1
+SETUP_GIT
+}
+
 run_real_host_acceptance_regression_test() {
   local evidence failure_output success_output reboot_output recovery_output rescue_root fake_bin
   local module_contents module_sha module_mode module_uid module_gid child_status=0
   local restored_inode ssh_restore_output restore_function_output
-  local git_install_command fixture_log_command git_install_line fixture_log_line
+  local git_install_command fixture_log_command git_install_line fixture_log_line rendered_git_program
   evidence=$(mktemp -d)
   trap 'rm -rf "$evidence"' RETURN
   : > "$evidence/metadata.env"
@@ -304,6 +338,16 @@ run_real_host_acceptance_regression_test() {
   git_install_line=$(grep -Fnx "$git_install_command" "$0" | cut -d: -f1)
   fixture_log_line=$(grep -Fnx "$fixture_log_command" "$0" | cut -d: -f1)
   [ "$git_install_line" -eq $((fixture_log_line - 1)) ]
+
+  rendered_git_program="$evidence/authenticated-git-fixture.sh"
+  write_authenticated_git_fixture_program 192.0.2.1 > "$rendered_git_program"
+  grep -Fx "openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj '/CN=192.0.2.1' -addext 'subjectAltName=IP:192.0.2.1' -keyout /tmp/ployz-build-git/server.key -out /tmp/ployz-build-git/server.crt >/dev/null 2>&1" "$rendered_git_program" >/dev/null
+  grep -F "'https://192.0.2.1:9443/repo.git/info/refs?service=git-upload-pack'" "$rendered_git_program" >/dev/null
+  grep -Fx "for _ in {1..50}; do curl -fsS -u builder:build-secret-370 'https://192.0.2.1:9443/repo.git/info/refs?service=git-upload-pack' >/dev/null && exit 0; sleep 0.2; done" "$rendered_git_program" >/dev/null
+  if grep -F '$(' "$rendered_git_program" >/dev/null; then
+    return 1
+  fi
+  bash -n "$rendered_git_program"
 
   failure_output=$("$0" --phase-failure-probe "$evidence" 2>&1) || child_status=$?
   [ "$child_status" -ne 0 ]
@@ -743,35 +787,8 @@ git_fixture_dir=$(mktemp -d)
 scp "${SSH_OPTS[@]}" \
   "$REPO_ROOT/testing/ployz-e2e/tests/dind_cluster/fixtures/authenticated_git_server.py" \
   "root@${CORE}:/tmp/ployz-authenticated-git-server.py" >/dev/null
-ssh "${SSH_OPTS[@]}" "root@${CORE}" 'bash -s' <<SETUP_GIT
-set -euo pipefail
-rm -rf /tmp/ployz-build-git
-mkdir -p /tmp/ployz-build-git/work/dockerfile /tmp/ployz-build-git/work/railpack /tmp/ployz-build-git/work/slow
-mv /tmp/ployz-authenticated-git-server.py /tmp/ployz-build-git/server.py
-chmod 0700 /tmp/ployz-build-git/server.py
-printf '%s\n' 'FROM alpine:3.20' 'COPY marker /marker' 'CMD ["sh", "-c", "while true; do sleep 600; done"]' > /tmp/ployz-build-git/work/dockerfile/Dockerfile
-printf '%s\n' 'real-host exact Dockerfile commit' > /tmp/ployz-build-git/work/dockerfile/marker
-printf '%s\n' '{"scripts":{"start":"node server.js"},"engines":{"node":"22"}}' > /tmp/ployz-build-git/work/railpack/package.json
-printf '%s\n' 'require("http").createServer((_, res) => res.end("real-host railpack\\n")).listen(process.env.PORT || 3000);' > /tmp/ployz-build-git/work/railpack/server.js
-printf '%s\n' 'FROM alpine:3.20' 'RUN echo blocking-build-start && sleep 600' 'CMD ["true"]' > /tmp/ployz-build-git/work/slow/Dockerfile
-git -C /tmp/ployz-build-git/work init -q -b main
-git -C /tmp/ployz-build-git/work config user.name 'Ployz acceptance'
-git -C /tmp/ployz-build-git/work config user.email 'acceptance@example.invalid'
-git -C /tmp/ployz-build-git/work add .
-GIT_AUTHOR_DATE='2026-01-01T00:00:00Z' GIT_COMMITTER_DATE='2026-01-01T00:00:00Z' git -C /tmp/ployz-build-git/work commit -qm fixture
-git clone -q --bare /tmp/ployz-build-git/work /tmp/ployz-build-git/repo.git
-git -C /tmp/ployz-build-git/repo.git update-server-info
-git -C /tmp/ployz-build-git/work rev-parse HEAD > /tmp/ployz-build-git/commit
-openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj '/CN=${CORE}' -addext 'subjectAltName=IP:${CORE}' -keyout /tmp/ployz-build-git/server.key -out /tmp/ployz-build-git/server.crt >/dev/null 2>&1
-install -m 0644 /tmp/ployz-build-git/server.crt /etc/pki/ca-trust/source/anchors/ployz-build-git.crt
-update-ca-trust
-firewall-cmd --quiet --add-port=9443/tcp
-printf '%s\n' 'PLOYZ_BUILD_GIT_SECRET=build-secret-370' > /tmp/ployz-build-git/secret.env
-chmod 0600 /tmp/ployz-build-git/secret.env
-systemd-run --unit=ployz-real-host-build-git --setenv=GIT_USERNAME=builder --setenv=GIT_PASSWORD=build-secret-370 /usr/bin/python3 /tmp/ployz-build-git/server.py >/dev/null
-for _ in $(seq 1 50); do curl -fsS -u builder:build-secret-370 'https://${CORE}:9443/repo.git/info/refs?service=git-upload-pack' >/dev/null && exit 0; sleep 0.2; done
-exit 1
-SETUP_GIT
+write_authenticated_git_fixture_program "$CORE" \
+  | ssh "${SSH_OPTS[@]}" "root@${CORE}" 'bash -s'
 scp "${SSH_OPTS[@]}" "root@${CORE}:/tmp/ployz-build-git/server.crt" "$git_fixture_dir/server.crt" >/dev/null
 scp "${SSH_OPTS[@]}" "$git_fixture_dir/server.crt" "root@${EDGE}:/usr/local/share/ca-certificates/ployz-build-git.crt" >/dev/null
 remote "$EDGE" 'update-ca-certificates >/dev/null'
