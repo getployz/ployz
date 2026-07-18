@@ -85,29 +85,28 @@ restore_verified_module() {
   test "$(stat -c %g "$destination")" = "$expected_gid"
 }
 
-emit_restore_verified_module() {
-  declare -f restore_verified_module
-}
-
-zpool_health_is_online() {
-  [ "$1" = ONLINE ]
-}
-
 wait_for_storage_ready_testimony() {
   local expected_pool=$1
-  local deadline=$((SECONDS + ${STORAGE_READY_TIMEOUT_SECONDS:-360}))
-  local testimony=
+  local forbidden_alarm_pin=${2:-}
+  local timeout_seconds=${STORAGE_READY_TIMEOUT_SECONDS:-360}
+  local deadline=$((SECONDS + timeout_seconds))
+  local testimony= storage_alarms=
 
   while (( SECONDS < deadline )); do
-    if testimony=$(core_before_deadline "$deadline" "timeout 12s ployz machine inspect '${core_machine_id}'") \
-      && printf '%s\n' "$testimony" | grep -Fx "storage ready pool=${expected_pool}" >/dev/null; then
-      printf '%s\n' "$testimony"
-      return 0
+    if testimony=$(core_before_deadline "$deadline" "timeout 12s ployz machine inspect '${core_machine_id}'"); then
+      storage_alarms=$(printf '%s\n' "$testimony" | sed -n 's/^storage-alarms //p')
+      if printf '%s\n' "$testimony" | grep -Fx "storage ready pool=${expected_pool}" >/dev/null \
+        && { [ -z "$forbidden_alarm_pin" ] \
+          || ! printf '%s\n' "$storage_alarms" | tr ',' '\n' | cut -d: -f1 \
+            | grep -Fx "$forbidden_alarm_pin" >/dev/null; }; then
+        printf '%s\n' "$testimony"
+        return 0
+      fi
     fi
     sleep_before_deadline "$deadline" 3
   done
   printf '%s\n' "$testimony"
-  log "storage testimony did not report ready pool=${expected_pool} within 6 minutes"
+  log "storage testimony did not report ready pool=${expected_pool} without forbidden alarm ${forbidden_alarm_pin:-none} within ${timeout_seconds} seconds"
   return 1
 }
 
@@ -149,7 +148,7 @@ write_zfs_recovery_instructions() {
 # ZFS module recovery for the original system from root@${CORE} or provider rescue.
   set -euo pipefail
 EOF
-  emit_restore_verified_module >> "$output"
+  declare -f restore_verified_module >> "$output"
   cat >> "$output" <<EOF
   system_root=\${PLOYZ_RECOVERY_MOUNT_ROOT:-/}
   case "\$system_root" in
@@ -214,7 +213,7 @@ EOF
 }
 
 write_zfs_ssh_restore_program() {
-  emit_restore_verified_module
+  declare -f restore_verified_module
   cat <<'REMOTE_RESTORE'
 set -euo pipefail
 manifest=$1
@@ -254,6 +253,7 @@ run_real_host_acceptance_regression_test() {
   local evidence failure_output success_output reboot_output recovery_output rescue_root fake_bin
   local module_contents module_sha module_mode module_uid module_gid child_status=0
   local restored_inode ssh_restore_output restore_function_output
+  local online_health=ONLINE degraded_health=DEGRADED
   evidence=$(mktemp -d)
   trap 'rm -rf "$evidence"' RETURN
   : > "$evidence/metadata.env"
@@ -293,19 +293,18 @@ run_real_host_acceptance_regression_test() {
 
   ssh_restore_output="$evidence/ssh-restore-probe.sh"
   restore_function_output="$evidence/restore-function.sh"
-  "$0" --ssh-restore-program-probe > "$ssh_restore_output"
-  emit_restore_verified_module > "$restore_function_output"
+  write_zfs_ssh_restore_program > "$ssh_restore_output"
+  declare -f restore_verified_module > "$restore_function_output"
   head -n "$(wc -l < "$restore_function_output")" "$ssh_restore_output" \
     | cmp -s - "$restore_function_output"
   bash -n "$ssh_restore_output"
 
-  "$0" --zpool-health-probe ONLINE
-  child_status=0
-  "$0" --zpool-health-probe DEGRADED || child_status=$?
-  [ "$child_status" -ne 0 ]
+  [ "$online_health" = ONLINE ]
+  [ "$degraded_health" != ONLINE ]
   "$0" --storage-ready-probe > "$evidence/storage-ready.stdout"
   grep -Fx 'storage ready pool=probe-pool' "$evidence/storage-ready.stdout" >/dev/null
-  grep -Fx 'inspect_calls=2' "$evidence/storage-ready.stdout" >/dev/null
+  grep -Fx 'storage-alarms none' "$evidence/storage-ready.stdout" >/dev/null
+  grep -Fx 'inspect_calls=3' "$evidence/storage-ready.stdout" >/dev/null
 
   rescue_root="$evidence/original-root"
   fake_bin="$evidence/bin"
@@ -427,14 +426,6 @@ case ${1:-} in
     write_zfs_recovery_instructions "$recovery_output"
     exit 0
     ;;
-  --ssh-restore-program-probe)
-    write_zfs_ssh_restore_program
-    exit 0
-    ;;
-  --zpool-health-probe)
-    zpool_health_is_online "${2:?missing pool health}"
-    exit 0
-    ;;
   --storage-ready-probe)
     core_machine_id=probe-machine
     STORAGE_READY_TIMEOUT_SECONDS=30
@@ -442,14 +433,14 @@ case ${1:-} in
     trap 'rm -f "$storage_ready_probe_calls"' EXIT
     core_before_deadline() {
       printf 'inspect\n' >> "$storage_ready_probe_calls"
-      if [ "$(wc -l < "$storage_ready_probe_calls")" -eq 1 ]; then
-        printf 'storage ready pool=stale-pool\n'
-      else
-        printf 'storage ready pool=probe-pool\n'
-      fi
+      case $(wc -l < "$storage_ready_probe_calls") in
+        1) printf 'storage ready pool=stale-pool\nstorage-alarms none\n' ;;
+        2) printf 'storage ready pool=probe-pool\nstorage-alarms probe-ns/probe-volume:zfs-module-missing\n' ;;
+        *) printf 'storage ready pool=probe-pool\nstorage-alarms none\n' ;;
+      esac
     }
     sleep_before_deadline() { :; }
-    wait_for_storage_ready_testimony probe-pool
+    wait_for_storage_ready_testimony probe-pool probe-ns/probe-volume
     printf 'inspect_calls=%s\n' "$(wc -l < "$storage_ready_probe_calls")"
     exit 0
     ;;
@@ -987,7 +978,7 @@ PY
   }
   pool_guid=$(core "zpool get -H -o value guid '${pool}'")
   pool_health=$(core "zpool get -H -o value health '${pool}'")
-  zpool_health_is_online "$pool_health" || {
+  [ "$pool_health" = ONLINE ] || {
     log "pool health is ${pool_health}, expected ONLINE"; return 1;
   }
   dataset_guid=$(core "zfs get -H -o value guid '${dataset}'")
@@ -1072,15 +1063,16 @@ zfs_verify_preserved_storage_evidence() {
 }
 
 zfs_verify_reboot_recovery() {
+  local forbidden_alarm_pin=${1:-}
   local recovered_dataset_quota recovered_dataset_refquota recovered_pool_health machine_storage
   wait_for_core_api
-  machine_storage=$(wait_for_storage_ready_testimony "$pool")
+  machine_storage=$(wait_for_storage_ready_testimony "$pool" "$forbidden_alarm_pin")
   printf '%s\n' "$machine_storage"
   zfs_verify_preserved_storage_evidence
   core "zfs_time=\$(systemctl show zfs.target -p ActiveEnterTimestampMonotonic --value); docker_time=\$(systemctl show docker.service -p ActiveEnterTimestampMonotonic --value); after=\$(systemctl show docker.service -p After --value); printf 'zfs_active_us=%s\\ndocker_active_us=%s\\ndocker_after=%s\\n' \"\$zfs_time\" \"\$docker_time\" \"\$after\"; [ \"\$zfs_time\" -gt 0 ] && [ \"\$docker_time\" -gt 0 ] && [ \"\$zfs_time\" -le \"\$docker_time\" ] && printf '%s\\n' \"\$after\" | tr ' ' '\\n' | grep -Fx zfs.target >/dev/null"
   core_with_local_timeout 200s "timeout 3m sh -c 'until zpool list -H -o guid \"${pool}\" | grep -Fx \"${pool_guid}\"; do sleep 2; done'"
   recovered_pool_health=$(core "zpool get -H -o value health '${pool}'")
-  zpool_health_is_online "$recovered_pool_health" || {
+  [ "$recovered_pool_health" = ONLINE ] || {
     log "pool health after reboot is ${recovered_pool_health}, expected ONLINE"; return 1;
   }
   [ "$(core "zfs get -H -o value guid '${dataset}'")" = "$dataset_guid" ] || {
@@ -1283,21 +1275,7 @@ zfs_restore_module() {
 }
 
 zfs_verify_alarm_cleared() {
-  wait_for_core_api
-  zfs_verify_reboot_recovery
-  local testimony_deadline=$((SECONDS + 360))
-  while (( SECONDS < testimony_deadline )); do
-    if restored_testimony=$(core_before_deadline "$testimony_deadline" "timeout 12s ployz machine inspect '${core_machine_id}'") \
-      && printf '%s\n' "$restored_testimony" | grep -F "storage ready pool=${pool}" >/dev/null \
-      && ! printf '%s\n' "$restored_testimony" | grep -F "${zfs_namespace}/${zfs_volume}:" >/dev/null; then
-      printf '%s\n' "$restored_testimony"
-      return 0
-    fi
-    sleep_before_deadline "$testimony_deadline" 3
-  done
-  printf '%s\n' "$restored_testimony"
-  log "stranded-volume alarm did not clear"
-  return 1
+  zfs_verify_reboot_recovery "${zfs_namespace}/${zfs_volume}"
 }
 
 run_zfs_real_host_certification() {
