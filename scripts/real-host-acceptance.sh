@@ -328,6 +328,10 @@ run_real_host_acceptance_regression_test() {
   local module_contents module_sha module_mode module_uid module_gid child_status=0
   local restored_inode ssh_restore_output restore_function_output
   local git_install_command fixture_log_command git_install_line fixture_log_line rendered_git_program
+  local cancel_command cancel_status_capture cancel_status_guard cancel_watch cancel_watch_status_capture
+  local cancel_watch_status_guard json_assertion
+  local cancel_command_line cancel_status_capture_line cancel_status_guard_line cancel_watch_line
+  local cancel_watch_status_capture_line cancel_watch_status_guard_line json_assertion_line
   evidence=$(mktemp -d)
   trap 'rm -rf "$evidence"' RETURN
   : > "$evidence/metadata.env"
@@ -338,6 +342,40 @@ run_real_host_acceptance_regression_test() {
   git_install_line=$(grep -Fnx "$git_install_command" "$0" | cut -d: -f1)
   fixture_log_line=$(grep -Fnx "$fixture_log_command" "$0" | cut -d: -f1)
   [ "$git_install_line" -eq $((fixture_log_line - 1)) ]
+
+  cancel_command='core '\''ployz build cancel op_real_host_build_cancel --reason "real-host cancellation proof"'\'''
+  cancel_status_capture='cancel_exit=$?'
+  cancel_status_guard='[ "$cancel_exit" -eq 1 ] || { log "build cancellation exited ${cancel_exit}, expected 1"; exit 1; }'
+  cancel_watch='cancel_events=$(core '\''ployz ops watch op_real_host_build_cancel --json'\'')'
+  cancel_watch_status_capture='cancel_watch_exit=$?'
+  cancel_watch_status_guard='[ "$cancel_watch_exit" -eq 1 ] || { log "cancelled build watch exited ${cancel_watch_exit}, expected 1"; exit 1; }'
+  json_assertion='assert len(cancelled) == 1 and cancelled[0]["cleanup"]["kind"] == "completed"'
+  [ "$(grep -Fxc "$cancel_command" "$0")" -eq 1 ]
+  [ "$(grep -Fxc "$cancel_status_capture" "$0")" -eq 1 ]
+  [ "$(grep -Fxc "$cancel_status_guard" "$0")" -eq 1 ]
+  [ "$(grep -Fxc "$cancel_watch" "$0")" -eq 1 ]
+  [ "$(grep -Fxc "$cancel_watch_status_capture" "$0")" -eq 1 ]
+  [ "$(grep -Fxc "$cancel_watch_status_guard" "$0")" -eq 1 ]
+  [ "$(grep -Fxc "$json_assertion" "$0")" -eq 1 ]
+  cancel_command_line=$(grep -Fnx "$cancel_command" "$0" | cut -d: -f1)
+  cancel_status_capture_line=$(grep -Fnx "$cancel_status_capture" "$0" | cut -d: -f1)
+  cancel_status_guard_line=$(grep -Fnx "$cancel_status_guard" "$0" | cut -d: -f1)
+  cancel_watch_line=$(grep -Fnx "$cancel_watch" "$0" | cut -d: -f1)
+  cancel_watch_status_capture_line=$(grep -Fnx "$cancel_watch_status_capture" "$0" | cut -d: -f1)
+  cancel_watch_status_guard_line=$(grep -Fnx "$cancel_watch_status_guard" "$0" | cut -d: -f1)
+  json_assertion_line=$(grep -Fnx "$json_assertion" "$0" | cut -d: -f1)
+  [ "$(sed -n "$((cancel_command_line - 1)),$cancel_watch_status_guard_line p" "$0" | grep -Fxc 'set +e')" -eq 2 ]
+  [ "$(sed -n "$((cancel_command_line - 1)),$cancel_watch_status_guard_line p" "$0" | grep -Fxc 'set -e')" -eq 2 ]
+  [ "$(sed -n "$((cancel_command_line - 1))p" "$0")" = 'set +e' ]
+  [ "$cancel_status_capture_line" -eq $((cancel_command_line + 1)) ]
+  [ "$(sed -n "$((cancel_status_capture_line + 1))p" "$0")" = 'set -e' ]
+  [ "$cancel_status_guard_line" -eq $((cancel_status_capture_line + 2)) ]
+  [ "$cancel_watch_line" -eq $((cancel_status_guard_line + 2)) ]
+  [ "$(sed -n "$((cancel_watch_line - 1))p" "$0")" = 'set +e' ]
+  [ "$cancel_watch_status_capture_line" -eq $((cancel_watch_line + 1)) ]
+  [ "$(sed -n "$((cancel_watch_status_capture_line + 1))p" "$0")" = 'set -e' ]
+  [ "$cancel_watch_status_guard_line" -eq $((cancel_watch_status_capture_line + 2)) ]
+  [ "$json_assertion_line" -gt "$cancel_watch_status_guard_line" ]
 
   rendered_git_program="$evidence/authenticated-git-fixture.sh"
   write_authenticated_git_fixture_program 192.0.2.1 > "$rendered_git_program"
@@ -835,8 +873,16 @@ for _ in $(seq 1 180); do
   sleep 1
 done
 core 'ployz ops status op_real_host_build_cancel' | grep -q 'state building'
+set +e
 core 'ployz build cancel op_real_host_build_cancel --reason "real-host cancellation proof"'
-cancel_events=$(core 'ployz ops watch op_real_host_build_cancel --json' || true)
+cancel_exit=$?
+set -e
+[ "$cancel_exit" -eq 1 ] || { log "build cancellation exited ${cancel_exit}, expected 1"; exit 1; }
+set +e
+cancel_events=$(core 'ployz ops watch op_real_host_build_cancel --json')
+cancel_watch_exit=$?
+set -e
+[ "$cancel_watch_exit" -eq 1 ] || { log "cancelled build watch exited ${cancel_watch_exit}, expected 1"; exit 1; }
 CANCEL_EVENTS="$cancel_events" python3 - <<'PY'
 import json, os
 events = [json.loads(line)["event"] for line in os.environ["CANCEL_EVENTS"].splitlines() if line]
