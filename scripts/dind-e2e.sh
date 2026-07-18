@@ -21,8 +21,6 @@ source "${ROOT_DIR}/scripts/lib.sh"
 TARGET_DIR="${PLOYZ_DIND_TARGET_DIR:-/tmp/ployz-dind-machine-target}"
 ARTIFACT_DIR="${TARGET_DIR}/release"
 MACHINE_IMAGE="${PLOYZ_DIND_MACHINE_IMAGE:-ployz-dind-machine:local}"
-export PLOYZ_DIND_UMAMI_IMAGE="${PLOYZ_DIND_UMAMI_IMAGE:-ghcr.io/umami-software/umami:postgresql-latest}"
-export PLOYZ_DIND_POSTGRES_IMAGE="${PLOYZ_DIND_POSTGRES_IMAGE:-postgres:15-alpine}"
 WORKERS="${PLOYZ_DIND_WORKERS:-2}"
 
 case "${WORKERS}" in

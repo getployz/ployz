@@ -495,10 +495,9 @@ fn service_is(container: &ManagedWorkloadContainer, service: &str) -> bool {
         .is_some_and(|value| value == service)
 }
 
-fn database_service_compose() -> String {
-    format!(
-        r#"  db:
-    image: ${{PLOYZ_DIND_POSTGRES_IMAGE:-postgres:15-alpine}}
+fn database_service_compose() -> &'static str {
+    r#"  db:
+    image: ${PLOYZ_DIND_POSTGRES_IMAGE:-postgres:15-alpine@sha256:3d0f7584ed7d04e27fa050d6683a74746608faf21f202be78460d679cc56461f}
     environment:
       POSTGRES_DB: umami
       POSTGRES_USER: umami
@@ -511,7 +510,6 @@ fn database_service_compose() -> String {
       timeout: 2s
       retries: 30
 "#
-    )
 }
 
 fn umami_compose() -> &'static str {

@@ -2,10 +2,8 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use ployz::deploy::compose::{ComposeInput, UnsupportedFieldMode, parse_deploy_file};
-use ployz_test_support::ids::{namespace_id, service_id};
+use ployz_test_support::ids::service_id;
 
-const DATABASE_COMPOSE: &str =
-    include_str!("../../../testing/ployz-e2e/tests/fixtures/v1-acceptance-database.yaml");
 const UMAMI_COMPOSE: &str =
     include_str!("../../../testing/ployz-e2e/tests/fixtures/v1-acceptance-umami.yaml");
 
@@ -63,21 +61,18 @@ fn umami_images_follow_dind_mirror_overrides() {
 }
 
 #[test]
-fn database_deploy_is_a_full_single_service_namespace_revision() {
-    let parsed = parse(DATABASE_COMPOSE);
-    let [database] = parsed.services.as_slice() else {
-        panic!("database Deploy must contain exactly one service");
-    };
-
-    assert_eq!(
-        (&parsed.namespace_id, &database.service_id),
-        (&namespace_id("v1_acceptance"), &service_id("db"))
-    );
-}
-
-#[test]
 fn umami_waits_for_database_dns_before_starting() {
     let parsed = parse(UMAMI_COMPOSE);
+    assert_eq!(
+        parsed.services.len(),
+        2,
+        "full acceptance fixture must contain exactly Postgres and Umami"
+    );
+    parsed
+        .services
+        .iter()
+        .find(|service| service.service_id == service_id("db"))
+        .expect("Postgres service exists");
     let umami = parsed
         .services
         .iter()
