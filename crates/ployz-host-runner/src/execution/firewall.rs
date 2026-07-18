@@ -125,10 +125,7 @@ impl FirewallBackend {
     ) -> Result<(), FailureMessage> {
         match self {
             Self::Firewalld => change_firewalld(port, runner, FirewallChange::Open),
-            Self::Ufw if query_ufw(port, runner)? => Ok(()),
-            Self::Ufw => {
-                require_success(runner, "ufw", &["insert", "1", "allow", &render_port(port)])
-            }
+            Self::Ufw => open_ufw(port, runner),
             Self::None => Ok(()),
             Self::Unmanaged(name) => Err(unmanaged_firewall(name)),
         }
@@ -148,6 +145,30 @@ impl FirewallBackend {
             Self::Unmanaged(name) => Err(unmanaged_firewall(name)),
         }
     }
+}
+
+fn open_ufw(
+    port: AssignedHostPort,
+    runner: &mut impl HostRunnerCommandRunner,
+) -> Result<(), FailureMessage> {
+    if query_ufw(port, runner)? {
+        return Ok(());
+    }
+
+    let port_name = render_port(port);
+    require_success(runner, "ufw", &["insert", "1", "allow", &port_name])?;
+    if query_ufw(port, runner)? {
+        return Ok(());
+    }
+
+    require_success(runner, "ufw", &["allow", &port_name])?;
+    if query_ufw(port, runner)? {
+        return Ok(());
+    }
+
+    Err(failure_message(format!(
+        "UFW did not assure inbound reachability for {port_name}"
+    )))
 }
 
 #[derive(Clone, Copy)]
@@ -576,20 +597,46 @@ mod tests {
     }
 
     #[test]
-    fn ufw_open_rejects_earlier_deny_and_scoped_allow_rules() {
-        for rule in [
-            "4222/tcp                 DENY IN     Anywhere\n4222/tcp                 ALLOW IN    Anywhere\n",
-            "4222/tcp                 ALLOW IN    192.0.2.0/24\n4222/tcp                 ALLOW IN    Anywhere\n",
-        ] {
-            let mut runner = RecordingRunner::with_outputs([active(rule), active("")]);
-            FirewallBackend::Ufw
-                .open_with(TCP_4222, &mut runner)
-                .expect("broad allow opens");
-            assert_eq!(
-                runner.calls,
-                vec!["ufw status verbose", "ufw insert 1 allow 4222/tcp"]
-            );
-        }
+    fn ufw_open_rejects_scoped_allow_rule() {
+        let scoped = "4222/tcp                 ALLOW IN    192.0.2.0/24\n4222/tcp                 ALLOW IN    Anywhere\n";
+        let mut runner = RecordingRunner::with_outputs([
+            active(scoped),
+            active(""),
+            active("4222/tcp                 ALLOW IN    Anywhere\n"),
+        ]);
+        FirewallBackend::Ufw
+            .open_with(TCP_4222, &mut runner)
+            .expect("broad allow opens");
+        assert_eq!(
+            runner.calls,
+            vec![
+                "ufw status verbose",
+                "ufw insert 1 allow 4222/tcp",
+                "ufw status verbose"
+            ]
+        );
+    }
+
+    #[test]
+    fn ufw_open_inserts_missing_rule_and_verifies_it() {
+        let mut runner = RecordingRunner::with_outputs([
+            active(""),
+            active(""),
+            active("4222/tcp                 ALLOW IN    Anywhere\n"),
+        ]);
+
+        FirewallBackend::Ufw
+            .open_with(TCP_4222, &mut runner)
+            .expect("missing broad allow opens");
+
+        assert_eq!(
+            runner.calls,
+            vec![
+                "ufw status verbose",
+                "ufw insert 1 allow 4222/tcp",
+                "ufw status verbose"
+            ]
+        );
     }
 
     #[test]
@@ -599,13 +646,18 @@ mod tests {
                 "4222/tcp                 ALLOW FWD   Anywhere\n4222/tcp                 ALLOW IN    Anywhere\n",
             ),
             active(""),
+            active("4222/tcp                 ALLOW IN    Anywhere\n"),
         ]);
         FirewallBackend::Ufw
             .open_with(TCP_4222, &mut runner)
             .expect("inbound broad allow opens");
         assert_eq!(
             runner.calls,
-            vec!["ufw status verbose", "ufw insert 1 allow 4222/tcp"]
+            vec![
+                "ufw status verbose",
+                "ufw insert 1 allow 4222/tcp",
+                "ufw status verbose"
+            ]
         );
     }
 
@@ -614,13 +666,18 @@ mod tests {
         let mut runner = RecordingRunner::with_outputs([
             active("4222/tcp (v6)            ALLOW IN    Anywhere (v6)\n"),
             active(""),
+            active("4222/tcp                 ALLOW IN    Anywhere\n"),
         ]);
         FirewallBackend::Ufw
             .open_with(TCP_4222, &mut runner)
             .expect("IPv4 broad allow opens");
         assert_eq!(
             runner.calls,
-            vec!["ufw status verbose", "ufw insert 1 allow 4222/tcp"]
+            vec![
+                "ufw status verbose",
+                "ufw insert 1 allow 4222/tcp",
+                "ufw status verbose"
+            ]
         );
     }
 
@@ -655,6 +712,113 @@ mod tests {
         assert_eq!(
             allow_failure.calls,
             vec!["ufw status verbose", "ufw insert 1 allow 4222/tcp"]
+        );
+    }
+
+    #[test]
+    fn ufw_open_replaces_action_only_collision_and_verifies_the_result() {
+        let deny_then_allow = "4222/tcp                 DENY IN     Anywhere\n4222/tcp                 ALLOW IN    Anywhere\n";
+        let mut runner = RecordingRunner::with_outputs([
+            active(deny_then_allow),
+            active(""),
+            active(deny_then_allow),
+            active(""),
+            active("4222/tcp                 ALLOW IN    Anywhere\n"),
+        ]);
+
+        FirewallBackend::Ufw
+            .open_with(TCP_4222, &mut runner)
+            .expect("plain allow replaces the colliding action");
+
+        assert_eq!(
+            runner.calls,
+            vec![
+                "ufw status verbose",
+                "ufw insert 1 allow 4222/tcp",
+                "ufw status verbose",
+                "ufw allow 4222/tcp",
+                "ufw status verbose"
+            ]
+        );
+    }
+
+    #[test]
+    fn ufw_open_fails_when_the_final_postcondition_is_unassured() {
+        let deny_then_allow = "4222/tcp                 DENY IN     Anywhere\n4222/tcp                 ALLOW IN    Anywhere\n";
+        let mut runner = RecordingRunner::with_outputs([
+            active(deny_then_allow),
+            active(""),
+            active(deny_then_allow),
+            active(""),
+            active(deny_then_allow),
+        ]);
+
+        let error = FirewallBackend::Ufw
+            .open_with(TCP_4222, &mut runner)
+            .expect_err("an unassured final rule is an error");
+
+        assert_eq!(
+            error.as_str(),
+            "UFW did not assure inbound reachability for 4222/tcp"
+        );
+        assert_eq!(
+            runner.calls,
+            vec![
+                "ufw status verbose",
+                "ufw insert 1 allow 4222/tcp",
+                "ufw status verbose",
+                "ufw allow 4222/tcp",
+                "ufw status verbose"
+            ]
+        );
+    }
+
+    #[test]
+    fn ufw_open_propagates_post_insert_query_failure_without_fallback() {
+        let mut runner = RecordingRunner::with_outputs([
+            active(""),
+            active(""),
+            command_failure("post-insert query failed"),
+        ]);
+
+        let error = FirewallBackend::Ufw
+            .open_with(TCP_4222, &mut runner)
+            .expect_err("query failure propagates");
+
+        assert_eq!(error.as_str(), "post-insert query failed");
+        assert_eq!(
+            runner.calls,
+            vec![
+                "ufw status verbose",
+                "ufw insert 1 allow 4222/tcp",
+                "ufw status verbose"
+            ]
+        );
+    }
+
+    #[test]
+    fn ufw_open_propagates_fallback_failure_without_final_query() {
+        let deny = "4222/tcp                 DENY IN     Anywhere\n";
+        let mut runner = RecordingRunner::with_outputs([
+            active(deny),
+            active(""),
+            active(deny),
+            command_failure("fallback allow failed"),
+        ]);
+
+        let error = FirewallBackend::Ufw
+            .open_with(TCP_4222, &mut runner)
+            .expect_err("fallback failure propagates");
+
+        assert_eq!(error.as_str(), "fallback allow failed");
+        assert_eq!(
+            runner.calls,
+            vec![
+                "ufw status verbose",
+                "ufw insert 1 allow 4222/tcp",
+                "ufw status verbose",
+                "ufw allow 4222/tcp"
+            ]
         );
     }
 
