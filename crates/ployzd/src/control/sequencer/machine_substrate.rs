@@ -47,13 +47,18 @@ impl OperationControllers {
         &self,
         command: MachineBuildCachePruneSubmitCommand,
     ) -> Result<AcceptedMachineBuildCachePruneSubmission, SubmitCommandError> {
-        self.repository
-            .submit_machine_build_cache_prune(MachineBuildCachePruneOperationSubmission {
+        let machine_id = command.machine_id.clone();
+        let operation_id = command.operation_id.clone();
+        let submitted = self.repository.submit_machine_build_cache_prune(
+            MachineBuildCachePruneOperationSubmission {
                 operation_id: command.operation_id,
                 machine_id: command.machine_id,
-            })
-            .await
-            .map_err(SubmitCommandError::Submit)
+            },
+        );
+        self.submit_with_machine_substrate_lock(machine_id, operation_id, submitted, |accepted| {
+            accepted.should_start_execution
+        })
+        .await
     }
 
     pub async fn submit_machine_update(

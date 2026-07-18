@@ -33,6 +33,13 @@ fn storage_prepare_command(operation: &str) -> MachineStoragePrepareSubmitComman
     }
 }
 
+fn build_cache_prune_command(operation: &str) -> MachineBuildCachePruneSubmitCommand {
+    MachineBuildCachePruneSubmitCommand {
+        operation_id: operation_id(operation),
+        machine_id: machine_id("machine-a"),
+    }
+}
+
 fn build_submit_command(operation: &str) -> BuildSubmitCommand {
     BuildSubmitCommand {
         operation_id: operation_id(operation),
@@ -134,6 +141,88 @@ async fn update_and_storage_prepare_conflict_in_both_directions() {
             .await,
         Err(SubmitCommandError::MachineSubstrateBusy { owner, .. })
             if owner == operation_id("op_prepare")
+    ));
+}
+
+#[tokio::test]
+async fn build_cache_prune_uses_the_machine_substrate_fence() {
+    let (_nats, controllers, _intent) = test_controllers().await;
+    controllers
+        .submit_machine_update(machine_update_command("op_update"))
+        .await
+        .expect("update submits");
+    assert!(matches!(
+        controllers
+            .submit_machine_build_cache_prune(build_cache_prune_command("op_prune"))
+            .await,
+        Err(SubmitCommandError::MachineSubstrateBusy { owner, .. })
+            if owner == operation_id("op_update")
+    ));
+
+    controllers
+        .release_machine(&machine_id("machine-a"), &operation_id("op_update"))
+        .await;
+    controllers
+        .submit_machine_build_cache_prune(build_cache_prune_command("op_prune"))
+        .await
+        .expect("prune submits");
+    assert!(matches!(
+        controllers
+            .submit_machine_storage_prepare(storage_prepare_command("op_prepare"))
+            .await,
+        Err(SubmitCommandError::MachineSubstrateBusy { owner, .. })
+            if owner == operation_id("op_prune")
+    ));
+}
+
+#[tokio::test]
+async fn build_cache_prune_round_trips_completed_evidence() {
+    let (_nats, controllers, _intent) = test_controllers().await;
+    let accepted = controllers
+        .submit_machine_build_cache_prune(build_cache_prune_command("op_prune"))
+        .await
+        .expect("prune submits");
+    controllers
+        .repository()
+        .record_machine_build_cache_prune_transition(
+            &accepted.operation_id,
+            &accepted.machine_id,
+            ployz_core::operation::MachineBuildCachePruneTransition::Pruning,
+        )
+        .await
+        .expect("pruning records");
+    controllers
+        .repository()
+        .record_machine_build_cache_prune_transition(
+            &accepted.operation_id,
+            &accepted.machine_id,
+            ployz_core::operation::MachineBuildCachePruneTransition::Completed {
+                evidence: ployz_core::operation::BuildCachePruneEvidence {
+                    before_available_bytes: 10,
+                    reclaimed_bytes: 5,
+                    after_available_bytes: 15,
+                },
+            },
+        )
+        .await
+        .expect("completion records");
+
+    assert!(matches!(
+        controllers
+            .repository()
+            .get(&accepted.operation_id)
+            .await
+            .expect("status reads"),
+        Some(OperationStatus::MachineBuildCachePrune {
+            state: ployz_core::operation::MachineBuildCachePruneOperationState::Completed {
+                evidence: ployz_core::operation::BuildCachePruneEvidence {
+                    before_available_bytes: 10,
+                    reclaimed_bytes: 5,
+                    after_available_bytes: 15,
+                }
+            },
+            ..
+        })
     ));
 }
 

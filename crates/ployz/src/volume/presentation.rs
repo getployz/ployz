@@ -233,6 +233,10 @@ pub(crate) fn storage_effect_failure(
         StorageEffectFailure::OwnedPool { message } => {
             format!("Ployz owned image pool preparation failed: {message}")
         }
+        StorageEffectFailure::OwnedPoolEvidencePresent { backing_file } => format!(
+            "Ployz owned ZFS backing evidence already exists at {}; inspect or import it before retrying storage preparation",
+            backing_file.display()
+        ),
         StorageEffectFailure::OwnedPoolTooSmall {
             total_bytes,
             available_bytes,
@@ -240,6 +244,12 @@ pub(crate) fn storage_effect_failure(
             minimum_pool_bytes,
         } => format!(
             "Ployz cannot reserve an owned ZFS pool: host total {total_bytes} bytes, available {available_bytes} bytes, required host headroom {required_headroom_bytes} bytes, minimum pool {minimum_pool_bytes} bytes"
+        ),
+        StorageEffectFailure::OwnedPoolHeadroomNotPreserved {
+            available_bytes,
+            required_headroom_bytes,
+        } => format!(
+            "Ployz stopped owned ZFS pool preparation because allocation left {available_bytes} bytes available, below the required {required_headroom_bytes} bytes of host headroom"
         ),
         StorageEffectFailure::Dataset { message } => {
             format!("ZFS property or dataset effect failed: {message}")

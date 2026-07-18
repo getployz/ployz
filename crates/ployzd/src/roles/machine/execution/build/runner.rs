@@ -6,20 +6,20 @@ use super::lifecycle::{
 };
 use super::logs::{BuildLogProgress, PublishedLogs};
 use super::oci::{OciLayoutError, OciValidationControl, validate_oci_layout};
-use super::plan::{
-    BuildAdapterToolchain, BuildToolchain, buildkit_for_platform, lower_build_adapter,
-    toolchain_for_platform,
-};
+use super::plan::{BuildAdapterToolchain, lower_build_adapter, toolchain_for_platform};
 use super::source::checkout_git_source;
 use super::workspace::{
     clean_failed_workspace, prepare_private_directory, prepare_workspace, remove_workspace_tree,
     verify_helper,
 };
+use crate::roles::machine::facts::read_disk_space;
 use crate::roles::machine::protocol::BuildLogSummary;
 use ployz_core::build::{BuildAdapter, GitSource};
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::image::OciPlatform;
-use ployz_core::operation::{BuildPlatformFailure, BuildToolchainEvidence, FailureMessage};
+use ployz_core::operation::{
+    BuildCachePruneEvidence, BuildPlatformFailure, BuildToolchainEvidence, FailureMessage,
+};
 use ployz_nats::service_runtime::NatsClient;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -80,20 +80,13 @@ impl DockerBuildExecutor {
         builder_result.and(workspace_result)
     }
 
-    pub(crate) async fn prune_cache(&self) -> Result<BuildCachePruneResult, BuildExecutionError> {
+    pub(crate) async fn prune_cache(&self) -> Result<BuildCachePruneEvidence, BuildExecutionError> {
         let _effect_guard = self.effect_guard.acquire().await?;
         prepare_private_directory(&self.workspace_root).await?;
-        let before = read_disk_capacity(&self.workspace_root)?;
-        let policy = BuildDiskPolicy::for_capacity(before);
-        let config = self.workspace_root.join(BUILDKIT_CONFIG);
-        write_buildkit_config(&config, policy).await?;
-        let platform = OciPlatform::current();
-        let (buildkit_reference, _) = buildkit_for_platform(&platform)
-            .map_err(|error| infrastructure("select BuildKit image", error.to_string()))?;
-        let (_cancel_tx, mut cancelled) = watch::channel(false);
-        prune_buildkit_cache(&platform, &config, &buildkit_reference, &mut cancelled).await?;
-        let after = read_disk_capacity(&self.workspace_root)?;
-        Ok(BuildCachePruneResult {
+        let before = build_disk_space(&self.workspace_root)?;
+        prune_buildkit_cache().await?;
+        let after = build_disk_space(&self.workspace_root)?;
+        Ok(BuildCachePruneEvidence {
             before_available_bytes: before.available_bytes,
             reclaimed_bytes: after.available_bytes.saturating_sub(before.available_bytes),
             after_available_bytes: after.available_bytes,
@@ -151,9 +144,7 @@ impl DockerBuildExecutor {
                 message: failure(error.to_string()),
             })
         })?;
-        let buildkit_config = self
-            .ensure_host_disk_capacity(&workspace, platform, &toolchain, cancelled)
-            .await?;
+        let buildkit_config = self.ensure_host_disk_capacity(&workspace).await?;
         let checkout = checkout_git_source(source, &workspace)
             .await
             .map_err(|error| {
@@ -271,18 +262,14 @@ impl DockerBuildExecutor {
     async fn ensure_host_disk_capacity(
         &self,
         workspace: &Path,
-        platform: &OciPlatform,
-        toolchain: &BuildToolchain,
-        cancelled: &mut watch::Receiver<bool>,
     ) -> Result<PathBuf, BuildExecutionError> {
-        let mut capacity = read_disk_capacity(workspace)?;
+        let mut capacity = build_disk_space(workspace)?;
         let policy = BuildDiskPolicy::for_capacity(capacity);
         let config = workspace.join(BUILDKIT_CONFIG);
         write_buildkit_config(&config, policy).await?;
         if capacity.available_bytes < policy.required_free_bytes {
-            prune_buildkit_cache(platform, &config, &toolchain.buildkit_reference, cancelled)
-                .await?;
-            capacity = read_disk_capacity(workspace)?;
+            prune_buildkit_cache().await?;
+            capacity = build_disk_space(workspace)?;
         }
         if capacity.available_bytes < policy.required_free_bytes {
             return Err(platform_failure(
@@ -296,62 +283,48 @@ impl DockerBuildExecutor {
     }
 }
 
-#[derive(Clone, Copy)]
-struct DiskCapacity {
-    available_bytes: u64,
-    total_bytes: u64,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct BuildDiskPolicy {
     cache_reserved_bytes: u64,
     cache_max_bytes: u64,
+    cache_min_free_bytes: u64,
     required_free_bytes: u64,
 }
 
 impl BuildDiskPolicy {
-    fn for_capacity(capacity: DiskCapacity) -> Self {
+    fn for_capacity(capacity: ployz_core::machine::runtime::MachineDiskSpace) -> Self {
         let disk_share = capacity.total_bytes.saturating_mul(DISK_PERCENT) / 100;
         let cache_max_bytes = disk_share.min(CACHE_MAX_BYTES);
         Self {
             cache_reserved_bytes: CACHE_RESERVED_BYTES.min(cache_max_bytes),
             cache_max_bytes,
-            required_free_bytes: REQUIRED_FREE_BYTES.max(disk_share),
+            cache_min_free_bytes: REQUIRED_FREE_BYTES.max(disk_share),
+            required_free_bytes: REQUIRED_FREE_BYTES,
         }
     }
 }
 
-fn read_disk_capacity(path: &Path) -> Result<DiskCapacity, BuildExecutionError> {
-    let stat = rustix::fs::statvfs(path)
-        .map_err(|error| infrastructure("read build host disk capacity", error.to_string()))?;
-    Ok(DiskCapacity {
-        available_bytes: bytes_from_blocks(stat.f_bavail, stat.f_frsize),
-        total_bytes: bytes_from_blocks(stat.f_blocks, stat.f_frsize),
-    })
-}
-
-fn bytes_from_blocks(blocks: u64, block_size: u64) -> u64 {
-    u64::try_from(u128::from(blocks).saturating_mul(u128::from(block_size))).unwrap_or(u64::MAX)
+fn build_disk_space(
+    path: &Path,
+) -> Result<ployz_core::machine::runtime::MachineDiskSpace, BuildExecutionError> {
+    read_disk_space(path)
+        .map_err(|error| infrastructure("read build host disk capacity", error.to_string()))
 }
 
 async fn write_buildkit_config(
     path: &Path,
     policy: BuildDiskPolicy,
 ) -> Result<(), BuildExecutionError> {
-    let config = format!(
-        "[worker.oci]\ngc = true\nreservedSpace = {}\nmaxUsedSpace = {}\nminFreeSpace = {}\n",
-        policy.cache_reserved_bytes, policy.cache_max_bytes, policy.required_free_bytes
-    );
-    tokio::fs::write(path, config)
+    tokio::fs::write(path, render_buildkit_config(policy))
         .await
         .map_err(|error| infrastructure("write BuildKit configuration", error.to_string()))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct BuildCachePruneResult {
-    pub(crate) before_available_bytes: u64,
-    pub(crate) reclaimed_bytes: u64,
-    pub(crate) after_available_bytes: u64,
+fn render_buildkit_config(policy: BuildDiskPolicy) -> String {
+    format!(
+        "[worker.oci]\ngc = true\nreservedSpace = {}\nmaxUsedSpace = {}\nminFreeSpace = {}\n",
+        policy.cache_reserved_bytes, policy.cache_max_bytes, policy.cache_min_free_bytes
+    )
 }
 
 #[derive(Clone, Copy)]
@@ -581,20 +554,45 @@ mod tests {
 
     #[test]
     fn build_disk_policy_bounds_cache_and_protects_host_space() {
-        let small = BuildDiskPolicy::for_capacity(DiskCapacity {
+        let small = BuildDiskPolicy::for_capacity(ployz_core::machine::runtime::MachineDiskSpace {
             available_bytes: 0,
             total_bytes: GIB,
         });
         assert_eq!(small.cache_max_bytes, GIB / 5);
         assert_eq!(small.cache_reserved_bytes, GIB / 5);
+        assert_eq!(small.cache_min_free_bytes, 5 * GIB);
         assert_eq!(small.required_free_bytes, 5 * GIB);
 
-        let large = BuildDiskPolicy::for_capacity(DiskCapacity {
+        let large = BuildDiskPolicy::for_capacity(ployz_core::machine::runtime::MachineDiskSpace {
             available_bytes: 0,
             total_bytes: 100 * GIB,
         });
         assert_eq!(large.cache_reserved_bytes, 512 * 1024 * 1024);
         assert_eq!(large.cache_max_bytes, 10 * GIB);
-        assert_eq!(large.required_free_bytes, 20 * GIB);
+        assert_eq!(large.cache_min_free_bytes, 20 * GIB);
+        assert_eq!(large.required_free_bytes, 5 * GIB);
+    }
+
+    #[test]
+    fn buildkit_config_wires_native_gc_thresholds() {
+        assert_eq!(
+            render_buildkit_config(BuildDiskPolicy {
+                cache_reserved_bytes: 1,
+                cache_max_bytes: 2,
+                cache_min_free_bytes: 3,
+                required_free_bytes: 3,
+            }),
+            "[worker.oci]\ngc = true\nreservedSpace = 1\nmaxUsedSpace = 2\nminFreeSpace = 3\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn prune_disk_evidence_can_start_with_an_absent_workspace() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join("builds");
+        prepare_private_directory(&workspace)
+            .await
+            .expect("prepare workspace");
+        assert!(build_disk_space(&workspace).is_ok());
     }
 }

@@ -139,9 +139,7 @@ pub struct MachineBuildCachePruneRpcRequest {
 #[serde(deny_unknown_fields)]
 pub struct MachineBuildCachePruneRpcOk {
     pub machine_id: MachineId,
-    pub before_available_bytes: u64,
-    pub reclaimed_bytes: u64,
-    pub after_available_bytes: u64,
+    pub evidence: ployz_core::operation::BuildCachePruneEvidence,
 }
 
 impl MachineRpcResponder for MachineBuildCachePruneRpcOk {

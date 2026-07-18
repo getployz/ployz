@@ -352,6 +352,21 @@ async fn interruption_recovery_is_uncapped_idempotent_and_excludes_other_owners(
                 "op_storage_prepare",
                 "machine_storage_prepare_submitted",
             )?;
+            let prune_id = operation_id("op_build_cache_prune");
+            upsert_status(
+                conn,
+                &prune_id,
+                &OperationStatus::machine_build_cache_prune_accepted(
+                    prune_id.clone(),
+                    ployz_test_support::ids::machine_id("machine-cache"),
+                    EventSequence::first(),
+                ),
+            )?;
+            seed_submission_event(
+                conn,
+                "op_build_cache_prune",
+                "machine_build_cache_prune_submitted",
+            )?;
             let cert_id = operation_id("op_cert_owned_elsewhere");
             upsert_status(
                 conn,
@@ -372,7 +387,7 @@ async fn interruption_recovery_is_uncapped_idempotent_and_excludes_other_owners(
         .record_interrupted_operations(OperationInterruptionCause::PriorCoreProcessLoss)
         .await
         .expect("recover interrupted operations");
-    assert_eq!(first.recorded, 103);
+    assert_eq!(first.recorded, 104);
 
     let recovered = repository
         .get(&operation_id("op_interrupted_000"))
@@ -392,6 +407,14 @@ async fn interruption_recovery_is_uncapped_idempotent_and_excludes_other_owners(
             .await
             .expect("read recovered storage preparation")
             .expect("recovered storage preparation exists")
+            .is_terminal()
+    );
+    assert!(
+        repository
+            .get(&operation_id("op_build_cache_prune"))
+            .await
+            .expect("read recovered cache prune")
+            .expect("recovered cache prune exists")
             .is_terminal()
     );
     let (status_json, event_json) = store

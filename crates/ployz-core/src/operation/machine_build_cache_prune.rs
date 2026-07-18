@@ -235,6 +235,7 @@ fn transition_allowed(
         (
             MachineBuildCachePruneOperationState::Accepted,
             MachineBuildCachePruneOperationState::Pruning
+                | MachineBuildCachePruneOperationState::Failed { .. }
                 | MachineBuildCachePruneOperationState::Cancelled { .. }
         ) | (
             MachineBuildCachePruneOperationState::Pruning,
@@ -294,6 +295,43 @@ mod tests {
                 state: MachineBuildCachePruneOperationState::Completed { .. },
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn initial_evidence_failure_can_fail_from_accepted() {
+        let operation_id = OperationId::try_new("op_prune").unwrap();
+        let machine_id = MachineId::try_new("machine-a").unwrap();
+        let status = OperationStatus::machine_build_cache_prune_accepted(
+            operation_id.clone(),
+            machine_id.clone(),
+            EventSequence::first(),
+        );
+        let projected = project_operation_event(
+            &status,
+            OperationEvent::MachineBuildCachePruneFailed {
+                operation_id,
+                machine_id: machine_id.clone(),
+                failure: MachineBuildCachePruneFailure::StateCommitFailed {
+                    machine_id,
+                    message: FailureMessage::try_new("initial transition failed").unwrap(),
+                },
+            },
+            EventSequence::try_new(2).unwrap(),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            projected,
+            OperationProjection::StatusChanged {
+                status
+            } if matches!(
+                *status,
+                OperationStatus::MachineBuildCachePrune {
+                    state: MachineBuildCachePruneOperationState::Failed { .. },
+                    ..
+                }
+            )
         ));
     }
 }

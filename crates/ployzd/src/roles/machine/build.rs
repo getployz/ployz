@@ -139,11 +139,11 @@ impl MachineBuildRuntime {
 
     pub(crate) async fn prune_cache(
         &self,
-    ) -> Result<super::execution::build::BuildCachePruneResult, BuildExecutionError> {
+    ) -> Result<ployz_core::operation::BuildCachePruneEvidence, BuildExecutionError> {
         match &self.effects {
             BuildEffects::Docker(effects) => effects.executor.prune_cache().await,
             #[cfg(test)]
-            BuildEffects::Test(_) => Ok(super::execution::build::BuildCachePruneResult {
+            BuildEffects::Test(_) => Ok(ployz_core::operation::BuildCachePruneEvidence {
                 before_available_bytes: 0,
                 reclaimed_bytes: 0,
                 after_available_bytes: 0,
@@ -683,12 +683,10 @@ pub(crate) async fn handle_build_cache_prune(
         });
     };
     match runtime.prune_cache().await {
-        Ok(result) => machine_success(MachineBuildCachePruneRpcResponse::Ok(
+        Ok(evidence) => machine_success(MachineBuildCachePruneRpcResponse::Ok(
             MachineBuildCachePruneRpcOk {
                 machine_id,
-                before_available_bytes: result.before_available_bytes,
-                reclaimed_bytes: result.reclaimed_bytes,
-                after_available_bytes: result.after_available_bytes,
+                evidence,
             },
         )),
         Err(error) => machine_domain_error(MachineBuildCachePruneRpcResponse::DomainError {

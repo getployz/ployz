@@ -625,11 +625,7 @@ impl NatsMachineSubstrateUpdater {
             },
         )
         .await
-        .map(|response| ployz_core::operation::BuildCachePruneEvidence {
-            before_available_bytes: response.before_available_bytes,
-            reclaimed_bytes: response.reclaimed_bytes,
-            after_available_bytes: response.after_available_bytes,
-        })
+        .map(|response| response.evidence)
         .map_err(|error| match error {
             MachineCallError::Unavailable(reason) => MachineBuildCachePruneError::Unavailable {
                 machine_id: machine_id.clone(),

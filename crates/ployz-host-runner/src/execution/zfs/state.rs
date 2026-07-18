@@ -167,6 +167,11 @@ fn classify_adopted_pool(
 fn prepare_owned_pool(
     runner: &mut impl HostRunnerCommandRunner,
 ) -> Result<(ZfsPoolName, PreparedStorageOrigin), ZfsEffectError> {
+    if owned_backing_file_exists(runner)? {
+        return Err(ZfsEffectError::OwnedPoolEvidencePresent {
+            backing_file: PathBuf::from(PLOYZ_OWNED_ZFS_BACKING_FILE),
+        });
+    }
     checked(
         runner,
         "install",
@@ -192,14 +197,38 @@ fn prepare_owned_pool(
             minimum_pool_bytes: MINIMUM_OWNED_POOL_BYTES,
         });
     }
-    checked(
+    create_new_owned_backing_file(runner)?;
+    if let Err(failure) = checked(
         runner,
         "fallocate",
         &["-l", &pool_bytes.to_string(), PLOYZ_OWNED_ZFS_BACKING_FILE],
         COMMAND_TIMEOUT,
         EffectClass::OwnedPool,
-    )?;
-    checked(
+    ) {
+        return Err(cleanup_new_owned_backing_file(runner, failure));
+    }
+    let post_allocation = checked(
+        runner,
+        "df",
+        &["-B1", "--output=size,avail", STORAGE_DIRECTORY],
+        COMMAND_TIMEOUT,
+        EffectClass::OwnedPool,
+    )
+    .and_then(|output| parse_filesystem_capacity(&output.stdout));
+    let [_, available_after_allocation] = match post_allocation {
+        Ok(capacity) => capacity,
+        Err(failure) => return Err(cleanup_new_owned_backing_file(runner, failure)),
+    };
+    if available_after_allocation < required_headroom_bytes {
+        return Err(cleanup_new_owned_backing_file(
+            runner,
+            ZfsEffectError::OwnedPoolHeadroomNotPreserved {
+                available_bytes: available_after_allocation,
+                required_headroom_bytes,
+            },
+        ));
+    }
+    if let Err(failure) = checked(
         runner,
         "zpool",
         &[
@@ -210,13 +239,80 @@ fn prepare_owned_pool(
         ],
         COMMAND_TIMEOUT,
         EffectClass::OwnedPool,
-    )?;
+    ) {
+        return Err(cleanup_new_owned_backing_file(runner, failure));
+    }
     Ok((
         ZfsPoolName::try_new(PLOYZ_OWNED_ZFS_POOL).expect("owned pool constant is valid"),
         PreparedStorageOrigin::OwnedImage {
             backing_file: PathBuf::from(PLOYZ_OWNED_ZFS_BACKING_FILE),
         },
     ))
+}
+
+fn create_new_owned_backing_file(
+    runner: &mut impl HostRunnerCommandRunner,
+) -> Result<(), ZfsEffectError> {
+    let output_file = format!("of={PLOYZ_OWNED_ZFS_BACKING_FILE}");
+    let output = runner
+        .command_with_timeout(
+            "dd",
+            &["if=/dev/null", &output_file, "status=none", "conv=excl"],
+            COMMAND_TIMEOUT,
+        )
+        .map_err(|error| ZfsEffectError::OwnedPool {
+            message: error.to_string(),
+        })?;
+    if output.success {
+        return Ok(());
+    }
+    if owned_backing_file_exists(runner)? {
+        return Err(ZfsEffectError::OwnedPoolEvidencePresent {
+            backing_file: PathBuf::from(PLOYZ_OWNED_ZFS_BACKING_FILE),
+        });
+    }
+    Err(ZfsEffectError::OwnedPool {
+        message: output.failure,
+    })
+}
+
+fn owned_backing_file_exists(
+    runner: &mut impl HostRunnerCommandRunner,
+) -> Result<bool, ZfsEffectError> {
+    let output = runner
+        .command_with_timeout(
+            "test",
+            &["-e", PLOYZ_OWNED_ZFS_BACKING_FILE],
+            COMMAND_TIMEOUT,
+        )
+        .map_err(|error| ZfsEffectError::OwnedPool {
+            message: error.to_string(),
+        })?;
+    match (output.success, output.exit_code) {
+        (true, _) => Ok(true),
+        (false, Some(1)) => Ok(false),
+        (false, _) => Err(ZfsEffectError::OwnedPool {
+            message: output.failure,
+        }),
+    }
+}
+
+fn cleanup_new_owned_backing_file(
+    runner: &mut impl HostRunnerCommandRunner,
+    failure: ZfsEffectError,
+) -> ZfsEffectError {
+    match checked(
+        runner,
+        "rm",
+        &["-f", "--", PLOYZ_OWNED_ZFS_BACKING_FILE],
+        COMMAND_TIMEOUT,
+        EffectClass::OwnedPool,
+    ) {
+        Ok(_) => failure,
+        Err(cleanup_failure) => ZfsEffectError::OwnedPool {
+            message: format!("{failure}; backing-file cleanup failed: {cleanup_failure}"),
+        },
+    }
 }
 
 fn parse_filesystem_capacity(output: &str) -> Result<[u64; 2], ZfsEffectError> {

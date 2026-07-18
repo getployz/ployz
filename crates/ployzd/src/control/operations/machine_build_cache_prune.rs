@@ -37,10 +37,14 @@ impl MachineBuildCachePruneOperation {
             return;
         }
         let operation_id = accepted.operation_id.clone();
+        let lease = self
+            .controllers
+            .machine_substrate_lease(accepted.machine_id.clone(), accepted.operation_id.clone());
         let runtime = self.clone();
-        let admission = self
-            .task_registry
-            .spawn(move || async move { runtime.run(accepted).await });
+        let admission = self.task_registry.spawn(move || async move {
+            let _lease = lease;
+            runtime.run(accepted).await;
+        });
         super::finish_rejected_task_admission(&self.controllers, &operation_id, admission).await;
     }
 

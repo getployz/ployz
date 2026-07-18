@@ -17,7 +17,6 @@ use tokio::sync::{mpsc, watch};
 
 pub(super) const BUILDER_LABEL: &str = "com.getployz.build=true";
 pub(super) const CACHE_VOLUME: &str = "ployz-buildkit-cache-v1";
-const CACHE_PRUNER: &str = "ployz-buildkit-cache-pruner";
 const COMMAND_OUTPUT_LIMIT_BYTES: usize = 256 * 1024;
 const RAILPACK_PREPARE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 pub(super) const DOCKER_COMMAND_TIMEOUT: Duration = Duration::from_secs(5 * 60);
@@ -321,12 +320,7 @@ pub(super) async fn create_builder(
     require_success("create BuildKit container", &created)
 }
 
-pub(super) async fn prune_buildkit_cache(
-    platform: &OciPlatform,
-    config: &Path,
-    image: &str,
-    cancelled: &mut watch::Receiver<bool>,
-) -> Result<(), BuildExecutionError> {
+pub(super) async fn prune_buildkit_cache() -> Result<(), BuildExecutionError> {
     let volume = run_bounded(
         "docker",
         [
@@ -343,74 +337,13 @@ pub(super) async fn prune_buildkit_cache(
     if String::from_utf8_lossy(&volume.stdout).trim() != CACHE_VOLUME {
         return Ok(());
     }
-    let image_inspect = run_bounded(
+    let removed = run_bounded(
         "docker",
-        ["image", "inspect", image],
+        ["volume", "rm", CACHE_VOLUME],
         DOCKER_COMMAND_TIMEOUT,
     )
     .await?;
-    if !image_inspect.status.success() {
-        return Err(infrastructure(
-            "prune BuildKit cache",
-            "the pinned BuildKit image is not available locally",
-        ));
-    }
-
-    remove_builder(CACHE_PRUNER).await?;
-    let cache_mount = format!("type=volume,src={CACHE_VOLUME},dst=/var/lib/buildkit");
-    let config_mount = format!(
-        "type=bind,src={},dst=/etc/buildkit/buildkitd.toml,readonly",
-        config.to_string_lossy()
-    );
-    let platform_label = format!(
-        "com.getployz.build.platform={}/{}",
-        platform.os(),
-        platform.architecture()
-    );
-    let created = run_bounded(
-        "docker",
-        [
-            "create",
-            "--name",
-            CACHE_PRUNER,
-            "--label",
-            BUILDER_LABEL,
-            "--label",
-            platform_label.as_str(),
-            "--privileged",
-            "--mount",
-            cache_mount.as_str(),
-            "--mount",
-            config_mount.as_str(),
-            image,
-            "--config",
-            "/etc/buildkit/buildkitd.toml",
-            "--addr",
-            "unix:///run/buildkit/buildkitd.sock",
-        ],
-        DOCKER_COMMAND_TIMEOUT,
-    )
-    .await?;
-    require_success("create BuildKit cache pruner", &created)?;
-    let prune = async {
-        let started =
-            run_bounded("docker", ["start", CACHE_PRUNER], DOCKER_COMMAND_TIMEOUT).await?;
-        require_success("start BuildKit cache pruner", &started)?;
-        await_buildkit(CACHE_PRUNER, cancelled).await?;
-        let pruned = run_bounded(
-            "docker",
-            ["exec", CACHE_PRUNER, "buildctl", "prune", "--all"],
-            DOCKER_COMMAND_TIMEOUT,
-        )
-        .await?;
-        require_success("prune BuildKit cache", &pruned)
-    }
-    .await;
-    let cleanup = remove_builder(CACHE_PRUNER).await;
-    match (prune, cleanup) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Err(error), _) | (Ok(()), Err(error)) => Err(error),
-    }
+    require_success("remove BuildKit cache volume", &removed)
 }
 
 pub(super) async fn await_buildkit(

@@ -64,11 +64,6 @@ pub(super) fn toolchain_for_platform(
     platform: &OciPlatform,
     adapter: &BuildAdapter,
 ) -> Result<BuildToolchain, BuildPlanError> {
-    if platform.os() != "linux" {
-        return Err(BuildPlanError::UnsupportedPlatform {
-            platform: platform.clone(),
-        });
-    }
     let pins = railpack_pins().map_err(invalid_pin)?;
     let (buildkit_reference, buildkit_manifest_digest) = buildkit_for_platform(platform)?;
     let railpack = pins

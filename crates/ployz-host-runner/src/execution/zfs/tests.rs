@@ -562,9 +562,12 @@ fn zero_pools_physically_allocate_half_the_filesystem_for_owned_pool() {
         success(),
         success(),
         stdout(""),
+        failed("backing file absent"),
         success(),
         stdout("1B-blocks Avail\n25769803776 23622320128\n"),
         success(),
+        success(),
+        stdout("1B-blocks Avail\n25769803776 10737418240\n"),
         success(),
         success(),
         failed("dataset absent"),
@@ -588,14 +591,24 @@ fn zero_pools_physically_allocate_half_the_filesystem_for_owned_pool() {
             backing_file: PathBuf::from(PLOYZ_OWNED_ZFS_BACKING_FILE)
         }
     );
-    assert_eq!(invocation(&runner, 6).program, "fallocate");
-    assert_eq!(
-        invocation(&runner, 6).args,
-        vec!["-l", "12884901888", PLOYZ_OWNED_ZFS_BACKING_FILE]
-    );
-    assert_eq!(invocation(&runner, 7).program, "zpool");
+    assert_eq!(invocation(&runner, 7).program, "dd");
     assert_eq!(
         invocation(&runner, 7).args,
+        vec![
+            "if=/dev/null".to_owned(),
+            format!("of={PLOYZ_OWNED_ZFS_BACKING_FILE}"),
+            "status=none".to_owned(),
+            "conv=excl".to_owned()
+        ]
+    );
+    assert_eq!(invocation(&runner, 8).program, "fallocate");
+    assert_eq!(
+        invocation(&runner, 8).args,
+        vec!["-l", "12884901888", PLOYZ_OWNED_ZFS_BACKING_FILE]
+    );
+    assert_eq!(invocation(&runner, 10).program, "zpool");
+    assert_eq!(
+        invocation(&runner, 10).args,
         vec![
             "create",
             "-f",
@@ -613,9 +626,12 @@ fn owned_pool_sizing_preserves_host_headroom() {
         success(),
         success(),
         stdout(""),
+        failed("backing file absent"),
         success(),
         stdout("1B-blocks Avail\n42949672960 19327352832\n"),
         success(),
+        success(),
+        stdout("1B-blocks Avail\n42949672960 8589934592\n"),
         success(),
         success(),
         failed("dataset absent"),
@@ -635,7 +651,7 @@ fn owned_pool_sizing_preserves_host_headroom() {
     .unwrap();
 
     assert_eq!(
-        invocation(&runner, 6).args,
+        invocation(&runner, 8).args,
         vec!["-l", "10737418240", PLOYZ_OWNED_ZFS_BACKING_FILE]
     );
 }
@@ -648,6 +664,7 @@ fn owned_pool_refuses_less_than_eight_gibibytes_after_headroom() {
         success(),
         success(),
         stdout(""),
+        failed("backing file absent"),
         success(),
         stdout("1B-blocks Avail\n25769803776 12884901888\n"),
     ]);
@@ -670,7 +687,144 @@ fn owned_pool_refuses_less_than_eight_gibibytes_after_headroom() {
             minimum_pool_bytes: 8_589_934_592,
         }
     );
-    assert_eq!(runner.invocations.len(), 6);
+    assert_eq!(runner.invocations.len(), 7);
+}
+
+#[test]
+fn automatic_prepare_preserves_unimported_owned_backing_evidence() {
+    let state = tempfile::tempdir().unwrap();
+    let mut runner = RecordingRunner::new([success(), success(), success(), stdout(""), success()]);
+
+    let failure = prepare_storage(
+        &mut runner,
+        &profile("ID=ubuntu\nVERSION_ID=24.04\n"),
+        &PoolSelection::Automatic,
+        state.path(),
+        &state.path().join("docker.service.d"),
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        failure,
+        ZfsEffectError::OwnedPoolEvidencePresent {
+            backing_file: PathBuf::from(PLOYZ_OWNED_ZFS_BACKING_FILE),
+        }
+    );
+    assert_eq!(invocation(&runner, 4).program, "test");
+    assert!(
+        runner
+            .invocations
+            .iter()
+            .all(|call| call.program != "fallocate" && call.program != "rm")
+    );
+}
+
+#[test]
+fn owned_pool_allocation_rechecks_headroom_and_removes_new_backing_file() {
+    let state = tempfile::tempdir().unwrap();
+    let mut runner = RecordingRunner::new([
+        success(),
+        success(),
+        success(),
+        stdout(""),
+        failed("backing file absent"),
+        success(),
+        stdout("1B-blocks Avail\n25769803776 23622320128\n"),
+        success(),
+        success(),
+        stdout("1B-blocks Avail\n25769803776 4294967296\n"),
+        success(),
+    ]);
+
+    let failure = prepare_storage(
+        &mut runner,
+        &profile("ID=ubuntu\nVERSION_ID=24.04\n"),
+        &PoolSelection::Automatic,
+        state.path(),
+        &state.path().join("docker.service.d"),
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        failure,
+        ZfsEffectError::OwnedPoolHeadroomNotPreserved {
+            available_bytes: 4_294_967_296,
+            required_headroom_bytes: 5_368_709_120,
+        }
+    );
+    assert_eq!(invocation(&runner, 10).program, "rm");
+    assert_eq!(
+        invocation(&runner, 10).args,
+        vec!["-f", "--", PLOYZ_OWNED_ZFS_BACKING_FILE]
+    );
+    assert!(runner.invocations.iter().all(|call| {
+        !(call.program == "zpool" && call.args.first().is_some_and(|arg| arg == "create"))
+    }));
+}
+
+#[test]
+fn failed_allocation_and_pool_create_remove_only_the_new_backing_file() {
+    for outputs in [
+        vec![
+            success(),
+            success(),
+            success(),
+            stdout(""),
+            failed("backing file absent"),
+            success(),
+            stdout("1B-blocks Avail\n25769803776 23622320128\n"),
+            success(),
+            failed("allocation failed"),
+            success(),
+        ],
+        vec![
+            success(),
+            success(),
+            success(),
+            stdout(""),
+            failed("backing file absent"),
+            success(),
+            stdout("1B-blocks Avail\n25769803776 23622320128\n"),
+            success(),
+            success(),
+            stdout("1B-blocks Avail\n25769803776 10737418240\n"),
+            failed("pool create failed"),
+            success(),
+        ],
+    ] {
+        let state = tempfile::tempdir().unwrap();
+        let mut runner = RecordingRunner::new(outputs);
+
+        assert!(matches!(
+            prepare_storage(
+                &mut runner,
+                &profile("ID=ubuntu\nVERSION_ID=24.04\n"),
+                &PoolSelection::Automatic,
+                state.path(),
+                &state.path().join("docker.service.d"),
+            ),
+            Err(ZfsEffectError::OwnedPool { .. })
+        ));
+        let cleanup = runner.invocations.last().expect("cleanup invocation");
+        assert_eq!(cleanup.program, "rm");
+        assert_eq!(cleanup.args, vec!["-f", "--", PLOYZ_OWNED_ZFS_BACKING_FILE]);
+    }
+}
+
+#[test]
+fn owned_pool_failure_reads_legacy_sparse_pool_evidence() {
+    let failure: ZfsEffectError =
+        serde_json::from_str(r#"{"kind":"sparse_pool","message":"legacy preparation failure"}"#)
+            .unwrap();
+
+    assert_eq!(
+        failure,
+        ZfsEffectError::OwnedPool {
+            message: "legacy preparation failure".to_owned(),
+        }
+    );
+    let serialized = serde_json::to_value(failure).unwrap();
+    assert_eq!(serialized.get("kind").unwrap(), "owned_pool");
 }
 
 #[test]
