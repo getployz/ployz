@@ -18,7 +18,8 @@ Supported and translated fields become a Ployz deploy request. Unsupported and u
 | `services.*.entrypoint` | Translated | Shell form is split into argv; empty string or empty exec form clears the image entrypoint. |
 | `services.*.environment` | Translated | Map and list forms are merged into container environment. |
 | `services.*.env_file` | Translated | Files are read relative to the Compose file and merged into container environment. |
-| `services.*.deploy.replicas` | Translated | Maps to Ployz replica count; omitted defaults to 1. |
+| `services.*.deploy.mode` | Translated | `replicated` runs the requested replica count; `global` runs once on each eligible machine. Omitted defaults to `replicated`. |
+| `services.*.deploy.replicas` | Translated | Maps to the count for `replicated` mode; omitted defaults to 1. It cannot be combined with `global`. |
 | `services.*.deploy.resources.limits` | Translated | `cpus`, `memory`, and `pids` map to Docker container limits. |
 | `services.*.deploy.restart_policy.condition` | Translated | Maps to Docker restart policy when `services.*.restart` is absent. |
 | `services.*.stop_grace_period` | Translated | Maps to Ployz stop grace period; omitted defaults to 10 seconds. |
@@ -32,7 +33,6 @@ Supported and translated fields become a Ployz deploy request. Unsupported and u
 | `services.*.build` | Unsupported (planned) | build images before deploy |
 | `services.*.cgroup_parent` | Unsupported (unsupported) | cgroup parent is not part of the deploy model |
 | `configs`, `services.*.configs` | Unsupported (planned) | configs are not deployed yet |
-| `services.*.deploy.mode` | Unsupported (planned) | global deploy mode is not deployed yet |
 | `services.*.deploy.placement` | Unsupported (planned) | placement constraints are not deployed yet |
 | `services.*.deploy.resources.reservations` | Unsupported (planned) | reservations are not deployed yet |
 | `services.*.deploy.restart_policy` subfields other than `condition` | Unsupported (planned) | restart policy delay/window fields are not deployed yet |
@@ -58,7 +58,7 @@ Supported and translated fields become a Ployz deploy request. Unsupported and u
 | `volumes.*.x-ployz.max-size` | Ployz-specific extension | Declares a Provisioned Volume with a positive byte quantity such as `10G`. |
 | `services.*.ulimits` | Unsupported (unsupported) | ulimits are not deployed yet |
 | `services.*.user` | Unsupported (unsupported) | container user is not deployed yet |
-| `services.*.volumes` | Translated (limited) | Named-volume short and long syntax map to service mounts. Bind, anonymous, tmpfs, read-only, and mount-option forms are rejected. A mount without a top-level declaration is synthesized as Plain. |
+| `services.*.volumes` | Translated (limited) | Named-volume short and long syntax map to service mounts for replicated services. Global services cannot mount volumes. Bind, anonymous, tmpfs, read-only, and mount-option forms are rejected. A mount without a top-level declaration is synthesized as Plain. |
 | `services.*.working_dir` | Unsupported (unsupported) | working directory is not deployed yet |
 | `services.*.x-pre_deploy` | Unsupported | rename the hook to Compose `pre_start` |
 | Any other field | Unsupported | Unknown field; remove it or pass `--allow-unsupported`. |

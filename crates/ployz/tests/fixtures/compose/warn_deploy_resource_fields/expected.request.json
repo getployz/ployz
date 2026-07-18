@@ -4,7 +4,10 @@
     {
       "service_id": "both",
       "image": "nginx:latest",
-      "replicas": 3,
+      "mode": {
+        "kind": "replicated",
+        "replicas": 3
+      },
       "runtime": {
         "command": null,
         "entrypoint": null,
@@ -19,7 +22,10 @@
     {
       "service_id": "deploy",
       "image": "nginx:latest",
-      "replicas": 3,
+      "mode": {
+        "kind": "replicated",
+        "replicas": 3
+      },
       "runtime": {
         "command": null,
         "entrypoint": null,
@@ -34,7 +40,10 @@
     {
       "service_id": "no-deploy",
       "image": "nginx:latest",
-      "replicas": 1,
+      "mode": {
+        "kind": "replicated",
+        "replicas": 1
+      },
       "runtime": {
         "command": null,
         "entrypoint": null,

@@ -361,7 +361,9 @@ async fn interrupted_deploy_retry_gathers_and_reuses_retained_runtime_work() {
         .expect("retry commits serving target");
     assert_eq!(
         serving.mode,
-        ReplicaCount::try_new(2).expect("replica count")
+        ployz_core::deploy::ServiceMode::Replicated {
+            replicas: ReplicaCount::try_new(2).expect("replica count")
+        }
     );
     assert!(matches!(
         restarted_controllers
@@ -592,7 +594,9 @@ async fn interrupted_scale_up_replica_is_regated_under_a_promoted_entry() {
         .expect("retry commits serving target");
     assert_eq!(
         serving.mode,
-        ReplicaCount::try_new(2).expect("replica count")
+        ployz_core::deploy::ServiceMode::Replicated {
+            replicas: ReplicaCount::try_new(2).expect("replica count")
+        }
     );
 }
 

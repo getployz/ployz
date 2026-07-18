@@ -16,7 +16,7 @@ use crate::execution_support::generate_client_deploy_id;
 
 /// Public port the `--route HOST:PORT` shorthand listens on: alpha route
 /// shorthand is plain HTTP (KTD8).
-/// Replica count when `--replicas` is omitted (R10).
+/// Replica count for the default replicated service mode.
 const DEFAULT_REPLICA_COUNT: u16 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -179,6 +179,7 @@ fn deploy_submit_command(parsed: DeployCli) -> Result<DeployCommand, PloyzctlCli
         service,
         image,
         replicas,
+        global,
         route,
         route_hostname,
         endpoint_port,
@@ -196,12 +197,13 @@ fn deploy_submit_command(parsed: DeployCli) -> Result<DeployCommand, PloyzctlCli
         if image.is_some()
             || service.is_some()
             || replicas.is_some()
+            || global
             || !route.is_empty()
             || route_hostname.is_some()
             || endpoint_port.is_some()
         {
             return Err(cli_error(
-                "deploy -f conflicts with --image, --service, --replicas, and route flags",
+                "deploy -f conflicts with --image, --service, --replicas, --global, and route flags",
             ));
         }
         let namespace_override = namespace
@@ -249,10 +251,15 @@ fn deploy_submit_command(parsed: DeployCli) -> Result<DeployCommand, PloyzctlCli
     };
     let generated_ids = generate_client_deploy_id(&service_id)
         .map_err(|error| cli_error(format!("could not generate client operation ids: {error}")))?;
-    let replicas = match replicas {
-        Some(value) => parse_replicas(value)?,
-        None => ReplicaCount::try_new(DEFAULT_REPLICA_COUNT)
-            .expect("one replica is a valid replica count"),
+    let mode = if global {
+        ployz_core::deploy::ServiceMode::Global
+    } else {
+        let replicas = match replicas {
+            Some(value) => parse_replicas(value)?,
+            None => ReplicaCount::try_new(DEFAULT_REPLICA_COUNT)
+                .expect("one replica is a valid replica count"),
+        };
+        ployz_core::deploy::ServiceMode::Replicated { replicas }
     };
     let routes = if route.is_empty() {
         parse_deploy_route(
@@ -284,7 +291,7 @@ fn deploy_submit_command(parsed: DeployCli) -> Result<DeployCommand, PloyzctlCli
                 service_id,
                 image,
                 image_source: ployz_core::deploy::ImageSource::Registry,
-                replicas,
+                mode,
                 runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
                 pre_start: None,
                 depends_on: Vec::new(),
@@ -316,6 +323,8 @@ pub(crate) struct DeployCli {
     image: Option<String>,
     #[arg(long)]
     replicas: Option<String>,
+    #[arg(long, conflicts_with = "replicas")]
+    global: bool,
     /// Resolve the image from its registry even when it exists in local Docker.
     #[arg(long)]
     from_registry: bool,

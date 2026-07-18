@@ -432,7 +432,9 @@ fn placement_target(namespace: &str) -> DeployRequest {
             service_id: service_id("server"),
             image: ImageReference::try_new(WORKLOAD_IMAGE).expect("workload image reference"),
             image_source: ImageSource::Registry,
-            replicas: ReplicaCount::try_new(2).expect("two replicas"),
+            mode: ployz_core::deploy::ServiceMode::Replicated {
+                replicas: ReplicaCount::try_new(2).expect("two replicas"),
+            },
             runtime: ContainerRuntimeSpec::image_defaults(),
             pre_start: None,
             depends_on: Vec::new(),

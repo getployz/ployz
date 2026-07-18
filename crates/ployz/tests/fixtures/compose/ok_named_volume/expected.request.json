@@ -16,7 +16,10 @@
     {
       "service_id": "long",
       "image": "nginx:latest",
-      "replicas": 1,
+      "mode": {
+        "kind": "replicated",
+        "replicas": 1
+      },
       "runtime": {
         "command": null,
         "entrypoint": null,
@@ -37,7 +40,10 @@
     {
       "service_id": "short",
       "image": "nginx:latest",
-      "replicas": 1,
+      "mode": {
+        "kind": "replicated",
+        "replicas": 1
+      },
       "runtime": {
         "command": null,
         "entrypoint": null,

@@ -385,7 +385,7 @@ test("sdk maps raw deploy input to the wire request", () => {
         {
           service_id: "svc_api",
           image: "ghcr.io/acme/api:rev-2",
-          replicas: 1,
+          mode: { kind: "replicated", replicas: 1 },
           keep: 0,
           runtime: {
             command: null,
@@ -416,7 +416,7 @@ test("sdk maps raw deploy input to the wire request", () => {
           {
             service_id: "svc_api",
             image: "ghcr.io/acme/api:rev-2",
-            replicas: 1,
+            mode: { kind: "replicated", replicas: 1 },
             keep: 0,
             runtime: {
               command: null,
@@ -445,9 +445,18 @@ test("sdk maps raw deploy input to the wire request", () => {
     /service id/,
   );
   assert.throws(
-    () => deploySubmitRequest({ ...deployInput(), replicas: 0 }, reservationId),
+    () =>
+      deploySubmitRequest(
+        { ...deployInput(), mode: { kind: "replicated", replicas: 0 } },
+        reservationId,
+      ),
     /replica count/,
   );
+  const global = deploySubmitRequest(
+    { ...deployInput(), mode: { kind: "global" } },
+    reservationId,
+  );
+  assert.deepEqual(global.target.services[0]?.mode, { kind: "global" });
 });
 
 test("sdk maps raw machine add input to the wire request", () => {
@@ -1196,7 +1205,7 @@ function defaultFixture(): OperationFixture {
           service_id: serviceId("svc_api"),
           namespace_revision_entry_id: namespaceRevisionEntryId("rev_2"),
           image: imageReference("nginx:1.27-alpine"),
-          desired_replicas: replicaCount(1),
+          mode: { kind: "replicated", replicas: replicaCount(1) },
           volume_names: [],
         },
         route_bindings: [],
@@ -1244,7 +1253,7 @@ function defaultFixture(): OperationFixture {
             service_id: serviceId("svc_api"),
             namespace_revision_entry_id: namespaceRevisionEntryId("rev_2"),
             image: imageReference("nginx:1.27-alpine"),
-            desired_replicas: replicaCount(1),
+            mode: { kind: "replicated", replicas: replicaCount(1) },
             volume_names: [],
           },
           route_bindings: [],
@@ -1304,7 +1313,6 @@ function deployInput() {
     idempotencyKey: "idem_deploy_123",
     serviceId: "svc_api",
     image: "ghcr.io/acme/api:rev-2",
-    replicas: 1,
     keep: 0,
   };
 }

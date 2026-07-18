@@ -4,7 +4,10 @@
     {
       "service_id": "web",
       "image": "ghcr.io/acme/web:1",
-      "replicas": 2,
+      "mode": {
+        "kind": "replicated",
+        "replicas": 2
+      },
       "runtime": {
         "command": [
           "serve",

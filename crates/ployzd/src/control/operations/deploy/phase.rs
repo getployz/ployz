@@ -316,7 +316,7 @@ where
                             .namespace_revision_entry_id(&command.request.namespace_id),
                         machine_id: machine_id.clone(),
                         container_id: container_id.clone(),
-                        step_id: deploy_step_id(*slot).map_err(|source| {
+                        step_id: deploy_step_id(*slot, machine_id).map_err(|source| {
                             run.fail_service(
                                 DeployExecutionError::StepId(source),
                                 service.service.service_id.clone(),

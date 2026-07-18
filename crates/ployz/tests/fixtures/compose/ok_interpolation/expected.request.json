@@ -4,7 +4,10 @@
     {
       "service_id": "api",
       "image": "ghcr.io/acme/api:v1",
-      "replicas": 3,
+      "mode": {
+        "kind": "replicated",
+        "replicas": 3
+      },
       "runtime": {
         "command": [
           "echo",

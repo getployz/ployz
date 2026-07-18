@@ -162,11 +162,11 @@ impl ServiceInspectOutput {
     #[must_use]
     pub fn render(&self) -> String {
         format!(
-            "service {}\nintent namespace-revision-entry {}\nintent image {}\nintent desired-replicas {}\nintent routes {}\n{}",
+            "service {}\nintent namespace-revision-entry {}\nintent image {}\nintent mode {}\nintent routes {}\n{}",
             self.service.active.service_id.as_str(),
             self.service.active.namespace_revision_entry_id.as_str(),
             self.service.active.image.as_str(),
-            self.service.active.desired_replicas.get(),
+            render_service_mode(self.service.active.mode),
             render_routes(&self.service),
             render_service_container_rows(&self.service),
         )
@@ -175,14 +175,23 @@ impl ServiceInspectOutput {
 
 fn render_service_summary(service: &ServiceSnapshot) -> String {
     format!(
-        "{} image {} testimony ready-replicas {} intent desired-replicas {} machines {} routes {}",
+        "{} image {} testimony ready-replicas {} intent mode {} machines {} routes {}",
         service.active.service_id.as_str(),
         service.active.image.as_str(),
         service.testimony.ready_container_count,
-        service.active.desired_replicas.get(),
+        render_service_mode(service.active.mode),
         render_machine_counts(service, "", ", "),
         render_routes(service),
     )
+}
+
+fn render_service_mode(mode: ployz_core::deploy::ServiceMode) -> String {
+    match mode {
+        ployz_core::deploy::ServiceMode::Replicated { replicas } => {
+            format!("replicated replicas {}", replicas.get())
+        }
+        ployz_core::deploy::ServiceMode::Global => "global".to_owned(),
+    }
 }
 
 fn render_routes(service: &ServiceSnapshot) -> String {

@@ -107,7 +107,10 @@
           "image": {
             "state": "pending_build"
           },
-          "replicas": 2,
+          "mode": {
+            "kind": "replicated",
+            "replicas": 2
+          },
           "runtime": {
             "command": null,
             "entrypoint": null,
@@ -136,11 +139,17 @@
           {
             "services": [
               {
+                "placement": {
+                  "kind": "replicated"
+                },
                 "service_id": "svc_api",
                 "steps": [
                   {
                     "machine_id": "machine_2",
-                    "slot": 1,
+                    "slot": {
+                      "kind": "replicated",
+                      "number": 1
+                    },
                     "step": "run_container"
                   }
                 ]
@@ -196,7 +205,10 @@
       "services": [
         {
           "image": "ghcr.io/acme/api:rev-2",
-          "replicas": 2,
+          "mode": {
+            "kind": "replicated",
+            "replicas": 2
+          },
           "runtime": {
             "command": null,
             "entrypoint": null,
@@ -398,7 +410,10 @@
             "services": [
               {
                 "image": "ghcr.io/acme/api:rev-2",
-                "replicas": 2,
+                "mode": {
+                  "kind": "replicated",
+                  "replicas": 2
+                },
                 "runtime": {
                   "command": null,
                   "entrypoint": null,
@@ -472,7 +487,10 @@
               "services": [
                 {
                   "image": "ghcr.io/acme/api:rev-2",
-                  "replicas": 2,
+                  "mode": {
+                    "kind": "replicated",
+                    "replicas": 2
+                  },
                   "runtime": {
                     "command": null,
                     "entrypoint": null,
