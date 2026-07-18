@@ -219,6 +219,45 @@ async fn deploy_promotes_each_dependency_phase_before_starting_the_next() {
 }
 
 #[tokio::test]
+async fn routed_later_dependency_phase_records_its_own_cutover() {
+    let mut recorder = RecordingOperations::default();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_database", "ctr_web"]);
+    let mut health = RecordingHealth::healthy();
+    let mut namespace_state = RecordingNamespaceState::stored();
+
+    execute_deploy(
+        phased_deploy_with_routed_later_phase(),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect("phased deploy succeeds");
+
+    let running_stages = recorder.records.iter().filter_map(|record| {
+        let RecordedOperation::Transition(DeployTransition::Running { stage }) = record else {
+            return None;
+        };
+        Some(*stage)
+    });
+    assert_eq!(
+        running_stages
+            .filter(|stage| *stage == DeployRunningStage::RouteCutover)
+            .count(),
+        1
+    );
+    assert_deploy_event_order(
+        &recorder.records,
+        DeployRunningStage::ServingTargetCommit,
+        DeployRunningStage::RouteCutover,
+    );
+}
+
+#[tokio::test]
 async fn reused_promoted_dependency_is_unchanged_and_not_regated() {
     let mut recorder = RecordingOperations::default();
     let mut runtime = RecordingRuntime::with_containers(["ctr_web"]);
@@ -1729,6 +1768,45 @@ async fn replaced_service_routes_are_removed_inside_the_phase_commit() {
     assert_eq!(
         namespace_state.route_removals,
         vec![route_target("old.example.com", 443)]
+    );
+    assert_deploy_event_order(
+        &recorder.records,
+        DeployRunningStage::RouteCutover,
+        DeployRunningStage::ServingTargetCommit,
+    );
+}
+
+#[tokio::test]
+async fn removal_only_phase_records_route_cutover() {
+    let mut recorder = RecordingOperations::default();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
+    let mut health = RecordingHealth::healthy();
+    let mut namespace_state = RecordingNamespaceState::stored();
+
+    execute_deploy(
+        unrouted_deploy_removing_route_command(1),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect("route removal succeeds");
+
+    let [(_, phase_route_removals, _)] = namespace_state.phase_requests.as_slice() else {
+        panic!("expected one phase commit");
+    };
+    assert_eq!(
+        phase_route_removals,
+        &vec![route_target("old.example.com", 443)]
+    );
+    assert_deploy_event_order(
+        &recorder.records,
+        DeployRunningStage::RouteCutover,
+        DeployRunningStage::ServingTargetCommit,
     );
 }
 

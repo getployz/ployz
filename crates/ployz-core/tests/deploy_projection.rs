@@ -297,6 +297,57 @@ fn deploy_route_cutover_can_precede_active_service_commit() {
 }
 
 #[test]
+fn later_phases_can_record_route_cutover_cycles() {
+    let mut status = OperationStatus::Deploy {
+        id: operation_id("op_123"),
+        namespace_id: namespace_id("default"),
+        service_id: service_id("svc_api"),
+        origin: None,
+        state: DeployOperationState::Running {
+            stage: DeployRunningStage::ServingTargetCommit,
+        },
+        last_event_sequence: event_sequence(6),
+    };
+
+    assert_eq!(
+        project_deploy_transition(
+            &status,
+            DeployTransition::Running {
+                stage: DeployRunningStage::EnsuringCertificates,
+            },
+            event_sequence(7),
+        ),
+        Ok(OperationProjection::AlreadySatisfied)
+    );
+
+    for (sequence, stage) in [
+        DeployRunningStage::RouteCutover,
+        DeployRunningStage::ServingTargetCommit,
+        DeployRunningStage::RouteCutover,
+        DeployRunningStage::ServingTargetCommit,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let projection = project_deploy_transition(
+            &status,
+            DeployTransition::Running { stage },
+            event_sequence(u64::try_from(sequence).expect("sequence fits") + 7),
+        )
+        .expect("approved phase cycle projects");
+        let OperationProjection::StatusChanged { status: projected } = projection else {
+            panic!("every phase cycle transition changes status");
+        };
+        status = *projected;
+    }
+
+    assert!(matches!(
+        project_deploy_transition(&status, DeployTransition::completed(), event_sequence(11)),
+        Ok(OperationProjection::StatusChanged { .. })
+    ));
+}
+
+#[test]
 fn deploy_cleanup_can_follow_active_service_commit() {
     let committing = OperationStatus::Deploy {
         id: operation_id("op_123"),
