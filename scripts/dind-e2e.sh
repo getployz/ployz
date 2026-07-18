@@ -21,6 +21,8 @@ source "${ROOT_DIR}/scripts/lib.sh"
 TARGET_DIR="${PLOYZ_DIND_TARGET_DIR:-/tmp/ployz-dind-machine-target}"
 ARTIFACT_DIR="${TARGET_DIR}/release"
 MACHINE_IMAGE="${PLOYZ_DIND_MACHINE_IMAGE:-ployz-dind-machine:local}"
+UMAMI_IMAGE="${PLOYZ_DIND_UMAMI_IMAGE:-ghcr.io/umami-software/umami:postgresql-latest}"
+POSTGRES_IMAGE="${PLOYZ_DIND_POSTGRES_IMAGE:-postgres:15-alpine}"
 WORKERS="${PLOYZ_DIND_WORKERS:-2}"
 
 case "${WORKERS}" in
@@ -43,7 +45,10 @@ incremental=0
 if [ "${1:-}" = "--full" ]; then
   shift
 elif [ "$#" -gt 0 ]; then
-  fingerprint="$(PLOYZ_DIND_PLATFORM="${platform}" bash "${ROOT_DIR}/scripts/build-dind-machine-image.sh" fingerprint)"
+  fingerprint="$(PLOYZ_DIND_PLATFORM="${platform}" \
+    PLOYZ_DIND_UMAMI_IMAGE="${UMAMI_IMAGE}" \
+    PLOYZ_DIND_POSTGRES_IMAGE="${POSTGRES_IMAGE}" \
+    bash "${ROOT_DIR}/scripts/build-dind-machine-image.sh" fingerprint)"
   image_identity="$(docker image inspect --format '{{.Os}}/{{.Architecture}} {{index .Config.Labels "dev.ployz.dind.fingerprint"}}' "${MACHINE_IMAGE}" 2>/dev/null || true)"
   if [ "${image_identity}" = "${platform} ${fingerprint}" ]; then
     build_mode=artifacts-only
@@ -54,6 +59,8 @@ fi
 PLOYZ_DIND_TARGET_DIR="${TARGET_DIR}" \
   PLOYZ_DIND_MACHINE_IMAGE="${MACHINE_IMAGE}" \
   PLOYZ_DIND_PLATFORM="${platform}" \
+  PLOYZ_DIND_UMAMI_IMAGE="${UMAMI_IMAGE}" \
+  PLOYZ_DIND_POSTGRES_IMAGE="${POSTGRES_IMAGE}" \
   PLOYZ_DIND_CARGO_INCREMENTAL="${incremental}" \
   bash "${ROOT_DIR}/scripts/build-dind-machine-image.sh" "${build_mode}"
 
@@ -65,6 +72,8 @@ run_dind() {
   PLOYZ_DIND_E2E=1 \
     PLOYZ_DIND_MACHINE_IMAGE="${MACHINE_IMAGE}" \
     PLOYZ_DIND_ARTIFACT_DIR="${ARTIFACT_DIR}" \
+    PLOYZ_DIND_UMAMI_IMAGE="${UMAMI_IMAGE}" \
+    PLOYZ_DIND_POSTGRES_IMAGE="${POSTGRES_IMAGE}" \
     cargo test -p ployz-e2e --test dind_cluster -- --test-threads="${workers}" --nocapture "$@"
 }
 
