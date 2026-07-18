@@ -259,6 +259,82 @@ async fn shutdown_cancels_active_build_and_waits_for_cleanup() {
     assert!(runtime.lifecycle.state.lock().await.phase == BuildRuntimePhase::Stopped);
 }
 
+#[tokio::test]
+async fn cache_prune_waits_for_active_build_cleanup() {
+    let effects = Arc::new(TestBuildEffects::cooperative(true));
+    let runtime = MachineBuildRuntime::new_for_test(
+        MachineId::try_new("machine-a").expect("machine"),
+        effects.clone(),
+    );
+    let operation_id = OperationId::try_new("build-before-prune").expect("operation");
+    let start_runtime = runtime.clone();
+    let request = build_request(operation_id.as_str(), 10_000);
+    let start = tokio::spawn(async move { start_runtime.start(request).await });
+    effects.ingest_started.notified().await;
+
+    let mut prune = Box::pin(runtime.prune_cache());
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(10), &mut prune)
+            .await
+            .is_err()
+    );
+
+    assert_eq!(
+        runtime.cancel(&operation_id).await,
+        MachineBuildCancelOutcome::Requested
+    );
+    assert!(matches!(
+        start.await.expect("start task"),
+        Err(MachineBuildStartDomainError::Cancelled {
+            cleanup: MachineBuildCleanupOutcome::Confirmed,
+            ..
+        })
+    ));
+    tokio::time::timeout(std::time::Duration::from_secs(1), prune)
+        .await
+        .expect("prune proceeds after build cleanup")
+        .expect("prune succeeds");
+}
+
+#[tokio::test(start_paused = true)]
+async fn shutdown_rejects_cache_prune_waiting_behind_a_build() {
+    let effects = Arc::new(TestBuildEffects::new(true));
+    let runtime = MachineBuildRuntime::new_for_test(
+        MachineId::try_new("machine-a").expect("machine"),
+        effects.clone(),
+    );
+    let start_runtime = runtime.clone();
+    let start = tokio::spawn(async move {
+        start_runtime
+            .start(build_request("build-during-shutdown", 10_000))
+            .await
+    });
+    effects.ingest_started.notified().await;
+    let mut prune = Box::pin(runtime.prune_cache());
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(1), &mut prune)
+            .await
+            .is_err()
+    );
+
+    let shutdown_runtime = runtime.clone();
+    let shutdown = tokio::spawn(async move { shutdown_runtime.shutdown().await });
+    tokio::task::yield_now().await;
+    tokio::time::advance(BUILD_TASK_DRAIN_TIMEOUT).await;
+    tokio::task::yield_now().await;
+
+    assert!(matches!(
+        prune.await,
+        Err(BuildExecutionError::Infrastructure {
+            action: "prune build cache",
+            ..
+        })
+    ));
+    shutdown.await.expect("shutdown task");
+    let _ = start.await.expect("start task");
+    assert_eq!(effects.cleanup_calls.load(Ordering::SeqCst), 1);
+}
+
 #[tokio::test(start_paused = true)]
 async fn timeout_during_ingestion_aborts_then_cleans_once_without_late_success() {
     let effects = Arc::new(TestBuildEffects::new(true));
