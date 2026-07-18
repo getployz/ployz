@@ -140,6 +140,23 @@ impl MachineBuildRuntime {
     pub(crate) async fn prune_cache(
         &self,
     ) -> Result<ployz_core::operation::BuildCachePruneEvidence, BuildExecutionError> {
+        let _slot = self
+            .machine_slot
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|error| BuildExecutionError::Infrastructure {
+                action: "acquire machine build slot",
+                message: error.to_string(),
+                log_summary: BuildLogSummary::none(),
+            })?;
+        if self.lifecycle.state.lock().await.phase != BuildRuntimePhase::Accepting {
+            return Err(BuildExecutionError::Infrastructure {
+                action: "prune build cache",
+                message: "machine build runtime is shutting down".to_owned(),
+                log_summary: BuildLogSummary::none(),
+            });
+        }
         match &self.effects {
             BuildEffects::Docker(effects) => effects.executor.prune_cache().await,
             #[cfg(test)]
@@ -199,6 +216,12 @@ impl MachineBuildRuntime {
         let completion_wait =
             futures_util::future::join_all(residual.iter().map(|build| build.completion.wait()));
         let _ = tokio::time::timeout(BUILD_TASK_DRAIN_TIMEOUT, completion_wait).await;
+        let _slot = self
+            .machine_slot
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("machine build slot remains open for the runtime lifetime");
         {
             let mut state = self.lifecycle.state.lock().await;
             state.active.clear();
