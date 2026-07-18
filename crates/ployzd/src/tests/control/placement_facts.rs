@@ -102,8 +102,8 @@ async fn bounded_placement_gather_queries_every_candidate_before_classifying_sil
     }
 
     assert_eq!(gathered.len(), machine_ids.len());
-    for (index, facts) in gathered.into_iter().enumerate() {
-        assert_eq!(facts.machine_id, machine_ids[index]);
+    for (index, (facts, machine_id)) in gathered.into_iter().zip(machine_ids.iter()).enumerate() {
+        assert_eq!(&facts.machine_id, machine_id);
         assert_eq!(facts.lifecycle, MachineLifecycle::Active);
         assert_eq!(
             facts.answer.is_some(),
