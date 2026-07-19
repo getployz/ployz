@@ -546,7 +546,12 @@ fn global_plan_visits_each_selected_machine_once_and_reuses_only_same_machine() 
     input.draining_machines = vec![machine_id("machine_draining")];
 
     let plan = plan_single_service(&input).expect("global plan");
-    let service = &plan.phases[0].services[0];
+    let [phase] = plan.phases.as_slice() else {
+        panic!("global plan should contain one phase");
+    };
+    let [service] = phase.services.as_slice() else {
+        panic!("global plan should contain one service");
+    };
     assert_eq!(
         service.steps,
         vec![
@@ -601,7 +606,12 @@ fn global_zero_selected_fails_first_deploy_but_preserves_promoted_target_with_de
 
     input.equivalent_target_promoted = true;
     let plan = plan_single_service(&input).expect("promoted target stays unchanged");
-    let service = &plan.phases[0].services[0];
+    let [phase] = plan.phases.as_slice() else {
+        panic!("global plan should contain one phase");
+    };
+    let [service] = phase.services.as_slice() else {
+        panic!("global plan should contain one service");
+    };
     assert!(service.steps.is_empty());
     assert!(matches!(
         &service.placement,

@@ -65,6 +65,12 @@ pub(super) struct PromotionPorts<'a, R, C, S> {
     pub namespace_state: &'a mut S,
 }
 
+pub(super) struct ServiceStartPorts<'a, R, N> {
+    pub containers: &'a mut Vec<DeployContainer>,
+    pub recorder: &'a mut R,
+    pub machine_runtime: &'a mut N,
+}
+
 impl CoarsePhaseProgress {
     async fn record<R>(
         self,
@@ -259,10 +265,8 @@ pub(super) async fn start_services<R, N>(
     phase: &DeployPhasePlan,
     dataplane_members: &[ployz_core::network::DataplaneMember],
     services_with_cleanup: &std::collections::BTreeSet<ServiceId>,
-    containers: &mut Vec<DeployContainer>,
     run: &mut DeployRun<'_>,
-    recorder: &mut R,
-    machine_runtime: &mut N,
+    ports: ServiceStartPorts<'_, R, N>,
 ) -> Result<(), DeployExecutionFailure>
 where
     R: DeployOperationRecorder,
@@ -274,9 +278,14 @@ where
                 && matches!(service.service.image_source, ImageSource::PushedToSeed(_))
         })
     }) {
-        ensure_images(command, &phase.services, recorder, machine_runtime)
-            .await
-            .map_err(|source| run.fail(source))?;
+        ensure_images(
+            command,
+            &phase.services,
+            ports.recorder,
+            ports.machine_runtime,
+        )
+        .await
+        .map_err(|source| run.fail(source))?;
     }
 
     for service_plan in &phase.services {
@@ -295,7 +304,7 @@ where
                 service,
                 pre_start,
                 dataplane_members,
-                machine_runtime,
+                ports.machine_runtime,
             )
             .await
             .map_err(|source| run.fail_service(source, service.service.service_id.clone()))?;
@@ -341,7 +350,7 @@ where
                             == ExistingReplicaCreationGate::RequiredAfterInterruption
                             && requires_docker_healthcheck(service),
                     };
-                    containers.push(container.clone());
+                    ports.containers.push(container.clone());
                     run.existing_container(container, existing.creation_gate);
                 }
                 DeployPlanStep::RunContainer { machine_id, slot } => {
@@ -351,7 +360,7 @@ where
                             machine_id: machine_id.clone(),
                         },
                         run_deploy_step(
-                            machine_runtime,
+                            ports.machine_runtime,
                             command,
                             service,
                             machine_id,
@@ -364,11 +373,11 @@ where
                         Ok(started) => started,
                         Err(source) => return Err(run.fail_run_container(service, source)),
                     };
-                    containers.push(started.clone());
+                    ports.containers.push(started.clone());
                     run.container_started(started.clone(), disposition);
                     record_evidence(
                         command,
-                        recorder,
+                        ports.recorder,
                         DeployEvidence::ContainerStarted {
                             machine_id: started.machine_id.clone(),
                             container_id: started.container_id.clone(),

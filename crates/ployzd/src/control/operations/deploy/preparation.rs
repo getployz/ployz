@@ -440,31 +440,6 @@ fn overlay_global_candidate_disposition(
     }
 }
 
-#[cfg(test)]
-mod global_candidate_tests {
-    use super::*;
-
-    #[test]
-    fn draining_candidate_cannot_be_downgraded_by_later_unusability() {
-        let machine_id = MachineId::try_new("machine_a").expect("machine id");
-        let mut candidates =
-            BTreeMap::from([(machine_id.clone(), GlobalCandidateDisposition::Draining)]);
-
-        overlay_global_candidate_disposition(
-            &mut candidates,
-            &ployz_core::operation::UnusableMachine {
-                machine_id: machine_id.clone(),
-                reason: ployz_core::machine::MachineUsabilityReason::FactsUnavailable,
-            },
-        );
-
-        assert_eq!(
-            candidates.get(&machine_id),
-            Some(&GlobalCandidateDisposition::Draining)
-        );
-    }
-}
-
 pub(super) fn prepare_deploy_preview_command(
     target: DeployPlanningTarget,
     facts: DeployExecutionFacts,
@@ -603,4 +578,29 @@ pub fn namespace_cleanup_candidates(
             identity: container.identity.clone(),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod global_candidate_tests {
+    use super::*;
+
+    #[test]
+    fn draining_candidate_cannot_be_downgraded_by_later_unusability() {
+        let machine_id = MachineId::try_new("machine_a").expect("machine id");
+        let mut candidates =
+            BTreeMap::from([(machine_id.clone(), GlobalCandidateDisposition::Draining)]);
+
+        overlay_global_candidate_disposition(
+            &mut candidates,
+            &ployz_core::operation::UnusableMachine {
+                machine_id: machine_id.clone(),
+                reason: ployz_core::machine::MachineUsabilityReason::FactsUnavailable,
+            },
+        );
+
+        assert_eq!(
+            candidates.get(&machine_id),
+            Some(&GlobalCandidateDisposition::Draining)
+        );
+    }
 }

@@ -315,10 +315,12 @@ where
             phase,
             &dataplane_membership,
             &services_with_cleanup,
-            &mut containers,
             &mut run,
-            &mut *ports.recorder,
-            &mut *ports.machine_runtime,
+            phase::ServiceStartPorts {
+                containers: &mut containers,
+                recorder: &mut *ports.recorder,
+                machine_runtime: &mut *ports.machine_runtime,
+            },
         )
         .await?;
 
