@@ -321,7 +321,7 @@ mod tests {
         BuildExecutorCredentialExpiresAt, CredentialName, CredentialRole, MintedNatsUser,
         NatsInternalAuthority,
     };
-    use ployz_core::{BuildExecutorId, BuildPoolId};
+    use ployz_core::ids::{BuildExecutorId, BuildPoolId};
 
     fn credential(name: &str) -> CredentialGrant {
         CredentialGrant {

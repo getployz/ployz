@@ -770,7 +770,7 @@ mod tests {
     use ployz_core::nats_config::{
         BuildExecutorCredentialExpiresAt, CredentialName, MintedNatsUser,
     };
-    use ployz_core::{BuildExecutorId, BuildPoolId};
+    use ployz_core::ids::{BuildExecutorId, BuildPoolId};
 
     use super::*;
     use crate::control::store::CoreStore;
