@@ -10,17 +10,18 @@ use ployz_core::intent::RouteBindingState;
 use ployz_core::intent::ServingTargetEntry;
 use ployz_core::machine::GatewayStatusObservation;
 use ployz_core::machine::runtime::{
-    MachineFactsSnapshot, ManagedContainerKind, ManagedContainerObservation,
+    MachineContainerTestimony, MachineFactsSnapshot, MachineFactsTestimony, ManagedContainerKind,
+    ManagedContainerObservation,
 };
 use ployz_core::machine::{MachineStorageTestimony, derive_stranded_volume_alarms};
 
 use ployz_sdk_types::{
-    MachineSnapshot, MachineTestimony, RouteTlsAvailability, RouteTlsStatus,
-    RuntimeDerivedCollectionSource, RuntimeDerivedCollectionStatus, RuntimePloyzDnsTarget,
-    RuntimePloyzDnsTargetAllocation, RuntimePloyzDnsTargetPublication, RuntimeProjectionSource,
-    RuntimeProjectionSources, RuntimeServiceInstance, RuntimeServiceRelease,
-    RuntimeServiceRevision, RuntimeSnapshot, ServiceContainerMembership, ServiceContainerTestimony,
-    ServiceMachineTestimony, ServiceSnapshot, ServiceTestimony,
+    MachineContainerAvailability, MachineSnapshot, MachineTestimony, RouteTlsAvailability,
+    RouteTlsStatus, RuntimeDerivedCollectionSource, RuntimeDerivedCollectionStatus,
+    RuntimePloyzDnsTarget, RuntimePloyzDnsTargetAllocation, RuntimePloyzDnsTargetPublication,
+    RuntimeProjectionSource, RuntimeProjectionSources, RuntimeServiceInstance,
+    RuntimeServiceRelease, RuntimeServiceRevision, RuntimeSnapshot, ServiceContainerMembership,
+    ServiceContainerTestimony, ServiceMachineTestimony, ServiceSnapshot, ServiceTestimony,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -59,6 +60,7 @@ pub(crate) async fn load_ingress_sources(
 pub(crate) fn from_sources(
     intent: IntentSnapshot,
     facts: &BTreeMap<MachineId, MachineFactsSnapshot>,
+    direct_facts: Option<&BTreeMap<MachineId, MachineFactsTestimony>>,
     fresh_storage_testimony: Option<&[MachineStorageTestimony]>,
     gateway_statuses: &BTreeMap<MachineId, GatewayStatusObservation>,
     ingress: RuntimeIngressSources,
@@ -81,7 +83,15 @@ pub(crate) fn from_sources(
     let machines = intent
         .active_machines
         .into_iter()
-        .map(|active| machine_snapshot(active, facts, gateway_statuses, &storage_alarms))
+        .map(|active| {
+            machine_snapshot(
+                active,
+                facts,
+                direct_facts,
+                gateway_statuses,
+                &storage_alarms,
+            )
+        })
         .collect::<Vec<_>>();
     let routes = intent.route_bindings;
     let services = intent
@@ -215,19 +225,32 @@ fn usable_certificate<'a>(
 fn machine_snapshot(
     active: ActiveMachineState,
     facts: &BTreeMap<MachineId, MachineFactsSnapshot>,
+    direct_facts: Option<&BTreeMap<MachineId, MachineFactsTestimony>>,
     gateways: &BTreeMap<MachineId, GatewayStatusObservation>,
     storage_alarms: &[ployz_core::machine::StrandedVolumeAlarm],
 ) -> MachineSnapshot {
-    let testimony = match facts.get(&active.machine_id) {
+    let testimony = match direct_facts.and_then(|facts| facts.get(&active.machine_id)) {
         Some(facts) => MachineTestimony::Answered {
             endpoints: facts.endpoints().cloned(),
             gateway: gateways.get(&active.machine_id).cloned().map(Box::new),
-            observed_container_count: facts.containers().containers().len(),
+            containers: container_availability(facts.containers()),
             disk_space: facts.disk_space(),
             storage: facts.storage().cloned(),
             last_observed_at_unix_seconds: facts.observed_at_unix_ms() / 1_000,
         },
-        None => MachineTestimony::NoAnswer,
+        None => match facts.get(&active.machine_id) {
+            Some(facts) => MachineTestimony::Answered {
+                endpoints: facts.endpoints().cloned(),
+                gateway: gateways.get(&active.machine_id).cloned().map(Box::new),
+                containers: MachineContainerAvailability::Answered {
+                    observed_count: facts.containers().containers().len(),
+                },
+                disk_space: facts.disk_space(),
+                storage: facts.storage().cloned(),
+                last_observed_at_unix_seconds: facts.observed_at_unix_ms() / 1_000,
+            },
+            None => MachineTestimony::NoAnswer,
+        },
     };
     let alarms = storage_alarms
         .iter()
@@ -238,6 +261,21 @@ fn machine_snapshot(
         active,
         testimony,
         storage_alarms: alarms,
+    }
+}
+
+pub(crate) fn container_availability(
+    testimony: &MachineContainerTestimony,
+) -> MachineContainerAvailability {
+    match testimony {
+        MachineContainerTestimony::Answered { snapshot } => {
+            MachineContainerAvailability::Answered {
+                observed_count: snapshot.containers().len(),
+            }
+        }
+        MachineContainerTestimony::Unavailable { reason } => {
+            MachineContainerAvailability::Unavailable { reason: *reason }
+        }
     }
 }
 
@@ -466,12 +504,16 @@ mod tests {
         ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow, LeaseBearerToken,
         LeaseExpiresAt, LeaseIssuedAt, ManagedLeaseName, ManagedLeaseRecord,
     };
+    use ployz_core::deploy::{DatasetName, VolumeMaxSizeBytes, VolumeName, ZfsPoolName};
     use ployz_core::ids::{CertId, RouteBindingId};
     use ployz_core::ingress::{
         ActiveCertificateMetadata, AutomaticHostnameConfiguration, IngressEndpointProjectionState,
     };
     use ployz_core::intent::recovery::ControlPlaneEpoch;
-    use ployz_core::network::DataplaneProjection;
+    use ployz_core::intent::{VolumeKind, VolumePinState};
+    use ployz_core::machine::runtime::{MachineContainerUnavailableReason, MachineDiskSpace};
+    use ployz_core::machine::{StorageCapability, StorageUnavailableReason, StrandedVolumeReason};
+    use ployz_core::network::{DataplaneProjection, MachineEndpointSubnet, WireGuardPublicKey};
     use ployz_core::operation::{RouteHostname, RoutePort, RouteTarget};
 
     #[test]
@@ -480,6 +522,7 @@ mod tests {
         let snapshot = from_sources(
             intent(Vec::new()),
             &BTreeMap::new(),
+            None,
             Some(&[]),
             &BTreeMap::new(),
             ingress(Some(PloyzDnsTargetAllocation::Allocated {
@@ -513,6 +556,7 @@ mod tests {
         let snapshot = from_sources(
             intent(vec![(route.clone(), cert)]),
             &BTreeMap::new(),
+            None,
             Some(&[]),
             &BTreeMap::new(),
             ingress(None),
@@ -528,6 +572,101 @@ mod tests {
                 },
             }]
         );
+    }
+
+    #[test]
+    fn runtime_snapshot_keeps_storage_testimony_when_containers_are_unavailable() {
+        let machine_id = MachineId::try_new("machine-a").expect("machine id");
+        let mut cluster_intent = intent(Vec::new());
+        cluster_intent.active_machines = vec![ActiveMachineState {
+            machine_id: machine_id.clone(),
+            name: ployz_core::machine::MachineName::try_new("machine-a").expect("machine name"),
+            activated_by: ployz_test_support::ids::operation_id("op_add"),
+            roles: ployz_core::machine::roles::InstallRolePolicy::install_all(),
+            lifecycle: ployz_core::machine::MachineLifecycle::Active,
+            control_endpoints: Vec::new(),
+            mesh_endpoints: Vec::new(),
+            endpoint_subnet: MachineEndpointSubnet::try_new("10.198.0.0/24")
+                .expect("endpoint subnet"),
+            wireguard_public_key: WireGuardPublicKey::try_new("public-machine-a")
+                .expect("public key"),
+        }];
+        let namespace_id = NamespaceId::try_new("team-a").expect("namespace");
+        let volume_name = VolumeName::try_new("data").expect("volume");
+        let pool = ZfsPoolName::try_new("tank").expect("pool");
+        cluster_intent.volume_pins = vec![
+            VolumePinState::try_new(
+                namespace_id.clone(),
+                volume_name.clone(),
+                machine_id.clone(),
+                VolumeKind::Provisioned {
+                    dataset: DatasetName::for_volume(&pool, &namespace_id, &volume_name)
+                        .expect("dataset"),
+                    max_size_bytes: VolumeMaxSizeBytes::try_new(1024).expect("quota"),
+                },
+            )
+            .expect("pin"),
+        ];
+        let direct = MachineFactsTestimony::try_new(
+            machine_id.clone(),
+            MachineContainerTestimony::Unavailable {
+                reason: MachineContainerUnavailableReason::DockerUnavailable,
+            },
+            None,
+            MachineDiskSpace {
+                available_bytes: 40,
+                total_bytes: 100,
+            },
+            Some(StorageCapability::Unavailable {
+                reason: StorageUnavailableReason::ZfsModuleMissing,
+            }),
+            ployz_core::image::OciPlatform::try_new("linux", "amd64").expect("platform"),
+            1_000,
+        )
+        .expect("direct testimony");
+        let direct_facts = BTreeMap::from([(machine_id.clone(), direct.clone())]);
+        let storage = [MachineStorageTestimony::new(
+            machine_id,
+            direct.storage().cloned(),
+        )];
+
+        let snapshot = from_sources(
+            cluster_intent,
+            &BTreeMap::new(),
+            Some(&direct_facts),
+            Some(&storage),
+            &BTreeMap::new(),
+            ingress(None),
+            1,
+        );
+
+        let [machine] = snapshot.machines.as_slice() else {
+            panic!("one machine");
+        };
+        assert!(matches!(
+            &machine.testimony,
+            MachineTestimony::Answered {
+                containers: MachineContainerAvailability::Unavailable {
+                    reason: MachineContainerUnavailableReason::DockerUnavailable,
+                },
+                storage: Some(StorageCapability::Unavailable {
+                    reason: StorageUnavailableReason::ZfsModuleMissing,
+                }),
+                ..
+            }
+        ));
+        let [alarm] = machine.storage_alarms.as_slice() else {
+            panic!("one exact storage alarm");
+        };
+        assert_eq!(alarm.namespace_id, namespace_id);
+        assert_eq!(alarm.volume_name, volume_name);
+        assert_eq!(
+            alarm.reason,
+            StrandedVolumeReason::StorageUnavailable {
+                reason: StorageUnavailableReason::ZfsModuleMissing,
+            }
+        );
+        assert!(snapshot.containers.is_empty());
     }
 
     fn intent(

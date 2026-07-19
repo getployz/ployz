@@ -470,6 +470,22 @@ async fn in_use_guard_runs_no_machine_effects() {
     ));
 }
 
+#[tokio::test]
+async fn incomplete_container_testimony_runs_no_destructive_volume_effects() {
+    let runtime = FakeRuntime::new(provisioned_pin());
+    runtime.state.lock().expect("runtime state lock").fresh = false;
+
+    runtime.run().await;
+
+    let state = runtime.state.lock().expect("runtime state lock");
+    assert!(state.effects.is_empty());
+    assert!(state.pin_present);
+    assert!(matches!(
+        failed_transition(&state),
+        VolumeRemoveFailure::MachineUnavailable { .. }
+    ));
+}
+
 #[test]
 fn remove_guard_rejects_a_volume_referenced_by_a_serving_target() {
     let namespace_id = namespace_id("team-a");

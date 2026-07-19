@@ -202,7 +202,11 @@ async fn gather_joining_machine(
                 }
                 return Err(evidence);
             }
-            Err(error @ MachineFactsReadError::GatherFailed { .. }) => {
+            Err(
+                error @ (MachineFactsReadError::GatherFailed { .. }
+                | MachineFactsReadError::ContainersUnavailable { .. }
+                | MachineFactsReadError::Invalid { .. }),
+            ) => {
                 return Err(no_answer(machine_id.clone(), error.to_string()));
             }
         }

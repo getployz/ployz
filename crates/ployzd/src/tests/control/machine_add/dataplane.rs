@@ -341,7 +341,7 @@ async fn start_join_dataplane_responder(
             )
             .expect("machine facts");
             let response = MachineFactsGetRpcResponse::Ok(MachineFactsGetRpcOk {
-                facts,
+                facts: facts.into(),
                 build: crate::roles::machine::protocol::MachineBuildCapability::Available,
             });
             let payload = serde_json::to_vec(&response).expect("facts response serializes");

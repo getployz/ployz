@@ -188,7 +188,7 @@ fn machine_inspect_renders_missing_observations_as_unknown() {
     machine.testimony = ployz_sdk_types::MachineTestimony::Answered {
         endpoints: None,
         gateway: None,
-        observed_container_count: 3,
+        containers: ployz_sdk_types::MachineContainerAvailability::Answered { observed_count: 3 },
         disk_space: ployz_test_support::fixtures::test_disk_space(),
         storage: None,
         last_observed_at_unix_seconds: 60,
@@ -213,6 +213,38 @@ fn machine_inspect_renders_no_answer() {
         output,
         "machine machine_1\nname edge_1\nactivated-by op_machine\ncontrol-endpoints no answer\nmesh-endpoints no answer\ngateway no answer\ncontainers no answer\ndisk-space no answer\nstorage no answer\nstorage-alarms none\n"
     );
+}
+
+#[test]
+fn machine_inspect_renders_partial_storage_testimony_when_docker_is_unavailable() {
+    let mut machine = machine_snapshot("machine_1", None);
+    machine.testimony = ployz_sdk_types::MachineTestimony::Answered {
+        endpoints: None,
+        gateway: None,
+        containers: ployz_sdk_types::MachineContainerAvailability::Unavailable {
+            reason:
+                ployz_core::machine::runtime::MachineContainerUnavailableReason::DockerUnavailable,
+        },
+        disk_space: ployz_test_support::fixtures::test_disk_space(),
+        storage: Some(ployz_core::machine::StorageCapability::Unavailable {
+            reason: ployz_core::machine::StorageUnavailableReason::ZfsModuleMissing,
+        }),
+        last_observed_at_unix_seconds: 60,
+    };
+    machine.storage_alarms.push(StrandedVolumeAlarm::new(
+        NamespaceId::try_new("team-a").expect("namespace"),
+        VolumeName::try_new("data").expect("volume"),
+        machine.active.machine_id.clone(),
+        StrandedVolumeReason::StorageUnavailable {
+            reason: ployz_core::machine::StorageUnavailableReason::ZfsModuleMissing,
+        },
+    ));
+
+    let output = MachineInspectOutput::new(machine).render();
+
+    assert!(output.contains("containers no answer\n"));
+    assert!(output.contains("storage unavailable zfs-module-missing\n"));
+    assert!(output.contains("storage-alarms team-a/data:zfs-module-missing\n"));
 }
 
 fn accepted_operation(operation_id: &str) -> AcceptedOperation {
@@ -257,7 +289,9 @@ fn machine_snapshot(machine_id: &str, gateway: Option<GatewayServingStatus>) -> 
                     process_health: ployz_core::machine::GatewayProcessHealth::default(),
                 })
             }),
-            observed_container_count: 3,
+            containers: ployz_sdk_types::MachineContainerAvailability::Answered {
+                observed_count: 3,
+            },
             disk_space: ployz_test_support::fixtures::test_disk_space(),
             storage: None,
             last_observed_at_unix_seconds: 60,

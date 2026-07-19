@@ -32,7 +32,10 @@ use ployz_core::image::{
 };
 use ployz_core::intent::{ProvisionedVolumePinState, VolumePinState};
 use ployz_core::machine::MachineLifecycle;
-use ployz_core::machine::runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
+use ployz_core::machine::runtime::{
+    MachineContainerObservationSnapshot, MachineContainerUnavailableReason, MachineFactsSnapshot,
+    MachineFactsTestimony,
+};
 use ployz_core::network::{MachineDataplaneStatus, NetworkStatusMode};
 use ployz_core::operation::{MachineSubstrateVersions, MachineUpdateFailure};
 use ployz_nats::service_protocol::{NatsServiceError, NatsServiceErrorCode};
@@ -168,6 +171,16 @@ pub enum MachineFactsReadError {
     Unavailable {
         machine_id: MachineId,
         reason: MachineRuntimeUnavailableReason,
+    },
+    #[error("machine {} container testimony unavailable: {reason:?}", machine_id.as_str())]
+    ContainersUnavailable {
+        machine_id: MachineId,
+        reason: MachineContainerUnavailableReason,
+    },
+    #[error("machine {} returned invalid facts: {message}", machine_id.as_str())]
+    Invalid {
+        machine_id: MachineId,
+        message: String,
     },
 }
 
@@ -326,6 +339,27 @@ impl NatsMachineFactsReader {
         &self,
         machine_id: &MachineId,
     ) -> Result<MachineFactsSnapshot, MachineFactsReadError> {
+        let testimony = self.machine_facts_testimony(machine_id).await?;
+        testimony.try_into().map_err(|error| match error {
+            ployz_core::machine::runtime::MachineFactsCompletionError::ContainersUnavailable {
+                reason,
+            } => MachineFactsReadError::ContainersUnavailable {
+                machine_id: machine_id.clone(),
+                reason,
+            },
+            ployz_core::machine::runtime::MachineFactsCompletionError::Invalid(error) => {
+                MachineFactsReadError::Invalid {
+                    machine_id: machine_id.clone(),
+                    message: error.to_string(),
+                }
+            }
+        })
+    }
+
+    pub async fn machine_facts_testimony(
+        &self,
+        machine_id: &MachineId,
+    ) -> Result<MachineFactsTestimony, MachineFactsReadError> {
         self.machine_facts_response(machine_id)
             .await
             .map(|ok| ok.facts)
@@ -473,7 +507,9 @@ fn machine_placement_fact_reads(
                 .machine_facts_response(&machine_id)
                 .await
                 .ok()
-                .map(|response| placement_answer(response, control_request_started_at_unix_ms));
+                .and_then(|response| {
+                    placement_answer(response, control_request_started_at_unix_ms)
+                });
             MachinePlacementFacts {
                 machine_id,
                 lifecycle,
@@ -486,18 +522,19 @@ fn machine_placement_fact_reads(
 fn placement_answer(
     response: MachineFactsGetRpcOk,
     control_request_started_at_unix_ms: u64,
-) -> MachinePlacementFactsAnswer {
-    MachinePlacementFactsAnswer {
-        containers: response.facts.containers().clone(),
-        platform: response.facts.platform().clone(),
-        endpoints: response.facts.endpoints().cloned(),
-        storage: response.facts.storage().cloned(),
+) -> Option<MachinePlacementFactsAnswer> {
+    let facts = MachineFactsSnapshot::try_from(response.facts).ok()?;
+    Some(MachinePlacementFactsAnswer {
+        containers: facts.containers().clone(),
+        platform: facts.platform().clone(),
+        endpoints: facts.endpoints().cloned(),
+        storage: facts.storage().cloned(),
         build: response.build,
         clock: MachineClockTestimony {
             control_request_started_at_unix_ms,
-            machine_observed_at_unix_ms: response.facts.observed_at_unix_ms(),
+            machine_observed_at_unix_ms: facts.observed_at_unix_ms(),
         },
-    }
+    })
 }
 
 fn current_unix_millis() -> u64 {
@@ -535,6 +572,35 @@ pub(crate) async fn read_available_machine_facts_by_id(
     read_available_machine_facts(facts_reader, machine_ids)
         .await
         .into_iter()
+        .map(|facts| (facts.machine_id().clone(), facts))
+        .collect()
+}
+
+pub(crate) async fn read_available_machine_facts_testimony_by_id(
+    facts_reader: &NatsMachineFactsReader,
+    machine_ids: impl IntoIterator<Item = MachineId>,
+) -> BTreeMap<MachineId, MachineFactsTestimony> {
+    let mut reads =
+        stream::iter(machine_ids)
+            .map(|machine_id| async move {
+                facts_reader.machine_facts_testimony(&machine_id).await.ok()
+            })
+            .buffer_unordered(MAX_CONCURRENT_MACHINE_READS);
+    let mut testimony = BTreeMap::new();
+    while let Some(answer) = reads.next().await {
+        if let Some(answer) = answer {
+            testimony.insert(answer.machine_id().clone(), answer);
+        }
+    }
+    testimony
+}
+
+pub(crate) fn complete_machine_facts_by_id(
+    testimony: &BTreeMap<MachineId, MachineFactsTestimony>,
+) -> BTreeMap<MachineId, MachineFactsSnapshot> {
+    testimony
+        .values()
+        .filter_map(|answer| MachineFactsSnapshot::try_from(answer.clone()).ok())
         .map(|facts| (facts.machine_id().clone(), facts))
         .collect()
 }
@@ -1121,7 +1187,34 @@ mod tests {
     use super::*;
     use futures_util::stream;
     use ployz_core::image::OciPlatform;
-    use ployz_core::machine::runtime::{MachineContainerObservationSnapshot, MachineDiskSpace};
+    use ployz_core::machine::runtime::{
+        MachineContainerObservationSnapshot, MachineContainerTestimony,
+        MachineContainerUnavailableReason, MachineDiskSpace,
+    };
+
+    #[test]
+    fn complete_facts_map_excludes_container_unavailable_testimony() {
+        let machine_id = MachineId::try_new("machine-a").expect("machine id");
+        let testimony = MachineFactsTestimony::try_new(
+            machine_id.clone(),
+            MachineContainerTestimony::Unavailable {
+                reason: MachineContainerUnavailableReason::DockerUnavailable,
+            },
+            None,
+            MachineDiskSpace {
+                available_bytes: 1,
+                total_bytes: 2,
+            },
+            None,
+            OciPlatform::try_new("linux", "amd64").expect("platform"),
+            1,
+        )
+        .expect("direct testimony");
+
+        let complete = complete_machine_facts_by_id(&BTreeMap::from([(machine_id, testimony)]));
+
+        assert!(complete.is_empty());
+    }
 
     #[test]
     fn placement_answer_binds_seed_clock_to_control_gather_start() {
@@ -1140,13 +1233,15 @@ mod tests {
         )
         .expect("facts");
 
-        let answer = placement_answer(
+        let Some(answer) = placement_answer(
             MachineFactsGetRpcOk {
-                facts,
+                facts: facts.into(),
                 build: MachineBuildCapability::Available,
             },
             1_000,
-        );
+        ) else {
+            panic!("complete facts produce a placement answer");
+        };
 
         assert_eq!(
             answer.clock,
@@ -1172,12 +1267,10 @@ mod tests {
             panic!("candidate fixture is non-empty");
         };
         let completed_id = completed_id.clone();
-        let completed = MachinePlacementFacts {
-            machine_id: completed_id.clone(),
-            lifecycle: MachineLifecycle::Active,
-            answer: Some(placement_answer(
-                MachineFactsGetRpcOk {
-                    facts: MachineFactsSnapshot::try_new(
+        let Some(completed_answer) = placement_answer(
+            MachineFactsGetRpcOk {
+                facts: MachineFactsTestimony::from(
+                    MachineFactsSnapshot::try_new(
                         completed_id.clone(),
                         MachineContainerObservationSnapshot::try_new(completed_id.clone(), [])
                             .expect("containers"),
@@ -1191,10 +1284,17 @@ mod tests {
                         1_234,
                     )
                     .expect("facts"),
-                    build: MachineBuildCapability::Available,
-                },
-                1_000,
-            )),
+                ),
+                build: MachineBuildCapability::Available,
+            },
+            1_000,
+        ) else {
+            panic!("complete facts produce a placement answer");
+        };
+        let completed = MachinePlacementFacts {
+            machine_id: completed_id.clone(),
+            lifecycle: MachineLifecycle::Active,
+            answer: Some(completed_answer),
         };
         let reads = stream::once(async move { completed }).chain(stream::pending());
 
