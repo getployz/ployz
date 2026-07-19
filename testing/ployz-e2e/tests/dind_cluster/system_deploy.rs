@@ -279,16 +279,16 @@ async fn assert_completed_system_deploy(
         .steps
         .iter()
         .map(|step| match step {
-            DeployPlanStep::RunContainer {
-                machine_id,
-                slot: ReplicaSlot::Global,
+            DeployPlanStep::RunContainer { machine_id, slot } => {
+                assert_eq!(slot, &ReplicaSlot::Global, "global service slot: {step:?}");
+                machine_id.clone()
             }
-            | DeployPlanStep::UseExistingContainer {
-                machine_id,
-                slot: ReplicaSlot::Global,
-                ..
-            } => machine_id.clone(),
-            step => panic!("global service has non-global slot: {step:?}"),
+            DeployPlanStep::UseExistingContainer {
+                machine_id, slot, ..
+            } => {
+                assert_eq!(slot, &ReplicaSlot::Global, "global service slot: {step:?}");
+                machine_id.clone()
+            }
         })
         .collect::<Vec<_>>();
     let step_count = step_machines.len();
