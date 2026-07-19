@@ -382,7 +382,7 @@ fn operation_subject(status: &OperationStatus) -> String {
                 "credential {} name {} role {}",
                 grant.public_key.as_str(),
                 grant.name.as_str(),
-                credential_role_name(grant.role)
+                credential_role_name(&grant.role)
             ),
             CredentialGrantAction::Remove { public_key } => {
                 format!("credential {}", public_key.as_str())
@@ -731,10 +731,19 @@ fn credential_grant_failure(failure: &CredentialGrantFailure) -> String {
         CredentialGrantFailure::RoleChangeRequiresExplicitOperation { current, requested } => {
             format!(
                 "role change from {} to {} requires an explicit role-change operation",
-                credential_role_name(*current),
-                credential_role_name(*requested)
+                credential_role_name(current),
+                credential_role_name(requested)
             )
         }
+        CredentialGrantFailure::BuildExecutorIdentityAlreadyActive {
+            identity,
+            existing_public_key,
+        } => format!(
+            "Build Executor {}/{} is already granted to {}",
+            identity.pool_id.as_str(),
+            identity.executor_id.as_str(),
+            existing_public_key.as_str()
+        ),
         CredentialGrantFailure::IntentStoreFailed {
             message,
             intent_committed,
@@ -756,9 +765,10 @@ fn credential_mutation_failure(stage: &str, message: &str, intent_committed: boo
     format!("{stage}: {message} (intent committed: {intent_committed})")
 }
 
-const fn credential_role_name(role: ployz_sdk_types::CredentialRole) -> &'static str {
+const fn credential_role_name(role: &ployz_sdk_types::CredentialRole) -> &'static str {
     match role {
         ployz_sdk_types::CredentialRole::Operator => "operator",
+        ployz_sdk_types::CredentialRole::BuildExecutor { .. } => "build-executor",
     }
 }
 

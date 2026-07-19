@@ -8,7 +8,8 @@
 
 use crate::control::store::{CoreStore, CoreStoreError, from_json, query_json_list, to_json};
 use ployz_core::nats_config::{
-    CredentialGrant, CredentialRole, NatsAuthorizationGrant, NatsUserPublicKey,
+    BuildExecutorIdentity, CredentialGrant, CredentialRole, NatsAuthorizationGrant,
+    NatsUserPublicKey,
 };
 use ployz_nats::permissions::parse_authorized_users;
 use rusqlite::{Connection, params};
@@ -66,6 +67,19 @@ impl NatsAuthorizationStore {
                 NatsAuthorizationGrant::Internal { .. } => None,
             })
             .collect())
+    }
+
+    /// Atomically admits one credential mutation against durable authority intent.
+    pub async fn upsert_credential_at(
+        &self,
+        credential: &CredentialGrant,
+        now_unix_seconds: u64,
+    ) -> Result<CredentialUpsertStoreOutcome, NatsAuthorizationStoreError> {
+        let credential = credential.clone();
+        self.store
+            .call(move |conn| upsert_credential_at(conn, &credential, now_unix_seconds))
+            .await
+            .map_err(store_error)
     }
 
     pub async fn remove_credential(
@@ -140,6 +154,70 @@ fn put_authorization(
     Ok(())
 }
 
+fn upsert_credential_at(
+    conn: &mut Connection,
+    requested: &CredentialGrant,
+    now_unix_seconds: u64,
+) -> Result<CredentialUpsertStoreOutcome, rusqlite::Error> {
+    let transaction = conn.transaction()?;
+    let credentials = query_json_list::<NatsAuthorizationGrant>(
+        &transaction,
+        "SELECT json FROM nats_authorizations ORDER BY rowid",
+    )?
+    .into_iter()
+    .filter_map(|grant| match grant {
+        NatsAuthorizationGrant::Credential(credential) => Some(credential),
+        NatsAuthorizationGrant::Internal { .. } => None,
+    })
+    .collect::<Vec<_>>();
+
+    let existing = credentials
+        .iter()
+        .find(|credential| credential.public_key == requested.public_key);
+    if let Some(existing) = existing {
+        if !existing.role.has_same_authority_as(&requested.role) {
+            return Ok(CredentialUpsertStoreOutcome::Rejected(
+                CredentialUpsertStoreRejection::AuthorityMismatch {
+                    existing: existing.role.clone(),
+                    requested: requested.role.clone(),
+                },
+            ));
+        }
+        if existing == requested {
+            return Ok(CredentialUpsertStoreOutcome::Unchanged);
+        }
+    }
+
+    if requested.role.is_active_at(now_unix_seconds) {
+        if let Some(identity) = requested.role.build_executor_identity() {
+            if let Some(conflict) = credentials.iter().find(|credential| {
+                credential.public_key != requested.public_key
+                    && credential.role.is_active_at(now_unix_seconds)
+                    && credential.role.build_executor_identity().as_ref() == Some(&identity)
+            }) {
+                return Ok(CredentialUpsertStoreOutcome::Rejected(
+                    CredentialUpsertStoreRejection::ActiveBuildExecutorIdentity {
+                        identity,
+                        existing_public_key: conflict.public_key.clone(),
+                    },
+                ));
+            }
+        }
+    }
+
+    let outcome = if existing.is_some() {
+        CredentialUpsertStoreOutcome::Updated
+    } else {
+        CredentialUpsertStoreOutcome::Added
+    };
+    put_authorization(
+        &transaction,
+        &NatsAuthorizationGrant::Credential(requested.clone()),
+    )?;
+    transaction.commit()?;
+    Ok(outcome)
+}
+
 fn credential_authority_key(public_key: &NatsUserPublicKey) -> String {
     format!("user.{}", public_key.as_str())
 }
@@ -180,6 +258,7 @@ fn remove_credential(
     .count();
     let removes_final_operator = match credential.role {
         CredentialRole::Operator => operator_count == 1,
+        CredentialRole::BuildExecutor { .. } => false,
     };
     if removes_final_operator {
         return Ok(CredentialRemoveStoreOutcome::RejectedLastOperator);
@@ -199,6 +278,30 @@ pub enum CredentialRemoveStoreOutcome {
     RejectedLastOperator,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CredentialUpsertStoreOutcome {
+    Added,
+    Updated,
+    Unchanged,
+    Rejected(CredentialUpsertStoreRejection),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum CredentialUpsertStoreRejection {
+    #[error("credential authority cannot change from {existing:?} to {requested:?}")]
+    AuthorityMismatch {
+        existing: CredentialRole,
+        requested: CredentialRole,
+    },
+    #[error(
+        "active Build Executor identity {identity:?} is already granted to {existing_public_key:?}"
+    )]
+    ActiveBuildExecutorIdentity {
+        identity: BuildExecutorIdentity,
+        existing_public_key: NatsUserPublicKey,
+    },
+}
+
 #[derive(Debug, thiserror::Error)]
 #[error("nats authorization store: {message}")]
 pub struct NatsAuthorizationStoreError {
@@ -215,8 +318,10 @@ fn store_error(error: CoreStoreError) -> NatsAuthorizationStoreError {
 mod tests {
     use super::*;
     use ployz_core::nats_config::{
-        CredentialName, CredentialRole, MintedNatsUser, NatsInternalAuthority,
+        BuildExecutorCredentialExpiresAt, CredentialName, CredentialRole, MintedNatsUser,
+        NatsInternalAuthority,
     };
+    use ployz_core::{BuildExecutorId, BuildPoolId};
 
     fn credential(name: &str) -> CredentialGrant {
         CredentialGrant {
@@ -298,5 +403,121 @@ mod tests {
             store.list_credentials().await.expect("credentials").len(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn credential_upsert_renews_only_same_authority() {
+        let store = NatsAuthorizationStore::new(CoreStore::open_in_memory().await.expect("store"));
+        let public_key = MintedNatsUser::generate().expect("mint user").public;
+        let original = build_executor_credential(public_key.clone(), "pool-a", "builder-a", 20);
+        assert_eq!(
+            store
+                .upsert_credential_at(&original, 10)
+                .await
+                .expect("add"),
+            CredentialUpsertStoreOutcome::Added
+        );
+
+        let renewed = build_executor_credential(public_key.clone(), "pool-a", "builder-a", 30);
+        assert_eq!(
+            store
+                .upsert_credential_at(&renewed, 10)
+                .await
+                .expect("renew"),
+            CredentialUpsertStoreOutcome::Updated
+        );
+        let reassigned = build_executor_credential(public_key, "pool-b", "builder-a", 40);
+        assert!(matches!(
+            store
+                .upsert_credential_at(&reassigned, 10)
+                .await
+                .expect("reject"),
+            CredentialUpsertStoreOutcome::Rejected(
+                CredentialUpsertStoreRejection::AuthorityMismatch { .. }
+            )
+        ));
+        assert_eq!(store.list_credentials().await.expect("list"), vec![renewed]);
+    }
+
+    #[tokio::test]
+    async fn credential_upsert_rejects_second_active_key_but_allows_expired_history() {
+        let store = NatsAuthorizationStore::new(CoreStore::open_in_memory().await.expect("store"));
+        let old = build_executor_credential(
+            MintedNatsUser::generate().expect("old key").public,
+            "pool-a",
+            "builder-a",
+            20,
+        );
+        store.upsert_credential_at(&old, 10).await.expect("old add");
+        let replacement = build_executor_credential(
+            MintedNatsUser::generate().expect("replacement key").public,
+            "pool-a",
+            "builder-a",
+            40,
+        );
+
+        assert!(matches!(
+            store
+                .upsert_credential_at(&replacement, 19)
+                .await
+                .expect("reject active duplicate"),
+            CredentialUpsertStoreOutcome::Rejected(
+                CredentialUpsertStoreRejection::ActiveBuildExecutorIdentity { .. }
+            )
+        ));
+        assert_eq!(
+            store
+                .upsert_credential_at(&replacement, 20)
+                .await
+                .expect("replace expired"),
+            CredentialUpsertStoreOutcome::Added
+        );
+        assert_eq!(store.list_credentials().await.expect("history").len(), 2);
+    }
+
+    #[tokio::test]
+    async fn concurrent_credential_upserts_admit_only_one_active_identity() {
+        let store = NatsAuthorizationStore::new(CoreStore::open_in_memory().await.expect("store"));
+        let first = build_executor_credential(
+            MintedNatsUser::generate().expect("first key").public,
+            "pool-a",
+            "builder-a",
+            30,
+        );
+        let second = build_executor_credential(
+            MintedNatsUser::generate().expect("second key").public,
+            "pool-a",
+            "builder-a",
+            30,
+        );
+
+        let outcomes = tokio::join!(
+            store.upsert_credential_at(&first, 10),
+            store.upsert_credential_at(&second, 10),
+        );
+        let admitted = [outcomes.0.expect("first"), outcomes.1.expect("second")]
+            .into_iter()
+            .filter(|outcome| matches!(outcome, CredentialUpsertStoreOutcome::Added))
+            .count();
+
+        assert_eq!(admitted, 1);
+        assert_eq!(store.list_credentials().await.expect("list").len(), 1);
+    }
+
+    fn build_executor_credential(
+        public_key: NatsUserPublicKey,
+        pool: &str,
+        executor: &str,
+        expires_at: u64,
+    ) -> CredentialGrant {
+        CredentialGrant {
+            public_key,
+            name: CredentialName::try_new("External builder").expect("name"),
+            role: CredentialRole::BuildExecutor {
+                pool_id: BuildPoolId::try_new(pool).expect("pool id"),
+                executor_id: BuildExecutorId::try_new(executor).expect("executor id"),
+                expires_at: BuildExecutorCredentialExpiresAt::try_new(expires_at).expect("expiry"),
+            },
+        }
     }
 }

@@ -3,7 +3,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::ids::OperationId;
-use crate::nats_config::{CredentialGrant, CredentialRole, NatsUserPublicKey};
+use crate::nats_config::{
+    BuildExecutorIdentity, CredentialGrant, CredentialRole, NatsUserPublicKey,
+};
 
 use super::events::OperationEvent;
 use super::projection::{
@@ -81,6 +83,10 @@ pub enum CredentialGrantFailure {
     RoleChangeRequiresExplicitOperation {
         current: CredentialRole,
         requested: CredentialRole,
+    },
+    BuildExecutorIdentityAlreadyActive {
+        identity: BuildExecutorIdentity,
+        existing_public_key: NatsUserPublicKey,
     },
     IntentStoreFailed {
         message: FailureMessage,

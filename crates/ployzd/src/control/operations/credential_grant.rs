@@ -94,6 +94,13 @@ fn mutation_failure(error: CredentialMutationFailure) -> CredentialGrantFailure 
                 requested,
             },
             CredentialMutationRejection::LastOperator => CredentialGrantFailure::LastOperator,
+            CredentialMutationRejection::ActiveBuildExecutorIdentity {
+                identity,
+                existing_public_key,
+            } => CredentialGrantFailure::BuildExecutorIdentityAlreadyActive {
+                identity,
+                existing_public_key,
+            },
         },
         CredentialMutationFailure::NotCommitted { failure } => render_failure(failure, false),
         CredentialMutationFailure::Committed { failure } => render_failure(failure, true),

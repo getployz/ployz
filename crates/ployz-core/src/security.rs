@@ -2,13 +2,19 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::MachineId;
+use crate::ids::{BuildExecutorId, BuildPoolId, MachineId};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "principal", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NatsPrincipal {
-    Machine { machine_id: MachineId },
+    Machine {
+        machine_id: MachineId,
+    },
+    BuildExecutor {
+        pool_id: BuildPoolId,
+        executor_id: BuildExecutorId,
+    },
     Controller,
     Operator,
     Join,
@@ -23,6 +29,14 @@ impl NatsPrincipal {
     pub fn authority_key(&self) -> String {
         match self {
             Self::Machine { machine_id } => format!("machine_{}", machine_id.as_str()),
+            Self::BuildExecutor {
+                pool_id,
+                executor_id,
+            } => format!(
+                "build_executor.{}.{}",
+                pool_id.as_str(),
+                executor_id.as_str()
+            ),
             Self::Controller => "controller".to_owned(),
             Self::Operator => "operator".to_owned(),
             Self::Join => "join".to_owned(),
@@ -37,6 +51,29 @@ impl NatsPrincipal {
                     key: key.to_owned(),
                 })?;
             return Ok(Self::Machine { machine_id });
+        }
+        if let Some(identity) = key.strip_prefix("build_executor.") {
+            let mut parts = identity.split('.');
+            let (Some(pool_id), Some(executor_id), None) =
+                (parts.next(), parts.next(), parts.next())
+            else {
+                return Err(NatsPrincipalKeyError::Invalid {
+                    key: key.to_owned(),
+                });
+            };
+            let pool_id =
+                BuildPoolId::try_new(pool_id).map_err(|_| NatsPrincipalKeyError::Invalid {
+                    key: key.to_owned(),
+                })?;
+            let executor_id = BuildExecutorId::try_new(executor_id).map_err(|_| {
+                NatsPrincipalKeyError::Invalid {
+                    key: key.to_owned(),
+                }
+            })?;
+            return Ok(Self::BuildExecutor {
+                pool_id,
+                executor_id,
+            });
         }
         match key {
             "controller" => Ok(Self::Controller),

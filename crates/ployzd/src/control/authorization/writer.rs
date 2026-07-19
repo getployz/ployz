@@ -1,10 +1,11 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::adapters::atomic_file::write_file_atomically;
 use crate::control::intent::nats_authorizations::{
-    CredentialRemoveStoreOutcome, NatsAuthorizationStore, NatsAuthorizationStoreError,
+    CredentialRemoveStoreOutcome, CredentialUpsertStoreOutcome, CredentialUpsertStoreRejection,
+    NatsAuthorizationStore, NatsAuthorizationStoreError,
 };
 use ployz_core::nats_config::{
     CredentialGrant, CredentialRole, NatsAuthorizationGrant, NatsUserPublicKey,
@@ -50,6 +51,13 @@ pub enum CredentialMutationRejection {
     RoleMismatch {
         existing: CredentialRole,
         requested: CredentialRole,
+    },
+    #[error(
+        "active Build Executor identity {identity:?} is already granted to {existing_public_key:?}"
+    )]
+    ActiveBuildExecutorIdentity {
+        identity: ployz_core::nats_config::BuildExecutorIdentity,
+        existing_public_key: NatsUserPublicKey,
     },
     #[error("the final Operator credential cannot be removed")]
     LastOperator,
@@ -449,26 +457,48 @@ async fn handle_add_credential(
     grant: CredentialGrant,
     projection: AuthorizationProjectionState,
 ) -> Result<CredentialMutationResult, CredentialMutationFailure> {
-    let existing = store
-        .list_credentials()
+    let now_unix_seconds =
+        current_unix_seconds().map_err(|message| CredentialMutationFailure::NotCommitted {
+            failure: RenderFailure::Prepare {
+                failure: RenderPrepareFailure::Store { message },
+            },
+        })?;
+    let outcome = store
+        .upsert_credential_at(&grant, now_unix_seconds)
         .await
         .map_err(|error| CredentialMutationFailure::NotCommitted {
             failure: store_failure(error),
-        })?
-        .into_iter()
-        .find(|existing| existing.public_key == grant.public_key);
-    let change = match existing {
-        Some(existing) if existing.role != grant.role => {
+        })?;
+    let change = match outcome {
+        CredentialUpsertStoreOutcome::Rejected(
+            CredentialUpsertStoreRejection::AuthorityMismatch {
+                existing,
+                requested,
+            },
+        ) => {
             return Err(CredentialMutationFailure::Rejected {
                 reason: CredentialMutationRejection::RoleMismatch {
-                    existing: existing.role,
-                    requested: grant.role,
+                    existing,
+                    requested,
                 },
             });
         }
-        Some(existing) if existing == grant => CredentialMutationChange::Unchanged,
-        Some(_) => CredentialMutationChange::Updated,
-        None => CredentialMutationChange::Added,
+        CredentialUpsertStoreOutcome::Rejected(
+            CredentialUpsertStoreRejection::ActiveBuildExecutorIdentity {
+                identity,
+                existing_public_key,
+            },
+        ) => {
+            return Err(CredentialMutationFailure::Rejected {
+                reason: CredentialMutationRejection::ActiveBuildExecutorIdentity {
+                    identity,
+                    existing_public_key,
+                },
+            });
+        }
+        CredentialUpsertStoreOutcome::Unchanged => CredentialMutationChange::Unchanged,
+        CredentialUpsertStoreOutcome::Updated => CredentialMutationChange::Updated,
+        CredentialUpsertStoreOutcome::Added => CredentialMutationChange::Added,
     };
 
     let authorization = match change {
@@ -478,12 +508,6 @@ async fn handle_add_credential(
                 .map_err(|failure| CredentialMutationFailure::Committed { failure })?
         }
         CredentialMutationChange::Added | CredentialMutationChange::Updated => {
-            store
-                .upsert(&NatsAuthorizationGrant::Credential(grant))
-                .await
-                .map_err(|error| CredentialMutationFailure::NotCommitted {
-                    failure: store_failure(error),
-                })?;
             handle_render_request(
                 path,
                 store,
@@ -501,6 +525,13 @@ async fn handle_add_credential(
         change,
         authorization,
     })
+}
+
+fn current_unix_seconds() -> Result<u64, String> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .map_err(|error| format!("system clock is before Unix epoch: {error}"))
 }
 
 async fn handle_remove_credential(
