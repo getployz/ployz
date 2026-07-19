@@ -79,7 +79,7 @@ fn product_main() -> ExitCode {
     {
         Ok(runtime) => runtime,
         Err(error) => {
-            telemetry.capture_failure(FailureClass::Runtime);
+            telemetry.capture_failure(FailureClass::CliRuntime);
             eprintln!("could not start async runtime: {error}");
             telemetry.shutdown();
             return ExitCode::FAILURE;

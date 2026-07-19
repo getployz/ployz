@@ -60,29 +60,22 @@ pub enum Consent {
 
 impl Consent {
     #[must_use]
-    pub fn from_environment(persisted: PersistedTelemetry) -> Self {
-        let ployz_telemetry = env::var("PLOYZ_TELEMETRY").ok();
-        let do_not_track = env::var("DO_NOT_TRACK").ok();
-        Self::resolve(
-            ployz_telemetry.as_deref(),
-            do_not_track.as_deref(),
-            persisted,
-        )
-    }
-
-    #[must_use]
     pub fn resolve(
         ployz_telemetry: Option<&str>,
         do_not_track: Option<&str>,
         persisted: PersistedTelemetry,
     ) -> Self {
-        if let Some(consent) = Self::resolve_environment(ployz_telemetry, do_not_track) {
-            return consent;
-        }
-        match persisted {
+        Self::with_persisted(
+            Self::resolve_environment(ployz_telemetry, do_not_track),
+            persisted,
+        )
+    }
+
+    fn with_persisted(environment: Option<Self>, persisted: PersistedTelemetry) -> Self {
+        environment.unwrap_or(match persisted {
             PersistedTelemetry::Enabled | PersistedTelemetry::Unset => Self::Enabled,
             PersistedTelemetry::Disabled | PersistedTelemetry::Corrupt => Self::Disabled,
-        }
+        })
     }
 
     #[must_use]
@@ -210,6 +203,9 @@ impl ConfigFile {
     }
 
     pub fn ensure_install_id(&mut self) -> Result<Uuid, ConfigError> {
+        if let Some(install_id) = self.stored.install_id {
+            return Ok(install_id);
+        }
         self.update(|stored| *stored.install_id.get_or_insert_with(Uuid::new_v4))
     }
 
@@ -242,13 +238,11 @@ impl ConfigFile {
         self.update(|stored| match surface {
             Surface::Cli => stored.cli_notice_seen = true,
             Surface::Daemon => stored.daemon_notice_seen = true,
-        })?;
-        Ok(())
+        })
     }
 
     pub fn set_telemetry(&mut self, enabled: bool) -> Result<(), ConfigError> {
-        self.update(|stored| stored.telemetry = Some(enabled))?;
-        Ok(())
+        self.update(|stored| stored.telemetry = Some(enabled))
     }
 
     fn update<T>(&mut self, change: impl FnOnce(&mut StoredConfig) -> T) -> Result<T, ConfigError> {
@@ -335,32 +329,23 @@ impl CommandOutcome {
 pub enum FailureClass {
     HostParse,
     CliParse,
-    Runtime,
+    CliRuntime,
     Command,
     DaemonRole,
     DaemonConfig,
+    DaemonRuntime,
 }
 
 impl FailureClass {
-    fn tag(self) -> &'static str {
+    fn metadata(self) -> (&'static str, &'static str) {
         match self {
-            Self::HostParse => "host_parse",
-            Self::CliParse => "cli_parse",
-            Self::Runtime => "runtime",
-            Self::Command => "command",
-            Self::DaemonRole => "role",
-            Self::DaemonConfig => "config",
-        }
-    }
-
-    fn message(self) -> &'static str {
-        match self {
-            Self::HostParse => "host command parsing failed",
-            Self::CliParse => "CLI command parsing failed",
-            Self::Runtime => "async runtime failed",
-            Self::Command => "CLI command failed",
-            Self::DaemonRole => "daemon role parsing failed",
-            Self::DaemonConfig => "daemon configuration failed",
+            Self::HostParse => ("host_parse", "host command parsing failed"),
+            Self::CliParse => ("cli_parse", "CLI command parsing failed"),
+            Self::CliRuntime => ("cli_runtime", "CLI async runtime initialization failed"),
+            Self::Command => ("command", "CLI command failed"),
+            Self::DaemonRole => ("role", "daemon role parsing failed"),
+            Self::DaemonConfig => ("config", "daemon configuration failed"),
+            Self::DaemonRuntime => ("daemon_runtime", "daemon execution failed"),
         }
     }
 }
@@ -384,7 +369,8 @@ pub struct Telemetry {
 impl Telemetry {
     #[must_use]
     pub fn bootstrap(surface: Surface, version: &'static str) -> Self {
-        if Consent::environment_override() == Some(Consent::Disabled) {
+        let environment = Consent::environment_override();
+        if environment == Some(Consent::Disabled) {
             return Self::disabled(surface, version);
         }
         let config = match ConfigFile::load_or_create_default() {
@@ -401,7 +387,7 @@ impl Telemetry {
         let persisted = config
             .as_ref()
             .map_or(PersistedTelemetry::Corrupt, ConfigFile::persisted_telemetry);
-        let consent = Consent::from_environment(persisted);
+        let consent = Consent::with_persisted(environment, persisted);
         let mut telemetry =
             Self::start(surface, version, consent, SENTRY_DSN).unwrap_or_else(|error| {
                 eprintln!("could not initialize error telemetry: {error}");
@@ -515,10 +501,11 @@ impl Telemetry {
         if self.sentry.is_none() {
             return;
         }
+        let (failure_tag, message) = class.metadata();
         sentry::with_scope(
-            |scope| scope.set_tag("failure", class.tag()),
+            |scope| scope.set_tag("failure", failure_tag),
             || {
-                sentry::capture_message(class.message(), sentry::Level::Error);
+                sentry::capture_message(message, sentry::Level::Error);
             },
         );
     }
@@ -592,7 +579,10 @@ mod tests {
         let mut first = ConfigFile::load_or_create(&path).unwrap();
 
         let install_id = first.ensure_install_id().unwrap();
+        let lock_path = path.with_extension("lock");
+        fs::remove_file(&lock_path).unwrap();
         assert_eq!(first.ensure_install_id().unwrap(), install_id);
+        assert!(!lock_path.exists());
         first.set_telemetry(false).unwrap();
 
         let second = ConfigFile::load_or_create(&path).unwrap();
@@ -663,7 +653,11 @@ mod tests {
                 "cli_parse",
                 "CLI command parsing failed",
             ),
-            (FailureClass::Runtime, "runtime", "async runtime failed"),
+            (
+                FailureClass::CliRuntime,
+                "cli_runtime",
+                "CLI async runtime initialization failed",
+            ),
             (FailureClass::Command, "command", "CLI command failed"),
             (
                 FailureClass::DaemonRole,
@@ -675,9 +669,13 @@ mod tests {
                 "config",
                 "daemon configuration failed",
             ),
+            (
+                FailureClass::DaemonRuntime,
+                "daemon_runtime",
+                "daemon execution failed",
+            ),
         ] {
-            assert_eq!(class.tag(), expected_tag);
-            assert_eq!(class.message(), expected_message);
+            assert_eq!(class.metadata(), (expected_tag, expected_message));
         }
     }
 }

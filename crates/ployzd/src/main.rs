@@ -55,7 +55,7 @@ impl MainError {
         match self {
             Self::Role(_) => FailureClass::DaemonRole,
             Self::Config(_) => FailureClass::DaemonConfig,
-            Self::Runtime(_) => FailureClass::Runtime,
+            Self::Runtime(_) => FailureClass::DaemonRuntime,
         }
     }
 }
