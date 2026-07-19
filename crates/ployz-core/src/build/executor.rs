@@ -31,6 +31,11 @@ pub struct BuildExecutorReadinessAnswer<T> {
     pub readiness: T,
 }
 
+/// Strict empty request for point-of-use external Build Executor readiness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuildExecutorReadinessRequest {}
+
 /// Native execution capability reported at the point of build admission.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -585,6 +590,16 @@ pub struct BuildExecutorStartOk {
     pub log_summary: BuildLogSummary,
 }
 
+/// Terminal response from one exact external Build Executor start subject.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BuildExecutorStartResponse {
+    Ok(BuildExecutorStartOk),
+    DomainError {
+        error: BuildExecutorStartDomainError,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BuildLogSummary {
@@ -676,6 +691,16 @@ pub struct BuildExecutorCancelOk {
     pub outcome: BuildExecutorCancelOutcome,
 }
 
+/// Response from one exact external Build Executor cancellation subject.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BuildExecutorCancelResponse {
+    Ok(BuildExecutorCancelOk),
+    DomainError {
+        error: BuildExecutorCancelDomainError,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BuildExecutorCancelOutcome {
@@ -711,6 +736,55 @@ mod tests {
     use crate::nats_config::{
         BuildExecutorCredentialExpiresAt, CredentialName, CredentialRole, MintedNatsUser,
     };
+
+    #[test]
+    fn external_executor_transport_envelopes_are_strict() {
+        assert_eq!(
+            serde_json::from_value::<BuildExecutorReadinessRequest>(serde_json::json!({}))
+                .expect("empty readiness request"),
+            BuildExecutorReadinessRequest {},
+        );
+        assert!(
+            serde_json::from_value::<BuildExecutorReadinessRequest>(serde_json::json!({
+                "unexpected": true
+            }))
+            .is_err()
+        );
+
+        let start = BuildExecutorStartResponse::DomainError {
+            error: BuildExecutorStartDomainError::RuntimeUnavailable,
+        };
+        let start_json = serde_json::to_value(&start).expect("start response");
+        assert_eq!(
+            serde_json::from_value::<BuildExecutorStartResponse>(start_json.clone())
+                .expect("strict start response"),
+            start,
+        );
+        let mut invalid_start = start_json;
+        invalid_start
+            .as_object_mut()
+            .expect("object")
+            .insert("unexpected".to_owned(), serde_json::json!(true));
+        assert!(serde_json::from_value::<BuildExecutorStartResponse>(invalid_start).is_err());
+
+        let cancel = BuildExecutorCancelResponse::DomainError {
+            error: BuildExecutorCancelDomainError::CancelFailed {
+                message: FailureMessage::try_new("cancel failed").expect("message"),
+            },
+        };
+        let cancel_json = serde_json::to_value(&cancel).expect("cancel response");
+        assert_eq!(
+            serde_json::from_value::<BuildExecutorCancelResponse>(cancel_json.clone())
+                .expect("strict cancel response"),
+            cancel,
+        );
+        let mut invalid_cancel = cancel_json;
+        invalid_cancel
+            .as_object_mut()
+            .expect("object")
+            .insert("unexpected".to_owned(), serde_json::json!(true));
+        assert!(serde_json::from_value::<BuildExecutorCancelResponse>(invalid_cancel).is_err());
+    }
 
     #[test]
     fn readiness_reconcile_is_known_set_driven_and_preserves_silence() {
