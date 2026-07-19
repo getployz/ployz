@@ -2,9 +2,9 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use super::{
-    CONNECT_TIMEOUT, CoreContext, DEPLOY_TERMINAL_BUDGET, DindMachine, NAMESPACE_ID_LABEL,
-    WORKLOAD_IMAGE, add_and_join_edge, assert_unit_active, connect_core_client, finish,
-    init_core_cluster, managed_workload_containers, operation_events, operation_status,
+    CONNECT_TIMEOUT, CoreContext, DEPLOY_TERMINAL_BUDGET, DindMachine, ManagedWorkloadContainer,
+    NAMESPACE_ID_LABEL, WORKLOAD_IMAGE, add_and_join_edge, assert_unit_active, connect_core_client,
+    finish, init_core_cluster, managed_workload_containers, operation_events, operation_status,
     read_intent, terminal_operation_events, wait_for_machine_observations,
     wait_for_terminal_deploy_status, with_evidence,
 };
@@ -40,95 +40,108 @@ async fn group_system_deploy_explicit_convergence() {
         let [edge_2, edge_3] = core.cluster.edges() else {
             panic!("scenario requires exactly two edges");
         };
-        add_and_join_edge(&core, edge_2).await;
-        for machine in ["core_1", "edge_2"] {
-            wait_for_machine_observations(&core, &machine_id(machine)).await;
+        system_deploy_admission_and_initial(&core, edge_2).await;
+        system_deploy_lifecycle_convergence(&core, edge_3).await;
+        system_deploy_silence_and_recovery(&core, edge_3).await;
+        system_deploy_failure_atomicity_and_retry(&core).await;
+    })
+    .await;
+    finish(core).await;
+}
+
+async fn system_deploy_admission_and_initial(core: &CoreContext, edge_2: &DindMachine) {
+    add_and_join_edge(core, edge_2).await;
+    for machine in ["core_1", "edge_2"] {
+        wait_for_machine_observations(core, &machine_id(machine)).await;
+    }
+    assert_reserved_system_namespace_rejections(core).await;
+
+    let initial = submit_system_probe(core, "idem_system_initial", None).await;
+    assert_completed_system_deploy(core, &initial.operation_id, 2).await;
+    assert_system_container_machines(core, &["core_1", "edge_2"]).await;
+}
+
+async fn system_deploy_lifecycle_convergence(core: &CoreContext, edge_3: &DindMachine) {
+    add_and_join_edge(core, edge_3).await;
+    wait_for_machine_observations(core, &machine_id("edge_3")).await;
+    assert_system_container_machines(core, &["core_1", "edge_2"]).await;
+    let joined = submit_system_probe(core, "idem_system_joined", None).await;
+    assert_completed_system_deploy(core, &joined.operation_id, 3).await;
+    assert_system_container_machines(core, &["core_1", "edge_2", "edge_3"]).await;
+
+    set_machine_lifecycle(core, "edge_2", true).await;
+    assert_system_container_machines(core, &["core_1", "edge_2", "edge_3"]).await;
+    let drained = submit_system_probe(core, "idem_system_drained", None).await;
+    assert_completed_system_deploy(core, &drained.operation_id, 2).await;
+    assert_system_container_machines(core, &["core_1", "edge_3"]).await;
+
+    set_machine_lifecycle(core, "edge_2", false).await;
+    assert_system_container_machines(core, &["core_1", "edge_3"]).await;
+    let resumed = submit_system_probe(core, "idem_system_resumed", None).await;
+    assert_completed_system_deploy(core, &resumed.operation_id, 3).await;
+    assert_system_container_machines(core, &["core_1", "edge_2", "edge_3"]).await;
+}
+
+async fn system_deploy_silence_and_recovery(core: &CoreContext, edge_3: &DindMachine) {
+    let stopped = core
+        .exec_on(edge_3, &["systemctl", "stop", "ployzd-machine-edge_3"])
+        .await;
+    assert!(stopped.success(), "stop edge testimony: {stopped:?}");
+    wait_for_no_testimony(core, "edge_3").await;
+    let deferred = submit_system_probe(core, "idem_system_deferred", None).await;
+    let deferred_status =
+        wait_for_terminal_deploy_status(core, &deferred.operation_id, DEPLOY_TERMINAL_BUDGET).await;
+    assert!(matches!(
+        deferred_status,
+        OperationStatus::Deploy {
+            state: DeployOperationState::Completed {
+                outcome: DeployCompletionOutcome::CompletedWithWarnings
+            },
+            ..
         }
+    ));
+    let deferred_plan = deploy_plan(core, &deferred.operation_id).await;
+    assert!(deferred_plan.phases.iter().flat_map(|phase| &phase.services).any(|service| {
+        matches!(&service.placement, ployz_core::deploy::DeployServicePlacement::Global { deferred, .. }
+            if deferred.iter().any(|machine| machine.machine_id == machine_id("edge_3")
+                && matches!(machine.reason, ployz_core::machine::MachineUsabilityReason::FactsUnavailable)))
+    }));
+    assert_system_container_machines(core, &["core_1", "edge_2", "edge_3"]).await;
 
-        assert_reserved_system_namespace_rejections(&core).await;
-
-        let initial = submit_system_probe(&core, "idem_system_initial", None).await;
-        assert_completed_system_deploy(&core, &initial.operation_id, 2).await;
-        assert_system_container_machines(&core, &["core_1", "edge_2"]).await;
-
-        add_and_join_edge(&core, edge_3).await;
-        wait_for_machine_observations(&core, &machine_id("edge_3")).await;
-        assert_system_container_machines(&core, &["core_1", "edge_2"]).await;
-        let joined = submit_system_probe(&core, "idem_system_joined", None).await;
-        assert_completed_system_deploy(&core, &joined.operation_id, 3).await;
-        assert_system_container_machines(&core, &["core_1", "edge_2", "edge_3"]).await;
-
-        set_machine_lifecycle(&core, "edge_2", true).await;
-        assert_system_container_machines(&core, &["core_1", "edge_2", "edge_3"]).await;
-        let drained = submit_system_probe(&core, "idem_system_drained", None).await;
-        assert_completed_system_deploy(&core, &drained.operation_id, 2).await;
-        assert_system_container_machines(&core, &["core_1", "edge_3"]).await;
-
-        set_machine_lifecycle(&core, "edge_2", false).await;
-        assert_system_container_machines(&core, &["core_1", "edge_3"]).await;
-        let resumed = submit_system_probe(&core, "idem_system_resumed", None).await;
-        assert_completed_system_deploy(&core, &resumed.operation_id, 3).await;
-        assert_system_container_machines(&core, &["core_1", "edge_2", "edge_3"]).await;
-
-        let stopped = core
-            .exec_on(edge_3, &["systemctl", "stop", "ployzd-machine-edge_3"])
-            .await;
-        assert!(stopped.success(), "stop edge testimony: {stopped:?}");
-        wait_for_no_testimony(&core, "edge_3").await;
-        let deferred = submit_system_probe(&core, "idem_system_deferred", None).await;
-        let deferred_status = wait_for_terminal_deploy_status(
-            &core,
-            &deferred.operation_id,
-            DEPLOY_TERMINAL_BUDGET,
-        )
+    let restarted = core
+        .exec_on(edge_3, &["systemctl", "start", "ployzd-machine-edge_3"])
         .await;
-        assert!(matches!(
-            deferred_status,
-            OperationStatus::Deploy {
-                state: DeployOperationState::Completed {
-                    outcome: DeployCompletionOutcome::CompletedWithWarnings
-                }, ..
-            }
-        ));
-        let deferred_plan = deploy_plan(&core, &deferred.operation_id).await;
-        assert!(deferred_plan.phases.iter().flat_map(|phase| &phase.services).any(|service| {
-            matches!(&service.placement, ployz_core::deploy::DeployServicePlacement::Global { deferred, .. }
-                if deferred.iter().any(|machine| machine.machine_id == machine_id("edge_3")
-                    && matches!(machine.reason, ployz_core::machine::MachineUsabilityReason::FactsUnavailable)))
-        }));
-        assert_system_container_machines(&core, &["core_1", "edge_2", "edge_3"]).await;
+    assert!(restarted.success(), "restore edge testimony: {restarted:?}");
+    wait_for_machine_observations(core, &machine_id("edge_3")).await;
+    let recovered = submit_system_probe(core, "idem_system_recovered", None).await;
+    assert_completed_system_deploy(core, &recovered.operation_id, 3).await;
+}
 
-        let restarted = core
-            .exec_on(edge_3, &["systemctl", "start", "ployzd-machine-edge_3"])
-            .await;
-        assert!(restarted.success(), "restore edge testimony: {restarted:?}");
-        wait_for_machine_observations(&core, &machine_id("edge_3")).await;
-        let recovered = submit_system_probe(&core, "idem_system_recovered", None).await;
-        assert_completed_system_deploy(&core, &recovered.operation_id, 3).await;
-
-        let before_failure = system_serving_entry(&core).await;
-        let gated = submit_system_probe(
-            &core,
-            "idem_system_gated_failure",
-            Some("timeout 120 sh -c 'until test -f /tmp/release; do sleep 0.1; done'"),
-        )
-        .await;
-        let plan = wait_for_deploy_plan(&core, &gated.operation_id).await;
-        let pre_start_machine = plan
-            .phases
-            .iter()
-            .flat_map(|phase| &phase.services)
-            .find_map(|service| service.pre_start.as_ref())
-            .expect("gated plan has pre-start host")
-            .machine_id
-            .clone();
-        let selected = plan
-            .target_machines()
-            .into_iter()
-            .find(|machine| machine != &pre_start_machine)
-            .expect("global plan selects another machine");
-        assert!(plan
-            .phases
+async fn system_deploy_failure_atomicity_and_retry(core: &CoreContext) {
+    let before_failure = system_serving_entry(core).await;
+    let before_containers = placement_probe_container_identities(core).await;
+    let gated = submit_system_probe(
+        core,
+        "idem_system_gated_failure",
+        Some("timeout 120 sh -c 'until test -f /tmp/release; do sleep 0.1; done'"),
+    )
+    .await;
+    let plan = wait_for_deploy_plan(core, &gated.operation_id).await;
+    let pre_start_machine = plan
+        .phases
+        .iter()
+        .flat_map(|phase| &phase.services)
+        .find_map(|service| service.pre_start.as_ref())
+        .expect("gated plan has pre-start host")
+        .machine_id
+        .clone();
+    let selected = plan
+        .target_machines()
+        .into_iter()
+        .find(|machine| machine != &pre_start_machine)
+        .expect("global plan selects another machine");
+    assert!(
+        plan.phases
             .iter()
             .flat_map(|phase| &phase.services)
             .flat_map(|service| &service.steps)
@@ -139,48 +152,57 @@ async fn group_system_deploy_explicit_convergence() {
                     slot: ReplicaSlot::Global,
                     ..
                 } if machine_id == &selected
-            )), "selected failure target must have plan-derived container work: {plan:?}");
-        let selected_host = dind_machine(&core, &selected);
-        let pre_start_host = dind_machine(&core, &pre_start_machine);
-        let hook = wait_for_pre_start_container(&core, pre_start_host).await;
-        stop_docker_runtime(&core, selected_host).await;
-        let release = core
-            .exec_on(pre_start_host, &["docker", "exec", &hook, "touch", "/tmp/release"])
-            .await;
-        assert!(release.success(), "release pre-start gate: {release:?}");
-        let failed = wait_for_terminal_deploy_status(
-            &core,
-            &gated.operation_id,
-            DEPLOY_TERMINAL_BUDGET,
+            )),
+        "selected failure target must have plan-derived container work: {plan:?}"
+    );
+    let selected_host = dind_machine(core, &selected);
+    let pre_start_host = dind_machine(core, &pre_start_machine);
+    let hook = wait_for_pre_start_container(core, pre_start_host).await;
+    stop_docker_runtime(core, selected_host).await;
+    let release = core
+        .exec_on(
+            pre_start_host,
+            &["docker", "exec", &hook, "touch", "/tmp/release"],
         )
         .await;
-        let OperationStatus::Deploy {
-            state: DeployOperationState::Failed { failure }, ..
-        } = &failed else {
-            panic!("selected-slot deploy must fail: {failed:?}");
-        };
-        assert!(matches!(failure,
-            DeployOperationFailure::RuntimeUnavailable { machine_id, .. }
-            | DeployOperationFailure::ContainerStartFailed { machine_id, .. }
-                if machine_id == &selected));
-        assert_eq!(system_serving_entry(&core).await, before_failure);
-        assert!(!terminal_operation_events(&core, &gated.operation_id).await.is_empty());
+    assert!(release.success(), "release pre-start gate: {release:?}");
+    let failed =
+        wait_for_terminal_deploy_status(core, &gated.operation_id, DEPLOY_TERMINAL_BUDGET).await;
+    let OperationStatus::Deploy {
+        state: DeployOperationState::Failed { failure },
+        ..
+    } = &failed
+    else {
+        panic!("selected-slot deploy must fail: {failed:?}");
+    };
+    assert!(matches!(failure,
+        DeployOperationFailure::RuntimeUnavailable { machine_id, .. }
+        | DeployOperationFailure::ContainerStartFailed { machine_id, .. }
+            if machine_id == &selected));
+    assert_eq!(system_serving_entry(core).await, before_failure);
+    assert!(
+        !terminal_operation_events(core, &gated.operation_id)
+            .await
+            .is_empty()
+    );
 
-        let docker_started = core
-            .exec_on(
-                selected_host,
-                &["systemctl", "start", "docker.socket", "docker.service"],
-            )
-            .await;
-        assert!(docker_started.success(), "restart selected Docker: {docker_started:?}");
-        assert_unit_active(&core, selected_host, "docker").await;
-        let retry = submit_system_probe(&core, "idem_system_retry", None).await;
-        assert_completed_system_deploy(&core, &retry.operation_id, 3).await;
-        assert_eq!(operation_status(&core, &gated.operation_id).await, failed);
-        assert_system_container_machines(&core, &["core_1", "edge_2", "edge_3"]).await;
-    })
-    .await;
-    finish(core).await;
+    let docker_started = core
+        .exec_on(
+            selected_host,
+            &["systemctl", "start", "docker.socket", "docker.service"],
+        )
+        .await;
+    assert!(
+        docker_started.success(),
+        "restart selected Docker: {docker_started:?}"
+    );
+    assert_unit_active(core, selected_host, "docker").await;
+    assert_placement_probe_container_identities(core, &before_containers).await;
+
+    let retry = submit_system_probe(core, "idem_system_retry", None).await;
+    assert_completed_system_deploy(core, &retry.operation_id, 3).await;
+    assert_eq!(operation_status(core, &gated.operation_id).await, failed);
+    assert_system_container_machines(core, &["core_1", "edge_2", "edge_3"]).await;
 }
 
 async fn submit_system_probe(
@@ -330,19 +352,7 @@ async fn assert_system_container_machines(core: &CoreContext, expected: &[&str])
         let matching = managed_workload_containers(core, machine)
             .await
             .into_iter()
-            .filter(|container| {
-                container.labels.get(NAMESPACE_ID_LABEL).map(String::as_str) == Some("ployz-system")
-                    && container
-                        .labels
-                        .get(super::CONTAINER_TYPE_LABEL)
-                        .map(String::as_str)
-                        == Some("service")
-                    && container
-                        .labels
-                        .get(super::SERVICE_ID_LABEL)
-                        .map(String::as_str)
-                        == Some("placement-probe")
-            })
+            .filter(is_placement_probe_service)
             .count();
         assert!(matching <= 1, "more than one placement-probe on {id:?}");
         if matching == 1 {
@@ -356,6 +366,71 @@ async fn assert_system_container_machines(core: &CoreContext, expected: &[&str])
         .collect::<Vec<_>>();
     expected.sort();
     assert_eq!(actual, expected);
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PlacementProbeContainerIdentity {
+    machine_id: ployz_core::ids::MachineId,
+    container_id: String,
+    labels: BTreeMap<String, String>,
+}
+
+async fn placement_probe_container_identities(
+    core: &CoreContext,
+) -> Vec<PlacementProbeContainerIdentity> {
+    let mut identities = Vec::new();
+    for (machine_id, machine) in all_dind_machines(core) {
+        for container in managed_workload_containers(core, machine)
+            .await
+            .into_iter()
+            .filter(is_placement_probe_service)
+        {
+            identities.push(PlacementProbeContainerIdentity {
+                machine_id: machine_id.clone(),
+                container_id: container.id,
+                labels: container.labels.into_iter().collect(),
+            });
+        }
+    }
+    identities.sort_by(|left, right| {
+        left.machine_id
+            .as_str()
+            .cmp(right.machine_id.as_str())
+            .then_with(|| left.container_id.cmp(&right.container_id))
+    });
+    identities
+}
+
+async fn assert_placement_probe_container_identities(
+    core: &CoreContext,
+    expected: &[PlacementProbeContainerIdentity],
+) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let actual = placement_probe_container_identities(core).await;
+        if actual == expected {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "failed system deploy changed serving placement-probe container identities: expected {expected:?}, actual {actual:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+fn is_placement_probe_service(container: &ManagedWorkloadContainer) -> bool {
+    container.labels.get(NAMESPACE_ID_LABEL).map(String::as_str) == Some("ployz-system")
+        && container
+            .labels
+            .get(super::CONTAINER_TYPE_LABEL)
+            .map(String::as_str)
+            == Some("service")
+        && container
+            .labels
+            .get(super::SERVICE_ID_LABEL)
+            .map(String::as_str)
+            == Some("placement-probe")
 }
 
 fn all_dind_machines(core: &CoreContext) -> Vec<(ployz_core::ids::MachineId, &DindMachine)> {

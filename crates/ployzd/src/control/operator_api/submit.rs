@@ -237,8 +237,7 @@ fn credential_add_submit_error(
                 sequence,
             }
         }
-        super::error_map::SubmitFailure::ResourceBusy { .. }
-        | super::error_map::SubmitFailure::ReservedSystemNamespace { .. } => {
+        super::error_map::SubmitFailure::ResourceBusy { .. } => {
             unreachable!("credential grants have no deploy target or namespace fence")
         }
     }
@@ -261,8 +260,7 @@ fn credential_remove_submit_error(
                 sequence,
             }
         }
-        super::error_map::SubmitFailure::ResourceBusy { .. }
-        | super::error_map::SubmitFailure::ReservedSystemNamespace { .. } => {
+        super::error_map::SubmitFailure::ResourceBusy { .. } => {
             unreachable!("credential grants have no deploy target or namespace fence")
         }
     }
@@ -293,32 +291,34 @@ pub async fn service_restart(
         .await
         .map_err(
             |error| match super::error_map::ordinary_namespace_submit_failure(error) {
-                super::error_map::SubmitFailure::ResourceBusy {
+                super::error_map::OrdinaryNamespaceSubmitFailure::ReservedSystemNamespace {
                     namespace_id,
-                    owner,
-                } => ServiceRestartError::ResourceBusy {
+                } => ServiceRestartError::ReservedSystemNamespace {
+                    operation_id: operation_id.clone(),
+                    namespace_id,
+                },
+                super::error_map::OrdinaryNamespaceSubmitFailure::Submit(
+                    super::error_map::SubmitFailure::ResourceBusy {
+                        namespace_id,
+                        owner,
+                    },
+                ) => ServiceRestartError::ResourceBusy {
                     operation_id: operation_id.clone(),
                     namespace_id,
                     owner_operation_id: owner,
                 },
-                super::error_map::SubmitFailure::ReservedSystemNamespace { namespace_id } => {
-                    ServiceRestartError::ReservedSystemNamespace {
-                        operation_id: operation_id.clone(),
-                        namespace_id,
-                    }
-                }
-                super::error_map::SubmitFailure::Unavailable { message } => {
-                    ServiceRestartError::Unavailable {
-                        operation_id: operation_id.clone(),
-                        message,
-                    }
-                }
-                super::error_map::SubmitFailure::DuplicateSequenceMismatch { sequence } => {
-                    ServiceRestartError::DuplicateSequenceMismatch {
-                        operation_id: operation_id.clone(),
-                        sequence,
-                    }
-                }
+                super::error_map::OrdinaryNamespaceSubmitFailure::Submit(
+                    super::error_map::SubmitFailure::Unavailable { message },
+                ) => ServiceRestartError::Unavailable {
+                    operation_id: operation_id.clone(),
+                    message,
+                },
+                super::error_map::OrdinaryNamespaceSubmitFailure::Submit(
+                    super::error_map::SubmitFailure::DuplicateSequenceMismatch { sequence },
+                ) => ServiceRestartError::DuplicateSequenceMismatch {
+                    operation_id: operation_id.clone(),
+                    sequence,
+                },
             },
         )?;
     let operation = owned_operation(
@@ -432,32 +432,34 @@ pub async fn namespace_remove(
         .await
         .map_err(
             |error| match super::error_map::ordinary_namespace_submit_failure(error) {
-                super::error_map::SubmitFailure::ResourceBusy {
+                super::error_map::OrdinaryNamespaceSubmitFailure::ReservedSystemNamespace {
                     namespace_id,
-                    owner,
-                } => NamespaceRemoveError::ResourceBusy {
+                } => NamespaceRemoveError::ReservedSystemNamespace {
+                    operation_id: operation_id.clone(),
+                    namespace_id,
+                },
+                super::error_map::OrdinaryNamespaceSubmitFailure::Submit(
+                    super::error_map::SubmitFailure::ResourceBusy {
+                        namespace_id,
+                        owner,
+                    },
+                ) => NamespaceRemoveError::ResourceBusy {
                     operation_id: operation_id.clone(),
                     namespace_id,
                     owner_operation_id: owner,
                 },
-                super::error_map::SubmitFailure::ReservedSystemNamespace { namespace_id } => {
-                    NamespaceRemoveError::ReservedSystemNamespace {
-                        operation_id: operation_id.clone(),
-                        namespace_id,
-                    }
-                }
-                super::error_map::SubmitFailure::Unavailable { message } => {
-                    NamespaceRemoveError::Unavailable {
-                        operation_id: operation_id.clone(),
-                        message,
-                    }
-                }
-                super::error_map::SubmitFailure::DuplicateSequenceMismatch { sequence } => {
-                    NamespaceRemoveError::DuplicateSequenceMismatch {
-                        operation_id: operation_id.clone(),
-                        sequence,
-                    }
-                }
+                super::error_map::OrdinaryNamespaceSubmitFailure::Submit(
+                    super::error_map::SubmitFailure::Unavailable { message },
+                ) => NamespaceRemoveError::Unavailable {
+                    operation_id: operation_id.clone(),
+                    message,
+                },
+                super::error_map::OrdinaryNamespaceSubmitFailure::Submit(
+                    super::error_map::SubmitFailure::DuplicateSequenceMismatch { sequence },
+                ) => NamespaceRemoveError::DuplicateSequenceMismatch {
+                    operation_id: operation_id.clone(),
+                    sequence,
+                },
             },
         )?;
     let operation = owned_operation(
@@ -486,32 +488,34 @@ pub async fn volume_remove(
         .await
         .map_err(
             |error| match super::error_map::ordinary_namespace_submit_failure(error) {
-                super::error_map::SubmitFailure::ResourceBusy {
+                super::error_map::OrdinaryNamespaceSubmitFailure::ReservedSystemNamespace {
                     namespace_id,
-                    owner,
-                } => VolumeRemoveError::ResourceBusy {
+                } => VolumeRemoveError::ReservedSystemNamespace {
+                    operation_id: operation_id.clone(),
+                    namespace_id,
+                },
+                super::error_map::OrdinaryNamespaceSubmitFailure::Submit(
+                    super::error_map::SubmitFailure::ResourceBusy {
+                        namespace_id,
+                        owner,
+                    },
+                ) => VolumeRemoveError::ResourceBusy {
                     operation_id: operation_id.clone(),
                     namespace_id,
                     owner_operation_id: owner,
                 },
-                super::error_map::SubmitFailure::ReservedSystemNamespace { namespace_id } => {
-                    VolumeRemoveError::ReservedSystemNamespace {
-                        operation_id: operation_id.clone(),
-                        namespace_id,
-                    }
-                }
-                super::error_map::SubmitFailure::Unavailable { message } => {
-                    VolumeRemoveError::Unavailable {
-                        operation_id: operation_id.clone(),
-                        message,
-                    }
-                }
-                super::error_map::SubmitFailure::DuplicateSequenceMismatch { sequence } => {
-                    VolumeRemoveError::DuplicateSequenceMismatch {
-                        operation_id: operation_id.clone(),
-                        sequence,
-                    }
-                }
+                super::error_map::OrdinaryNamespaceSubmitFailure::Submit(
+                    super::error_map::SubmitFailure::Unavailable { message },
+                ) => VolumeRemoveError::Unavailable {
+                    operation_id: operation_id.clone(),
+                    message,
+                },
+                super::error_map::OrdinaryNamespaceSubmitFailure::Submit(
+                    super::error_map::SubmitFailure::DuplicateSequenceMismatch { sequence },
+                ) => VolumeRemoveError::DuplicateSequenceMismatch {
+                    operation_id: operation_id.clone(),
+                    sequence,
+                },
             },
         )?;
     let operation = owned_operation(
@@ -537,32 +541,34 @@ pub async fn submit_volume_create(
         .await
         .map_err(
             |error| match super::error_map::ordinary_namespace_submit_failure(error) {
-                super::error_map::SubmitFailure::ResourceBusy {
+                super::error_map::OrdinaryNamespaceSubmitFailure::ReservedSystemNamespace {
                     namespace_id,
-                    owner,
-                } => VolumeCreateError::ResourceBusy {
+                } => VolumeCreateError::ReservedSystemNamespace {
+                    operation_id: operation_id.clone(),
+                    namespace_id,
+                },
+                super::error_map::OrdinaryNamespaceSubmitFailure::Submit(
+                    super::error_map::SubmitFailure::ResourceBusy {
+                        namespace_id,
+                        owner,
+                    },
+                ) => VolumeCreateError::ResourceBusy {
                     operation_id: operation_id.clone(),
                     namespace_id,
                     owner_operation_id: owner,
                 },
-                super::error_map::SubmitFailure::ReservedSystemNamespace { namespace_id } => {
-                    VolumeCreateError::ReservedSystemNamespace {
-                        operation_id: operation_id.clone(),
-                        namespace_id,
-                    }
-                }
-                super::error_map::SubmitFailure::Unavailable { message } => {
-                    VolumeCreateError::Unavailable {
-                        operation_id: operation_id.clone(),
-                        message,
-                    }
-                }
-                super::error_map::SubmitFailure::DuplicateSequenceMismatch { sequence } => {
-                    VolumeCreateError::DuplicateSequenceMismatch {
-                        operation_id: operation_id.clone(),
-                        sequence,
-                    }
-                }
+                super::error_map::OrdinaryNamespaceSubmitFailure::Submit(
+                    super::error_map::SubmitFailure::Unavailable { message },
+                ) => VolumeCreateError::Unavailable {
+                    operation_id: operation_id.clone(),
+                    message,
+                },
+                super::error_map::OrdinaryNamespaceSubmitFailure::Submit(
+                    super::error_map::SubmitFailure::DuplicateSequenceMismatch { sequence },
+                ) => VolumeCreateError::DuplicateSequenceMismatch {
+                    operation_id: operation_id.clone(),
+                    sequence,
+                },
             },
         )?;
     let operation = owned_operation(
@@ -838,8 +844,7 @@ pub async fn core_replace(
         })
         .await
         .map_err(|error| match super::error_map::submit_failure(error) {
-            super::error_map::SubmitFailure::ResourceBusy { .. }
-            | super::error_map::SubmitFailure::ReservedSystemNamespace { .. } => {
+            super::error_map::SubmitFailure::ResourceBusy { .. } => {
                 unreachable!("core replace submit has no namespace lock")
             }
             super::error_map::SubmitFailure::Unavailable { message } => {

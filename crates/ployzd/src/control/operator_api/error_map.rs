@@ -25,9 +25,6 @@ pub(super) fn corrupt(detail: impl std::fmt::Display) -> String {
 }
 
 pub(super) enum SubmitFailure {
-    ReservedSystemNamespace {
-        namespace_id: ployz_core::ids::NamespaceId,
-    },
     ResourceBusy {
         namespace_id: ployz_core::ids::NamespaceId,
         owner: OperationId,
@@ -38,6 +35,13 @@ pub(super) enum SubmitFailure {
     DuplicateSequenceMismatch {
         sequence: EventSequence,
     },
+}
+
+pub(super) enum OrdinaryNamespaceSubmitFailure {
+    ReservedSystemNamespace {
+        namespace_id: ployz_core::ids::NamespaceId,
+    },
+    Submit(SubmitFailure),
 }
 
 pub(super) fn submit_failure(error: SubmitCommandError) -> SubmitFailure {
@@ -96,14 +100,16 @@ pub(super) fn submit_failure(error: SubmitCommandError) -> SubmitFailure {
 
 pub(super) fn ordinary_namespace_submit_failure(
     error: OrdinaryNamespaceSubmitError,
-) -> SubmitFailure {
+) -> OrdinaryNamespaceSubmitFailure {
     match error {
         OrdinaryNamespaceSubmitError::ReservedSystemNamespace(error) => {
-            SubmitFailure::ReservedSystemNamespace {
+            OrdinaryNamespaceSubmitFailure::ReservedSystemNamespace {
                 namespace_id: error.namespace_id,
             }
         }
-        OrdinaryNamespaceSubmitError::Submit(error) => submit_failure(error),
+        OrdinaryNamespaceSubmitError::Submit(error) => {
+            OrdinaryNamespaceSubmitFailure::Submit(submit_failure(error))
+        }
     }
 }
 
@@ -131,14 +137,6 @@ pub(super) fn unfenced_submit_failure(
                 owner.as_str()
             )),
         },
-        SubmitFailure::ReservedSystemNamespace { namespace_id } => {
-            UnfencedSubmitFailure::Unavailable {
-                message: corrupt(format_args!(
-                    "{operation} submit returned reserved system namespace {}",
-                    namespace_id.as_str()
-                )),
-            }
-        }
         SubmitFailure::Unavailable { message } => UnfencedSubmitFailure::Unavailable { message },
         SubmitFailure::DuplicateSequenceMismatch { sequence } => {
             UnfencedSubmitFailure::DuplicateSequenceMismatch { sequence }
@@ -215,12 +213,6 @@ fn deploy_submit_error_from_submit_error(
             namespace_id,
             owner_operation_id: owner,
         },
-        SubmitFailure::ReservedSystemNamespace { namespace_id } => {
-            DeploySubmitError::ReservedSystemNamespace {
-                operation_id,
-                namespace_id,
-            }
-        }
         SubmitFailure::Unavailable { message } => DeploySubmitError::Unavailable {
             operation_id,
             message,
@@ -444,8 +436,9 @@ pub(super) fn ops_watch_error_from_replay_error(
 #[cfg(test)]
 mod tests {
     use super::{
-        deploy_submit_error_from_submit_error, machine_add_error_from_submit_error,
-        ops_watch_error_from_replay_error, ordinary_deploy_submit_error,
+        OrdinaryNamespaceSubmitFailure, deploy_submit_error_from_submit_error,
+        machine_add_error_from_submit_error, ops_watch_error_from_replay_error,
+        ordinary_deploy_submit_error, ordinary_namespace_submit_failure,
     };
     use crate::control::operation_evidence::{
         OperationEventLogError, OperationStatusStoreError, ReplayOperationEventsError,
@@ -558,6 +551,24 @@ mod tests {
                 namespace_id,
             }
         );
+    }
+
+    #[test]
+    fn ordinary_namespace_submit_keeps_reserved_namespace_outside_generic_submit_failure() {
+        let namespace_id = ployz_core::namespace::reserved_system_namespace();
+
+        assert!(matches!(
+            ordinary_namespace_submit_failure(
+                OrdinaryNamespaceSubmitError::ReservedSystemNamespace(
+                    ployz_core::namespace::ReservedSystemNamespace {
+                        namespace_id: namespace_id.clone(),
+                    },
+                ),
+            ),
+            OrdinaryNamespaceSubmitFailure::ReservedSystemNamespace {
+                namespace_id: rejected,
+            } if rejected == namespace_id
+        ));
     }
 
     #[test]
