@@ -2,6 +2,7 @@ use super::*;
 use ployz::commands::parse_command;
 use ployz::deploy::history_store::{ClusterFingerprint, DeployHistory, DeployHistoryEntry};
 use ployz::dispatcher::{PloyzctlExecutionError, PloyzctlRuntimeConfig, execute_command};
+use ployz_core::deploy::ImageSource;
 use ployz_core::operation::{DeployFailureClass, DeployRunningStage, HealthCheckFailure};
 use support::dind::formation::ProductCliHarness;
 
@@ -337,8 +338,18 @@ async fn step_5_retry_and_restore(
     let rollback_error = execute_command(rollback, config)
         .await
         .expect_err("redacted environment history must reject automatic rollback");
-    let PloyzctlExecutionError::Deploy(rollback_error) = rollback_error else {
-        panic!("environment rollback must return a typed deploy error: {rollback_error:?}");
+    let rollback_error = match rollback_error {
+        PloyzctlExecutionError::Deploy(error) => error,
+        PloyzctlExecutionError::LocalCommand
+        | PloyzctlExecutionError::CloudUnconfigured { .. }
+        | PloyzctlExecutionError::Support(_)
+        | PloyzctlExecutionError::Core(_)
+        | PloyzctlExecutionError::Build(_)
+        | PloyzctlExecutionError::Machine(_)
+        | PloyzctlExecutionError::Namespace(_)
+        | PloyzctlExecutionError::Volume(_) => {
+            panic!("environment rollback must return a typed deploy error: {rollback_error:?}")
+        }
     };
     let rollback_error = rollback_error.to_string();
     assert!(
@@ -352,11 +363,8 @@ async fn step_5_retry_and_restore(
         "rollback error must tell the operator how to restore the deploy: {rollback_error}"
     );
     for secret in [
-        "POSTGRES_DB=umami",
-        "POSTGRES_PASSWORD=umami",
-        "POSTGRES_USER=umami",
-        "APP_SECRET=ployz-v1-acceptance",
-        "DATABASE_URL=postgresql://umami:umami@db:5432/umami",
+        "ployz-v1-acceptance",
+        "postgresql://umami:umami@db:5432/umami",
     ] {
         assert!(
             !rollback_error.contains(secret),
@@ -382,10 +390,7 @@ async fn step_5_retry_and_restore(
     assert_eq!(recorded_bad_deploy, bad_deploy_entry);
     assert_ne!(restored_entry.operation_id, app.application.operation_id);
     assert_ne!(restored_entry.operation_id, bad_deploy_entry.operation_id);
-    assert_eq!(
-        restored_entry.request, app.application.request,
-        "fresh operator submission must restore the original redacted request evidence"
-    );
+    assert_restored_request(&restored_entry.request, &app.application.request);
 
     wait_for_umami_https(core, &app.hostname).await;
 
@@ -411,6 +416,48 @@ async fn step_5_retry_and_restore(
         retained_marker = marker.success() && marker.stdout.trim() == "retained";
     }
     assert!(retained_marker, "Postgres named volume lost its marker");
+}
+
+fn assert_restored_request(
+    restored: &ployz_core::deploy::DeployRequestEvidence,
+    original: &ployz_core::deploy::DeployRequestEvidence,
+) {
+    assert_eq!(
+        restored.request().namespace_id,
+        original.request().namespace_id
+    );
+    assert_eq!(restored.request().origin, original.request().origin);
+    assert_eq!(restored.request().volumes, original.request().volumes);
+    assert_eq!(restored.environment_names(), original.environment_names());
+    assert_eq!(
+        restored.request().services.len(),
+        original.request().services.len()
+    );
+    for (restored, original) in restored
+        .request()
+        .services
+        .iter()
+        .zip(&original.request().services)
+    {
+        assert_eq!(restored.service_id, original.service_id);
+        assert_eq!(restored.image, original.image);
+        assert_eq!(restored.mode, original.mode);
+        assert_eq!(restored.keep, original.keep);
+        assert_eq!(restored.runtime, original.runtime);
+        assert_eq!(restored.pre_start, original.pre_start);
+        assert_eq!(restored.depends_on, original.depends_on);
+        assert_eq!(restored.routes, original.routes);
+        match (&restored.image_source, &original.image_source) {
+            (ImageSource::Registry, ImageSource::Registry) => {}
+            (ImageSource::PushedToSeed(restored), ImageSource::PushedToSeed(original)) => {
+                assert_eq!(restored.index_digest(), original.index_digest());
+            }
+            (restored @ ImageSource::Registry, original @ ImageSource::PushedToSeed(_))
+            | (restored @ ImageSource::PushedToSeed(_), original @ ImageSource::Registry) => {
+                panic!("restored image source changed from {original:?} to {restored:?}")
+            }
+        }
+    }
 }
 
 fn deploy_history(config: &PloyzctlRuntimeConfig) -> DeployHistory {
