@@ -1127,10 +1127,14 @@ fn render_gateway(machine: &MachineSnapshot) -> String {
 
 fn render_container_count(machine: &MachineSnapshot) -> String {
     match &machine.testimony {
-        MachineTestimony::Answered {
-            observed_container_count,
-            ..
-        } => observed_container_count.to_string(),
+        MachineTestimony::Answered { containers, .. } => match containers {
+            ployz_sdk_types::MachineContainerAvailability::Answered { observed_count } => {
+                observed_count.to_string()
+            }
+            ployz_sdk_types::MachineContainerAvailability::Unavailable { .. } => {
+                "no answer".to_owned()
+            }
+        },
         MachineTestimony::NoAnswer => "no answer".to_owned(),
     }
 }

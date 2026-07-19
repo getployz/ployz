@@ -4,7 +4,9 @@ use crate::control::intent::service::NatsIntentReader;
 use crate::control::projection::runtime_state::{
     RuntimeIngressSources, from_sources as runtime_snapshot_from_sources, load_ingress_sources,
 };
-use crate::control::role_client::machine::{NatsMachineFactsReader, read_available_machine_facts};
+use crate::control::role_client::machine::{
+    NatsMachineFactsReader, read_available_machine_facts_testimony_by_id,
+};
 use crate::control::store::CoreStore;
 use crate::process_support::BackoffSchedule;
 use crate::role_testimony::RoleTestimonyCache;
@@ -499,9 +501,9 @@ async fn gather_storage_testimony(
     facts_reader: NatsMachineFactsReader,
     machine_ids: Vec<ployz_core::ids::MachineId>,
 ) -> StorageAlarmGatherOutput {
-    read_available_machine_facts(&facts_reader, machine_ids)
+    read_available_machine_facts_testimony_by_id(&facts_reader, machine_ids)
         .await
-        .into_iter()
+        .into_values()
         .map(|facts| {
             ployz_core::machine::MachineStorageTestimony::new(
                 facts.machine_id().clone(),
@@ -1103,9 +1105,13 @@ fn assemble_snapshot(
     fresh_storage_testimony: Option<&[ployz_core::machine::MachineStorageTestimony]>,
 ) -> RuntimeSnapshot {
     let (machine_facts, gateway_statuses) = facts.runtime_projection_facts();
+    let machine_testimony = machine_facts
+        .into_iter()
+        .map(|(machine_id, facts)| (machine_id, facts.into()))
+        .collect();
     runtime_snapshot_from_sources(
         intent,
-        &machine_facts,
+        &machine_testimony,
         fresh_storage_testimony,
         &gateway_statuses,
         ingress,

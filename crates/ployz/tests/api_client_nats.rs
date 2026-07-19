@@ -755,7 +755,9 @@ fn machine_snapshot(machine_id: &str) -> MachineSnapshot {
                 route_count: 2,
                 process_health: ployz_core::machine::GatewayProcessHealth::default(),
             })),
-            observed_container_count: 3,
+            containers: ployz_sdk_types::MachineContainerAvailability::Answered {
+                observed_count: 3,
+            },
             disk_space: ployz_test_support::fixtures::test_disk_space(),
             storage: None,
             last_observed_at_unix_seconds: 60,

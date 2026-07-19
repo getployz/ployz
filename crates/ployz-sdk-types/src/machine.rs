@@ -154,7 +154,7 @@ pub enum MachineTestimony {
     Answered {
         endpoints: Option<MachineEndpointObservation>,
         gateway: Option<Box<GatewayStatusObservation>>,
-        observed_container_count: usize,
+        containers: MachineContainerAvailability,
         disk_space: MachineDiskSpace,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         storage: Option<StorageCapability>,
@@ -164,6 +164,17 @@ pub enum MachineTestimony {
         last_observed_at_unix_seconds: u64,
     },
     NoAnswer,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineContainerAvailability {
+    Answered {
+        observed_count: usize,
+    },
+    Unavailable {
+        reason: MachineContainerUnavailableReason,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
