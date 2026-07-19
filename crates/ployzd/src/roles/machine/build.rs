@@ -4,11 +4,13 @@ use super::execution::build::{
 };
 use super::images::AvailableImageService;
 use super::protocol::{
-    BuildLogSummary, MachineBuildCachePruneDomainError, MachineBuildCachePruneRpcOk,
-    MachineBuildCachePruneRpcRequest, MachineBuildCachePruneRpcResponse, MachineBuildCancelOutcome,
-    MachineBuildCancelRpcOk, MachineBuildCancelRpcRequest, MachineBuildCancelRpcResponse,
-    MachineBuildCleanupOutcome, MachineBuildStartDomainError, MachineBuildStartRpcOk,
-    MachineBuildStartRpcRequest, MachineBuildStartRpcResponse,
+    BuildExecutorAcceptance, BuildExecutorOrigin, BuildLogSummary,
+    MachineBuildCachePruneDomainError, MachineBuildCachePruneRpcOk,
+    MachineBuildCachePruneRpcRequest, MachineBuildCachePruneRpcResponse,
+    MachineBuildCancelDomainError, MachineBuildCancelOutcome, MachineBuildCancelRpcOk,
+    MachineBuildCancelRpcRequest, MachineBuildCancelRpcResponse, MachineBuildCleanupOutcome,
+    MachineBuildStartDomainError, MachineBuildStartRpcOk, MachineBuildStartRpcRequest,
+    MachineBuildStartRpcResponse,
 };
 use super::response::{failure_message, machine_domain_error, machine_success};
 use ployz_core::build::{
@@ -271,19 +273,18 @@ impl MachineBuildRuntime {
         &self,
         request: MachineBuildStartRpcRequest,
     ) -> Result<MachineBuildStartRpcOk, MachineBuildStartDomainError> {
+        validate_start_provenance(&self.machine_id, &request)?;
         if self.lifecycle.state.lock().await.phase != BuildRuntimePhase::Accepting {
             return Err(build_runtime_stopped());
         }
         if request.platform != self.local_platform {
-            return Err(MachineBuildStartDomainError::PlatformFailed {
-                failure: BuildPlatformFailure::PlatformMismatch {
-                    expected: request.platform,
-                    actual: self.local_platform.clone(),
-                },
-                log_summary: BuildLogSummary::none(),
+            return Err(MachineBuildStartDomainError::PlatformMismatch {
+                expected: request.platform,
+                actual: self.local_platform.clone(),
             });
         }
         let timeout = requested_build_timeout(request.timeout_millis)?;
+        let acceptance = BuildExecutorAcceptance::from_start_request(&request);
         let (cancel, cancel_rx) = watch::channel(false);
         let runtime = self.clone();
         let operation_id = request.operation_id.clone();
@@ -296,13 +297,14 @@ impl MachineBuildRuntime {
         let completion = Arc::new(BuildSupervisorCompletion::new());
         let completion_guard = BuildSupervisorCompletionGuard(completion.clone());
         let task_operation_id = operation_id.clone();
+        let task_acceptance = acceptance.clone();
         let supervisor = tokio::spawn(async move {
             let _completion = completion_guard;
             if launch_rx.await.is_err() {
                 return;
             }
             let result = runtime
-                .run_build(request, task_cancel, cancel_rx, deadline)
+                .run_build(request, task_acceptance, task_cancel, cancel_rx, deadline)
                 .await;
             runtime.remove_active(&task_operation_id).await;
             let _ = result_tx.send(result);
@@ -333,6 +335,7 @@ impl MachineBuildRuntime {
         }
         result_rx.await.unwrap_or_else(|_| {
             Err(MachineBuildStartDomainError::PlatformFailed {
+                acceptance,
                 failure: BuildPlatformFailure::MachineUnavailable {
                     message: failure_message(
                         "machine build task stopped before returning a result",
@@ -346,6 +349,7 @@ impl MachineBuildRuntime {
     async fn run_build(
         &self,
         request: MachineBuildStartRpcRequest,
+        acceptance: BuildExecutorAcceptance,
         cancel: watch::Sender<bool>,
         mut cancel_rx: watch::Receiver<bool>,
         deadline: Instant,
@@ -355,6 +359,7 @@ impl MachineBuildRuntime {
             biased;
             () = tokio::time::sleep_until(deadline) => {
                 return Err(MachineBuildStartDomainError::TimedOut {
+                    acceptance,
                     message: failure_message("build timed out waiting for the machine build slot"),
                     cleanup: MachineBuildCleanupOutcome::Confirmed,
                     log_summary: BuildLogSummary::none(),
@@ -363,11 +368,13 @@ impl MachineBuildRuntime {
             changed = cancel_rx.changed() => {
                 let _ = changed;
                 return Err(MachineBuildStartDomainError::Cancelled {
+                    acceptance,
                     cleanup: MachineBuildCleanupOutcome::Confirmed,
                     log_summary: BuildLogSummary::none(),
                 });
             }
             permit = slot => permit.map_err(|_| MachineBuildStartDomainError::PlatformFailed {
+                acceptance: acceptance.clone(),
                 failure: BuildPlatformFailure::MachineUnavailable {
                     message: failure_message("machine build slot closed"),
                 },
@@ -385,6 +392,7 @@ impl MachineBuildRuntime {
             let task = task_effects.execute_and_ingest(
                 machine_id,
                 request,
+                acceptance.clone(),
                 task_cancel_rx,
                 task_progress,
                 deadline,
@@ -412,10 +420,12 @@ impl MachineBuildRuntime {
         let log_summary = BuildLogSummary::new(final_log_sequence, omitted_log_bytes);
         match completion {
             BuildTaskCompletion::Cancelled => Err(MachineBuildStartDomainError::Cancelled {
+                acceptance,
                 cleanup,
                 log_summary,
             }),
             BuildTaskCompletion::TimedOut => Err(MachineBuildStartDomainError::TimedOut {
+                acceptance,
                 message: failure_message(match cleanup {
                     MachineBuildCleanupOutcome::Confirmed => {
                         "build exceeded its operation deadline"
@@ -430,6 +440,7 @@ impl MachineBuildRuntime {
             BuildTaskCompletion::Finished(result) => {
                 if cleanup == MachineBuildCleanupOutcome::Unconfirmed {
                     return Err(MachineBuildStartDomainError::PlatformFailed {
+                        acceptance,
                         failure: BuildPlatformFailure::MachineUnavailable {
                             message: failure_message(
                                 "build workspace cleanup did not finish successfully",
@@ -438,7 +449,7 @@ impl MachineBuildRuntime {
                         log_summary,
                     });
                 }
-                (*result).map_err(|error| machine_build_error(error, cleanup))
+                (*result).map_err(|error| machine_build_error(error, cleanup, acceptance))
             }
         }
     }
@@ -491,6 +502,7 @@ impl BuildEffects {
         &self,
         machine_id: MachineId,
         request: MachineBuildStartRpcRequest,
+        acceptance: BuildExecutorAcceptance,
         cancel_rx: watch::Receiver<bool>,
         log_progress: BuildLogProgress,
         deadline: Instant,
@@ -546,6 +558,7 @@ impl BuildEffects {
                     })?;
                 Ok(MachineBuildStartRpcOk {
                     machine_id: machine_id.clone(),
+                    acceptance,
                     image: PlatformImage {
                         seed: machine_id,
                         manifest_digest: result.layout.manifest_digest().clone(),
@@ -591,32 +604,76 @@ fn requested_build_timeout(
 ) -> Result<std::time::Duration, MachineBuildStartDomainError> {
     let timeout = std::time::Duration::from_millis(timeout_millis);
     if timeout.is_zero() || timeout > BUILD_MAX_EXECUTION_TIMEOUT {
-        return Err(MachineBuildStartDomainError::TimedOut {
-            message: failure_message("build timeout must be between 1ms and 30m"),
-            cleanup: MachineBuildCleanupOutcome::Confirmed,
-            log_summary: BuildLogSummary::none(),
-        });
+        return Err(MachineBuildStartDomainError::InvalidTimeout { timeout_millis });
     }
     Ok(timeout)
+}
+
+fn validate_start_provenance(
+    machine_id: &MachineId,
+    request: &MachineBuildStartRpcRequest,
+) -> Result<(), MachineBuildStartDomainError> {
+    let expected_origin = BuildExecutorOrigin::Cluster {
+        machine_id: machine_id.clone(),
+    };
+    if request.origin != expected_origin {
+        return Err(MachineBuildStartDomainError::OriginMismatch {
+            expected: expected_origin,
+            actual: request.origin.clone(),
+        });
+    }
+    if request.image_seed != *machine_id {
+        return Err(MachineBuildStartDomainError::ImageSeedMismatch {
+            expected: machine_id.clone(),
+            actual: request.image_seed.clone(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_cancel_provenance(
+    machine_id: &MachineId,
+    request: &MachineBuildCancelRpcRequest,
+) -> Result<(), MachineBuildCancelDomainError> {
+    let expected_origin = BuildExecutorOrigin::Cluster {
+        machine_id: machine_id.clone(),
+    };
+    if request.origin != expected_origin {
+        return Err(MachineBuildCancelDomainError::OriginMismatch {
+            expected: expected_origin,
+            actual: request.origin.clone(),
+        });
+    }
+    if request.image_seed != *machine_id {
+        return Err(MachineBuildCancelDomainError::ImageSeedMismatch {
+            expected: machine_id.clone(),
+            actual: request.image_seed.clone(),
+        });
+    }
+    Ok(())
 }
 
 fn machine_build_error(
     error: BuildExecutionError,
     cleanup: MachineBuildCleanupOutcome,
+    acceptance: BuildExecutorAcceptance,
 ) -> MachineBuildStartDomainError {
     let log_summary = error.log_summary();
     match error {
         BuildExecutionError::Cancelled { .. } => MachineBuildStartDomainError::Cancelled {
+            acceptance,
             cleanup,
             log_summary,
         },
         BuildExecutionError::TimedOut { .. } => MachineBuildStartDomainError::TimedOut {
+            acceptance,
             message: failure_message("build exceeded its operation deadline"),
             cleanup,
             log_summary,
         },
         BuildExecutionError::Platform { failure, .. } => {
             MachineBuildStartDomainError::PlatformFailed {
+                acceptance,
                 failure,
                 log_summary,
             }
@@ -624,6 +681,7 @@ fn machine_build_error(
         BuildExecutionError::Infrastructure {
             action, message, ..
         } => MachineBuildStartDomainError::PlatformFailed {
+            acceptance,
             failure: BuildPlatformFailure::MachineUnavailable {
                 message: failure_message(format!("{action}: {message}")),
             },
@@ -633,12 +691,7 @@ fn machine_build_error(
 }
 
 fn build_runtime_stopped() -> MachineBuildStartDomainError {
-    MachineBuildStartDomainError::PlatformFailed {
-        failure: BuildPlatformFailure::MachineUnavailable {
-            message: failure_message("machine build runtime is shutting down"),
-        },
-        log_summary: BuildLogSummary::none(),
-    }
+    MachineBuildStartDomainError::RuntimeStopped
 }
 
 fn local_platform() -> Result<OciPlatform, String> {
@@ -663,15 +716,16 @@ pub(crate) async fn handle_build_start(
         Ok(request) => request,
         Err(response) => return response,
     };
+    if let Err(error) = validate_start_provenance(&machine_id, &request) {
+        return machine_domain_error(MachineBuildStartRpcResponse::DomainError {
+            machine_id,
+            error,
+        });
+    }
     let Some(runtime) = runtime else {
         return machine_domain_error(MachineBuildStartRpcResponse::DomainError {
             machine_id,
-            error: MachineBuildStartDomainError::PlatformFailed {
-                failure: BuildPlatformFailure::MachineUnavailable {
-                    message: failure_message("machine build runtime is unavailable"),
-                },
-                log_summary: BuildLogSummary::none(),
-            },
+            error: MachineBuildStartDomainError::RuntimeUnavailable,
         });
     };
     match runtime.start(request).await {
@@ -691,6 +745,12 @@ pub(crate) async fn handle_build_cancel(
         Ok(request) => request,
         Err(response) => return response,
     };
+    if let Err(error) = validate_cancel_provenance(&machine_id, &request) {
+        return machine_domain_error(MachineBuildCancelRpcResponse::DomainError {
+            machine_id,
+            error,
+        });
+    }
     let Some(runtime) = runtime else {
         return machine_domain_error(MachineBuildCancelRpcResponse::DomainError {
             machine_id,
@@ -701,6 +761,9 @@ pub(crate) async fn handle_build_cancel(
     };
     let outcome = runtime.cancel(&request.operation_id).await;
     machine_success(MachineBuildCancelRpcResponse::Ok(MachineBuildCancelRpcOk {
+        origin: BuildExecutorOrigin::Cluster {
+            machine_id: machine_id.clone(),
+        },
         machine_id,
         outcome,
     }))

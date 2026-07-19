@@ -5,7 +5,7 @@ use ployz_core::image::OciPlatform;
 use ployz_core::operation::{BuildEvidence, BuildOperationFailure, FailureMessage};
 
 use crate::control::operation_evidence::OperationRepository;
-use crate::roles::machine::protocol::{BuildLogSummary, MachineBuildLogFrame};
+use crate::roles::machine::protocol::{BuildExecutorOrigin, BuildLogSummary, MachineBuildLogFrame};
 
 use super::log_stream::{LogBeforeDeadline, next_log_before_deadline};
 
@@ -16,6 +16,7 @@ pub(super) struct PlatformLogSession<'a> {
     operation_id: &'a OperationId,
     machine_id: &'a MachineId,
     platform: &'a OciPlatform,
+    origin: BuildExecutorOrigin,
     logs: async_nats::Subscriber,
     next_sequence: u64,
     logs_open: bool,
@@ -27,6 +28,7 @@ impl<'a> PlatformLogSession<'a> {
         operation_id: &'a OperationId,
         machine_id: &'a MachineId,
         platform: &'a OciPlatform,
+        origin: BuildExecutorOrigin,
         logs: async_nats::Subscriber,
     ) -> Self {
         Self {
@@ -34,6 +36,7 @@ impl<'a> PlatformLogSession<'a> {
             operation_id,
             machine_id,
             platform,
+            origin,
             logs,
             next_sequence: 1,
             logs_open: true,
@@ -63,6 +66,7 @@ impl<'a> PlatformLogSession<'a> {
             self.operation_id,
             self.machine_id,
             self.platform,
+            &self.origin,
             self.next_sequence,
             &frame,
         ) {
@@ -138,12 +142,14 @@ fn is_next_frame(
     operation_id: &OperationId,
     machine_id: &MachineId,
     platform: &OciPlatform,
+    origin: &BuildExecutorOrigin,
     next_sequence: u64,
     frame: &MachineBuildLogFrame,
 ) -> bool {
     frame.operation_id == *operation_id
         && frame.machine_id == *machine_id
         && frame.platform == *platform
+        && frame.origin == *origin
         && frame.sequence == next_sequence
 }
 
@@ -163,9 +169,13 @@ mod tests {
         let operation_id = OperationId::try_new("build-1").expect("operation id");
         let machine_id = MachineId::try_new("machine-a").expect("machine id");
         let platform = OciPlatform::try_new("linux", "amd64").expect("platform");
+        let origin = BuildExecutorOrigin::Cluster {
+            machine_id: machine_id.clone(),
+        };
         let frame = MachineBuildLogFrame {
             operation_id: operation_id.clone(),
             machine_id: machine_id.clone(),
+            origin: origin.clone(),
             platform: platform.clone(),
             sequence: 1,
             chunk: BuildLogChunk::try_new("line").expect("log chunk"),
@@ -175,6 +185,7 @@ mod tests {
             &operation_id,
             &machine_id,
             &platform,
+            &origin,
             1,
             &frame
         ));
@@ -182,6 +193,7 @@ mod tests {
             &operation_id,
             &machine_id,
             &platform,
+            &origin,
             2,
             &frame
         ));
@@ -189,6 +201,19 @@ mod tests {
             &OperationId::try_new("build-2").expect("operation id"),
             &machine_id,
             &platform,
+            &origin,
+            1,
+            &frame,
+        ));
+        assert!(!is_next_frame(
+            &operation_id,
+            &machine_id,
+            &platform,
+            &BuildExecutorOrigin::External {
+                pool_id: ployz_core::build::BuildPoolId::try_new("pool-a").expect("pool id"),
+                executor_id: ployz_core::build::BuildExecutorId::try_new("executor-a")
+                    .expect("executor id"),
+            },
             1,
             &frame,
         ));

@@ -1,7 +1,15 @@
 //! Validated source and adapter contracts for bounded image builds.
 
+mod executor;
 mod railpack;
 
+pub use crate::ids::{BuildExecutorId, BuildPoolId};
+pub use executor::{
+    BuildExecutorAcceptance, BuildExecutorCancelDomainError, BuildExecutorCancelOk,
+    BuildExecutorCancelOutcome, BuildExecutorCancelRequest, BuildExecutorCleanupOutcome,
+    BuildExecutorLogFrame, BuildExecutorOrigin, BuildExecutorStartDomainError,
+    BuildExecutorStartOk, BuildExecutorStartRequest, BuildLogSummary, BuildTarget,
+};
 pub use railpack::{RailpackPins, RailpackPlatformPins, railpack_pins};
 
 use std::collections::BTreeSet;

@@ -108,8 +108,13 @@ impl MachineBuildRuntime {
 }
 
 fn build_request(operation_id: &str, timeout_millis: u64) -> MachineBuildStartRpcRequest {
+    let machine_id = MachineId::try_new("machine-a").expect("machine");
     MachineBuildStartRpcRequest {
         operation_id: OperationId::try_new(operation_id).expect("operation"),
+        origin: BuildExecutorOrigin::Cluster {
+            machine_id: machine_id.clone(),
+        },
+        image_seed: machine_id,
         source: ployz_core::build::GitSource::try_new(
             "https://example.test/repo.git",
             "0123456789abcdef0123456789abcdef01234567",
@@ -141,25 +146,112 @@ fn build_timeout_accepts_the_shared_limit_and_rejects_larger_requests() {
     );
     assert!(matches!(
         requested_build_timeout(BUILD_MAX_EXECUTION_TIMEOUT.as_millis() as u64 + 1),
-        Err(MachineBuildStartDomainError::TimedOut { message, .. })
-            if message.as_str() == "build timeout must be between 1ms and 30m"
+        Err(MachineBuildStartDomainError::InvalidTimeout { timeout_millis })
+            if timeout_millis == BUILD_MAX_EXECUTION_TIMEOUT.as_millis() as u64 + 1
     ));
 }
 
 #[test]
 fn execution_timeout_maps_to_typed_machine_timeout_with_cleanup() {
     let log_summary = BuildLogSummary::new(7, 11);
+    let acceptance = BuildExecutorAcceptance::from_start_request(&build_request("build-1", 1_000));
+    let expected_acceptance = acceptance.clone();
     assert!(matches!(
         machine_build_error(
             BuildExecutionError::TimedOut { log_summary },
             MachineBuildCleanupOutcome::Confirmed,
+            acceptance,
         ),
         MachineBuildStartDomainError::TimedOut {
+            acceptance: actual_acceptance,
             cleanup: MachineBuildCleanupOutcome::Confirmed,
             log_summary: actual,
             ..
-        } if actual == log_summary
+        } if actual == log_summary && actual_acceptance == expected_acceptance
     ));
+}
+
+#[test]
+fn cancel_rejects_misaddressed_cluster_provenance() {
+    let machine_id = MachineId::try_new("machine-a").expect("machine");
+    let request = MachineBuildCancelRpcRequest {
+        operation_id: OperationId::try_new("build-1").expect("operation"),
+        origin: BuildExecutorOrigin::Cluster {
+            machine_id: MachineId::try_new("machine-b").expect("machine"),
+        },
+        image_seed: machine_id.clone(),
+    };
+
+    assert!(matches!(
+        validate_cancel_provenance(&machine_id, &request),
+        Err(MachineBuildCancelDomainError::OriginMismatch { expected, actual })
+            if expected == (BuildExecutorOrigin::Cluster { machine_id })
+                && actual == request.origin
+    ));
+}
+
+#[test]
+fn cancel_rejects_misaddressed_image_seed() {
+    let machine_id = MachineId::try_new("machine-a").expect("machine");
+    let request = MachineBuildCancelRpcRequest {
+        operation_id: OperationId::try_new("build-1").expect("operation"),
+        origin: BuildExecutorOrigin::Cluster {
+            machine_id: machine_id.clone(),
+        },
+        image_seed: MachineId::try_new("machine-b").expect("machine"),
+    };
+
+    assert!(matches!(
+        validate_cancel_provenance(&machine_id, &request),
+        Err(MachineBuildCancelDomainError::ImageSeedMismatch { expected, actual })
+            if expected == machine_id && actual == request.image_seed
+    ));
+}
+
+#[tokio::test]
+async fn start_rejects_wrong_origin_before_registration() {
+    let machine_id = MachineId::try_new("machine-a").expect("machine");
+    let effects = Arc::new(TestBuildEffects::new(true));
+    let runtime = MachineBuildRuntime::new_for_test(machine_id.clone(), effects.clone());
+    let mut request = build_request("wrong-origin", 1_000);
+    let actual = BuildExecutorOrigin::External {
+        pool_id: ployz_core::build::BuildPoolId::try_new("pool-a").expect("pool id"),
+        executor_id: ployz_core::build::BuildExecutorId::try_new("executor-a")
+            .expect("executor id"),
+    };
+    request.origin = actual.clone();
+
+    assert_eq!(
+        runtime.start(request).await,
+        Err(MachineBuildStartDomainError::OriginMismatch {
+            expected: BuildExecutorOrigin::Cluster { machine_id },
+            actual,
+        })
+    );
+    assert!(runtime.lifecycle.state.lock().await.active.is_empty());
+    assert!(!effects.task_active.load(Ordering::SeqCst));
+    assert_eq!(effects.cleanup_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn start_rejects_wrong_image_seed_before_registration() {
+    let machine_id = MachineId::try_new("machine-a").expect("machine");
+    let effects = Arc::new(TestBuildEffects::new(true));
+    let runtime = MachineBuildRuntime::new_for_test(machine_id.clone(), effects.clone());
+    let mut request = build_request("wrong-seed", 1_000);
+    let actual = MachineId::try_new("machine-b").expect("machine");
+    request.image_seed = actual.clone();
+
+    assert_eq!(
+        runtime.start(request).await,
+        Err(MachineBuildStartDomainError::ImageSeedMismatch {
+            expected: machine_id,
+            actual,
+        })
+    );
+    assert!(runtime.lifecycle.state.lock().await.active.is_empty());
+    assert!(!effects.task_active.load(Ordering::SeqCst));
+    assert_eq!(effects.cleanup_calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
@@ -195,6 +287,10 @@ async fn unavailable_build_runtime_is_typed_machine_evidence() {
     let machine_id = MachineId::try_new("machine-a").expect("machine");
     let request = MachineBuildStartRpcRequest {
         operation_id: OperationId::try_new("build-1").expect("operation"),
+        origin: BuildExecutorOrigin::Cluster {
+            machine_id: machine_id.clone(),
+        },
+        image_seed: machine_id.clone(),
         source: ployz_core::build::GitSource::try_new(
             "https://example.test/repo.git",
             "0123456789abcdef0123456789abcdef01234567",
@@ -228,10 +324,7 @@ async fn unavailable_build_runtime_is_typed_machine_evidence() {
         response,
         MachineRpcResponse::DomainError {
             machine_id: actual,
-            error: MachineBuildStartDomainError::PlatformFailed {
-                failure: BuildPlatformFailure::MachineUnavailable { .. },
-                ..
-            }
+            error: MachineBuildStartDomainError::RuntimeUnavailable
         } if actual == machine_id
     ));
 }
@@ -247,10 +340,7 @@ async fn shutdown_closes_build_admission_with_stable_typed_evidence() {
 
     assert!(matches!(
         runtime.start(build_request("after-shutdown", 1_000)).await,
-        Err(MachineBuildStartDomainError::PlatformFailed {
-            failure: BuildPlatformFailure::MachineUnavailable { message },
-            ..
-        }) if message.as_str() == "machine build runtime is shutting down"
+        Err(MachineBuildStartDomainError::RuntimeStopped)
     ));
 }
 
@@ -488,6 +578,7 @@ async fn cancellation_during_ingestion_aborts_then_returns_typed_cleanup() {
                 final_log_sequence: 7,
                 omitted_log_bytes: 11,
             },
+            ..
         })
     ));
     assert_eq!(effects.cleanup_calls.load(Ordering::SeqCst), 1);

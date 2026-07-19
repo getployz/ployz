@@ -47,6 +47,8 @@ subject_token_id! { pub struct ContainerId; ts_brand: "Brand<string, \"Container
 subject_token_id! { pub struct CertId; ts_brand: "Brand<string, \"CertId\">"; }
 subject_token_id! { pub struct RouteBindingId; ts_brand: "Brand<string, \"RouteBindingId\">"; }
 subject_token_id! { pub struct StepId; ts_brand: "Brand<string, \"StepId\">"; }
+subject_token_id! { pub struct BuildPoolId; ts_brand: "Brand<string, \"BuildPoolId\">"; }
+subject_token_id! { pub struct BuildExecutorId; ts_brand: "Brand<string, \"BuildExecutorId\">"; }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]

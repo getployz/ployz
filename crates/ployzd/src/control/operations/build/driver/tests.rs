@@ -26,6 +26,25 @@ use ployz_core::operation::{
 use ployz_nats::subjects::machine_service;
 use ployz_test_support::ids::{event_replay_limit, event_sequence, machine_id, operation_id};
 
+fn cluster_origin(machine_id: &MachineId) -> BuildExecutorOrigin {
+    BuildExecutorOrigin::Cluster {
+        machine_id: machine_id.clone(),
+    }
+}
+
+fn executor_acceptance(
+    operation_id: &OperationId,
+    machine_id: &MachineId,
+    platform: &OciPlatform,
+) -> BuildExecutorAcceptance {
+    BuildExecutorAcceptance {
+        operation_id: operation_id.clone(),
+        origin: cluster_origin(machine_id),
+        image_seed: machine_id.clone(),
+        platform: platform.clone(),
+    }
+}
+
 #[tokio::test]
 async fn platform_rpc_failure_records_real_evidence_and_publishes_no_image_index() {
     let amd64_machine = machine_id("machine_amd64");
@@ -111,6 +130,7 @@ async fn platform_rpc_failure_records_real_evidence_and_publishes_no_image_index
         amd64_machine.clone(),
         MachineBuildStartRpcResponse::Ok(MachineBuildStartRpcOk {
             machine_id: amd64_machine.clone(),
+            acceptance: executor_acceptance(&operation_id, &amd64_machine, &amd64),
             image: completed_image.clone(),
             verified_commit: verified_commit.clone(),
             toolchain: toolchain.clone(),
@@ -124,6 +144,7 @@ async fn platform_rpc_failure_records_real_evidence_and_publishes_no_image_index
         MachineBuildStartRpcResponse::DomainError {
             machine_id: arm64_machine.clone(),
             error: MachineBuildStartDomainError::PlatformFailed {
+                acceptance: executor_acceptance(&operation_id, &arm64_machine, &arm64),
                 failure: platform_failure.clone(),
                 log_summary: BuildLogSummary::none(),
             },
@@ -314,6 +335,9 @@ async fn valid_log_is_observed_while_machine_call_is_pending() {
     let frame = MachineBuildLogFrame {
         operation_id: OperationId::try_new("build-1").expect("operation id"),
         machine_id: MachineId::try_new("machine-a").expect("machine id"),
+        origin: BuildExecutorOrigin::Cluster {
+            machine_id: MachineId::try_new("machine-a").expect("machine id"),
+        },
         platform: OciPlatform::try_new("linux", "amd64").expect("platform"),
         sequence: 1,
         chunk: BuildLogChunk::try_new("live").expect("chunk"),
@@ -354,7 +378,7 @@ async fn timed_out_cancel_attempt_retries_inside_one_absolute_deadline() {
     let started_at = tokio::time::Instant::now();
     let deadline = started_at + BUILD_CANCEL_TIMEOUT;
 
-    deliver_build_cancel_to_machine(deadline, |timeout| {
+    deliver_build_cancel_to_machine(&machine_id, deadline, |timeout| {
         observed_timeouts.borrow_mut().push(timeout);
         let attempt = attempts.get();
         attempts.set(attempt + 1);
@@ -367,6 +391,7 @@ async fn timed_out_cancel_attempt_retries_inside_one_absolute_deadline() {
                 ))
             } else {
                 Ok(MachineBuildCancelRpcOk {
+                    origin: cluster_origin(&machine_id),
                     machine_id,
                     outcome: MachineBuildCancelOutcome::Requested,
                 })
@@ -392,7 +417,8 @@ fn cancel_delivery_retries_not_running_and_transient_unavailability() {
     let machine_id = machine_id("machine-a");
     let retryable = [
         Ok(MachineBuildCancelRpcOk {
-            machine_id,
+            origin: cluster_origin(&machine_id),
+            machine_id: machine_id.clone(),
             outcome: MachineBuildCancelOutcome::NotRunning,
         }),
         Err(MachineCallError::Unavailable(
@@ -423,7 +449,11 @@ fn cancel_delivery_retries_not_running_and_transient_unavailability() {
         )),
     ];
 
-    assert!(retryable.iter().all(cancel_delivery_should_retry));
+    assert!(
+        retryable
+            .iter()
+            .all(|result| cancel_delivery_should_retry(&machine_id, result))
+    );
 }
 
 #[test]
@@ -432,6 +462,7 @@ fn cancel_delivery_stops_on_requested_domain_failure_and_permanent_unavailabilit
     let permanent = [
         Ok(MachineBuildCancelRpcOk {
             machine_id: machine_id.clone(),
+            origin: cluster_origin(&machine_id),
             outcome: MachineBuildCancelOutcome::Requested,
         }),
         Err(MachineCallError::Domain(
@@ -475,7 +506,7 @@ fn cancel_delivery_stops_on_requested_domain_failure_and_permanent_unavailabilit
         )),
         Err(MachineCallError::Unavailable(
             MachineRuntimeUnavailableReason::WrongResponder {
-                actual_machine_id: machine_id,
+                actual_machine_id: machine_id.clone(),
             },
         )),
     ];
@@ -483,7 +514,7 @@ fn cancel_delivery_stops_on_requested_domain_failure_and_permanent_unavailabilit
     assert!(
         permanent
             .iter()
-            .all(|result| !cancel_delivery_should_retry(result))
+            .all(|result| !cancel_delivery_should_retry(&machine_id, result))
     );
 }
 
@@ -501,6 +532,26 @@ fn already_running_is_stable_machine_unavailable_evidence() {
             failure: BuildPlatformFailure::MachineUnavailable { message },
             ..
         } if message.as_str() == "machine reports this build is already running"
+    ));
+}
+
+#[test]
+fn terminal_acceptance_rejects_wrong_executor_provenance() {
+    let operation_id = OperationId::try_new("build-1").expect("operation id");
+    let machine_id = MachineId::try_new("machine-a").expect("machine id");
+    let platform = OciPlatform::try_new("linux", "amd64").expect("platform");
+    let expected = executor_acceptance(&operation_id, &machine_id, &platform);
+    let mut actual = expected.clone();
+    actual.origin = BuildExecutorOrigin::External {
+        pool_id: ployz_core::build::BuildPoolId::try_new("pool-a").expect("pool id"),
+        executor_id: ployz_core::build::BuildExecutorId::try_new("executor-a")
+            .expect("executor id"),
+    };
+
+    assert!(matches!(
+        validate_executor_acceptance(&expected, &actual),
+        Err(BuildPlatformFailure::MachineUnavailable { message })
+            if message.as_str() == "build executor returned mismatched acceptance provenance"
     ));
 }
 
