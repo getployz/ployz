@@ -76,8 +76,9 @@ pub use ployz_core::machine::{
     StrandedVolumeAlarm, StrandedVolumeReason, VolumeEnsureFailure,
 };
 pub use ployz_core::nats_config::{
-    CredentialGrant, CredentialName, CredentialNameError, CredentialRole, NatsAuthorizationGrant,
-    NatsCaCertificatePem, NatsInternalAuthority, NatsUserPublicKey, NatsUserSeed,
+    BuildExecutorCredentialExpiresAt, BuildExecutorIdentity, CredentialGrant, CredentialName,
+    CredentialNameError, CredentialRole, NatsAuthorizationGrant, NatsCaCertificatePem,
+    NatsInternalAuthority, NatsUserPublicKey, NatsUserSeed,
 };
 pub use ployz_core::network::internal_dns::{
     InternalDnsFactGeneration, InternalDnsFactWatermark, InternalDnsIntentHealth,

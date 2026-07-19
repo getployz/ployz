@@ -140,6 +140,10 @@ export type BuildPoolId = Brand<string, "BuildPoolId">;
 
 export type BuildExecutorId = Brand<string, "BuildExecutorId">;
 
+export type BuildExecutorIdentity = { pool_id: BuildPoolId, executor_id: BuildExecutorId, };
+
+export type BuildExecutorCredentialExpiresAt = Brand<string, "BuildExecutorCredentialExpiresAt">;
+
 export type BuildTarget = { "target": "cluster" } | { "target": "external", pool_id: BuildPoolId, };
 
 export type BuildExecutorOrigin = { "origin": "cluster", machine_id: MachineId, } | { "origin": "external", pool_id: BuildPoolId, executor_id: BuildExecutorId, };
