@@ -26,6 +26,7 @@ use crate::tests::support::control::{RecordingReload, TestNats};
 
 const LIFECYCLE_BUDGET: Duration = Duration::from_secs(15);
 const LIFECYCLE_POLL_INTERVAL: Duration = Duration::from_millis(25);
+const AUTHORIZATION_HEALTH_REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[tokio::test]
 async fn operator_can_add_list_rename_and_remove_a_live_credential() {
@@ -212,6 +213,7 @@ async fn expiring_build_executor_loses_live_authority_without_disturbing_operato
     let config = nats.control_config();
     let runtime = nats.start_control(&config).await;
     let api = nats.api();
+    let health_api = nats.api_with_request_timeout(AUTHORIZATION_HEALTH_REQUEST_TIMEOUT);
     let machine = nats.machine_client(&retained_machine_id).await;
     let minted = MintedNatsUser::generate().expect("executor credential mints");
     let public_key = minted.public.clone();
@@ -226,7 +228,7 @@ async fn expiring_build_executor_loses_live_authority_without_disturbing_operato
         expires_at,
     );
     add_credential(&api, "op_executor_expiry_add", grant.clone()).await;
-    wait_for_authorization_health(&api, "scheduled executor expiry", |health| {
+    wait_for_authorization_health(&health_api, "scheduled executor expiry", |health| {
         (health.next_expiry_at_unix_seconds == Some(expires_at)).then_some(())
     })
     .await;
@@ -244,10 +246,14 @@ async fn expiring_build_executor_loses_live_authority_without_disturbing_operato
         .await
         .expect("executor binds before expiry");
 
-    wait_for_authorization_health(&api, "successful executor expiry projection", |health| {
-        (health.next_expiry_at_unix_seconds.is_none() && health.consecutive_failures == 0)
-            .then_some(())
-    })
+    wait_for_authorization_health(
+        &health_api,
+        "successful executor expiry projection",
+        |health| {
+            (health.next_expiry_at_unix_seconds.is_none() && health.consecutive_failures == 0)
+                .then_some(())
+        },
+    )
     .await;
     wait_for_disconnection(&executor, "expired executor").await;
     assert!(
@@ -287,6 +293,7 @@ async fn failed_expiry_reload_surfaces_health_then_recovers_and_revokes() {
     let config = nats.control_config();
     let initial_runtime = nats.start_control(&config).await;
     let api = nats.api();
+    let health_api = nats.api_with_request_timeout(AUTHORIZATION_HEALTH_REQUEST_TIMEOUT);
     let minted = MintedNatsUser::generate().expect("executor credential mints");
     let public_key = minted.public.clone();
     let pool_id = BuildPoolId::try_new("pool_ci").expect("pool id");
@@ -313,7 +320,7 @@ async fn failed_expiry_reload_surfaces_health_then_recovers_and_revokes() {
     let runtime = nats
         .start_control_with_reload(&config, reload.clone())
         .await;
-    wait_for_authorization_health(&api, "rescheduled executor expiry", |health| {
+    wait_for_authorization_health(&health_api, "rescheduled executor expiry", |health| {
         (health.next_expiry_at_unix_seconds == Some(expires_at)).then_some(())
     })
     .await;
@@ -321,7 +328,7 @@ async fn failed_expiry_reload_surfaces_health_then_recovers_and_revokes() {
         reload.outcomes().is_empty(),
         "fixture startup reload bypasses the mutation runner"
     );
-    wait_for_authorization_health(&api, "failed expiry reload evidence", |health| {
+    wait_for_authorization_health(&health_api, "failed expiry reload evidence", |health| {
         (health.consecutive_failures == 1
             && health
                 .last_failure
@@ -355,7 +362,7 @@ async fn failed_expiry_reload_surfaces_health_then_recovers_and_revokes() {
         ),
         "retry reload succeeds: {retry_outcomes:?}"
     );
-    wait_for_authorization_health(&api, "recovered expiry reload", |health| {
+    wait_for_authorization_health(&health_api, "recovered expiry reload", |health| {
         (health.consecutive_failures == 0
             && health.last_failure.is_none()
             && health.next_expiry_at_unix_seconds.is_none())
@@ -449,17 +456,32 @@ async fn wait_for_authorization_health<T>(
     label: &str,
     mut accept: impl FnMut(&ControlNatsAuthorizationHealth) -> Option<T>,
 ) -> T {
-    poll_until(LIFECYCLE_BUDGET, LIFECYCLE_POLL_INTERVAL, async || {
-        let health = api
-            .runtime_snapshot(&RuntimeSnapshotRequest {})
-            .await
-            .ok()?
-            .control_health?
-            .nats_authorization;
-        accept(&health)
-    })
-    .await
-    .unwrap_or_else(|| panic!("timed out waiting for {label}"))
+    let deadline = tokio::time::Instant::now() + LIFECYCLE_BUDGET;
+    let mut last_request_error = None;
+    let mut last_health = None;
+
+    loop {
+        match api.runtime_snapshot(&RuntimeSnapshotRequest {}).await {
+            Ok(snapshot) => {
+                if let Some(control_health) = snapshot.control_health {
+                    let health = control_health.nats_authorization;
+                    if let Some(value) = accept(&health) {
+                        return value;
+                    }
+                    last_health = Some(health);
+                }
+            }
+            Err(error) => last_request_error = Some(format!("{error:?}")),
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            panic!(
+                "timed out waiting for {label}; last request error: {last_request_error:?}; \
+                 last authorization health: {last_health:?}"
+            );
+        }
+        tokio::time::sleep(LIFECYCLE_POLL_INTERVAL).await;
+    }
 }
 
 fn current_unix_seconds() -> u64 {

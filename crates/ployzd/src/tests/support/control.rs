@@ -50,6 +50,10 @@ impl TestNats {
         self.connected.api()
     }
 
+    pub fn api_with_request_timeout(&self, request_timeout: Duration) -> OperationApiClient {
+        self.api().with_request_timeout(request_timeout)
+    }
+
     pub fn join_api(&self) -> OperationApiClient {
         OperationApiClient::new(self.connected.join.clone())
             .with_request_timeout(Duration::from_secs(30))
