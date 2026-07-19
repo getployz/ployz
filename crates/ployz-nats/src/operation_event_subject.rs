@@ -247,6 +247,7 @@ pub const fn machine_credential_provisioning_step_token(
 
 #[cfg(test)]
 mod build_subject_tests {
+    use ployz_core::build::{BuildExecutorAssignment, BuildExecutorEvidence};
     use ployz_core::ids::{MachineId, OperationId};
     use ployz_core::image::OciPlatform;
     use ployz_core::operation::{BuildLogChunk, OperationEvent};
@@ -269,7 +270,9 @@ mod build_subject_tests {
             operation_event_subject_suffix(&OperationEvent::BuildPlatformLog {
                 operation_id,
                 platform,
-                machine_id,
+                executor: BuildExecutorEvidence::from_assignment(
+                    &BuildExecutorAssignment::Cluster { machine_id },
+                ),
                 chunk: BuildLogChunk::try_new("step 1").expect("chunk"),
             }),
             "build.platform.log"

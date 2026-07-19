@@ -10,6 +10,7 @@ use crate::control::sequencer::{
     OperationControllers, ServiceRestartSubmitCommand, VolumeCreateSubmitCommand,
     VolumeRemoveSubmitCommand,
 };
+use ployz_core::build::BuildTarget;
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::operation::{CredentialGrantAction, EventSequence, VolumeCreateRequest};
 use ployz_nats::subjects::{OperationProgressScope, operation_progress_watch};
@@ -29,8 +30,22 @@ pub async fn build_submit(
     request: BuildSubmitRequest,
 ) -> Result<AcceptedOperation, BuildSubmitError> {
     let operation_id = request.operation_id.clone();
+    if let BuildTarget::External { pool_id } = &request.target {
+        let platform = request
+            .platforms
+            .iter()
+            .next()
+            .expect("validated build platforms are non-empty")
+            .clone();
+        return Err(BuildSubmitError::NoCapableExternalExecutor {
+            operation_id,
+            pool_id: pool_id.clone(),
+            platform,
+        });
+    }
     let accepted = handlers.controllers().submit_build(BuildSubmitCommand {
         operation_id: request.operation_id,
+        target: request.target,
         source: request.source,
         adapter: request.adapter,
         platforms: request.platforms,

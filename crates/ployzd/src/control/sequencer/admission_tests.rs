@@ -1,7 +1,7 @@
 use super::*;
 use crate::control::intent::ingress_intent::IngressIntentStore;
 use crate::control::store::CoreStore;
-use ployz_core::build::{BuildAdapter, BuildCacheScope, BuildPlatforms, GitSource};
+use ployz_core::build::{BuildAdapter, BuildCacheScope, BuildPlatforms, BuildTarget, GitSource};
 use ployz_core::deploy::{
     ContainerRuntimeSpec, DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec,
     ImageReference, ImageSource, ReplicaCount,
@@ -44,6 +44,7 @@ fn build_cache_prune_command(operation: &str) -> MachineBuildCachePruneSubmitCom
 fn build_submit_command(operation: &str) -> BuildSubmitCommand {
     BuildSubmitCommand {
         operation_id: operation_id(operation),
+        target: BuildTarget::Cluster,
         source: GitSource::try_new(
             "https://example.com/repository.git",
             "0123456789abcdef0123456789abcdef01234567",
@@ -78,15 +79,15 @@ async fn build_submit_records_redacted_accepted_evidence_before_execution() {
         .expect("status reads")
         .expect("status exists");
 
-    let OperationStatus::Build { source, state, .. } = status else {
+    let OperationStatus::Build { status } = status else {
         panic!("build submission must project build status");
     };
     assert!(matches!(
-        state,
+        status.state(),
         ployz_core::operation::BuildOperationState::Accepted
     ));
     assert!(
-        !serde_json::to_string(&source)
+        !serde_json::to_string(status.source())
             .expect("source evidence serializes")
             .contains("private-token")
     );
@@ -105,6 +106,27 @@ async fn build_submit_rejects_same_operation_id_with_different_request() {
     conflicting.platforms =
         BuildPlatforms::try_new([OciPlatform::try_new("linux", "arm64").expect("valid platform")])
             .expect("non-empty platforms");
+
+    assert!(matches!(
+        controllers.submit_build(conflicting).await,
+        Err(SubmitCommandError::Submit(
+            SubmitOperationError::DuplicateSequenceMismatch { .. }
+        ))
+    ));
+}
+
+#[tokio::test]
+async fn build_submit_idempotency_includes_target() {
+    let (_nats, controllers, _intent) = test_controllers().await;
+    let original = build_submit_command("build_target_conflict");
+    controllers
+        .submit_build(original)
+        .await
+        .expect("cluster build submits");
+    let mut conflicting = build_submit_command("build_target_conflict");
+    conflicting.target = BuildTarget::External {
+        pool_id: ployz_core::build::BuildPoolId::try_new("pool-a").expect("pool id"),
+    };
 
     assert!(matches!(
         controllers.submit_build(conflicting).await,

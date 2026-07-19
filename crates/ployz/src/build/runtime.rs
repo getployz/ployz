@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use ployz_core::build::{BUILD_MAX_ATTACHED_WATCH_TIMEOUT, GitSource};
+use ployz_core::build::{BUILD_MAX_ATTACHED_WATCH_TIMEOUT, BuildTarget, GitSource};
 use ployz_sdk_types::{BuildCancelRequest, BuildSubmitRequest};
 
 use crate::build::command::{BuildCancelCommand, BuildSubmitCommand};
@@ -41,6 +41,7 @@ pub(crate) async fn submit(
     let accepted = api
         .build_submit(&BuildSubmitRequest {
             operation_id: command.operation_id,
+            target: BuildTarget::Cluster,
             source,
             adapter: command.adapter,
             platforms: command.platforms,

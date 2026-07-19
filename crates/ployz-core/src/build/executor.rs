@@ -1,0 +1,783 @@
+//! Transport-neutral contracts for bounded build executors.
+
+use std::collections::BTreeSet;
+
+use serde::{Deserialize, Serialize};
+
+use super::{BuildAdapter, GitSource, VerifiedGitCommit};
+use crate::deploy::PlatformImage;
+use crate::ids::{BuildExecutorId, BuildPoolId, MachineId, OperationId};
+use crate::image::OciPlatform;
+use crate::operation::{
+    BuildLogChunk, BuildPlatformFailure, BuildToolchainEvidence, FailureMessage,
+};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "target", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BuildTarget {
+    Cluster,
+    External { pool_id: BuildPoolId },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "executor", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BuildExecutorAssignment {
+    Cluster {
+        machine_id: MachineId,
+    },
+    External {
+        pool_id: BuildPoolId,
+        executor_id: BuildExecutorId,
+        image_seed: MachineId,
+    },
+}
+
+impl BuildExecutorAssignment {
+    #[must_use]
+    pub fn origin(&self) -> BuildExecutorOrigin {
+        match self {
+            Self::Cluster { machine_id } => BuildExecutorOrigin::Cluster {
+                machine_id: machine_id.clone(),
+            },
+            Self::External {
+                pool_id,
+                executor_id,
+                image_seed: _,
+            } => BuildExecutorOrigin::External {
+                pool_id: pool_id.clone(),
+                executor_id: executor_id.clone(),
+            },
+        }
+    }
+
+    #[must_use]
+    pub const fn image_seed(&self) -> &MachineId {
+        match self {
+            Self::Cluster { machine_id } => machine_id,
+            Self::External { image_seed, .. } => image_seed,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalBuildExecutorCandidate {
+    pub pool_id: BuildPoolId,
+    pub executor_id: BuildExecutorId,
+    pub platform: OciPlatform,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct BuildPlatformExecutorAssignment {
+    pub platform: OciPlatform,
+    pub executor: BuildExecutorAssignment,
+}
+
+/// Canonical per-platform executor provenance for one build operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "typescript",
+    ts(type = "Array<BuildPlatformExecutorAssignment>")
+)]
+#[serde(
+    try_from = "Vec<BuildPlatformExecutorAssignment>",
+    into = "Vec<BuildPlatformExecutorAssignment>"
+)]
+pub struct BuildExecutorAssignments(Vec<BuildPlatformExecutorAssignment>);
+
+impl BuildExecutorAssignments {
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self(Vec::new())
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &BuildPlatformExecutorAssignment> {
+        self.0.iter()
+    }
+
+    pub(crate) fn insert(
+        &mut self,
+        target: &BuildTarget,
+        requested_platforms: &super::BuildPlatforms,
+        assignment: BuildPlatformExecutorAssignment,
+    ) -> Result<(), BuildExecutorAssignmentsError> {
+        if !requested_platforms.contains(&assignment.platform) {
+            return Err(BuildExecutorAssignmentsError::UnrequestedPlatform);
+        }
+        if self
+            .0
+            .iter()
+            .any(|placed| placed.platform == assignment.platform)
+        {
+            return Err(BuildExecutorAssignmentsError::DuplicatePlatform);
+        }
+        if !assignment_matches_target(target, &assignment.executor) {
+            return Err(BuildExecutorAssignmentsError::TargetMismatch);
+        }
+        self.0.push(assignment);
+        Ok(())
+    }
+
+    #[must_use]
+    pub(crate) fn matches(
+        &self,
+        platform: &OciPlatform,
+        executor: &BuildExecutorAssignment,
+    ) -> bool {
+        self.0
+            .iter()
+            .any(|placed| placed.platform == *platform && placed.executor == *executor)
+    }
+
+    #[must_use]
+    pub(crate) fn is_complete(&self, platforms: &super::BuildPlatforms) -> bool {
+        self.len() == platforms.iter().len()
+            && platforms
+                .iter()
+                .all(|platform| self.0.iter().any(|placed| placed.platform == *platform))
+    }
+
+    #[must_use]
+    pub(crate) fn contains_seed(&self, machine_id: &MachineId) -> bool {
+        self.0
+            .iter()
+            .any(|assignment| assignment.executor.image_seed() == machine_id)
+    }
+
+    #[must_use]
+    pub(crate) fn matches_contract(
+        &self,
+        target: &BuildTarget,
+        platforms: &super::BuildPlatforms,
+    ) -> bool {
+        self.0.iter().all(|assignment| {
+            platforms.contains(&assignment.platform)
+                && assignment_matches_target(target, &assignment.executor)
+        })
+    }
+}
+
+impl TryFrom<Vec<BuildPlatformExecutorAssignment>> for BuildExecutorAssignments {
+    type Error = BuildExecutorAssignmentsError;
+
+    fn try_from(assignments: Vec<BuildPlatformExecutorAssignment>) -> Result<Self, Self::Error> {
+        let Some(first) = assignments.first() else {
+            return Ok(Self::empty());
+        };
+        for (index, assignment) in assignments.iter().enumerate() {
+            if assignments
+                .iter()
+                .take(index)
+                .any(|placed| placed.platform == assignment.platform)
+            {
+                return Err(BuildExecutorAssignmentsError::DuplicatePlatform);
+            }
+            if !same_target(&first.executor, &assignment.executor) {
+                return Err(BuildExecutorAssignmentsError::HeterogeneousTarget);
+            }
+        }
+        Ok(Self(assignments))
+    }
+}
+
+impl From<BuildExecutorAssignments> for Vec<BuildPlatformExecutorAssignment> {
+    fn from(assignments: BuildExecutorAssignments) -> Self {
+        assignments.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum BuildExecutorAssignmentsError {
+    #[error("build executor assignments contain a duplicate platform")]
+    DuplicatePlatform,
+    #[error("build executor assignments mix targets or external pools")]
+    HeterogeneousTarget,
+    #[error("build executor assignment targets an unrequested platform")]
+    UnrequestedPlatform,
+    #[error("build executor assignment does not match the requested build target")]
+    TargetMismatch,
+}
+
+fn same_target(left: &BuildExecutorAssignment, right: &BuildExecutorAssignment) -> bool {
+    match (left, right) {
+        (BuildExecutorAssignment::Cluster { .. }, BuildExecutorAssignment::Cluster { .. }) => true,
+        (
+            BuildExecutorAssignment::External { pool_id: left, .. },
+            BuildExecutorAssignment::External { pool_id: right, .. },
+        ) => left == right,
+        (BuildExecutorAssignment::Cluster { .. }, BuildExecutorAssignment::External { .. })
+        | (BuildExecutorAssignment::External { .. }, BuildExecutorAssignment::Cluster { .. }) => {
+            false
+        }
+    }
+}
+
+fn assignment_matches_target(target: &BuildTarget, assignment: &BuildExecutorAssignment) -> bool {
+    match (target, assignment) {
+        (BuildTarget::Cluster, BuildExecutorAssignment::Cluster { .. }) => true,
+        (
+            BuildTarget::External { pool_id },
+            BuildExecutorAssignment::External {
+                pool_id: assignment_pool_id,
+                ..
+            },
+        ) => pool_id == assignment_pool_id,
+        (BuildTarget::Cluster, BuildExecutorAssignment::External { .. })
+        | (BuildTarget::External { .. }, BuildExecutorAssignment::Cluster { .. }) => false,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExternalBuildPlacementError {
+    NoCapableExecutor {
+        pool_id: BuildPoolId,
+        platform: OciPlatform,
+    },
+    NoReachableImageSeed {
+        pool_id: BuildPoolId,
+    },
+}
+
+/// Selects only from the capability inventory and reachable Machine seeds the
+/// caller supplied. An unsolicited responder has no path into either set.
+pub fn place_external_build_platforms(
+    pool_id: &BuildPoolId,
+    platforms: &super::BuildPlatforms,
+    candidates: &[ExternalBuildExecutorCandidate],
+    reachable_image_seeds: &BTreeSet<MachineId>,
+) -> Result<Vec<BuildPlatformExecutorAssignment>, ExternalBuildPlacementError> {
+    let mut assignments = Vec::new();
+    for platform in platforms.iter() {
+        let executor = candidates
+            .iter()
+            .filter(|candidate| candidate.pool_id == *pool_id && candidate.platform == *platform)
+            .min_by(|left, right| left.executor_id.cmp(&right.executor_id))
+            .ok_or_else(|| ExternalBuildPlacementError::NoCapableExecutor {
+                pool_id: pool_id.clone(),
+                platform: platform.clone(),
+            })?;
+        let image_seed = reachable_image_seeds
+            .iter()
+            .next()
+            .cloned()
+            .ok_or_else(|| ExternalBuildPlacementError::NoReachableImageSeed {
+                pool_id: pool_id.clone(),
+            })?;
+        assignments.push(BuildPlatformExecutorAssignment {
+            platform: platform.clone(),
+            executor: BuildExecutorAssignment::External {
+                pool_id: pool_id.clone(),
+                executor_id: executor.executor_id.clone(),
+                image_seed,
+            },
+        });
+    }
+    Ok(assignments)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "origin", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BuildExecutorOrigin {
+    Cluster {
+        machine_id: MachineId,
+    },
+    External {
+        pool_id: BuildPoolId,
+        executor_id: BuildExecutorId,
+    },
+}
+
+/// Validated executor identity and image-seed provenance for build evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    try_from = "BuildExecutorEvidenceWire",
+    into = "BuildExecutorEvidenceWire"
+)]
+pub struct BuildExecutorEvidence(BuildExecutorAssignment);
+
+#[cfg(feature = "typescript")]
+impl ts_rs::TS for BuildExecutorEvidence {
+    type WithoutGenerics = Self;
+    type OptionInnerType = Self;
+
+    fn name(_cfg: &ts_rs::Config) -> String {
+        "BuildExecutorEvidence".to_owned()
+    }
+
+    fn decl(cfg: &ts_rs::Config) -> String {
+        format!(
+            "type BuildExecutorEvidence = {};",
+            BuildExecutorEvidenceWire::inline(cfg)
+        )
+    }
+
+    fn decl_concrete(cfg: &ts_rs::Config) -> String {
+        Self::decl(cfg)
+    }
+
+    fn inline(cfg: &ts_rs::Config) -> String {
+        BuildExecutorEvidenceWire::inline(cfg)
+    }
+
+    fn inline_flattened(cfg: &ts_rs::Config) -> String {
+        BuildExecutorEvidenceWire::inline_flattened(cfg)
+    }
+
+    fn visit_dependencies(visitor: &mut impl ts_rs::TypeVisitor)
+    where
+        Self: 'static,
+    {
+        BuildExecutorEvidenceWire::visit_dependencies(visitor);
+    }
+}
+
+impl BuildExecutorEvidence {
+    #[must_use]
+    pub fn from_assignment(assignment: &BuildExecutorAssignment) -> Self {
+        Self(assignment.clone())
+    }
+
+    #[must_use]
+    pub const fn machine_id(&self) -> &MachineId {
+        self.0.image_seed()
+    }
+
+    #[must_use]
+    pub const fn assignment(&self) -> &BuildExecutorAssignment {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum BuildExecutorEvidenceError {
+    #[error("cluster build evidence seed does not match its executor machine")]
+    ClusterSeedMismatch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+struct BuildExecutorEvidenceWire {
+    machine_id: MachineId,
+    executor_origin: BuildExecutorOrigin,
+}
+
+impl TryFrom<BuildExecutorEvidenceWire> for BuildExecutorEvidence {
+    type Error = BuildExecutorEvidenceError;
+
+    fn try_from(value: BuildExecutorEvidenceWire) -> Result<Self, Self::Error> {
+        let assignment = match value.executor_origin {
+            BuildExecutorOrigin::Cluster { machine_id } if machine_id == value.machine_id => {
+                BuildExecutorAssignment::Cluster { machine_id }
+            }
+            BuildExecutorOrigin::Cluster { .. } => {
+                return Err(BuildExecutorEvidenceError::ClusterSeedMismatch);
+            }
+            BuildExecutorOrigin::External {
+                pool_id,
+                executor_id,
+            } => BuildExecutorAssignment::External {
+                pool_id,
+                executor_id,
+                image_seed: value.machine_id,
+            },
+        };
+        Ok(Self(assignment))
+    }
+}
+
+impl From<BuildExecutorEvidence> for BuildExecutorEvidenceWire {
+    fn from(value: BuildExecutorEvidence) -> Self {
+        Self {
+            machine_id: value.0.image_seed().clone(),
+            executor_origin: value.0.origin(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuildExecutorStartRequest {
+    pub operation_id: OperationId,
+    pub assignment: BuildExecutorAssignment,
+    pub source: GitSource,
+    pub adapter: BuildAdapter,
+    pub platform: OciPlatform,
+    pub timeout_millis: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuildExecutorAcceptance {
+    pub operation_id: OperationId,
+    pub assignment: BuildExecutorAssignment,
+    pub platform: OciPlatform,
+}
+
+impl BuildExecutorAcceptance {
+    #[must_use]
+    pub fn from_start_request(request: &BuildExecutorStartRequest) -> Self {
+        Self {
+            operation_id: request.operation_id.clone(),
+            assignment: request.assignment.clone(),
+            platform: request.platform.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuildExecutorStartOk {
+    pub acceptance: BuildExecutorAcceptance,
+    pub image: PlatformImage,
+    pub verified_commit: VerifiedGitCommit,
+    pub toolchain: BuildToolchainEvidence,
+    #[serde(flatten)]
+    pub log_summary: BuildLogSummary,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuildLogSummary {
+    pub final_log_sequence: u64,
+    pub omitted_log_bytes: u64,
+}
+
+impl BuildLogSummary {
+    #[must_use]
+    pub const fn new(final_log_sequence: u64, omitted_log_bytes: u64) -> Self {
+        Self {
+            final_log_sequence,
+            omitted_log_bytes,
+        }
+    }
+
+    #[must_use]
+    pub const fn none() -> Self {
+        Self::new(0, 0)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BuildExecutorStartDomainError {
+    AssignmentMismatch {
+        expected: Box<BuildExecutorAssignment>,
+        actual: BuildExecutorAssignment,
+    },
+    RuntimeUnavailable,
+    RuntimeStopped,
+    PlatformMismatch {
+        expected: OciPlatform,
+        actual: OciPlatform,
+    },
+    InvalidTimeout {
+        timeout_millis: u64,
+    },
+    AlreadyRunning,
+    PlatformFailed {
+        acceptance: Box<BuildExecutorAcceptance>,
+        failure: BuildPlatformFailure,
+        #[serde(flatten)]
+        log_summary: BuildLogSummary,
+    },
+    Cancelled {
+        acceptance: Box<BuildExecutorAcceptance>,
+        cleanup: BuildExecutorCleanupOutcome,
+        #[serde(flatten)]
+        log_summary: BuildLogSummary,
+    },
+    TimedOut {
+        acceptance: Box<BuildExecutorAcceptance>,
+        message: FailureMessage,
+        cleanup: BuildExecutorCleanupOutcome,
+        #[serde(flatten)]
+        log_summary: BuildLogSummary,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BuildExecutorCleanupOutcome {
+    Confirmed,
+    Unconfirmed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuildExecutorCancelRequest {
+    pub operation_id: OperationId,
+    pub assignment: BuildExecutorAssignment,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuildExecutorCancelOk {
+    pub assignment: BuildExecutorAssignment,
+    pub outcome: BuildExecutorCancelOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BuildExecutorCancelOutcome {
+    Requested,
+    NotRunning,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BuildExecutorCancelDomainError {
+    AssignmentMismatch {
+        expected: Box<BuildExecutorAssignment>,
+        actual: BuildExecutorAssignment,
+    },
+    CancelFailed {
+        message: FailureMessage,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuildExecutorLogFrame {
+    pub operation_id: OperationId,
+    pub assignment: BuildExecutorAssignment,
+    pub platform: OciPlatform,
+    pub sequence: u64,
+    pub chunk: BuildLogChunk,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cluster_assignment() -> BuildExecutorAssignment {
+        BuildExecutorAssignment::Cluster {
+            machine_id: MachineId::try_new("machine-a").expect("machine id"),
+        }
+    }
+
+    fn platform(architecture: &str) -> OciPlatform {
+        OciPlatform::try_new("linux", architecture).expect("platform")
+    }
+
+    fn placed(
+        architecture: &str,
+        executor: BuildExecutorAssignment,
+    ) -> BuildPlatformExecutorAssignment {
+        BuildPlatformExecutorAssignment {
+            platform: platform(architecture),
+            executor,
+        }
+    }
+
+    fn start_request() -> BuildExecutorStartRequest {
+        let source = GitSource::try_new(
+            "https://example.test/repo.git",
+            "0123456789abcdef0123456789abcdef01234567",
+            "git",
+            "redacted-test-value",
+            None::<String>,
+        )
+        .expect("source");
+        BuildExecutorStartRequest {
+            operation_id: OperationId::try_new("build-1").expect("operation id"),
+            assignment: cluster_assignment(),
+            source,
+            adapter: BuildAdapter::Dockerfile {
+                dockerfile: super::super::BuildContextPath::try_new("Dockerfile")
+                    .expect("dockerfile path"),
+                target: None,
+            },
+            platform: OciPlatform::try_new("linux", "amd64").expect("platform"),
+            timeout_millis: 1_000,
+        }
+    }
+
+    #[test]
+    fn build_executor_ids_are_validated_subject_tokens() {
+        assert!(BuildPoolId::try_new("pool-a").is_ok());
+        assert!(BuildExecutorId::try_new("executor.a").is_err());
+    }
+
+    #[test]
+    fn executor_origin_rejects_unknown_fields() {
+        let origin = serde_json::json!({
+            "origin": "cluster",
+            "machine_id": "machine-a",
+            "credential": "must-not-fit",
+        });
+        assert!(serde_json::from_value::<BuildExecutorOrigin>(origin).is_err());
+    }
+
+    #[test]
+    fn executor_evidence_keeps_the_flat_checked_wire_shape() {
+        let evidence = BuildExecutorEvidence::from_assignment(&cluster_assignment());
+        let encoded = serde_json::to_value(evidence).expect("encode evidence");
+        assert_eq!(
+            encoded,
+            serde_json::json!({
+                "machine_id": "machine-a",
+                "executor_origin": {"origin": "cluster", "machine_id": "machine-a"},
+            })
+        );
+
+        let mut unknown = encoded;
+        unknown
+            .as_object_mut()
+            .expect("evidence object")
+            .insert("credential".into(), serde_json::json!("must-not-fit"));
+        assert!(serde_json::from_value::<BuildExecutorEvidence>(unknown).is_err());
+    }
+
+    #[test]
+    fn executor_assignments_reject_duplicate_platforms() {
+        let encoded = serde_json::to_value([
+            placed("amd64", cluster_assignment()),
+            placed("amd64", cluster_assignment()),
+        ])
+        .expect("encode assignments");
+        assert!(serde_json::from_value::<BuildExecutorAssignments>(encoded).is_err());
+    }
+
+    #[test]
+    fn executor_assignments_use_a_transparent_array_and_own_placement_checks() {
+        let requested =
+            super::super::BuildPlatforms::try_new([platform("amd64"), platform("arm64")])
+                .expect("platforms");
+        let machine_a = cluster_assignment();
+        let machine_b = BuildExecutorAssignment::Cluster {
+            machine_id: MachineId::try_new("machine-b").expect("machine"),
+        };
+        let mut assignments = BuildExecutorAssignments::empty();
+
+        assignments
+            .insert(
+                &BuildTarget::Cluster,
+                &requested,
+                placed("amd64", machine_a.clone()),
+            )
+            .expect("first placement");
+        assert!(!assignments.is_complete(&requested));
+        assert!(assignments.matches(&platform("amd64"), &machine_a));
+        assert!(!assignments.matches(&platform("amd64"), &machine_b));
+        assert!(
+            assignments
+                .insert(
+                    &BuildTarget::Cluster,
+                    &requested,
+                    placed("amd64", machine_b.clone()),
+                )
+                .is_err()
+        );
+        assert!(
+            assignments
+                .insert(
+                    &BuildTarget::Cluster,
+                    &requested,
+                    placed("riscv64", machine_b.clone()),
+                )
+                .is_err()
+        );
+        assignments
+            .insert(
+                &BuildTarget::Cluster,
+                &requested,
+                placed("arm64", machine_b),
+            )
+            .expect("second placement");
+        assert!(assignments.is_complete(&requested));
+        assert!(assignments.contains_seed(machine_a.image_seed()));
+
+        let encoded = serde_json::to_value(&assignments).expect("encode assignments");
+        assert!(encoded.is_array());
+        assert_eq!(
+            serde_json::from_value::<BuildExecutorAssignments>(encoded)
+                .expect("decode assignments"),
+            assignments
+        );
+    }
+
+    #[test]
+    fn executor_assignments_reject_mixed_targets_and_external_pools() {
+        let external = |pool: &str, executor: &str| BuildExecutorAssignment::External {
+            pool_id: BuildPoolId::try_new(pool).expect("pool"),
+            executor_id: BuildExecutorId::try_new(executor).expect("executor"),
+            image_seed: MachineId::try_new("seed-a").expect("seed"),
+        };
+        for assignments in [
+            vec![
+                placed("amd64", cluster_assignment()),
+                placed("arm64", external("pool-a", "executor-a")),
+            ],
+            vec![
+                placed("amd64", external("pool-a", "executor-a")),
+                placed("arm64", external("pool-b", "executor-b")),
+            ],
+        ] {
+            let encoded = serde_json::to_value(assignments).expect("encode assignments");
+            assert!(serde_json::from_value::<BuildExecutorAssignments>(encoded).is_err());
+        }
+    }
+
+    #[test]
+    fn acceptance_is_an_exact_start_request_projection() {
+        let request = start_request();
+
+        assert_eq!(
+            BuildExecutorAcceptance::from_start_request(&request),
+            BuildExecutorAcceptance {
+                operation_id: request.operation_id,
+                assignment: request.assignment,
+                platform: request.platform,
+            }
+        );
+    }
+
+    #[test]
+    fn start_request_rejects_unknown_fields() {
+        let mut encoded = serde_json::to_value(start_request()).expect("encode request");
+        encoded
+            .as_object_mut()
+            .expect("request object")
+            .insert("credential".to_owned(), serde_json::json!("must-not-fit"));
+
+        assert!(serde_json::from_value::<BuildExecutorStartRequest>(encoded).is_err());
+    }
+
+    #[test]
+    fn log_frame_rejects_unknown_or_oversized_payloads() {
+        let frame = serde_json::json!({
+            "operation_id": "build-1",
+            "assignment": {"executor": "cluster", "machine_id": "machine-a"},
+            "platform": {"os": "linux", "architecture": "amd64"},
+            "sequence": 1,
+            "chunk": "hello",
+            "credential": "must-not-fit"
+        });
+        assert!(serde_json::from_value::<BuildExecutorLogFrame>(frame).is_err());
+
+        let frame = serde_json::json!({
+            "operation_id": "build-1",
+            "assignment": {"executor": "cluster", "machine_id": "machine-a"},
+            "platform": {"os": "linux", "architecture": "amd64"},
+            "sequence": 1,
+            "chunk": "x".repeat(crate::operation::MAX_BUILD_LOG_CHUNK_BYTES + 1)
+        });
+        assert!(serde_json::from_value::<BuildExecutorLogFrame>(frame).is_err());
+    }
+}
