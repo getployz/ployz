@@ -281,7 +281,7 @@ async fn begin_upload(
         }
     }
     let upload_id =
-        match ImageUploadId::try_new(format!("upload_{}", nuid::next().to_ascii_lowercase())) {
+        match ImageUploadId::try_new(crate::identity::prefix_id("upload_", &nuid::next())) {
             Ok(upload_id) => upload_id,
             Err(error) => {
                 return storage_error(machine_id, error.to_string());
