@@ -41,9 +41,6 @@ pub(super) async fn run_executor_session(
     };
     let evidence_executor = BuildExecutorEvidence::from_assignment(&executor);
     let id = &accepted.submission.operation_id;
-    if !driver.active.claim_machine_start(id, &machine_id).await {
-        return Ok(PlatformOutcome::CancelledBeforeStart);
-    }
     let logs = driver
         .client
         .subscribe(machine_build_log(&machine_id, id))
@@ -57,6 +54,9 @@ pub(super) async fn run_executor_session(
                 },
             )
         })?;
+    if !driver.active.claim_executor_start(id, &executor).await {
+        return Ok(PlatformOutcome::CancelledBeforeStart);
+    }
     let mut log_session = PlatformLogSession::new(
         driver.controllers.repository(),
         id,
@@ -64,15 +64,15 @@ pub(super) async fn run_executor_session(
         executor.clone(),
         logs,
     );
-    let request = build_start_request(accepted, executor, platform.clone(), driver.timeout);
+    let request = build_start_request(accepted, executor.clone(), platform.clone(), driver.timeout);
     if !driver
         .active
-        .machine_start_is_authorized(id, &machine_id)
+        .executor_start_is_authorized(id, &executor)
         .await
     {
         driver
             .active
-            .release_machine_start_claim(id, &machine_id)
+            .release_executor_start_claim(id, &executor)
             .await;
         return Ok(PlatformOutcome::CancelledBeforeStart);
     }
@@ -114,7 +114,7 @@ pub(super) async fn run_executor_session(
         )) => {
             log_session.drain(BuildLogSummary::none()).await?;
             return Ok(PlatformOutcome::TimedOut {
-                machine_id,
+                executor,
                 message: reason.failure_message(),
                 cleanup: MachineBuildCleanupOutcome::Unconfirmed,
             });
@@ -147,14 +147,13 @@ pub(super) async fn run_executor_session(
                 record_platform_failure(driver, id, platform, evidence_executor, failure).await?;
                 Ok(PlatformOutcome::Failed(operation_failure))
             }
-            BuildSummary::Cancelled { cleanup, .. } => Ok(PlatformOutcome::Cancelled {
-                machine_id,
-                cleanup,
-            }),
+            BuildSummary::Cancelled { cleanup, .. } => {
+                Ok(PlatformOutcome::Cancelled { executor, cleanup })
+            }
             BuildSummary::TimedOut {
                 message, cleanup, ..
             } => Ok(PlatformOutcome::TimedOut {
-                machine_id,
+                executor,
                 message,
                 cleanup,
             }),

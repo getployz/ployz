@@ -71,6 +71,7 @@ pub struct BuildSubmitCommand {
 pub struct AcceptedBuildExecution {
     pub submission: AcceptedBuildSubmission,
     pub source: GitSource,
+    pub planned_assignments: Vec<ployz_core::build::BuildPlatformExecutorAssignment>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -354,7 +355,11 @@ impl OperationControllers {
             })
             .await
             .map_err(SubmitCommandError::Submit)?;
-        Ok(AcceptedBuildExecution { submission, source })
+        Ok(AcceptedBuildExecution {
+            submission,
+            source,
+            planned_assignments: Vec::new(),
+        })
     }
 
     async fn submit_deploy_inner(

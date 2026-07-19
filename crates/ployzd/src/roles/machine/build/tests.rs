@@ -219,7 +219,7 @@ async fn start_rejects_wrong_origin_before_registration() {
         runtime.start(request).await,
         Err(MachineBuildStartDomainError::AssignmentMismatch {
             expected: Box::new(BuildExecutorAssignment::Cluster { machine_id }),
-            actual,
+            actual: Box::new(actual),
         })
     );
     assert!(runtime.lifecycle.state.lock().await.active.is_empty());
@@ -245,7 +245,7 @@ async fn start_rejects_external_assignment_with_different_seed_before_registrati
         runtime.start(request).await,
         Err(MachineBuildStartDomainError::AssignmentMismatch {
             expected: Box::new(BuildExecutorAssignment::Cluster { machine_id }),
-            actual,
+            actual: Box::new(actual),
         })
     );
     assert!(runtime.lifecycle.state.lock().await.active.is_empty());

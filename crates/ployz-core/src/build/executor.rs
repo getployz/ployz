@@ -594,7 +594,7 @@ pub struct BuildExecutorStartOk {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BuildExecutorStartResponse {
-    Ok(BuildExecutorStartOk),
+    Ok(Box<BuildExecutorStartOk>),
     DomainError {
         error: BuildExecutorStartDomainError,
     },
@@ -627,11 +627,11 @@ impl BuildLogSummary {
 pub enum BuildExecutorStartDomainError {
     AssignmentMismatch {
         expected: Box<BuildExecutorAssignment>,
-        actual: BuildExecutorAssignment,
+        actual: Box<BuildExecutorAssignment>,
     },
     ExecutorIdentityMismatch {
         expected: BuildExecutorIdentity,
-        actual: BuildExecutorAssignment,
+        actual: Box<BuildExecutorAssignment>,
     },
     RuntimeUnavailable,
     RuntimeStopped,
@@ -982,11 +982,11 @@ mod tests {
     fn external_pre_acceptance_errors_preserve_typed_provenance() {
         let error = BuildExecutorStartDomainError::ExecutorIdentityMismatch {
             expected: executor_identity("pool-a", "executor-a"),
-            actual: BuildExecutorAssignment::External {
+            actual: Box::new(BuildExecutorAssignment::External {
                 pool_id: BuildPoolId::try_new("pool-a").expect("pool"),
                 executor_id: BuildExecutorId::try_new("executor-b").expect("executor"),
                 image_seed: MachineId::try_new("seed-a").expect("seed"),
-            },
+            }),
         };
 
         assert_eq!(

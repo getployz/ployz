@@ -673,7 +673,7 @@ fn validate_start_provenance(
     if request.assignment != expected {
         return Err(MachineBuildStartDomainError::AssignmentMismatch {
             expected: Box::new(expected),
-            actual: request.assignment.clone(),
+            actual: Box::new(request.assignment.clone()),
         });
     }
     Ok(())

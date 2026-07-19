@@ -2,7 +2,10 @@ use std::future::Future;
 use std::time::Duration;
 
 use ployz_core::build::{
-    BUILD_MAX_PLACEMENT_TIMEOUT, BuildExecutorAssignment, BuildExecutorEvidence, BuildTarget,
+    BUILD_MAX_PLACEMENT_TIMEOUT, BuildExecutorAssignment, BuildExecutorCancelOk,
+    BuildExecutorCancelOutcome, BuildExecutorCancelRequest, BuildExecutorCancelResponse,
+    BuildExecutorCleanupOutcome, BuildExecutorEvidence, BuildPlatformExecutorAssignment,
+    BuildTarget,
 };
 use ployz_core::deploy::PushedImageReceipt;
 use ployz_core::ids::{MachineId, OperationId};
@@ -11,7 +14,10 @@ use ployz_core::operation::{
     BuildTimeoutFailure, BuildTransition, CancellationReason, EventSequence, FailureMessage,
     OperationStatus,
 };
-use ployz_nats::subjects::MachineServiceEndpoint;
+use ployz_nats::service_runtime::request_json;
+use ployz_nats::subjects::{
+    BuildExecutorServiceEndpoint, MachineServiceEndpoint, build_executor_service,
+};
 
 use crate::control::intent::service::NatsIntentReader;
 use crate::control::role_client::machine::{
@@ -22,7 +28,7 @@ use crate::control::sequencer::{AcceptedBuildExecution, OperationControllers};
 use crate::roles::machine::MachineRuntimeUnavailableReason;
 use crate::roles::machine::protocol::{
     MachineBuildCancelDomainError, MachineBuildCancelOutcome, MachineBuildCancelRpcOk,
-    MachineBuildCancelRpcRequest, MachineBuildCleanupOutcome, MachineBuildStartDomainError,
+    MachineBuildCancelRpcRequest, MachineBuildStartDomainError,
 };
 use crate::tasks::TaskSpawner;
 
@@ -96,6 +102,7 @@ impl BuildOperationDriver {
             .start(
                 accepted.submission.operation_id.clone(),
                 accepted.submission.start_sequence,
+                accepted.submission.target.clone(),
             )
             .await;
         let driver = self.clone();
@@ -138,17 +145,36 @@ impl BuildOperationDriver {
         self.active.remove(&operation_id).await;
     }
 
+    pub(crate) async fn preflight_external(
+        &self,
+        pool_id: &ployz_core::build::BuildPoolId,
+        platforms: &ployz_core::build::BuildPlatforms,
+        adapter: &ployz_core::build::BuildAdapter,
+    ) -> Result<
+        Vec<ployz_core::build::BuildPlatformExecutorAssignment>,
+        super::ExternalBuildAdmissionError,
+    > {
+        super::external_admission::preflight_external_build(
+            &self.client,
+            &self.intent,
+            pool_id,
+            platforms,
+            adapter,
+        )
+        .await
+    }
+
     pub(crate) async fn cancel(
         &self,
         operation_id: &OperationId,
         reason: CancellationReason,
     ) -> Result<BuildCancelDisposition, String> {
-        let (machines, watch_start_sequence) =
+        let (executors, watch_start_sequence) =
             match self.active.request_cancellation(operation_id, reason).await {
                 CancellationRequest::Accepted {
-                    machines,
+                    executors,
                     watch_start_sequence,
-                } => (machines, watch_start_sequence),
+                } => (executors, watch_start_sequence),
                 CancellationRequest::Finalizing => {
                     return Ok(BuildCancelDisposition::AlreadyTerminal);
                 }
@@ -191,27 +217,9 @@ impl BuildOperationDriver {
                     });
                 }
             };
-        futures_util::future::join_all(machines.iter().map(|machine_id| async move {
+        futures_util::future::join_all(executors.iter().map(|executor| async move {
             let deadline = tokio::time::Instant::now() + BUILD_CANCEL_TIMEOUT;
-            deliver_build_cancel_to_machine(machine_id, deadline, |request_timeout| {
-                let request = MachineBuildCancelRpcRequest {
-                    operation_id: operation_id.clone(),
-                    assignment: BuildExecutorAssignment::Cluster {
-                        machine_id: machine_id.clone(),
-                    },
-                };
-                async move {
-                    call_machine::<MachineBuildCancelRpcOk, MachineBuildCancelDomainError>(
-                        &self.client,
-                        request_timeout,
-                        machine_id,
-                        MachineServiceEndpoint::BuildCancel,
-                        &request,
-                    )
-                    .await
-                }
-            })
-            .await;
+            deliver_build_cancel(self, operation_id, executor, deadline).await;
         }))
         .await;
         Ok(BuildCancelDisposition::Accepted {
@@ -276,16 +284,15 @@ impl BuildOperationDriver {
                 Ok(PlatformOutcome::Failed(failure)) => {
                     first_failure.get_or_insert(failure);
                 }
-                Ok(PlatformOutcome::Cancelled {
-                    machine_id,
-                    cleanup,
-                }) => cancelled.push((machine_id, cleanup)),
+                Ok(PlatformOutcome::Cancelled { executor, cleanup }) => {
+                    cancelled.push((executor, cleanup))
+                }
                 Ok(PlatformOutcome::CancelledBeforeStart) => {}
                 Ok(PlatformOutcome::TimedOut {
-                    machine_id,
+                    executor,
                     message,
                     cleanup,
-                }) => timed_out.push((machine_id, message, cleanup)),
+                }) => timed_out.push((executor, message, cleanup)),
             }
         }
         let cancellation_reason = self.active.claim_finalization(id).await;
@@ -299,8 +306,8 @@ impl BuildOperationDriver {
                     id,
                     cancelled
                         .into_iter()
-                        .filter_map(|(machine_id, cleanup)| {
-                            (cleanup == MachineBuildCleanupOutcome::Confirmed).then_some(machine_id)
+                        .filter_map(|(executor, cleanup)| {
+                            (cleanup == BuildExecutorCleanupOutcome::Confirmed).then_some(executor)
                         })
                         .collect(),
                 )
@@ -343,51 +350,61 @@ impl BuildOperationDriver {
     async fn place(
         &self,
         accepted: &AcceptedBuildExecution,
-    ) -> Result<Vec<ClusterBuildExecutorAssignment>, BuildOperationFailure> {
+    ) -> Result<Vec<BuildPlatformExecutorAssignment>, BuildOperationFailure> {
         let id = &accepted.submission.operation_id;
-        let BuildTarget::Cluster = &accepted.submission.target else {
-            return Err(BuildOperationFailure::ControlUnavailable {
-                message: FailureMessage::try_new(
-                    "external build execution was not admitted before transport dispatch",
-                )
-                .expect("external dispatch failure is non-empty"),
-            });
-        };
         self.controllers
             .repository()
             .record_build_transition(id, BuildTransition::Placing)
             .await
             .map_err(record_failure)?;
-        let intent = self.intent.intent().await.map_err(|error| {
-            BuildOperationFailure::ControlUnavailable {
-                message: failure_message(error),
-            }
-        })?;
-        let projection = intent.dataplane_projection;
-        let facts = read_machine_placement_facts(
-            &self.facts,
-            intent
-                .active_machines
+        let placement = match &accepted.submission.target {
+            BuildTarget::Cluster => {
+                let intent = self.intent.intent().await.map_err(|error| {
+                    BuildOperationFailure::ControlUnavailable {
+                        message: failure_message(error),
+                    }
+                })?;
+                let projection = intent.dataplane_projection;
+                let facts = read_machine_placement_facts(
+                    &self.facts,
+                    intent
+                        .active_machines
+                        .into_iter()
+                        .map(|machine| (machine.machine_id, machine.lifecycle)),
+                )
+                .await;
+                let dataplane_statuses = gather_dataplane_statuses(
+                    &self.facts,
+                    projection
+                        .declared_members()
+                        .iter()
+                        .map(|member| &member.machine_id),
+                )
+                .await;
+                place_build_platforms(
+                    &accepted.submission.platforms,
+                    &accepted.submission.adapter,
+                    &facts,
+                    &projection,
+                    &dataplane_statuses,
+                )
+                .map_err(|failure| *failure)?
                 .into_iter()
-                .map(|machine| (machine.machine_id, machine.lifecycle)),
-        )
-        .await;
-        let dataplane_statuses = gather_dataplane_statuses(
-            &self.facts,
-            projection
-                .declared_members()
-                .iter()
-                .map(|member| &member.machine_id),
-        )
-        .await;
-        let placement = place_build_platforms(
-            &accepted.submission.platforms,
-            &accepted.submission.adapter,
-            &facts,
-            &projection,
-            &dataplane_statuses,
-        )
-        .map_err(|failure| *failure)?;
+                .map(|assignment| BuildPlatformExecutorAssignment {
+                    platform: assignment.platform,
+                    executor: BuildExecutorAssignment::Cluster {
+                        machine_id: assignment.machine_id,
+                    },
+                })
+                .collect()
+            }
+            BuildTarget::External { .. } if accepted.planned_assignments.is_empty() => {
+                return Err(BuildOperationFailure::ControlUnavailable {
+                    message: failure_message("external build lost its admitted placement"),
+                });
+            }
+            BuildTarget::External { .. } => accepted.planned_assignments.clone(),
+        };
         for assignment in &placement {
             self.controllers
                 .repository()
@@ -395,11 +412,7 @@ impl BuildOperationDriver {
                     id,
                     BuildEvidence::PlatformPlaced {
                         platform: assignment.platform.clone(),
-                        executor: BuildExecutorEvidence::from_assignment(
-                            &BuildExecutorAssignment::Cluster {
-                                machine_id: assignment.machine_id.clone(),
-                            },
-                        ),
+                        executor: BuildExecutorEvidence::from_assignment(&assignment.executor),
                     },
                 )
                 .await
@@ -416,9 +429,106 @@ impl BuildOperationDriver {
     async fn run_platform(
         &self,
         accepted: &AcceptedBuildExecution,
-        assignment: ClusterBuildExecutorAssignment,
+        assignment: BuildPlatformExecutorAssignment,
     ) -> Result<PlatformOutcome, BuildOperationFailure> {
-        super::executor_session::run_executor_session(self, accepted, assignment).await
+        match assignment.executor {
+            BuildExecutorAssignment::Cluster { machine_id } => {
+                super::executor_session::run_executor_session(
+                    self,
+                    accepted,
+                    ClusterBuildExecutorAssignment {
+                        platform: assignment.platform,
+                        machine_id,
+                    },
+                )
+                .await
+            }
+            executor @ BuildExecutorAssignment::External { .. } => {
+                super::external_executor_session::run_external_executor_session(
+                    self,
+                    accepted,
+                    BuildPlatformExecutorAssignment {
+                        platform: assignment.platform,
+                        executor,
+                    },
+                )
+                .await
+            }
+        }
+    }
+}
+
+async fn deliver_build_cancel(
+    driver: &BuildOperationDriver,
+    operation_id: &OperationId,
+    assignment: &BuildExecutorAssignment,
+    deadline: tokio::time::Instant,
+) {
+    match assignment {
+        BuildExecutorAssignment::Cluster { machine_id } => {
+            deliver_build_cancel_to_machine(machine_id, deadline, |request_timeout| {
+                let request = MachineBuildCancelRpcRequest {
+                    operation_id: operation_id.clone(),
+                    assignment: assignment.clone(),
+                };
+                async move {
+                    call_machine::<MachineBuildCancelRpcOk, MachineBuildCancelDomainError>(
+                        &driver.client,
+                        request_timeout,
+                        machine_id,
+                        MachineServiceEndpoint::BuildCancel,
+                        &request,
+                    )
+                    .await
+                }
+            })
+            .await;
+        }
+        BuildExecutorAssignment::External {
+            pool_id,
+            executor_id,
+            image_seed: _,
+        } => {
+            while let Some(remaining) = deadline.checked_duration_since(tokio::time::Instant::now())
+            {
+                let subject = build_executor_service(
+                    pool_id,
+                    executor_id,
+                    BuildExecutorServiceEndpoint::BuildCancel,
+                );
+                let request = BuildExecutorCancelRequest {
+                    operation_id: operation_id.clone(),
+                    assignment: assignment.clone(),
+                };
+                let result = request_json::<_, BuildExecutorCancelResponse>(
+                    &driver.client,
+                    subject,
+                    &request,
+                    remaining.min(BUILD_CANCEL_ATTEMPT_TIMEOUT),
+                )
+                .await;
+                let retry = match result {
+                    Ok(BuildExecutorCancelResponse::Ok(BuildExecutorCancelOk {
+                        assignment: actual,
+                        outcome: BuildExecutorCancelOutcome::NotRunning,
+                    })) if actual == *assignment => true,
+                    Ok(BuildExecutorCancelResponse::Ok(BuildExecutorCancelOk {
+                        assignment: actual,
+                        outcome: BuildExecutorCancelOutcome::Requested,
+                    })) if actual == *assignment => false,
+                    Ok(BuildExecutorCancelResponse::Ok(_))
+                    | Ok(BuildExecutorCancelResponse::DomainError { .. }) => false,
+                    Err(_) => true,
+                };
+                if !retry {
+                    break;
+                }
+                let Some(delay) = cancel_retry_delay(tokio::time::Instant::now(), deadline) else {
+                    break;
+                };
+                tokio::time::sleep(delay).await;
+            }
+        }
     }
 }
 
@@ -527,36 +637,79 @@ pub(super) enum PlatformOutcome {
     },
     Failed(BuildOperationFailure),
     Cancelled {
-        machine_id: MachineId,
-        cleanup: MachineBuildCleanupOutcome,
+        executor: BuildExecutorAssignment,
+        cleanup: BuildExecutorCleanupOutcome,
     },
     CancelledBeforeStart,
     TimedOut {
-        machine_id: MachineId,
+        executor: BuildExecutorAssignment,
         message: FailureMessage,
-        cleanup: MachineBuildCleanupOutcome,
+        cleanup: BuildExecutorCleanupOutcome,
     },
 }
 
 fn timeout_cleanup(
-    outcomes: &[(MachineId, FailureMessage, MachineBuildCleanupOutcome)],
+    outcomes: &[(
+        BuildExecutorAssignment,
+        FailureMessage,
+        BuildExecutorCleanupOutcome,
+    )],
 ) -> BuildCleanupEvidence {
     let unconfirmed = outcomes
         .iter()
-        .filter(|(_, _, cleanup)| *cleanup == MachineBuildCleanupOutcome::Unconfirmed)
-        .map(|(machine_id, _, _)| machine_id.clone())
+        .filter(|(_, _, cleanup)| *cleanup == BuildExecutorCleanupOutcome::Unconfirmed)
+        .map(|(executor, _, _)| executor.clone())
         .collect::<Vec<_>>();
     if unconfirmed.is_empty() {
-        BuildCleanupEvidence::Completed {
-            machine_ids: outcomes
-                .iter()
-                .map(|(machine_id, _, _)| machine_id.clone())
-                .collect(),
-        }
+        cleanup_for_assignments(outcomes.iter().map(|(executor, _, _)| executor), true)
     } else {
-        BuildCleanupEvidence::Unconfirmed {
-            machine_ids: unconfirmed,
+        cleanup_for_assignments(unconfirmed.iter(), false)
+    }
+}
+
+fn cleanup_for_assignments<'a>(
+    assignments: impl Iterator<Item = &'a BuildExecutorAssignment>,
+    confirmed: bool,
+) -> BuildCleanupEvidence {
+    let assignments = assignments.cloned().collect::<Vec<_>>();
+    match assignments.first() {
+        Some(BuildExecutorAssignment::Cluster { .. }) if confirmed => {
+            BuildCleanupEvidence::Completed {
+                machine_ids: assignments
+                    .into_iter()
+                    .filter_map(|assignment| match assignment {
+                        BuildExecutorAssignment::Cluster { machine_id } => Some(machine_id),
+                        BuildExecutorAssignment::External { .. } => None,
+                    })
+                    .collect(),
+            }
         }
+        Some(BuildExecutorAssignment::Cluster { .. }) => BuildCleanupEvidence::Unconfirmed {
+            machine_ids: assignments
+                .into_iter()
+                .filter_map(|assignment| match assignment {
+                    BuildExecutorAssignment::Cluster { machine_id } => Some(machine_id),
+                    BuildExecutorAssignment::External { .. } => None,
+                })
+                .collect(),
+        },
+        Some(BuildExecutorAssignment::External { .. }) if confirmed => {
+            BuildCleanupEvidence::ExternalCompleted {
+                executors: assignments
+                    .iter()
+                    .map(BuildExecutorEvidence::from_assignment)
+                    .collect(),
+            }
+        }
+        Some(BuildExecutorAssignment::External { .. }) => {
+            BuildCleanupEvidence::ExternalUnconfirmed {
+                executors: assignments
+                    .iter()
+                    .map(BuildExecutorEvidence::from_assignment)
+                    .collect(),
+            }
+        }
+        None => BuildCleanupEvidence::NotRequired,
     }
 }
 
@@ -623,6 +776,20 @@ pub(super) fn machine_failure(
         }) => BuildPlatformFailure::MachineUnavailable {
             message: failure_message("machine rejected build executor provenance"),
         },
+        MachineCallError::Domain(MachineBuildStartDomainError::ExecutorIdentityMismatch {
+            expected: _,
+            actual: _,
+        }) => BuildPlatformFailure::MachineUnavailable {
+            message: failure_message("machine rejected external executor identity provenance"),
+        },
+        MachineCallError::Domain(MachineBuildStartDomainError::ToolchainUnavailable {
+            adapter: _,
+        }) => BuildPlatformFailure::MachineUnavailable {
+            message: failure_message("machine rejected unavailable build toolchain"),
+        },
+        MachineCallError::Domain(MachineBuildStartDomainError::ImageSeedUnavailable {
+            image_seed,
+        }) => BuildPlatformFailure::ImageSeedUnavailable { image_seed },
         MachineCallError::Domain(MachineBuildStartDomainError::PlatformFailed {
             acceptance: _,
             failure,
