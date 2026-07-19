@@ -412,10 +412,12 @@ verify_owned_zfs_boot_order() {
 }
 
 verify_owned_zfs_failure_state() {
+  local machine_unit=${1:?missing machine unit}
   local dependency_evidence
   command -v pgrep >/dev/null || return 1
   command -v ss >/dev/null || return 1
   systemctl is-failed --quiet ployz-owned-zfs-import.service || return 1
+  systemctl is-active --quiet "$machine_unit" || return 1
   if systemctl is-active --quiet docker.service; then
     return 1
   fi
@@ -429,11 +431,12 @@ verify_owned_zfs_failure_state() {
     return 1
   fi
   dependency_evidence=$(verify_owned_zfs_dependency_edges) || return 1
-  printf 'recovery_state=failed\ndocker_state=inactive\ndockerd_process=absent\npostgres_process=absent\npostgres_listener=absent\n%s\n' \
+  printf 'recovery_state=failed\ndocker_state=inactive\nmachine_state=active\ndockerd_process=absent\npostgres_process=absent\npostgres_listener=absent\n%s\n' \
     "$dependency_evidence"
-  systemctl status --no-pager -n 100 ployz-owned-zfs-import.service docker.service || true
+  systemctl status --no-pager -n 100 ployz-owned-zfs-import.service docker.service "$machine_unit" || true
   journalctl -b -u ployz-owned-zfs-import.service --no-pager -n 100 || true
   journalctl -b -u docker.service --no-pager -n 100 || true
+  journalctl -b -u "$machine_unit" --no-pager -n 100 || true
 }
 
 zfs_running_database_container() {
@@ -489,7 +492,7 @@ zfs_verify_module_failure() {
   zfs_verify_preserved_durable_storage_evidence
   printf 'recorded_pre_failure_container=%s\nrecorded_pre_failure_volume=%s\nrecorded_pre_failure_docker_labels_sha256=%s\n' \
     "$baseline_db_container" "$docker_volume_name" "$docker_labels_sha"
-  core "$(declare -f verify_owned_zfs_dependency_edges); $(declare -f verify_owned_zfs_failure_state); verify_owned_zfs_failure_state"
+  core "$(declare -f verify_owned_zfs_dependency_edges); $(declare -f verify_owned_zfs_failure_state); verify_owned_zfs_failure_state 'ployzd-machine-${core_machine_id}.service'"
   core "! zpool list '${pool}' >/dev/null 2>&1 && ! zfs list '${dataset}' >/dev/null 2>&1"
   core "test ! -e '${bind_device}'"
   core 'systemctl is-active --quiet ployzd-control && timeout 10s ployz ops list >/dev/null'
@@ -677,7 +680,7 @@ EOF
   printf '%s\n' "$module_failure_output" | grep -Fx 'storage unavailable zfs-module-missing' >/dev/null
   printf '%s\n' "$module_failure_output" | grep -Fx 'storage-alarms probe-ns/probe-volume:zfs-module-missing' >/dev/null
   printf '%s\n' "$module_failure_output" | grep -Fx module_failure_probe=passed >/dev/null
-  for module_failure_probe_mode in recovery-not-failed docker-active dockerd-live postgres-live missing-dependency listener-present; do
+  for module_failure_probe_mode in recovery-not-failed machine-inactive docker-active dockerd-live postgres-live missing-dependency listener-present; do
     child_status=0
     module_failure_output=$("$0" --module-failure-probe "$evidence" "$module_failure_probe_mode" 2>&1) \
       || child_status=$?
@@ -1000,6 +1003,9 @@ case "${1:-}:${2:-}:${3:-}" in
   is-active:--quiet:docker.service)
     [ "${PLOYZ_MODULE_FAILURE_PROBE_MODE:-valid}" = docker-active ]
     ;;
+  is-active:--quiet:ployzd-machine-probe-machine.service)
+    [ "${PLOYZ_MODULE_FAILURE_PROBE_MODE:-valid}" != machine-inactive ]
+    ;;
   show:ployz-owned-zfs-import.service:-p)
     case "$4" in
       After) printf 'network.target zfs-import.target\n' ;;
@@ -1078,7 +1084,7 @@ EOF
         "readlink -f '${backing_file_path}'") printf '%s\n' "$backing_file_path" ;;
         "stat -Lc '%d:%i:%s' '${backing_file_path}'") printf '%s\n' "$backing_file_identity" ;;
         "timeout 20s ployz ops watch '${storage_operation_id}' --json") printf '%s\n' "$storage_operation_evidence" ;;
-        *'verify_owned_zfs_failure_state')
+        *'verify_owned_zfs_failure_state '*)
           PATH="$module_failure_probe_bin:$PATH" bash -euo pipefail -c "$command"
           ;;
         "! zpool list '${pool}' >/dev/null 2>&1 && ! zfs list '${dataset}' >/dev/null 2>&1") return 0 ;;

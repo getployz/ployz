@@ -1,5 +1,5 @@
 use ployz_core::ids::MachineId;
-use ployz_core::machine::runtime::{MachineFactsRefreshConfirmation, MachineFactsSnapshot};
+use ployz_core::machine::runtime::{MachineFactsRefreshConfirmation, MachineFactsTestimony};
 use ployz_core::operation::FailureMessage;
 use serde::{Deserialize, Serialize};
 
@@ -12,7 +12,7 @@ pub struct MachineFactsGetRpcRequest {}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MachineFactsGetRpcOk {
-    pub facts: MachineFactsSnapshot,
+    pub facts: MachineFactsTestimony,
     /// Point-of-use testimony that this process can accept `BuildStart`.
     ///
     /// The alpha machine RPC is intentionally strict: peers running a wire
@@ -81,7 +81,9 @@ pub enum MachineFactsRefreshDomainError {
 mod tests {
     use super::*;
     use ployz_core::image::OciPlatform;
-    use ployz_core::machine::runtime::{MachineContainerObservationSnapshot, MachineDiskSpace};
+    use ployz_core::machine::runtime::{
+        MachineContainerObservationSnapshot, MachineDiskSpace, MachineFactsSnapshot,
+    };
 
     fn facts() -> MachineFactsSnapshot {
         let machine_id = MachineId::try_new("machine-a").expect("machine id");
@@ -108,7 +110,7 @@ mod tests {
             MachineBuildCapability::Unavailable,
         ] {
             let response = MachineFactsGetRpcOk {
-                facts: facts(),
+                facts: facts().into(),
                 build,
             };
             let encoded = serde_json::to_value(&response).expect("encode");
@@ -125,7 +127,7 @@ mod tests {
 
     #[test]
     fn facts_get_rejects_pre_capability_alpha_responses() {
-        let encoded = serde_json::json!({ "facts": facts() });
+        let encoded = serde_json::json!({ "facts": MachineFactsTestimony::from(facts()) });
         assert!(serde_json::from_value::<MachineFactsGetRpcOk>(encoded).is_err());
     }
 }

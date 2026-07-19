@@ -1225,7 +1225,7 @@ async fn start_dynamic_facts_subscription(
                 .clone();
             let response =
                 serde_json::to_vec(&MachineFactsGetRpcResponse::Ok(MachineFactsGetRpcOk {
-                    facts,
+                    facts: facts.into(),
                     build: crate::roles::machine::protocol::MachineBuildCapability::Available,
                 }))
                 .expect("facts response serializes");
