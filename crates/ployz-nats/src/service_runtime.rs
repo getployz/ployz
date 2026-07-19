@@ -27,7 +27,6 @@ pub type NatsClient = async_nats::Client;
 const NO_RESPONDERS_RETRIES: usize = 4;
 const NO_RESPONDERS_RETRY_DELAY: Duration = Duration::from_millis(100);
 const SERVICE_REGISTRATION_TIMEOUT: Duration = Duration::from_secs(2);
-const RESTRICTED_SERVICE_REGISTRATION_SETTLE: Duration = Duration::from_millis(100);
 const SERVICE_SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 
 pub async fn request_json<Request, Response>(
@@ -279,7 +278,12 @@ impl RunningNatsService {
                 wait_for_service_registration(&self.client, endpoint.subject.as_str()).await?;
             }
             EndpointRegistration::Restricted => {
-                tokio::time::sleep(RESTRICTED_SERVICE_REGISTRATION_SETTLE).await;
+                self.client.flush().await.map_err(|error| {
+                    NatsServiceRuntimeError::AddEndpoint {
+                        subject: endpoint.subject.clone(),
+                        message: format!("restricted service registration flush failed: {error}"),
+                    }
+                })?;
             }
         }
         Ok(())

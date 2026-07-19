@@ -74,7 +74,46 @@ pub(super) fn load_executor_context(
     pool_id: &BuildPoolId,
     executor_id: &BuildExecutorId,
 ) -> Result<ExecutorContext, ExecutorContextError> {
-    read_executor_context(root, pool_id, executor_id)
+    let paths = identity_paths(root, pool_id, executor_id);
+    let raw = fs::read_to_string(&paths.context).map_err(|error| ExecutorContextError::Read {
+        path: paths.context.clone(),
+        message: error.to_string(),
+    })?;
+    let file: ExecutorContextFile =
+        serde_json::from_str(&raw).map_err(|error| ExecutorContextError::Parse {
+            path: paths.context.clone(),
+            message: error.to_string(),
+        })?;
+    let ExecutorContextFile {
+        organization_id,
+        pool_id: stored_pool_id,
+        executor_id: stored_executor_id,
+        runtime_nats_url,
+        nats_ca_file,
+        nats_seed_file,
+        credential_expires_at,
+    } = file;
+    if stored_pool_id != *pool_id || stored_executor_id != *executor_id {
+        return Err(ExecutorContextError::IdentityMismatch);
+    }
+    if !is_private_ca_reference(&nats_ca_file) || nats_seed_file != Path::new(SEED_FILE) {
+        return Err(ExecutorContextError::InvalidMaterialReference);
+    }
+    let seed = fs::read_to_string(&paths.seed).map_err(|error| ExecutorContextError::Read {
+        path: paths.seed.clone(),
+        message: error.to_string(),
+    })?;
+    NatsUserSeed::try_new(seed).map_err(ExecutorContextError::Nkey)?;
+    Ok(ExecutorContext {
+        organization_id,
+        pool_id: stored_pool_id,
+        executor_id: stored_executor_id,
+        nats_url: NatsClientUrl::try_new(runtime_nats_url)
+            .map_err(ExecutorContextError::InvalidNatsUrl)?,
+        nats_ca_file: paths.directory.join(nats_ca_file),
+        nats_seed_file: paths.seed,
+        credential_expires_at,
+    })
 }
 
 pub(super) fn identity_paths(
@@ -176,54 +215,7 @@ pub(super) fn publish_executor_context(
             message: "executor context path has no identity root".to_owned(),
         });
     };
-    read_executor_context(root, pool_id, executor_id)
-}
-
-fn read_executor_context(
-    root: &Path,
-    expected_pool_id: &BuildPoolId,
-    expected_executor_id: &BuildExecutorId,
-) -> Result<ExecutorContext, ExecutorContextError> {
-    let paths = identity_paths(root, expected_pool_id, expected_executor_id);
-    let raw = fs::read_to_string(&paths.context).map_err(|error| ExecutorContextError::Read {
-        path: paths.context.clone(),
-        message: error.to_string(),
-    })?;
-    let file: ExecutorContextFile =
-        serde_json::from_str(&raw).map_err(|error| ExecutorContextError::Parse {
-            path: paths.context.clone(),
-            message: error.to_string(),
-        })?;
-    let ExecutorContextFile {
-        organization_id,
-        pool_id,
-        executor_id,
-        runtime_nats_url,
-        nats_ca_file,
-        nats_seed_file,
-        credential_expires_at,
-    } = file;
-    if pool_id != *expected_pool_id || executor_id != *expected_executor_id {
-        return Err(ExecutorContextError::IdentityMismatch);
-    }
-    if !is_private_ca_reference(&nats_ca_file) || nats_seed_file != Path::new(SEED_FILE) {
-        return Err(ExecutorContextError::InvalidMaterialReference);
-    }
-    let seed = fs::read_to_string(&paths.seed).map_err(|error| ExecutorContextError::Read {
-        path: paths.seed.clone(),
-        message: error.to_string(),
-    })?;
-    NatsUserSeed::try_new(seed).map_err(ExecutorContextError::Nkey)?;
-    Ok(ExecutorContext {
-        organization_id,
-        pool_id,
-        executor_id,
-        nats_url: NatsClientUrl::try_new(runtime_nats_url)
-            .map_err(ExecutorContextError::InvalidNatsUrl)?,
-        nats_ca_file: paths.directory.join(nats_ca_file),
-        nats_seed_file: paths.seed,
-        credential_expires_at,
-    })
+    load_executor_context(root, pool_id, executor_id)
 }
 
 fn load_identity_seed(path: &Path, raw: String) -> Result<MintedNatsUser, ExecutorContextError> {

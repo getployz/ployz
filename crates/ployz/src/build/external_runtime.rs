@@ -145,8 +145,7 @@ async fn run_connected_once(
     let session = ConnectedExecutor::start(identity, client, workspace_root, terminal_tx).await?;
     let wait_result = wait_for_once_terminal(&mut terminal_rx, wait_timeout).await;
     let shutdown_result = session.shutdown().await;
-    wait_result?;
-    shutdown_result?;
+    finish_executor_session(wait_result, shutdown_result)?;
     Ok(PloyzctlExecutionOutput::stdout(
         "Build Executor stopped.\n".to_owned(),
     ))
@@ -180,12 +179,20 @@ async fn run_watch(
         .await;
     eprintln!("Build Executor stopping");
     let shutdown_result = connected.shutdown().await;
-    wait_result?;
-    shutdown_result?;
+    finish_executor_session(wait_result, shutdown_result)?;
     eprintln!("Build Executor stopped");
     Ok(PloyzctlExecutionOutput::stdout(
         "Build Executor stopped.\n".to_owned(),
     ))
+}
+
+fn finish_executor_session(
+    wait_result: Result<(), BuildExecutionError>,
+    shutdown_result: Result<(), PloyzctlExecutionError>,
+) -> Result<(), PloyzctlExecutionError> {
+    shutdown_result?;
+    wait_result?;
+    Ok(())
 }
 
 async fn current_health_description() -> Result<String, BuildExecutionError> {
@@ -960,6 +967,24 @@ mod tests {
     use crate::build::watch_lifecycle::executor_principal;
 
     const SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    #[test]
+    fn shutdown_failure_precedes_wait_failure_after_both_complete() {
+        let error = finish_executor_session(
+            Err(BuildExecutionError::ExecutorIdleTimedOut {
+                wait_timeout: Duration::from_secs(1),
+            }),
+            Err(PloyzctlExecutionError::from(
+                BuildExecutionError::ExecutorRuntime {
+                    message: "cleanup evidence failed".to_owned(),
+                },
+            )),
+        )
+        .expect_err("cleanup failure takes precedence");
+
+        assert!(error.to_string().contains("cleanup evidence failed"));
+        assert!(!error.to_string().contains("idle"));
+    }
 
     #[test]
     fn configured_identity_drives_principal_and_exact_endpoint_subjects() {
