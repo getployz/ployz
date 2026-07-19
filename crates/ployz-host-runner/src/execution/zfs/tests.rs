@@ -187,6 +187,130 @@ fn persist(directory: &Path, origin: PreparedStorageOrigin) {
 }
 
 #[test]
+fn owned_storage_recovery_requires_a_valid_owned_descriptor_before_observation() {
+    let missing = tempfile::tempdir().unwrap();
+    let mut runner = RecordingRunner::new([]);
+    assert!(matches!(
+        recover_owned_storage(&mut runner, missing.path()),
+        Err(ZfsEffectError::PreparedStateUnavailable { .. })
+    ));
+    assert!(runner.invocations.is_empty());
+
+    let invalid = tempfile::tempdir().unwrap();
+    std::fs::write(invalid.path().join("prepared-storage.json"), b"{}").unwrap();
+    let mut runner = RecordingRunner::new([]);
+    assert!(matches!(
+        recover_owned_storage(&mut runner, invalid.path()),
+        Err(ZfsEffectError::PreparedStateUnavailable { .. })
+    ));
+    assert!(runner.invocations.is_empty());
+
+    let adopted = tempfile::tempdir().unwrap();
+    persist(adopted.path(), PreparedStorageOrigin::Adopted);
+    let mut runner = RecordingRunner::new([]);
+    assert!(matches!(
+        recover_owned_storage(&mut runner, adopted.path()),
+        Err(ZfsEffectError::PreparedStateMismatch { .. })
+    ));
+    assert!(runner.invocations.is_empty());
+}
+
+#[test]
+fn owned_storage_recovery_reuses_an_imported_pool_after_full_verification() {
+    let state = tempfile::tempdir().unwrap();
+    persist(
+        state.path(),
+        PreparedStorageOrigin::OwnedImage {
+            backing_file: PathBuf::from(PLOYZ_OWNED_ZFS_BACKING_FILE),
+        },
+    );
+    let mut runner = RecordingRunner::new([
+        stdout("ployz\n"),
+        success(),
+        stdout(VOLUME_MOUNTPOINT),
+        pool_status(PLOYZ_OWNED_ZFS_POOL, PLOYZ_OWNED_ZFS_BACKING_FILE),
+    ]);
+
+    recover_owned_storage(&mut runner, state.path()).unwrap();
+
+    assert_eq!(runner.invocations.len(), 4);
+    assert!(runner.invocations.iter().all(|call| {
+        !(call.program == "zpool" && call.args.first().is_some_and(|arg| arg == "import"))
+    }));
+}
+
+#[test]
+fn reboot_recovery_imports_only_the_descriptor_pool_then_fully_verifies_it() {
+    let state = tempfile::tempdir().unwrap();
+    persist(
+        state.path(),
+        PreparedStorageOrigin::OwnedImage {
+            backing_file: PathBuf::from(PLOYZ_OWNED_ZFS_BACKING_FILE),
+        },
+    );
+    let mut runner = RecordingRunner::new([
+        stdout(""),
+        success(),
+        success(),
+        stdout(VOLUME_MOUNTPOINT),
+        pool_status(PLOYZ_OWNED_ZFS_POOL, PLOYZ_OWNED_ZFS_BACKING_FILE),
+    ]);
+
+    recover_owned_storage(&mut runner, state.path()).unwrap();
+
+    assert_eq!(
+        invocation(&runner, 0).args,
+        vec!["list", "-H", "-o", "name"]
+    );
+    assert_eq!(
+        invocation(&runner, 1).args,
+        vec![
+            "import",
+            "-d",
+            PLOYZ_OWNED_ZFS_BACKING_FILE,
+            PLOYZ_OWNED_ZFS_POOL
+        ]
+    );
+    assert_eq!(invocation(&runner, 1).timeout, COMMAND_TIMEOUT);
+    assert_eq!(
+        invocation(&runner, 2).args.last().unwrap(),
+        PLOYZ_OWNED_ZFS_POOL
+    );
+    assert_eq!(invocation(&runner, 3).program, "zfs");
+    assert_eq!(
+        invocation(&runner, 4).args,
+        vec!["status", "-P", PLOYZ_OWNED_ZFS_POOL]
+    );
+}
+
+#[test]
+fn owned_storage_recovery_reports_import_and_post_import_mismatch_failures() {
+    let state = tempfile::tempdir().unwrap();
+    persist(
+        state.path(),
+        PreparedStorageOrigin::OwnedImage {
+            backing_file: PathBuf::from(PLOYZ_OWNED_ZFS_BACKING_FILE),
+        },
+    );
+    let mut import_failure = RecordingRunner::new([stdout(""), failed("import failed")]);
+    assert!(matches!(
+        recover_owned_storage(&mut import_failure, state.path()),
+        Err(ZfsEffectError::OwnedPool { .. })
+    ));
+
+    let mut mismatch = RecordingRunner::new([
+        stdout(""),
+        success(),
+        success(),
+        stdout("/wrong/mountpoint"),
+    ]);
+    assert!(matches!(
+        recover_owned_storage(&mut mismatch, state.path()),
+        Err(ZfsEffectError::PreparedStateMismatch { .. })
+    ));
+}
+
+#[test]
 fn storage_capability_distinguishes_unprepared_and_unavailable_hosts() {
     let unprepared = tempfile::tempdir().unwrap();
     let mut runner = RecordingRunner::new([]);
@@ -608,6 +732,11 @@ fn ubuntu_one_pool_is_adopted_with_exact_bounded_setup() {
         runner.invocations.last().unwrap().args,
         vec!["daemon-reload"]
     );
+    assert!(!state.path().join("ployz-owned-zfs-import.service").exists());
+    assert!(runner.invocations.iter().all(|invocation| {
+        !(invocation.program == "systemctl"
+            && invocation.args.first().is_some_and(|arg| arg == "enable"))
+    }));
 }
 
 #[test]
@@ -714,6 +843,87 @@ fn zero_pools_physically_allocate_half_the_filesystem_for_owned_pool() {
             PLOYZ_OWNED_ZFS_POOL,
             PLOYZ_OWNED_ZFS_BACKING_FILE
         ]
+    );
+    assert_eq!(
+        std::fs::read_to_string(state.path().join("ployz-owned-zfs-import.service")).unwrap(),
+        "[Unit]\nRequires=zfs-import.target\nAfter=zfs-import.target\nBefore=docker.service\n\n[Service]\nType=oneshot\nExecStart=/usr/local/bin/ployz host internal-storage-recover\nRemainAfterExit=yes\n\n[Install]\nWantedBy=multi-user.target\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(state.path().join("docker.service.d/ployz-zfs.conf")).unwrap(),
+        "[Unit]\nRequires=ployz-owned-zfs-import.service\nAfter=ployz-owned-zfs-import.service\n"
+    );
+    assert_eq!(
+        runner.invocations.iter().rev().nth(1).unwrap().args,
+        vec!["daemon-reload"]
+    );
+    assert_eq!(
+        runner.invocations.last().unwrap().args,
+        vec!["enable", "ployz-owned-zfs-import.service"]
+    );
+}
+
+#[test]
+fn owned_preparation_persists_authority_before_unit_or_enable_failure() {
+    let outputs = || {
+        [
+            success(),
+            success(),
+            success(),
+            stdout(""),
+            failed("backing file absent"),
+            success(),
+            stdout("1B-blocks Avail\n25769803776 23622320128\n"),
+            success(),
+            success(),
+            stdout("1B-blocks Avail\n25769803776 10737418240\n"),
+            success(),
+            success(),
+            failed("dataset absent"),
+            success(),
+            failed("dataset absent"),
+            success(),
+        ]
+    };
+
+    let unit_write = tempfile::tempdir().unwrap();
+    std::fs::create_dir(unit_write.path().join("ployz-owned-zfs-import.service")).unwrap();
+    let mut runner = RecordingRunner::new(outputs());
+    assert!(matches!(
+        prepare_storage(
+            &mut runner,
+            &profile("ID=ubuntu\nVERSION_ID=24.04\n"),
+            &PoolSelection::Automatic,
+            unit_write.path(),
+            &unit_write.path().join("docker.service.d"),
+        ),
+        Err(ZfsEffectError::Dataset { .. })
+    ));
+    assert!(load_prepared_storage_state(unit_write.path()).is_ok());
+    assert!(
+        runner
+            .invocations
+            .iter()
+            .all(|call| call.program != "systemctl")
+    );
+
+    let enable = tempfile::tempdir().unwrap();
+    let mut enable_outputs = outputs().to_vec();
+    enable_outputs.extend([success(), failed("enable failed")]);
+    let mut runner = RecordingRunner::new(enable_outputs);
+    assert!(matches!(
+        prepare_storage(
+            &mut runner,
+            &profile("ID=ubuntu\nVERSION_ID=24.04\n"),
+            &PoolSelection::Automatic,
+            enable.path(),
+            &enable.path().join("docker.service.d"),
+        ),
+        Err(ZfsEffectError::Dataset { .. })
+    ));
+    assert!(load_prepared_storage_state(enable.path()).is_ok());
+    assert_eq!(
+        runner.invocations.last().unwrap().args,
+        vec!["enable", "ployz-owned-zfs-import.service"]
     );
 }
 

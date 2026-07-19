@@ -23,6 +23,38 @@ const MINIMUM_OWNED_POOL_BYTES: u64 = 8 * GIBIBYTE;
 const MINIMUM_HOST_HEADROOM_BYTES: u64 = 5 * GIBIBYTE;
 const OWNED_POOL_ALLOCATION_CUSHION_BYTES: u64 = 1024 * 1024;
 
+pub fn recover_owned_storage(
+    runner: &mut impl HostRunnerCommandRunner,
+    state_directory: &Path,
+) -> Result<PreparedStorageState, ZfsEffectError> {
+    let state = load_prepared_storage_state(state_directory)?;
+    let PreparedStorageOrigin::OwnedImage { .. } = state.origin() else {
+        return Err(ZfsEffectError::PreparedStateMismatch {
+            message: format!(
+                "prepared pool {} is adopted and has no Ployz-owned import authority",
+                state.pool().as_str()
+            ),
+        });
+    };
+    let imported = imported_pools(runner)?;
+    if !imported.contains(state.pool()) {
+        checked(
+            runner,
+            "zpool",
+            &[
+                "import",
+                "-d",
+                PLOYZ_OWNED_ZFS_BACKING_FILE,
+                state.pool().as_str(),
+            ],
+            COMMAND_TIMEOUT,
+            EffectClass::OwnedPool,
+        )?;
+    }
+    verify_prepared_storage_state(runner, &state, COMMAND_TIMEOUT)?;
+    Ok(state)
+}
+
 /// Observes the capability prepared by Ployz without importing pools or
 /// changing host storage. One prepared descriptor supplies the expected pool,
 /// dataset root, and owned backing identity; current module, pool, dataset, and
