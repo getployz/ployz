@@ -57,35 +57,13 @@ struct NatsAuthorizationHealthState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum AuthorizationWake {
-    Expiry {
-        expires_at_unix_seconds: u64,
-        delay: Duration,
-    },
-    Retry {
-        render_at_unix_seconds: Option<u64>,
-        delay: Duration,
-    },
+pub(super) struct AuthorizationWake {
+    delay: Duration,
 }
 
 impl AuthorizationWake {
     pub(super) const fn wait_duration(self) -> Duration {
-        match self {
-            Self::Expiry { delay, .. } | Self::Retry { delay, .. } => delay,
-        }
-    }
-
-    pub(super) const fn render_time(self) -> Option<u64> {
-        match self {
-            Self::Expiry {
-                expires_at_unix_seconds,
-                ..
-            } => Some(expires_at_unix_seconds),
-            Self::Retry {
-                render_at_unix_seconds,
-                ..
-            } => render_at_unix_seconds,
-        }
+        self.delay
     }
 }
 
@@ -100,33 +78,24 @@ pub(super) async fn schedule_after_success(
             let next_expiry_at_unix_seconds = next_active_expiry(&grants, now_unix_seconds);
             health.record_success(next_expiry_at_unix_seconds);
             (
-                next_expiry_at_unix_seconds.map(|expires_at_unix_seconds| {
-                    AuthorizationWake::Expiry {
-                        expires_at_unix_seconds,
-                        delay: Duration::from_secs(
-                            expires_at_unix_seconds.saturating_sub(now_unix_seconds),
-                        ),
-                    }
+                next_expiry_at_unix_seconds.map(|expires_at_unix_seconds| AuthorizationWake {
+                    delay: Duration::from_secs(
+                        expires_at_unix_seconds.saturating_sub(now_unix_seconds),
+                    ),
                 }),
                 RETRY_SCHEDULE.interval,
             )
         }
         Err(error) => {
             health.record_failure(error);
-            retry_after_failure(Some(now_unix_seconds), retry_delay)
+            retry_after_failure(retry_delay)
         }
     }
 }
 
-pub(super) fn retry_after_failure(
-    render_at_unix_seconds: Option<u64>,
-    retry_delay: Duration,
-) -> (Option<AuthorizationWake>, Duration) {
+pub(super) fn retry_after_failure(retry_delay: Duration) -> (Option<AuthorizationWake>, Duration) {
     (
-        Some(AuthorizationWake::Retry {
-            render_at_unix_seconds,
-            delay: retry_delay,
-        }),
+        Some(AuthorizationWake { delay: retry_delay }),
         RETRY_SCHEDULE.next_after_failure(retry_delay),
     )
 }

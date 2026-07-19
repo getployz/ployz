@@ -377,6 +377,67 @@ async fn external_build_executor_is_denied_other_authority_by_the_server() {
 }
 
 #[tokio::test]
+async fn external_build_executor_cannot_self_address_a_request_to_gain_reply_authority() {
+    let pool_id = BuildPoolId::try_new("pool-a").expect("pool id");
+    let executor_id = BuildExecutorId::try_new("executor-a").expect("executor id");
+    let minted = MintedNatsUser::generate().expect("executor nkey mints");
+    let credential = external_executor_credential(&minted, &pool_id, &executor_id);
+    let fixture = SecuredTestNats::start_with_machines_and_credentials(
+        &[],
+        std::slice::from_ref(&credential),
+    )
+    .await
+    .expect("secured fixture");
+    let principal = external_executor_principal(&pool_id, &executor_id);
+    let own_inbox = format!("{}.escalation", inbox_prefix(&principal));
+    let (executor, mut events) =
+        connect_with_event_capture(&fixture.config_with_seed(principal, minted.seed)).await;
+    let controller = connect_authenticated(&fixture.controller_config(), CONNECT_TIMEOUT)
+        .await
+        .expect("controller connects");
+    let mut self_requests = executor
+        .subscribe(own_inbox.clone())
+        .await
+        .expect("executor subscribes its own inbox");
+    let mut forbidden = controller
+        .subscribe(OPERATOR_INIT_FIRST_MACHINE_ACTIVATE)
+        .await
+        .expect("controller observes forbidden Operator subject");
+    executor
+        .flush()
+        .await
+        .expect("executor subscription flushes");
+    controller
+        .flush()
+        .await
+        .expect("observer subscription flushes");
+
+    executor
+        .publish_with_reply(
+            own_inbox,
+            OPERATOR_INIT_FIRST_MACHINE_ACTIVATE.to_owned(),
+            "malicious request".into(),
+        )
+        .await
+        .expect("publish is accepted client-side");
+    executor.flush().await.expect("denied publish flushes");
+
+    assert_permission_violation_kind(&mut events, "Publish").await;
+    assert!(
+        tokio::time::timeout(NO_DELIVERY_WINDOW, self_requests.next())
+            .await
+            .is_err(),
+        "the denied self-addressed request must not reach the executor"
+    );
+    assert!(
+        tokio::time::timeout(NO_DELIVERY_WINDOW, forbidden.next())
+            .await
+            .is_err(),
+        "self-addressing must not mint reply authority for a forbidden subject"
+    );
+}
+
+#[tokio::test]
 async fn build_executor_grant_preserves_operator_and_machine_traffic() {
     let pool_id = BuildPoolId::try_new("pool-a").expect("pool id");
     let executor_id = BuildExecutorId::try_new("executor-a").expect("executor id");

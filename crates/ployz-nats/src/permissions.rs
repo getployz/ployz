@@ -173,9 +173,9 @@ fn parse_credential_role(
     else {
         return Err(invalid_credential_role(line_number, value));
     };
-    let pool_id = ployz_core::ids::BuildPoolId::try_new(pool_id)
-        .map_err(|_| invalid_credential_role(line_number, value))?;
-    let executor_id = ployz_core::ids::BuildExecutorId::try_new(executor_id)
+    let pool_id =
+        BuildPoolId::try_new(pool_id).map_err(|_| invalid_credential_role(line_number, value))?;
+    let executor_id = BuildExecutorId::try_new(executor_id)
         .map_err(|_| invalid_credential_role(line_number, value))?;
     let expires_at = expires_at
         .parse::<u64>()
@@ -300,7 +300,6 @@ impl NatsPermissionProfile {
             } => Self {
                 principal: principal.clone(),
                 publish: SubjectPermissions::allowing([
-                    inbox_scope.clone(),
                     build_executor_log_publish_scope(pool_id, executor_id),
                     OPERATOR_MACHINE_IMAGE_QUERY_SCOPE.to_owned(),
                     OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE.to_owned(),

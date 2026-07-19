@@ -2,10 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::build::BuildExecutorIdentity;
 use crate::ids::OperationId;
-use crate::nats_config::{
-    BuildExecutorIdentity, CredentialGrant, CredentialRole, NatsUserPublicKey,
-};
+use crate::nats_config::{CredentialGrant, CredentialRole, NatsUserPublicKey};
 
 use super::events::OperationEvent;
 use super::projection::{

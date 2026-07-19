@@ -1,15 +1,16 @@
 //! Core-local NATS authorization grants, stored in SQLite.
 //!
-//! One `nats_authorizations` row per grant holds the whole `NatsAuthorizationGrant`,
-//! keyed by its `authority_record_key`. `authorized-users.conf` is a rendered
+//! One `nats_authorizations` row per grant holds the whole `NatsAuthorizationGrant`.
+//! Client credentials are keyed by public key; internal grants are keyed by their
+//! authority key. `authorized-users.conf` is a rendered
 //! projection of this table (see `adapters/nats_authorization`), so the grant set
 //! is durable operator intent — mirrored to candidates and seeded on promotion
 //! like the machine roster, never re-derived from partial truth.
 
 use crate::control::store::{CoreStore, CoreStoreError, from_json, query_json_list, to_json};
+use ployz_core::build::BuildExecutorIdentity;
 use ployz_core::nats_config::{
-    BuildExecutorIdentity, CredentialGrant, CredentialRole, NatsAuthorizationGrant,
-    NatsUserPublicKey,
+    CredentialGrant, CredentialRole, NatsAuthorizationGrant, NatsUserPublicKey,
 };
 use ployz_nats::permissions::parse_authorized_users;
 use rusqlite::{Connection, params};
@@ -26,9 +27,8 @@ impl NatsAuthorizationStore {
         Self { store }
     }
 
-    /// Add or replace a grant by its `authority_record_key`. Operator grants are keyed
-    /// by public key, so operator and Cloud both persist; every other principal is
-    /// unique by role or machine id.
+    /// Add or replace a client credential by public key or an internal grant by its
+    /// authority key.
     pub async fn upsert(
         &self,
         user: &NatsAuthorizationGrant,
@@ -40,8 +40,9 @@ impl NatsAuthorizationStore {
             .map_err(store_error)
     }
 
-    /// Every current grant in insertion order (SQLite `rowid`, preserved across
-    /// upserts). Insertion order — not key order — is what makes the render
+    /// Every durable grant in insertion order, including expired Build Executor
+    /// credential history (SQLite `rowid`, preserved across upserts). Insertion
+    /// order — not key order — is what makes the render
     /// byte-stable: seeding from the Host Runner-written conf and re-rendering it must
     /// reproduce the same file, and a new machine grant appends, exactly as the
     /// prior disk-merge writer behaved. A reorder would make startup's no-op render

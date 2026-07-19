@@ -2,8 +2,7 @@
 
 use std::fmt;
 
-use std::collections::BTreeMap;
-
+use crate::build::BuildExecutorIdentity;
 use crate::ids::{BuildExecutorId, BuildPoolId, MachineId};
 use crate::security::NatsPrincipal;
 use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
@@ -68,99 +67,6 @@ positive_u64_wire_newtype! {
 positive_u64_wire_error! {
     pub enum BuildExecutorCredentialTimestampError;
     noun: "Build Executor credential timestamp";
-}
-
-/// Durable identity of one external Build Executor within one Build Pool.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct BuildExecutorIdentity {
-    pub pool_id: BuildPoolId,
-    pub executor_id: BuildExecutorId,
-}
-
-/// One point-of-use readiness answer from an external Build Executor.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BuildExecutorReadinessAnswer<T> {
-    pub identity: BuildExecutorIdentity,
-    pub readiness: T,
-}
-
-/// Readiness testimony for every executor in the enrolled known set.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BuildExecutorReadinessTestimony<T> {
-    Answered {
-        identity: BuildExecutorIdentity,
-        readiness: T,
-    },
-    Silent {
-        identity: BuildExecutorIdentity,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum BuildExecutorReadinessReconcileError {
-    #[error("Build Executor known set contains duplicate identity {identity:?}")]
-    DuplicateKnownIdentity { identity: BuildExecutorIdentity },
-    #[error("un-enrolled Build Executor answered as {identity:?}")]
-    UnknownIdentity { identity: BuildExecutorIdentity },
-    #[error(
-        "Build Executor {executor_id:?} answered for pool {actual_pool_id:?}, not enrolled pool {expected_pool_id:?}"
-    )]
-    WrongPool {
-        executor_id: BuildExecutorId,
-        expected_pool_id: BuildPoolId,
-        actual_pool_id: BuildPoolId,
-    },
-    #[error("Build Executor answered more than once as {identity:?}")]
-    DuplicateResponse { identity: BuildExecutorIdentity },
-}
-
-fn reconcile_build_executor_readiness_for_known_set<T>(
-    known: impl IntoIterator<Item = BuildExecutorIdentity>,
-    answers: impl IntoIterator<Item = BuildExecutorReadinessAnswer<T>>,
-) -> Result<Vec<BuildExecutorReadinessTestimony<T>>, BuildExecutorReadinessReconcileError> {
-    let mut testimony = BTreeMap::new();
-    for identity in known {
-        if testimony.insert(identity.clone(), None).is_some() {
-            return Err(BuildExecutorReadinessReconcileError::DuplicateKnownIdentity { identity });
-        }
-    }
-
-    for BuildExecutorReadinessAnswer {
-        identity,
-        readiness,
-    } in answers
-    {
-        let Some(existing) = testimony.get_mut(&identity) else {
-            let mut enrolled = testimony
-                .keys()
-                .filter(|known| known.executor_id == identity.executor_id);
-            let first = enrolled.next();
-            if let (Some(enrolled), None) = (first, enrolled.next()) {
-                return Err(BuildExecutorReadinessReconcileError::WrongPool {
-                    executor_id: identity.executor_id,
-                    expected_pool_id: enrolled.pool_id.clone(),
-                    actual_pool_id: identity.pool_id,
-                });
-            }
-            return Err(BuildExecutorReadinessReconcileError::UnknownIdentity { identity });
-        };
-        if existing.replace(readiness).is_some() {
-            return Err(BuildExecutorReadinessReconcileError::DuplicateResponse { identity });
-        }
-    }
-
-    Ok(testimony
-        .into_iter()
-        .map(|(identity, readiness)| match readiness {
-            Some(readiness) => BuildExecutorReadinessTestimony::Answered {
-                identity,
-                readiness,
-            },
-            None => BuildExecutorReadinessTestimony::Silent { identity },
-        })
-        .collect())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -230,24 +136,6 @@ pub struct CredentialGrant {
     pub public_key: NatsUserPublicKey,
     pub name: CredentialName,
     pub role: CredentialRole,
-}
-
-/// Reconciles readiness answers against active durable credential intent at an explicit time.
-pub fn reconcile_build_executor_readiness_at<T>(
-    credentials: &[CredentialGrant],
-    answers: impl IntoIterator<Item = BuildExecutorReadinessAnswer<T>>,
-    now_unix_seconds: u64,
-) -> Result<Vec<BuildExecutorReadinessTestimony<T>>, BuildExecutorReadinessReconcileError> {
-    reconcile_build_executor_readiness_for_known_set(
-        credentials.iter().filter_map(|credential| {
-            credential
-                .role
-                .is_active_at(now_unix_seconds)
-                .then(|| credential.role.build_executor_identity())
-                .flatten()
-        }),
-        answers,
-    )
 }
 
 /// NATS authorities owned by the control plane rather than a client.

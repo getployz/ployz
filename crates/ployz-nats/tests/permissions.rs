@@ -121,7 +121,6 @@ fn build_executor_credential_is_bound_to_one_external_executor() {
     assert_eq!(
         profile.publish.allowed_subjects(),
         &[
-            "_INBOX_build_executor.pool-a.executor-a.>".to_owned(),
             build_executor_log_publish_scope(&pool_id, &executor_id),
             OPERATOR_MACHINE_IMAGE_QUERY_SCOPE.to_owned(),
             OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE.to_owned(),
