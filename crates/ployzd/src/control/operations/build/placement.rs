@@ -160,7 +160,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![(amd64, "a-amd64"), (arm64, "arm64")]
         );
-        assert_eq!(placement[0].machine_id.as_str(), "a-amd64");
     }
 
     #[test]

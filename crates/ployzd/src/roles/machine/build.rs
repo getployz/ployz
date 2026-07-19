@@ -336,7 +336,7 @@ impl MachineBuildRuntime {
         }
         result_rx.await.unwrap_or_else(|_| {
             Err(MachineBuildStartDomainError::PlatformFailed {
-                acceptance,
+                acceptance: Box::new(acceptance),
                 failure: BuildPlatformFailure::MachineUnavailable {
                     message: failure_message(
                         "machine build task stopped before returning a result",
@@ -360,7 +360,7 @@ impl MachineBuildRuntime {
             biased;
             () = tokio::time::sleep_until(deadline) => {
                 return Err(MachineBuildStartDomainError::TimedOut {
-                    acceptance,
+                    acceptance: Box::new(acceptance),
                     message: failure_message("build timed out waiting for the machine build slot"),
                     cleanup: MachineBuildCleanupOutcome::Confirmed,
                     log_summary: BuildLogSummary::none(),
@@ -369,13 +369,13 @@ impl MachineBuildRuntime {
             changed = cancel_rx.changed() => {
                 let _ = changed;
                 return Err(MachineBuildStartDomainError::Cancelled {
-                    acceptance,
+                    acceptance: Box::new(acceptance),
                     cleanup: MachineBuildCleanupOutcome::Confirmed,
                     log_summary: BuildLogSummary::none(),
                 });
             }
             permit = slot => permit.map_err(|_| MachineBuildStartDomainError::PlatformFailed {
-                acceptance: acceptance.clone(),
+                acceptance: Box::new(acceptance.clone()),
                 failure: BuildPlatformFailure::MachineUnavailable {
                     message: failure_message("machine build slot closed"),
                 },
@@ -421,12 +421,12 @@ impl MachineBuildRuntime {
         let log_summary = BuildLogSummary::new(final_log_sequence, omitted_log_bytes);
         match completion {
             BuildTaskCompletion::Cancelled => Err(MachineBuildStartDomainError::Cancelled {
-                acceptance,
+                acceptance: Box::new(acceptance),
                 cleanup,
                 log_summary,
             }),
             BuildTaskCompletion::TimedOut => Err(MachineBuildStartDomainError::TimedOut {
-                acceptance,
+                acceptance: Box::new(acceptance),
                 message: failure_message(match cleanup {
                     MachineBuildCleanupOutcome::Confirmed => {
                         "build exceeded its operation deadline"
@@ -441,7 +441,7 @@ impl MachineBuildRuntime {
             BuildTaskCompletion::Finished(result) => {
                 if cleanup == MachineBuildCleanupOutcome::Unconfirmed {
                     return Err(MachineBuildStartDomainError::PlatformFailed {
-                        acceptance,
+                        acceptance: Box::new(acceptance),
                         failure: BuildPlatformFailure::MachineUnavailable {
                             message: failure_message(
                                 "build workspace cleanup did not finish successfully",
@@ -621,7 +621,7 @@ fn validate_start_provenance(
     };
     if request.assignment != expected {
         return Err(MachineBuildStartDomainError::AssignmentMismatch {
-            expected,
+            expected: Box::new(expected),
             actual: request.assignment.clone(),
         });
     }
@@ -637,7 +637,7 @@ fn validate_cancel_provenance(
     };
     if request.assignment != expected {
         return Err(MachineBuildCancelDomainError::AssignmentMismatch {
-            expected,
+            expected: Box::new(expected),
             actual: request.assignment.clone(),
         });
     }
@@ -652,19 +652,19 @@ fn machine_build_error(
     let log_summary = error.log_summary();
     match error {
         BuildExecutionError::Cancelled { .. } => MachineBuildStartDomainError::Cancelled {
-            acceptance,
+            acceptance: Box::new(acceptance),
             cleanup,
             log_summary,
         },
         BuildExecutionError::TimedOut { .. } => MachineBuildStartDomainError::TimedOut {
-            acceptance,
+            acceptance: Box::new(acceptance),
             message: failure_message("build exceeded its operation deadline"),
             cleanup,
             log_summary,
         },
         BuildExecutionError::Platform { failure, .. } => {
             MachineBuildStartDomainError::PlatformFailed {
-                acceptance,
+                acceptance: Box::new(acceptance),
                 failure,
                 log_summary,
             }
@@ -672,7 +672,7 @@ fn machine_build_error(
         BuildExecutionError::Infrastructure {
             action, message, ..
         } => MachineBuildStartDomainError::PlatformFailed {
-            acceptance,
+            acceptance: Box::new(acceptance),
             failure: BuildPlatformFailure::MachineUnavailable {
                 message: failure_message(format!("{action}: {message}")),
             },

@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use ployz_core::build::{
-    BuildExecutorAcceptance, BuildExecutorAssignment, BuildExecutorOrigin, BuildLogSummary,
+    BuildExecutorAcceptance, BuildExecutorAssignment, BuildExecutorEvidence, BuildLogSummary,
     build_control_request_timeout,
 };
 use ployz_core::ids::{MachineId, OperationId};
@@ -39,7 +39,7 @@ pub(super) async fn run_executor_session(
     let executor = BuildExecutorAssignment::Cluster {
         machine_id: machine_id.clone(),
     };
-    let origin = executor.origin();
+    let evidence_executor = BuildExecutorEvidence::from_assignment(&executor);
     let id = &accepted.submission.operation_id;
     if !driver.active.claim_machine_start(id, &machine_id).await {
         return Ok(PlatformOutcome::CancelledBeforeStart);
@@ -60,7 +60,6 @@ pub(super) async fn run_executor_session(
     let mut log_session = PlatformLogSession::new(
         driver.controllers.repository(),
         id,
-        &machine_id,
         &platform,
         executor.clone(),
         logs,
@@ -85,7 +84,7 @@ pub(super) async fn run_executor_session(
             failure,
             log_summary,
         })) => BuildSummary::Failed {
-            acceptance,
+            acceptance: *acceptance,
             failure,
             log_summary,
         },
@@ -94,7 +93,7 @@ pub(super) async fn run_executor_session(
             cleanup,
             log_summary,
         })) => BuildSummary::Cancelled {
-            acceptance,
+            acceptance: *acceptance,
             cleanup,
             log_summary,
         },
@@ -104,7 +103,7 @@ pub(super) async fn run_executor_session(
             cleanup,
             log_summary,
         })) => BuildSummary::TimedOut {
-            acceptance,
+            acceptance: *acceptance,
             message,
             cleanup,
             log_summary,
@@ -125,7 +124,7 @@ pub(super) async fn run_executor_session(
             let BuildOperationFailure::PlatformFailed { failure, .. } = &operation_failure else {
                 unreachable!("machine failure is platform-scoped")
             };
-            record_platform_failure(driver, id, platform, machine_id, origin, failure.clone())
+            record_platform_failure(driver, id, platform, evidence_executor, failure.clone())
                 .await?;
             return Ok(PlatformOutcome::Failed(operation_failure));
         }
@@ -136,7 +135,7 @@ pub(super) async fn run_executor_session(
     ) {
         let operation_failure =
             platform_failure(platform.clone(), machine_id.clone(), failure.clone());
-        record_platform_failure(driver, id, platform, machine_id, origin, failure).await?;
+        record_platform_failure(driver, id, platform, evidence_executor, failure).await?;
         return Ok(PlatformOutcome::Failed(operation_failure));
     }
     log_session.drain(summary.log_summary()).await?;
@@ -145,7 +144,7 @@ pub(super) async fn run_executor_session(
             BuildSummary::Failed { failure, .. } => {
                 let operation_failure =
                     platform_failure(platform.clone(), machine_id.clone(), failure.clone());
-                record_platform_failure(driver, id, platform, machine_id, origin, failure).await?;
+                record_platform_failure(driver, id, platform, evidence_executor, failure).await?;
                 Ok(PlatformOutcome::Failed(operation_failure))
             }
             BuildSummary::Cancelled { cleanup, .. } => Ok(PlatformOutcome::Cancelled {
@@ -165,7 +164,7 @@ pub(super) async fn run_executor_session(
     if let Err(failure) = validate_completed_image_seed(&machine_id, &ok) {
         let operation_failure =
             platform_failure(platform.clone(), machine_id.clone(), failure.clone());
-        record_platform_failure(driver, id, platform, machine_id, origin, failure).await?;
+        record_platform_failure(driver, id, platform, evidence_executor, failure).await?;
         return Ok(PlatformOutcome::Failed(operation_failure));
     }
     let ok = ok.into_executor();
@@ -176,8 +175,7 @@ pub(super) async fn run_executor_session(
             id,
             BuildEvidence::VerifiedCommit {
                 platform: platform.clone(),
-                machine_id: machine_id.clone(),
-                executor_origin: origin.clone(),
+                executor: evidence_executor.clone(),
                 commit: ok.verified_commit,
             },
         )
@@ -190,8 +188,7 @@ pub(super) async fn run_executor_session(
             id,
             BuildEvidence::ToolchainVerified {
                 platform: platform.clone(),
-                machine_id: machine_id.clone(),
-                executor_origin: origin.clone(),
+                executor: evidence_executor.clone(),
                 toolchain: ok.toolchain,
             },
         )
@@ -204,8 +201,7 @@ pub(super) async fn run_executor_session(
             id,
             BuildEvidence::PlatformCompleted {
                 platform: platform.clone(),
-                machine_id: machine_id.clone(),
-                executor_origin: origin,
+                executor: evidence_executor,
                 image: ok.image.clone(),
             },
         )
@@ -250,8 +246,7 @@ async fn record_platform_failure(
     driver: &BuildOperationDriver,
     operation_id: &OperationId,
     platform: OciPlatform,
-    machine_id: MachineId,
-    executor_origin: BuildExecutorOrigin,
+    executor: BuildExecutorEvidence,
     failure: BuildPlatformFailure,
 ) -> Result<(), BuildOperationFailure> {
     driver
@@ -261,8 +256,7 @@ async fn record_platform_failure(
             operation_id,
             BuildEvidence::PlatformFailed {
                 platform,
-                machine_id,
-                executor_origin,
+                executor,
                 failure,
             },
         )
@@ -317,7 +311,7 @@ fn validate_completed_image_seed(
     machine_id: &MachineId,
     completed: &MachineBuildStartRpcOk,
 ) -> Result<(), BuildPlatformFailure> {
-    if completed.image.seed != *machine_id {
+    if completed.executor.image.seed != *machine_id {
         return Err(BuildPlatformFailure::MachineUnavailable {
             message: failure_message("build executor returned an image from a different seed"),
         });
@@ -352,7 +346,7 @@ enum BuildSummary {
 impl BuildSummary {
     fn acceptance(&self) -> &BuildExecutorAcceptance {
         match self {
-            Self::Completed(ok) => &ok.acceptance,
+            Self::Completed(ok) => &ok.executor.acceptance,
             Self::Failed { acceptance, .. }
             | Self::Cancelled { acceptance, .. }
             | Self::TimedOut { acceptance, .. } => acceptance,
@@ -361,7 +355,7 @@ impl BuildSummary {
 
     fn log_summary(&self) -> BuildLogSummary {
         match self {
-            Self::Completed(ok) => ok.log_summary(),
+            Self::Completed(ok) => ok.executor.log_summary,
             Self::Failed { log_summary, .. }
             | Self::Cancelled { log_summary, .. }
             | Self::TimedOut { log_summary, .. } => *log_summary,

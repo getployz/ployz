@@ -79,15 +79,15 @@ async fn build_submit_records_redacted_accepted_evidence_before_execution() {
         .expect("status reads")
         .expect("status exists");
 
-    let OperationStatus::Build { source, state, .. } = status else {
+    let OperationStatus::Build { status } = status else {
         panic!("build submission must project build status");
     };
     assert!(matches!(
-        state,
+        status.state(),
         ployz_core::operation::BuildOperationState::Accepted
     ));
     assert!(
-        !serde_json::to_string(&source)
+        !serde_json::to_string(status.source())
             .expect("source evidence serializes")
             .contains("private-token")
     );

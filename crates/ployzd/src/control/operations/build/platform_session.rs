@@ -1,6 +1,9 @@
 use std::time::Duration;
 
-use ployz_core::ids::{MachineId, OperationId};
+use ployz_core::build::BuildExecutorEvidence;
+#[cfg(test)]
+use ployz_core::ids::MachineId;
+use ployz_core::ids::OperationId;
 use ployz_core::image::OciPlatform;
 use ployz_core::operation::{BuildEvidence, BuildOperationFailure, FailureMessage};
 
@@ -16,19 +19,18 @@ const BUILD_LOG_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 pub(super) struct PlatformLogSession<'a> {
     repository: &'a OperationRepository,
     operation_id: &'a OperationId,
-    machine_id: &'a MachineId,
     platform: &'a OciPlatform,
     assignment: BuildExecutorAssignment,
+    executor: BuildExecutorEvidence,
     logs: async_nats::Subscriber,
     next_sequence: u64,
     logs_open: bool,
 }
 
 impl<'a> PlatformLogSession<'a> {
-    pub(super) const fn new(
+    pub(super) fn new(
         repository: &'a OperationRepository,
         operation_id: &'a OperationId,
-        machine_id: &'a MachineId,
         platform: &'a OciPlatform,
         assignment: BuildExecutorAssignment,
         logs: async_nats::Subscriber,
@@ -36,8 +38,8 @@ impl<'a> PlatformLogSession<'a> {
         Self {
             repository,
             operation_id,
-            machine_id,
             platform,
+            executor: BuildExecutorEvidence::from_assignment(&assignment),
             assignment,
             logs,
             next_sequence: 1,
@@ -78,8 +80,7 @@ impl<'a> PlatformLogSession<'a> {
                 self.operation_id,
                 BuildEvidence::PlatformLog {
                     platform: self.platform.clone(),
-                    machine_id: self.machine_id.clone(),
-                    executor_origin: self.assignment.origin(),
+                    executor: self.executor.clone(),
                     chunk: frame.chunk,
                 },
             )
@@ -115,8 +116,7 @@ impl<'a> PlatformLogSession<'a> {
                     self.operation_id,
                     BuildEvidence::PlatformLogGap {
                         platform: self.platform.clone(),
-                        machine_id: self.machine_id.clone(),
-                        executor_origin: self.assignment.origin(),
+                        executor: self.executor.clone(),
                         expected_sequence: self.next_sequence,
                         final_sequence: final_log_sequence,
                     },
@@ -130,8 +130,7 @@ impl<'a> PlatformLogSession<'a> {
                     self.operation_id,
                     BuildEvidence::PlatformLogTruncated {
                         platform: self.platform.clone(),
-                        machine_id: self.machine_id.clone(),
-                        executor_origin: self.assignment.origin(),
+                        executor: self.executor.clone(),
                         omitted_bytes: omitted_log_bytes,
                     },
                 )

@@ -50,8 +50,9 @@ mod volume_remove;
 pub use accessors::NextEventSequenceError;
 pub use build::{
     BuildAdapterToolchainEvidence, BuildCleanupEvidence, BuildEvidence, BuildLogChunk,
-    BuildLogChunkError, BuildOperationFailure, BuildOperationState, BuildPlatformFailure,
-    BuildTimeoutFailure, BuildToolchainEvidence, BuildTransition, MAX_BUILD_LOG_CHUNK_BYTES,
+    BuildLogChunkError, BuildOperationFailure, BuildOperationState, BuildOperationStatus,
+    BuildPlatformFailure, BuildTimeoutFailure, BuildToolchainEvidence, BuildTransition,
+    MAX_BUILD_LOG_CHUNK_BYTES,
 };
 pub use cert::{
     CertInterruptionStage, CertOperationFailure, CertOperationFailureError, CertOperationState,
@@ -168,13 +169,9 @@ pub enum OperationKind {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OperationStatus {
     Build {
-        id: OperationId,
-        target: crate::build::BuildTarget,
-        source: crate::build::GitSourceEvidence,
-        adapter: crate::build::BuildAdapter,
-        platforms: crate::build::BuildPlatforms,
-        state: BuildOperationState,
-        last_event_sequence: EventSequence,
+        #[serde(flatten)]
+        #[cfg_attr(feature = "typescript", ts(flatten))]
+        status: BuildOperationStatus,
     },
     Deploy {
         id: OperationId,
@@ -313,13 +310,16 @@ impl OperationStatus {
         event_sequence: EventSequence,
     ) -> Self {
         Self::Build {
-            id,
-            target,
-            source,
-            adapter,
-            platforms,
-            state: BuildOperationState::Accepted,
-            last_event_sequence: event_sequence,
+            status: BuildOperationStatus::new(build::BuildOperationStatusWire {
+                id,
+                target,
+                source,
+                adapter,
+                platforms,
+                executor_assignments: crate::build::BuildExecutorAssignments::empty(),
+                state: BuildOperationState::Accepted,
+                last_event_sequence: event_sequence,
+            }),
         }
     }
 
@@ -567,7 +567,7 @@ impl OperationStatus {
     #[must_use]
     pub const fn is_terminal(&self) -> bool {
         match self {
-            Self::Build { state, .. } => state.is_terminal(),
+            Self::Build { status } => status.state().is_terminal(),
             Self::Deploy { state, .. } => state.is_terminal(),
             Self::Cert { state, .. } => state.is_terminal(),
             Self::MachineAdd { state, .. } => state.is_terminal(),
@@ -599,9 +599,9 @@ impl OperationStatus {
         // Reaching here means the state is terminal, so anything that is
         // neither completed nor cancelled is a failure.
         let outcome = match self {
-            Self::Build { state, .. } => OperationOutcome::from_terminal(
-                matches!(state, BuildOperationState::Completed { .. }),
-                matches!(state, BuildOperationState::Cancelled { .. }),
+            Self::Build { status } => OperationOutcome::from_terminal(
+                matches!(status.state(), BuildOperationState::Completed { .. }),
+                matches!(status.state(), BuildOperationState::Cancelled { .. }),
             ),
             Self::Deploy { state, .. } => OperationOutcome::from_terminal(
                 matches!(state, DeployOperationState::Completed { .. }),

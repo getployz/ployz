@@ -2,23 +2,23 @@ use ployz_core::build::{
     BuildExecutorCancelDomainError, BuildExecutorCancelOk, BuildExecutorCancelOutcome,
     BuildExecutorCancelRequest, BuildExecutorCleanupOutcome, BuildExecutorLogFrame,
     BuildExecutorStartDomainError, BuildExecutorStartOk, BuildExecutorStartRequest,
-    VerifiedGitCommit,
 };
-use ployz_core::deploy::PlatformImage;
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::machine::rpc::MachineRpcResponse;
-use ployz_core::operation::{BuildToolchainEvidence, FailureMessage};
+use ployz_core::operation::FailureMessage;
 use serde::{Deserialize, Serialize};
 
 pub type MachineBuildStartRpcRequest = BuildExecutorStartRequest;
 pub type MachineBuildStartDomainError = BuildExecutorStartDomainError;
 pub type MachineBuildCleanupOutcome = BuildExecutorCleanupOutcome;
+pub type MachineBuildStartRpcOk = MachineBuildExecutorRpcOk<BuildExecutorStartOk>;
 pub type MachineBuildStartRpcResponse =
     MachineRpcResponse<MachineBuildStartRpcOk, MachineBuildStartDomainError>;
 
 pub type MachineBuildCancelRpcRequest = BuildExecutorCancelRequest;
 pub type MachineBuildCancelOutcome = BuildExecutorCancelOutcome;
 pub type MachineBuildCancelDomainError = BuildExecutorCancelDomainError;
+pub type MachineBuildCancelRpcOk = MachineBuildExecutorRpcOk<BuildExecutorCancelOk>;
 pub type MachineBuildCancelRpcResponse =
     MachineRpcResponse<MachineBuildCancelRpcOk, MachineBuildCancelDomainError>;
 
@@ -28,111 +28,28 @@ pub use ployz_core::build::{BuildExecutorAcceptance, BuildExecutorAssignment, Bu
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct MachineBuildStartRpcOk {
+pub struct MachineBuildExecutorRpcOk<T> {
     pub machine_id: MachineId,
-    pub acceptance: BuildExecutorAcceptance,
-    pub image: PlatformImage,
-    pub verified_commit: VerifiedGitCommit,
-    pub toolchain: BuildToolchainEvidence,
-    pub final_log_sequence: u64,
-    pub omitted_log_bytes: u64,
+    pub executor: T,
 }
 
-impl MachineBuildStartRpcOk {
+impl<T> MachineBuildExecutorRpcOk<T> {
     #[must_use]
-    pub const fn log_summary(&self) -> BuildLogSummary {
-        BuildLogSummary::new(self.final_log_sequence, self.omitted_log_bytes)
-    }
-
-    #[must_use]
-    pub fn into_executor(self) -> BuildExecutorStartOk {
-        self.into()
+    pub fn into_executor(self) -> T {
+        self.executor
     }
 }
 
-impl From<(MachineId, BuildExecutorStartOk)> for MachineBuildStartRpcOk {
-    fn from((machine_id, executor): (MachineId, BuildExecutorStartOk)) -> Self {
-        let BuildExecutorStartOk {
-            acceptance,
-            image,
-            verified_commit,
-            toolchain,
-            log_summary,
-        } = executor;
+impl<T> From<(MachineId, T)> for MachineBuildExecutorRpcOk<T> {
+    fn from((machine_id, executor): (MachineId, T)) -> Self {
         Self {
             machine_id,
-            acceptance,
-            image,
-            verified_commit,
-            toolchain,
-            final_log_sequence: log_summary.final_log_sequence,
-            omitted_log_bytes: log_summary.omitted_log_bytes,
+            executor,
         }
     }
 }
 
-impl From<MachineBuildStartRpcOk> for BuildExecutorStartOk {
-    fn from(response: MachineBuildStartRpcOk) -> Self {
-        let MachineBuildStartRpcOk {
-            machine_id: _,
-            acceptance,
-            image,
-            verified_commit,
-            toolchain,
-            final_log_sequence,
-            omitted_log_bytes,
-        } = response;
-        Self {
-            acceptance,
-            image,
-            verified_commit,
-            toolchain,
-            log_summary: BuildLogSummary::new(final_log_sequence, omitted_log_bytes),
-        }
-    }
-}
-
-impl ployz_core::machine::rpc::MachineRpcResponder for MachineBuildStartRpcOk {
-    fn responder_machine_id(&self) -> &MachineId {
-        &self.machine_id
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MachineBuildCancelRpcOk {
-    pub machine_id: MachineId,
-    pub assignment: BuildExecutorAssignment,
-    pub outcome: BuildExecutorCancelOutcome,
-}
-
-impl MachineBuildCancelRpcOk {
-    #[must_use]
-    pub fn into_executor(self) -> BuildExecutorCancelOk {
-        self.into()
-    }
-}
-
-impl From<(MachineId, BuildExecutorCancelOk)> for MachineBuildCancelRpcOk {
-    fn from((machine_id, executor): (MachineId, BuildExecutorCancelOk)) -> Self {
-        Self {
-            machine_id,
-            assignment: executor.assignment,
-            outcome: executor.outcome,
-        }
-    }
-}
-
-impl From<MachineBuildCancelRpcOk> for BuildExecutorCancelOk {
-    fn from(response: MachineBuildCancelRpcOk) -> Self {
-        Self {
-            assignment: response.assignment,
-            outcome: response.outcome,
-        }
-    }
-}
-
-impl ployz_core::machine::rpc::MachineRpcResponder for MachineBuildCancelRpcOk {
+impl<T> ployz_core::machine::rpc::MachineRpcResponder for MachineBuildExecutorRpcOk<T> {
     fn responder_machine_id(&self) -> &MachineId {
         &self.machine_id
     }
@@ -185,7 +102,7 @@ mod tests {
     }
 
     #[test]
-    fn successful_response_keeps_flat_log_summary_wire_shape() {
+    fn successful_start_response_has_a_strict_nested_executor_envelope() {
         let digest = OciDigest::try_new(format!("sha256:{}", "a".repeat(64))).expect("digest");
         let source = GitSource::try_new(
             "https://example.test/repo.git",
@@ -218,14 +135,34 @@ mod tests {
 
         let encoded = serde_json::to_value(&response).expect("encode success");
         assert_eq!(
-            encoded.get("final_log_sequence"),
-            Some(&serde_json::json!(8))
+            encoded,
+            serde_json::json!({
+                "machine_id": "machine-a",
+                "executor": {
+                    "acceptance": {
+                        "operation_id": "build-1",
+                        "assignment": {"executor": "cluster", "machine_id": "machine-a"},
+                        "platform": {"os": "linux", "architecture": "amd64"},
+                    },
+                    "image": {
+                        "seed": "machine-a",
+                        "manifest_digest": format!("sha256:{}", "a".repeat(64)),
+                        "image_id": format!("sha256:{}", "a".repeat(64)),
+                        "availability_expires_at": "4102444800",
+                    },
+                    "verified_commit": {
+                        "url": "https://example.test/repo.git",
+                        "commit": "0123456789abcdef0123456789abcdef01234567",
+                    },
+                    "toolchain": {
+                        "buildkit_image": format!("sha256:{}", "a".repeat(64)),
+                        "adapter": {"adapter": "dockerfile"},
+                    },
+                    "final_log_sequence": 8,
+                    "omitted_log_bytes": 13,
+                },
+            })
         );
-        assert_eq!(
-            encoded.get("omitted_log_bytes"),
-            Some(&serde_json::json!(13))
-        );
-        assert!(encoded.get("log_summary").is_none());
         assert_eq!(
             serde_json::from_value::<MachineBuildStartRpcOk>(encoded.clone())
                 .expect("decode success"),
@@ -237,13 +174,55 @@ mod tests {
             .expect("success object")
             .insert("unexpected".to_owned(), serde_json::json!(true));
         assert!(serde_json::from_value::<MachineBuildStartRpcOk>(unknown).is_err());
+
+        let mut unknown_executor = serde_json::to_value(&response).expect("encode success");
+        unknown_executor
+            .get_mut("executor")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("executor object")
+            .insert("unexpected".to_owned(), serde_json::json!(true));
+        assert!(serde_json::from_value::<MachineBuildStartRpcOk>(unknown_executor).is_err());
+    }
+
+    #[test]
+    fn successful_cancel_response_has_a_strict_nested_executor_envelope() {
+        let machine_id = MachineId::try_new("machine-a").expect("machine");
+        let response = MachineBuildCancelRpcOk::from((
+            machine_id.clone(),
+            BuildExecutorCancelOk {
+                assignment: BuildExecutorAssignment::Cluster { machine_id },
+                outcome: BuildExecutorCancelOutcome::Requested,
+            },
+        ));
+        let encoded = serde_json::to_value(&response).expect("encode success");
+        assert_eq!(
+            encoded,
+            serde_json::json!({
+                "machine_id": "machine-a",
+                "executor": {
+                    "assignment": {"executor": "cluster", "machine_id": "machine-a"},
+                    "outcome": {"outcome": "requested"},
+                },
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<MachineBuildCancelRpcOk>(encoded.clone())
+                .expect("decode success"),
+            response
+        );
+        let mut unknown = encoded;
+        unknown
+            .as_object_mut()
+            .expect("success object")
+            .insert("unexpected".to_owned(), serde_json::json!(true));
+        assert!(serde_json::from_value::<MachineBuildCancelRpcOk>(unknown).is_err());
     }
 
     #[test]
     fn timed_out_response_preserves_typed_cleanup_outcome() {
         let machine_id = MachineId::try_new("machine-a").expect("machine id");
         let error = MachineBuildStartDomainError::TimedOut {
-            acceptance: acceptance(&machine_id),
+            acceptance: Box::new(acceptance(&machine_id)),
             message: FailureMessage::try_new("deadline exceeded").expect("message"),
             cleanup: MachineBuildCleanupOutcome::Unconfirmed,
             log_summary: BuildLogSummary::new(3, 5),

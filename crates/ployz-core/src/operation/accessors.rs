@@ -4,8 +4,8 @@ impl OperationStatus {
     #[must_use]
     pub const fn id(&self) -> &OperationId {
         match self {
-            Self::Build { id, .. }
-            | Self::Deploy { id, .. }
+            Self::Build { status } => status.id(),
+            Self::Deploy { id, .. }
             | Self::Cert { id, .. }
             | Self::MachineAdd { id, .. }
             | Self::MachineUpdate { id, .. }
@@ -83,11 +83,8 @@ impl OperationStatus {
     #[must_use]
     pub const fn last_event_sequence(&self) -> EventSequence {
         match self {
-            Self::Build {
-                last_event_sequence,
-                ..
-            }
-            | Self::Deploy {
+            Self::Build { status } => status.last_event_sequence(),
+            Self::Deploy {
                 last_event_sequence,
                 ..
             }

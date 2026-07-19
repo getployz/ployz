@@ -21,16 +21,16 @@ use ployz_core::install::{
     DEFAULT_MACHINE_BOOTSTRAP_URL, InstallArtifactVersion, InstallSha256Digest, MachineBootstrapUrl,
 };
 use ployz_core::operation::{
-    BuildAdapterToolchainEvidence, BuildLogChunk, BuildOperationState, BuildToolchainEvidence,
-    OperationEvent, OperationEventReplayRequest,
+    BuildAdapterToolchainEvidence, BuildEvidence, BuildLogChunk, BuildOperationState,
+    BuildToolchainEvidence, OperationEvent, OperationEventReplayRequest,
 };
 use ployz_nats::subjects::machine_service;
 use ployz_test_support::ids::{event_replay_limit, event_sequence, machine_id, operation_id};
 
-fn cluster_origin(machine_id: &MachineId) -> BuildExecutorOrigin {
-    BuildExecutorOrigin::Cluster {
+fn cluster_evidence(machine_id: &MachineId) -> BuildExecutorEvidence {
+    BuildExecutorEvidence::from_assignment(&BuildExecutorAssignment::Cluster {
         machine_id: machine_id.clone(),
-    }
+    })
 }
 
 fn executor_acceptance(
@@ -93,6 +93,18 @@ async fn platform_rpc_failure_records_real_evidence_and_publishes_no_image_index
         .record_build_transition(&operation_id, BuildTransition::Placing)
         .await
         .expect("record placement");
+    for (platform, machine_id) in [(&amd64, &amd64_machine), (&arm64, &arm64_machine)] {
+        repository
+            .record_build_evidence(
+                &operation_id,
+                BuildEvidence::PlatformPlaced {
+                    platform: platform.clone(),
+                    executor: cluster_evidence(machine_id),
+                },
+            )
+            .await
+            .expect("record platform placement");
+    }
     repository
         .record_build_transition(&operation_id, BuildTransition::Building)
         .await
@@ -149,7 +161,7 @@ async fn platform_rpc_failure_records_real_evidence_and_publishes_no_image_index
         MachineBuildStartRpcResponse::DomainError {
             machine_id: arm64_machine.clone(),
             error: MachineBuildStartDomainError::PlatformFailed {
-                acceptance: executor_acceptance(&operation_id, &arm64_machine, &arm64),
+                acceptance: Box::new(executor_acceptance(&operation_id, &arm64_machine, &arm64)),
                 failure: platform_failure.clone(),
                 log_summary: BuildLogSummary::none(),
             },
@@ -216,11 +228,11 @@ async fn platform_rpc_failure_records_real_evidence_and_publishes_no_image_index
         .await
         .expect("read build status")
         .expect("build status exists");
-    let OperationStatus::Build { state, .. } = &snapshot.status else {
+    let OperationStatus::Build { status } = &snapshot.status else {
         panic!("submitted build projects build status");
     };
     assert_eq!(
-        state,
+        status.state(),
         &BuildOperationState::Failed {
             failure: operation_failure,
         }
@@ -243,55 +255,47 @@ async fn platform_rpc_failure_records_real_evidence_and_publishes_no_image_index
         &record.event,
         OperationEvent::BuildCommitVerified {
             platform,
-            machine_id,
-            executor_origin,
+            executor,
             commit,
             ..
         }
             if platform == &amd64
-                && machine_id == &amd64_machine
-                && executor_origin == &cluster_origin(machine_id)
+                && executor == &cluster_evidence(&amd64_machine)
                 && commit == &verified_commit
     )));
     assert!(replay.events.iter().any(|record| matches!(
         &record.event,
         OperationEvent::BuildPlatformToolchainVerified {
             platform,
-            machine_id,
-            executor_origin,
+            executor,
             toolchain: actual,
             ..
         } if platform == &amd64
-            && machine_id == &amd64_machine
-            && executor_origin == &cluster_origin(machine_id)
+            && executor == &cluster_evidence(&amd64_machine)
             && actual == &toolchain
     )));
     assert!(replay.events.iter().any(|record| matches!(
         &record.event,
         OperationEvent::BuildPlatformCompleted {
             platform,
-            machine_id,
-            executor_origin,
+            executor,
             image,
             ..
         }
             if platform == &amd64
-                && machine_id == &amd64_machine
-                && executor_origin == &cluster_origin(machine_id)
+                && executor == &cluster_evidence(&amd64_machine)
                 && image == &completed_image
     )));
     assert!(replay.events.iter().any(|record| matches!(
         &record.event,
         OperationEvent::BuildPlatformFailed {
             platform,
-            machine_id,
-            executor_origin,
+            executor,
             failure,
             ..
         }
             if platform == &arm64
-                && machine_id == &arm64_machine
-                && executor_origin == &cluster_origin(machine_id)
+                && executor == &cluster_evidence(&arm64_machine)
                 && failure == &platform_failure
     )));
     assert!(
