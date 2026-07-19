@@ -68,7 +68,7 @@ fn namespace_revision_entry_identity_is_stable_for_same_service_shape() {
     assert_eq!(
         left.namespace_revision_entry_id(&namespace_id("default"))
             .as_str(),
-        "c0efb9e9ad7fc2843b0e4988e101df759a2d554498dd0797bf5866d1b37641a9"
+        "26c648a60227c8466a084afa8a498ceeb310b697cf65b3494969892e0cc2201c"
     );
 }
 
@@ -85,7 +85,7 @@ fn namespace_revision_entry_identity_changes_for_service_or_image_change() {
         service_spec("svc_web", "ghcr.io/acme/api:rev-1", 1, None)
             .namespace_revision_entry_id(&namespace_id("default"))
             .as_str(),
-        "f33e503c27652276d057ba043e2d6a53426b7f83c0a07a3789faa03ff392202d"
+        "4b18fc13b614879ed2f3971d3be552e951b200f7e66f45736513ba1fa7e8f1f7"
     );
     assert_ne!(
         base.namespace_revision_entry_id(&namespace_id("default")),
@@ -96,7 +96,7 @@ fn namespace_revision_entry_identity_changes_for_service_or_image_change() {
         service_spec("svc_api", "ghcr.io/acme/api:rev-2", 1, None)
             .namespace_revision_entry_id(&namespace_id("default"))
             .as_str(),
-        "034347bbe51f5d3d20359e3576cff43b8ed3d1aab21f16551a3621a63e7bceec"
+        "1707fcaf35ffa8c847ae815cc50e9c34f0f02c357cb13f18c3c8be62d2f863f4"
     );
 }
 
@@ -106,7 +106,7 @@ fn mutable_tag_repeats_as_same_namespace_revision_entry_identity() {
         service_spec("svc_api", "nginx:latest", 1, None)
             .namespace_revision_entry_id(&namespace_id("default"))
             .as_str(),
-        "0ea3e7c5d9cade815538aa0467430568e61a92ff415f698ae220d2458e7e29b8"
+        "f8266a979cad94098b86e47688deb2d4504ab72e9e4c99f913def40b7e3000fb"
     );
     assert_eq!(
         service_spec("svc_api", "nginx:latest", 1, None)
@@ -292,21 +292,77 @@ fn namespace_revision_entry_identity_is_stable_for_environment_order() {
 }
 
 #[test]
-fn namespace_revision_entry_identity_frames_environment_values() {
-    let env_injected = service_spec_with_runtime(
+fn operation_scoped_revisions_never_depend_on_environment_values() {
+    let left = service_spec_with_runtime(
         "svc_api",
         "ghcr.io/acme/api:rev-1",
-        runtime_with_env([("PAYLOAD", "value\nimage=ghcr.io/acme/api:rev-2")]),
+        runtime_with_env([("TOKEN", "first")]),
     );
-    let image_changed = service_spec_with_runtime(
+    let right = service_spec_with_runtime(
         "svc_api",
-        "ghcr.io/acme/api:rev-2",
-        runtime_with_env([("PAYLOAD", "value")]),
+        "ghcr.io/acme/api:rev-1",
+        runtime_with_env([("TOKEN", "second")]),
     );
+    let namespace = namespace_id("default");
+    let operation = operation_id("op_deploy");
+
+    assert_eq!(
+        left.namespace_revision_entry_id_for_operation(&namespace, &operation),
+        right.namespace_revision_entry_id_for_operation(&namespace, &operation)
+    );
+    assert_eq!(
+        ployz_core::deploy::namespace_revision_id_for_operation(&namespace, &[left], &operation),
+        ployz_core::deploy::namespace_revision_id_for_operation(&namespace, &[right], &operation)
+    );
+}
+
+#[test]
+fn environment_revisions_are_scoped_to_the_accepted_operation() {
+    let service = service_spec_with_runtime(
+        "svc_api",
+        "ghcr.io/acme/api:rev-1",
+        runtime_with_env([("TOKEN", "secret")]),
+    );
+    let namespace = namespace_id("default");
 
     assert_ne!(
-        env_injected.namespace_revision_entry_id(&namespace_id("default")),
-        image_changed.namespace_revision_entry_id(&namespace_id("default"))
+        service.namespace_revision_entry_id_for_operation(&namespace, &operation_id("op_one")),
+        service.namespace_revision_entry_id_for_operation(&namespace, &operation_id("op_two"))
+    );
+    assert_ne!(
+        ployz_core::deploy::namespace_revision_id_for_operation(
+            &namespace,
+            std::slice::from_ref(&service),
+            &operation_id("op_one")
+        ),
+        ployz_core::deploy::namespace_revision_id_for_operation(
+            &namespace,
+            &[service],
+            &operation_id("op_two")
+        )
+    );
+}
+
+#[test]
+fn environment_free_revisions_are_reusable_across_operations() {
+    let service = service_spec("svc_api", "ghcr.io/acme/api:rev-1", 1, None);
+    let namespace = namespace_id("default");
+
+    assert_eq!(
+        service.namespace_revision_entry_id_for_operation(&namespace, &operation_id("op_one")),
+        service.namespace_revision_entry_id_for_operation(&namespace, &operation_id("op_two"))
+    );
+    assert_eq!(
+        ployz_core::deploy::namespace_revision_id_for_operation(
+            &namespace,
+            std::slice::from_ref(&service),
+            &operation_id("op_one")
+        ),
+        ployz_core::deploy::namespace_revision_id_for_operation(
+            &namespace,
+            &[service],
+            &operation_id("op_two")
+        )
     );
 }
 
@@ -1081,6 +1137,76 @@ fn deploy_preparation_marks_interrupted_replicas_for_creation_gating() {
 }
 
 #[test]
+fn environment_replica_reuse_requires_the_same_operation_revision_and_provenance() {
+    let mut service = deploy_request(1);
+    service.runtime = runtime_with_env([("TOKEN", "secret")]);
+    let request = DeployRequest {
+        namespace_id: namespace_id("default"),
+        origin: None,
+        volumes: BTreeMap::new(),
+        services: vec![service.clone()],
+    };
+    let prior_operation = operation_id("op_prior");
+    let current_operation = operation_id("op_current");
+    let prior_entry =
+        service.namespace_revision_entry_id_for_operation(&request.namespace_id, &prior_operation);
+    let current_entry = service
+        .namespace_revision_entry_id_for_operation(&request.namespace_id, &current_operation);
+    let mut observed = observed_container(
+        "machine_a",
+        "ctr_retained",
+        "svc_api",
+        prior_entry.as_str(),
+        ManagedContainerKind::Service,
+        ContainerRuntimeState::running_unroutable(),
+    );
+    observed.identity.operation_id = prior_operation.clone();
+    let observed_machines = vec![observed_machine("machine_a", [observed])];
+
+    let current_target = DeployPlanningTarget::try_from_operation(&request, &current_operation)
+        .expect("current operation target validates");
+    let not_reused = prepare_deploy(DeployPreparationInput {
+        target: &current_target,
+        service_id: service.service_id.clone(),
+        occupied_route_bindings: Vec::new(),
+        eligible_machines: vec![machine_id("machine_a")],
+        machine_platforms: BTreeMap::new(),
+        draining_machines: Vec::new(),
+        observed_machines: observed_machines.clone(),
+        existing_replica_policy: ExistingReplicaPolicy::RecoverInterrupted {
+            operation_ids: BTreeSet::from([prior_operation.clone()]),
+        },
+    })
+    .expect("current operation prepares");
+    assert!(not_reused.existing_replicas.is_empty());
+    assert_ne!(prior_entry, current_entry);
+
+    let prior_target = DeployPlanningTarget::try_from_operation(&request, &prior_operation)
+        .expect("prior operation target validates");
+    let recovered = prepare_deploy(DeployPreparationInput {
+        target: &prior_target,
+        service_id: service.service_id,
+        occupied_route_bindings: Vec::new(),
+        eligible_machines: vec![machine_id("machine_a")],
+        machine_platforms: BTreeMap::new(),
+        draining_machines: Vec::new(),
+        observed_machines,
+        existing_replica_policy: ExistingReplicaPolicy::RecoverInterrupted {
+            operation_ids: BTreeSet::from([prior_operation]),
+        },
+    })
+    .expect("same operation recovery prepares");
+    assert_eq!(
+        recovered.existing_replicas,
+        vec![ExistingServiceReplica {
+            machine_id: machine_id("machine_a"),
+            container_id: container_id("ctr_retained"),
+            creation_gate: ExistingReplicaCreationGate::RequiredAfterInterruption,
+        }]
+    );
+}
+
+#[test]
 fn promoted_entry_still_gates_replica_from_interrupted_provenance() {
     let request = deploy_request(2);
     let entry_id = request.namespace_revision_entry_id(&namespace_id("default"));
@@ -1563,7 +1689,7 @@ fn namespace_revision_entry_id_pins_the_versioned_encoding() {
 
     assert_eq!(
         entry_id.as_str(),
-        "c0efb9e9ad7fc2843b0e4988e101df759a2d554498dd0797bf5866d1b37641a9"
+        "26c648a60227c8466a084afa8a498ceeb310b697cf65b3494969892e0cc2201c"
     );
 }
 

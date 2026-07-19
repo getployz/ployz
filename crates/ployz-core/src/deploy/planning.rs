@@ -99,6 +99,13 @@ pub struct DeployPlanningTarget {
     namespace_id: NamespaceId,
     volumes: BTreeMap<VolumeName, VolumeSpec>,
     services: Vec<DeployPlanningService>,
+    revision_scope: DeployRevisionScope,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DeployRevisionScope {
+    Preview,
+    Operation(OperationId),
 }
 
 impl DeployPlanningTarget {
@@ -112,6 +119,24 @@ impl DeployPlanningTarget {
             request.namespace_id.clone(),
             request.volumes.clone(),
             services,
+            DeployRevisionScope::Preview,
+        )
+    }
+
+    pub fn try_from_operation(
+        request: &DeployRequest,
+        operation_id: &OperationId,
+    ) -> Result<Self, DeployTargetValidationError> {
+        let services = request
+            .services
+            .iter()
+            .map(DeployPlanningService::from_deploy)
+            .collect::<Vec<_>>();
+        Self::try_new(
+            request.namespace_id.clone(),
+            request.volumes.clone(),
+            services,
+            DeployRevisionScope::Operation(operation_id.clone()),
         )
     }
 
@@ -127,6 +152,7 @@ impl DeployPlanningTarget {
             target.namespace_id.clone(),
             target.volumes.clone(),
             services,
+            DeployRevisionScope::Preview,
         )
     }
 
@@ -134,6 +160,7 @@ impl DeployPlanningTarget {
         namespace_id: NamespaceId,
         volumes: BTreeMap<VolumeName, VolumeSpec>,
         services: Vec<DeployPlanningService>,
+        revision_scope: DeployRevisionScope,
     ) -> Result<Self, DeployTargetValidationError> {
         let mut service_ids = BTreeSet::new();
         for service in &services {
@@ -168,6 +195,7 @@ impl DeployPlanningTarget {
             namespace_id,
             volumes,
             services,
+            revision_scope,
         })
     }
 
@@ -202,6 +230,16 @@ impl DeployPlanningTarget {
     #[must_use]
     pub fn services(&self) -> &[DeployPlanningService] {
         &self.services
+    }
+
+    #[must_use]
+    pub fn namespace_revision_id(&self, request: &DeployRequest) -> NamespaceRevisionId {
+        match &self.revision_scope {
+            DeployRevisionScope::Operation(operation_id) => {
+                request.namespace_revision_id_for_operation(operation_id)
+            }
+            DeployRevisionScope::Preview => request.namespace_revision_id(),
+        }
     }
 
     pub fn validate_registry_credential_service_ids<'a>(
@@ -382,6 +420,33 @@ impl DeployPlanningService {
             )),
             DeployPlanningImage::PendingBuild => None,
         }
+    }
+
+    #[must_use]
+    pub fn namespace_revision_entry_id_for_target(
+        &self,
+        target: &DeployPlanningTarget,
+    ) -> Option<NamespaceRevisionEntryId> {
+        let (image, image_source) = self.concrete_image()?;
+        Some(match &target.revision_scope {
+            DeployRevisionScope::Operation(operation_id) => {
+                namespace_revision_entry_id_for_operation(
+                    target.namespace_id(),
+                    &self.service_id,
+                    image,
+                    image_source,
+                    &self.runtime,
+                    operation_id,
+                )
+            }
+            DeployRevisionScope::Preview => namespace_revision_entry_id_for(
+                target.namespace_id(),
+                &self.service_id,
+                image,
+                image_source,
+                &self.runtime,
+            ),
+        })
     }
 }
 

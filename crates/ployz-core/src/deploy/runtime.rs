@@ -173,6 +173,10 @@ impl ServiceEnvironment {
         self.0.iter()
     }
 
+    pub fn names(&self) -> impl Iterator<Item = &EnvName> {
+        self.0.keys()
+    }
+
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()

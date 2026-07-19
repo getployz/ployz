@@ -7,6 +7,27 @@ pub fn namespace_revision_id_for(
     namespace_id: &NamespaceId,
     services: &[DeployServiceSpec],
 ) -> NamespaceRevisionId {
+    namespace_revision_id_for_scope(namespace_id, services, RevisionScope::Unscoped)
+}
+
+#[must_use]
+pub fn namespace_revision_id_for_operation(
+    namespace_id: &NamespaceId,
+    services: &[DeployServiceSpec],
+    operation_id: &OperationId,
+) -> NamespaceRevisionId {
+    namespace_revision_id_for_scope(
+        namespace_id,
+        services,
+        RevisionScope::Operation(operation_id),
+    )
+}
+
+fn namespace_revision_id_for_scope(
+    namespace_id: &NamespaceId,
+    services: &[DeployServiceSpec],
+    scope: RevisionScope<'_>,
+) -> NamespaceRevisionId {
     let mut services = services.iter().collect::<Vec<_>>();
     services.sort_by(|left, right| left.service_id.cmp(&right.service_id));
 
@@ -40,6 +61,7 @@ pub fn namespace_revision_id_for(
             ServiceMode::Global => hash_frame(&mut hasher, "service_mode", b"global"),
         }
         hash_runtime_spec(&mut hasher, &service.runtime);
+        scope.hash_for_environment(&mut hasher, &service.runtime.environment);
 
         match &service.pre_start {
             Some(pre_start) => {
@@ -107,6 +129,43 @@ pub fn namespace_revision_entry_id_for(
     image_source: &ImageSource,
     runtime: &ContainerRuntimeSpec,
 ) -> NamespaceRevisionEntryId {
+    namespace_revision_entry_id_for_scope(
+        namespace_id,
+        service_id,
+        image,
+        image_source,
+        runtime,
+        RevisionScope::Unscoped,
+    )
+}
+
+#[must_use]
+pub fn namespace_revision_entry_id_for_operation(
+    namespace_id: &NamespaceId,
+    service_id: &ServiceId,
+    image: &ImageReference,
+    image_source: &ImageSource,
+    runtime: &ContainerRuntimeSpec,
+    operation_id: &OperationId,
+) -> NamespaceRevisionEntryId {
+    namespace_revision_entry_id_for_scope(
+        namespace_id,
+        service_id,
+        image,
+        image_source,
+        runtime,
+        RevisionScope::Operation(operation_id),
+    )
+}
+
+fn namespace_revision_entry_id_for_scope(
+    namespace_id: &NamespaceId,
+    service_id: &ServiceId,
+    image: &ImageReference,
+    image_source: &ImageSource,
+    runtime: &ContainerRuntimeSpec,
+    scope: RevisionScope<'_>,
+) -> NamespaceRevisionEntryId {
     let mut hasher = Sha256::new();
     hash_frame(
         &mut hasher,
@@ -131,6 +190,7 @@ pub fn namespace_revision_entry_id_for(
         }
     }
     hash_runtime_spec(&mut hasher, runtime);
+    scope.hash_for_environment(&mut hasher, &runtime.environment);
     let digest = hasher.finalize();
     NamespaceRevisionEntryId::try_new(format!("{digest:x}"))
         .expect("sha256 hex digest is a subject token")
@@ -171,9 +231,8 @@ fn hash_runtime_spec(hasher: &mut Sha256, runtime: &ContainerRuntimeSpec) {
         None => hash_frame(hasher, "entrypoint", b"none"),
     }
 
-    for (name, value) in environment.iter() {
+    for name in environment.names() {
         hash_frame(hasher, "env_name", name.as_str().as_bytes());
-        hash_frame(hasher, "env_value", value.as_str().as_bytes());
     }
     hash_frame(
         hasher,
@@ -215,6 +274,22 @@ fn hash_runtime_spec(hasher: &mut Sha256, runtime: &ContainerRuntimeSpec) {
     }
     if let Some(pids) = resources.pids {
         hash_frame(hasher, "pids", pids.get().to_string().as_bytes());
+    }
+}
+
+#[derive(Clone, Copy)]
+enum RevisionScope<'a> {
+    Unscoped,
+    Operation(&'a OperationId),
+}
+
+impl RevisionScope<'_> {
+    fn hash_for_environment(self, hasher: &mut Sha256, environment: &ServiceEnvironment) {
+        if let Self::Operation(operation_id) = self
+            && !environment.is_empty()
+        {
+            hash_frame(hasher, "operation_id", operation_id.as_str().as_bytes());
+        }
     }
 }
 

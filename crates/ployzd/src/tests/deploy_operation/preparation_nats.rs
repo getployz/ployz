@@ -344,6 +344,7 @@ async fn prepare_command_from_nats(
     let ingress_projection =
         crate::control::intent::ingress_intent::IngressProjectionStore::new(store);
     let facts = load_deploy_execution_facts_from_nats(
+        &operation_id,
         &request,
         intent_reader,
         facts_reader,

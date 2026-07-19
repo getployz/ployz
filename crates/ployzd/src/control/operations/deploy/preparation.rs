@@ -150,7 +150,7 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
     registry_credentials: &BTreeMap<ServiceId, RegistryCredential>,
     reusable_interrupted_operation_ids: &BTreeSet<OperationId>,
 ) -> DeployExecutionCommand {
-    let target = DeployPlanningTarget::try_from_deploy(&request)
+    let target = DeployPlanningTarget::try_from_operation(&request, &operation_id)
         .expect("volume-declared deploy request is a validated planning target");
     let prepared = prepare_deploy_command(&target, &facts, reusable_interrupted_operation_ids);
     let route_binding_commits = commit_deploy_route_bindings(
@@ -268,7 +268,7 @@ fn prepare_deploy_command(
             &facts.machine_storage_testimony,
             &storage_requirement,
         );
-        let desired_serving_entry = preview_serving_target_entry(target.namespace_id(), service);
+        let desired_serving_entry = planning_serving_target_entry(target, service);
         let equivalent_serving_entry = desired_serving_entry.as_ref().and_then(|desired| {
             facts.namespace_serving_entries.iter().find(|entry| {
                 entry.namespace_id == desired.namespace_id
@@ -494,14 +494,14 @@ fn draining_machines(
         .collect()
 }
 
-fn preview_serving_target_entry(
-    namespace_id: &ployz_core::ids::NamespaceId,
+fn planning_serving_target_entry(
+    target: &DeployPlanningTarget,
     service: &DeployPlanningService,
 ) -> Option<ServingTargetEntry> {
-    let namespace_revision_entry_id = service.namespace_revision_entry_id(namespace_id)?;
+    let namespace_revision_entry_id = service.namespace_revision_entry_id_for_target(target)?;
     let (image, _) = service.concrete_image()?;
     Some(serving_target_entry(
-        namespace_id,
+        target.namespace_id(),
         service.service_id(),
         namespace_revision_entry_id,
         image,

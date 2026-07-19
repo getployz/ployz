@@ -16,6 +16,7 @@ use ployz_core::deploy::{
     DeployRouteBindingValidationError, DeployRouteTarget,
 };
 use ployz_core::ids::MachineId;
+use ployz_core::ids::OperationId;
 use ployz_core::ingress::{AutomaticHostnameConfiguration, IngressConfiguration};
 use ployz_core::intent::ActiveMachineState;
 use ployz_core::intent::IntentSnapshot;
@@ -42,6 +43,7 @@ struct DeployFactGatherPolicy {
 }
 
 pub async fn load_deploy_execution_facts_from_nats(
+    operation_id: &OperationId,
     request: &DeployRequest,
     intent_reader: &NatsIntentReader,
     facts_reader: &NatsMachineFactsReader,
@@ -49,11 +51,12 @@ pub async fn load_deploy_execution_facts_from_nats(
     projection_store: &IngressProjectionStore,
     step_timeout: Duration,
 ) -> Result<DeployExecutionFacts, DeployFactLoadError> {
-    let target = DeployPlanningTarget::try_from_deploy(request).map_err(|error| {
-        DeployFactLoadError::InvalidStoredTarget {
-            message: error.to_string(),
-        }
-    })?;
+    let target =
+        DeployPlanningTarget::try_from_operation(request, operation_id).map_err(|error| {
+            DeployFactLoadError::InvalidStoredTarget {
+                message: error.to_string(),
+            }
+        })?;
     load_planning_facts_from_nats(
         &target,
         intent_reader,

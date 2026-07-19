@@ -15,9 +15,11 @@ use ployz_core::operation::{
     DeployCompletionOutcome, DeployOperationState, OperationEvent, OperationStatus,
 };
 use ployz_core::security::NatsPrincipal;
-use ployz_sdk_types::MachineListRequest;
+use ployz_sdk_types::{ServiceInspectRequest, ServiceMachineTestimony};
 use ployz_test_support::ids::{namespace_id, service_id};
 use std::collections::BTreeMap;
+
+const SECRET_SENTINEL: &str = "ployz-e2e-secret-sentinel-665";
 
 /// Environment values cross the operator API into only the selected runtime,
 /// while durable and public evidence retains only their names.
@@ -26,7 +28,6 @@ pub(super) async fn scenario_deploy_environment_evidence_boundary(
     workload_image: &ImageReference,
 ) {
     const ENV_NAME: &str = "PLOYZ_E2E_DEPLOY_SECRET";
-    const SENTINEL: &str = "ployz-e2e-secret-sentinel-665";
 
     let mut runtime = ContainerRuntimeSpec::image_defaults();
     runtime.command = Some(
@@ -39,7 +40,7 @@ pub(super) async fn scenario_deploy_environment_evidence_boundary(
     );
     runtime.environment = ServiceEnvironment::from(BTreeMap::from([(
         EnvName::try_new(ENV_NAME).expect("valid environment name"),
-        EnvValue::try_new(SENTINEL).expect("valid environment value"),
+        EnvValue::try_new(SECRET_SENTINEL).expect("valid environment value"),
     )]));
     let accepted = core
         .api
@@ -129,7 +130,7 @@ pub(super) async fn scenario_deploy_environment_evidence_boundary(
         selected_container
             .env
             .iter()
-            .any(|entry| entry == &format!("{ENV_NAME}={SENTINEL}")),
+            .any(|entry| entry == &format!("{ENV_NAME}={SECRET_SENTINEL}")),
         "selected container config did not retain the exact submitted environment value"
     );
     let process_environment = core
@@ -145,7 +146,7 @@ pub(super) async fn scenario_deploy_environment_evidence_boundary(
         )
         .await;
     assert!(
-        process_environment.success() && process_environment.stdout.trim() == SENTINEL,
+        process_environment.success() && process_environment.stdout.trim() == SECRET_SENTINEL,
         "selected container process did not receive the exact submitted environment value"
     );
 
@@ -200,32 +201,40 @@ pub(super) async fn scenario_deploy_environment_evidence_boundary(
         "serving intent",
         &serde_json::to_string(&intent).expect("serving intent serializes"),
     );
-    let machine_observations = core
+    let service_snapshot = core
         .api
-        .machine_list(&MachineListRequest {})
+        .service_inspect(&ServiceInspectRequest {
+            namespace_id: namespace_id("deploy_env_evidence"),
+            service_id: service_id("svc_deploy_env_evidence"),
+        })
         .await
-        .expect("read current machine facts and observations");
-    assert_eq!(
-        machine_observations.machines.len(),
-        intent.active_machines.len(),
-        "machine observation snapshot covers the active roster"
+        .expect("inspect deployed environment-boundary service");
+    assert!(
+        service_snapshot.testimony.observed_container_count > 0,
+        "service inspection observed no service containers"
     );
-    assert!(intent.active_machines.iter().all(|active| {
-        machine_observations
-            .machines
-            .iter()
-            .any(|machine| machine.active.machine_id == active.machine_id)
-    }));
+    assert!(
+        service_snapshot.testimony.machines.iter().any(|machine| {
+            let ServiceMachineTestimony::Answered { containers, .. } = machine else {
+                return false;
+            };
+            containers.iter().any(|container| {
+                container.observation.identity.namespace_id == namespace_id("deploy_env_evidence")
+                    && container.observation.identity.service_id
+                        == service_id("svc_deploy_env_evidence")
+            })
+        }),
+        "service inspection omitted the concrete namespace/service observation"
+    );
     assert_secret_absent(
-        "machine facts and observations",
-        &serde_json::to_string(&machine_observations)
-            .expect("machine facts and observations serialize"),
+        "populated service snapshot",
+        &serde_json::to_string(&service_snapshot).expect("service snapshot serializes"),
     );
 }
 
 fn assert_secret_absent(label: &str, serialized: &str) {
     assert!(
-        !serialized.contains("ployz-e2e-secret-sentinel-665"),
+        !serialized.contains(SECRET_SENTINEL),
         "{label} exposed a plaintext environment value"
     );
 }

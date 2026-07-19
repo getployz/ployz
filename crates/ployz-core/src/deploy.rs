@@ -7,7 +7,7 @@ use std::num::{NonZeroI64, NonZeroU16, NonZeroU64};
 
 use crate::ids::{
     ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
-    RouteBindingId, ServiceId,
+    OperationId, RouteBindingId, ServiceId,
 };
 use crate::ingress::{AutomaticHostnameLabel, RouteBindingOrigin};
 use crate::intent::{RouteBindingState, ServingTargetEntry, VolumePinState};
@@ -43,7 +43,9 @@ pub use request::{
 pub use request_evidence::*;
 pub use retention::{DeployCleanupAction, DeployCleanupContainer, ObservedCleanupCandidate};
 pub use revision::{
-    canonical_capabilities, namespace_revision_entry_id_for, namespace_revision_id_for,
+    canonical_capabilities, namespace_revision_entry_id_for,
+    namespace_revision_entry_id_for_operation, namespace_revision_id_for,
+    namespace_revision_id_for_operation,
 };
 pub use routes::*;
 pub use runtime::*;

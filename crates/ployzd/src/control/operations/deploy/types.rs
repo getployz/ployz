@@ -88,6 +88,12 @@ impl DeployExecutionCommand {
     }
 
     #[must_use]
+    pub fn namespace_revision_id(&self) -> NamespaceRevisionId {
+        self.request
+            .namespace_revision_id_for_operation(&self.operation_id)
+    }
+
+    #[must_use]
     pub fn services(&self) -> &[DeployServiceExecutionCommand] {
         &self.services
     }
@@ -253,15 +259,29 @@ impl DeployServiceExecutionCommand {
     }
 
     #[must_use]
-    pub fn serving_target_entry_state(&self, namespace_id: &NamespaceId) -> ServingTargetEntry {
+    pub fn serving_target_entry_state(
+        &self,
+        namespace_id: &NamespaceId,
+        operation_id: &OperationId,
+    ) -> ServingTargetEntry {
         serving_target_entry(
             namespace_id,
             &self.service.service_id,
-            self.service.namespace_revision_entry_id(namespace_id),
+            self.namespace_revision_entry_id(namespace_id, operation_id),
             &self.service.image,
             self.service.mode,
             &self.service.runtime,
         )
+    }
+
+    #[must_use]
+    pub(super) fn namespace_revision_entry_id(
+        &self,
+        namespace_id: &NamespaceId,
+        operation_id: &OperationId,
+    ) -> NamespaceRevisionEntryId {
+        self.service
+            .namespace_revision_entry_id_for_operation(namespace_id, operation_id)
     }
 
     #[must_use]

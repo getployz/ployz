@@ -4,9 +4,10 @@ use crate::control::operations::deploy::{
 };
 use ployz_core::deploy::{
     ContainerMountPath, DatasetName, DeployCleanupContainer, DeployRequest, DeployRoute,
-    DeployRouteTarget, DeployServiceSpec, ImageAvailabilityExpiresAt, ImageReference, ImageSource,
-    PlatformImage, PushedImageReceipt, ReplicaCount, ServiceMode, ServiceVolumeMount,
-    VolumeAdmissionFailure, VolumeMaxSizeBytes, VolumeName, VolumeSpec, ZfsPoolName,
+    DeployRouteTarget, DeployServiceSpec, EnvName, EnvValue, ImageAvailabilityExpiresAt,
+    ImageReference, ImageSource, PlatformImage, PushedImageReceipt, ReplicaCount,
+    ServiceEnvironment, ServiceMode, ServiceVolumeMount, VolumeAdmissionFailure,
+    VolumeMaxSizeBytes, VolumeName, VolumeSpec, ZfsPoolName,
 };
 use ployz_core::ids::{NamespaceRevisionEntryId, RouteBindingId};
 use ployz_core::ingress::{AutomaticHostnameLabel, RouteBindingOrigin};
@@ -22,6 +23,106 @@ use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, namespace_revision_entry_id, operation_id, service_id,
 };
 use std::time::Duration;
+
+#[test]
+fn execution_threads_operation_scoped_environment_revisions_end_to_end() {
+    let mut first_value = deploy_request();
+    first_value.services[0].runtime.environment =
+        ServiceEnvironment::from(std::collections::BTreeMap::from([(
+            EnvName::try_new("TOKEN").expect("environment name"),
+            EnvValue::try_new("first").expect("environment value"),
+        )]));
+    let mut second_value = first_value.clone();
+    second_value.services[0].runtime.environment =
+        ServiceEnvironment::from(std::collections::BTreeMap::from([(
+            EnvName::try_new("TOKEN").expect("environment name"),
+            EnvValue::try_new("second").expect("environment value"),
+        )]));
+
+    let first = prepare_deploy_execution_command(
+        operation_id("op_first"),
+        first_value,
+        empty_execution_facts(),
+    );
+    let same_operation = prepare_deploy_execution_command(
+        operation_id("op_first"),
+        second_value.clone(),
+        empty_execution_facts(),
+    );
+    let next_operation = prepare_deploy_execution_command(
+        operation_id("op_next"),
+        second_value,
+        empty_execution_facts(),
+    );
+
+    assert_eq!(
+        deploy_plan(&first)
+            .expect("first plan")
+            .namespace_revision_id,
+        deploy_plan(&same_operation)
+            .expect("same operation plan")
+            .namespace_revision_id
+    );
+    assert_ne!(
+        deploy_plan(&first)
+            .expect("first plan")
+            .namespace_revision_id,
+        deploy_plan(&next_operation)
+            .expect("next operation plan")
+            .namespace_revision_id
+    );
+    assert_eq!(
+        single_service(&first)
+            .serving_target_entry_state(&namespace_id("default"), first.operation_id()),
+        single_service(&same_operation)
+            .serving_target_entry_state(&namespace_id("default"), same_operation.operation_id(),)
+    );
+    assert_ne!(
+        single_service(&first)
+            .serving_target_entry_state(&namespace_id("default"), first.operation_id()),
+        single_service(&next_operation)
+            .serving_target_entry_state(&namespace_id("default"), next_operation.operation_id(),)
+    );
+
+    let env_free_first = prepare_deploy_execution_command(
+        operation_id("op_free_first"),
+        deploy_request(),
+        empty_execution_facts(),
+    );
+    let env_free_next = prepare_deploy_execution_command(
+        operation_id("op_free_next"),
+        deploy_request(),
+        empty_execution_facts(),
+    );
+    assert_eq!(
+        deploy_plan(&env_free_first)
+            .expect("env-free first plan")
+            .namespace_revision_id,
+        deploy_plan(&env_free_next)
+            .expect("env-free next plan")
+            .namespace_revision_id
+    );
+}
+
+fn empty_execution_facts() -> DeployExecutionFacts {
+    DeployExecutionFacts {
+        namespace_route_bindings: Vec::new(),
+        namespace_serving_entries: Vec::new(),
+        namespace_volume_pins: Vec::new(),
+        eligible_machines: vec![machine_id("machine_a")],
+        unusable_machines: Vec::new(),
+        dataplane_members: Vec::new(),
+        observed_machines: Vec::new(),
+        machine_platforms: std::collections::BTreeMap::new(),
+        seed_clock_testimony: std::collections::BTreeMap::new(),
+        machine_storage_testimony: std::collections::BTreeMap::new(),
+        namespace_cleanup_candidates: Vec::new(),
+        automatic_hostname_mode: AutomaticHostnameMode::Disabled,
+        gateway_certificate_targets: Vec::new(),
+        ployz_gateway_certificate_targets: Vec::new(),
+        step_timeout: Duration::from_secs(5),
+    }
+}
 
 #[tokio::test]
 async fn separates_reusable_replicas_from_cleanup_candidates() {
