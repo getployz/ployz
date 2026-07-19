@@ -40,6 +40,12 @@ pub struct PloyzctlRuntimeConfig {
     pub cluster_context_path: Option<PathBuf>,
     /// Deploy-history root override for embedded runtimes and tests.
     pub deploy_history_root: Option<PathBuf>,
+    /// Executor context root override for embedded runtimes and tests.
+    pub executor_context_root: Option<PathBuf>,
+    /// Permits loopback HTTP enrollment servers in deterministic tests.
+    pub allow_insecure_executor_enrollment: bool,
+    /// Whole-request enrollment budget override for embedded runtimes and tests.
+    pub executor_enrollment_timeout: Option<Duration>,
 }
 
 impl PloyzctlRuntimeConfig {
@@ -72,6 +78,9 @@ impl PloyzctlRuntimeConfig {
             ssh_install_timeout: None,
             cluster_context_path: None,
             deploy_history_root: None,
+            executor_context_root: None,
+            allow_insecure_executor_enrollment: false,
+            executor_enrollment_timeout: None,
         }
     }
 
@@ -173,6 +182,9 @@ pub async fn execute_command(
         PloyzctlCommand::BuildCancel(command) => {
             crate::build::runtime::cancel(command, config).await
         }
+        PloyzctlCommand::BuildEnroll(command) => crate::build::enrollment::enroll(command, config)
+            .await
+            .map_err(Into::into),
         PloyzctlCommand::BuildExecutor(command) => {
             crate::build::external_runtime::run(command, config).await
         }

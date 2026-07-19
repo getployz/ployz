@@ -65,6 +65,66 @@ fn cli_telemetry_names_are_canonical_across_aliases() {
 }
 
 #[test]
+fn cli_build_enroll_parses_exact_identity_and_https_endpoint() {
+    let command = parse_command(
+        [
+            "build",
+            "enroll",
+            "--enrollment-url",
+            "https://cloud.example/api/build-executors/enroll",
+            "--token",
+            "secret-token",
+            "--pool-id",
+            "homelab",
+            "--executor-id",
+            "builder-1",
+        ]
+        .map(str::to_owned),
+    )
+    .expect("build enrollment parses");
+
+    assert_eq!(command.telemetry_name(), Some("build enroll"));
+    assert!(!format!("{command:?}").contains("secret-token"));
+    let PloyzctlCommand::BuildEnroll(command) = command else {
+        panic!("expected build enrollment command");
+    };
+    assert_eq!(command.pool_id.as_str(), "homelab");
+    assert_eq!(command.executor_id.as_str(), "builder-1");
+}
+
+#[test]
+fn cli_build_enroll_rejects_invalid_identity_and_url() {
+    for args in [
+        [
+            "build",
+            "enroll",
+            "--enrollment-url",
+            "not-a-url",
+            "--token",
+            "token",
+            "--pool-id",
+            "homelab",
+            "--executor-id",
+            "builder-1",
+        ],
+        [
+            "build",
+            "enroll",
+            "--enrollment-url",
+            "https://cloud.example/enroll",
+            "--token",
+            "token",
+            "--pool-id",
+            "bad.pool",
+            "--executor-id",
+            "builder-1",
+        ],
+    ] {
+        assert!(parse_command(args.map(str::to_owned)).is_err());
+    }
+}
+
+#[test]
 fn binary_login_fails_fast_when_cloud_is_unconfigured() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
         .env("DO_NOT_TRACK", "1")

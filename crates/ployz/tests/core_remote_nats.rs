@@ -174,6 +174,9 @@ fn test_config(
         ssh_install_timeout: None,
         cluster_context_path: Some(context.context_path.clone()),
         deploy_history_root: None,
+        executor_context_root: None,
+        allow_insecure_executor_enrollment: false,
+        executor_enrollment_timeout: None,
     }
 }
 

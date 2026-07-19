@@ -10,6 +10,7 @@ use ployz_core::ids::{BuildExecutorId, BuildPoolId, OperationId};
 use ployz_core::image::OciPlatform;
 use ployz_core::operation::CancellationReason;
 
+use crate::build::enrollment::{EnrollmentToken, EnrollmentUrl};
 use crate::commands::{PloyzctlCliError, cli_error, invalid_value};
 use crate::execution_support::generate_client_build_id;
 
@@ -20,6 +21,14 @@ const DEFAULT_EXECUTOR_WAIT_TIMEOUT_SECONDS: u64 = 600;
 pub enum BuildExecutorRunMode {
     Once { wait_timeout: Duration },
     Watch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuildEnrollCommand {
+    pub enrollment_url: EnrollmentUrl,
+    pub token: EnrollmentToken,
+    pub pool_id: BuildPoolId,
+    pub executor_id: BuildExecutorId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,6 +115,35 @@ pub(crate) struct BuildExecutorWatchCli {
     executor_id: String,
     #[arg(long)]
     workspace_root: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct BuildEnrollCli {
+    #[arg(long)]
+    enrollment_url: String,
+    #[arg(long)]
+    token: String,
+    #[arg(long)]
+    pool_id: String,
+    #[arg(long)]
+    executor_id: String,
+}
+
+pub(crate) fn build_enroll_command(
+    parsed: BuildEnrollCli,
+) -> Result<BuildEnrollCommand, PloyzctlCliError> {
+    if parsed.token.is_empty() {
+        return Err(cli_error("--token must not be empty"));
+    }
+    Ok(BuildEnrollCommand {
+        enrollment_url: EnrollmentUrl::try_new(parsed.enrollment_url)
+            .map_err(|error| invalid_value("--enrollment-url", error))?,
+        token: EnrollmentToken::new(parsed.token),
+        pool_id: BuildPoolId::try_new(parsed.pool_id)
+            .map_err(|error| invalid_value("--pool-id", error))?,
+        executor_id: BuildExecutorId::try_new(parsed.executor_id)
+            .map_err(|error| invalid_value("--executor-id", error))?,
+    })
 }
 
 pub(crate) fn build_executor_once_command(
