@@ -1,3 +1,4 @@
+use ployz_core::ids::{BuildExecutorId, BuildPoolId};
 use ployz_core::nats_config::{
     BuildExecutorCredentialExpiresAt, BuildExecutorIdentity, BuildExecutorReadinessAnswer,
     BuildExecutorReadinessReconcileError, BuildExecutorReadinessTestimony, CredentialGrant,
@@ -6,7 +7,6 @@ use ployz_core::nats_config::{
     reconcile_build_executor_readiness_at,
 };
 use ployz_core::security::NatsPrincipal;
-use ployz_core::ids::{BuildExecutorId, BuildPoolId};
 
 const CA_PEM: &str = "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n";
 

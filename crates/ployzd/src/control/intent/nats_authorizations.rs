@@ -55,6 +55,7 @@ impl NatsAuthorizationStore {
             .map_err(store_error)
     }
 
+    #[cfg(test)]
     pub async fn list_credentials(
         &self,
     ) -> Result<Vec<CredentialGrant>, NatsAuthorizationStoreError> {
@@ -188,21 +189,20 @@ fn upsert_credential_at(
         }
     }
 
-    if requested.role.is_active_at(now_unix_seconds) {
-        if let Some(identity) = requested.role.build_executor_identity() {
-            if let Some(conflict) = credentials.iter().find(|credential| {
-                credential.public_key != requested.public_key
-                    && credential.role.is_active_at(now_unix_seconds)
-                    && credential.role.build_executor_identity().as_ref() == Some(&identity)
-            }) {
-                return Ok(CredentialUpsertStoreOutcome::Rejected(
-                    CredentialUpsertStoreRejection::ActiveBuildExecutorIdentity {
-                        identity,
-                        existing_public_key: conflict.public_key.clone(),
-                    },
-                ));
-            }
-        }
+    if requested.role.is_active_at(now_unix_seconds)
+        && let Some(identity) = requested.role.build_executor_identity()
+        && let Some(conflict) = credentials.iter().find(|credential| {
+            credential.public_key != requested.public_key
+                && credential.role.is_active_at(now_unix_seconds)
+                && credential.role.build_executor_identity().as_ref() == Some(&identity)
+        })
+    {
+        return Ok(CredentialUpsertStoreOutcome::Rejected(
+            CredentialUpsertStoreRejection::ActiveBuildExecutorIdentity {
+                identity,
+                existing_public_key: conflict.public_key.clone(),
+            },
+        ));
     }
 
     let outcome = if existing.is_some() {
@@ -317,11 +317,11 @@ fn store_error(error: CoreStoreError) -> NatsAuthorizationStoreError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ployz_core::ids::{BuildExecutorId, BuildPoolId};
     use ployz_core::nats_config::{
         BuildExecutorCredentialExpiresAt, CredentialName, CredentialRole, MintedNatsUser,
         NatsInternalAuthority,
     };
-    use ployz_core::ids::{BuildExecutorId, BuildPoolId};
 
     fn credential(name: &str) -> CredentialGrant {
         CredentialGrant {

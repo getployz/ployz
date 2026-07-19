@@ -767,10 +767,10 @@ mod tests {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use ployz_core::ids::{BuildExecutorId, BuildPoolId};
     use ployz_core::nats_config::{
         BuildExecutorCredentialExpiresAt, CredentialName, MintedNatsUser,
     };
-    use ployz_core::ids::{BuildExecutorId, BuildPoolId};
 
     use super::*;
     use crate::control::store::CoreStore;
@@ -1091,7 +1091,9 @@ mod tests {
         let path = directory.path().join("authorized-users.conf");
         let reload = ScriptedReload::new([reloaded(), reloaded()]);
         let writer = NatsAuthorizationWriter::start(path.clone(), store.clone(), reload.clone());
+        let health = writer.health_reader();
         writer.handle().render(None).await.expect("startup render");
+        wait_for_scheduled_expiry(&health, now + 60).await;
 
         tokio::time::advance(Duration::from_secs(60)).await;
         wait_for_reload_calls(&reload, 2).await;
@@ -1127,6 +1129,7 @@ mod tests {
             .add_credential(executor.clone())
             .await
             .expect("add executor");
+        wait_for_scheduled_expiry(&health, now + 60).await;
         assert_eq!(
             health.snapshot().next_expiry_at_unix_seconds,
             Some(now + 60)
@@ -1145,6 +1148,7 @@ mod tests {
             .add_credential(renewed)
             .await
             .expect("renew executor");
+        wait_for_scheduled_expiry(&health, now + 120).await;
         assert_eq!(
             health.snapshot().next_expiry_at_unix_seconds,
             Some(now + 120)
@@ -1170,9 +1174,11 @@ mod tests {
         let writer = NatsAuthorizationWriter::start(path.clone(), store, reload.clone());
         let health = writer.health_reader();
         writer.handle().render(None).await.expect("startup render");
+        wait_for_scheduled_expiry(&health, now + 60).await;
 
         tokio::time::advance(Duration::from_secs(60)).await;
         wait_for_reload_calls(&reload, 2).await;
+        wait_for_health_failures(&health, 1).await;
         let degraded = health.snapshot();
         assert_eq!(degraded.consecutive_failures, 1);
         assert!(
@@ -1184,6 +1190,7 @@ mod tests {
 
         tokio::time::advance(RETRY_SCHEDULE.interval).await;
         wait_for_reload_calls(&reload, 3).await;
+        wait_for_health_failures(&health, 0).await;
 
         assert_eq!(health.snapshot().consecutive_failures, 0);
         assert_eq!(health.snapshot().last_failure, None);
@@ -1201,6 +1208,32 @@ mod tests {
         panic!(
             "reload call count did not reach {expected}; observed {}",
             reload.calls()
+        );
+    }
+
+    async fn wait_for_scheduled_expiry(health: &NatsAuthorizationHealthReader, expected: u64) {
+        for _ in 0..1_000 {
+            if health.snapshot().next_expiry_at_unix_seconds == Some(expected) {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!(
+            "scheduled expiry did not become {expected}; observed {:?}",
+            health.snapshot().next_expiry_at_unix_seconds
+        );
+    }
+
+    async fn wait_for_health_failures(health: &NatsAuthorizationHealthReader, expected: u64) {
+        for _ in 0..1_000 {
+            if health.snapshot().consecutive_failures == expected {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!(
+            "authorization failure count did not become {expected}; observed {}",
+            health.snapshot().consecutive_failures
         );
     }
 
