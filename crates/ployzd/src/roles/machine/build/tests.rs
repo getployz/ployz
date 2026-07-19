@@ -1,4 +1,7 @@
 use super::*;
+use crate::roles::machine::protocol::{
+    MachineBuildCachePruneDomainError, MachineBuildCancelDomainError,
+};
 use ployz_core::machine::rpc::MachineRpcResponse;
 use std::sync::atomic::Ordering;
 
@@ -13,7 +16,7 @@ pub(super) struct TestBuildEffects {
 }
 
 impl TestBuildEffects {
-    fn new(cleanup_completes: bool) -> Self {
+    pub(super) fn new(cleanup_completes: bool) -> Self {
         Self {
             ingest_started: tokio::sync::Notify::new(),
             prune_started: tokio::sync::Notify::new(),
@@ -86,24 +89,6 @@ struct TestTaskActive<'a>(&'a std::sync::atomic::AtomicBool);
 impl Drop for TestTaskActive<'_> {
     fn drop(&mut self) {
         self.0.store(false, Ordering::SeqCst);
-    }
-}
-
-impl MachineBuildRuntime {
-    fn new_for_test(machine_id: MachineId, effects: Arc<TestBuildEffects>) -> Self {
-        Self {
-            machine_id,
-            effects: BuildEffects::Test(effects),
-            lifecycle: Arc::new(BuildRuntimeLifecycle {
-                state: Mutex::new(BuildRuntimeState {
-                    phase: BuildRuntimePhase::Accepting,
-                    active: BTreeMap::new(),
-                }),
-                changed: Notify::new(),
-            }),
-            machine_slot: Arc::new(Semaphore::new(1)),
-            local_platform: local_platform().expect("supported test platform"),
-        }
     }
 }
 
@@ -267,7 +252,7 @@ async fn build_start_rejects_malformed_requests_at_the_transport_boundary() {
 }
 
 #[tokio::test]
-async fn unavailable_build_runtime_is_typed_machine_evidence() {
+async fn unavailable_build_runtime_is_typed_machine_evidence_for_every_handler() {
     let machine_id = MachineId::try_new("machine-a").expect("machine");
     let request = MachineBuildStartRpcRequest {
         operation_id: OperationId::try_new("build-1").expect("operation"),
@@ -309,6 +294,59 @@ async fn unavailable_build_runtime_is_typed_machine_evidence() {
             machine_id: actual,
             error: MachineBuildStartDomainError::RuntimeUnavailable
         } if actual == machine_id
+    ));
+
+    let cancel_response = handle_build_cancel(
+        machine_id.clone(),
+        None,
+        NatsServiceRequest {
+            payload: serde_json::to_vec(&MachineBuildCancelRpcRequest {
+                operation_id: OperationId::try_new("build-1").expect("operation"),
+                assignment: BuildExecutorAssignment::Cluster {
+                    machine_id: machine_id.clone(),
+                },
+            })
+            .expect("request"),
+            headers: None,
+        },
+    )
+    .await;
+    let NatsServiceResponse::DomainError { payload } = cancel_response else {
+        panic!("unavailable runtime should reject cancellation with a domain error");
+    };
+    let cancel_response: MachineBuildCancelRpcResponse =
+        serde_json::from_slice(&payload).expect("typed response");
+    assert!(matches!(
+        cancel_response,
+        MachineRpcResponse::DomainError {
+            machine_id: actual,
+            error: MachineBuildCancelDomainError::CancelFailed { message },
+        } if actual == machine_id && message.as_str() == "machine build runtime is unavailable"
+    ));
+
+    let prune_response = handle_build_cache_prune(
+        machine_id.clone(),
+        None,
+        NatsServiceRequest {
+            payload: serde_json::to_vec(&MachineBuildCachePruneRpcRequest {
+                operation_id: OperationId::try_new("prune-1").expect("operation"),
+            })
+            .expect("request"),
+            headers: None,
+        },
+    )
+    .await;
+    let NatsServiceResponse::DomainError { payload } = prune_response else {
+        panic!("unavailable runtime should reject cache pruning with a domain error");
+    };
+    let prune_response: MachineBuildCachePruneRpcResponse =
+        serde_json::from_slice(&payload).expect("typed response");
+    assert!(matches!(
+        prune_response,
+        MachineRpcResponse::DomainError {
+            machine_id: actual,
+            error: MachineBuildCachePruneDomainError::PruneFailed { message },
+        } if actual == machine_id && message.as_str() == "machine build runtime is unavailable"
     ));
 }
 
