@@ -426,6 +426,7 @@ verify_owned_zfs_failure_state() {
   if ! command -v pgrep >/dev/null \
     || ! command -v ss >/dev/null \
     || ! systemctl is-failed --quiet ployz-owned-zfs-import.service \
+    || ! systemctl is-active --quiet "$machine_unit" \
     || systemctl is-active --quiet docker.service \
     || pgrep -x dockerd >/dev/null \
     || pgrep -x postgres >/dev/null \
@@ -703,7 +704,7 @@ EOF
   printf '%s\n' "$module_failure_output" | grep -Fx 'storage unavailable zfs-module-missing' >/dev/null
   printf '%s\n' "$module_failure_output" | grep -Fx 'storage-alarms probe-ns/probe-volume:zfs-module-missing' >/dev/null
   printf '%s\n' "$module_failure_output" | grep -Fx module_failure_probe=passed >/dev/null
-  for module_failure_probe_mode in recovery-not-failed docker-active dockerd-live postgres-live missing-dependency listener-present; do
+  for module_failure_probe_mode in recovery-not-failed machine-inactive docker-active dockerd-live postgres-live missing-dependency listener-present; do
     child_status=0
     module_failure_output=$("$0" --module-failure-probe "$evidence" "$module_failure_probe_mode" 2>&1) \
       || child_status=$?
@@ -1096,6 +1097,9 @@ case "${1:-}:${2:-}:${3:-}" in
     ;;
   is-active:--quiet:docker.service)
     [ "${PLOYZ_MODULE_FAILURE_PROBE_MODE:-valid}" = docker-active ]
+    ;;
+  is-active:--quiet:ployzd-machine-probe-machine.service)
+    [ "${PLOYZ_MODULE_FAILURE_PROBE_MODE:-valid}" != machine-inactive ]
     ;;
   show:ployz-owned-zfs-import.service:-p)
     case "$4" in
