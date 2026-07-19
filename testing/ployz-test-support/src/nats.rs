@@ -15,8 +15,8 @@ use std::time::Duration;
 
 use ployz_core::ids::MachineId;
 use ployz_core::nats_config::{
-    CredentialGrant, CredentialName, CredentialRole, MintedNatsUser, NatsAuthorizationGrant,
-    NatsInternalAuthority, NatsUserPublicKey, NatsUserSeed,
+    BuildExecutorCredentialExpiresAt, CredentialGrant, CredentialName, CredentialRole,
+    MintedNatsUser, NatsAuthorizationGrant, NatsInternalAuthority, NatsUserPublicKey, NatsUserSeed,
 };
 use ployz_core::security::NatsPrincipal;
 use ployz_nats::connect::{
@@ -70,6 +70,25 @@ impl SecuredTestNats {
         machine_ids: &[MachineId],
         extra_user_public_keys: &[NatsUserPublicKey],
     ) -> Result<Self, FixtureError> {
+        let extra_credentials = extra_user_public_keys
+            .iter()
+            .cloned()
+            .map(|public_key| CredentialGrant {
+                public_key,
+                name: CredentialName::try_new("Test external operator")
+                    .expect("test credential name"),
+                role: CredentialRole::Operator,
+            })
+            .collect::<Vec<_>>();
+        Self::start_with_machines_and_credentials(machine_ids, &extra_credentials).await
+    }
+
+    /// Starts a secured server with the base principals, supplied Machine
+    /// users, and arbitrary external credential grants.
+    pub async fn start_with_machines_and_credentials(
+        machine_ids: &[MachineId],
+        extra_credentials: &[CredentialGrant],
+    ) -> Result<Self, FixtureError> {
         let dir = tempfile::TempDir::new()?;
 
         let identity = generate_test_cluster_identity()?;
@@ -98,13 +117,8 @@ impl SecuredTestNats {
                 minted,
             ));
         }
-        for public_key in extra_user_public_keys {
-            authorized.push(NatsAuthorizationGrant::Credential(CredentialGrant {
-                public_key: public_key.clone(),
-                name: CredentialName::try_new("Test external operator")
-                    .expect("test credential name"),
-                role: CredentialRole::Operator,
-            }));
+        for credential in extra_credentials {
+            authorized.push(NatsAuthorizationGrant::Credential(credential.clone()));
         }
         let authorized_users_path = dir.path().join("authorized-users.conf");
         fs::write(&authorized_users_path, render_authorized_users(&authorized))?;
@@ -340,6 +354,20 @@ fn authorized_user(principal: NatsPrincipal, minted: &MintedNatsUser) -> NatsAut
             authority: NatsInternalAuthority::Machine { machine_id },
             public_key,
         },
+        NatsPrincipal::BuildExecutor {
+            pool_id,
+            executor_id,
+        } => NatsAuthorizationGrant::Credential(CredentialGrant {
+            public_key,
+            name: CredentialName::try_new("Build Executor (secured-test-core)")
+                .expect("test credential name"),
+            role: CredentialRole::BuildExecutor {
+                pool_id,
+                executor_id,
+                expires_at: BuildExecutorCredentialExpiresAt::try_new(u64::MAX)
+                    .expect("maximum timestamp is positive"),
+            },
+        }),
         NatsPrincipal::Controller => NatsAuthorizationGrant::Internal {
             authority: NatsInternalAuthority::Controller,
             public_key,

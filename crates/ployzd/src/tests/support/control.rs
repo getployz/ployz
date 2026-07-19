@@ -18,7 +18,7 @@ use ployz_sdk_types::{
 use ployz_test_support::fixtures::machine_join_material;
 use ployz_test_support::ids::machine_id;
 use ployz_test_support::nats::SecuredTestNats;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -48,6 +48,10 @@ impl TestNats {
 
     pub fn api(&self) -> OperationApiClient {
         self.connected.api()
+    }
+
+    pub fn api_with_request_timeout(&self, request_timeout: Duration) -> OperationApiClient {
+        self.api().with_request_timeout(request_timeout)
     }
 
     pub fn join_api(&self) -> OperationApiClient {
@@ -185,7 +189,15 @@ pub struct RecordingReload {
 #[derive(Clone)]
 enum ReloadBehavior {
     Signal(u32),
-    GatedSignal { pid: u32, released: Arc<AtomicBool> },
+    GatedSignal {
+        pid: u32,
+        released: Arc<AtomicBool>,
+    },
+    FailThenGatedSignal {
+        pid: u32,
+        calls: Arc<AtomicUsize>,
+        released: Arc<AtomicBool>,
+    },
     Fail,
 }
 
@@ -214,9 +226,24 @@ impl RecordingReload {
         }
     }
 
+    pub fn fail_then_gated_signal(pid: u32) -> Self {
+        Self {
+            behavior: ReloadBehavior::FailThenGatedSignal {
+                pid,
+                calls: Arc::new(AtomicUsize::new(0)),
+                released: Arc::new(AtomicBool::new(false)),
+            },
+            outcomes: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
     pub fn release(&self) {
-        if let ReloadBehavior::GatedSignal { released, .. } = &self.behavior {
-            released.store(true, Ordering::SeqCst);
+        match &self.behavior {
+            ReloadBehavior::GatedSignal { released, .. }
+            | ReloadBehavior::FailThenGatedSignal { released, .. } => {
+                released.store(true, Ordering::SeqCst);
+            }
+            ReloadBehavior::Signal(_) | ReloadBehavior::Fail => {}
         }
     }
 
@@ -237,6 +264,23 @@ impl NatsReloadRunner for RecordingReload {
                     std::thread::sleep(Duration::from_millis(10));
                 }
                 SignalNatsReloadRunner::new(*pid).reload()
+            }
+            ReloadBehavior::FailThenGatedSignal {
+                pid,
+                calls,
+                released,
+            } => {
+                if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    NatsReloadOutcome::Failed(NatsReloadEvidence {
+                        command: "test-reload".to_owned(),
+                        output: "reload refused by test".to_owned(),
+                    })
+                } else {
+                    while !released.load(Ordering::SeqCst) {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    SignalNatsReloadRunner::new(*pid).reload()
+                }
             }
             ReloadBehavior::Fail => NatsReloadOutcome::Failed(NatsReloadEvidence {
                 command: "test-reload".to_owned(),

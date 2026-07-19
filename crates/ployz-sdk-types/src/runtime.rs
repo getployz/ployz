@@ -23,10 +23,19 @@ pub struct RuntimeSnapshotResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct ControlHealth {
+    pub nats_authorization: ControlNatsAuthorizationHealth,
     pub task_supervisor: ControlTaskSupervisorHealth,
     pub runtime_projection: ControlRuntimeProjectionHealth,
     pub ingress_endpoint_projection: ControlIngressEndpointProjectionHealth,
     pub certificate_renewal: ControlCertificateRenewalHealth,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ControlNatsAuthorizationHealth {
+    pub consecutive_failures: u64,
+    pub last_failure: Option<String>,
+    pub next_expiry_at_unix_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

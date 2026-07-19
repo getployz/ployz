@@ -140,6 +140,10 @@ export type BuildPoolId = Brand<string, "BuildPoolId">;
 
 export type BuildExecutorId = Brand<string, "BuildExecutorId">;
 
+export type BuildExecutorIdentity = { pool_id: BuildPoolId, executor_id: BuildExecutorId, };
+
+export type BuildExecutorCredentialExpiresAt = Brand<string, "BuildExecutorCredentialExpiresAt">;
+
 export type BuildTarget = { "target": "cluster" } | { "target": "external", pool_id: BuildPoolId, };
 
 export type BuildExecutorOrigin = { "origin": "cluster", machine_id: MachineId, } | { "origin": "external", pool_id: BuildPoolId, executor_id: BuildExecutorId, };
@@ -352,7 +356,7 @@ export type CredentialGrantAction = { "action": "add", grant: CredentialGrant, }
 
 export type CredentialGrantOperationState = { "state": "accepted" } | { "state": "completed" } | { "state": "failed", failure: CredentialGrantFailure, } | { "state": "cancelled", reason: CancellationReason, } | { "state": "interrupted", evidence: OperationInterruptionEvidence, };
 
-export type CredentialGrantFailure = { "kind": "last_operator" } | { "kind": "role_change_requires_explicit_operation", current: CredentialRole, requested: CredentialRole, } | { "kind": "intent_store_failed", message: FailureMessage, intent_committed: boolean, } | { "kind": "authorization_render_failed", message: FailureMessage, intent_committed: boolean, } | { "kind": "nats_reload_failed", message: FailureMessage, intent_committed: boolean, };
+export type CredentialGrantFailure = { "kind": "last_operator" } | { "kind": "role_change_requires_explicit_operation", current: CredentialRole, requested: CredentialRole, } | { "kind": "build_executor_identity_already_active", identity: BuildExecutorIdentity, existing_public_key: NatsUserPublicKey, } | { "kind": "intent_store_failed", message: FailureMessage, intent_committed: boolean, } | { "kind": "authorization_render_failed", message: FailureMessage, intent_committed: boolean, } | { "kind": "nats_reload_failed", message: FailureMessage, intent_committed: boolean, };
 
 export type MachineAddOperationState = { "state": "pending", join_token: IssuedJoinToken, } | { "state": "joining", joined_at: JoinTokenRedeemedAt, } | { "state": "completed" } | { "state": "failed", failure: MachineAddFailure, } | { "state": "cancelled", reason: CancellationReason, };
 
@@ -856,7 +860,9 @@ export type RuntimeSnapshotRequest = Record<symbol, never>;
 
 export type RuntimeSnapshotResult = { snapshot: RuntimeSnapshot, control_health: ControlHealth | null, };
 
-export type ControlHealth = { task_supervisor: ControlTaskSupervisorHealth, runtime_projection: ControlRuntimeProjectionHealth, ingress_endpoint_projection: ControlIngressEndpointProjectionHealth, certificate_renewal: ControlCertificateRenewalHealth, };
+export type ControlHealth = { nats_authorization: ControlNatsAuthorizationHealth, task_supervisor: ControlTaskSupervisorHealth, runtime_projection: ControlRuntimeProjectionHealth, ingress_endpoint_projection: ControlIngressEndpointProjectionHealth, certificate_renewal: ControlCertificateRenewalHealth, };
+
+export type ControlNatsAuthorizationHealth = { consecutive_failures: number, last_failure: string | null, next_expiry_at_unix_seconds: number | null, };
 
 export type ControlTaskSupervisorHealth = { active_tasks: number, panicked_tasks: number, last_failure: ControlTaskSupervisorFailure | null, };
 
@@ -955,11 +961,11 @@ export type NatsUserSeed = string;
 
 export type NatsUserPublicKey = string;
 
-export type NatsPrincipal = { "principal": "machine", machine_id: MachineId, } | { "principal": "controller" } | { "principal": "operator" } | { "principal": "join" } | { "principal": "system" };
+export type NatsPrincipal = { "principal": "machine", machine_id: MachineId, } | { "principal": "build_executor", pool_id: BuildPoolId, executor_id: BuildExecutorId, } | { "principal": "controller" } | { "principal": "operator" } | { "principal": "join" } | { "principal": "system" };
 
 export type CredentialName = string;
 
-export type CredentialRole = "operator";
+export type CredentialRole = "operator" | { "build_executor": { pool_id: BuildPoolId, executor_id: BuildExecutorId, expires_at: BuildExecutorCredentialExpiresAt, } };
 
 export type CredentialGrant = { public_key: NatsUserPublicKey, name: CredentialName, role: CredentialRole, };
 

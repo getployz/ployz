@@ -1,4 +1,6 @@
-use ployz_core::ids::{CertId, MachineId, OperationId, SubjectTokenError};
+use ployz_core::ids::{
+    BuildExecutorId, BuildPoolId, CertId, MachineId, OperationId, SubjectTokenError,
+};
 use ployz_core::machine::{MachineAddFailure, MachineCredentialProvisioningStep, MachineLifecycle};
 use ployz_core::operation::{
     CancellationReason, DeployCompletionOutcome, DeployRunningStage, MachineSubstrateVersions,
@@ -6,9 +8,10 @@ use ployz_core::operation::{
 };
 use ployz_nats::operation_event_subject::operation_event_subject_suffix;
 use ployz_nats::subjects::{
-    MachineServiceEndpoint, OperationApiEndpoint, OperationApiEndpointExecution,
-    OperationProgressScope, machine_container_facts, machine_facts, machine_service,
-    operation_progress_watch,
+    BUILD_EXECUTOR_SERVICE_NAME, BuildExecutorServiceEndpoint, MachineServiceEndpoint,
+    OperationApiEndpoint, OperationApiEndpointExecution, OperationProgressScope,
+    build_executor_log, build_executor_service, build_executor_service_discovery_subscriptions,
+    machine_container_facts, machine_facts, machine_service, operation_progress_watch,
 };
 use ployz_test_support::ids::{container_id, machine_id, namespace_id, operation_id};
 
@@ -196,6 +199,66 @@ fn machine_subjects_use_known_endpoint_and_event_tokens() {
     assert_eq!(
         machine_container_facts(&machine_id),
         "plz.v1.testimony.machine.machine_7.containers"
+    );
+}
+
+#[test]
+fn external_build_executor_subjects_are_exactly_pool_and_executor_scoped() {
+    let pool_id = BuildPoolId::try_new("pool-west").expect("pool");
+    let executor_id = BuildExecutorId::try_new("builder_1").expect("executor");
+    let operation_id = OperationId::try_new("build-7").expect("operation");
+
+    assert_eq!(BUILD_EXECUTOR_SERVICE_NAME, "plz-build-executor");
+    assert_eq!(
+        build_executor_service(
+            &pool_id,
+            &executor_id,
+            BuildExecutorServiceEndpoint::ReadinessGet,
+        ),
+        "plz.v1.rpc.build_executor.query.pool-west.builder_1.readiness.get"
+    );
+    assert_eq!(
+        build_executor_service(
+            &pool_id,
+            &executor_id,
+            BuildExecutorServiceEndpoint::BuildStart,
+        ),
+        "plz.v1.rpc.build_executor.command.pool-west.builder_1.build.start"
+    );
+    assert_eq!(
+        build_executor_service(
+            &pool_id,
+            &executor_id,
+            BuildExecutorServiceEndpoint::BuildCancel,
+        ),
+        "plz.v1.rpc.build_executor.command.pool-west.builder_1.build.cancel"
+    );
+    assert_eq!(
+        build_executor_log(&pool_id, &executor_id, &operation_id),
+        "plz.v1.signal.build_executor.pool-west.builder_1.build.operation.build-7.log"
+    );
+}
+
+#[test]
+fn external_build_executor_service_discovery_is_narrow_and_fixed() {
+    assert_eq!(
+        build_executor_service_discovery_subscriptions(),
+        [
+            "$SRV.PING".to_owned(),
+            "$SRV.PING.plz-build-executor".to_owned(),
+            "$SRV.PING.plz-build-executor.*".to_owned(),
+            "$SRV.INFO".to_owned(),
+            "$SRV.INFO.plz-build-executor".to_owned(),
+            "$SRV.INFO.plz-build-executor.*".to_owned(),
+            "$SRV.STATS".to_owned(),
+            "$SRV.STATS.plz-build-executor".to_owned(),
+            "$SRV.STATS.plz-build-executor.*".to_owned(),
+        ]
+    );
+    assert!(
+        build_executor_service_discovery_subscriptions()
+            .iter()
+            .all(|subject| subject != "$SRV.>" && !subject.ends_with(".>"))
     );
 }
 

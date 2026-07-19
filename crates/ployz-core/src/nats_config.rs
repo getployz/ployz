@@ -2,8 +2,10 @@
 
 use std::fmt;
 
-use crate::ids::MachineId;
+use crate::build::BuildExecutorIdentity;
+use crate::ids::{BuildExecutorId, BuildPoolId, MachineId};
 use crate::security::NatsPrincipal;
+use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 use serde::{Deserialize, Serialize};
 
 /// Human-facing name attached to a client credential grant.
@@ -54,12 +56,76 @@ pub enum CredentialNameError {
     InvalidControlCharacter,
 }
 
-/// Authority granted to a human or automation client credential.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+positive_u64_wire_newtype! {
+    /// The last Unix second before which an external Build Executor credential is active.
+    pub struct BuildExecutorCredentialExpiresAt;
+    ts_brand: "Brand<string, \"BuildExecutorCredentialExpiresAt\">";
+    accessor: unix_seconds;
+    error: BuildExecutorCredentialTimestampError;
+}
+
+positive_u64_wire_error! {
+    pub enum BuildExecutorCredentialTimestampError;
+    noun: "Build Executor credential timestamp";
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
+/// Authority granted to a human or automation client credential.
 pub enum CredentialRole {
     Operator,
+    BuildExecutor {
+        pool_id: BuildPoolId,
+        executor_id: BuildExecutorId,
+        expires_at: BuildExecutorCredentialExpiresAt,
+    },
+}
+
+impl CredentialRole {
+    #[must_use]
+    pub const fn is_active_at(&self, now_unix_seconds: u64) -> bool {
+        match self {
+            Self::Operator => true,
+            Self::BuildExecutor { expires_at, .. } => now_unix_seconds < expires_at.unix_seconds(),
+        }
+    }
+
+    #[must_use]
+    pub fn has_same_authority_as(&self, requested: &Self) -> bool {
+        match (self, requested) {
+            (Self::Operator, Self::Operator) => true,
+            (
+                Self::BuildExecutor {
+                    pool_id: current_pool,
+                    executor_id: current_executor,
+                    expires_at: _,
+                },
+                Self::BuildExecutor {
+                    pool_id: requested_pool,
+                    executor_id: requested_executor,
+                    expires_at: _,
+                },
+            ) => current_pool == requested_pool && current_executor == requested_executor,
+            (Self::Operator, Self::BuildExecutor { .. })
+            | (Self::BuildExecutor { .. }, Self::Operator) => false,
+        }
+    }
+
+    #[must_use]
+    pub fn build_executor_identity(&self) -> Option<BuildExecutorIdentity> {
+        match self {
+            Self::BuildExecutor {
+                pool_id,
+                executor_id,
+                expires_at: _,
+            } => Some(BuildExecutorIdentity {
+                pool_id: pool_id.clone(),
+                executor_id: executor_id.clone(),
+            }),
+            Self::Operator => None,
+        }
+    }
 }
 
 /// One named client credential. The public key is its stable identity.
@@ -118,6 +184,14 @@ impl NatsAuthorizationGrant {
         match self {
             Self::Credential(CredentialGrant { role, .. }) => match role {
                 CredentialRole::Operator => NatsPrincipal::Operator,
+                CredentialRole::BuildExecutor {
+                    pool_id,
+                    executor_id,
+                    expires_at: _,
+                } => NatsPrincipal::BuildExecutor {
+                    pool_id: pool_id.clone(),
+                    executor_id: executor_id.clone(),
+                },
             },
             Self::Internal { authority, .. } => authority.principal(),
         }

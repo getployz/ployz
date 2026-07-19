@@ -8,11 +8,13 @@
 //! serializes through one single-writer task owning the file. Concurrent
 //! machine-adds queue render requests; no two renders interleave.
 
+mod expiry;
 mod machine_seed;
 mod mint;
 mod reload;
 mod writer;
 
+pub(crate) use expiry::NatsAuthorizationHealthReader;
 pub use machine_seed::{MachineSeedWriteError, write_machine_seed_file};
 pub use mint::{MachineCredentialMint, MintRequest, MintResumeError, MintVerifyEndpoint};
 pub use reload::{HostNatsReloadRunner, NatsReloadRunner};

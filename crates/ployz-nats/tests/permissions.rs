@@ -1,19 +1,24 @@
 use ployz_core::build::BUILD_RESPONSE_PERMISSION_EXPIRY;
+use ployz_core::ids::{BuildExecutorId, BuildPoolId};
 use ployz_core::security::NatsPrincipal;
 use ployz_nats::permissions::{
     NatsPermissionProfile, ResponsePermission, inbox_prefix, inbox_subscribe_scope,
 };
 use ployz_nats::subjects::MachineServiceEndpoint;
 use ployz_nats::subjects::{
-    CORE_RPC_QUERY_SCOPE, INGRESS_ENDPOINT_CHANGED, INGRESS_ENDPOINT_GET, INTENT_CHANGED,
-    INTENT_GET, JOIN_MACHINE_REDEEM, JOIN_MACHINE_REPORT, MACHINE_RPC_COMMAND_SCOPE,
-    MACHINE_RPC_QUERY_SCOPE, OPERATION_PROGRESS_SCOPE, OPERATOR_INIT_FIRST_MACHINE_ACTIVATE,
-    OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE, OPERATOR_MACHINE_IMAGE_QUERY_SCOPE,
-    OPERATOR_RPC_COMMAND_SCOPE, OPERATOR_RPC_QUERY_SCOPE, OPERATOR_RUNTIME_SNAPSHOT,
-    PENDING_MACHINE_JOINS_CHANGED, RUNTIME_SNAPSHOT_SEED, RUNTIME_SNAPSHOT_STREAM, gateway_status,
-    gateway_status_scope, machine_build_log_publish_scope, machine_build_log_subscribe_scope,
-    machine_container_facts, machine_facts, machine_facts_scope, machine_service,
-    machine_service_command_scope, machine_service_query_scope,
+    BUILD_EXECUTOR_RPC_BUILD_CANCEL_SCOPE, BUILD_EXECUTOR_RPC_BUILD_START_SCOPE,
+    BUILD_EXECUTOR_RPC_READINESS_SCOPE, BUILD_EXECUTOR_SIGNAL_LOG_SCOPE,
+    BuildExecutorServiceEndpoint, CORE_RPC_QUERY_SCOPE, INGRESS_ENDPOINT_CHANGED,
+    INGRESS_ENDPOINT_GET, INTENT_CHANGED, INTENT_GET, JOIN_MACHINE_REDEEM, JOIN_MACHINE_REPORT,
+    MACHINE_RPC_COMMAND_SCOPE, MACHINE_RPC_QUERY_SCOPE, OPERATION_PROGRESS_SCOPE,
+    OPERATOR_INIT_FIRST_MACHINE_ACTIVATE, OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE,
+    OPERATOR_MACHINE_IMAGE_QUERY_SCOPE, OPERATOR_RPC_COMMAND_SCOPE, OPERATOR_RPC_QUERY_SCOPE,
+    OPERATOR_RUNTIME_SNAPSHOT, PENDING_MACHINE_JOINS_CHANGED, RUNTIME_SNAPSHOT_SEED,
+    RUNTIME_SNAPSHOT_STREAM, build_executor_log_publish_scope, build_executor_service,
+    build_executor_service_discovery_subscriptions, gateway_status, gateway_status_scope,
+    machine_build_log_publish_scope, machine_build_log_subscribe_scope, machine_container_facts,
+    machine_facts, machine_facts_scope, machine_service, machine_service_command_scope,
+    machine_service_query_scope,
 };
 use ployz_test_support::ids::machine_id;
 
@@ -69,6 +74,9 @@ fn controller_credential_renders_owner_machine_service_and_progress_scopes() {
             OPERATOR_INIT_FIRST_MACHINE_ACTIVATE.to_owned(),
             MACHINE_RPC_QUERY_SCOPE.to_owned(),
             MACHINE_RPC_COMMAND_SCOPE.to_owned(),
+            BUILD_EXECUTOR_RPC_READINESS_SCOPE.to_owned(),
+            BUILD_EXECUTOR_RPC_BUILD_START_SCOPE.to_owned(),
+            BUILD_EXECUTOR_RPC_BUILD_CANCEL_SCOPE.to_owned(),
             CORE_RPC_QUERY_SCOPE.to_owned(),
             OPERATION_PROGRESS_SCOPE.to_owned(),
             ployz_nats::subjects::INTENT_CHANGED.to_owned(),
@@ -91,12 +99,165 @@ fn controller_credential_renders_owner_machine_service_and_progress_scopes() {
             INGRESS_ENDPOINT_CHANGED.to_owned(),
             machine_facts_scope(),
             machine_build_log_subscribe_scope(),
+            BUILD_EXECUTOR_SIGNAL_LOG_SCOPE.to_owned(),
             gateway_status_scope(),
             "$SRV.>".to_owned(),
             "_INBOX_ctl.>".to_owned()
         ]
     );
     assert_eq!(profile.publish.denied_subjects(), &[] as &[String]);
+}
+
+#[test]
+fn build_executor_credential_is_bound_to_one_external_executor() {
+    let pool_id = BuildPoolId::try_new("pool-a").expect("pool");
+    let executor_id = BuildExecutorId::try_new("executor-a").expect("executor");
+    let principal = NatsPrincipal::BuildExecutor {
+        pool_id: pool_id.clone(),
+        executor_id: executor_id.clone(),
+    };
+    let profile = NatsPermissionProfile::render(principal.clone());
+
+    assert_eq!(
+        profile.publish.allowed_subjects(),
+        &[
+            build_executor_log_publish_scope(&pool_id, &executor_id),
+            OPERATOR_MACHINE_IMAGE_QUERY_SCOPE.to_owned(),
+            OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE.to_owned(),
+        ]
+    );
+    let mut expected_subscribe = vec![
+        build_executor_service(
+            &pool_id,
+            &executor_id,
+            BuildExecutorServiceEndpoint::ReadinessGet,
+        ),
+        build_executor_service(
+            &pool_id,
+            &executor_id,
+            BuildExecutorServiceEndpoint::BuildStart,
+        ),
+        build_executor_service(
+            &pool_id,
+            &executor_id,
+            BuildExecutorServiceEndpoint::BuildCancel,
+        ),
+    ];
+    expected_subscribe.extend(build_executor_service_discovery_subscriptions());
+    expected_subscribe.push("_INBOX_build_executor.pool-a.executor-a.>".to_owned());
+    assert_eq!(profile.subscribe.allowed_subjects(), expected_subscribe);
+    assert_eq!(profile.publish.denied_subjects(), &[] as &[String]);
+    assert_eq!(profile.subscribe.denied_subjects(), &[] as &[String]);
+    assert_eq!(
+        profile.allow_responses,
+        ResponsePermission::RequestScoped {
+            expires: BUILD_RESPONSE_PERMISSION_EXPIRY,
+        }
+    );
+    assert_eq!(
+        inbox_prefix(&principal),
+        "_INBOX_build_executor.pool-a.executor-a"
+    );
+}
+
+#[test]
+fn build_executor_permission_matrix_excludes_other_authority() {
+    let pool_id = BuildPoolId::try_new("pool-a").expect("pool");
+    let executor_id = BuildExecutorId::try_new("executor-a").expect("executor");
+    let profile = NatsPermissionProfile::render(NatsPrincipal::BuildExecutor {
+        pool_id: pool_id.clone(),
+        executor_id: executor_id.clone(),
+    });
+    let other_pool = BuildPoolId::try_new("pool-b").expect("pool");
+    let other_executor = BuildExecutorId::try_new("executor-b").expect("executor");
+
+    for allowed in [
+        build_executor_service(
+            &pool_id,
+            &executor_id,
+            BuildExecutorServiceEndpoint::ReadinessGet,
+        ),
+        build_executor_service(
+            &pool_id,
+            &executor_id,
+            BuildExecutorServiceEndpoint::BuildStart,
+        ),
+        build_executor_service(
+            &pool_id,
+            &executor_id,
+            BuildExecutorServiceEndpoint::BuildCancel,
+        ),
+        "$SRV.PING.plz-build-executor.runtime-id".to_owned(),
+    ] {
+        assert!(
+            profile
+                .subscribe
+                .allowed_subjects()
+                .iter()
+                .any(|pattern| nats_subject_matches(pattern, &allowed)),
+            "expected subscription authority for {allowed}"
+        );
+    }
+
+    for denied in [
+        build_executor_service(
+            &other_pool,
+            &executor_id,
+            BuildExecutorServiceEndpoint::BuildStart,
+        ),
+        build_executor_service(
+            &pool_id,
+            &other_executor,
+            BuildExecutorServiceEndpoint::BuildCancel,
+        ),
+        "$SRV.PING.other-service.runtime-id".to_owned(),
+        "$SRV.PING.plz-build-executor.runtime.extra".to_owned(),
+        "plz.v1.rpc.operator.command.build.submit".to_owned(),
+        "plz.v1.rpc.machine.command.machine-a.build.start".to_owned(),
+        "plz.v1.rpc.machine.query.machine-a.facts.get".to_owned(),
+    ] {
+        assert!(
+            profile
+                .subscribe
+                .allowed_subjects()
+                .iter()
+                .all(|pattern| !nats_subject_matches(pattern, &denied)),
+            "unexpected subscription authority for {denied}"
+        );
+    }
+
+    for allowed in [
+        "plz.v1.signal.build_executor.pool-a.executor-a.build.operation.op-1.log",
+        "plz.v1.rpc.machine.query.machine-a.image.blob.check",
+        "plz.v1.rpc.machine.command.machine-a.image.blob.push",
+    ] {
+        assert!(
+            profile
+                .publish
+                .allowed_subjects()
+                .iter()
+                .any(|pattern| nats_subject_matches(pattern, allowed)),
+            "expected publication authority for {allowed}"
+        );
+    }
+
+    for denied in [
+        "plz.v1.signal.build_executor.pool-b.executor-a.build.operation.op-1.log",
+        "plz.v1.signal.build_executor.pool-a.executor-b.build.operation.op-1.log",
+        "plz.v1.signal.machine.machine-a.build.operation.op-1.log",
+        "plz.v1.testimony.machine.machine-a.snapshot",
+        "plz.v1.rpc.operator.query.ops.list",
+        "plz.v1.rpc.machine.command.machine-a.container.run",
+    ] {
+        assert!(
+            profile
+                .publish
+                .allowed_subjects()
+                .iter()
+                .all(|pattern| !nats_subject_matches(pattern, denied)),
+            "unexpected publication authority for {denied}"
+        );
+    }
 }
 
 #[test]
@@ -400,6 +561,10 @@ fn no_profile_subscribes_the_shared_inbox_scope() {
         NatsPrincipal::Machine {
             machine_id: machine_id("machine_7"),
         },
+        NatsPrincipal::BuildExecutor {
+            pool_id: BuildPoolId::try_new("pool-a").expect("pool"),
+            executor_id: BuildExecutorId::try_new("executor-a").expect("executor"),
+        },
         NatsPrincipal::Controller,
         NatsPrincipal::Operator,
         NatsPrincipal::Join,
@@ -431,6 +596,23 @@ fn inbox_prefixes_are_distinct_per_principal() {
     assert_eq!(inbox_prefix(&NatsPrincipal::Operator), "_INBOX_operator");
     assert_eq!(inbox_prefix(&NatsPrincipal::Join), "_INBOX_join");
     assert_eq!(inbox_prefix(&NatsPrincipal::System), "_INBOX_sys");
+    assert_eq!(
+        inbox_prefix(&NatsPrincipal::BuildExecutor {
+            pool_id: BuildPoolId::try_new("pool-a").expect("pool"),
+            executor_id: BuildExecutorId::try_new("executor-a").expect("executor"),
+        }),
+        "_INBOX_build_executor.pool-a.executor-a"
+    );
+    assert_ne!(
+        inbox_prefix(&NatsPrincipal::BuildExecutor {
+            pool_id: BuildPoolId::try_new("pool_a").expect("pool"),
+            executor_id: BuildExecutorId::try_new("executor").expect("executor"),
+        }),
+        inbox_prefix(&NatsPrincipal::BuildExecutor {
+            pool_id: BuildPoolId::try_new("pool").expect("pool"),
+            executor_id: BuildExecutorId::try_new("a_executor").expect("executor"),
+        })
+    );
     assert_eq!(
         inbox_prefix(&NatsPrincipal::Machine {
             machine_id: machine_id("machine_7")

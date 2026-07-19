@@ -1,7 +1,10 @@
+use ployz_core::build::{BuildExecutorId, BuildPoolId};
 use ployz_core::nats_config::{
-    CredentialGrant, CredentialName, CredentialRole, NatsAuthorizationGrant, NatsInternalAuthority,
-    NatsServerCertificatePem, NatsServerConfigError, NatsUserPublicKey, NatsUserSeed,
+    BuildExecutorCredentialExpiresAt, CredentialGrant, CredentialName, CredentialRole,
+    NatsAuthorizationGrant, NatsInternalAuthority, NatsServerCertificatePem, NatsServerConfigError,
+    NatsUserPublicKey, NatsUserSeed,
 };
+use ployz_core::security::NatsPrincipal;
 
 const CA_PEM: &str = "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n";
 
@@ -29,6 +32,40 @@ fn authorized_user_record_keys_include_user_public_key() {
         second_user.authority_record_key()
     );
     assert_eq!(controller.authority_record_key(), "controller");
+}
+
+#[test]
+fn build_executor_principal_authority_key_round_trips_without_ambiguity() {
+    let principal = NatsPrincipal::BuildExecutor {
+        pool_id: BuildPoolId::try_new("pool-west").expect("pool id"),
+        executor_id: BuildExecutorId::try_new("builder_1").expect("executor id"),
+    };
+
+    let key = principal.authority_key();
+
+    assert_eq!(key, "build_executor.pool-west.builder_1");
+    assert_eq!(NatsPrincipal::try_from_authority_key(&key), Ok(principal));
+    assert!(NatsPrincipal::try_from_authority_key("build_executor.pool.only.extra").is_err());
+}
+
+#[test]
+fn build_executor_role_renews_only_the_same_authority_and_expires_at_deadline() {
+    let role = build_executor_role("pool-a", "executor-a", 20);
+    let renewed = build_executor_role("pool-a", "executor-a", 30);
+
+    assert!(role.has_same_authority_as(&renewed));
+    assert!(!role.has_same_authority_as(&build_executor_role("pool-b", "executor-a", 30)));
+    assert!(!role.has_same_authority_as(&build_executor_role("pool-a", "executor-b", 30)));
+    assert!(role.is_active_at(19));
+    assert!(!role.is_active_at(20));
+}
+
+fn build_executor_role(pool: &str, executor: &str, expires_at: u64) -> CredentialRole {
+    CredentialRole::BuildExecutor {
+        pool_id: BuildPoolId::try_new(pool).expect("pool id"),
+        executor_id: BuildExecutorId::try_new(executor).expect("executor id"),
+        expires_at: BuildExecutorCredentialExpiresAt::try_new(expires_at).expect("expiry"),
+    }
 }
 
 #[test]

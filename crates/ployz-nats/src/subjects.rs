@@ -1,6 +1,6 @@
 //! Concrete NATS subject construction.
 
-use ployz_core::ids::{MachineId, NamespaceId, OperationId};
+use ployz_core::ids::{BuildExecutorId, BuildPoolId, MachineId, NamespaceId, OperationId};
 use ployz_core::operation::{
     DeployRunningStage, NamespaceRemoveRunningStage, NetworkRepairRunningStage,
     ServiceRestartRunningStage, VolumeRemoveRunningStage,
@@ -15,6 +15,15 @@ pub const MACHINE_RPC_QUERY_SCOPE: &str = "plz.v1.rpc.machine.query.>";
 pub const MACHINE_RPC_COMMAND_SCOPE: &str = "plz.v1.rpc.machine.command.>";
 pub const OPERATOR_MACHINE_IMAGE_QUERY_SCOPE: &str = "plz.v1.rpc.machine.query.*.image.>";
 pub const OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE: &str = "plz.v1.rpc.machine.command.*.image.>";
+pub const BUILD_EXECUTOR_SERVICE_NAME: &str = "plz-build-executor";
+pub const BUILD_EXECUTOR_RPC_READINESS_SCOPE: &str =
+    "plz.v1.rpc.build_executor.query.*.*.readiness.get";
+pub const BUILD_EXECUTOR_RPC_BUILD_START_SCOPE: &str =
+    "plz.v1.rpc.build_executor.command.*.*.build.start";
+pub const BUILD_EXECUTOR_RPC_BUILD_CANCEL_SCOPE: &str =
+    "plz.v1.rpc.build_executor.command.*.*.build.cancel";
+pub const BUILD_EXECUTOR_SIGNAL_LOG_SCOPE: &str =
+    "plz.v1.signal.build_executor.*.*.build.operation.*.log";
 pub const INTENT_GET: &str = "plz.v1.rpc.core.query.intent.get";
 pub const INTENT_CHANGED: &str = "plz.v1.signal.intent.changed";
 pub const INGRESS_ENDPOINT_GET: &str = "plz.v1.rpc.core.query.ingress.endpoint.get";
@@ -391,6 +400,88 @@ pub fn machine_build_log_publish_scope(machine_id: &MachineId) -> String {
 #[must_use]
 pub fn machine_build_log_subscribe_scope() -> String {
     "plz.v1.signal.machine.*.build.operation.*.log".to_owned()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildExecutorServiceEndpoint {
+    ReadinessGet,
+    BuildStart,
+    BuildCancel,
+}
+
+impl BuildExecutorServiceEndpoint {
+    #[must_use]
+    const fn execution_class(self) -> &'static str {
+        match self {
+            Self::ReadinessGet => "query",
+            Self::BuildStart | Self::BuildCancel => "command",
+        }
+    }
+
+    #[must_use]
+    const fn subject_suffix(self) -> &'static str {
+        match self {
+            Self::ReadinessGet => "readiness.get",
+            Self::BuildStart => "build.start",
+            Self::BuildCancel => "build.cancel",
+        }
+    }
+}
+
+#[must_use]
+pub fn build_executor_service(
+    pool_id: &BuildPoolId,
+    executor_id: &BuildExecutorId,
+    endpoint: BuildExecutorServiceEndpoint,
+) -> String {
+    format!(
+        "plz.v1.rpc.build_executor.{}.{}.{}.{}",
+        endpoint.execution_class(),
+        pool_id.as_str(),
+        executor_id.as_str(),
+        endpoint.subject_suffix()
+    )
+}
+
+#[must_use]
+pub fn build_executor_log(
+    pool_id: &BuildPoolId,
+    executor_id: &BuildExecutorId,
+    operation_id: &OperationId,
+) -> String {
+    format!(
+        "plz.v1.signal.build_executor.{}.{}.build.operation.{}.log",
+        pool_id.as_str(),
+        executor_id.as_str(),
+        operation_id.as_str()
+    )
+}
+
+#[must_use]
+pub fn build_executor_log_publish_scope(
+    pool_id: &BuildPoolId,
+    executor_id: &BuildExecutorId,
+) -> String {
+    format!(
+        "plz.v1.signal.build_executor.{}.{}.build.operation.*.log",
+        pool_id.as_str(),
+        executor_id.as_str()
+    )
+}
+
+#[must_use]
+pub fn build_executor_service_discovery_subscriptions() -> [String; 9] {
+    [
+        "$SRV.PING".to_owned(),
+        format!("$SRV.PING.{BUILD_EXECUTOR_SERVICE_NAME}"),
+        format!("$SRV.PING.{BUILD_EXECUTOR_SERVICE_NAME}.*"),
+        "$SRV.INFO".to_owned(),
+        format!("$SRV.INFO.{BUILD_EXECUTOR_SERVICE_NAME}"),
+        format!("$SRV.INFO.{BUILD_EXECUTOR_SERVICE_NAME}.*"),
+        "$SRV.STATS".to_owned(),
+        format!("$SRV.STATS.{BUILD_EXECUTOR_SERVICE_NAME}"),
+        format!("$SRV.STATS.{BUILD_EXECUTOR_SERVICE_NAME}.*"),
+    ]
 }
 
 #[must_use]

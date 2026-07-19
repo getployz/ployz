@@ -12,19 +12,19 @@ use ployz_sdk_types::{
     CloudFounderBootstrapResult, ControlCertificateRenewalAttempt,
     ControlCertificateRenewalFailure, ControlCertificateRenewalHealth,
     ControlCertificateRenewalOutcome, ControlHealth, ControlIngressEndpointProjectionHealth,
-    ControlPlaneEpoch, ControlRuntimeProjectionHealth, ControlRuntimeProjectionLoopHealth,
-    ControlRuntimeProjectionServiceHealth, ControlTaskSupervisorFailure,
-    ControlTaskSupervisorHealth, CoreReplaceError, CoreReplaceReportError,
-    CoreReplaceReportRequest, CoreReplaceReported, CoreReplaceRequest, CredentialAddError,
-    CredentialAddRequest, CredentialListError, CredentialListRequest, CredentialListResult,
-    CredentialRemoveError, CredentialRemoveRequest, DependencyCondition, DeployOperationState,
-    DeployPhaseNumber, DeployPhaseNumberError, DeployPreview, DeployPreviewError,
-    DeployPreviewRequest, DeployRequest, DeployReservationId, DeployReserveError,
-    DeployReserveRequest, DeployReserved, DeployRunningStage, DeployServiceSpec, DeploySubmitError,
-    DeploySubmitRequest, DeploySubmitResponse, EventSequence, EventSequenceError,
-    GatewayHttpFailure, GatewayProcessAttempt, GatewayProcessHealth, GatewayStatusPublishFailure,
-    GatewayWatchFailure, GitSource, HostPortAssurance, ImageReference, ImageReferenceError,
-    IngressConfiguration, IngressConfigureError, IngressConfigureRequest,
+    ControlNatsAuthorizationHealth, ControlPlaneEpoch, ControlRuntimeProjectionHealth,
+    ControlRuntimeProjectionLoopHealth, ControlRuntimeProjectionServiceHealth,
+    ControlTaskSupervisorFailure, ControlTaskSupervisorHealth, CoreReplaceError,
+    CoreReplaceReportError, CoreReplaceReportRequest, CoreReplaceReported, CoreReplaceRequest,
+    CredentialAddError, CredentialAddRequest, CredentialListError, CredentialListRequest,
+    CredentialListResult, CredentialRemoveError, CredentialRemoveRequest, DependencyCondition,
+    DeployOperationState, DeployPhaseNumber, DeployPhaseNumberError, DeployPreview,
+    DeployPreviewError, DeployPreviewRequest, DeployRequest, DeployReservationId,
+    DeployReserveError, DeployReserveRequest, DeployReserved, DeployRunningStage,
+    DeployServiceSpec, DeploySubmitError, DeploySubmitRequest, DeploySubmitResponse, EventSequence,
+    EventSequenceError, GatewayHttpFailure, GatewayProcessAttempt, GatewayProcessHealth,
+    GatewayStatusPublishFailure, GatewayWatchFailure, GitSource, HostPortAssurance, ImageReference,
+    ImageReferenceError, IngressConfiguration, IngressConfigureError, IngressConfigureRequest,
     IngressEndpointProjectionIdentity, InitFirstMachineActivateError,
     InitFirstMachineActivateRequest, InitFirstMachineActivated, InstallContractError,
     InstallRolePolicy, LogsTailError, LogsTailRequest, LogsTailResult,
@@ -877,6 +877,7 @@ fn sdk_exports_operational_health_wire_types() {
     assert_wire_type::<GatewayWatchFailure>();
     assert_wire_type::<GatewayStatusPublishFailure>();
     assert_wire_type::<ControlHealth>();
+    assert_wire_type::<ControlNatsAuthorizationHealth>();
     assert_wire_type::<ControlTaskSupervisorHealth>();
     assert_wire_type::<ControlTaskSupervisorFailure>();
     assert_wire_type::<ControlRuntimeProjectionHealth>();

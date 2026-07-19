@@ -1,6 +1,6 @@
 //! Transport-neutral contracts for bounded build executors.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -8,9 +8,92 @@ use super::{BuildAdapter, GitSource, VerifiedGitCommit};
 use crate::deploy::PlatformImage;
 use crate::ids::{BuildExecutorId, BuildPoolId, MachineId, OperationId};
 use crate::image::OciPlatform;
+use crate::nats_config::CredentialGrant;
 use crate::operation::{
     BuildLogChunk, BuildPlatformFailure, BuildToolchainEvidence, FailureMessage,
 };
+
+/// Durable identity of one external Build Executor within one Build Pool.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct BuildExecutorIdentity {
+    pub pool_id: BuildPoolId,
+    pub executor_id: BuildExecutorId,
+}
+
+/// One point-of-use readiness answer from an external Build Executor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuildExecutorReadinessAnswer<T> {
+    pub identity: BuildExecutorIdentity,
+    pub readiness: T,
+}
+
+/// Readiness testimony for every executor in the enrolled known set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BuildExecutorReadinessTestimony<T> {
+    Answered {
+        identity: BuildExecutorIdentity,
+        readiness: T,
+    },
+    Silent {
+        identity: BuildExecutorIdentity,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum BuildExecutorReadinessReconcileError {
+    #[error("Build Executor known set contains duplicate identity {identity:?}")]
+    DuplicateKnownIdentity { identity: BuildExecutorIdentity },
+    #[error("un-enrolled Build Executor answered as {identity:?}")]
+    UnknownIdentity { identity: BuildExecutorIdentity },
+    #[error("Build Executor answered more than once as {identity:?}")]
+    DuplicateResponse { identity: BuildExecutorIdentity },
+}
+
+/// Reconciles readiness answers against active durable credential intent at an explicit time.
+pub fn reconcile_build_executor_readiness_at<T>(
+    credentials: &[CredentialGrant],
+    answers: impl IntoIterator<Item = BuildExecutorReadinessAnswer<T>>,
+    now_unix_seconds: u64,
+) -> Result<Vec<BuildExecutorReadinessTestimony<T>>, BuildExecutorReadinessReconcileError> {
+    let mut testimony = BTreeMap::new();
+    for identity in credentials.iter().filter_map(|credential| {
+        credential
+            .role
+            .is_active_at(now_unix_seconds)
+            .then(|| credential.role.build_executor_identity())
+            .flatten()
+    }) {
+        if testimony.insert(identity.clone(), None).is_some() {
+            return Err(BuildExecutorReadinessReconcileError::DuplicateKnownIdentity { identity });
+        }
+    }
+
+    for BuildExecutorReadinessAnswer {
+        identity,
+        readiness,
+    } in answers
+    {
+        let Some(existing) = testimony.get_mut(&identity) else {
+            return Err(BuildExecutorReadinessReconcileError::UnknownIdentity { identity });
+        };
+        if existing.replace(readiness).is_some() {
+            return Err(BuildExecutorReadinessReconcileError::DuplicateResponse { identity });
+        }
+    }
+
+    Ok(testimony
+        .into_iter()
+        .map(|(identity, readiness)| match readiness {
+            Some(readiness) => BuildExecutorReadinessTestimony::Answered {
+                identity,
+                readiness,
+            },
+            None => BuildExecutorReadinessTestimony::Silent { identity },
+        })
+        .collect())
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -564,6 +647,119 @@ pub struct BuildExecutorLogFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nats_config::{
+        BuildExecutorCredentialExpiresAt, CredentialName, CredentialRole, MintedNatsUser,
+    };
+
+    #[test]
+    fn readiness_reconcile_is_known_set_driven_and_preserves_silence() {
+        let first = executor_identity("pool-a", "executor-a");
+        let second = executor_identity("pool-a", "executor-b");
+        let testimony = reconcile_build_executor_readiness_at(
+            &[
+                build_executor_credential(second.clone(), 30),
+                build_executor_credential(first.clone(), 20),
+                build_executor_credential(executor_identity("pool-a", "expired"), 10),
+            ],
+            [BuildExecutorReadinessAnswer {
+                identity: first.clone(),
+                readiness: "ready",
+            }],
+            10,
+        )
+        .expect("known response");
+
+        assert_eq!(
+            testimony,
+            vec![
+                BuildExecutorReadinessTestimony::Answered {
+                    identity: first,
+                    readiness: "ready",
+                },
+                BuildExecutorReadinessTestimony::Silent { identity: second },
+            ]
+        );
+    }
+
+    #[test]
+    fn readiness_reconcile_rejects_unknown_and_duplicate_answers() {
+        let known = executor_identity("pool-a", "executor-a");
+        let answer = |identity| BuildExecutorReadinessAnswer {
+            identity,
+            readiness: (),
+        };
+
+        for unknown in [
+            executor_identity("pool-a", "unknown"),
+            executor_identity("pool-b", "executor-a"),
+        ] {
+            assert!(matches!(
+                reconcile_build_executor_readiness_at(
+                    &[build_executor_credential(known.clone(), 20)],
+                    [answer(unknown)],
+                    10,
+                ),
+                Err(BuildExecutorReadinessReconcileError::UnknownIdentity { .. })
+            ));
+        }
+        assert!(matches!(
+            reconcile_build_executor_readiness_at(
+                &[build_executor_credential(known.clone(), 20)],
+                [answer(known.clone()), answer(known)],
+                10,
+            ),
+            Err(BuildExecutorReadinessReconcileError::DuplicateResponse { .. })
+        ));
+    }
+
+    #[test]
+    fn readiness_reconcile_excludes_expired_and_rejects_duplicate_active_identity() {
+        let identity = executor_identity("pool-a", "executor-a");
+        assert!(matches!(
+            reconcile_build_executor_readiness_at(
+                &[build_executor_credential(identity.clone(), 10)],
+                [BuildExecutorReadinessAnswer {
+                    identity: identity.clone(),
+                    readiness: (),
+                }],
+                10,
+            ),
+            Err(BuildExecutorReadinessReconcileError::UnknownIdentity { .. })
+        ));
+        assert!(matches!(
+            reconcile_build_executor_readiness_at(
+                &[
+                    build_executor_credential(identity.clone(), 20),
+                    build_executor_credential(identity, 30),
+                ],
+                std::iter::empty::<BuildExecutorReadinessAnswer<()>>(),
+                10,
+            ),
+            Err(BuildExecutorReadinessReconcileError::DuplicateKnownIdentity { .. })
+        ));
+    }
+
+    fn executor_identity(pool: &str, executor: &str) -> BuildExecutorIdentity {
+        BuildExecutorIdentity {
+            pool_id: BuildPoolId::try_new(pool).expect("pool id"),
+            executor_id: BuildExecutorId::try_new(executor).expect("executor id"),
+        }
+    }
+
+    fn build_executor_credential(
+        identity: BuildExecutorIdentity,
+        expires_at: u64,
+    ) -> CredentialGrant {
+        CredentialGrant {
+            public_key: MintedNatsUser::generate().expect("mint credential").public,
+            name: CredentialName::try_new("External builder").expect("credential name"),
+            role: CredentialRole::BuildExecutor {
+                pool_id: identity.pool_id,
+                executor_id: identity.executor_id,
+                expires_at: BuildExecutorCredentialExpiresAt::try_new(expires_at).expect("expiry"),
+            },
+        }
+    }
 
     fn cluster_assignment() -> BuildExecutorAssignment {
         BuildExecutorAssignment::Cluster {

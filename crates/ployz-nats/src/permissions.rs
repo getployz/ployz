@@ -1,23 +1,27 @@
 //! NATS subject permissions and authorization-file rendering.
 
 use ployz_core::build::BUILD_RESPONSE_PERMISSION_EXPIRY;
-use ployz_core::ids::MachineId;
+use ployz_core::ids::{BuildExecutorId, BuildPoolId, MachineId};
 use ployz_core::nats_config::{
-    CredentialGrant, CredentialName, CredentialRole, NatsAuthorizationGrant, NatsInternalAuthority,
-    NatsUserPublicKey,
+    BuildExecutorCredentialExpiresAt, CredentialGrant, CredentialName, CredentialRole,
+    NatsAuthorizationGrant, NatsInternalAuthority, NatsUserPublicKey,
 };
 use ployz_core::security::NatsPrincipal;
 
 use crate::server_config::quote_nats_string;
 use crate::subjects::{
-    CORE_RPC_QUERY_SCOPE, INGRESS_ENDPOINT_CHANGED, INGRESS_ENDPOINT_GET, INTENT_CHANGED,
-    INTENT_GET, JOIN_MACHINE_REDEEM, JOIN_MACHINE_REPORT, MACHINE_RPC_COMMAND_SCOPE,
-    MACHINE_RPC_QUERY_SCOPE, OPERATION_PROGRESS_SCOPE, OPERATOR_INIT_FIRST_MACHINE_ACTIVATE,
-    OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE, OPERATOR_MACHINE_IMAGE_QUERY_SCOPE,
-    OPERATOR_RPC_COMMAND_SCOPE, OPERATOR_RPC_QUERY_SCOPE, PENDING_MACHINE_JOINS_CHANGED,
-    RUNTIME_SNAPSHOT_STREAM, gateway_status, gateway_status_scope, machine_build_log_publish_scope,
-    machine_build_log_subscribe_scope, machine_container_facts, machine_facts, machine_facts_scope,
-    machine_service_command_scope, machine_service_query_scope,
+    BUILD_EXECUTOR_RPC_BUILD_CANCEL_SCOPE, BUILD_EXECUTOR_RPC_BUILD_START_SCOPE,
+    BUILD_EXECUTOR_RPC_READINESS_SCOPE, BUILD_EXECUTOR_SIGNAL_LOG_SCOPE,
+    BuildExecutorServiceEndpoint, CORE_RPC_QUERY_SCOPE, INGRESS_ENDPOINT_CHANGED,
+    INGRESS_ENDPOINT_GET, INTENT_CHANGED, INTENT_GET, JOIN_MACHINE_REDEEM, JOIN_MACHINE_REPORT,
+    MACHINE_RPC_COMMAND_SCOPE, MACHINE_RPC_QUERY_SCOPE, OPERATION_PROGRESS_SCOPE,
+    OPERATOR_INIT_FIRST_MACHINE_ACTIVATE, OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE,
+    OPERATOR_MACHINE_IMAGE_QUERY_SCOPE, OPERATOR_RPC_COMMAND_SCOPE, OPERATOR_RPC_QUERY_SCOPE,
+    PENDING_MACHINE_JOINS_CHANGED, RUNTIME_SNAPSHOT_STREAM, build_executor_log_publish_scope,
+    build_executor_service, build_executor_service_discovery_subscriptions, gateway_status,
+    gateway_status_scope, machine_build_log_publish_scope, machine_build_log_subscribe_scope,
+    machine_container_facts, machine_facts, machine_facts_scope, machine_service_command_scope,
+    machine_service_query_scope,
 };
 use std::time::Duration;
 
@@ -79,15 +83,7 @@ pub fn parse_authorized_users(
                     AuthorizedUsersParseError::CredentialMarkerWithoutPrincipal { line_number },
                 );
             };
-            pending.credential_role = Some(match value.trim() {
-                "operator" => CredentialRole::Operator,
-                value => {
-                    return Err(AuthorizedUsersParseError::InvalidCredentialRole {
-                        line_number,
-                        value: value.to_owned(),
-                    });
-                }
-            });
+            pending.credential_role = Some(parse_credential_role(value.trim(), line_number)?);
             continue;
         }
         if let Some(value) = trimmed.strip_prefix("nkey:") {
@@ -106,17 +102,23 @@ pub fn parse_authorized_users(
                 credential_role,
             } = pending;
             users.push(match principal {
-                NatsPrincipal::Operator => {
+                principal @ (NatsPrincipal::Operator | NatsPrincipal::BuildExecutor { .. }) => {
                     let (Some(name), Some(role)) = (credential_name, credential_role) else {
                         return Err(AuthorizedUsersParseError::MissingCredentialMetadata {
                             line_number,
                         });
                     };
-                    NatsAuthorizationGrant::Credential(CredentialGrant {
+                    let authorization = NatsAuthorizationGrant::Credential(CredentialGrant {
                         public_key,
                         name,
                         role,
-                    })
+                    });
+                    if authorization.principal() != principal {
+                        return Err(AuthorizedUsersParseError::PrincipalCredentialMismatch {
+                            line_number,
+                        });
+                    }
+                    authorization
                 }
                 NatsPrincipal::Machine { machine_id } => internal_authorization(
                     NatsInternalAuthority::Machine { machine_id },
@@ -155,6 +157,45 @@ pub fn parse_authorized_users(
     Ok(users)
 }
 
+fn parse_credential_role(
+    value: &str,
+    line_number: usize,
+) -> Result<CredentialRole, AuthorizedUsersParseError> {
+    if value == "operator" {
+        return Ok(CredentialRole::Operator);
+    }
+    let Some(value) = value.strip_prefix("build_executor.") else {
+        return Err(invalid_credential_role(line_number, value));
+    };
+    let mut parts = value.split('.');
+    let (Some(pool_id), Some(executor_id), Some(expires_at), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return Err(invalid_credential_role(line_number, value));
+    };
+    let pool_id =
+        BuildPoolId::try_new(pool_id).map_err(|_| invalid_credential_role(line_number, value))?;
+    let executor_id = BuildExecutorId::try_new(executor_id)
+        .map_err(|_| invalid_credential_role(line_number, value))?;
+    let expires_at = expires_at
+        .parse::<u64>()
+        .ok()
+        .and_then(|expires_at| BuildExecutorCredentialExpiresAt::try_new(expires_at).ok())
+        .ok_or_else(|| invalid_credential_role(line_number, value))?;
+    Ok(CredentialRole::BuildExecutor {
+        pool_id,
+        executor_id,
+        expires_at,
+    })
+}
+
+fn invalid_credential_role(line_number: usize, value: &str) -> AuthorizedUsersParseError {
+    AuthorizedUsersParseError::InvalidCredentialRole {
+        line_number,
+        value: value.to_owned(),
+    }
+}
+
 fn internal_authorization(
     authority: NatsInternalAuthority,
     credential_name: Option<CredentialName>,
@@ -189,8 +230,10 @@ pub enum AuthorizedUsersParseError {
     InvalidCredentialName { line_number: usize },
     #[error("authorized-users line {line_number}: {value:?} is not a credential role")]
     InvalidCredentialRole { line_number: usize, value: String },
-    #[error("authorized-users line {line_number}: operator credential metadata is incomplete")]
+    #[error("authorized-users line {line_number}: credential metadata is incomplete")]
     MissingCredentialMetadata { line_number: usize },
+    #[error("authorized-users line {line_number}: principal and credential role do not match")]
+    PrincipalCredentialMismatch { line_number: usize },
     #[error("authorized-users line {line_number}: internal principal has credential metadata")]
     InternalPrincipalHasCredentialMetadata { line_number: usize },
     #[error("authorized-users line {line_number}: {value:?} is not an NKey user public key")]
@@ -201,6 +244,14 @@ pub enum AuthorizedUsersParseError {
 pub fn inbox_prefix(principal: &NatsPrincipal) -> String {
     match principal {
         NatsPrincipal::Machine { machine_id } => format!("_INBOX_machine_{}", machine_id.as_str()),
+        NatsPrincipal::BuildExecutor {
+            pool_id,
+            executor_id,
+        } => format!(
+            "_INBOX_build_executor.{}.{}",
+            pool_id.as_str(),
+            executor_id.as_str()
+        ),
         NatsPrincipal::Controller => "_INBOX_ctl".to_owned(),
         NatsPrincipal::Operator => "_INBOX_operator".to_owned(),
         NatsPrincipal::Join => "_INBOX_join".to_owned(),
@@ -243,6 +294,25 @@ impl NatsPermissionProfile {
                     },
                 }
             }
+            NatsPrincipal::BuildExecutor {
+                pool_id,
+                executor_id,
+            } => Self {
+                principal: principal.clone(),
+                publish: SubjectPermissions::allowing([
+                    build_executor_log_publish_scope(pool_id, executor_id),
+                    OPERATOR_MACHINE_IMAGE_QUERY_SCOPE.to_owned(),
+                    OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE.to_owned(),
+                ]),
+                subscribe: build_executor_service_server_subscriptions(
+                    pool_id,
+                    executor_id,
+                    inbox_scope,
+                ),
+                allow_responses: ResponsePermission::RequestScoped {
+                    expires: BUILD_RESPONSE_PERMISSION_EXPIRY,
+                },
+            },
             NatsPrincipal::Controller => Self {
                 principal: principal.clone(),
                 publish: controller_publications(),
@@ -315,10 +385,39 @@ fn controller_subscriptions(inbox_scope: String) -> SubjectPermissions {
         INGRESS_ENDPOINT_CHANGED.to_owned(),
         machine_facts_scope(),
         machine_build_log_subscribe_scope(),
+        BUILD_EXECUTOR_SIGNAL_LOG_SCOPE.to_owned(),
         gateway_status_scope(),
         NATS_SERVICE_DISCOVERY_SCOPE.to_owned(),
         inbox_scope,
     ])
+}
+
+#[must_use]
+fn build_executor_service_server_subscriptions(
+    pool_id: &BuildPoolId,
+    executor_id: &BuildExecutorId,
+    inbox_scope: String,
+) -> SubjectPermissions {
+    let mut allow = vec![
+        build_executor_service(
+            pool_id,
+            executor_id,
+            BuildExecutorServiceEndpoint::ReadinessGet,
+        ),
+        build_executor_service(
+            pool_id,
+            executor_id,
+            BuildExecutorServiceEndpoint::BuildStart,
+        ),
+        build_executor_service(
+            pool_id,
+            executor_id,
+            BuildExecutorServiceEndpoint::BuildCancel,
+        ),
+    ];
+    allow.extend(build_executor_service_discovery_subscriptions());
+    allow.push(inbox_scope);
+    SubjectPermissions::allowing_all(allow)
 }
 
 #[must_use]
@@ -345,6 +444,9 @@ fn controller_publications() -> SubjectPermissions {
     allow.push(OPERATOR_INIT_FIRST_MACHINE_ACTIVATE.to_owned());
     allow.extend(machine_service_client_publications().into_allowed_subjects());
     allow.extend([
+        BUILD_EXECUTOR_RPC_READINESS_SCOPE.to_owned(),
+        BUILD_EXECUTOR_RPC_BUILD_START_SCOPE.to_owned(),
+        BUILD_EXECUTOR_RPC_BUILD_CANCEL_SCOPE.to_owned(),
         CORE_RPC_QUERY_SCOPE.to_owned(),
         OPERATION_PROGRESS_SCOPE.to_owned(),
         INTENT_CHANGED.to_owned(),
@@ -431,7 +533,17 @@ pub fn render_authorized_users(users: &[NatsAuthorizationGrant]) -> String {
                 name.as_str()
             ));
             let role = match role {
-                CredentialRole::Operator => "operator",
+                CredentialRole::Operator => "operator".to_owned(),
+                CredentialRole::BuildExecutor {
+                    pool_id,
+                    executor_id,
+                    expires_at,
+                } => format!(
+                    "build_executor.{}.{}.{}",
+                    pool_id.as_str(),
+                    executor_id.as_str(),
+                    expires_at.unix_seconds()
+                ),
             };
             rendered.push_str(&format!("      # ployz-credential-role: {role}\n"));
         }

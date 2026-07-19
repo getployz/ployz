@@ -103,9 +103,11 @@ pub struct RuntimeSnapshotQueryService {
     runtime_projection_health: RuntimeProjectionHealthReader,
     ingress_endpoint_projection_health: IngressEndpointProjectionHealth,
     certificate_renewal_health: CertificateRenewalHealth,
+    nats_authorization_health: crate::control::authorization::NatsAuthorizationHealthReader,
 }
 
 pub(crate) struct ControlHealthReaders {
+    pub(crate) nats_authorization: crate::control::authorization::NatsAuthorizationHealthReader,
     pub(crate) task_supervisor: crate::tasks::TaskSupervisorHealthReader,
     pub(crate) runtime_projection: RuntimeProjectionHealthReader,
     pub(crate) ingress_endpoint_projection: IngressEndpointProjectionHealth,
@@ -130,6 +132,7 @@ impl RuntimeSnapshotQueryService {
             runtime_projection_health: health.runtime_projection,
             ingress_endpoint_projection_health: health.ingress_endpoint_projection,
             certificate_renewal_health: health.certificate_renewal,
+            nats_authorization_health: health.nats_authorization,
         }
     }
 
@@ -173,6 +176,7 @@ impl RuntimeSnapshotQueryService {
                 read_at_unix_seconds,
             ),
             control_health: Some(ControlHealth {
+                nats_authorization: self.nats_authorization_health.snapshot(),
                 task_supervisor: self
                     .task_supervisor_health
                     .snapshot()
