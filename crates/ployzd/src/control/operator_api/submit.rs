@@ -10,7 +10,7 @@ use crate::control::sequencer::{
     OperationControllers, ServiceRestartSubmitCommand, VolumeCreateSubmitCommand,
     VolumeRemoveSubmitCommand,
 };
-use ployz_core::build::BuildTarget;
+use ployz_core::build::{BuildPlatformExecutorAssignment, BuildTarget};
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::operation::{CredentialGrantAction, EventSequence, VolumeCreateRequest};
 use ployz_nats::subjects::{OperationProgressScope, operation_progress_watch};
@@ -30,20 +30,8 @@ pub async fn build_submit(
     request: BuildSubmitRequest,
 ) -> Result<AcceptedOperation, BuildSubmitError> {
     let operation_id = request.operation_id.clone();
-    if let BuildTarget::External { pool_id } = &request.target {
-        let platform = request
-            .platforms
-            .iter()
-            .next()
-            .expect("validated build platforms are non-empty")
-            .clone();
-        return Err(BuildSubmitError::NoCapableExternalExecutor {
-            operation_id,
-            pool_id: pool_id.clone(),
-            platform,
-        });
-    }
-    let accepted = handlers.controllers().submit_build(BuildSubmitCommand {
+    let planned_assignments = external_preflight_for_new_operation(handlers, &request).await?;
+    let mut accepted = handlers.controllers().submit_build(BuildSubmitCommand {
         operation_id: request.operation_id,
         target: request.target,
         source: request.source,
@@ -64,6 +52,9 @@ pub async fn build_submit(
             message: format!("{error:?}"),
         },
     })?;
+    if accepted.submission.should_start_execution {
+        accepted.planned_assignments = planned_assignments;
+    }
     let operation = owned_operation(
         accepted.submission.operation_id.clone(),
         OperationProgressScope::Cluster,
@@ -71,6 +62,56 @@ pub async fn build_submit(
     );
     handlers.build_driver().start(accepted).await;
     Ok(operation)
+}
+
+async fn external_preflight_for_new_operation(
+    handlers: &OperationApiHandlers,
+    request: &BuildSubmitRequest,
+) -> Result<Vec<BuildPlatformExecutorAssignment>, BuildSubmitError> {
+    let BuildTarget::External { pool_id } = &request.target else {
+        return Ok(Vec::new());
+    };
+    let operation_id = request.operation_id.clone();
+    let existing = handlers
+        .controllers()
+        .repository()
+        .get(&operation_id)
+        .await
+        .map_err(|error| BuildSubmitError::Unavailable {
+            operation_id: operation_id.clone(),
+            message: error.to_string(),
+        })?;
+    if existing.is_some() {
+        return Ok(Vec::new());
+    }
+    handlers
+        .build_driver()
+        .preflight_external(pool_id, &request.platforms, &request.adapter)
+        .await
+        .map_err(|failure| {
+            match failure {
+            crate::control::operations::build::ExternalBuildAdmissionError::NoCapableExecutor {
+                pool_id,
+                platform,
+            } => BuildSubmitError::NoCapableExternalExecutor {
+                operation_id,
+                pool_id,
+                platform,
+            },
+            crate::control::operations::build::ExternalBuildAdmissionError::NoReachableImageSeed {
+                pool_id,
+            } => BuildSubmitError::NoReachableImageSeed {
+                operation_id,
+                pool_id,
+            },
+            crate::control::operations::build::ExternalBuildAdmissionError::Unavailable {
+                message,
+            } => BuildSubmitError::Unavailable {
+                operation_id,
+                message,
+            },
+        }
+        })
 }
 
 pub async fn build_cancel(

@@ -173,6 +173,9 @@ pub async fn execute_command(
         PloyzctlCommand::BuildCancel(command) => {
             crate::build::runtime::cancel(command, config).await
         }
+        PloyzctlCommand::BuildExecutor(command) => {
+            crate::build::external_runtime::run(command, config).await
+        }
         PloyzctlCommand::CorePromote(command) => {
             crate::core::runtime::promote(command, config).await
         }

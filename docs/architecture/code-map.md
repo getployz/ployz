@@ -65,8 +65,10 @@ domain and wire contracts:
 ployz ----------------> host-runner ----> ployz-nats ----> ployz-sdk-types ----> ployz-core
   |                           |                 |                  |
   +---------------------------+-----------------+------------------+
+  +-------------> ployz-build-executor ------> ployz-nats + ployz-core
 
 ployzd -------------------------------> ployz-nats + ployz-sdk-types + ployz-core
+  +-----------------------------------> ployz-build-executor
   +-----------------------------------> ployz-ebpf-common (validation contract)
 
 ployz-ebpf-ctl ------------------------> ployz-ebpf-common
@@ -76,8 +78,11 @@ ployz-ebpf program --------------------> ployz-ebpf-common
 The diagram omits repeated direct edges for readability: SDK types depend on
 Core; NATS depends on Core and SDK types; Host Runner depends on all three;
 `ployz` depends on Host Runner, NATS, SDK types, Core, and telemetry; `ployzd`
-depends on NATS, SDK types, Core, telemetry, and the shared eBPF validation
-contract. [`crates/ployz-telemetry/`](../../crates/ployz-telemetry/) is an
+depends on NATS, SDK types, Core, telemetry, the shared build executor, and the
+shared eBPF validation contract. `ployz-build-executor` depends inward on NATS
+for exact log publication and on Core for build contracts; both `ployz` and
+`ployzd` use it without depending on each other's process wiring.
+[`crates/ployz-telemetry/`](../../crates/ployz-telemetry/) is an
 independent adapter used by executable surfaces. Test-only crates under
 [`testing/`](../../testing/) may depend outward for fixtures and black-box
 exercise; production crates must not depend on them except as dev-dependencies.
@@ -125,6 +130,17 @@ implementation. Put Control behavior under `control/`, local execution under
 `roles/dns/`, and certificate execution shared by Control/Gateway under
 `certificate/`. Cross-role calls use NATS contracts rather than importing
 another role's private implementation.
+
+### Shared build executor
+
+[`crates/ployz-build-executor/src/`](../../crates/ployz-build-executor/src/)
+owns the process-wiring-neutral Dockerfile and Railpack execution engine: native
+runtime readiness, pinned toolchain lowering, bounded workspace lifecycle,
+redacted build logs, and validated OCI-layout output. Machine-role and external
+CLI runtimes own admission, NATS endpoints, image ingestion or push, and
+terminal operation evidence; they call this crate rather than duplicating its
+Docker mechanics. The shared engine depends only on Core build contracts and
+the NATS log adapter, never on `ployz` or `ployzd` process wiring.
 
 ### CLI features
 
@@ -174,6 +190,7 @@ scenarios. None is a production abstraction.
 | NATS subject, endpoint, permission, connection, or service transport | `crates/ployz-nats/src/` | Core policy and orchestration convenience |
 | Control operation admission, evidence, intent, or projection | The matching directory under `crates/ployzd/src/control/` | Role-private runtime effects |
 | Machine, Gateway, or DNS behavior | `crates/ployzd/src/roles/machine/`, `crates/ployzd/src/roles/gateway/`, or `crates/ployzd/src/roles/dns/` | Another role's private module; call its service instead |
+| Shared Dockerfile or Railpack build execution mechanic | `crates/ployz-build-executor/src/` | CLI or daemon admission, NATS service ownership, image distribution, operation evidence |
 | CLI command or presentation | Matching feature under `crates/ployz/src/` | Core and transport presentation logic |
 | Public SDK request, response, or operation contract | `crates/ployz-sdk-types/src/`, then generated output in `packages/ployz-sdk/` | Daemon-only implementation types |
 | Privileged install, bootstrap, update, recovery, or supervisor effect | `crates/ployz-host-runner/src/` | Cluster policy decisions |

@@ -23,10 +23,68 @@ pub struct BuildExecutorIdentity {
 }
 
 /// One point-of-use readiness answer from an external Build Executor.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
 pub struct BuildExecutorReadinessAnswer<T> {
     pub identity: BuildExecutorIdentity,
     pub readiness: T,
+}
+
+/// Strict empty request for point-of-use external Build Executor readiness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuildExecutorReadinessRequest {}
+
+/// Native execution capability reported at the point of build admission.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct BuildExecutorReadiness {
+    pub native_platform: OciPlatform,
+    pub capability: BuildExecutorCapability,
+}
+
+/// The complete adapter set one external executor can accept now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum BuildExecutorCapability {
+    DockerfileAndRailpack,
+    DockerfileOnly,
+    RuntimeUnavailable,
+}
+
+impl BuildExecutorCapability {
+    #[must_use]
+    pub const fn supports(self, adapter: &BuildAdapter) -> bool {
+        match (self, adapter) {
+            (Self::DockerfileAndRailpack, BuildAdapter::Dockerfile { .. })
+            | (Self::DockerfileAndRailpack, BuildAdapter::Railpack { .. })
+            | (Self::DockerfileOnly, BuildAdapter::Dockerfile { .. }) => true,
+            (Self::DockerfileOnly, BuildAdapter::Railpack { .. })
+            | (Self::RuntimeUnavailable, BuildAdapter::Dockerfile { .. })
+            | (Self::RuntimeUnavailable, BuildAdapter::Railpack { .. }) => false,
+        }
+    }
+}
+
+/// Adapter identity used in typed admission failures without repeating adapter input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum BuildAdapterKind {
+    Dockerfile,
+    Railpack,
+}
+
+impl From<&BuildAdapter> for BuildAdapterKind {
+    fn from(adapter: &BuildAdapter) -> Self {
+        match adapter {
+            BuildAdapter::Dockerfile { .. } => Self::Dockerfile,
+            BuildAdapter::Railpack { .. } => Self::Railpack,
+        }
+    }
 }
 
 /// Readiness testimony for every executor in the enrolled known set.
@@ -235,10 +293,10 @@ impl BuildExecutorAssignments {
     }
 
     #[must_use]
-    pub(crate) fn contains_seed(&self, machine_id: &MachineId) -> bool {
+    pub(crate) fn contains_executor(&self, executor: &BuildExecutorAssignment) -> bool {
         self.0
             .iter()
-            .any(|assignment| assignment.executor.image_seed() == machine_id)
+            .any(|assignment| assignment.executor == *executor)
     }
 
     #[must_use]
@@ -527,11 +585,44 @@ impl BuildExecutorAcceptance {
 #[serde(deny_unknown_fields)]
 pub struct BuildExecutorStartOk {
     pub acceptance: BuildExecutorAcceptance,
+    pub cleanup: BuildExecutorSuccessCleanupEvidence,
     pub image: PlatformImage,
     pub verified_commit: VerifiedGitCommit,
     pub toolchain: BuildToolchainEvidence,
     #[serde(flatten)]
     pub log_summary: BuildLogSummary,
+}
+
+/// Positive proof required on every successful build-executor response.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuildExecutorSuccessCleanupEvidence {
+    pub outcome: BuildExecutorSuccessCleanupOutcome,
+}
+
+impl BuildExecutorSuccessCleanupEvidence {
+    #[must_use]
+    pub const fn confirmed() -> Self {
+        Self {
+            outcome: BuildExecutorSuccessCleanupOutcome::Confirmed,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BuildExecutorSuccessCleanupOutcome {
+    Confirmed,
+}
+
+/// Terminal response from one exact external Build Executor start subject.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BuildExecutorStartResponse {
+    Ok(Box<BuildExecutorStartOk>),
+    DomainError {
+        error: BuildExecutorStartDomainError,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -561,13 +652,23 @@ impl BuildLogSummary {
 pub enum BuildExecutorStartDomainError {
     AssignmentMismatch {
         expected: Box<BuildExecutorAssignment>,
-        actual: BuildExecutorAssignment,
+        actual: Box<BuildExecutorAssignment>,
+    },
+    ExecutorIdentityMismatch {
+        expected: BuildExecutorIdentity,
+        actual: Box<BuildExecutorAssignment>,
     },
     RuntimeUnavailable,
     RuntimeStopped,
     PlatformMismatch {
         expected: OciPlatform,
         actual: OciPlatform,
+    },
+    ToolchainUnavailable {
+        adapter: BuildAdapterKind,
+    },
+    ImageSeedUnavailable {
+        image_seed: MachineId,
     },
     InvalidTimeout {
         timeout_millis: u64,
@@ -615,6 +716,16 @@ pub struct BuildExecutorCancelOk {
     pub outcome: BuildExecutorCancelOutcome,
 }
 
+/// Response from one exact external Build Executor cancellation subject.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BuildExecutorCancelResponse {
+    Ok(BuildExecutorCancelOk),
+    DomainError {
+        error: BuildExecutorCancelDomainError,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BuildExecutorCancelOutcome {
@@ -650,6 +761,107 @@ mod tests {
     use crate::nats_config::{
         BuildExecutorCredentialExpiresAt, CredentialName, CredentialRole, MintedNatsUser,
     };
+
+    #[test]
+    fn external_executor_transport_envelopes_are_strict() {
+        assert_eq!(
+            serde_json::from_value::<BuildExecutorReadinessRequest>(serde_json::json!({}))
+                .expect("empty readiness request"),
+            BuildExecutorReadinessRequest {},
+        );
+        assert!(
+            serde_json::from_value::<BuildExecutorReadinessRequest>(serde_json::json!({
+                "unexpected": true
+            }))
+            .is_err()
+        );
+
+        let start = BuildExecutorStartResponse::DomainError {
+            error: BuildExecutorStartDomainError::RuntimeUnavailable,
+        };
+        let start_json = serde_json::to_value(&start).expect("start response");
+        assert_eq!(
+            serde_json::from_value::<BuildExecutorStartResponse>(start_json.clone())
+                .expect("strict start response"),
+            start,
+        );
+        let mut invalid_start = start_json;
+        invalid_start
+            .as_object_mut()
+            .expect("object")
+            .insert("unexpected".to_owned(), serde_json::json!(true));
+        assert!(serde_json::from_value::<BuildExecutorStartResponse>(invalid_start).is_err());
+
+        let cancel = BuildExecutorCancelResponse::DomainError {
+            error: BuildExecutorCancelDomainError::CancelFailed {
+                message: FailureMessage::try_new("cancel failed").expect("message"),
+            },
+        };
+        let cancel_json = serde_json::to_value(&cancel).expect("cancel response");
+        assert_eq!(
+            serde_json::from_value::<BuildExecutorCancelResponse>(cancel_json.clone())
+                .expect("strict cancel response"),
+            cancel,
+        );
+        let mut invalid_cancel = cancel_json;
+        invalid_cancel
+            .as_object_mut()
+            .expect("object")
+            .insert("unexpected".to_owned(), serde_json::json!(true));
+        assert!(serde_json::from_value::<BuildExecutorCancelResponse>(invalid_cancel).is_err());
+    }
+
+    #[test]
+    fn external_success_requires_confirmed_cleanup_evidence() {
+        let request = start_request();
+        let digest =
+            crate::image::OciDigest::try_new(format!("sha256:{}", "a".repeat(64))).expect("digest");
+        let success = BuildExecutorStartResponse::Ok(Box::new(BuildExecutorStartOk {
+            acceptance: BuildExecutorAcceptance::from_start_request(&request),
+            cleanup: BuildExecutorSuccessCleanupEvidence::confirmed(),
+            image: PlatformImage {
+                seed: request.assignment.image_seed().clone(),
+                manifest_digest: digest.clone(),
+                image_id: digest.clone(),
+                availability_expires_at: crate::deploy::ImageAvailabilityExpiresAt::try_new(
+                    4_102_444_800,
+                )
+                .expect("expiry"),
+            },
+            verified_commit: VerifiedGitCommit::from_source(&request.source),
+            toolchain: BuildToolchainEvidence {
+                buildkit_image: digest,
+                adapter: crate::operation::BuildAdapterToolchainEvidence::Dockerfile,
+            },
+            log_summary: BuildLogSummary::new(8, 13),
+        }));
+        let encoded = serde_json::to_value(&success).expect("success response");
+        assert_eq!(
+            encoded.get("cleanup"),
+            Some(&serde_json::json!({"outcome": "confirmed"}))
+        );
+        assert_eq!(
+            serde_json::from_value::<BuildExecutorStartResponse>(encoded.clone())
+                .expect("strict success response"),
+            success
+        );
+
+        let mut unconfirmed = encoded.clone();
+        unconfirmed
+            .get_mut("cleanup")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("cleanup object")
+            .insert("outcome".to_owned(), serde_json::json!("unconfirmed"));
+        assert!(serde_json::from_value::<BuildExecutorStartResponse>(unconfirmed).is_err());
+
+        let mut unknown = encoded;
+        unknown
+            .get_mut("cleanup")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("cleanup object")
+            .insert("unexpected".to_owned(), serde_json::json!(true));
+        assert!(serde_json::from_value::<BuildExecutorStartResponse>(unknown).is_err());
+    }
 
     #[test]
     fn readiness_reconcile_is_known_set_driven_and_preserves_silence() {
@@ -805,6 +1017,71 @@ mod tests {
     }
 
     #[test]
+    fn readiness_answer_is_exact_and_capabilities_are_adapter_specific() {
+        let answer = BuildExecutorReadinessAnswer {
+            identity: executor_identity("pool-a", "executor-a"),
+            readiness: BuildExecutorReadiness {
+                native_platform: platform("amd64"),
+                capability: BuildExecutorCapability::DockerfileOnly,
+            },
+        };
+
+        assert_eq!(
+            serde_json::to_value(answer).expect("readiness answer"),
+            serde_json::json!({
+                "identity": {"pool_id": "pool-a", "executor_id": "executor-a"},
+                "readiness": {
+                    "native_platform": {"os": "linux", "architecture": "amd64"},
+                    "capability": "dockerfile_only",
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn readiness_capability_distinguishes_runtime_and_railpack_availability() {
+        let dockerfile = BuildAdapter::Dockerfile {
+            dockerfile: super::super::BuildContextPath::try_new("Dockerfile")
+                .expect("dockerfile path"),
+            target: None,
+        };
+        let railpack = BuildAdapter::Railpack {
+            cache_scope: super::super::BuildCacheScope::try_new("cache").expect("cache scope"),
+        };
+
+        assert!(BuildExecutorCapability::DockerfileOnly.supports(&dockerfile));
+        assert!(!BuildExecutorCapability::DockerfileOnly.supports(&railpack));
+        assert!(!BuildExecutorCapability::RuntimeUnavailable.supports(&dockerfile));
+        assert!(BuildExecutorCapability::DockerfileAndRailpack.supports(&railpack));
+    }
+
+    #[test]
+    fn external_pre_acceptance_errors_preserve_typed_provenance() {
+        let error = BuildExecutorStartDomainError::ExecutorIdentityMismatch {
+            expected: executor_identity("pool-a", "executor-a"),
+            actual: Box::new(BuildExecutorAssignment::External {
+                pool_id: BuildPoolId::try_new("pool-a").expect("pool"),
+                executor_id: BuildExecutorId::try_new("executor-b").expect("executor"),
+                image_seed: MachineId::try_new("seed-a").expect("seed"),
+            }),
+        };
+
+        assert_eq!(
+            serde_json::to_value(error).expect("start error"),
+            serde_json::json!({
+                "error": "executor_identity_mismatch",
+                "expected": {"pool_id": "pool-a", "executor_id": "executor-a"},
+                "actual": {
+                    "executor": "external",
+                    "pool_id": "pool-a",
+                    "executor_id": "executor-b",
+                    "image_seed": "seed-a",
+                },
+            })
+        );
+    }
+
+    #[test]
     fn build_executor_ids_are_validated_subject_tokens() {
         assert!(BuildPoolId::try_new("pool-a").is_ok());
         assert!(BuildExecutorId::try_new("executor.a").is_err());
@@ -897,7 +1174,7 @@ mod tests {
             )
             .expect("second placement");
         assert!(assignments.is_complete(&requested));
-        assert!(assignments.contains_seed(machine_a.image_seed()));
+        assert!(assignments.contains_executor(&machine_a));
 
         let encoded = serde_json::to_value(&assignments).expect("encode assignments");
         assert!(encoded.is_array());

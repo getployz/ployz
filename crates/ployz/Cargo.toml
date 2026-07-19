@@ -21,6 +21,7 @@ flate2 = { version = "1.1.9", default-features = false, features = ["rust_backen
 futures-util.workspace = true
 nuid.workspace = true
 ployz-core.workspace = true
+ployz-build-executor.workspace = true
 ployz-host-runner.workspace = true
 ployz-nats.workspace = true
 ployz-sdk-types.workspace = true
@@ -33,7 +34,7 @@ shell-words = "1"
 tar = "0.4.45"
 tempfile = "3"
 thiserror.workspace = true
-tokio = { workspace = true, features = ["macros", "rt", "time"] }
+tokio = { workspace = true, features = ["macros", "rt", "signal", "sync", "time"] }
 wait-timeout.workspace = true
 
 [dev-dependencies]

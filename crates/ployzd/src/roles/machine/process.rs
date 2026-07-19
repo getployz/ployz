@@ -10,7 +10,6 @@ use crate::process_support::{
 use crate::recovery::{IntentFailover, mirrored_server_pool, spawn_intent_failover_mirror};
 use crate::recovery::{IntentMirror, PendingMachineJoinMirror};
 use crate::roles::machine::build::MachineBuildRuntime;
-use crate::roles::machine::execution::build::{BuildExecutionError, DockerBuildExecutor};
 use crate::roles::machine::execution::containerd_content::ContainerdContentStore;
 use crate::roles::machine::execution::docker::runner::DockerManagedContainerRunner;
 use crate::roles::machine::execution::host_dataplane::{
@@ -32,6 +31,7 @@ use crate::roles::machine::service::{
     start_machine_role_service_with_endpoint_cache_and_image,
 };
 use futures_util::StreamExt;
+use ployz_build_executor::{BuildExecutionError, DockerBuildExecutor};
 use ployz_core::build::BUILD_CACHE_PRUNE_MAX_EXECUTION_TIMEOUT;
 use ployz_core::ids::MachineId;
 use ployz_core::image::IMAGE_MESH_REGISTRY_PORT;
@@ -248,13 +248,14 @@ where
     let projection_state = MachineProjectionState::new();
     let build_state = match image_state.clone() {
         Some(images) => {
-            let executor = DockerBuildExecutor::new(
+            let executor = DockerBuildExecutor::new(PathBuf::from(BUILD_WORKSPACE_ROOT));
+            let runtime = MachineBuildRuntime::new(
                 machine_id.clone(),
                 client.clone(),
-                PathBuf::from(BUILD_WORKSPACE_ROOT),
-            );
-            let runtime = MachineBuildRuntime::new(machine_id.clone(), executor, Some(images))
-                .map_err(|message| MachineProcessError::InitializeBuildRuntime { message })?;
+                executor,
+                Some(images),
+            )
+            .map_err(|message| MachineProcessError::InitializeBuildRuntime { message })?;
             let recovery = runtime.recover_orphans().await;
             build_runtime_after_recovery(runtime, recovery)
         }

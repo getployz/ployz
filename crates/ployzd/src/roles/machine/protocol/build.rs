@@ -86,7 +86,7 @@ pub enum MachineBuildCachePruneDomainError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::build::{GitSource, VerifiedGitCommit};
+    use ployz_core::build::{BuildExecutorSuccessCleanupEvidence, GitSource, VerifiedGitCommit};
     use ployz_core::deploy::{ImageAvailabilityExpiresAt, PlatformImage};
     use ployz_core::image::{OciDigest, OciPlatform};
     use ployz_core::operation::{BuildAdapterToolchainEvidence, BuildToolchainEvidence};
@@ -117,6 +117,7 @@ mod tests {
             machine_id.clone(),
             BuildExecutorStartOk {
                 acceptance: acceptance(&machine_id),
+                cleanup: BuildExecutorSuccessCleanupEvidence::confirmed(),
                 image: PlatformImage {
                     seed: machine_id,
                     manifest_digest: digest.clone(),
@@ -144,6 +145,7 @@ mod tests {
                         "assignment": {"executor": "cluster", "machine_id": "machine-a"},
                         "platform": {"os": "linux", "architecture": "amd64"},
                     },
+                    "cleanup": {"outcome": "confirmed"},
                     "image": {
                         "seed": "machine-a",
                         "manifest_digest": format!("sha256:{}", "a".repeat(64)),
@@ -182,6 +184,24 @@ mod tests {
             .expect("executor object")
             .insert("unexpected".to_owned(), serde_json::json!(true));
         assert!(serde_json::from_value::<MachineBuildStartRpcOk>(unknown_executor).is_err());
+
+        let mut unconfirmed_cleanup = serde_json::to_value(&response).expect("encode success");
+        unconfirmed_cleanup
+            .get_mut("executor")
+            .and_then(|executor| executor.get_mut("cleanup"))
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("cleanup object")
+            .insert("outcome".to_owned(), serde_json::json!("unconfirmed"));
+        assert!(serde_json::from_value::<MachineBuildStartRpcOk>(unconfirmed_cleanup).is_err());
+
+        let mut unknown_cleanup = serde_json::to_value(&response).expect("encode success");
+        unknown_cleanup
+            .get_mut("executor")
+            .and_then(|executor| executor.get_mut("cleanup"))
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("cleanup object")
+            .insert("unexpected".to_owned(), serde_json::json!(true));
+        assert!(serde_json::from_value::<MachineBuildStartRpcOk>(unknown_cleanup).is_err());
     }
 
     #[test]

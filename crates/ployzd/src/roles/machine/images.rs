@@ -57,7 +57,7 @@ impl AvailableImageService {
 
     pub(crate) async fn ingest_build_layout(
         &self,
-        layout: &crate::roles::machine::execution::build::ValidatedOciLayout,
+        layout: &ployz_build_executor::ValidatedOciLayout,
     ) -> Result<ployz_core::image::ImageContentLeaseExpiresAt, String> {
         let lease = self
             .content

@@ -1,7 +1,3 @@
-use super::execution::build::{
-    BuildExecutionError, BuildExecutionRequest, BuildExecutionResult, BuildLogProgress,
-    DockerBuildExecutor,
-};
 use super::images::AvailableImageService;
 use super::protocol::{
     BuildExecutorAcceptance, BuildExecutorAssignment, BuildLogSummary,
@@ -13,16 +9,22 @@ use super::protocol::{
     MachineBuildStartRpcResponse,
 };
 use super::response::{failure_message, machine_domain_error, machine_success};
+use ployz_build_executor::{
+    BuildExecutionError, BuildExecutionRequest, BuildExecutionResult, BuildLogDestination,
+    BuildLogProgress, DockerBuildExecutor,
+};
 use ployz_core::build::{
     BUILD_CACHE_PRUNE_MAX_EXECUTION_TIMEOUT, BUILD_FORCE_CLEANUP_TIMEOUT,
     BUILD_MAX_EXECUTION_TIMEOUT, BUILD_TASK_DRAIN_TIMEOUT, BuildExecutorCancelOk,
-    BuildExecutorStartOk,
+    BuildExecutorStartOk, BuildExecutorSuccessCleanupEvidence, VerifiedGitCommit,
 };
 use ployz_core::deploy::PlatformImage;
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::image::OciPlatform;
 use ployz_core::operation::BuildPlatformFailure;
+use ployz_nats::service_runtime::NatsClient;
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, decode_json_request};
+use ployz_nats::subjects::machine_build_log;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -106,12 +108,31 @@ enum BuildEffects {
 #[derive(Clone)]
 struct DockerBuildEffects {
     executor: DockerBuildExecutor,
+    log_client: NatsClient,
     image_state: Option<AvailableImageService>,
+}
+
+struct MachineBuildLogRoute {
+    subject: String,
+    assignment: BuildExecutorAssignment,
+}
+
+fn machine_build_log_route(
+    machine_id: &MachineId,
+    operation_id: &OperationId,
+) -> MachineBuildLogRoute {
+    MachineBuildLogRoute {
+        subject: machine_build_log(machine_id, operation_id),
+        assignment: BuildExecutorAssignment::Cluster {
+            machine_id: machine_id.clone(),
+        },
+    }
 }
 
 impl MachineBuildRuntime {
     pub(crate) fn new(
         machine_id: MachineId,
+        log_client: NatsClient,
         executor: DockerBuildExecutor,
         image_state: Option<AvailableImageService>,
     ) -> Result<Self, String> {
@@ -119,6 +140,7 @@ impl MachineBuildRuntime {
             machine_id,
             effects: BuildEffects::Docker(Box::new(DockerBuildEffects {
                 executor,
+                log_client,
                 image_state,
             })),
             lifecycle: Arc::new(BuildRuntimeLifecycle {
@@ -461,18 +483,7 @@ impl MachineBuildRuntime {
                 log_summary,
             }),
             BuildTaskCompletion::Finished(result) => {
-                if cleanup == MachineBuildCleanupOutcome::Unconfirmed {
-                    return Err(MachineBuildStartDomainError::PlatformFailed {
-                        acceptance: Box::new(acceptance),
-                        failure: BuildPlatformFailure::MachineUnavailable {
-                            message: failure_message(
-                                "build workspace cleanup did not finish successfully",
-                            ),
-                        },
-                        log_summary,
-                    });
-                }
-                (*result).map_err(|error| machine_build_error(error, cleanup, acceptance))
+                finish_machine_build(*result, cleanup, acceptance, log_summary)
             }
         }
     }
@@ -498,9 +509,54 @@ impl MachineBuildRuntime {
 }
 
 enum BuildTaskCompletion {
-    Finished(Box<Result<MachineBuildStartRpcOk, BuildExecutionError>>),
+    Finished(Box<Result<MachineBuildOutput, BuildExecutionError>>),
     Cancelled,
     TimedOut,
+}
+
+struct MachineBuildOutput {
+    machine_id: MachineId,
+    acceptance: BuildExecutorAcceptance,
+    image: PlatformImage,
+    verified_commit: VerifiedGitCommit,
+    toolchain: ployz_core::operation::BuildToolchainEvidence,
+    log_summary: BuildLogSummary,
+}
+
+impl MachineBuildOutput {
+    fn into_rpc_ok(self) -> MachineBuildStartRpcOk {
+        MachineBuildStartRpcOk::from((
+            self.machine_id,
+            BuildExecutorStartOk {
+                acceptance: self.acceptance,
+                cleanup: BuildExecutorSuccessCleanupEvidence::confirmed(),
+                image: self.image,
+                verified_commit: self.verified_commit,
+                toolchain: self.toolchain,
+                log_summary: self.log_summary,
+            },
+        ))
+    }
+}
+
+fn finish_machine_build(
+    result: Result<MachineBuildOutput, BuildExecutionError>,
+    cleanup: MachineBuildCleanupOutcome,
+    acceptance: BuildExecutorAcceptance,
+    log_summary: BuildLogSummary,
+) -> Result<MachineBuildStartRpcOk, MachineBuildStartDomainError> {
+    if cleanup == MachineBuildCleanupOutcome::Unconfirmed {
+        return Err(MachineBuildStartDomainError::PlatformFailed {
+            acceptance: Box::new(acceptance),
+            failure: BuildPlatformFailure::MachineUnavailable {
+                message: failure_message("build workspace cleanup did not finish successfully"),
+            },
+            log_summary,
+        });
+    }
+    result
+        .map(MachineBuildOutput::into_rpc_ok)
+        .map_err(|error| machine_build_error(error, cleanup, acceptance))
 }
 
 struct ResidualBuild {
@@ -529,11 +585,17 @@ impl BuildEffects {
         cancel_rx: watch::Receiver<bool>,
         log_progress: BuildLogProgress,
         deadline: Instant,
-    ) -> Result<MachineBuildStartRpcOk, BuildExecutionError> {
+    ) -> Result<MachineBuildOutput, BuildExecutionError> {
         match self {
             Self::Docker(effects) => {
                 let operation_id = request.operation_id;
                 let platform = request.platform;
+                let route = machine_build_log_route(&machine_id, &operation_id);
+                let log_destination = BuildLogDestination::new(
+                    effects.log_client.clone(),
+                    route.subject,
+                    route.assignment,
+                );
                 let result: BuildExecutionResult = effects
                     .executor
                     .execute(
@@ -542,6 +604,7 @@ impl BuildEffects {
                             &request.source,
                             &request.adapter,
                             &platform,
+                            &log_destination,
                         ),
                         cancel_rx,
                         log_progress,
@@ -579,21 +642,19 @@ impl BuildEffects {
                         },
                         log_summary,
                     })?;
-                Ok(MachineBuildStartRpcOk::from((
-                    machine_id.clone(),
-                    BuildExecutorStartOk {
-                        acceptance,
-                        image: PlatformImage {
-                            seed: machine_id,
-                            manifest_digest: result.layout.manifest_digest().clone(),
-                            image_id: result.layout.image_id().clone(),
-                            availability_expires_at,
-                        },
-                        verified_commit: result.verified_commit,
-                        toolchain: result.toolchain,
-                        log_summary,
+                Ok(MachineBuildOutput {
+                    machine_id: machine_id.clone(),
+                    acceptance,
+                    image: PlatformImage {
+                        seed: machine_id,
+                        manifest_digest: result.layout.manifest_digest().clone(),
+                        image_id: result.layout.image_id().clone(),
+                        availability_expires_at,
                     },
-                )))
+                    verified_commit: result.verified_commit,
+                    toolchain: result.toolchain,
+                    log_summary,
+                })
             }
             #[cfg(test)]
             Self::Test(effects) => {
@@ -644,7 +705,7 @@ fn validate_start_provenance(
     if request.assignment != expected {
         return Err(MachineBuildStartDomainError::AssignmentMismatch {
             expected: Box::new(expected),
-            actual: request.assignment.clone(),
+            actual: Box::new(request.assignment.clone()),
         });
     }
     Ok(())
@@ -708,16 +769,7 @@ fn build_runtime_stopped() -> MachineBuildStartDomainError {
 }
 
 fn local_platform() -> Result<OciPlatform, String> {
-    let architecture = match std::env::consts::ARCH {
-        "x86_64" => "amd64",
-        "aarch64" => "arm64",
-        architecture => {
-            return Err(format!(
-                "unsupported build machine architecture {architecture}"
-            ));
-        }
-    };
-    OciPlatform::try_new(std::env::consts::OS, architecture).map_err(|error| error.to_string())
+    ployz_build_executor::native_oci_platform()
 }
 
 pub(crate) async fn handle_build_start(
