@@ -1,7 +1,8 @@
 use std::time::Duration;
 
 use ployz_core::build::{
-    BuildExecutorAcceptance, BuildExecutorAssignment, BuildExecutorEvidence, BuildLogSummary,
+    BuildExecutorAcceptance, BuildExecutorAssignment, BuildExecutorEvidence, BuildExecutorStartOk,
+    BuildExecutorSuccessCleanupEvidence, BuildExecutorSuccessCleanupOutcome, BuildLogSummary,
     build_control_request_timeout,
 };
 use ployz_core::ids::{MachineId, OperationId};
@@ -166,7 +167,17 @@ pub(super) async fn run_executor_session(
         record_platform_failure(driver, id, platform, evidence_executor, failure).await?;
         return Ok(PlatformOutcome::Failed(operation_failure));
     }
-    let ok = ok.into_executor();
+    let BuildExecutorStartOk {
+        acceptance: _,
+        cleanup:
+            BuildExecutorSuccessCleanupEvidence {
+                outcome: BuildExecutorSuccessCleanupOutcome::Confirmed,
+            },
+        image,
+        verified_commit,
+        toolchain,
+        log_summary: _,
+    } = ok.into_executor();
     driver
         .controllers
         .repository()
@@ -175,7 +186,7 @@ pub(super) async fn run_executor_session(
             BuildEvidence::VerifiedCommit {
                 platform: platform.clone(),
                 executor: evidence_executor.clone(),
-                commit: ok.verified_commit,
+                commit: verified_commit,
             },
         )
         .await
@@ -188,7 +199,7 @@ pub(super) async fn run_executor_session(
             BuildEvidence::ToolchainVerified {
                 platform: platform.clone(),
                 executor: evidence_executor.clone(),
-                toolchain: ok.toolchain,
+                toolchain,
             },
         )
         .await
@@ -201,15 +212,12 @@ pub(super) async fn run_executor_session(
             BuildEvidence::PlatformCompleted {
                 platform: platform.clone(),
                 executor: evidence_executor,
-                image: ok.image.clone(),
+                image: image.clone(),
             },
         )
         .await
         .map_err(record_failure)?;
-    Ok(PlatformOutcome::Completed {
-        platform,
-        image: ok.image,
-    })
+    Ok(PlatformOutcome::Completed { platform, image })
 }
 
 async fn receive_executor_result(

@@ -16,8 +16,10 @@ use ployz_core::build::{
     BuildExecutorCancelRequest, BuildExecutorCancelResponse, BuildExecutorCapability,
     BuildExecutorCleanupOutcome, BuildExecutorIdentity, BuildExecutorReadiness,
     BuildExecutorReadinessAnswer, BuildExecutorReadinessRequest, BuildExecutorStartDomainError,
-    BuildExecutorStartOk, BuildExecutorStartRequest, BuildExecutorStartResponse, BuildLogSummary,
+    BuildExecutorStartOk, BuildExecutorStartRequest, BuildExecutorStartResponse,
+    BuildExecutorSuccessCleanupEvidence, BuildLogSummary,
 };
+use ployz_core::deploy::PlatformImage;
 use ployz_core::operation::{BuildPlatformFailure, FailureMessage};
 use ployz_core::security::NatsPrincipal;
 use ployz_nats::connect::connect_authenticated;
@@ -209,6 +211,7 @@ async fn start_executor_service(
     terminal: tokio::sync::mpsc::UnboundedSender<()>,
 ) -> Result<RunningNatsService, BuildExecutionError> {
     let endpoints = executor_endpoints(&identity);
+    let [readiness_endpoint, start_endpoint, cancel_endpoint] = &endpoints;
     let spec = NatsServiceSpec::new(
         format!(
             "{BUILD_EXECUTOR_SERVICE_NAME}.{}.{}",
@@ -230,7 +233,7 @@ async fn start_executor_service(
 
     let readiness_identity = identity.clone();
     service
-        .bind_endpoint(&endpoints[0], move |request| {
+        .bind_endpoint(readiness_endpoint, move |request| {
             let identity = readiness_identity.clone();
             async move {
                 match decode_json_request::<BuildExecutorReadinessRequest>(&request) {
@@ -257,7 +260,7 @@ async fn start_executor_service(
     let start_runtime = runtime.clone();
     service
         .bind_endpoint_with_policy(
-            &endpoints[1],
+            start_endpoint,
             EndpointExecutionPolicy::new(NonZeroUsize::MIN, BUILD_START_ENDPOINT_TIMEOUT),
             move |request| {
                 let runtime = start_runtime.clone();
@@ -274,7 +277,7 @@ async fn start_executor_service(
 
     let cancel_runtime = runtime;
     service
-        .bind_endpoint(&endpoints[2], move |request| {
+        .bind_endpoint(cancel_endpoint, move |request| {
             let runtime = cancel_runtime.clone();
             async move { handle_cancel(runtime, request).await }
         })
@@ -568,7 +571,7 @@ impl ExternalBuildRuntime {
             Ok(Ok(())) => BuildExecutorCleanupOutcome::Confirmed,
             Ok(Err(_)) | Err(_) => BuildExecutorCleanupOutcome::Unconfirmed,
         };
-        pushed.map_err(|error| external_build_error(error, cleanup, acceptance))
+        finish_external_build(pushed, cleanup, acceptance)
     }
 
     async fn push_result(
@@ -577,7 +580,7 @@ impl ExternalBuildRuntime {
         cancel_rx: &mut watch::Receiver<bool>,
         deadline: Instant,
         result: BuildExecutionResult,
-    ) -> Result<BuildExecutorStartOk, EngineError> {
+    ) -> Result<ExternalBuildOutput, EngineError> {
         let log_summary = result.log_summary;
         let push = push_validated_oci_layout(
             &self.client,
@@ -614,7 +617,7 @@ impl ExternalBuildRuntime {
                 log_summary,
             });
         };
-        Ok(BuildExecutorStartOk {
+        Ok(ExternalBuildOutput {
             acceptance: BuildExecutorAcceptance::from_start_request(request),
             image: image.clone(),
             verified_commit: result.verified_commit,
@@ -682,6 +685,47 @@ impl ExternalBuildRuntime {
             state.active = None;
             self.changed.notify_waiters();
         }
+    }
+}
+
+struct ExternalBuildOutput {
+    acceptance: BuildExecutorAcceptance,
+    image: PlatformImage,
+    verified_commit: ployz_core::build::VerifiedGitCommit,
+    toolchain: ployz_core::operation::BuildToolchainEvidence,
+    log_summary: BuildLogSummary,
+}
+
+impl ExternalBuildOutput {
+    fn into_start_ok(self) -> BuildExecutorStartOk {
+        BuildExecutorStartOk {
+            acceptance: self.acceptance,
+            cleanup: BuildExecutorSuccessCleanupEvidence::confirmed(),
+            image: self.image,
+            verified_commit: self.verified_commit,
+            toolchain: self.toolchain,
+            log_summary: self.log_summary,
+        }
+    }
+}
+
+fn finish_external_build(
+    pushed: Result<ExternalBuildOutput, EngineError>,
+    cleanup: BuildExecutorCleanupOutcome,
+    acceptance: BuildExecutorAcceptance,
+) -> Result<BuildExecutorStartOk, BuildExecutorStartDomainError> {
+    match (pushed, cleanup) {
+        (Ok(output), BuildExecutorCleanupOutcome::Confirmed) => Ok(output.into_start_ok()),
+        (Ok(output), BuildExecutorCleanupOutcome::Unconfirmed) => {
+            Err(BuildExecutorStartDomainError::PlatformFailed {
+                acceptance: Box::new(output.acceptance),
+                failure: BuildPlatformFailure::ExecutorUnavailable {
+                    message: failure("build workspace cleanup did not finish successfully"),
+                },
+                log_summary: output.log_summary,
+            })
+        }
+        (Err(error), cleanup) => Err(external_build_error(error, cleanup, acceptance)),
     }
 }
 
@@ -785,9 +829,11 @@ fn executor_error(message: impl Into<String>) -> BuildExecutionError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::build::{BuildAdapter, BuildContextPath, GitSource};
+    use ployz_core::build::{BuildAdapter, BuildContextPath, GitSource, VerifiedGitCommit};
+    use ployz_core::deploy::{ImageAvailabilityExpiresAt, PlatformImage};
     use ployz_core::ids::{BuildExecutorId, BuildPoolId, MachineId, OperationId};
-    use ployz_core::image::OciPlatform;
+    use ployz_core::image::{OciDigest, OciPlatform};
+    use ployz_core::operation::{BuildAdapterToolchainEvidence, BuildToolchainEvidence};
 
     const SHA: &str = "0123456789abcdef0123456789abcdef01234567";
 
@@ -1007,6 +1053,72 @@ mod tests {
             ),
             Err(BuildExecutorStartDomainError::ImageSeedUnavailable { image_seed })
         );
+    }
+
+    #[test]
+    fn successful_push_with_unconfirmed_cleanup_is_a_typed_platform_failure() {
+        let request = start_request();
+        let acceptance = BuildExecutorAcceptance::from_start_request(&request);
+        let log_summary = BuildLogSummary::new(9, 17);
+        let result = finish_external_build(
+            Ok(successful_output(&request, log_summary)),
+            BuildExecutorCleanupOutcome::Unconfirmed,
+            acceptance.clone(),
+        );
+
+        assert_eq!(
+            result,
+            Err(BuildExecutorStartDomainError::PlatformFailed {
+                acceptance: Box::new(acceptance),
+                failure: BuildPlatformFailure::ExecutorUnavailable {
+                    message: failure("build workspace cleanup did not finish successfully"),
+                },
+                log_summary,
+            })
+        );
+    }
+
+    #[test]
+    fn successful_push_with_confirmed_cleanup_carries_positive_proof() {
+        let request = start_request();
+        let acceptance = BuildExecutorAcceptance::from_start_request(&request);
+        let log_summary = BuildLogSummary::new(9, 17);
+        let success = finish_external_build(
+            Ok(successful_output(&request, log_summary)),
+            BuildExecutorCleanupOutcome::Confirmed,
+            acceptance.clone(),
+        )
+        .expect("confirmed cleanup permits success");
+
+        assert_eq!(success.acceptance, acceptance);
+        assert_eq!(
+            success.cleanup,
+            BuildExecutorSuccessCleanupEvidence::confirmed()
+        );
+        assert_eq!(success.log_summary, log_summary);
+    }
+
+    fn successful_output(
+        request: &BuildExecutorStartRequest,
+        log_summary: BuildLogSummary,
+    ) -> ExternalBuildOutput {
+        let digest = OciDigest::try_new(format!("sha256:{}", "a".repeat(64))).expect("digest");
+        ExternalBuildOutput {
+            acceptance: BuildExecutorAcceptance::from_start_request(request),
+            image: PlatformImage {
+                seed: request.assignment.image_seed().clone(),
+                manifest_digest: digest.clone(),
+                image_id: digest.clone(),
+                availability_expires_at: ImageAvailabilityExpiresAt::try_new(4_102_444_800)
+                    .expect("expiry"),
+            },
+            verified_commit: VerifiedGitCommit::from_source(&request.source),
+            toolchain: BuildToolchainEvidence {
+                buildkit_image: digest,
+                adapter: BuildAdapterToolchainEvidence::Dockerfile,
+            },
+            log_summary,
+        }
     }
 
     fn identity() -> BuildExecutorIdentity {

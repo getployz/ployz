@@ -3,7 +3,7 @@ use crate::roles::machine::protocol::{
     MachineBuildCachePruneDomainError, MachineBuildCancelDomainError,
 };
 use ployz_core::machine::rpc::MachineRpcResponse;
-use ployz_core::operation::BuildLogChunk;
+use ployz_core::operation::{BuildAdapterToolchainEvidence, BuildLogChunk, BuildToolchainEvidence};
 use std::sync::atomic::Ordering;
 
 pub(super) struct TestBuildEffects {
@@ -47,7 +47,7 @@ impl TestBuildEffects {
         &self,
         log_progress: BuildLogProgress,
         mut cancelled: watch::Receiver<bool>,
-    ) -> Result<MachineBuildStartRpcOk, BuildExecutionError> {
+    ) -> Result<MachineBuildOutput, BuildExecutionError> {
         self.task_active.store(true, Ordering::SeqCst);
         let _active = TestTaskActive(&self.task_active);
         log_progress.set_for_test(7, 11);
@@ -181,6 +181,71 @@ fn execution_timeout_maps_to_typed_machine_timeout_with_cleanup() {
             ..
         } if actual == log_summary && *actual_acceptance == expected_acceptance
     ));
+}
+
+#[test]
+fn machine_success_requires_and_carries_confirmed_cleanup_proof() {
+    let request = build_request("build-success", 1_000);
+    let acceptance = BuildExecutorAcceptance::from_start_request(&request);
+    let log_summary = BuildLogSummary::new(7, 11);
+    let confirmed = finish_machine_build(
+        Ok(successful_machine_output(&request, log_summary)),
+        MachineBuildCleanupOutcome::Confirmed,
+        acceptance.clone(),
+        log_summary,
+    )
+    .expect("confirmed cleanup permits success");
+    assert_eq!(
+        confirmed.executor.cleanup,
+        BuildExecutorSuccessCleanupEvidence::confirmed()
+    );
+    assert_eq!(confirmed.executor.acceptance, acceptance);
+    assert_eq!(confirmed.executor.log_summary, log_summary);
+
+    let unconfirmed = finish_machine_build(
+        Ok(successful_machine_output(&request, log_summary)),
+        MachineBuildCleanupOutcome::Unconfirmed,
+        acceptance.clone(),
+        log_summary,
+    );
+    assert_eq!(
+        unconfirmed,
+        Err(MachineBuildStartDomainError::PlatformFailed {
+            acceptance: Box::new(acceptance),
+            failure: BuildPlatformFailure::MachineUnavailable {
+                message: failure_message("build workspace cleanup did not finish successfully"),
+            },
+            log_summary,
+        })
+    );
+}
+
+fn successful_machine_output(
+    request: &MachineBuildStartRpcRequest,
+    log_summary: BuildLogSummary,
+) -> MachineBuildOutput {
+    let machine_id = request.assignment.image_seed().clone();
+    let digest = ployz_core::image::OciDigest::try_new(format!("sha256:{}", "a".repeat(64)))
+        .expect("digest");
+    MachineBuildOutput {
+        machine_id: machine_id.clone(),
+        acceptance: BuildExecutorAcceptance::from_start_request(request),
+        image: PlatformImage {
+            seed: machine_id,
+            manifest_digest: digest.clone(),
+            image_id: digest.clone(),
+            availability_expires_at: ployz_core::deploy::ImageAvailabilityExpiresAt::try_new(
+                4_102_444_800,
+            )
+            .expect("expiry"),
+        },
+        verified_commit: VerifiedGitCommit::from_source(&request.source),
+        toolchain: BuildToolchainEvidence {
+            buildkit_image: digest,
+            adapter: BuildAdapterToolchainEvidence::Dockerfile,
+        },
+        log_summary,
+    }
 }
 
 #[test]

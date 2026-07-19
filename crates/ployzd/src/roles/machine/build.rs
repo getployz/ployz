@@ -16,7 +16,7 @@ use ployz_build_executor::{
 use ployz_core::build::{
     BUILD_CACHE_PRUNE_MAX_EXECUTION_TIMEOUT, BUILD_FORCE_CLEANUP_TIMEOUT,
     BUILD_MAX_EXECUTION_TIMEOUT, BUILD_TASK_DRAIN_TIMEOUT, BuildExecutorCancelOk,
-    BuildExecutorStartOk,
+    BuildExecutorStartOk, BuildExecutorSuccessCleanupEvidence, VerifiedGitCommit,
 };
 use ployz_core::deploy::PlatformImage;
 use ployz_core::ids::{MachineId, OperationId};
@@ -483,18 +483,7 @@ impl MachineBuildRuntime {
                 log_summary,
             }),
             BuildTaskCompletion::Finished(result) => {
-                if cleanup == MachineBuildCleanupOutcome::Unconfirmed {
-                    return Err(MachineBuildStartDomainError::PlatformFailed {
-                        acceptance: Box::new(acceptance),
-                        failure: BuildPlatformFailure::MachineUnavailable {
-                            message: failure_message(
-                                "build workspace cleanup did not finish successfully",
-                            ),
-                        },
-                        log_summary,
-                    });
-                }
-                (*result).map_err(|error| machine_build_error(error, cleanup, acceptance))
+                finish_machine_build(*result, cleanup, acceptance, log_summary)
             }
         }
     }
@@ -520,9 +509,54 @@ impl MachineBuildRuntime {
 }
 
 enum BuildTaskCompletion {
-    Finished(Box<Result<MachineBuildStartRpcOk, BuildExecutionError>>),
+    Finished(Box<Result<MachineBuildOutput, BuildExecutionError>>),
     Cancelled,
     TimedOut,
+}
+
+struct MachineBuildOutput {
+    machine_id: MachineId,
+    acceptance: BuildExecutorAcceptance,
+    image: PlatformImage,
+    verified_commit: VerifiedGitCommit,
+    toolchain: ployz_core::operation::BuildToolchainEvidence,
+    log_summary: BuildLogSummary,
+}
+
+impl MachineBuildOutput {
+    fn into_rpc_ok(self) -> MachineBuildStartRpcOk {
+        MachineBuildStartRpcOk::from((
+            self.machine_id,
+            BuildExecutorStartOk {
+                acceptance: self.acceptance,
+                cleanup: BuildExecutorSuccessCleanupEvidence::confirmed(),
+                image: self.image,
+                verified_commit: self.verified_commit,
+                toolchain: self.toolchain,
+                log_summary: self.log_summary,
+            },
+        ))
+    }
+}
+
+fn finish_machine_build(
+    result: Result<MachineBuildOutput, BuildExecutionError>,
+    cleanup: MachineBuildCleanupOutcome,
+    acceptance: BuildExecutorAcceptance,
+    log_summary: BuildLogSummary,
+) -> Result<MachineBuildStartRpcOk, MachineBuildStartDomainError> {
+    if cleanup == MachineBuildCleanupOutcome::Unconfirmed {
+        return Err(MachineBuildStartDomainError::PlatformFailed {
+            acceptance: Box::new(acceptance),
+            failure: BuildPlatformFailure::MachineUnavailable {
+                message: failure_message("build workspace cleanup did not finish successfully"),
+            },
+            log_summary,
+        });
+    }
+    result
+        .map(MachineBuildOutput::into_rpc_ok)
+        .map_err(|error| machine_build_error(error, cleanup, acceptance))
 }
 
 struct ResidualBuild {
@@ -551,7 +585,7 @@ impl BuildEffects {
         cancel_rx: watch::Receiver<bool>,
         log_progress: BuildLogProgress,
         deadline: Instant,
-    ) -> Result<MachineBuildStartRpcOk, BuildExecutionError> {
+    ) -> Result<MachineBuildOutput, BuildExecutionError> {
         match self {
             Self::Docker(effects) => {
                 let operation_id = request.operation_id;
@@ -608,21 +642,19 @@ impl BuildEffects {
                         },
                         log_summary,
                     })?;
-                Ok(MachineBuildStartRpcOk::from((
-                    machine_id.clone(),
-                    BuildExecutorStartOk {
-                        acceptance,
-                        image: PlatformImage {
-                            seed: machine_id,
-                            manifest_digest: result.layout.manifest_digest().clone(),
-                            image_id: result.layout.image_id().clone(),
-                            availability_expires_at,
-                        },
-                        verified_commit: result.verified_commit,
-                        toolchain: result.toolchain,
-                        log_summary,
+                Ok(MachineBuildOutput {
+                    machine_id: machine_id.clone(),
+                    acceptance,
+                    image: PlatformImage {
+                        seed: machine_id,
+                        manifest_digest: result.layout.manifest_digest().clone(),
+                        image_id: result.layout.image_id().clone(),
+                        availability_expires_at,
                     },
-                )))
+                    verified_commit: result.verified_commit,
+                    toolchain: result.toolchain,
+                    log_summary,
+                })
             }
             #[cfg(test)]
             Self::Test(effects) => {

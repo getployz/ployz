@@ -59,10 +59,12 @@ impl BuildExecutorCapability {
     #[must_use]
     pub const fn supports(self, adapter: &BuildAdapter) -> bool {
         match (self, adapter) {
-            (Self::DockerfileAndRailpack, _)
+            (Self::DockerfileAndRailpack, BuildAdapter::Dockerfile { .. })
+            | (Self::DockerfileAndRailpack, BuildAdapter::Railpack { .. })
             | (Self::DockerfileOnly, BuildAdapter::Dockerfile { .. }) => true,
             (Self::DockerfileOnly, BuildAdapter::Railpack { .. })
-            | (Self::RuntimeUnavailable, _) => false,
+            | (Self::RuntimeUnavailable, BuildAdapter::Dockerfile { .. })
+            | (Self::RuntimeUnavailable, BuildAdapter::Railpack { .. }) => false,
         }
     }
 }
@@ -583,11 +585,34 @@ impl BuildExecutorAcceptance {
 #[serde(deny_unknown_fields)]
 pub struct BuildExecutorStartOk {
     pub acceptance: BuildExecutorAcceptance,
+    pub cleanup: BuildExecutorSuccessCleanupEvidence,
     pub image: PlatformImage,
     pub verified_commit: VerifiedGitCommit,
     pub toolchain: BuildToolchainEvidence,
     #[serde(flatten)]
     pub log_summary: BuildLogSummary,
+}
+
+/// Positive proof required on every successful build-executor response.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuildExecutorSuccessCleanupEvidence {
+    pub outcome: BuildExecutorSuccessCleanupOutcome,
+}
+
+impl BuildExecutorSuccessCleanupEvidence {
+    #[must_use]
+    pub const fn confirmed() -> Self {
+        Self {
+            outcome: BuildExecutorSuccessCleanupOutcome::Confirmed,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BuildExecutorSuccessCleanupOutcome {
+    Confirmed,
 }
 
 /// Terminal response from one exact external Build Executor start subject.
@@ -784,6 +809,58 @@ mod tests {
             .expect("object")
             .insert("unexpected".to_owned(), serde_json::json!(true));
         assert!(serde_json::from_value::<BuildExecutorCancelResponse>(invalid_cancel).is_err());
+    }
+
+    #[test]
+    fn external_success_requires_confirmed_cleanup_evidence() {
+        let request = start_request();
+        let digest =
+            crate::image::OciDigest::try_new(format!("sha256:{}", "a".repeat(64))).expect("digest");
+        let success = BuildExecutorStartResponse::Ok(Box::new(BuildExecutorStartOk {
+            acceptance: BuildExecutorAcceptance::from_start_request(&request),
+            cleanup: BuildExecutorSuccessCleanupEvidence::confirmed(),
+            image: PlatformImage {
+                seed: request.assignment.image_seed().clone(),
+                manifest_digest: digest.clone(),
+                image_id: digest.clone(),
+                availability_expires_at: crate::deploy::ImageAvailabilityExpiresAt::try_new(
+                    4_102_444_800,
+                )
+                .expect("expiry"),
+            },
+            verified_commit: VerifiedGitCommit::from_source(&request.source),
+            toolchain: BuildToolchainEvidence {
+                buildkit_image: digest,
+                adapter: crate::operation::BuildAdapterToolchainEvidence::Dockerfile,
+            },
+            log_summary: BuildLogSummary::new(8, 13),
+        }));
+        let encoded = serde_json::to_value(&success).expect("success response");
+        assert_eq!(
+            encoded.get("cleanup"),
+            Some(&serde_json::json!({"outcome": "confirmed"}))
+        );
+        assert_eq!(
+            serde_json::from_value::<BuildExecutorStartResponse>(encoded.clone())
+                .expect("strict success response"),
+            success
+        );
+
+        let mut unconfirmed = encoded.clone();
+        unconfirmed
+            .get_mut("cleanup")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("cleanup object")
+            .insert("outcome".to_owned(), serde_json::json!("unconfirmed"));
+        assert!(serde_json::from_value::<BuildExecutorStartResponse>(unconfirmed).is_err());
+
+        let mut unknown = encoded;
+        unknown
+            .get_mut("cleanup")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("cleanup object")
+            .insert("unexpected".to_owned(), serde_json::json!(true));
+        assert!(serde_json::from_value::<BuildExecutorStartResponse>(unknown).is_err());
     }
 
     #[test]

@@ -13,7 +13,8 @@ use crate::tasks::TaskRegistry;
 use futures_util::StreamExt;
 use ployz_core::build::{
     BuildAdapter, BuildCacheScope, BuildExecutorCancelOk, BuildExecutorCleanupOutcome,
-    BuildExecutorStartOk, BuildPlatforms, BuildTarget, GitSource, VerifiedGitCommit,
+    BuildExecutorStartOk, BuildExecutorSuccessCleanupEvidence, BuildPlatforms, BuildTarget,
+    GitSource, VerifiedGitCommit,
 };
 use ployz_core::deploy::{ImageAvailabilityExpiresAt, PlatformImage};
 use ployz_core::image::{OciDigest, OciPlatform};
@@ -147,6 +148,7 @@ async fn platform_rpc_failure_records_real_evidence_and_publishes_no_image_index
             amd64_machine.clone(),
             BuildExecutorStartOk {
                 acceptance: executor_acceptance(&operation_id, &amd64_machine, &amd64),
+                cleanup: BuildExecutorSuccessCleanupEvidence::confirmed(),
                 image: completed_image.clone(),
                 verified_commit: verified_commit.clone(),
                 toolchain: toolchain.clone(),
