@@ -14,6 +14,13 @@ fn cluster_evidence(machine_id: &MachineId) -> BuildExecutorEvidence {
         machine_id: machine_id.clone(),
     })
 }
+fn external_evidence(executor_id: &str, image_seed: &str) -> BuildExecutorEvidence {
+    BuildExecutorEvidence::from_assignment(&BuildExecutorAssignment::External {
+        pool_id: crate::ids::BuildPoolId::try_new("pool-a").expect("pool"),
+        executor_id: crate::ids::BuildExecutorId::try_new(executor_id).expect("executor"),
+        image_seed: MachineId::try_new(image_seed).expect("seed"),
+    })
+}
 fn status0() -> OperationStatus {
     status_for_target(BuildTarget::Cluster)
 }
@@ -318,6 +325,105 @@ fn platform_failure_image_seed_must_match_placed_executor() {
 }
 
 #[test]
+fn external_platform_failure_must_match_exact_executor_and_seed() {
+    let pool_id = crate::ids::BuildPoolId::try_new("pool-a").expect("pool");
+    let building = building_status(BuildTarget::External { pool_id });
+    let failure = |executor| BuildOperationFailure::ExternalPlatformFailed {
+        platform: OciPlatform::try_new("linux", "amd64").expect("platform"),
+        executor,
+        failure: BuildPlatformFailure::MachineUnavailable {
+            message: FailureMessage::try_new("failed").expect("message"),
+        },
+    };
+
+    assert!(
+        project_event_from_status(
+            &building,
+            BuildTransition::Failed {
+                failure: failure(external_evidence("executor-a", "seed-a")),
+            }
+            .event(&id()),
+            EventSequence::try_new(5).expect("sequence"),
+        )
+        .is_ok()
+    );
+    assert!(
+        project_event_from_status(
+            &building,
+            BuildTransition::Failed {
+                failure: failure(external_evidence("executor-b", "seed-a")),
+            }
+            .event(&id()),
+            EventSequence::try_new(5).expect("sequence"),
+        )
+        .is_err()
+    );
+    assert!(
+        project_event_from_status(
+            &building,
+            BuildTransition::Failed {
+                failure: BuildOperationFailure::PlatformFailed {
+                    platform: OciPlatform::try_new("linux", "amd64").expect("platform"),
+                    machine_id: MachineId::try_new("seed-a").expect("seed"),
+                    failure: BuildPlatformFailure::MachineUnavailable {
+                        message: FailureMessage::try_new("failed").expect("message"),
+                    },
+                },
+            }
+            .event(&id()),
+            EventSequence::try_new(5).expect("sequence"),
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn cluster_terminal_failure_wire_shape_remains_machine_scoped() {
+    let failure = BuildOperationFailure::PlatformFailed {
+        platform: OciPlatform::try_new("linux", "amd64").expect("platform"),
+        machine_id: MachineId::try_new("machine-a").expect("machine"),
+        failure: BuildPlatformFailure::MachineUnavailable {
+            message: FailureMessage::try_new("offline").expect("message"),
+        },
+    };
+
+    assert_eq!(
+        serde_json::to_value(failure).expect("failure"),
+        serde_json::json!({
+            "kind": "platform_failed",
+            "platform": {"os": "linux", "architecture": "amd64"},
+            "machine_id": "machine-a",
+            "failure": {"kind": "machine_unavailable", "message": "offline"},
+        })
+    );
+}
+
+#[test]
+fn external_runtime_and_image_seed_failures_have_distinct_wire_evidence() {
+    let executor_unavailable = BuildPlatformFailure::ExecutorUnavailable {
+        message: FailureMessage::try_new("executor offline").expect("message"),
+    };
+    let image_seed_unavailable = BuildPlatformFailure::ImageSeedUnavailable {
+        image_seed: MachineId::try_new("seed-a").expect("seed"),
+    };
+
+    assert_eq!(
+        serde_json::to_value(executor_unavailable).expect("executor failure"),
+        serde_json::json!({
+            "kind": "executor_unavailable",
+            "message": "executor offline",
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(image_seed_unavailable).expect("seed failure"),
+        serde_json::json!({
+            "kind": "image_seed_unavailable",
+            "image_seed": "seed-a",
+        })
+    );
+}
+
+#[test]
 fn terminal_cleanup_must_not_name_unplaced_image_seeds() {
     let building = building_status(BuildTarget::Cluster);
     let cleanup = BuildCleanupEvidence::Completed {
@@ -329,6 +435,55 @@ fn terminal_cleanup_must_not_name_unplaced_image_seeds() {
             BuildTransition::Cancelled {
                 reason: CancellationReason::try_new("cancelled").expect("reason"),
                 cleanup,
+            }
+            .event(&id()),
+            EventSequence::try_new(5).expect("sequence"),
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn external_cleanup_must_match_exact_executor_and_seed() {
+    let pool_id = crate::ids::BuildPoolId::try_new("pool-a").expect("pool");
+    let building = building_status(BuildTarget::External { pool_id });
+
+    assert!(
+        project_event_from_status(
+            &building,
+            BuildTransition::Cancelled {
+                reason: CancellationReason::try_new("cancelled").expect("reason"),
+                cleanup: BuildCleanupEvidence::ExternalCompleted {
+                    executors: vec![external_evidence("executor-a", "seed-a")],
+                },
+            }
+            .event(&id()),
+            EventSequence::try_new(5).expect("sequence"),
+        )
+        .is_ok()
+    );
+    assert!(
+        project_event_from_status(
+            &building,
+            BuildTransition::Cancelled {
+                reason: CancellationReason::try_new("cancelled").expect("reason"),
+                cleanup: BuildCleanupEvidence::ExternalUnconfirmed {
+                    executors: vec![external_evidence("executor-a", "seed-b")],
+                },
+            }
+            .event(&id()),
+            EventSequence::try_new(5).expect("sequence"),
+        )
+        .is_err()
+    );
+    assert!(
+        project_event_from_status(
+            &building,
+            BuildTransition::Cancelled {
+                reason: CancellationReason::try_new("cancelled").expect("reason"),
+                cleanup: BuildCleanupEvidence::Completed {
+                    machine_ids: vec![MachineId::try_new("seed-a").expect("seed")],
+                },
             }
             .event(&id()),
             EventSequence::try_new(5).expect("sequence"),

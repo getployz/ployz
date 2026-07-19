@@ -66,6 +66,53 @@ fn cli_telemetry_names_are_canonical_across_aliases() {
 }
 
 #[test]
+fn disabled_environment_does_not_touch_telemetry_config() {
+    for (name, value, removed) in [
+        ("PLOYZ_TELEMETRY", "0", "DO_NOT_TRACK"),
+        ("DO_NOT_TRACK", "1", "PLOYZ_TELEMETRY"),
+    ] {
+        let home = tempfile::tempdir().expect("temporary home");
+        let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .env("HOME", home.path())
+            .env(name, value)
+            .env_remove(removed)
+            .arg("login")
+            .output()
+            .expect("ployz binary runs");
+
+        assert!(!output.status.success());
+        assert!(!home.path().join(".ployz").exists());
+    }
+}
+
+#[test]
+fn telemetry_disable_persists_preference_without_identity() {
+    let home = tempfile::tempdir().expect("temporary home");
+    let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env("HOME", home.path())
+        .env_remove("PLOYZ_TELEMETRY")
+        .env_remove("DO_NOT_TRACK")
+        .args(["telemetry", "disable"])
+        .output()
+        .expect("ployz binary runs");
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    let stored: serde_json::Value = serde_json::from_slice(
+        &fs::read(home.path().join(".ployz/config")).expect("telemetry config exists"),
+    )
+    .expect("telemetry config is JSON");
+    assert_eq!(
+        stored.get("telemetry"),
+        Some(&serde_json::Value::Bool(false))
+    );
+    assert!(
+        stored
+            .get("install_id")
+            .is_some_and(serde_json::Value::is_null)
+    );
+}
+
+#[test]
 fn binary_login_fails_fast_when_cloud_is_unconfigured() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
         .env("DO_NOT_TRACK", "1")

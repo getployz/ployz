@@ -3317,6 +3317,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "nuid",
+ "ployz-build-executor",
  "ployz-core",
  "ployz-host-runner",
  "ployz-nats",
@@ -3333,6 +3334,21 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "wait-timeout",
+]
+
+[[package]]
+name = "ployz-build-executor"
+version = "0.1.0"
+dependencies = [
+ "ployz-core",
+ "ployz-nats",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]
@@ -3515,6 +3531,7 @@ dependencies = [
  "openssl",
  "pingora",
  "ployz",
+ "ployz-build-executor",
  "ployz-core",
  "ployz-ebpf-common",
  "ployz-nats",
@@ -4381,7 +4398,6 @@ dependencies = [
  "rustls",
  "sentry-backtrace",
  "sentry-core",
- "sentry-panic",
  "sentry-tracing",
  "tokio",
  "ureq",
@@ -4409,16 +4425,6 @@ dependencies = [
  "serde",
  "serde_json",
  "url",
-]
-
-[[package]]
-name = "sentry-panic"
-version = "0.48.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d47aa64170cf609b948fe8f47d2690541bde11e465daa836cf81ad6e62bb3240"
-dependencies = [
- "sentry-backtrace",
- "sentry-core",
 ]
 
 [[package]]

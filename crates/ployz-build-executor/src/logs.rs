@@ -1,11 +1,9 @@
 use super::runner::{BuildExecutionError, infrastructure};
-use crate::roles::machine::protocol::MachineBuildLogFrame;
-use ployz_core::build::BuildExecutorAssignment;
-use ployz_core::ids::{MachineId, OperationId};
+use ployz_core::build::{BuildExecutorAssignment, BuildExecutorLogFrame};
+use ployz_core::ids::OperationId;
 use ployz_core::image::OciPlatform;
 use ployz_core::operation::{BuildLogChunk, MAX_BUILD_LOG_CHUNK_BYTES};
 use ployz_nats::service_runtime::NatsClient;
-use ployz_nats::subjects::machine_build_log;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::AsyncReadExt;
@@ -14,14 +12,14 @@ use tokio::sync::mpsc;
 const BUILD_LOG_LIMIT_BYTES: u64 = 8 * 1024 * 1024;
 
 #[derive(Clone, Default)]
-pub(crate) struct BuildLogProgress {
+pub struct BuildLogProgress {
     sequence: Arc<AtomicU64>,
     omitted_bytes: Arc<AtomicU64>,
 }
 
 impl BuildLogProgress {
     #[must_use]
-    pub(crate) fn summary(&self) -> (u64, u64) {
+    pub fn summary(&self) -> (u64, u64) {
         (
             self.sequence.load(Ordering::Acquire),
             self.omitted_bytes.load(Ordering::Acquire),
@@ -36,8 +34,8 @@ impl BuildLogProgress {
         self.omitted_bytes.store(omitted_bytes, Ordering::Release);
     }
 
-    #[cfg(test)]
-    pub(crate) fn set_for_test(&self, sequence: u64, omitted_bytes: u64) {
+    #[doc(hidden)]
+    pub fn set_for_test(&self, sequence: u64, omitted_bytes: u64) {
         self.published(sequence);
         self.omitted(omitted_bytes);
     }
@@ -105,9 +103,26 @@ fn take_utf8_output(pending: &mut Vec<u8>, boundary: Utf8Boundary) -> String {
     }
 }
 
-pub(super) struct BuildLogPublisher {
+#[derive(Clone)]
+pub struct BuildLogDestination {
     client: NatsClient,
-    machine_id: MachineId,
+    subject: String,
+    assignment: BuildExecutorAssignment,
+}
+
+impl BuildLogDestination {
+    #[must_use]
+    pub fn new(client: NatsClient, subject: String, assignment: BuildExecutorAssignment) -> Self {
+        Self {
+            client,
+            subject,
+            assignment,
+        }
+    }
+}
+
+pub(super) struct BuildLogPublisher {
+    destination: BuildLogDestination,
     operation_id: OperationId,
     platform: OciPlatform,
     secret: String,
@@ -120,16 +135,14 @@ pub(super) struct BuildLogPublisher {
 
 impl BuildLogPublisher {
     pub(super) fn new(
-        client: NatsClient,
-        machine_id: MachineId,
+        destination: BuildLogDestination,
         operation_id: OperationId,
         platform: OciPlatform,
         secret: &str,
         progress: BuildLogProgress,
     ) -> Self {
         Self {
-            client,
-            machine_id,
+            destination,
             operation_id,
             platform,
             secret: secret.to_owned(),
@@ -151,7 +164,8 @@ impl BuildLogPublisher {
         let remaining =
             take_redacted_output(&mut self.pending, &self.secret, RedactionBoundary::End);
         self.publish_text(remaining).await?;
-        self.client
+        self.destination
+            .client
             .flush()
             .await
             .map_err(|error| infrastructure("flush build logs", error.to_string()))?;
@@ -180,11 +194,9 @@ impl BuildLogPublisher {
                 break;
             }
             self.sequence = self.sequence.saturating_add(1);
-            let frame = MachineBuildLogFrame {
+            let frame = BuildExecutorLogFrame {
                 operation_id: self.operation_id.clone(),
-                assignment: BuildExecutorAssignment::Cluster {
-                    machine_id: self.machine_id.clone(),
-                },
+                assignment: self.destination.assignment.clone(),
                 platform: self.platform.clone(),
                 sequence: self.sequence,
                 chunk: BuildLogChunk::try_new(chunk)
@@ -192,11 +204,9 @@ impl BuildLogPublisher {
             };
             let payload = serde_json::to_vec(&frame)
                 .map_err(|error| infrastructure("encode build log", error.to_string()))?;
-            self.client
-                .publish(
-                    machine_build_log(&self.machine_id, &self.operation_id),
-                    payload.into(),
-                )
+            self.destination
+                .client
+                .publish(self.destination.subject.clone(), payload.into())
                 .await
                 .map_err(|error| infrastructure("publish build log", error.to_string()))?;
             self.published_bytes = self.published_bytes.saturating_add(bytes);

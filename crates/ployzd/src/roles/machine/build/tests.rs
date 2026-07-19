@@ -3,6 +3,7 @@ use crate::roles::machine::protocol::{
     MachineBuildCachePruneDomainError, MachineBuildCancelDomainError,
 };
 use ployz_core::machine::rpc::MachineRpcResponse;
+use ployz_core::operation::{BuildAdapterToolchainEvidence, BuildLogChunk, BuildToolchainEvidence};
 use std::sync::atomic::Ordering;
 
 pub(super) struct TestBuildEffects {
@@ -46,7 +47,7 @@ impl TestBuildEffects {
         &self,
         log_progress: BuildLogProgress,
         mut cancelled: watch::Receiver<bool>,
-    ) -> Result<MachineBuildStartRpcOk, BuildExecutionError> {
+    ) -> Result<MachineBuildOutput, BuildExecutionError> {
         self.task_active.store(true, Ordering::SeqCst);
         let _active = TestTaskActive(&self.task_active);
         log_progress.set_for_test(7, 11);
@@ -121,6 +122,35 @@ fn local_platform_uses_oci_architecture_names() {
 }
 
 #[test]
+fn machine_log_route_preserves_subject_and_cluster_frame_bytes() {
+    let machine_id = MachineId::try_new("machine-a").expect("machine");
+    let operation_id = OperationId::try_new("build-1").expect("operation");
+    let platform = OciPlatform::try_new("linux", "amd64").expect("platform");
+    let route = machine_build_log_route(&machine_id, &operation_id);
+    assert_eq!(
+        route.subject,
+        "plz.v1.signal.machine.machine-a.build.operation.build-1.log"
+    );
+    let frame = crate::roles::machine::protocol::MachineBuildLogFrame {
+        operation_id,
+        assignment: route.assignment,
+        platform,
+        sequence: 3,
+        chunk: BuildLogChunk::try_new("hello").expect("chunk"),
+    };
+    assert_eq!(
+        serde_json::to_value(frame).expect("frame"),
+        serde_json::json!({
+            "operation_id": "build-1",
+            "assignment": {"executor": "cluster", "machine_id": "machine-a"},
+            "platform": {"os": "linux", "architecture": "amd64"},
+            "sequence": 3,
+            "chunk": "hello",
+        })
+    );
+}
+
+#[test]
 fn build_timeout_accepts_the_shared_limit_and_rejects_larger_requests() {
     assert_eq!(
         requested_build_timeout(BUILD_MAX_EXECUTION_TIMEOUT.as_millis() as u64),
@@ -151,6 +181,71 @@ fn execution_timeout_maps_to_typed_machine_timeout_with_cleanup() {
             ..
         } if actual == log_summary && *actual_acceptance == expected_acceptance
     ));
+}
+
+#[test]
+fn machine_success_requires_and_carries_confirmed_cleanup_proof() {
+    let request = build_request("build-success", 1_000);
+    let acceptance = BuildExecutorAcceptance::from_start_request(&request);
+    let log_summary = BuildLogSummary::new(7, 11);
+    let confirmed = finish_machine_build(
+        Ok(successful_machine_output(&request, log_summary)),
+        MachineBuildCleanupOutcome::Confirmed,
+        acceptance.clone(),
+        log_summary,
+    )
+    .expect("confirmed cleanup permits success");
+    assert_eq!(
+        confirmed.executor.cleanup,
+        BuildExecutorSuccessCleanupEvidence::confirmed()
+    );
+    assert_eq!(confirmed.executor.acceptance, acceptance);
+    assert_eq!(confirmed.executor.log_summary, log_summary);
+
+    let unconfirmed = finish_machine_build(
+        Ok(successful_machine_output(&request, log_summary)),
+        MachineBuildCleanupOutcome::Unconfirmed,
+        acceptance.clone(),
+        log_summary,
+    );
+    assert_eq!(
+        unconfirmed,
+        Err(MachineBuildStartDomainError::PlatformFailed {
+            acceptance: Box::new(acceptance),
+            failure: BuildPlatformFailure::MachineUnavailable {
+                message: failure_message("build workspace cleanup did not finish successfully"),
+            },
+            log_summary,
+        })
+    );
+}
+
+fn successful_machine_output(
+    request: &MachineBuildStartRpcRequest,
+    log_summary: BuildLogSummary,
+) -> MachineBuildOutput {
+    let machine_id = request.assignment.image_seed().clone();
+    let digest = ployz_core::image::OciDigest::try_new(format!("sha256:{}", "a".repeat(64)))
+        .expect("digest");
+    MachineBuildOutput {
+        machine_id: machine_id.clone(),
+        acceptance: BuildExecutorAcceptance::from_start_request(request),
+        image: PlatformImage {
+            seed: machine_id,
+            manifest_digest: digest.clone(),
+            image_id: digest.clone(),
+            availability_expires_at: ployz_core::deploy::ImageAvailabilityExpiresAt::try_new(
+                4_102_444_800,
+            )
+            .expect("expiry"),
+        },
+        verified_commit: VerifiedGitCommit::from_source(&request.source),
+        toolchain: BuildToolchainEvidence {
+            buildkit_image: digest,
+            adapter: BuildAdapterToolchainEvidence::Dockerfile,
+        },
+        log_summary,
+    }
 }
 
 #[test]
@@ -189,7 +284,7 @@ async fn start_rejects_wrong_origin_before_registration() {
         runtime.start(request).await,
         Err(MachineBuildStartDomainError::AssignmentMismatch {
             expected: Box::new(BuildExecutorAssignment::Cluster { machine_id }),
-            actual,
+            actual: Box::new(actual),
         })
     );
     assert!(runtime.lifecycle.state.lock().await.active.is_empty());
@@ -215,7 +310,7 @@ async fn start_rejects_external_assignment_with_different_seed_before_registrati
         runtime.start(request).await,
         Err(MachineBuildStartDomainError::AssignmentMismatch {
             expected: Box::new(BuildExecutorAssignment::Cluster { machine_id }),
-            actual,
+            actual: Box::new(actual),
         })
     );
     assert!(runtime.lifecycle.state.lock().await.active.is_empty());

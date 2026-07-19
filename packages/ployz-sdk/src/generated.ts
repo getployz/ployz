@@ -142,6 +142,14 @@ export type BuildExecutorId = Brand<string, "BuildExecutorId">;
 
 export type BuildExecutorIdentity = { pool_id: BuildPoolId, executor_id: BuildExecutorId, };
 
+export type BuildExecutorCapability = "dockerfile_and_railpack" | "dockerfile_only" | "runtime_unavailable";
+
+export type BuildExecutorReadiness = { native_platform: OciPlatform, capability: BuildExecutorCapability, };
+
+export type BuildExecutorReadinessAnswer<T> = { identity: BuildExecutorIdentity, readiness: T, };
+
+export type BuildAdapterKind = "dockerfile" | "railpack";
+
 export type BuildExecutorCredentialExpiresAt = Brand<string, "BuildExecutorCredentialExpiresAt">;
 
 export type BuildTarget = { "target": "cluster" } | { "target": "external", pool_id: BuildPoolId, };
@@ -346,11 +354,11 @@ export type BuildAdapterToolchainEvidence = { "adapter": "dockerfile" } | { "ada
 
 export type BuildToolchainEvidence = { buildkit_image: OciDigest, adapter: BuildAdapterToolchainEvidence, };
 
-export type BuildOperationFailure = { "kind": "no_eligible_machine", platform: OciPlatform, unusable: Array<UnusableMachine>, } | { "kind": "platform_failed", platform: OciPlatform, machine_id: MachineId, failure: BuildPlatformFailure, } | { "kind": "receipt_assembly_failed", message: FailureMessage, } | { "kind": "evidence_recording_failed", message: FailureMessage, } | { "kind": "control_unavailable", message: FailureMessage, };
+export type BuildOperationFailure = { "kind": "no_eligible_machine", platform: OciPlatform, unusable: Array<UnusableMachine>, } | { "kind": "platform_failed", platform: OciPlatform, machine_id: MachineId, failure: BuildPlatformFailure, } | { "kind": "external_platform_failed", platform: OciPlatform, executor: BuildExecutorEvidence, failure: BuildPlatformFailure, } | { "kind": "receipt_assembly_failed", message: FailureMessage, } | { "kind": "evidence_recording_failed", message: FailureMessage, } | { "kind": "control_unavailable", message: FailureMessage, };
 
-export type BuildPlatformFailure = { "kind": "machine_unavailable", message: FailureMessage, } | { "kind": "buildkit_digest_mismatch", expected: OciDigest, actual: OciDigest, } | { "kind": "helper_digest_mismatch", expected: InstallSha256Digest, actual: InstallSha256Digest, } | { "kind": "frontend_digest_mismatch", expected: OciDigest, actual: OciDigest, } | { "kind": "platform_mismatch", expected: OciPlatform, actual: OciPlatform, } | { "kind": "insufficient_host_disk", available_bytes: number, required_free_bytes: number, } | { "kind": "source_fetch_failed", message: FailureMessage, } | { "kind": "adapter_failed", message: FailureMessage, } | { "kind": "image_push_failed", message: FailureMessage, };
+export type BuildPlatformFailure = { "kind": "machine_unavailable", message: FailureMessage, } | { "kind": "executor_unavailable", message: FailureMessage, } | { "kind": "image_seed_unavailable", image_seed: MachineId, } | { "kind": "buildkit_digest_mismatch", expected: OciDigest, actual: OciDigest, } | { "kind": "helper_digest_mismatch", expected: InstallSha256Digest, actual: InstallSha256Digest, } | { "kind": "frontend_digest_mismatch", expected: OciDigest, actual: OciDigest, } | { "kind": "platform_mismatch", expected: OciPlatform, actual: OciPlatform, } | { "kind": "insufficient_host_disk", available_bytes: number, required_free_bytes: number, } | { "kind": "source_fetch_failed", message: FailureMessage, } | { "kind": "adapter_failed", message: FailureMessage, } | { "kind": "image_push_failed", message: FailureMessage, };
 
-export type BuildCleanupEvidence = { "kind": "not_required" } | { "kind": "completed", machine_ids: Array<MachineId>, } | { "kind": "unconfirmed", machine_ids: Array<MachineId>, };
+export type BuildCleanupEvidence = { "kind": "not_required" } | { "kind": "completed", machine_ids: Array<MachineId>, } | { "kind": "unconfirmed", machine_ids: Array<MachineId>, } | { "kind": "external_completed", executors: Array<BuildExecutorEvidence>, } | { "kind": "external_unconfirmed", executors: Array<BuildExecutorEvidence>, };
 
 export type BuildTimeoutFailure = { "kind": "deadline_exceeded", message: FailureMessage, };
 

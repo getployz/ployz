@@ -1,10 +1,11 @@
 pub use ployz_core::build::{
-    BuildAdapter, BuildCacheScope, BuildContextPath, BuildExecutorAssignment,
-    BuildExecutorAssignments, BuildExecutorEvidence, BuildExecutorId, BuildExecutorIdentity,
-    BuildExecutorOrigin, BuildPlatformExecutorAssignment, BuildPlatforms, BuildPlatformsError,
-    BuildPoolId, BuildTarget, DockerfileStageName, GitBasicCredential, GitCommit,
-    GitCredentialSecret, GitCredentialUsername, GitRepositoryUrl, GitSource, GitSourceError,
-    GitSourceEvidence, RailpackCacheKey, VerifiedGitCommit,
+    BuildAdapter, BuildAdapterKind, BuildCacheScope, BuildContextPath, BuildExecutorAssignment,
+    BuildExecutorAssignments, BuildExecutorCapability, BuildExecutorEvidence, BuildExecutorId,
+    BuildExecutorIdentity, BuildExecutorOrigin, BuildExecutorReadiness,
+    BuildExecutorReadinessAnswer, BuildPlatformExecutorAssignment, BuildPlatforms,
+    BuildPlatformsError, BuildPoolId, BuildTarget, DockerfileStageName, GitBasicCredential,
+    GitCommit, GitCredentialSecret, GitCredentialUsername, GitRepositoryUrl, GitSource,
+    GitSourceError, GitSourceEvidence, RailpackCacheKey, VerifiedGitCommit,
 };
 pub use ployz_core::certificate::{
     AcmeChallengeError, AcmeChallengeToken, AcmeChallengeTtlError, AcmeChallengeTtlSeconds,

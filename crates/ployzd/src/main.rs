@@ -1,4 +1,4 @@
-use ployz_telemetry::{Surface, Telemetry};
+use ployz_telemetry::{FailureClass, Surface, Telemetry};
 use ployzd::config::load_daemon_process_config;
 use ployzd::dispatch::run_daemon_process_until_shutdown;
 use ployzd::role_cli::parse_role_args;
@@ -10,7 +10,7 @@ fn main() {
     // Telemetry sinks flush with blocking calls and must outlive the async runtime.
     drop(runtime);
     if let Err(error) = &result {
-        telemetry.capture_error(error, error.failure_tag());
+        telemetry.capture_failure(error.failure_class());
         eprintln!("{error}");
     }
     telemetry.shutdown();
@@ -51,11 +51,11 @@ impl MainError {
         }
     }
 
-    const fn failure_tag(&self) -> &'static str {
+    const fn failure_class(&self) -> FailureClass {
         match self {
-            Self::Role(_) => "role",
-            Self::Config(_) => "config",
-            Self::Runtime(_) => "runtime",
+            Self::Role(_) => FailureClass::DaemonRole,
+            Self::Config(_) => FailureClass::DaemonConfig,
+            Self::Runtime(_) => FailureClass::DaemonRuntime,
         }
     }
 }

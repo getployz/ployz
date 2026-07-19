@@ -1,9 +1,12 @@
+use std::path::PathBuf;
+use std::time::Duration;
+
 use clap::{ArgGroup, Args};
 use ployz_core::build::{
     BuildAdapter, BuildCacheScope, BuildContextPath, BuildPlatforms, DockerfileStageName,
     GitCommit, GitCredentialUsername, GitRepositoryUrl,
 };
-use ployz_core::ids::OperationId;
+use ployz_core::ids::{BuildExecutorId, BuildPoolId, OperationId};
 use ployz_core::image::OciPlatform;
 use ployz_core::operation::CancellationReason;
 
@@ -11,6 +14,21 @@ use crate::commands::{PloyzctlCliError, cli_error, invalid_value};
 use crate::execution_support::generate_client_build_id;
 
 const DEFAULT_CANCELLATION_REASON: &str = "operator requested build cancellation";
+const DEFAULT_EXECUTOR_WAIT_TIMEOUT_SECONDS: u64 = 600;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildExecutorRunMode {
+    Once { wait_timeout: Duration },
+    Watch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuildExecutorCommand {
+    pub pool_id: BuildPoolId,
+    pub executor_id: BuildExecutorId,
+    pub workspace_root: Option<PathBuf>,
+    pub mode: BuildExecutorRunMode,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildSubmitCommand {
@@ -66,6 +84,73 @@ pub(crate) struct BuildCancelCli {
     operation_id: String,
     #[arg(long)]
     reason: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct BuildExecutorOnceCli {
+    #[arg(long)]
+    pool_id: String,
+    #[arg(long)]
+    executor_id: String,
+    #[arg(long)]
+    workspace_root: Option<PathBuf>,
+    #[arg(long, default_value_t = DEFAULT_EXECUTOR_WAIT_TIMEOUT_SECONDS)]
+    wait_timeout_seconds: u64,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct BuildExecutorWatchCli {
+    #[arg(long)]
+    pool_id: String,
+    #[arg(long)]
+    executor_id: String,
+    #[arg(long)]
+    workspace_root: Option<PathBuf>,
+}
+
+pub(crate) fn build_executor_once_command(
+    parsed: BuildExecutorOnceCli,
+) -> Result<BuildExecutorCommand, PloyzctlCliError> {
+    if parsed.wait_timeout_seconds == 0 {
+        return Err(cli_error(
+            "--wait-timeout-seconds must be greater than zero",
+        ));
+    }
+    build_executor_command(
+        parsed.pool_id,
+        parsed.executor_id,
+        parsed.workspace_root,
+        BuildExecutorRunMode::Once {
+            wait_timeout: Duration::from_secs(parsed.wait_timeout_seconds),
+        },
+    )
+}
+
+pub(crate) fn build_executor_watch_command(
+    parsed: BuildExecutorWatchCli,
+) -> Result<BuildExecutorCommand, PloyzctlCliError> {
+    build_executor_command(
+        parsed.pool_id,
+        parsed.executor_id,
+        parsed.workspace_root,
+        BuildExecutorRunMode::Watch,
+    )
+}
+
+fn build_executor_command(
+    pool_id: String,
+    executor_id: String,
+    workspace_root: Option<PathBuf>,
+    mode: BuildExecutorRunMode,
+) -> Result<BuildExecutorCommand, PloyzctlCliError> {
+    Ok(BuildExecutorCommand {
+        pool_id: BuildPoolId::try_new(pool_id)
+            .map_err(|error| invalid_value("--pool-id", error))?,
+        executor_id: BuildExecutorId::try_new(executor_id)
+            .map_err(|error| invalid_value("--executor-id", error))?,
+        workspace_root,
+        mode,
+    })
 }
 
 pub(crate) fn build_submit_command(

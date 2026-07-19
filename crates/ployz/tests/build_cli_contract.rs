@@ -1,4 +1,6 @@
-use ployz::build::command::{BuildCancelCommand, BuildSubmitCommand};
+use ployz::build::command::{
+    BuildCancelCommand, BuildExecutorCommand, BuildExecutorRunMode, BuildSubmitCommand,
+};
 use ployz::commands::{PloyzctlCommand, parse_command};
 use ployz_core::build::BuildAdapter;
 
@@ -142,6 +144,79 @@ fn cancel_defaults_reason_and_accepts_override() {
         panic!("expected cancel");
     };
     assert_eq!(command.reason.as_str(), "no longer needed");
+}
+
+#[test]
+fn external_executor_once_and_watch_parse_exact_identity_and_lifecycle() {
+    let command = parse_command(
+        [
+            "build",
+            "once",
+            "--pool-id",
+            "pool_ci",
+            "--executor-id",
+            "executor_1",
+            "--workspace-root",
+            "/tmp/ployz-builds",
+            "--wait-timeout-seconds",
+            "47",
+        ]
+        .map(str::to_owned),
+    )
+    .expect("build once parses");
+    let PloyzctlCommand::BuildExecutor(BuildExecutorCommand {
+        pool_id,
+        executor_id,
+        workspace_root,
+        mode: BuildExecutorRunMode::Once { wait_timeout },
+    }) = command
+    else {
+        panic!("expected external Build Executor");
+    };
+    assert_eq!(pool_id.as_str(), "pool_ci");
+    assert_eq!(executor_id.as_str(), "executor_1");
+    assert_eq!(
+        workspace_root.expect("workspace"),
+        std::path::Path::new("/tmp/ployz-builds")
+    );
+    assert_eq!(wait_timeout, std::time::Duration::from_secs(47));
+
+    let command = parse_command(
+        [
+            "build",
+            "watch",
+            "--pool-id",
+            "pool_ci",
+            "--executor-id",
+            "executor_1",
+        ]
+        .map(str::to_owned),
+    )
+    .expect("build watch parses");
+    assert!(matches!(
+        command,
+        PloyzctlCommand::BuildExecutor(BuildExecutorCommand {
+            mode: BuildExecutorRunMode::Watch,
+            ..
+        })
+    ));
+
+    assert!(
+        parse_command(
+            [
+                "build",
+                "once",
+                "--pool-id",
+                "pool_ci",
+                "--executor-id",
+                "executor_1",
+                "--wait-timeout-seconds",
+                "0",
+            ]
+            .map(str::to_owned),
+        )
+        .is_err()
+    );
 }
 
 fn common_args() -> Vec<String> {

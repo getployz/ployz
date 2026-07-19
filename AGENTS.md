@@ -87,6 +87,9 @@ crate level:
 - `ployzd`: separate Control, Machine, Gateway, and DNS role-process wiring and
   implementation behind one shipped daemon artifact.
 - `ployz`: feature-owned CLI command, execution, and presentation modules.
+- `ployz-build-executor`: process-wiring-neutral Dockerfile and Railpack execution
+  mechanics, including workspace, toolchain, log, cleanup, and validated OCI-layout
+  production.
 - `ployz-host-runner`: privileged machine-local lifecycle planning and effects.
 - `ployz-sdk-types`: public schema/type export surface.
 - `ebpf/{common,control,program}`: shared contract, userspace controller, and

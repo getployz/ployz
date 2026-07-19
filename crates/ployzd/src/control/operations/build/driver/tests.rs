@@ -12,8 +12,9 @@ use crate::roles::machine::protocol::{
 use crate::tasks::TaskRegistry;
 use futures_util::StreamExt;
 use ployz_core::build::{
-    BuildAdapter, BuildCacheScope, BuildExecutorCancelOk, BuildExecutorStartOk, BuildPlatforms,
-    BuildTarget, GitSource, VerifiedGitCommit,
+    BuildAdapter, BuildCacheScope, BuildExecutorCancelOk, BuildExecutorCleanupOutcome,
+    BuildExecutorStartOk, BuildExecutorSuccessCleanupEvidence, BuildPlatforms, BuildTarget,
+    GitSource, VerifiedGitCommit,
 };
 use ployz_core::deploy::{ImageAvailabilityExpiresAt, PlatformImage};
 use ployz_core::image::{OciDigest, OciPlatform};
@@ -147,6 +148,7 @@ async fn platform_rpc_failure_records_real_evidence_and_publishes_no_image_index
             amd64_machine.clone(),
             BuildExecutorStartOk {
                 acceptance: executor_acceptance(&operation_id, &amd64_machine, &amd64),
+                cleanup: BuildExecutorSuccessCleanupEvidence::confirmed(),
                 image: completed_image.clone(),
                 verified_commit: verified_commit.clone(),
                 toolchain: toolchain.clone(),
@@ -180,21 +182,29 @@ async fn platform_rpc_failure_records_real_evidence_and_publishes_no_image_index
     );
     driver
         .active
-        .start(operation_id.clone(), accepted.submission.start_sequence)
+        .start(
+            operation_id.clone(),
+            accepted.submission.start_sequence,
+            BuildTarget::Cluster,
+        )
         .await;
     let outcomes = futures_util::future::join_all([
         driver.run_platform(
             &accepted,
-            ClusterBuildExecutorAssignment {
+            BuildPlatformExecutorAssignment {
                 platform: amd64.clone(),
-                machine_id: amd64_machine.clone(),
+                executor: BuildExecutorAssignment::Cluster {
+                    machine_id: amd64_machine.clone(),
+                },
             },
         ),
         driver.run_platform(
             &accepted,
-            ClusterBuildExecutorAssignment {
+            BuildPlatformExecutorAssignment {
                 platform: arm64.clone(),
-                machine_id: arm64_machine.clone(),
+                executor: BuildExecutorAssignment::Cluster {
+                    machine_id: arm64_machine.clone(),
+                },
             },
         ),
     ])
@@ -617,9 +627,11 @@ fn timeout_cleanup_is_completed_only_when_every_machine_confirms() {
 
     assert_eq!(
         timeout_cleanup(&[(
-            confirmed.clone(),
+            BuildExecutorAssignment::Cluster {
+                machine_id: confirmed.clone(),
+            },
             message.clone(),
-            MachineBuildCleanupOutcome::Confirmed,
+            BuildExecutorCleanupOutcome::Confirmed,
         )]),
         BuildCleanupEvidence::Completed {
             machine_ids: vec![confirmed.clone()],
@@ -628,14 +640,18 @@ fn timeout_cleanup_is_completed_only_when_every_machine_confirms() {
     assert_eq!(
         timeout_cleanup(&[
             (
-                confirmed,
+                BuildExecutorAssignment::Cluster {
+                    machine_id: confirmed,
+                },
                 message.clone(),
-                MachineBuildCleanupOutcome::Confirmed,
+                BuildExecutorCleanupOutcome::Confirmed,
             ),
             (
-                unconfirmed.clone(),
+                BuildExecutorAssignment::Cluster {
+                    machine_id: unconfirmed.clone(),
+                },
                 message,
-                MachineBuildCleanupOutcome::Unconfirmed,
+                BuildExecutorCleanupOutcome::Unconfirmed,
             ),
         ]),
         BuildCleanupEvidence::Unconfirmed {
