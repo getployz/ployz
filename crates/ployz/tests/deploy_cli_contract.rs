@@ -2,11 +2,12 @@ use std::process::{Command, Output};
 
 use ployz::commands::{PloyzctlCommand, parse_command};
 use ployz::deploy::command::{
-    DeployCommand, DeployOutput, DeployRollbackCommand, DeployRollbackSelection,
+    DeployCommand, DeployEndpoint, DeployOutput, DeployRollbackCommand, DeployRollbackSelection,
+    DeploySubmissionRequest,
 };
 use ployz_core::deploy::{
-    DeployOrigin, DeployRoute, DeployRouteTarget, DeployServiceSpec, ImageReference, ReplicaCount,
-    ServiceMode,
+    DeployOrigin, DeployReservationId, DeployRoute, DeployRouteTarget, DeployServiceSpec,
+    ImageReference, ReplicaCount, ServiceMode,
 };
 use ployz_core::ids::{NamespaceId, OperationId, ServiceId};
 use ployz_core::operation::{RouteHostname, RoutePort};
@@ -21,6 +22,102 @@ fn cli_dispatches_deploy_request() {
         panic!("expected deploy command");
     };
     assert_deploy_fixture(&command);
+}
+
+#[test]
+fn cli_system_deploy_uses_compose_and_the_system_submission_shape() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let compose_path = dir.path().join("compose.yaml");
+    std::fs::write(
+        &compose_path,
+        "services:\n  api:\n    image: nginx:latest\n  worker:\n    image: redis:7\n    depends_on:\n      - api\n",
+    )
+    .expect("write compose");
+    let path = compose_path.display().to_string();
+
+    let command = parse_command(
+        [
+            "system",
+            "deploy",
+            "-f",
+            &path,
+            "--detach",
+            "--from-registry",
+            "--allow-unsupported",
+            "--origin",
+            "release candidate",
+        ]
+        .map(str::to_owned),
+    )
+    .expect("system deploy parses");
+    let PloyzctlCommand::SystemDeploy(command) = command else {
+        panic!("expected system deploy command");
+    };
+    assert_eq!(command.endpoint, DeployEndpoint::System);
+    assert!(command.detach);
+    assert!(command.from_registry);
+    assert_eq!(command.target.services.len(), 2);
+    assert_eq!(
+        command.reservation_namespace(),
+        ployz_core::namespace::reserved_system_namespace()
+    );
+
+    let DeploySubmissionRequest::System(request) =
+        command.into_request(DeployReservationId::first())
+    else {
+        panic!("system deploy must select the system endpoint");
+    };
+    assert_eq!(request.target.services.len(), 2);
+    assert_eq!(
+        request.target.origin,
+        Some(DeployOrigin::try_new("release candidate").expect("origin"))
+    );
+    let target = serde_json::to_value(&request.target).expect("serialize target");
+    assert!(target.get("namespace_id").is_none());
+    assert!(target.get("volumes").is_none());
+}
+
+#[test]
+fn cli_system_deploy_does_not_accept_namespace_or_ordinary_deploy_flags() {
+    for args in [
+        vec![
+            "system",
+            "deploy",
+            "-f",
+            "compose.yaml",
+            "--namespace",
+            "prod",
+        ],
+        vec!["system", "deploy", "-f", "compose.yaml", "--image", "nginx"],
+    ] {
+        assert!(parse_command(args.into_iter().map(str::to_owned)).is_err());
+    }
+    assert!(parse_command(["system", "deploy"].map(str::to_owned)).is_err());
+}
+
+#[test]
+fn cli_system_deploy_rejects_declared_and_mounted_volumes_during_parsing() {
+    for (name, source, expected) in [
+        (
+            "declared",
+            "services:\n  api:\n    image: nginx\nvolumes:\n  data: {}\n",
+            "top-level Compose volume declarations",
+        ),
+        (
+            "mounted",
+            "services:\n  api:\n    image: nginx\n    volumes:\n      - data:/data\n",
+            "volume mounts on service api",
+        ),
+    ] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(format!("{name}.yaml"));
+        std::fs::write(&path, source).expect("write compose");
+        let error = parse_command(
+            ["system", "deploy", "-f", &path.display().to_string()].map(str::to_owned),
+        )
+        .expect_err("system volumes are rejected before execution");
+        assert!(error.to_string().contains(expected), "{error}");
+    }
 }
 
 #[test]
