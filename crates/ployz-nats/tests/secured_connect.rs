@@ -8,24 +8,65 @@ use std::net::{SocketAddr, TcpStream};
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use ployz_core::ids::MachineId;
-use ployz_core::nats_config::MintedNatsUser;
+use ployz_core::build::{
+    BuildAdapter, BuildContextPath, BuildExecutorAssignment, BuildExecutorCancelRequest,
+    BuildExecutorStartRequest, GitSource,
+};
+use ployz_core::ids::{BuildExecutorId, BuildPoolId, MachineId, OperationId};
+use ployz_core::image::OciPlatform;
+use ployz_core::nats_config::{
+    BuildExecutorCredentialExpiresAt, CredentialGrant, CredentialName, CredentialRole,
+    MintedNatsUser,
+};
 use ployz_core::security::NatsPrincipal;
 use ployz_nats::connect::{
     NatsConnectConfig, authenticated_connect_options, connect_authenticated,
 };
 use ployz_nats::permissions::{inbox_prefix, inbox_subscribe_scope};
+use ployz_nats::service_runtime::{NatsServiceResponse, start_nats_service};
+use ployz_nats::services::{
+    EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceMetadata, ServiceVersion,
+};
 use ployz_nats::subjects::{
-    INTENT_CHANGED, INTENT_GET, MachineServiceEndpoint, OPERATOR_INIT_FIRST_MACHINE_ACTIVATE,
-    PENDING_MACHINE_JOINS_CHANGED, RUNTIME_SNAPSHOT_SEED, RUNTIME_SNAPSHOT_STREAM, gateway_status,
-    gateway_status_scope, machine_container_facts, machine_facts, machine_facts_scope,
-    machine_service, machine_service_command_scope, machine_service_query_scope,
+    BUILD_EXECUTOR_SERVICE_NAME, BuildExecutorServiceEndpoint, INTENT_CHANGED, INTENT_GET,
+    MachineServiceEndpoint, OPERATOR_INIT_FIRST_MACHINE_ACTIVATE, PENDING_MACHINE_JOINS_CHANGED,
+    RUNTIME_SNAPSHOT_SEED, RUNTIME_SNAPSHOT_STREAM, build_executor_log, build_executor_service,
+    gateway_status, gateway_status_scope, machine_container_facts, machine_facts,
+    machine_facts_scope, machine_service, machine_service_command_scope,
+    machine_service_query_scope,
 };
 use ployz_test_support::nats::SecuredTestNats;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const EVENT_TIMEOUT: Duration = Duration::from_secs(5);
 const NO_DELIVERY_WINDOW: Duration = Duration::from_millis(500);
+
+fn external_executor_credential(
+    minted: &MintedNatsUser,
+    pool_id: &BuildPoolId,
+    executor_id: &BuildExecutorId,
+) -> CredentialGrant {
+    CredentialGrant {
+        public_key: minted.public.clone(),
+        name: CredentialName::try_new("Test external Build Executor").expect("credential name"),
+        role: CredentialRole::BuildExecutor {
+            pool_id: pool_id.clone(),
+            executor_id: executor_id.clone(),
+            expires_at: BuildExecutorCredentialExpiresAt::try_new(2_000_000_000)
+                .expect("future expiry"),
+        },
+    }
+}
+
+fn external_executor_principal(
+    pool_id: &BuildPoolId,
+    executor_id: &BuildExecutorId,
+) -> NatsPrincipal {
+    NatsPrincipal::BuildExecutor {
+        pool_id: pool_id.clone(),
+        executor_id: executor_id.clone(),
+    }
+}
 
 #[tokio::test]
 async fn valid_seed_and_ca_connects_over_tls() {
@@ -78,6 +119,322 @@ async fn extra_cloud_operator_public_key_can_connect_as_operator() {
     .expect("external cloud operator key connects as Operator principal");
 
     client.flush().await.expect("cloud operator round-trips");
+}
+
+#[tokio::test]
+async fn external_build_executor_serves_its_endpoints_logs_and_image_requests() {
+    let pool_id = BuildPoolId::try_new("pool-a").expect("pool id");
+    let executor_id = BuildExecutorId::try_new("executor-a").expect("executor id");
+    let machine_id = MachineId::try_new("machine-a").expect("machine id");
+    let operation_id = OperationId::try_new("build-7").expect("operation id");
+    let minted = MintedNatsUser::generate().expect("executor nkey mints");
+    let credential = external_executor_credential(&minted, &pool_id, &executor_id);
+    let fixture = SecuredTestNats::start_with_machines_and_credentials(
+        std::slice::from_ref(&machine_id),
+        std::slice::from_ref(&credential),
+    )
+    .await
+    .expect("secured fixture");
+    let principal = external_executor_principal(&pool_id, &executor_id);
+    let (executor, mut executor_events) =
+        connect_with_event_capture(&fixture.config_with_seed(principal, minted.seed)).await;
+    let controller = connect_authenticated(&fixture.controller_config(), CONNECT_TIMEOUT)
+        .await
+        .expect("controller connects");
+    let machine_config = fixture
+        .machine_config(&machine_id)
+        .expect("fixture minted machine");
+    let machine = connect_authenticated(&machine_config, CONNECT_TIMEOUT)
+        .await
+        .expect("machine connects");
+
+    let readiness_subject = build_executor_service(
+        &pool_id,
+        &executor_id,
+        BuildExecutorServiceEndpoint::ReadinessGet,
+    );
+    let start_subject = build_executor_service(
+        &pool_id,
+        &executor_id,
+        BuildExecutorServiceEndpoint::BuildStart,
+    );
+    let cancel_subject = build_executor_service(
+        &pool_id,
+        &executor_id,
+        BuildExecutorServiceEndpoint::BuildCancel,
+    );
+    let spec = NatsServiceSpec::new(
+        "external-executor-a",
+        BUILD_EXECUTOR_SERVICE_NAME,
+        ServiceVersion::new(0, 1, 0),
+        "test external Build Executor",
+        ServiceMetadata::empty(),
+        vec![
+            NatsServiceEndpointSpec::new(
+                "readiness.get",
+                &readiness_subject,
+                EndpointExecution::Query,
+            ),
+            NatsServiceEndpointSpec::new(
+                "build.start",
+                &start_subject,
+                EndpointExecution::AcceptsOperation,
+            ),
+            NatsServiceEndpointSpec::new(
+                "build.cancel",
+                &cancel_subject,
+                EndpointExecution::MutatesOperation,
+            ),
+        ],
+    );
+    let mut runtime = start_nats_service(executor.clone(), &spec)
+        .await
+        .expect("executor service starts");
+    for endpoint in &spec.endpoints {
+        runtime
+            .bind_endpoint(endpoint, |request| async move {
+                NatsServiceResponse::ok(request.payload)
+            })
+            .await
+            .expect("executor endpoint binds");
+    }
+
+    let readiness = request_when_responder_ready(&controller, &readiness_subject, "ready").await;
+    assert_eq!(readiness.payload.as_ref(), b"ready");
+
+    let assignment = BuildExecutorAssignment::External {
+        pool_id: pool_id.clone(),
+        executor_id: executor_id.clone(),
+        image_seed: machine_id.clone(),
+    };
+    let start_request = BuildExecutorStartRequest {
+        operation_id: operation_id.clone(),
+        assignment: assignment.clone(),
+        source: GitSource::try_new(
+            "https://example.test/repo.git",
+            "0123456789abcdef0123456789abcdef01234567",
+            "git",
+            "redacted-test-value",
+            None::<String>,
+        )
+        .expect("source"),
+        adapter: BuildAdapter::Dockerfile {
+            dockerfile: BuildContextPath::try_new("Dockerfile").expect("dockerfile path"),
+            target: None,
+        },
+        platform: OciPlatform::try_new("linux", "amd64").expect("platform"),
+        timeout_millis: 1_000,
+    };
+    let start_payload = serde_json::to_vec(&start_request).expect("start request encodes");
+    let start_response = controller
+        .request(start_subject, start_payload.clone().into())
+        .await
+        .expect("controller requests build start");
+    assert_eq!(start_response.payload.as_ref(), start_payload);
+
+    let cancel_request = BuildExecutorCancelRequest {
+        operation_id: operation_id.clone(),
+        assignment,
+    };
+    let cancel_payload = serde_json::to_vec(&cancel_request).expect("cancel request encodes");
+    let cancel_response = controller
+        .request(cancel_subject, cancel_payload.clone().into())
+        .await
+        .expect("controller requests build cancel");
+    assert_eq!(cancel_response.payload.as_ref(), cancel_payload);
+
+    let mut logs = controller
+        .subscribe(build_executor_log(&pool_id, &executor_id, &operation_id))
+        .await
+        .expect("controller subscribes executor log");
+    controller.flush().await.expect("log subscription flushes");
+    executor
+        .publish(
+            build_executor_log(&pool_id, &executor_id, &operation_id),
+            "build output".into(),
+        )
+        .await
+        .expect("executor publishes own log");
+    let log = tokio::time::timeout(EVENT_TIMEOUT, logs.next())
+        .await
+        .expect("log arrives before timeout")
+        .expect("log subscription remains open");
+    assert_eq!(log.payload.as_ref(), b"build output");
+
+    for endpoint in [
+        MachineServiceEndpoint::ImageBlobCheck,
+        MachineServiceEndpoint::ImageBlobPush,
+        MachineServiceEndpoint::ImageManifestPush,
+    ] {
+        let subject = machine_service(&machine_id, endpoint);
+        let mut requests = machine
+            .subscribe(subject.clone())
+            .await
+            .expect("machine subscribes image endpoint");
+        machine.flush().await.expect("image endpoint flushes");
+        let responder = machine.clone();
+        tokio::spawn(async move {
+            if let Some(request) = requests.next().await
+                && let Some(reply) = request.reply
+            {
+                responder.publish(reply, "image-ok".into()).await.ok();
+                responder.flush().await.ok();
+            }
+        });
+        let response = request_when_responder_ready(&executor, &subject, "image-request").await;
+        assert_eq!(response.payload.as_ref(), b"image-ok");
+    }
+
+    // `start_nats_service` registers the Service API's PING/INFO/STATS
+    // subscriptions, including the fixed service-name discovery subjects.
+    // Operational readiness is the direct known-set RPC exercised above.
+    assert_no_permission_violation(&mut executor_events).await;
+    runtime.shutdown().await.expect("executor service stops");
+}
+
+#[tokio::test]
+async fn external_build_executor_is_denied_other_authority_by_the_server() {
+    let pool_id = BuildPoolId::try_new("pool-a").expect("pool id");
+    let other_pool_id = BuildPoolId::try_new("pool-b").expect("pool id");
+    let executor_id = BuildExecutorId::try_new("executor-a").expect("executor id");
+    let other_executor_id = BuildExecutorId::try_new("executor-b").expect("executor id");
+    let machine_id = MachineId::try_new("machine-a").expect("machine id");
+    let operation_id = OperationId::try_new("build-7").expect("operation id");
+    let minted = MintedNatsUser::generate().expect("executor nkey mints");
+    let credential = external_executor_credential(&minted, &pool_id, &executor_id);
+    let fixture = SecuredTestNats::start_with_machines_and_credentials(
+        std::slice::from_ref(&machine_id),
+        std::slice::from_ref(&credential),
+    )
+    .await
+    .expect("secured fixture");
+    let principal = external_executor_principal(&pool_id, &executor_id);
+    let (executor, mut events) =
+        connect_with_event_capture(&fixture.config_with_seed(principal, minted.seed)).await;
+
+    for denied in [
+        build_executor_service(
+            &pool_id,
+            &other_executor_id,
+            BuildExecutorServiceEndpoint::BuildStart,
+        ),
+        build_executor_service(
+            &other_pool_id,
+            &executor_id,
+            BuildExecutorServiceEndpoint::ReadinessGet,
+        ),
+        machine_service(&machine_id, MachineServiceEndpoint::BuildStart),
+        "$SRV.PING.some-other-service".to_owned(),
+        format!("$SRV.PING.{BUILD_EXECUTOR_SERVICE_NAME}.instance.extra"),
+    ] {
+        let _subscription = executor
+            .subscribe(denied)
+            .await
+            .expect("subscribe call is accepted client-side");
+        executor.flush().await.expect("denied subscription flushes");
+        assert_permission_violation_kind(&mut events, "Subscription").await;
+    }
+
+    for (denied, payload) in [
+        (
+            build_executor_log(&other_pool_id, &executor_id, &operation_id),
+            "cross-pool-log",
+        ),
+        (
+            build_executor_log(&pool_id, &other_executor_id, &operation_id),
+            "cross-executor-log",
+        ),
+        (
+            OPERATOR_INIT_FIRST_MACHINE_ACTIVATE.to_owned(),
+            "operator-rpc",
+        ),
+        (
+            machine_service(&machine_id, MachineServiceEndpoint::ContainerRun),
+            "container-run",
+        ),
+        (
+            machine_service(&machine_id, MachineServiceEndpoint::ImageEnsure),
+            "image-ensure",
+        ),
+        (
+            machine_service(&machine_id, MachineServiceEndpoint::ImageRemove),
+            "image-remove",
+        ),
+        (machine_facts(&machine_id), "machine-facts"),
+        (INTENT_CHANGED.to_owned(), "intent-changed"),
+        (
+            PENDING_MACHINE_JOINS_CHANGED.to_owned(),
+            "membership-changed",
+        ),
+    ] {
+        executor
+            .publish(denied, payload.into())
+            .await
+            .expect("publish call is accepted client-side");
+        executor.flush().await.expect("denied publish flushes");
+        assert_permission_violation_kind(&mut events, "Publish").await;
+    }
+}
+
+#[tokio::test]
+async fn build_executor_grant_preserves_operator_and_machine_traffic() {
+    let pool_id = BuildPoolId::try_new("pool-a").expect("pool id");
+    let executor_id = BuildExecutorId::try_new("executor-a").expect("executor id");
+    let machine_id = MachineId::try_new("machine-a").expect("machine id");
+    let minted = MintedNatsUser::generate().expect("executor nkey mints");
+    let credential = external_executor_credential(&minted, &pool_id, &executor_id);
+    let fixture = SecuredTestNats::start_with_machines_and_credentials(
+        std::slice::from_ref(&machine_id),
+        std::slice::from_ref(&credential),
+    )
+    .await
+    .expect("secured fixture");
+    let controller = connect_authenticated(&fixture.controller_config(), CONNECT_TIMEOUT)
+        .await
+        .expect("controller connects");
+    let operator = connect_authenticated(&fixture.user_config(), CONNECT_TIMEOUT)
+        .await
+        .expect("operator connects");
+    let machine_config = fixture
+        .machine_config(&machine_id)
+        .expect("fixture minted machine");
+    let machine = connect_authenticated(&machine_config, CONNECT_TIMEOUT)
+        .await
+        .expect("machine connects");
+
+    let mut intent_requests = controller
+        .subscribe(INTENT_GET)
+        .await
+        .expect("controller subscribes intent endpoint");
+    let mut facts = controller
+        .subscribe(machine_facts(&machine_id))
+        .await
+        .expect("controller subscribes machine facts");
+    controller
+        .flush()
+        .await
+        .expect("controller subscriptions flush");
+    let responder = controller.clone();
+    tokio::spawn(async move {
+        if let Some(request) = intent_requests.next().await
+            && let Some(reply) = request.reply
+        {
+            responder.publish(reply, "intent".into()).await.ok();
+            responder.flush().await.ok();
+        }
+    });
+
+    let intent = request_when_responder_ready(&operator, INTENT_GET, "get").await;
+    assert_eq!(intent.payload.as_ref(), b"intent");
+    machine
+        .publish(machine_facts(&machine_id), "facts".into())
+        .await
+        .expect("machine publishes facts");
+    let fact = tokio::time::timeout(EVENT_TIMEOUT, facts.next())
+        .await
+        .expect("facts arrive before timeout")
+        .expect("facts subscription remains open");
+    assert_eq!(fact.payload.as_ref(), b"facts");
 }
 
 #[tokio::test]
@@ -559,6 +916,17 @@ async fn next_permission_violation(
     })
     .await
     .expect("server reports a permission violation")
+}
+
+async fn assert_permission_violation_kind(
+    events: &mut tokio::sync::mpsc::UnboundedReceiver<async_nats::Event>,
+    expected_kind: &str,
+) {
+    let violation = next_permission_violation(events).await;
+    assert!(
+        violation.contains(expected_kind),
+        "expected a {expected_kind} violation, got: {violation}"
+    );
 }
 
 async fn assert_no_permission_violation(

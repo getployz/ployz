@@ -4,7 +4,7 @@ use ployz_core::build::BUILD_RESPONSE_PERMISSION_EXPIRY;
 use ployz_core::ids::{BuildExecutorId, BuildPoolId};
 use ployz_core::nats_config::{
     BuildExecutorCredentialExpiresAt, CredentialGrant, CredentialName, CredentialRole,
-    NatsAuthorizationGrant, NatsInternalAuthority, NatsUserPublicKey,
+    MintedNatsUser, NatsAuthorizationGrant, NatsInternalAuthority, NatsUserPublicKey,
 };
 use ployz_core::security::NatsPrincipal;
 use ployz_nats::permissions::{
@@ -247,6 +247,5 @@ fn user_public_key() -> NatsUserPublicKey {
 }
 
 fn another_user_public_key() -> NatsUserPublicKey {
-    let pair = nkeys::KeyPair::new_user();
-    NatsUserPublicKey::try_new(pair.public_key()).expect("valid user public key")
+    MintedNatsUser::generate().expect("user mints").public
 }
