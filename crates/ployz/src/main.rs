@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use ployz::commands::{PloyzctlCommand, TelemetryCommand, parse_invocation};
 use ployz::dispatcher::{CommandExit, PloyzctlRuntimeConfig, execute_command};
-use ployz_telemetry::{CommandOutcome, ConfigFile, Surface, Telemetry};
+use ployz_telemetry::{CommandOutcome, ConfigFile, FailureClass, Surface, Telemetry};
 
 /// `ployz host ...` dispatches before the async runtime exists: Host Runner
 /// commands are synchronous and drive their own bounded runtimes internally,
@@ -29,7 +29,7 @@ fn host_main(raw_args: Vec<std::ffi::OsString>) -> ExitCode {
         }
         Err(error) => {
             let telemetry = Telemetry::bootstrap(Surface::Cli, env!("CARGO_PKG_VERSION"));
-            telemetry.capture_error(&error, "host_parse");
+            telemetry.capture_failure(FailureClass::HostParse);
             eprintln!("{error}");
             telemetry.shutdown();
             return ExitCode::FAILURE;
@@ -60,7 +60,7 @@ fn product_main() -> ExitCode {
         }
         Err(error) => {
             let telemetry = Telemetry::bootstrap(Surface::Cli, env!("CARGO_PKG_VERSION"));
-            telemetry.capture_error(&error, "cli_parse");
+            telemetry.capture_failure(FailureClass::CliParse);
             eprintln!("{error}");
             telemetry.shutdown();
             return ExitCode::FAILURE;
@@ -79,7 +79,7 @@ fn product_main() -> ExitCode {
     {
         Ok(runtime) => runtime,
         Err(error) => {
-            telemetry.capture_error(&error, "runtime");
+            telemetry.capture_failure(FailureClass::Runtime);
             eprintln!("could not start async runtime: {error}");
             telemetry.shutdown();
             return ExitCode::FAILURE;
@@ -101,7 +101,7 @@ fn product_main() -> ExitCode {
             }
         }
         Err(error) => {
-            telemetry.capture_error(&error, "command");
+            telemetry.capture_failure(FailureClass::Command);
             eprintln!("{error}");
             (ExitCode::FAILURE, CommandOutcome::Failed)
         }

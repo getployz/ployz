@@ -3,7 +3,6 @@
 //! Shared opt-out telemetry configuration and sink wiring.
 
 use std::env;
-use std::error::Error;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -62,9 +61,11 @@ pub enum Consent {
 impl Consent {
     #[must_use]
     pub fn from_environment(persisted: PersistedTelemetry) -> Self {
+        let ployz_telemetry = env::var("PLOYZ_TELEMETRY").ok();
+        let do_not_track = env::var("DO_NOT_TRACK").ok();
         Self::resolve(
-            env::var("PLOYZ_TELEMETRY").ok().as_deref(),
-            env::var("DO_NOT_TRACK").ok().as_deref(),
+            ployz_telemetry.as_deref(),
+            do_not_track.as_deref(),
             persisted,
         )
     }
@@ -75,13 +76,8 @@ impl Consent {
         do_not_track: Option<&str>,
         persisted: PersistedTelemetry,
     ) -> Self {
-        match ployz_telemetry {
-            Some("1") => return Self::Enabled,
-            Some("0") => return Self::Disabled,
-            Some(_) | None => {}
-        }
-        if do_not_track == Some("1") {
-            return Self::Disabled;
+        if let Some(consent) = Self::resolve_environment(ployz_telemetry, do_not_track) {
+            return consent;
         }
         match persisted {
             PersistedTelemetry::Enabled | PersistedTelemetry::Unset => Self::Enabled,
@@ -92,6 +88,24 @@ impl Consent {
     #[must_use]
     pub fn is_enabled(self) -> bool {
         self == Self::Enabled
+    }
+
+    fn environment_override() -> Option<Self> {
+        let ployz_telemetry = env::var("PLOYZ_TELEMETRY").ok();
+        let do_not_track = env::var("DO_NOT_TRACK").ok();
+        Self::resolve_environment(ployz_telemetry.as_deref(), do_not_track.as_deref())
+    }
+
+    fn resolve_environment(
+        ployz_telemetry: Option<&str>,
+        do_not_track: Option<&str>,
+    ) -> Option<Self> {
+        match ployz_telemetry {
+            Some("1") => Some(Self::Enabled),
+            Some("0") => Some(Self::Disabled),
+            Some(_) | None if do_not_track == Some("1") => Some(Self::Disabled),
+            Some(_) | None => None,
+        }
     }
 }
 
@@ -120,7 +134,7 @@ pub enum ConfigError {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct StoredConfig {
-    install_id: Uuid,
+    install_id: Option<Uuid>,
     telemetry: Option<bool>,
     cli_notice_seen: bool,
     daemon_notice_seen: bool,
@@ -129,7 +143,7 @@ struct StoredConfig {
 impl StoredConfig {
     fn fresh() -> Self {
         Self {
-            install_id: Uuid::new_v4(),
+            install_id: None,
             telemetry: None,
             cli_notice_seen: false,
             daemon_notice_seen: false,
@@ -191,8 +205,12 @@ impl ConfigFile {
     }
 
     #[must_use]
-    pub fn install_id(&self) -> Uuid {
+    pub fn install_id(&self) -> Option<Uuid> {
         self.stored.install_id
+    }
+
+    pub fn ensure_install_id(&mut self) -> Result<Uuid, ConfigError> {
+        self.update(|stored| *stored.install_id.get_or_insert_with(Uuid::new_v4))
     }
 
     #[must_use]
@@ -224,27 +242,29 @@ impl ConfigFile {
         self.update(|stored| match surface {
             Surface::Cli => stored.cli_notice_seen = true,
             Surface::Daemon => stored.daemon_notice_seen = true,
-        })
+        })?;
+        Ok(())
     }
 
     pub fn set_telemetry(&mut self, enabled: bool) -> Result<(), ConfigError> {
-        self.update(|stored| stored.telemetry = Some(enabled))
+        self.update(|stored| stored.telemetry = Some(enabled))?;
+        Ok(())
     }
 
-    fn update(&mut self, change: impl FnOnce(&mut StoredConfig)) -> Result<(), ConfigError> {
+    fn update<T>(&mut self, change: impl FnOnce(&mut StoredConfig) -> T) -> Result<T, ConfigError> {
         let _lock = lock_config(&self.path)?;
         let mut latest = Self::load_or_create_unlocked(self.path.clone())?;
         if latest.corrupt {
             latest.stored = self.stored.clone();
         }
-        change(&mut latest.stored);
+        let result = change(&mut latest.stored);
         latest.corrupt = false;
         latest.diagnostic = None;
         latest.save_unlocked()?;
         self.stored = latest.stored;
         self.corrupt = false;
         self.diagnostic = None;
-        Ok(())
+        Ok(result)
     }
 
     fn save_unlocked(&self) -> Result<(), ConfigError> {
@@ -311,6 +331,40 @@ impl CommandOutcome {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureClass {
+    HostParse,
+    CliParse,
+    Runtime,
+    Command,
+    DaemonRole,
+    DaemonConfig,
+}
+
+impl FailureClass {
+    fn tag(self) -> &'static str {
+        match self {
+            Self::HostParse => "host_parse",
+            Self::CliParse => "cli_parse",
+            Self::Runtime => "runtime",
+            Self::Command => "command",
+            Self::DaemonRole => "role",
+            Self::DaemonConfig => "config",
+        }
+    }
+
+    fn message(self) -> &'static str {
+        match self {
+            Self::HostParse => "host command parsing failed",
+            Self::CliParse => "CLI command parsing failed",
+            Self::Runtime => "async runtime failed",
+            Self::Command => "CLI command failed",
+            Self::DaemonRole => "daemon role parsing failed",
+            Self::DaemonConfig => "daemon configuration failed",
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum TelemetryError {
     #[error("invalid Sentry DSN: {0}")]
@@ -330,6 +384,9 @@ pub struct Telemetry {
 impl Telemetry {
     #[must_use]
     pub fn bootstrap(surface: Surface, version: &'static str) -> Self {
+        if Consent::environment_override() == Some(Consent::Disabled) {
+            return Self::disabled(surface, version);
+        }
         let config = match ConfigFile::load_or_create_default() {
             Ok(config) => Some(config),
             Err(ConfigError::HomeUnavailable) => None,
@@ -357,8 +414,15 @@ impl Telemetry {
                     eprintln!("could not record telemetry notice: {error}");
                 }
             }
-            if let Err(error) = telemetry.attach_posthog(POSTHOG_API_KEY, config.install_id()) {
-                eprintln!("could not initialize usage telemetry: {error}");
+            if consent.is_enabled() && !POSTHOG_API_KEY.trim().is_empty() {
+                match config.ensure_install_id() {
+                    Ok(install_id) => {
+                        if let Err(error) = telemetry.attach_posthog(POSTHOG_API_KEY, install_id) {
+                            eprintln!("could not initialize usage telemetry: {error}");
+                        }
+                    }
+                    Err(error) => eprintln!("could not persist telemetry identity: {error}"),
+                }
             }
         }
         telemetry
@@ -384,7 +448,6 @@ impl Telemetry {
             sentry::configure_scope(|scope| {
                 scope.set_tag("surface", surface.as_str());
                 scope.set_tag("version", version);
-                scope.set_tag("failure", "panic");
             });
             Some(guard)
         } else {
@@ -448,14 +511,14 @@ impl Telemetry {
         client.capture(self.event("daemon_started", distinct_id));
     }
 
-    pub fn capture_error(&self, error: &(dyn Error + 'static), failure_tag: &str) {
+    pub fn capture_failure(&self, class: FailureClass) {
         if self.sentry.is_none() {
             return;
         }
         sentry::with_scope(
-            |scope| scope.set_tag("failure", failure_tag),
+            |scope| scope.set_tag("failure", class.tag()),
             || {
-                sentry::capture_error(error);
+                sentry::capture_message(class.message(), sentry::Level::Error);
             },
         );
     }
@@ -507,19 +570,34 @@ mod tests {
     }
 
     #[test]
-    fn config_persists_identity_preference_and_notices() {
+    fn disabled_config_does_not_create_an_identity() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("nested/config");
         let mut first = ConfigFile::load_or_create(&path).unwrap();
-        let install_id = first.install_id();
+        assert_eq!(first.install_id(), None);
         first.set_telemetry(false).unwrap();
         first.mark_notice_seen(Surface::Cli).unwrap();
 
         let second = ConfigFile::load_or_create(&path).unwrap();
-        assert_eq!(second.install_id(), install_id);
+        assert_eq!(second.install_id(), None);
         assert_eq!(second.persisted_telemetry(), PersistedTelemetry::Disabled);
         assert!(!second.notice_needed(Surface::Cli));
         assert!(second.notice_needed(Surface::Daemon));
+    }
+
+    #[test]
+    fn enabled_config_creates_one_stable_identity_on_demand() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config");
+        let mut first = ConfigFile::load_or_create(&path).unwrap();
+
+        let install_id = first.ensure_install_id().unwrap();
+        assert_eq!(first.ensure_install_id().unwrap(), install_id);
+        first.set_telemetry(false).unwrap();
+
+        let second = ConfigFile::load_or_create(&path).unwrap();
+        assert_eq!(second.install_id(), Some(install_id));
+        assert_eq!(second.persisted_telemetry(), PersistedTelemetry::Disabled);
     }
 
     #[test]
@@ -570,5 +648,36 @@ mod tests {
         telemetry.attach_posthog("", "install-id").unwrap();
         telemetry.capture_command("version", CommandOutcome::Succeeded, Duration::ZERO);
         telemetry.shutdown();
+    }
+
+    #[test]
+    fn failure_classes_map_to_fixed_sentry_values() {
+        for (class, expected_tag, expected_message) in [
+            (
+                FailureClass::HostParse,
+                "host_parse",
+                "host command parsing failed",
+            ),
+            (
+                FailureClass::CliParse,
+                "cli_parse",
+                "CLI command parsing failed",
+            ),
+            (FailureClass::Runtime, "runtime", "async runtime failed"),
+            (FailureClass::Command, "command", "CLI command failed"),
+            (
+                FailureClass::DaemonRole,
+                "role",
+                "daemon role parsing failed",
+            ),
+            (
+                FailureClass::DaemonConfig,
+                "config",
+                "daemon configuration failed",
+            ),
+        ] {
+            assert_eq!(class.tag(), expected_tag);
+            assert_eq!(class.message(), expected_message);
+        }
     }
 }

@@ -4398,7 +4398,6 @@ dependencies = [
  "rustls",
  "sentry-backtrace",
  "sentry-core",
- "sentry-panic",
  "sentry-tracing",
  "tokio",
  "ureq",
@@ -4426,16 +4425,6 @@ dependencies = [
  "serde",
  "serde_json",
  "url",
-]
-
-[[package]]
-name = "sentry-panic"
-version = "0.48.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d47aa64170cf609b948fe8f47d2690541bde11e465daa836cf81ad6e62bb3240"
-dependencies = [
- "sentry-backtrace",
- "sentry-core",
 ]
 
 [[package]]
