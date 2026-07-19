@@ -359,7 +359,7 @@ async fn run_authorization_loop<R: NatsReloadRunner>(
             Ok(now_unix_seconds) => now_unix_seconds,
             Err(message) => {
                 if let AuthorizationEvent::Request(request) = event {
-                    reply_with_clock_failure(request, message.clone());
+                    reply_with_clock_failure(*request, message.clone());
                 }
                 state.clock_failed(health, &message);
                 continue;
@@ -381,7 +381,7 @@ async fn run_authorization_loop<R: NatsReloadRunner>(
                     path,
                     store,
                     Arc::clone(&reload),
-                    request,
+                    *request,
                     state.projection,
                     now_unix_seconds,
                 )
@@ -398,10 +398,13 @@ async fn next_authorization_event(
 ) -> Option<AuthorizationEvent> {
     match wake {
         Some(scheduled) => tokio::select! {
-            request = receiver.recv() => request.map(AuthorizationEvent::Request),
+            request = receiver.recv() => request.map(|request| AuthorizationEvent::Request(Box::new(request))),
             () = tokio::time::sleep(scheduled.wait_duration()) => Some(AuthorizationEvent::Wake),
         },
-        None => receiver.recv().await.map(AuthorizationEvent::Request),
+        None => receiver
+            .recv()
+            .await
+            .map(|request| AuthorizationEvent::Request(Box::new(request))),
     }
 }
 
@@ -547,7 +550,7 @@ fn mutation_request_outcome(
 }
 
 enum AuthorizationEvent {
-    Request(AuthorizationRequest),
+    Request(Box<AuthorizationRequest>),
     Wake,
 }
 
