@@ -77,10 +77,12 @@ pub(super) fn record_terminal_success(
                 evidence_error = Some("image resolution preceded submitted request".to_owned());
                 continue;
             };
-            let Some(service) = target
+            let Some(requested_image) = target
+                .request()
                 .services
-                .iter_mut()
+                .iter()
                 .find(|service| service.service_id == *service_id)
+                .map(|service| &service.image)
             else {
                 evidence_error = Some(format!(
                     "image resolution names unknown service {}",
@@ -95,14 +97,16 @@ pub(super) fn record_terminal_success(
                 ));
                 continue;
             }
-            if service.image.pinned_digest().is_some() && service.image != *resolved {
+            if requested_image.pinned_digest().is_some() && requested_image != resolved {
                 evidence_error = Some(format!(
                     "service {} resolved to multiple digests",
                     service_id.as_str()
                 ));
                 continue;
             }
-            service.image = resolved.clone();
+            target
+                .replace_service_image(service_id, resolved.clone())
+                .map_err(|error| evidence_error_for(operation_id.clone(), error.to_string()))?;
             continue;
         }
         if let OperationEvent::DeployCompleted {
@@ -132,6 +136,7 @@ pub(super) fn record_terminal_success(
                 ));
             };
             if let Some(service) = request
+                .request()
                 .services
                 .iter()
                 .find(|service| service.image.pinned_digest().is_none())
@@ -209,8 +214,8 @@ impl From<crate::deploy::history_store::DeployHistoryError> for DeployHistoryRun
 mod tests {
     use super::*;
     use ployz_core::deploy::{
-        ContainerRuntimeSpec, DeployRequest, DeployServiceSpec, ImageReference, ImageSource,
-        ReplicaCount,
+        ContainerRuntimeSpec, DeployRequest, DeployRequestEvidence, DeployServiceSpec, EnvName,
+        EnvValue, ImageReference, ImageSource, ReplicaCount, ServiceEnvironment,
     };
     use ployz_core::operation::{DeployOperationFailure, OperationKind};
     use ployz_test_support::ids::{
@@ -255,7 +260,7 @@ mod tests {
                 OperationEvent::DeploySubmitted {
                     operation_id: operation_id.clone(),
                     reservation_id: None,
-                    target: request("ghcr.io/acme/web:latest"),
+                    target: DeployRequestEvidence::from_request(&request("ghcr.io/acme/web:latest")),
                 },
             ),
             replay(
@@ -310,12 +315,91 @@ mod tests {
         let [entry] = entries.as_slice() else {
             panic!("one entry persists");
         };
-        let [service] = entry.request.services.as_slice() else {
+        let [service] = entry.request.request().services.as_slice() else {
             panic!("one service persists");
         };
         assert_eq!(
             service.image.as_str(),
             "ghcr.io/acme/web@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+    }
+
+    #[test]
+    fn record_terminal_success_updates_images_without_restoring_environment_values() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let history = history(&temporary);
+        let operation_id = operation_id("op_deploy");
+        let mut submitted = request("ghcr.io/acme/web:latest");
+        let [service] = submitted.services.as_mut_slice() else {
+            panic!("one service in submitted request");
+        };
+        service.runtime.environment =
+            ServiceEnvironment::from(std::collections::BTreeMap::from([(
+                EnvName::try_new("DATABASE_URL").expect("valid environment name"),
+                EnvValue::try_new("replay-secret-sentinel").expect("valid environment value"),
+            )]));
+        let events = vec![
+            replay(
+                1,
+                OperationEvent::DeploySubmitted {
+                    operation_id: operation_id.clone(),
+                    reservation_id: None,
+                    target: DeployRequestEvidence::from_request(&submitted),
+                },
+            ),
+            replay(
+                2,
+                OperationEvent::DeployImageResolved {
+                    operation_id: operation_id.clone(),
+                    service_id: service_id("web"),
+                    machine_id: machine_id("edge-1"),
+                    requested: ImageReference::try_new("ghcr.io/acme/web:latest")
+                        .expect("valid requested image"),
+                    resolved: ImageReference::try_new(
+                        "ghcr.io/acme/web@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    )
+                    .expect("valid resolved image"),
+                    credential_supplied: false,
+                },
+            ),
+            replay(
+                3,
+                OperationEvent::DeployCompleted {
+                    operation_id: operation_id.clone(),
+                    outcome: DeployCompletionOutcome::Completed,
+                },
+            ),
+        ];
+
+        record_terminal_success(Ok(history.clone()), operation_id, &events)
+            .expect("foreground success records redacted evidence");
+
+        let entries = history.load().expect("history loads");
+        let [entry] = entries.as_slice() else {
+            panic!("one entry persists");
+        };
+        let [service] = entry.request.request().services.as_slice() else {
+            panic!("one service persists");
+        };
+        let [environment] = entry.request.environments() else {
+            panic!("one service environment persists");
+        };
+        assert_eq!(
+            service.image.as_str(),
+            "ghcr.io/acme/web@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+        assert_eq!(
+            environment
+                .fingerprints()
+                .keys()
+                .map(|name| name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["DATABASE_URL"]
+        );
+        assert!(
+            !std::fs::read_to_string(history.path())
+                .expect("history JSON reads")
+                .contains("replay-secret-sentinel")
         );
     }
 
@@ -373,7 +457,9 @@ mod tests {
                 OperationEvent::DeploySubmitted {
                     operation_id: operation_id.clone(),
                     reservation_id: None,
-                    target: request("ghcr.io/acme/web:latest"),
+                    target: DeployRequestEvidence::from_request(&request(
+                        "ghcr.io/acme/web:latest",
+                    )),
                 },
             ),
             replay(
@@ -403,7 +489,9 @@ mod tests {
                 OperationEvent::DeploySubmitted {
                     operation_id: operation_id.clone(),
                     reservation_id: None,
-                    target: request("ghcr.io/acme/web:latest"),
+                    target: DeployRequestEvidence::from_request(&request(
+                        "ghcr.io/acme/web:latest",
+                    )),
                 },
             ),
             replay(
@@ -440,9 +528,9 @@ mod tests {
             .append_success(DeployHistoryEntry {
                 recorded_at: DeployHistoryTimestamp::from_unix_seconds(1_750_000_000),
                 operation_id: operation_id("op_history"),
-                request: request(
+                request: DeployRequestEvidence::from_request(&request(
                     "ghcr.io/acme/web@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                ),
+                )),
             })
             .expect("history entry persists");
 

@@ -13,7 +13,8 @@ use ployz::operation::command::{ListOutput, OpsWatchOutput, StatusOutput, WatchO
 use ployz::service::command::{ServiceInspectOutput, ServiceListOutput};
 use ployz_core::certificate::ManagedLeaseName;
 use ployz_core::deploy::{
-    DeployOrigin, DeployRequest, DeployServiceSpec, ImageReference, ReplicaCount,
+    DeployOrigin, DeployRequest, DeployRequestEvidence, DeployServiceSpec, EnvName, EnvValue,
+    ImageReference, ReplicaCount, ServiceEnvironment,
 };
 use ployz_core::ids::{ContainerId, MachineId, NamespaceId, ServiceId};
 use ployz_core::machine::MachineLifecycle;
@@ -1108,6 +1109,13 @@ fn init_first_machine_can_include_gateway_role() {
 fn ops_watch_renders_persisted_operation_events() {
     let mut request = deploy_request();
     request.origin = Some(DeployOrigin::try_new("manual release").expect("valid deploy origin"));
+    let [service] = request.services.as_mut_slice() else {
+        panic!("one service in test request");
+    };
+    service.runtime.environment = ServiceEnvironment::from(std::collections::BTreeMap::from([(
+        EnvName::try_new("API_TOKEN").expect("valid environment name"),
+        EnvValue::try_new("operation-output-secret").expect("valid environment value"),
+    )]));
     let output = WatchOutput {
         events: vec![
             replayed(
@@ -1115,7 +1123,7 @@ fn ops_watch_renders_persisted_operation_events() {
                 ployz_core::operation::OperationEvent::DeploySubmitted {
                     operation_id: operation_id("op_123"),
                     reservation_id: Some(ployz_core::deploy::DeployReservationId::first()),
-                    target: request,
+                    target: DeployRequestEvidence::from_request(&request),
                 },
             ),
             replayed(
@@ -1134,6 +1142,7 @@ fn ops_watch_renders_persisted_operation_events() {
         output,
         "1 deploy.submitted origin manual release\n2 deploy.completed\n"
     );
+    assert!(!output.contains("operation-output-secret"));
 }
 
 #[test]
@@ -1186,7 +1195,7 @@ fn ops_watch_renders_failed_deploy_details() {
                 ployz_core::operation::OperationEvent::DeploySubmitted {
                     operation_id: operation_id("op_123"),
                     reservation_id: Some(ployz_core::deploy::DeployReservationId::first()),
-                    target: deploy_request(),
+                    target: DeployRequestEvidence::from_request(&deploy_request()),
                 },
             ),
             replayed(

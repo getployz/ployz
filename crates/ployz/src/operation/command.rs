@@ -1035,17 +1035,19 @@ fn render_replayed_event_text(
 ) -> String {
     let label = operation_event_label(&event.event);
     match &event.event {
-        OperationEvent::DeploySubmitted { target, .. } => target.origin.as_ref().map_or_else(
-            || format!("{} {}", event.sequence.get(), label),
-            |origin| {
-                format!(
-                    "{} {} origin {}",
-                    event.sequence.get(),
-                    label,
-                    origin.as_str()
-                )
-            },
-        ),
+        OperationEvent::DeploySubmitted { target, .. } => {
+            target.request().origin.as_ref().map_or_else(
+                || format!("{} {}", event.sequence.get(), label),
+                |origin| {
+                    format!(
+                        "{} {} origin {}",
+                        event.sequence.get(),
+                        label,
+                        origin.as_str()
+                    )
+                },
+            )
+        }
         OperationEvent::DeployFailed { failure, .. } => format!(
             "{} {} {}",
             event.sequence.get(),

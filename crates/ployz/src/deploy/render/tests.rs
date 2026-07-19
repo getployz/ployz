@@ -1,10 +1,10 @@
 use super::*;
 use ployz_core::certificate::{ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow};
 use ployz_core::deploy::{
-    ContainerRuntimeSpec, DeployPhasePlan, DeployPlan, DeployPlanStep, DeployRequest, DeployRoute,
-    DeployRouteTarget, DeployServicePlacement, DeployServicePlan, DeployServiceSpec,
-    ImageReference, ImageSource, PlatformImage, PushedImageReceipt, ReplicaCount, ReplicaSlot,
-    ReplicatedReplicaSlot, VolumeAdmissionFailure,
+    ContainerRuntimeSpec, DeployPhasePlan, DeployPlan, DeployPlanStep, DeployRequest,
+    DeployRequestEvidence, DeployRoute, DeployRouteTarget, DeployServicePlacement,
+    DeployServicePlan, DeployServiceSpec, ImageReference, ImageSource, PlatformImage,
+    PushedImageReceipt, ReplicaCount, ReplicaSlot, ReplicatedReplicaSlot, VolumeAdmissionFailure,
 };
 use ployz_core::ids::{
     CertId, ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
@@ -185,7 +185,7 @@ fn happy_events() -> Vec<ReplayedOperationEvent> {
             OperationEvent::DeploySubmitted {
                 operation_id: operation_id.clone(),
                 reservation_id: Some(ployz_core::deploy::DeployReservationId::first()),
-                target: target(),
+                target: DeployRequestEvidence::from_request(&target()),
             },
         ),
         replay(
@@ -434,7 +434,7 @@ fn pushed_image_stays_pending_until_availability_is_verified() {
             OperationEvent::DeploySubmitted {
                 operation_id: operation_id.clone(),
                 reservation_id: Some(ployz_core::deploy::DeployReservationId::first()),
-                target,
+                target: DeployRequestEvidence::from_request(&target),
             },
         ),
         replay(
@@ -512,7 +512,7 @@ fn partial_completion_stays_distinct_from_success() {
             OperationEvent::DeploySubmitted {
                 operation_id: operation_id.clone(),
                 reservation_id: Some(ployz_core::deploy::DeployReservationId::first()),
-                target: single_service_target(),
+                target: DeployRequestEvidence::from_request(&single_service_target()),
             },
         ),
         replay(
@@ -543,7 +543,7 @@ fn early_artifact_failure_is_minimal() {
             OperationEvent::DeploySubmitted {
                 operation_id: operation_id.clone(),
                 reservation_id: Some(ployz_core::deploy::DeployReservationId::first()),
-                target: target(),
+                target: DeployRequestEvidence::from_request(&target()),
             },
         ),
         replay(
@@ -588,7 +588,7 @@ fn route_cutover_failure_makes_no_safety_claim() {
             OperationEvent::DeploySubmitted {
                 operation_id: operation_id.clone(),
                 reservation_id: Some(ployz_core::deploy::DeployReservationId::first()),
-                target: single_service_target(),
+                target: DeployRequestEvidence::from_request(&single_service_target()),
             },
         ),
         replay(
@@ -629,7 +629,7 @@ fn deep_health_failure_keeps_container_evidence_and_hints() {
             OperationEvent::DeploySubmitted {
                 operation_id: operation_id.clone(),
                 reservation_id: Some(ployz_core::deploy::DeployReservationId::first()),
-                target: single_service_target(),
+                target: DeployRequestEvidence::from_request(&single_service_target()),
             },
         ),
         replay(
@@ -706,7 +706,7 @@ fn certificate_dns_preflight_failure_names_scope_and_keeps_container_evidence() 
             OperationEvent::DeploySubmitted {
                 operation_id: operation_id.clone(),
                 reservation_id: Some(ployz_core::deploy::DeployReservationId::first()),
-                target: single_service_target(),
+                target: DeployRequestEvidence::from_request(&single_service_target()),
             },
         ),
         replay(
@@ -895,7 +895,7 @@ fn pre_start_failure_keeps_hook_evidence_and_serving_safety() {
             OperationEvent::DeploySubmitted {
                 operation_id: operation_id.clone(),
                 reservation_id: Some(ployz_core::deploy::DeployReservationId::first()),
-                target: single_service_target(),
+                target: DeployRequestEvidence::from_request(&single_service_target()),
             },
         ),
         replay(

@@ -21,6 +21,10 @@ pub enum DeployExecutionError {
     GenerateClientOperationIds { message: String },
     #[error("{message}")]
     History { message: String },
+    #[error(
+        "rollback cannot restore redacted environment values ({affected}); resubmit the deploy input with those environment values"
+    )]
+    RollbackEnvironment { affected: String },
 }
 
 impl From<DeployExecutionError> for PloyzctlExecutionError {
