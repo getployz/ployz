@@ -138,7 +138,7 @@ impl ContainerdContentStore {
                 .map_err(|error| ContainerdContentError::Protocol {
                     message: format!("format lease expiration: {error}"),
                 })?;
-        let id = format!("ployz-image-{}", nuid::next().to_ascii_lowercase());
+        let id = crate::identity::format_nuid_identity("ployz-image-", &nuid::next());
         let request = scoped_request(CreateRequest {
             id,
             labels: HashMap::from([("containerd.io/gc.expire".to_owned(), expires_at_label)]),
@@ -415,7 +415,7 @@ impl ContentIngest {
     #[must_use]
     pub fn new(digest: OciDigest, total_size: u64, lease: ContentLease) -> Self {
         Self {
-            reference: format!("ployz-image-upload-{}", nuid::next().to_ascii_lowercase()),
+            reference: crate::identity::format_nuid_identity("ployz-image-upload-", &nuid::next()),
             digest,
             total_size,
             lease,

@@ -22,8 +22,8 @@ use crate::{
     OpsWatchRequest, RuntimeSnapshotError, RuntimeSnapshotRequest, RuntimeSnapshotResult,
     ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
     ServiceListResult, ServiceRestartError, ServiceRestartRequest, ServiceSnapshot,
-    VolumeCreateError, VolumeCreateRequest, VolumeListError, VolumeListRequest, VolumeListResult,
-    VolumeRemoveError, VolumeRemoveRequest,
+    SystemDeployRequest, VolumeCreateError, VolumeCreateRequest, VolumeListError,
+    VolumeListRequest, VolumeListResult, VolumeRemoveError, VolumeRemoveRequest,
 };
 use ployz_core::operation::OperationEventReplayPage;
 
@@ -35,6 +35,7 @@ pub enum OperationApiEndpoint {
     DeployReserve,
     DeployPreview,
     DeploySubmit,
+    SystemDeploy,
     InitFirstMachineActivate,
     MachineAdd,
     MachineBuildCachePrune,
@@ -88,6 +89,7 @@ macro_rules! operation_api_contracts {
             $crate::operation_api::DeployReserveApi,
             $crate::operation_api::DeployPreviewApi,
             $crate::operation_api::DeploySubmitApi,
+            $crate::operation_api::SystemDeployApi,
             $crate::operation_api::InitFirstMachineActivateApi,
             $crate::operation_api::MachineAddApi,
             $crate::operation_api::MachineBuildCachePruneApi,
@@ -170,6 +172,18 @@ impl OperationApiContract for DeploySubmitApi {
 
     const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::DeploySubmit;
     const RESPONSE_ALIAS: &'static str = "DeploySubmitResponse";
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SystemDeployApi;
+
+impl OperationApiContract for SystemDeployApi {
+    type Request = SystemDeployRequest;
+    type Success = AcceptedOperation;
+    type Error = DeploySubmitError;
+
+    const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::SystemDeploy;
+    const RESPONSE_ALIAS: &'static str = "SystemDeployResponse";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

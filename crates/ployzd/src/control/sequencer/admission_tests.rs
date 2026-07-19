@@ -13,6 +13,7 @@ use ployz_core::ingress::{
 };
 use ployz_core::install::InstallArtifactVersion;
 use ployz_core::operation::RoutePort;
+use ployz_core::operation::VolumeCreateRequest;
 use ployz_test_support::ids::{
     idempotency_key, machine_id, namespace_id, operation_id, service_id,
 };
@@ -446,7 +447,7 @@ async fn duplicate_deploy_submission_keeps_ingress_fence_owned_by_original() {
 
     assert!(matches!(
         error,
-        SubmitCommandError::IngressBusy { owner, .. }
+        OrdinaryNamespaceSubmitError::Submit(SubmitCommandError::IngressBusy { owner, .. })
             if owner == operation_id("op_original")
     ));
 }
@@ -483,6 +484,224 @@ async fn duplicate_ingress_configure_submission_keeps_fence_owned_by_original() 
         IngressConfigureSubmitError::Busy { owner }
             if owner == operation_id("op_original")
     ));
+}
+
+#[tokio::test]
+async fn ordinary_deploy_rejects_the_reserved_system_namespace_before_recording_evidence() {
+    let (_nats, controllers, _intent) = test_controllers().await;
+    let namespace_id = ployz_core::namespace::reserved_system_namespace();
+    let reservation_id = controllers
+        .reserve_deploy(&namespace_id)
+        .await
+        .expect("system namespace reservation issues")
+        .reservation_id;
+    let mut target = automatic_deploy_request();
+    target.namespace_id = namespace_id.clone();
+    let operation_id = operation_id("op_reserved_deploy");
+
+    let error = controllers
+        .submit_deploy(DeploySubmitCommand {
+            operation_id: operation_id.clone(),
+            idempotency_key: idempotency_key("idem_reserved_deploy"),
+            reservation_id,
+            target,
+            registry_credentials: BTreeMap::new(),
+        })
+        .await
+        .expect_err("ordinary deploy cannot target the system namespace");
+
+    assert!(matches!(
+        error,
+        OrdinaryNamespaceSubmitError::ReservedSystemNamespace(ployz_core::namespace::ReservedSystemNamespace { namespace_id: rejected })
+            if rejected == namespace_id
+    ));
+    assert_operation_was_not_recorded(&controllers, &operation_id).await;
+}
+
+#[tokio::test]
+async fn ordinary_namespace_operations_reject_the_reserved_namespace_before_recording_evidence() {
+    let (_nats, controllers, _intent) = test_controllers().await;
+    let namespace_id = ployz_core::namespace::reserved_system_namespace();
+
+    let restart_id = operation_id("op_reserved_restart");
+    let restart_error = controllers
+        .submit_service_restart(ServiceRestartSubmitCommand {
+            operation_id: restart_id.clone(),
+            namespace_id: namespace_id.clone(),
+            service_id: service_id("svc_system"),
+        })
+        .await
+        .expect_err("ordinary restart cannot target the system namespace");
+    assert_reserved_system_namespace(restart_error, &namespace_id);
+    assert_operation_was_not_recorded(&controllers, &restart_id).await;
+
+    let remove_id = operation_id("op_reserved_namespace_remove");
+    let remove_error = controllers
+        .submit_namespace_remove(NamespaceRemoveSubmitCommand {
+            operation_id: remove_id.clone(),
+            namespace_id: namespace_id.clone(),
+        })
+        .await
+        .expect_err("ordinary namespace removal cannot target the system namespace");
+    assert_reserved_system_namespace(remove_error, &namespace_id);
+    assert_operation_was_not_recorded(&controllers, &remove_id).await;
+
+    let volume_create_id = operation_id("op_reserved_volume_create");
+    let create_error = controllers
+        .submit_volume_create(VolumeCreateSubmitCommand {
+            request: VolumeCreateRequest {
+                operation_id: volume_create_id.clone(),
+                namespace_id: namespace_id.clone(),
+                volume_name: ployz_core::deploy::VolumeName::try_new("data").expect("volume name"),
+                machine_id: machine_id("machine_a"),
+                spec: ployz_core::deploy::VolumeSpec::Plain,
+            },
+        })
+        .await
+        .expect_err("ordinary volume creation cannot target the system namespace");
+    assert_reserved_system_namespace(create_error, &namespace_id);
+    assert_operation_was_not_recorded(&controllers, &volume_create_id).await;
+
+    let volume_remove_id = operation_id("op_reserved_volume_remove");
+    let remove_error = controllers
+        .submit_volume_remove(VolumeRemoveSubmitCommand {
+            operation_id: volume_remove_id.clone(),
+            namespace_id: namespace_id.clone(),
+            volume_name: ployz_core::deploy::VolumeName::try_new("data").expect("volume name"),
+        })
+        .await
+        .expect_err("ordinary volume removal cannot target the system namespace");
+    assert_reserved_system_namespace(remove_error, &namespace_id);
+    assert_operation_was_not_recorded(&controllers, &volume_remove_id).await;
+}
+
+#[tokio::test]
+async fn system_deploy_uses_the_existing_reservation_repository_and_namespace_fence() {
+    let (_nats, controllers, _intent) = test_controllers().await;
+    let namespace_id = ployz_core::namespace::reserved_system_namespace();
+    let reservation_id = controllers
+        .reserve_deploy(&namespace_id)
+        .await
+        .expect("system namespace reservation issues")
+        .reservation_id;
+    let mut target = automatic_deploy_request();
+    target.namespace_id = namespace_id.clone();
+    clear_only_service_routes(&mut target);
+    let submitted_operation_id = operation_id("op_system_deploy");
+    let command = DeploySubmitCommand {
+        operation_id: submitted_operation_id.clone(),
+        idempotency_key: idempotency_key("idem_system_deploy"),
+        reservation_id,
+        target,
+        registry_credentials: BTreeMap::new(),
+    };
+
+    let accepted = controllers
+        .submit_system_deploy(command)
+        .await
+        .expect("system deploy is admitted through the deploy sequencer");
+    assert_eq!(accepted.submission.operation_id, submitted_operation_id);
+    assert!(
+        controllers
+            .repository()
+            .get(&submitted_operation_id)
+            .await
+            .expect("operation status reads")
+            .is_some(),
+        "system deploy records ordinary deploy evidence"
+    );
+
+    let next_reservation = controllers
+        .reserve_deploy(&namespace_id)
+        .await
+        .expect("second reservation issues")
+        .reservation_id;
+    let mut conflicting_target = automatic_deploy_request();
+    conflicting_target.namespace_id = namespace_id.clone();
+    clear_only_service_routes(&mut conflicting_target);
+    let conflicting_id = operation_id("op_system_deploy_conflict");
+    let conflict = controllers
+        .submit_system_deploy(DeploySubmitCommand {
+            operation_id: conflicting_id.clone(),
+            idempotency_key: idempotency_key("idem_system_deploy_conflict"),
+            reservation_id: next_reservation,
+            target: conflicting_target,
+            registry_credentials: BTreeMap::new(),
+        })
+        .await
+        .expect_err("system deploy shares the namespace fence");
+    assert!(matches!(
+        conflict,
+        SystemDeploySubmitError::Submit(SubmitCommandError::NamespaceBusy { namespace_id: busy, owner })
+            if busy == namespace_id && owner == submitted_operation_id
+    ));
+    assert_operation_was_not_recorded(&controllers, &conflicting_id).await;
+}
+
+#[tokio::test]
+async fn system_deploy_rejects_a_non_system_namespace_before_recording_evidence() {
+    let (_nats, controllers, _intent) = test_controllers().await;
+    let namespace_id = namespace_id("ordinary");
+    let reservation_id = controllers
+        .reserve_deploy(&namespace_id)
+        .await
+        .expect("ordinary namespace reservation issues")
+        .reservation_id;
+    let mut target = automatic_deploy_request();
+    target.namespace_id = namespace_id.clone();
+    clear_only_service_routes(&mut target);
+    let operation_id = operation_id("op_system_wrong_namespace");
+
+    let error = controllers
+        .submit_system_deploy(DeploySubmitCommand {
+            operation_id: operation_id.clone(),
+            idempotency_key: idempotency_key("idem_system_wrong_namespace"),
+            reservation_id,
+            target,
+            registry_credentials: BTreeMap::new(),
+        })
+        .await
+        .expect_err("system authority is fixed to the reserved namespace");
+
+    assert!(matches!(
+        error,
+        SystemDeploySubmitError::SystemNamespaceRequired(ployz_core::namespace::SystemNamespaceRequired { namespace_id: rejected })
+            if rejected == namespace_id
+    ));
+    assert_operation_was_not_recorded(&controllers, &operation_id).await;
+}
+
+fn assert_reserved_system_namespace(
+    error: OrdinaryNamespaceSubmitError,
+    namespace_id: &NamespaceId,
+) {
+    assert!(matches!(
+        error,
+        OrdinaryNamespaceSubmitError::ReservedSystemNamespace(ployz_core::namespace::ReservedSystemNamespace { namespace_id: rejected })
+            if rejected == *namespace_id
+    ));
+}
+
+async fn assert_operation_was_not_recorded(
+    controllers: &OperationControllers,
+    operation_id: &OperationId,
+) {
+    assert!(
+        controllers
+            .repository()
+            .get(operation_id)
+            .await
+            .expect("operation status reads")
+            .is_none(),
+        "rejected operation must not leave status or event evidence"
+    );
+}
+
+fn clear_only_service_routes(target: &mut DeployRequest) {
+    let [service] = target.services.as_mut_slice() else {
+        panic!("test deploy target must contain exactly one service")
+    };
+    service.routes.clear();
 }
 
 async fn test_controllers() -> (

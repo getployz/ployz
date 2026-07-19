@@ -24,6 +24,7 @@ pub const RUNTIME_SNAPSHOT_STREAM: &str = "plz.v1.projection.runtime.snapshot";
 pub const RUNTIME_SNAPSHOT_SEED: &str = "plz.v1.rpc.operator.query.runtime.snapshot.seed";
 
 pub const OPERATOR_DEPLOY_SUBMIT: &str = "plz.v1.rpc.operator.command.deploy.submit";
+pub const OPERATOR_SYSTEM_DEPLOY: &str = "plz.v1.rpc.operator.command.system.deploy";
 pub const OPERATOR_DEPLOY_PREVIEW: &str = "plz.v1.rpc.operator.query.deploy.preview";
 pub const OPERATOR_BUILD_SUBMIT: &str = "plz.v1.rpc.operator.command.build.submit";
 pub const OPERATOR_BUILD_CANCEL: &str = "plz.v1.rpc.operator.command.build.cancel";
@@ -71,6 +72,7 @@ pub enum OperationApiEndpoint {
     DeployReserve,
     DeployPreview,
     DeploySubmit,
+    SystemDeploy,
     InitFirstMachineActivate,
     MachineAdd,
     MachineBuildCachePrune,
@@ -121,6 +123,7 @@ impl OperationApiEndpoint {
             Self::DeployReserve => "deploy.reserve",
             Self::DeployPreview => "deploy.preview",
             Self::DeploySubmit => "deploy.submit",
+            Self::SystemDeploy => "system.deploy",
             Self::InitFirstMachineActivate => "init.first_machine.activate",
             Self::MachineAdd => "machine.add",
             Self::MachineBuildCachePrune => "machine.build_cache_prune",
@@ -164,6 +167,7 @@ impl OperationApiEndpoint {
             Self::DeployReserve => OPERATOR_DEPLOY_RESERVE,
             Self::DeployPreview => OPERATOR_DEPLOY_PREVIEW,
             Self::DeploySubmit => OPERATOR_DEPLOY_SUBMIT,
+            Self::SystemDeploy => OPERATOR_SYSTEM_DEPLOY,
             Self::InitFirstMachineActivate => OPERATOR_INIT_FIRST_MACHINE_ACTIVATE,
             Self::MachineAdd => OPERATOR_MACHINE_ADD,
             Self::MachineBuildCachePrune => OPERATOR_MACHINE_BUILD_CACHE_PRUNE,
@@ -204,6 +208,7 @@ impl OperationApiEndpoint {
         match self {
             Self::BuildSubmit
             | Self::DeploySubmit
+            | Self::SystemDeploy
             | Self::MachineAdd
             | Self::MachineBuildCachePrune
             | Self::MachineUpdate
@@ -253,6 +258,7 @@ impl From<ployz_sdk_types::operation_api::OperationApiEndpoint> for OperationApi
             Core::DeployReserve => Self::DeployReserve,
             Core::DeployPreview => Self::DeployPreview,
             Core::DeploySubmit => Self::DeploySubmit,
+            Core::SystemDeploy => Self::SystemDeploy,
             Core::InitFirstMachineActivate => Self::InitFirstMachineActivate,
             Core::MachineAdd => Self::MachineAdd,
             Core::MachineBuildCachePrune => Self::MachineBuildCachePrune,
@@ -637,6 +643,25 @@ mod build_contract_tests {
                 ployz_sdk_types::operation_api::OperationApiEndpoint::BuildCancel
             ),
             OperationApiEndpoint::BuildCancel
+        );
+    }
+
+    #[test]
+    fn system_deploy_endpoint_metadata_is_stable() {
+        assert_eq!(OperationApiEndpoint::SystemDeploy.name(), "system.deploy");
+        assert_eq!(
+            OperationApiEndpoint::SystemDeploy.subject(),
+            "plz.v1.rpc.operator.command.system.deploy"
+        );
+        assert_eq!(
+            OperationApiEndpoint::SystemDeploy.execution(),
+            OperationApiEndpointExecution::AcceptsOperation
+        );
+        assert_eq!(
+            OperationApiEndpoint::from(
+                ployz_sdk_types::operation_api::OperationApiEndpoint::SystemDeploy
+            ),
+            OperationApiEndpoint::SystemDeploy
         );
     }
 

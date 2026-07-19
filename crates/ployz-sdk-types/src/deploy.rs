@@ -118,12 +118,37 @@ pub struct DeploySubmitRequest {
     pub registry_credentials: BTreeMap<ServiceId, RegistryCredential>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SystemDeployTarget {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<DeployOrigin>,
+    pub services: Vec<DeployServiceSpec>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SystemDeployRequest {
+    pub idempotency_key: OperationIdempotencyKey,
+    pub reservation_id: DeployReservationId,
+    pub target: SystemDeployTarget,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub registry_credentials: BTreeMap<ServiceId, RegistryCredential>,
+}
+
+pub type SystemDeployResponse = OperationApiResponse<AcceptedOperation, DeploySubmitError>;
+
 pub type DeploySubmitResponse = OperationApiResponse<AcceptedOperation, DeploySubmitError>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
 #[derive(thiserror::Error)]
 pub enum DeploySubmitError {
+    #[error("namespace {} is reserved for Ployz system services", .namespace_id.as_str())]
+    ReservedSystemNamespace {
+        operation_id: OperationId,
+        namespace_id: NamespaceId,
+    },
     #[error(
         "deploy reservation {} was not issued for namespace {}",
         .reservation_id.get(),
@@ -201,6 +226,43 @@ pub enum DeploySubmitError {
 
 #[cfg(test)]
 mod tests {
+    use super::{SystemDeployRequest, SystemDeployTarget};
+
+    fn system_deploy_request() -> SystemDeployRequest {
+        SystemDeployRequest {
+            idempotency_key: ployz_core::operation::OperationIdempotencyKey::try_new("idem_system")
+                .expect("idempotency key"),
+            reservation_id: ployz_core::deploy::DeployReservationId::first(),
+            target: SystemDeployTarget {
+                origin: None,
+                services: Vec::new(),
+            },
+            registry_credentials: std::collections::BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn system_deploy_wire_shape_cannot_name_a_namespace_or_declare_volumes() {
+        let request = serde_json::to_value(system_deploy_request())
+            .expect("system deploy request serializes");
+        let target = request
+            .get("target")
+            .and_then(serde_json::Value::as_object)
+            .expect("target is an object");
+        assert_eq!(target.len(), 1);
+        assert!(target.contains_key("services"));
+
+        for forbidden in ["namespace_id", "volumes"] {
+            let mut request = request.clone();
+            request
+                .get_mut("target")
+                .and_then(serde_json::Value::as_object_mut)
+                .expect("target is an object")
+                .insert(forbidden.to_owned(), serde_json::json!({}));
+            assert!(serde_json::from_value::<SystemDeployRequest>(request).is_err());
+        }
+    }
+
     #[test]
     fn authoritative_deploy_rejects_unknown_pending_builds_field() {
         let request = super::DeploySubmitRequest {

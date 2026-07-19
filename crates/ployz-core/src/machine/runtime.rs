@@ -58,6 +58,207 @@ pub struct MachineFactsSnapshot {
     observed_at_unix_ms: u64,
 }
 
+/// Point-of-use machine testimony whose independently observed axes remain
+/// available when Docker cannot answer container discovery. Fanout projections
+/// continue to use [`MachineFactsSnapshot`], which is always container-complete.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    try_from = "MachineFactsTestimonyWire",
+    into = "MachineFactsTestimonyWire"
+)]
+pub struct MachineFactsTestimony {
+    machine_id: MachineId,
+    containers: MachineContainerTestimony,
+    endpoints: Option<MachineEndpointObservation>,
+    disk_space: MachineDiskSpace,
+    storage: Option<StorageCapability>,
+    platform: OciPlatform,
+    observed_at_unix_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MachineFactsTestimonyWire {
+    machine_id: MachineId,
+    containers: MachineContainerTestimony,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    endpoints: Option<MachineEndpointObservation>,
+    disk_space: MachineDiskSpace,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    storage: Option<StorageCapability>,
+    platform: OciPlatform,
+    observed_at_unix_ms: u64,
+}
+
+impl TryFrom<MachineFactsTestimonyWire> for MachineFactsTestimony {
+    type Error = MachineFactsSnapshotError;
+
+    fn try_from(value: MachineFactsTestimonyWire) -> Result<Self, Self::Error> {
+        Self::try_new(
+            value.machine_id,
+            value.containers,
+            value.endpoints,
+            value.disk_space,
+            value.storage,
+            value.platform,
+            value.observed_at_unix_ms,
+        )
+    }
+}
+
+impl From<MachineFactsTestimony> for MachineFactsTestimonyWire {
+    fn from(value: MachineFactsTestimony) -> Self {
+        Self {
+            machine_id: value.machine_id,
+            containers: value.containers,
+            endpoints: value.endpoints,
+            disk_space: value.disk_space,
+            storage: value.storage,
+            platform: value.platform,
+            observed_at_unix_ms: value.observed_at_unix_ms,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineContainerTestimony {
+    Answered {
+        snapshot: MachineContainerObservationSnapshot,
+    },
+    Unavailable {
+        reason: MachineContainerUnavailableReason,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum MachineContainerUnavailableReason {
+    DockerUnavailable,
+}
+
+impl MachineFactsTestimony {
+    pub fn try_new(
+        machine_id: MachineId,
+        containers: MachineContainerTestimony,
+        endpoints: Option<MachineEndpointObservation>,
+        disk_space: MachineDiskSpace,
+        storage: Option<StorageCapability>,
+        platform: OciPlatform,
+        observed_at_unix_ms: u64,
+    ) -> Result<Self, MachineFactsSnapshotError> {
+        if let MachineContainerTestimony::Answered { snapshot } = &containers
+            && snapshot.machine_id() != &machine_id
+        {
+            return Err(MachineFactsSnapshotError::ContainerMachineMismatch {
+                expected: machine_id,
+                actual: snapshot.machine_id().clone(),
+            });
+        }
+        validate_machine_endpoints(&machine_id, endpoints.as_ref())?;
+        Ok(Self {
+            machine_id,
+            containers,
+            endpoints,
+            disk_space,
+            storage,
+            platform,
+            observed_at_unix_ms,
+        })
+    }
+
+    #[must_use]
+    pub fn machine_id(&self) -> &MachineId {
+        &self.machine_id
+    }
+
+    #[must_use]
+    pub const fn containers(&self) -> &MachineContainerTestimony {
+        &self.containers
+    }
+
+    #[must_use]
+    pub fn endpoints(&self) -> Option<&MachineEndpointObservation> {
+        self.endpoints.as_ref()
+    }
+
+    #[must_use]
+    pub const fn disk_space(&self) -> MachineDiskSpace {
+        self.disk_space
+    }
+
+    #[must_use]
+    pub const fn storage(&self) -> Option<&StorageCapability> {
+        self.storage.as_ref()
+    }
+
+    #[must_use]
+    pub const fn platform(&self) -> &OciPlatform {
+        &self.platform
+    }
+
+    #[must_use]
+    pub const fn observed_at_unix_ms(&self) -> u64 {
+        self.observed_at_unix_ms
+    }
+}
+
+impl From<MachineFactsSnapshot> for MachineFactsTestimony {
+    fn from(facts: MachineFactsSnapshot) -> Self {
+        let MachineFactsSnapshotWire {
+            machine_id,
+            containers,
+            endpoints,
+            disk_space,
+            storage,
+            platform,
+            observed_at_unix_ms,
+        } = facts.into();
+        Self {
+            machine_id,
+            containers: MachineContainerTestimony::Answered {
+                snapshot: containers,
+            },
+            endpoints,
+            disk_space,
+            storage,
+            platform,
+            observed_at_unix_ms,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum MachineFactsCompletionError {
+    #[error("container testimony unavailable: {reason:?}")]
+    ContainersUnavailable {
+        reason: MachineContainerUnavailableReason,
+    },
+}
+
+impl TryFrom<MachineFactsTestimony> for MachineFactsSnapshot {
+    type Error = MachineFactsCompletionError;
+
+    fn try_from(testimony: MachineFactsTestimony) -> Result<Self, Self::Error> {
+        let containers = match testimony.containers {
+            MachineContainerTestimony::Answered { snapshot } => snapshot,
+            MachineContainerTestimony::Unavailable { reason } => {
+                return Err(MachineFactsCompletionError::ContainersUnavailable { reason });
+            }
+        };
+        Ok(Self {
+            machine_id: testimony.machine_id,
+            containers,
+            endpoints: testimony.endpoints,
+            disk_space: testimony.disk_space,
+            storage: testimony.storage,
+            platform: testimony.platform,
+            observed_at_unix_ms: testimony.observed_at_unix_ms,
+        })
+    }
+}
+
 impl MachineFactsSnapshot {
     pub fn try_new(
         machine_id: MachineId,
@@ -74,20 +275,7 @@ impl MachineFactsSnapshot {
                 actual: containers.machine_id().clone(),
             });
         }
-        if let Some(endpoints) = &endpoints
-            && endpoints.machine_id != machine_id
-        {
-            return Err(MachineFactsSnapshotError::EndpointMachineMismatch {
-                expected: machine_id,
-                actual: endpoints.machine_id.clone(),
-            });
-        }
-        if let Some(endpoints) = &endpoints
-            && endpoints.control_endpoints.is_empty()
-            && endpoints.mesh_endpoints.is_empty()
-        {
-            return Err(MachineFactsSnapshotError::EmptyEndpoints);
-        }
+        validate_machine_endpoints(&machine_id, endpoints.as_ref())?;
 
         Ok(Self {
             machine_id,
@@ -170,6 +358,27 @@ impl MachineFactsSnapshot {
             observed_at_unix_ms,
         )
     }
+}
+
+fn validate_machine_endpoints(
+    machine_id: &MachineId,
+    endpoints: Option<&MachineEndpointObservation>,
+) -> Result<(), MachineFactsSnapshotError> {
+    if let Some(endpoints) = endpoints
+        && endpoints.machine_id != *machine_id
+    {
+        return Err(MachineFactsSnapshotError::EndpointMachineMismatch {
+            expected: machine_id.clone(),
+            actual: endpoints.machine_id.clone(),
+        });
+    }
+    if let Some(endpoints) = endpoints
+        && endpoints.control_endpoints.is_empty()
+        && endpoints.mesh_endpoints.is_empty()
+    {
+        return Err(MachineFactsSnapshotError::EmptyEndpoints);
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

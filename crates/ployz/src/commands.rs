@@ -33,6 +33,7 @@ pub enum PloyzctlCommand {
     CoreReplace(core::CoreReplaceCommand),
     ComposeCheck(compose::ComposeCheckCommand),
     Deploy(deploy::DeployCommand),
+    SystemDeploy(deploy::DeployCommand),
     DeployHistory(deploy::DeployHistoryCommand),
     DeployRollback(deploy::DeployRollbackCommand),
     InternalInit(Box<init::FirstMachineInitCommand>),
@@ -82,6 +83,7 @@ impl PloyzctlCommand {
             Self::CoreReplace(_) => Some("core demote"),
             Self::ComposeCheck(_) => Some("compose check"),
             Self::Deploy(_) => Some("deploy"),
+            Self::SystemDeploy(_) => Some("system deploy"),
             Self::DeployHistory(_) => Some("deploy history"),
             Self::DeployRollback(_) => Some("deploy rollback"),
             Self::InternalInit(_) => Some("internal init"),
@@ -170,6 +172,10 @@ enum CommandCli {
     },
     Init(machine::MachineInitCli),
     Deploy(deploy::DeployRootCli),
+    System {
+        #[command(subcommand)]
+        command: SystemCli,
+    },
     Compose(compose::ComposeRootCli),
     Core {
         #[command(subcommand)]
@@ -213,6 +219,11 @@ enum CommandCli {
         #[command(subcommand)]
         command: InternalCli,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum SystemCli {
+    Deploy(deploy::SystemDeployCli),
 }
 
 #[derive(Debug, Args)]
@@ -356,6 +367,9 @@ fn command_from_cli(command: CommandCli) -> Result<PloyzctlCommand, PloyzctlCliE
                 }
             })
         }
+        CommandCli::System {
+            command: SystemCli::Deploy(command),
+        } => deploy::system_deploy_command(command).map(PloyzctlCommand::SystemDeploy),
         CommandCli::Compose(command) => {
             compose::compose_command(command).map(PloyzctlCommand::ComposeCheck)
         }

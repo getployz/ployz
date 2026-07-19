@@ -9,12 +9,14 @@ use crate::control::intent::service::NatsIntentReader;
 use crate::control::projection::ingress_endpoint::IngressEndpointProjectionHealth;
 use crate::control::projection::runtime::RuntimeProjectionHealthReader;
 use crate::control::projection::runtime_state::{
-    from_sources as runtime_snapshot_from_sources, load_ingress_sources, service_snapshot,
+    from_sources as runtime_snapshot_from_sources, load_ingress_sources, machine_testimony,
+    service_snapshot,
 };
 use crate::control::reconciler::certificate::CertificateRenewalHealth;
 use crate::control::role_client::machine::{
     MachineLogsTailError, NatsMachineFactsReader, NatsMachineLogsTailer,
     read_available_machine_facts, read_available_machine_facts_by_id,
+    read_available_machine_facts_testimony_by_id,
 };
 use crate::control::sequencer::OperationControllers;
 use crate::control::store::CoreStore;
@@ -32,7 +34,7 @@ use ployz_sdk_types::{
     ControlHealth, ControlTaskSupervisorFailure, ControlTaskSupervisorHealth, CredentialListError,
     CredentialListResult, LogsTailError, LogsTailRequest, LogsTailResult, LogsTailResultTarget,
     LogsTailTarget, MachineInspectError, MachineListError, MachineListResult, MachineSnapshot,
-    MachineTestimony, OpsListError, OpsListRequest, OpsListResult, OpsStatusError, OpsWatchError,
+    OpsListError, OpsListRequest, OpsListResult, OpsStatusError, OpsWatchError,
     RuntimeSnapshotError, RuntimeSnapshotResult, ServiceInspectError, ServiceListError,
     ServiceListResult, ServiceSnapshot,
 };
@@ -143,8 +145,9 @@ impl RuntimeSnapshotQueryService {
             .iter()
             .map(|machine| machine.machine_id.clone())
             .collect::<Vec<_>>();
-        let facts = read_available_machine_facts_by_id(&self.facts_reader, machine_ids).await;
-        let storage_testimony = facts
+        let direct_facts =
+            read_available_machine_facts_testimony_by_id(&self.facts_reader, machine_ids).await;
+        let storage_testimony = direct_facts
             .values()
             .map(|facts| {
                 MachineStorageTestimony::new(facts.machine_id().clone(), facts.storage().cloned())
@@ -163,7 +166,7 @@ impl RuntimeSnapshotQueryService {
         Ok(RuntimeSnapshotResult {
             snapshot: runtime_snapshot_from_sources(
                 intent,
-                &facts,
+                &direct_facts,
                 Some(&storage_testimony),
                 &gateway_statuses,
                 ingress,
@@ -621,7 +624,8 @@ impl MachineQueryService {
             .map(|machine| machine.machine_id.clone())
             .collect::<Vec<_>>();
         let facts =
-            read_available_machine_facts_by_id(&self.facts_reader, machine_ids.clone()).await;
+            read_available_machine_facts_testimony_by_id(&self.facts_reader, machine_ids.clone())
+                .await;
         let storage_testimony = facts
             .values()
             .map(|facts| {
@@ -638,20 +642,10 @@ impl MachineQueryService {
             .collect::<BTreeMap<_, _>>();
         let mut snapshots = Vec::with_capacity(machines.len());
         for machine in machines {
-            let testimony = match facts.get(&machine.machine_id) {
-                Some(facts) => MachineTestimony::Answered {
-                    endpoints: facts.endpoints().cloned(),
-                    gateway: gateway_statuses
-                        .get(&machine.machine_id)
-                        .cloned()
-                        .map(Box::new),
-                    observed_container_count: facts.containers().containers().len(),
-                    disk_space: facts.disk_space(),
-                    storage: facts.storage().cloned(),
-                    last_observed_at_unix_seconds: facts.observed_at_unix_ms() / 1_000,
-                },
-                None => MachineTestimony::NoAnswer,
-            };
+            let testimony = machine_testimony(
+                facts.get(&machine.machine_id),
+                gateway_statuses.get(&machine.machine_id),
+            );
             snapshots.push(MachineSnapshot {
                 testimony,
                 storage_alarms: storage_alarms
@@ -705,21 +699,11 @@ impl MachineQueryService {
     ) -> Result<MachineSnapshot, String> {
         let facts = self
             .facts_reader
-            .machine_facts(&active.machine_id)
+            .machine_facts_testimony(&active.machine_id)
             .await
             .ok();
         let gateway = self.facts.gateway_status(&active.machine_id);
-        let testimony = match facts {
-            Some(ref facts) => MachineTestimony::Answered {
-                endpoints: facts.endpoints().cloned(),
-                gateway: gateway.map(Box::new),
-                observed_container_count: facts.containers().containers().len(),
-                disk_space: facts.disk_space(),
-                storage: facts.storage().cloned(),
-                last_observed_at_unix_seconds: facts.observed_at_unix_ms() / 1_000,
-            },
-            None => MachineTestimony::NoAnswer,
-        };
+        let testimony = machine_testimony(facts.as_ref(), gateway.as_ref());
 
         let answered = facts
             .as_ref()

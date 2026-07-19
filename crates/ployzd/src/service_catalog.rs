@@ -43,6 +43,7 @@ pub const IMPLEMENTED_OPERATION_API_ENDPOINTS: &[OperationApiEndpoint] = &[
     OperationApiEndpoint::DeployReserve,
     OperationApiEndpoint::DeployPreview,
     OperationApiEndpoint::DeploySubmit,
+    OperationApiEndpoint::SystemDeploy,
     OperationApiEndpoint::ServiceRestart,
     OperationApiEndpoint::NamespaceRemove,
     OperationApiEndpoint::VolumeRemove,

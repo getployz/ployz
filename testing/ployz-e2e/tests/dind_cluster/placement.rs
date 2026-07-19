@@ -24,6 +24,7 @@ use ployz_core::security::NatsPrincipal;
 use ployz_e2e::dind;
 use ployz_sdk_types::{NetworkDataplaneTestimony, NetworkStatusMachine, NetworkStatusRequest};
 use ployz_test_support::ids::{machine_id, namespace_id, service_id};
+
 /// Placement uses durable intent plus fresh machine testimony, fixes its peer
 /// validation set for one pass, and does not require RTT.
 #[tokio::test]

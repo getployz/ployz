@@ -8,9 +8,14 @@ use ployz_core::deploy::{
 use ployz_core::ids::{MachineId, NamespaceId, OperationId, ServiceId};
 use ployz_core::image::OciDigest;
 use ployz_core::operation::OperationIdempotencyKey;
-use ployz_sdk_types::{DeploySubmitError, DeploySubmitRequest, NetworkRepairError};
+use ployz_sdk_types::{
+    DeploySubmitError, DeploySubmitRequest, NetworkRepairError, SystemDeployRequest,
+    SystemDeployTarget,
+};
 
-use super::{normalize_deploy_submit, validate_network_repair_preconditions};
+use super::{
+    normalize_deploy_submit, normalize_system_deploy, validate_network_repair_preconditions,
+};
 
 fn operation_id() -> OperationId {
     OperationId::try_new("op_network_repair").expect("operation id")
@@ -167,4 +172,77 @@ fn deploy_admission_rejects_a_mounted_volume_without_a_declaration() {
         Err(DeploySubmitError::InvalidTarget { message, .. })
             if message.as_str().contains("service api mounts volume data without a declaration")
     ));
+}
+
+#[test]
+fn ordinary_deploy_reports_reserved_namespace_before_invalid_target() {
+    let mut runtime = ContainerRuntimeSpec::image_defaults();
+    runtime.volume_mounts = vec![ServiceVolumeMount {
+        volume_name: VolumeName::try_new("undeclared").expect("volume name"),
+        target: ContainerMountPath::try_new("/data").expect("mount path"),
+    }];
+    let request = DeploySubmitRequest {
+        idempotency_key: OperationIdempotencyKey::try_new("idem_reserved_invalid")
+            .expect("idempotency key"),
+        reservation_id: DeployReservationId::first(),
+        target: DeployRequest {
+            namespace_id: ployz_core::namespace::reserved_system_namespace(),
+            origin: None,
+            volumes: BTreeMap::new(),
+            services: vec![DeployServiceSpec {
+                keep: None,
+                service_id: ServiceId::try_new("api").expect("service id"),
+                image: ImageReference::try_new("nginx:latest").expect("image"),
+                image_source: ImageSource::Registry,
+                mode: ployz_core::deploy::ServiceMode::Replicated {
+                    replicas: ReplicaCount::try_new(1).expect("replicas"),
+                },
+                runtime,
+                pre_start: None,
+                depends_on: Vec::new(),
+                routes: Vec::new(),
+            }],
+        },
+        registry_credentials: BTreeMap::new(),
+    };
+
+    assert!(matches!(
+        normalize_deploy_submit(request),
+        Err(DeploySubmitError::ReservedSystemNamespace { namespace_id, .. })
+            if namespace_id == ployz_core::namespace::reserved_system_namespace()
+    ));
+}
+
+#[test]
+fn system_deploy_normalization_fixes_the_reserved_namespace_and_empty_volumes() {
+    let command = normalize_system_deploy(SystemDeployRequest {
+        idempotency_key: OperationIdempotencyKey::try_new("idem_system_deploy")
+            .expect("idempotency key"),
+        reservation_id: DeployReservationId::first(),
+        target: SystemDeployTarget {
+            origin: None,
+            services: vec![DeployServiceSpec {
+                keep: None,
+                service_id: ServiceId::try_new("gateway").expect("service id"),
+                image: ImageReference::try_new("nginx:latest").expect("image"),
+                image_source: ImageSource::Registry,
+                mode: ployz_core::deploy::ServiceMode::Replicated {
+                    replicas: ReplicaCount::try_new(1).expect("replicas"),
+                },
+                runtime: ContainerRuntimeSpec::image_defaults(),
+                pre_start: None,
+                depends_on: Vec::new(),
+                routes: Vec::new(),
+            }],
+        },
+        registry_credentials: BTreeMap::new(),
+    })
+    .expect("system deploy target");
+
+    assert_eq!(
+        command.target.namespace_id,
+        ployz_core::namespace::reserved_system_namespace()
+    );
+    assert!(command.target.volumes.is_empty());
+    assert_eq!(command.target.services.len(), 1);
 }
