@@ -19,7 +19,7 @@ use crate::control::operation_evidence::{
     RedeemMachineJoinTokenError, ServiceRestartOperationSubmission, SubmitMachineAddError,
     SubmitOperationError, VolumeCreateOperationSubmission, VolumeRemoveOperationSubmission,
 };
-use ployz_core::build::{BuildAdapter, BuildPlatforms, GitSource};
+use ployz_core::build::{BuildAdapter, BuildPlatforms, BuildTarget, GitSource};
 use ployz_core::deploy::{
     DEFAULT_DEPLOY_RESERVATION_TTL_SECONDS, DeployRequest, DeployReservationExpiresAt,
     DeployReservationId, RegistryCredential, VolumeName,
@@ -61,6 +61,7 @@ pub struct DeploySubmitCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildSubmitCommand {
     pub operation_id: OperationId,
+    pub target: BuildTarget,
     pub source: GitSource,
     pub adapter: BuildAdapter,
     pub platforms: BuildPlatforms,
@@ -337,6 +338,7 @@ impl OperationControllers {
     ) -> Result<AcceptedBuildExecution, SubmitCommandError> {
         let BuildSubmitCommand {
             operation_id,
+            target,
             source,
             adapter,
             platforms,
@@ -345,6 +347,7 @@ impl OperationControllers {
             .repository
             .submit_build(BuildOperationSubmission {
                 operation_id,
+                target,
                 source: source.evidence(),
                 adapter,
                 platforms,

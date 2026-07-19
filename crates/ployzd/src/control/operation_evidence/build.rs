@@ -12,6 +12,7 @@ impl OperationRepository {
         submission: BuildOperationSubmission,
     ) -> Result<AcceptedBuildSubmission, SubmitOperationError> {
         let payload = BuildOperationPayload {
+            target: submission.target,
             source: submission.source,
             adapter: submission.adapter,
             platforms: submission.platforms,
@@ -28,6 +29,7 @@ impl OperationRepository {
         Ok(AcceptedBuildSubmission {
             operation_id: submitted.operation_id,
             start_sequence: submitted.start_sequence,
+            target: submitted.payload.target,
             source: submitted.payload.source,
             adapter: submitted.payload.adapter,
             platforms: submitted.payload.platforms,
@@ -60,82 +62,81 @@ fn build_evidence_event(operation_id: &OperationId, evidence: BuildEvidence) -> 
     match evidence {
         BuildEvidence::VerifiedCommit {
             platform,
-            machine_id,
+            executor,
             commit,
         } => OperationEvent::BuildCommitVerified {
             operation_id: operation_id.clone(),
             platform,
-            machine_id,
+            executor,
             commit,
         },
-        BuildEvidence::PlatformPlaced {
-            platform,
-            machine_id,
-        } => OperationEvent::BuildPlatformPlaced {
-            operation_id: operation_id.clone(),
-            platform,
-            machine_id,
-        },
+        BuildEvidence::PlatformPlaced { platform, executor } => {
+            OperationEvent::BuildPlatformPlaced {
+                operation_id: operation_id.clone(),
+                platform,
+                executor,
+            }
+        }
         BuildEvidence::ToolchainVerified {
             platform,
-            machine_id,
+            executor,
             toolchain,
         } => OperationEvent::BuildPlatformToolchainVerified {
             operation_id: operation_id.clone(),
             platform,
-            machine_id,
+            executor,
             toolchain,
         },
         BuildEvidence::PlatformLog {
             platform,
-            machine_id,
+            executor,
             chunk,
         } => OperationEvent::BuildPlatformLog {
             operation_id: operation_id.clone(),
             platform,
-            machine_id,
+            executor,
             chunk,
         },
         BuildEvidence::PlatformLogTruncated {
             platform,
-            machine_id,
+            executor,
             omitted_bytes,
         } => OperationEvent::BuildPlatformLogTruncated {
             operation_id: operation_id.clone(),
             platform,
-            machine_id,
+            executor,
             omitted_bytes,
         },
         BuildEvidence::PlatformLogGap {
             platform,
-            machine_id,
+            executor,
             expected_sequence,
             final_sequence,
         } => OperationEvent::BuildPlatformLogGap {
             operation_id: operation_id.clone(),
             platform,
-            machine_id,
+            executor,
             expected_sequence,
             final_sequence,
         },
         BuildEvidence::PlatformCompleted {
             platform,
-            machine_id,
+            executor,
             image,
         } => OperationEvent::BuildPlatformCompleted {
             operation_id: operation_id.clone(),
             platform,
-            machine_id,
+            executor,
             image,
         },
         BuildEvidence::PlatformFailed {
             platform,
-            machine_id,
+            executor,
             failure,
         } => OperationEvent::BuildPlatformFailed {
             operation_id: operation_id.clone(),
             platform,
-            machine_id,
+            executor,
             failure,
         },
     }

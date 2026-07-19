@@ -286,24 +286,18 @@ pub fn project_operation_event(
     }
     match event {
         ClassifiedOperationEvent::Build { event, .. } => {
-            let OperationStatus::Build {
-                id,
-                source,
-                adapter,
-                platforms,
-                state,
-                ..
-            } = current
-            else {
+            let OperationStatus::Build { status } = current else {
                 return Err(kind_mismatch(current, OperationKind::Build));
             };
             build::project_event(
                 build::BuildFields {
-                    id,
-                    source,
-                    adapter,
-                    platforms,
-                    state,
+                    id: status.id(),
+                    target: status.target(),
+                    source: status.source(),
+                    adapter: status.adapter(),
+                    platforms: status.platforms(),
+                    executor_assignments: status.executor_assignments(),
+                    state: status.state(),
                 },
                 event,
                 event_sequence,
@@ -570,14 +564,7 @@ fn project_operation_interruption(
 
     let mut status = current.clone();
     match &mut status {
-        OperationStatus::Build {
-            state,
-            last_event_sequence,
-            ..
-        } => {
-            *state = BuildOperationState::interrupted(evidence);
-            *last_event_sequence = event_sequence;
-        }
+        OperationStatus::Build { status } => status.interrupt(evidence, event_sequence),
         OperationStatus::Deploy {
             state,
             last_event_sequence,

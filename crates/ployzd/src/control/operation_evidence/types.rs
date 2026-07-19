@@ -1,4 +1,4 @@
-use ployz_core::build::{BuildAdapter, BuildPlatforms, GitSourceEvidence};
+use ployz_core::build::{BuildAdapter, BuildPlatforms, BuildTarget, GitSourceEvidence};
 use ployz_core::deploy::{DeployReservationId, VolumeName};
 use ployz_core::ids::{CertId, MachineId, NamespaceId, OperationId, ServiceId};
 use ployz_core::ingress::IngressConfiguration;
@@ -110,6 +110,7 @@ pub struct DeployOperationSubmission {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildOperationSubmission {
     pub operation_id: OperationId,
+    pub target: BuildTarget,
     pub source: GitSourceEvidence,
     pub adapter: BuildAdapter,
     pub platforms: BuildPlatforms,
@@ -117,6 +118,7 @@ pub struct BuildOperationSubmission {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct BuildOperationPayload {
+    pub(super) target: BuildTarget,
     pub(super) source: GitSourceEvidence,
     pub(super) adapter: BuildAdapter,
     pub(super) platforms: BuildPlatforms,
@@ -291,6 +293,7 @@ pub struct AcceptedDeploySubmission {
 pub struct AcceptedBuildSubmission {
     pub operation_id: OperationId,
     pub start_sequence: EventSequence,
+    pub target: BuildTarget,
     pub source: GitSourceEvidence,
     pub adapter: BuildAdapter,
     pub platforms: BuildPlatforms,

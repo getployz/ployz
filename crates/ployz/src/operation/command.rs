@@ -319,10 +319,10 @@ const fn operation_kind_name(kind: OperationKind) -> &'static str {
 
 fn operation_subject(status: &OperationStatus) -> String {
     match status {
-        OperationStatus::Build { source, .. } => format!(
+        OperationStatus::Build { status } => format!(
             "source {} commit {}",
-            source.url.as_str(),
-            source.commit.as_str()
+            status.source().url.as_str(),
+            status.source().commit.as_str()
         ),
         OperationStatus::Deploy { service_id, .. } => {
             format!("service {}", service_id.as_str())
@@ -459,7 +459,7 @@ const fn machine_lifecycle_state(
 
 fn operation_state(status: &OperationStatus) -> String {
     match status {
-        OperationStatus::Build { state, .. } => build_state(state).to_owned(),
+        OperationStatus::Build { status } => build_state(status.state()).to_owned(),
         OperationStatus::Deploy { state, .. } => deploy_state(state).to_owned(),
         OperationStatus::Cert { state, .. } => cert_state(state).to_owned(),
         OperationStatus::MachineAdd { state, .. } => machine_add_state(state).to_owned(),
@@ -618,10 +618,18 @@ fn status_failure_detail(status: &OperationStatus) -> Option<String> {
         return Some(format!("interruption {}", render_interruption(evidence)));
     }
     match status {
-        OperationStatus::Build {
-            state: ployz_sdk_types::BuildOperationState::Failed { failure },
-            ..
-        } => Some(format!("failure {failure:?}")),
+        OperationStatus::Build { status } => match status.state() {
+            ployz_sdk_types::BuildOperationState::Failed { failure } => {
+                Some(format!("failure {failure:?}"))
+            }
+            ployz_sdk_types::BuildOperationState::Accepted
+            | ployz_sdk_types::BuildOperationState::Placing
+            | ployz_sdk_types::BuildOperationState::Building
+            | ployz_sdk_types::BuildOperationState::Completed { .. }
+            | ployz_sdk_types::BuildOperationState::Cancelled { .. }
+            | ployz_sdk_types::BuildOperationState::TimedOut { .. }
+            | ployz_sdk_types::BuildOperationState::Interrupted { .. } => None,
+        },
         OperationStatus::Deploy {
             service_id,
             state: DeployOperationState::Failed { failure },
@@ -677,8 +685,7 @@ fn status_failure_detail(status: &OperationStatus) -> Option<String> {
             "failure {}",
             crate::volume::presentation::create_failure(failure)
         )),
-        OperationStatus::Build { .. }
-        | OperationStatus::Deploy { .. }
+        OperationStatus::Deploy { .. }
         | OperationStatus::Cert { .. }
         | OperationStatus::MachineAdd { .. }
         | OperationStatus::MachineUpdate { .. }
@@ -1076,7 +1083,7 @@ fn render_replayed_event_text(
         ),
         OperationEvent::BuildPlatformLog {
             platform,
-            machine_id,
+            executor,
             chunk,
             ..
         } => format!(
@@ -1085,7 +1092,7 @@ fn render_replayed_event_text(
             label,
             platform.os(),
             platform.architecture(),
-            machine_id.as_str(),
+            executor.machine_id().as_str(),
             chunk.as_str()
         ),
         OperationEvent::MachineBuildCachePruneCompleted { evidence, .. } => format!(
@@ -1363,6 +1370,7 @@ fn render_deploy_failure_detail(
 #[cfg(test)]
 mod tests {
     use super::{DeployEventRenderContext, render_replayed_event_text, status_failure_detail};
+    use ployz_core::build::{BuildExecutorAssignment, BuildExecutorEvidence};
     use ployz_core::certificate::{
         ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow,
         CertificateProvisionFailure,
@@ -1383,7 +1391,11 @@ mod tests {
                 operation_id: OperationId::try_new("build-1").expect("operation id"),
                 platform: ployz_core::image::OciPlatform::try_new("linux", "amd64")
                     .expect("platform"),
-                machine_id: MachineId::try_new("machine-a").expect("machine id"),
+                executor: BuildExecutorEvidence::from_assignment(
+                    &BuildExecutorAssignment::Cluster {
+                        machine_id: MachineId::try_new("machine-a").expect("machine id"),
+                    },
+                ),
                 chunk: BuildLogChunk::try_new("compiling crate").expect("chunk"),
             },
         };

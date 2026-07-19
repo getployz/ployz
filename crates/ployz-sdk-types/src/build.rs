@@ -5,12 +5,21 @@ use crate::core_types::*;
 use crate::ops::{AcceptedOperation, OperationApiResponse};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(
+    type = "{ operation_id: OperationId, target?: BuildTarget, source: GitSource, adapter: BuildAdapter, platforms: BuildPlatforms }"
+)]
 #[serde(deny_unknown_fields)]
 pub struct BuildSubmitRequest {
     pub operation_id: OperationId,
+    #[serde(default = "cluster_build_target")]
+    pub target: BuildTarget,
     pub source: GitSource,
     pub adapter: BuildAdapter,
     pub platforms: BuildPlatforms,
+}
+
+fn cluster_build_target() -> BuildTarget {
+    BuildTarget::Cluster
 }
 
 pub type BuildSubmitResponse = OperationApiResponse<AcceptedOperation, BuildSubmitError>;
@@ -20,6 +29,17 @@ pub type BuildSubmitResponse = OperationApiResponse<AcceptedOperation, BuildSubm
 pub enum BuildSubmitError {
     #[error("operation {} already exists with a different build request", .operation_id.as_str())]
     OperationConflict { operation_id: OperationId },
+    #[error("build pool {} has no capable enrolled executor for {platform:?}", .pool_id.as_str())]
+    NoCapableExternalExecutor {
+        operation_id: OperationId,
+        pool_id: BuildPoolId,
+        platform: OciPlatform,
+    },
+    #[error("build pool {} has no reachable active Machine image seed", .pool_id.as_str())]
+    NoReachableImageSeed {
+        operation_id: OperationId,
+        pool_id: BuildPoolId,
+    },
     #[error("build submit {} unavailable: {message}", .operation_id.as_str())]
     Unavailable {
         operation_id: OperationId,
@@ -96,6 +116,7 @@ mod tests {
     #[test]
     fn durable_source_evidence_cannot_serialize_request_credential() {
         let request: BuildSubmitRequest = serde_json::from_value(valid_json()).expect("request");
+        assert_eq!(request.target, BuildTarget::Cluster);
         let evidence = serde_json::to_value(request.source.evidence()).expect("evidence");
         assert!(!evidence.to_string().contains("token"));
         assert_eq!(
@@ -104,6 +125,34 @@ mod tests {
                 "url": "https://example.com/repo.git",
                 "commit": "0123456789abcdef0123456789abcdef01234567",
             })
+        );
+    }
+
+    #[test]
+    fn build_submit_target_defaults_to_cluster_and_accepts_external() {
+        let omitted: BuildSubmitRequest = serde_json::from_value(valid_json()).expect("request");
+        assert_eq!(omitted.target, BuildTarget::Cluster);
+
+        let mut external = valid_json();
+        external.as_object_mut().expect("request object").insert(
+            "target".into(),
+            serde_json::json!({"target":"external","pool_id":"pool-a"}),
+        );
+        let external: BuildSubmitRequest = serde_json::from_value(external).expect("request");
+        assert_eq!(
+            external.target,
+            BuildTarget::External {
+                pool_id: BuildPoolId::try_new("pool-a").expect("pool id")
+            }
+        );
+    }
+
+    #[test]
+    fn build_submit_typescript_keeps_the_defaulted_target_optional() {
+        let declaration = <BuildSubmitRequest as TS>::decl(&ts_rs::Config::default());
+        assert_eq!(
+            declaration,
+            "type BuildSubmitRequest = { operation_id: OperationId, target?: BuildTarget, source: GitSource, adapter: BuildAdapter, platforms: BuildPlatforms };"
         );
     }
 }
