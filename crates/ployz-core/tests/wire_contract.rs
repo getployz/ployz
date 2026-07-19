@@ -1090,11 +1090,11 @@ fn service_retention_count_accepts_zero_and_defaults_absent() {
 
 #[test]
 fn service_mode_has_closed_tagged_wire_shapes() {
+    let replicated = ServiceMode::Replicated {
+        replicas: ReplicaCount::try_new(3).expect("replicas"),
+    };
     assert_eq!(
-        serde_json::to_value(ServiceMode::Replicated {
-            replicas: ReplicaCount::try_new(3).expect("replicas"),
-        })
-        .expect("service mode json"),
+        serde_json::to_value(replicated).expect("service mode json"),
         serde_json::json!({ "kind": "replicated", "replicas": 3 })
     );
     assert_eq!(
@@ -1108,4 +1108,11 @@ fn service_mode_has_closed_tagged_wire_shapes() {
         }))
         .is_err()
     );
+
+    for mode in [replicated, ServiceMode::Global] {
+        let encoded = serde_json::to_value(mode).expect("service mode serializes");
+        let decoded =
+            serde_json::from_value::<ServiceMode>(encoded).expect("service mode deserializes");
+        assert_eq!(decoded, mode);
+    }
 }

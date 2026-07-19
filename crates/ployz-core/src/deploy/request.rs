@@ -393,12 +393,31 @@ impl DeployServiceSpec {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ServiceMode {
     Replicated { replicas: ReplicaCount },
     Global,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum ServiceModeWire {
+    Replicated { replicas: ReplicaCount },
+    Global {},
+}
+
+impl<'de> Deserialize<'de> for ServiceMode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        match ServiceModeWire::deserialize(deserializer)? {
+            ServiceModeWire::Replicated { replicas } => Ok(Self::Replicated { replicas }),
+            ServiceModeWire::Global {} => Ok(Self::Global),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
