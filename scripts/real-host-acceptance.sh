@@ -110,43 +110,142 @@ wait_for_storage_ready_testimony() {
   return 1
 }
 
-wait_for_operation_terminal() {
+wait_for_operation_state() {
   local operation_id=$1
   local budget_seconds=$2
+  local desired_state=${3:-successful}
   local deadline=$((SECONDS + budget_seconds))
-  local status='' state=''
+  local status='' state='' latest_observation=''
 
   while (( SECONDS < deadline )); do
-    if status=$(core_before_deadline "$deadline" "ployz ops status '${operation_id}'"); then
+    if status=$(core_before_deadline "$deadline" "ployz ops status '${operation_id}'" 2>&1); then
+      [ -z "$status" ] || latest_observation=$status
       state=$(printf '%s\n' "$status" | sed -n 's/^state \([^[:space:]]\+\)$/\1/p')
+      if [ "$state" = "$desired_state" ]; then
+        return 0
+      fi
       case "$state" in
-        accepted|preparing) ;;
-        completed) return 0 ;;
-        failed|cancelled|interrupted)
+        accepted|pending|joining|preparing|placing|building|planning|running|running:*) ;;
+        completed|completed-with-warnings|partially-completed|partially-completed-with-warnings)
+          if [ "$desired_state" = successful ]; then
+            return 0
+          fi
+          printf '%s\n' "$status"
+          log "operation ${operation_id} reached ${state}, desired state was ${desired_state}"
+          return 1
+          ;;
+        cancelled)
+          if [ "$desired_state" = cancelled ]; then
+            return 0
+          fi
           printf '%s\n' "$status"
           log "operation ${operation_id} reached terminal state ${state}"
           return 1
           ;;
-        '')
+        failed|interrupted|timed-out)
           printf '%s\n' "$status"
-          log "operation ${operation_id} status has no valid state line"
+          log "operation ${operation_id} reached terminal state ${state}"
           return 1
           ;;
-        *$'\n'*)
-          printf '%s\n' "$status"
-          log "operation ${operation_id} status has ambiguous state lines"
-          return 1
-          ;;
+        ''|*$'\n'*) ;;
         *)
           printf '%s\n' "$status"
           log "operation ${operation_id} reported unexpected state ${state}"
           return 1
           ;;
       esac
+    else
+      [ -z "$status" ] || latest_observation=$status
     fi
     sleep_before_deadline "$deadline" 3
   done
-  log "operation ${operation_id} did not reach a terminal state within ${budget_seconds} seconds"
+  [ -z "$latest_observation" ] || printf '%s\n' "$latest_observation"
+  log "operation ${operation_id} did not reach desired state ${desired_state} within ${budget_seconds} seconds"
+  return 1
+}
+
+valid_operation_evidence() {
+  local evidence=$1
+  [ -n "$evidence" ] && OPERATION_EVIDENCE="$evidence" python3 -c '
+import json
+import os
+
+lines = os.environ["OPERATION_EVIDENCE"].splitlines()
+assert lines
+for line in lines:
+    value = json.loads(line)
+    assert isinstance(value, dict)
+    assert "event" in value
+' >/dev/null 2>&1
+}
+
+assert_single_operation_event() {
+  local evidence=$1
+  local expected_event=$2
+  OPERATION_EVIDENCE="$evidence" EXPECTED_OPERATION_EVENT="$expected_event" python3 -c '
+import json
+import os
+
+events = [json.loads(line)["event"] for line in os.environ["OPERATION_EVIDENCE"].splitlines()]
+expected = os.environ["EXPECTED_OPERATION_EVENT"]
+assert sum(event.get("event") == expected for event in events) == 1
+'
+}
+
+replay_operation_evidence() {
+  local operation_id=$1
+  local budget_seconds=$2
+  local expected_exit=${3:-0}
+  local deadline=$((SECONDS + budget_seconds))
+  local evidence='' replay_exit=0 latest_evidence=''
+
+  while (( SECONDS < deadline )); do
+    if evidence=$(core_before_deadline "$deadline" "ployz ops watch '${operation_id}' --json"); then
+      replay_exit=0
+    else
+      replay_exit=$?
+    fi
+    latest_evidence=$evidence
+    if [ "$replay_exit" -eq "$expected_exit" ] && valid_operation_evidence "$evidence"; then
+      printf '%s\n' "$evidence"
+      return 0
+    fi
+    sleep_before_deadline "$deadline" 3
+  done
+
+  [ -z "$latest_evidence" ] || printf '%s\n' "$latest_evidence" >&2
+  log "operation ${operation_id} did not yield valid replay evidence with exit ${expected_exit} within ${budget_seconds} seconds"
+  return 1
+}
+
+find_volume_create_operation() {
+  local budget_seconds=$1
+  local namespace=$2
+  local volume=$3
+  local machine_id=$4
+  local deadline=$((SECONDS + budget_seconds))
+  local operations='' matches='' match_count=0
+
+  while (( SECONDS < deadline )); do
+    if operations=$(core_before_deadline "$deadline" 'ployz ops list'); then
+      matches=$(printf '%s\n' "$operations" | awk -v volume="${namespace}/${volume}" -v machine="$machine_id" \
+        '$2 == "volume-create" && $3 == "volume" && $4 == volume && $5 == "machine" && $6 == machine { print $1 }')
+      match_count=$(printf '%s\n' "$matches" | sed '/^$/d' | wc -l)
+      if [ "$match_count" -eq 1 ]; then
+        printf '%s\n' "$matches"
+        return 0
+      fi
+      if [ "$match_count" -gt 1 ]; then
+        printf '%s\n' "$operations" >&2
+        log "found ${match_count} volume-create operations for volume ${namespace}/${volume} machine ${machine_id}"
+        return 1
+      fi
+    fi
+    sleep_before_deadline "$deadline" 3
+  done
+
+  [ -z "$operations" ] || printf '%s\n' "$operations" >&2
+  log "did not find volume-create operation for volume ${namespace}/${volume} machine ${machine_id} within ${budget_seconds} seconds"
   return 1
 }
 
@@ -497,7 +596,7 @@ zfs_verify_preserved_durable_storage_evidence() {
   actual_descriptor_sha=$(printf '%s' "$actual_descriptor" | sha256sum | awk '{print $1}')
   actual_backing_path=$(core "readlink -f '${backing_file_path}'")
   actual_backing_identity=$(core "stat -Lc '%d:%i:%s' '${backing_file_path}'")
-  actual_operation_evidence=$(core "timeout 20s ployz ops watch '${storage_operation_id}' --json")
+  actual_operation_evidence=$(replay_operation_evidence "$storage_operation_id" 120)
   actual_operation_evidence_sha=$(printf '%s' "$actual_operation_evidence" | sha256sum | awk '{print $1}')
   if [ "$actual_descriptor_sha" != "$prepared_descriptor_sha" ] \
     || [ "$actual_backing_path" != "$backing_file_path" ] \
@@ -540,10 +639,8 @@ run_real_host_acceptance_regression_test() {
   local module_contents module_sha module_mode module_uid module_gid child_status=0
   local restored_inode ssh_restore_output restore_function_output
   local git_install_command fixture_log_command git_install_line fixture_log_line rendered_git_program
-  local cancel_command cancel_status_capture cancel_status_guard cancel_watch cancel_watch_status_capture
-  local cancel_watch_status_guard json_assertion
-  local cancel_command_line cancel_status_capture_line cancel_status_guard_line cancel_watch_line
-  local cancel_watch_status_capture_line cancel_watch_status_guard_line json_assertion_line
+  local cancel_command cancel_status_capture cancel_status_guard cancel_poll cancel_replay json_assertion
+  local cancel_command_line cancel_status_capture_line cancel_status_guard_line cancel_poll_line cancel_replay_line json_assertion_line
   local managed_function managed_deploy_log restart_invisibility_log dispatch_invocation
   local dockerfile_build_log railpack_build_log cancellation_log firewall_log direct_zfs_invocation
   local dockerfile_build_log_line railpack_build_log_line cancellation_log_line firewall_log_line
@@ -562,39 +659,31 @@ run_real_host_acceptance_regression_test() {
   fixture_log_line=$(grep -Fnx "$fixture_log_command" "$0" | cut -d: -f1)
   [ "$git_install_line" -eq $((fixture_log_line - 1)) ]
 
-  cancel_command='core '\''ployz build cancel op_real_host_build_cancel --reason "real-host cancellation proof"'\'''
+  cancel_command='cancel_output=$(core '\''ployz build cancel op_real_host_build_cancel --reason "real-host cancellation proof"'\'' 2>&1)'
   cancel_status_capture='cancel_exit=$?'
   cancel_status_guard='[ "$cancel_exit" -eq 1 ] || { log "build cancellation exited ${cancel_exit}, expected 1"; exit 1; }'
-  cancel_watch='cancel_events=$(core '\''ployz ops watch op_real_host_build_cancel --json'\'')'
-  cancel_watch_status_capture='cancel_watch_exit=$?'
-  cancel_watch_status_guard='[ "$cancel_watch_exit" -eq 1 ] || { log "cancelled build watch exited ${cancel_watch_exit}, expected 1"; exit 1; }'
+  cancel_poll='wait_for_operation_state op_real_host_build_cancel 120 cancelled'
+  cancel_replay='cancel_events=$(replay_operation_evidence op_real_host_build_cancel 120 1)'
   json_assertion='assert len(cancelled) == 1 and cancelled[0]["cleanup"]["kind"] == "completed"'
   [ "$(grep -Fxc "$cancel_command" "$0")" -eq 1 ]
   [ "$(grep -Fxc "$cancel_status_capture" "$0")" -eq 1 ]
   [ "$(grep -Fxc "$cancel_status_guard" "$0")" -eq 1 ]
-  [ "$(grep -Fxc "$cancel_watch" "$0")" -eq 1 ]
-  [ "$(grep -Fxc "$cancel_watch_status_capture" "$0")" -eq 1 ]
-  [ "$(grep -Fxc "$cancel_watch_status_guard" "$0")" -eq 1 ]
+  [ "$(grep -Fxc "$cancel_poll" "$0")" -eq 1 ]
+  [ "$(grep -Fxc "$cancel_replay" "$0")" -eq 1 ]
   [ "$(grep -Fxc "$json_assertion" "$0")" -eq 1 ]
   cancel_command_line=$(grep -Fnx "$cancel_command" "$0" | cut -d: -f1)
   cancel_status_capture_line=$(grep -Fnx "$cancel_status_capture" "$0" | cut -d: -f1)
   cancel_status_guard_line=$(grep -Fnx "$cancel_status_guard" "$0" | cut -d: -f1)
-  cancel_watch_line=$(grep -Fnx "$cancel_watch" "$0" | cut -d: -f1)
-  cancel_watch_status_capture_line=$(grep -Fnx "$cancel_watch_status_capture" "$0" | cut -d: -f1)
-  cancel_watch_status_guard_line=$(grep -Fnx "$cancel_watch_status_guard" "$0" | cut -d: -f1)
+  cancel_poll_line=$(grep -Fnx "$cancel_poll" "$0" | cut -d: -f1)
+  cancel_replay_line=$(grep -Fnx "$cancel_replay" "$0" | cut -d: -f1)
   json_assertion_line=$(grep -Fnx "$json_assertion" "$0" | cut -d: -f1)
-  [ "$(sed -n "$((cancel_command_line - 1)),$cancel_watch_status_guard_line p" "$0" | grep -Fxc 'set +e')" -eq 2 ]
-  [ "$(sed -n "$((cancel_command_line - 1)),$cancel_watch_status_guard_line p" "$0" | grep -Fxc 'set -e')" -eq 2 ]
   [ "$(sed -n "$((cancel_command_line - 1))p" "$0")" = 'set +e' ]
   [ "$cancel_status_capture_line" -eq $((cancel_command_line + 1)) ]
   [ "$(sed -n "$((cancel_status_capture_line + 1))p" "$0")" = 'set -e' ]
-  [ "$cancel_status_guard_line" -eq $((cancel_status_capture_line + 2)) ]
-  [ "$cancel_watch_line" -eq $((cancel_status_guard_line + 2)) ]
-  [ "$(sed -n "$((cancel_watch_line - 1))p" "$0")" = 'set +e' ]
-  [ "$cancel_watch_status_capture_line" -eq $((cancel_watch_line + 1)) ]
-  [ "$(sed -n "$((cancel_watch_status_capture_line + 1))p" "$0")" = 'set -e' ]
-  [ "$cancel_watch_status_guard_line" -eq $((cancel_watch_status_capture_line + 2)) ]
-  [ "$json_assertion_line" -gt "$cancel_watch_status_guard_line" ]
+  [ "$cancel_status_guard_line" -eq $((cancel_status_capture_line + 3)) ]
+  [ "$cancel_poll_line" -gt "$cancel_status_guard_line" ]
+  [ "$cancel_replay_line" -eq $((cancel_poll_line + 1)) ]
+  [ "$json_assertion_line" -gt "$cancel_replay_line" ]
 
   dockerfile_build_log="log \"building authenticated exact SHA for \${BUILD_ARCHITECTURES_LABEL} with Dockerfile\""
   railpack_build_log="log \"building authenticated exact SHA for \${BUILD_ARCHITECTURES_LABEL} with Railpack\""
@@ -804,11 +893,14 @@ EOF
   grep -Fx 'storage-alarms none' "$evidence/storage-ready.stdout" >/dev/null
   grep -Fx 'inspect_calls=3' "$evidence/storage-ready.stdout" >/dev/null
 
-  operation_probe=$("$0" --operation-terminal-probe completed)
-  printf '%s\n' "$operation_probe" | grep -Fx 'probe_status=0' >/dev/null
-  printf '%s\n' "$operation_probe" | grep -Fx 'status_calls=3' >/dev/null
+  for operation_probe_mode in machine-add build deploy building-target transient-observations \
+    completed-with-warnings partially-completed partially-completed-with-warnings cancelled; do
+    operation_probe=$("$0" --operation-terminal-probe "$operation_probe_mode")
+    printf '%s\n' "$operation_probe" | grep -Fx 'probe_status=0' >/dev/null
+  done
+  printf '%s\n' "$operation_probe" | grep -Fx 'status_calls=2' >/dev/null
 
-  for operation_probe_mode in terminal-failure missing-state ambiguous-state unexpected-state deadline; do
+  for operation_probe_mode in terminal-failure unexpected-state unexpected-terminal diagnostic-timeout deadline; do
     child_status=0
     operation_probe=$("$0" --operation-terminal-probe "$operation_probe_mode" 2>&1) \
       || child_status=$?
@@ -820,20 +912,42 @@ EOF
         printf '%s\n' "$operation_probe" | grep -Fx 'operation op_probe reached terminal state failed' >/dev/null
         printf '%s\n' "$operation_probe" | grep -Fx 'status_calls=2' >/dev/null
         ;;
-      missing-state)
-        printf '%s\n' "$operation_probe" | grep -Fx 'operation op_probe status has no valid state line' >/dev/null
-        ;;
-      ambiguous-state)
-        printf '%s\n' "$operation_probe" | grep -Fx 'operation op_probe status has ambiguous state lines' >/dev/null
+      unexpected-terminal)
+        printf '%s\n' "$operation_probe" | grep -Fx 'operation op_probe reached terminal state timed-out' >/dev/null
         ;;
       unexpected-state)
-        printf '%s\n' "$operation_probe" | grep -Fx 'operation op_probe reported unexpected state running' >/dev/null
+        printf '%s\n' "$operation_probe" | grep -Fx 'operation op_probe reported unexpected state unknown' >/dev/null
+        ;;
+      diagnostic-timeout)
+        printf '%s\n' "$operation_probe" | grep -Fx 'rpc status observation timed out' >/dev/null
+        printf '%s\n' "$operation_probe" | grep -Fx 'operation op_probe did not reach desired state successful within 5 seconds' >/dev/null
+        printf '%s\n' "$operation_probe" | grep -Fx 'status_calls=2' >/dev/null
         ;;
       deadline)
-        printf '%s\n' "$operation_probe" | grep -Fx 'operation op_probe did not reach a terminal state within 5 seconds' >/dev/null
+        printf '%s\n' "$operation_probe" | grep -Fx 'operation op_probe did not reach desired state successful within 5 seconds' >/dev/null
         printf '%s\n' "$operation_probe" | grep -Fx 'status_calls=1' >/dev/null
         ;;
     esac
+  done
+
+  operation_probe=$("$0" --operation-replay-probe success)
+  printf '%s\n' "$operation_probe" | grep -Fx 'replay_status=0' >/dev/null
+  printf '%s\n' "$operation_probe" | grep -Fx 'watch_calls=5' >/dev/null
+  printf '%s\n' "$operation_probe" | grep -F '"event":"build_completed"' >/dev/null
+  operation_probe=$("$0" --operation-replay-probe cancelled)
+  printf '%s\n' "$operation_probe" | grep -Fx 'replay_status=0' >/dev/null
+  printf '%s\n' "$operation_probe" | grep -Fx 'watch_calls=2' >/dev/null
+  printf '%s\n' "$operation_probe" | grep -F '"event":"build_cancelled"' >/dev/null
+
+  operation_probe=$("$0" --volume-operation-probe one)
+  printf '%s\n' "$operation_probe" | grep -Fx 'volume_probe_status=0' >/dev/null
+  printf '%s\n' "$operation_probe" | grep -Fx 'operation_id=op_volume_probe' >/dev/null
+  for operation_probe_mode in zero two; do
+    child_status=0
+    operation_probe=$("$0" --volume-operation-probe "$operation_probe_mode" 2>&1) \
+      || child_status=$?
+    [ "$child_status" -ne 0 ]
+    printf '%s\n' "$operation_probe" | grep -Fx 'volume_probe_status=1' >/dev/null
   done
 
   # shellcheck disable=SC2317 # The dispatcher invokes this recorder by name.
@@ -1160,7 +1274,7 @@ EOF
     prepared_descriptor_sha=$(printf '%s' "$prepared_descriptor" | sha256sum | awk '{print $1}')
     backing_file_identity=1:2:3
     storage_operation_id=op_probe
-    storage_operation_evidence=probe-operation-evidence
+    storage_operation_evidence='{"sequence":1,"event":{"event":"machine_storage_prepare_completed"}}'
     storage_operation_evidence_sha=$(printf '%s' "$storage_operation_evidence" | sha256sum | awk '{print $1}')
     pool=probe-pool
     dataset=probe-pool/ployz/volumes/probe
@@ -1182,7 +1296,6 @@ EOF
         "cat '${prepared_descriptor_path}'") printf '%s\n' "$prepared_descriptor" ;;
         "readlink -f '${backing_file_path}'") printf '%s\n' "$backing_file_path" ;;
         "stat -Lc '%d:%i:%s' '${backing_file_path}'") printf '%s\n' "$backing_file_identity" ;;
-        "timeout 20s ployz ops watch '${storage_operation_id}' --json") printf '%s\n' "$storage_operation_evidence" ;;
         *'verify_owned_zfs_failure_state '*)
           PATH="$module_failure_probe_bin:$PATH" bash -euo pipefail -c "$command"
           ;;
@@ -1195,6 +1308,7 @@ EOF
     core_before_deadline() {
       case "$2" in
         "systemctl is-active --quiet 'ployzd-machine-probe-machine.service'") return 0 ;;
+        "ployz ops watch 'op_probe' --json") printf '%s\n' "$storage_operation_evidence" ;;
         *) printf 'storage unavailable zfs-module-missing\nstorage-alarms probe-ns/probe-volume:zfs-module-missing\n' ;;
       esac
     }
@@ -1215,30 +1329,119 @@ EOF
       printf 'status\n' >> "$operation_probe_calls"
       operation_probe_call=$(wc -l < "$operation_probe_calls")
       case "${operation_probe_mode}:${operation_probe_call}" in
-        completed:1) printf 'operation op_probe\nstate accepted\n' ;;
-        completed:2) printf 'operation op_probe\nstate preparing\n' ;;
-        completed:3) printf 'operation op_probe\nstate completed\n' ;;
+        machine-add:1) printf 'operation op_probe\nstate pending\n' ;;
+        machine-add:2) printf 'operation op_probe\nstate joining\n' ;;
+        machine-add:3) printf 'operation op_probe\nstate completed\n' ;;
+        build:1) printf 'operation op_probe\nstate accepted\n' ;;
+        build:2) printf 'operation op_probe\nstate placing\n' ;;
+        build:3) printf 'operation op_probe\nstate building\n' ;;
+        build:4) printf 'operation op_probe\nstate completed\n' ;;
+        deploy:1) printf 'operation op_probe\nstate accepted\n' ;;
+        deploy:2) printf 'operation op_probe\nstate planning\n' ;;
+        deploy:3) printf 'operation op_probe\nstate running\n' ;;
+        deploy:4) printf 'operation op_probe\nstate running:starting\n' ;;
+        deploy:5) printf 'operation op_probe\nstate completed\n' ;;
+        building-target:1) printf 'operation op_probe\nstate accepted\n' ;;
+        building-target:2) printf 'operation op_probe\nstate placing\n' ;;
+        building-target:3) printf 'operation op_probe\nstate building\n' ;;
+        transient-observations:1) return 255 ;;
+        transient-observations:2) printf '\n' ;;
+        transient-observations:3) printf 'operation op_probe\nlast-event 1\n' ;;
+        transient-observations:4) printf 'operation op_probe\nstate accepted\nstate completed\n' ;;
+        transient-observations:5) printf 'operation op_probe\nstate completed\n' ;;
+        completed-with-warnings:1) printf 'operation op_probe\nstate preparing\n' ;;
+        completed-with-warnings:2) printf 'operation op_probe\nstate completed-with-warnings\n' ;;
+        partially-completed:1) printf 'operation op_probe\nstate preparing\n' ;;
+        partially-completed:2) printf 'operation op_probe\nstate partially-completed\n' ;;
+        partially-completed-with-warnings:1) printf 'operation op_probe\nstate preparing\n' ;;
+        partially-completed-with-warnings:2) printf 'operation op_probe\nstate partially-completed-with-warnings\n' ;;
+        cancelled:1) printf 'operation op_probe\nstate building\n' ;;
+        cancelled:2) printf 'operation op_probe\nstate cancelled\n' ;;
         terminal-failure:1) printf 'operation op_probe\nstate accepted\n' ;;
         terminal-failure:2) printf 'operation op_probe\nstate failed\nfailure probe\n' ;;
         terminal-failure:*) printf 'operation op_probe\nstate completed\n' ;;
-        missing-state:*) printf 'operation op_probe\nlast-event 1\n' ;;
-        ambiguous-state:*) printf 'operation op_probe\nstate accepted\nstate completed\n' ;;
-        unexpected-state:*) printf 'operation op_probe\nstate running\n' ;;
+        unexpected-state:*) printf 'operation op_probe\nstate unknown\n' ;;
+        unexpected-terminal:*) printf 'operation op_probe\nstate timed-out\n' ;;
+        diagnostic-timeout:1) printf 'rpc status observation timed out\n' >&2; return 255 ;;
+        diagnostic-timeout:2) return 255 ;;
         deadline:*) return 255 ;;
         *) return 2 ;;
       esac
     }
     sleep_before_deadline() {
-      if [ "$operation_probe_mode" = deadline ]; then
+      if [ "$operation_probe_mode" = deadline ] \
+        || { [ "$operation_probe_mode" = diagnostic-timeout ] \
+          && [ "$(wc -l < "$operation_probe_calls")" -ge 2 ]; }; then
         SECONDS=$1
       fi
     }
     set +e
-    wait_for_operation_terminal op_probe 5
+    desired_operation_state=successful
+    [ "$operation_probe_mode" != cancelled ] || desired_operation_state=cancelled
+    [ "$operation_probe_mode" != building-target ] || desired_operation_state=building
+    wait_for_operation_state op_probe 5 "$desired_operation_state"
     operation_probe_status=$?
     set -e
     printf 'probe_status=%s\nstatus_calls=%s\n' \
       "$operation_probe_status" "$(wc -l < "$operation_probe_calls")"
+    exit "$operation_probe_status"
+    ;;
+  --operation-replay-probe)
+    operation_probe_mode=${2:?missing operation replay probe mode}
+    operation_probe_calls=$(mktemp)
+    trap 'rm -f "$operation_probe_calls"' EXIT
+    : > "$operation_probe_calls"
+    SECONDS=0
+    log() { printf '%s\n' "$*" >&2; }
+    core_before_deadline() {
+      printf 'watch\n' >> "$operation_probe_calls"
+      operation_probe_call=$(wc -l < "$operation_probe_calls")
+      case "${operation_probe_mode}:${operation_probe_call}" in
+        success:1) return 255 ;;
+        success:2) printf '\n' ;;
+        success:3) printf 'not-json\n' ;;
+        success:4) printf '{"sequence":1}{"event":{"event":"build_completed"}}\n' ;;
+        success:5) printf '{"sequence":1,"event":{"event":"build_completed"}}\n' ;;
+        cancelled:1) return 1 ;;
+        cancelled:2)
+          printf '{"sequence":1,"event":{"event":"build_cancelled"}}\n'
+          return 1
+          ;;
+        *) return 2 ;;
+      esac
+    }
+    sleep_before_deadline() { :; }
+    expected_replay_exit=0
+    [ "$operation_probe_mode" != cancelled ] || expected_replay_exit=1
+    set +e
+    operation_probe=$(replay_operation_evidence op_probe 5 "$expected_replay_exit")
+    operation_probe_status=$?
+    set -e
+    printf '%s\nreplay_status=%s\nwatch_calls=%s\n' "$operation_probe" \
+      "$operation_probe_status" "$(wc -l < "$operation_probe_calls")"
+    exit "$operation_probe_status"
+    ;;
+  --volume-operation-probe)
+    operation_probe_mode=${2:?missing volume operation probe mode}
+    SECONDS=0
+    log() { printf '%s\n' "$*" >&2; }
+    core_before_deadline() {
+      case "$operation_probe_mode" in
+        zero) printf 'op_other build source example commit abc completed\n' ;;
+        one) printf 'op_volume_probe volume-create volume probe-ns/probe-volume machine probe-machine completed\n' ;;
+        two)
+          printf 'op_volume_probe volume-create volume probe-ns/probe-volume machine probe-machine completed\n'
+          printf 'op_volume_duplicate volume-create volume probe-ns/probe-volume machine probe-machine failed\n'
+          ;;
+      esac
+    }
+    sleep_before_deadline() { SECONDS=$1; }
+    set +e
+    operation_probe=$(find_volume_create_operation 1 probe-ns probe-volume probe-machine)
+    operation_probe_status=$?
+    set -e
+    printf 'volume_probe_status=%s\n' "$operation_probe_status"
+    [ -z "$operation_probe" ] || printf 'operation_id=%s\n' "$operation_probe"
     exit "$operation_probe_status"
     ;;
 esac
@@ -1258,6 +1461,34 @@ SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o GSSAPIAuthentication=no \
 remote() { ssh "${SSH_OPTS[@]}" "root@$1" "${@:2}"; }
 core() { remote "$CORE" "$@"; }
 managed_host() { grep -Eo '[A-Za-z0-9.-]+\.up\.ployz\.app' | tail -1 || true; }
+
+core_before_deadline() {
+  local deadline=$1
+  shift
+  local remaining=$((deadline - SECONDS))
+  local attempt
+  (( remaining > 0 )) || return 124
+  attempt=$remaining
+  (( attempt <= 15 )) || attempt=15
+  timeout --foreground --signal=TERM --kill-after=2s "${attempt}s" \
+    ssh "${SSH_OPTS[@]}" "root@${CORE}" "$@"
+}
+
+core_with_local_timeout() {
+  local budget=$1
+  shift
+  timeout --foreground --signal=TERM --kill-after=2s "$budget" \
+    ssh "${SSH_OPTS[@]}" "root@${CORE}" "$@"
+}
+
+sleep_before_deadline() {
+  local deadline=$1
+  local interval=$2
+  local remaining=$((deadline - SECONDS))
+  (( remaining > 0 )) || return 0
+  (( interval <= remaining )) || interval=$remaining
+  sleep "$interval"
+}
 valid_ipv4() {
   local part
   [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
@@ -1439,7 +1670,14 @@ core "ssh-keyscan -T 8 ${EDGE} >> ~/.ssh/known_hosts 2>/dev/null"
 
 log "machine add (${EDGE_ARCHITECTURE_LABEL})"
 t0=$(ts)
-core "timeout 15m ployz machine add root@${EDGE} --name ployz-edge"
+machine_add_output=$(core "timeout 15m ployz machine add root@${EDGE} --name ployz-edge --detach")
+printf '%s\n' "$machine_add_output"
+machine_add_operation_id=$(printf '%s\n' "$machine_add_output" | awk '/^operation / { print $2; exit }')
+[ -n "$machine_add_operation_id" ] || { log "machine add did not report an operation id"; exit 1; }
+wait_for_operation_state "$machine_add_operation_id" 600
+machine_add_events=$(replay_operation_evidence "$machine_add_operation_id" 600)
+printf '%s\n' "$machine_add_events"
+assert_single_operation_event "$machine_add_events" machine_add_completed
 log "TIMING machine-add=$(( $(ts)-t0 ))s"
 core 'ployz machine list'
 if [ "$RUN_ZFS_CERTIFICATION" = 1 ]; then
@@ -1474,8 +1712,8 @@ assert_build_evidence() {
   local operation_id=$1
   local expected_adapter=$2
   local first second first_index second_index
-  first=$(core "ployz ops watch '${operation_id}' --json")
-  second=$(core "ployz ops watch '${operation_id}' --json")
+  first=$(replay_operation_evidence "$operation_id" 120)
+  second=$(replay_operation_evidence "$operation_id" 120)
   [ "$first" = "$second" ] || { log "${operation_id} operation evidence was not stable"; exit 1; }
   first_index=$(BUILD_EVENTS="$first" python3 -c 'import json,os; events=[json.loads(line)["event"] for line in os.environ["BUILD_EVENTS"].splitlines() if line]; print(next(event["receipt"]["index_digest"] for event in events if event.get("event") == "build_completed"))')
   second_index=$(BUILD_EVENTS="$second" python3 -c 'import json,os; events=[json.loads(line)["event"] for line in os.environ["BUILD_EVENTS"].splitlines() if line]; print(next(event["receipt"]["index_digest"] for event in events if event.get("event") == "build_completed"))')
@@ -1497,30 +1735,26 @@ PY
 }
 
 log "building authenticated exact SHA for ${BUILD_ARCHITECTURES_LABEL} with Dockerfile"
-core "set -a; . /tmp/ployz-build-git/secret.env; set +a; timeout 30m ployz build submit --git 'https://${CORE}:9443/repo.git' --commit '${build_commit}' --git-username builder --git-secret-env PLOYZ_BUILD_GIT_SECRET --subdir dockerfile ${BUILD_PLATFORM_ARGUMENTS} --dockerfile Dockerfile --operation-id op_real_host_build_dockerfile"
+core "set -a; . /tmp/ployz-build-git/secret.env; set +a; timeout 30m ployz build submit --git 'https://${CORE}:9443/repo.git' --commit '${build_commit}' --git-username builder --git-secret-env PLOYZ_BUILD_GIT_SECRET --subdir dockerfile ${BUILD_PLATFORM_ARGUMENTS} --dockerfile Dockerfile --operation-id op_real_host_build_dockerfile --detach"
+wait_for_operation_state op_real_host_build_dockerfile 1800
 assert_build_evidence op_real_host_build_dockerfile dockerfile
 
 log "building authenticated exact SHA for ${BUILD_ARCHITECTURES_LABEL} with Railpack"
-core "set -a; . /tmp/ployz-build-git/secret.env; set +a; timeout 30m ployz build submit --git 'https://${CORE}:9443/repo.git' --commit '${build_commit}' --git-username builder --git-secret-env PLOYZ_BUILD_GIT_SECRET --subdir railpack ${BUILD_PLATFORM_ARGUMENTS} --railpack --cache-scope real-host-railpack --operation-id op_real_host_build_railpack"
+core "set -a; . /tmp/ployz-build-git/secret.env; set +a; timeout 30m ployz build submit --git 'https://${CORE}:9443/repo.git' --commit '${build_commit}' --git-username builder --git-secret-env PLOYZ_BUILD_GIT_SECRET --subdir railpack ${BUILD_PLATFORM_ARGUMENTS} --railpack --cache-scope real-host-railpack --operation-id op_real_host_build_railpack --detach"
+wait_for_operation_state op_real_host_build_railpack 1800
 assert_build_evidence op_real_host_build_railpack railpack
 
 log "cancelling a blocking authenticated build and checking cleanup evidence"
 core "set -a; . /tmp/ployz-build-git/secret.env; set +a; ployz build submit --git 'https://${CORE}:9443/repo.git' --commit '${build_commit}' --git-username builder --git-secret-env PLOYZ_BUILD_GIT_SECRET --subdir slow --platform linux/amd64 --dockerfile Dockerfile --operation-id op_real_host_build_cancel --detach"
-for _ in $(seq 1 180); do
-  if core 'ployz ops status op_real_host_build_cancel' | grep -q 'state building'; then break; fi
-  sleep 1
-done
-core 'ployz ops status op_real_host_build_cancel' | grep -q 'state building'
+wait_for_operation_state op_real_host_build_cancel 180 building
 set +e
-core 'ployz build cancel op_real_host_build_cancel --reason "real-host cancellation proof"'
+cancel_output=$(core 'ployz build cancel op_real_host_build_cancel --reason "real-host cancellation proof"' 2>&1)
 cancel_exit=$?
 set -e
+printf '%s\n' "$cancel_output"
 [ "$cancel_exit" -eq 1 ] || { log "build cancellation exited ${cancel_exit}, expected 1"; exit 1; }
-set +e
-cancel_events=$(core 'ployz ops watch op_real_host_build_cancel --json')
-cancel_watch_exit=$?
-set -e
-[ "$cancel_watch_exit" -eq 1 ] || { log "cancelled build watch exited ${cancel_watch_exit}, expected 1"; exit 1; }
+wait_for_operation_state op_real_host_build_cancel 120 cancelled
+cancel_events=$(replay_operation_evidence op_real_host_build_cancel 120 1)
 CANCEL_EVENTS="$cancel_events" python3 - <<'PY'
 import json, os
 events = [json.loads(line)["event"] for line in os.environ["CANCEL_EVENTS"].splitlines() if line]
@@ -1549,16 +1783,19 @@ services:
       - auto:web:80
 YAML'
 t0=$(ts)
-deploy_output=$(core 'timeout 15m ployz deploy -f /tmp/ployz-acceptance.yml')
+deploy_output=$(core 'timeout 15m ployz deploy -f /tmp/ployz-acceptance.yml --detach')
 printf '%s\n' "$deploy_output"
+deploy_operation_id=$(printf '%s\n' "$deploy_output" | awk '/^operation / { print $2; exit }')
+[ -n "$deploy_operation_id" ] || { log "managed deploy did not report an operation id"; exit 1; }
+wait_for_operation_state "$deploy_operation_id" 900
+deploy_events=$(replay_operation_evidence "$deploy_operation_id" 120)
+printf '%s\n' "$deploy_events"
+assert_single_operation_event "$deploy_events" deploy_completed
 log "TIMING deploy=$(( $(ts)-t0 ))s"
 
-hostname=$(printf '%s\n' "$deploy_output" | managed_host)
 service_output=$(core 'ployz service inspect web')
 printf '%s\n' "$service_output"
-if [ -z "$hostname" ]; then
-  hostname=$(printf '%s\n' "$service_output" | managed_host)
-fi
+hostname=$(printf '%s\n' "$service_output" | managed_host)
 [ -n "$hostname" ] || { log "managed public HTTPS URL not found"; exit 1; }
 core_container=$(printf '%s\n' "$service_output" | awk '/^container .* machine ployz-core / {print $2; exit}')
 edge_container=$(printf '%s\n' "$service_output" | awk '/^container .* machine ployz-edge / {print $2; exit}')
@@ -1623,34 +1860,6 @@ probe_dir=
 log "  continuous HTTPS probe saw no interruption"
 }
 
-core_before_deadline() {
-  local deadline=$1
-  shift
-  local remaining=$((deadline - SECONDS))
-  local attempt
-  (( remaining > 0 )) || return 124
-  attempt=$remaining
-  (( attempt <= 15 )) || attempt=15
-  timeout --foreground --signal=TERM --kill-after=2s "${attempt}s" \
-    ssh "${SSH_OPTS[@]}" "root@${CORE}" "$@"
-}
-
-core_with_local_timeout() {
-  local budget=$1
-  shift
-  timeout --foreground --signal=TERM --kill-after=2s "$budget" \
-    ssh "${SSH_OPTS[@]}" "root@${CORE}" "$@"
-}
-
-sleep_before_deadline() {
-  local deadline=$1
-  local interval=$2
-  local remaining=$((deadline - SECONDS))
-  (( remaining > 0 )) || return 0
-  (( interval <= remaining )) || interval=$remaining
-  sleep "$interval"
-}
-
 reboot_core() {
   local prior_boot_id=$1
   core_with_local_timeout 20s "nohup sh -c 'sleep 1; systemctl reboot' >/dev/null 2>&1 &" || true
@@ -1675,9 +1884,10 @@ zfs_storage_prepare() {
   printf '%s\n' "$storage_prepare_output"
   storage_operation_id=$(printf '%s\n' "$storage_prepare_output" | awk '/^operation / { print $2; exit }')
   [ -n "$storage_operation_id" ] || { log "storage preparation did not report an operation id"; return 1; }
-  wait_for_operation_terminal "$storage_operation_id" 1200
-  storage_operation_evidence=$(core "timeout 20s ployz ops watch '${storage_operation_id}' --json")
+  wait_for_operation_state "$storage_operation_id" 1200
+  storage_operation_evidence=$(replay_operation_evidence "$storage_operation_id" 120)
   printf '%s\n' "$storage_operation_evidence"
+  assert_single_operation_event "$storage_operation_evidence" machine_storage_prepare_completed
   storage_operation_evidence_sha=$(printf '%s' "$storage_operation_evidence" | sha256sum | awk '{print $1}')
   machine_storage=
   pool=
@@ -1694,7 +1904,17 @@ zfs_storage_prepare() {
 }
 
 zfs_deploy_database() {
-  core "timeout 15m ployz volume create '${zfs_namespace}' '${zfs_volume}' --machine '${core_machine_id}' --max-size 2G"
+  set +e
+  volume_create_output=$(core "timeout 15m ployz volume create '${zfs_namespace}' '${zfs_volume}' --machine '${core_machine_id}' --max-size 2G" 2>&1)
+  volume_create_exit=$?
+  set -e
+  printf '%s\n' "$volume_create_output"
+  log "volume create observation exited ${volume_create_exit}; durable operation evidence is authoritative"
+  volume_create_operation_id=$(find_volume_create_operation 900 "$zfs_namespace" "$zfs_volume" "$core_machine_id")
+  wait_for_operation_state "$volume_create_operation_id" 900
+  volume_create_events=$(replay_operation_evidence "$volume_create_operation_id" 120)
+  printf '%s\n' "$volume_create_events"
+  assert_single_operation_event "$volume_create_events" volume_create_completed
   core "cat > '${remote_compose}' <<'YAML'
 name: ${zfs_namespace}
 services:
@@ -1717,7 +1937,14 @@ volumes:
     x-ployz:
       max-size: 2G
 YAML"
-  core "timeout 20m ployz deploy -f '${remote_compose}'"
+  zfs_deploy_output=$(core "timeout 20m ployz deploy -f '${remote_compose}' --detach")
+  printf '%s\n' "$zfs_deploy_output"
+  zfs_deploy_operation_id=$(printf '%s\n' "$zfs_deploy_output" | awk '/^operation / { print $2; exit }')
+  [ -n "$zfs_deploy_operation_id" ] || { log "ZFS deploy did not report an operation id"; return 1; }
+  wait_for_operation_state "$zfs_deploy_operation_id" 1200
+  zfs_deploy_events=$(replay_operation_evidence "$zfs_deploy_operation_id" 120)
+  printf '%s\n' "$zfs_deploy_events"
+  assert_single_operation_event "$zfs_deploy_events" deploy_completed
   volume_output=$(core 'timeout 20s ployz volume list')
   printf '%s\n' "$volume_output"
   volume_row=$(printf '%s\n' "$volume_output" | awk -v ns="$zfs_namespace" -v volume="$zfs_volume" '$1 == ns && $2 == volume { print; exit }')
@@ -2030,8 +2257,8 @@ run_zfs_real_host_certification() {
   install -m 0444 "$REPO_ROOT/scripts/real-host-acceptance.sh" "$ZFS_EVIDENCE_DIR/sealed-harness.sh"
   cat > "$ZFS_EVIDENCE_DIR/commands.log" <<EOF
 Harness source: sealed-harness.sh (${harness_sha})
-01 timeout 2m ployz machine storage-prepare ${core_machine_id} --detach; poll ployz ops status OPERATION to terminal with a 1200s absolute budget; timeout 20s ployz ops watch OPERATION --json terminal replay
-02 ployz volume create ${zfs_namespace} ${zfs_volume} --machine ${core_machine_id} --max-size 2G; ployz deploy -f ${remote_compose}
+01 timeout 2m ployz machine storage-prepare ${core_machine_id} --detach; poll ployz ops status OPERATION to a successful terminal with a 1200s budget; replay terminal JSON evidence with a 120s budget
+02 issue ployz volume create ${zfs_namespace} ${zfs_volume} --machine ${core_machine_id} --max-size 2G once; resolve its unique durable operation, poll it to a successful terminal, and replay terminal JSON evidence; ployz deploy -f ${remote_compose} --detach with the same durable verification
 03 zpool/zfs GUID, mountpoint, exact quota=2147483648 and refquota=0; docker inspect container/volume; PostgreSQL row query
 04 systemctl reboot; active systemd zfs-import.target -> ployz-owned-zfs-import.service -> docker.service timestamps and exact dependencies before Docker assertions; same pool/dataset/quota/refquota/container/volume/bind/row
 05 modinfo/lsinitrd guard; root-only copy+metadata+checksum; move module; depmod; modinfo absence
@@ -2039,7 +2266,7 @@ Harness source: sealed-harness.sh (${harness_sha})
 07 verify backup checksum; restore exact module path; depmod; modinfo
 08 systemctl reboot; active recovery and Docker ordering before same pool/dataset/quota/refquota/container/volume/bind/row; alarm clear
 09 systemctl reboot; repeat active recovery/Docker ordering, full recovery, and alarm-clear proof
-Wait budgets use monotonic absolute deadlines: storage operation status poll 1200s with terminal replay 20s; disconnect 120s; reboot return 540s; API/testimony 360s; container 240s; each retry-loop SSH attempt at most 15s.
+Wait budgets use monotonic absolute deadlines: storage operation status poll 1200s with terminal replay 120s; volume operation discovery/status 900s with terminal replay 120s; ZFS deploy status 1200s with terminal replay 120s; disconnect 120s; reboot return 540s; API/testimony 360s; container 240s; each retry-loop SSH attempt at most 15s.
 Commands containing fixture credentials are intentionally redacted; their bounded outcomes are in the numbered logs.
 EOF
 
