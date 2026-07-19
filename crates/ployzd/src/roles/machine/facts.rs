@@ -7,7 +7,8 @@ use crate::roles::machine::protocol::{
     MachineFactsRefreshRpcOk, MachineFactsRefreshRpcRequest, MachineFactsRefreshRpcResponse,
 };
 use crate::roles::machine::runner::{
-    ExistingManagedContainerState, MachineContainerListError, MachineContainerRunner,
+    ExistingManagedContainer, ExistingManagedContainerState, MachineContainerListError,
+    MachineContainerRunner,
 };
 use crate::roles::machine::volume::STORAGE_CAPABILITY_HOST_COMMAND_TIMEOUT;
 use crate::roles::machine::volume::observe_storage_capability;
@@ -15,8 +16,10 @@ use ployz_core::ids::MachineId;
 use ployz_core::machine::MachineEndpointObservation;
 use ployz_core::machine::runtime::{
     ContainerRuntimeState, MachineContainerObservationSnapshot,
-    MachineContainerObservationSnapshotError, MachineDiskSpace, MachineFactsRefreshConfirmation,
-    MachineFactsSnapshot, MachineFactsSnapshotError, ManagedContainerObservation,
+    MachineContainerObservationSnapshotError, MachineContainerTestimony,
+    MachineContainerUnavailableReason, MachineDiskSpace, MachineFactsCompletionError,
+    MachineFactsRefreshConfirmation, MachineFactsSnapshot, MachineFactsSnapshotError,
+    MachineFactsTestimony, ManagedContainerObservation,
 };
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, decode_json_request};
 use ployz_nats::subjects::machine_facts;
@@ -162,7 +165,7 @@ where
         }
     };
     let storage = observe_storage_capability().await;
-    match read_machine_facts_snapshot(
+    match read_machine_facts_testimony(
         &machine_id,
         &state.facts.runner,
         endpoints,
@@ -282,10 +285,72 @@ pub(crate) async fn read_machine_facts_snapshot<R>(
 where
     R: MachineContainerRunner,
 {
-    let existing = runner
-        .existing_managed_containers()
-        .await
-        .map_err(MachineFactsReadError::ListContainers)?;
+    read_machine_facts_testimony(machine_id, runner, endpoints, storage, observed_at_unix_ms)
+        .await?
+        .try_into()
+        .map_err(MachineFactsReadError::Complete)
+}
+
+pub(crate) async fn read_machine_facts_testimony<R>(
+    machine_id: &MachineId,
+    runner: &R,
+    endpoints: Option<MachineEndpointObservation>,
+    storage: Option<ployz_core::machine::StorageCapability>,
+    observed_at_unix_ms: u64,
+) -> Result<MachineFactsTestimony, MachineFactsReadError>
+where
+    R: MachineContainerRunner,
+{
+    let existing = runner.existing_managed_containers().await;
+    let disk_space =
+        read_disk_space(Path::new(MACHINE_DATA_PATH)).map_err(MachineFactsReadError::DiskSpace)?;
+
+    assemble_machine_facts_testimony(
+        machine_id,
+        existing,
+        endpoints,
+        disk_space,
+        storage,
+        ployz_core::image::OciPlatform::current(),
+        observed_at_unix_ms,
+    )
+}
+
+fn assemble_machine_facts_testimony(
+    machine_id: &MachineId,
+    existing: Result<Vec<ExistingManagedContainer>, MachineContainerListError>,
+    endpoints: Option<MachineEndpointObservation>,
+    disk_space: MachineDiskSpace,
+    storage: Option<ployz_core::machine::StorageCapability>,
+    platform: ployz_core::image::OciPlatform,
+    observed_at_unix_ms: u64,
+) -> Result<MachineFactsTestimony, MachineFactsReadError> {
+    let containers = match existing {
+        Ok(existing) => MachineContainerTestimony::Answered {
+            snapshot: container_snapshot(machine_id, existing)?,
+        },
+        Err(MachineContainerListError::ListExisting { message: _ }) => {
+            MachineContainerTestimony::Unavailable {
+                reason: MachineContainerUnavailableReason::DockerUnavailable,
+            }
+        }
+    };
+    MachineFactsTestimony::try_new(
+        machine_id.clone(),
+        containers,
+        endpoints,
+        disk_space,
+        storage,
+        platform,
+        observed_at_unix_ms,
+    )
+    .map_err(MachineFactsReadError::BuildFactsSnapshot)
+}
+
+fn container_snapshot(
+    machine_id: &MachineId,
+    existing: Vec<ExistingManagedContainer>,
+) -> Result<MachineContainerObservationSnapshot, MachineFactsReadError> {
     let containers = existing
         .into_iter()
         .map(|container| ManagedContainerObservation {
@@ -297,33 +362,20 @@ where
             resolved_image_identity: container.resolved_image_identity,
             created_at_unix_seconds: container.created_at_unix_seconds,
         });
-    let containers = MachineContainerObservationSnapshot::try_new(machine_id.clone(), containers)
-        .map_err(MachineFactsReadError::BuildContainerSnapshot)?;
-    let disk_space =
-        read_disk_space(Path::new(MACHINE_DATA_PATH)).map_err(MachineFactsReadError::DiskSpace)?;
-
-    MachineFactsSnapshot::try_new(
-        machine_id.clone(),
-        containers,
-        endpoints,
-        disk_space,
-        storage,
-        ployz_core::image::OciPlatform::current(),
-        observed_at_unix_ms,
-    )
-    .map_err(MachineFactsReadError::BuildFactsSnapshot)
+    MachineContainerObservationSnapshot::try_new(machine_id.clone(), containers)
+        .map_err(MachineFactsReadError::BuildContainerSnapshot)
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum MachineFactsReadError {
-    #[error("failed to list managed Docker containers: {0:?}")]
-    ListContainers(MachineContainerListError),
     #[error("failed to build container snapshot: {0}")]
     BuildContainerSnapshot(MachineContainerObservationSnapshotError),
     #[error("failed to read disk space: {0}")]
     DiskSpace(std::io::Error),
     #[error("failed to build machine facts: {0}")]
     BuildFactsSnapshot(MachineFactsSnapshotError),
+    #[error("machine facts are not complete: {0}")]
+    Complete(MachineFactsCompletionError),
 }
 
 pub(super) fn read_disk_space(path: &Path) -> std::io::Result<MachineDiskSpace> {
@@ -372,6 +424,7 @@ pub(crate) fn observation_state(state: ExistingManagedContainerState) -> Contain
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ployz_core::machine::{StorageCapability, StorageUnavailableReason};
 
     #[test]
     fn facts_refresh_budget_includes_storage_and_non_storage_work() {
@@ -394,5 +447,52 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn direct_testimony_preserves_storage_when_docker_is_unavailable() {
+        let machine_id = MachineId::try_new("machine-a").expect("machine id");
+        let endpoints = MachineEndpointObservation {
+            machine_id: machine_id.clone(),
+            control_endpoints: vec!["203.0.113.10".parse().expect("control endpoint")],
+            mesh_endpoints: vec!["203.0.113.10:51820".parse().expect("mesh endpoint")],
+        };
+        let platform = ployz_core::image::OciPlatform::try_new("linux", "amd64").expect("platform");
+        let testimony = assemble_machine_facts_testimony(
+            &machine_id,
+            Err(MachineContainerListError::ListExisting {
+                message: "daemon unavailable".to_owned(),
+            }),
+            Some(endpoints.clone()),
+            MachineDiskSpace {
+                available_bytes: 40,
+                total_bytes: 100,
+            },
+            Some(StorageCapability::Unavailable {
+                reason: StorageUnavailableReason::ZfsModuleMissing,
+            }),
+            platform.clone(),
+            123,
+        )
+        .expect("independent axes remain valid");
+
+        assert_eq!(
+            testimony.containers(),
+            &MachineContainerTestimony::Unavailable {
+                reason: MachineContainerUnavailableReason::DockerUnavailable,
+            }
+        );
+        assert_eq!(
+            testimony.storage(),
+            Some(&StorageCapability::Unavailable {
+                reason: StorageUnavailableReason::ZfsModuleMissing,
+            })
+        );
+        assert_eq!(testimony.disk_space().available_bytes, 40);
+        assert_eq!(testimony.disk_space().total_bytes, 100);
+        assert_eq!(testimony.endpoints(), Some(&endpoints));
+        assert_eq!(testimony.platform(), &platform);
+        assert_eq!(testimony.observed_at_unix_ms(), 123);
+        assert!(MachineFactsSnapshot::try_from(testimony).is_err());
     }
 }

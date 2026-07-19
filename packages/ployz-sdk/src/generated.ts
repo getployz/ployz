@@ -681,9 +681,13 @@ export type GatewayStatusObservation = { machine_id: MachineId, listen_addr: str
 
 export type MachineDiskSpace = { available_bytes: number, total_bytes: number, };
 
+export type MachineContainerAvailability = { "status": "answered", observed_count: number, } | { "status": "unavailable", reason: MachineContainerUnavailableReason, };
+
+export type MachineContainerUnavailableReason = "docker_unavailable";
+
 export type MachineSnapshot = { active: ActiveMachineState, testimony: MachineTestimony, storage_alarms?: Array<StrandedVolumeAlarm>, };
 
-export type MachineTestimony = { "status": "answered", endpoints: MachineEndpointObservation | null, gateway: GatewayStatusObservation | null, observed_container_count: number, disk_space: MachineDiskSpace, storage?: StorageCapability | null,
+export type MachineTestimony = { "status": "answered", endpoints: MachineEndpointObservation | null, gateway: GatewayStatusObservation | null, containers: MachineContainerAvailability, disk_space: MachineDiskSpace, storage?: StorageCapability | null,
 /**
  * When this machine last self-reported, as display evidence for the
  * operator. Never an input to behavior: liveness surfaces at the point

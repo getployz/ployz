@@ -67,11 +67,11 @@ use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientErr
 use ployz_nats::permissions::inbox_subscribe_scope;
 use ployz_nats::subjects::{MachineServiceEndpoint, OPERATOR_RUNTIME_SNAPSHOT, machine_service};
 use ployz_sdk_types::{
-    AcceptedOperation, DeployReserveRequest, DeploySubmitRequest, MachineJoinRedeemError,
-    MachineJoinRedeemRequest, MachineListRequest, MachineSnapshot, MachineTestimony,
-    NamespaceRemoveRequest, NetworkDataplaneTestimony, NetworkStatusMachine, NetworkStatusRequest,
-    OpsListRequest, ServiceInspectRequest, VolumeCreateRequest, VolumeListRequest,
-    VolumeRemoveRequest, VolumeStatus,
+    AcceptedOperation, DeployReserveRequest, DeploySubmitRequest, MachineContainerAvailability,
+    MachineJoinRedeemError, MachineJoinRedeemRequest, MachineListRequest, MachineSnapshot,
+    MachineTestimony, NamespaceRemoveRequest, NetworkDataplaneTestimony, NetworkStatusMachine,
+    NetworkStatusRequest, OpsListRequest, ServiceInspectRequest, VolumeCreateRequest,
+    VolumeListRequest, VolumeRemoveRequest, VolumeStatus,
 };
 use ployz_test_support::ids::{
     idempotency_key, machine_id, namespace_id, operation_id, route_port, service_id,
@@ -3123,9 +3123,13 @@ fn answered_with_gateway_and_containers(count: usize) -> impl Fn(&MachineSnapsho
         MachineTestimony::Answered {
             endpoints,
             gateway,
-            observed_container_count,
+            containers: MachineContainerAvailability::Answered { observed_count },
             ..
-        } => endpoints.is_some() && gateway.is_some() && *observed_container_count == count,
+        } => endpoints.is_some() && gateway.is_some() && *observed_count == count,
+        MachineTestimony::Answered {
+            containers: MachineContainerAvailability::Unavailable { .. },
+            ..
+        } => false,
         MachineTestimony::NoAnswer => false,
     }
 }
@@ -3136,19 +3140,36 @@ fn matching_answered_testimony(current: &MachineTestimony, before: &MachineTesti
             MachineTestimony::Answered {
                 endpoints,
                 gateway,
-                observed_container_count,
+                containers: MachineContainerAvailability::Answered { observed_count },
                 ..
             },
             MachineTestimony::Answered {
                 endpoints: before_endpoints,
-                observed_container_count: before_container_count,
+                containers:
+                    MachineContainerAvailability::Answered {
+                        observed_count: before_container_count,
+                    },
                 ..
             },
         ) => {
             endpoints == before_endpoints
                 && gateway.is_some()
-                && observed_container_count == before_container_count
+                && observed_count == before_container_count
         }
+        (
+            MachineTestimony::Answered {
+                containers: MachineContainerAvailability::Unavailable { .. },
+                ..
+            },
+            MachineTestimony::Answered { .. },
+        )
+        | (
+            MachineTestimony::Answered { .. },
+            MachineTestimony::Answered {
+                containers: MachineContainerAvailability::Unavailable { .. },
+                ..
+            },
+        ) => false,
         (MachineTestimony::NoAnswer, MachineTestimony::Answered { .. })
         | (MachineTestimony::Answered { .. }, MachineTestimony::NoAnswer)
         | (MachineTestimony::NoAnswer, MachineTestimony::NoAnswer) => false,

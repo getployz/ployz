@@ -10,6 +10,9 @@ use std::collections::BTreeMap;
 use crate::certificate::{AcmeIssueContext, AcmeIssuer, AcmeIssuerError, IssuedCertificate};
 use crate::control::intent::machine_roster::MachineRosterStore;
 use crate::control::intent::namespace_intent::NamespaceIntentStore;
+use crate::control::role_client::machine::{
+    NatsMachineFactsReader, read_available_machine_facts_by_id,
+};
 use crate::control::sequencer::MachineAddBootstrapConfig;
 use crate::lease::LeaseWorkerUrl;
 use crate::roles::gateway::process::start_gateway_process_with_client;
@@ -37,9 +40,14 @@ use ployz_core::install::{InstallArtifactVersion, MachineBootstrapUrl};
 use ployz_core::intent::{ActiveMachineState, RouteBindingState, VolumePinState};
 use ployz_core::machine::MachineLifecycle;
 use ployz_core::machine::roles::InstallRolePolicy;
-use ployz_core::machine::runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
+use ployz_core::machine::runtime::{
+    MachineContainerObservationSnapshot, MachineContainerTestimony,
+    MachineContainerUnavailableReason, MachineDiskSpace, MachineFactsSnapshot,
+    MachineFactsTestimony,
+};
 use ployz_core::machine::{
-    GatewayServingStatus, GatewayStatusObservation, MachineEndpointObservation,
+    GatewayServingStatus, GatewayStatusObservation, MachineEndpointObservation, StorageCapability,
+    StorageUnavailableReason,
 };
 use ployz_core::operation::{
     DeployCompletionOutcome, DeployOperationState, MachineSubstrateVersions, OperationEvent,
@@ -59,9 +67,9 @@ use ployz_nats::subjects::{
 use ployz_sdk_types::{
     ControlCertificateRenewalAttempt, ControlCertificateRenewalOutcome, DeployPreviewImage,
     DeployPreviewRequest, DeployPreviewService, DeployPreviewTarget, DeployReserveRequest,
-    DeploySubmitRequest, MachineAddError, MachineAddRequest, MachineInspectRequest,
-    MachineJoinReportOutcome, MachineJoinReportRequest, MachineListRequest, MachineTestimony,
-    MachineUpdateError, MachineUpdateRequest, OpsListRequest, OpsWatchRequest,
+    DeploySubmitRequest, MachineAddError, MachineAddRequest, MachineContainerAvailability,
+    MachineInspectRequest, MachineJoinReportOutcome, MachineJoinReportRequest, MachineListRequest,
+    MachineTestimony, MachineUpdateError, MachineUpdateRequest, OpsListRequest, OpsWatchRequest,
     RuntimeDerivedCollectionStatus, RuntimePloyzDnsTargetAllocation,
     RuntimePloyzDnsTargetPublication, RuntimeSnapshot, RuntimeSnapshotRequest,
     ServiceInspectRequest, ServiceListRequest, VolumeListRequest, VolumeStatus,
@@ -252,13 +260,43 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
         .shutdown()
         .await
         .expect("machine runtime shuts down");
-    let _facts = start_facts_subscription(
+    let partial_facts = MachineFactsTestimony::try_new(
+        machine_id("machine_2"),
+        MachineContainerTestimony::Unavailable {
+            reason: MachineContainerUnavailableReason::DockerUnavailable,
+        },
+        Some(MachineEndpointObservation {
+            machine_id: machine_id("machine_2"),
+            control_endpoints: vec![IpAddr::V4(Ipv4Addr::new(203, 0, 113, 2))],
+            mesh_endpoints: Vec::new(),
+        }),
+        MachineDiskSpace {
+            available_bytes: 40,
+            total_bytes: 100,
+        },
+        Some(StorageCapability::Unavailable {
+            reason: StorageUnavailableReason::ZfsModuleMissing,
+        }),
+        ployz_core::image::OciPlatform::current(),
+        1_000,
+    )
+    .expect("partial facts");
+    let _facts = start_facts_testimony_subscription(
         minted_client.clone(),
         machine_id("machine_2"),
-        empty_machine_snapshot("machine_2"),
-        Some(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 2))),
+        partial_facts,
     )
     .await;
+    let complete_facts = read_available_machine_facts_by_id(
+        &NatsMachineFactsReader::new(nats.connected.controller.clone())
+            .with_request_timeout(Duration::from_secs(1)),
+        [machine_id("machine_2")],
+    )
+    .await;
+    assert!(
+        complete_facts.is_empty(),
+        "the complete-facts map used by destructive freshness excludes partial testimony"
+    );
     publish_gateway_status(
         &minted_client,
         GatewayStatusObservation {
@@ -280,7 +318,11 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
     assert_eq!(inspected.active.machine_id, machine_id("machine_2"));
     assert_eq!(inspected.active.name.as_str(), "edge_2");
     let MachineTestimony::Answered {
-        endpoints, gateway, ..
+        endpoints,
+        gateway,
+        containers,
+        storage,
+        ..
     } = &inspected.testimony
     else {
         panic!("machine answered");
@@ -297,6 +339,18 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
     assert_eq!(
         gateway.as_ref().expect("gateway status exists").serving,
         GatewayServingStatus::Current
+    );
+    assert_eq!(
+        containers,
+        &MachineContainerAvailability::Unavailable {
+            reason: MachineContainerUnavailableReason::DockerUnavailable,
+        }
+    );
+    assert_eq!(
+        storage,
+        &Some(StorageCapability::Unavailable {
+            reason: StorageUnavailableReason::ZfsModuleMissing,
+        })
     );
     let machines = api
         .machine_list(&MachineListRequest {})
@@ -1681,6 +1735,15 @@ async fn start_facts_subscription(
     containers: MachineContainerObservationSnapshot,
     public_ip: Option<IpAddr>,
 ) -> tokio::task::JoinHandle<()> {
+    let facts = machine_facts(&machine_id, containers, public_ip);
+    start_facts_testimony_subscription(client, machine_id, facts.into()).await
+}
+
+async fn start_facts_testimony_subscription(
+    client: async_nats::Client,
+    machine_id: MachineId,
+    facts: MachineFactsTestimony,
+) -> tokio::task::JoinHandle<()> {
     let subject = machine_service(&machine_id, MachineServiceEndpoint::FactsGet);
     let mut subscriber = client
         .subscribe(subject)
@@ -1695,10 +1758,9 @@ async fn start_facts_subscription(
             let Some(reply) = message.reply else {
                 continue;
             };
-            let facts = machine_facts(&machine_id, containers.clone(), public_ip);
             let response =
                 serde_json::to_vec(&MachineFactsGetRpcResponse::Ok(MachineFactsGetRpcOk {
-                    facts,
+                    facts: facts.clone(),
                     build: crate::roles::machine::protocol::MachineBuildCapability::Available,
                 }))
                 .expect("facts response serializes");
@@ -1816,11 +1878,6 @@ fn machine_facts(
 
 fn test_disk_space() -> ployz_core::machine::runtime::MachineDiskSpace {
     ployz_test_support::fixtures::test_disk_space()
-}
-
-fn empty_machine_snapshot(value: &str) -> MachineContainerObservationSnapshot {
-    MachineContainerObservationSnapshot::try_new(machine_id(value), [])
-        .expect("empty machine snapshot is valid")
 }
 
 async fn reserved_deploy_request(
