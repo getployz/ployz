@@ -30,7 +30,7 @@ try {
     namespaceId: "default",
     serviceId: "api",
     image: "ghcr.io/acme/api:rev-1",
-    replicas: 1,
+    mode: { kind: "replicated", replicas: 1 },
   });
 
   console.log(await operation.status());

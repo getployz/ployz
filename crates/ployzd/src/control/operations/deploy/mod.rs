@@ -1,5 +1,6 @@
 //! Deploy operation execution over explicit ports.
 
+mod completion;
 pub mod driver;
 mod facts;
 mod failure;
@@ -14,20 +15,21 @@ mod step;
 mod types;
 
 use ployz_core::deploy::{
-    ContainerRestartPolicy, DeployCleanupContainer, DeployPlan, DeployPlanStep,
-    DeployPlanningContext, DeployPlanningInput, ImageSource, ReplicaSlot, plan_namespace_deploy,
+    ContainerRestartPolicy, DeployCleanupContainer, DeployPlan, DeployPlanningContext, ImageSource,
+    ReplicaSlot, plan_namespace_deploy,
 };
-use ployz_core::ids::{OperationId, StepId, SubjectTokenError};
+use ployz_core::ids::{OperationId, StepId};
 use ployz_core::machine::runtime::ManagedContainerKind;
 use ployz_core::operation::{
-    ControlPlaneCommitScope, DeployCleanupFailure, DeployEvidence, DeployImageCleanup,
-    DeployPhaseNumber, DeployPhaseOutcome, DeployRunningStage, DeployServiceResult,
-    DeployTransition, FailureMessage, OperatorHint, RetainedArtifact,
+    ControlPlaneCommitScope, DeployCleanupFailure, DeployCompletionOutcome, DeployEvidence,
+    DeployImageCleanup, DeployPhaseNumber, DeployPhaseOutcome, DeployRunningStage,
+    DeployServiceResult, DeployTransition, FailureMessage, OperatorHint, RetainedArtifact,
 };
 
 pub use crate::control::role_client::machine::MachineVolumeEnsureError;
 #[cfg(test)]
 pub use crate::roles::machine::MachineRuntimeUnavailableReason;
+use completion::{plan_has_global_deferrals, service_result};
 pub use facts::{
     DeployFactLoadError, load_deploy_execution_facts_from_nats, validate_deploy_route_admission,
 };
@@ -52,8 +54,8 @@ pub use preparation::{AutomaticHostnameMode, DeployExecutionFacts, DeployExecuti
 pub use preparation::{namespace_cleanup_candidates, prepare_deploy_execution_command};
 pub(crate) use preview::DeployPreviewStores;
 pub use preview::preview_deploy_from_nats;
-use step::with_step_timeout;
 pub use step::{DeployExecutionStep, DeployFailureRecordError, DeployOperationRecordError};
+use step::{deploy_step_id, with_step_timeout};
 
 use crate::roles::machine::protocol::{
     MachineContainerRemoveRpcRequest, MachineContainerRunHookRpcRequest,
@@ -222,6 +224,11 @@ where
     .map_err(|source| run.fail(source))?;
     validate_pushed_platforms(command, &plan).map_err(|source| run.fail(*source))?;
     let dataplane_membership = dataplane_membership(command, &plan);
+    let services_with_cleanup = plan
+        .cleanup_actions
+        .iter()
+        .map(|action| action.target().identity.service_id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
     if command
         .services()
         .iter()
@@ -307,10 +314,13 @@ where
             command,
             phase,
             &dataplane_membership,
-            &mut containers,
+            &services_with_cleanup,
             &mut run,
-            &mut *ports.recorder,
-            &mut *ports.machine_runtime,
+            phase::ServiceStartPorts {
+                containers: &mut containers,
+                recorder: &mut *ports.recorder,
+                machine_runtime: &mut *ports.machine_runtime,
+            },
         )
         .await?;
 
@@ -366,11 +376,17 @@ where
         &plan.cleanup_actions,
     )
     .await;
+    let completion_outcome = if plan_has_global_deferrals(&plan) {
+        DeployCompletionOutcome::CompletedWithWarnings
+    } else {
+        DeployCleanupResult::completion_outcome(&cleanup, &image_cleanup)
+    };
     let terminal_event = record_terminal_state(
         command,
         &mut *ports.recorder,
         &cleanup,
         image_cleanup.clone(),
+        completion_outcome,
     )
     .await;
 
@@ -380,6 +396,7 @@ where
         containers,
         cleanup,
         image_cleanup,
+        completion_outcome,
         terminal_event,
     };
 
@@ -400,7 +417,7 @@ where
     record_running_stage(command, recorder, DeployRunningStage::ServingTargetCommit).await
 }
 
-pub(super) fn deploy_plan(
+pub(crate) fn deploy_plan(
     command: &DeployExecutionCommand,
 ) -> Result<DeployPlan, DeployExecutionError> {
     let target = ployz_core::deploy::DeployPlanningTarget::try_from_deploy(&command.request)
@@ -412,13 +429,7 @@ pub(super) fn deploy_plan(
         command
             .services()
             .iter()
-            .map(|service| DeployPlanningInput {
-                service_id: service.service.service_id.clone(),
-                eligible_machines: service.eligible_machines.clone(),
-                existing_replicas: service.existing_replicas.clone(),
-                cleanup_candidates: service.cleanup_candidates.clone(),
-                volume_pins: service.volume_pins.clone(),
-            })
+            .map(|service| service.planning_input().clone())
             .collect(),
         command.namespace_cleanup_candidates().to_vec(),
         DeployPlanningContext {
@@ -427,23 +438,6 @@ pub(super) fn deploy_plan(
     )
     .map(|plan| plan.with_revision(command.request.namespace_revision_id()))
     .map_err(DeployExecutionError::from)
-}
-
-fn service_result(service: &ployz_core::deploy::DeployServicePlan) -> DeployServiceResult {
-    if service.pre_start.is_none()
-        && service
-            .steps
-            .iter()
-            .all(|step| matches!(step, DeployPlanStep::UseExistingContainer { .. }))
-    {
-        DeployServiceResult::Unchanged {
-            service_id: service.service_id.clone(),
-        }
-    } else {
-        DeployServiceResult::Completed {
-            service_id: service.service_id.clone(),
-        }
-    }
 }
 
 async fn run_pre_start_hook<N>(
@@ -697,6 +691,7 @@ async fn record_terminal_state<R>(
     recorder: &mut R,
     cleanup: &[DeployCleanupResult],
     images: Vec<DeployImageCleanup>,
+    outcome: DeployCompletionOutcome,
 ) -> DeployTerminalEvent
 where
     R: DeployOperationRecorder,
@@ -707,7 +702,6 @@ where
             DeployImageCleanup::MissingIdentity { .. } | DeployImageCleanup::Failed { .. }
         )
     });
-    let outcome = DeployCleanupResult::completion_outcome(cleanup, &images);
     if !cleanup.is_empty() || !images.is_empty() {
         let record_cleanup =
             record_evidence(command, recorder, cleanup_evidence(cleanup, images)).await;
@@ -918,7 +912,7 @@ async fn run_deploy_step<N>(
 where
     N: MachineContainerRuntime,
 {
-    let step_id = deploy_step_id(slot).map_err(DeployExecutionError::StepId)?;
+    let step_id = deploy_step_id(slot, machine_id).map_err(DeployExecutionError::StepId)?;
     let requires_docker_healthcheck = requires_docker_healthcheck(service);
     let request = MachineContainerRunRpcRequest {
         pull: machine_image_pull(
@@ -980,6 +974,7 @@ fn provisioned_volume_names(
     service: &DeployServiceExecutionCommand,
 ) -> Vec<ployz_core::deploy::VolumeName> {
     let mut names = service
+        .planning_input
         .volume_pins
         .iter()
         .filter_map(|pin| match pin.kind() {
@@ -990,8 +985,4 @@ fn provisioned_volume_names(
     names.sort();
     names.dedup();
     names
-}
-
-fn deploy_step_id(slot: ReplicaSlot) -> Result<StepId, SubjectTokenError> {
-    StepId::try_new(format!("run_{}", slot.get()))
 }

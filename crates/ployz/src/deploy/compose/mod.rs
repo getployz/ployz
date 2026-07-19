@@ -360,6 +360,105 @@ mod tests {
     }
 
     #[test]
+    fn compose_deploy_mode_maps_replicated_and_global() {
+        for (mode, expected) in [
+            (
+                "replicated",
+                ployz_core::deploy::ServiceMode::Replicated {
+                    replicas: ReplicaCount::try_new(1).expect("replicas"),
+                },
+            ),
+            ("global", ployz_core::deploy::ServiceMode::Global),
+        ] {
+            let source = format!(
+                "name: default\nservices:\n  web:\n    image: nginx\n    deploy:\n      mode: {mode}\n"
+            );
+            let (request, warnings) = parse_deploy_file(ComposeInput {
+                source: &source,
+                base_dir: Path::new("."),
+                interpolation_env: BTreeMap::new(),
+                namespace_override: None,
+                mode: UnsupportedFieldMode::Strict,
+            })
+            .expect("supported deploy mode parses");
+            assert!(warnings.is_empty());
+            let [service] = request.services.as_slice() else {
+                panic!("one service")
+            };
+            assert_eq!(service.mode, expected);
+        }
+    }
+
+    #[test]
+    fn compose_service_without_deploy_defaults_to_replicated_one() {
+        let (request, warnings) = parse_deploy_file(ComposeInput {
+            source: "name: default\nservices:\n  web:\n    image: nginx\n",
+            base_dir: Path::new("."),
+            interpolation_env: BTreeMap::new(),
+            namespace_override: None,
+            mode: UnsupportedFieldMode::Strict,
+        })
+        .expect("minimal service parses");
+        assert!(warnings.is_empty());
+        let [service] = request.services.as_slice() else {
+            panic!("one service")
+        };
+        assert_eq!(
+            service.mode,
+            ployz_core::deploy::ServiceMode::Replicated {
+                replicas: ReplicaCount::try_new(1).expect("replicas")
+            }
+        );
+    }
+
+    #[test]
+    fn compose_global_rejects_even_one_explicit_replica() {
+        let error = parse_deploy_file(ComposeInput {
+            source: "name: default\nservices:\n  web:\n    image: nginx\n    deploy:\n      mode: global\n      replicas: 1\n",
+            base_dir: Path::new("."),
+            interpolation_env: BTreeMap::new(),
+            namespace_override: None,
+            mode: UnsupportedFieldMode::Strict,
+        })
+        .expect_err("global and replicas conflict");
+        assert!(error.to_string().contains(
+            "services.web.deploy.replicas  invalid value  replicas cannot be set when deploy.mode is global"
+        ));
+    }
+
+    #[test]
+    fn compose_rejects_an_invalid_deploy_mode() {
+        let error = parse_deploy_file(ComposeInput {
+            source: "name: default\nservices:\n  web:\n    image: nginx\n    deploy:\n      mode: daemon\n",
+            base_dir: Path::new("."),
+            interpolation_env: BTreeMap::new(),
+            namespace_override: None,
+            mode: UnsupportedFieldMode::Strict,
+        })
+        .expect_err("unknown mode rejects");
+        assert!(error.to_string().contains(
+            "services.web.deploy.mode  invalid value  mode must be replicated or global"
+        ));
+    }
+
+    #[test]
+    fn compose_global_rejects_volume_mounts_cleanly() {
+        let error = parse_deploy_file(ComposeInput {
+            source: "name: default\nservices:\n  web:\n    image: nginx\n    deploy:\n      mode: global\n    volumes:\n      - data:/data\n",
+            base_dir: Path::new("."),
+            interpolation_env: BTreeMap::new(),
+            namespace_override: None,
+            mode: UnsupportedFieldMode::Strict,
+        })
+        .expect_err("global volume mount rejects");
+        assert!(
+            error.to_string().contains(
+                "services.web.volumes  invalid value  global services cannot mount volumes"
+            )
+        );
+    }
+
+    #[test]
     fn unmounted_declared_volume_is_advisory_in_both_modes() {
         let source = r#"
             name: default
@@ -509,8 +608,10 @@ mod tests {
 
         assert!(warnings.is_empty());
         assert_eq!(
-            parsed.services.first().expect("one service").replicas,
-            ReplicaCount::try_new(2).expect("valid replica count")
+            parsed.services.first().expect("one service").mode,
+            ployz_core::deploy::ServiceMode::Replicated {
+                replicas: ReplicaCount::try_new(2).expect("valid replica count")
+            }
         );
     }
 

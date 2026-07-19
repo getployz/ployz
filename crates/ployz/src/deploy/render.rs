@@ -1,6 +1,6 @@
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployPlan, DeployPlanStep, DeployRequest, DeployRoute,
-    DeployRouteTarget, ImageSource,
+    DeployRouteTarget, ImageSource, ReplicaSlot,
 };
 use ployz_core::ids::{OperationId, ServiceId};
 use ployz_core::image::OciPlatform;
@@ -153,7 +153,7 @@ impl DeployTree {
                                 operation_id.as_str(),
                                 service.service_id.as_str(),
                                 service.service_id.as_str(),
-                                slot.get(),
+                                slot_label(slot),
                                 machine_id.as_str()
                             ));
                         }
@@ -449,7 +449,7 @@ impl DeployTree {
     /// events carry no service or slot identity, so attribution is by count:
     /// the core sequencer starts containers one at a time in plan-step order,
     /// and that ordering invariant is what makes the positional match honest.
-    fn nth_run_step(&self, wanted: usize) -> Option<(&str, &str, u16)> {
+    fn nth_run_step(&self, wanted: usize) -> Option<(&str, &str, String)> {
         let plan = self.plan()?;
         let mut index = 0;
         for service in plan.phases.iter().flat_map(|phase| &phase.services) {
@@ -459,7 +459,7 @@ impl DeployTree {
                         return Some((
                             service.service_id.as_str(),
                             machine_id.as_str(),
-                            slot.get(),
+                            slot_label(slot),
                         ));
                     }
                     DeployPlanStep::RunContainer { .. } => index += 1,
@@ -485,7 +485,7 @@ impl DeployTree {
                         operation_id.as_str(),
                         service.service_id.as_str(),
                         service.service_id.as_str(),
-                        slot.get(),
+                        slot_label(slot),
                         machine_id.as_str()
                     )),
                     DeployPlanStep::UseExistingContainer { .. } => None,
@@ -941,12 +941,17 @@ fn render_service_step(
             text: format!(
                 "✓ no changes — already at target ({}.{} on {})",
                 service_id,
-                slot.get(),
+                slot_label(slot),
                 machine_id.as_str()
             ),
         },
         DeployPlanStep::RunContainer { machine_id, slot } => {
-            let name = format!("{}.{} on {}", service_id, slot.get(), machine_id.as_str());
+            let name = format!(
+                "{}.{} on {}",
+                service_id,
+                slot_label(slot),
+                machine_id.as_str()
+            );
             if tree.is_complete_success()
                 || tree.stage().is_some_and(|stage| {
                     stage_rank(stage) >= stage_rank(DeployRunningStage::EnsuringCertificates)
@@ -995,6 +1000,13 @@ fn render_service_step(
                 phase: PendingPhase::Queued,
             }
         }
+    }
+}
+
+fn slot_label(slot: &ReplicaSlot) -> String {
+    match slot {
+        ReplicaSlot::Replicated { number } => number.get().to_string(),
+        ReplicaSlot::Global => "global".to_owned(),
     }
 }
 

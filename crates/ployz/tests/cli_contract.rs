@@ -1378,7 +1378,7 @@ fn service_list_renders_service_summaries() {
 
     assert_eq!(
         output,
-        "svc_api image ghcr.io/acme/api:rev-2 testimony ready-replicas 0 intent desired-replicas 1 machines none routes none\nsvc_worker image ghcr.io/acme/api:rev-2 testimony ready-replicas 0 intent desired-replicas 1 machines none routes none\n"
+        "svc_api image ghcr.io/acme/api:rev-2 testimony ready-replicas 0 intent mode replicated replicas 1 machines none routes none\nsvc_worker image ghcr.io/acme/api:rev-2 testimony ready-replicas 0 intent mode replicated replicas 1 machines none routes none\n"
     );
 }
 
@@ -1398,7 +1398,7 @@ fn service_inspect_renders_active_revision() {
 
     assert_eq!(
         output,
-        "service svc_api\nintent namespace-revision-entry rev_2\nintent image ghcr.io/acme/api:rev-2\nintent desired-replicas 1\nintent routes none\ncontainers none\n"
+        "service svc_api\nintent namespace-revision-entry rev_2\nintent image ghcr.io/acme/api:rev-2\nintent mode replicated replicas 1\nintent routes none\ncontainers none\n"
     );
 }
 
@@ -1455,7 +1455,7 @@ fn service_inspect_renders_container_rows() {
 
     assert_eq!(
         output,
-        "service svc_api\nintent namespace-revision-entry rev_2\nintent image ghcr.io/acme/api:rev-2\nintent desired-replicas 1\nintent routes none\ncontainer ctr_active machine machine_a docker-state running health absent resolved-image absent created absent operation op_deploy serving-target-member\ncontainer ctr_failed machine machine_a docker-state exited health unhealthy resolved-image sha256:abc123 created 123 operation op_deploy retained-evidence\nmachine machine_b: no answer\n"
+        "service svc_api\nintent namespace-revision-entry rev_2\nintent image ghcr.io/acme/api:rev-2\nintent mode replicated replicas 1\nintent routes none\ncontainer ctr_active machine machine_a docker-state running health absent resolved-image absent created absent operation op_deploy serving-target-member\ncontainer ctr_failed machine machine_a docker-state exited health unhealthy resolved-image sha256:abc123 created 123 operation op_deploy retained-evidence\nmachine machine_b: no answer\n"
     );
 }
 
@@ -1509,7 +1509,9 @@ fn deploy_request() -> DeployRequest {
             service_id: ServiceId::try_new("svc_api").expect("valid service id"),
             image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
             image_source: ployz_core::deploy::ImageSource::Registry,
-            replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+            mode: ployz_core::deploy::ServiceMode::Replicated {
+                replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+            },
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             pre_start: None,
             depends_on: Vec::new(),

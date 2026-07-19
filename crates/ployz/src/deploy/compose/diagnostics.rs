@@ -142,7 +142,6 @@ pub(crate) enum KnownUnsupported {
     Build,
     CgroupParent,
     Configs,
-    DeployMode,
     DeployPlacement,
     DeployResources,
     DeployRestartPolicy,
@@ -175,7 +174,6 @@ impl KnownUnsupported {
         match self {
             Self::Build
             | Self::Configs
-            | Self::DeployMode
             | Self::DeployPlacement
             | Self::DeployResources
             | Self::DeployUpdateConfig
@@ -213,7 +211,6 @@ impl KnownUnsupported {
             }
             Self::CgroupParent => "cgroup parent is not part of the deploy model",
             Self::Configs => "configs are not deployed yet",
-            Self::DeployMode => "global deploy mode is not deployed yet",
             Self::DeployPlacement => "placement constraints are not deployed yet",
             Self::DeployResources => "resource reservations are not deployed yet",
             Self::DeployRestartPolicy => "restart policy subfields are not deployed yet",
@@ -292,7 +289,6 @@ pub(crate) fn classify_service_key(key: &str) -> Option<KnownUnsupported> {
         "build" => Some(KnownUnsupported::Build),
         "cgroup_parent" => Some(KnownUnsupported::CgroupParent),
         "configs" => Some(KnownUnsupported::Configs),
-        "deploy.mode" => Some(KnownUnsupported::DeployMode),
         "deploy.placement" => Some(KnownUnsupported::DeployPlacement),
         "deploy.resources" => Some(KnownUnsupported::DeployResources),
         "deploy.restart_policy" => Some(KnownUnsupported::DeployRestartPolicy),

@@ -360,8 +360,10 @@ async fn interrupted_deploy_retry_gathers_and_reuses_retained_runtime_work() {
         .find(|entry| entry.service_id == service_id("svc_api"))
         .expect("retry commits serving target");
     assert_eq!(
-        serving.desired_replicas,
-        ReplicaCount::try_new(2).expect("replica count")
+        serving.mode,
+        ployz_core::deploy::ServiceMode::Replicated {
+            replicas: ReplicaCount::try_new(2).expect("replica count")
+        }
     );
     assert!(matches!(
         restarted_controllers
@@ -591,8 +593,10 @@ async fn interrupted_scale_up_replica_is_regated_under_a_promoted_entry() {
         .find(|entry| entry.service_id == service_id("svc_api"))
         .expect("retry commits serving target");
     assert_eq!(
-        serving.desired_replicas,
-        ReplicaCount::try_new(2).expect("replica count")
+        serving.mode,
+        ployz_core::deploy::ServiceMode::Replicated {
+            replicas: ReplicaCount::try_new(2).expect("replica count")
+        }
     );
 }
 
@@ -1320,7 +1324,9 @@ fn deploy_request(replicas: u16) -> DeployRequest {
             service_id: service_id("svc_api"),
             image: image("registry.example/api:rev_2"),
             image_source: ployz_core::deploy::ImageSource::Registry,
-            replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
+            mode: ployz_core::deploy::ServiceMode::Replicated {
+                replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
+            },
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             pre_start: None,
             depends_on: Vec::new(),
@@ -1356,7 +1362,7 @@ fn preview_target_from_deploy(request: DeployRequest) -> DeployPreviewTarget {
                     image: service.image,
                     image_source: service.image_source,
                 },
-                replicas: service.replicas,
+                mode: service.mode,
                 keep: service.keep,
                 runtime: service.runtime,
                 pre_start: service.pre_start,

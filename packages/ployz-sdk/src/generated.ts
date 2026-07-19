@@ -150,7 +150,11 @@ export type RailpackCacheKey = string;
 
 export type ReplicaCount = SafeInteger<"ReplicaCount">;
 
-export type ReplicaSlot = SafeInteger<"ReplicaSlot">;
+export type ReplicaSlot = { "kind": "replicated", number: ReplicatedReplicaSlot, } | { "kind": "global" };
+
+export type ReplicatedReplicaSlot = SafeInteger<"ReplicatedReplicaSlot">;
+
+export type ServiceMode = { "kind": "replicated", replicas: ReplicaCount, } | { "kind": "global" };
 
 export type EnvName = Brand<string, "EnvName">;
 
@@ -224,7 +228,7 @@ export type DeployOrigin = Brand<string, "DeployOrigin">;
 
 export type DeployRequest = { namespace_id: NamespaceId, origin?: DeployOrigin | null, volumes?: { [key in VolumeName]: VolumeSpec }, services: Array<DeployServiceSpec>, };
 
-export type DeployServiceSpec = { service_id: ServiceId, image: ImageReference, image_source?: ImageSource, replicas: ReplicaCount,
+export type DeployServiceSpec = { service_id: ServiceId, image: ImageReference, image_source?: ImageSource, mode: ServiceMode,
 /**
  * Number of newest stopped superseded containers retained for inspection.
  * Absence preserves full container cleanup and disables image reclamation.
@@ -250,7 +254,9 @@ volume_pin_commits?: Array<VolumePinState>, volume_ensures?: Array<VolumePinStat
 
 export type DeployPhasePlan = { services: Array<DeployServicePlan>, };
 
-export type DeployServicePlan = { service_id: ServiceId, steps: Array<DeployPlanStep>, pre_start?: PreStartHookStep | null, };
+export type DeployServicePlan = { service_id: ServiceId, placement: DeployServicePlacement, steps: Array<DeployPlanStep>, pre_start?: PreStartHookStep | null, };
+
+export type DeployServicePlacement = { "kind": "replicated" } | { "kind": "global", candidates: Array<MachineId>, selected: Array<MachineId>, deferred: Array<UnusableMachine>, draining: Array<MachineId>, };
 
 export type DeployPhaseNumber = SafeInteger<"DeployPhaseNumber">;
 
@@ -655,7 +661,7 @@ export type ControlPlaneEpoch = number;
 
 export type RouteBindingState = { id: RouteBindingId, namespace_id: NamespaceId, target: RouteTarget, endpoint_port: RoutePort, service_id: ServiceId, origin: RouteBindingOrigin, };
 
-export type ServingTargetEntry = { namespace_id: NamespaceId, service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, image: ImageReference, desired_replicas: ReplicaCount, volume_names: Array<VolumeName>, };
+export type ServingTargetEntry = { namespace_id: NamespaceId, service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, image: ImageReference, mode: ServiceMode, volume_names: Array<VolumeName>, };
 
 export type MachineEndpointObservation = { machine_id: MachineId, control_endpoints: Array<string>, mesh_endpoints: Array<string>, };
 
@@ -716,7 +722,7 @@ export type DeployPreviewRequest = { target: DeployPreviewTarget, registry_crede
 
 export type DeployPreviewTarget = { namespace_id: NamespaceId, origin?: DeployOrigin | null, volumes?: { [key in VolumeName]: VolumeSpec }, services: Array<DeployPreviewService>, };
 
-export type DeployPreviewService = { service_id: ServiceId, image: DeployPreviewImage, replicas: ReplicaCount, keep?: ContainerRetentionCount | null, runtime: ContainerRuntimeSpec, pre_start?: PreStartHook | null, depends_on?: Array<ServiceDependency>, routes?: Array<DeployRoute>, };
+export type DeployPreviewService = { service_id: ServiceId, image: DeployPreviewImage, mode: ServiceMode, keep?: ContainerRetentionCount | null, runtime: ContainerRuntimeSpec, pre_start?: PreStartHook | null, depends_on?: Array<ServiceDependency>, routes?: Array<DeployRoute>, };
 
 export type DeployPreviewImage = { "state": "concrete", image: ImageReference, image_source: ImageSource, } | { "state": "pending_build" };
 

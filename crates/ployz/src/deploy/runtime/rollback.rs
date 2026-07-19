@@ -197,7 +197,9 @@ mod tests {
                 service_id: service_id("web"),
                 image: ImageReference::try_new(image).expect("valid image"),
                 image_source: ImageSource::Registry,
-                replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+                mode: ployz_core::deploy::ServiceMode::Replicated {
+                    replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+                },
                 runtime: ContainerRuntimeSpec::image_defaults(),
                 pre_start: None,
                 depends_on: Vec::new(),

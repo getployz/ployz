@@ -2,8 +2,9 @@ use super::*;
 use ployz_core::certificate::{ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow};
 use ployz_core::deploy::{
     ContainerRuntimeSpec, DeployPhasePlan, DeployPlan, DeployPlanStep, DeployRequest, DeployRoute,
-    DeployRouteTarget, DeployServicePlan, DeployServiceSpec, ImageReference, ImageSource,
-    PlatformImage, PushedImageReceipt, ReplicaCount, ReplicaSlot, VolumeAdmissionFailure,
+    DeployRouteTarget, DeployServicePlacement, DeployServicePlan, DeployServiceSpec,
+    ImageReference, ImageSource, PlatformImage, PushedImageReceipt, ReplicaCount, ReplicaSlot,
+    ReplicatedReplicaSlot, VolumeAdmissionFailure,
 };
 use ployz_core::ids::{
     CertId, ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
@@ -48,7 +49,9 @@ fn service(name: &str, image: &str, replicas: u16, routes: Vec<DeployRoute>) -> 
         service_id: service_id(name),
         image: ImageReference::try_new(image).expect("valid image reference"),
         image_source: ImageSource::Registry,
-        replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
+        mode: ployz_core::deploy::ServiceMode::Replicated {
+            replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
+        },
         runtime: ContainerRuntimeSpec::image_defaults(),
         pre_start: None,
         depends_on: Vec::new(),
@@ -127,25 +130,27 @@ fn plan() -> DeployPlan {
             services: vec![
                 DeployServicePlan {
                     service_id: service_id("web"),
+                    placement: DeployServicePlacement::Replicated,
                     pre_start: None,
                     steps: vec![
                         DeployPlanStep::RunContainer {
                             machine_id: machine_id("hetzner-1"),
-                            slot: ReplicaSlot::try_new(1).expect("valid replica slot"),
+                            slot: replica_slot(1),
                         },
                         DeployPlanStep::RunContainer {
                             machine_id: machine_id("hetzner-2"),
-                            slot: ReplicaSlot::try_new(2).expect("valid replica slot"),
+                            slot: replica_slot(2),
                         },
                     ],
                 },
                 DeployServicePlan {
                     service_id: service_id("worker"),
+                    placement: DeployServicePlacement::Replicated,
                     pre_start: None,
                     steps: vec![DeployPlanStep::UseExistingContainer {
                         machine_id: machine_id("hetzner-2"),
                         container_id: container_id("worker-existing"),
-                        slot: ReplicaSlot::try_new(1).expect("valid replica slot"),
+                        slot: replica_slot(1),
                     }],
                 },
             ],
@@ -153,6 +158,12 @@ fn plan() -> DeployPlan {
         volume_pin_commits: Vec::new(),
         volume_ensures: Vec::new(),
         cleanup_actions: Vec::new(),
+    }
+}
+
+fn replica_slot(number: u16) -> ReplicaSlot {
+    ReplicaSlot::Replicated {
+        number: ReplicatedReplicaSlot::try_new(number).expect("valid replica slot"),
     }
 }
 

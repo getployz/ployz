@@ -318,6 +318,7 @@ fn preview_plan_error(
             .cloned()
             .unwrap_or_else(|| command.unusable_machines.clone()),
         DeployPlanError::UnknownService { .. }
+        | DeployPlanError::PlacementModeMismatch { .. }
         | DeployPlanError::UnknownServiceDependency { .. }
         | DeployPlanError::ServiceDependencyCycle { .. }
         | DeployPlanError::HealthyDependencyWithoutHealthcheck { .. }

@@ -6,6 +6,7 @@ use ployz::deploy::command::{
 };
 use ployz_core::deploy::{
     DeployOrigin, DeployRoute, DeployRouteTarget, DeployServiceSpec, ImageReference, ReplicaCount,
+    ServiceMode,
 };
 use ployz_core::ids::{NamespaceId, OperationId, ServiceId};
 use ployz_core::operation::{RouteHostname, RoutePort};
@@ -219,8 +220,10 @@ fn cli_deploy_shorthand_derives_full_request() {
         ImageReference::try_new("ghcr.io/acme/web:latest").expect("valid image")
     );
     assert_eq!(
-        first_service(&command).replicas,
-        ReplicaCount::try_new(1).expect("valid replicas")
+        first_service(&command).mode,
+        ServiceMode::Replicated {
+            replicas: ReplicaCount::try_new(1).expect("valid replicas")
+        }
     );
     assert_eq!(
         first_service(&command).routes,
@@ -263,9 +266,29 @@ fn cli_explicit_flags_override_shorthand_derivations() {
         ServiceId::try_new("svc_custom").expect("valid service id")
     );
     assert_eq!(
-        first_service(&command).replicas,
-        ReplicaCount::try_new(3).expect("valid replicas")
+        first_service(&command).mode,
+        ServiceMode::Replicated {
+            replicas: ReplicaCount::try_new(3).expect("valid replicas")
+        }
     );
+}
+
+#[test]
+fn cli_global_selects_global_service_mode() {
+    let command =
+        shorthand_deploy_command(quick_start_deploy_args().chain(["--global"].map(str::to_owned)));
+    assert_eq!(first_service(&command).mode, ServiceMode::Global);
+}
+
+#[test]
+fn cli_global_conflicts_with_replicas() {
+    let error = parse_command(
+        quick_start_deploy_args().chain(["--global", "--replicas", "1"].map(str::to_owned)),
+    )
+    .expect_err("global and replicas conflict");
+    let rendered = error.to_string();
+    assert!(rendered.contains("--global"), "{rendered}");
+    assert!(rendered.contains("--replicas"), "{rendered}");
 }
 
 #[test]
@@ -607,7 +630,9 @@ fn assert_deploy_fixture(command: &DeployCommand) {
             service_id: ServiceId::try_new("svc_api").expect("valid service id"),
             image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
             image_source: ployz_core::deploy::ImageSource::Registry,
-            replicas: ReplicaCount::try_new(1).expect("valid replicas"),
+            mode: ployz_core::deploy::ServiceMode::Replicated {
+                replicas: ReplicaCount::try_new(1).expect("valid replicas")
+            },
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             pre_start: None,
             depends_on: Vec::new(),

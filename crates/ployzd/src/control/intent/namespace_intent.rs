@@ -344,7 +344,9 @@ mod tests {
             namespace_revision_entry_id: NamespaceRevisionEntryId::try_new("revision_entry_b")
                 .expect("revision entry id"),
             image: ImageReference::try_new("nginx:latest").expect("image"),
-            desired_replicas: ReplicaCount::try_new(1).expect("replicas"),
+            mode: ployz_core::deploy::ServiceMode::Replicated {
+                replicas: ReplicaCount::try_new(1).expect("replicas"),
+            },
             volume_names: Vec::new(),
         }
     }

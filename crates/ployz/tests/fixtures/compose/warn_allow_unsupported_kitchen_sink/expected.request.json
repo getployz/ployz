@@ -9,7 +9,10 @@
     {
       "service_id": "web",
       "image": "nginx:latest",
-      "replicas": 2,
+      "mode": {
+        "kind": "replicated",
+        "replicas": 2
+      },
       "runtime": {
         "command": null,
         "entrypoint": null,

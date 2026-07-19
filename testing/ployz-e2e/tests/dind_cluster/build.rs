@@ -214,7 +214,9 @@ async fn deploy_receipt(core: &CoreContext, label: &str, receipt: PushedImageRec
             service_id: service_id(&format!("svc-build-{label}")),
             image,
             image_source: ImageSource::PushedToSeed(receipt),
-            replicas: ReplicaCount::try_new(1).expect("one replica"),
+            mode: ployz_core::deploy::ServiceMode::Replicated {
+                replicas: ReplicaCount::try_new(1).expect("one replica"),
+            },
             runtime: ContainerRuntimeSpec::image_defaults(),
             pre_start: None,
             depends_on: Vec::new(),

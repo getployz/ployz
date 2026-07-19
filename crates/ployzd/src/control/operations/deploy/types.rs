@@ -1,7 +1,10 @@
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployPlanningInput, DeployPlanningTarget, DeployRequest,
-    DeployRouteBindingAddition, DeployServiceSpec, ExistingServiceReplica,
-    ObservedCleanupCandidate, RegistryCredential,
+    DeployRouteBindingAddition, DeployServiceSpec, RegistryCredential,
+};
+#[cfg(test)]
+use ployz_core::deploy::{
+    DeployPlanningPlacementInput, ExistingServiceReplica, ObservedCleanupCandidate,
 };
 use ployz_core::ids::{
     ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
@@ -10,7 +13,6 @@ use ployz_core::ids::{
 use ployz_core::image::OciPlatform;
 use ployz_core::intent::RouteBindingState;
 use ployz_core::intent::ServingTargetEntry;
-use ployz_core::intent::VolumePinState;
 use ployz_core::network::DataplaneMember;
 use ployz_core::operation::{
     DeployCompletionOutcome, DeployImageCleanup, FailureMessage, OperatorHint, RetainedArtifact,
@@ -68,11 +70,15 @@ pub struct DeployServiceExecutionCommand {
     pub(super) service: DeployServiceSpec,
     pub(super) registry_credential: Option<RegistryCredential>,
     pub(super) route_commits: Vec<RouteBindingState>,
-    pub(super) volume_pins: Vec<VolumePinState>,
-    pub(super) eligible_machines: Vec<MachineId>,
+    pub(super) planning_input: DeployPlanningInput,
+    pub(super) serving_intent: ServingIntentDisposition,
     pub(super) unusable_machines: Vec<ployz_core::operation::UnusableMachine>,
-    pub(super) existing_replicas: Vec<ExistingServiceReplica>,
-    pub(super) cleanup_candidates: Vec<ObservedCleanupCandidate>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ServingIntentDisposition {
+    Unchanged,
+    Changed,
 }
 
 impl DeployExecutionCommand {
@@ -221,19 +227,29 @@ impl DeployServiceExecutionCommand {
     #[must_use]
     #[cfg(test)]
     pub fn existing_replicas(&self) -> &[ExistingServiceReplica] {
-        &self.existing_replicas
+        &self.planning_input.existing_replicas
     }
 
     #[must_use]
     #[cfg(test)]
     pub fn cleanup_candidates(&self) -> &[ObservedCleanupCandidate] {
-        &self.cleanup_candidates
+        &self.planning_input.cleanup_candidates
     }
 
     #[must_use]
     #[cfg(test)]
-    pub fn eligible_machines(&self) -> &[MachineId] {
-        &self.eligible_machines
+    pub fn eligible_machines(&self) -> Vec<MachineId> {
+        match &self.planning_input.placement {
+            DeployPlanningPlacementInput::Replicated { eligible_machines } => {
+                eligible_machines.clone()
+            }
+            DeployPlanningPlacementInput::Global(input) => input.selected_machines(),
+        }
+    }
+
+    #[must_use]
+    pub(super) fn planning_input(&self) -> &DeployPlanningInput {
+        &self.planning_input
     }
 
     #[must_use]
@@ -243,7 +259,7 @@ impl DeployServiceExecutionCommand {
             &self.service.service_id,
             self.service.namespace_revision_entry_id(namespace_id),
             &self.service.image,
-            self.service.replicas,
+            self.service.mode,
             &self.service.runtime,
         )
     }
@@ -259,7 +275,7 @@ pub(super) fn serving_target_entry(
     service_id: &ServiceId,
     namespace_revision_entry_id: NamespaceRevisionEntryId,
     image: &ployz_core::deploy::ImageReference,
-    desired_replicas: ployz_core::deploy::ReplicaCount,
+    mode: ployz_core::deploy::ServiceMode,
     runtime: &ployz_core::deploy::ContainerRuntimeSpec,
 ) -> ServingTargetEntry {
     let mut volume_names = runtime
@@ -274,7 +290,7 @@ pub(super) fn serving_target_entry(
         service_id: service_id.clone(),
         namespace_revision_entry_id,
         image: image.clone(),
-        desired_replicas,
+        mode,
         volume_names,
     }
 }
@@ -286,6 +302,7 @@ pub struct DeployExecutionOutcome {
     pub containers: Vec<DeployContainer>,
     pub cleanup: Vec<DeployCleanupResult>,
     pub image_cleanup: Vec<DeployImageCleanup>,
+    pub completion_outcome: DeployCompletionOutcome,
     pub terminal_event: DeployTerminalEvent,
 }
 
@@ -293,7 +310,7 @@ impl DeployExecutionOutcome {
     #[must_use]
     #[cfg(test)]
     pub fn completion_outcome(&self) -> DeployCompletionOutcome {
-        DeployCleanupResult::completion_outcome(&self.cleanup, &self.image_cleanup)
+        self.completion_outcome
     }
 }
 

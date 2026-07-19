@@ -776,7 +776,9 @@ mod tests {
                 service_id: service_id("svc_api"),
                 image: ployz_core::deploy::ImageReference::try_new("nginx:latest").expect("image"),
                 image_source: ployz_core::deploy::ImageSource::Registry,
-                replicas: ployz_core::deploy::ReplicaCount::try_new(1).expect("replicas"),
+                mode: ployz_core::deploy::ServiceMode::Replicated {
+                    replicas: ployz_core::deploy::ReplicaCount::try_new(1).expect("replicas"),
+                },
                 runtime,
                 pre_start: None,
                 depends_on: Vec::new(),
