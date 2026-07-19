@@ -1,8 +1,6 @@
 use std::collections::BTreeSet;
 
-use ployz_core::build::{
-    BuildAdapter, BuildExecutorId, BuildExecutorOrigin, BuildPlatforms, BuildPoolId,
-};
+use ployz_core::build::{BuildAdapter, BuildPlatforms};
 use ployz_core::ids::MachineId;
 use ployz_core::image::OciPlatform;
 use ployz_core::machine::MachineUsabilityReason;
@@ -14,65 +12,9 @@ use crate::control::role_client::machine::MachinePlacementFacts;
 use crate::roles::machine::protocol::MachineBuildCapability;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct BuildExecutorAssignment {
-    pub(crate) origin: BuildExecutorOrigin,
+pub(crate) struct ClusterBuildExecutorAssignment {
     pub(crate) platform: OciPlatform,
-    pub(crate) image_seed: MachineId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ExternalBuildExecutorCandidate {
-    pub(crate) pool_id: BuildPoolId,
-    pub(crate) executor_id: BuildExecutorId,
-    pub(crate) platform: OciPlatform,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ExternalBuildPlacementError {
-    NoCapableExecutor {
-        pool_id: BuildPoolId,
-        platform: OciPlatform,
-    },
-    NoReachableImageSeed {
-        pool_id: BuildPoolId,
-    },
-}
-
-/// Selects only from the capability inventory and reachable Machine seeds the
-/// caller supplied. An unsolicited responder has no path into either set.
-pub(crate) fn place_external_build_platforms(
-    pool_id: &BuildPoolId,
-    platforms: &BuildPlatforms,
-    candidates: &[ExternalBuildExecutorCandidate],
-    reachable_image_seeds: &BTreeSet<MachineId>,
-) -> Result<Vec<BuildExecutorAssignment>, ExternalBuildPlacementError> {
-    let mut assignments = Vec::new();
-    for platform in platforms.iter() {
-        let executor = candidates
-            .iter()
-            .filter(|candidate| candidate.pool_id == *pool_id && candidate.platform == *platform)
-            .min_by(|left, right| left.executor_id.cmp(&right.executor_id))
-            .ok_or_else(|| ExternalBuildPlacementError::NoCapableExecutor {
-                pool_id: pool_id.clone(),
-                platform: platform.clone(),
-            })?;
-        let image_seed = reachable_image_seeds
-            .iter()
-            .next()
-            .cloned()
-            .ok_or_else(|| ExternalBuildPlacementError::NoReachableImageSeed {
-                pool_id: pool_id.clone(),
-            })?;
-        assignments.push(BuildExecutorAssignment {
-            origin: BuildExecutorOrigin::External {
-                pool_id: pool_id.clone(),
-                executor_id: executor.executor_id.clone(),
-            },
-            platform: platform.clone(),
-            image_seed,
-        });
-    }
-    Ok(assignments)
+    pub(crate) machine_id: MachineId,
 }
 
 /// Resolves every requested platform before any machine work starts.
@@ -86,7 +28,7 @@ pub(crate) fn place_build_platforms(
     facts: &[MachinePlacementFacts],
     projection: &DataplaneProjection,
     dataplane_statuses: &[(MachineId, Result<MachineDataplaneStatus, FailureMessage>)],
-) -> Result<Vec<BuildExecutorAssignment>, Box<BuildOperationFailure>> {
+) -> Result<Vec<ClusterBuildExecutorAssignment>, Box<BuildOperationFailure>> {
     let build_unavailable = facts
         .iter()
         .filter_map(|candidate| {
@@ -129,12 +71,9 @@ pub(crate) fn place_build_platforms(
                 unusable,
             }));
         };
-        assignments.push(BuildExecutorAssignment {
-            origin: BuildExecutorOrigin::Cluster {
-                machine_id: machine_id.clone(),
-            },
+        assignments.push(ClusterBuildExecutorAssignment {
             platform: platform.clone(),
-            image_seed: machine_id,
+            machine_id,
         });
     }
     Ok(assignments)
@@ -160,7 +99,11 @@ fn build_capability_supports_adapter(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::build::{BuildCacheScope, BuildContextPath};
+    use ployz_core::build::{
+        BuildCacheScope, BuildContextPath, BuildExecutorAssignment, BuildExecutorId,
+        BuildPlatformExecutorAssignment, BuildPoolId, ExternalBuildExecutorCandidate,
+        ExternalBuildPlacementError, place_external_build_platforms,
+    };
     use ployz_core::machine::MachineLifecycle;
     use ployz_core::network::{
         DataplaneProjectionMember, DataplaneProjectionRevisions, DataplaneProjectionTestimony,
@@ -213,15 +156,11 @@ mod tests {
         assert_eq!(
             placement
                 .iter()
-                .map(|assignment| (assignment.platform.clone(), assignment.image_seed.as_str(),))
+                .map(|assignment| (assignment.platform.clone(), assignment.machine_id.as_str(),))
                 .collect::<Vec<_>>(),
             vec![(amd64, "a-amd64"), (arm64, "arm64")]
         );
-        assert!(placement.iter().all(|assignment| matches!(
-            &assignment.origin,
-            BuildExecutorOrigin::Cluster { machine_id }
-                if machine_id == &assignment.image_seed
-        )));
+        assert_eq!(placement[0].machine_id.as_str(), "a-amd64");
     }
 
     #[test]
@@ -279,7 +218,7 @@ mod tests {
         assert_eq!(
             placement
                 .first()
-                .map(|assignment| assignment.image_seed.as_str()),
+                .map(|assignment| assignment.machine_id.as_str()),
             Some("b-available")
         );
     }
@@ -310,7 +249,7 @@ mod tests {
         assert_eq!(
             placement
                 .first()
-                .map(|assignment| assignment.image_seed.as_str()),
+                .map(|assignment| assignment.machine_id.as_str()),
             Some("b-available")
         );
     }
@@ -341,7 +280,7 @@ mod tests {
         assert_eq!(
             placement
                 .first()
-                .map(|assignment| assignment.image_seed.as_str()),
+                .map(|assignment| assignment.machine_id.as_str()),
             Some("a-no-railpack")
         );
     }
@@ -404,13 +343,13 @@ mod tests {
 
         assert_eq!(
             place_external_build_platforms(&pool_id, &platforms, &candidates, &seeds),
-            Ok(vec![BuildExecutorAssignment {
-                origin: BuildExecutorOrigin::External {
+            Ok(vec![BuildPlatformExecutorAssignment {
+                platform: amd64,
+                executor: BuildExecutorAssignment::External {
                     pool_id,
                     executor_id: BuildExecutorId::try_new("executor-a").expect("executor id"),
+                    image_seed: MachineId::try_new("seed-a").expect("machine id"),
                 },
-                platform: amd64,
-                image_seed: MachineId::try_new("seed-a").expect("machine id"),
             }])
         );
     }

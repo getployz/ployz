@@ -111,10 +111,7 @@ fn build_request(operation_id: &str, timeout_millis: u64) -> MachineBuildStartRp
     let machine_id = MachineId::try_new("machine-a").expect("machine");
     MachineBuildStartRpcRequest {
         operation_id: OperationId::try_new(operation_id).expect("operation"),
-        origin: BuildExecutorOrigin::Cluster {
-            machine_id: machine_id.clone(),
-        },
-        image_seed: machine_id,
+        assignment: BuildExecutorAssignment::Cluster { machine_id },
         source: ployz_core::build::GitSource::try_new(
             "https://example.test/repo.git",
             "0123456789abcdef0123456789abcdef01234567",
@@ -176,35 +173,16 @@ fn cancel_rejects_misaddressed_cluster_provenance() {
     let machine_id = MachineId::try_new("machine-a").expect("machine");
     let request = MachineBuildCancelRpcRequest {
         operation_id: OperationId::try_new("build-1").expect("operation"),
-        origin: BuildExecutorOrigin::Cluster {
+        assignment: BuildExecutorAssignment::Cluster {
             machine_id: MachineId::try_new("machine-b").expect("machine"),
         },
-        image_seed: machine_id.clone(),
     };
 
     assert!(matches!(
         validate_cancel_provenance(&machine_id, &request),
-        Err(MachineBuildCancelDomainError::OriginMismatch { expected, actual })
-            if expected == (BuildExecutorOrigin::Cluster { machine_id })
-                && actual == request.origin
-    ));
-}
-
-#[test]
-fn cancel_rejects_misaddressed_image_seed() {
-    let machine_id = MachineId::try_new("machine-a").expect("machine");
-    let request = MachineBuildCancelRpcRequest {
-        operation_id: OperationId::try_new("build-1").expect("operation"),
-        origin: BuildExecutorOrigin::Cluster {
-            machine_id: machine_id.clone(),
-        },
-        image_seed: MachineId::try_new("machine-b").expect("machine"),
-    };
-
-    assert!(matches!(
-        validate_cancel_provenance(&machine_id, &request),
-        Err(MachineBuildCancelDomainError::ImageSeedMismatch { expected, actual })
-            if expected == machine_id && actual == request.image_seed
+        Err(MachineBuildCancelDomainError::AssignmentMismatch { expected, actual })
+            if expected == (BuildExecutorAssignment::Cluster { machine_id })
+                && actual == request.assignment
     ));
 }
 
@@ -214,17 +192,18 @@ async fn start_rejects_wrong_origin_before_registration() {
     let effects = Arc::new(TestBuildEffects::new(true));
     let runtime = MachineBuildRuntime::new_for_test(machine_id.clone(), effects.clone());
     let mut request = build_request("wrong-origin", 1_000);
-    let actual = BuildExecutorOrigin::External {
+    let actual = BuildExecutorAssignment::External {
         pool_id: ployz_core::build::BuildPoolId::try_new("pool-a").expect("pool id"),
         executor_id: ployz_core::build::BuildExecutorId::try_new("executor-a")
             .expect("executor id"),
+        image_seed: machine_id.clone(),
     };
-    request.origin = actual.clone();
+    request.assignment = actual.clone();
 
     assert_eq!(
         runtime.start(request).await,
-        Err(MachineBuildStartDomainError::OriginMismatch {
-            expected: BuildExecutorOrigin::Cluster { machine_id },
+        Err(MachineBuildStartDomainError::AssignmentMismatch {
+            expected: BuildExecutorAssignment::Cluster { machine_id },
             actual,
         })
     );
@@ -234,18 +213,23 @@ async fn start_rejects_wrong_origin_before_registration() {
 }
 
 #[tokio::test]
-async fn start_rejects_wrong_image_seed_before_registration() {
+async fn start_rejects_external_assignment_with_different_seed_before_registration() {
     let machine_id = MachineId::try_new("machine-a").expect("machine");
     let effects = Arc::new(TestBuildEffects::new(true));
     let runtime = MachineBuildRuntime::new_for_test(machine_id.clone(), effects.clone());
     let mut request = build_request("wrong-seed", 1_000);
-    let actual = MachineId::try_new("machine-b").expect("machine");
-    request.image_seed = actual.clone();
+    let actual = BuildExecutorAssignment::External {
+        pool_id: ployz_core::build::BuildPoolId::try_new("pool-a").expect("pool id"),
+        executor_id: ployz_core::build::BuildExecutorId::try_new("executor-a")
+            .expect("executor id"),
+        image_seed: MachineId::try_new("machine-b").expect("machine"),
+    };
+    request.assignment = actual.clone();
 
     assert_eq!(
         runtime.start(request).await,
-        Err(MachineBuildStartDomainError::ImageSeedMismatch {
-            expected: machine_id,
+        Err(MachineBuildStartDomainError::AssignmentMismatch {
+            expected: BuildExecutorAssignment::Cluster { machine_id },
             actual,
         })
     );
@@ -287,10 +271,9 @@ async fn unavailable_build_runtime_is_typed_machine_evidence() {
     let machine_id = MachineId::try_new("machine-a").expect("machine");
     let request = MachineBuildStartRpcRequest {
         operation_id: OperationId::try_new("build-1").expect("operation"),
-        origin: BuildExecutorOrigin::Cluster {
+        assignment: BuildExecutorAssignment::Cluster {
             machine_id: machine_id.clone(),
         },
-        image_seed: machine_id.clone(),
         source: ployz_core::build::GitSource::try_new(
             "https://example.test/repo.git",
             "0123456789abcdef0123456789abcdef01234567",

@@ -2,21 +2,21 @@ use ployz_core::build::{
     BuildExecutorCancelDomainError, BuildExecutorCancelOk, BuildExecutorCancelOutcome,
     BuildExecutorCancelRequest, BuildExecutorCleanupOutcome, BuildExecutorLogFrame,
     BuildExecutorStartDomainError, BuildExecutorStartOk, BuildExecutorStartRequest,
+    VerifiedGitCommit,
 };
+use ployz_core::deploy::PlatformImage;
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::machine::rpc::MachineRpcResponse;
-use ployz_core::operation::FailureMessage;
+use ployz_core::operation::{BuildToolchainEvidence, FailureMessage};
 use serde::{Deserialize, Serialize};
 
 pub type MachineBuildStartRpcRequest = BuildExecutorStartRequest;
-pub type MachineBuildStartRpcOk = BuildExecutorStartOk;
 pub type MachineBuildStartDomainError = BuildExecutorStartDomainError;
 pub type MachineBuildCleanupOutcome = BuildExecutorCleanupOutcome;
 pub type MachineBuildStartRpcResponse =
     MachineRpcResponse<MachineBuildStartRpcOk, MachineBuildStartDomainError>;
 
 pub type MachineBuildCancelRpcRequest = BuildExecutorCancelRequest;
-pub type MachineBuildCancelRpcOk = BuildExecutorCancelOk;
 pub type MachineBuildCancelOutcome = BuildExecutorCancelOutcome;
 pub type MachineBuildCancelDomainError = BuildExecutorCancelDomainError;
 pub type MachineBuildCancelRpcResponse =
@@ -24,7 +24,119 @@ pub type MachineBuildCancelRpcResponse =
 
 pub type MachineBuildLogFrame = BuildExecutorLogFrame;
 
-pub use ployz_core::build::{BuildExecutorAcceptance, BuildExecutorOrigin, BuildLogSummary};
+pub use ployz_core::build::{BuildExecutorAcceptance, BuildExecutorAssignment, BuildLogSummary};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachineBuildStartRpcOk {
+    pub machine_id: MachineId,
+    pub acceptance: BuildExecutorAcceptance,
+    pub image: PlatformImage,
+    pub verified_commit: VerifiedGitCommit,
+    pub toolchain: BuildToolchainEvidence,
+    pub final_log_sequence: u64,
+    pub omitted_log_bytes: u64,
+}
+
+impl MachineBuildStartRpcOk {
+    #[must_use]
+    pub const fn log_summary(&self) -> BuildLogSummary {
+        BuildLogSummary::new(self.final_log_sequence, self.omitted_log_bytes)
+    }
+
+    #[must_use]
+    pub fn into_executor(self) -> BuildExecutorStartOk {
+        self.into()
+    }
+}
+
+impl From<(MachineId, BuildExecutorStartOk)> for MachineBuildStartRpcOk {
+    fn from((machine_id, executor): (MachineId, BuildExecutorStartOk)) -> Self {
+        let BuildExecutorStartOk {
+            acceptance,
+            image,
+            verified_commit,
+            toolchain,
+            log_summary,
+        } = executor;
+        Self {
+            machine_id,
+            acceptance,
+            image,
+            verified_commit,
+            toolchain,
+            final_log_sequence: log_summary.final_log_sequence,
+            omitted_log_bytes: log_summary.omitted_log_bytes,
+        }
+    }
+}
+
+impl From<MachineBuildStartRpcOk> for BuildExecutorStartOk {
+    fn from(response: MachineBuildStartRpcOk) -> Self {
+        let MachineBuildStartRpcOk {
+            machine_id: _,
+            acceptance,
+            image,
+            verified_commit,
+            toolchain,
+            final_log_sequence,
+            omitted_log_bytes,
+        } = response;
+        Self {
+            acceptance,
+            image,
+            verified_commit,
+            toolchain,
+            log_summary: BuildLogSummary::new(final_log_sequence, omitted_log_bytes),
+        }
+    }
+}
+
+impl ployz_core::machine::rpc::MachineRpcResponder for MachineBuildStartRpcOk {
+    fn responder_machine_id(&self) -> &MachineId {
+        &self.machine_id
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachineBuildCancelRpcOk {
+    pub machine_id: MachineId,
+    pub assignment: BuildExecutorAssignment,
+    pub outcome: BuildExecutorCancelOutcome,
+}
+
+impl MachineBuildCancelRpcOk {
+    #[must_use]
+    pub fn into_executor(self) -> BuildExecutorCancelOk {
+        self.into()
+    }
+}
+
+impl From<(MachineId, BuildExecutorCancelOk)> for MachineBuildCancelRpcOk {
+    fn from((machine_id, executor): (MachineId, BuildExecutorCancelOk)) -> Self {
+        Self {
+            machine_id,
+            assignment: executor.assignment,
+            outcome: executor.outcome,
+        }
+    }
+}
+
+impl From<MachineBuildCancelRpcOk> for BuildExecutorCancelOk {
+    fn from(response: MachineBuildCancelRpcOk) -> Self {
+        Self {
+            assignment: response.assignment,
+            outcome: response.outcome,
+        }
+    }
+}
+
+impl ployz_core::machine::rpc::MachineRpcResponder for MachineBuildCancelRpcOk {
+    fn responder_machine_id(&self) -> &MachineId {
+        &self.machine_id
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -65,10 +177,9 @@ mod tests {
     fn acceptance(machine_id: &MachineId) -> BuildExecutorAcceptance {
         BuildExecutorAcceptance {
             operation_id: OperationId::try_new("build-1").expect("operation id"),
-            origin: BuildExecutorOrigin::Cluster {
+            assignment: BuildExecutorAssignment::Cluster {
                 machine_id: machine_id.clone(),
             },
-            image_seed: machine_id.clone(),
             platform: OciPlatform::try_new("linux", "amd64").expect("platform"),
         }
     }
@@ -85,23 +196,25 @@ mod tests {
         )
         .expect("source");
         let machine_id = MachineId::try_new("machine-a").expect("machine");
-        let response = MachineBuildStartRpcOk {
-            machine_id: machine_id.clone(),
-            acceptance: acceptance(&machine_id),
-            image: PlatformImage {
-                seed: machine_id,
-                manifest_digest: digest.clone(),
-                image_id: digest.clone(),
-                availability_expires_at: ImageAvailabilityExpiresAt::try_new(4_102_444_800)
-                    .expect("expiry"),
+        let response = MachineBuildStartRpcOk::from((
+            machine_id.clone(),
+            BuildExecutorStartOk {
+                acceptance: acceptance(&machine_id),
+                image: PlatformImage {
+                    seed: machine_id,
+                    manifest_digest: digest.clone(),
+                    image_id: digest.clone(),
+                    availability_expires_at: ImageAvailabilityExpiresAt::try_new(4_102_444_800)
+                        .expect("expiry"),
+                },
+                verified_commit: VerifiedGitCommit::from_source(&source),
+                toolchain: BuildToolchainEvidence {
+                    buildkit_image: digest,
+                    adapter: BuildAdapterToolchainEvidence::Dockerfile,
+                },
+                log_summary: BuildLogSummary::new(8, 13),
             },
-            verified_commit: VerifiedGitCommit::from_source(&source),
-            toolchain: BuildToolchainEvidence {
-                buildkit_image: digest,
-                adapter: BuildAdapterToolchainEvidence::Dockerfile,
-            },
-            log_summary: BuildLogSummary::new(8, 13),
-        };
+        ));
 
         let encoded = serde_json::to_value(&response).expect("encode success");
         assert_eq!(
@@ -142,8 +255,7 @@ mod tests {
                 "error": "timed_out",
                 "acceptance": {
                     "operation_id": "build-1",
-                    "origin": {"origin": "cluster", "machine_id": "machine-a"},
-                    "image_seed": "machine-a",
+                    "assignment": {"executor": "cluster", "machine_id": "machine-a"},
                     "platform": {"os": "linux", "architecture": "amd64"},
                 },
                 "message": "deadline exceeded",

@@ -8,11 +8,15 @@ use crate::ops::{AcceptedOperation, OperationApiResponse};
 #[serde(deny_unknown_fields)]
 pub struct BuildSubmitRequest {
     pub operation_id: OperationId,
-    #[serde(default)]
+    #[serde(default = "cluster_build_target")]
     pub target: BuildTarget,
     pub source: GitSource,
     pub adapter: BuildAdapter,
     pub platforms: BuildPlatforms,
+}
+
+fn cluster_build_target() -> BuildTarget {
+    BuildTarget::Cluster
 }
 
 pub type BuildSubmitResponse = OperationApiResponse<AcceptedOperation, BuildSubmitError>;

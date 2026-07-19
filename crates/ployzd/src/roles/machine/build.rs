@@ -4,7 +4,7 @@ use super::execution::build::{
 };
 use super::images::AvailableImageService;
 use super::protocol::{
-    BuildExecutorAcceptance, BuildExecutorOrigin, BuildLogSummary,
+    BuildExecutorAcceptance, BuildExecutorAssignment, BuildLogSummary,
     MachineBuildCachePruneDomainError, MachineBuildCachePruneRpcOk,
     MachineBuildCachePruneRpcRequest, MachineBuildCachePruneRpcResponse,
     MachineBuildCancelDomainError, MachineBuildCancelOutcome, MachineBuildCancelRpcOk,
@@ -15,7 +15,8 @@ use super::protocol::{
 use super::response::{failure_message, machine_domain_error, machine_success};
 use ployz_core::build::{
     BUILD_CACHE_PRUNE_MAX_EXECUTION_TIMEOUT, BUILD_FORCE_CLEANUP_TIMEOUT,
-    BUILD_MAX_EXECUTION_TIMEOUT, BUILD_TASK_DRAIN_TIMEOUT,
+    BUILD_MAX_EXECUTION_TIMEOUT, BUILD_TASK_DRAIN_TIMEOUT, BuildExecutorCancelOk,
+    BuildExecutorStartOk,
 };
 use ployz_core::deploy::PlatformImage;
 use ployz_core::ids::{MachineId, OperationId};
@@ -556,19 +557,21 @@ impl BuildEffects {
                         },
                         log_summary,
                     })?;
-                Ok(MachineBuildStartRpcOk {
-                    machine_id: machine_id.clone(),
-                    acceptance,
-                    image: PlatformImage {
-                        seed: machine_id,
-                        manifest_digest: result.layout.manifest_digest().clone(),
-                        image_id: result.layout.image_id().clone(),
-                        availability_expires_at,
+                Ok(MachineBuildStartRpcOk::from((
+                    machine_id.clone(),
+                    BuildExecutorStartOk {
+                        acceptance,
+                        image: PlatformImage {
+                            seed: machine_id,
+                            manifest_digest: result.layout.manifest_digest().clone(),
+                            image_id: result.layout.image_id().clone(),
+                            availability_expires_at,
+                        },
+                        verified_commit: result.verified_commit,
+                        toolchain: result.toolchain,
+                        log_summary,
                     },
-                    verified_commit: result.verified_commit,
-                    toolchain: result.toolchain,
-                    log_summary,
-                })
+                )))
             }
             #[cfg(test)]
             Self::Test(effects) => {
@@ -613,19 +616,13 @@ fn validate_start_provenance(
     machine_id: &MachineId,
     request: &MachineBuildStartRpcRequest,
 ) -> Result<(), MachineBuildStartDomainError> {
-    let expected_origin = BuildExecutorOrigin::Cluster {
+    let expected = BuildExecutorAssignment::Cluster {
         machine_id: machine_id.clone(),
     };
-    if request.origin != expected_origin {
-        return Err(MachineBuildStartDomainError::OriginMismatch {
-            expected: expected_origin,
-            actual: request.origin.clone(),
-        });
-    }
-    if request.image_seed != *machine_id {
-        return Err(MachineBuildStartDomainError::ImageSeedMismatch {
-            expected: machine_id.clone(),
-            actual: request.image_seed.clone(),
+    if request.assignment != expected {
+        return Err(MachineBuildStartDomainError::AssignmentMismatch {
+            expected,
+            actual: request.assignment.clone(),
         });
     }
     Ok(())
@@ -635,19 +632,13 @@ fn validate_cancel_provenance(
     machine_id: &MachineId,
     request: &MachineBuildCancelRpcRequest,
 ) -> Result<(), MachineBuildCancelDomainError> {
-    let expected_origin = BuildExecutorOrigin::Cluster {
+    let expected = BuildExecutorAssignment::Cluster {
         machine_id: machine_id.clone(),
     };
-    if request.origin != expected_origin {
-        return Err(MachineBuildCancelDomainError::OriginMismatch {
-            expected: expected_origin,
-            actual: request.origin.clone(),
-        });
-    }
-    if request.image_seed != *machine_id {
-        return Err(MachineBuildCancelDomainError::ImageSeedMismatch {
-            expected: machine_id.clone(),
-            actual: request.image_seed.clone(),
+    if request.assignment != expected {
+        return Err(MachineBuildCancelDomainError::AssignmentMismatch {
+            expected,
+            actual: request.assignment.clone(),
         });
     }
     Ok(())
@@ -760,13 +751,17 @@ pub(crate) async fn handle_build_cancel(
         });
     };
     let outcome = runtime.cancel(&request.operation_id).await;
-    machine_success(MachineBuildCancelRpcResponse::Ok(MachineBuildCancelRpcOk {
-        origin: BuildExecutorOrigin::Cluster {
-            machine_id: machine_id.clone(),
-        },
-        machine_id,
-        outcome,
-    }))
+    machine_success(MachineBuildCancelRpcResponse::Ok(
+        MachineBuildCancelRpcOk::from((
+            machine_id.clone(),
+            BuildExecutorCancelOk {
+                assignment: BuildExecutorAssignment::Cluster {
+                    machine_id: machine_id.clone(),
+                },
+                outcome,
+            },
+        )),
+    ))
 }
 
 pub(crate) async fn handle_build_cache_prune(

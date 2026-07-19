@@ -1,6 +1,6 @@
 use super::runner::{BuildExecutionError, infrastructure};
 use crate::roles::machine::protocol::MachineBuildLogFrame;
-use ployz_core::build::BuildExecutorOrigin;
+use ployz_core::build::BuildExecutorAssignment;
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::image::OciPlatform;
 use ployz_core::operation::{BuildLogChunk, MAX_BUILD_LOG_CHUNK_BYTES};
@@ -182,8 +182,7 @@ impl BuildLogPublisher {
             self.sequence = self.sequence.saturating_add(1);
             let frame = MachineBuildLogFrame {
                 operation_id: self.operation_id.clone(),
-                machine_id: self.machine_id.clone(),
-                origin: BuildExecutorOrigin::Cluster {
+                assignment: BuildExecutorAssignment::Cluster {
                     machine_id: self.machine_id.clone(),
                 },
                 platform: self.platform.clone(),

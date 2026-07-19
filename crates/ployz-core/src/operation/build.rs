@@ -471,6 +471,10 @@ fn project_evidence(
         return Err(invalid_transition(fields));
     }
 
+    if !evidence_matches_target(fields.target, &evidence) {
+        return Err(invalid_transition(fields));
+    }
+
     if let BuildEvidence::VerifiedCommit { commit, .. } = &evidence
         && (commit.url != fields.source.url
             || commit.commit != fields.source.commit
@@ -504,6 +508,78 @@ fn project_evidence(
     Ok(OperationProjection::StatusChanged {
         status: Box::new(status(fields, fields.state.clone(), sequence)),
     })
+}
+
+fn evidence_matches_target(target: &BuildTarget, evidence: &BuildEvidence) -> bool {
+    let (machine_id, origin, completed_image) = match evidence {
+        BuildEvidence::PlatformPlaced {
+            machine_id,
+            executor_origin,
+            platform: _,
+        }
+        | BuildEvidence::ToolchainVerified {
+            machine_id,
+            executor_origin,
+            platform: _,
+            toolchain: _,
+        }
+        | BuildEvidence::VerifiedCommit {
+            machine_id,
+            executor_origin,
+            platform: _,
+            commit: _,
+        }
+        | BuildEvidence::PlatformLog {
+            machine_id,
+            executor_origin,
+            platform: _,
+            chunk: _,
+        }
+        | BuildEvidence::PlatformLogTruncated {
+            machine_id,
+            executor_origin,
+            platform: _,
+            omitted_bytes: _,
+        }
+        | BuildEvidence::PlatformLogGap {
+            machine_id,
+            executor_origin,
+            platform: _,
+            expected_sequence: _,
+            final_sequence: _,
+        }
+        | BuildEvidence::PlatformFailed {
+            machine_id,
+            executor_origin,
+            platform: _,
+            failure: _,
+        } => (machine_id, executor_origin, None),
+        BuildEvidence::PlatformCompleted {
+            machine_id,
+            executor_origin,
+            image,
+            platform: _,
+        } => (machine_id, executor_origin, Some(image)),
+    };
+
+    let origin_matches = match (target, origin) {
+        (
+            BuildTarget::Cluster,
+            BuildExecutorOrigin::Cluster {
+                machine_id: origin_machine_id,
+            },
+        ) => origin_machine_id == machine_id,
+        (
+            BuildTarget::External { pool_id },
+            BuildExecutorOrigin::External {
+                pool_id: origin_pool_id,
+                executor_id: _,
+            },
+        ) => origin_pool_id == pool_id,
+        (BuildTarget::Cluster, BuildExecutorOrigin::External { .. })
+        | (BuildTarget::External { .. }, BuildExecutorOrigin::Cluster { .. }) => false,
+    };
+    origin_matches && completed_image.is_none_or(|image| image.seed == *machine_id)
 }
 
 fn invalid_transition(fields: &BuildFields<'_>) -> StatusProjectionError {
@@ -615,9 +691,12 @@ mod tests {
         }
     }
     fn status0() -> OperationStatus {
+        status_for_target(BuildTarget::Cluster)
+    }
+    fn status_for_target(target: BuildTarget) -> OperationStatus {
         OperationStatus::build_accepted(
             id(),
-            BuildTarget::Cluster,
+            target,
             GitSource::try_new(
                 "https://example.com/repo.git",
                 "0123456789abcdef0123456789abcdef01234567",
@@ -634,6 +713,26 @@ mod tests {
                 .expect("platforms"),
             EventSequence::try_new(1).expect("sequence"),
         )
+    }
+    fn building_status(target: BuildTarget) -> OperationStatus {
+        let accepted = status_for_target(target);
+        let OperationProjection::StatusChanged { status: placing } = project_event_from_status(
+            &accepted,
+            BuildTransition::Placing.event(&id()),
+            EventSequence::try_new(2).expect("sequence"),
+        )
+        .expect("placing") else {
+            panic!("changed")
+        };
+        let OperationProjection::StatusChanged { status: building } = project_event_from_status(
+            &placing,
+            BuildTransition::Building.event(&id()),
+            EventSequence::try_new(3).expect("sequence"),
+        )
+        .expect("building") else {
+            panic!("changed")
+        };
+        *building
     }
     fn receipt() -> PushedImageReceipt {
         PushedImageReceipt::try_new([(
@@ -900,6 +999,88 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn cluster_evidence_rejects_origin_and_image_seed_contradictions() {
+        let building = building_status(BuildTarget::Cluster);
+        let platform = OciPlatform::try_new("linux", "amd64").expect("platform");
+        let machine_id = MachineId::try_new("machine-a").expect("machine");
+        let other_machine = MachineId::try_new("machine-b").expect("machine");
+
+        for event in [
+            OperationEvent::BuildPlatformFailed {
+                operation_id: id(),
+                platform: platform.clone(),
+                machine_id: machine_id.clone(),
+                executor_origin: cluster_origin(&other_machine),
+                failure: BuildPlatformFailure::MachineUnavailable {
+                    message: FailureMessage::try_new("failed").expect("message"),
+                },
+            },
+            OperationEvent::BuildPlatformCompleted {
+                operation_id: id(),
+                platform: platform.clone(),
+                machine_id: machine_id.clone(),
+                executor_origin: cluster_origin(&machine_id),
+                image: PlatformImage {
+                    seed: other_machine.clone(),
+                    manifest_digest: OciDigest::try_new(format!("sha256:{}", "1".repeat(64)))
+                        .expect("digest"),
+                    image_id: OciDigest::try_new(format!("sha256:{}", "2".repeat(64)))
+                        .expect("digest"),
+                    availability_expires_at: crate::deploy::ImageAvailabilityExpiresAt::try_new(
+                        4_102_444_800,
+                    )
+                    .expect("expiry"),
+                },
+            },
+        ] {
+            assert!(
+                project_event_from_status(
+                    &building,
+                    event,
+                    EventSequence::try_new(4).expect("sequence"),
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn external_evidence_requires_the_admitted_pool_and_external_origin() {
+        let pool_id = crate::ids::BuildPoolId::try_new("pool-a").expect("pool");
+        let building = building_status(BuildTarget::External {
+            pool_id: pool_id.clone(),
+        });
+        let platform = OciPlatform::try_new("linux", "amd64").expect("platform");
+        let machine_id = MachineId::try_new("seed-a").expect("machine");
+        let failure = BuildPlatformFailure::MachineUnavailable {
+            message: FailureMessage::try_new("failed").expect("message"),
+        };
+
+        for executor_origin in [
+            cluster_origin(&machine_id),
+            BuildExecutorOrigin::External {
+                pool_id: crate::ids::BuildPoolId::try_new("pool-b").expect("pool"),
+                executor_id: crate::ids::BuildExecutorId::try_new("executor-a").expect("executor"),
+            },
+        ] {
+            assert!(
+                project_event_from_status(
+                    &building,
+                    OperationEvent::BuildPlatformFailed {
+                        operation_id: id(),
+                        platform: platform.clone(),
+                        machine_id: machine_id.clone(),
+                        executor_origin,
+                        failure: failure.clone(),
+                    },
+                    EventSequence::try_new(4).expect("sequence"),
+                )
+                .is_err()
+            );
+        }
     }
 
     #[test]

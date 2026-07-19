@@ -5,10 +5,12 @@ mod railpack;
 
 pub use crate::ids::{BuildExecutorId, BuildPoolId};
 pub use executor::{
-    BuildExecutorAcceptance, BuildExecutorCancelDomainError, BuildExecutorCancelOk,
-    BuildExecutorCancelOutcome, BuildExecutorCancelRequest, BuildExecutorCleanupOutcome,
-    BuildExecutorLogFrame, BuildExecutorOrigin, BuildExecutorStartDomainError,
-    BuildExecutorStartOk, BuildExecutorStartRequest, BuildLogSummary, BuildTarget,
+    BuildExecutorAcceptance, BuildExecutorAssignment, BuildExecutorCancelDomainError,
+    BuildExecutorCancelOk, BuildExecutorCancelOutcome, BuildExecutorCancelRequest,
+    BuildExecutorCleanupOutcome, BuildExecutorLogFrame, BuildExecutorOrigin,
+    BuildExecutorStartDomainError, BuildExecutorStartOk, BuildExecutorStartRequest,
+    BuildLogSummary, BuildPlatformExecutorAssignment, BuildTarget, ExternalBuildExecutorCandidate,
+    ExternalBuildPlacementError, place_external_build_platforms,
 };
 pub use railpack::{RailpackPins, RailpackPlatformPins, railpack_pins};
 
