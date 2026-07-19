@@ -110,32 +110,32 @@ wait_for_storage_ready_testimony() {
   return 1
 }
 
-wait_for_operation_terminal() {
+wait_for_operation_state() {
   local operation_id=$1
   local budget_seconds=$2
-  local expected_terminal=${3:-successful}
+  local desired_state=${3:-successful}
   local deadline=$((SECONDS + budget_seconds))
   local status='' state='' latest_observation=''
 
   while (( SECONDS < deadline )); do
-    if status=$(core_before_deadline "$deadline" "ployz ops status '${operation_id}'"); then
-      latest_observation=$status
+    if status=$(core_before_deadline "$deadline" "ployz ops status '${operation_id}'" 2>&1); then
+      [ -z "$status" ] || latest_observation=$status
       state=$(printf '%s\n' "$status" | sed -n 's/^state \([^[:space:]]\+\)$/\1/p')
-      if [ "$state" = "$expected_terminal" ]; then
+      if [ "$state" = "$desired_state" ]; then
         return 0
       fi
       case "$state" in
         accepted|pending|joining|preparing|placing|building|planning|running|running:*) ;;
         completed|completed-with-warnings|partially-completed|partially-completed-with-warnings)
-          if [ "$expected_terminal" = successful ]; then
+          if [ "$desired_state" = successful ]; then
             return 0
           fi
           printf '%s\n' "$status"
-          log "operation ${operation_id} reached ${state}, expected ${expected_terminal}"
+          log "operation ${operation_id} reached ${state}, desired state was ${desired_state}"
           return 1
           ;;
         cancelled)
-          if [ "$expected_terminal" = cancelled ]; then
+          if [ "$desired_state" = cancelled ]; then
             return 0
           fi
           printf '%s\n' "$status"
@@ -155,12 +155,12 @@ wait_for_operation_terminal() {
           ;;
       esac
     else
-      latest_observation=$status
+      [ -z "$status" ] || latest_observation=$status
     fi
     sleep_before_deadline "$deadline" 3
   done
   [ -z "$latest_observation" ] || printf '%s\n' "$latest_observation"
-  log "operation ${operation_id} did not reach a terminal state within ${budget_seconds} seconds"
+  log "operation ${operation_id} did not reach desired state ${desired_state} within ${budget_seconds} seconds"
   return 1
 }
 
@@ -177,6 +177,19 @@ for line in lines:
     assert isinstance(value, dict)
     assert "event" in value
 ' >/dev/null 2>&1
+}
+
+assert_single_operation_event() {
+  local evidence=$1
+  local expected_event=$2
+  OPERATION_EVIDENCE="$evidence" EXPECTED_OPERATION_EVENT="$expected_event" python3 -c '
+import json
+import os
+
+events = [json.loads(line)["event"] for line in os.environ["OPERATION_EVIDENCE"].splitlines()]
+expected = os.environ["EXPECTED_OPERATION_EVENT"]
+assert sum(event.get("event") == expected for event in events) == 1
+'
 }
 
 replay_operation_evidence() {
@@ -649,7 +662,7 @@ run_real_host_acceptance_regression_test() {
   cancel_command='cancel_output=$(core '\''ployz build cancel op_real_host_build_cancel --reason "real-host cancellation proof"'\'' 2>&1)'
   cancel_status_capture='cancel_exit=$?'
   cancel_status_guard='[ "$cancel_exit" -eq 1 ] || { log "build cancellation exited ${cancel_exit}, expected 1"; exit 1; }'
-  cancel_poll='wait_for_operation_terminal op_real_host_build_cancel 120 cancelled'
+  cancel_poll='wait_for_operation_state op_real_host_build_cancel 120 cancelled'
   cancel_replay='cancel_events=$(replay_operation_evidence op_real_host_build_cancel 120 1)'
   json_assertion='assert len(cancelled) == 1 and cancelled[0]["cleanup"]["kind"] == "completed"'
   [ "$(grep -Fxc "$cancel_command" "$0")" -eq 1 ]
@@ -887,7 +900,7 @@ EOF
   done
   printf '%s\n' "$operation_probe" | grep -Fx 'status_calls=2' >/dev/null
 
-  for operation_probe_mode in terminal-failure unexpected-terminal deadline; do
+  for operation_probe_mode in terminal-failure unexpected-state unexpected-terminal diagnostic-timeout deadline; do
     child_status=0
     operation_probe=$("$0" --operation-terminal-probe "$operation_probe_mode" 2>&1) \
       || child_status=$?
@@ -902,8 +915,16 @@ EOF
       unexpected-terminal)
         printf '%s\n' "$operation_probe" | grep -Fx 'operation op_probe reached terminal state timed-out' >/dev/null
         ;;
+      unexpected-state)
+        printf '%s\n' "$operation_probe" | grep -Fx 'operation op_probe reported unexpected state unknown' >/dev/null
+        ;;
+      diagnostic-timeout)
+        printf '%s\n' "$operation_probe" | grep -Fx 'rpc status observation timed out' >/dev/null
+        printf '%s\n' "$operation_probe" | grep -Fx 'operation op_probe did not reach desired state successful within 5 seconds' >/dev/null
+        printf '%s\n' "$operation_probe" | grep -Fx 'status_calls=2' >/dev/null
+        ;;
       deadline)
-        printf '%s\n' "$operation_probe" | grep -Fx 'operation op_probe did not reach a terminal state within 5 seconds' >/dev/null
+        printf '%s\n' "$operation_probe" | grep -Fx 'operation op_probe did not reach desired state successful within 5 seconds' >/dev/null
         printf '%s\n' "$operation_probe" | grep -Fx 'status_calls=1' >/dev/null
         ;;
     esac
@@ -1275,7 +1296,6 @@ EOF
         "cat '${prepared_descriptor_path}'") printf '%s\n' "$prepared_descriptor" ;;
         "readlink -f '${backing_file_path}'") printf '%s\n' "$backing_file_path" ;;
         "stat -Lc '%d:%i:%s' '${backing_file_path}'") printf '%s\n' "$backing_file_identity" ;;
-        "timeout 20s ployz ops watch '${storage_operation_id}' --json") printf '%s\n' "$storage_operation_evidence" ;;
         *'verify_owned_zfs_failure_state '*)
           PATH="$module_failure_probe_bin:$PATH" bash -euo pipefail -c "$command"
           ;;
@@ -1340,21 +1360,26 @@ EOF
         terminal-failure:1) printf 'operation op_probe\nstate accepted\n' ;;
         terminal-failure:2) printf 'operation op_probe\nstate failed\nfailure probe\n' ;;
         terminal-failure:*) printf 'operation op_probe\nstate completed\n' ;;
+        unexpected-state:*) printf 'operation op_probe\nstate unknown\n' ;;
         unexpected-terminal:*) printf 'operation op_probe\nstate timed-out\n' ;;
+        diagnostic-timeout:1) printf 'rpc status observation timed out\n' >&2; return 255 ;;
+        diagnostic-timeout:2) return 255 ;;
         deadline:*) return 255 ;;
         *) return 2 ;;
       esac
     }
     sleep_before_deadline() {
-      if [ "$operation_probe_mode" = deadline ]; then
+      if [ "$operation_probe_mode" = deadline ] \
+        || { [ "$operation_probe_mode" = diagnostic-timeout ] \
+          && [ "$(wc -l < "$operation_probe_calls")" -ge 2 ]; }; then
         SECONDS=$1
       fi
     }
     set +e
-    expected_operation_terminal=successful
-    [ "$operation_probe_mode" != cancelled ] || expected_operation_terminal=cancelled
-    [ "$operation_probe_mode" != building-target ] || expected_operation_terminal=building
-    wait_for_operation_terminal op_probe 5 "$expected_operation_terminal"
+    desired_operation_state=successful
+    [ "$operation_probe_mode" != cancelled ] || desired_operation_state=cancelled
+    [ "$operation_probe_mode" != building-target ] || desired_operation_state=building
+    wait_for_operation_state op_probe 5 "$desired_operation_state"
     operation_probe_status=$?
     set -e
     printf 'probe_status=%s\nstatus_calls=%s\n' \
@@ -1649,16 +1674,10 @@ machine_add_output=$(core "timeout 15m ployz machine add root@${EDGE} --name plo
 printf '%s\n' "$machine_add_output"
 machine_add_operation_id=$(printf '%s\n' "$machine_add_output" | awk '/^operation / { print $2; exit }')
 [ -n "$machine_add_operation_id" ] || { log "machine add did not report an operation id"; exit 1; }
-wait_for_operation_terminal "$machine_add_operation_id" 600
+wait_for_operation_state "$machine_add_operation_id" 600
 machine_add_events=$(replay_operation_evidence "$machine_add_operation_id" 600)
 printf '%s\n' "$machine_add_events"
-MACHINE_ADD_EVENTS="$machine_add_events" python3 -c '
-import json
-import os
-
-events = [json.loads(line)["event"] for line in os.environ["MACHINE_ADD_EVENTS"].splitlines()]
-assert sum(event.get("event") == "machine_add_completed" for event in events) == 1
-'
+assert_single_operation_event "$machine_add_events" machine_add_completed
 log "TIMING machine-add=$(( $(ts)-t0 ))s"
 core 'ployz machine list'
 if [ "$RUN_ZFS_CERTIFICATION" = 1 ]; then
@@ -1717,24 +1736,24 @@ PY
 
 log "building authenticated exact SHA for ${BUILD_ARCHITECTURES_LABEL} with Dockerfile"
 core "set -a; . /tmp/ployz-build-git/secret.env; set +a; timeout 30m ployz build submit --git 'https://${CORE}:9443/repo.git' --commit '${build_commit}' --git-username builder --git-secret-env PLOYZ_BUILD_GIT_SECRET --subdir dockerfile ${BUILD_PLATFORM_ARGUMENTS} --dockerfile Dockerfile --operation-id op_real_host_build_dockerfile --detach"
-wait_for_operation_terminal op_real_host_build_dockerfile 1800
+wait_for_operation_state op_real_host_build_dockerfile 1800
 assert_build_evidence op_real_host_build_dockerfile dockerfile
 
 log "building authenticated exact SHA for ${BUILD_ARCHITECTURES_LABEL} with Railpack"
 core "set -a; . /tmp/ployz-build-git/secret.env; set +a; timeout 30m ployz build submit --git 'https://${CORE}:9443/repo.git' --commit '${build_commit}' --git-username builder --git-secret-env PLOYZ_BUILD_GIT_SECRET --subdir railpack ${BUILD_PLATFORM_ARGUMENTS} --railpack --cache-scope real-host-railpack --operation-id op_real_host_build_railpack --detach"
-wait_for_operation_terminal op_real_host_build_railpack 1800
+wait_for_operation_state op_real_host_build_railpack 1800
 assert_build_evidence op_real_host_build_railpack railpack
 
 log "cancelling a blocking authenticated build and checking cleanup evidence"
 core "set -a; . /tmp/ployz-build-git/secret.env; set +a; ployz build submit --git 'https://${CORE}:9443/repo.git' --commit '${build_commit}' --git-username builder --git-secret-env PLOYZ_BUILD_GIT_SECRET --subdir slow --platform linux/amd64 --dockerfile Dockerfile --operation-id op_real_host_build_cancel --detach"
-wait_for_operation_terminal op_real_host_build_cancel 180 building
+wait_for_operation_state op_real_host_build_cancel 180 building
 set +e
 cancel_output=$(core 'ployz build cancel op_real_host_build_cancel --reason "real-host cancellation proof"' 2>&1)
 cancel_exit=$?
 set -e
 printf '%s\n' "$cancel_output"
 [ "$cancel_exit" -eq 1 ] || { log "build cancellation exited ${cancel_exit}, expected 1"; exit 1; }
-wait_for_operation_terminal op_real_host_build_cancel 120 cancelled
+wait_for_operation_state op_real_host_build_cancel 120 cancelled
 cancel_events=$(replay_operation_evidence op_real_host_build_cancel 120 1)
 CANCEL_EVENTS="$cancel_events" python3 - <<'PY'
 import json, os
@@ -1768,16 +1787,10 @@ deploy_output=$(core 'timeout 15m ployz deploy -f /tmp/ployz-acceptance.yml --de
 printf '%s\n' "$deploy_output"
 deploy_operation_id=$(printf '%s\n' "$deploy_output" | awk '/^operation / { print $2; exit }')
 [ -n "$deploy_operation_id" ] || { log "managed deploy did not report an operation id"; exit 1; }
-wait_for_operation_terminal "$deploy_operation_id" 900
+wait_for_operation_state "$deploy_operation_id" 900
 deploy_events=$(replay_operation_evidence "$deploy_operation_id" 120)
 printf '%s\n' "$deploy_events"
-DEPLOY_EVENTS="$deploy_events" python3 -c '
-import json
-import os
-
-events = [json.loads(line)["event"] for line in os.environ["DEPLOY_EVENTS"].splitlines()]
-assert sum(event.get("event") == "deploy_completed" for event in events) == 1
-'
+assert_single_operation_event "$deploy_events" deploy_completed
 log "TIMING deploy=$(( $(ts)-t0 ))s"
 
 service_output=$(core 'ployz service inspect web')
@@ -1871,16 +1884,10 @@ zfs_storage_prepare() {
   printf '%s\n' "$storage_prepare_output"
   storage_operation_id=$(printf '%s\n' "$storage_prepare_output" | awk '/^operation / { print $2; exit }')
   [ -n "$storage_operation_id" ] || { log "storage preparation did not report an operation id"; return 1; }
-  wait_for_operation_terminal "$storage_operation_id" 1200
+  wait_for_operation_state "$storage_operation_id" 1200
   storage_operation_evidence=$(replay_operation_evidence "$storage_operation_id" 120)
   printf '%s\n' "$storage_operation_evidence"
-  STORAGE_OPERATION_EVENTS="$storage_operation_evidence" python3 -c '
-import json
-import os
-
-events = [json.loads(line)["event"] for line in os.environ["STORAGE_OPERATION_EVENTS"].splitlines()]
-assert sum(event.get("event") == "machine_storage_prepare_completed" for event in events) == 1
-'
+  assert_single_operation_event "$storage_operation_evidence" machine_storage_prepare_completed
   storage_operation_evidence_sha=$(printf '%s' "$storage_operation_evidence" | sha256sum | awk '{print $1}')
   machine_storage=
   pool=
@@ -1904,16 +1911,10 @@ zfs_deploy_database() {
   printf '%s\n' "$volume_create_output"
   log "volume create observation exited ${volume_create_exit}; durable operation evidence is authoritative"
   volume_create_operation_id=$(find_volume_create_operation 900 "$zfs_namespace" "$zfs_volume" "$core_machine_id")
-  wait_for_operation_terminal "$volume_create_operation_id" 900
+  wait_for_operation_state "$volume_create_operation_id" 900
   volume_create_events=$(replay_operation_evidence "$volume_create_operation_id" 120)
   printf '%s\n' "$volume_create_events"
-  VOLUME_CREATE_EVENTS="$volume_create_events" python3 -c '
-import json
-import os
-
-events = [json.loads(line)["event"] for line in os.environ["VOLUME_CREATE_EVENTS"].splitlines()]
-assert sum(event.get("event") == "volume_create_completed" for event in events) == 1
-'
+  assert_single_operation_event "$volume_create_events" volume_create_completed
   core "cat > '${remote_compose}' <<'YAML'
 name: ${zfs_namespace}
 services:
@@ -1940,16 +1941,10 @@ YAML"
   printf '%s\n' "$zfs_deploy_output"
   zfs_deploy_operation_id=$(printf '%s\n' "$zfs_deploy_output" | awk '/^operation / { print $2; exit }')
   [ -n "$zfs_deploy_operation_id" ] || { log "ZFS deploy did not report an operation id"; return 1; }
-  wait_for_operation_terminal "$zfs_deploy_operation_id" 1200
+  wait_for_operation_state "$zfs_deploy_operation_id" 1200
   zfs_deploy_events=$(replay_operation_evidence "$zfs_deploy_operation_id" 120)
   printf '%s\n' "$zfs_deploy_events"
-  ZFS_DEPLOY_EVENTS="$zfs_deploy_events" python3 -c '
-import json
-import os
-
-events = [json.loads(line)["event"] for line in os.environ["ZFS_DEPLOY_EVENTS"].splitlines()]
-assert sum(event.get("event") == "deploy_completed" for event in events) == 1
-'
+  assert_single_operation_event "$zfs_deploy_events" deploy_completed
   volume_output=$(core 'timeout 20s ployz volume list')
   printf '%s\n' "$volume_output"
   volume_row=$(printf '%s\n' "$volume_output" | awk -v ns="$zfs_namespace" -v volume="$zfs_volume" '$1 == ns && $2 == volume { print; exit }')
