@@ -378,25 +378,134 @@ exit 1
 SETUP_GIT
 }
 
+verify_owned_zfs_dependency_edges() {
+  local recovery_after recovery_before recovery_requires docker_after docker_requires
+  recovery_after=$(systemctl show ployz-owned-zfs-import.service -p After --value)
+  recovery_before=$(systemctl show ployz-owned-zfs-import.service -p Before --value)
+  recovery_requires=$(systemctl show ployz-owned-zfs-import.service -p Requires --value)
+  docker_after=$(systemctl show docker.service -p After --value)
+  docker_requires=$(systemctl show docker.service -p Requires --value)
+  printf 'recovery_after=%s\nrecovery_before=%s\nrecovery_requires=%s\ndocker_after=%s\ndocker_requires=%s\n' \
+    "$recovery_after" "$recovery_before" "$recovery_requires" "$docker_after" "$docker_requires"
+  printf '%s\n' "$recovery_after" | tr ' ' '\n' | grep -Fx zfs-import.target >/dev/null \
+    && printf '%s\n' "$recovery_before" | tr ' ' '\n' | grep -Fx docker.service >/dev/null \
+    && printf '%s\n' "$recovery_requires" | tr ' ' '\n' | grep -Fx zfs-import.target >/dev/null \
+    && printf '%s\n' "$docker_after" | tr ' ' '\n' | grep -Fx ployz-owned-zfs-import.service >/dev/null \
+    && printf '%s\n' "$docker_requires" | tr ' ' '\n' | grep -Fx ployz-owned-zfs-import.service >/dev/null
+}
+
 verify_owned_zfs_boot_order() {
-  local import_time recovery_time docker_time recovery_after recovery_requires docker_after
+  local import_time recovery_time docker_time dependency_evidence
+  systemctl is-active --quiet ployz-owned-zfs-import.service || return 1
+  systemctl is-active --quiet docker.service || return 1
   import_time=$(systemctl show zfs-import.target -p ActiveEnterTimestampMonotonic --value)
   recovery_time=$(systemctl show ployz-owned-zfs-import.service -p ActiveEnterTimestampMonotonic --value)
   docker_time=$(systemctl show docker.service -p ActiveEnterTimestampMonotonic --value)
-  recovery_after=$(systemctl show ployz-owned-zfs-import.service -p After --value)
-  recovery_requires=$(systemctl show ployz-owned-zfs-import.service -p Requires --value)
-  docker_after=$(systemctl show docker.service -p After --value)
-  printf 'zfs_import_active_us=%s\nrecovery_active_us=%s\ndocker_active_us=%s\nrecovery_after=%s\nrecovery_requires=%s\ndocker_after=%s\n' \
-    "$import_time" "$recovery_time" "$docker_time" "$recovery_after" \
-    "$recovery_requires" "$docker_after"
+  dependency_evidence=$(verify_owned_zfs_dependency_edges) || return 1
+  printf 'zfs_import_active_us=%s\nrecovery_active_us=%s\ndocker_active_us=%s\n%s\n' \
+    "$import_time" "$recovery_time" "$docker_time" "$dependency_evidence"
   [ "$import_time" -gt 0 ] \
     && [ "$recovery_time" -gt 0 ] \
     && [ "$docker_time" -gt 0 ] \
     && [ "$import_time" -le "$recovery_time" ] \
-    && [ "$recovery_time" -le "$docker_time" ] \
-    && printf '%s\n' "$recovery_after" | tr ' ' '\n' | grep -Fx zfs-import.target >/dev/null \
-    && printf '%s\n' "$recovery_requires" | tr ' ' '\n' | grep -Fx zfs-import.target >/dev/null \
-    && printf '%s\n' "$docker_after" | tr ' ' '\n' | grep -Fx ployz-owned-zfs-import.service >/dev/null
+    && [ "$recovery_time" -le "$docker_time" ]
+}
+
+verify_owned_zfs_failure_state() {
+  local dependency_evidence
+  command -v pgrep >/dev/null || return 1
+  command -v ss >/dev/null || return 1
+  systemctl is-failed --quiet ployz-owned-zfs-import.service || return 1
+  if systemctl is-active --quiet docker.service; then
+    return 1
+  fi
+  if pgrep -x dockerd >/dev/null; then
+    return 1
+  fi
+  if pgrep -x postgres >/dev/null; then
+    return 1
+  fi
+  if ss -H -ltnp | grep -Eq 'users:\(\("postgres"'; then
+    return 1
+  fi
+  dependency_evidence=$(verify_owned_zfs_dependency_edges) || return 1
+  printf 'recovery_state=failed\ndocker_state=inactive\ndockerd_process=absent\npostgres_process=absent\npostgres_listener=absent\n%s\n' \
+    "$dependency_evidence"
+  systemctl status --no-pager -n 100 ployz-owned-zfs-import.service docker.service || true
+  journalctl -b -u ployz-owned-zfs-import.service --no-pager -n 100 || true
+  journalctl -b -u docker.service --no-pager -n 100 || true
+}
+
+zfs_running_database_container() {
+  local namespace=$1
+  local service=$2
+  local expected_container=${3:-}
+  local deadline=${4:-}
+  local matching_containers matching_count query
+  query="docker ps -q --filter 'label=plz.namespace_id=${namespace}' --filter 'label=plz.service_id=${service}'"
+  if [ -n "$deadline" ]; then
+    matching_containers=$(core_before_deadline "$deadline" "$query") || return 2
+  else
+    matching_containers=$(core "$query") || return 1
+  fi
+  matching_count=$(printf '%s\n' "$matching_containers" | sed '/^$/d' | wc -l)
+  if [ "$matching_count" -eq 0 ]; then
+    return 2
+  fi
+  if [ "$matching_count" -ne 1 ]; then
+    log "expected exactly one running database container, found ${matching_count}" >&2
+    return 1
+  fi
+  matching_containers=$(printf '%s\n' "$matching_containers" | sed '/^$/d')
+  if [ -n "$expected_container" ] && [ "$matching_containers" != "$expected_container" ]; then
+    log "running database container ${matching_containers} does not match baseline ${expected_container}" >&2
+    return 1
+  fi
+  printf '%s\n' "$matching_containers"
+}
+
+zfs_verify_preserved_durable_storage_evidence() {
+  local actual_descriptor actual_descriptor_sha actual_backing_path actual_backing_identity
+  local actual_operation_evidence actual_operation_evidence_sha
+  actual_descriptor=$(core "cat '${prepared_descriptor_path}'")
+  actual_descriptor_sha=$(printf '%s' "$actual_descriptor" | sha256sum | awk '{print $1}')
+  actual_backing_path=$(core "readlink -f '${backing_file_path}'")
+  actual_backing_identity=$(core "stat -Lc '%d:%i:%s' '${backing_file_path}'")
+  actual_operation_evidence=$(core "timeout 20s ployz ops watch '${storage_operation_id}' --json")
+  actual_operation_evidence_sha=$(printf '%s' "$actual_operation_evidence" | sha256sum | awk '{print $1}')
+  if [ "$actual_descriptor_sha" != "$prepared_descriptor_sha" ] \
+    || [ "$actual_backing_path" != "$backing_file_path" ] \
+    || [ "$actual_backing_identity" != "$backing_file_identity" ] \
+    || [ "$actual_operation_evidence_sha" != "$storage_operation_evidence_sha" ]; then
+    log "prepared descriptor, backing file, or operation evidence changed"
+    return 1
+  fi
+  printf 'preserved_descriptor_sha256=%s\npreserved_backing_file=%s\npreserved_backing_identity=%s\npreserved_operation_evidence_sha256=%s\n' \
+    "$actual_descriptor_sha" "$actual_backing_path" "$actual_backing_identity" "$actual_operation_evidence_sha"
+}
+
+zfs_verify_module_failure() {
+  wait_for_core_api
+  zfs_verify_preserved_durable_storage_evidence
+  printf 'recorded_pre_failure_container=%s\nrecorded_pre_failure_volume=%s\nrecorded_pre_failure_docker_labels_sha256=%s\n' \
+    "$baseline_db_container" "$docker_volume_name" "$docker_labels_sha"
+  core "$(declare -f verify_owned_zfs_dependency_edges); $(declare -f verify_owned_zfs_failure_state); verify_owned_zfs_failure_state"
+  core "! zpool list '${pool}' >/dev/null 2>&1 && ! zfs list '${dataset}' >/dev/null 2>&1"
+  core "test ! -e '${bind_device}'"
+  core 'systemctl is-active --quiet ployzd-control && timeout 10s ployz ops list >/dev/null'
+  local testimony_deadline=$((SECONDS + 360))
+  while (( SECONDS < testimony_deadline )); do
+    if failure_testimony=$(core_before_deadline "$testimony_deadline" "timeout 12s ployz machine inspect '${core_machine_id}'") \
+      && printf '%s\n' "$failure_testimony" | grep -Fx 'storage unavailable zfs-module-missing' >/dev/null \
+      && printf '%s\n' "$failure_testimony" | grep -Fx "storage-alarms ${zfs_namespace}/${zfs_volume}:zfs-module-missing" >/dev/null; then
+      printf '%s\n' "$failure_testimony"
+      return 0
+    fi
+    sleep_before_deadline "$testimony_deadline" 3
+  done
+  printf '%s\n' "$failure_testimony"
+  log "typed ZFS module failure and exact stranded pin did not converge"
+  return 1
 }
 
 run_real_host_acceptance_regression_test() {
@@ -413,7 +522,8 @@ run_real_host_acceptance_regression_test() {
   local dockerfile_build_log_line railpack_build_log_line cancellation_log_line firewall_log_line
   local managed_function_line managed_deploy_log_line restart_invisibility_log_line dispatch_invocation_line
   local acceptance_phase_sequence operation_probe operation_probe_mode
-  local boot_order_fake_bin boot_order_output boot_order_expected
+  local boot_order_fake_bin boot_order_output boot_order_expected module_failure_output
+  local module_failure_probe_mode container_probe_output
   evidence=$(mktemp -d)
   trap 'rm -rf "$evidence"' RETURN
   : > "$evidence/metadata.env"
@@ -502,19 +612,29 @@ run_real_host_acceptance_regression_test() {
   cat > "$boot_order_fake_bin/systemctl" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+mode=${PLOYZ_BOOT_ORDER_PROBE_MODE:-valid}
+if [ "$1" = is-active ] && [ "$2" = --quiet ]; then
+  case "$3" in
+    ployz-owned-zfs-import.service) [ "$mode" != recovery-inactive ] ;;
+    docker.service) [ "$mode" != docker-inactive ] ;;
+    *) exit 1 ;;
+  esac
+  exit
+fi
 [ "$1" = show ] && [ "$3" = -p ] && [ "$5" = --value ]
 unit=$2
 property=$4
-mode=${PLOYZ_BOOT_ORDER_PROBE_MODE:-valid}
 case "${unit}:${property}" in
   zfs-import.target:ActiveEnterTimestampMonotonic) [ "$mode" = bad-order ] && printf '200\n' || printf '100\n' ;;
   ployz-owned-zfs-import.service:ActiveEnterTimestampMonotonic) [ "$mode" = bad-order ] && printf '100\n' || printf '200\n' ;;
   docker.service:ActiveEnterTimestampMonotonic) printf '300\n' ;;
   ployz-owned-zfs-import.service:After) printf 'network.target zfs-import.target\n' ;;
+  ployz-owned-zfs-import.service:Before) printf 'docker.service\n' ;;
   ployz-owned-zfs-import.service:Requires)
     [ "$mode" = missing-dependency ] && printf 'network.target\n' || printf 'zfs-import.target\n'
     ;;
   docker.service:After) printf 'network.target ployz-owned-zfs-import.service\n' ;;
+  docker.service:Requires) printf 'ployz-owned-zfs-import.service\n' ;;
   *) exit 1 ;;
 esac
 EOF
@@ -525,8 +645,10 @@ zfs_import_active_us=100
 recovery_active_us=200
 docker_active_us=300
 recovery_after=network.target zfs-import.target
+recovery_before=docker.service
 recovery_requires=zfs-import.target
 docker_after=network.target ployz-owned-zfs-import.service
+docker_requires=ployz-owned-zfs-import.service
 EOF
   )
   [ "$boot_order_output" = "$boot_order_expected" ]
@@ -534,6 +656,48 @@ EOF
     return 1
   fi
   if ( export PLOYZ_BOOT_ORDER_PROBE_MODE=missing-dependency; PATH="$boot_order_fake_bin:$PATH"; verify_owned_zfs_boot_order >/dev/null ); then
+    return 1
+  fi
+  if ( export PLOYZ_BOOT_ORDER_PROBE_MODE=recovery-inactive; PATH="$boot_order_fake_bin:$PATH"; verify_owned_zfs_boot_order >/dev/null ); then
+    return 1
+  fi
+  if ( export PLOYZ_BOOT_ORDER_PROBE_MODE=docker-inactive; PATH="$boot_order_fake_bin:$PATH"; verify_owned_zfs_boot_order >/dev/null ); then
+    return 1
+  fi
+
+  module_failure_output=$("$0" --module-failure-probe "$evidence")
+  printf '%s\n' "$module_failure_output" | grep -Fx recovery_state=failed >/dev/null
+  printf '%s\n' "$module_failure_output" | grep -Fx docker_state=inactive >/dev/null
+  printf '%s\n' "$module_failure_output" | grep -Fx dockerd_process=absent >/dev/null
+  printf '%s\n' "$module_failure_output" | grep -Fx postgres_process=absent >/dev/null
+  printf '%s\n' "$module_failure_output" | grep -Fx postgres_listener=absent >/dev/null
+  printf '%s\n' "$module_failure_output" | grep -Fx recorded_pre_failure_container=probe-container >/dev/null
+  printf '%s\n' "$module_failure_output" | grep -Fx recorded_pre_failure_volume=probe-volume-name >/dev/null
+  printf '%s\n' "$module_failure_output" | grep -Fx recorded_pre_failure_docker_labels_sha256=probe-labels-sha >/dev/null
+  printf '%s\n' "$module_failure_output" | grep -Fx 'storage unavailable zfs-module-missing' >/dev/null
+  printf '%s\n' "$module_failure_output" | grep -Fx 'storage-alarms probe-ns/probe-volume:zfs-module-missing' >/dev/null
+  printf '%s\n' "$module_failure_output" | grep -Fx module_failure_probe=passed >/dev/null
+  for module_failure_probe_mode in recovery-not-failed docker-active dockerd-live postgres-live missing-dependency listener-present; do
+    child_status=0
+    module_failure_output=$("$0" --module-failure-probe "$evidence" "$module_failure_probe_mode" 2>&1) \
+      || child_status=$?
+    [ "$child_status" -ne 0 ]
+    if printf '%s\n' "$module_failure_output" | grep -Fx module_failure_probe=passed >/dev/null; then
+      return 1
+    fi
+  done
+  module_failure_output=$("$0" --module-failure-probe "$evidence" journal-failure)
+  printf '%s\n' "$module_failure_output" | grep -Fx module_failure_probe=passed >/dev/null
+
+  container_probe_output=$(
+    core() { printf 'probe-container\n'; }
+    zfs_running_database_container probe-ns probe-service probe-container
+  )
+  [ "$container_probe_output" = probe-container ]
+  if (
+    core() { printf 'probe-container\nreplacement-container\n'; }
+    zfs_running_database_container probe-ns probe-service probe-container >/dev/null 2>&1
+  ); then
     return 1
   fi
 
@@ -818,6 +982,118 @@ case ${1:-} in
     sleep_before_deadline() { :; }
     wait_for_storage_ready_testimony probe-pool probe-ns/probe-volume
     printf 'inspect_calls=%s\n' "$(wc -l < "$storage_ready_probe_calls")"
+    exit 0
+    ;;
+  --module-failure-probe)
+    module_failure_probe_root=${2:?missing module failure probe directory}/module-failure
+    module_failure_probe_mode=${3:-valid}
+    export PLOYZ_MODULE_FAILURE_PROBE_MODE=$module_failure_probe_mode
+    module_failure_probe_bin="$module_failure_probe_root/bin"
+    mkdir -p "$module_failure_probe_bin"
+    cat > "$module_failure_probe_bin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}:${2:-}:${3:-}" in
+  is-failed:--quiet:ployz-owned-zfs-import.service)
+    [ "${PLOYZ_MODULE_FAILURE_PROBE_MODE:-valid}" != recovery-not-failed ]
+    ;;
+  is-active:--quiet:docker.service)
+    [ "${PLOYZ_MODULE_FAILURE_PROBE_MODE:-valid}" = docker-active ]
+    ;;
+  show:ployz-owned-zfs-import.service:-p)
+    case "$4" in
+      After) printf 'network.target zfs-import.target\n' ;;
+      Before) printf 'docker.service\n' ;;
+      Requires)
+        [ "${PLOYZ_MODULE_FAILURE_PROBE_MODE:-valid}" = missing-dependency ] \
+          && printf 'network.target\n' || printf 'zfs-import.target\n'
+        ;;
+      *) exit 1 ;;
+    esac
+    ;;
+  show:docker.service:-p)
+    case "$4" in
+      After) printf 'network.target ployz-owned-zfs-import.service\n' ;;
+      Requires) printf 'ployz-owned-zfs-import.service\n' ;;
+      *) exit 1 ;;
+    esac
+    ;;
+  status:--no-pager:-n) printf 'bounded unit status evidence\n'; exit 3 ;;
+  *) exit 1 ;;
+esac
+EOF
+    cat > "$module_failure_probe_bin/pgrep" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$1" = -x ]
+case "$2" in
+  dockerd) [ "${PLOYZ_MODULE_FAILURE_PROBE_MODE:-valid}" = dockerd-live ] ;;
+  postgres) [ "${PLOYZ_MODULE_FAILURE_PROBE_MODE:-valid}" = postgres-live ] ;;
+  *) exit 2 ;;
+esac
+EOF
+    cat > "$module_failure_probe_bin/ss" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$1" = -H ] && [ "$2" = -ltnp ]
+if [ "${PLOYZ_MODULE_FAILURE_PROBE_MODE:-valid}" = listener-present ]; then
+  printf 'LISTEN 0 128 *:5432 *:* users:(("postgres",pid=123,fd=7))\n'
+fi
+EOF
+    cat > "$module_failure_probe_bin/journalctl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$1" = -b ] && [ "$2" = -u ] && [ "$4" = --no-pager ] && [ "$5" = -n ] && [ "$6" = 100 ]
+printf 'bounded journal evidence for %s\n' "$3"
+[ "${PLOYZ_MODULE_FAILURE_PROBE_MODE:-valid}" != journal-failure ]
+EOF
+    chmod +x "$module_failure_probe_bin/systemctl" "$module_failure_probe_bin/pgrep" \
+      "$module_failure_probe_bin/ss" "$module_failure_probe_bin/journalctl"
+    prepared_descriptor_path=/probe/prepared-storage.json
+    backing_file_path=/probe/ployz.img
+    prepared_descriptor=probe-descriptor
+    prepared_descriptor_sha=$(printf '%s' "$prepared_descriptor" | sha256sum | awk '{print $1}')
+    backing_file_identity=1:2:3
+    storage_operation_id=op_probe
+    storage_operation_evidence=probe-operation-evidence
+    storage_operation_evidence_sha=$(printf '%s' "$storage_operation_evidence" | sha256sum | awk '{print $1}')
+    pool=probe-pool
+    dataset=probe-pool/ployz/volumes/probe
+    bind_device=/probe/missing-bind
+    core_machine_id=probe-machine
+    zfs_namespace=probe-ns
+    zfs_volume=probe-volume
+    baseline_db_container=probe-container
+    docker_volume_name=probe-volume-name
+    docker_labels_sha=probe-labels-sha
+    core() {
+      local command=$1
+      if [[ "$command" =~ (^|[[:space:]\;\|\&\(])docker[[:space:]] ]] \
+        || [[ "$command" = *'/var/lib/docker'* ]]; then
+        printf 'phase06 attempted forbidden Docker access: %s\n' "$command" >&2
+        return 97
+      fi
+      case "$command" in
+        "cat '${prepared_descriptor_path}'") printf '%s\n' "$prepared_descriptor" ;;
+        "readlink -f '${backing_file_path}'") printf '%s\n' "$backing_file_path" ;;
+        "stat -Lc '%d:%i:%s' '${backing_file_path}'") printf '%s\n' "$backing_file_identity" ;;
+        "timeout 20s ployz ops watch '${storage_operation_id}' --json") printf '%s\n' "$storage_operation_evidence" ;;
+        *'verify_owned_zfs_failure_state')
+          PATH="$module_failure_probe_bin:$PATH" bash -euo pipefail -c "$command"
+          ;;
+        "! zpool list '${pool}' >/dev/null 2>&1 && ! zfs list '${dataset}' >/dev/null 2>&1") return 0 ;;
+        "test ! -e '${bind_device}'") return 0 ;;
+        'systemctl is-active --quiet ployzd-control && timeout 10s ployz ops list >/dev/null') return 0 ;;
+        *) printf 'unexpected phase06 core command: %s\n' "$command" >&2; return 98 ;;
+      esac
+    }
+    core_before_deadline() {
+      printf 'storage unavailable zfs-module-missing\nstorage-alarms probe-ns/probe-volume:zfs-module-missing\n'
+    }
+    wait_for_core_api() { :; }
+    sleep_before_deadline() { :; }
+    zfs_verify_module_failure
+    printf 'module_failure_probe=passed\n'
     exit 0
     ;;
   --operation-terminal-probe)
@@ -1350,8 +1626,10 @@ YAML"
     return 1
   fi
 
-  db_container=$(core "docker ps -q --filter 'label=plz.namespace_id=${zfs_namespace}' --filter 'label=plz.service_id=${zfs_service}' | head -1")
-  [ -n "$db_container" ] || { log "database container is not running on the core"; return 1; }
+  if ! db_container=$(zfs_running_database_container "$zfs_namespace" "$zfs_service"); then
+    log "database container is not running uniquely on the core"
+    return 1
+  fi
   baseline_db_container=$db_container
   core "timeout 30s docker exec '${db_container}' psql -U ployzcert -d ployzcert -v ON_ERROR_STOP=1 -c \"CREATE TABLE certification (marker text PRIMARY KEY); INSERT INTO certification VALUES ('${row_marker}');\""
 }
@@ -1445,36 +1723,26 @@ PY
 }
 
 zfs_verify_preserved_storage_evidence() {
-  local actual_descriptor actual_descriptor_sha actual_backing_path actual_backing_identity
-  local actual_labels actual_labels_sha actual_operation_evidence actual_operation_evidence_sha
-  actual_descriptor=$(core "cat '${prepared_descriptor_path}'")
-  actual_descriptor_sha=$(printf '%s' "$actual_descriptor" | sha256sum | awk '{print $1}')
-  actual_backing_path=$(core "readlink -f '${backing_file_path}'")
-  actual_backing_identity=$(core "stat -Lc '%d:%i:%s' '${backing_file_path}'")
+  local actual_labels actual_labels_sha
+  zfs_verify_preserved_durable_storage_evidence
   actual_labels=$(core "docker inspect --format '{{json .Config.Labels}}' '${baseline_db_container}'")
   actual_labels_sha=$(printf '%s' "$actual_labels" | sha256sum | awk '{print $1}')
-  actual_operation_evidence=$(core "timeout 20s ployz ops watch '${storage_operation_id}' --json")
-  actual_operation_evidence_sha=$(printf '%s' "$actual_operation_evidence" | sha256sum | awk '{print $1}')
-  if [ "$actual_descriptor_sha" != "$prepared_descriptor_sha" ] \
-    || [ "$actual_backing_path" != "$backing_file_path" ] \
-    || [ "$actual_backing_identity" != "$backing_file_identity" ] \
-    || [ "$actual_labels_sha" != "$docker_labels_sha" ] \
-    || [ "$actual_operation_evidence_sha" != "$storage_operation_evidence_sha" ]; then
-    log "prepared descriptor, backing file, Docker labels, or operation evidence changed"
+  [ "$actual_labels_sha" = "$docker_labels_sha" ] || {
+    log "Docker labels changed"
     return 1
-  fi
-  printf 'preserved_descriptor_sha256=%s\npreserved_backing_file=%s\npreserved_backing_identity=%s\npreserved_docker_labels_sha256=%s\npreserved_operation_evidence_sha256=%s\n' \
-    "$actual_descriptor_sha" "$actual_backing_path" "$actual_backing_identity" "$actual_labels_sha" "$actual_operation_evidence_sha"
+  }
+  printf 'preserved_docker_labels_sha256=%s\n' "$actual_labels_sha"
 }
 
 zfs_verify_reboot_recovery() {
   local forbidden_alarm_pin=${1:-}
   local recovered_dataset_quota recovered_dataset_refquota recovered_pool_health machine_storage
+  local container_status
   wait_for_core_api
   machine_storage=$(wait_for_storage_ready_testimony "$pool" "$forbidden_alarm_pin")
   printf '%s\n' "$machine_storage"
+  core "$(declare -f verify_owned_zfs_dependency_edges); $(declare -f verify_owned_zfs_boot_order); verify_owned_zfs_boot_order"
   zfs_verify_preserved_storage_evidence
-  core "$(declare -f verify_owned_zfs_boot_order); verify_owned_zfs_boot_order"
   core_with_local_timeout 200s "timeout 3m sh -c 'until zpool list -H -o guid \"${pool}\" | grep -Fx \"${pool_guid}\"; do sleep 2; done'"
   recovered_pool_health=$(core "zpool get -H -o value health '${pool}'")
   [ "$recovered_pool_health" = ONLINE ] || {
@@ -1498,14 +1766,19 @@ zfs_verify_reboot_recovery() {
   recovered_container=
   local container_deadline=$((SECONDS + 240))
   while (( SECONDS < container_deadline )); do
-    if ! recovered_container=$(core_before_deadline "$container_deadline" "docker ps -q --filter 'label=plz.namespace_id=${zfs_namespace}' --filter 'label=plz.service_id=${zfs_service}' | head -1"); then
-      recovered_container=
+    if recovered_container=$(zfs_running_database_container \
+      "$zfs_namespace" "$zfs_service" "$baseline_db_container" "$container_deadline"); then
+      break
+    else
+      container_status=$?
     fi
-    [ -n "$recovered_container" ] && break
+    if [ "$container_status" -ne 2 ]; then
+      return 1
+    fi
+    recovered_container=
     sleep_before_deadline "$container_deadline" 2
   done
   [ -n "$recovered_container" ] || { log "database container did not return after reboot"; return 1; }
-  [ "$recovered_container" = "$baseline_db_container" ] || { log "a replacement database container returned after reboot"; return 1; }
   recovered_volume_name=$(core "docker inspect --format '{{range .Mounts}}{{if eq .Destination \"/var/lib/postgresql/data\"}}{{.Name}}{{end}}{{end}}' '${recovered_container}'")
   recovered_source=$(core "docker inspect --format '{{range .Mounts}}{{if eq .Destination \"/var/lib/postgresql/data\"}}{{.Source}}{{end}}{{end}}' '${recovered_container}'")
   recovered_device=$(core "docker volume inspect --format '{{index .Options \"device\"}}' '${recovered_volume_name}'")
@@ -1621,54 +1894,6 @@ fi
 REMOTE_QUARANTINE
 }
 
-zfs_verify_module_failure() {
-  wait_for_core_api
-  zfs_verify_preserved_storage_evidence
-  core "! zpool list '${pool}' >/dev/null 2>&1 && ! zfs list '${dataset}' >/dev/null 2>&1"
-  core "test ! -e '${bind_device}'"
-  failure_containers=$(core "docker ps -aq --filter 'label=plz.namespace_id=${zfs_namespace}' --filter 'label=plz.service_id=${zfs_service}'")
-  if [ "$(printf '%s\n' "$failure_containers" | sed '/^$/d' | wc -l)" -ne 1 ] \
-    || [ "$failure_containers" != "$baseline_db_container" ]; then
-    log "failure evidence does not contain exactly the baseline database container"
-    return 1
-  fi
-  for container in $failure_containers; do
-    [ "$(core "docker inspect --format '{{.State.Running}}' '${container}'")" = false ] || {
-      log "database container ${container} is running without ZFS"; return 1;
-    }
-    failure_volume_name=$(core "docker inspect --format '{{range .Mounts}}{{if eq .Destination \"/var/lib/postgresql/data\"}}{{.Name}}{{end}}{{end}}' '${container}'")
-    if [ "$container" != "$baseline_db_container" ] || [ "$failure_volume_name" != "$docker_volume_name" ]; then
-      log "database failure evidence names a replacement container or volume"
-      return 1
-    fi
-  done
-  if start_failure=$(core "docker start '${baseline_db_container}'" 2>&1); then
-    log "database container started without its ZFS bind device"; return 1
-  fi
-  state_error=$(core "docker inspect --format '{{.State.Error}}' '${baseline_db_container}'")
-  printf 'docker-start-error:\n%s\ndocker-state-error:\n%s\n' "$start_failure" "$state_error"
-  printf '%s\n%s\n' "$start_failure" "$state_error" | grep -Eqi 'mount|bind|no such file|does not exist' || {
-    log "Docker start failed without mount/bind evidence"; return 1;
-  }
-  [ "$(core "docker inspect --format '{{.State.Running}}' '${baseline_db_container}'")" = false ] \
-    || { log "database container became running after failed start"; return 1; }
-  core "journalctl -b -u docker.service --no-pager -n 100"
-  core 'systemctl is-active --quiet ployzd-control && timeout 10s ployz ops list >/dev/null'
-  local testimony_deadline=$((SECONDS + 360))
-  while (( SECONDS < testimony_deadline )); do
-    if failure_testimony=$(core_before_deadline "$testimony_deadline" "timeout 12s ployz machine inspect '${core_machine_id}'") \
-      && printf '%s\n' "$failure_testimony" | grep -Fx 'storage unavailable zfs-module-missing' >/dev/null \
-      && printf '%s\n' "$failure_testimony" | grep -Fx "storage-alarms ${zfs_namespace}/${zfs_volume}:zfs-module-missing" >/dev/null; then
-      printf '%s\n' "$failure_testimony"
-      return 0
-    fi
-    sleep_before_deadline "$testimony_deadline" 3
-  done
-  printf '%s\n' "$failure_testimony"
-  log "typed ZFS module failure and exact stranded pin did not converge"
-  return 1
-}
-
 zfs_restore_module() {
   local restore_command
   printf -v restore_command 'bash -s -- %q %q %q %q' \
@@ -1700,12 +1925,12 @@ Harness source: sealed-harness.sh (${harness_sha})
 01 timeout 2m ployz machine storage-prepare ${core_machine_id} --detach; poll ployz ops status OPERATION to terminal with a 1200s absolute budget; timeout 20s ployz ops watch OPERATION --json terminal replay
 02 ployz volume create ${zfs_namespace} ${zfs_volume} --machine ${core_machine_id} --max-size 2G; ployz deploy -f ${remote_compose}
 03 zpool/zfs GUID, mountpoint, exact quota=2147483648 and refquota=0; docker inspect container/volume; PostgreSQL row query
-04 systemctl reboot; systemd zfs-import.target -> ployz-owned-zfs-import.service -> docker.service timestamps and dependencies; same pool/dataset/quota/refquota/container/volume/bind/row
+04 systemctl reboot; active systemd zfs-import.target -> ployz-owned-zfs-import.service -> docker.service timestamps and exact dependencies before Docker assertions; same pool/dataset/quota/refquota/container/volume/bind/row
 05 modinfo/lsinitrd guard; root-only copy+metadata+checksum; move module; depmod; modinfo absence
-06 systemctl reboot; absent pool/dataset/bind device; stopped same container; Control/API and typed stranded-pin testimony
+06 systemctl reboot; failed owned-ZFS recovery; inactive Docker with no dockerd/PostgreSQL process or listener; exact dependency edges; absent pool/dataset/bind device; preserved durable evidence plus recorded pre-failure Docker identity without a live Docker read; Control/API and typed stranded-pin testimony
 07 verify backup checksum; restore exact module path; depmod; modinfo
-08 systemctl reboot; same pool/dataset/quota/refquota/container/volume/bind/row; alarm clear
-09 systemctl reboot; repeat full recovery and alarm-clear proof
+08 systemctl reboot; active recovery and Docker ordering before same pool/dataset/quota/refquota/container/volume/bind/row; alarm clear
+09 systemctl reboot; repeat active recovery/Docker ordering, full recovery, and alarm-clear proof
 Wait budgets use monotonic absolute deadlines: storage operation status poll 1200s with terminal replay 20s; disconnect 120s; reboot return 540s; API/testimony 360s; container 240s; each retry-loop SSH attempt at most 15s.
 Commands containing fixture credentials are intentionally redacted; their bounded outcomes are in the numbered logs.
 EOF
