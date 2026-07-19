@@ -2,7 +2,7 @@ use std::future::Future;
 use std::time::Duration;
 
 use ployz_core::build::{
-    BUILD_MAX_PLACEMENT_TIMEOUT, BuildExecutorAssignment, BuildExecutorOrigin, BuildTarget,
+    BUILD_MAX_PLACEMENT_TIMEOUT, BuildExecutorAssignment, BuildExecutorEvidence, BuildTarget,
 };
 use ployz_core::deploy::PushedImageReceipt;
 use ployz_core::ids::{MachineId, OperationId};
@@ -395,10 +395,11 @@ impl BuildOperationDriver {
                     id,
                     BuildEvidence::PlatformPlaced {
                         platform: assignment.platform.clone(),
-                        machine_id: assignment.machine_id.clone(),
-                        executor_origin: BuildExecutorOrigin::Cluster {
-                            machine_id: assignment.machine_id.clone(),
-                        },
+                        executor: BuildExecutorEvidence::from_assignment(
+                            &BuildExecutorAssignment::Cluster {
+                                machine_id: assignment.machine_id.clone(),
+                            },
+                        ),
                     },
                 )
                 .await
@@ -452,18 +453,18 @@ fn cancel_delivery_should_retry(
     };
     match result {
         Ok(ok)
-            if ok.assignment == expected_assignment
-                && ok.outcome == MachineBuildCancelOutcome::NotRunning =>
+            if ok.executor.assignment == expected_assignment
+                && ok.executor.outcome == MachineBuildCancelOutcome::NotRunning =>
         {
             true
         }
         Ok(ok)
-            if ok.assignment == expected_assignment
-                && ok.outcome == MachineBuildCancelOutcome::Requested =>
+            if ok.executor.assignment == expected_assignment
+                && ok.executor.outcome == MachineBuildCancelOutcome::Requested =>
         {
             false
         }
-        Ok(MachineBuildCancelRpcOk { .. })
+        Ok(_)
         | Err(MachineCallError::Domain(MachineBuildCancelDomainError::CancelFailed {
             message: _,
         }))

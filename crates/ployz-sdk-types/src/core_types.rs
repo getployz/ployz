@@ -1,5 +1,6 @@
 pub use ployz_core::build::{
-    BuildAdapter, BuildCacheScope, BuildContextPath, BuildExecutorId, BuildExecutorOrigin,
+    BuildAdapter, BuildCacheScope, BuildContextPath, BuildExecutorAssignment,
+    BuildExecutorEvidence, BuildExecutorId, BuildExecutorOrigin, BuildPlatformExecutorAssignment,
     BuildPlatforms, BuildPlatformsError, BuildPoolId, BuildTarget, DockerfileStageName,
     GitBasicCredential, GitCommit, GitCredentialSecret, GitCredentialUsername, GitRepositoryUrl,
     GitSource, GitSourceError, GitSourceEvidence, RailpackCacheKey, VerifiedGitCommit,

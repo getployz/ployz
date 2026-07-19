@@ -5,6 +5,9 @@ use crate::core_types::*;
 use crate::ops::{AcceptedOperation, OperationApiResponse};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(
+    type = "{ operation_id: OperationId, target?: BuildTarget, source: GitSource, adapter: BuildAdapter, platforms: BuildPlatforms }"
+)]
 #[serde(deny_unknown_fields)]
 pub struct BuildSubmitRequest {
     pub operation_id: OperationId,
@@ -141,6 +144,15 @@ mod tests {
             BuildTarget::External {
                 pool_id: BuildPoolId::try_new("pool-a").expect("pool id")
             }
+        );
+    }
+
+    #[test]
+    fn build_submit_typescript_keeps_the_defaulted_target_optional() {
+        let declaration = <BuildSubmitRequest as TS>::decl(&ts_rs::Config::default());
+        assert!(
+            declaration.contains("target?: BuildTarget"),
+            "{declaration}"
         );
     }
 }

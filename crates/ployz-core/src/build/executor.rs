@@ -21,6 +21,7 @@ pub enum BuildTarget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "executor", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BuildExecutorAssignment {
     Cluster {
@@ -34,14 +35,6 @@ pub enum BuildExecutorAssignment {
 }
 
 impl BuildExecutorAssignment {
-    #[must_use]
-    pub fn image_seed(&self) -> &MachineId {
-        match self {
-            Self::Cluster { machine_id } => machine_id,
-            Self::External { image_seed, .. } => image_seed,
-        }
-    }
-
     #[must_use]
     pub fn origin(&self) -> BuildExecutorOrigin {
         match self {
@@ -67,7 +60,9 @@ pub struct ExternalBuildExecutorCandidate {
     pub platform: OciPlatform,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
 pub struct BuildPlatformExecutorAssignment {
     pub platform: OciPlatform,
     pub executor: BuildExecutorAssignment,
@@ -132,6 +127,117 @@ pub enum BuildExecutorOrigin {
         pool_id: BuildPoolId,
         executor_id: BuildExecutorId,
     },
+}
+
+/// Validated executor identity and image-seed provenance for build evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(
+    try_from = "BuildExecutorEvidenceWire",
+    into = "BuildExecutorEvidenceWire"
+)]
+pub struct BuildExecutorEvidence {
+    machine_id: MachineId,
+    executor_origin: BuildExecutorOrigin,
+}
+
+impl BuildExecutorEvidence {
+    #[must_use]
+    pub fn from_assignment(assignment: &BuildExecutorAssignment) -> Self {
+        match assignment {
+            BuildExecutorAssignment::Cluster { machine_id } => Self {
+                machine_id: machine_id.clone(),
+                executor_origin: BuildExecutorOrigin::Cluster {
+                    machine_id: machine_id.clone(),
+                },
+            },
+            BuildExecutorAssignment::External {
+                pool_id,
+                executor_id,
+                image_seed,
+            } => Self {
+                machine_id: image_seed.clone(),
+                executor_origin: BuildExecutorOrigin::External {
+                    pool_id: pool_id.clone(),
+                    executor_id: executor_id.clone(),
+                },
+            },
+        }
+    }
+
+    pub fn try_new(
+        machine_id: MachineId,
+        executor_origin: BuildExecutorOrigin,
+    ) -> Result<Self, BuildExecutorEvidenceError> {
+        if let BuildExecutorOrigin::Cluster {
+            machine_id: origin_machine_id,
+        } = &executor_origin
+            && origin_machine_id != &machine_id
+        {
+            return Err(BuildExecutorEvidenceError::ClusterSeedMismatch);
+        }
+        Ok(Self {
+            machine_id,
+            executor_origin,
+        })
+    }
+
+    #[must_use]
+    pub const fn machine_id(&self) -> &MachineId {
+        &self.machine_id
+    }
+
+    #[must_use]
+    pub const fn executor_origin(&self) -> &BuildExecutorOrigin {
+        &self.executor_origin
+    }
+
+    #[must_use]
+    pub fn assignment(&self) -> BuildExecutorAssignment {
+        match &self.executor_origin {
+            BuildExecutorOrigin::Cluster { machine_id } => BuildExecutorAssignment::Cluster {
+                machine_id: machine_id.clone(),
+            },
+            BuildExecutorOrigin::External {
+                pool_id,
+                executor_id,
+            } => BuildExecutorAssignment::External {
+                pool_id: pool_id.clone(),
+                executor_id: executor_id.clone(),
+                image_seed: self.machine_id.clone(),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum BuildExecutorEvidenceError {
+    #[error("cluster build evidence seed does not match its executor machine")]
+    ClusterSeedMismatch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BuildExecutorEvidenceWire {
+    machine_id: MachineId,
+    executor_origin: BuildExecutorOrigin,
+}
+
+impl TryFrom<BuildExecutorEvidenceWire> for BuildExecutorEvidence {
+    type Error = BuildExecutorEvidenceError;
+
+    fn try_from(value: BuildExecutorEvidenceWire) -> Result<Self, Self::Error> {
+        Self::try_new(value.machine_id, value.executor_origin)
+    }
+}
+
+impl From<BuildExecutorEvidence> for BuildExecutorEvidenceWire {
+    fn from(value: BuildExecutorEvidence) -> Self {
+        Self {
+            machine_id: value.machine_id,
+            executor_origin: value.executor_origin,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

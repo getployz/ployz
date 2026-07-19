@@ -292,6 +292,7 @@ pub fn project_operation_event(
                 source,
                 adapter,
                 platforms,
+                executor_assignments,
                 state,
                 ..
             } = current
@@ -305,6 +306,7 @@ pub fn project_operation_event(
                     source,
                     adapter,
                     platforms,
+                    executor_assignments,
                     state,
                 },
                 event,

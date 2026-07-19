@@ -173,6 +173,7 @@ pub enum OperationStatus {
         source: crate::build::GitSourceEvidence,
         adapter: crate::build::BuildAdapter,
         platforms: crate::build::BuildPlatforms,
+        executor_assignments: Vec<crate::build::BuildPlatformExecutorAssignment>,
         state: BuildOperationState,
         last_event_sequence: EventSequence,
     },
@@ -318,6 +319,7 @@ impl OperationStatus {
             source,
             adapter,
             platforms,
+            executor_assignments: Vec::new(),
             state: BuildOperationState::Accepted,
             last_event_sequence: event_sequence,
         }

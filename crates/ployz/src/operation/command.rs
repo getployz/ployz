@@ -1076,7 +1076,7 @@ fn render_replayed_event_text(
         ),
         OperationEvent::BuildPlatformLog {
             platform,
-            machine_id,
+            executor,
             chunk,
             ..
         } => format!(
@@ -1085,7 +1085,7 @@ fn render_replayed_event_text(
             label,
             platform.os(),
             platform.architecture(),
-            machine_id.as_str(),
+            executor.machine_id().as_str(),
             chunk.as_str()
         ),
         OperationEvent::MachineBuildCachePruneCompleted { evidence, .. } => format!(
