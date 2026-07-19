@@ -3,7 +3,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::build::{
-    BuildAdapter, BuildExecutorAssignments, BuildPlatforms, BuildTarget, GitSourceEvidence,
+    BuildAdapter, BuildExecutorAssignments, BuildExecutorEvidence, BuildPlatforms, BuildTarget,
+    GitSourceEvidence,
 };
 use crate::deploy::PushedImageReceipt;
 use crate::ids::{MachineId, OperationId};
@@ -285,6 +286,11 @@ pub enum BuildOperationFailure {
         machine_id: MachineId,
         failure: BuildPlatformFailure,
     },
+    ExternalPlatformFailed {
+        platform: OciPlatform,
+        executor: BuildExecutorEvidence,
+        failure: BuildPlatformFailure,
+    },
     ReceiptAssemblyFailed {
         message: FailureMessage,
     },
@@ -302,6 +308,12 @@ pub enum BuildOperationFailure {
 pub enum BuildPlatformFailure {
     MachineUnavailable {
         message: FailureMessage,
+    },
+    ExecutorUnavailable {
+        message: FailureMessage,
+    },
+    ImageSeedUnavailable {
+        image_seed: MachineId,
     },
     BuildkitDigestMismatch {
         expected: crate::image::OciDigest,
@@ -359,8 +371,18 @@ pub enum BuildAdapterToolchainEvidence {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BuildCleanupEvidence {
     NotRequired,
-    Completed { machine_ids: Vec<MachineId> },
-    Unconfirmed { machine_ids: Vec<MachineId> },
+    Completed {
+        machine_ids: Vec<MachineId>,
+    },
+    Unconfirmed {
+        machine_ids: Vec<MachineId>,
+    },
+    ExternalCompleted {
+        executors: Vec<BuildExecutorEvidence>,
+    },
+    ExternalUnconfirmed {
+        executors: Vec<BuildExecutorEvidence>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -580,15 +602,54 @@ impl BuildExecutorAssignments {
                         failure: _,
                     },
             } => self.iter().any(|assignment| {
-                assignment.platform == *platform && assignment.executor.image_seed() == machine_id
+                assignment.platform == *platform
+                    && matches!(
+                        &assignment.executor,
+                        crate::build::BuildExecutorAssignment::Cluster {
+                            machine_id: assigned_machine_id,
+                        } if assigned_machine_id == machine_id
+                    )
+            }),
+            BuildOperationState::Failed {
+                failure:
+                    BuildOperationFailure::ExternalPlatformFailed {
+                        platform,
+                        executor,
+                        failure: _,
+                    },
+            } => self.iter().any(|assignment| {
+                assignment.platform == *platform
+                    && matches!(
+                        executor.assignment(),
+                        crate::build::BuildExecutorAssignment::External { .. }
+                    )
+                    && assignment.executor == *executor.assignment()
             }),
             BuildOperationState::Cancelled { cleanup, .. }
             | BuildOperationState::TimedOut { cleanup, .. } => match cleanup {
                 BuildCleanupEvidence::NotRequired => true,
                 BuildCleanupEvidence::Completed { machine_ids }
-                | BuildCleanupEvidence::Unconfirmed { machine_ids } => machine_ids
-                    .iter()
-                    .all(|machine_id| self.contains_seed(machine_id)),
+                | BuildCleanupEvidence::Unconfirmed { machine_ids } => {
+                    machine_ids.iter().all(|machine_id| {
+                        self.iter().any(|assignment| {
+                            matches!(
+                                &assignment.executor,
+                                crate::build::BuildExecutorAssignment::Cluster {
+                                    machine_id: assigned_machine_id,
+                                } if assigned_machine_id == machine_id
+                            )
+                        })
+                    })
+                }
+                BuildCleanupEvidence::ExternalCompleted { executors }
+                | BuildCleanupEvidence::ExternalUnconfirmed { executors } => {
+                    executors.iter().all(|executor| {
+                        matches!(
+                            executor.assignment(),
+                            crate::build::BuildExecutorAssignment::External { .. }
+                        ) && self.contains_executor(executor.assignment())
+                    })
+                }
             },
             BuildOperationState::Accepted
             | BuildOperationState::Placing

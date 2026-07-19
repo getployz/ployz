@@ -23,10 +23,61 @@ pub struct BuildExecutorIdentity {
 }
 
 /// One point-of-use readiness answer from an external Build Executor.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
 pub struct BuildExecutorReadinessAnswer<T> {
     pub identity: BuildExecutorIdentity,
     pub readiness: T,
+}
+
+/// Native execution capability reported at the point of build admission.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct BuildExecutorReadiness {
+    pub native_platform: OciPlatform,
+    pub capability: BuildExecutorCapability,
+}
+
+/// The complete adapter set one external executor can accept now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum BuildExecutorCapability {
+    DockerfileAndRailpack,
+    DockerfileOnly,
+    RuntimeUnavailable,
+}
+
+impl BuildExecutorCapability {
+    #[must_use]
+    pub const fn supports(self, adapter: &BuildAdapter) -> bool {
+        match (self, adapter) {
+            (Self::DockerfileAndRailpack, _)
+            | (Self::DockerfileOnly, BuildAdapter::Dockerfile { .. }) => true,
+            (Self::DockerfileOnly, BuildAdapter::Railpack { .. })
+            | (Self::RuntimeUnavailable, _) => false,
+        }
+    }
+}
+
+/// Adapter identity used in typed admission failures without repeating adapter input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum BuildAdapterKind {
+    Dockerfile,
+    Railpack,
+}
+
+impl From<&BuildAdapter> for BuildAdapterKind {
+    fn from(adapter: &BuildAdapter) -> Self {
+        match adapter {
+            BuildAdapter::Dockerfile { .. } => Self::Dockerfile,
+            BuildAdapter::Railpack { .. } => Self::Railpack,
+        }
+    }
 }
 
 /// Readiness testimony for every executor in the enrolled known set.
@@ -235,10 +286,10 @@ impl BuildExecutorAssignments {
     }
 
     #[must_use]
-    pub(crate) fn contains_seed(&self, machine_id: &MachineId) -> bool {
+    pub(crate) fn contains_executor(&self, executor: &BuildExecutorAssignment) -> bool {
         self.0
             .iter()
-            .any(|assignment| assignment.executor.image_seed() == machine_id)
+            .any(|assignment| assignment.executor == *executor)
     }
 
     #[must_use]
@@ -563,11 +614,21 @@ pub enum BuildExecutorStartDomainError {
         expected: Box<BuildExecutorAssignment>,
         actual: BuildExecutorAssignment,
     },
+    ExecutorIdentityMismatch {
+        expected: BuildExecutorIdentity,
+        actual: BuildExecutorAssignment,
+    },
     RuntimeUnavailable,
     RuntimeStopped,
     PlatformMismatch {
         expected: OciPlatform,
         actual: OciPlatform,
+    },
+    ToolchainUnavailable {
+        adapter: BuildAdapterKind,
+    },
+    ImageSeedUnavailable {
+        image_seed: MachineId,
     },
     InvalidTimeout {
         timeout_millis: u64,
@@ -805,6 +866,71 @@ mod tests {
     }
 
     #[test]
+    fn readiness_answer_is_exact_and_capabilities_are_adapter_specific() {
+        let answer = BuildExecutorReadinessAnswer {
+            identity: executor_identity("pool-a", "executor-a"),
+            readiness: BuildExecutorReadiness {
+                native_platform: platform("amd64"),
+                capability: BuildExecutorCapability::DockerfileOnly,
+            },
+        };
+
+        assert_eq!(
+            serde_json::to_value(answer).expect("readiness answer"),
+            serde_json::json!({
+                "identity": {"pool_id": "pool-a", "executor_id": "executor-a"},
+                "readiness": {
+                    "native_platform": {"os": "linux", "architecture": "amd64"},
+                    "capability": "dockerfile_only",
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn readiness_capability_distinguishes_runtime_and_railpack_availability() {
+        let dockerfile = BuildAdapter::Dockerfile {
+            dockerfile: super::super::BuildContextPath::try_new("Dockerfile")
+                .expect("dockerfile path"),
+            target: None,
+        };
+        let railpack = BuildAdapter::Railpack {
+            cache_scope: super::super::BuildCacheScope::try_new("cache").expect("cache scope"),
+        };
+
+        assert!(BuildExecutorCapability::DockerfileOnly.supports(&dockerfile));
+        assert!(!BuildExecutorCapability::DockerfileOnly.supports(&railpack));
+        assert!(!BuildExecutorCapability::RuntimeUnavailable.supports(&dockerfile));
+        assert!(BuildExecutorCapability::DockerfileAndRailpack.supports(&railpack));
+    }
+
+    #[test]
+    fn external_pre_acceptance_errors_preserve_typed_provenance() {
+        let error = BuildExecutorStartDomainError::ExecutorIdentityMismatch {
+            expected: executor_identity("pool-a", "executor-a"),
+            actual: BuildExecutorAssignment::External {
+                pool_id: BuildPoolId::try_new("pool-a").expect("pool"),
+                executor_id: BuildExecutorId::try_new("executor-b").expect("executor"),
+                image_seed: MachineId::try_new("seed-a").expect("seed"),
+            },
+        };
+
+        assert_eq!(
+            serde_json::to_value(error).expect("start error"),
+            serde_json::json!({
+                "error": "executor_identity_mismatch",
+                "expected": {"pool_id": "pool-a", "executor_id": "executor-a"},
+                "actual": {
+                    "executor": "external",
+                    "pool_id": "pool-a",
+                    "executor_id": "executor-b",
+                    "image_seed": "seed-a",
+                },
+            })
+        );
+    }
+
+    #[test]
     fn build_executor_ids_are_validated_subject_tokens() {
         assert!(BuildPoolId::try_new("pool-a").is_ok());
         assert!(BuildExecutorId::try_new("executor.a").is_err());
@@ -897,7 +1023,7 @@ mod tests {
             )
             .expect("second placement");
         assert!(assignments.is_complete(&requested));
-        assert!(assignments.contains_seed(machine_a.image_seed()));
+        assert!(assignments.contains_executor(&machine_a));
 
         let encoded = serde_json::to_value(&assignments).expect("encode assignments");
         assert!(encoded.is_array());

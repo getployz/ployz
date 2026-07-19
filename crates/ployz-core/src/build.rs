@@ -5,15 +5,15 @@ mod railpack;
 
 pub use crate::ids::{BuildExecutorId, BuildPoolId};
 pub use executor::{
-    BuildExecutorAcceptance, BuildExecutorAssignment, BuildExecutorAssignments,
+    BuildAdapterKind, BuildExecutorAcceptance, BuildExecutorAssignment, BuildExecutorAssignments,
     BuildExecutorAssignmentsError, BuildExecutorCancelDomainError, BuildExecutorCancelOk,
-    BuildExecutorCancelOutcome, BuildExecutorCancelRequest, BuildExecutorCleanupOutcome,
-    BuildExecutorEvidence, BuildExecutorEvidenceError, BuildExecutorIdentity,
-    BuildExecutorLogFrame, BuildExecutorOrigin, BuildExecutorReadinessAnswer,
-    BuildExecutorReadinessReconcileError, BuildExecutorReadinessTestimony,
-    BuildExecutorStartDomainError, BuildExecutorStartOk, BuildExecutorStartRequest,
-    BuildLogSummary, BuildPlatformExecutorAssignment, BuildTarget, ExternalBuildExecutorCandidate,
-    ExternalBuildPlacementError, place_external_build_platforms,
+    BuildExecutorCancelOutcome, BuildExecutorCancelRequest, BuildExecutorCapability,
+    BuildExecutorCleanupOutcome, BuildExecutorEvidence, BuildExecutorEvidenceError,
+    BuildExecutorIdentity, BuildExecutorLogFrame, BuildExecutorOrigin, BuildExecutorReadiness,
+    BuildExecutorReadinessAnswer, BuildExecutorReadinessReconcileError,
+    BuildExecutorReadinessTestimony, BuildExecutorStartDomainError, BuildExecutorStartOk,
+    BuildExecutorStartRequest, BuildLogSummary, BuildPlatformExecutorAssignment, BuildTarget,
+    ExternalBuildExecutorCandidate, ExternalBuildPlacementError, place_external_build_platforms,
     reconcile_build_executor_readiness_at,
 };
 pub use railpack::{RailpackPins, RailpackPlatformPins, railpack_pins};
