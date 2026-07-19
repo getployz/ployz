@@ -15,6 +15,10 @@ use ployz_nats::permissions::render_authorized_users;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
+use super::expiry::{
+    AuthorizationWake, NatsAuthorizationHealthReader, RETRY_SCHEDULE, retry_after_failure,
+    schedule_after_success,
+};
 use super::reload::{
     NatsReloadEvidence, NatsReloadFailure, NatsReloadOutcome, NatsReloadRunner,
     RELOAD_COMMAND_TIMEOUT,
@@ -225,6 +229,7 @@ enum AuthorizationProjectionState {
 /// The running single-writer that owns `authorized-users.conf`.
 pub struct NatsAuthorizationWriter {
     handle: NatsAuthorizationHandle,
+    health: NatsAuthorizationHealthReader,
     task: JoinHandle<()>,
 }
 
@@ -238,29 +243,109 @@ impl NatsAuthorizationWriter {
         reload: impl NatsReloadRunner,
     ) -> Self {
         let (sender, mut receiver) = mpsc::channel(RENDER_QUEUE_DEPTH);
+        let health = NatsAuthorizationHealthReader::default();
+        let task_health = health.clone();
         let task = tokio::spawn(async move {
             let reload = Arc::new(reload);
             // A restarted control process cannot know whether the independently
             // supervised nats-server applied the current file before the restart.
             let mut projection = AuthorizationProjectionState::ReloadRequired;
-            while let Some(request) = receiver.recv().await {
+            let mut wake: Option<AuthorizationWake> = None;
+            let mut retry_delay = RETRY_SCHEDULE.interval;
+            loop {
+                let event = match wake {
+                    Some(scheduled) => tokio::select! {
+                        request = receiver.recv() => match request {
+                            Some(request) => AuthorizationEvent::Request(request),
+                            None => break,
+                        },
+                        () = tokio::time::sleep(scheduled.wait_duration()) => {
+                            AuthorizationEvent::Wake(scheduled)
+                        }
+                    },
+                    None => match receiver.recv().await {
+                        Some(request) => AuthorizationEvent::Request(request),
+                        None => break,
+                    },
+                };
+
+                if let AuthorizationEvent::Wake(scheduled) = event {
+                    let render_time = match scheduled.render_time() {
+                        Some(render_time) => render_time,
+                        None => match current_unix_seconds() {
+                            Ok(render_time) => render_time,
+                            Err(message) => {
+                                task_health.record_failure(&message);
+                                (wake, retry_delay) = retry_after_failure(None, retry_delay);
+                                continue;
+                            }
+                        },
+                    };
+                    let result = handle_render_request_at(
+                        &authorized_users_file,
+                        &store,
+                        Arc::clone(&reload),
+                        None,
+                        None,
+                        projection,
+                        render_time,
+                    )
+                    .await;
+                    match result {
+                        Ok(_) => {
+                            projection = AuthorizationProjectionState::Current;
+                            (wake, retry_delay) = schedule_after_success(
+                                &store,
+                                render_time,
+                                &task_health,
+                                retry_delay,
+                            )
+                            .await;
+                        }
+                        Err(failure) => {
+                            projection = AuthorizationProjectionState::ReloadRequired;
+                            task_health.record_failure(&failure);
+                            (wake, retry_delay) =
+                                retry_after_failure(Some(render_time), retry_delay);
+                        }
+                    }
+                    continue;
+                }
+
+                let AuthorizationEvent::Request(request) = event else {
+                    unreachable!("wake events return before request handling")
+                };
+                let now = match current_unix_seconds() {
+                    Ok(now) => now,
+                    Err(message) => {
+                        task_health.record_failure(&message);
+                        reply_with_clock_failure(request, message);
+                        (wake, retry_delay) = retry_after_failure(None, retry_delay);
+                        continue;
+                    }
+                };
+                let mut request_failure = None;
                 match request {
                     AuthorizationRequest::Render { verify, reply } => {
-                        let result = handle_render_request(
+                        let result = handle_render_request_at(
                             &authorized_users_file,
                             &store,
                             Arc::clone(&reload),
                             None,
                             verify,
                             projection,
+                            now,
                         )
                         .await;
                         match &result {
                             Ok(_) => projection = AuthorizationProjectionState::Current,
                             Err(RenderFailure::Reload { .. }) => {
                                 projection = AuthorizationProjectionState::ReloadRequired;
+                                request_failure = result.as_ref().err().map(ToString::to_string);
                             }
-                            Err(RenderFailure::Prepare { .. } | RenderFailure::Verify { .. }) => {}
+                            Err(RenderFailure::Prepare { .. } | RenderFailure::Verify { .. }) => {
+                                request_failure = result.as_ref().err().map(ToString::to_string);
+                            }
                         }
                         let _ = reply.send(result);
                     }
@@ -269,35 +354,39 @@ impl NatsAuthorizationWriter {
                         verify,
                         reply,
                     } => {
-                        let result = handle_render_request(
+                        let result = handle_render_request_at(
                             &authorized_users_file,
                             &store,
                             Arc::clone(&reload),
                             Some(grant),
                             verify,
                             projection,
+                            now,
                         )
                         .await;
                         projection = if result.is_ok() {
                             AuthorizationProjectionState::Current
                         } else {
+                            request_failure = result.as_ref().err().map(ToString::to_string);
                             AuthorizationProjectionState::ReloadRequired
                         };
                         let _ = reply.send(result);
                     }
                     AuthorizationRequest::AddCredential { grant, reply } => {
-                        let result = handle_add_credential(
+                        let result = handle_add_credential_at(
                             &authorized_users_file,
                             &store,
                             Arc::clone(&reload),
                             grant,
                             projection,
+                            now,
                         )
                         .await;
                         match &result {
                             Ok(_) => projection = AuthorizationProjectionState::Current,
                             Err(CredentialMutationFailure::Committed { .. }) => {
                                 projection = AuthorizationProjectionState::ReloadRequired;
+                                request_failure = result.as_ref().err().map(ToString::to_string);
                             }
                             Err(
                                 CredentialMutationFailure::Rejected { .. }
@@ -307,18 +396,20 @@ impl NatsAuthorizationWriter {
                         let _ = reply.send(result);
                     }
                     AuthorizationRequest::RemoveCredential { public_key, reply } => {
-                        let result = handle_remove_credential(
+                        let result = handle_remove_credential_at(
                             &authorized_users_file,
                             &store,
                             Arc::clone(&reload),
                             &public_key,
                             projection,
+                            now,
                         )
                         .await;
                         match &result {
                             Ok(_) => projection = AuthorizationProjectionState::Current,
                             Err(CredentialMutationFailure::Committed { .. }) => {
                                 projection = AuthorizationProjectionState::ReloadRequired;
+                                request_failure = result.as_ref().err().map(ToString::to_string);
                             }
                             Err(
                                 CredentialMutationFailure::Rejected { .. }
@@ -328,11 +419,19 @@ impl NatsAuthorizationWriter {
                         let _ = reply.send(result);
                     }
                 }
+                if let Some(failure) = request_failure {
+                    task_health.record_failure(failure);
+                    (wake, retry_delay) = retry_after_failure(Some(now), retry_delay);
+                } else if matches!(projection, AuthorizationProjectionState::Current) {
+                    (wake, retry_delay) =
+                        schedule_after_success(&store, now, &task_health, retry_delay).await;
+                }
             }
         });
 
         Self {
             handle: NatsAuthorizationHandle { sender },
+            health,
             task,
         }
     }
@@ -342,9 +441,40 @@ impl NatsAuthorizationWriter {
         self.handle.clone()
     }
 
+    #[must_use]
+    pub(crate) fn health_reader(&self) -> NatsAuthorizationHealthReader {
+        self.health.clone()
+    }
+
     pub fn shutdown(self) {
         drop(self.handle);
         self.task.abort();
+    }
+}
+
+enum AuthorizationEvent {
+    Request(AuthorizationRequest),
+    Wake(AuthorizationWake),
+}
+
+fn reply_with_clock_failure(request: AuthorizationRequest, message: String) {
+    match request {
+        AuthorizationRequest::Render { reply, .. }
+        | AuthorizationRequest::Authorize { reply, .. } => {
+            let _ = reply.send(Err(clock_render_failure(message)));
+        }
+        AuthorizationRequest::AddCredential { reply, .. }
+        | AuthorizationRequest::RemoveCredential { reply, .. } => {
+            let _ = reply.send(Err(CredentialMutationFailure::NotCommitted {
+                failure: clock_render_failure(message),
+            }));
+        }
+    }
+}
+
+fn clock_render_failure(message: String) -> RenderFailure {
+    RenderFailure::Prepare {
+        failure: RenderPrepareFailure::Store { message },
     }
 }
 
@@ -359,13 +489,15 @@ fn read_authorized_users_contents(path: &Path) -> Result<Option<String>, Authori
     }
 }
 
-async fn handle_render_request(
+#[allow(clippy::too_many_arguments)]
+async fn handle_render_request_at(
     path: &Path,
     store: &NatsAuthorizationStore,
     reload: Arc<impl NatsReloadRunner>,
     authorize: Option<NatsAuthorizationGrant>,
     verify: Option<NatsConnectConfig>,
     projection: AuthorizationProjectionState,
+    now_unix_seconds: u64,
 ) -> Result<RenderedAuthorization, RenderFailure> {
     let prepare = |failure: RenderPrepareFailure| RenderFailure::Prepare { failure };
     let store_prepare = store_failure;
@@ -377,6 +509,7 @@ async fn handle_render_request(
     if let Some(user) = &authorize {
         upsert_in_place(&mut desired, user.clone());
     }
+    desired.retain(|grant| authorization_is_active_at(grant, now_unix_seconds));
     let current_contents = read_authorized_users_contents(path)
         .map_err(|source| prepare(RenderPrepareFailure::File { source }))?;
 
@@ -450,19 +583,23 @@ async fn handle_render_request(
     })
 }
 
-async fn handle_add_credential(
+fn authorization_is_active_at(grant: &NatsAuthorizationGrant, now_unix_seconds: u64) -> bool {
+    match grant {
+        NatsAuthorizationGrant::Credential(CredentialGrant { role, .. }) => {
+            role.is_active_at(now_unix_seconds)
+        }
+        NatsAuthorizationGrant::Internal { .. } => true,
+    }
+}
+
+async fn handle_add_credential_at(
     path: &Path,
     store: &NatsAuthorizationStore,
     reload: Arc<impl NatsReloadRunner>,
     grant: CredentialGrant,
     projection: AuthorizationProjectionState,
+    now_unix_seconds: u64,
 ) -> Result<CredentialMutationResult, CredentialMutationFailure> {
-    let now_unix_seconds =
-        current_unix_seconds().map_err(|message| CredentialMutationFailure::NotCommitted {
-            failure: RenderFailure::Prepare {
-                failure: RenderPrepareFailure::Store { message },
-            },
-        })?;
     let outcome = store
         .upsert_credential_at(&grant, now_unix_seconds)
         .await
@@ -502,19 +639,26 @@ async fn handle_add_credential(
     };
 
     let authorization = match change {
-        CredentialMutationChange::Unchanged => {
-            handle_render_request(path, store, reload, None, None, projection)
-                .await
-                .map_err(|failure| CredentialMutationFailure::Committed { failure })?
-        }
+        CredentialMutationChange::Unchanged => handle_render_request_at(
+            path,
+            store,
+            reload,
+            None,
+            None,
+            projection,
+            now_unix_seconds,
+        )
+        .await
+        .map_err(|failure| CredentialMutationFailure::Committed { failure })?,
         CredentialMutationChange::Added | CredentialMutationChange::Updated => {
-            handle_render_request(
+            handle_render_request_at(
                 path,
                 store,
                 reload,
                 None,
                 None,
                 AuthorizationProjectionState::ReloadRequired,
+                now_unix_seconds,
             )
             .await
             .map_err(|failure| CredentialMutationFailure::Committed { failure })?
@@ -534,12 +678,13 @@ fn current_unix_seconds() -> Result<u64, String> {
         .map_err(|error| format!("system clock is before Unix epoch: {error}"))
 }
 
-async fn handle_remove_credential(
+async fn handle_remove_credential_at(
     path: &Path,
     store: &NatsAuthorizationStore,
     reload: Arc<impl NatsReloadRunner>,
     public_key: &NatsUserPublicKey,
     projection: AuthorizationProjectionState,
+    now_unix_seconds: u64,
 ) -> Result<CredentialMutationResult, CredentialMutationFailure> {
     let outcome = store.remove_credential(public_key).await.map_err(|error| {
         CredentialMutationFailure::NotCommitted {
@@ -558,9 +703,17 @@ async fn handle_remove_credential(
             });
         }
     };
-    let authorization = handle_render_request(path, store, reload, None, None, render_projection)
-        .await
-        .map_err(|failure| CredentialMutationFailure::Committed { failure })?;
+    let authorization = handle_render_request_at(
+        path,
+        store,
+        reload,
+        None,
+        None,
+        render_projection,
+        now_unix_seconds,
+    )
+    .await
+    .map_err(|failure| CredentialMutationFailure::Committed { failure })?;
     Ok(CredentialMutationResult {
         change,
         authorization,
@@ -614,7 +767,10 @@ mod tests {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use ployz_core::nats_config::{CredentialName, MintedNatsUser};
+    use ployz_core::nats_config::{
+        BuildExecutorCredentialExpiresAt, CredentialName, MintedNatsUser,
+    };
+    use ployz_core::{BuildExecutorId, BuildPoolId};
 
     use super::*;
     use crate::control::store::CoreStore;
@@ -654,6 +810,19 @@ mod tests {
             public_key: MintedNatsUser::generate().expect("mint credential").public,
             name: CredentialName::try_new(name).expect("credential name"),
             role: CredentialRole::Operator,
+        }
+    }
+
+    fn build_executor_credential(name: &str, expires_at_unix_seconds: u64) -> CredentialGrant {
+        CredentialGrant {
+            public_key: MintedNatsUser::generate().expect("mint credential").public,
+            name: CredentialName::try_new(name).expect("credential name"),
+            role: CredentialRole::BuildExecutor {
+                pool_id: BuildPoolId::try_new("pool_ci").expect("pool id"),
+                executor_id: BuildExecutorId::try_new("executor_a").expect("executor id"),
+                expires_at: BuildExecutorCredentialExpiresAt::try_new(expires_at_unix_seconds)
+                    .expect("expiry"),
+            },
         }
     }
 
@@ -910,5 +1079,141 @@ mod tests {
             1
         );
         writer.shutdown();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn build_executor_expires_without_deleting_durable_history() {
+        let now = current_unix_seconds().expect("current time");
+        let founder = credential("Founder");
+        let executor = build_executor_credential("CI executor", now + 60);
+        let store = store_with(&[founder.clone(), executor.clone()]).await;
+        let directory = tempfile::tempdir().expect("temp directory");
+        let path = directory.path().join("authorized-users.conf");
+        let reload = ScriptedReload::new([reloaded(), reloaded()]);
+        let writer = NatsAuthorizationWriter::start(path.clone(), store.clone(), reload.clone());
+        writer.handle().render(None).await.expect("startup render");
+
+        tokio::time::advance(Duration::from_secs(60)).await;
+        wait_for_reload_calls(&reload, 2).await;
+
+        assert_eq!(reload.calls(), 2);
+        assert_eq!(
+            parse_rendered_credentials(&path),
+            vec![founder.clone()],
+            "expired executor is absent from the running authorization projection"
+        );
+        assert_eq!(
+            store.list_credentials().await.expect("durable credentials"),
+            vec![founder, executor],
+            "expiry retains durable credential history"
+        );
+        writer.shutdown();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn credential_mutation_replaces_the_scheduled_expiry() {
+        let now = current_unix_seconds().expect("current time");
+        let founder = credential("Founder");
+        let executor = build_executor_credential("CI executor", now + 60);
+        let store = store_with(std::slice::from_ref(&founder)).await;
+        let directory = tempfile::tempdir().expect("temp directory");
+        let path = directory.path().join("authorized-users.conf");
+        let reload = ScriptedReload::new([reloaded(), reloaded(), reloaded(), reloaded()]);
+        let writer = NatsAuthorizationWriter::start(path, store, reload.clone());
+        let health = writer.health_reader();
+        writer.handle().render(None).await.expect("startup render");
+        writer
+            .handle()
+            .add_credential(executor.clone())
+            .await
+            .expect("add executor");
+        assert_eq!(
+            health.snapshot().next_expiry_at_unix_seconds,
+            Some(now + 60)
+        );
+
+        let renewed = CredentialGrant {
+            role: CredentialRole::BuildExecutor {
+                pool_id: BuildPoolId::try_new("pool_ci").expect("pool id"),
+                executor_id: BuildExecutorId::try_new("executor_a").expect("executor id"),
+                expires_at: BuildExecutorCredentialExpiresAt::try_new(now + 120).expect("expiry"),
+            },
+            ..executor
+        };
+        writer
+            .handle()
+            .add_credential(renewed)
+            .await
+            .expect("renew executor");
+        assert_eq!(
+            health.snapshot().next_expiry_at_unix_seconds,
+            Some(now + 120)
+        );
+
+        tokio::time::advance(Duration::from_secs(60)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(reload.calls(), 3, "the replaced deadline no longer wakes");
+        tokio::time::advance(Duration::from_secs(60)).await;
+        wait_for_reload_calls(&reload, 4).await;
+        writer.shutdown();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failed_expiry_reload_is_visible_and_recovers_on_retry() {
+        let now = current_unix_seconds().expect("current time");
+        let founder = credential("Founder");
+        let executor = build_executor_credential("CI executor", now + 60);
+        let store = store_with(&[founder.clone(), executor]).await;
+        let directory = tempfile::tempdir().expect("temp directory");
+        let path = directory.path().join("authorized-users.conf");
+        let reload = ScriptedReload::new([reloaded(), failed_reload(), reloaded()]);
+        let writer = NatsAuthorizationWriter::start(path.clone(), store, reload.clone());
+        let health = writer.health_reader();
+        writer.handle().render(None).await.expect("startup render");
+
+        tokio::time::advance(Duration::from_secs(60)).await;
+        wait_for_reload_calls(&reload, 2).await;
+        let degraded = health.snapshot();
+        assert_eq!(degraded.consecutive_failures, 1);
+        assert!(
+            degraded
+                .last_failure
+                .as_deref()
+                .is_some_and(|failure| failure.contains("reload failed"))
+        );
+
+        tokio::time::advance(RETRY_SCHEDULE.interval).await;
+        wait_for_reload_calls(&reload, 3).await;
+
+        assert_eq!(health.snapshot().consecutive_failures, 0);
+        assert_eq!(health.snapshot().last_failure, None);
+        assert_eq!(parse_rendered_credentials(&path), vec![founder]);
+        writer.shutdown();
+    }
+
+    async fn wait_for_reload_calls(reload: &ScriptedReload, expected: usize) {
+        for _ in 0..1_000 {
+            if reload.calls() >= expected {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!(
+            "reload call count did not reach {expected}; observed {}",
+            reload.calls()
+        );
+    }
+
+    fn parse_rendered_credentials(path: &Path) -> Vec<CredentialGrant> {
+        ployz_nats::permissions::parse_authorized_users(
+            &std::fs::read_to_string(path).expect("authorization file"),
+        )
+        .expect("parse authorization file")
+        .into_iter()
+        .filter_map(|grant| match grant {
+            NatsAuthorizationGrant::Credential(credential) => Some(credential),
+            NatsAuthorizationGrant::Internal { .. } => None,
+        })
+        .collect()
     }
 }

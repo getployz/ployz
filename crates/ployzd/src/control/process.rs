@@ -531,6 +531,7 @@ async fn start_control_process_with_client_reload_and_issuer(
             intent_reader,
             logs_tailer,
             ControlHealthReaders {
+                nats_authorization: authorization.health_reader(),
                 task_supervisor: control_tasks.health_reader(),
                 runtime_projection: runtime_projection_health,
                 ingress_endpoint_projection: ingress_endpoint_projection_health,

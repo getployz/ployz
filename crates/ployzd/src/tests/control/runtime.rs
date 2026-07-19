@@ -104,6 +104,8 @@ async fn control_runtime_bootstraps_nats_and_serves_operation_api() {
     assert!(control_health.task_supervisor.active_tasks > 0);
     assert_eq!(control_health.task_supervisor.panicked_tasks, 0);
     assert_eq!(control_health.task_supervisor.last_failure, None);
+    assert_eq!(control_health.nats_authorization.consecutive_failures, 0);
+    assert_eq!(control_health.nats_authorization.last_failure, None);
     let renewal_health = control_health.certificate_renewal;
     assert_eq!(renewal_health.consecutive_failures, 0);
     assert!(matches!(
