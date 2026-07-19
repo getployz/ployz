@@ -406,9 +406,9 @@
           "operation_id": "op_123",
           "reservation_id": "1",
           "target": {
-            "environments": [
+            "environment_names": [
               {
-                "fingerprints": {},
+                "names": [],
                 "service_id": "svc_api"
               }
             ],
@@ -491,9 +491,9 @@
             "operation_id": "op_123",
             "reservation_id": "1",
             "target": {
-              "environments": [
+              "environment_names": [
                 {
-                  "fingerprints": {},
+                  "names": [],
                   "service_id": "svc_api"
                 }
               ],

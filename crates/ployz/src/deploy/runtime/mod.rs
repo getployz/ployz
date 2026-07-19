@@ -17,6 +17,10 @@ pub enum DeployExecutionError {
     },
     #[error("failed to write deploy progress: {message}")]
     WriteProgress { message: String },
+    #[error("deploy progress evidence is inconsistent: {source}")]
+    InconsistentEvidence {
+        source: ployz_core::deploy::DeployImageReplacementError,
+    },
     #[error("could not generate client operation ids: {message}")]
     GenerateClientOperationIds { message: String },
     #[error("{message}")]

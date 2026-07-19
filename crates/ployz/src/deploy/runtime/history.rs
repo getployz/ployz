@@ -381,7 +381,7 @@ mod tests {
         let [service] = entry.request.request().services.as_slice() else {
             panic!("one service persists");
         };
-        let [environment] = entry.request.environments() else {
+        let [environment] = entry.request.environment_names() else {
             panic!("one service environment persists");
         };
         assert_eq!(
@@ -390,8 +390,8 @@ mod tests {
         );
         assert_eq!(
             environment
-                .fingerprints()
-                .keys()
+                .names()
+                .iter()
                 .map(|name| name.as_str())
                 .collect::<Vec<_>>(),
             vec!["DATABASE_URL"]

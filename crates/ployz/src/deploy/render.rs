@@ -1,6 +1,6 @@
 use ployz_core::deploy::{
-    DeployCleanupContainer, DeployPlan, DeployPlanStep, DeployRequest, DeployRequestEvidence,
-    DeployRoute, DeployRouteTarget, ImageSource, ReplicaSlot,
+    DeployCleanupContainer, DeployImageReplacementError, DeployPlan, DeployPlanStep, DeployRequest,
+    DeployRequestEvidence, DeployRoute, DeployRouteTarget, ImageSource, ReplicaSlot,
 };
 use ployz_core::ids::{OperationId, ServiceId};
 use ployz_core::image::OciPlatform;
@@ -76,17 +76,27 @@ impl DeployTree {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn ingest_page(&mut self, events: &[ReplayedOperationEvent]) {
+        self.try_ingest_page(events)
+            .expect("test deploy evidence is internally consistent");
+    }
+
+    pub(crate) fn try_ingest_page(
+        &mut self,
+        events: &[ReplayedOperationEvent],
+    ) -> Result<(), DeployImageReplacementError> {
         for replayed in events {
-            self.ingest(&replayed.event);
+            self.ingest(&replayed.event)?;
         }
+        Ok(())
     }
 
     pub(crate) fn tick_spinner(&mut self) {
         self.spinner_frame = (self.spinner_frame + 1) % SPINNER_FRAMES.len();
     }
 
-    fn ingest(&mut self, event: &OperationEvent) {
+    fn ingest(&mut self, event: &OperationEvent) -> Result<(), DeployImageReplacementError> {
         match event {
             OperationEvent::DeploySubmitted {
                 operation_id,
@@ -115,9 +125,9 @@ impl DeployTree {
                 ..
             } => {
                 if let Some(deploy) = &mut self.deploy {
-                    let _ = deploy
+                    deploy
                         .target
-                        .replace_service_image(service_id, resolved.clone());
+                        .replace_service_image(service_id, resolved.clone())?;
                 }
                 self.plain_lines.push(format!(
                     "deploy {}: image {} — {} → {}",
@@ -439,6 +449,7 @@ impl DeployTree {
             | OperationEvent::VolumeCreateFailed { .. }
             | OperationEvent::OperationInterrupted { .. } => {}
         }
+        Ok(())
     }
 
     /// The `wanted`-th `RunContainer` step in plan order. Container-started

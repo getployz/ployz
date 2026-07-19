@@ -216,18 +216,6 @@ fn submit_deploy_operation_txn(
     if let Some(existing) =
         existing_submit::<DeployOperationSubmission>(&transaction, &operation_id)?
     {
-        let existing = match existing {
-            SubmitTxn::Existing {
-                start_sequence,
-                payload,
-                should_start_execution: _,
-            } => SubmitTxn::Existing {
-                start_sequence,
-                payload,
-                should_start_execution: false,
-            },
-            other => other,
-        };
         return Ok(DeploySubmitTxn::Submission(Box::new(existing)));
     }
     if let Some(rejection) = commit_deploy_reservation(&transaction, &operation_id, &payload)? {
@@ -328,7 +316,7 @@ mod tests {
         ContainerRuntimeSpec, DeployRequest, DeployServiceSpec, EnvName, EnvValue, ImageReference,
         ImageSource, ReplicaCount, ServiceEnvironment, ServiceMode,
     };
-    use ployz_core::operation::OperationEventReplayRequest;
+    use ployz_core::operation::{CancellationReason, OperationEventReplayRequest};
     use ployz_test_support::ids::{
         event_replay_limit, event_sequence, idempotency_key, namespace_id, operation_id, service_id,
     };
@@ -416,7 +404,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn duplicate_deploy_claim_uses_matching_presented_live_request_without_restart() {
+    async fn duplicate_deploy_claim_resumes_only_accepted_before_start() {
         let nats = ployz_test_support::nats::TestNats::start().await;
         let store = CoreStore::open_in_memory().await.expect("core store opens");
         let repository = OperationRepository::open(store, nats.controller);
@@ -445,29 +433,86 @@ mod tests {
                 idempotency_key: idempotency_key("idem_duplicate"),
                 reservation_id: DeployReservationId::try_new(reservation_id.get() + 1)
                     .expect("next reservation id shape is valid"),
-                target: target.clone(),
+                target: secret_deploy_request("replacement-live-secret"),
             })
             .await
             .expect("matching evidence adopts the stored claim");
         assert_eq!(duplicate.operation_id, operation_id("op_original"));
         assert_eq!(duplicate.reservation_id, reservation_id);
         assert_eq!(
-            duplicate.target, target,
-            "caller live values stay in memory"
+            duplicate.target,
+            secret_deploy_request("replacement-live-secret"),
+            "caller live values stay in memory even when values differ"
         );
         let accepted = repository
             .submit_claimed_deploy(duplicate)
             .await
             .expect("existing operation is accepted idempotently");
-        assert!(!accepted.should_start_execution);
-        assert_eq!(accepted.target, target);
+        assert!(
+            accepted.should_start_execution,
+            "accepted-before-start recovery resumes with the presented live request"
+        );
+        assert_eq!(
+            accepted.target,
+            secret_deploy_request("replacement-live-secret")
+        );
 
+        repository
+            .record_deploy_transition(&operation_id("op_original"), DeployTransition::Planning)
+            .await
+            .expect("deploy advances into planning");
+        let in_flight = repository
+            .claim_deploy(DeployOperationSubmission {
+                operation_id: operation_id("op_in_flight_discarded"),
+                idempotency_key: idempotency_key("idem_duplicate"),
+                reservation_id,
+                target: secret_deploy_request("third-live-secret"),
+            })
+            .await
+            .expect("same names and non-secret request shape adopt the claim");
+        let in_flight = repository
+            .submit_claimed_deploy(in_flight)
+            .await
+            .expect("in-flight retry is accepted idempotently");
+        assert!(!in_flight.should_start_execution);
+
+        repository
+            .record_deploy_transition(
+                &operation_id("op_original"),
+                DeployTransition::Cancelled {
+                    reason: CancellationReason::try_new("operator cancelled")
+                        .expect("valid cancellation reason"),
+                },
+            )
+            .await
+            .expect("deploy reaches a terminal state");
+        let terminal = repository
+            .claim_deploy(DeployOperationSubmission {
+                operation_id: operation_id("op_terminal_discarded"),
+                idempotency_key: idempotency_key("idem_duplicate"),
+                reservation_id,
+                target: secret_deploy_request("fourth-live-secret"),
+            })
+            .await
+            .expect("terminal retry adopts the claim");
+        let terminal = repository
+            .submit_claimed_deploy(terminal)
+            .await
+            .expect("terminal retry is accepted idempotently");
+        assert!(!terminal.should_start_execution);
+
+        let mut mismatched_target = target;
+        let [service] = mismatched_target.services.as_mut_slice() else {
+            panic!("test target contains one service");
+        };
+        service.image =
+            ImageReference::try_new("registry.example/api:different").expect("image reference");
         let mismatch = repository
             .claim_deploy(DeployOperationSubmission {
                 operation_id: operation_id("op_mismatch"),
                 idempotency_key: idempotency_key("idem_duplicate"),
                 reservation_id,
-                target: secret_deploy_request("different-secret"),
+                target: mismatched_target,
             })
             .await;
         assert!(matches!(
@@ -487,10 +532,7 @@ mod tests {
             json.contains("API_TOKEN"),
             "environment name remains visible"
         );
-        assert!(
-            json.contains("v1:sha256:"),
-            "environment fingerprint remains visible"
-        );
+        assert!(!json.contains("sha256:"), "no value digest is durable");
     }
 
     fn secret_deploy_request(secret: &str) -> DeployRequest {

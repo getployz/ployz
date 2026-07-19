@@ -282,6 +282,44 @@ fn happy_tree() -> DeployTree {
 }
 
 #[test]
+fn image_resolution_for_unknown_service_surfaces_inconsistent_evidence() {
+    let operation_id = operation_id();
+    let mut tree = DeployTree::new();
+    let error = tree
+        .try_ingest_page(&[
+            replay(
+                1,
+                OperationEvent::DeploySubmitted {
+                    operation_id: operation_id.clone(),
+                    reservation_id: Some(ployz_core::deploy::DeployReservationId::first()),
+                    target: DeployRequestEvidence::from_request(&single_service_target()),
+                },
+            ),
+            replay(
+                2,
+                OperationEvent::DeployImageResolved {
+                    operation_id,
+                    service_id: service_id("unknown"),
+                    machine_id: machine_id("hetzner-1"),
+                    requested: ImageReference::try_new("ghcr.io/acme/unknown:1")
+                        .expect("requested image"),
+                    resolved: ImageReference::try_new(
+                        "ghcr.io/acme/unknown@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    )
+                    .expect("resolved image"),
+                    credential_supplied: false,
+                },
+            ),
+        ])
+        .expect_err("unknown service evidence is inconsistent");
+
+    assert_eq!(
+        error.to_string(),
+        "deploy request does not contain service unknown"
+    );
+}
+
+#[test]
 fn happy_path_renders_plain_milestones_and_final_tree() {
     let tree = happy_tree();
 

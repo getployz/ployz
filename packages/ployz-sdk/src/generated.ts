@@ -248,11 +248,9 @@ export type DeployOrigin = Brand<string, "DeployOrigin">;
 
 export type DeployRequest = { namespace_id: NamespaceId, origin?: DeployOrigin | null, volumes?: { [key in VolumeName]: VolumeSpec }, services: Array<DeployServiceSpec>, };
 
-export type DeployRequestEvidence = { request: DeployRequest, environments: Array<ServiceEnvironmentEvidence>, };
+export type DeployRequestEvidence = { request: DeployRequest, environment_names: Array<ServiceEnvironmentNames>, };
 
-export type EnvValueFingerprint = Brand<string, "EnvValueFingerprint">;
-
-export type ServiceEnvironmentEvidence = { service_id: ServiceId, fingerprints: { [key in EnvName]: EnvValueFingerprint }, };
+export type ServiceEnvironmentNames = { service_id: ServiceId, names: Array<EnvName>, };
 
 export type DeployServiceSpec = { service_id: ServiceId, image: ImageReference, image_source?: ImageSource, mode: ServiceMode,
 /**

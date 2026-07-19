@@ -518,7 +518,7 @@ mod tests {
     }
 
     #[test]
-    fn persisted_history_redacts_environment_values_but_keeps_names_and_fingerprints() {
+    fn persisted_history_redacts_environment_values_but_keeps_names() {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let history = DeployHistory::new(
             temporary.path().to_owned(),
@@ -548,7 +548,8 @@ mod tests {
         let json = std::fs::read_to_string(history.path()).expect("history JSON reads");
         assert!(!json.contains(sentinel));
         assert!(json.contains("DATABASE_URL"));
-        assert!(json.contains("v1:sha256:"));
+        assert!(!json.contains("\"fingerprints\""));
+        assert!(!json.contains("v1:sha256:"));
     }
 
     #[cfg(unix)]

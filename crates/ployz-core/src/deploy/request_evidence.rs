@@ -1,108 +1,30 @@
-use super::{DeployImageReplacementError, DeployRequest, EnvName, EnvValue, ImageReference};
+use super::{DeployImageReplacementError, DeployRequest, EnvName, ImageReference};
 use crate::ids::ServiceId;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
-
-const FINGERPRINT_PREFIX: &str = "v1:sha256:";
-const FINGERPRINT_DOMAIN: &str = "ployz.deploy-env-evidence.v1";
-
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "typescript",
-    ts(type = "Brand<string, \"EnvValueFingerprint\">")
-)]
-#[serde(try_from = "String", into = "String")]
-pub struct EnvValueFingerprint(String);
-
-impl EnvValueFingerprint {
-    #[must_use]
-    pub fn for_value(service_id: &ServiceId, name: &EnvName, value: &EnvValue) -> Self {
-        let mut hasher = Sha256::new();
-        for part in [
-            FINGERPRINT_DOMAIN.as_bytes(),
-            service_id.as_str().as_bytes(),
-            name.as_str().as_bytes(),
-            value.as_str().as_bytes(),
-        ] {
-            hasher.update((part.len() as u64).to_be_bytes());
-            hasher.update(part);
-        }
-        Self(format!("{FINGERPRINT_PREFIX}{:x}", hasher.finalize()))
-    }
-
-    pub fn try_new(value: impl Into<String>) -> Result<Self, EnvValueFingerprintError> {
-        let value = value.into();
-        let Some(digest) = value.strip_prefix(FINGERPRINT_PREFIX) else {
-            return Err(EnvValueFingerprintError);
-        };
-        if digest.len() != 64
-            || !digest
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        {
-            return Err(EnvValueFingerprintError);
-        }
-        Ok(Self(value))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Debug for EnvValueFingerprint {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_tuple("EnvValueFingerprint")
-            .field(&self.0)
-            .finish()
-    }
-}
-
-impl TryFrom<String> for EnvValueFingerprint {
-    type Error = EnvValueFingerprintError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::try_new(value)
-    }
-}
-
-impl From<EnvValueFingerprint> for String {
-    fn from(value: EnvValueFingerprint) -> Self {
-        value.0
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("environment value fingerprint must be v1:sha256 followed by 64 lowercase hex digits")]
-pub struct EnvValueFingerprintError;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-pub struct ServiceEnvironmentEvidence {
+pub struct ServiceEnvironmentNames {
     service_id: ServiceId,
-    fingerprints: BTreeMap<EnvName, EnvValueFingerprint>,
+    names: BTreeSet<EnvName>,
 }
 
-impl ServiceEnvironmentEvidence {
+impl ServiceEnvironmentNames {
     #[must_use]
     pub fn service_id(&self) -> &ServiceId {
         &self.service_id
     }
 
     #[must_use]
-    pub fn fingerprints(&self) -> &BTreeMap<EnvName, EnvValueFingerprint> {
-        &self.fingerprints
+    pub fn names(&self) -> &BTreeSet<EnvName> {
+        &self.names
     }
 
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.fingerprints.is_empty()
+        self.names.is_empty()
     }
 }
 
@@ -111,14 +33,14 @@ impl ServiceEnvironmentEvidence {
 #[serde(deny_unknown_fields)]
 pub struct DeployRequestEvidence {
     request: DeployRequest,
-    environments: Vec<ServiceEnvironmentEvidence>,
+    environment_names: Vec<ServiceEnvironmentNames>,
 }
 
 impl DeployRequestEvidence {
     #[must_use]
     pub fn from_request(request: &DeployRequest) -> Self {
         let mut request = request.clone();
-        let environments = request
+        let environment_names = request
             .services
             .iter_mut()
             .map(|service| {
@@ -126,24 +48,19 @@ impl DeployRequestEvidence {
                     &mut service.runtime.environment,
                     super::ServiceEnvironment::empty(),
                 );
-                let fingerprints = environment
+                let names = environment
                     .iter()
-                    .map(|(name, value)| {
-                        (
-                            name.clone(),
-                            EnvValueFingerprint::for_value(&service.service_id, name, value),
-                        )
-                    })
+                    .map(|(name, _value)| name.clone())
                     .collect();
-                ServiceEnvironmentEvidence {
+                ServiceEnvironmentNames {
                     service_id: service.service_id.clone(),
-                    fingerprints,
+                    names,
                 }
             })
             .collect();
         Self {
             request,
-            environments,
+            environment_names,
         }
     }
 
@@ -153,8 +70,8 @@ impl DeployRequestEvidence {
     }
 
     #[must_use]
-    pub fn environments(&self) -> &[ServiceEnvironmentEvidence] {
-        &self.environments
+    pub fn environment_names(&self) -> &[ServiceEnvironmentNames] {
+        &self.environment_names
     }
 
     #[must_use]
@@ -174,12 +91,12 @@ impl DeployRequestEvidence {
         self,
     ) -> Result<DeployRequest, DeployRollbackEnvironmentError> {
         let affected = self
-            .environments
+            .environment_names
             .into_iter()
             .filter(|environment| !environment.is_empty())
             .map(|environment| DeployRollbackEnvironment {
                 service_id: environment.service_id,
-                environment_names: environment.fingerprints.into_keys().collect(),
+                environment_names: environment.names.into_iter().collect(),
             })
             .collect::<Vec<_>>();
         if affected.is_empty() {
@@ -194,7 +111,7 @@ impl DeployRequestEvidence {
 #[serde(deny_unknown_fields)]
 struct DeployRequestEvidenceWire {
     request: DeployRequest,
-    environments: Vec<ServiceEnvironmentEvidence>,
+    environment_names: Vec<ServiceEnvironmentNames>,
 }
 
 impl<'de> Deserialize<'de> for DeployRequestEvidence {
@@ -225,22 +142,33 @@ impl TryFrom<DeployRequestEvidenceWire> for DeployRequestEvidence {
             .iter()
             .map(|service| service.service_id.clone())
             .collect::<BTreeSet<_>>();
-        let mut seen = BTreeSet::new();
-        for environment in &wire.environments {
+        let mut environments = BTreeMap::new();
+        for environment in wire.environment_names {
             if !known.contains(&environment.service_id) {
                 return Err(DeployRequestEvidenceError::UnknownService {
                     service_id: environment.service_id.clone(),
                 });
             }
-            if !seen.insert(environment.service_id.clone()) {
-                return Err(DeployRequestEvidenceError::DuplicateService {
-                    service_id: environment.service_id.clone(),
-                });
+            let service_id = environment.service_id.clone();
+            if environments
+                .insert(service_id.clone(), environment)
+                .is_some()
+            {
+                return Err(DeployRequestEvidenceError::DuplicateService { service_id });
             }
+        }
+        let mut environment_names = Vec::with_capacity(wire.request.services.len());
+        for service in &wire.request.services {
+            let Some(environment) = environments.remove(&service.service_id) else {
+                return Err(DeployRequestEvidenceError::MissingService {
+                    service_id: service.service_id.clone(),
+                });
+            };
+            environment_names.push(environment);
         }
         Ok(Self {
             request: wire.request,
-            environments: wire.environments,
+            environment_names,
         })
     }
 }
@@ -253,6 +181,8 @@ pub enum DeployRequestEvidenceError {
     UnknownService { service_id: ServiceId },
     #[error("deploy environment evidence names service {} more than once", .service_id.as_str())]
     DuplicateService { service_id: ServiceId },
+    #[error("deploy environment evidence omits service {}", .service_id.as_str())]
+    MissingService { service_id: ServiceId },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -328,6 +258,22 @@ mod tests {
         }
     }
 
+    fn environment_names_wire_mut(wire: &mut serde_json::Value) -> &mut Vec<serde_json::Value> {
+        wire.get_mut("environment_names")
+            .and_then(serde_json::Value::as_array_mut)
+            .expect("environment_names is an array")
+    }
+
+    fn request_environment_wire_mut(wire: &mut serde_json::Value) -> &mut serde_json::Value {
+        wire.get_mut("request")
+            .and_then(|request| request.get_mut("services"))
+            .and_then(serde_json::Value::as_array_mut)
+            .and_then(|services| services.first_mut())
+            .and_then(|service| service.get_mut("runtime"))
+            .and_then(|runtime| runtime.get_mut("environment"))
+            .expect("request service has an environment field")
+    }
+
     #[test]
     fn deploy_request_evidence_removes_values_and_keeps_names() {
         let evidence = DeployRequestEvidence::from_request(&request_with_environment(&[
@@ -340,72 +286,93 @@ mod tests {
         assert!(!wire.contains("production"));
         assert!(wire.contains("TOKEN"));
         assert!(wire.contains("MODE"));
-        assert!(
-            evidence.request().services[0]
-                .runtime
-                .environment
-                .is_empty()
-        );
+        let [service] = evidence.request().services.as_slice() else {
+            panic!("evidence request contains one service");
+        };
+        assert!(service.runtime.environment.is_empty());
     }
 
     #[test]
-    fn environment_fingerprint_is_stable_and_bound_to_service_and_name() {
-        let service_id = ServiceId::try_new("api").expect("valid service id");
-        let other_service_id = ServiceId::try_new("worker").expect("valid service id");
-        let name = EnvName::try_new("TOKEN").expect("valid environment name");
-        let other_name = EnvName::try_new("OTHER_TOKEN").expect("valid environment name");
-        let value = EnvValue::try_new("secret-value").expect("valid environment value");
-
-        let fingerprint = EnvValueFingerprint::for_value(&service_id, &name, &value);
-        assert_eq!(
-            fingerprint.as_str(),
-            "v1:sha256:ab1a63f0834c06f5bd1e9e1451464da4f614b18946132de588c944679f5c0f3e"
-        );
-        assert_eq!(
-            fingerprint,
-            EnvValueFingerprint::for_value(&service_id, &name, &value)
-        );
-        assert_ne!(
-            fingerprint,
-            EnvValueFingerprint::for_value(&other_service_id, &name, &value)
-        );
-        assert_ne!(
-            fingerprint,
-            EnvValueFingerprint::for_value(&service_id, &other_name, &value)
-        );
-
-        for invalid in [
-            "sha256:ab1a63f0834c06f5bd1e9e1451464da4f614b18946132de588c944679f5c0f3e",
-            "v1:sha256:AB1A63F0834C06F5BD1E9E1451464DA4F614B18946132DE588C944679F5C0F3E",
-            "v1:sha256:abc",
-        ] {
-            assert!(EnvValueFingerprint::try_new(invalid).is_err());
-        }
-    }
-
-    #[test]
-    fn evidence_wire_rejects_secret_values_unknown_and_duplicate_services() {
+    fn evidence_wire_rejects_secret_values_unknown_duplicate_and_missing_services() {
         let evidence = DeployRequestEvidence::from_request(&request_with_environment(&[(
             "TOKEN",
             "secret-value",
         )]));
         let mut wire = serde_json::to_value(&evidence).expect("evidence serializes");
 
-        wire["request"]["services"][0]["runtime"]["environment"] =
-            serde_json::json!({"TOKEN": "leaked"});
+        *request_environment_wire_mut(&mut wire) = serde_json::json!({"TOKEN": "leaked"});
         assert!(serde_json::from_value::<DeployRequestEvidence>(wire).is_err());
 
         let mut wire = serde_json::to_value(&evidence).expect("evidence serializes");
-        wire["environments"][0]["service_id"] = serde_json::json!("unknown");
+        let [environment] = environment_names_wire_mut(&mut wire).as_mut_slice() else {
+            panic!("one environment name set serializes");
+        };
+        *environment
+            .get_mut("service_id")
+            .expect("environment name set has a service id") = serde_json::json!("unknown");
         assert!(serde_json::from_value::<DeployRequestEvidence>(wire).is_err());
 
         let mut wire = serde_json::to_value(&evidence).expect("evidence serializes");
-        let duplicate = wire["environments"][0].clone();
-        wire["environments"]
-            .as_array_mut()
-            .expect("environments is an array")
-            .push(duplicate);
+        let duplicate = {
+            let [environment] = environment_names_wire_mut(&mut wire).as_slice() else {
+                panic!("one environment name set serializes");
+            };
+            environment.clone()
+        };
+        environment_names_wire_mut(&mut wire).push(duplicate);
         assert!(serde_json::from_value::<DeployRequestEvidence>(wire).is_err());
+
+        let mut wire = serde_json::to_value(&evidence).expect("evidence serializes");
+        environment_names_wire_mut(&mut wire).clear();
+        assert!(serde_json::from_value::<DeployRequestEvidence>(wire).is_err());
+    }
+
+    #[test]
+    fn evidence_wire_normalizes_services_and_names_to_canonical_order() {
+        let mut request = request_with_environment(&[("TOKEN", "secret-value")]);
+        let [api] = request.services.as_slice() else {
+            panic!("test request contains one service");
+        };
+        let mut worker = api.clone();
+        worker.service_id = ServiceId::try_new("worker").expect("valid service id");
+        worker.runtime.environment = ServiceEnvironment::from(BTreeMap::from([
+            (
+                EnvName::try_new("ZEBRA").expect("valid environment name"),
+                EnvValue::try_new("z-value").expect("valid environment value"),
+            ),
+            (
+                EnvName::try_new("ALPHA").expect("valid environment name"),
+                EnvValue::try_new("a-value").expect("valid environment value"),
+            ),
+        ]));
+        request.services.push(worker);
+        let evidence = DeployRequestEvidence::from_request(&request);
+        let mut wire = serde_json::to_value(&evidence).expect("evidence serializes");
+        let environments = environment_names_wire_mut(&mut wire);
+        environments.reverse();
+        let Some(worker) = environments.first_mut() else {
+            panic!("worker environment name set serializes");
+        };
+        *worker
+            .get_mut("names")
+            .expect("environment name set has names") =
+            serde_json::json!(["ZEBRA", "ALPHA", "ZEBRA"]);
+
+        let normalized = serde_json::from_value::<DeployRequestEvidence>(wire)
+            .expect("reordered complete evidence is accepted");
+        let [api, worker] = normalized.environment_names() else {
+            panic!("both service environment name sets remain present");
+        };
+        assert_eq!(api.service_id().as_str(), "api");
+        assert_eq!(worker.service_id().as_str(), "worker");
+        assert_eq!(
+            worker
+                .names()
+                .iter()
+                .map(EnvName::as_str)
+                .collect::<Vec<_>>(),
+            vec!["ALPHA", "ZEBRA"]
+        );
     }
 
     #[test]
@@ -417,11 +384,13 @@ mod tests {
 
         let error = evidence
             .try_into_rollback_request()
-            .expect_err("fingerprints cannot restore environment values");
-        assert_eq!(error.affected().len(), 1);
-        assert_eq!(error.affected()[0].service_id().as_str(), "api");
+            .expect_err("names cannot restore environment values");
+        let [affected] = error.affected() else {
+            panic!("one service requires environment restoration");
+        };
+        assert_eq!(affected.service_id().as_str(), "api");
         assert_eq!(
-            error.affected()[0]
+            affected
                 .environment_names()
                 .iter()
                 .map(EnvName::as_str)

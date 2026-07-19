@@ -83,7 +83,7 @@ fn deploy_submitted_typescript_uses_redacted_request_evidence() {
     assert!(event.contains("target: DeployRequestEvidence"), "{event}");
     assert!(evidence.contains("request: DeployRequest"), "{evidence}");
     assert!(
-        evidence.contains("environments: Array<ServiceEnvironmentEvidence>"),
+        evidence.contains("environment_names: Array<ServiceEnvironmentNames>"),
         "{evidence}"
     );
 }
