@@ -164,6 +164,10 @@ async fn removing_build_executor_revokes_the_connected_client() {
         .subscribe(endpoint.clone())
         .await
         .expect("executor binds its readiness endpoint");
+    executor
+        .flush()
+        .await
+        .expect("executor readiness subscription flushes");
     nats.connected
         .controller
         .publish(endpoint, "readiness".into())
