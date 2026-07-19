@@ -1,0 +1,14 @@
+# PROTOTYPE — throwaway. Not a workspace member; its own workspace root so it
+# never touches the ployz build. Answers wayfinder ticket #457's harness
+# question; the validated decision lives in the ticket, not here.
+[package]
+name = "renderer-seam-harness"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+ratatui = { version = "0.29", default-features = false, features = ["crossterm"] }
+crossterm = "0.28"
