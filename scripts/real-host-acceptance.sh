@@ -378,6 +378,27 @@ exit 1
 SETUP_GIT
 }
 
+verify_owned_zfs_boot_order() {
+  local import_time recovery_time docker_time recovery_after recovery_requires docker_after
+  import_time=$(systemctl show zfs-import.target -p ActiveEnterTimestampMonotonic --value)
+  recovery_time=$(systemctl show ployz-owned-zfs-import.service -p ActiveEnterTimestampMonotonic --value)
+  docker_time=$(systemctl show docker.service -p ActiveEnterTimestampMonotonic --value)
+  recovery_after=$(systemctl show ployz-owned-zfs-import.service -p After --value)
+  recovery_requires=$(systemctl show ployz-owned-zfs-import.service -p Requires --value)
+  docker_after=$(systemctl show docker.service -p After --value)
+  printf 'zfs_import_active_us=%s\nrecovery_active_us=%s\ndocker_active_us=%s\nrecovery_after=%s\nrecovery_requires=%s\ndocker_after=%s\n' \
+    "$import_time" "$recovery_time" "$docker_time" "$recovery_after" \
+    "$recovery_requires" "$docker_after"
+  [ "$import_time" -gt 0 ] \
+    && [ "$recovery_time" -gt 0 ] \
+    && [ "$docker_time" -gt 0 ] \
+    && [ "$import_time" -le "$recovery_time" ] \
+    && [ "$recovery_time" -le "$docker_time" ] \
+    && printf '%s\n' "$recovery_after" | tr ' ' '\n' | grep -Fx zfs-import.target >/dev/null \
+    && printf '%s\n' "$recovery_requires" | tr ' ' '\n' | grep -Fx zfs-import.target >/dev/null \
+    && printf '%s\n' "$docker_after" | tr ' ' '\n' | grep -Fx ployz-owned-zfs-import.service >/dev/null
+}
+
 run_real_host_acceptance_regression_test() {
   local evidence failure_output success_output reboot_output recovery_output rescue_root fake_bin
   local module_contents module_sha module_mode module_uid module_gid child_status=0
@@ -392,6 +413,7 @@ run_real_host_acceptance_regression_test() {
   local dockerfile_build_log_line railpack_build_log_line cancellation_log_line firewall_log_line
   local managed_function_line managed_deploy_log_line restart_invisibility_log_line dispatch_invocation_line
   local acceptance_phase_sequence operation_probe operation_probe_mode
+  local boot_order_fake_bin boot_order_output boot_order_expected
   evidence=$(mktemp -d)
   trap 'rm -rf "$evidence"' RETURN
   : > "$evidence/metadata.env"
@@ -474,6 +496,46 @@ run_real_host_acceptance_regression_test() {
   [ -z "$(sed -n "$((dispatch_invocation_line - 1))p" "$0")" ]
   [ -z "$(sed -n "$((dispatch_invocation_line + 1))p" "$0")" ]
   [ "$(sed -n "$((dispatch_invocation_line + 2))p" "$0")" = "log \"\$ACCEPTANCE_SUCCESS_MARKER\"" ]
+
+  boot_order_fake_bin="$evidence/boot-order-bin"
+  mkdir -p "$boot_order_fake_bin"
+  cat > "$boot_order_fake_bin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$1" = show ] && [ "$3" = -p ] && [ "$5" = --value ]
+unit=$2
+property=$4
+mode=${PLOYZ_BOOT_ORDER_PROBE_MODE:-valid}
+case "${unit}:${property}" in
+  zfs-import.target:ActiveEnterTimestampMonotonic) [ "$mode" = bad-order ] && printf '200\n' || printf '100\n' ;;
+  ployz-owned-zfs-import.service:ActiveEnterTimestampMonotonic) [ "$mode" = bad-order ] && printf '100\n' || printf '200\n' ;;
+  docker.service:ActiveEnterTimestampMonotonic) printf '300\n' ;;
+  ployz-owned-zfs-import.service:After) printf 'network.target zfs-import.target\n' ;;
+  ployz-owned-zfs-import.service:Requires)
+    [ "$mode" = missing-dependency ] && printf 'network.target\n' || printf 'zfs-import.target\n'
+    ;;
+  docker.service:After) printf 'network.target ployz-owned-zfs-import.service\n' ;;
+  *) exit 1 ;;
+esac
+EOF
+  chmod +x "$boot_order_fake_bin/systemctl"
+  boot_order_output=$( ( PATH="$boot_order_fake_bin:$PATH"; verify_owned_zfs_boot_order ) )
+  boot_order_expected=$(cat <<'EOF'
+zfs_import_active_us=100
+recovery_active_us=200
+docker_active_us=300
+recovery_after=network.target zfs-import.target
+recovery_requires=zfs-import.target
+docker_after=network.target ployz-owned-zfs-import.service
+EOF
+  )
+  [ "$boot_order_output" = "$boot_order_expected" ]
+  if ( export PLOYZ_BOOT_ORDER_PROBE_MODE=bad-order; PATH="$boot_order_fake_bin:$PATH"; verify_owned_zfs_boot_order >/dev/null ); then
+    return 1
+  fi
+  if ( export PLOYZ_BOOT_ORDER_PROBE_MODE=missing-dependency; PATH="$boot_order_fake_bin:$PATH"; verify_owned_zfs_boot_order >/dev/null ); then
+    return 1
+  fi
 
   rendered_git_program="$evidence/authenticated-git-fixture.sh"
   write_authenticated_git_fixture_program 192.0.2.1 > "$rendered_git_program"
@@ -1412,7 +1474,7 @@ zfs_verify_reboot_recovery() {
   machine_storage=$(wait_for_storage_ready_testimony "$pool" "$forbidden_alarm_pin")
   printf '%s\n' "$machine_storage"
   zfs_verify_preserved_storage_evidence
-  core "zfs_time=\$(systemctl show zfs.target -p ActiveEnterTimestampMonotonic --value); docker_time=\$(systemctl show docker.service -p ActiveEnterTimestampMonotonic --value); after=\$(systemctl show docker.service -p After --value); printf 'zfs_active_us=%s\\ndocker_active_us=%s\\ndocker_after=%s\\n' \"\$zfs_time\" \"\$docker_time\" \"\$after\"; [ \"\$zfs_time\" -gt 0 ] && [ \"\$docker_time\" -gt 0 ] && [ \"\$zfs_time\" -le \"\$docker_time\" ] && printf '%s\\n' \"\$after\" | tr ' ' '\\n' | grep -Fx zfs.target >/dev/null"
+  core "$(declare -f verify_owned_zfs_boot_order); verify_owned_zfs_boot_order"
   core_with_local_timeout 200s "timeout 3m sh -c 'until zpool list -H -o guid \"${pool}\" | grep -Fx \"${pool_guid}\"; do sleep 2; done'"
   recovered_pool_health=$(core "zpool get -H -o value health '${pool}'")
   [ "$recovered_pool_health" = ONLINE ] || {
@@ -1638,7 +1700,7 @@ Harness source: sealed-harness.sh (${harness_sha})
 01 timeout 2m ployz machine storage-prepare ${core_machine_id} --detach; poll ployz ops status OPERATION to terminal with a 1200s absolute budget; timeout 20s ployz ops watch OPERATION --json terminal replay
 02 ployz volume create ${zfs_namespace} ${zfs_volume} --machine ${core_machine_id} --max-size 2G; ployz deploy -f ${remote_compose}
 03 zpool/zfs GUID, mountpoint, exact quota=2147483648 and refquota=0; docker inspect container/volume; PostgreSQL row query
-04 systemctl reboot; systemd zfs.target-before-docker timestamps; same pool/dataset/quota/refquota/container/volume/bind/row
+04 systemctl reboot; systemd zfs-import.target -> ployz-owned-zfs-import.service -> docker.service timestamps and dependencies; same pool/dataset/quota/refquota/container/volume/bind/row
 05 modinfo/lsinitrd guard; root-only copy+metadata+checksum; move module; depmod; modinfo absence
 06 systemctl reboot; absent pool/dataset/bind device; stopped same container; Control/API and typed stranded-pin testimony
 07 verify backup checksum; restore exact module path; depmod; modinfo

@@ -97,3 +97,55 @@ fn openrc_kill_sets_the_service_context_for_supervise_daemon() {
         )]
     );
 }
+
+#[test]
+fn owned_zfs_import_is_an_exact_systemd_only_service_contract() {
+    let spec = SupervisorUnitSpec::OwnedZfsImport;
+    let rendered = SupervisorBackend::Systemd
+        .render(&spec)
+        .expect("owned ZFS import service renders");
+
+    assert_eq!(rendered.file_name(), "ployz-owned-zfs-import.service");
+    assert_eq!(
+        rendered.contents(),
+        "[Unit]\nRequires=zfs-import.target\nAfter=zfs-import.target\nBefore=docker.service\n\n[Service]\nType=oneshot\nExecStart=/usr/local/bin/ployz host internal-storage-recover\nRemainAfterExit=yes\n\n[Install]\nWantedBy=multi-user.target\n"
+    );
+    assert!(matches!(
+        SupervisorBackend::OpenRc.render(&spec),
+        Err(
+            crate::execution::SupervisorUnitFileError::UnsupportedSupervisor {
+                supervisor: "OpenRC",
+                ..
+            }
+        )
+    ));
+}
+
+#[test]
+fn enable_translates_without_starting_or_restarting_the_service() {
+    let target = SupervisorUnitTarget::OwnedZfsImport;
+    assert_eq!(
+        SupervisorBackend::Systemd.commands(SupervisorChange::Enable, &target),
+        [
+            ("systemctl", vec!["daemon-reload".to_owned()]),
+            (
+                "systemctl",
+                vec![
+                    "enable".to_owned(),
+                    "ployz-owned-zfs-import.service".to_owned()
+                ]
+            ),
+        ]
+    );
+    assert_eq!(
+        SupervisorBackend::OpenRc.commands(SupervisorChange::Enable, &target),
+        [(
+            "rc-update",
+            vec![
+                "add".to_owned(),
+                "ployz-owned-zfs-import".to_owned(),
+                "default".to_owned(),
+            ]
+        )]
+    );
+}

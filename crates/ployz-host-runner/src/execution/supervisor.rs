@@ -52,6 +52,7 @@ impl SupervisorDirectories {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SupervisorChange {
     InstallAndStart,
+    Enable,
     Restart,
     Stop,
     Disable,
@@ -122,6 +123,10 @@ impl SupervisorBackend {
                 command("systemctl", ["enable", systemd_name.as_str()]),
                 command("systemctl", ["restart", systemd_name.as_str()]),
             ],
+            (Self::Systemd, SupervisorChange::Enable) => vec![
+                command("systemctl", ["daemon-reload"]),
+                command("systemctl", ["enable", systemd_name.as_str()]),
+            ],
             (Self::Systemd, SupervisorChange::Restart) => {
                 vec![command("systemctl", ["restart", systemd_name.as_str()])]
             }
@@ -143,6 +148,10 @@ impl SupervisorBackend {
                 command("rc-update", ["add", openrc_name.as_str(), "default"]),
                 command("rc-service", [openrc_name.as_str(), "restart"]),
             ],
+            (Self::OpenRc, SupervisorChange::Enable) => vec![command(
+                "rc-update",
+                ["add", openrc_name.as_str(), "default"],
+            )],
             (Self::OpenRc, SupervisorChange::Restart) => {
                 vec![command("rc-service", [openrc_name.as_str(), "restart"])]
             }
@@ -197,6 +206,9 @@ impl SupervisorBackend {
             (Self::Systemd, SupervisorChange::InstallAndStart) => {
                 vec![command("systemctl", ["enable", "--now", "docker"])]
             }
+            (Self::Systemd, SupervisorChange::Enable) => {
+                vec![command("systemctl", ["enable", "docker"])]
+            }
             (Self::Systemd, SupervisorChange::Restart) => {
                 vec![command("systemctl", ["restart", "docker"])]
             }
@@ -216,6 +228,9 @@ impl SupervisorBackend {
                 command("rc-update", ["add", "docker", "default"]),
                 command("rc-service", ["docker", "start"]),
             ],
+            (Self::OpenRc, SupervisorChange::Enable) => {
+                vec![command("rc-update", ["add", "docker", "default"])]
+            }
             (Self::OpenRc, SupervisorChange::Restart) => {
                 vec![command("rc-service", ["docker", "restart"])]
             }
@@ -310,6 +325,12 @@ fn render_openrc(
             },
             false,
         ),
+        SupervisorUnitSpec::OwnedZfsImport => {
+            return Err(SupervisorUnitFileError::UnsupportedSupervisor {
+                unit: spec.unit_name(),
+                supervisor: "OpenRC",
+            });
+        }
     };
     let command = shell_double_quote(&command.display().to_string())?;
     let command_args = shell_double_quote(&args.join(" "))?;
