@@ -740,6 +740,10 @@ export type DeployPreviewError = { "error": "invalid_target", message: FailureMe
 
 export type DeploySubmitRequest = { idempotency_key: OperationIdempotencyKey, reservation_id: DeployReservationId, target: DeployRequest, registry_credentials?: { [key in ServiceId]: RegistryCredential }, };
 
+export type SystemDeployRequest = { idempotency_key: OperationIdempotencyKey, reservation_id: DeployReservationId, target: SystemDeployTarget, registry_credentials?: { [key in ServiceId]: RegistryCredential }, };
+
+export type SystemDeployTarget = { origin?: DeployOrigin | null, services: Array<DeployServiceSpec>, };
+
 export type BuildSubmitRequest = { operation_id: OperationId, source: GitSource, adapter: BuildAdapter, platforms: BuildPlatforms, };
 
 export type BuildSubmitError = { "error": "operation_conflict", operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, };
@@ -808,11 +812,11 @@ export type ServiceInspectError = { "error": "no_such_service", service_id: Serv
 
 export type ServiceRestartRequest = { operation_id: OperationId, namespace_id: NamespaceId, service_id: ServiceId, };
 
-export type ServiceRestartError = { "error": "resource_busy", operation_id: OperationId, namespace_id: NamespaceId, owner_operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
+export type ServiceRestartError = { "error": "reserved_system_namespace", operation_id: OperationId, namespace_id: NamespaceId, } | { "error": "resource_busy", operation_id: OperationId, namespace_id: NamespaceId, owner_operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
 
 export type NamespaceRemoveRequest = { operation_id: OperationId, namespace_id: NamespaceId, };
 
-export type NamespaceRemoveError = { "error": "resource_busy", operation_id: OperationId, namespace_id: NamespaceId, owner_operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
+export type NamespaceRemoveError = { "error": "reserved_system_namespace", operation_id: OperationId, namespace_id: NamespaceId, } | { "error": "resource_busy", operation_id: OperationId, namespace_id: NamespaceId, owner_operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
 
 export type NetworkRepairRequest = { operation_id: OperationId, machine_id?: MachineId, };
 
@@ -820,7 +824,7 @@ export type NetworkRepairError = { "error": "no_active_machines", operation_id: 
 
 export type VolumeCreateRequest = { operation_id: OperationId, namespace_id: NamespaceId, volume_name: VolumeName, machine_id: MachineId, spec: VolumeSpec, };
 
-export type VolumeCreateError = { "error": "resource_busy", operation_id: OperationId, namespace_id: NamespaceId, owner_operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
+export type VolumeCreateError = { "error": "reserved_system_namespace", operation_id: OperationId, namespace_id: NamespaceId, } | { "error": "resource_busy", operation_id: OperationId, namespace_id: NamespaceId, owner_operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
 
 export type VolumeListRequest = Record<symbol, never>;
 
@@ -830,7 +834,7 @@ export type VolumeListError = { "error": "unavailable", message: string, };
 
 export type VolumeRemoveRequest = { operation_id: OperationId, namespace_id: NamespaceId, volume_name: VolumeName, };
 
-export type VolumeRemoveError = { "error": "resource_busy", operation_id: OperationId, namespace_id: NamespaceId, owner_operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
+export type VolumeRemoveError = { "error": "reserved_system_namespace", operation_id: OperationId, namespace_id: NamespaceId, } | { "error": "resource_busy", operation_id: OperationId, namespace_id: NamespaceId, owner_operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
 
 export type RuntimeSnapshotRequest = Record<symbol, never>;
 
@@ -1003,7 +1007,7 @@ export type DeployReserveError = { "error": "unavailable", message: string, };
 
 export type OperationApiResponse<T, E> = { "status": "ok", value: T, } | { "status": "domain_error", error: E, };
 
-export type DeploySubmitError = { "error": "reservation_not_found", operation_id: OperationId, namespace_id: NamespaceId, reservation_id: DeployReservationId, } | { "error": "reservation_expired", operation_id: OperationId, namespace_id: NamespaceId, reservation_id: DeployReservationId, expired_at: DeployReservationExpiresAt, } | { "error": "stale_reservation", operation_id: OperationId, namespace_id: NamespaceId, reservation_id: DeployReservationId, last_committed_reservation_id: DeployReservationId, } | { "error": "reservation_already_committed", operation_id: OperationId, namespace_id: NamespaceId, reservation_id: DeployReservationId, owner_operation_id: OperationId, } | { "error": "invalid_target", operation_id: OperationId, message: FailureMessage, } | { "error": "resource_busy", operation_id: OperationId, namespace_id: NamespaceId, owner_operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
+export type DeploySubmitError = { "error": "reserved_system_namespace", operation_id: OperationId, namespace_id: NamespaceId, } | { "error": "reservation_not_found", operation_id: OperationId, namespace_id: NamespaceId, reservation_id: DeployReservationId, } | { "error": "reservation_expired", operation_id: OperationId, namespace_id: NamespaceId, reservation_id: DeployReservationId, expired_at: DeployReservationExpiresAt, } | { "error": "stale_reservation", operation_id: OperationId, namespace_id: NamespaceId, reservation_id: DeployReservationId, last_committed_reservation_id: DeployReservationId, } | { "error": "reservation_already_committed", operation_id: OperationId, namespace_id: NamespaceId, reservation_id: DeployReservationId, owner_operation_id: OperationId, } | { "error": "invalid_target", operation_id: OperationId, message: FailureMessage, } | { "error": "resource_busy", operation_id: OperationId, namespace_id: NamespaceId, owner_operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
 
 export type MachineAddError = { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, } | { "error": "duplicate_idempotency_key", operation_id: OperationId, };
 
@@ -1085,6 +1089,8 @@ export type DeployPreviewResponse = OperationApiResponse<DeployPreview, DeployPr
 
 export type DeploySubmitResponse = OperationApiResponse<AcceptedOperation, DeploySubmitError>;
 
+export type SystemDeployResponse = OperationApiResponse<AcceptedOperation, DeploySubmitError>;
+
 export type InitFirstMachineActivateResponse = OperationApiResponse<InitFirstMachineActivated, InitFirstMachineActivateError>;
 
 export type MachineAddResponse = OperationApiResponse<MachineAddAccepted, MachineAddError>;
@@ -1157,6 +1163,7 @@ export const OPERATION_API_CONTRACTS = [
   { name: "deploy.reserve", subject: "plz.v1.rpc.operator.command.deploy.reserve", execution: "mutates_operation", request: "DeployReserveRequest", success: "DeployReserved", error: "DeployReserveError", response: "DeployReserveResponse" },
   { name: "deploy.preview", subject: "plz.v1.rpc.operator.query.deploy.preview", execution: "query", request: "DeployPreviewRequest", success: "DeployPreview", error: "DeployPreviewError", response: "DeployPreviewResponse" },
   { name: "deploy.submit", subject: "plz.v1.rpc.operator.command.deploy.submit", execution: "accepts_operation", request: "DeploySubmitRequest", success: "AcceptedOperation", error: "DeploySubmitError", response: "DeploySubmitResponse" },
+  { name: "system.deploy", subject: "plz.v1.rpc.operator.command.system.deploy", execution: "accepts_operation", request: "SystemDeployRequest", success: "AcceptedOperation", error: "DeploySubmitError", response: "SystemDeployResponse" },
   { name: "init.first_machine.activate", subject: "plz.v1.rpc.operator.command.init.first_machine.activate", execution: "mutates_operation", request: "InitFirstMachineActivateRequest", success: "InitFirstMachineActivated", error: "InitFirstMachineActivateError", response: "InitFirstMachineActivateResponse" },
   { name: "machine.add", subject: "plz.v1.rpc.operator.command.machine.add", execution: "accepts_operation", request: "MachineAddRequest", success: "MachineAddAccepted", error: "MachineAddError", response: "MachineAddResponse" },
   { name: "machine.build_cache_prune", subject: "plz.v1.rpc.operator.command.machine.build_cache_prune", execution: "accepts_operation", request: "MachineBuildCachePruneRequest", success: "AcceptedOperation", error: "MachineBuildCachePruneError", response: "MachineBuildCachePruneResponse" },
@@ -1199,6 +1206,7 @@ export type OperationApiRequestByEndpoint = {
   "deploy.reserve": DeployReserveRequest;
   "deploy.preview": DeployPreviewRequest;
   "deploy.submit": DeploySubmitRequest;
+  "system.deploy": SystemDeployRequest;
   "init.first_machine.activate": InitFirstMachineActivateRequest;
   "machine.add": MachineAddRequest;
   "machine.build_cache_prune": MachineBuildCachePruneRequest;
@@ -1239,6 +1247,7 @@ export type OperationApiResponseByEndpoint = {
   "deploy.reserve": DeployReserveResponse;
   "deploy.preview": DeployPreviewResponse;
   "deploy.submit": DeploySubmitResponse;
+  "system.deploy": SystemDeployResponse;
   "init.first_machine.activate": InitFirstMachineActivateResponse;
   "machine.add": MachineAddResponse;
   "machine.build_cache_prune": MachineBuildCachePruneResponse;

@@ -28,8 +28,8 @@ use ployz_sdk_types::{
     OpsWatchRequest, RuntimeSnapshotError, RuntimeSnapshotRequest, RuntimeSnapshotResult,
     ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
     ServiceListResult, ServiceRestartError, ServiceRestartRequest, ServiceSnapshot,
-    VolumeCreateError, VolumeCreateRequest, VolumeListError, VolumeListRequest, VolumeListResult,
-    VolumeRemoveError, VolumeRemoveRequest,
+    SystemDeployRequest, VolumeCreateError, VolumeCreateRequest, VolumeListError,
+    VolumeListRequest, VolumeListResult, VolumeRemoveError, VolumeRemoveRequest,
     operation_api::{
         BuildCancelApi, BuildSubmitApi, CoreReplaceApi, CoreReplaceReportApi, CredentialAddApi,
         CredentialListApi, CredentialRemoveApi, DeployPreviewApi, DeployReserveApi,
@@ -39,7 +39,7 @@ use ployz_sdk_types::{
         MachineStoragePrepareApi, MachineUpdateApi, NamespaceRemoveApi, NetworkRepairApi,
         NetworkResolveApi, NetworkStatusApi, OperationApiContract, OpsListApi, OpsStatusApi,
         OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi, ServiceRestartApi,
-        VolumeCreateApi, VolumeListApi, VolumeRemoveApi,
+        SystemDeployApi, VolumeCreateApi, VolumeListApi, VolumeRemoveApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -134,6 +134,13 @@ impl OperationApiClient {
         request: &DeploySubmitRequest,
     ) -> Result<AcceptedOperation, OperationApiClientError<DeploySubmitError>> {
         self.request_api::<DeploySubmitApi>(request).await
+    }
+
+    pub async fn system_deploy(
+        &self,
+        request: &SystemDeployRequest,
+    ) -> Result<AcceptedOperation, OperationApiClientError<DeploySubmitError>> {
+        self.request_api::<SystemDeployApi>(request).await
     }
 
     pub async fn init_first_machine_activate(

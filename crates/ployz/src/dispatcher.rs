@@ -185,6 +185,9 @@ pub async fn execute_command(
         PloyzctlCommand::Deploy(command) => {
             crate::deploy::runtime::follow::execute_deploy(command, config).await
         }
+        PloyzctlCommand::SystemDeploy(command) => {
+            crate::deploy::runtime::follow::execute_deploy(command, config).await
+        }
         PloyzctlCommand::DeployHistory(command) => {
             crate::deploy::runtime::history::inspect(command, config)
         }

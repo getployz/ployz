@@ -4,7 +4,9 @@ use std::io::{self, BufRead, IsTerminal, Write};
 use ployz_core::deploy::{DeployOrigin, DeployRequest};
 use ployz_sdk_types::DeploySubmitRequest;
 
-use crate::deploy::command::{DeployRollbackCommand, DeployRollbackSelection};
+use crate::deploy::command::{
+    DeployRollbackCommand, DeployRollbackSelection, DeploySubmissionRequest,
+};
 use crate::execution_support::generate_client_deploy_rollback_id;
 
 use super::{follow as deploy_follow, history as deploy_history};
@@ -34,12 +36,12 @@ pub(crate) async fn execute(
     })?;
     let accepted = deploy_follow::submit_deploy(
         &api,
-        DeploySubmitRequest {
+        DeploySubmissionRequest::Ordinary(DeploySubmitRequest {
             idempotency_key: generated.idempotency_key,
             reservation_id,
             target,
             registry_credentials: BTreeMap::new(),
-        },
+        }),
     )
     .await?;
     deploy_follow::follow_accepted_deploy(

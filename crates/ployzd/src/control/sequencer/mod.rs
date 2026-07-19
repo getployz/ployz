@@ -277,6 +277,28 @@ impl OperationControllers {
     pub async fn submit_deploy(
         &self,
         command: DeploySubmitCommand,
+    ) -> Result<AcceptedDeployExecution, OrdinaryNamespaceSubmitError> {
+        ployz_core::namespace::ensure_ordinary_namespace(&command.target.namespace_id)
+            .map_err(OrdinaryNamespaceSubmitError::ReservedSystemNamespace)?;
+        self.submit_authorized_deploy(command)
+            .await
+            .map_err(OrdinaryNamespaceSubmitError::Submit)
+    }
+
+    pub async fn submit_system_deploy(
+        &self,
+        command: DeploySubmitCommand,
+    ) -> Result<AcceptedDeployExecution, SystemDeploySubmitError> {
+        ployz_core::namespace::ensure_system_namespace(&command.target.namespace_id)
+            .map_err(SystemDeploySubmitError::SystemNamespaceRequired)?;
+        self.submit_authorized_deploy(command)
+            .await
+            .map_err(SystemDeploySubmitError::Submit)
+    }
+
+    async fn submit_authorized_deploy(
+        &self,
+        command: DeploySubmitCommand,
     ) -> Result<AcceptedDeployExecution, SubmitCommandError> {
         let ingress_fence_owner =
             deploy_requires_ingress(&command.target).then(|| command.operation_id.clone());
@@ -590,16 +612,20 @@ impl OperationControllers {
         command: ServiceRestartSubmitCommand,
     ) -> Result<
         crate::control::operation_evidence::AcceptedServiceRestartSubmission,
-        SubmitCommandError,
+        OrdinaryNamespaceSubmitError,
     > {
+        ployz_core::namespace::ensure_ordinary_namespace(&command.namespace_id)
+            .map_err(OrdinaryNamespaceSubmitError::ReservedSystemNamespace)?;
         let namespace_id = command.namespace_id.clone();
         let operation_id = command.operation_id.clone();
         let claim = self.claim_namespace(&namespace_id, &operation_id).await;
         if let NamespaceClaim::Busy { owner } = claim {
-            return Err(SubmitCommandError::NamespaceBusy {
-                namespace_id,
-                owner,
-            });
+            return Err(OrdinaryNamespaceSubmitError::Submit(
+                SubmitCommandError::NamespaceBusy {
+                    namespace_id,
+                    owner,
+                },
+            ));
         }
 
         let submitted = self
@@ -623,7 +649,9 @@ impl OperationControllers {
                     self.release_namespace(&namespace_id, &command.operation_id)
                         .await;
                 }
-                Err(SubmitCommandError::Submit(error))
+                Err(OrdinaryNamespaceSubmitError::Submit(
+                    SubmitCommandError::Submit(error),
+                ))
             }
         }
     }
@@ -633,16 +661,20 @@ impl OperationControllers {
         command: NamespaceRemoveSubmitCommand,
     ) -> Result<
         crate::control::operation_evidence::AcceptedNamespaceRemoveSubmission,
-        SubmitCommandError,
+        OrdinaryNamespaceSubmitError,
     > {
+        ployz_core::namespace::ensure_ordinary_namespace(&command.namespace_id)
+            .map_err(OrdinaryNamespaceSubmitError::ReservedSystemNamespace)?;
         let namespace_id = command.namespace_id.clone();
         let operation_id = command.operation_id.clone();
         let claim = self.claim_namespace(&namespace_id, &operation_id).await;
         if let NamespaceClaim::Busy { owner } = claim {
-            return Err(SubmitCommandError::NamespaceBusy {
-                namespace_id,
-                owner,
-            });
+            return Err(OrdinaryNamespaceSubmitError::Submit(
+                SubmitCommandError::NamespaceBusy {
+                    namespace_id,
+                    owner,
+                },
+            ));
         }
 
         let submitted = self
@@ -665,7 +697,9 @@ impl OperationControllers {
                     self.release_namespace(&namespace_id, &command.operation_id)
                         .await;
                 }
-                Err(SubmitCommandError::Submit(error))
+                Err(OrdinaryNamespaceSubmitError::Submit(
+                    SubmitCommandError::Submit(error),
+                ))
             }
         }
     }
@@ -675,16 +709,20 @@ impl OperationControllers {
         command: VolumeRemoveSubmitCommand,
     ) -> Result<
         crate::control::operation_evidence::AcceptedVolumeRemoveSubmission,
-        SubmitCommandError,
+        OrdinaryNamespaceSubmitError,
     > {
+        ployz_core::namespace::ensure_ordinary_namespace(&command.namespace_id)
+            .map_err(OrdinaryNamespaceSubmitError::ReservedSystemNamespace)?;
         let namespace_id = command.namespace_id.clone();
         let operation_id = command.operation_id.clone();
         let claim = self.claim_namespace(&namespace_id, &operation_id).await;
         if let NamespaceClaim::Busy { owner } = claim {
-            return Err(SubmitCommandError::NamespaceBusy {
-                namespace_id,
-                owner,
-            });
+            return Err(OrdinaryNamespaceSubmitError::Submit(
+                SubmitCommandError::NamespaceBusy {
+                    namespace_id,
+                    owner,
+                },
+            ));
         }
 
         let submitted = self
@@ -708,7 +746,9 @@ impl OperationControllers {
                     self.release_namespace(&namespace_id, &command.operation_id)
                         .await;
                 }
-                Err(SubmitCommandError::Submit(error))
+                Err(OrdinaryNamespaceSubmitError::Submit(
+                    SubmitCommandError::Submit(error),
+                ))
             }
         }
     }
@@ -718,16 +758,20 @@ impl OperationControllers {
         command: VolumeCreateSubmitCommand,
     ) -> Result<
         crate::control::operation_evidence::AcceptedVolumeCreateSubmission,
-        SubmitCommandError,
+        OrdinaryNamespaceSubmitError,
     > {
+        ployz_core::namespace::ensure_ordinary_namespace(&command.request.namespace_id)
+            .map_err(OrdinaryNamespaceSubmitError::ReservedSystemNamespace)?;
         let namespace_id = command.request.namespace_id.clone();
         let operation_id = command.request.operation_id.clone();
         let claim = self.claim_namespace(&namespace_id, &operation_id).await;
         if let NamespaceClaim::Busy { owner } = claim {
-            return Err(SubmitCommandError::NamespaceBusy {
-                namespace_id,
-                owner,
-            });
+            return Err(OrdinaryNamespaceSubmitError::Submit(
+                SubmitCommandError::NamespaceBusy {
+                    namespace_id,
+                    owner,
+                },
+            ));
         }
 
         let submitted = self
@@ -751,7 +795,9 @@ impl OperationControllers {
                 if matches!(claim, NamespaceClaim::Acquired) {
                     self.release_namespace(&namespace_id, &operation_id).await;
                 }
-                Err(SubmitCommandError::Submit(error))
+                Err(OrdinaryNamespaceSubmitError::Submit(
+                    SubmitCommandError::Submit(error),
+                ))
             }
         }
     }
@@ -935,6 +981,18 @@ pub enum SubmitCommandError {
         expired_at: DeployReservationExpiresAt,
     },
     Submit(SubmitOperationError),
+}
+
+#[derive(Debug)]
+pub enum OrdinaryNamespaceSubmitError {
+    ReservedSystemNamespace(ployz_core::namespace::ReservedSystemNamespace),
+    Submit(SubmitCommandError),
+}
+
+#[derive(Debug)]
+pub enum SystemDeploySubmitError {
+    SystemNamespaceRequired(ployz_core::namespace::SystemNamespaceRequired),
+    Submit(SubmitCommandError),
 }
 
 #[derive(Debug, thiserror::Error)]

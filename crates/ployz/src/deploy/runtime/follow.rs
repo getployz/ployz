@@ -3,10 +3,10 @@ use std::io::{self, IsTerminal, Write};
 use ployz_core::deploy::DeployReservationId;
 use ployz_core::ids::{NamespaceId, OperationId};
 use ployz_core::operation::ReplayedOperationEvent;
-use ployz_sdk_types::{AcceptedOperation, DeployReserveRequest, DeploySubmitRequest};
+use ployz_sdk_types::{AcceptedOperation, DeployReserveRequest};
 
 use crate::api_client::OperationApiClient;
-use crate::deploy::command::{DeployCommand, DeployOutput};
+use crate::deploy::command::{DeployCommand, DeployOutput, DeploySubmissionRequest};
 use crate::deploy::render::{
     DeployTree, render_failure_block, render_frame, render_plain_lines, render_terminal,
 };
@@ -29,17 +29,17 @@ pub(crate) async fn execute_deploy(
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
     let config = with_cluster_context_from_disk(config.clone())?;
     let detach = command.detach;
-    let namespace_id = command.target.namespace_id.clone();
+    let namespace_id = command.reservation_namespace();
     let warnings = command.warnings.join("\n");
     if !warnings.is_empty() {
         eprintln!("{warnings}");
     }
     let connect = nats_connect_config(&config)?;
     let api = operation_api_client_with_connect(&config, connect).await?;
-    let reservation_id = reserve_deploy(&api, command.target.namespace_id.clone()).await?;
+    let reservation_id = reserve_deploy(&api, namespace_id.clone()).await?;
     let receipts = crate::deploy::image_push::prepare_deploy_images(
         &api,
-        &mut command.target.services,
+        command.target.services_mut(),
         command.from_registry,
     )
     .await
@@ -83,16 +83,18 @@ pub(super) async fn reserve_deploy(
 
 pub(super) async fn submit_deploy(
     api: &OperationApiClient,
-    mut request: DeploySubmitRequest,
+    mut request: DeploySubmissionRequest,
 ) -> Result<AcceptedOperation, PloyzctlExecutionError> {
-    request.registry_credentials =
-        crate::deploy::registry_auth::deploy_registry_credentials(&request.target.services)
-            .await
-            .map_err(|source| DeployExecutionError::RegistryAuth { source })?;
-    api.deploy_submit(&request)
+    let credentials = crate::deploy::registry_auth::deploy_registry_credentials(request.services())
         .await
-        .map_err(api_error)
-        .map_err(PloyzctlExecutionError::from)
+        .map_err(|source| DeployExecutionError::RegistryAuth { source })?;
+    request.set_registry_credentials(credentials);
+    match &request {
+        DeploySubmissionRequest::Ordinary(request) => api.deploy_submit(request).await,
+        DeploySubmissionRequest::System(request) => api.system_deploy(request).await,
+    }
+    .map_err(api_error)
+    .map_err(PloyzctlExecutionError::from)
 }
 
 pub(super) async fn follow_accepted_deploy(

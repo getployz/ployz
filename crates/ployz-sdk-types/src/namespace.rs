@@ -17,6 +17,11 @@ pub type NamespaceRemoveResponse = OperationApiResponse<AcceptedOperation, Names
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
 #[derive(thiserror::Error)]
 pub enum NamespaceRemoveError {
+    #[error("namespace {} is reserved for Ployz system services", .namespace_id.as_str())]
+    ReservedSystemNamespace {
+        operation_id: OperationId,
+        namespace_id: NamespaceId,
+    },
     #[error(
         "namespace {} is busy with operation {}",
         .namespace_id.as_str(),

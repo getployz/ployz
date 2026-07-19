@@ -25,6 +25,8 @@ mod placement;
 #[path = "dind_cluster/rollback.rs"]
 mod rollback;
 mod support;
+#[path = "dind_cluster/system_deploy.rs"]
+mod system_deploy;
 
 use futures_util::StreamExt;
 use ployz::deploy::compose::{ComposeInput, UnsupportedFieldMode, parse_deploy_file};

@@ -792,7 +792,7 @@ async fn duplicate_driver_execution_does_not_release_the_original_namespace_lock
     ));
     assert!(matches!(
         second,
-        SubmitCommandError::NamespaceBusy { owner, .. }
+        crate::control::sequencer::OrdinaryNamespaceSubmitError::Submit(SubmitCommandError::NamespaceBusy { owner, .. })
             if owner == operation_id("op_123")
     ));
 }
@@ -983,10 +983,10 @@ async fn deploy_submit_rejects_busy_namespace_without_creating_second_operation(
 
     assert!(matches!(
         error,
-        SubmitCommandError::NamespaceBusy {
+        crate::control::sequencer::OrdinaryNamespaceSubmitError::Submit(SubmitCommandError::NamespaceBusy {
             namespace_id: locked_namespace_id,
             owner,
-        } if locked_namespace_id == namespace_id("default")
+        }) if locked_namespace_id == namespace_id("default")
             && owner == operation_id("op_first")
     ));
     assert!(
@@ -1029,11 +1029,11 @@ async fn older_reservation_is_stale_while_newer_deploy_holds_namespace_lock() {
 
     assert!(matches!(
         error,
-        SubmitCommandError::Submit(SubmitOperationError::StaleDeployReservation {
+        crate::control::sequencer::OrdinaryNamespaceSubmitError::Submit(SubmitCommandError::Submit(SubmitOperationError::StaleDeployReservation {
             namespace_id: stale_namespace_id,
             reservation_id,
             last_committed_reservation_id,
-        }) if stale_namespace_id == namespace_id("default")
+        })) if stale_namespace_id == namespace_id("default")
             && reservation_id == older
             && last_committed_reservation_id == newer
     ));
