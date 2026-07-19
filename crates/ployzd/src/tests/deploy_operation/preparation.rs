@@ -27,13 +27,19 @@ use std::time::Duration;
 #[test]
 fn execution_threads_operation_scoped_environment_revisions_end_to_end() {
     let mut first_value = deploy_request();
-    first_value.services[0].runtime.environment =
+    let [first_service] = first_value.services.as_mut_slice() else {
+        panic!("deploy request contains one service");
+    };
+    first_service.runtime.environment =
         ServiceEnvironment::from(std::collections::BTreeMap::from([(
             EnvName::try_new("TOKEN").expect("environment name"),
             EnvValue::try_new("first").expect("environment value"),
         )]));
     let mut second_value = first_value.clone();
-    second_value.services[0].runtime.environment =
+    let [second_service] = second_value.services.as_mut_slice() else {
+        panic!("deploy request contains one service");
+    };
+    second_service.runtime.environment =
         ServiceEnvironment::from(std::collections::BTreeMap::from([(
             EnvName::try_new("TOKEN").expect("environment name"),
             EnvValue::try_new("second").expect("environment value"),
