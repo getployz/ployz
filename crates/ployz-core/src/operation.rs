@@ -310,16 +310,16 @@ impl OperationStatus {
         event_sequence: EventSequence,
     ) -> Self {
         Self::Build {
-            status: BuildOperationStatus::new(
+            status: BuildOperationStatus::new(build::BuildOperationStatusWire {
                 id,
                 target,
                 source,
                 adapter,
                 platforms,
-                crate::build::BuildExecutorAssignments::empty(),
-                BuildOperationState::Accepted,
-                event_sequence,
-            ),
+                executor_assignments: crate::build::BuildExecutorAssignments::empty(),
+                state: BuildOperationState::Accepted,
+                last_event_sequence: event_sequence,
+            }),
         }
     }
 

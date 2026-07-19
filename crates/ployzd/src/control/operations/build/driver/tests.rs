@@ -161,7 +161,7 @@ async fn platform_rpc_failure_records_real_evidence_and_publishes_no_image_index
         MachineBuildStartRpcResponse::DomainError {
             machine_id: arm64_machine.clone(),
             error: MachineBuildStartDomainError::PlatformFailed {
-                acceptance: executor_acceptance(&operation_id, &arm64_machine, &arm64),
+                acceptance: Box::new(executor_acceptance(&operation_id, &arm64_machine, &arm64)),
                 failure: platform_failure.clone(),
                 log_summary: BuildLogSummary::none(),
             },

@@ -84,7 +84,7 @@ pub(super) async fn run_executor_session(
             failure,
             log_summary,
         })) => BuildSummary::Failed {
-            acceptance,
+            acceptance: *acceptance,
             failure,
             log_summary,
         },
@@ -93,7 +93,7 @@ pub(super) async fn run_executor_session(
             cleanup,
             log_summary,
         })) => BuildSummary::Cancelled {
-            acceptance,
+            acceptance: *acceptance,
             cleanup,
             log_summary,
         },
@@ -103,7 +103,7 @@ pub(super) async fn run_executor_session(
             cleanup,
             log_summary,
         })) => BuildSummary::TimedOut {
-            acceptance,
+            acceptance: *acceptance,
             message,
             cleanup,
             log_summary,

@@ -101,6 +101,10 @@ impl BuildExecutorAssignments {
     }
 
     #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = &BuildPlatformExecutorAssignment> {
         self.0.iter()
     }
@@ -175,8 +179,9 @@ impl TryFrom<Vec<BuildPlatformExecutorAssignment>> for BuildExecutorAssignments 
             return Ok(Self::empty());
         };
         for (index, assignment) in assignments.iter().enumerate() {
-            if assignments[..index]
+            if assignments
                 .iter()
+                .take(index)
                 .any(|placed| placed.platform == assignment.platform)
             {
                 return Err(BuildExecutorAssignmentsError::DuplicatePlatform);
@@ -472,7 +477,7 @@ impl BuildLogSummary {
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BuildExecutorStartDomainError {
     AssignmentMismatch {
-        expected: BuildExecutorAssignment,
+        expected: Box<BuildExecutorAssignment>,
         actual: BuildExecutorAssignment,
     },
     RuntimeUnavailable,
@@ -486,19 +491,19 @@ pub enum BuildExecutorStartDomainError {
     },
     AlreadyRunning,
     PlatformFailed {
-        acceptance: BuildExecutorAcceptance,
+        acceptance: Box<BuildExecutorAcceptance>,
         failure: BuildPlatformFailure,
         #[serde(flatten)]
         log_summary: BuildLogSummary,
     },
     Cancelled {
-        acceptance: BuildExecutorAcceptance,
+        acceptance: Box<BuildExecutorAcceptance>,
         cleanup: BuildExecutorCleanupOutcome,
         #[serde(flatten)]
         log_summary: BuildLogSummary,
     },
     TimedOut {
-        acceptance: BuildExecutorAcceptance,
+        acceptance: Box<BuildExecutorAcceptance>,
         message: FailureMessage,
         cleanup: BuildExecutorCleanupOutcome,
         #[serde(flatten)]
@@ -538,7 +543,7 @@ pub enum BuildExecutorCancelOutcome {
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BuildExecutorCancelDomainError {
     AssignmentMismatch {
-        expected: BuildExecutorAssignment,
+        expected: Box<BuildExecutorAssignment>,
         actual: BuildExecutorAssignment,
     },
     CancelFailed {

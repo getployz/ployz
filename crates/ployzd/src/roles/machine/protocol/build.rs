@@ -222,7 +222,7 @@ mod tests {
     fn timed_out_response_preserves_typed_cleanup_outcome() {
         let machine_id = MachineId::try_new("machine-a").expect("machine id");
         let error = MachineBuildStartDomainError::TimedOut {
-            acceptance: acceptance(&machine_id),
+            acceptance: Box::new(acceptance(&machine_id)),
             message: FailureMessage::try_new("deadline exceeded").expect("message"),
             cleanup: MachineBuildCleanupOutcome::Unconfirmed,
             log_summary: BuildLogSummary::new(3, 5),

@@ -69,15 +69,15 @@ pub struct BuildOperationStatus {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct BuildOperationStatusWire {
-    id: OperationId,
-    target: BuildTarget,
-    source: GitSourceEvidence,
-    adapter: BuildAdapter,
-    platforms: BuildPlatforms,
-    executor_assignments: BuildExecutorAssignments,
-    state: BuildOperationState,
-    last_event_sequence: EventSequence,
+pub(super) struct BuildOperationStatusWire {
+    pub(super) id: OperationId,
+    pub(super) target: BuildTarget,
+    pub(super) source: GitSourceEvidence,
+    pub(super) adapter: BuildAdapter,
+    pub(super) platforms: BuildPlatforms,
+    pub(super) executor_assignments: BuildExecutorAssignments,
+    pub(super) state: BuildOperationState,
+    pub(super) last_event_sequence: EventSequence,
 }
 
 impl TryFrom<BuildOperationStatusWire> for BuildOperationStatus {
@@ -104,28 +104,19 @@ impl TryFrom<BuildOperationStatusWire> for BuildOperationStatus {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("build status executor provenance does not match its contract or phase")]
-struct BuildOperationStatusError;
+pub(super) struct BuildOperationStatusError;
 
 impl BuildOperationStatus {
-    pub(super) fn new(
-        id: OperationId,
-        target: BuildTarget,
-        source: GitSourceEvidence,
-        adapter: BuildAdapter,
-        platforms: BuildPlatforms,
-        executor_assignments: BuildExecutorAssignments,
-        state: BuildOperationState,
-        last_event_sequence: EventSequence,
-    ) -> Self {
+    pub(super) fn new(wire: BuildOperationStatusWire) -> Self {
         let status = Self {
-            id,
-            target,
-            source,
-            adapter,
-            platforms,
-            executor_assignments,
-            state,
-            last_event_sequence,
+            id: wire.id,
+            target: wire.target,
+            source: wire.source,
+            adapter: wire.adapter,
+            platforms: wire.platforms,
+            executor_assignments: wire.executor_assignments,
+            state: wire.state,
+            last_event_sequence: wire.last_event_sequence,
         };
         assert!(
             status.is_valid(),
@@ -142,7 +133,7 @@ impl BuildOperationStatus {
             return false;
         }
         match &self.state {
-            BuildOperationState::Accepted => self.executor_assignments.len() == 0,
+            BuildOperationState::Accepted => self.executor_assignments.is_empty(),
             BuildOperationState::Placing => true,
             BuildOperationState::Building => self.executor_assignments.is_complete(&self.platforms),
             BuildOperationState::Completed { .. }
@@ -157,7 +148,7 @@ impl BuildOperationStatus {
             BuildOperationState::Interrupted { evidence } => match evidence.last_durable_stage() {
                 super::OperationInterruptionStage::Build {
                     stage: super::BuildInterruptionStage::Accepted,
-                } => self.executor_assignments.len() == 0,
+                } => self.executor_assignments.is_empty(),
                 super::OperationInterruptionStage::Build {
                     stage: super::BuildInterruptionStage::Placing,
                 } => true,
@@ -623,16 +614,16 @@ pub(super) fn status(
     sequence: EventSequence,
 ) -> OperationStatus {
     OperationStatus::Build {
-        status: BuildOperationStatus::new(
-            fields.id.clone(),
-            fields.target.clone(),
-            fields.source.clone(),
-            fields.adapter.clone(),
-            fields.platforms.clone(),
+        status: BuildOperationStatus::new(BuildOperationStatusWire {
+            id: fields.id.clone(),
+            target: fields.target.clone(),
+            source: fields.source.clone(),
+            adapter: fields.adapter.clone(),
+            platforms: fields.platforms.clone(),
             executor_assignments,
             state,
-            sequence,
-        ),
+            last_event_sequence: sequence,
+        }),
     }
 }
 

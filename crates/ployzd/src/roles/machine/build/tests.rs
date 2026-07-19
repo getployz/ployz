@@ -164,7 +164,7 @@ fn execution_timeout_maps_to_typed_machine_timeout_with_cleanup() {
             cleanup: MachineBuildCleanupOutcome::Confirmed,
             log_summary: actual,
             ..
-        } if actual == log_summary && actual_acceptance == expected_acceptance
+        } if actual == log_summary && *actual_acceptance == expected_acceptance
     ));
 }
 
@@ -181,7 +181,7 @@ fn cancel_rejects_misaddressed_cluster_provenance() {
     assert!(matches!(
         validate_cancel_provenance(&machine_id, &request),
         Err(MachineBuildCancelDomainError::AssignmentMismatch { expected, actual })
-            if expected == (BuildExecutorAssignment::Cluster { machine_id })
+            if *expected == (BuildExecutorAssignment::Cluster { machine_id })
                 && actual == request.assignment
     ));
 }
@@ -203,7 +203,7 @@ async fn start_rejects_wrong_origin_before_registration() {
     assert_eq!(
         runtime.start(request).await,
         Err(MachineBuildStartDomainError::AssignmentMismatch {
-            expected: BuildExecutorAssignment::Cluster { machine_id },
+            expected: Box::new(BuildExecutorAssignment::Cluster { machine_id }),
             actual,
         })
     );
@@ -229,7 +229,7 @@ async fn start_rejects_external_assignment_with_different_seed_before_registrati
     assert_eq!(
         runtime.start(request).await,
         Err(MachineBuildStartDomainError::AssignmentMismatch {
-            expected: BuildExecutorAssignment::Cluster { machine_id },
+            expected: Box::new(BuildExecutorAssignment::Cluster { machine_id }),
             actual,
         })
     );
