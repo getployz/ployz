@@ -127,7 +127,7 @@ fetch_file() {
         echo "ployz installer requires curl to download $source" >&2
         exit 1
       }
-      curl -fsSL "$source" -o "$target"
+      curl -fsSL --retry 3 --retry-delay 1 --retry-max-time 60 --retry-connrefused --connect-timeout 10 --max-time 30 "$source" -o "$target"
       ;;
   esac
 }
