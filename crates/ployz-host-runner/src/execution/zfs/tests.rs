@@ -741,12 +741,12 @@ fn zero_pools_physically_allocate_half_the_filesystem_for_owned_pool() {
         std::fs::read_to_string(state.path().join("docker.service.d/ployz-zfs.conf")).unwrap(),
         "[Unit]\nRequires=ployz-owned-zfs-import.service\nAfter=ployz-owned-zfs-import.service\n"
     );
+    let [.., daemon_reload, enable] = runner.invocations.as_slice() else {
+        panic!("expected daemon-reload and service enable invocations");
+    };
+    assert_eq!(daemon_reload.args, vec!["daemon-reload"]);
     assert_eq!(
-        runner.invocations.iter().rev().nth(1).unwrap().args,
-        vec!["daemon-reload"]
-    );
-    assert_eq!(
-        runner.invocations.last().unwrap().args,
+        enable.args,
         vec!["enable", "ployz-owned-zfs-import.service"]
     );
 }
@@ -812,8 +812,11 @@ fn owned_preparation_persists_authority_before_unit_or_enable_failure() {
         Err(ZfsEffectError::Dataset { .. })
     ));
     assert!(load_prepared_storage_state(enable.path()).is_ok());
+    let Some(enable_invocation) = runner.invocations.last() else {
+        panic!("expected service enable invocation");
+    };
     assert_eq!(
-        runner.invocations.last().unwrap().args,
+        enable_invocation.args,
         vec!["enable", "ployz-owned-zfs-import.service"]
     );
 }
