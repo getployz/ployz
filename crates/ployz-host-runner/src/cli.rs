@@ -37,6 +37,7 @@ pub enum HostRunnerCommand {
     CoreDemote(HostRunnerCoreDemote),
     SubstrateUpdate(HostRunnerSubstrateUpdate),
     StoragePrepare(HostRunnerStoragePrepare),
+    StorageRecover,
     StorageCapability,
     StoragePoolFacts,
     StorageDatasetEnsure(HostRunnerDatasetQuota),
@@ -252,6 +253,7 @@ pub fn load_command(
         Some(HostRunnerSubcommand::StoragePrepare { operation_id, pool }) => Ok(
             HostRunnerCommand::StoragePrepare(HostRunnerStoragePrepare { operation_id, pool }),
         ),
+        Some(HostRunnerSubcommand::StorageRecover) => Ok(HostRunnerCommand::StorageRecover),
         Some(HostRunnerSubcommand::StorageCapability) => Ok(HostRunnerCommand::StorageCapability),
         Some(HostRunnerSubcommand::StoragePoolFacts) => Ok(HostRunnerCommand::StoragePoolFacts),
         Some(HostRunnerSubcommand::StorageDatasetEnsure { dataset, quota }) => Ok(
@@ -333,6 +335,8 @@ enum HostRunnerSubcommand {
         #[arg(long, value_name = "pool", value_parser = parse_zfs_pool)]
         pool: Option<ZfsPoolName>,
     },
+    #[command(name = "internal-storage-recover", hide = true)]
+    StorageRecover,
     #[command(name = "internal-storage-capability", hide = true)]
     StorageCapability,
     #[command(name = "internal-storage-pool-facts", hide = true)]
@@ -1055,6 +1059,14 @@ mod tests {
                 successor_nats_url: NatsClientUrl::try_new("tls://203.0.113.10:4222")
                     .expect("valid url"),
             })
+        );
+    }
+
+    #[test]
+    fn parser_accepts_hidden_storage_recovery() {
+        assert_eq!(
+            load_command(["internal-storage-recover".into()]).unwrap(),
+            HostRunnerCommand::StorageRecover
         );
     }
 

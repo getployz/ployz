@@ -517,7 +517,7 @@ pub(super) fn load_and_verify_with_timeout(
     Ok(state)
 }
 
-fn verify_prepared_storage_state(
+pub(super) fn verify_prepared_storage_state(
     runner: &mut impl HostRunnerCommandRunner,
     state: &PreparedStorageState,
     command_timeout: std::time::Duration,

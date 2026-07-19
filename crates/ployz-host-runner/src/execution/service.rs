@@ -9,6 +9,7 @@ use ployz_core::roles::DaemonProcessRole;
 pub enum SupervisorUnitTarget {
     NatsServer,
     PloyzdRole(DaemonProcessRole),
+    OwnedZfsImport,
 }
 
 impl SupervisorUnitTarget {
@@ -17,6 +18,7 @@ impl SupervisorUnitTarget {
         match self {
             Self::NatsServer => "nats-server.service".to_owned(),
             Self::PloyzdRole(role) => role_unit_name(role),
+            Self::OwnedZfsImport => "ployz-owned-zfs-import.service".to_owned(),
         }
     }
 }
@@ -29,6 +31,7 @@ pub enum SupervisorUnitSpec {
         artifact: ArtifactTarget,
         environment_file: PloyzdRoleEnvironmentFile,
     },
+    OwnedZfsImport,
 }
 
 impl SupervisorUnitSpec {
@@ -37,6 +40,7 @@ impl SupervisorUnitSpec {
         match self {
             Self::NatsServer(_) => SupervisorUnitTarget::NatsServer,
             Self::PloyzdRole { role, .. } => SupervisorUnitTarget::PloyzdRole(role.clone()),
+            Self::OwnedZfsImport => SupervisorUnitTarget::OwnedZfsImport,
         }
     }
 
@@ -55,6 +59,7 @@ impl SupervisorUnitSpec {
                 artifact,
                 environment_file,
             } => Ok(PloyzdRoleUnit::new(role.clone(), artifact, environment_file)?.render()),
+            Self::OwnedZfsImport => Ok("[Unit]\nRequires=zfs-import.target\nAfter=zfs-import.target\nBefore=docker.service\n\n[Service]\nType=oneshot\nExecStart=/usr/local/bin/ployz host internal-storage-recover\nRemainAfterExit=yes\n\n[Install]\nWantedBy=multi-user.target\n".to_owned()),
         }
     }
 }
@@ -296,6 +301,11 @@ pub enum SupervisorUnitFileError {
     MissingFileName { value: std::path::PathBuf },
     #[error("systemd environment file path {} must be an absolute plain token", value.display())]
     UnsupportedEnvironmentFilePath { value: std::path::PathBuf },
+    #[error("supervisor unit {unit} is unsupported by {supervisor}")]
+    UnsupportedSupervisor {
+        unit: String,
+        supervisor: &'static str,
+    },
 }
 
 fn is_plain_systemd_token_byte(byte: u8) -> bool {
