@@ -3,6 +3,7 @@
 mod command;
 mod dataset;
 mod preparation;
+mod recovery;
 mod state;
 
 pub use dataset::*;
@@ -11,9 +12,10 @@ use ployz_core::storage::{
     PreparedStorageOrigin, PreparedStorageState, StorageEffectFailure as ZfsEffectError,
 };
 pub use preparation::*;
+pub use recovery::recover_owned_storage;
 #[cfg(test)]
 use state::load_prepared_storage_state;
-pub use state::{observe_storage_capability, recover_owned_storage};
+pub use state::observe_storage_capability;
 
 #[cfg(test)]
 use command::{COMMAND_TIMEOUT, INSTALL_TIMEOUT};

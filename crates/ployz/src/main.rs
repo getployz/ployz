@@ -148,6 +148,7 @@ fn host_command_name(command: &ployz_host_runner::cli::HostRunnerCommand) -> &'s
         HostRunnerCommand::CoreDemote(_) => "host core-demote",
         HostRunnerCommand::SubstrateUpdate(_) => "host substrate-update",
         HostRunnerCommand::StoragePrepare(_) => "host storage-prepare",
+        HostRunnerCommand::StorageRecover => "host internal-storage-recover",
         HostRunnerCommand::StorageCapability => "host internal-storage-capability",
         HostRunnerCommand::StoragePoolFacts => "host internal-storage-pool-facts",
         HostRunnerCommand::StorageDatasetEnsure(_) => "host internal-storage-dataset-ensure",

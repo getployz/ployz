@@ -13,6 +13,8 @@ use super::state::{imported_pools, persist_prepared_storage_state};
 use super::*;
 use crate::execution::{HostPlatformProfile, HostRunnerCommandOutput, HostRunnerCommandRunner};
 
+mod recovery;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Invocation {
     program: String,
@@ -44,10 +46,10 @@ fn invocation(runner: &RecordingRunner, index: usize) -> &Invocation {
 impl HostRunnerCommandRunner for RecordingRunner {
     fn command(
         &mut self,
-        _program: &str,
-        _args: &[&str],
+        program: &str,
+        args: &[&str],
     ) -> Result<HostRunnerCommandOutput, FailureMessage> {
-        unreachable!("ZFS effects always use the bounded command seam")
+        self.command_with_timeout(program, args, COMMAND_TIMEOUT)
     }
 
     fn command_with_timeout(
@@ -184,130 +186,6 @@ fn persist(directory: &Path, origin: PreparedStorageOrigin) {
         .expect("test prepared state"),
     )
     .unwrap();
-}
-
-#[test]
-fn owned_storage_recovery_requires_a_valid_owned_descriptor_before_observation() {
-    let missing = tempfile::tempdir().unwrap();
-    let mut runner = RecordingRunner::new([]);
-    assert!(matches!(
-        recover_owned_storage(&mut runner, missing.path()),
-        Err(ZfsEffectError::PreparedStateUnavailable { .. })
-    ));
-    assert!(runner.invocations.is_empty());
-
-    let invalid = tempfile::tempdir().unwrap();
-    std::fs::write(invalid.path().join("prepared-storage.json"), b"{}").unwrap();
-    let mut runner = RecordingRunner::new([]);
-    assert!(matches!(
-        recover_owned_storage(&mut runner, invalid.path()),
-        Err(ZfsEffectError::PreparedStateUnavailable { .. })
-    ));
-    assert!(runner.invocations.is_empty());
-
-    let adopted = tempfile::tempdir().unwrap();
-    persist(adopted.path(), PreparedStorageOrigin::Adopted);
-    let mut runner = RecordingRunner::new([]);
-    assert!(matches!(
-        recover_owned_storage(&mut runner, adopted.path()),
-        Err(ZfsEffectError::PreparedStateMismatch { .. })
-    ));
-    assert!(runner.invocations.is_empty());
-}
-
-#[test]
-fn owned_storage_recovery_reuses_an_imported_pool_after_full_verification() {
-    let state = tempfile::tempdir().unwrap();
-    persist(
-        state.path(),
-        PreparedStorageOrigin::OwnedImage {
-            backing_file: PathBuf::from(PLOYZ_OWNED_ZFS_BACKING_FILE),
-        },
-    );
-    let mut runner = RecordingRunner::new([
-        stdout("ployz\n"),
-        success(),
-        stdout(VOLUME_MOUNTPOINT),
-        pool_status(PLOYZ_OWNED_ZFS_POOL, PLOYZ_OWNED_ZFS_BACKING_FILE),
-    ]);
-
-    recover_owned_storage(&mut runner, state.path()).unwrap();
-
-    assert_eq!(runner.invocations.len(), 4);
-    assert!(runner.invocations.iter().all(|call| {
-        !(call.program == "zpool" && call.args.first().is_some_and(|arg| arg == "import"))
-    }));
-}
-
-#[test]
-fn reboot_recovery_imports_only_the_descriptor_pool_then_fully_verifies_it() {
-    let state = tempfile::tempdir().unwrap();
-    persist(
-        state.path(),
-        PreparedStorageOrigin::OwnedImage {
-            backing_file: PathBuf::from(PLOYZ_OWNED_ZFS_BACKING_FILE),
-        },
-    );
-    let mut runner = RecordingRunner::new([
-        stdout(""),
-        success(),
-        success(),
-        stdout(VOLUME_MOUNTPOINT),
-        pool_status(PLOYZ_OWNED_ZFS_POOL, PLOYZ_OWNED_ZFS_BACKING_FILE),
-    ]);
-
-    recover_owned_storage(&mut runner, state.path()).unwrap();
-
-    assert_eq!(
-        invocation(&runner, 0).args,
-        vec!["list", "-H", "-o", "name"]
-    );
-    assert_eq!(
-        invocation(&runner, 1).args,
-        vec![
-            "import",
-            "-d",
-            PLOYZ_OWNED_ZFS_BACKING_FILE,
-            PLOYZ_OWNED_ZFS_POOL
-        ]
-    );
-    assert_eq!(invocation(&runner, 1).timeout, COMMAND_TIMEOUT);
-    assert_eq!(
-        invocation(&runner, 2).args.last().unwrap(),
-        PLOYZ_OWNED_ZFS_POOL
-    );
-    assert_eq!(invocation(&runner, 3).program, "zfs");
-    assert_eq!(
-        invocation(&runner, 4).args,
-        vec!["status", "-P", PLOYZ_OWNED_ZFS_POOL]
-    );
-}
-
-#[test]
-fn owned_storage_recovery_reports_import_and_post_import_mismatch_failures() {
-    let state = tempfile::tempdir().unwrap();
-    persist(
-        state.path(),
-        PreparedStorageOrigin::OwnedImage {
-            backing_file: PathBuf::from(PLOYZ_OWNED_ZFS_BACKING_FILE),
-        },
-    );
-    let mut import_failure = RecordingRunner::new([stdout(""), failed("import failed")]);
-    assert!(matches!(
-        recover_owned_storage(&mut import_failure, state.path()),
-        Err(ZfsEffectError::OwnedPool { .. })
-    ));
-
-    let mut mismatch = RecordingRunner::new([
-        stdout(""),
-        success(),
-        success(),
-        stdout("/wrong/mountpoint"),
-    ]);
-    assert!(matches!(
-        recover_owned_storage(&mut mismatch, state.path()),
-        Err(ZfsEffectError::PreparedStateMismatch { .. })
-    ));
 }
 
 #[test]
@@ -496,6 +374,7 @@ fn unsupported_profile_refuses_before_mutation() {
         &PoolSelection::Automatic,
         state.path(),
         &state.path().join("docker.service.d"),
+        state.path(),
     )
     .unwrap_err();
     assert_eq!(error, ZfsEffectError::UnsupportedPlatform);
@@ -513,6 +392,7 @@ fn package_failure_is_typed_and_the_invocation_is_bounded() {
         &PoolSelection::Automatic,
         state.path(),
         &state.path().join("docker.service.d"),
+        state.path(),
     )
     .unwrap_err();
 
@@ -543,6 +423,7 @@ fn operation_scoped_terminal_failure_is_final_on_replay() {
         &PoolSelection::Automatic,
         state.path(),
         &state.path().join("docker.service.d"),
+        state.path(),
     )
     .unwrap_err();
     let mut replay = RecordingRunner::new([]);
@@ -553,6 +434,7 @@ fn operation_scoped_terminal_failure_is_final_on_replay() {
         &PoolSelection::Automatic,
         state.path(),
         &state.path().join("docker.service.d"),
+        state.path(),
     )
     .unwrap_err();
 
@@ -571,6 +453,7 @@ fn automatic_multiple_pools_are_sorted_and_refused() {
         &PoolSelection::Automatic,
         state.path(),
         &state.path().join("docker.service.d"),
+        state.path(),
     )
     .unwrap_err();
     assert_eq!(
@@ -605,6 +488,7 @@ fn explicit_pool_must_be_imported() {
         &PoolSelection::Explicit(requested.clone()),
         state.path(),
         &state.path().join("docker.service.d"),
+        state.path(),
     )
     .unwrap_err();
     assert_eq!(
@@ -630,6 +514,7 @@ fn existing_parent_dataset_with_wrong_mountpoint_is_rejected() {
         &PoolSelection::Automatic,
         state.path(),
         &state.path().join("docker.service.d"),
+        state.path(),
     )
     .unwrap_err();
     assert!(matches!(
@@ -655,6 +540,7 @@ fn owned_image_pool_without_descriptor_is_refused_as_ambiguous_half_state() {
         &PoolSelection::Automatic,
         state.path(),
         &state.path().join("docker.service.d"),
+        state.path(),
     )
     .unwrap_err();
 
@@ -691,6 +577,7 @@ fn ubuntu_one_pool_is_adopted_with_exact_bounded_setup() {
         &PoolSelection::Automatic,
         state.path(),
         &state.path().join("docker.service.d"),
+        state.path(),
     )
     .unwrap();
 
@@ -761,6 +648,7 @@ fn rocky_installs_repo_epel_matching_kernel_and_zfs() {
         &PoolSelection::Automatic,
         state.path(),
         &state.path().join("docker.service.d"),
+        state.path(),
     )
     .unwrap();
 
@@ -810,6 +698,7 @@ fn zero_pools_physically_allocate_half_the_filesystem_for_owned_pool() {
         &PoolSelection::Automatic,
         state.path(),
         &state.path().join("docker.service.d"),
+        state.path(),
     )
     .unwrap();
 
@@ -895,6 +784,7 @@ fn owned_preparation_persists_authority_before_unit_or_enable_failure() {
             &PoolSelection::Automatic,
             unit_write.path(),
             &unit_write.path().join("docker.service.d"),
+            unit_write.path(),
         ),
         Err(ZfsEffectError::Dataset { .. })
     ));
@@ -917,6 +807,7 @@ fn owned_preparation_persists_authority_before_unit_or_enable_failure() {
             &PoolSelection::Automatic,
             enable.path(),
             &enable.path().join("docker.service.d"),
+            enable.path(),
         ),
         Err(ZfsEffectError::Dataset { .. })
     ));
@@ -956,6 +847,7 @@ fn owned_pool_sizing_preserves_headroom_after_allocation_overhead() {
         &PoolSelection::Automatic,
         state.path(),
         &state.path().join("docker.service.d"),
+        state.path(),
     )
     .unwrap();
 
@@ -984,6 +876,7 @@ fn owned_pool_refuses_less_than_eight_gibibytes_after_headroom() {
         &PoolSelection::Automatic,
         state.path(),
         &state.path().join("docker.service.d"),
+        state.path(),
     )
     .unwrap_err();
 
@@ -1010,6 +903,7 @@ fn automatic_prepare_preserves_unimported_owned_backing_evidence() {
         &PoolSelection::Automatic,
         state.path(),
         &state.path().join("docker.service.d"),
+        state.path(),
     )
     .unwrap_err();
 
@@ -1051,6 +945,7 @@ fn owned_pool_allocation_rechecks_headroom_and_removes_new_backing_file() {
         &PoolSelection::Automatic,
         state.path(),
         &state.path().join("docker.service.d"),
+        state.path(),
     )
     .unwrap_err();
 
@@ -1098,6 +993,7 @@ fn failed_allocation_and_pool_create_remove_only_the_new_backing_file() {
                 &PoolSelection::Automatic,
                 state.path(),
                 &state.path().join("docker.service.d"),
+                state.path(),
             ),
             Err(ZfsEffectError::OwnedPool { .. })
         ));
@@ -1234,6 +1130,7 @@ fn failed_pool_create_cleanup_requires_conclusive_unused_observation() {
             &PoolSelection::Automatic,
             state.path(),
             &state.path().join("docker.service.d"),
+            state.path(),
         )
         .unwrap_err();
 
@@ -1330,6 +1227,7 @@ fn repeated_prepare_verifies_and_preserves_owned_origin() {
         &PoolSelection::Automatic,
         state.path(),
         &state.path().join("docker.service.d"),
+        state.path(),
     )
     .unwrap();
 

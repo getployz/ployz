@@ -29,6 +29,7 @@ use execution::{
 
 const HOST_RUNNER_STATE_DIRECTORY: &str = "/var/lib/ployz";
 const DOCKER_SYSTEMD_DROP_IN_DIRECTORY: &str = "/etc/systemd/system/docker.service.d";
+const SYSTEMD_UNIT_DIRECTORY: &str = "/etc/systemd/system";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("Host Runner commands require Linux; this platform is {platform}")]
@@ -82,6 +83,7 @@ pub fn run_host_runner_command(command: HostRunnerCommand) -> ExitCode {
                 &selection,
                 std::path::Path::new(HOST_RUNNER_STATE_DIRECTORY),
                 std::path::Path::new(DOCKER_SYSTEMD_DROP_IN_DIRECTORY),
+                std::path::Path::new(SYSTEMD_UNIT_DIRECTORY),
             )
             .map_err(|error| error.to_string())
         }),

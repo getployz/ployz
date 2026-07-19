@@ -18,7 +18,8 @@ use super::state::{
     select_pool,
 };
 use crate::execution::{
-    FileMode, HostPlatformProfile, HostRunnerCommandRunner, ZfsInstall, write_durable_file,
+    FileMode, HostPlatformProfile, HostRunnerCommandRunner, SupervisorBackend, SupervisorChange,
+    SupervisorUnitSpec, ZfsInstall, execute_supervisor_commands, write_durable_file,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +35,7 @@ pub fn prepare_storage_for_operation(
     selection: &PoolSelection,
     state_directory: &Path,
     docker_drop_in_directory: &Path,
+    supervisor_directory: &Path,
 ) -> Result<PreparedStorageState, ZfsEffectError> {
     let evidence_file =
         StorageOperationEvidenceFile::in_state_directory(state_directory, operation_id.clone());
@@ -84,6 +86,7 @@ pub fn prepare_storage_for_operation(
         selection,
         state_directory,
         docker_drop_in_directory,
+        supervisor_directory,
     );
     let evidence = match &result {
         Ok(prepared) => StoragePreparationEvidence::Completed {
@@ -122,6 +125,7 @@ pub fn prepare_storage(
     selection: &PoolSelection,
     state_directory: &Path,
     docker_drop_in_directory: &Path,
+    supervisor_directory: &Path,
 ) -> Result<PreparedStorageState, ZfsEffectError> {
     install_zfs(runner, profile)?;
     let imported = imported_pools(runner)?;
@@ -167,36 +171,49 @@ pub fn prepare_storage(
         }
     })?;
     persist_prepared_storage_state(state_directory, &state)?;
-    install_docker_zfs_ordering(runner, docker_drop_in_directory, state.origin())?;
+    install_docker_zfs_ordering(
+        runner,
+        profile.supervisor().into(),
+        docker_drop_in_directory,
+        supervisor_directory,
+        state.origin(),
+    )?;
     Ok(state)
 }
 
-fn install_docker_zfs_ordering(
+pub(super) fn install_docker_zfs_ordering(
     runner: &mut impl HostRunnerCommandRunner,
+    backend: SupervisorBackend,
     directory: &Path,
+    supervisor_directory: &Path,
     origin: &PreparedStorageOrigin,
 ) -> Result<(), ZfsEffectError> {
+    if matches!(origin, PreparedStorageOrigin::OwnedImage { .. })
+        && backend != SupervisorBackend::Systemd
+    {
+        return Err(ZfsEffectError::Dataset {
+            message: "Ployz-owned ZFS recovery requires systemd".to_owned(),
+        });
+    }
     std::fs::create_dir_all(directory).map_err(|error| ZfsEffectError::Dataset {
         message: format!(
             "failed to create Docker systemd drop-in directory {}: {error}",
             directory.display()
         ),
     })?;
-    let (drop_in, enable_unit) = match origin {
+    let (drop_in, enable_target) = match origin {
         PreparedStorageOrigin::OwnedImage { .. } => {
-            let Some(systemd_directory) = directory.parent() else {
-                return Err(ZfsEffectError::Dataset {
-                    message: format!(
-                        "Docker systemd drop-in directory {} has no systemd parent",
-                        directory.display()
-                    ),
-                });
-            };
+            let spec = SupervisorUnitSpec::OwnedZfsImport;
+            let rendered = backend
+                .render(&spec)
+                .map_err(|error| ZfsEffectError::Dataset {
+                    message: error.to_string(),
+                })?;
             write_durable_file(
-                systemd_directory,
-                "ployz-owned-zfs-import.service",
+                supervisor_directory,
+                rendered.file_name(),
                 FileMode::Plain,
-                b"[Unit]\nRequires=zfs-import.target\nAfter=zfs-import.target\nBefore=docker.service\n\n[Service]\nType=oneshot\nExecStart=/usr/local/bin/ployz host internal-storage-recover\nRemainAfterExit=yes\n\n[Install]\nWantedBy=multi-user.target\n",
+                rendered.contents().as_bytes(),
             )
             .map_err(|error| ZfsEffectError::Dataset {
                 message: error.to_string(),
@@ -204,28 +221,26 @@ fn install_docker_zfs_ordering(
             (
                 b"[Unit]\nRequires=ployz-owned-zfs-import.service\nAfter=ployz-owned-zfs-import.service\n"
                     .as_slice(),
-                true,
+                Some(spec.target()),
             )
         }
-        PreparedStorageOrigin::Adopted => (b"[Unit]\nAfter=zfs.target\n".as_slice(), false),
+        PreparedStorageOrigin::Adopted => (b"[Unit]\nAfter=zfs.target\n".as_slice(), None),
     };
     write_durable_file(directory, "ployz-zfs.conf", FileMode::Plain, drop_in).map_err(|error| {
         ZfsEffectError::Dataset {
             message: error.to_string(),
         }
     })?;
-    checked(
-        runner,
-        "systemctl",
-        &["daemon-reload"],
-        COMMAND_TIMEOUT,
-        EffectClass::Dataset,
-    )?;
-    if enable_unit {
+    if let Some(target) = enable_target {
+        execute_supervisor_commands(runner, backend.commands(SupervisorChange::Enable, &target))
+            .map_err(|error| ZfsEffectError::Dataset {
+                message: error.to_string(),
+            })?;
+    } else {
         checked(
             runner,
             "systemctl",
-            &["enable", "ployz-owned-zfs-import.service"],
+            &["daemon-reload"],
             COMMAND_TIMEOUT,
             EffectClass::Dataset,
         )?;
