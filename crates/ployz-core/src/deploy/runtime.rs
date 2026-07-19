@@ -53,17 +53,23 @@ pub enum EnvNameError {
     ContainsNul { value: String },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[cfg_attr(feature = "typescript", ts(type = "Brand<string, \"EnvValue\">"))]
 #[serde(try_from = "String", into = "String")]
 pub struct EnvValue(String);
 
+impl std::fmt::Debug for EnvValue {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("EnvValue([redacted])")
+    }
+}
+
 impl EnvValue {
     pub fn try_new(value: impl Into<String>) -> Result<Self, EnvValueError> {
         let value = value.into();
         if value.contains('\0') {
-            return Err(EnvValueError::ContainsNul { value });
+            return Err(EnvValueError::ContainsNul);
         }
         Ok(Self(value))
     }
@@ -90,8 +96,8 @@ impl From<EnvValue> for String {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum EnvValueError {
-    #[error("environment variable value contains NUL: {value}")]
-    ContainsNul { value: String },
+    #[error("environment variable value contains NUL")]
+    ContainsNul,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

@@ -20,6 +20,7 @@ pub mod planning;
 pub mod preparation;
 pub mod preview;
 pub mod request;
+mod request_evidence;
 mod retention;
 pub mod revision;
 pub mod routes;
@@ -39,6 +40,7 @@ pub use request::{
     DeployServiceSpec, DeployTargetValidationError, DeployVolumeDeclarationError, PreStartHook,
     ReplicaCount, ReplicaCountError, ServiceDependency, ServiceMode,
 };
+pub use request_evidence::*;
 pub use retention::{DeployCleanupAction, DeployCleanupContainer, ObservedCleanupCandidate};
 pub use revision::{
     canonical_capabilities, namespace_revision_entry_id_for, namespace_revision_id_for,
