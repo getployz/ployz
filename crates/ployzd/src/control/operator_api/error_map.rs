@@ -62,6 +62,18 @@ pub(super) fn submit_failure(error: SubmitCommandError) -> SubmitFailure {
                 ),
             }
         }
+        SubmitCommandError::ReservedSystemNamespace { namespace_id } => {
+            SubmitFailure::Unavailable {
+                message: ployz_core::namespace::ReservedSystemNamespace { namespace_id }
+                    .to_string(),
+            }
+        }
+        SubmitCommandError::SystemNamespaceRequired { namespace_id } => {
+            SubmitFailure::Unavailable {
+                message: ployz_core::namespace::SystemNamespaceRequired { namespace_id }
+                    .to_string(),
+            }
+        }
         SubmitCommandError::ReservationNotFound {
             namespace_id: _,
             reservation_id: _,
@@ -174,6 +186,8 @@ pub(super) fn deploy_submit_error_from_submit_error(
         | error @ SubmitCommandError::NamespaceBusy { .. }
         | error @ SubmitCommandError::IngressBusy { .. }
         | error @ SubmitCommandError::MachineSubstrateBusy { .. }
+        | error @ SubmitCommandError::ReservedSystemNamespace { .. }
+        | error @ SubmitCommandError::SystemNamespaceRequired { .. }
         | error @ SubmitCommandError::Submit(SubmitOperationError::StoreStatus(_))
         | error @ SubmitCommandError::Submit(SubmitOperationError::DuplicateSequenceMismatch {
             ..

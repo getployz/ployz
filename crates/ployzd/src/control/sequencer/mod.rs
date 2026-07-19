@@ -278,6 +278,22 @@ impl OperationControllers {
         &self,
         command: DeploySubmitCommand,
     ) -> Result<AcceptedDeployExecution, SubmitCommandError> {
+        ployz_core::namespace::ensure_ordinary_namespace(&command.target.namespace_id)?;
+        self.submit_authorized_deploy(command).await
+    }
+
+    pub async fn submit_system_deploy(
+        &self,
+        command: DeploySubmitCommand,
+    ) -> Result<AcceptedDeployExecution, SubmitCommandError> {
+        ployz_core::namespace::ensure_system_namespace(&command.target.namespace_id)?;
+        self.submit_authorized_deploy(command).await
+    }
+
+    async fn submit_authorized_deploy(
+        &self,
+        command: DeploySubmitCommand,
+    ) -> Result<AcceptedDeployExecution, SubmitCommandError> {
         let ingress_fence_owner =
             deploy_requires_ingress(&command.target).then(|| command.operation_id.clone());
         let ingress_claim = if let Some(owner) = &ingress_fence_owner {
@@ -592,6 +608,7 @@ impl OperationControllers {
         crate::control::operation_evidence::AcceptedServiceRestartSubmission,
         SubmitCommandError,
     > {
+        ployz_core::namespace::ensure_ordinary_namespace(&command.namespace_id)?;
         let namespace_id = command.namespace_id.clone();
         let operation_id = command.operation_id.clone();
         let claim = self.claim_namespace(&namespace_id, &operation_id).await;
@@ -635,6 +652,7 @@ impl OperationControllers {
         crate::control::operation_evidence::AcceptedNamespaceRemoveSubmission,
         SubmitCommandError,
     > {
+        ployz_core::namespace::ensure_ordinary_namespace(&command.namespace_id)?;
         let namespace_id = command.namespace_id.clone();
         let operation_id = command.operation_id.clone();
         let claim = self.claim_namespace(&namespace_id, &operation_id).await;
@@ -677,6 +695,7 @@ impl OperationControllers {
         crate::control::operation_evidence::AcceptedVolumeRemoveSubmission,
         SubmitCommandError,
     > {
+        ployz_core::namespace::ensure_ordinary_namespace(&command.namespace_id)?;
         let namespace_id = command.namespace_id.clone();
         let operation_id = command.operation_id.clone();
         let claim = self.claim_namespace(&namespace_id, &operation_id).await;
@@ -720,6 +739,7 @@ impl OperationControllers {
         crate::control::operation_evidence::AcceptedVolumeCreateSubmission,
         SubmitCommandError,
     > {
+        ployz_core::namespace::ensure_ordinary_namespace(&command.request.namespace_id)?;
         let namespace_id = command.request.namespace_id.clone();
         let operation_id = command.request.operation_id.clone();
         let claim = self.claim_namespace(&namespace_id, &operation_id).await;
@@ -925,6 +945,12 @@ pub enum SubmitCommandError {
         namespace_id: NamespaceId,
         owner: OperationId,
     },
+    ReservedSystemNamespace {
+        namespace_id: NamespaceId,
+    },
+    SystemNamespaceRequired {
+        namespace_id: NamespaceId,
+    },
     ReservationNotFound {
         namespace_id: NamespaceId,
         reservation_id: DeployReservationId,
@@ -948,6 +974,22 @@ pub enum DeployReservationIssueError {
 impl From<SubmitOperationError> for SubmitCommandError {
     fn from(value: SubmitOperationError) -> Self {
         Self::Submit(value)
+    }
+}
+
+impl From<ployz_core::namespace::ReservedSystemNamespace> for SubmitCommandError {
+    fn from(error: ployz_core::namespace::ReservedSystemNamespace) -> Self {
+        Self::ReservedSystemNamespace {
+            namespace_id: error.namespace_id,
+        }
+    }
+}
+
+impl From<ployz_core::namespace::SystemNamespaceRequired> for SubmitCommandError {
+    fn from(error: ployz_core::namespace::SystemNamespaceRequired) -> Self {
+        Self::SystemNamespaceRequired {
+            namespace_id: error.namespace_id,
+        }
     }
 }
 
