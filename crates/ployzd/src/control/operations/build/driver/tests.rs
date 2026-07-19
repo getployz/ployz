@@ -228,11 +228,11 @@ async fn platform_rpc_failure_records_real_evidence_and_publishes_no_image_index
         .await
         .expect("read build status")
         .expect("build status exists");
-    let OperationStatus::Build { state, .. } = &snapshot.status else {
+    let OperationStatus::Build { status } = &snapshot.status else {
         panic!("submitted build projects build status");
     };
     assert_eq!(
-        state,
+        status.state(),
         &BuildOperationState::Failed {
             failure: operation_failure,
         }

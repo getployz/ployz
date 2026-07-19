@@ -150,9 +150,9 @@ mod tests {
     #[test]
     fn build_submit_typescript_keeps_the_defaulted_target_optional() {
         let declaration = <BuildSubmitRequest as TS>::decl(&ts_rs::Config::default());
-        assert!(
-            declaration.contains("target?: BuildTarget"),
-            "{declaration}"
+        assert_eq!(
+            declaration,
+            "type BuildSubmitRequest = { operation_id: OperationId, target?: BuildTarget, source: GitSource, adapter: BuildAdapter, platforms: BuildPlatforms };"
         );
     }
 }

@@ -3,8 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::build::{
-    BuildAdapter, BuildExecutorAssignment, BuildPlatformExecutorAssignment, BuildPlatforms,
-    BuildTarget, GitSourceEvidence,
+    BuildAdapter, BuildExecutorAssignments, BuildPlatforms, BuildTarget, GitSourceEvidence,
 };
 use crate::deploy::PushedImageReceipt;
 use crate::ids::{MachineId, OperationId};
@@ -50,6 +49,198 @@ pub enum BuildOperationState {
     Interrupted {
         evidence: OperationInterruptionEvidence,
     },
+}
+
+/// A build status whose executor provenance has been checked against the
+/// admitted target, platforms, and current phase.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(try_from = "BuildOperationStatusWire", deny_unknown_fields)]
+pub struct BuildOperationStatus {
+    id: OperationId,
+    target: BuildTarget,
+    source: GitSourceEvidence,
+    adapter: BuildAdapter,
+    platforms: BuildPlatforms,
+    executor_assignments: BuildExecutorAssignments,
+    state: BuildOperationState,
+    last_event_sequence: EventSequence,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BuildOperationStatusWire {
+    id: OperationId,
+    target: BuildTarget,
+    source: GitSourceEvidence,
+    adapter: BuildAdapter,
+    platforms: BuildPlatforms,
+    executor_assignments: BuildExecutorAssignments,
+    state: BuildOperationState,
+    last_event_sequence: EventSequence,
+}
+
+impl TryFrom<BuildOperationStatusWire> for BuildOperationStatus {
+    type Error = BuildOperationStatusError;
+
+    fn try_from(wire: BuildOperationStatusWire) -> Result<Self, Self::Error> {
+        let status = Self {
+            id: wire.id,
+            target: wire.target,
+            source: wire.source,
+            adapter: wire.adapter,
+            platforms: wire.platforms,
+            executor_assignments: wire.executor_assignments,
+            state: wire.state,
+            last_event_sequence: wire.last_event_sequence,
+        };
+        if status.is_valid() {
+            Ok(status)
+        } else {
+            Err(BuildOperationStatusError)
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("build status executor provenance does not match its contract or phase")]
+struct BuildOperationStatusError;
+
+impl BuildOperationStatus {
+    pub(super) fn new(
+        id: OperationId,
+        target: BuildTarget,
+        source: GitSourceEvidence,
+        adapter: BuildAdapter,
+        platforms: BuildPlatforms,
+        executor_assignments: BuildExecutorAssignments,
+        state: BuildOperationState,
+        last_event_sequence: EventSequence,
+    ) -> Self {
+        let status = Self {
+            id,
+            target,
+            source,
+            adapter,
+            platforms,
+            executor_assignments,
+            state,
+            last_event_sequence,
+        };
+        assert!(
+            status.is_valid(),
+            "build status constructor received contradictory provenance"
+        );
+        status
+    }
+
+    fn is_valid(&self) -> bool {
+        if !self
+            .executor_assignments
+            .matches_contract(&self.target, &self.platforms)
+        {
+            return false;
+        }
+        match &self.state {
+            BuildOperationState::Accepted => self.executor_assignments.len() == 0,
+            BuildOperationState::Placing => true,
+            BuildOperationState::Building => self.executor_assignments.is_complete(&self.platforms),
+            BuildOperationState::Completed { .. }
+            | BuildOperationState::Failed { .. }
+            | BuildOperationState::Cancelled { .. }
+            | BuildOperationState::TimedOut { .. } => {
+                self.executor_assignments
+                    .terminal_provenance_matches(&self.state)
+                    && (!matches!(self.state, BuildOperationState::Completed { .. })
+                        || self.executor_assignments.is_complete(&self.platforms))
+            }
+            BuildOperationState::Interrupted { evidence } => match evidence.last_durable_stage() {
+                super::OperationInterruptionStage::Build {
+                    stage: super::BuildInterruptionStage::Accepted,
+                } => self.executor_assignments.len() == 0,
+                super::OperationInterruptionStage::Build {
+                    stage: super::BuildInterruptionStage::Placing,
+                } => true,
+                super::OperationInterruptionStage::Build {
+                    stage: super::BuildInterruptionStage::Building,
+                } => self.executor_assignments.is_complete(&self.platforms),
+                super::OperationInterruptionStage::Deploy { .. }
+                | super::OperationInterruptionStage::CredentialGrantAccepted
+                | super::OperationInterruptionStage::IngressConfigureAccepted
+                | super::OperationInterruptionStage::MachineUpdateAccepted
+                | super::OperationInterruptionStage::MachineUpdateRunning
+                | super::OperationInterruptionStage::MachineStoragePrepareAccepted
+                | super::OperationInterruptionStage::MachineStoragePreparePreparing
+                | super::OperationInterruptionStage::MachineBuildCachePruneAccepted
+                | super::OperationInterruptionStage::MachineBuildCachePrunePruning
+                | super::OperationInterruptionStage::MachineLifecycleAccepted
+                | super::OperationInterruptionStage::NetworkRepairAccepted
+                | super::OperationInterruptionStage::NetworkRepairRunning { .. }
+                | super::OperationInterruptionStage::ServiceRestartAccepted
+                | super::OperationInterruptionStage::ServiceRestartRunning { .. }
+                | super::OperationInterruptionStage::NamespaceRemoveAccepted
+                | super::OperationInterruptionStage::NamespaceRemoveRunning { .. }
+                | super::OperationInterruptionStage::VolumeRemoveAccepted
+                | super::OperationInterruptionStage::VolumeRemoveRunning { .. }
+                | super::OperationInterruptionStage::VolumeCreateAccepted
+                | super::OperationInterruptionStage::VolumeCreatePlanning
+                | super::OperationInterruptionStage::VolumeCreateRunning { .. } => false,
+            },
+        }
+    }
+
+    #[must_use]
+    pub const fn id(&self) -> &OperationId {
+        &self.id
+    }
+
+    #[must_use]
+    pub const fn target(&self) -> &BuildTarget {
+        &self.target
+    }
+
+    #[must_use]
+    pub const fn source(&self) -> &GitSourceEvidence {
+        &self.source
+    }
+
+    #[must_use]
+    pub const fn adapter(&self) -> &BuildAdapter {
+        &self.adapter
+    }
+
+    #[must_use]
+    pub const fn platforms(&self) -> &BuildPlatforms {
+        &self.platforms
+    }
+
+    #[must_use]
+    pub const fn executor_assignments(&self) -> &BuildExecutorAssignments {
+        &self.executor_assignments
+    }
+
+    #[must_use]
+    pub const fn state(&self) -> &BuildOperationState {
+        &self.state
+    }
+
+    #[must_use]
+    pub const fn last_event_sequence(&self) -> EventSequence {
+        self.last_event_sequence
+    }
+
+    pub(super) fn interrupt(
+        &mut self,
+        evidence: OperationInterruptionEvidence,
+        event_sequence: EventSequence,
+    ) {
+        self.state = BuildOperationState::interrupted(evidence);
+        self.last_event_sequence = event_sequence;
+        assert!(
+            self.is_valid(),
+            "build interruption produced contradictory provenance"
+        );
+    }
 }
 
 impl BuildOperationState {
@@ -319,7 +510,7 @@ pub(super) struct BuildFields<'a> {
     pub source: &'a GitSourceEvidence,
     pub adapter: &'a BuildAdapter,
     pub platforms: &'a BuildPlatforms,
-    pub executor_assignments: &'a [BuildPlatformExecutorAssignment],
+    pub executor_assignments: &'a BuildExecutorAssignments,
     pub state: &'a BuildOperationState,
 }
 
@@ -348,12 +539,14 @@ pub(super) fn project_event(
         BuildEvent::Transition(transition) => {
             let attempted = transition.state();
             if matches!(attempted, BuildOperationState::Building)
-                && !all_platforms_placed(fields.platforms, fields.executor_assignments)
+                && !fields.executor_assignments.is_complete(fields.platforms)
             {
                 return Err(invalid_transition(&fields));
             }
             if attempted.is_terminal()
-                && !terminal_provenance_matches(fields.executor_assignments, &attempted)
+                && !fields
+                    .executor_assignments
+                    .terminal_provenance_matches(&attempted)
             {
                 return Err(invalid_transition(&fields));
             }
@@ -368,7 +561,7 @@ pub(super) fn project_event(
                     status(
                         &fields,
                         state,
-                        fields.executor_assignments.to_vec(),
+                        fields.executor_assignments.clone(),
                         sequence,
                     )
                 },
@@ -377,73 +570,42 @@ pub(super) fn project_event(
     }
 }
 
-fn terminal_provenance_matches(
-    assignments: &[BuildPlatformExecutorAssignment],
-    attempted: &BuildOperationState,
-) -> bool {
-    match attempted {
-        BuildOperationState::Completed { receipt } => {
-            receipt.platforms().len() == assignments.len()
-                && assignments.iter().all(|assignment| {
-                    receipt.platform(&assignment.platform).is_some_and(|image| {
-                        image.seed == *assignment_image_seed(&assignment.executor)
+impl BuildExecutorAssignments {
+    fn terminal_provenance_matches(&self, attempted: &BuildOperationState) -> bool {
+        match attempted {
+            BuildOperationState::Completed { receipt } => {
+                receipt.platforms().len() == self.len()
+                    && self.iter().all(|assignment| {
+                        receipt
+                            .platform(&assignment.platform)
+                            .is_some_and(|image| image.seed == *assignment.executor.image_seed())
                     })
-                })
+            }
+            BuildOperationState::Failed {
+                failure:
+                    BuildOperationFailure::PlatformFailed {
+                        platform,
+                        machine_id,
+                        failure: _,
+                    },
+            } => self.iter().any(|assignment| {
+                assignment.platform == *platform && assignment.executor.image_seed() == machine_id
+            }),
+            BuildOperationState::Cancelled { cleanup, .. }
+            | BuildOperationState::TimedOut { cleanup, .. } => match cleanup {
+                BuildCleanupEvidence::NotRequired => self.len() == 0,
+                BuildCleanupEvidence::Completed { machine_ids }
+                | BuildCleanupEvidence::Unconfirmed { machine_ids } => machine_ids
+                    .iter()
+                    .all(|machine_id| self.contains_seed(machine_id)),
+            },
+            BuildOperationState::Accepted
+            | BuildOperationState::Placing
+            | BuildOperationState::Building
+            | BuildOperationState::Failed { .. }
+            | BuildOperationState::Interrupted { .. } => true,
         }
-        BuildOperationState::Failed {
-            failure:
-                BuildOperationFailure::PlatformFailed {
-                    platform,
-                    machine_id,
-                    failure: _,
-                },
-        } => assignments.iter().any(|assignment| {
-            assignment.platform == *platform
-                && assignment_image_seed(&assignment.executor) == machine_id
-        }),
-        BuildOperationState::Cancelled { cleanup, .. }
-        | BuildOperationState::TimedOut { cleanup, .. } => cleanup_matches(assignments, cleanup),
-        BuildOperationState::Accepted
-        | BuildOperationState::Placing
-        | BuildOperationState::Building
-        | BuildOperationState::Failed { .. }
-        | BuildOperationState::Interrupted { .. } => true,
     }
-}
-
-fn cleanup_matches(
-    assignments: &[BuildPlatformExecutorAssignment],
-    cleanup: &BuildCleanupEvidence,
-) -> bool {
-    let machine_ids = match cleanup {
-        BuildCleanupEvidence::NotRequired => return true,
-        BuildCleanupEvidence::Completed { machine_ids }
-        | BuildCleanupEvidence::Unconfirmed { machine_ids } => machine_ids,
-    };
-    machine_ids.iter().all(|machine_id| {
-        assignments
-            .iter()
-            .any(|assignment| assignment_image_seed(&assignment.executor) == machine_id)
-    })
-}
-
-fn assignment_image_seed(assignment: &BuildExecutorAssignment) -> &MachineId {
-    match assignment {
-        BuildExecutorAssignment::Cluster { machine_id } => machine_id,
-        BuildExecutorAssignment::External { image_seed, .. } => image_seed,
-    }
-}
-
-fn all_platforms_placed(
-    platforms: &BuildPlatforms,
-    assignments: &[BuildPlatformExecutorAssignment],
-) -> bool {
-    assignments.len() == platforms.iter().len()
-        && platforms.iter().all(|platform| {
-            assignments
-                .iter()
-                .any(|placed| placed.platform == *platform)
-        })
 }
 
 pub(super) fn invalid_transition(fields: &BuildFields<'_>) -> StatusProjectionError {
@@ -457,18 +619,20 @@ pub(super) fn invalid_transition(fields: &BuildFields<'_>) -> StatusProjectionEr
 pub(super) fn status(
     fields: &BuildFields<'_>,
     state: BuildOperationState,
-    executor_assignments: Vec<BuildPlatformExecutorAssignment>,
+    executor_assignments: BuildExecutorAssignments,
     sequence: EventSequence,
 ) -> OperationStatus {
     OperationStatus::Build {
-        id: fields.id.clone(),
-        target: fields.target.clone(),
-        source: fields.source.clone(),
-        adapter: fields.adapter.clone(),
-        platforms: fields.platforms.clone(),
-        executor_assignments,
-        state,
-        last_event_sequence: sequence,
+        status: BuildOperationStatus::new(
+            fields.id.clone(),
+            fields.target.clone(),
+            fields.source.clone(),
+            fields.adapter.clone(),
+            fields.platforms.clone(),
+            executor_assignments,
+            state,
+            sequence,
+        ),
     }
 }
 
@@ -693,6 +857,52 @@ mod tests {
     }
 
     #[test]
+    fn current_build_status_wire_rejects_cross_field_provenance_contradictions() {
+        let pool_id = crate::ids::BuildPoolId::try_new("pool-a").expect("pool");
+        let external = building_status(BuildTarget::External { pool_id });
+        let encoded = serde_json::to_value(&external).expect("status");
+        assert_eq!(
+            serde_json::from_value::<OperationStatus>(encoded).expect("valid status"),
+            external
+        );
+
+        let mut wrong_pool = serde_json::to_value(&external).expect("status");
+        *wrong_pool
+            .pointer_mut("/executor_assignments/0/executor/pool_id")
+            .expect("assignment pool") = serde_json::json!("pool-b");
+        assert!(serde_json::from_value::<OperationStatus>(wrong_pool).is_err());
+
+        let mut unrequested_platform = serde_json::to_value(&external).expect("status");
+        *unrequested_platform
+            .pointer_mut("/executor_assignments/0/platform/architecture")
+            .expect("assignment platform") = serde_json::json!("arm64");
+        assert!(serde_json::from_value::<OperationStatus>(unrequested_platform).is_err());
+
+        let mut incomplete_building = serde_json::to_value(&external).expect("status");
+        incomplete_building
+            .get_mut("platforms")
+            .and_then(serde_json::Value::as_array_mut)
+            .expect("platforms")
+            .push(serde_json::json!({"os":"linux","architecture":"arm64"}));
+        assert!(serde_json::from_value::<OperationStatus>(incomplete_building).is_err());
+
+        let building = building_status(BuildTarget::Cluster);
+        let OperationProjection::StatusChanged { status: completed } = project_event_from_status(
+            &building,
+            BuildTransition::Completed { receipt: receipt() }.event(&id()),
+            EventSequence::try_new(5).expect("sequence"),
+        )
+        .expect("completed") else {
+            panic!("changed")
+        };
+        let mut wrong_terminal_seed = serde_json::to_value(completed).expect("status");
+        *wrong_terminal_seed
+            .pointer_mut("/state/receipt/platforms/0/1/seed")
+            .expect("receipt seed") = serde_json::json!("machine-b");
+        assert!(serde_json::from_value::<OperationStatus>(wrong_terminal_seed).is_err());
+    }
+
+    #[test]
     fn completed_receipt_must_match_placed_platform() {
         let pool_id = crate::ids::BuildPoolId::try_new("pool-a").expect("pool");
         let building = building_status(BuildTarget::External { pool_id });
@@ -846,10 +1056,8 @@ mod tests {
         };
         assert!(matches!(
             *completed,
-            OperationStatus::Build {
-                state: BuildOperationState::Completed { .. },
-                ..
-            }
+            OperationStatus::Build { ref status }
+                if matches!(status.state(), BuildOperationState::Completed { .. })
         ));
     }
 
@@ -908,10 +1116,7 @@ mod tests {
             None::<String>,
         )
         .expect("source");
-        let OperationStatus::Build {
-            adapter, platforms, ..
-        } = &accepted
-        else {
+        let OperationStatus::Build { status } = &accepted else {
             panic!("build status")
         };
 
@@ -922,8 +1127,8 @@ mod tests {
                     operation_id: id(),
                     target: BuildTarget::Cluster,
                     source: different_source.evidence(),
-                    adapter: adapter.clone(),
-                    platforms: platforms.clone(),
+                    adapter: status.adapter().clone(),
+                    platforms: status.platforms().clone(),
                 },
                 EventSequence::try_new(2).expect("sequence"),
             )
@@ -1025,6 +1230,22 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn flat_executor_evidence_does_not_weaken_event_unknown_field_rejection() {
+        let mut event = serde_json::to_value(OperationEvent::BuildPlatformPlaced {
+            operation_id: id(),
+            platform: OciPlatform::try_new("linux", "amd64").expect("platform"),
+            executor: cluster_evidence(&MachineId::try_new("machine-a").expect("machine")),
+        })
+        .expect("event");
+        event
+            .as_object_mut()
+            .expect("event object")
+            .insert("credential".into(), serde_json::json!("must-not-fit"));
+
+        assert!(serde_json::from_value::<OperationEvent>(event).is_err());
     }
 
     #[test]

@@ -1,9 +1,10 @@
 pub use ployz_core::build::{
     BuildAdapter, BuildCacheScope, BuildContextPath, BuildExecutorAssignment,
-    BuildExecutorEvidence, BuildExecutorId, BuildExecutorOrigin, BuildPlatformExecutorAssignment,
-    BuildPlatforms, BuildPlatformsError, BuildPoolId, BuildTarget, DockerfileStageName,
-    GitBasicCredential, GitCommit, GitCredentialSecret, GitCredentialUsername, GitRepositoryUrl,
-    GitSource, GitSourceError, GitSourceEvidence, RailpackCacheKey, VerifiedGitCommit,
+    BuildExecutorAssignments, BuildExecutorEvidence, BuildExecutorId, BuildExecutorOrigin,
+    BuildPlatformExecutorAssignment, BuildPlatforms, BuildPlatformsError, BuildPoolId, BuildTarget,
+    DockerfileStageName, GitBasicCredential, GitCommit, GitCredentialSecret, GitCredentialUsername,
+    GitRepositoryUrl, GitSource, GitSourceError, GitSourceEvidence, RailpackCacheKey,
+    VerifiedGitCommit,
 };
 pub use ployz_core::certificate::{
     AcmeChallengeError, AcmeChallengeToken, AcmeChallengeTtlError, AcmeChallengeTtlSeconds,
@@ -98,10 +99,10 @@ pub use ployz_core::network::{
 pub use ployz_core::operation::{
     ArtifactUnavailableReason, BuildAdapterToolchainEvidence, BuildCachePruneEvidence,
     BuildCleanupEvidence, BuildInterruptionStage, BuildLogChunk, BuildOperationFailure,
-    BuildOperationState, BuildPlatformFailure, BuildTimeoutFailure, BuildToolchainEvidence,
-    CancellationReason, CertificateProvisionWarning, CredentialGrantAction, CredentialGrantFailure,
-    CredentialGrantOperationState, EventSequence, EventSequenceError, FailureMessage,
-    HealthCheckFailure, IngressConfigureFailure, IngressConfigureOperationState,
+    BuildOperationState, BuildOperationStatus, BuildPlatformFailure, BuildTimeoutFailure,
+    BuildToolchainEvidence, CancellationReason, CertificateProvisionWarning, CredentialGrantAction,
+    CredentialGrantFailure, CredentialGrantOperationState, EventSequence, EventSequenceError,
+    FailureMessage, HealthCheckFailure, IngressConfigureFailure, IngressConfigureOperationState,
     MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineAddOperationState, MachineAddOperationStateName,
     MachineBuildCachePruneFailure, MachineBuildCachePruneOperationState, MachineLifecycleFailure,
     MachineLifecycleOperationState, MachineStoragePrepareFailure,

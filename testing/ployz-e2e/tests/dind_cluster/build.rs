@@ -101,6 +101,7 @@ async fn submit_build(
         .api
         .build_submit(&BuildSubmitRequest {
             operation_id: operation_id.clone(),
+            target: ployz_core::build::BuildTarget::Cluster,
             source: GitSource::try_new(
                 &git.url,
                 &git.commit,
@@ -122,21 +123,22 @@ async fn submit_build(
         "Git secret entered durable status"
     );
     let OperationStatus::Build {
-        source,
-        state: BuildOperationState::Completed { receipt },
-        ..
-    } = status
+        status: build_status,
+    } = &status
     else {
         panic!("build {operation} did not complete: {status:?}");
     };
-    assert_eq!(source.commit.as_str(), git.commit);
+    let BuildOperationState::Completed { receipt } = build_status.state() else {
+        panic!("build {operation} did not complete: {status:?}");
+    };
+    assert_eq!(build_status.source().commit.as_str(), git.commit);
     let platform_images = receipt.platforms().collect::<Vec<_>>();
     let [(actual_platform, image)] = platform_images.as_slice() else {
         panic!("build {operation} did not return exactly one native image");
     };
     assert_eq!(*actual_platform, platform);
     assert_eq!(image.seed, machine_id("core_1"));
-    receipt
+    receipt.clone()
 }
 
 async fn assert_success_evidence(
@@ -248,6 +250,7 @@ async fn assert_build_cancellation(core: &CoreContext, git: &GitFixture, platfor
     core.api
         .build_submit(&BuildSubmitRequest {
             operation_id: operation_id.clone(),
+            target: ployz_core::build::BuildTarget::Cluster,
             source: GitSource::try_new(
                 &git.url,
                 &git.commit,
@@ -267,10 +270,13 @@ async fn assert_build_cancellation(core: &CoreContext, git: &GitFixture, platfor
     let deadline = Instant::now() + Duration::from_secs(90);
     loop {
         let status = operation_status(core, &operation_id).await;
-        let OperationStatus::Build { state, .. } = status else {
+        let OperationStatus::Build {
+            status: build_status,
+        } = status
+        else {
             panic!("wrong operation status for build: {status:?}");
         };
-        match state {
+        match build_status.state() {
             BuildOperationState::Building => break,
             BuildOperationState::Accepted | BuildOperationState::Placing => {}
             state @ (BuildOperationState::Completed { .. }
@@ -295,13 +301,14 @@ async fn assert_build_cancellation(core: &CoreContext, git: &GitFixture, platfor
     let status = wait_for_terminal_status(&core.api, &operation_id, BUILD_BUDGET).await;
     assert!(matches!(
         status,
-        OperationStatus::Build {
-            state: BuildOperationState::Cancelled {
-                cleanup: BuildCleanupEvidence::Completed { .. },
-                ..
-            },
-            ..
-        }
+        OperationStatus::Build { ref status }
+            if matches!(
+                status.state(),
+                BuildOperationState::Cancelled {
+                    cleanup: BuildCleanupEvidence::Completed { .. },
+                    ..
+                }
+            )
     ));
     let events = terminal_operation_events(core, &operation_id).await;
     let encoded = serde_json::to_string(&events).expect("cancellation events serialize");

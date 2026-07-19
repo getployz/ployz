@@ -160,7 +160,7 @@ impl BuildOperationDriver {
                         .await
                         .map_err(|error| error.to_string())?;
                     return Ok(match status {
-                        Some(OperationStatus::Build { state, .. }) if state.is_terminal() => {
+                        Some(OperationStatus::Build { status }) if status.state().is_terminal() => {
                             BuildCancelDisposition::AlreadyTerminal
                         }
                         Some(OperationStatus::Build { .. }) => {

@@ -1,6 +1,5 @@
 use crate::build::{
-    BuildAdapter, BuildExecutorAssignment, BuildExecutorEvidence, BuildPlatformExecutorAssignment,
-    BuildTarget, VerifiedGitCommit,
+    BuildAdapter, BuildExecutorEvidence, BuildPlatformExecutorAssignment, VerifiedGitCommit,
 };
 use crate::deploy::PlatformImage;
 use crate::image::OciPlatform;
@@ -102,26 +101,22 @@ pub(super) fn project(
     }
 
     let assignment = evidence.executor().assignment();
-    if !assignment_matches_target(fields.target, &assignment) {
-        return Err(invalid_transition(fields));
-    }
-
-    let mut executor_assignments = fields.executor_assignments.to_vec();
+    let mut executor_assignments = fields.executor_assignments.clone();
     if placement {
         if executor_assignments
-            .iter()
-            .any(|placed| placed.platform == *platform)
+            .insert(
+                fields.target,
+                fields.platforms,
+                BuildPlatformExecutorAssignment {
+                    platform: platform.clone(),
+                    executor: assignment.clone(),
+                },
+            )
+            .is_err()
         {
             return Err(invalid_transition(fields));
         }
-        executor_assignments.push(BuildPlatformExecutorAssignment {
-            platform: platform.clone(),
-            executor: assignment,
-        });
-    } else if !executor_assignments
-        .iter()
-        .any(|placed| placed.platform == *platform && placed.executor == assignment)
-    {
+    } else if !executor_assignments.matches(platform, assignment) {
         return Err(invalid_transition(fields));
     }
 
@@ -155,21 +150,6 @@ pub(super) fn project(
     })
 }
 
-fn assignment_matches_target(target: &BuildTarget, assignment: &BuildExecutorAssignment) -> bool {
-    match (target, assignment) {
-        (BuildTarget::Cluster, BuildExecutorAssignment::Cluster { .. }) => true,
-        (
-            BuildTarget::External { pool_id },
-            BuildExecutorAssignment::External {
-                pool_id: assignment_pool_id,
-                ..
-            },
-        ) => pool_id == assignment_pool_id,
-        (BuildTarget::Cluster, BuildExecutorAssignment::External { .. })
-        | (BuildTarget::External { .. }, BuildExecutorAssignment::Cluster { .. }) => false,
-    }
-}
-
 fn toolchain_matches_adapter(adapter: &BuildAdapter, toolchain: &BuildToolchainEvidence) -> bool {
     matches!(
         (adapter, &toolchain.adapter),
@@ -186,7 +166,10 @@ fn toolchain_matches_adapter(adapter: &BuildAdapter, toolchain: &BuildToolchainE
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::build::{BuildCacheScope, BuildExecutorId, BuildPlatforms, BuildPoolId, GitSource};
+    use crate::build::{
+        BuildCacheScope, BuildExecutorAssignment, BuildExecutorId, BuildPlatforms, BuildPoolId,
+        BuildTarget, GitSource,
+    };
     use crate::deploy::{ImageAvailabilityExpiresAt, PlatformImage};
     use crate::ids::{MachineId, OperationId};
     use crate::image::OciDigest;

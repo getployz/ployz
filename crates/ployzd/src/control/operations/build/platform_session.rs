@@ -1,7 +1,9 @@
 use std::time::Duration;
 
 use ployz_core::build::BuildExecutorEvidence;
-use ployz_core::ids::{MachineId, OperationId};
+#[cfg(test)]
+use ployz_core::ids::MachineId;
+use ployz_core::ids::OperationId;
 use ployz_core::image::OciPlatform;
 use ployz_core::operation::{BuildEvidence, BuildOperationFailure, FailureMessage};
 

@@ -286,7 +286,7 @@ impl OperationStatus {
         cause: OperationInterruptionCause,
     ) -> Option<OperationInterruptionEvidence> {
         match self {
-            Self::Build { state, .. } => state.interruption_evidence(cause),
+            Self::Build { status } => status.state().interruption_evidence(cause),
             Self::Deploy { state, .. } => state.interruption_evidence(cause),
             Self::CredentialGrant { state, .. } => state.interruption_evidence(cause),
             Self::IngressConfigure { state, .. } => state.interruption_evidence(cause),
@@ -308,12 +308,20 @@ impl OperationStatus {
 
     #[must_use]
     pub const fn terminal_interruption_evidence(&self) -> Option<&OperationInterruptionEvidence> {
+        if let Self::Build { status } = self {
+            return match status.state() {
+                BuildOperationState::Interrupted { evidence } => Some(evidence),
+                BuildOperationState::Accepted
+                | BuildOperationState::Placing
+                | BuildOperationState::Building
+                | BuildOperationState::Completed { .. }
+                | BuildOperationState::Failed { .. }
+                | BuildOperationState::Cancelled { .. }
+                | BuildOperationState::TimedOut { .. } => None,
+            };
+        }
         match self {
-            Self::Build {
-                state: BuildOperationState::Interrupted { evidence },
-                ..
-            }
-            | Self::Deploy {
+            Self::Deploy {
                 state: DeployOperationState::Interrupted { evidence },
                 ..
             }
