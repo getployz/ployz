@@ -1,8 +1,8 @@
 use super::ValidatedOciLayout;
 use super::lifecycle::{
-    BUILDER_LABEL, CACHE_VOLUME, DOCKER_COMMAND_TIMEOUT, PinnedImageKind, await_buildkit,
-    builder_name, create_builder, prune_buildkit_cache, pull_exact_image, remove_builder,
-    require_success, run_bounded, run_buildctl, run_prepare,
+    BUILDER_LABEL, BuildLogContext, CACHE_VOLUME, DOCKER_COMMAND_TIMEOUT, PinnedImageKind,
+    await_buildkit, builder_name, create_builder, prune_buildkit_cache, pull_exact_image,
+    remove_builder, require_success, run_bounded, run_buildctl, run_prepare,
 };
 use super::logs::{BuildLogProgress, PublishedLogs};
 use super::oci::{OciLayoutError, OciValidationControl, validate_oci_layout};
@@ -12,15 +12,14 @@ use super::workspace::{
     clean_failed_workspace, prepare_private_directory, prepare_workspace, remove_workspace_tree,
     verify_helper,
 };
-use crate::roles::machine::facts::read_disk_space;
-use crate::roles::machine::protocol::BuildLogSummary;
+use ployz_core::build::BuildLogSummary;
 use ployz_core::build::{BuildAdapter, GitSource};
-use ployz_core::ids::{MachineId, OperationId};
+use ployz_core::ids::OperationId;
 use ployz_core::image::OciPlatform;
 use ployz_core::operation::{
     BuildCachePruneEvidence, BuildPlatformFailure, BuildToolchainEvidence, FailureMessage,
 };
-use ployz_nats::service_runtime::NatsClient;
+use rustix::fs::statvfs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
@@ -35,18 +34,14 @@ const BUILDKIT_CONFIG: &str = "buildkitd.toml";
 
 #[derive(Clone)]
 pub struct DockerBuildExecutor {
-    machine_id: MachineId,
-    client: NatsClient,
     workspace_root: PathBuf,
     effect_guard: BuildEffectGuard,
 }
 
 impl DockerBuildExecutor {
     #[must_use]
-    pub fn new(machine_id: MachineId, client: NatsClient, workspace_root: PathBuf) -> Self {
+    pub fn new(workspace_root: PathBuf) -> Self {
         Self {
-            machine_id,
-            client,
             workspace_root,
             effect_guard: BuildEffectGuard::default(),
         }
@@ -80,7 +75,7 @@ impl DockerBuildExecutor {
         builder_result.and(workspace_result)
     }
 
-    pub(crate) async fn prune_cache(&self) -> Result<BuildCachePruneEvidence, BuildExecutionError> {
+    pub async fn prune_cache(&self) -> Result<BuildCachePruneEvidence, BuildExecutionError> {
         let _effect_guard = self.effect_guard.acquire().await?;
         prepare_private_directory(&self.workspace_root).await?;
         let before = build_disk_space(&self.workspace_root)?;
@@ -136,6 +131,7 @@ impl DockerBuildExecutor {
             source,
             adapter,
             platform,
+            log_destination,
         } = request;
         let workspace = self.workspace(operation_id, platform);
         check_cancelled(cancelled)?;
@@ -220,11 +216,12 @@ impl DockerBuildExecutor {
                 &plan,
                 source,
                 cancelled,
-                &self.client,
-                &self.machine_id,
-                operation_id,
-                platform,
-                log_progress,
+                BuildLogContext {
+                    destination: log_destination,
+                    operation_id,
+                    platform,
+                    progress: log_progress,
+                },
             )
             .await
         }
@@ -307,8 +304,24 @@ impl BuildDiskPolicy {
 fn build_disk_space(
     path: &Path,
 ) -> Result<ployz_core::machine::runtime::MachineDiskSpace, BuildExecutionError> {
-    read_disk_space(path)
-        .map_err(|error| infrastructure("read build host disk capacity", error.to_string()))
+    let mut existing = path;
+    while !existing.exists() {
+        let Some(parent) = existing.parent() else {
+            existing = Path::new("/");
+            break;
+        };
+        existing = parent;
+    }
+    let stat = statvfs(existing)
+        .map_err(|error| infrastructure("read build host disk capacity", error.to_string()))?;
+    Ok(ployz_core::machine::runtime::MachineDiskSpace {
+        available_bytes: bytes_from_blocks(stat.f_bavail, stat.f_frsize),
+        total_bytes: bytes_from_blocks(stat.f_blocks, stat.f_frsize),
+    })
+}
+
+fn bytes_from_blocks(blocks: u64, block_size: u64) -> u64 {
+    u64::try_from(u128::from(blocks).saturating_mul(u128::from(block_size))).unwrap_or(u64::MAX)
 }
 
 async fn write_buildkit_config(
@@ -328,26 +341,29 @@ fn render_buildkit_config(policy: BuildDiskPolicy) -> String {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct BuildExecutionRequest<'a> {
+pub struct BuildExecutionRequest<'a> {
     operation_id: &'a OperationId,
     source: &'a GitSource,
     adapter: &'a BuildAdapter,
     platform: &'a OciPlatform,
+    log_destination: &'a super::logs::BuildLogDestination,
 }
 
 impl<'a> BuildExecutionRequest<'a> {
     #[must_use]
-    pub(crate) const fn new(
+    pub const fn new(
         operation_id: &'a OperationId,
         source: &'a GitSource,
         adapter: &'a BuildAdapter,
         platform: &'a OciPlatform,
+        log_destination: &'a super::logs::BuildLogDestination,
     ) -> Self {
         Self {
             operation_id,
             source,
             adapter,
             platform,
+            log_destination,
         }
     }
 }

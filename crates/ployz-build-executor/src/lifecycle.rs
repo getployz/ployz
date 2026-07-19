@@ -1,13 +1,14 @@
-use super::logs::{BuildLogProgress, BuildLogPublisher, PublishedLogs, read_output};
+use super::logs::{
+    BuildLogDestination, BuildLogProgress, BuildLogPublisher, PublishedLogs, read_output,
+};
 use super::plan::{BuildExecutionPlan, PrepareCommand};
 use super::runner::{
     BuildExecutionError, adapter_failure, check_cancelled, infrastructure, platform_failure,
 };
 use ployz_core::build::GitSource;
-use ployz_core::ids::{MachineId, OperationId};
+use ployz_core::ids::OperationId;
 use ployz_core::image::{OciDigest, OciPlatform};
 use ployz_core::operation::BuildPlatformFailure;
-use ployz_nats::service_runtime::NatsClient;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
@@ -19,9 +20,52 @@ pub(super) const BUILDER_LABEL: &str = "com.getployz.build=true";
 pub(super) const CACHE_VOLUME: &str = "ployz-buildkit-cache-v1";
 const COMMAND_OUTPUT_LIMIT_BYTES: usize = 256 * 1024;
 const RAILPACK_PREPARE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const DOCKER_RUNTIME_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 pub(super) const DOCKER_COMMAND_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const BUILDKIT_READY_ATTEMPTS: usize = 30;
 const BUILDKIT_READY_DELAY: Duration = Duration::from_millis(500);
+
+pub(super) async fn probe_docker_runtime(
+    native: &OciPlatform,
+) -> Result<OciPlatform, BuildExecutionError> {
+    let output = run_bounded(
+        "docker",
+        [
+            "info",
+            "--format",
+            r#"{"os":{{json .OSType}},"architecture":{{json .Architecture}}}"#,
+        ],
+        DOCKER_RUNTIME_PROBE_TIMEOUT,
+    )
+    .await?;
+    require_success("probe Docker build runtime", &output)?;
+    validate_docker_server_platform(&output.stdout, native)
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DockerServerPlatform {
+    os: String,
+    architecture: String,
+}
+
+fn validate_docker_server_platform(
+    output: &[u8],
+    native: &OciPlatform,
+) -> Result<OciPlatform, BuildExecutionError> {
+    let reported: DockerServerPlatform = serde_json::from_slice(output).map_err(|error| {
+        infrastructure("decode Docker build runtime platform", error.to_string())
+    })?;
+    let actual = crate::oci_platform(&reported.os, &reported.architecture)
+        .map_err(|message| infrastructure("normalize Docker build runtime platform", message))?;
+    if &actual != native {
+        return Err(platform_failure(BuildPlatformFailure::PlatformMismatch {
+            expected: native.clone(),
+            actual,
+        }));
+    }
+    Ok(actual)
+}
 
 pub(super) async fn run_prepare(
     prepare: &PrepareCommand,
@@ -384,17 +428,19 @@ pub(super) async fn await_buildkit(
     ))
 }
 
-#[allow(clippy::too_many_arguments)]
+pub(super) struct BuildLogContext<'a> {
+    pub(super) destination: &'a BuildLogDestination,
+    pub(super) operation_id: &'a OperationId,
+    pub(super) platform: &'a OciPlatform,
+    pub(super) progress: BuildLogProgress,
+}
+
 pub(super) async fn run_buildctl(
     builder: &str,
     plan: &BuildExecutionPlan,
     source: &GitSource,
     cancelled: &mut watch::Receiver<bool>,
-    client: &NatsClient,
-    machine_id: &MachineId,
-    operation_id: &OperationId,
-    platform: &OciPlatform,
-    log_progress: BuildLogProgress,
+    logs: BuildLogContext<'_>,
 ) -> Result<PublishedLogs, BuildExecutionError> {
     let mut command = Command::new("docker");
     command
@@ -419,12 +465,11 @@ pub(super) async fn run_buildctl(
     tokio::spawn(read_output(stdout, output_tx.clone()));
     tokio::spawn(read_output(stderr, output_tx));
     let mut publisher = BuildLogPublisher::new(
-        client.clone(),
-        machine_id.clone(),
-        operation_id.clone(),
-        platform.clone(),
+        logs.destination.clone(),
+        logs.operation_id.clone(),
+        logs.platform.clone(),
         source.credential().secret().secret(),
-        log_progress,
+        logs.progress,
     );
     while let Some(bytes) = tokio::select! {
         bytes = output_rx.recv() => bytes,
@@ -545,6 +590,34 @@ mod tests {
             builder_name(&operation, &platform),
             "ployz-build-build-01-linux-arm64"
         );
+    }
+
+    #[test]
+    fn docker_server_platform_accepts_docker_and_oci_architecture_names() {
+        let native = OciPlatform::try_new("linux", "amd64").expect("native");
+        for architecture in ["x86_64", "amd64"] {
+            let output = format!(r#"{{"os":"linux","architecture":"{architecture}"}}"#);
+            assert_eq!(
+                validate_docker_server_platform(output.as_bytes(), &native)
+                    .expect("compatible server"),
+                native
+            );
+        }
+    }
+
+    #[test]
+    fn docker_server_platform_rejects_remote_architecture_mismatch() {
+        let native = OciPlatform::try_new("linux", "amd64").expect("native");
+        let error =
+            validate_docker_server_platform(br#"{"os":"linux","architecture":"aarch64"}"#, &native)
+                .expect_err("remote architecture must not be testified as native");
+        assert!(matches!(
+            error,
+            BuildExecutionError::Platform {
+                failure: BuildPlatformFailure::PlatformMismatch { expected, actual },
+                ..
+            } if expected == native && actual.architecture() == "arm64"
+        ));
     }
 
     #[test]

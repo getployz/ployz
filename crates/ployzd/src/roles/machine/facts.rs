@@ -200,7 +200,7 @@ async fn build_capability_for_facts(
     }
     map_build_capability(
         build_runtime_available,
-        crate::roles::machine::execution::build::railpack_helper_is_ready(platform).await,
+        ployz_build_executor::railpack_helper_is_ready(platform).await,
     )
 }
 

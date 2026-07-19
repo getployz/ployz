@@ -1,7 +1,3 @@
-use super::execution::build::{
-    BuildExecutionError, BuildExecutionRequest, BuildExecutionResult, BuildLogProgress,
-    DockerBuildExecutor,
-};
 use super::images::AvailableImageService;
 use super::protocol::{
     BuildExecutorAcceptance, BuildExecutorAssignment, BuildLogSummary,
@@ -13,6 +9,10 @@ use super::protocol::{
     MachineBuildStartRpcResponse,
 };
 use super::response::{failure_message, machine_domain_error, machine_success};
+use ployz_build_executor::{
+    BuildExecutionError, BuildExecutionRequest, BuildExecutionResult, BuildLogDestination,
+    BuildLogProgress, DockerBuildExecutor,
+};
 use ployz_core::build::{
     BUILD_CACHE_PRUNE_MAX_EXECUTION_TIMEOUT, BUILD_FORCE_CLEANUP_TIMEOUT,
     BUILD_MAX_EXECUTION_TIMEOUT, BUILD_TASK_DRAIN_TIMEOUT, BuildExecutorCancelOk,
@@ -22,7 +22,9 @@ use ployz_core::deploy::PlatformImage;
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::image::OciPlatform;
 use ployz_core::operation::BuildPlatformFailure;
+use ployz_nats::service_runtime::NatsClient;
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, decode_json_request};
+use ployz_nats::subjects::machine_build_log;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -106,12 +108,31 @@ enum BuildEffects {
 #[derive(Clone)]
 struct DockerBuildEffects {
     executor: DockerBuildExecutor,
+    log_client: NatsClient,
     image_state: Option<AvailableImageService>,
+}
+
+struct MachineBuildLogRoute {
+    subject: String,
+    assignment: BuildExecutorAssignment,
+}
+
+fn machine_build_log_route(
+    machine_id: &MachineId,
+    operation_id: &OperationId,
+) -> MachineBuildLogRoute {
+    MachineBuildLogRoute {
+        subject: machine_build_log(machine_id, operation_id),
+        assignment: BuildExecutorAssignment::Cluster {
+            machine_id: machine_id.clone(),
+        },
+    }
 }
 
 impl MachineBuildRuntime {
     pub(crate) fn new(
         machine_id: MachineId,
+        log_client: NatsClient,
         executor: DockerBuildExecutor,
         image_state: Option<AvailableImageService>,
     ) -> Result<Self, String> {
@@ -119,6 +140,7 @@ impl MachineBuildRuntime {
             machine_id,
             effects: BuildEffects::Docker(Box::new(DockerBuildEffects {
                 executor,
+                log_client,
                 image_state,
             })),
             lifecycle: Arc::new(BuildRuntimeLifecycle {
@@ -534,6 +556,12 @@ impl BuildEffects {
             Self::Docker(effects) => {
                 let operation_id = request.operation_id;
                 let platform = request.platform;
+                let route = machine_build_log_route(&machine_id, &operation_id);
+                let log_destination = BuildLogDestination::new(
+                    effects.log_client.clone(),
+                    route.subject,
+                    route.assignment,
+                );
                 let result: BuildExecutionResult = effects
                     .executor
                     .execute(
@@ -542,6 +570,7 @@ impl BuildEffects {
                             &request.source,
                             &request.adapter,
                             &platform,
+                            &log_destination,
                         ),
                         cancel_rx,
                         log_progress,
@@ -708,16 +737,7 @@ fn build_runtime_stopped() -> MachineBuildStartDomainError {
 }
 
 fn local_platform() -> Result<OciPlatform, String> {
-    let architecture = match std::env::consts::ARCH {
-        "x86_64" => "amd64",
-        "aarch64" => "arm64",
-        architecture => {
-            return Err(format!(
-                "unsupported build machine architecture {architecture}"
-            ));
-        }
-    };
-    OciPlatform::try_new(std::env::consts::OS, architecture).map_err(|error| error.to_string())
+    ployz_build_executor::native_oci_platform()
 }
 
 pub(crate) async fn handle_build_start(

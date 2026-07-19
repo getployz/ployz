@@ -3,6 +3,7 @@ use crate::roles::machine::protocol::{
     MachineBuildCachePruneDomainError, MachineBuildCancelDomainError,
 };
 use ployz_core::machine::rpc::MachineRpcResponse;
+use ployz_core::operation::BuildLogChunk;
 use std::sync::atomic::Ordering;
 
 pub(super) struct TestBuildEffects {
@@ -118,6 +119,35 @@ fn local_platform_uses_oci_architecture_names() {
     let platform = local_platform().expect("supported test host");
     assert_eq!(platform.os(), std::env::consts::OS);
     assert!(matches!(platform.architecture(), "amd64" | "arm64"));
+}
+
+#[test]
+fn machine_log_route_preserves_subject_and_cluster_frame_bytes() {
+    let machine_id = MachineId::try_new("machine-a").expect("machine");
+    let operation_id = OperationId::try_new("build-1").expect("operation");
+    let platform = OciPlatform::try_new("linux", "amd64").expect("platform");
+    let route = machine_build_log_route(&machine_id, &operation_id);
+    assert_eq!(
+        route.subject,
+        "plz.v1.signal.machine.machine-a.build.operation.build-1.log"
+    );
+    let frame = crate::roles::machine::protocol::MachineBuildLogFrame {
+        operation_id,
+        assignment: route.assignment,
+        platform,
+        sequence: 3,
+        chunk: BuildLogChunk::try_new("hello").expect("chunk"),
+    };
+    assert_eq!(
+        serde_json::to_value(frame).expect("frame"),
+        serde_json::json!({
+            "operation_id": "build-1",
+            "assignment": {"executor": "cluster", "machine_id": "machine-a"},
+            "platform": {"os": "linux", "architecture": "amd64"},
+            "sequence": 3,
+            "chunk": "hello",
+        })
+    );
 }
 
 #[test]

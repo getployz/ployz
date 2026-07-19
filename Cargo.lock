@@ -3336,6 +3336,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "ployz-build-executor"
+version = "0.1.0"
+dependencies = [
+ "ployz-core",
+ "ployz-nats",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "ployz-core"
 version = "0.1.0"
 dependencies = [
@@ -3515,6 +3530,7 @@ dependencies = [
  "openssl",
  "pingora",
  "ployz",
+ "ployz-build-executor",
  "ployz-core",
  "ployz-ebpf-common",
  "ployz-nats",
