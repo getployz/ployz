@@ -29,17 +29,17 @@ pub(crate) async fn execute_deploy(
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
     let config = with_cluster_context_from_disk(config.clone())?;
     let detach = command.detach;
-    let namespace_id = command.target.namespace_id.clone();
+    let namespace_id = command.reservation_namespace();
     let warnings = command.warnings.join("\n");
     if !warnings.is_empty() {
         eprintln!("{warnings}");
     }
     let connect = nats_connect_config(&config)?;
     let api = operation_api_client_with_connect(&config, connect).await?;
-    let reservation_id = reserve_deploy(&api, command.reservation_namespace()).await?;
+    let reservation_id = reserve_deploy(&api, namespace_id.clone()).await?;
     let receipts = crate::deploy::image_push::prepare_deploy_images(
         &api,
-        &mut command.target.services,
+        command.target.services_mut(),
         command.from_registry,
     )
     .await
@@ -85,22 +85,13 @@ pub(super) async fn submit_deploy(
     api: &OperationApiClient,
     mut request: DeploySubmissionRequest,
 ) -> Result<AcceptedOperation, PloyzctlExecutionError> {
-    let services = match &request {
-        DeploySubmissionRequest::Ordinary(request) => &request.target.services,
-        DeploySubmissionRequest::System(request) => &request.target.services,
-    };
-    let credentials = crate::deploy::registry_auth::deploy_registry_credentials(services)
+    let credentials = crate::deploy::registry_auth::deploy_registry_credentials(request.services())
         .await
         .map_err(|source| DeployExecutionError::RegistryAuth { source })?;
-    match &mut request {
-        DeploySubmissionRequest::Ordinary(request) => {
-            request.registry_credentials = credentials;
-            api.deploy_submit(request).await
-        }
-        DeploySubmissionRequest::System(request) => {
-            request.registry_credentials = credentials;
-            api.system_deploy(request).await
-        }
+    request.set_registry_credentials(credentials);
+    match &request {
+        DeploySubmissionRequest::Ordinary(request) => api.deploy_submit(request).await,
+        DeploySubmissionRequest::System(request) => api.system_deploy(request).await,
     }
     .map_err(api_error)
     .map_err(PloyzctlExecutionError::from)

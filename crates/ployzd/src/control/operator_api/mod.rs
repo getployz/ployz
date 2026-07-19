@@ -1,6 +1,7 @@
 //! Operator-facing operation service handlers.
 
 mod core_replace;
+mod deploy;
 mod error_map;
 mod first_machine;
 mod machine_build_cache_prune;
@@ -12,6 +13,7 @@ pub mod service;
 mod submit;
 
 pub use core_replace::core_replace_report;
+pub use deploy::{deploy_reserve, deploy_submit, system_deploy};
 pub use first_machine::init_first_machine_activate;
 pub use machine_build_cache_prune::machine_build_cache_prune;
 pub use machine_join::{machine_join_redeem, machine_join_report};
@@ -27,10 +29,9 @@ pub use queries::{
 #[cfg(test)]
 pub use submit::owned_operation;
 pub use submit::{
-    build_cancel, build_submit, core_replace, credential_add, credential_remove, deploy_reserve,
-    deploy_submit, ingress_configure, machine_add, machine_drain, machine_resume, machine_update,
-    namespace_remove, network_repair, service_restart, submit_volume_create, system_deploy,
-    volume_remove,
+    build_cancel, build_submit, core_replace, credential_add, credential_remove, ingress_configure,
+    machine_add, machine_drain, machine_resume, machine_update, namespace_remove, network_repair,
+    service_restart, submit_volume_create, volume_remove,
 };
 
 use crate::control::authorization::MachineCredentialMint;

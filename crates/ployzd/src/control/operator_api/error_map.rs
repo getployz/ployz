@@ -7,7 +7,10 @@ use crate::control::operation_evidence::{
     RedeemMachineJoinTokenError as RedeemMachineJoinTokenRepositoryError,
     ReplayOperationEventsError, SubmitOperationError,
 };
-use crate::control::sequencer::{MachineAddSubmitCommandError, SubmitCommandError};
+use crate::control::sequencer::{
+    MachineAddSubmitCommandError, OrdinaryNamespaceSubmitError, SubmitCommandError,
+    SystemDeploySubmitError,
+};
 use ployz_core::ids::OperationId;
 use ployz_core::operation::{EventSequence, ProjectionOperationState, StatusProjectionError};
 use ployz_sdk_types::{
@@ -65,15 +68,6 @@ pub(super) fn submit_failure(error: SubmitCommandError) -> SubmitFailure {
                 ),
             }
         }
-        SubmitCommandError::ReservedSystemNamespace { namespace_id } => {
-            SubmitFailure::ReservedSystemNamespace { namespace_id }
-        }
-        SubmitCommandError::SystemNamespaceRequired { namespace_id } => {
-            SubmitFailure::Unavailable {
-                message: ployz_core::namespace::SystemNamespaceRequired { namespace_id }
-                    .to_string(),
-            }
-        }
         SubmitCommandError::ReservationNotFound {
             namespace_id: _,
             reservation_id: _,
@@ -97,6 +91,19 @@ pub(super) fn submit_failure(error: SubmitCommandError) -> SubmitFailure {
         SubmitCommandError::Submit(SubmitOperationError::DuplicateSequenceMismatch {
             sequence,
         }) => SubmitFailure::DuplicateSequenceMismatch { sequence },
+    }
+}
+
+pub(super) fn ordinary_namespace_submit_failure(
+    error: OrdinaryNamespaceSubmitError,
+) -> SubmitFailure {
+    match error {
+        OrdinaryNamespaceSubmitError::ReservedSystemNamespace(error) => {
+            SubmitFailure::ReservedSystemNamespace {
+                namespace_id: error.namespace_id,
+            }
+        }
+        OrdinaryNamespaceSubmitError::Submit(error) => submit_failure(error),
     }
 }
 
@@ -139,7 +146,7 @@ pub(super) fn unfenced_submit_failure(
     }
 }
 
-pub(super) fn deploy_submit_error_from_submit_error(
+fn deploy_submit_error_from_submit_error(
     operation_id: OperationId,
     error: SubmitCommandError,
 ) -> DeploySubmitError {
@@ -190,17 +197,10 @@ pub(super) fn deploy_submit_error_from_submit_error(
                 owner_operation_id,
             };
         }
-        SubmitCommandError::ReservedSystemNamespace { namespace_id } => {
-            return DeploySubmitError::ReservedSystemNamespace {
-                operation_id,
-                namespace_id,
-            };
-        }
         error @ SubmitCommandError::Clock { .. }
         | error @ SubmitCommandError::NamespaceBusy { .. }
         | error @ SubmitCommandError::IngressBusy { .. }
         | error @ SubmitCommandError::MachineSubstrateBusy { .. }
-        | error @ SubmitCommandError::SystemNamespaceRequired { .. }
         | error @ SubmitCommandError::Submit(SubmitOperationError::StoreStatus(_))
         | error @ SubmitCommandError::Submit(SubmitOperationError::DuplicateSequenceMismatch {
             ..
@@ -230,6 +230,38 @@ pub(super) fn deploy_submit_error_from_submit_error(
                 operation_id,
                 sequence,
             }
+        }
+    }
+}
+
+pub(super) fn ordinary_deploy_submit_error(
+    operation_id: OperationId,
+    error: OrdinaryNamespaceSubmitError,
+) -> DeploySubmitError {
+    match error {
+        OrdinaryNamespaceSubmitError::ReservedSystemNamespace(error) => {
+            DeploySubmitError::ReservedSystemNamespace {
+                operation_id,
+                namespace_id: error.namespace_id,
+            }
+        }
+        OrdinaryNamespaceSubmitError::Submit(error) => {
+            deploy_submit_error_from_submit_error(operation_id, error)
+        }
+    }
+}
+
+pub(super) fn system_deploy_submit_error(
+    operation_id: OperationId,
+    error: SystemDeploySubmitError,
+) -> DeploySubmitError {
+    match error {
+        SystemDeploySubmitError::SystemNamespaceRequired(error) => DeploySubmitError::Unavailable {
+            operation_id,
+            message: error.to_string(),
+        },
+        SystemDeploySubmitError::Submit(error) => {
+            deploy_submit_error_from_submit_error(operation_id, error)
         }
     }
 }
@@ -413,13 +445,15 @@ pub(super) fn ops_watch_error_from_replay_error(
 mod tests {
     use super::{
         deploy_submit_error_from_submit_error, machine_add_error_from_submit_error,
-        ops_watch_error_from_replay_error,
+        ops_watch_error_from_replay_error, ordinary_deploy_submit_error,
     };
     use crate::control::operation_evidence::{
         OperationEventLogError, OperationStatusStoreError, ReplayOperationEventsError,
         SubmitOperationError,
     };
-    use crate::control::sequencer::{MachineAddSubmitCommandError, SubmitCommandError};
+    use crate::control::sequencer::{
+        MachineAddSubmitCommandError, OrdinaryNamespaceSubmitError, SubmitCommandError,
+    };
     use ployz_core::ids::{NamespaceId, OperationId};
     use ployz_core::operation::EventSequence;
     use ployz_sdk_types::{DeploySubmitError, MachineAddError, OpsWatchError};
@@ -511,11 +545,13 @@ mod tests {
         let namespace_id = ployz_core::namespace::reserved_system_namespace();
 
         assert_eq!(
-            deploy_submit_error_from_submit_error(
+            ordinary_deploy_submit_error(
                 submitted_operation_id.clone(),
-                SubmitCommandError::ReservedSystemNamespace {
-                    namespace_id: namespace_id.clone(),
-                },
+                OrdinaryNamespaceSubmitError::ReservedSystemNamespace(
+                    ployz_core::namespace::ReservedSystemNamespace {
+                        namespace_id: namespace_id.clone(),
+                    },
+                ),
             ),
             DeploySubmitError::ReservedSystemNamespace {
                 operation_id: submitted_operation_id,

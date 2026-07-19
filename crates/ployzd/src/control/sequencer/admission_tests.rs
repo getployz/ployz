@@ -425,7 +425,7 @@ async fn duplicate_deploy_submission_keeps_ingress_fence_owned_by_original() {
 
     assert!(matches!(
         error,
-        SubmitCommandError::IngressBusy { owner, .. }
+        OrdinaryNamespaceSubmitError::Submit(SubmitCommandError::IngressBusy { owner, .. })
             if owner == operation_id("op_original")
     ));
 }
@@ -490,7 +490,7 @@ async fn ordinary_deploy_rejects_the_reserved_system_namespace_before_recording_
 
     assert!(matches!(
         error,
-        SubmitCommandError::ReservedSystemNamespace { namespace_id: rejected }
+        OrdinaryNamespaceSubmitError::ReservedSystemNamespace(ployz_core::namespace::ReservedSystemNamespace { namespace_id: rejected })
             if rejected == namespace_id
     ));
     assert_operation_was_not_recorded(&controllers, &operation_id).await;
@@ -610,7 +610,7 @@ async fn system_deploy_uses_the_existing_reservation_repository_and_namespace_fe
         .expect_err("system deploy shares the namespace fence");
     assert!(matches!(
         conflict,
-        SubmitCommandError::NamespaceBusy { namespace_id: busy, owner }
+        SystemDeploySubmitError::Submit(SubmitCommandError::NamespaceBusy { namespace_id: busy, owner })
             if busy == namespace_id && owner == submitted_operation_id
     ));
     assert_operation_was_not_recorded(&controllers, &conflicting_id).await;
@@ -643,16 +643,19 @@ async fn system_deploy_rejects_a_non_system_namespace_before_recording_evidence(
 
     assert!(matches!(
         error,
-        SubmitCommandError::SystemNamespaceRequired { namespace_id: rejected }
+        SystemDeploySubmitError::SystemNamespaceRequired(ployz_core::namespace::SystemNamespaceRequired { namespace_id: rejected })
             if rejected == namespace_id
     ));
     assert_operation_was_not_recorded(&controllers, &operation_id).await;
 }
 
-fn assert_reserved_system_namespace(error: SubmitCommandError, namespace_id: &NamespaceId) {
+fn assert_reserved_system_namespace(
+    error: OrdinaryNamespaceSubmitError,
+    namespace_id: &NamespaceId,
+) {
     assert!(matches!(
         error,
-        SubmitCommandError::ReservedSystemNamespace { namespace_id: rejected }
+        OrdinaryNamespaceSubmitError::ReservedSystemNamespace(ployz_core::namespace::ReservedSystemNamespace { namespace_id: rejected })
             if rejected == *namespace_id
     ));
 }

@@ -2,8 +2,8 @@ use std::process::{Command, Output};
 
 use ployz::commands::{PloyzctlCommand, parse_command};
 use ployz::deploy::command::{
-    DeployCommand, DeployEndpoint, DeployOutput, DeployRollbackCommand, DeployRollbackSelection,
-    DeploySubmissionRequest,
+    DeployCommand, DeployCommandTarget, DeployOutput, DeployRollbackCommand,
+    DeployRollbackSelection, DeploySubmissionRequest,
 };
 use ployz_core::deploy::{
     DeployOrigin, DeployReservationId, DeployRoute, DeployRouteTarget, DeployServiceSpec,
@@ -53,10 +53,10 @@ fn cli_system_deploy_uses_compose_and_the_system_submission_shape() {
     let PloyzctlCommand::SystemDeploy(command) = command else {
         panic!("expected system deploy command");
     };
-    assert_eq!(command.endpoint, DeployEndpoint::System);
+    assert!(matches!(command.target, DeployCommandTarget::System(_)));
     assert!(command.detach);
     assert!(command.from_registry);
-    assert_eq!(command.target.services.len(), 2);
+    assert_eq!(command.target.services().len(), 2);
     assert_eq!(
         command.reservation_namespace(),
         ployz_core::namespace::reserved_system_namespace()
@@ -127,8 +127,8 @@ fn cli_deploy_accepts_origin_caption() {
     );
 
     assert_eq!(
-        command.target.origin,
-        Some(DeployOrigin::try_new("release 2026-07-10").expect("valid origin"))
+        command.target.origin(),
+        Some(&DeployOrigin::try_new("release 2026-07-10").expect("valid origin"))
     );
 }
 
@@ -453,7 +453,7 @@ fn cli_allows_unsupported_compose_when_flag_is_set() {
     let PloyzctlCommand::Deploy(command) = command else {
         panic!("expected deploy command");
     };
-    assert_eq!(command.target.services.len(), 1);
+    assert_eq!(command.target.services().len(), 1);
     assert!(
         command
             .warnings
@@ -716,12 +716,16 @@ fn assert_deploy_fixture(command: &DeployCommand) {
             .starts_with("idem_deploy_svc_api_")
     );
     assert_eq!(
-        command.target.namespace_id,
+        command
+            .target
+            .ordinary()
+            .expect("ordinary target")
+            .namespace_id,
         NamespaceId::try_new("default").expect("valid namespace id")
     );
-    assert_eq!(command.target.origin, None);
+    assert_eq!(command.target.origin(), None);
     assert_eq!(
-        command.target.services,
+        command.target.services(),
         vec![DeployServiceSpec {
             keep: None,
             service_id: ServiceId::try_new("svc_api").expect("valid service id"),
@@ -735,6 +739,7 @@ fn assert_deploy_fixture(command: &DeployCommand) {
             depends_on: Vec::new(),
             routes: Vec::new(),
         }]
+        .as_slice()
     );
     assert!(command.warnings.is_empty());
     assert!(!command.detach);

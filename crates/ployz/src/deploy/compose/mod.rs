@@ -48,58 +48,6 @@ pub fn parse_compose_file(
     })
 }
 
-pub fn parse_system_deploy_file(
-    file: &Path,
-    mode: UnsupportedFieldMode,
-) -> Result<(DeployRequest, Vec<RenderedWarning>), PloyzctlCliError> {
-    let source = fs::read_to_string(file)
-        .map_err(|error| cli_error(format!("could not read {}: {error}", file.display())))?;
-    reject_system_deploy_volumes(&source)?;
-    let base_dir = file.parent().unwrap_or_else(|| Path::new("."));
-    parse_deploy_file(ComposeInput {
-        source: &source,
-        base_dir,
-        interpolation_env: interpolation_env(base_dir)?,
-        namespace_override: Some(ployz_core::namespace::reserved_system_namespace()),
-        mode,
-    })
-}
-
-fn reject_system_deploy_volumes(source: &str) -> Result<(), PloyzctlCliError> {
-    let mut value: Value = serde_yaml::from_str(source)
-        .map_err(|error| cli_error(format!("invalid compose YAML: {error}")))?;
-    apply_merge(&mut value);
-    let Some(document) = value.as_mapping() else {
-        return Ok(());
-    };
-    if document.contains_key(Value::String("volumes".to_owned())) {
-        return Err(PloyzctlCliError::InvalidValue {
-            flag: "-f",
-            message: "system deploy does not support top-level Compose volume declarations"
-                .to_owned(),
-        });
-    }
-    let services_key = Value::String("services".to_owned());
-    let volumes_key = Value::String("volumes".to_owned());
-    if let Some(services) = document.get(&services_key).and_then(Value::as_mapping) {
-        for (name, service) in services {
-            if service
-                .as_mapping()
-                .is_some_and(|service| service.contains_key(&volumes_key))
-            {
-                return Err(PloyzctlCliError::InvalidValue {
-                    flag: "-f",
-                    message: format!(
-                        "system deploy does not support Compose volume mounts on service {}",
-                        name.as_str().unwrap_or("<unknown>")
-                    ),
-                });
-            }
-        }
-    }
-    Ok(())
-}
-
 pub fn parse_deploy_file(
     input: ComposeInput<'_>,
 ) -> Result<(DeployRequest, Vec<RenderedWarning>), PloyzctlCliError> {

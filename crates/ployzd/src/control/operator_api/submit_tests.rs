@@ -175,6 +175,45 @@ fn deploy_admission_rejects_a_mounted_volume_without_a_declaration() {
 }
 
 #[test]
+fn ordinary_deploy_reports_reserved_namespace_before_invalid_target() {
+    let mut runtime = ContainerRuntimeSpec::image_defaults();
+    runtime.volume_mounts = vec![ServiceVolumeMount {
+        volume_name: VolumeName::try_new("undeclared").expect("volume name"),
+        target: ContainerMountPath::try_new("/data").expect("mount path"),
+    }];
+    let request = DeploySubmitRequest {
+        idempotency_key: OperationIdempotencyKey::try_new("idem_reserved_invalid")
+            .expect("idempotency key"),
+        reservation_id: DeployReservationId::first(),
+        target: DeployRequest {
+            namespace_id: ployz_core::namespace::reserved_system_namespace(),
+            origin: None,
+            volumes: BTreeMap::new(),
+            services: vec![DeployServiceSpec {
+                keep: None,
+                service_id: ServiceId::try_new("api").expect("service id"),
+                image: ImageReference::try_new("nginx:latest").expect("image"),
+                image_source: ImageSource::Registry,
+                mode: ployz_core::deploy::ServiceMode::Replicated {
+                    replicas: ReplicaCount::try_new(1).expect("replicas"),
+                },
+                runtime,
+                pre_start: None,
+                depends_on: Vec::new(),
+                routes: Vec::new(),
+            }],
+        },
+        registry_credentials: BTreeMap::new(),
+    };
+
+    assert!(matches!(
+        normalize_deploy_submit(request),
+        Err(DeploySubmitError::ReservedSystemNamespace { namespace_id, .. })
+            if namespace_id == ployz_core::namespace::reserved_system_namespace()
+    ));
+}
+
+#[test]
 fn system_deploy_normalization_fixes_the_reserved_namespace_and_empty_volumes() {
     let command = normalize_system_deploy(SystemDeployRequest {
         idempotency_key: OperationIdempotencyKey::try_new("idem_system_deploy")

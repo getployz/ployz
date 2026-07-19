@@ -2,16 +2,13 @@
 //! and return the operation id + watch subject.
 
 use crate::control::authorization::MintRequest;
-use crate::control::intent::ingress_intent::PloyzDnsTargetStore;
-use crate::control::intent::namespace_intent::NamespaceIntentStore;
-use crate::control::operations::deploy::validate_deploy_route_admission;
 use crate::control::sequencer::{
     BuildSubmitCommand, CoreReplaceSubmitCommand, CredentialGrantSubmitCommand,
-    DeploySubmitCommand, IngressConfigureSubmitCommand, IngressConfigureSubmitError,
-    MachineAddBootstrapMaterial, MachineAddBootstrapMaterialError, MachineAddSubmitCommand,
-    MachineLifecycleSubmitCommand, MachineUpdateSubmitCommand, NamespaceRemoveSubmitCommand,
-    NetworkRepairSubmitCommand, OperationControllers, ServiceRestartSubmitCommand,
-    VolumeCreateSubmitCommand, VolumeRemoveSubmitCommand,
+    IngressConfigureSubmitCommand, IngressConfigureSubmitError, MachineAddBootstrapMaterial,
+    MachineAddBootstrapMaterialError, MachineAddSubmitCommand, MachineLifecycleSubmitCommand,
+    MachineUpdateSubmitCommand, NamespaceRemoveSubmitCommand, NetworkRepairSubmitCommand,
+    OperationControllers, ServiceRestartSubmitCommand, VolumeCreateSubmitCommand,
+    VolumeRemoveSubmitCommand,
 };
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::operation::{CredentialGrantAction, EventSequence, VolumeCreateRequest};
@@ -19,13 +16,11 @@ use ployz_nats::subjects::{OperationProgressScope, operation_progress_watch};
 use ployz_sdk_types::{
     AcceptedOperation, BuildCancelError, BuildCancelRequest, BuildSubmitError, BuildSubmitRequest,
     CoreReplaceError, CoreReplaceRequest, CredentialAddError, CredentialAddRequest,
-    CredentialRemoveError, CredentialRemoveRequest, DeployRequest, DeployReserveError,
-    DeployReserveRequest, DeployReserved, DeploySubmitError, DeploySubmitRequest,
-    IngressConfigureError, IngressConfigureRequest, MachineAddAccepted, MachineAddError,
-    MachineAddRequest, MachineJoinToken, MachineLifecycleError, MachineLifecycleRequest,
-    MachineUpdateError, MachineUpdateRequest, NamespaceRemoveError, NamespaceRemoveRequest,
-    NetworkRepairError, NetworkRepairRequest, ServiceRestartError, ServiceRestartRequest,
-    SystemDeployRequest, SystemDeployTarget, VolumeCreateError, VolumeRemoveError,
+    CredentialRemoveError, CredentialRemoveRequest, IngressConfigureError, IngressConfigureRequest,
+    MachineAddAccepted, MachineAddError, MachineAddRequest, MachineJoinToken,
+    MachineLifecycleError, MachineLifecycleRequest, MachineUpdateError, MachineUpdateRequest,
+    NamespaceRemoveError, NamespaceRemoveRequest, NetworkRepairError, NetworkRepairRequest,
+    ServiceRestartError, ServiceRestartRequest, VolumeCreateError, VolumeRemoveError,
     VolumeRemoveRequest,
 };
 
@@ -49,8 +44,6 @@ pub async fn build_submit(
         | crate::control::sequencer::SubmitCommandError::IngressBusy { .. }
         | crate::control::sequencer::SubmitCommandError::ReservationNotFound { .. }
         | crate::control::sequencer::SubmitCommandError::ReservationExpired { .. }
-        | crate::control::sequencer::SubmitCommandError::ReservedSystemNamespace { .. }
-        | crate::control::sequencer::SubmitCommandError::SystemNamespaceRequired { .. }
         | crate::control::sequencer::SubmitCommandError::Submit(_)) => BuildSubmitError::Unavailable {
             operation_id: operation_id.clone(),
             message: format!("{error:?}"),
@@ -97,9 +90,9 @@ pub async fn build_cancel(
 }
 
 use super::OperationApiHandlers;
-use super::error_map::{
-    deploy_submit_error_from_submit_error, machine_add_error_from_submit_error,
-};
+#[cfg(test)]
+use super::deploy::{normalize_deploy_submit, normalize_system_deploy};
+use super::error_map::machine_add_error_from_submit_error;
 
 #[must_use]
 pub fn owned_operation(
@@ -113,98 +106,6 @@ pub fn owned_operation(
         watch_subject,
         start_sequence,
     }
-}
-
-fn normalize_deploy_submit(
-    value: DeploySubmitRequest,
-) -> Result<DeploySubmitCommand, DeploySubmitError> {
-    let operation_id = mint_deploy_operation_id();
-    let DeploySubmitRequest {
-        idempotency_key,
-        reservation_id,
-        target,
-        registry_credentials,
-    } = value;
-    normalize_deploy_command(
-        operation_id,
-        idempotency_key,
-        reservation_id,
-        target,
-        registry_credentials,
-    )
-}
-
-fn normalize_system_deploy(
-    value: SystemDeployRequest,
-) -> Result<DeploySubmitCommand, DeploySubmitError> {
-    let operation_id = mint_deploy_operation_id();
-    let SystemDeployRequest {
-        idempotency_key,
-        reservation_id,
-        target: SystemDeployTarget { origin, services },
-        registry_credentials,
-    } = value;
-    normalize_deploy_command(
-        operation_id,
-        idempotency_key,
-        reservation_id,
-        DeployRequest {
-            namespace_id: ployz_core::namespace::reserved_system_namespace(),
-            origin,
-            volumes: std::collections::BTreeMap::new(),
-            services,
-        },
-        registry_credentials,
-    )
-}
-
-fn normalize_deploy_command(
-    operation_id: OperationId,
-    idempotency_key: ployz_core::operation::OperationIdempotencyKey,
-    reservation_id: ployz_core::deploy::DeployReservationId,
-    target: DeployRequest,
-    registry_credentials: std::collections::BTreeMap<
-        ployz_core::ids::ServiceId,
-        ployz_core::image::RegistryCredential,
-    >,
-) -> Result<DeploySubmitCommand, DeploySubmitError> {
-    let planning_target = ployz_core::deploy::DeployPlanningTarget::try_from_deploy(&target)
-        .map_err(|error| DeploySubmitError::InvalidTarget {
-            operation_id: operation_id.clone(),
-            message: ployz_core::operation::FailureMessage::try_new(error.to_string())
-                .expect("deploy target validation error is non-empty"),
-        })?;
-    planning_target
-        .validate_registry_credential_service_ids(registry_credentials.keys())
-        .map_err(|error| DeploySubmitError::InvalidTarget {
-            operation_id: operation_id.clone(),
-            message: ployz_core::operation::FailureMessage::try_new(error.to_string())
-                .expect("registry credential target validation error is non-empty"),
-        })?;
-    Ok(DeploySubmitCommand {
-        operation_id,
-        idempotency_key,
-        reservation_id,
-        target,
-        registry_credentials,
-    })
-}
-
-pub async fn deploy_reserve(
-    handlers: &OperationApiHandlers,
-    request: DeployReserveRequest,
-) -> Result<DeployReserved, DeployReserveError> {
-    handlers
-        .controllers
-        .reserve_deploy(&request.namespace_id)
-        .await
-        .map(|reservation| DeployReserved {
-            reservation_id: reservation.reservation_id,
-            expires_at: reservation.expires_at,
-        })
-        .map_err(|error| DeployReserveError::Unavailable {
-            message: error.to_string(),
-        })
 }
 
 pub async fn credential_add(
@@ -367,11 +268,6 @@ fn credential_remove_submit_error(
     }
 }
 
-fn mint_deploy_operation_id() -> OperationId {
-    OperationId::try_new(format!("op_deploy_{}", nuid::next()))
-        .expect("generated deploy operation id uses subject-token characters")
-}
-
 impl From<MachineUpdateRequest> for MachineUpdateSubmitCommand {
     fn from(value: MachineUpdateRequest) -> Self {
         Self {
@@ -380,72 +276,6 @@ impl From<MachineUpdateRequest> for MachineUpdateSubmitCommand {
             target_version: value.target_version,
         }
     }
-}
-
-pub async fn deploy_submit(
-    handlers: &OperationApiHandlers,
-    request: DeploySubmitRequest,
-) -> Result<AcceptedOperation, DeploySubmitError> {
-    let command = normalize_deploy_submit(request)?;
-    let operation_id = command.operation_id.clone();
-    validate_deploy_command(handlers, &command).await?;
-    let accepted_execution = handlers
-        .controllers
-        .submit_deploy(command)
-        .await
-        .map_err(|error| deploy_submit_error_from_submit_error(operation_id, error))?;
-    finish_deploy(handlers, accepted_execution).await
-}
-
-pub async fn system_deploy(
-    handlers: &OperationApiHandlers,
-    request: SystemDeployRequest,
-) -> Result<AcceptedOperation, DeploySubmitError> {
-    let command = normalize_system_deploy(request)?;
-    let operation_id = command.operation_id.clone();
-    validate_deploy_command(handlers, &command).await?;
-    let accepted_execution = handlers
-        .controllers
-        .submit_system_deploy(command)
-        .await
-        .map_err(|error| deploy_submit_error_from_submit_error(operation_id, error))?;
-    finish_deploy(handlers, accepted_execution).await
-}
-
-async fn validate_deploy_command(
-    handlers: &OperationApiHandlers,
-    command: &DeploySubmitCommand,
-) -> Result<(), DeploySubmitError> {
-    validate_deploy_route_admission(
-        &command.target,
-        &handlers.ingress_intent,
-        &PloyzDnsTargetStore::new(handlers.core_store.clone()),
-        &NamespaceIntentStore::new(handlers.core_store.clone()),
-    )
-    .await
-    .map_err(|error| DeploySubmitError::InvalidTarget {
-        operation_id: command.operation_id.clone(),
-        message: ployz_core::operation::FailureMessage::try_new(error.to_string())
-            .expect("route admission validation error is non-empty"),
-    })
-}
-
-async fn finish_deploy(
-    handlers: &OperationApiHandlers,
-    accepted_execution: crate::control::sequencer::AcceptedDeployExecution,
-) -> Result<AcceptedOperation, DeploySubmitError> {
-    let accepted = &accepted_execution.submission;
-    let scope = OperationProgressScope::Namespace {
-        namespace_id: accepted.target.namespace_id.clone(),
-    };
-    let operation = owned_operation(
-        accepted.operation_id.clone(),
-        scope,
-        accepted.start_sequence,
-    );
-    handlers.deploy_driver.start(accepted_execution).await;
-
-    Ok(operation)
 }
 
 pub async fn service_restart(
@@ -461,34 +291,36 @@ pub async fn service_restart(
             service_id: request.service_id,
         })
         .await
-        .map_err(|error| match super::error_map::submit_failure(error) {
-            super::error_map::SubmitFailure::ResourceBusy {
-                namespace_id,
-                owner,
-            } => ServiceRestartError::ResourceBusy {
-                operation_id: operation_id.clone(),
-                namespace_id,
-                owner_operation_id: owner,
-            },
-            super::error_map::SubmitFailure::ReservedSystemNamespace { namespace_id } => {
-                ServiceRestartError::ReservedSystemNamespace {
+        .map_err(
+            |error| match super::error_map::ordinary_namespace_submit_failure(error) {
+                super::error_map::SubmitFailure::ResourceBusy {
+                    namespace_id,
+                    owner,
+                } => ServiceRestartError::ResourceBusy {
                     operation_id: operation_id.clone(),
                     namespace_id,
+                    owner_operation_id: owner,
+                },
+                super::error_map::SubmitFailure::ReservedSystemNamespace { namespace_id } => {
+                    ServiceRestartError::ReservedSystemNamespace {
+                        operation_id: operation_id.clone(),
+                        namespace_id,
+                    }
                 }
-            }
-            super::error_map::SubmitFailure::Unavailable { message } => {
-                ServiceRestartError::Unavailable {
-                    operation_id: operation_id.clone(),
-                    message,
+                super::error_map::SubmitFailure::Unavailable { message } => {
+                    ServiceRestartError::Unavailable {
+                        operation_id: operation_id.clone(),
+                        message,
+                    }
                 }
-            }
-            super::error_map::SubmitFailure::DuplicateSequenceMismatch { sequence } => {
-                ServiceRestartError::DuplicateSequenceMismatch {
-                    operation_id: operation_id.clone(),
-                    sequence,
+                super::error_map::SubmitFailure::DuplicateSequenceMismatch { sequence } => {
+                    ServiceRestartError::DuplicateSequenceMismatch {
+                        operation_id: operation_id.clone(),
+                        sequence,
+                    }
                 }
-            }
-        })?;
+            },
+        )?;
     let operation = owned_operation(
         accepted.operation_id.clone(),
         OperationProgressScope::Namespace {
@@ -598,34 +430,36 @@ pub async fn namespace_remove(
             namespace_id: request.namespace_id,
         })
         .await
-        .map_err(|error| match super::error_map::submit_failure(error) {
-            super::error_map::SubmitFailure::ResourceBusy {
-                namespace_id,
-                owner,
-            } => NamespaceRemoveError::ResourceBusy {
-                operation_id: operation_id.clone(),
-                namespace_id,
-                owner_operation_id: owner,
-            },
-            super::error_map::SubmitFailure::ReservedSystemNamespace { namespace_id } => {
-                NamespaceRemoveError::ReservedSystemNamespace {
+        .map_err(
+            |error| match super::error_map::ordinary_namespace_submit_failure(error) {
+                super::error_map::SubmitFailure::ResourceBusy {
+                    namespace_id,
+                    owner,
+                } => NamespaceRemoveError::ResourceBusy {
                     operation_id: operation_id.clone(),
                     namespace_id,
+                    owner_operation_id: owner,
+                },
+                super::error_map::SubmitFailure::ReservedSystemNamespace { namespace_id } => {
+                    NamespaceRemoveError::ReservedSystemNamespace {
+                        operation_id: operation_id.clone(),
+                        namespace_id,
+                    }
                 }
-            }
-            super::error_map::SubmitFailure::Unavailable { message } => {
-                NamespaceRemoveError::Unavailable {
-                    operation_id: operation_id.clone(),
-                    message,
+                super::error_map::SubmitFailure::Unavailable { message } => {
+                    NamespaceRemoveError::Unavailable {
+                        operation_id: operation_id.clone(),
+                        message,
+                    }
                 }
-            }
-            super::error_map::SubmitFailure::DuplicateSequenceMismatch { sequence } => {
-                NamespaceRemoveError::DuplicateSequenceMismatch {
-                    operation_id: operation_id.clone(),
-                    sequence,
+                super::error_map::SubmitFailure::DuplicateSequenceMismatch { sequence } => {
+                    NamespaceRemoveError::DuplicateSequenceMismatch {
+                        operation_id: operation_id.clone(),
+                        sequence,
+                    }
                 }
-            }
-        })?;
+            },
+        )?;
     let operation = owned_operation(
         accepted.operation_id.clone(),
         OperationProgressScope::Namespace {
@@ -650,34 +484,36 @@ pub async fn volume_remove(
             volume_name: request.volume_name,
         })
         .await
-        .map_err(|error| match super::error_map::submit_failure(error) {
-            super::error_map::SubmitFailure::ResourceBusy {
-                namespace_id,
-                owner,
-            } => VolumeRemoveError::ResourceBusy {
-                operation_id: operation_id.clone(),
-                namespace_id,
-                owner_operation_id: owner,
-            },
-            super::error_map::SubmitFailure::ReservedSystemNamespace { namespace_id } => {
-                VolumeRemoveError::ReservedSystemNamespace {
+        .map_err(
+            |error| match super::error_map::ordinary_namespace_submit_failure(error) {
+                super::error_map::SubmitFailure::ResourceBusy {
+                    namespace_id,
+                    owner,
+                } => VolumeRemoveError::ResourceBusy {
                     operation_id: operation_id.clone(),
                     namespace_id,
+                    owner_operation_id: owner,
+                },
+                super::error_map::SubmitFailure::ReservedSystemNamespace { namespace_id } => {
+                    VolumeRemoveError::ReservedSystemNamespace {
+                        operation_id: operation_id.clone(),
+                        namespace_id,
+                    }
                 }
-            }
-            super::error_map::SubmitFailure::Unavailable { message } => {
-                VolumeRemoveError::Unavailable {
-                    operation_id: operation_id.clone(),
-                    message,
+                super::error_map::SubmitFailure::Unavailable { message } => {
+                    VolumeRemoveError::Unavailable {
+                        operation_id: operation_id.clone(),
+                        message,
+                    }
                 }
-            }
-            super::error_map::SubmitFailure::DuplicateSequenceMismatch { sequence } => {
-                VolumeRemoveError::DuplicateSequenceMismatch {
-                    operation_id: operation_id.clone(),
-                    sequence,
+                super::error_map::SubmitFailure::DuplicateSequenceMismatch { sequence } => {
+                    VolumeRemoveError::DuplicateSequenceMismatch {
+                        operation_id: operation_id.clone(),
+                        sequence,
+                    }
                 }
-            }
-        })?;
+            },
+        )?;
     let operation = owned_operation(
         accepted.operation_id.clone(),
         OperationProgressScope::Namespace {
@@ -699,34 +535,36 @@ pub async fn submit_volume_create(
         .controllers()
         .submit_volume_create(VolumeCreateSubmitCommand { request })
         .await
-        .map_err(|error| match super::error_map::submit_failure(error) {
-            super::error_map::SubmitFailure::ResourceBusy {
-                namespace_id,
-                owner,
-            } => VolumeCreateError::ResourceBusy {
-                operation_id: operation_id.clone(),
-                namespace_id,
-                owner_operation_id: owner,
-            },
-            super::error_map::SubmitFailure::ReservedSystemNamespace { namespace_id } => {
-                VolumeCreateError::ReservedSystemNamespace {
+        .map_err(
+            |error| match super::error_map::ordinary_namespace_submit_failure(error) {
+                super::error_map::SubmitFailure::ResourceBusy {
+                    namespace_id,
+                    owner,
+                } => VolumeCreateError::ResourceBusy {
                     operation_id: operation_id.clone(),
                     namespace_id,
+                    owner_operation_id: owner,
+                },
+                super::error_map::SubmitFailure::ReservedSystemNamespace { namespace_id } => {
+                    VolumeCreateError::ReservedSystemNamespace {
+                        operation_id: operation_id.clone(),
+                        namespace_id,
+                    }
                 }
-            }
-            super::error_map::SubmitFailure::Unavailable { message } => {
-                VolumeCreateError::Unavailable {
-                    operation_id: operation_id.clone(),
-                    message,
+                super::error_map::SubmitFailure::Unavailable { message } => {
+                    VolumeCreateError::Unavailable {
+                        operation_id: operation_id.clone(),
+                        message,
+                    }
                 }
-            }
-            super::error_map::SubmitFailure::DuplicateSequenceMismatch { sequence } => {
-                VolumeCreateError::DuplicateSequenceMismatch {
-                    operation_id: operation_id.clone(),
-                    sequence,
+                super::error_map::SubmitFailure::DuplicateSequenceMismatch { sequence } => {
+                    VolumeCreateError::DuplicateSequenceMismatch {
+                        operation_id: operation_id.clone(),
+                        sequence,
+                    }
                 }
-            }
-        })?;
+            },
+        )?;
     let operation = owned_operation(
         accepted.request.operation_id.clone(),
         OperationProgressScope::Namespace {
@@ -839,13 +677,12 @@ pub async fn machine_update(
         });
     }
     let operation_id = request.operation_id.clone();
-    let accepted =
-        handlers
-            .controllers()
-            .submit_machine_update(request.into())
-            .await
-            .map_err(|error| {
-                let error = match error {
+    let accepted = handlers
+        .controllers()
+        .submit_machine_update(request.into())
+        .await
+        .map_err(|error| {
+            let error = match error {
                 crate::control::sequencer::SubmitCommandError::MachineSubstrateBusy {
                     machine_id,
                     owner,
@@ -865,29 +702,23 @@ pub async fn machine_update(
                 | error @ crate::control::sequencer::SubmitCommandError::ReservationExpired {
                     ..
                 }
-                | error @ crate::control::sequencer::SubmitCommandError::ReservedSystemNamespace {
-                    ..
-                }
-                | error @ crate::control::sequencer::SubmitCommandError::SystemNamespaceRequired {
-                    ..
-                }
                 | error @ crate::control::sequencer::SubmitCommandError::Submit(_) => error,
             };
-                match super::error_map::unfenced_submit_failure("machine-update", error) {
-                    super::error_map::UnfencedSubmitFailure::Unavailable { message } => {
-                        MachineUpdateError::Unavailable {
-                            operation_id: operation_id.clone(),
-                            message,
-                        }
+            match super::error_map::unfenced_submit_failure("machine-update", error) {
+                super::error_map::UnfencedSubmitFailure::Unavailable { message } => {
+                    MachineUpdateError::Unavailable {
+                        operation_id: operation_id.clone(),
+                        message,
                     }
-                    super::error_map::UnfencedSubmitFailure::DuplicateSequenceMismatch {
-                        sequence,
-                    } => MachineUpdateError::DuplicateSequenceMismatch {
+                }
+                super::error_map::UnfencedSubmitFailure::DuplicateSequenceMismatch { sequence } => {
+                    MachineUpdateError::DuplicateSequenceMismatch {
                         operation_id: operation_id.clone(),
                         sequence,
-                    },
+                    }
                 }
-            })?;
+            }
+        })?;
     let operation = owned_machine_operation(
         accepted.operation_id.clone(),
         &accepted.machine_id,

@@ -39,13 +39,12 @@ pub async fn machine_storage_prepare(
     }
 
     let operation_id = request.operation_id.clone();
-    let accepted =
-        handlers
-            .controllers()
-            .submit_machine_storage_prepare(request.into())
-            .await
-            .map_err(|error| {
-                let error = match error {
+    let accepted = handlers
+        .controllers()
+        .submit_machine_storage_prepare(request.into())
+        .await
+        .map_err(|error| {
+            let error = match error {
                 crate::control::sequencer::SubmitCommandError::MachineSubstrateBusy {
                     machine_id,
                     owner,
@@ -65,29 +64,23 @@ pub async fn machine_storage_prepare(
                 | error @ crate::control::sequencer::SubmitCommandError::ReservationExpired {
                     ..
                 }
-                | error @ crate::control::sequencer::SubmitCommandError::ReservedSystemNamespace {
-                    ..
-                }
-                | error @ crate::control::sequencer::SubmitCommandError::SystemNamespaceRequired {
-                    ..
-                }
                 | error @ crate::control::sequencer::SubmitCommandError::Submit(_) => error,
             };
-                match super::error_map::unfenced_submit_failure("machine-storage-prepare", error) {
-                    super::error_map::UnfencedSubmitFailure::Unavailable { message } => {
-                        MachineStoragePrepareError::Unavailable {
-                            operation_id: operation_id.clone(),
-                            message,
-                        }
+            match super::error_map::unfenced_submit_failure("machine-storage-prepare", error) {
+                super::error_map::UnfencedSubmitFailure::Unavailable { message } => {
+                    MachineStoragePrepareError::Unavailable {
+                        operation_id: operation_id.clone(),
+                        message,
                     }
-                    super::error_map::UnfencedSubmitFailure::DuplicateSequenceMismatch {
-                        sequence,
-                    } => MachineStoragePrepareError::DuplicateSequenceMismatch {
+                }
+                super::error_map::UnfencedSubmitFailure::DuplicateSequenceMismatch { sequence } => {
+                    MachineStoragePrepareError::DuplicateSequenceMismatch {
                         operation_id: operation_id.clone(),
                         sequence,
-                    },
+                    }
                 }
-            })?;
+            }
+        })?;
     let operation = owned_machine_operation(
         accepted.operation_id.clone(),
         &accepted.machine_id,
