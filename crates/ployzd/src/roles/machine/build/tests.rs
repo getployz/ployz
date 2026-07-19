@@ -353,7 +353,7 @@ async fn unavailable_build_runtime_is_typed_machine_evidence_for_every_handler()
 #[tokio::test]
 async fn shutdown_closes_build_admission_with_stable_typed_evidence() {
     let effects = Arc::new(TestBuildEffects::new(true));
-    let runtime = MachineBuildRuntime::new_with_test_effects(
+    let runtime = MachineBuildRuntime::new_for_test(
         MachineId::try_new("machine-a").expect("machine"),
         effects,
     );
@@ -368,7 +368,7 @@ async fn shutdown_closes_build_admission_with_stable_typed_evidence() {
 #[tokio::test]
 async fn shutdown_cancels_active_build_and_waits_for_cleanup() {
     let effects = Arc::new(TestBuildEffects::cooperative(true));
-    let runtime = MachineBuildRuntime::new_with_test_effects(
+    let runtime = MachineBuildRuntime::new_for_test(
         MachineId::try_new("machine-a").expect("machine"),
         effects.clone(),
     );
@@ -398,7 +398,7 @@ async fn shutdown_cancels_active_build_and_waits_for_cleanup() {
 #[tokio::test]
 async fn cache_prune_waits_for_active_build_cleanup() {
     let effects = Arc::new(TestBuildEffects::cooperative(true));
-    let runtime = MachineBuildRuntime::new_with_test_effects(
+    let runtime = MachineBuildRuntime::new_for_test(
         MachineId::try_new("machine-a").expect("machine"),
         effects.clone(),
     );
@@ -435,7 +435,7 @@ async fn cache_prune_waits_for_active_build_cleanup() {
 #[tokio::test(start_paused = true)]
 async fn cache_prune_times_out_the_whole_effect_and_releases_the_machine_slot() {
     let effects = Arc::new(TestBuildEffects::blocking_prune());
-    let runtime = MachineBuildRuntime::new_with_test_effects(
+    let runtime = MachineBuildRuntime::new_for_test(
         MachineId::try_new("machine-a").expect("machine"),
         effects.clone(),
     );
@@ -463,7 +463,7 @@ async fn cache_prune_times_out_the_whole_effect_and_releases_the_machine_slot() 
 
 #[tokio::test]
 async fn shutdown_waits_for_the_machine_slot_before_stopping() {
-    let runtime = MachineBuildRuntime::new_with_test_effects(
+    let runtime = MachineBuildRuntime::new_for_test(
         MachineId::try_new("machine-a").expect("machine"),
         Arc::new(TestBuildEffects::new(true)),
     );
@@ -494,7 +494,7 @@ async fn shutdown_waits_for_the_machine_slot_before_stopping() {
 #[tokio::test(start_paused = true)]
 async fn shutdown_rejects_cache_prune_waiting_behind_a_build() {
     let effects = Arc::new(TestBuildEffects::new(true));
-    let runtime = MachineBuildRuntime::new_with_test_effects(
+    let runtime = MachineBuildRuntime::new_for_test(
         MachineId::try_new("machine-a").expect("machine"),
         effects.clone(),
     );
@@ -533,7 +533,7 @@ async fn shutdown_rejects_cache_prune_waiting_behind_a_build() {
 #[tokio::test(start_paused = true)]
 async fn timeout_during_ingestion_aborts_then_cleans_once_without_late_success() {
     let effects = Arc::new(TestBuildEffects::new(true));
-    let runtime = MachineBuildRuntime::new_with_test_effects(
+    let runtime = MachineBuildRuntime::new_for_test(
         MachineId::try_new("machine-a").expect("machine"),
         effects.clone(),
     );
@@ -573,7 +573,7 @@ async fn timeout_during_ingestion_aborts_then_cleans_once_without_late_success()
 #[tokio::test(start_paused = true)]
 async fn cancellation_during_ingestion_aborts_then_returns_typed_cleanup() {
     let effects = Arc::new(TestBuildEffects::new(true));
-    let runtime = MachineBuildRuntime::new_with_test_effects(
+    let runtime = MachineBuildRuntime::new_for_test(
         MachineId::try_new("machine-a").expect("machine"),
         effects.clone(),
     );
@@ -609,7 +609,7 @@ async fn cancellation_during_ingestion_aborts_then_returns_typed_cleanup() {
 #[tokio::test(start_paused = true)]
 async fn bounded_cleanup_reports_unconfirmed_when_it_cannot_finish() {
     let effects = Arc::new(TestBuildEffects::new(false));
-    let runtime = MachineBuildRuntime::new_with_test_effects(
+    let runtime = MachineBuildRuntime::new_for_test(
         MachineId::try_new("machine-a").expect("machine"),
         effects.clone(),
     );

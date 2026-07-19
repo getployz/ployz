@@ -134,7 +134,7 @@ impl MachineBuildRuntime {
     }
 
     #[cfg(test)]
-    fn new_with_test_effects(machine_id: MachineId, effects: Arc<tests::TestBuildEffects>) -> Self {
+    fn new_for_test(machine_id: MachineId, effects: Arc<tests::TestBuildEffects>) -> Self {
         Self {
             machine_id,
             effects: BuildEffects::Test(effects),
@@ -151,8 +151,8 @@ impl MachineBuildRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) fn new_for_test(machine_id: MachineId) -> Self {
-        Self::new_with_test_effects(machine_id, Arc::new(tests::TestBuildEffects::new(true)))
+    pub(crate) fn new_with_default_test_effects(machine_id: MachineId) -> Self {
+        Self::new_for_test(machine_id, Arc::new(tests::TestBuildEffects::new(true)))
     }
 
     pub(crate) async fn recover_orphans(&self) -> Result<(), BuildExecutionError> {

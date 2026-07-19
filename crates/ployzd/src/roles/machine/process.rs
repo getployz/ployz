@@ -585,7 +585,7 @@ mod tests {
 
     #[test]
     fn build_recovery_failure_leaves_machine_startup_without_build_runtime() {
-        let runtime = MachineBuildRuntime::new_for_test(machine_id("machine_a"));
+        let runtime = MachineBuildRuntime::new_with_default_test_effects(machine_id("machine_a"));
         let recovery = Err(BuildExecutionError::Infrastructure {
             action: "list orphaned builders",
             message: "docker unavailable".to_owned(),
@@ -597,7 +597,7 @@ mod tests {
 
     #[test]
     fn build_recovery_success_keeps_build_runtime_for_machine_startup() {
-        let runtime = MachineBuildRuntime::new_for_test(machine_id("machine_a"));
+        let runtime = MachineBuildRuntime::new_with_default_test_effects(machine_id("machine_a"));
 
         assert!(build_runtime_after_recovery(runtime, Ok(())).is_some());
     }
