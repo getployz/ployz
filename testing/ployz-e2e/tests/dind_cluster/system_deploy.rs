@@ -318,7 +318,7 @@ async fn assert_completed_system_deploy(
         ),
         "system deploy terminal outcome did not match typed deferrals: {status:?} {plan:?}"
     );
-    assert_selected_system_containers(core, &selected).await;
+    assert_selected_system_containers(core, &selected, draining).await;
     selected
 }
 
@@ -360,6 +360,7 @@ async fn deploy_plan(
 async fn assert_selected_system_containers(
     core: &CoreContext,
     selected: &[ployz_core::ids::MachineId],
+    draining: &[ployz_core::ids::MachineId],
 ) {
     for (id, machine) in all_dind_machines(core) {
         let matching = managed_workload_containers(core, machine)
@@ -372,6 +373,12 @@ async fn assert_selected_system_containers(
             assert_eq!(
                 matching, 1,
                 "selected machine has no running placement-probe: {id:?}"
+            );
+        }
+        if draining.contains(&id) {
+            assert_eq!(
+                matching, 0,
+                "draining machine retained a running placement-probe: {id:?}"
             );
         }
     }
