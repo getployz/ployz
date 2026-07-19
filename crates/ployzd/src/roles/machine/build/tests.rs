@@ -1,4 +1,7 @@
 use super::*;
+use crate::roles::machine::protocol::{
+    MachineBuildCachePruneDomainError, MachineBuildCancelDomainError,
+};
 use ployz_core::machine::rpc::MachineRpcResponse;
 use std::sync::atomic::Ordering;
 
@@ -13,7 +16,7 @@ pub(super) struct TestBuildEffects {
 }
 
 impl TestBuildEffects {
-    fn new(cleanup_completes: bool) -> Self {
+    pub(super) fn new(cleanup_completes: bool) -> Self {
         Self {
             ingest_started: tokio::sync::Notify::new(),
             prune_started: tokio::sync::Notify::new(),
@@ -86,24 +89,6 @@ struct TestTaskActive<'a>(&'a std::sync::atomic::AtomicBool);
 impl Drop for TestTaskActive<'_> {
     fn drop(&mut self) {
         self.0.store(false, Ordering::SeqCst);
-    }
-}
-
-impl MachineBuildRuntime {
-    fn new_for_test(machine_id: MachineId, effects: Arc<TestBuildEffects>) -> Self {
-        Self {
-            machine_id,
-            effects: BuildEffects::Test(effects),
-            lifecycle: Arc::new(BuildRuntimeLifecycle {
-                state: Mutex::new(BuildRuntimeState {
-                    phase: BuildRuntimePhase::Accepting,
-                    active: BTreeMap::new(),
-                }),
-                changed: Notify::new(),
-            }),
-            machine_slot: Arc::new(Semaphore::new(1)),
-            local_platform: local_platform().expect("supported test platform"),
-        }
     }
 }
 
@@ -191,7 +176,7 @@ async fn build_start_rejects_malformed_requests_at_the_transport_boundary() {
 }
 
 #[tokio::test]
-async fn unavailable_build_runtime_is_typed_machine_evidence() {
+async fn unavailable_build_runtime_is_typed_machine_evidence_for_every_handler() {
     let machine_id = MachineId::try_new("machine-a").expect("machine");
     let request = MachineBuildStartRpcRequest {
         operation_id: OperationId::try_new("build-1").expect("operation"),
@@ -229,17 +214,67 @@ async fn unavailable_build_runtime_is_typed_machine_evidence() {
         MachineRpcResponse::DomainError {
             machine_id: actual,
             error: MachineBuildStartDomainError::PlatformFailed {
-                failure: BuildPlatformFailure::MachineUnavailable { .. },
+                failure: BuildPlatformFailure::MachineUnavailable { message },
                 ..
             }
-        } if actual == machine_id
+        } if actual == machine_id && message.as_str() == "machine build runtime is unavailable"
+    ));
+
+    let cancel_response = handle_build_cancel(
+        machine_id.clone(),
+        None,
+        NatsServiceRequest {
+            payload: serde_json::to_vec(&MachineBuildCancelRpcRequest {
+                operation_id: OperationId::try_new("build-1").expect("operation"),
+            })
+            .expect("request"),
+            headers: None,
+        },
+    )
+    .await;
+    let NatsServiceResponse::DomainError { payload } = cancel_response else {
+        panic!("unavailable runtime should reject cancellation with a domain error");
+    };
+    let cancel_response: MachineBuildCancelRpcResponse =
+        serde_json::from_slice(&payload).expect("typed response");
+    assert!(matches!(
+        cancel_response,
+        MachineRpcResponse::DomainError {
+            machine_id: actual,
+            error: MachineBuildCancelDomainError::CancelFailed { message },
+        } if actual == machine_id && message.as_str() == "machine build runtime is unavailable"
+    ));
+
+    let prune_response = handle_build_cache_prune(
+        machine_id.clone(),
+        None,
+        NatsServiceRequest {
+            payload: serde_json::to_vec(&MachineBuildCachePruneRpcRequest {
+                operation_id: OperationId::try_new("prune-1").expect("operation"),
+            })
+            .expect("request"),
+            headers: None,
+        },
+    )
+    .await;
+    let NatsServiceResponse::DomainError { payload } = prune_response else {
+        panic!("unavailable runtime should reject cache pruning with a domain error");
+    };
+    let prune_response: MachineBuildCachePruneRpcResponse =
+        serde_json::from_slice(&payload).expect("typed response");
+    assert!(matches!(
+        prune_response,
+        MachineRpcResponse::DomainError {
+            machine_id: actual,
+            error: MachineBuildCachePruneDomainError::PruneFailed { message },
+        } if actual == machine_id && message.as_str() == "machine build runtime is unavailable"
     ));
 }
 
 #[tokio::test]
 async fn shutdown_closes_build_admission_with_stable_typed_evidence() {
     let effects = Arc::new(TestBuildEffects::new(true));
-    let runtime = MachineBuildRuntime::new_for_test(
+    let runtime = MachineBuildRuntime::new_with_test_effects(
         MachineId::try_new("machine-a").expect("machine"),
         effects,
     );
@@ -257,7 +292,7 @@ async fn shutdown_closes_build_admission_with_stable_typed_evidence() {
 #[tokio::test]
 async fn shutdown_cancels_active_build_and_waits_for_cleanup() {
     let effects = Arc::new(TestBuildEffects::cooperative(true));
-    let runtime = MachineBuildRuntime::new_for_test(
+    let runtime = MachineBuildRuntime::new_with_test_effects(
         MachineId::try_new("machine-a").expect("machine"),
         effects.clone(),
     );
@@ -287,7 +322,7 @@ async fn shutdown_cancels_active_build_and_waits_for_cleanup() {
 #[tokio::test]
 async fn cache_prune_waits_for_active_build_cleanup() {
     let effects = Arc::new(TestBuildEffects::cooperative(true));
-    let runtime = MachineBuildRuntime::new_for_test(
+    let runtime = MachineBuildRuntime::new_with_test_effects(
         MachineId::try_new("machine-a").expect("machine"),
         effects.clone(),
     );
@@ -324,7 +359,7 @@ async fn cache_prune_waits_for_active_build_cleanup() {
 #[tokio::test(start_paused = true)]
 async fn cache_prune_times_out_the_whole_effect_and_releases_the_machine_slot() {
     let effects = Arc::new(TestBuildEffects::blocking_prune());
-    let runtime = MachineBuildRuntime::new_for_test(
+    let runtime = MachineBuildRuntime::new_with_test_effects(
         MachineId::try_new("machine-a").expect("machine"),
         effects.clone(),
     );
@@ -352,7 +387,7 @@ async fn cache_prune_times_out_the_whole_effect_and_releases_the_machine_slot() 
 
 #[tokio::test]
 async fn shutdown_waits_for_the_machine_slot_before_stopping() {
-    let runtime = MachineBuildRuntime::new_for_test(
+    let runtime = MachineBuildRuntime::new_with_test_effects(
         MachineId::try_new("machine-a").expect("machine"),
         Arc::new(TestBuildEffects::new(true)),
     );
@@ -383,7 +418,7 @@ async fn shutdown_waits_for_the_machine_slot_before_stopping() {
 #[tokio::test(start_paused = true)]
 async fn shutdown_rejects_cache_prune_waiting_behind_a_build() {
     let effects = Arc::new(TestBuildEffects::new(true));
-    let runtime = MachineBuildRuntime::new_for_test(
+    let runtime = MachineBuildRuntime::new_with_test_effects(
         MachineId::try_new("machine-a").expect("machine"),
         effects.clone(),
     );
@@ -422,7 +457,7 @@ async fn shutdown_rejects_cache_prune_waiting_behind_a_build() {
 #[tokio::test(start_paused = true)]
 async fn timeout_during_ingestion_aborts_then_cleans_once_without_late_success() {
     let effects = Arc::new(TestBuildEffects::new(true));
-    let runtime = MachineBuildRuntime::new_for_test(
+    let runtime = MachineBuildRuntime::new_with_test_effects(
         MachineId::try_new("machine-a").expect("machine"),
         effects.clone(),
     );
@@ -462,7 +497,7 @@ async fn timeout_during_ingestion_aborts_then_cleans_once_without_late_success()
 #[tokio::test(start_paused = true)]
 async fn cancellation_during_ingestion_aborts_then_returns_typed_cleanup() {
     let effects = Arc::new(TestBuildEffects::new(true));
-    let runtime = MachineBuildRuntime::new_for_test(
+    let runtime = MachineBuildRuntime::new_with_test_effects(
         MachineId::try_new("machine-a").expect("machine"),
         effects.clone(),
     );
@@ -497,7 +532,7 @@ async fn cancellation_during_ingestion_aborts_then_returns_typed_cleanup() {
 #[tokio::test(start_paused = true)]
 async fn bounded_cleanup_reports_unconfirmed_when_it_cannot_finish() {
     let effects = Arc::new(TestBuildEffects::new(false));
-    let runtime = MachineBuildRuntime::new_for_test(
+    let runtime = MachineBuildRuntime::new_with_test_effects(
         MachineId::try_new("machine-a").expect("machine"),
         effects.clone(),
     );

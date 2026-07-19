@@ -255,11 +255,8 @@ where
             );
             let runtime = MachineBuildRuntime::new(machine_id.clone(), executor, Some(images))
                 .map_err(|message| MachineProcessError::InitializeBuildRuntime { message })?;
-            runtime
-                .recover_orphans()
-                .await
-                .map_err(MachineProcessError::RecoverBuildRuntime)?;
-            Some(runtime)
+            let recovery = runtime.recover_orphans().await;
+            build_runtime_after_recovery(runtime, recovery)
         }
         None => None,
     };
@@ -314,6 +311,21 @@ where
         image_registry: None,
         build_runtime,
     })
+}
+
+fn build_runtime_after_recovery(
+    runtime: MachineBuildRuntime,
+    recovery: Result<(), BuildExecutionError>,
+) -> Option<MachineBuildRuntime> {
+    match recovery {
+        Ok(()) => Some(runtime),
+        Err(error) => {
+            eprintln!(
+                "ployzd machine build runtime unavailable; build RPCs fail closed while other machine testimony remains active: {error}"
+            );
+            None
+        }
+    }
 }
 
 /// A background task owned by the machine process: a shutdown signal and its
@@ -537,8 +549,6 @@ pub enum MachineProcessError {
     InvalidImageRegistryAddress { message: String },
     #[error("failed to initialize machine build runtime: {message}")]
     InitializeBuildRuntime { message: String },
-    #[error("failed to recover machine build runtime: {0}")]
-    RecoverBuildRuntime(BuildExecutionError),
     #[error("failed to start machine service: {0:?}")]
     StartMachineService(MachineServiceError),
     #[error("failed to wait for shutdown: {0}")]
@@ -572,6 +582,25 @@ mod tests {
     use ployz_nats::subjects::machine_facts;
     use std::sync::{Arc, Mutex};
     use tokio::sync::Notify;
+
+    #[test]
+    fn build_recovery_failure_leaves_machine_startup_without_build_runtime() {
+        let runtime = MachineBuildRuntime::new_for_test(machine_id("machine_a"));
+        let recovery = Err(BuildExecutionError::Infrastructure {
+            action: "list orphaned builders",
+            message: "docker unavailable".to_owned(),
+            log_summary: crate::roles::machine::protocol::BuildLogSummary::none(),
+        });
+
+        assert!(build_runtime_after_recovery(runtime, recovery).is_none());
+    }
+
+    #[test]
+    fn build_recovery_success_keeps_build_runtime_for_machine_startup() {
+        let runtime = MachineBuildRuntime::new_for_test(machine_id("machine_a"));
+
+        assert!(build_runtime_after_recovery(runtime, Ok(())).is_some());
+    }
 
     #[test]
     fn machine_shutdown_covers_prune_and_build_runtime_shutdown() {
