@@ -280,13 +280,15 @@ async fn begin_upload(
             return storage_error(machine_id, error.to_string());
         }
     }
-    let upload_id =
-        match ImageUploadId::try_new(crate::identity::prefix_id("upload_", &nuid::next())) {
-            Ok(upload_id) => upload_id,
-            Err(error) => {
-                return storage_error(machine_id, error.to_string());
-            }
-        };
+    let upload_id = match ImageUploadId::try_new(crate::identity::format_nuid_identity(
+        "upload_",
+        &nuid::next(),
+    )) {
+        Ok(upload_id) => upload_id,
+        Err(error) => {
+            return storage_error(machine_id, error.to_string());
+        }
+    };
     let ingest = ContentIngest::new(digest, total_size, lease);
     let mut uploads = state.uploads.lock().await;
     if uploads.len() >= MAX_UPLOAD_SESSIONS {

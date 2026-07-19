@@ -4,7 +4,7 @@
 //! from NATS. This is last-known evidence for that process, never shared
 //! cluster truth and never an owner of Core machine testimony contracts.
 
-use crate::identity::prefix_id;
+use crate::identity::format_nuid_identity;
 use futures_util::StreamExt;
 use ployz_core::ids::MachineId;
 use ployz_core::machine::GatewayStatusObservation;
@@ -35,10 +35,9 @@ impl Default for RoleTestimonyCache {
     fn default() -> Self {
         let (changes, _) = watch::channel(0);
         Self {
-            resolver_cache_incarnation: InternalDnsResolverCacheIncarnation::try_new(prefix_id(
-                "",
-                &nuid::next(),
-            ))
+            resolver_cache_incarnation: InternalDnsResolverCacheIncarnation::try_new(
+                format_nuid_identity("", &nuid::next()),
+            )
             .expect("NUID is a valid resolver cache incarnation"),
             state: Arc::default(),
             changes,
