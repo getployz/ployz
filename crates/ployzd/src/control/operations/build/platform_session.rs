@@ -78,6 +78,7 @@ impl<'a> PlatformLogSession<'a> {
                 BuildEvidence::PlatformLog {
                     platform: self.platform.clone(),
                     machine_id: self.machine_id.clone(),
+                    executor_origin: self.origin.clone(),
                     chunk: frame.chunk,
                 },
             )
@@ -114,6 +115,7 @@ impl<'a> PlatformLogSession<'a> {
                     BuildEvidence::PlatformLogGap {
                         platform: self.platform.clone(),
                         machine_id: self.machine_id.clone(),
+                        executor_origin: self.origin.clone(),
                         expected_sequence: self.next_sequence,
                         final_sequence: final_log_sequence,
                     },
@@ -128,6 +130,7 @@ impl<'a> PlatformLogSession<'a> {
                     BuildEvidence::PlatformLogTruncated {
                         platform: self.platform.clone(),
                         machine_id: self.machine_id.clone(),
+                        executor_origin: self.origin.clone(),
                         omitted_bytes: omitted_log_bytes,
                     },
                 )

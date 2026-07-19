@@ -1384,6 +1384,9 @@ mod tests {
                 platform: ployz_core::image::OciPlatform::try_new("linux", "amd64")
                     .expect("platform"),
                 machine_id: MachineId::try_new("machine-a").expect("machine id"),
+                executor_origin: ployz_core::build::BuildExecutorOrigin::Cluster {
+                    machine_id: MachineId::try_new("machine-a").expect("machine id"),
+                },
                 chunk: BuildLogChunk::try_new("compiling crate").expect("chunk"),
             },
         };

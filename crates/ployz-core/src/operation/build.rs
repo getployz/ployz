@@ -2,7 +2,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::build::{BuildAdapter, BuildPlatforms, GitSourceEvidence, VerifiedGitCommit};
+use crate::build::{
+    BuildAdapter, BuildExecutorOrigin, BuildPlatforms, BuildTarget, GitSourceEvidence,
+    VerifiedGitCommit,
+};
 use crate::deploy::{PlatformImage, PushedImageReceipt};
 use crate::ids::{MachineId, OperationId};
 use crate::image::OciPlatform;
@@ -229,41 +232,49 @@ pub enum BuildEvidence {
     VerifiedCommit {
         platform: OciPlatform,
         machine_id: MachineId,
+        executor_origin: BuildExecutorOrigin,
         commit: VerifiedGitCommit,
     },
     PlatformPlaced {
         platform: OciPlatform,
         machine_id: MachineId,
+        executor_origin: BuildExecutorOrigin,
     },
     ToolchainVerified {
         platform: OciPlatform,
         machine_id: MachineId,
+        executor_origin: BuildExecutorOrigin,
         toolchain: BuildToolchainEvidence,
     },
     PlatformLog {
         platform: OciPlatform,
         machine_id: MachineId,
+        executor_origin: BuildExecutorOrigin,
         chunk: BuildLogChunk,
     },
     PlatformLogTruncated {
         platform: OciPlatform,
         machine_id: MachineId,
+        executor_origin: BuildExecutorOrigin,
         omitted_bytes: u64,
     },
     PlatformLogGap {
         platform: OciPlatform,
         machine_id: MachineId,
+        executor_origin: BuildExecutorOrigin,
         expected_sequence: u64,
         final_sequence: u64,
     },
     PlatformCompleted {
         platform: OciPlatform,
         machine_id: MachineId,
+        executor_origin: BuildExecutorOrigin,
         image: PlatformImage,
     },
     PlatformFailed {
         platform: OciPlatform,
         machine_id: MachineId,
+        executor_origin: BuildExecutorOrigin,
         failure: BuildPlatformFailure,
     },
 }
@@ -342,6 +353,7 @@ impl BuildTransition {
 
 pub(super) enum BuildEvent {
     Submitted {
+        target: BuildTarget,
         source: GitSourceEvidence,
         adapter: BuildAdapter,
         platforms: BuildPlatforms,
@@ -352,6 +364,7 @@ pub(super) enum BuildEvent {
 
 pub(super) struct BuildFields<'a> {
     pub id: &'a OperationId,
+    pub target: &'a BuildTarget,
     pub source: &'a GitSourceEvidence,
     pub adapter: &'a BuildAdapter,
     pub platforms: &'a BuildPlatforms,
@@ -365,11 +378,13 @@ pub(super) fn project_event(
 ) -> Result<OperationProjection, StatusProjectionError> {
     match event {
         BuildEvent::Submitted {
+            target,
             source,
             adapter,
             platforms,
         } => {
-            if fields.source != &source
+            if fields.target != &target
+                || fields.source != &source
                 || fields.adapter != &adapter
                 || fields.platforms != &platforms
             {
@@ -399,6 +414,7 @@ fn project_evidence(
         BuildEvidence::PlatformPlaced {
             platform,
             machine_id: _,
+            executor_origin: _,
         } => (
             platform,
             matches!(fields.state, BuildOperationState::Placing),
@@ -406,37 +422,44 @@ fn project_evidence(
         BuildEvidence::ToolchainVerified {
             platform,
             machine_id: _,
+            executor_origin: _,
             toolchain: _,
         }
         | BuildEvidence::VerifiedCommit {
             platform,
             machine_id: _,
+            executor_origin: _,
             commit: _,
         }
         | BuildEvidence::PlatformLog {
             platform,
             machine_id: _,
+            executor_origin: _,
             chunk: _,
         }
         | BuildEvidence::PlatformLogTruncated {
             platform,
             machine_id: _,
+            executor_origin: _,
             omitted_bytes: _,
         }
         | BuildEvidence::PlatformLogGap {
             platform,
             machine_id: _,
+            executor_origin: _,
             expected_sequence: _,
             final_sequence: _,
         }
         | BuildEvidence::PlatformCompleted {
             platform,
             machine_id: _,
+            executor_origin: _,
             image: _,
         }
         | BuildEvidence::PlatformFailed {
             platform,
             machine_id: _,
+            executor_origin: _,
             failure: _,
         } => (
             platform,
@@ -498,6 +521,7 @@ fn status(
 ) -> OperationStatus {
     OperationStatus::Build {
         id: fields.id.clone(),
+        target: fields.target.clone(),
         source: fields.source.clone(),
         adapter: fields.adapter.clone(),
         platforms: fields.platforms.clone(),
@@ -585,9 +609,15 @@ mod tests {
     fn id() -> OperationId {
         OperationId::try_new("build-test").expect("id")
     }
+    fn cluster_origin(machine_id: &MachineId) -> BuildExecutorOrigin {
+        BuildExecutorOrigin::Cluster {
+            machine_id: machine_id.clone(),
+        }
+    }
     fn status0() -> OperationStatus {
         OperationStatus::build_accepted(
             id(),
+            BuildTarget::Cluster,
             GitSource::try_new(
                 "https://example.com/repo.git",
                 "0123456789abcdef0123456789abcdef01234567",
@@ -705,6 +735,7 @@ mod tests {
                 operation_id: id(),
                 platform: OciPlatform::try_new("linux", "amd64").expect("platform"),
                 machine_id: MachineId::try_new("machine-a").expect("machine"),
+                executor_origin: cluster_origin(&MachineId::try_new("machine-a").expect("machine")),
                 expected_sequence: 2,
                 final_sequence: 3,
             },
@@ -751,12 +782,14 @@ mod tests {
                 .expect("platforms");
         let event = OperationEvent::BuildSubmitted {
             operation_id: id(),
+            target: BuildTarget::Cluster,
             source: evidence.clone(),
             adapter: adapter.clone(),
             platforms: platforms.clone(),
         };
         let status = OperationStatus::build_accepted(
             id(),
+            BuildTarget::Cluster,
             evidence,
             adapter,
             platforms,
@@ -797,6 +830,7 @@ mod tests {
                 &accepted,
                 OperationEvent::BuildSubmitted {
                     operation_id: id(),
+                    target: BuildTarget::Cluster,
                     source: different_source.evidence(),
                     adapter: adapter.clone(),
                     platforms: platforms.clone(),
@@ -826,6 +860,9 @@ mod tests {
                     operation_id: id(),
                     platform: OciPlatform::try_new("linux", "arm64").expect("platform"),
                     machine_id: MachineId::try_new("machine-arm").expect("machine"),
+                    executor_origin: cluster_origin(
+                        &MachineId::try_new("machine-arm").expect("machine"),
+                    ),
                 },
                 EventSequence::try_new(3).expect("sequence"),
             )
@@ -838,6 +875,9 @@ mod tests {
                     operation_id: id(),
                     platform: OciPlatform::try_new("linux", "amd64").expect("platform"),
                     machine_id: MachineId::try_new("machine-amd").expect("machine"),
+                    executor_origin: cluster_origin(
+                        &MachineId::try_new("machine-amd").expect("machine"),
+                    ),
                     chunk: BuildLogChunk::try_new("too early").expect("chunk"),
                 },
                 EventSequence::try_new(3).expect("sequence"),
@@ -851,6 +891,9 @@ mod tests {
                     operation_id: id(),
                     platform: OciPlatform::try_new("linux", "amd64").expect("platform"),
                     machine_id: MachineId::try_new("machine-amd").expect("machine"),
+                    executor_origin: cluster_origin(
+                        &MachineId::try_new("machine-amd").expect("machine"),
+                    ),
                     toolchain: railpack_toolchain(),
                 },
                 EventSequence::try_new(3).expect("sequence"),
@@ -886,6 +929,7 @@ mod tests {
                 operation_id: id(),
                 platform: platform.clone(),
                 machine_id: machine_id.clone(),
+                executor_origin: cluster_origin(&machine_id),
                 commit: VerifiedGitCommit {
                     url: GitRepositoryUrl::try_new("https://example.com/repo.git").expect("url"),
                     commit: GitCommit::try_new("0123456789abcdef0123456789abcdef01234567")
@@ -905,6 +949,7 @@ mod tests {
                 OperationEvent::BuildPlatformToolchainVerified {
                     operation_id: id(),
                     platform,
+                    executor_origin: cluster_origin(&machine_id),
                     machine_id,
                     toolchain: railpack_toolchain(),
                 },

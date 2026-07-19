@@ -35,6 +35,7 @@ impl OperationAction for BuildOperationSubmission {
     fn submitted_event(operation_id: OperationId, payload: Self::Payload) -> OperationEvent {
         OperationEvent::BuildSubmitted {
             operation_id,
+            target: payload.target,
             source: payload.source,
             adapter: payload.adapter,
             platforms: payload.platforms,
@@ -44,6 +45,7 @@ impl OperationAction for BuildOperationSubmission {
     fn submitted_event_parts(event: OperationEvent) -> Option<(OperationId, Self::Payload)> {
         let OperationEvent::BuildSubmitted {
             operation_id,
+            target,
             source,
             adapter,
             platforms,
@@ -54,6 +56,7 @@ impl OperationAction for BuildOperationSubmission {
         Some((
             operation_id,
             BuildOperationPayload {
+                target,
                 source,
                 adapter,
                 platforms,
@@ -68,6 +71,7 @@ impl OperationAction for BuildOperationSubmission {
     ) -> OperationStatus {
         OperationStatus::build_accepted(
             operation_id,
+            payload.target.clone(),
             payload.source.clone(),
             payload.adapter.clone(),
             payload.platforms.clone(),

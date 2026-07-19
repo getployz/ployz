@@ -7,4 +7,4 @@ mod placement;
 mod platform_session;
 
 pub(crate) use driver::{BuildCancelDisposition, BuildOperationDriver};
-pub(crate) use placement::place_build_platforms;
+pub(crate) use placement::{ExternalBuildPlacementError, place_external_build_platforms};

@@ -4,6 +4,9 @@
 use crate::control::authorization::MintRequest;
 use crate::control::intent::ingress_intent::PloyzDnsTargetStore;
 use crate::control::intent::namespace_intent::NamespaceIntentStore;
+use crate::control::operations::build::{
+    ExternalBuildPlacementError, place_external_build_platforms,
+};
 use crate::control::operations::deploy::validate_deploy_route_admission;
 use crate::control::sequencer::{
     BuildSubmitCommand, CoreReplaceSubmitCommand, CredentialGrantSubmitCommand,
@@ -13,6 +16,7 @@ use crate::control::sequencer::{
     NetworkRepairSubmitCommand, OperationControllers, ServiceRestartSubmitCommand,
     VolumeCreateSubmitCommand, VolumeRemoveSubmitCommand,
 };
+use ployz_core::build::BuildTarget;
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::operation::{CredentialGrantAction, EventSequence, VolumeCreateRequest};
 use ployz_nats::subjects::{OperationProgressScope, operation_progress_watch};
@@ -33,8 +37,36 @@ pub async fn build_submit(
     request: BuildSubmitRequest,
 ) -> Result<AcceptedOperation, BuildSubmitError> {
     let operation_id = request.operation_id.clone();
+    if let BuildTarget::External { pool_id } = &request.target {
+        place_external_build_platforms(
+            pool_id,
+            &request.platforms,
+            &[],
+            &std::collections::BTreeSet::new(),
+        )
+        .map_err(|error| match error {
+            ExternalBuildPlacementError::NoCapableExecutor { pool_id, platform } => {
+                BuildSubmitError::NoCapableExternalExecutor {
+                    operation_id: operation_id.clone(),
+                    pool_id,
+                    platform,
+                }
+            }
+            ExternalBuildPlacementError::NoReachableImageSeed { pool_id } => {
+                BuildSubmitError::NoReachableImageSeed {
+                    operation_id: operation_id.clone(),
+                    pool_id,
+                }
+            }
+        })?;
+        return Err(BuildSubmitError::Unavailable {
+            operation_id,
+            message: "external build execution transport is unavailable".to_owned(),
+        });
+    }
     let accepted = handlers.controllers().submit_build(BuildSubmitCommand {
         operation_id: request.operation_id,
+        target: request.target,
         source: request.source,
         adapter: request.adapter,
         platforms: request.platforms,

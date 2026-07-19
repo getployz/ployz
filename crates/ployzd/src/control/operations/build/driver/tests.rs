@@ -12,7 +12,7 @@ use crate::roles::machine::protocol::{
 use crate::tasks::TaskRegistry;
 use futures_util::StreamExt;
 use ployz_core::build::{
-    BuildAdapter, BuildCacheScope, BuildPlatforms, GitSource, VerifiedGitCommit,
+    BuildAdapter, BuildCacheScope, BuildPlatforms, BuildTarget, GitSource, VerifiedGitCommit,
 };
 use ployz_core::deploy::{ImageAvailabilityExpiresAt, PlatformImage};
 use ployz_core::image::{OciDigest, OciPlatform};
@@ -77,6 +77,7 @@ async fn platform_rpc_failure_records_real_evidence_and_publishes_no_image_index
     let accepted = controllers
         .submit_build(BuildSubmitCommand {
             operation_id: operation_id.clone(),
+            target: BuildTarget::Cluster,
             source: source.clone(),
             adapter: BuildAdapter::Railpack {
                 cache_scope: BuildCacheScope::try_new("mixed-platform").expect("valid cache scope"),
@@ -166,8 +167,22 @@ async fn platform_rpc_failure_records_real_evidence_and_publishes_no_image_index
         .start(operation_id.clone(), accepted.submission.start_sequence)
         .await;
     let outcomes = futures_util::future::join_all([
-        driver.run_platform(&accepted, amd64.clone(), amd64_machine.clone()),
-        driver.run_platform(&accepted, arm64.clone(), arm64_machine.clone()),
+        driver.run_platform(
+            &accepted,
+            BuildExecutorAssignment {
+                origin: cluster_origin(&amd64_machine),
+                platform: amd64.clone(),
+                image_seed: amd64_machine.clone(),
+            },
+        ),
+        driver.run_platform(
+            &accepted,
+            BuildExecutorAssignment {
+                origin: cluster_origin(&arm64_machine),
+                platform: arm64.clone(),
+                image_seed: arm64_machine.clone(),
+            },
+        ),
     ])
     .await;
     let result = driver
@@ -224,9 +239,16 @@ async fn platform_rpc_failure_records_real_evidence_and_publishes_no_image_index
         .expect("replay build evidence");
     assert!(replay.events.iter().any(|record| matches!(
         &record.event,
-        OperationEvent::BuildCommitVerified { platform, machine_id, commit, .. }
+        OperationEvent::BuildCommitVerified {
+            platform,
+            machine_id,
+            executor_origin,
+            commit,
+            ..
+        }
             if platform == &amd64
                 && machine_id == &amd64_machine
+                && executor_origin == &cluster_origin(machine_id)
                 && commit == &verified_commit
     )));
     assert!(replay.events.iter().any(|record| matches!(
@@ -234,24 +256,40 @@ async fn platform_rpc_failure_records_real_evidence_and_publishes_no_image_index
         OperationEvent::BuildPlatformToolchainVerified {
             platform,
             machine_id,
+            executor_origin,
             toolchain: actual,
             ..
         } if platform == &amd64
             && machine_id == &amd64_machine
+            && executor_origin == &cluster_origin(machine_id)
             && actual == &toolchain
     )));
     assert!(replay.events.iter().any(|record| matches!(
         &record.event,
-        OperationEvent::BuildPlatformCompleted { platform, machine_id, image, .. }
+        OperationEvent::BuildPlatformCompleted {
+            platform,
+            machine_id,
+            executor_origin,
+            image,
+            ..
+        }
             if platform == &amd64
                 && machine_id == &amd64_machine
+                && executor_origin == &cluster_origin(machine_id)
                 && image == &completed_image
     )));
     assert!(replay.events.iter().any(|record| matches!(
         &record.event,
-        OperationEvent::BuildPlatformFailed { platform, machine_id, failure, .. }
+        OperationEvent::BuildPlatformFailed {
+            platform,
+            machine_id,
+            executor_origin,
+            failure,
+            ..
+        }
             if platform == &arm64
                 && machine_id == &arm64_machine
+                && executor_origin == &cluster_origin(machine_id)
                 && failure == &platform_failure
     )));
     assert!(

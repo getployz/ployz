@@ -3,7 +3,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::build::{BuildAdapter, BuildPlatforms, GitSourceEvidence, VerifiedGitCommit};
+use crate::build::{
+    BuildAdapter, BuildExecutorOrigin, BuildPlatforms, BuildTarget, GitSourceEvidence,
+    VerifiedGitCommit,
+};
 use crate::certificate::AcmeHttp01Challenge;
 use crate::deploy::{
     DeployCleanupContainer, DeployPlan, DeployRequest, DeployReservationId, VolumeName,
@@ -112,6 +115,7 @@ pub enum OperationSubject {
 pub enum OperationEvent {
     BuildSubmitted {
         operation_id: OperationId,
+        target: BuildTarget,
         source: GitSourceEvidence,
         adapter: BuildAdapter,
         platforms: BuildPlatforms,
@@ -123,17 +127,20 @@ pub enum OperationEvent {
         operation_id: OperationId,
         platform: crate::image::OciPlatform,
         machine_id: MachineId,
+        executor_origin: BuildExecutorOrigin,
     },
     BuildCommitVerified {
         operation_id: OperationId,
         platform: crate::image::OciPlatform,
         machine_id: MachineId,
+        executor_origin: BuildExecutorOrigin,
         commit: VerifiedGitCommit,
     },
     BuildPlatformToolchainVerified {
         operation_id: OperationId,
         platform: crate::image::OciPlatform,
         machine_id: MachineId,
+        executor_origin: BuildExecutorOrigin,
         toolchain: BuildToolchainEvidence,
     },
     BuildRunning {
@@ -143,18 +150,21 @@ pub enum OperationEvent {
         operation_id: OperationId,
         platform: crate::image::OciPlatform,
         machine_id: MachineId,
+        executor_origin: BuildExecutorOrigin,
         chunk: BuildLogChunk,
     },
     BuildPlatformLogTruncated {
         operation_id: OperationId,
         platform: crate::image::OciPlatform,
         machine_id: MachineId,
+        executor_origin: BuildExecutorOrigin,
         omitted_bytes: u64,
     },
     BuildPlatformLogGap {
         operation_id: OperationId,
         platform: crate::image::OciPlatform,
         machine_id: MachineId,
+        executor_origin: BuildExecutorOrigin,
         expected_sequence: u64,
         final_sequence: u64,
     },
@@ -162,12 +172,14 @@ pub enum OperationEvent {
         operation_id: OperationId,
         platform: crate::image::OciPlatform,
         machine_id: MachineId,
+        executor_origin: BuildExecutorOrigin,
         image: crate::deploy::PlatformImage,
     },
     BuildPlatformFailed {
         operation_id: OperationId,
         platform: crate::image::OciPlatform,
         machine_id: MachineId,
+        executor_origin: BuildExecutorOrigin,
         failure: BuildPlatformFailure,
     },
     BuildCompleted {
@@ -1042,12 +1054,14 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
         match event {
             OperationEvent::BuildSubmitted {
                 operation_id,
+                target,
                 source,
                 adapter,
                 platforms,
             } => Self::Build {
                 operation_id,
                 event: BuildEvent::Submitted {
+                    target,
                     source,
                     adapter,
                     platforms,
@@ -1061,23 +1075,27 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 operation_id,
                 platform,
                 machine_id,
+                executor_origin,
             } => Self::Build {
                 operation_id,
                 event: BuildEvent::Evidence(BuildEvidence::PlatformPlaced {
                     platform,
                     machine_id,
+                    executor_origin,
                 }),
             },
             OperationEvent::BuildCommitVerified {
                 operation_id,
                 platform,
                 machine_id,
+                executor_origin,
                 commit,
             } => Self::Build {
                 operation_id,
                 event: BuildEvent::Evidence(BuildEvidence::VerifiedCommit {
                     platform,
                     machine_id,
+                    executor_origin,
                     commit,
                 }),
             },
@@ -1085,12 +1103,14 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 operation_id,
                 platform,
                 machine_id,
+                executor_origin,
                 toolchain,
             } => Self::Build {
                 operation_id,
                 event: BuildEvent::Evidence(BuildEvidence::ToolchainVerified {
                     platform,
                     machine_id,
+                    executor_origin,
                     toolchain,
                 }),
             },
@@ -1102,12 +1122,14 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 operation_id,
                 platform,
                 machine_id,
+                executor_origin,
                 chunk,
             } => Self::Build {
                 operation_id,
                 event: BuildEvent::Evidence(BuildEvidence::PlatformLog {
                     platform,
                     machine_id,
+                    executor_origin,
                     chunk,
                 }),
             },
@@ -1115,12 +1137,14 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 operation_id,
                 platform,
                 machine_id,
+                executor_origin,
                 omitted_bytes,
             } => Self::Build {
                 operation_id,
                 event: BuildEvent::Evidence(BuildEvidence::PlatformLogTruncated {
                     platform,
                     machine_id,
+                    executor_origin,
                     omitted_bytes,
                 }),
             },
@@ -1128,6 +1152,7 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 operation_id,
                 platform,
                 machine_id,
+                executor_origin,
                 expected_sequence,
                 final_sequence,
             } => Self::Build {
@@ -1135,6 +1160,7 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 event: BuildEvent::Evidence(BuildEvidence::PlatformLogGap {
                     platform,
                     machine_id,
+                    executor_origin,
                     expected_sequence,
                     final_sequence,
                 }),
@@ -1143,12 +1169,14 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 operation_id,
                 platform,
                 machine_id,
+                executor_origin,
                 image,
             } => Self::Build {
                 operation_id,
                 event: BuildEvent::Evidence(BuildEvidence::PlatformCompleted {
                     platform,
                     machine_id,
+                    executor_origin,
                     image,
                 }),
             },
@@ -1156,12 +1184,14 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 operation_id,
                 platform,
                 machine_id,
+                executor_origin,
                 failure,
             } => Self::Build {
                 operation_id,
                 event: BuildEvent::Evidence(BuildEvidence::PlatformFailed {
                     platform,
                     machine_id,
+                    executor_origin,
                     failure,
                 }),
             },

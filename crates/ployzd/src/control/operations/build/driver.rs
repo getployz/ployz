@@ -1,11 +1,11 @@
-use std::collections::BTreeMap;
 use std::future::Future;
 use std::time::Duration;
 
-use ployz_core::build::{BUILD_MAX_PLACEMENT_TIMEOUT, build_control_request_timeout};
+use ployz_core::build::{
+    BUILD_MAX_PLACEMENT_TIMEOUT, BuildExecutorOrigin, BuildTarget, build_control_request_timeout,
+};
 use ployz_core::deploy::PushedImageReceipt;
 use ployz_core::ids::{MachineId, OperationId};
-use ployz_core::image::OciPlatform;
 use ployz_core::operation::{
     BuildCleanupEvidence, BuildEvidence, BuildOperationFailure, BuildPlatformFailure,
     BuildTimeoutFailure, BuildTransition, CancellationReason, EventSequence, FailureMessage,
@@ -21,7 +21,7 @@ use crate::control::role_client::machine_convergence::gather_dataplane_statuses;
 use crate::control::sequencer::{AcceptedBuildExecution, OperationControllers};
 use crate::roles::machine::MachineRuntimeUnavailableReason;
 use crate::roles::machine::protocol::{
-    BuildExecutorAcceptance, BuildExecutorOrigin, BuildLogSummary, MachineBuildCancelDomainError,
+    BuildExecutorAcceptance, BuildLogSummary, MachineBuildCancelDomainError,
     MachineBuildCancelOutcome, MachineBuildCancelRpcOk, MachineBuildCancelRpcRequest,
     MachineBuildCleanupOutcome, MachineBuildStartDomainError, MachineBuildStartRpcOk,
     MachineBuildStartRpcRequest,
@@ -30,7 +30,7 @@ use crate::tasks::TaskSpawner;
 
 use super::active_registry::{ActiveBuildRegistry, CancellationRequest, RejectedAdmissionOutcome};
 use super::log_stream::{MachineCallOrLog, next_machine_call_or_log};
-use super::place_build_platforms;
+use super::placement::{BuildExecutorAssignment, place_build_platforms};
 use super::platform_session::PlatformLogSession;
 
 const BUILD_CANCEL_TIMEOUT: Duration = Duration::from_secs(5);
@@ -246,11 +246,12 @@ impl BuildOperationDriver {
     ) -> Result<(), BuildOperationFailure> {
         let placement = within_placement_deadline(self.place(accepted)).await?;
         let id = &accepted.submission.operation_id;
-        let outcomes =
-            futures_util::future::join_all(placement.iter().map(|(platform, machine_id)| {
-                self.run_platform(accepted, platform.clone(), machine_id.clone())
-            }))
-            .await;
+        let outcomes = futures_util::future::join_all(
+            placement
+                .into_iter()
+                .map(|assignment| self.run_platform(accepted, assignment)),
+        )
+        .await;
         self.finalize_joined_outcomes(id, outcomes).await
     }
 
@@ -339,13 +340,21 @@ impl BuildOperationDriver {
     async fn place(
         &self,
         accepted: &AcceptedBuildExecution,
-    ) -> Result<BTreeMap<OciPlatform, MachineId>, BuildOperationFailure> {
+    ) -> Result<Vec<BuildExecutorAssignment>, BuildOperationFailure> {
         let id = &accepted.submission.operation_id;
         self.controllers
             .repository()
             .record_build_transition(id, BuildTransition::Placing)
             .await
             .map_err(record_failure)?;
+        let BuildTarget::Cluster = &accepted.submission.target else {
+            return Err(BuildOperationFailure::ControlUnavailable {
+                message: FailureMessage::try_new(
+                    "external build execution was not admitted before transport dispatch",
+                )
+                .expect("external dispatch failure is non-empty"),
+            });
+        };
         let intent = self.intent.intent().await.map_err(|error| {
             BuildOperationFailure::ControlUnavailable {
                 message: failure_message(error),
@@ -376,14 +385,15 @@ impl BuildOperationDriver {
             &dataplane_statuses,
         )
         .map_err(|failure| *failure)?;
-        for (platform, machine_id) in placement.iter() {
+        for assignment in &placement {
             self.controllers
                 .repository()
                 .record_build_evidence(
                     id,
                     BuildEvidence::PlatformPlaced {
-                        platform: platform.clone(),
-                        machine_id: machine_id.clone(),
+                        platform: assignment.platform.clone(),
+                        machine_id: assignment.image_seed.clone(),
+                        executor_origin: assignment.origin.clone(),
                     },
                 )
                 .await
@@ -400,9 +410,32 @@ impl BuildOperationDriver {
     async fn run_platform(
         &self,
         accepted: &AcceptedBuildExecution,
-        platform: ployz_core::image::OciPlatform,
-        machine_id: MachineId,
+        assignment: BuildExecutorAssignment,
     ) -> Result<PlatformOutcome, BuildOperationFailure> {
+        let BuildExecutorAssignment {
+            origin,
+            platform,
+            image_seed: machine_id,
+        } = assignment;
+        let BuildExecutorOrigin::Cluster {
+            machine_id: cluster_machine_id,
+        } = &origin
+        else {
+            return Err(BuildOperationFailure::ControlUnavailable {
+                message: FailureMessage::try_new(
+                    "external build execution transport is not implemented",
+                )
+                .expect("external dispatch failure is non-empty"),
+            });
+        };
+        if cluster_machine_id != &machine_id {
+            return Err(BuildOperationFailure::ControlUnavailable {
+                message: FailureMessage::try_new(
+                    "cluster build executor and image seed must be the same Machine",
+                )
+                .expect("cluster assignment failure is non-empty"),
+            });
+        }
         let id = &accepted.submission.operation_id;
         if !self.active.claim_machine_start(id, &machine_id).await {
             return Ok(PlatformOutcome::CancelledBeforeStart);
@@ -417,9 +450,6 @@ impl BuildOperationDriver {
                 },
             )
         })?;
-        let origin = BuildExecutorOrigin::Cluster {
-            machine_id: machine_id.clone(),
-        };
         let mut log_session = PlatformLogSession::new(
             self.controllers.repository(),
             id,
@@ -430,7 +460,7 @@ impl BuildOperationDriver {
         );
         let request = build_start_request(
             accepted,
-            origin,
+            origin.clone(),
             machine_id.clone(),
             platform.clone(),
             self.timeout,
@@ -520,6 +550,7 @@ impl BuildOperationDriver {
                         BuildEvidence::PlatformFailed {
                             platform,
                             machine_id,
+                            executor_origin: origin.clone(),
                             failure: failure.clone(),
                         },
                     )
@@ -541,6 +572,7 @@ impl BuildOperationDriver {
                     BuildEvidence::PlatformFailed {
                         platform,
                         machine_id,
+                        executor_origin: origin.clone(),
                         failure,
                     },
                 )
@@ -562,6 +594,7 @@ impl BuildOperationDriver {
                             BuildEvidence::PlatformFailed {
                                 platform,
                                 machine_id,
+                                executor_origin: origin.clone(),
                                 failure,
                             },
                         )
@@ -595,6 +628,7 @@ impl BuildOperationDriver {
                     BuildEvidence::PlatformFailed {
                         platform,
                         machine_id,
+                        executor_origin: origin.clone(),
                         failure,
                     },
                 )
@@ -609,6 +643,7 @@ impl BuildOperationDriver {
                 BuildEvidence::VerifiedCommit {
                     platform: platform.clone(),
                     machine_id: machine_id.clone(),
+                    executor_origin: origin.clone(),
                     commit: ok.verified_commit,
                 },
             )
@@ -621,6 +656,7 @@ impl BuildOperationDriver {
                 BuildEvidence::ToolchainVerified {
                     platform: platform.clone(),
                     machine_id: machine_id.clone(),
+                    executor_origin: origin.clone(),
                     toolchain: ok.toolchain,
                 },
             )
@@ -633,6 +669,7 @@ impl BuildOperationDriver {
                 BuildEvidence::PlatformCompleted {
                     platform: platform.clone(),
                     machine_id: machine_id.clone(),
+                    executor_origin: origin,
                     image: ok.image.clone(),
                 },
             )

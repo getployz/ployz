@@ -169,6 +169,7 @@ pub enum OperationKind {
 pub enum OperationStatus {
     Build {
         id: OperationId,
+        target: crate::build::BuildTarget,
         source: crate::build::GitSourceEvidence,
         adapter: crate::build::BuildAdapter,
         platforms: crate::build::BuildPlatforms,
@@ -305,6 +306,7 @@ impl OperationStatus {
     #[must_use]
     pub fn build_accepted(
         id: OperationId,
+        target: crate::build::BuildTarget,
         source: crate::build::GitSourceEvidence,
         adapter: crate::build::BuildAdapter,
         platforms: crate::build::BuildPlatforms,
@@ -312,6 +314,7 @@ impl OperationStatus {
     ) -> Self {
         Self::Build {
             id,
+            target,
             source,
             adapter,
             platforms,

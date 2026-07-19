@@ -288,6 +288,7 @@ pub fn project_operation_event(
         ClassifiedOperationEvent::Build { event, .. } => {
             let OperationStatus::Build {
                 id,
+                target,
                 source,
                 adapter,
                 platforms,
@@ -300,6 +301,7 @@ pub fn project_operation_event(
             build::project_event(
                 build::BuildFields {
                     id,
+                    target,
                     source,
                     adapter,
                     platforms,
