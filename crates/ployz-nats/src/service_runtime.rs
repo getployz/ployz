@@ -27,6 +27,7 @@ pub type NatsClient = async_nats::Client;
 const NO_RESPONDERS_RETRIES: usize = 4;
 const NO_RESPONDERS_RETRY_DELAY: Duration = Duration::from_millis(100);
 const SERVICE_REGISTRATION_TIMEOUT: Duration = Duration::from_secs(2);
+const RESTRICTED_SERVICE_REGISTRATION_SETTLE: Duration = Duration::from_millis(100);
 const SERVICE_SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 
 pub async fn request_json<Request, Response>(
@@ -156,6 +157,54 @@ impl RunningNatsService {
         H: Fn(NatsServiceRequest) -> F + Send + Sync + 'static,
         F: Future<Output = NatsServiceResponse> + Send + 'static,
     {
+        self.bind_endpoint_inner(endpoint, policy, EndpointRegistration::RoundTrip, handler)
+            .await
+    }
+
+    /// Binds an endpoint for a service principal that cannot safely publish
+    /// registration probes to its own reply inbox.
+    pub async fn bind_restricted_endpoint<H, F>(
+        &mut self,
+        endpoint: &NatsServiceEndpointSpec,
+        handler: H,
+    ) -> Result<(), NatsServiceRuntimeError>
+    where
+        H: Fn(NatsServiceRequest) -> F + Send + Sync + 'static,
+        F: Future<Output = NatsServiceResponse> + Send + 'static,
+    {
+        self.bind_restricted_endpoint_with_policy(
+            endpoint,
+            EndpointExecutionPolicy::default(),
+            handler,
+        )
+        .await
+    }
+
+    pub async fn bind_restricted_endpoint_with_policy<H, F>(
+        &mut self,
+        endpoint: &NatsServiceEndpointSpec,
+        policy: EndpointExecutionPolicy,
+        handler: H,
+    ) -> Result<(), NatsServiceRuntimeError>
+    where
+        H: Fn(NatsServiceRequest) -> F + Send + Sync + 'static,
+        F: Future<Output = NatsServiceResponse> + Send + 'static,
+    {
+        self.bind_endpoint_inner(endpoint, policy, EndpointRegistration::Restricted, handler)
+            .await
+    }
+
+    async fn bind_endpoint_inner<H, F>(
+        &mut self,
+        endpoint: &NatsServiceEndpointSpec,
+        policy: EndpointExecutionPolicy,
+        registration: EndpointRegistration,
+        handler: H,
+    ) -> Result<(), NatsServiceRuntimeError>
+    where
+        H: Fn(NatsServiceRequest) -> F + Send + Sync + 'static,
+        F: Future<Output = NatsServiceResponse> + Send + 'static,
+    {
         let Some(service) = self.service.as_ref() else {
             return Err(NatsServiceRuntimeError::Stopped);
         };
@@ -168,14 +217,6 @@ impl RunningNatsService {
                 subject: endpoint.subject.clone(),
                 message: error.to_string(),
             })?;
-        self.client
-            .flush()
-            .await
-            .map_err(|error| NatsServiceRuntimeError::AddEndpoint {
-                subject: endpoint.subject.clone(),
-                message: format!("subscription flush failed: {error}"),
-            })?;
-
         let handler = Arc::new(handler);
         let health = Arc::clone(&self.health);
         let client = self.client.clone();
@@ -233,7 +274,14 @@ impl RunningNatsService {
                 .fetch_add(1, Ordering::Relaxed);
         });
         self.endpoint_tasks.push(task);
-        wait_for_service_registration(&self.client, endpoint.subject.as_str()).await?;
+        match registration {
+            EndpointRegistration::RoundTrip => {
+                wait_for_service_registration(&self.client, endpoint.subject.as_str()).await?;
+            }
+            EndpointRegistration::Restricted => {
+                tokio::time::sleep(RESTRICTED_SERVICE_REGISTRATION_SETTLE).await;
+            }
+        }
         Ok(())
     }
 
@@ -314,6 +362,12 @@ impl RunningNatsService {
         }
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EndpointRegistration {
+    RoundTrip,
+    Restricted,
 }
 
 fn response_within_max_payload(

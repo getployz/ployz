@@ -322,9 +322,7 @@ mod tests {
             ssh_install_timeout: None,
             cluster_context_path: None,
             deploy_history_root: None,
-            executor_context_root: None,
-            allow_insecure_executor_enrollment: false,
-            executor_enrollment_timeout: None,
+            build_executor: crate::dispatcher::BuildExecutorRuntimeConfig::default(),
         };
 
         let config = env_config.with_cluster_context(Some(cluster_context()));

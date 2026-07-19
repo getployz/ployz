@@ -40,12 +40,18 @@ pub struct PloyzctlRuntimeConfig {
     pub cluster_context_path: Option<PathBuf>,
     /// Deploy-history root override for embedded runtimes and tests.
     pub deploy_history_root: Option<PathBuf>,
+    /// Build Executor-specific embedded-runtime and test seams.
+    pub build_executor: BuildExecutorRuntimeConfig,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BuildExecutorRuntimeConfig {
     /// Executor context root override for embedded runtimes and tests.
-    pub executor_context_root: Option<PathBuf>,
+    pub context_root: Option<PathBuf>,
     /// Permits loopback HTTP enrollment servers in deterministic tests.
-    pub allow_insecure_executor_enrollment: bool,
+    pub allow_insecure_enrollment: bool,
     /// Whole-request enrollment budget override for embedded runtimes and tests.
-    pub executor_enrollment_timeout: Option<Duration>,
+    pub enrollment_timeout: Option<Duration>,
 }
 
 impl PloyzctlRuntimeConfig {
@@ -78,9 +84,7 @@ impl PloyzctlRuntimeConfig {
             ssh_install_timeout: None,
             cluster_context_path: None,
             deploy_history_root: None,
-            executor_context_root: None,
-            allow_insecure_executor_enrollment: false,
-            executor_enrollment_timeout: None,
+            build_executor: BuildExecutorRuntimeConfig::default(),
         }
     }
 

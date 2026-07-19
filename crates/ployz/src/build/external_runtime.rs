@@ -3,7 +3,7 @@
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use ployz_build_executor::{
     BuildExecutionError as EngineError, BuildExecutionRequest, BuildExecutionResult,
@@ -41,8 +41,7 @@ use tokio::time::{Instant, timeout};
 use super::command::{BuildExecutorCommand, BuildExecutorRunMode};
 use super::runtime::BuildExecutionError;
 use super::watch_lifecycle::{
-    WatchConnect, connect_watch, credential_lifetime, executor_connect_config,
-    resolve_workspace_root,
+    WatchConnect, connect_watch, executor_connect_config, resolve_workspace_root,
 };
 use crate::deploy::image_push::{probe_image_seed, push_validated_oci_layout};
 use crate::dispatcher::PloyzctlRuntimeConfig;
@@ -53,6 +52,56 @@ const SHUTDOWN_TIMEOUT: Duration = BUILD_TASK_DRAIN_TIMEOUT
     .saturating_add(BUILD_FORCE_CLEANUP_TIMEOUT)
     .saturating_add(Duration::from_secs(5));
 
+struct ConnectedExecutor {
+    client: async_nats::Client,
+    runtime: ExternalBuildRuntime,
+    service: RunningNatsService,
+}
+
+impl ConnectedExecutor {
+    async fn start(
+        identity: BuildExecutorIdentity,
+        client: async_nats::Client,
+        workspace_root: PathBuf,
+        terminal: tokio::sync::mpsc::UnboundedSender<()>,
+    ) -> Result<Self, BuildExecutionError> {
+        let readiness = probe_readiness().await?;
+        let runtime = ExternalBuildRuntime::new(identity.clone(), client.clone(), workspace_root);
+        if readiness.capability != BuildExecutorCapability::RuntimeUnavailable {
+            runtime.recover_orphans().await?;
+        }
+        let service =
+            start_executor_service(client.clone(), identity, runtime.clone(), terminal).await?;
+        eprintln!("Build Executor {}", health_description(&readiness));
+        Ok(Self {
+            client,
+            runtime,
+            service,
+        })
+    }
+
+    async fn shutdown(self) -> Result<(), PloyzctlExecutionError> {
+        let runtime_result = self
+            .runtime
+            .shutdown()
+            .await
+            .map_err(PloyzctlExecutionError::from);
+        let service_result = self.service.shutdown().await.map_err(|error| {
+            PloyzctlExecutionError::from(BuildExecutionError::ExecutorRuntime {
+                message: error.to_string(),
+            })
+        });
+        let client_result = self.client.drain().await.map_err(|error| {
+            PloyzctlExecutionError::from(BuildExecutionError::ExecutorRuntime {
+                message: format!("failed to drain NATS client: {error}"),
+            })
+        });
+        runtime_result?;
+        service_result?;
+        client_result
+    }
+}
+
 pub(crate) async fn run(
     command: BuildExecutorCommand,
     config: &PloyzctlRuntimeConfig,
@@ -62,11 +111,6 @@ pub(crate) async fn run(
         executor_id: command.executor_id.clone(),
     };
     let (connect, credential_expires_at) = executor_connect_config(config, &identity)?;
-    credential_lifetime(credential_expires_at, SystemTime::now()).map_err(|error| {
-        BuildExecutionError::ExecutorCredential {
-            message: error.to_string(),
-        }
-    })?;
     let workspace_root = resolve_workspace_root(command.workspace_root.as_deref(), &identity)?;
 
     match command.mode {
@@ -97,32 +141,12 @@ async fn run_connected_once(
     workspace_root: PathBuf,
     wait_timeout: Duration,
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
-    let startup_readiness = probe_readiness().await?;
     let (terminal_tx, mut terminal_rx) = tokio::sync::mpsc::unbounded_channel();
-    let runtime = ExternalBuildRuntime::new(identity.clone(), client.clone(), workspace_root);
-    if startup_readiness.capability != BuildExecutorCapability::RuntimeUnavailable {
-        runtime.recover_orphans().await?;
-    }
-    let service =
-        start_executor_service(client.clone(), identity, runtime.clone(), terminal_tx).await?;
+    let session = ConnectedExecutor::start(identity, client, workspace_root, terminal_tx).await?;
     let wait_result = wait_for_once_terminal(&mut terminal_rx, wait_timeout).await;
-    let shutdown_result = runtime.shutdown().await;
-    let service_result = service.shutdown().await.map_err(|error| {
-        PloyzctlExecutionError::from(BuildExecutionError::ExecutorRuntime {
-            message: error.to_string(),
-        })
-    });
-    let client_result =
-        client
-            .drain()
-            .await
-            .map_err(|error| BuildExecutionError::ExecutorRuntime {
-                message: format!("failed to drain NATS client: {error}"),
-            });
-    shutdown_result?;
-    service_result?;
-    client_result?;
+    let shutdown_result = session.shutdown().await;
     wait_result?;
+    shutdown_result?;
     Ok(PloyzctlExecutionOutput::stdout(
         "Build Executor stopped.\n".to_owned(),
     ))
@@ -132,7 +156,7 @@ async fn run_watch(
     identity: BuildExecutorIdentity,
     connect: ployz_nats::connect::NatsConnectConfig,
     workspace_root: PathBuf,
-    credential_expires_at: u64,
+    credential_expires_at: ployz_core::nats_config::BuildExecutorCredentialExpiresAt,
     connect_timeout: Duration,
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
     let mut session = match connect_watch(&connect, credential_expires_at, connect_timeout).await? {
@@ -143,55 +167,41 @@ async fn run_watch(
             ));
         }
     };
-    let client = session.client.clone();
-    let readiness = probe_readiness().await?;
     let (terminal_tx, _terminal_rx) = tokio::sync::mpsc::unbounded_channel();
-    let runtime = ExternalBuildRuntime::new(identity.clone(), client.clone(), workspace_root);
-    if readiness.capability != BuildExecutorCapability::RuntimeUnavailable {
-        runtime.recover_orphans().await?;
-    }
-    credential_lifetime(credential_expires_at, SystemTime::now()).map_err(|error| {
-        BuildExecutionError::ExecutorCredential {
-            message: error.to_string(),
-        }
-    })?;
-    let service =
-        start_executor_service(client.clone(), identity, runtime.clone(), terminal_tx).await?;
-    let health_description = format!(
+    let connected = ConnectedExecutor::start(
+        identity,
+        session.client.clone(),
+        workspace_root,
+        terminal_tx,
+    )
+    .await?;
+    let wait_result = session
+        .wait(credential_expires_at, current_health_description)
+        .await;
+    eprintln!("Build Executor stopping");
+    let shutdown_result = connected.shutdown().await;
+    wait_result?;
+    shutdown_result?;
+    eprintln!("Build Executor stopped");
+    Ok(PloyzctlExecutionOutput::stdout(
+        "Build Executor stopped.\n".to_owned(),
+    ))
+}
+
+async fn current_health_description() -> Result<String, BuildExecutionError> {
+    probe_readiness()
+        .await
+        .map(|readiness| health_description(&readiness))
+}
+
+fn health_description(readiness: &BuildExecutorReadiness) -> String {
+    format!(
         "{} {}/{} {}",
         health_state(readiness.capability),
         readiness.native_platform.os(),
         readiness.native_platform.architecture(),
         capability_name(readiness.capability),
-    );
-    eprintln!("Build Executor {health_description}");
-    let wait_result = session
-        .wait(credential_expires_at, &health_description)
-        .await;
-    eprintln!("Build Executor stopping");
-    let shutdown_result = runtime.shutdown().await;
-    let service_result =
-        service
-            .shutdown()
-            .await
-            .map_err(|error| BuildExecutionError::ExecutorRuntime {
-                message: error.to_string(),
-            });
-    let client_result =
-        client
-            .drain()
-            .await
-            .map_err(|error| BuildExecutionError::ExecutorRuntime {
-                message: format!("failed to drain NATS client: {error}"),
-            });
-    shutdown_result?;
-    service_result?;
-    client_result?;
-    wait_result?;
-    eprintln!("Build Executor stopped");
-    Ok(PloyzctlExecutionOutput::stdout(
-        "Build Executor stopped.\n".to_owned(),
-    ))
+    )
 }
 
 fn capability_name(capability: BuildExecutorCapability) -> &'static str {
@@ -322,7 +332,7 @@ async fn start_executor_service(
 
     let readiness_identity = identity.clone();
     service
-        .bind_endpoint(readiness_endpoint, move |request| {
+        .bind_restricted_endpoint(readiness_endpoint, move |request| {
             let identity = readiness_identity.clone();
             async move {
                 match decode_json_request::<BuildExecutorReadinessRequest>(&request) {
@@ -348,7 +358,7 @@ async fn start_executor_service(
 
     let start_runtime = runtime.clone();
     service
-        .bind_endpoint_with_policy(
+        .bind_restricted_endpoint_with_policy(
             start_endpoint,
             EndpointExecutionPolicy::new(NonZeroUsize::MIN, BUILD_START_ENDPOINT_TIMEOUT),
             move |request| {
@@ -366,7 +376,7 @@ async fn start_executor_service(
 
     let cancel_runtime = runtime;
     service
-        .bind_endpoint(cancel_endpoint, move |request| {
+        .bind_restricted_endpoint(cancel_endpoint, move |request| {
             let runtime = cancel_runtime.clone();
             async move { handle_cancel(runtime, request).await }
         })
@@ -986,12 +996,15 @@ mod tests {
         publish_executor_context(
             &paths,
             ExecutorContextPublication {
-                organization_id: "org-1",
+                organization_id: &ployz_core::ids::SubjectToken::try_new("org-1")
+                    .expect("organization id"),
                 pool_id: &identity.pool_id,
                 executor_id: &identity.executor_id,
                 nats_url: NatsClientUrl::try_new("tls://executor.example:4222").expect("NATS URL"),
                 ca_pem: "executor-ca",
-                credential_expires_at: u64::MAX,
+                credential_expires_at:
+                    ployz_core::nats_config::BuildExecutorCredentialExpiresAt::try_new(u64::MAX)
+                        .expect("expiry"),
             },
         )
         .expect("published executor context");
@@ -999,7 +1012,10 @@ mod tests {
             nats_url: Some("tls://operator.example:4222".to_owned()),
             nats_ca_file: Some(PathBuf::from("operator-ca")),
             nats_seed_file: Some(PathBuf::from("operator-seed")),
-            executor_context_root: Some(temporary.path().to_owned()),
+            build_executor: crate::dispatcher::BuildExecutorRuntimeConfig {
+                context_root: Some(temporary.path().to_owned()),
+                ..crate::dispatcher::BuildExecutorRuntimeConfig::default()
+            },
             ..PloyzctlRuntimeConfig::default()
         };
 
@@ -1008,7 +1024,7 @@ mod tests {
 
         assert_eq!(connect.url.as_str(), "tls://executor.example:4222");
         assert_eq!(connect.principal, executor_principal(&identity));
-        assert_eq!(expires_at, u64::MAX);
+        assert_eq!(expires_at.unix_seconds(), u64::MAX);
         assert!(matches!(connect.auth, NatsClientAuth::NkeySeed(_)));
         assert!(
             matches!(connect.trust, NatsTlsTrust::ClusterCa(path) if path != Path::new("operator-ca"))

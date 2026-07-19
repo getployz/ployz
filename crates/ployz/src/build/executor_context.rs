@@ -4,8 +4,10 @@ use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use ployz_core::ids::{BuildExecutorId, BuildPoolId, SubjectToken, SubjectTokenError};
-use ployz_core::nats_config::{MintedNatsUser, NatsServerConfigError, NatsUserSeed};
+use ployz_core::ids::{BuildExecutorId, BuildPoolId, SubjectToken};
+use ployz_core::nats_config::{
+    BuildExecutorCredentialExpiresAt, MintedNatsUser, NatsServerConfigError, NatsUserSeed,
+};
 use ployz_nats::connect::{NatsClientUrl, NatsClientUrlError};
 use serde::{Deserialize, Serialize};
 
@@ -19,52 +21,18 @@ const PRIVATE_DIRECTORY_MODE: u32 = 0o700;
 const PRIVATE_FILE_MODE: u32 = 0o600;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExecutorContext {
-    pub organization_id: String,
+pub(super) struct ExecutorContext {
+    pub organization_id: SubjectToken,
     pub pool_id: BuildPoolId,
     pub executor_id: BuildExecutorId,
     pub nats_url: NatsClientUrl,
     pub nats_ca_file: PathBuf,
     pub nats_seed_file: PathBuf,
-    pub credential_expires_at: u64,
+    pub credential_expires_at: BuildExecutorCredentialExpiresAt,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExecutorConnectionInputs {
-    pub organization_id: String,
-    pub pool_id: BuildPoolId,
-    pub executor_id: BuildExecutorId,
-    pub nats_url: NatsClientUrl,
-    pub nats_ca_file: PathBuf,
-    pub nats_seed_file: PathBuf,
-    pub credential_expires_at: u64,
-}
-
-impl From<ExecutorContext> for ExecutorConnectionInputs {
-    fn from(context: ExecutorContext) -> Self {
-        let ExecutorContext {
-            organization_id,
-            pool_id,
-            executor_id,
-            nats_url,
-            nats_ca_file,
-            nats_seed_file,
-            credential_expires_at,
-        } = context;
-        Self {
-            organization_id,
-            pool_id,
-            executor_id,
-            nats_url,
-            nats_ca_file,
-            nats_seed_file,
-            credential_expires_at,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ExecutorIdentityPaths {
+pub(super) struct ExecutorIdentityPaths {
     pub directory: PathBuf,
     pub context: PathBuf,
     pub seed: PathBuf,
@@ -73,17 +41,17 @@ pub(crate) struct ExecutorIdentityPaths {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ExecutorContextFile {
-    organization_id: String,
-    pool_id: String,
-    executor_id: String,
+    organization_id: SubjectToken,
+    pool_id: BuildPoolId,
+    executor_id: BuildExecutorId,
     runtime_nats_url: String,
     nats_ca_file: PathBuf,
     nats_seed_file: PathBuf,
-    credential_expires_at: String,
+    credential_expires_at: BuildExecutorCredentialExpiresAt,
 }
 
 #[must_use]
-pub fn default_executor_context_root() -> Option<PathBuf> {
+fn default_executor_context_root() -> Option<PathBuf> {
     let config_home = std::env::var_os("XDG_CONFIG_HOME")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
@@ -95,15 +63,21 @@ pub fn default_executor_context_root() -> Option<PathBuf> {
     Some(config_home.join("ployz").join("build-executors"))
 }
 
-pub fn load_executor_connection(
+pub(super) fn resolve_executor_context_root(configured: Option<&Path>) -> Option<PathBuf> {
+    configured
+        .map(Path::to_path_buf)
+        .or_else(default_executor_context_root)
+}
+
+pub(super) fn load_executor_context(
     root: &Path,
     pool_id: &BuildPoolId,
     executor_id: &BuildExecutorId,
-) -> Result<ExecutorConnectionInputs, ExecutorContextError> {
-    load_executor_context(root, pool_id, executor_id).map(Into::into)
+) -> Result<ExecutorContext, ExecutorContextError> {
+    read_executor_context(root, pool_id, executor_id)
 }
 
-pub(crate) fn identity_paths(
+pub(super) fn identity_paths(
     root: &Path,
     pool_id: &BuildPoolId,
     executor_id: &BuildExecutorId,
@@ -116,7 +90,7 @@ pub(crate) fn identity_paths(
     }
 }
 
-pub(crate) fn load_or_create_identity(
+pub(super) fn load_or_create_identity(
     paths: &ExecutorIdentityPaths,
 ) -> Result<MintedNatsUser, ExecutorContextError> {
     prepare_identity_hierarchy(paths)?;
@@ -148,16 +122,16 @@ pub(crate) fn load_or_create_identity(
     }
 }
 
-pub(crate) struct ExecutorContextPublication<'a> {
-    pub organization_id: &'a str,
+pub(super) struct ExecutorContextPublication<'a> {
+    pub organization_id: &'a SubjectToken,
     pub pool_id: &'a BuildPoolId,
     pub executor_id: &'a BuildExecutorId,
     pub nats_url: NatsClientUrl,
     pub ca_pem: &'a str,
-    pub credential_expires_at: u64,
+    pub credential_expires_at: BuildExecutorCredentialExpiresAt,
 }
 
-pub(crate) fn publish_executor_context(
+pub(super) fn publish_executor_context(
     paths: &ExecutorIdentityPaths,
     publication: ExecutorContextPublication<'_>,
 ) -> Result<ExecutorContext, ExecutorContextError> {
@@ -169,22 +143,16 @@ pub(crate) fn publish_executor_context(
         ca_pem,
         credential_expires_at,
     } = publication;
-    if SubjectToken::try_new(organization_id).is_err() {
-        return Err(ExecutorContextError::InvalidOrganization);
-    }
-    if credential_expires_at == 0 {
-        return Err(ExecutorContextError::InvalidExpiry);
-    }
     prepare_identity_hierarchy(paths)?;
     let (ca_directory, ca_relative) = create_ca_generation(paths, ca_pem)?;
     let file = ExecutorContextFile {
-        organization_id: organization_id.to_owned(),
-        pool_id: pool_id.as_str().to_owned(),
-        executor_id: executor_id.as_str().to_owned(),
+        organization_id: organization_id.clone(),
+        pool_id: pool_id.clone(),
+        executor_id: executor_id.clone(),
         runtime_nats_url: nats_url.as_str().to_owned(),
         nats_ca_file: ca_relative,
         nats_seed_file: PathBuf::from(SEED_FILE),
-        credential_expires_at: credential_expires_at.to_string(),
+        credential_expires_at,
     };
     let mut payload =
         serde_json::to_vec_pretty(&file).map_err(|error| ExecutorContextError::Write {
@@ -208,10 +176,10 @@ pub(crate) fn publish_executor_context(
             message: "executor context path has no identity root".to_owned(),
         });
     };
-    load_executor_context(root, pool_id, executor_id)
+    read_executor_context(root, pool_id, executor_id)
 }
 
-fn load_executor_context(
+fn read_executor_context(
     root: &Path,
     expected_pool_id: &BuildPoolId,
     expected_executor_id: &BuildExecutorId,
@@ -235,23 +203,12 @@ fn load_executor_context(
         nats_seed_file,
         credential_expires_at,
     } = file;
-    if SubjectToken::try_new(organization_id.clone()).is_err() {
-        return Err(ExecutorContextError::InvalidOrganization);
-    }
-    let pool_id = BuildPoolId::try_new(pool_id).map_err(ExecutorContextError::InvalidIdentity)?;
-    let executor_id =
-        BuildExecutorId::try_new(executor_id).map_err(ExecutorContextError::InvalidIdentity)?;
     if pool_id != *expected_pool_id || executor_id != *expected_executor_id {
         return Err(ExecutorContextError::IdentityMismatch);
     }
     if !is_private_ca_reference(&nats_ca_file) || nats_seed_file != Path::new(SEED_FILE) {
         return Err(ExecutorContextError::InvalidMaterialReference);
     }
-    let credential_expires_at = credential_expires_at
-        .parse::<u64>()
-        .ok()
-        .filter(|value| *value > 0)
-        .ok_or(ExecutorContextError::InvalidExpiry)?;
     let seed = fs::read_to_string(&paths.seed).map_err(|error| ExecutorContextError::Read {
         path: paths.seed.clone(),
         message: error.to_string(),
@@ -428,23 +385,17 @@ fn prepare_identity_hierarchy(paths: &ExecutorIdentityPaths) -> Result<(), Execu
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum ExecutorContextError {
+pub(super) enum ExecutorContextError {
     #[error("executor context file {} is unreadable: {message}", path.display())]
     Read { path: PathBuf, message: String },
     #[error("executor context file {} is invalid: {message}", path.display())]
     Parse { path: PathBuf, message: String },
     #[error("could not write executor context material at {}: {message}", path.display())]
     Write { path: PathBuf, message: String },
-    #[error("executor context has an invalid identity: {0}")]
-    InvalidIdentity(SubjectTokenError),
     #[error("executor context identity does not match the requested executor")]
     IdentityMismatch,
-    #[error("executor context organization id is invalid")]
-    InvalidOrganization,
     #[error("executor context must reference its own generated CA and nkey.seed")]
     InvalidMaterialReference,
-    #[error("executor context credential expiry must be a positive decimal string")]
-    InvalidExpiry,
     #[error("executor context has an invalid NATS URL: {0}")]
     InvalidNatsUrl(NatsClientUrlError),
     #[error("executor NKey material is invalid: {0}")]
@@ -466,8 +417,8 @@ mod tests {
     use ployz_nats::connect::NatsClientUrl;
 
     use super::{
-        ExecutorContextPublication, identity_paths, load_executor_connection,
-        load_or_create_identity, publish_executor_context,
+        ExecutorContextPublication, identity_paths, load_executor_context, load_or_create_identity,
+        publish_executor_context,
     };
 
     #[test]
@@ -485,9 +436,8 @@ mod tests {
         let reader_executor = executor_id.clone();
         let reader = thread::spawn(move || {
             for _ in 0..100 {
-                let context =
-                    load_executor_connection(&reader_root, &reader_pool, &reader_executor)
-                        .expect("published context loads");
+                let context = load_executor_context(&reader_root, &reader_pool, &reader_executor)
+                    .expect("published context loads");
                 let ca = fs::read_to_string(&context.nats_ca_file).expect("published CA reads");
                 let expected = context
                     .nats_url
@@ -514,13 +464,15 @@ mod tests {
         publish_executor_context(
             paths,
             ExecutorContextPublication {
-                organization_id: "org-1",
+                organization_id: &ployz_core::ids::SubjectToken::try_new("org-1")
+                    .expect("organization id"),
                 pool_id,
                 executor_id,
                 nats_url: NatsClientUrl::try_new(format!("tls://{generation}.example:4222"))
                     .expect("NATS URL"),
                 ca_pem: generation,
-                credential_expires_at: 1,
+                credential_expires_at:
+                    ployz_core::nats_config::BuildExecutorCredentialExpiresAt::first(),
             },
         )
         .expect("context publishes");

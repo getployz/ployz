@@ -72,8 +72,8 @@ fn cli_build_enroll_parses_exact_identity_and_https_endpoint() {
             "enroll",
             "--enrollment-url",
             "https://cloud.example/api/build-executors/enroll",
-            "--token",
-            "secret-token",
+            "--token-env",
+            "PLOYZ_BUILD_ENROLLMENT_TOKEN",
             "--pool-id",
             "homelab",
             "--executor-id",
@@ -84,7 +84,7 @@ fn cli_build_enroll_parses_exact_identity_and_https_endpoint() {
     .expect("build enrollment parses");
 
     assert_eq!(command.telemetry_name(), Some("build enroll"));
-    assert!(!format!("{command:?}").contains("secret-token"));
+    assert!(format!("{command:?}").contains("PLOYZ_BUILD_ENROLLMENT_TOKEN"));
     let PloyzctlCommand::BuildEnroll(command) = command else {
         panic!("expected build enrollment command");
     };
@@ -100,8 +100,8 @@ fn cli_build_enroll_rejects_invalid_identity_and_url() {
             "enroll",
             "--enrollment-url",
             "not-a-url",
-            "--token",
-            "token",
+            "--token-env",
+            "PLOYZ_BUILD_ENROLLMENT_TOKEN",
             "--pool-id",
             "homelab",
             "--executor-id",
@@ -112,8 +112,8 @@ fn cli_build_enroll_rejects_invalid_identity_and_url() {
             "enroll",
             "--enrollment-url",
             "https://cloud.example/enroll",
-            "--token",
-            "token",
+            "--token-env",
+            "PLOYZ_BUILD_ENROLLMENT_TOKEN",
             "--pool-id",
             "bad.pool",
             "--executor-id",
@@ -122,6 +122,37 @@ fn cli_build_enroll_rejects_invalid_identity_and_url() {
     ] {
         assert!(parse_command(args.map(str::to_owned)).is_err());
     }
+}
+
+#[test]
+fn cli_build_enroll_accepts_only_a_valid_token_environment_name() {
+    let base = [
+        "build",
+        "enroll",
+        "--enrollment-url",
+        "https://cloud.example/enroll",
+        "--token-env",
+        "SECRET=value",
+        "--pool-id",
+        "homelab",
+        "--executor-id",
+        "builder-1",
+    ];
+    assert!(parse_command(base.map(str::to_owned)).is_err());
+
+    let raw_token = [
+        "build",
+        "enroll",
+        "--enrollment-url",
+        "https://cloud.example/enroll",
+        "--token",
+        "secret-token",
+        "--pool-id",
+        "homelab",
+        "--executor-id",
+        "builder-1",
+    ];
+    assert!(parse_command(raw_token.map(str::to_owned)).is_err());
 }
 
 #[test]

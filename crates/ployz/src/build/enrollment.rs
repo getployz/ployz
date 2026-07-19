@@ -5,14 +5,14 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use ployz_core::ids::SubjectToken;
-use ployz_core::nats_config::NatsCaCertificatePem;
+use ployz_core::nats_config::{BuildExecutorCredentialExpiresAt, NatsCaCertificatePem};
 use ployz_nats::connect::NatsClientUrl;
 use serde::{Deserialize, Serialize};
 
 use super::command::BuildEnrollCommand;
 use super::executor_context::{
-    ExecutorContextError, ExecutorContextPublication, default_executor_context_root,
-    identity_paths, load_or_create_identity, publish_executor_context,
+    ExecutorContextError, ExecutorContextPublication, identity_paths, load_or_create_identity,
+    publish_executor_context, resolve_executor_context_root,
 };
 use crate::dispatcher::PloyzctlRuntimeConfig;
 use crate::execution_support::PloyzctlExecutionOutput;
@@ -65,19 +65,15 @@ impl fmt::Debug for EnrollmentUrl {
     }
 }
 
-impl fmt::Display for EnrollmentUrl {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("enrollment endpoint")
-    }
-}
-
 #[derive(Clone, PartialEq, Eq)]
-pub struct EnrollmentToken(String);
+struct EnrollmentToken(String);
 
 impl EnrollmentToken {
-    #[must_use]
-    pub fn new(value: String) -> Self {
-        Self(value)
+    fn try_new(value: String) -> Result<Self, BuildEnrollmentError> {
+        if value.is_empty() {
+            return Err(BuildEnrollmentError::EmptyToken);
+        }
+        Ok(Self(value))
     }
 
     fn secret(&self) -> &str {
@@ -143,13 +139,26 @@ pub(crate) async fn enroll(
 ) -> Result<PloyzctlExecutionOutput, BuildEnrollmentError> {
     let BuildEnrollCommand {
         enrollment_url,
-        token,
+        token_env,
         pool_id,
         executor_id,
     } = command;
-    if enrollment_url.is_loopback_http() && !config.allow_insecure_executor_enrollment {
+    if enrollment_url.is_loopback_http() && !config.build_executor.allow_insecure_enrollment {
         return Err(BuildEnrollmentError::HttpsRequired);
     }
+    let token = std::env::var(&token_env)
+        .map_err(|_| BuildEnrollmentError::ReadToken { name: token_env })
+        .and_then(EnrollmentToken::try_new)?;
+    enroll_with_token(enrollment_url, token, pool_id, executor_id, config).await
+}
+
+async fn enroll_with_token(
+    enrollment_url: EnrollmentUrl,
+    token: EnrollmentToken,
+    pool_id: ployz_core::ids::BuildPoolId,
+    executor_id: ployz_core::ids::BuildExecutorId,
+    config: &PloyzctlRuntimeConfig,
+) -> Result<PloyzctlExecutionOutput, BuildEnrollmentError> {
     let root = executor_context_root(config)?;
     let paths = identity_paths(&root, &pool_id, &executor_id);
     let identity = load_or_create_identity(&paths)?;
@@ -163,13 +172,13 @@ pub(crate) async fn enroll(
         token,
         request,
         config
-            .executor_enrollment_timeout
+            .build_executor
+            .enrollment_timeout
             .unwrap_or(Duration::from_secs(15)),
     )
     .await?;
-    if SubjectToken::try_new(response.organization_id.clone()).is_err() {
-        return Err(BuildEnrollmentError::InvalidOrganization);
-    }
+    let organization_id = SubjectToken::try_new(response.organization_id)
+        .map_err(|_| BuildEnrollmentError::InvalidOrganization)?;
     if response.pool_id != pool_id.as_str() || response.executor_id != executor_id.as_str() {
         return Err(BuildEnrollmentError::IdentityMismatch);
     }
@@ -179,20 +188,23 @@ pub(crate) async fn enroll(
     let context = publish_executor_context(
         &paths,
         ExecutorContextPublication {
-            organization_id: &response.organization_id,
+            organization_id: &organization_id,
             pool_id: &pool_id,
             executor_id: &executor_id,
             nats_url,
             ca_pem: ca_pem.as_str(),
-            credential_expires_at: response.credential_expires_at.0,
+            credential_expires_at: BuildExecutorCredentialExpiresAt::try_new(
+                response.credential_expires_at.0,
+            )
+            .map_err(|_| BuildEnrollmentError::InvalidResponse)?,
         },
     )?;
     Ok(PloyzctlExecutionOutput::stdout(format!(
         "enrolled Build Executor {}/{} for organization {}\ncredentials expire at {}\ncontext {}\n",
         context.pool_id.as_str(),
         context.executor_id.as_str(),
-        context.organization_id,
-        context.credential_expires_at,
+        context.organization_id.as_str(),
+        context.credential_expires_at.unix_seconds(),
         paths.context.display(),
     )))
 }
@@ -232,10 +244,7 @@ async fn exchange(
 }
 
 fn executor_context_root(config: &PloyzctlRuntimeConfig) -> Result<PathBuf, BuildEnrollmentError> {
-    config
-        .executor_context_root
-        .clone()
-        .or_else(default_executor_context_root)
+    resolve_executor_context_root(config.build_executor.context_root.as_deref())
         .ok_or(BuildEnrollmentError::MissingConfigRoot)
 }
 
@@ -262,6 +271,12 @@ pub enum BuildEnrollmentError {
     HttpsRequired,
     #[error("could not resolve a user config directory for Build Executor enrollment")]
     MissingConfigRoot,
+    #[error(
+        "environment variable {name} containing the enrollment token is not set or is not valid Unicode"
+    )]
+    ReadToken { name: String },
+    #[error("Build Executor enrollment token must not be empty")]
+    EmptyToken,
     #[error("Build Executor enrollment service is unavailable; retry the same command")]
     Unavailable,
     #[error("Build Executor enrollment was rejected with HTTP status {status}")]
@@ -276,8 +291,16 @@ pub enum BuildEnrollmentError {
     InvalidNatsUrl,
     #[error("Build Executor enrollment returned invalid NATS CA material")]
     InvalidCa,
-    #[error(transparent)]
-    Context(#[from] ExecutorContextError),
+    #[error("Build Executor context failed: {message}")]
+    Context { message: String },
+}
+
+impl From<ExecutorContextError> for BuildEnrollmentError {
+    fn from(error: ExecutorContextError) -> Self {
+        Self::Context {
+            message: error.to_string(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -292,13 +315,45 @@ mod tests {
     use ployz_core::ids::{BuildExecutorId, BuildPoolId};
     use serde_json::Value;
 
-    use super::{BuildEnrollmentError, EnrollmentToken, EnrollmentUrl, enroll};
+    use super::{BuildEnrollmentError, EnrollmentToken, EnrollmentUrl, enroll, enroll_with_token};
     use crate::build::command::BuildEnrollCommand;
-    use crate::build::executor_context::{identity_paths, load_executor_connection};
-    use crate::dispatcher::PloyzctlRuntimeConfig;
+    use crate::build::executor_context::{identity_paths, load_executor_context};
+    use crate::dispatcher::{BuildExecutorRuntimeConfig, PloyzctlRuntimeConfig};
 
     const TOKEN: &str = "enrollment-secret-never-persist";
+    const TOKEN_ENV: &str = "PLOYZ_TEST_BUILD_ENROLLMENT_TOKEN";
     const TEST_CA: &str = "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----";
+
+    #[test]
+    fn enrollment_token_rejects_empty_secret() {
+        assert_eq!(
+            EnrollmentToken::try_new(String::new()),
+            Err(BuildEnrollmentError::EmptyToken)
+        );
+    }
+
+    #[tokio::test]
+    async fn enrollment_reads_the_token_environment_only_at_execution() {
+        let config = PloyzctlRuntimeConfig::default();
+        let error = enroll(
+            BuildEnrollCommand {
+                enrollment_url: EnrollmentUrl::try_new("https://cloud.example/enroll")
+                    .expect("HTTPS URL"),
+                token_env: "PLOYZ_TEST_TOKEN_THAT_IS_NOT_SET_630".to_owned(),
+                pool_id: BuildPoolId::try_new("homelab").expect("pool id"),
+                executor_id: BuildExecutorId::try_new("builder-1").expect("executor id"),
+            },
+            &config,
+        )
+        .await
+        .expect_err("missing execution secret fails");
+        assert_eq!(
+            error,
+            BuildEnrollmentError::ReadToken {
+                name: "PLOYZ_TEST_TOKEN_THAT_IS_NOT_SET_630".to_owned()
+            }
+        );
+    }
 
     #[tokio::test]
     async fn retry_reuses_seed_and_publishes_only_matching_context() {
@@ -309,8 +364,11 @@ mod tests {
         let paths = identity_paths(&root, &pool_id, &executor_id);
         let (url, requests, server) = ambiguous_then_success_server(paths.seed.clone());
         let config = PloyzctlRuntimeConfig {
-            executor_context_root: Some(root.clone()),
-            allow_insecure_executor_enrollment: true,
+            build_executor: BuildExecutorRuntimeConfig {
+                context_root: Some(root.clone()),
+                allow_insecure_enrollment: true,
+                enrollment_timeout: None,
+            },
             nats_seed_file: Some(temporary.path().join("operator.seed")),
             cluster_context_path: Some(temporary.path().join("operator-context.json")),
             ..PloyzctlRuntimeConfig::default()
@@ -321,7 +379,7 @@ mod tests {
         )
         .expect("operator seed fixture writes");
 
-        let first_error = enroll(command(&url, &pool_id, &executor_id), &config)
+        let first_error = enroll_test(command(&url, &pool_id, &executor_id), &config)
             .await
             .expect_err("closed response is ambiguous");
         assert_eq!(first_error, BuildEnrollmentError::Unavailable);
@@ -331,7 +389,7 @@ mod tests {
             "no context publishes without a response"
         );
 
-        let output = enroll(command(&url, &pool_id, &executor_id), &config)
+        let output = enroll_test(command(&url, &pool_id, &executor_id), &config)
             .await
             .expect("same command retries successfully");
         server.join().expect("server thread exits");
@@ -344,14 +402,17 @@ mod tests {
             vec!["executor_id", "pool_id", "public_key"]
         );
 
-        let connection = load_executor_connection(&root, &pool_id, &executor_id)
-            .expect("executor context loads");
+        let connection =
+            load_executor_context(&root, &pool_id, &executor_id).expect("executor context loads");
         assert_eq!(connection.nats_seed_file, paths.seed);
         assert_ne!(
             connection.nats_seed_file,
             config.nats_seed_file.expect("operator seed")
         );
-        assert_eq!(connection.credential_expires_at, 1_900_000_000);
+        assert_eq!(
+            connection.credential_expires_at.unix_seconds(),
+            1_900_000_000
+        );
         assert_private_material(&root, &paths.directory, &connection.nats_ca_file);
         for file in [&paths.context, &paths.seed, &connection.nats_ca_file] {
             let contents = fs::read_to_string(file).expect("material is text");
@@ -375,12 +436,15 @@ mod tests {
         let paths = identity_paths(&root, &pool_id, &executor_id);
         let (url, server) = single_response_server("other-builder");
         let config = PloyzctlRuntimeConfig {
-            executor_context_root: Some(root),
-            allow_insecure_executor_enrollment: true,
+            build_executor: BuildExecutorRuntimeConfig {
+                context_root: Some(root),
+                allow_insecure_enrollment: true,
+                enrollment_timeout: None,
+            },
             ..PloyzctlRuntimeConfig::default()
         };
 
-        let error = enroll(command(&url, &pool_id, &executor_id), &config)
+        let error = enroll_test(command(&url, &pool_id, &executor_id), &config)
             .await
             .expect_err("mismatched identity fails");
         server.join().expect("server thread exits");
@@ -400,13 +464,15 @@ mod tests {
         let executor_id = BuildExecutorId::try_new("builder-1").expect("executor id");
         let (url, server) = stalled_server();
         let config = PloyzctlRuntimeConfig {
-            executor_context_root: Some(root),
-            allow_insecure_executor_enrollment: true,
-            executor_enrollment_timeout: Some(std::time::Duration::from_millis(50)),
+            build_executor: BuildExecutorRuntimeConfig {
+                context_root: Some(root),
+                allow_insecure_enrollment: true,
+                enrollment_timeout: Some(std::time::Duration::from_millis(50)),
+            },
             ..PloyzctlRuntimeConfig::default()
         };
 
-        let error = enroll(command(&url, &pool_id, &executor_id), &config)
+        let error = enroll_test(command(&url, &pool_id, &executor_id), &config)
             .await
             .expect_err("whole request times out");
         server.join().expect("server thread exits");
@@ -422,10 +488,30 @@ mod tests {
     ) -> BuildEnrollCommand {
         BuildEnrollCommand {
             enrollment_url: EnrollmentUrl::try_new(url).expect("loopback enrollment URL"),
-            token: EnrollmentToken::new(TOKEN.to_owned()),
+            token_env: TOKEN_ENV.to_owned(),
             pool_id: pool_id.clone(),
             executor_id: executor_id.clone(),
         }
+    }
+
+    async fn enroll_test(
+        command: BuildEnrollCommand,
+        config: &PloyzctlRuntimeConfig,
+    ) -> Result<crate::execution_support::PloyzctlExecutionOutput, BuildEnrollmentError> {
+        let BuildEnrollCommand {
+            enrollment_url,
+            token_env: _,
+            pool_id,
+            executor_id,
+        } = command;
+        enroll_with_token(
+            enrollment_url,
+            EnrollmentToken::try_new(TOKEN.to_owned()).expect("non-empty token"),
+            pool_id,
+            executor_id,
+            config,
+        )
+        .await
     }
 
     #[derive(Debug)]

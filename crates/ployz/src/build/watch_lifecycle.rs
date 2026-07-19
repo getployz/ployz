@@ -7,13 +7,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_nats::{ClientError, Event, ServerError};
 use ployz_core::build::BuildExecutorIdentity;
-use ployz_core::nats_config::NatsUserSeed;
+use ployz_core::nats_config::{BuildExecutorCredentialExpiresAt, NatsUserSeed};
 use ployz_core::security::NatsPrincipal;
 use ployz_nats::connect::{
     NatsClientAuth, NatsConnectConfig, NatsTlsTrust, authenticated_connect_options,
 };
 
-use super::executor_context::{default_executor_context_root, load_executor_connection};
+use super::executor_context::{load_executor_context, resolve_executor_context_root};
 use super::runtime::BuildExecutionError;
 use crate::dispatcher::PloyzctlRuntimeConfig;
 
@@ -31,13 +31,8 @@ pub(super) enum ConnectionEvent {
     Connected,
     TransientDisconnect,
     TerminalAuthorization,
+    TerminalConnection,
     Ignore,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ShutdownSignal {
-    Interrupt,
-    Terminate,
 }
 
 pub(super) enum WatchConnect {
@@ -48,24 +43,22 @@ pub(super) enum WatchConnect {
 pub(super) struct WatchSession {
     pub client: async_nats::Client,
     events: tokio::sync::mpsc::UnboundedReceiver<Event>,
-    shutdown: Pin<Box<dyn Future<Output = Result<ShutdownSignal, std::io::Error>> + Send>>,
+    shutdown: Pin<Box<dyn Future<Output = Result<(), std::io::Error>> + Send>>,
 }
 
 pub(super) fn executor_connect_config(
     config: &PloyzctlRuntimeConfig,
     identity: &BuildExecutorIdentity,
-) -> Result<(NatsConnectConfig, u64), BuildExecutionError> {
-    let root = config
-        .executor_context_root
-        .clone()
-        .or_else(default_executor_context_root)
+) -> Result<(NatsConnectConfig, BuildExecutorCredentialExpiresAt), BuildExecutionError> {
+    let root = resolve_executor_context_root(config.build_executor.context_root.as_deref())
         .ok_or_else(|| BuildExecutionError::ExecutorContext {
             message: "neither XDG_CONFIG_HOME nor HOME is available".to_owned(),
         })?;
-    let inputs = load_executor_connection(&root, &identity.pool_id, &identity.executor_id)
-        .map_err(|error| BuildExecutionError::ExecutorContext {
+    let inputs = load_executor_context(&root, &identity.pool_id, &identity.executor_id).map_err(
+        |error| BuildExecutionError::ExecutorContext {
             message: error.to_string(),
-        })?;
+        },
+    )?;
     let raw_seed = std::fs::read_to_string(&inputs.nats_seed_file).map_err(|error| {
         BuildExecutionError::ExecutorContext {
             message: format!(
@@ -122,11 +115,11 @@ pub(super) fn resolve_workspace_root(
 
 pub(super) async fn connect_watch(
     connect: &NatsConnectConfig,
-    credential_expires_at: u64,
+    credential_expires_at: BuildExecutorCredentialExpiresAt,
     connect_timeout: Duration,
 ) -> Result<WatchConnect, BuildExecutionError> {
     let (events_tx, events) = tokio::sync::mpsc::unbounded_channel();
-    let mut shutdown: Pin<Box<dyn Future<Output = Result<ShutdownSignal, std::io::Error>> + Send>> =
+    let mut shutdown: Pin<Box<dyn Future<Output = Result<(), std::io::Error>> + Send>> =
         Box::pin(shutdown_signal());
     let mut attempt = 0;
     let client = loop {
@@ -196,8 +189,8 @@ pub(super) async fn connect_watch(
 impl WatchSession {
     pub async fn wait(
         &mut self,
-        credential_expires_at: u64,
-        ready_description: &str,
+        credential_expires_at: BuildExecutorCredentialExpiresAt,
+        mut probe_health: impl AsyncFnMut() -> Result<String, BuildExecutionError>,
     ) -> Result<(), BuildExecutionError> {
         let expiry =
             credential_lifetime(credential_expires_at, SystemTime::now()).map_err(|error| {
@@ -222,11 +215,17 @@ impl WatchSession {
                     }
                     Some(ConnectionEvent::Connected) if disconnected => {
                         disconnected = false;
-                        eprintln!("Build Executor {ready_description}");
+                        let health_description = probe_health().await?;
+                        eprintln!("Build Executor {health_description}");
                     }
                     Some(ConnectionEvent::TerminalAuthorization) => {
                         return Err(BuildExecutionError::ExecutorCredential {
                             message: "NATS rejected Build Executor authorization".to_owned(),
+                        });
+                    }
+                    Some(ConnectionEvent::TerminalConnection) => {
+                        return Err(BuildExecutionError::ExecutorConnection {
+                            message: "NATS closed the Build Executor connection".to_owned(),
                         });
                     }
                     Some(ConnectionEvent::Connected | ConnectionEvent::Ignore) => {}
@@ -239,10 +238,11 @@ impl WatchSession {
     }
 }
 
-fn expired_error(credential_expires_at: u64) -> BuildExecutionError {
+fn expired_error(credential_expires_at: BuildExecutorCredentialExpiresAt) -> BuildExecutionError {
     BuildExecutionError::ExecutorCredential {
         message: format!(
-            "Build Executor credential expired at Unix timestamp {credential_expires_at}"
+            "Build Executor credential expired at Unix timestamp {}",
+            credential_expires_at.unix_seconds()
         ),
     }
 }
@@ -299,16 +299,16 @@ pub(super) fn classify_event(event: &Event) -> ConnectionEvent {
         {
             ConnectionEvent::TerminalAuthorization
         }
+        Event::Closed
+        | Event::ClientError(ClientError::MaxReconnects | ClientError::ServerNotInPool) => {
+            ConnectionEvent::TerminalConnection
+        }
         Event::LameDuckMode
         | Event::Draining
-        | Event::Closed
         | Event::SlowConsumer(_)
         | Event::ServerError(ServerError::SlowConsumer(_))
         | Event::ServerError(ServerError::Other(_))
-        | Event::ClientError(ClientError::Other(_))
-        | Event::ClientError(ClientError::MaxReconnects | ClientError::ServerNotInPool) => {
-            ConnectionEvent::Ignore
-        }
+        | Event::ClientError(ClientError::Other(_)) => ConnectionEvent::Ignore,
     }
 }
 
@@ -323,7 +323,7 @@ pub(super) fn is_authorization_error(message: &str) -> bool {
 }
 
 pub(super) fn credential_lifetime(
-    expires_at: u64,
+    expires_at: BuildExecutorCredentialExpiresAt,
     now: SystemTime,
 ) -> Result<Duration, CredentialExpiryError> {
     let now = now
@@ -331,10 +331,13 @@ pub(super) fn credential_lifetime(
         .map_err(|_| CredentialExpiryError::ClockBeforeEpoch)?
         .as_secs();
     expires_at
+        .unix_seconds()
         .checked_sub(now)
         .filter(|remaining| *remaining > 0)
         .map(Duration::from_secs)
-        .ok_or(CredentialExpiryError::Expired { expires_at })
+        .ok_or(CredentialExpiryError::Expired {
+            expires_at: expires_at.unix_seconds(),
+        })
 }
 
 #[must_use]
@@ -361,10 +364,7 @@ pub(super) fn default_workspace_root(
     )
 }
 
-pub(super) async fn select_shutdown<I, T>(
-    interrupt: I,
-    terminate: T,
-) -> Result<ShutdownSignal, std::io::Error>
+pub(super) async fn select_shutdown<I, T>(interrupt: I, terminate: T) -> Result<(), std::io::Error>
 where
     I: Future<Output = Result<(), std::io::Error>>,
     T: Future<Output = Result<(), std::io::Error>>,
@@ -372,13 +372,13 @@ where
     tokio::pin!(interrupt);
     tokio::pin!(terminate);
     tokio::select! {
-        result = &mut interrupt => result.map(|()| ShutdownSignal::Interrupt),
-        result = &mut terminate => result.map(|()| ShutdownSignal::Terminate),
+        result = &mut interrupt => result,
+        result = &mut terminate => result,
     }
 }
 
 #[cfg(unix)]
-pub(super) async fn shutdown_signal() -> Result<ShutdownSignal, std::io::Error> {
+pub(super) async fn shutdown_signal() -> Result<(), std::io::Error> {
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     select_shutdown(tokio::signal::ctrl_c(), async move {
         terminate.recv().await.map(|_| ()).ok_or_else(|| {
@@ -389,9 +389,8 @@ pub(super) async fn shutdown_signal() -> Result<ShutdownSignal, std::io::Error> 
 }
 
 #[cfg(not(unix))]
-pub(super) async fn shutdown_signal() -> Result<ShutdownSignal, std::io::Error> {
-    tokio::signal::ctrl_c().await?;
-    Ok(ShutdownSignal::Interrupt)
+pub(super) async fn shutdown_signal() -> Result<(), std::io::Error> {
+    tokio::signal::ctrl_c().await
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -431,6 +430,14 @@ mod tests {
             ))),
             ConnectionEvent::TerminalAuthorization
         );
+        assert_eq!(
+            classify_event(&Event::Closed),
+            ConnectionEvent::TerminalConnection
+        );
+        assert_eq!(
+            classify_event(&Event::ClientError(ClientError::MaxReconnects)),
+            ConnectionEvent::TerminalConnection
+        );
     }
 
     #[test]
@@ -456,19 +463,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn either_shutdown_source_wins_without_an_os_process() {
-        let signal = select_shutdown(std::future::pending(), async { Ok(()) })
+    async fn sigterm_source_stops_without_an_os_process() {
+        select_shutdown(std::future::pending(), async { Ok(()) })
             .await
-            .expect("synthetic termination");
-        assert_eq!(signal, ShutdownSignal::Terminate);
+            .expect("synthetic SIGTERM");
+    }
+
+    #[tokio::test]
+    async fn sigint_source_stops_without_an_os_process() {
+        select_shutdown(async { Ok(()) }, std::future::pending())
+            .await
+            .expect("synthetic SIGINT");
     }
 
     #[test]
     fn credential_expiry_fails_closed() {
         let now = UNIX_EPOCH + Duration::from_secs(100);
-        assert_eq!(credential_lifetime(101, now), Ok(Duration::from_secs(1)));
+        let future = BuildExecutorCredentialExpiresAt::try_new(101).expect("future expiry");
+        let current = BuildExecutorCredentialExpiresAt::try_new(100).expect("current expiry");
+        assert_eq!(credential_lifetime(future, now), Ok(Duration::from_secs(1)));
         assert_eq!(
-            credential_lifetime(100, now),
+            credential_lifetime(current, now),
             Err(CredentialExpiryError::Expired { expires_at: 100 })
         );
     }
