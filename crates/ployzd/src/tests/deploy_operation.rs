@@ -193,7 +193,7 @@ async fn global_operation_records_full_placement_and_completes_with_deferral_war
     let mut health = RecordingHealth::healthy();
     let mut namespace_state = RecordingNamespaceState::stored();
 
-    execute_deploy(
+    let outcome = execute_deploy(
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
@@ -227,6 +227,123 @@ async fn global_operation_records_full_placement_and_completes_with_deferral_war
             outcome: DeployCompletionOutcome::CompletedWithWarnings,
         }))
     ));
+    assert_eq!(
+        outcome.completion_outcome,
+        DeployCompletionOutcome::CompletedWithWarnings
+    );
+}
+
+#[tokio::test]
+async fn replicated_to_global_reuse_reports_completed_service_work() {
+    let mut promoted = ployz_test_support::fixtures::serving_target_entry("svc_api", "unused");
+    promoted.namespace_revision_entry_id = target_namespace_revision_entry_id();
+    promoted.mode = ServiceMode::Replicated {
+        replicas: ReplicaCount::try_new(1).expect("replicas"),
+    };
+    let observation = ployz_core::machine::runtime::MachineContainerObservationSnapshot::try_new(
+        machine_id("machine_a"),
+        [observed_service_container_with_entry(
+            "machine_a",
+            "ctr_existing",
+            target_namespace_revision_entry_id(),
+        )],
+    )
+    .expect("valid observation");
+    let command = global_deploy_command(
+        vec![machine_id("machine_a")],
+        Vec::new(),
+        vec![observation],
+        vec![promoted],
+    );
+    let mut recorder = RecordingOperations::default();
+    let mut runtime = RecordingRuntime::with_containers([]);
+    let mut health = RecordingHealth::healthy();
+    let mut namespace_state = RecordingNamespaceState::stored();
+
+    execute_deploy(
+        command,
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect("mode switch reuses the selected container");
+
+    assert!(runtime.requests.is_empty());
+    assert!(recorder.phase_records.iter().any(|evidence| matches!(
+        evidence,
+        DeployEvidence::PhaseFinished {
+            outcome: DeployPhaseOutcome::Promoted,
+            services,
+            ..
+        } if matches!(services.as_slice(), [DeployServiceResult::Completed { .. }])
+    )));
+}
+
+#[tokio::test]
+async fn global_draining_cleanup_reports_completed_service_work() {
+    let mut promoted = ployz_test_support::fixtures::serving_target_entry("svc_api", "unused");
+    promoted.namespace_revision_entry_id = target_namespace_revision_entry_id();
+    promoted.mode = ServiceMode::Global;
+    let selected = ployz_core::machine::runtime::MachineContainerObservationSnapshot::try_new(
+        machine_id("machine_a"),
+        [observed_service_container_with_entry(
+            "machine_a",
+            "ctr_existing",
+            target_namespace_revision_entry_id(),
+        )],
+    )
+    .expect("valid selected observation");
+    let draining = ployz_core::machine::runtime::MachineContainerObservationSnapshot::try_new(
+        machine_id("machine_draining"),
+        [observed_service_container(
+            "machine_draining",
+            "ctr_draining",
+            "entry_old",
+        )],
+    )
+    .expect("valid draining observation");
+    let command = global_deploy_command(
+        vec![machine_id("machine_a")],
+        vec![UnusableMachine {
+            machine_id: machine_id("machine_draining"),
+            reason: MachineUsabilityReason::Draining,
+        }],
+        vec![selected, draining],
+        vec![promoted],
+    );
+    let mut recorder = RecordingOperations::default();
+    let mut runtime = RecordingRuntime::with_containers([]);
+    let mut health = RecordingHealth::healthy();
+    let mut namespace_state = RecordingNamespaceState::stored();
+
+    execute_deploy(
+        command,
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect("draining cleanup completes");
+
+    assert!(runtime.requests.is_empty());
+    assert_eq!(runtime.removals.len(), 1);
+    assert!(recorder.phase_records.iter().any(|evidence| matches!(
+        evidence,
+        DeployEvidence::PhaseFinished {
+            outcome: DeployPhaseOutcome::Promoted,
+            services,
+            ..
+        } if matches!(services.as_slice(), [DeployServiceResult::Completed { .. }])
+    )));
 }
 
 #[tokio::test]
@@ -279,7 +396,7 @@ async fn deferred_global_candidate_does_not_authorize_cleanup() {
 }
 
 #[tokio::test]
-async fn global_selected_slot_start_failure_preserves_phase_atomicity_and_artifact() {
+async fn global_selected_slot_failure_then_distinct_resubmission_converges() {
     let command = global_deploy_command(
         vec![machine_id("machine_a"), machine_id("machine_b")],
         Vec::new(),
@@ -287,7 +404,7 @@ async fn global_selected_slot_start_failure_preserves_phase_atomicity_and_artifa
         Vec::new(),
     );
     let mut recorder = RecordingOperations::default();
-    let mut runtime = RecordingRuntime::failing_start("ctr_created");
+    let mut runtime = RecordingRuntime::failing_start_after_first(["ctr_a", "ctr_b"]);
     let mut health = RecordingHealth::healthy();
     let mut namespace_state = RecordingNamespaceState::stored();
 
@@ -305,8 +422,11 @@ async fn global_selected_slot_start_failure_preserves_phase_atomicity_and_artifa
     .expect_err("global slot failure is terminal");
 
     assert!(namespace_state.phase_requests.is_empty());
-    assert!(runtime.stops.is_empty());
-    assert!(runtime.removals.is_empty());
+    assert_eq!(runtime.stops.len(), 1);
+    let [(_, removed)] = runtime.removals.as_slice() else {
+        panic!("successful unpromoted slot is removed")
+    };
+    assert_eq!(removed.container_id, container_id("ctr_a"));
     assert!(matches!(
         error,
         DeployExecutionError::Failed {
@@ -314,9 +434,65 @@ async fn global_selected_slot_start_failure_preserves_phase_atomicity_and_artifa
             ..
         } if matches!(failure.as_ref(),
             DeployOperationFailure::ContainerStartFailed { retained_artifacts, .. }
-                if retained_artifacts == &vec![retained_created_container("machine_a", "ctr_created")]
+                if retained_artifacts == &vec![retained_created_container("machine_b", "ctr_b")]
         )
     ));
+
+    let [
+        (_, _successful_request),
+        (failed_machine_id, failed_request),
+    ] = runtime.requests.as_slice()
+    else {
+        panic!("two selected slots attempted")
+    };
+    let retained_observation = ployz_core::machine::runtime::ManagedContainerObservation {
+        machine_id: failed_machine_id.clone(),
+        container_id: container_id("ctr_b"),
+        identity: failed_request.container.clone(),
+        state: ployz_core::machine::runtime::ContainerRuntimeState::Exited,
+        health_status: None,
+        resolved_image_identity: None,
+        created_at_unix_seconds: None,
+    };
+    let snapshot = ployz_core::machine::runtime::MachineContainerObservationSnapshot::try_new(
+        failed_machine_id.clone(),
+        [retained_observation],
+    )
+    .expect("fresh retained observation");
+    let retry_command = global_deploy_command(
+        vec![machine_id("machine_a"), machine_id("machine_b")],
+        Vec::new(),
+        vec![snapshot],
+        Vec::new(),
+    )
+    .with_operation_id(operation_id("op_retry"));
+    let mut retry_recorder = RecordingOperations::for_operation(operation_id("op_retry"));
+    let mut retry_runtime = RecordingRuntime::with_containers(["ctr_retry_a", "ctr_retry_b"]);
+    let mut retry_health = RecordingHealth::healthy();
+    let mut retry_namespace_state = RecordingNamespaceState::stored();
+
+    execute_deploy(
+        retry_command,
+        DeployExecutionPorts {
+            recorder: &mut retry_recorder,
+            machine_runtime: &mut retry_runtime,
+            health_checker: &mut retry_health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut retry_namespace_state,
+        },
+    )
+    .await
+    .expect("ordinary resubmission converges");
+
+    assert!(matches!(
+        retry_runtime.requests.as_slice(),
+        [(first_machine, first), (second_machine, second)]
+            if first_machine == &machine_id("machine_a")
+                && second_machine == &machine_id("machine_b")
+                && first.container.operation_id == operation_id("op_retry")
+                && second.container.operation_id == operation_id("op_retry")
+    ));
+    assert_eq!(retry_namespace_state.phase_requests.len(), 1);
 }
 
 #[tokio::test]

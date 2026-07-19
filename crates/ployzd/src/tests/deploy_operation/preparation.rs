@@ -252,6 +252,48 @@ fn global_empty_exception_requires_an_equivalent_global_serving_target() {
     assert!(deploy_plan(&global_command).is_ok());
 }
 
+#[test]
+fn observation_only_unusable_machine_is_not_a_global_candidate() {
+    let mut request = deploy_request();
+    let [service] = request.services.as_mut_slice() else {
+        panic!("one service")
+    };
+    service.mode = ServiceMode::Global;
+    let mut promoted = serving_target_entry("svc_api", "unused");
+    promoted.namespace_revision_entry_id = target_namespace_revision_entry_id();
+    promoted.mode = ServiceMode::Global;
+    let mut facts = facts_with_target_observation(vec![machine_id("machine_a")], vec![promoted]);
+    facts.observed_machines = vec![
+        MachineContainerObservationSnapshot::try_new(
+            machine_id("machine_observed"),
+            [observed_service_container_with_entry(
+                "machine_observed",
+                "ctr_observed",
+                target_namespace_revision_entry_id(),
+            )],
+        )
+        .expect("valid observation"),
+    ];
+
+    let command = prepare_deploy_execution_command(operation_id("op_global"), request, facts);
+    let plan = deploy_plan(&command).expect("global plan");
+    let [phase] = plan.phases.as_slice() else {
+        panic!("one phase")
+    };
+    let [service] = phase.services.as_slice() else {
+        panic!("one service")
+    };
+    assert_eq!(
+        service.placement,
+        ployz_core::deploy::DeployServicePlacement::Global {
+            candidates: vec![machine_id("machine_a")],
+            selected: vec![machine_id("machine_a")],
+            deferred: Vec::new(),
+            draining: Vec::new(),
+        }
+    );
+}
+
 #[tokio::test]
 async fn pushed_receipt_keeps_a_covered_existing_replica_outside_new_placement_candidates() {
     let amd64 = ployz_core::image::OciPlatform::try_new("linux", "amd64").expect("platform");

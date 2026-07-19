@@ -3,7 +3,8 @@
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployPlanningInput, DeployPlanningPlacementInput,
     DeployPlanningService, DeployPlanningTarget, DeployPreparationInput, DeployRequest,
-    DeployRouteBindingAddition, ExistingReplicaPolicy, PreparedDeploy, RegistryCredential,
+    DeployRouteBindingAddition, EmptyGlobalSelectionPolicy, ExistingReplicaPolicy,
+    GlobalCandidateDisposition, GlobalPlanningInput, PreparedDeploy, RegistryCredential,
     ServiceMode, commit_deploy_route_bindings, namespace_route_binding_removals,
     namespace_serving_target_removals, prepare_deploy, validate_deploy_route_bindings,
 };
@@ -23,7 +24,10 @@ use crate::certificate::GatewayCertificateTarget;
 use crate::control::role_client::machine::MachineClockTestimony;
 
 use super::placement::{ProvisionedStorageRequirement, classify_storage_usability};
-use super::types::{DeployPreviewPlanningCommand, merged_unusable_machines, serving_target_entry};
+use super::types::{
+    DeployPreviewPlanningCommand, ServingIntentDisposition, merged_unusable_machines,
+    serving_target_entry,
+};
 use super::{DeployExecutionCommand, DeployServiceExecutionCommand};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,6 +117,13 @@ impl DeployExecutionInput {
         self.facts.seed_clock_testimony.insert(seed, testimony);
         self
     }
+
+    #[must_use]
+    #[cfg(test)]
+    pub(crate) fn with_operation_id(mut self, operation_id: OperationId) -> Self {
+        self.operation_id = operation_id;
+        self
+    }
 }
 
 #[must_use]
@@ -166,6 +177,7 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
                 .cloned()
                 .collect(),
             planning_input: prepared.planning_input,
+            serving_intent: prepared.serving_intent,
             unusable_machines: prepared.unusable_machines,
         })
         .collect::<Vec<_>>();
@@ -204,6 +216,7 @@ struct PreparedDeployCommand {
 
 struct PreparedDeployService {
     planning_input: DeployPlanningInput,
+    serving_intent: ServingIntentDisposition,
     unusable_machines: Vec<ployz_core::operation::UnusableMachine>,
 }
 
@@ -255,23 +268,27 @@ fn prepare_deploy_command(
             &facts.machine_storage_testimony,
             &storage_requirement,
         );
-        let equivalent_entry_id = service.namespace_revision_entry_id(target.namespace_id());
-        let equivalent_entry_promoted = equivalent_entry_id.as_ref().is_some_and(|entry_id| {
-            facts.namespace_serving_entries.iter().any(|entry| {
-                entry.namespace_id == *target.namespace_id()
-                    && entry.service_id == *service.service_id()
-                    && entry.namespace_revision_entry_id == *entry_id
+        let desired_serving_entry = preview_serving_target_entry(target.namespace_id(), service);
+        let equivalent_serving_entry = desired_serving_entry.as_ref().and_then(|desired| {
+            facts.namespace_serving_entries.iter().find(|entry| {
+                entry.namespace_id == desired.namespace_id
+                    && entry.service_id == desired.service_id
+                    && entry.namespace_revision_entry_id == desired.namespace_revision_entry_id
             })
         });
-        let equivalent_global_target_promoted =
-            equivalent_entry_id.as_ref().is_some_and(|entry_id| {
-                facts.namespace_serving_entries.iter().any(|entry| {
-                    entry.namespace_id == *target.namespace_id()
-                        && entry.service_id == *service.service_id()
-                        && entry.namespace_revision_entry_id == *entry_id
-                        && matches!(entry.mode, ServiceMode::Global)
-                })
-            });
+        let equivalent_entry_promoted = equivalent_serving_entry.is_some();
+        let empty_selection_policy = if equivalent_serving_entry
+            .is_some_and(|entry| matches!(entry.mode, ServiceMode::Global))
+        {
+            EmptyGlobalSelectionPolicy::PreserveEquivalentGlobalTarget
+        } else {
+            EmptyGlobalSelectionPolicy::RequireSelected
+        };
+        let serving_intent = if equivalent_serving_entry == desired_serving_entry.as_ref() {
+            ServingIntentDisposition::Unchanged
+        } else {
+            ServingIntentDisposition::Changed
+        };
         let prepared = prepare_planning_service(
             target,
             service.service_id(),
@@ -290,37 +307,34 @@ fn prepare_deploy_command(
                 prepared.unusable_machines.clone(),
             ),
         );
-        let mut candidate_machines = facts.eligible_machines.clone();
-        candidate_machines.extend(
-            facts
-                .unusable_machines
-                .iter()
-                .map(|machine| machine.machine_id.clone()),
-        );
-        let deferred_machines = merged_unusable
-            .iter()
-            .filter(|machine| {
-                !matches!(
-                    machine.reason,
-                    ployz_core::machine::MachineUsabilityReason::Draining
-                )
-            })
-            .cloned()
-            .collect();
-        if let Some(entry) = preview_serving_target_entry(target.namespace_id(), service) {
+        if let Some(entry) = desired_serving_entry {
             serving_target_commits.push(entry);
         }
         let placement = match service.mode() {
             ServiceMode::Replicated { .. } => DeployPlanningPlacementInput::Replicated {
                 eligible_machines: prepared.eligible_machines,
             },
-            ServiceMode::Global => DeployPlanningPlacementInput::Global {
-                candidates: candidate_machines,
-                selected: prepared.eligible_machines,
-                deferred: deferred_machines,
-                draining: draining_machines.clone(),
-                equivalent_global_target_promoted,
-            },
+            ServiceMode::Global => {
+                let mut candidates = facts
+                    .eligible_machines
+                    .iter()
+                    .cloned()
+                    .map(|machine_id| (machine_id, GlobalCandidateDisposition::Selected))
+                    .collect::<BTreeMap<_, _>>();
+                for unusable in &facts.unusable_machines {
+                    candidates.insert(
+                        unusable.machine_id.clone(),
+                        global_candidate_disposition(&unusable.reason),
+                    );
+                }
+                for unusable in &merged_unusable {
+                    overlay_global_candidate_disposition(&mut candidates, unusable);
+                }
+                DeployPlanningPlacementInput::Global(GlobalPlanningInput::new(
+                    candidates,
+                    empty_selection_policy,
+                ))
+            }
         };
         services.push(PreparedDeployService {
             planning_input: DeployPlanningInput {
@@ -330,6 +344,7 @@ fn prepare_deploy_command(
                 cleanup_candidates: prepared.cleanup_candidates,
                 volume_pins: facts.namespace_volume_pins.clone(),
             },
+            serving_intent,
             unusable_machines: merged_unusable,
         });
     }
@@ -388,6 +403,65 @@ fn existing_replica_policy(
         }
     } else {
         ExistingReplicaPolicy::ExcludeUnpromoted
+    }
+}
+
+fn global_candidate_disposition(
+    reason: &ployz_core::machine::MachineUsabilityReason,
+) -> GlobalCandidateDisposition {
+    match reason {
+        ployz_core::machine::MachineUsabilityReason::Draining => {
+            GlobalCandidateDisposition::Draining
+        }
+        reason @ (ployz_core::machine::MachineUsabilityReason::PlatformMismatch { .. }
+        | ployz_core::machine::MachineUsabilityReason::FactsUnavailable
+        | ployz_core::machine::MachineUsabilityReason::BuildUnavailable
+        | ployz_core::machine::MachineUsabilityReason::StorageTestimonyNotReported
+        | ployz_core::machine::MachineUsabilityReason::StorageUnprepared
+        | ployz_core::machine::MachineUsabilityReason::StorageUnavailable { .. }
+        | ployz_core::machine::MachineUsabilityReason::StoragePoolMismatch { .. }
+        | ployz_core::machine::MachineUsabilityReason::DataplaneUnavailable { .. }) => {
+            GlobalCandidateDisposition::Deferred {
+                reason: reason.clone(),
+            }
+        }
+    }
+}
+
+fn overlay_global_candidate_disposition(
+    candidates: &mut BTreeMap<MachineId, GlobalCandidateDisposition>,
+    unusable: &ployz_core::operation::UnusableMachine,
+) {
+    let Some(disposition) = candidates.get_mut(&unusable.machine_id) else {
+        return;
+    };
+    if !matches!(disposition, GlobalCandidateDisposition::Draining) {
+        *disposition = global_candidate_disposition(&unusable.reason);
+    }
+}
+
+#[cfg(test)]
+mod global_candidate_tests {
+    use super::*;
+
+    #[test]
+    fn draining_candidate_cannot_be_downgraded_by_later_unusability() {
+        let machine_id = MachineId::try_new("machine_a").expect("machine id");
+        let mut candidates =
+            BTreeMap::from([(machine_id.clone(), GlobalCandidateDisposition::Draining)]);
+
+        overlay_global_candidate_disposition(
+            &mut candidates,
+            &ployz_core::operation::UnusableMachine {
+                machine_id: machine_id.clone(),
+                reason: ployz_core::machine::MachineUsabilityReason::FactsUnavailable,
+            },
+        );
+
+        assert_eq!(
+            candidates.get(&machine_id),
+            Some(&GlobalCandidateDisposition::Draining)
+        );
     }
 }
 

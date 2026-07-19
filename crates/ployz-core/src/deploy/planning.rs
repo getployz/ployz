@@ -20,23 +20,70 @@ pub struct DeployPlanningInput {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployPlanningPlacementInput {
-    Replicated {
-        eligible_machines: Vec<MachineId>,
+    Replicated { eligible_machines: Vec<MachineId> },
+    Global(GlobalPlanningInput),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GlobalPlanningInput {
+    candidates: BTreeMap<MachineId, GlobalCandidateDisposition>,
+    empty_selection_policy: EmptyGlobalSelectionPolicy,
+}
+
+impl GlobalPlanningInput {
+    #[must_use]
+    pub fn new(
+        candidates: BTreeMap<MachineId, GlobalCandidateDisposition>,
+        empty_selection_policy: EmptyGlobalSelectionPolicy,
+    ) -> Self {
+        Self {
+            candidates,
+            empty_selection_policy,
+        }
+    }
+
+    fn candidates(&self) -> &BTreeMap<MachineId, GlobalCandidateDisposition> {
+        &self.candidates
+    }
+
+    const fn empty_selection_policy(&self) -> EmptyGlobalSelectionPolicy {
+        self.empty_selection_policy
+    }
+
+    #[must_use]
+    pub fn selected_machines(&self) -> Vec<MachineId> {
+        self.candidates
+            .iter()
+            .filter_map(|(machine_id, disposition)| {
+                matches!(disposition, GlobalCandidateDisposition::Selected)
+                    .then_some(machine_id.clone())
+            })
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GlobalCandidateDisposition {
+    Selected,
+    Deferred {
+        reason: crate::machine::MachineUsabilityReason,
     },
-    Global {
-        candidates: Vec<MachineId>,
-        selected: Vec<MachineId>,
-        deferred: Vec<crate::operation::UnusableMachine>,
-        draining: Vec<MachineId>,
-        equivalent_global_target_promoted: bool,
-    },
+    Draining,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmptyGlobalSelectionPolicy {
+    RequireSelected,
+    PreserveEquivalentGlobalTarget,
 }
 
 impl DeployPlanningInput {
     pub(crate) fn eligible_machines(&self) -> &[MachineId] {
         match &self.placement {
             DeployPlanningPlacementInput::Replicated { eligible_machines } => eligible_machines,
-            DeployPlanningPlacementInput::Global { selected, .. } => selected,
+            // Global services cannot mount volumes; volume planning never
+            // consumes their selected machines.
+            DeployPlanningPlacementInput::Global(_) => &[],
         }
     }
 }

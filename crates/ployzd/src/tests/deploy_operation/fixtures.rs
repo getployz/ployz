@@ -50,7 +50,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-#[derive(Default)]
 pub(super) struct RecordingOperations {
     pub(super) records: Vec<RecordedOperation>,
     pub(super) phase_records: Vec<DeployEvidence>,
@@ -58,10 +57,29 @@ pub(super) struct RecordingOperations {
     fail_cleanup_evidence_remaining: usize,
     fail_phase_finished_evidence_remaining: usize,
     pub(super) completed_transition_attempts: usize,
+    expected_operation_id: OperationId,
+}
+
+impl Default for RecordingOperations {
+    fn default() -> Self {
+        Self::for_operation(operation_id("op_123"))
+    }
 }
 
 impl RecordingOperations {
-    pub(super) const fn fail_completed_transition_times(times: usize) -> Self {
+    pub(super) fn for_operation(expected_operation_id: OperationId) -> Self {
+        Self {
+            records: Vec::new(),
+            phase_records: Vec::new(),
+            fail_completed_transition_remaining: 0,
+            fail_cleanup_evidence_remaining: 0,
+            fail_phase_finished_evidence_remaining: 0,
+            completed_transition_attempts: 0,
+            expected_operation_id,
+        }
+    }
+
+    pub(super) fn fail_completed_transition_times(times: usize) -> Self {
         Self {
             records: Vec::new(),
             phase_records: Vec::new(),
@@ -69,10 +87,11 @@ impl RecordingOperations {
             fail_cleanup_evidence_remaining: 0,
             fail_phase_finished_evidence_remaining: 0,
             completed_transition_attempts: 0,
+            expected_operation_id: operation_id("op_123"),
         }
     }
 
-    pub(super) const fn fail_cleanup_evidence_times(times: usize) -> Self {
+    pub(super) fn fail_cleanup_evidence_times(times: usize) -> Self {
         Self {
             records: Vec::new(),
             phase_records: Vec::new(),
@@ -80,10 +99,11 @@ impl RecordingOperations {
             fail_cleanup_evidence_remaining: times,
             fail_phase_finished_evidence_remaining: 0,
             completed_transition_attempts: 0,
+            expected_operation_id: operation_id("op_123"),
         }
     }
 
-    pub(super) const fn fail_phase_finished_evidence_times(times: usize) -> Self {
+    pub(super) fn fail_phase_finished_evidence_times(times: usize) -> Self {
         Self {
             records: Vec::new(),
             phase_records: Vec::new(),
@@ -91,6 +111,7 @@ impl RecordingOperations {
             fail_cleanup_evidence_remaining: 0,
             fail_phase_finished_evidence_remaining: times,
             completed_transition_attempts: 0,
+            expected_operation_id: operation_id("op_123"),
         }
     }
 }
@@ -126,7 +147,7 @@ impl DeployOperationRecorder for RecordingOperations {
         recorded_operation_id: &OperationId,
         transition: DeployTransition,
     ) -> Result<(), DeployOperationRecordError> {
-        assert_eq!(recorded_operation_id, &operation_id("op_123"));
+        assert_eq!(recorded_operation_id, &self.expected_operation_id);
         if self.fail_completed_transition_remaining > 0
             && matches!(transition, DeployTransition::Completed { .. })
         {
@@ -145,7 +166,7 @@ impl DeployOperationRecorder for RecordingOperations {
         recorded_operation_id: &OperationId,
         evidence: DeployEvidence,
     ) -> Result<(), DeployOperationRecordError> {
-        assert_eq!(recorded_operation_id, &operation_id("op_123"));
+        assert_eq!(recorded_operation_id, &self.expected_operation_id);
         match evidence {
             DeployEvidence::ImageResolved { .. } => {}
             DeployEvidence::PlanCreated { plan } => {
@@ -250,6 +271,7 @@ pub(super) struct RecordingRuntime {
     reuse_existing: bool,
     start_existing: bool,
     fail_start: bool,
+    fail_start_after_first: bool,
     fail_remove: bool,
     fail_stop: bool,
 }
@@ -644,6 +666,7 @@ impl RecordingRuntime {
             reuse_existing: false,
             start_existing: false,
             fail_start: false,
+            fail_start_after_first: false,
             fail_remove: false,
             fail_stop: false,
         }
@@ -668,6 +691,7 @@ impl RecordingRuntime {
             reuse_existing: true,
             start_existing: false,
             fail_start: false,
+            fail_start_after_first: false,
             fail_remove: false,
             fail_stop: false,
         }
@@ -692,6 +716,7 @@ impl RecordingRuntime {
             reuse_existing: false,
             start_existing: true,
             fail_start: false,
+            fail_start_after_first: false,
             fail_remove: false,
             fail_stop: false,
         }
@@ -716,6 +741,7 @@ impl RecordingRuntime {
             reuse_existing: false,
             start_existing: false,
             fail_start: false,
+            fail_start_after_first: false,
             fail_remove: false,
             fail_stop: false,
         }
@@ -743,6 +769,7 @@ impl RecordingRuntime {
             reuse_existing: false,
             start_existing: false,
             fail_start: false,
+            fail_start_after_first: false,
             fail_remove: false,
             fail_stop: false,
         }
@@ -767,6 +794,7 @@ impl RecordingRuntime {
             reuse_existing: false,
             start_existing: false,
             fail_start: true,
+            fail_start_after_first: false,
             fail_remove: false,
             fail_stop: false,
         }
@@ -775,6 +803,12 @@ impl RecordingRuntime {
     pub(super) fn with_remove_failure(mut self) -> Self {
         self.fail_remove = true;
         self
+    }
+
+    pub(super) fn failing_start_after_first<const N: usize>(containers: [&str; N]) -> Self {
+        let mut runtime = Self::with_containers(containers);
+        runtime.fail_start_after_first = true;
+        runtime
     }
 
     pub(super) fn with_hook_outcome(mut self, container_id: &str, exit_code: i64) -> Self {
@@ -882,12 +916,12 @@ impl MachineContainerRuntime for RecordingRuntime {
             });
         };
 
-        if self.fail_start {
+        if self.fail_start || (self.fail_start_after_first && self.requests.len() > 1) {
             return Err(MachineContainerRuntimeError::CreatedContainerStartFailed {
                 machine_id: machine_id.clone(),
-                container_id,
+                inspect_hint: inspect_hint(container_id.as_str()),
                 message: runtime_failure_message("container start failed: exec format error"),
-                inspect_hint: inspect_hint("ctr_created"),
+                container_id,
             });
         }
 
@@ -1133,6 +1167,11 @@ pub(super) fn phased_deploy_with_reused_dependency() -> DeployExecutionInput {
         condition: DependencyCondition::Healthy,
     }];
     let database_entry = database.namespace_revision_entry_id(&request.namespace_id);
+    let mut promoted = serving_target_entry("svc_database", "unused");
+    promoted.namespace_revision_entry_id = database_entry.clone();
+    promoted.image = database.image.clone();
+    promoted.mode = database.mode;
+    promoted.volume_names = Vec::new();
     request.services = vec![database, web];
     let observation = containers::observation("machine_a", "ctr_database")
         .with(
@@ -1147,8 +1186,6 @@ pub(super) fn phased_deploy_with_reused_dependency() -> DeployExecutionInput {
         MachineContainerObservationSnapshot::try_new(machine_id("machine_a"), [observation])
             .expect("valid observation"),
     ];
-    let mut promoted = serving_target_entry("svc_database", "unused");
-    promoted.namespace_revision_entry_id = database_entry;
     execution_input_for_request(request, snapshots, vec![promoted])
 }
 
@@ -1968,7 +2005,7 @@ pub(super) fn observed_service_container(
     )
 }
 
-fn observed_service_container_with_entry(
+pub(super) fn observed_service_container_with_entry(
     machine_id: &str,
     container_id: &str,
     namespace_revision_entry_id: NamespaceRevisionEntryId,

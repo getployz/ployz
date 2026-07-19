@@ -19,28 +19,15 @@ pub(super) fn plan_deploy_service(
             volume_plan,
             replicas,
         ),
-        (
-            ServiceMode::Global,
-            DeployPlanningPlacementInput::Global {
-                candidates,
-                selected,
-                deferred,
-                draining,
-                equivalent_global_target_promoted,
-            },
-        ) => plan_global_service(
-            service,
-            input.service_id,
-            GlobalPlanningInput {
-                candidates,
-                selected,
-                deferred,
-                draining,
-                equivalent_global_target_promoted,
-            },
-            input.existing_replicas,
-            input.cleanup_candidates,
-        ),
+        (ServiceMode::Global, DeployPlanningPlacementInput::Global(placement)) => {
+            plan_global_service(
+                service,
+                input.service_id,
+                placement,
+                input.existing_replicas,
+                input.cleanup_candidates,
+            )
+        }
         _ => Err(DeployPlanError::PlacementModeMismatch {
             service_id: input.service_id,
         }),
@@ -104,44 +91,48 @@ fn plan_replicated_service(
     ))
 }
 
-struct GlobalPlanningInput {
-    candidates: Vec<MachineId>,
-    selected: Vec<MachineId>,
-    deferred: Vec<crate::operation::UnusableMachine>,
-    draining: Vec<MachineId>,
-    equivalent_global_target_promoted: bool,
-}
-
 fn plan_global_service(
     service: &DeployPlanningService,
     service_id: ServiceId,
-    mut placement: GlobalPlanningInput,
+    placement: GlobalPlanningInput,
     mut existing_replicas: Vec<ExistingServiceReplica>,
     mut cleanup_candidates: Vec<ObservedCleanupCandidate>,
 ) -> Result<DeploySingleServicePlan, DeployPlanError> {
-    normalize_machine_ids(&mut placement.candidates);
-    normalize_machine_ids(&mut placement.selected);
-    normalize_machine_ids(&mut placement.draining);
-    placement
-        .deferred
-        .sort_by(|left, right| left.machine_id.cmp(&right.machine_id));
-    placement
-        .deferred
-        .dedup_by(|left, right| left.machine_id == right.machine_id && left.reason == right.reason);
-
-    if placement.selected.is_empty() && !placement.equivalent_global_target_promoted {
+    let selected = placement
+        .candidates()
+        .iter()
+        .filter_map(|(machine_id, disposition)| {
+            matches!(disposition, GlobalCandidateDisposition::Selected)
+                .then_some(machine_id.clone())
+        })
+        .collect::<Vec<_>>();
+    if selected.is_empty()
+        && matches!(
+            placement.empty_selection_policy(),
+            EmptyGlobalSelectionPolicy::RequireSelected
+        )
+    {
         return Err(DeployPlanError::NoEligibleMachines { service_id });
     }
-
-    let selected_set = placement.selected.iter().cloned().collect::<BTreeSet<_>>();
+    let selected_set = selected.iter().cloned().collect::<BTreeSet<_>>();
     let deferred_set = placement
-        .deferred
+        .candidates()
         .iter()
-        .map(|machine| machine.machine_id.clone())
+        .filter_map(|(machine_id, disposition)| {
+            matches!(disposition, GlobalCandidateDisposition::Deferred { .. })
+                .then_some(machine_id.clone())
+        })
+        .collect::<BTreeSet<_>>();
+    let draining_set = placement
+        .candidates()
+        .iter()
+        .filter_map(|(machine_id, disposition)| {
+            matches!(disposition, GlobalCandidateDisposition::Draining)
+                .then_some(machine_id.clone())
+        })
         .collect::<BTreeSet<_>>();
     normalize_existing_replicas(&mut existing_replicas);
-    let steps = placement
-        .selected
+    let steps = selected
         .iter()
         .map(|machine_id| {
             existing_replicas
@@ -164,13 +155,25 @@ fn plan_global_service(
     cleanup_candidates.retain(|candidate| {
         !deferred_set.contains(&candidate.target.machine_id)
             && (selected_set.contains(&candidate.target.machine_id)
-                || placement.draining.contains(&candidate.target.machine_id))
+                || draining_set.contains(&candidate.target.machine_id))
     });
     let service_placement = DeployServicePlacement::Global {
-        candidates: placement.candidates,
-        selected: placement.selected,
-        deferred: placement.deferred,
-        draining: placement.draining,
+        candidates: placement.candidates().keys().cloned().collect(),
+        selected,
+        deferred: placement
+            .candidates()
+            .iter()
+            .filter_map(|(machine_id, disposition)| match disposition {
+                GlobalCandidateDisposition::Deferred { reason } => {
+                    Some(crate::operation::UnusableMachine {
+                        machine_id: machine_id.clone(),
+                        reason: reason.clone(),
+                    })
+                }
+                GlobalCandidateDisposition::Selected | GlobalCandidateDisposition::Draining => None,
+            })
+            .collect(),
+        draining: draining_set.into_iter().collect(),
     };
 
     Ok(finalize_service_plan(
@@ -237,11 +240,6 @@ fn normalize_existing_replicas(replicas: &mut Vec<ExistingServiceReplica>) {
     replicas.dedup_by(|left, right| {
         left.machine_id == right.machine_id && left.container_id == right.container_id
     });
-}
-
-fn normalize_machine_ids(machines: &mut Vec<MachineId>) {
-    machines.sort();
-    machines.dedup();
 }
 
 pub(super) fn replicated_slot(number: u16) -> ReplicaSlot {

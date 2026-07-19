@@ -7,6 +7,7 @@ use ployz_core::deploy::{
 use ployz_core::ids::{MachineId, NamespaceId, NamespaceRevisionId, OperationId, ServiceId};
 use ployz_core::image::{OciDigest, OciPlatform};
 
+use crate::control::operations::deploy::types::ServingIntentDisposition;
 use crate::control::role_client::machine::MachineClockTestimony;
 
 #[test]
@@ -323,6 +324,7 @@ fn pushed_service() -> DeployServiceExecutionCommand {
             cleanup_candidates: Vec::new(),
             volume_pins: Vec::new(),
         },
+        serving_intent: ServingIntentDisposition::Changed,
         unusable_machines: Vec::new(),
     }
 }

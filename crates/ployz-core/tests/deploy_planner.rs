@@ -4,15 +4,15 @@ use ployz_core::deploy::{
     DeployCleanupContainer, DeployPhasePlan, DeployPlan, DeployPlanError, DeployPlanStep,
     DeployPlanningInput as CoreDeployPlanningInput, DeployPlanningPlacementInput,
     DeployPlanningTarget, DeployPreparationInput, DeployRequest, DeployRoute, DeployRouteTarget,
-    DeployServicePlacement, DeployServicePlan, DeployServiceSpec, EnvName, EnvValue,
-    ExistingReplicaCreationGate, ExistingReplicaPolicy, ExistingServiceReplica,
-    HealthcheckShellCommand, ImageReference, ImageSource, ObservedCleanupCandidate, PlatformImage,
-    PreStartHook, PreStartHookStep, PushedImageReceipt, ReplicaCount, ReplicaSlot,
-    ReplicatedReplicaSlot, ServiceDependency, ServiceEnvironment, ServiceMode, ServiceVolumeMount,
-    StopGracePeriod, VolumeAdmissionFailure, VolumeMaxSizeBytes, VolumeName, VolumeSpec,
-    ZfsPoolName, commit_deploy_route_bindings, namespace_revision_id_for,
-    namespace_route_binding_removals, namespace_serving_target_removals, plan_namespace_deploy,
-    prepare_deploy, validate_deploy_route_bindings,
+    DeployServicePlacement, DeployServicePlan, DeployServiceSpec, EmptyGlobalSelectionPolicy,
+    EnvName, EnvValue, ExistingReplicaCreationGate, ExistingReplicaPolicy, ExistingServiceReplica,
+    GlobalCandidateDisposition, GlobalPlanningInput, HealthcheckShellCommand, ImageReference,
+    ImageSource, ObservedCleanupCandidate, PlatformImage, PreStartHook, PreStartHookStep,
+    PushedImageReceipt, ReplicaCount, ReplicaSlot, ReplicatedReplicaSlot, ServiceDependency,
+    ServiceEnvironment, ServiceMode, ServiceVolumeMount, StopGracePeriod, VolumeAdmissionFailure,
+    VolumeMaxSizeBytes, VolumeName, VolumeSpec, ZfsPoolName, commit_deploy_route_bindings,
+    namespace_revision_id_for, namespace_route_binding_removals, namespace_serving_target_removals,
+    plan_namespace_deploy, prepare_deploy, validate_deploy_route_bindings,
 };
 use ployz_core::ids::MachineId;
 use ployz_core::image::{OciDigest, OciPlatform};
@@ -681,13 +681,13 @@ fn namespace_planner_rejects_a_mode_and_placement_mismatch() {
     let request = normalized_services(vec![deploy_request(1)], BTreeMap::new());
     let input = CoreDeployPlanningInput {
         service_id: service_id("svc_api"),
-        placement: DeployPlanningPlacementInput::Global {
-            candidates: vec![machine_id("machine_a")],
-            selected: vec![machine_id("machine_a")],
-            deferred: Vec::new(),
-            draining: Vec::new(),
-            equivalent_global_target_promoted: false,
-        },
+        placement: DeployPlanningPlacementInput::Global(GlobalPlanningInput::new(
+            BTreeMap::from([(
+                machine_id("machine_a"),
+                GlobalCandidateDisposition::Selected,
+            )]),
+            EmptyGlobalSelectionPolicy::RequireSelected,
+        )),
         existing_replicas: Vec::new(),
         cleanup_candidates: Vec::new(),
         volume_pins: Vec::new(),
@@ -1802,13 +1802,39 @@ fn plan_inputs(
                     ServiceMode::Replicated { .. } => DeployPlanningPlacementInput::Replicated {
                         eligible_machines: input.eligible_machines,
                     },
-                    ServiceMode::Global => DeployPlanningPlacementInput::Global {
-                        candidates: input.candidate_machines,
-                        selected: input.eligible_machines,
-                        deferred: input.deferred_machines,
-                        draining: input.draining_machines,
-                        equivalent_global_target_promoted: input.equivalent_target_promoted,
-                    },
+                    ServiceMode::Global => {
+                        let candidates = input
+                            .candidate_machines
+                            .into_iter()
+                            .map(|machine_id| {
+                                let disposition = if input.draining_machines.contains(&machine_id) {
+                                    GlobalCandidateDisposition::Draining
+                                } else if let Some(unusable) = input
+                                    .deferred_machines
+                                    .iter()
+                                    .find(|unusable| unusable.machine_id == machine_id)
+                                {
+                                    GlobalCandidateDisposition::Deferred {
+                                        reason: unusable.reason.clone(),
+                                    }
+                                } else if input.eligible_machines.contains(&machine_id) {
+                                    GlobalCandidateDisposition::Selected
+                                } else {
+                                    panic!("global candidate fixture requires a disposition")
+                                };
+                                (machine_id, disposition)
+                            })
+                            .collect();
+                        let empty_selection_policy = if input.equivalent_target_promoted {
+                            EmptyGlobalSelectionPolicy::PreserveEquivalentGlobalTarget
+                        } else {
+                            EmptyGlobalSelectionPolicy::RequireSelected
+                        };
+                        DeployPlanningPlacementInput::Global(GlobalPlanningInput::new(
+                            candidates,
+                            empty_selection_policy,
+                        ))
+                    }
                 };
                 CoreDeployPlanningInput {
                     service_id: input.service.service_id,

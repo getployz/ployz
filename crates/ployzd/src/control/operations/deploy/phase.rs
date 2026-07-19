@@ -144,6 +144,13 @@ impl<'a> DeployRun<'a> {
         phase.completed_services.push(result);
     }
 
+    fn completed_services(&self) -> &[DeployServiceResult] {
+        match &self.phase {
+            DeployRunPhase::OutsidePhase => &[],
+            DeployRunPhase::During(phase) => &phase.completed_services,
+        }
+    }
+
     fn health_check_containers(&self) -> &[DeployContainer] {
         match &self.phase {
             DeployRunPhase::OutsidePhase => &[],
@@ -251,6 +258,7 @@ pub(super) async fn start_services<R, N>(
     command: &DeployExecutionCommand,
     phase: &DeployPhasePlan,
     dataplane_members: &[ployz_core::network::DataplaneMember],
+    services_with_cleanup: &std::collections::BTreeSet<ServiceId>,
     containers: &mut Vec<DeployContainer>,
     run: &mut DeployRun<'_>,
     recorder: &mut R,
@@ -373,7 +381,11 @@ where
                 }
             }
         }
-        run.service_completed(service_result(service_plan));
+        run.service_completed(service_result(
+            service,
+            service_plan,
+            services_with_cleanup.contains(&service_plan.service_id),
+        ));
     }
 
     Ok(())
@@ -574,6 +586,7 @@ where
     )
     .await
     .map_err(|source| run.fail(source))?;
+    let completed_services = run.completed_services().to_vec();
     run.phase_promoted();
 
     record_evidence(
@@ -582,7 +595,7 @@ where
         DeployEvidence::PhaseFinished {
             phase: phase_number,
             outcome: DeployPhaseOutcome::Promoted,
-            services: phase.services.iter().map(service_result).collect(),
+            services: completed_services,
         },
     )
     .await

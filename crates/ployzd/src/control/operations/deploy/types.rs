@@ -71,7 +71,14 @@ pub struct DeployServiceExecutionCommand {
     pub(super) registry_credential: Option<RegistryCredential>,
     pub(super) route_commits: Vec<RouteBindingState>,
     pub(super) planning_input: DeployPlanningInput,
+    pub(super) serving_intent: ServingIntentDisposition,
     pub(super) unusable_machines: Vec<ployz_core::operation::UnusableMachine>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ServingIntentDisposition {
+    Unchanged,
+    Changed,
 }
 
 impl DeployExecutionCommand {
@@ -231,10 +238,12 @@ impl DeployServiceExecutionCommand {
 
     #[must_use]
     #[cfg(test)]
-    pub fn eligible_machines(&self) -> &[MachineId] {
+    pub fn eligible_machines(&self) -> Vec<MachineId> {
         match &self.planning_input.placement {
-            DeployPlanningPlacementInput::Replicated { eligible_machines } => eligible_machines,
-            DeployPlanningPlacementInput::Global { selected, .. } => selected,
+            DeployPlanningPlacementInput::Replicated { eligible_machines } => {
+                eligible_machines.clone()
+            }
+            DeployPlanningPlacementInput::Global(input) => input.selected_machines(),
         }
     }
 
@@ -293,6 +302,7 @@ pub struct DeployExecutionOutcome {
     pub containers: Vec<DeployContainer>,
     pub cleanup: Vec<DeployCleanupResult>,
     pub image_cleanup: Vec<DeployImageCleanup>,
+    pub completion_outcome: DeployCompletionOutcome,
     pub terminal_event: DeployTerminalEvent,
 }
 
@@ -300,7 +310,7 @@ impl DeployExecutionOutcome {
     #[must_use]
     #[cfg(test)]
     pub fn completion_outcome(&self) -> DeployCompletionOutcome {
-        DeployCleanupResult::completion_outcome(&self.cleanup, &self.image_cleanup)
+        self.completion_outcome
     }
 }
 

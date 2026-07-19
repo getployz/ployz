@@ -15,21 +15,21 @@ mod step;
 mod types;
 
 use ployz_core::deploy::{
-    ContainerRestartPolicy, DeployCleanupContainer, DeployPlan, DeployPlanStep,
-    DeployPlanningContext, ImageSource, ReplicaSlot, plan_namespace_deploy,
+    ContainerRestartPolicy, DeployCleanupContainer, DeployPlan, DeployPlanningContext, ImageSource,
+    ReplicaSlot, plan_namespace_deploy,
 };
 use ployz_core::ids::{OperationId, StepId};
 use ployz_core::machine::runtime::ManagedContainerKind;
 use ployz_core::operation::{
-    ControlPlaneCommitScope, DeployCleanupFailure, DeployEvidence, DeployImageCleanup,
-    DeployPhaseNumber, DeployPhaseOutcome, DeployRunningStage, DeployServiceResult,
-    DeployTransition, FailureMessage, OperatorHint, RetainedArtifact,
+    ControlPlaneCommitScope, DeployCleanupFailure, DeployCompletionOutcome, DeployEvidence,
+    DeployImageCleanup, DeployPhaseNumber, DeployPhaseOutcome, DeployRunningStage,
+    DeployServiceResult, DeployTransition, FailureMessage, OperatorHint, RetainedArtifact,
 };
 
 pub use crate::control::role_client::machine::MachineVolumeEnsureError;
 #[cfg(test)]
 pub use crate::roles::machine::MachineRuntimeUnavailableReason;
-use completion::{deploy_completion_outcome, plan_has_global_deferrals};
+use completion::{plan_has_global_deferrals, service_result};
 pub use facts::{
     DeployFactLoadError, load_deploy_execution_facts_from_nats, validate_deploy_route_admission,
 };
@@ -224,6 +224,11 @@ where
     .map_err(|source| run.fail(source))?;
     validate_pushed_platforms(command, &plan).map_err(|source| run.fail(*source))?;
     let dataplane_membership = dataplane_membership(command, &plan);
+    let services_with_cleanup = plan
+        .cleanup_actions
+        .iter()
+        .map(|action| action.target().identity.service_id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
     if command
         .services()
         .iter()
@@ -309,6 +314,7 @@ where
             command,
             phase,
             &dataplane_membership,
+            &services_with_cleanup,
             &mut containers,
             &mut run,
             &mut *ports.recorder,
@@ -368,12 +374,17 @@ where
         &plan.cleanup_actions,
     )
     .await;
+    let completion_outcome = if plan_has_global_deferrals(&plan) {
+        DeployCompletionOutcome::CompletedWithWarnings
+    } else {
+        DeployCleanupResult::completion_outcome(&cleanup, &image_cleanup)
+    };
     let terminal_event = record_terminal_state(
         command,
         &mut *ports.recorder,
         &cleanup,
         image_cleanup.clone(),
-        plan_has_global_deferrals(&plan),
+        completion_outcome,
     )
     .await;
 
@@ -383,6 +394,7 @@ where
         containers,
         cleanup,
         image_cleanup,
+        completion_outcome,
         terminal_event,
     };
 
@@ -424,23 +436,6 @@ pub(crate) fn deploy_plan(
     )
     .map(|plan| plan.with_revision(command.request.namespace_revision_id()))
     .map_err(DeployExecutionError::from)
-}
-
-fn service_result(service: &ployz_core::deploy::DeployServicePlan) -> DeployServiceResult {
-    if service.pre_start.is_none()
-        && service
-            .steps
-            .iter()
-            .all(|step| matches!(step, DeployPlanStep::UseExistingContainer { .. }))
-    {
-        DeployServiceResult::Unchanged {
-            service_id: service.service_id.clone(),
-        }
-    } else {
-        DeployServiceResult::Completed {
-            service_id: service.service_id.clone(),
-        }
-    }
 }
 
 async fn run_pre_start_hook<N>(
@@ -694,7 +689,7 @@ async fn record_terminal_state<R>(
     recorder: &mut R,
     cleanup: &[DeployCleanupResult],
     images: Vec<DeployImageCleanup>,
-    global_deferrals: bool,
+    outcome: DeployCompletionOutcome,
 ) -> DeployTerminalEvent
 where
     R: DeployOperationRecorder,
@@ -705,7 +700,6 @@ where
             DeployImageCleanup::MissingIdentity { .. } | DeployImageCleanup::Failed { .. }
         )
     });
-    let outcome = deploy_completion_outcome(cleanup, &images, global_deferrals);
     if !cleanup.is_empty() || !images.is_empty() {
         let record_cleanup =
             record_evidence(command, recorder, cleanup_evidence(cleanup, images)).await;
