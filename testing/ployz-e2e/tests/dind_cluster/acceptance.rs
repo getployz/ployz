@@ -1,7 +1,7 @@
 use super::*;
 use ployz::commands::parse_command;
 use ployz::deploy::history_store::{ClusterFingerprint, DeployHistory, DeployHistoryEntry};
-use ployz::dispatcher::{PloyzctlRuntimeConfig, execute_command};
+use ployz::dispatcher::{PloyzctlExecutionError, PloyzctlRuntimeConfig, execute_command};
 use ployz_core::operation::{DeployFailureClass, DeployRunningStage, HealthCheckFailure};
 use support::dind::formation::ProductCliHarness;
 
@@ -39,7 +39,7 @@ async fn group_v1_acceptance() {
         let app = step_2_deploy_real_application(&core, &config, &history, &compose_path).await;
         let failed = step_3_explain_failures(&core, &config, compose_dir.path()).await;
         step_4_keep_https_while_core_is_stopped(&core, &app).await;
-        step_5_retry_and_rollback(&core, &config, &history, &compose_path, &app, &failed).await;
+        step_5_retry_and_restore(&core, &config, &history, &compose_path, &app, &failed).await;
     })
     .await;
 
@@ -288,7 +288,7 @@ async fn step_4_keep_https_while_core_is_stopped(core: &CoreContext, app: &Deplo
     wait_for_fresh_peer_handshakes(core).await;
 }
 
-async fn step_5_retry_and_rollback(
+async fn step_5_retry_and_restore(
     core: &CoreContext,
     config: &PloyzctlRuntimeConfig,
     history: &DeployHistory,
@@ -334,20 +334,57 @@ async fn step_5_retry_and_rollback(
         .map(str::to_owned),
     )
     .expect("acceptance rollback command parses");
-    execute_command(rollback, config)
+    let rollback_error = execute_command(rollback, config)
         .await
-        .expect("acceptance rollback executes");
+        .expect_err("redacted environment history must reject automatic rollback");
+    let PloyzctlExecutionError::Deploy(rollback_error) = rollback_error else {
+        panic!("environment rollback must return a typed deploy error: {rollback_error:?}");
+    };
+    let rollback_error = rollback_error.to_string();
+    assert!(
+        rollback_error.contains(
+            "db: POSTGRES_DB,POSTGRES_PASSWORD,POSTGRES_USER; umami: APP_SECRET,DATABASE_URL"
+        ),
+        "rollback error must identify every affected environment name: {rollback_error}"
+    );
+    assert!(
+        rollback_error.contains("resubmit the deploy input with those environment values"),
+        "rollback error must tell the operator how to restore the deploy: {rollback_error}"
+    );
+    for secret in [
+        "POSTGRES_DB=umami",
+        "POSTGRES_PASSWORD=umami",
+        "POSTGRES_USER=umami",
+        "APP_SECRET=ployz-v1-acceptance",
+        "DATABASE_URL=postgresql://umami:umami@db:5432/umami",
+    ] {
+        assert!(
+            !rollback_error.contains(secret),
+            "rollback error leaked an environment value: {rollback_error}"
+        );
+    }
 
-    let entries = history.load().expect("load rollback history");
-    let [recorded_application, bad_deploy_entry, rollback_entry] = entries.as_slice() else {
-        panic!("rollback must append after application Deploy and bad Deploy: {entries:?}");
+    let entries = history.load().expect("load rejected rollback history");
+    let [recorded_application, recorded_bad_deploy] = entries.as_slice() else {
+        panic!("rejected rollback must not append deploy history: {entries:?}");
     };
     assert_eq!(recorded_application, &app.application);
-    assert_ne!(rollback_entry.operation_id, app.application.operation_id);
-    assert_ne!(rollback_entry.operation_id, bad_deploy_entry.operation_id);
+    assert_eq!(recorded_bad_deploy, bad_deploy_entry);
+
+    std::fs::write(compose_path, umami_compose()).expect("restore Umami Compose file");
+    execute_compose(compose_path, config).await;
+
+    let entries = history.load().expect("load restored deploy history");
+    let [recorded_application, recorded_bad_deploy, restored_entry] = entries.as_slice() else {
+        panic!("operator restore must append after application and bad Deploy: {entries:?}");
+    };
+    assert_eq!(recorded_application, &app.application);
+    assert_eq!(recorded_bad_deploy, bad_deploy_entry);
+    assert_ne!(restored_entry.operation_id, app.application.operation_id);
+    assert_ne!(restored_entry.operation_id, bad_deploy_entry.operation_id);
     assert_eq!(
-        rollback_entry.request.request().services,
-        app.application.request.request().services
+        restored_entry.request, app.application.request,
+        "fresh operator submission must restore the original redacted request evidence"
     );
 
     wait_for_umami_https(core, &app.hostname).await;
