@@ -1105,10 +1105,13 @@ fn assemble_snapshot(
     fresh_storage_testimony: Option<&[ployz_core::machine::MachineStorageTestimony]>,
 ) -> RuntimeSnapshot {
     let (machine_facts, gateway_statuses) = facts.runtime_projection_facts();
+    let machine_testimony = machine_facts
+        .into_iter()
+        .map(|(machine_id, facts)| (machine_id, facts.into()))
+        .collect();
     runtime_snapshot_from_sources(
         intent,
-        &machine_facts,
-        None,
+        &machine_testimony,
         fresh_storage_testimony,
         &gateway_statuses,
         ingress,

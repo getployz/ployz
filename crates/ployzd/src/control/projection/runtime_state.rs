@@ -59,13 +59,17 @@ pub(crate) async fn load_ingress_sources(
 
 pub(crate) fn from_sources(
     intent: IntentSnapshot,
-    facts: &BTreeMap<MachineId, MachineFactsSnapshot>,
-    direct_facts: Option<&BTreeMap<MachineId, MachineFactsTestimony>>,
+    facts: &BTreeMap<MachineId, MachineFactsTestimony>,
     fresh_storage_testimony: Option<&[MachineStorageTestimony]>,
     gateway_statuses: &BTreeMap<MachineId, GatewayStatusObservation>,
     ingress: RuntimeIngressSources,
     read_at_unix_seconds: u64,
 ) -> RuntimeSnapshot {
+    let complete_facts = facts
+        .values()
+        .filter_map(|facts| MachineFactsSnapshot::try_from(facts.clone()).ok())
+        .map(|facts| (facts.machine_id().clone(), facts))
+        .collect::<BTreeMap<_, _>>();
     let ployz_dns_target = runtime_ployz_dns_target(
         intent.ployz_dns_target,
         ingress.ployz_dns_target_allocation,
@@ -83,25 +87,17 @@ pub(crate) fn from_sources(
     let machines = intent
         .active_machines
         .into_iter()
-        .map(|active| {
-            machine_snapshot(
-                active,
-                facts,
-                direct_facts,
-                gateway_statuses,
-                &storage_alarms,
-            )
-        })
+        .map(|active| machine_snapshot(active, facts, gateway_statuses, &storage_alarms))
         .collect::<Vec<_>>();
     let routes = intent.route_bindings;
     let services = intent
         .serving_target_entries
         .into_iter()
-        .map(|active| service_snapshot(active, &routes, &machine_ids, facts))
+        .map(|active| service_snapshot(active, &routes, &machine_ids, &complete_facts))
         .collect::<Vec<_>>();
     let containers = machine_ids
         .iter()
-        .filter_map(|machine_id| facts.get(machine_id))
+        .filter_map(|machine_id| complete_facts.get(machine_id))
         .flat_map(|facts| facts.containers().containers().iter().cloned())
         .collect::<Vec<_>>();
     let revisions = derive_revisions(&services, &containers);
@@ -224,34 +220,14 @@ fn usable_certificate<'a>(
 
 fn machine_snapshot(
     active: ActiveMachineState,
-    facts: &BTreeMap<MachineId, MachineFactsSnapshot>,
-    direct_facts: Option<&BTreeMap<MachineId, MachineFactsTestimony>>,
+    facts: &BTreeMap<MachineId, MachineFactsTestimony>,
     gateways: &BTreeMap<MachineId, GatewayStatusObservation>,
     storage_alarms: &[ployz_core::machine::StrandedVolumeAlarm],
 ) -> MachineSnapshot {
-    let testimony = match direct_facts.and_then(|facts| facts.get(&active.machine_id)) {
-        Some(facts) => MachineTestimony::Answered {
-            endpoints: facts.endpoints().cloned(),
-            gateway: gateways.get(&active.machine_id).cloned().map(Box::new),
-            containers: container_availability(facts.containers()),
-            disk_space: facts.disk_space(),
-            storage: facts.storage().cloned(),
-            last_observed_at_unix_seconds: facts.observed_at_unix_ms() / 1_000,
-        },
-        None => match facts.get(&active.machine_id) {
-            Some(facts) => MachineTestimony::Answered {
-                endpoints: facts.endpoints().cloned(),
-                gateway: gateways.get(&active.machine_id).cloned().map(Box::new),
-                containers: MachineContainerAvailability::Answered {
-                    observed_count: facts.containers().containers().len(),
-                },
-                disk_space: facts.disk_space(),
-                storage: facts.storage().cloned(),
-                last_observed_at_unix_seconds: facts.observed_at_unix_ms() / 1_000,
-            },
-            None => MachineTestimony::NoAnswer,
-        },
-    };
+    let testimony = machine_testimony(
+        facts.get(&active.machine_id),
+        gateways.get(&active.machine_id),
+    );
     let alarms = storage_alarms
         .iter()
         .filter(|alarm| alarm.machine_id == active.machine_id)
@@ -264,9 +240,24 @@ fn machine_snapshot(
     }
 }
 
-pub(crate) fn container_availability(
-    testimony: &MachineContainerTestimony,
-) -> MachineContainerAvailability {
+pub(crate) fn machine_testimony(
+    facts: Option<&MachineFactsTestimony>,
+    gateway: Option<&GatewayStatusObservation>,
+) -> MachineTestimony {
+    let Some(facts) = facts else {
+        return MachineTestimony::NoAnswer;
+    };
+    MachineTestimony::Answered {
+        endpoints: facts.endpoints().cloned(),
+        gateway: gateway.cloned().map(Box::new),
+        containers: container_availability(facts.containers()),
+        disk_space: facts.disk_space(),
+        storage: facts.storage().cloned(),
+        last_observed_at_unix_seconds: facts.observed_at_unix_ms() / 1_000,
+    }
+}
+
+fn container_availability(testimony: &MachineContainerTestimony) -> MachineContainerAvailability {
     match testimony {
         MachineContainerTestimony::Answered { snapshot } => {
             MachineContainerAvailability::Answered {
@@ -522,7 +513,6 @@ mod tests {
         let snapshot = from_sources(
             intent(Vec::new()),
             &BTreeMap::new(),
-            None,
             Some(&[]),
             &BTreeMap::new(),
             ingress(Some(PloyzDnsTargetAllocation::Allocated {
@@ -556,7 +546,6 @@ mod tests {
         let snapshot = from_sources(
             intent(vec![(route.clone(), cert)]),
             &BTreeMap::new(),
-            None,
             Some(&[]),
             &BTreeMap::new(),
             ingress(None),
@@ -632,8 +621,7 @@ mod tests {
 
         let snapshot = from_sources(
             cluster_intent,
-            &BTreeMap::new(),
-            Some(&direct_facts),
+            &direct_facts,
             Some(&storage),
             &BTreeMap::new(),
             ingress(None),

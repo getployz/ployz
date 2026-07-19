@@ -177,11 +177,6 @@ pub enum MachineFactsReadError {
         machine_id: MachineId,
         reason: MachineContainerUnavailableReason,
     },
-    #[error("machine {} returned invalid facts: {message}", machine_id.as_str())]
-    Invalid {
-        machine_id: MachineId,
-        message: String,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -347,12 +342,6 @@ impl NatsMachineFactsReader {
                 machine_id: machine_id.clone(),
                 reason,
             },
-            ployz_core::machine::runtime::MachineFactsCompletionError::Invalid(error) => {
-                MachineFactsReadError::Invalid {
-                    machine_id: machine_id.clone(),
-                    message: error.to_string(),
-                }
-            }
         })
     }
 
@@ -593,16 +582,6 @@ pub(crate) async fn read_available_machine_facts_testimony_by_id(
         }
     }
     testimony
-}
-
-pub(crate) fn complete_machine_facts_by_id(
-    testimony: &BTreeMap<MachineId, MachineFactsTestimony>,
-) -> BTreeMap<MachineId, MachineFactsSnapshot> {
-    testimony
-        .values()
-        .filter_map(|answer| MachineFactsSnapshot::try_from(answer.clone()).ok())
-        .map(|facts| (facts.machine_id().clone(), facts))
-        .collect()
 }
 
 impl NatsMachineSubstrateUpdater {
@@ -1193,30 +1172,6 @@ mod tests {
     };
 
     #[test]
-    fn complete_facts_map_excludes_container_unavailable_testimony() {
-        let machine_id = MachineId::try_new("machine-a").expect("machine id");
-        let testimony = MachineFactsTestimony::try_new(
-            machine_id.clone(),
-            MachineContainerTestimony::Unavailable {
-                reason: MachineContainerUnavailableReason::DockerUnavailable,
-            },
-            None,
-            MachineDiskSpace {
-                available_bytes: 1,
-                total_bytes: 2,
-            },
-            None,
-            OciPlatform::try_new("linux", "amd64").expect("platform"),
-            1,
-        )
-        .expect("direct testimony");
-
-        let complete = complete_machine_facts_by_id(&BTreeMap::from([(machine_id, testimony)]));
-
-        assert!(complete.is_empty());
-    }
-
-    #[test]
     fn placement_answer_binds_seed_clock_to_control_gather_start() {
         let machine_id = MachineId::try_new("machine-a").expect("machine id");
         let facts = MachineFactsSnapshot::try_new(
@@ -1249,6 +1204,37 @@ mod tests {
                 control_request_started_at_unix_ms: 1_000,
                 machine_observed_at_unix_ms: 1_234,
             }
+        );
+    }
+
+    #[test]
+    fn placement_rejects_container_unavailable_testimony() {
+        let machine_id = MachineId::try_new("machine-a").expect("machine id");
+        let facts = MachineFactsTestimony::try_new(
+            machine_id,
+            MachineContainerTestimony::Unavailable {
+                reason: MachineContainerUnavailableReason::DockerUnavailable,
+            },
+            None,
+            MachineDiskSpace {
+                available_bytes: 1,
+                total_bytes: 2,
+            },
+            None,
+            OciPlatform::try_new("linux", "amd64").expect("platform"),
+            1_234,
+        )
+        .expect("direct testimony");
+
+        assert!(
+            placement_answer(
+                MachineFactsGetRpcOk {
+                    facts,
+                    build: MachineBuildCapability::Available,
+                },
+                1_000,
+            )
+            .is_none()
         );
     }
 

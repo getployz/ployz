@@ -329,9 +329,11 @@ fn assemble_machine_facts_testimony(
         Ok(existing) => MachineContainerTestimony::Answered {
             snapshot: container_snapshot(machine_id, existing)?,
         },
-        Err(_) => MachineContainerTestimony::Unavailable {
-            reason: MachineContainerUnavailableReason::DockerUnavailable,
-        },
+        Err(MachineContainerListError::ListExisting { message: _ }) => {
+            MachineContainerTestimony::Unavailable {
+                reason: MachineContainerUnavailableReason::DockerUnavailable,
+            }
+        }
     };
     MachineFactsTestimony::try_new(
         machine_id.clone(),
@@ -450,12 +452,18 @@ mod tests {
     #[test]
     fn direct_testimony_preserves_storage_when_docker_is_unavailable() {
         let machine_id = MachineId::try_new("machine-a").expect("machine id");
+        let endpoints = MachineEndpointObservation {
+            machine_id: machine_id.clone(),
+            control_endpoints: vec!["203.0.113.10".parse().expect("control endpoint")],
+            mesh_endpoints: vec!["203.0.113.10:51820".parse().expect("mesh endpoint")],
+        };
+        let platform = ployz_core::image::OciPlatform::try_new("linux", "amd64").expect("platform");
         let testimony = assemble_machine_facts_testimony(
             &machine_id,
             Err(MachineContainerListError::ListExisting {
                 message: "daemon unavailable".to_owned(),
             }),
-            None,
+            Some(endpoints.clone()),
             MachineDiskSpace {
                 available_bytes: 40,
                 total_bytes: 100,
@@ -463,7 +471,7 @@ mod tests {
             Some(StorageCapability::Unavailable {
                 reason: StorageUnavailableReason::ZfsModuleMissing,
             }),
-            ployz_core::image::OciPlatform::try_new("linux", "amd64").expect("platform"),
+            platform.clone(),
             123,
         )
         .expect("independent axes remain valid");
@@ -481,6 +489,10 @@ mod tests {
             })
         );
         assert_eq!(testimony.disk_space().available_bytes, 40);
+        assert_eq!(testimony.disk_space().total_bytes, 100);
+        assert_eq!(testimony.endpoints(), Some(&endpoints));
+        assert_eq!(testimony.platform(), &platform);
+        assert_eq!(testimony.observed_at_unix_ms(), 123);
         assert!(MachineFactsSnapshot::try_from(testimony).is_err());
     }
 }

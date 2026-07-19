@@ -177,11 +177,18 @@ async fn machine_role_service_preserves_non_docker_testimony_when_docker_is_unav
         panic!("running machine responder must preserve its non-Docker testimony");
     };
     assert_eq!(answer.facts.machine_id(), &machine_id("machine_a"));
+    assert_eq!(answer.build, MachineBuildCapability::Unavailable);
     assert_eq!(
         answer.facts.containers(),
         &MachineContainerTestimony::Unavailable {
             reason: MachineContainerUnavailableReason::DockerUnavailable,
         }
+    );
+    assert!(answer.facts.disk_space().total_bytes > 0);
+    assert!(answer.facts.disk_space().available_bytes <= answer.facts.disk_space().total_bytes);
+    assert_eq!(
+        answer.facts.platform(),
+        &ployz_core::image::OciPlatform::current()
     );
     assert!(answer.facts.observed_at_unix_ms() > 0);
 }

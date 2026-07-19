@@ -69,10 +69,8 @@ pub struct MachineFactsSnapshot {
 pub struct MachineFactsTestimony {
     machine_id: MachineId,
     containers: MachineContainerTestimony,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     endpoints: Option<MachineEndpointObservation>,
     disk_space: MachineDiskSpace,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     storage: Option<StorageCapability>,
     platform: OciPlatform,
     observed_at_unix_ms: u64,
@@ -237,8 +235,6 @@ pub enum MachineFactsCompletionError {
     ContainersUnavailable {
         reason: MachineContainerUnavailableReason,
     },
-    #[error("invalid complete machine facts: {0}")]
-    Invalid(MachineFactsSnapshotError),
 }
 
 impl TryFrom<MachineFactsTestimony> for MachineFactsSnapshot {
@@ -251,16 +247,15 @@ impl TryFrom<MachineFactsTestimony> for MachineFactsSnapshot {
                 return Err(MachineFactsCompletionError::ContainersUnavailable { reason });
             }
         };
-        Self::try_new(
-            testimony.machine_id,
+        Ok(Self {
+            machine_id: testimony.machine_id,
             containers,
-            testimony.endpoints,
-            testimony.disk_space,
-            testimony.storage,
-            testimony.platform,
-            testimony.observed_at_unix_ms,
-        )
-        .map_err(MachineFactsCompletionError::Invalid)
+            endpoints: testimony.endpoints,
+            disk_space: testimony.disk_space,
+            storage: testimony.storage,
+            platform: testimony.platform,
+            observed_at_unix_ms: testimony.observed_at_unix_ms,
+        })
     }
 }
 

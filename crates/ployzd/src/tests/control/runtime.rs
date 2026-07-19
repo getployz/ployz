@@ -10,6 +10,9 @@ use std::collections::BTreeMap;
 use crate::certificate::{AcmeIssueContext, AcmeIssuer, AcmeIssuerError, IssuedCertificate};
 use crate::control::intent::machine_roster::MachineRosterStore;
 use crate::control::intent::namespace_intent::NamespaceIntentStore;
+use crate::control::role_client::machine::{
+    NatsMachineFactsReader, read_available_machine_facts_by_id,
+};
 use crate::control::sequencer::MachineAddBootstrapConfig;
 use crate::lease::LeaseWorkerUrl;
 use crate::roles::gateway::process::start_gateway_process_with_client;
@@ -284,6 +287,16 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
         partial_facts,
     )
     .await;
+    let complete_facts = read_available_machine_facts_by_id(
+        &NatsMachineFactsReader::new(nats.connected.controller.clone())
+            .with_request_timeout(Duration::from_secs(1)),
+        [machine_id("machine_2")],
+    )
+    .await;
+    assert!(
+        complete_facts.is_empty(),
+        "the complete-facts map used by destructive freshness excludes partial testimony"
+    );
     publish_gateway_status(
         &minted_client,
         GatewayStatusObservation {
