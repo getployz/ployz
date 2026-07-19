@@ -411,32 +411,54 @@ verify_owned_zfs_boot_order() {
     && [ "$recovery_time" -le "$docker_time" ]
 }
 
+emit_owned_zfs_failure_diagnostics() {
+  local machine_unit=${1:?missing machine unit}
+  local unit
+  for unit in ployz-owned-zfs-import.service docker.service "$machine_unit"; do
+    systemctl status --no-pager -n 100 "$unit" || true
+    journalctl -b -u "$unit" --no-pager -n 100 || true
+  done
+}
+
 verify_owned_zfs_failure_state() {
   local machine_unit=${1:?missing machine unit}
   local dependency_evidence
-  command -v pgrep >/dev/null || return 1
-  command -v ss >/dev/null || return 1
-  systemctl is-failed --quiet ployz-owned-zfs-import.service || return 1
-  systemctl is-active --quiet "$machine_unit" || return 1
-  if systemctl is-active --quiet docker.service; then
+  if ! command -v pgrep >/dev/null \
+    || ! command -v ss >/dev/null \
+    || ! systemctl is-failed --quiet ployz-owned-zfs-import.service \
+    || systemctl is-active --quiet docker.service \
+    || pgrep -x dockerd >/dev/null \
+    || pgrep -x postgres >/dev/null \
+    || ss -H -ltnp | grep -Eq 'users:\(\("postgres"'; then
+    emit_owned_zfs_failure_diagnostics "$machine_unit"
     return 1
   fi
-  if pgrep -x dockerd >/dev/null; then
+  dependency_evidence=$(verify_owned_zfs_dependency_edges) || {
+    emit_owned_zfs_failure_diagnostics "$machine_unit"
     return 1
-  fi
-  if pgrep -x postgres >/dev/null; then
-    return 1
-  fi
-  if ss -H -ltnp | grep -Eq 'users:\(\("postgres"'; then
-    return 1
-  fi
-  dependency_evidence=$(verify_owned_zfs_dependency_edges) || return 1
+  }
   printf 'recovery_state=failed\ndocker_state=inactive\nmachine_state=active\ndockerd_process=absent\npostgres_process=absent\npostgres_listener=absent\n%s\n' \
     "$dependency_evidence"
-  systemctl status --no-pager -n 100 ployz-owned-zfs-import.service docker.service "$machine_unit" || true
-  journalctl -b -u ployz-owned-zfs-import.service --no-pager -n 100 || true
-  journalctl -b -u docker.service --no-pager -n 100 || true
-  journalctl -b -u "$machine_unit" --no-pager -n 100 || true
+  emit_owned_zfs_failure_diagnostics "$machine_unit"
+}
+
+wait_for_exact_machine_unit_active() {
+  local machine_unit=${1:?missing machine unit}
+  local timeout_seconds=${MACHINE_UNIT_READY_TIMEOUT_SECONDS:-180}
+  local deadline=$((SECONDS + timeout_seconds))
+
+  while (( SECONDS < deadline )); do
+    if core_before_deadline "$deadline" "systemctl is-active --quiet '${machine_unit}'" 2>/dev/null; then
+      return 0
+    fi
+    sleep_before_deadline "$deadline" 3
+  done
+
+  log "Machine unit ${machine_unit} did not become active within ${timeout_seconds} seconds"
+  core_with_local_timeout 20s \
+    "$(declare -f emit_owned_zfs_failure_diagnostics); emit_owned_zfs_failure_diagnostics '${machine_unit}'" \
+    || true
+  return 1
 }
 
 zfs_running_database_container() {
@@ -489,10 +511,11 @@ zfs_verify_preserved_durable_storage_evidence() {
 
 zfs_verify_module_failure() {
   wait_for_core_api
+  wait_for_exact_machine_unit_active "ployzd-machine-${core_machine_id}.service"
   zfs_verify_preserved_durable_storage_evidence
   printf 'recorded_pre_failure_container=%s\nrecorded_pre_failure_volume=%s\nrecorded_pre_failure_docker_labels_sha256=%s\n' \
     "$baseline_db_container" "$docker_volume_name" "$docker_labels_sha"
-  core "$(declare -f verify_owned_zfs_dependency_edges); $(declare -f verify_owned_zfs_failure_state); verify_owned_zfs_failure_state 'ployzd-machine-${core_machine_id}.service'"
+  core "$(declare -f verify_owned_zfs_dependency_edges); $(declare -f emit_owned_zfs_failure_diagnostics); $(declare -f verify_owned_zfs_failure_state); verify_owned_zfs_failure_state 'ployzd-machine-${core_machine_id}.service'"
   core "! zpool list '${pool}' >/dev/null 2>&1 && ! zfs list '${dataset}' >/dev/null 2>&1"
   core "test ! -e '${bind_device}'"
   core 'systemctl is-active --quiet ployzd-control && timeout 10s ployz ops list >/dev/null'
@@ -526,7 +549,7 @@ run_real_host_acceptance_regression_test() {
   local managed_function_line managed_deploy_log_line restart_invisibility_log_line dispatch_invocation_line
   local acceptance_phase_sequence operation_probe operation_probe_mode
   local boot_order_fake_bin boot_order_output boot_order_expected module_failure_output
-  local module_failure_probe_mode container_probe_output
+  local module_failure_probe_mode machine_readiness_output diagnostic_unit container_probe_output
   evidence=$(mktemp -d)
   trap 'rm -rf "$evidence"' RETURN
   : > "$evidence/metadata.env"
@@ -680,7 +703,7 @@ EOF
   printf '%s\n' "$module_failure_output" | grep -Fx 'storage unavailable zfs-module-missing' >/dev/null
   printf '%s\n' "$module_failure_output" | grep -Fx 'storage-alarms probe-ns/probe-volume:zfs-module-missing' >/dev/null
   printf '%s\n' "$module_failure_output" | grep -Fx module_failure_probe=passed >/dev/null
-  for module_failure_probe_mode in recovery-not-failed machine-inactive docker-active dockerd-live postgres-live missing-dependency listener-present; do
+  for module_failure_probe_mode in recovery-not-failed docker-active dockerd-live postgres-live missing-dependency listener-present; do
     child_status=0
     module_failure_output=$("$0" --module-failure-probe "$evidence" "$module_failure_probe_mode" 2>&1) \
       || child_status=$?
@@ -688,9 +711,29 @@ EOF
     if printf '%s\n' "$module_failure_output" | grep -Fx module_failure_probe=passed >/dev/null; then
       return 1
     fi
+    for diagnostic_unit in ployz-owned-zfs-import.service docker.service ployzd-machine-probe-machine.service; do
+      printf '%s\n' "$module_failure_output" | grep -Fx "bounded unit status evidence for ${diagnostic_unit}" >/dev/null
+      printf '%s\n' "$module_failure_output" | grep -Fx "bounded journal evidence for ${diagnostic_unit}" >/dev/null
+    done
   done
   module_failure_output=$("$0" --module-failure-probe "$evidence" journal-failure)
   printf '%s\n' "$module_failure_output" | grep -Fx module_failure_probe=passed >/dev/null
+
+  machine_readiness_output=$("$0" --machine-readiness-probe delayed-active)
+  printf '%s\n' "$machine_readiness_output" | grep -Fx machine_readiness_probe=passed >/dev/null
+  printf '%s\n' "$machine_readiness_output" | grep -Fx readiness_calls=3 >/dev/null
+  printf '%s\n' "$machine_readiness_output" | grep -Fx readiness_seconds=6 >/dev/null
+  child_status=0
+  machine_readiness_output=$("$0" --machine-readiness-probe never-active 2>&1) \
+    || child_status=$?
+  [ "$child_status" -ne 0 ]
+  printf '%s\n' "$machine_readiness_output" | grep -Fx 'Machine unit ployzd-machine-probe-machine.service did not become active within 9 seconds' >/dev/null
+  printf '%s\n' "$machine_readiness_output" | grep -Fx readiness_calls=3 >/dev/null
+  printf '%s\n' "$machine_readiness_output" | grep -Fx readiness_seconds=9 >/dev/null
+  for diagnostic_unit in ployz-owned-zfs-import.service docker.service ployzd-machine-probe-machine.service; do
+    printf '%s\n' "$machine_readiness_output" | grep -Fx "bounded unit status evidence for ${diagnostic_unit}" >/dev/null
+    printf '%s\n' "$machine_readiness_output" | grep -Fx "bounded current-boot journal evidence for ${diagnostic_unit}" >/dev/null
+  done
 
   container_probe_output=$(
     core() { printf 'probe-container\n'; }
@@ -987,6 +1030,57 @@ case ${1:-} in
     printf 'inspect_calls=%s\n' "$(wc -l < "$storage_ready_probe_calls")"
     exit 0
     ;;
+  --machine-readiness-probe)
+    machine_readiness_probe_mode=${2:?missing machine readiness probe mode}
+    core_machine_id=probe-machine
+    MACHINE_UNIT_READY_TIMEOUT_SECONDS=9
+    machine_readiness_probe_calls=0
+    machine_readiness_probe_bin=$(mktemp -d)
+    trap 'rm -rf "$machine_readiness_probe_bin"' EXIT
+    cat > "$machine_readiness_probe_bin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$1" = status ] && [ "$2" = --no-pager ] && [ "$3" = -n ] && [ "$4" = 100 ]
+printf 'bounded unit status evidence for %s\n' "$5"
+EOF
+    cat > "$machine_readiness_probe_bin/journalctl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$1" = -b ] && [ "$2" = -u ] && [ "$4" = --no-pager ] && [ "$5" = -n ] && [ "$6" = 100 ]
+printf 'bounded current-boot journal evidence for %s\n' "$3"
+EOF
+    chmod +x "$machine_readiness_probe_bin/systemctl" "$machine_readiness_probe_bin/journalctl"
+    SECONDS=0
+    log() { printf '%s\n' "$*" >&2; }
+    core_before_deadline() {
+      machine_readiness_probe_calls=$((machine_readiness_probe_calls + 1))
+      if [ "$machine_readiness_probe_mode" = delayed-active ] \
+        && [ "$machine_readiness_probe_calls" -eq 3 ]; then
+        return 0
+      fi
+      return 1
+    }
+    core_with_local_timeout() {
+      [ "$1" = 20s ]
+      PATH="$machine_readiness_probe_bin:$PATH" bash -euo pipefail -c "$2"
+    }
+    sleep_before_deadline() {
+      local deadline=$1
+      local interval=$2
+      local next=$((SECONDS + interval))
+      (( next <= deadline )) || next=$deadline
+      SECONDS=$next
+    }
+    set +e
+    wait_for_exact_machine_unit_active "ployzd-machine-${core_machine_id}.service"
+    machine_readiness_probe_status=$?
+    set -e
+    [ "$machine_readiness_probe_status" -ne 0 ] \
+      || printf 'machine_readiness_probe=passed\n'
+    printf 'readiness_calls=%s\nreadiness_seconds=%s\n' \
+      "$machine_readiness_probe_calls" "$SECONDS"
+    exit "$machine_readiness_probe_status"
+    ;;
   --module-failure-probe)
     module_failure_probe_root=${2:?missing module failure probe directory}/module-failure
     module_failure_probe_mode=${3:-valid}
@@ -1002,9 +1096,6 @@ case "${1:-}:${2:-}:${3:-}" in
     ;;
   is-active:--quiet:docker.service)
     [ "${PLOYZ_MODULE_FAILURE_PROBE_MODE:-valid}" = docker-active ]
-    ;;
-  is-active:--quiet:ployzd-machine-probe-machine.service)
-    [ "${PLOYZ_MODULE_FAILURE_PROBE_MODE:-valid}" != machine-inactive ]
     ;;
   show:ployz-owned-zfs-import.service:-p)
     case "$4" in
@@ -1024,7 +1115,11 @@ case "${1:-}:${2:-}:${3:-}" in
       *) exit 1 ;;
     esac
     ;;
-  status:--no-pager:-n) printf 'bounded unit status evidence\n'; exit 3 ;;
+  status:--no-pager:-n)
+    [ "$4" = 100 ]
+    printf 'bounded unit status evidence for %s\n' "$5"
+    exit 3
+    ;;
   *) exit 1 ;;
 esac
 EOF
@@ -1094,7 +1189,10 @@ EOF
       esac
     }
     core_before_deadline() {
-      printf 'storage unavailable zfs-module-missing\nstorage-alarms probe-ns/probe-volume:zfs-module-missing\n'
+      case "$2" in
+        "systemctl is-active --quiet 'ployzd-machine-probe-machine.service'") return 0 ;;
+        *) printf 'storage unavailable zfs-module-missing\nstorage-alarms probe-ns/probe-volume:zfs-module-missing\n' ;;
+      esac
     }
     wait_for_core_api() { :; }
     sleep_before_deadline() { :; }
