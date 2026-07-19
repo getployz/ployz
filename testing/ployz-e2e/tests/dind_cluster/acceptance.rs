@@ -318,8 +318,8 @@ async fn step_5_retry_and_rollback(
     };
     assert_eq!(recorded_application, &app.application);
     assert_ne!(
-        bad_deploy_entry.request.services,
-        app.application.request.services
+        bad_deploy_entry.request.request().services,
+        app.application.request.request().services
     );
 
     let rollback = parse_command(
@@ -346,8 +346,8 @@ async fn step_5_retry_and_rollback(
     assert_ne!(rollback_entry.operation_id, app.application.operation_id);
     assert_ne!(rollback_entry.operation_id, bad_deploy_entry.operation_id);
     assert_eq!(
-        rollback_entry.request.services,
-        app.application.request.services
+        rollback_entry.request.request().services,
+        app.application.request.request().services
     );
 
     wait_for_umami_https(core, &app.hostname).await;

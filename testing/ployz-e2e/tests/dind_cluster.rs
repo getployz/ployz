@@ -1221,6 +1221,11 @@ async fn serial_smoke() {
         )
         .await;
         timed(
+            "deploy_environment_evidence_boundary",
+            scenario_deploy_environment_evidence_boundary(&core, &workload_image),
+        )
+        .await;
+        timed(
             "named_volume_redeploy",
             scenario_named_volume_survives_redeploy(&core, &workload_image),
         )
@@ -2091,6 +2096,176 @@ async fn scenario_runtime_fields_deploy(core: &CoreContext, workload_image: &Ima
     assert_eq!(container.pids_limit, 64);
 
     scenario_failing_healthcheck_deploy(core, workload_image).await;
+}
+
+/// Environment values cross the operator API into only the selected runtime,
+/// while durable operation evidence retains names and fingerprints.
+async fn scenario_deploy_environment_evidence_boundary(
+    core: &CoreContext,
+    workload_image: &ImageReference,
+) {
+    const ENV_NAME: &str = "PLOYZ_E2E_DEPLOY_SECRET";
+    const SENTINEL: &str = "ployz-e2e-secret-sentinel-665";
+
+    let mut runtime = ContainerRuntimeSpec::image_defaults();
+    runtime.command = Some(
+        ContainerCommand::try_new(vec![
+            "sh".to_owned(),
+            "-c".to_owned(),
+            "sleep 600".to_owned(),
+        ])
+        .expect("valid sleeper command"),
+    );
+    runtime.environment = ServiceEnvironment::from(BTreeMap::from([(
+        EnvName::try_new(ENV_NAME).expect("valid environment name"),
+        EnvValue::try_new(SENTINEL).expect("valid environment value"),
+    )]));
+    let accepted = core
+        .api
+        .deploy_submit(
+            &reserved_deploy_request(
+                core,
+                "idem_dind_deploy_env_evidence",
+                DeployRequest {
+                    namespace_id: namespace_id("deploy_env_evidence"),
+                    origin: None,
+                    volumes: BTreeMap::new(),
+                    services: vec![DeployServiceSpec {
+                        keep: None,
+                        service_id: service_id("svc_deploy_env_evidence"),
+                        image: workload_image.clone(),
+                        image_source: ployz_core::deploy::ImageSource::Registry,
+                        mode: ployz_core::deploy::ServiceMode::Replicated {
+                            replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+                        },
+                        runtime,
+                        pre_start: None,
+                        depends_on: Vec::new(),
+                        routes: Vec::new(),
+                    }],
+                },
+            )
+            .await,
+        )
+        .await
+        .expect("environment boundary deploy submits");
+    let status =
+        wait_for_terminal_deploy_status(core, &accepted.operation_id, DEPLOY_TERMINAL_BUDGET).await;
+    assert!(
+        matches!(
+            status,
+            OperationStatus::Deploy {
+                state: DeployOperationState::Completed {
+                    outcome: DeployCompletionOutcome::Completed,
+                },
+                ..
+            }
+        ),
+        "environment boundary deploy did not complete"
+    );
+
+    let machines = std::iter::once(core.cluster.core())
+        .chain(core.cluster.edges())
+        .collect::<Vec<_>>();
+    let mut placements = Vec::new();
+    let mut placement_counts = Vec::new();
+    for machine in &machines {
+        let containers = managed_workload_containers(core, machine)
+            .await
+            .into_iter()
+            .filter(|container| {
+                container.labels.get(NAMESPACE_ID_LABEL).map(String::as_str)
+                    == Some("deploy_env_evidence")
+                    && container.labels.get(SERVICE_ID_LABEL).map(String::as_str)
+                        == Some("svc_deploy_env_evidence")
+                    && container
+                        .labels
+                        .get(CONTAINER_TYPE_LABEL)
+                        .map(String::as_str)
+                        == Some("service")
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            containers.len() <= 1,
+            "one service replica created multiple containers on one machine"
+        );
+        placement_counts.push((machine.name.as_str(), containers.len()));
+        if let [container] = containers.as_slice() {
+            placements.push((*machine, container.clone()));
+        }
+    }
+    let [(selected_machine, selected_container)] = placements.as_slice() else {
+        panic!("one service replica must run on exactly one selected machine");
+    };
+    assert!(
+        placement_counts
+            .iter()
+            .filter(|(machine_name, _)| *machine_name != selected_machine.name)
+            .all(|(_, count)| *count == 0),
+        "the non-selected machine ran a managed container for the service"
+    );
+    assert!(
+        selected_container
+            .env
+            .iter()
+            .any(|entry| entry == &format!("{ENV_NAME}={SENTINEL}")),
+        "selected container config did not retain the exact submitted environment value"
+    );
+    let process_environment = core
+        .exec_on(
+            selected_machine,
+            &[
+                "docker",
+                "exec",
+                &selected_container.id,
+                "printenv",
+                ENV_NAME,
+            ],
+        )
+        .await;
+    assert!(
+        process_environment.success() && process_environment.stdout.trim() == SENTINEL,
+        "selected container process did not receive the exact submitted environment value"
+    );
+
+    let events = terminal_operation_events(core, &accepted.operation_id).await;
+    let serialized = serde_json::to_string(&events).expect("terminal events serialize");
+    assert!(
+        !serialized.contains(SENTINEL),
+        "terminal deploy evidence exposed a plaintext environment value"
+    );
+    let Some(target) = events.iter().find_map(|event| {
+        if let OperationEvent::DeploySubmitted { target, .. } = event {
+            Some(target)
+        } else {
+            None
+        }
+    }) else {
+        panic!("terminal replay omitted DeploySubmitted evidence");
+    };
+    let [environment] = target.environments() else {
+        panic!("DeploySubmitted evidence must contain one service environment");
+    };
+    assert_eq!(
+        environment.service_id(),
+        &service_id("svc_deploy_env_evidence")
+    );
+    let fingerprints = environment.fingerprints().iter().collect::<Vec<_>>();
+    let [(name, fingerprint)] = fingerprints.as_slice() else {
+        panic!("DeploySubmitted evidence must contain one environment fingerprint");
+    };
+    assert_eq!(name.as_str(), ENV_NAME);
+    let digest = fingerprint
+        .as_str()
+        .strip_prefix("v1:sha256:")
+        .expect("environment fingerprint has the canonical version and algorithm");
+    assert!(
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+        "environment fingerprint must contain a canonical lowercase SHA-256 digest"
+    );
 }
 
 async fn scenario_failing_healthcheck_deploy(core: &CoreContext, workload_image: &ImageReference) {
