@@ -34,7 +34,7 @@ shell-words = "1"
 tar = "0.4.45"
 tempfile = "3"
 thiserror.workspace = true
-tokio = { workspace = true, features = ["macros", "rt", "time"] }
+tokio = { workspace = true, features = ["macros", "rt", "signal", "sync", "time"] }
 wait-timeout.workspace = true
 
 [dev-dependencies]

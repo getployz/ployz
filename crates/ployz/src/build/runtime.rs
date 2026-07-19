@@ -16,6 +16,10 @@ pub enum BuildExecutionError {
     ReadGitSecret { name: String },
     #[error("Git source is invalid: {message}")]
     InvalidGitSource { message: String },
+    #[error("Build Executor failed: {message}")]
+    ExecutorRuntime { message: String },
+    #[error("Build Executor received no build within {}s", wait_timeout.as_secs())]
+    ExecutorIdleTimedOut { wait_timeout: Duration },
 }
 
 pub(crate) async fn submit(

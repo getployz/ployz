@@ -13,11 +13,12 @@ use ployz_core::deploy::{
 use ployz_core::ids::MachineId;
 use ployz_core::image::{
     IMAGE_BLOB_CHUNK_MAX_BYTES, IMAGE_BLOB_PUSH_ACTION_CHUNK, IMAGE_BLOB_PUSH_ACTION_HEADER,
-    IMAGE_BLOB_PUSH_OFFSET_HEADER, IMAGE_BLOB_PUSH_UPLOAD_ID_HEADER, ImageBlobPushOk,
-    ImageBlobPushOutcome, ImageBlobPushRequest, ImageBlobPushResponse, ImageContentLeaseExpiresAt,
-    ImageManifestPushOk, ImageManifestPushRequest, ImageManifestPushResponse, ImageRpcDomainError,
-    ImageUploadId, OCI_IMAGE_CONFIG_MEDIA_TYPE, OCI_IMAGE_LAYER_GZIP_MEDIA_TYPE,
-    OCI_IMAGE_MANIFEST_MEDIA_TYPE, OciDigest, OciPlatform,
+    IMAGE_BLOB_PUSH_OFFSET_HEADER, IMAGE_BLOB_PUSH_UPLOAD_ID_HEADER, ImageBlobCheckOk,
+    ImageBlobCheckRequest, ImageBlobCheckResponse, ImageBlobPushOk, ImageBlobPushOutcome,
+    ImageBlobPushRequest, ImageBlobPushResponse, ImageContentLeaseExpiresAt, ImageManifestPushOk,
+    ImageManifestPushRequest, ImageManifestPushResponse, ImageRpcDomainError, ImageUploadId,
+    OCI_IMAGE_CONFIG_MEDIA_TYPE, OCI_IMAGE_LAYER_GZIP_MEDIA_TYPE, OCI_IMAGE_MANIFEST_MEDIA_TYPE,
+    OciDigest, OciPlatform,
 };
 use ployz_core::machine::MachineLifecycle;
 use ployz_core::machine::rpc::{MachineRpcResponder, MachineRpcResponse};
@@ -36,6 +37,7 @@ use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 
 const PUSH_RPC_TIMEOUT: Duration = Duration::from_secs(30);
+const EXECUTOR_ADMISSION_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 const CHUNKS_IN_FLIGHT: usize = 8;
 const LAYER_GZIP_LEVEL: u32 = 6;
 
@@ -241,6 +243,36 @@ pub async fn push_local_image(
         uploaded: transfer_receipt(uploaded)?,
         reused: transfer_receipt(reused)?,
     })
+}
+
+/// Proves that the assigned Machine image RPC is reachable and answers as
+/// that exact machine before an external executor accepts build work.
+pub(crate) async fn probe_image_seed(
+    client: &async_nats::Client,
+    seed: &MachineId,
+    admission_budget: Duration,
+) -> Result<(), ImagePushError> {
+    let request_timeout = admission_budget.min(EXECUTOR_ADMISSION_PROBE_TIMEOUT);
+    let response = request_json::<_, ImageBlobCheckResponse>(
+        client,
+        machine_service(seed, MachineServiceEndpoint::ImageBlobCheck),
+        &ImageBlobCheckRequest {
+            digests: Vec::new(),
+        },
+        request_timeout,
+    )
+    .await
+    .map_err(|error| rpc_transport(seed, error.to_string()))?;
+    let ImageBlobCheckOk {
+        machine_id: _,
+        present,
+    } = image_response(seed, response)?;
+    if !present.is_empty() {
+        return Err(ImagePushError::UnexpectedResponse {
+            message: "empty image blob check returned present digests".to_owned(),
+        });
+    }
+    Ok(())
 }
 
 pub(crate) async fn push_validated_oci_layout(
@@ -1056,17 +1088,62 @@ pub enum ImagePushError {
 mod tests {
     use super::{
         LayoutBlob, PreparedBlobKind, ValidatedBlobReader, classify_blob_metadata,
-        deterministic_gzip, layout_push_receipt, prepare_docker_save, receipt_availability,
+        deterministic_gzip, layout_push_receipt, prepare_docker_save, probe_image_seed,
+        receipt_availability,
     };
     use ployz_core::deploy::{PlatformImage, PushedImageReceipt};
     use ployz_core::ids::MachineId;
     use ployz_core::image::{
-        IMAGE_BLOB_CHUNK_MAX_BYTES, ImageContentLeaseExpiresAt, OciDigest, OciPlatform,
+        IMAGE_BLOB_CHUNK_MAX_BYTES, ImageBlobCheckOk, ImageBlobCheckRequest,
+        ImageBlobCheckResponse, ImageContentLeaseExpiresAt, OciDigest, OciPlatform,
     };
+    use ployz_core::machine::rpc::MachineRpcResponse;
+    use ployz_nats::subjects::{MachineServiceEndpoint, machine_service};
     use std::io::Cursor;
+    use std::time::Duration;
 
     fn digest(byte: char) -> OciDigest {
         OciDigest::try_new(format!("sha256:{}", byte.to_string().repeat(64))).expect("digest")
+    }
+
+    #[tokio::test]
+    async fn executor_admission_seed_probe_rejects_a_wrong_responder() {
+        let expected = MachineId::try_new("machine_expected").expect("machine");
+        let actual = MachineId::try_new("machine_other").expect("machine");
+        let nats = ployz_test_support::nats::TestNats::start_with_machines(std::slice::from_ref(
+            &expected,
+        ))
+        .await;
+        let machine = nats.machine_client(&expected).await;
+        let subject = machine_service(&expected, MachineServiceEndpoint::ImageBlobCheck);
+        let mut requests = machine.subscribe(subject).await.expect("subscribe");
+        machine.flush().await.expect("flush");
+        let responder = machine.clone();
+        let task = tokio::spawn(async move {
+            use futures_util::StreamExt;
+            let request = requests.next().await.expect("request");
+            let decoded: ImageBlobCheckRequest =
+                serde_json::from_slice(&request.payload).expect("decode");
+            assert!(decoded.digests.is_empty());
+            let reply = request.reply.expect("request has reply");
+            let response: ImageBlobCheckResponse = MachineRpcResponse::Ok(ImageBlobCheckOk {
+                machine_id: actual,
+                present: Vec::new(),
+            });
+            responder
+                .publish(reply, serde_json::to_vec(&response).expect("encode").into())
+                .await
+                .expect("respond");
+        });
+
+        let error = probe_image_seed(&nats.user, &expected, Duration::from_secs(1))
+            .await
+            .expect_err("wrong responder rejected");
+        assert!(matches!(
+            error,
+            super::ImagePushError::WrongResponder { .. }
+        ));
+        task.await.expect("responder");
     }
 
     #[test]
