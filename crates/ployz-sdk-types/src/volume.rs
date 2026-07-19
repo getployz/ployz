@@ -11,6 +11,11 @@ pub type VolumeCreateResponse = OperationApiResponse<AcceptedOperation, VolumeCr
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, thiserror::Error)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
 pub enum VolumeCreateError {
+    #[error("namespace {} is reserved for Ployz system services", .namespace_id.as_str())]
+    ReservedSystemNamespace {
+        operation_id: OperationId,
+        namespace_id: NamespaceId,
+    },
     #[error(
         "namespace {} is busy with operation {}",
         .namespace_id.as_str(),
@@ -100,6 +105,11 @@ pub type VolumeRemoveResponse = OperationApiResponse<AcceptedOperation, VolumeRe
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, thiserror::Error)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
 pub enum VolumeRemoveError {
+    #[error("namespace {} is reserved for Ployz system services", .namespace_id.as_str())]
+    ReservedSystemNamespace {
+        operation_id: OperationId,
+        namespace_id: NamespaceId,
+    },
     #[error(
         "namespace {} is busy with operation {}",
         .namespace_id.as_str(),

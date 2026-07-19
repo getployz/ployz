@@ -22,6 +22,9 @@ pub(super) fn corrupt(detail: impl std::fmt::Display) -> String {
 }
 
 pub(super) enum SubmitFailure {
+    ReservedSystemNamespace {
+        namespace_id: ployz_core::ids::NamespaceId,
+    },
     ResourceBusy {
         namespace_id: ployz_core::ids::NamespaceId,
         owner: OperationId,
@@ -63,10 +66,7 @@ pub(super) fn submit_failure(error: SubmitCommandError) -> SubmitFailure {
             }
         }
         SubmitCommandError::ReservedSystemNamespace { namespace_id } => {
-            SubmitFailure::Unavailable {
-                message: ployz_core::namespace::ReservedSystemNamespace { namespace_id }
-                    .to_string(),
-            }
+            SubmitFailure::ReservedSystemNamespace { namespace_id }
         }
         SubmitCommandError::SystemNamespaceRequired { namespace_id } => {
             SubmitFailure::Unavailable {
@@ -124,6 +124,14 @@ pub(super) fn unfenced_submit_failure(
                 owner.as_str()
             )),
         },
+        SubmitFailure::ReservedSystemNamespace { namespace_id } => {
+            UnfencedSubmitFailure::Unavailable {
+                message: corrupt(format_args!(
+                    "{operation} submit returned reserved system namespace {}",
+                    namespace_id.as_str()
+                )),
+            }
+        }
         SubmitFailure::Unavailable { message } => UnfencedSubmitFailure::Unavailable { message },
         SubmitFailure::DuplicateSequenceMismatch { sequence } => {
             UnfencedSubmitFailure::DuplicateSequenceMismatch { sequence }
@@ -182,11 +190,16 @@ pub(super) fn deploy_submit_error_from_submit_error(
                 owner_operation_id,
             };
         }
+        SubmitCommandError::ReservedSystemNamespace { namespace_id } => {
+            return DeploySubmitError::ReservedSystemNamespace {
+                operation_id,
+                namespace_id,
+            };
+        }
         error @ SubmitCommandError::Clock { .. }
         | error @ SubmitCommandError::NamespaceBusy { .. }
         | error @ SubmitCommandError::IngressBusy { .. }
         | error @ SubmitCommandError::MachineSubstrateBusy { .. }
-        | error @ SubmitCommandError::ReservedSystemNamespace { .. }
         | error @ SubmitCommandError::SystemNamespaceRequired { .. }
         | error @ SubmitCommandError::Submit(SubmitOperationError::StoreStatus(_))
         | error @ SubmitCommandError::Submit(SubmitOperationError::DuplicateSequenceMismatch {
@@ -202,6 +215,12 @@ pub(super) fn deploy_submit_error_from_submit_error(
             namespace_id,
             owner_operation_id: owner,
         },
+        SubmitFailure::ReservedSystemNamespace { namespace_id } => {
+            DeploySubmitError::ReservedSystemNamespace {
+                operation_id,
+                namespace_id,
+            }
+        }
         SubmitFailure::Unavailable { message } => DeploySubmitError::Unavailable {
             operation_id,
             message,
@@ -482,6 +501,25 @@ mod tests {
                 operation_id: submitted_operation_id,
                 namespace_id,
                 owner_operation_id: owner,
+            }
+        );
+    }
+
+    #[test]
+    fn deploy_submit_preserves_reserved_system_namespace_as_typed_error() {
+        let submitted_operation_id = operation_id("op_new");
+        let namespace_id = ployz_core::namespace::reserved_system_namespace();
+
+        assert_eq!(
+            deploy_submit_error_from_submit_error(
+                submitted_operation_id.clone(),
+                SubmitCommandError::ReservedSystemNamespace {
+                    namespace_id: namespace_id.clone(),
+                },
+            ),
+            DeploySubmitError::ReservedSystemNamespace {
+                operation_id: submitted_operation_id,
+                namespace_id,
             }
         );
     }

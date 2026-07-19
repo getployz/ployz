@@ -19,13 +19,14 @@ use ployz_nats::subjects::{OperationProgressScope, operation_progress_watch};
 use ployz_sdk_types::{
     AcceptedOperation, BuildCancelError, BuildCancelRequest, BuildSubmitError, BuildSubmitRequest,
     CoreReplaceError, CoreReplaceRequest, CredentialAddError, CredentialAddRequest,
-    CredentialRemoveError, CredentialRemoveRequest, DeployReserveError, DeployReserveRequest,
-    DeployReserved, DeploySubmitError, DeploySubmitRequest, IngressConfigureError,
-    IngressConfigureRequest, MachineAddAccepted, MachineAddError, MachineAddRequest,
-    MachineJoinToken, MachineLifecycleError, MachineLifecycleRequest, MachineUpdateError,
-    MachineUpdateRequest, NamespaceRemoveError, NamespaceRemoveRequest, NetworkRepairError,
-    NetworkRepairRequest, ServiceRestartError, ServiceRestartRequest, VolumeCreateError,
-    VolumeRemoveError, VolumeRemoveRequest,
+    CredentialRemoveError, CredentialRemoveRequest, DeployRequest, DeployReserveError,
+    DeployReserveRequest, DeployReserved, DeploySubmitError, DeploySubmitRequest,
+    IngressConfigureError, IngressConfigureRequest, MachineAddAccepted, MachineAddError,
+    MachineAddRequest, MachineJoinToken, MachineLifecycleError, MachineLifecycleRequest,
+    MachineUpdateError, MachineUpdateRequest, NamespaceRemoveError, NamespaceRemoveRequest,
+    NetworkRepairError, NetworkRepairRequest, ServiceRestartError, ServiceRestartRequest,
+    SystemDeployRequest, SystemDeployTarget, VolumeCreateError, VolumeRemoveError,
+    VolumeRemoveRequest,
 };
 
 pub async fn build_submit(
@@ -124,6 +125,49 @@ fn normalize_deploy_submit(
         target,
         registry_credentials,
     } = value;
+    normalize_deploy_command(
+        operation_id,
+        idempotency_key,
+        reservation_id,
+        target,
+        registry_credentials,
+    )
+}
+
+fn normalize_system_deploy(
+    value: SystemDeployRequest,
+) -> Result<DeploySubmitCommand, DeploySubmitError> {
+    let operation_id = mint_deploy_operation_id();
+    let SystemDeployRequest {
+        idempotency_key,
+        reservation_id,
+        target: SystemDeployTarget { origin, services },
+        registry_credentials,
+    } = value;
+    normalize_deploy_command(
+        operation_id,
+        idempotency_key,
+        reservation_id,
+        DeployRequest {
+            namespace_id: ployz_core::namespace::reserved_system_namespace(),
+            origin,
+            volumes: std::collections::BTreeMap::new(),
+            services,
+        },
+        registry_credentials,
+    )
+}
+
+fn normalize_deploy_command(
+    operation_id: OperationId,
+    idempotency_key: ployz_core::operation::OperationIdempotencyKey,
+    reservation_id: ployz_core::deploy::DeployReservationId,
+    target: DeployRequest,
+    registry_credentials: std::collections::BTreeMap<
+        ployz_core::ids::ServiceId,
+        ployz_core::image::RegistryCredential,
+    >,
+) -> Result<DeploySubmitCommand, DeploySubmitError> {
     let planning_target = ployz_core::deploy::DeployPlanningTarget::try_from_deploy(&target)
         .map_err(|error| DeploySubmitError::InvalidTarget {
             operation_id: operation_id.clone(),
@@ -292,7 +336,8 @@ fn credential_add_submit_error(
                 sequence,
             }
         }
-        super::error_map::SubmitFailure::ResourceBusy { .. } => {
+        super::error_map::SubmitFailure::ResourceBusy { .. }
+        | super::error_map::SubmitFailure::ReservedSystemNamespace { .. } => {
             unreachable!("credential grants have no deploy target or namespace fence")
         }
     }
@@ -315,7 +360,8 @@ fn credential_remove_submit_error(
                 sequence,
             }
         }
-        super::error_map::SubmitFailure::ResourceBusy { .. } => {
+        super::error_map::SubmitFailure::ResourceBusy { .. }
+        | super::error_map::SubmitFailure::ReservedSystemNamespace { .. } => {
             unreachable!("credential grants have no deploy target or namespace fence")
         }
     }
@@ -342,6 +388,34 @@ pub async fn deploy_submit(
 ) -> Result<AcceptedOperation, DeploySubmitError> {
     let command = normalize_deploy_submit(request)?;
     let operation_id = command.operation_id.clone();
+    validate_deploy_command(handlers, &command).await?;
+    let accepted_execution = handlers
+        .controllers
+        .submit_deploy(command)
+        .await
+        .map_err(|error| deploy_submit_error_from_submit_error(operation_id, error))?;
+    finish_deploy(handlers, accepted_execution).await
+}
+
+pub async fn system_deploy(
+    handlers: &OperationApiHandlers,
+    request: SystemDeployRequest,
+) -> Result<AcceptedOperation, DeploySubmitError> {
+    let command = normalize_system_deploy(request)?;
+    let operation_id = command.operation_id.clone();
+    validate_deploy_command(handlers, &command).await?;
+    let accepted_execution = handlers
+        .controllers
+        .submit_system_deploy(command)
+        .await
+        .map_err(|error| deploy_submit_error_from_submit_error(operation_id, error))?;
+    finish_deploy(handlers, accepted_execution).await
+}
+
+async fn validate_deploy_command(
+    handlers: &OperationApiHandlers,
+    command: &DeploySubmitCommand,
+) -> Result<(), DeploySubmitError> {
     validate_deploy_route_admission(
         &command.target,
         &handlers.ingress_intent,
@@ -350,15 +424,16 @@ pub async fn deploy_submit(
     )
     .await
     .map_err(|error| DeploySubmitError::InvalidTarget {
-        operation_id: operation_id.clone(),
+        operation_id: command.operation_id.clone(),
         message: ployz_core::operation::FailureMessage::try_new(error.to_string())
             .expect("route admission validation error is non-empty"),
-    })?;
-    let accepted_execution = handlers
-        .controllers
-        .submit_deploy(command)
-        .await
-        .map_err(|error| deploy_submit_error_from_submit_error(operation_id, error))?;
+    })
+}
+
+async fn finish_deploy(
+    handlers: &OperationApiHandlers,
+    accepted_execution: crate::control::sequencer::AcceptedDeployExecution,
+) -> Result<AcceptedOperation, DeploySubmitError> {
     let accepted = &accepted_execution.submission;
     let scope = OperationProgressScope::Namespace {
         namespace_id: accepted.target.namespace_id.clone(),
@@ -395,6 +470,12 @@ pub async fn service_restart(
                 namespace_id,
                 owner_operation_id: owner,
             },
+            super::error_map::SubmitFailure::ReservedSystemNamespace { namespace_id } => {
+                ServiceRestartError::ReservedSystemNamespace {
+                    operation_id: operation_id.clone(),
+                    namespace_id,
+                }
+            }
             super::error_map::SubmitFailure::Unavailable { message } => {
                 ServiceRestartError::Unavailable {
                     operation_id: operation_id.clone(),
@@ -526,6 +607,12 @@ pub async fn namespace_remove(
                 namespace_id,
                 owner_operation_id: owner,
             },
+            super::error_map::SubmitFailure::ReservedSystemNamespace { namespace_id } => {
+                NamespaceRemoveError::ReservedSystemNamespace {
+                    operation_id: operation_id.clone(),
+                    namespace_id,
+                }
+            }
             super::error_map::SubmitFailure::Unavailable { message } => {
                 NamespaceRemoveError::Unavailable {
                     operation_id: operation_id.clone(),
@@ -572,6 +659,12 @@ pub async fn volume_remove(
                 namespace_id,
                 owner_operation_id: owner,
             },
+            super::error_map::SubmitFailure::ReservedSystemNamespace { namespace_id } => {
+                VolumeRemoveError::ReservedSystemNamespace {
+                    operation_id: operation_id.clone(),
+                    namespace_id,
+                }
+            }
             super::error_map::SubmitFailure::Unavailable { message } => {
                 VolumeRemoveError::Unavailable {
                     operation_id: operation_id.clone(),
@@ -615,6 +708,12 @@ pub async fn submit_volume_create(
                 namespace_id,
                 owner_operation_id: owner,
             },
+            super::error_map::SubmitFailure::ReservedSystemNamespace { namespace_id } => {
+                VolumeCreateError::ReservedSystemNamespace {
+                    operation_id: operation_id.clone(),
+                    namespace_id,
+                }
+            }
             super::error_map::SubmitFailure::Unavailable { message } => {
                 VolumeCreateError::Unavailable {
                     operation_id: operation_id.clone(),
@@ -908,7 +1007,8 @@ pub async fn core_replace(
         })
         .await
         .map_err(|error| match super::error_map::submit_failure(error) {
-            super::error_map::SubmitFailure::ResourceBusy { .. } => {
+            super::error_map::SubmitFailure::ResourceBusy { .. }
+            | super::error_map::SubmitFailure::ReservedSystemNamespace { .. } => {
                 unreachable!("core replace submit has no namespace lock")
             }
             super::error_map::SubmitFailure::Unavailable { message } => {
