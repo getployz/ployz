@@ -561,17 +561,31 @@ async fn wait_for_service_registration(
     client: &async_nats::Client,
     endpoint_subject: &str,
 ) -> Result<(), NatsServiceRuntimeError> {
-    // A flush is a protocol barrier: its PONG arrives only after nats-server
-    // processed the endpoint subscription sent earlier on this connection.
-    timeout(SERVICE_REGISTRATION_TIMEOUT, client.flush())
+    // Receiving this self-message proves the server processed earlier commands
+    // on this connection, including the endpoint subscription.
+    let inbox = client.new_inbox();
+    let mut proof = client.subscribe(inbox.clone()).await.map_err(|error| {
+        NatsServiceRuntimeError::AddEndpoint {
+            subject: endpoint_subject.to_owned(),
+            message: format!("service registration proof subscribe failed: {error}"),
+        }
+    })?;
+    client
+        .publish(inbox, Vec::new().into())
+        .await
+        .map_err(|error| NatsServiceRuntimeError::AddEndpoint {
+            subject: endpoint_subject.to_owned(),
+            message: format!("service registration proof publish failed: {error}"),
+        })?;
+    timeout(SERVICE_REGISTRATION_TIMEOUT, proof.next())
         .await
         .map_err(|error| NatsServiceRuntimeError::AddEndpoint {
             subject: endpoint_subject.to_owned(),
             message: format!("service registration proof timed out: {error}"),
         })?
-        .map_err(|error| NatsServiceRuntimeError::AddEndpoint {
+        .ok_or_else(|| NatsServiceRuntimeError::AddEndpoint {
             subject: endpoint_subject.to_owned(),
-            message: format!("service registration proof flush failed: {error}"),
+            message: "service registration proof subscriber closed".to_owned(),
         })?;
     Ok(())
 }

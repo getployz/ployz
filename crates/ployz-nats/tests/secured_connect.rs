@@ -23,10 +23,6 @@ use ployz_nats::connect::{
     NatsConnectConfig, authenticated_connect_options, connect_authenticated,
 };
 use ployz_nats::permissions::{inbox_prefix, inbox_subscribe_scope};
-use ployz_nats::service_runtime::{NatsServiceResponse, start_nats_service};
-use ployz_nats::services::{
-    EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceMetadata, ServiceVersion,
-};
 use ployz_nats::subjects::{
     BUILD_EXECUTOR_SERVICE_NAME, BuildExecutorServiceEndpoint, INTENT_CHANGED, INTENT_GET,
     MachineServiceEndpoint, OPERATOR_INIT_FIRST_MACHINE_ACTIVATE, PENDING_MACHINE_JOINS_CHANGED,
@@ -163,42 +159,41 @@ async fn external_build_executor_serves_its_endpoints_logs_and_image_requests() 
         &executor_id,
         BuildExecutorServiceEndpoint::BuildCancel,
     );
-    let spec = NatsServiceSpec::new(
-        "external-executor-a",
-        BUILD_EXECUTOR_SERVICE_NAME,
-        ServiceVersion::new(0, 1, 0),
-        "test external Build Executor",
-        ServiceMetadata::empty(),
-        vec![
-            NatsServiceEndpointSpec::new(
-                "readiness.get",
-                &readiness_subject,
-                EndpointExecution::Query,
-            ),
-            NatsServiceEndpointSpec::new(
-                "build.start",
-                &start_subject,
-                EndpointExecution::AcceptsOperation,
-            ),
-            NatsServiceEndpointSpec::new(
-                "build.cancel",
-                &cancel_subject,
-                EndpointExecution::MutatesOperation,
-            ),
-        ],
-    );
-    let mut runtime = start_nats_service(executor.clone(), &spec)
-        .await
-        .expect("executor service starts");
-    for endpoint in &spec.endpoints {
-        runtime
-            .bind_endpoint(endpoint, |request| async move {
-                NatsServiceResponse::ok(request.payload)
-            })
+    let instance = "external-executor-a";
+    let discovery_subjects = ["PING", "INFO", "STATS"]
+        .into_iter()
+        .flat_map(|verb| {
+            [
+                format!("$SRV.{verb}"),
+                format!("$SRV.{verb}.{BUILD_EXECUTOR_SERVICE_NAME}"),
+                format!("$SRV.{verb}.{BUILD_EXECUTOR_SERVICE_NAME}.{instance}"),
+            ]
+        })
+        .collect::<Vec<_>>();
+    let mut responder_tasks = Vec::new();
+    for subject in [start_subject.clone(), cancel_subject.clone()]
+        .into_iter()
+        .chain(discovery_subjects.iter().cloned())
+        .chain(std::iter::once(readiness_subject.clone()))
+    {
+        let mut requests = executor
+            .subscribe(subject)
             .await
-            .expect("executor endpoint binds");
+            .expect("executor subscribes exact granted service subject");
+        let responder = executor.clone();
+        responder_tasks.push(tokio::spawn(async move {
+            while let Some(request) = requests.next().await {
+                let Some(reply) = request.reply else {
+                    continue;
+                };
+                responder.publish(reply, request.payload).await.ok();
+                responder.flush().await.ok();
+            }
+        }));
     }
 
+    // The known-set readiness subject is the registration proof. The bounded
+    // request retries only while the exact subscription reaches nats-server.
     let readiness = request_when_responder_ready(&controller, &readiness_subject, "ready").await;
     assert_eq!(readiness.payload.as_ref(), b"ready");
 
@@ -285,11 +280,10 @@ async fn external_build_executor_serves_its_endpoints_logs_and_image_requests() 
         assert_eq!(response.payload.as_ref(), b"image-ok");
     }
 
-    // `start_nats_service` registers the Service API's PING/INFO/STATS
-    // subscriptions, including the fixed service-name discovery subjects.
-    // Operational readiness is the direct known-set RPC exercised above.
     assert_no_permission_violation(&mut executor_events).await;
-    runtime.shutdown().await.expect("executor service stops");
+    for task in responder_tasks {
+        task.abort();
+    }
 }
 
 #[tokio::test]
