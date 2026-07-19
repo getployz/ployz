@@ -646,6 +646,15 @@ test("sdk exports the Rust operation API contract registry", () => {
       response: "DeploySubmitResponse",
     },
     {
+      name: "system.deploy",
+      subject: "plz.v1.rpc.operator.command.system.deploy",
+      execution: "accepts_operation",
+      request: "SystemDeployRequest",
+      success: "AcceptedOperation",
+      error: "DeploySubmitError",
+      response: "SystemDeployResponse",
+    },
+    {
       name: "init.first_machine.activate",
       subject: "plz.v1.rpc.operator.command.init.first_machine.activate",
       execution: "mutates_operation",
