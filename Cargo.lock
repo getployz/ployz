@@ -3317,6 +3317,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "nuid",
+ "ployz-build-executor",
  "ployz-core",
  "ployz-host-runner",
  "ployz-nats",

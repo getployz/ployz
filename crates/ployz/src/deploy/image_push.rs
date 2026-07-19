@@ -5,6 +5,7 @@ use bollard::Docker;
 use bollard::errors::Error as DockerError;
 use flate2::{Compression, GzBuilder, read::GzDecoder};
 use futures_util::{StreamExt, TryStreamExt, stream};
+use ployz_build_executor::ValidatedOciLayout;
 use ployz_core::deploy::DeployServiceSpec;
 use ployz_core::deploy::{
     ImageAvailabilityExpiresAt, ImageReference, ImageSource, PlatformImage, PushedImageReceipt,
@@ -26,10 +27,13 @@ use ployz_nats::service_runtime::request_json;
 use ployz_nats::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_sdk_types::MachineListRequest;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::io::{Cursor, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
+use tokio::fs::File;
+use tokio::io::AsyncReadExt;
 
 const PUSH_RPC_TIMEOUT: Duration = Duration::from_secs(30);
 const CHUNKS_IN_FLIGHT: usize = 8;
@@ -237,6 +241,309 @@ pub async fn push_local_image(
         uploaded: transfer_receipt(uploaded)?,
         reused: transfer_receipt(reused)?,
     })
+}
+
+pub(crate) async fn push_validated_oci_layout(
+    client: &async_nats::Client,
+    layout: &ValidatedOciLayout,
+    platform: &OciPlatform,
+    seed: &MachineId,
+) -> Result<ImagePushReceipt, ImagePushError> {
+    let blobs = classify_layout_blobs(layout)?;
+    let manifest_bytes = read_layout_blob(blobs.manifest).await?;
+    let mut uploaded = Vec::new();
+    let mut reused = Vec::new();
+    let mut lease_expiries = Vec::new();
+
+    for blob in std::iter::once(blobs.config).chain(blobs.layers.iter().copied()) {
+        let (lease_expires_at, was_reused) = push_layout_blob(client, seed, blob).await?;
+        lease_expiries.push(lease_expires_at);
+        if blob.digest != layout.image_id() {
+            let receipt = (blob.digest.clone(), blob.size);
+            if was_reused {
+                reused.push(receipt);
+            } else {
+                uploaded.push(receipt);
+            }
+        }
+    }
+
+    let pushed = manifest_push(client, seed, ImageManifestPushRequest { manifest_bytes }).await?;
+    if pushed.manifest_digest != *layout.manifest_digest() {
+        return Err(ImagePushError::ManifestDigestMismatch {
+            expected: layout.manifest_digest().clone(),
+            actual: pushed.manifest_digest,
+        });
+    }
+    if pushed.image_id != *layout.image_id() {
+        return Err(ImagePushError::ConfigDigestMismatch {
+            expected: layout.image_id().clone(),
+            actual: pushed.image_id,
+        });
+    }
+    if pushed.platform != *platform {
+        return Err(ImagePushError::UnexpectedResponse {
+            message: "seed reported a different image platform".to_owned(),
+        });
+    }
+    lease_expiries.push(pushed.lease_expires_at);
+    layout_push_receipt(
+        platform,
+        seed,
+        layout.manifest_digest(),
+        layout.image_id(),
+        lease_expiries,
+        uploaded,
+        reused,
+    )
+}
+
+fn layout_push_receipt(
+    platform: &OciPlatform,
+    seed: &MachineId,
+    manifest_digest: &OciDigest,
+    image_id: &OciDigest,
+    lease_expiries: impl IntoIterator<Item = ImageContentLeaseExpiresAt>,
+    uploaded: Vec<(OciDigest, u64)>,
+    reused: Vec<(OciDigest, u64)>,
+) -> Result<ImagePushReceipt, ImagePushError> {
+    let availability_expires_at = receipt_availability(lease_expiries)?;
+    let receipt = PushedImageReceipt::try_new([(
+        platform.clone(),
+        PlatformImage {
+            seed: seed.clone(),
+            manifest_digest: manifest_digest.clone(),
+            image_id: image_id.clone(),
+            availability_expires_at,
+        },
+    )])
+    .map_err(|error| ImagePushError::UnexpectedResponse {
+        message: error.to_string(),
+    })?;
+
+    Ok(ImagePushReceipt {
+        receipt,
+        uploaded: transfer_receipt_sizes(uploaded)?,
+        reused: transfer_receipt_sizes(reused)?,
+    })
+}
+
+struct LayoutBlobs<'a> {
+    manifest: LayoutBlob<'a>,
+    config: LayoutBlob<'a>,
+    layers: Vec<LayoutBlob<'a>>,
+}
+
+fn classify_layout_blobs(layout: &ValidatedOciLayout) -> Result<LayoutBlobs<'_>, ImagePushError> {
+    let blobs = layout
+        .blobs()
+        .iter()
+        .map(|blob| LayoutBlob {
+            path: blob.path(),
+            digest: blob.digest(),
+            size: blob.size(),
+        })
+        .collect::<Vec<_>>();
+    classify_blob_metadata(layout.manifest_digest(), layout.image_id(), &blobs)
+}
+
+fn classify_blob_metadata<'a>(
+    manifest_digest: &OciDigest,
+    image_id: &OciDigest,
+    blobs: &[LayoutBlob<'a>],
+) -> Result<LayoutBlobs<'a>, ImagePushError> {
+    if manifest_digest == image_id {
+        return Err(ImagePushError::InvalidOciLayout {
+            message: "manifest and config must have different digests".to_owned(),
+        });
+    }
+    let manifest = blobs
+        .iter()
+        .find(|blob| blob.digest == manifest_digest)
+        .copied()
+        .ok_or_else(|| ImagePushError::InvalidOciLayout {
+            message: format!("manifest blob {manifest_digest} is missing"),
+        })?;
+    let config = blobs
+        .iter()
+        .find(|blob| blob.digest == image_id)
+        .copied()
+        .ok_or_else(|| ImagePushError::InvalidOciLayout {
+            message: format!("config blob {image_id} is missing"),
+        })?;
+    let layers = blobs
+        .iter()
+        .filter(|blob| blob.digest != manifest_digest && blob.digest != image_id)
+        .copied()
+        .collect();
+    Ok(LayoutBlobs {
+        manifest,
+        config,
+        layers,
+    })
+}
+
+#[derive(Clone, Copy)]
+struct LayoutBlob<'a> {
+    path: &'a Path,
+    digest: &'a OciDigest,
+    size: u64,
+}
+
+struct ValidatedBlobReader<'a> {
+    blob: LayoutBlob<'a>,
+    file: File,
+    offset: u64,
+    hasher: Sha256,
+}
+
+impl<'a> ValidatedBlobReader<'a> {
+    async fn open(blob: LayoutBlob<'a>) -> Result<Self, ImagePushError> {
+        let file = File::open(blob.path)
+            .await
+            .map_err(|error| blob_read_error(blob.path, blob.digest, error))?;
+        let actual = file
+            .metadata()
+            .await
+            .map_err(|error| blob_read_error(blob.path, blob.digest, error))?
+            .len();
+        if actual != blob.size {
+            return Err(ImagePushError::OciBlobSizeDrift {
+                digest: blob.digest.clone(),
+                expected: blob.size,
+                actual,
+            });
+        }
+        Ok(Self {
+            blob,
+            file,
+            offset: 0,
+            hasher: Sha256::new(),
+        })
+    }
+
+    async fn next_chunk(&mut self) -> Result<Option<(u64, Vec<u8>)>, ImagePushError> {
+        if self.offset == self.blob.size {
+            let mut extra = [0_u8; 1];
+            let read = self
+                .file
+                .read(&mut extra)
+                .await
+                .map_err(|error| blob_read_error(self.blob.path, self.blob.digest, error))?;
+            if read != 0 {
+                return Err(ImagePushError::OciBlobSizeDrift {
+                    digest: self.blob.digest.clone(),
+                    expected: self.blob.size,
+                    actual: self.blob.size.saturating_add(1),
+                });
+            }
+            let actual = OciDigest::try_new(format!("sha256:{:x}", self.hasher.clone().finalize()))
+                .map_err(|error| ImagePushError::InvalidOciLayout {
+                    message: error.to_string(),
+                })?;
+            if actual != *self.blob.digest {
+                return Err(ImagePushError::OciBlobDigestMismatch {
+                    expected: self.blob.digest.clone(),
+                    actual,
+                });
+            }
+            return Ok(None);
+        }
+
+        let remaining = self.blob.size - self.offset;
+        let chunk_len = usize::try_from(remaining.min(IMAGE_BLOB_CHUNK_MAX_BYTES as u64))
+            .map_err(|_| ImagePushError::ImageTooLarge)?;
+        let mut bytes = vec![0_u8; chunk_len];
+        let read = self
+            .file
+            .read(&mut bytes)
+            .await
+            .map_err(|error| blob_read_error(self.blob.path, self.blob.digest, error))?;
+        if read == 0 {
+            return Err(ImagePushError::OciBlobSizeDrift {
+                digest: self.blob.digest.clone(),
+                expected: self.blob.size,
+                actual: self.offset,
+            });
+        }
+        bytes.truncate(read);
+        let offset = self.offset;
+        self.offset = self
+            .offset
+            .checked_add(u64::try_from(read).map_err(|_| ImagePushError::ImageTooLarge)?)
+            .ok_or(ImagePushError::ImageTooLarge)?;
+        self.hasher.update(&bytes);
+        Ok(Some((offset, bytes)))
+    }
+}
+
+async fn read_layout_blob(blob: LayoutBlob<'_>) -> Result<Vec<u8>, ImagePushError> {
+    let mut reader = ValidatedBlobReader::open(blob).await?;
+    let mut bytes =
+        Vec::with_capacity(usize::try_from(blob.size).map_err(|_| ImagePushError::ImageTooLarge)?);
+    while let Some((_, chunk)) = reader.next_chunk().await? {
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
+async fn push_layout_blob(
+    client: &async_nats::Client,
+    machine_id: &MachineId,
+    blob: LayoutBlob<'_>,
+) -> Result<(ImageContentLeaseExpiresAt, bool), ImagePushError> {
+    let mut reader = ValidatedBlobReader::open(blob).await?;
+    let begun = blob_push_json(
+        client,
+        machine_id,
+        &ImageBlobPushRequest::Begin {
+            digest: blob.digest.clone(),
+            total_size: blob.size,
+        },
+    )
+    .await?;
+    let upload_id = match begun.outcome {
+        ImageBlobPushOutcome::Retained {
+            digest,
+            size,
+            lease_expires_at,
+        } if digest == *blob.digest && size == blob.size => {
+            while reader.next_chunk().await?.is_some() {}
+            return Ok((lease_expires_at, true));
+        }
+        ImageBlobPushOutcome::Begun { upload_id } => upload_id,
+        ImageBlobPushOutcome::Retained { .. }
+        | ImageBlobPushOutcome::ChunkAccepted { .. }
+        | ImageBlobPushOutcome::Committed { .. } => {
+            return Err(ImagePushError::UnexpectedResponse {
+                message: "blob begin returned the wrong outcome".to_owned(),
+            });
+        }
+    };
+    while let Some((offset, chunk)) = reader.next_chunk().await? {
+        push_chunk(client, machine_id, &upload_id, offset, &chunk).await?;
+    }
+    let committed = blob_push_json(
+        client,
+        machine_id,
+        &ImageBlobPushRequest::Commit {
+            upload_id: upload_id.clone(),
+        },
+    )
+    .await?;
+    match committed.outcome {
+        ImageBlobPushOutcome::Committed {
+            digest,
+            size,
+            lease_expires_at,
+        } if digest == *blob.digest && size == blob.size => Ok((lease_expires_at, false)),
+        ImageBlobPushOutcome::Begun { .. }
+        | ImageBlobPushOutcome::Retained { .. }
+        | ImageBlobPushOutcome::ChunkAccepted { .. }
+        | ImageBlobPushOutcome::Committed { .. } => Err(ImagePushError::UnexpectedResponse {
+            message: format!("blob commit returned an unexpected outcome for {upload_id:?}"),
+        }),
+    }
 }
 
 fn receipt_availability(
@@ -640,6 +947,28 @@ fn transfer_receipt(blobs: Vec<(OciDigest, usize)>) -> Result<BlobTransferReceip
     })
 }
 
+fn transfer_receipt_sizes(
+    blobs: Vec<(OciDigest, u64)>,
+) -> Result<BlobTransferReceipt, ImagePushError> {
+    let bytes = blobs.iter().try_fold(0_u64, |total, (_, size)| {
+        total
+            .checked_add(*size)
+            .ok_or(ImagePushError::ImageTooLarge)
+    })?;
+    Ok(BlobTransferReceipt {
+        digests: blobs.into_iter().map(|(digest, _)| digest).collect(),
+        bytes,
+    })
+}
+
+fn blob_read_error(path: &Path, digest: &OciDigest, error: std::io::Error) -> ImagePushError {
+    ImagePushError::OciBlobRead {
+        path: path.to_path_buf(),
+        digest: digest.clone(),
+        message: error.to_string(),
+    }
+}
+
 fn rpc_transport(machine_id: &MachineId, message: String) -> ImagePushError {
     ImagePushError::Rpc {
         machine_id: machine_id.clone(),
@@ -667,6 +996,25 @@ pub enum ImagePushError {
     NoActiveMachines,
     #[error("invalid Docker image export: {message}")]
     InvalidDockerExport { message: String },
+    #[error("invalid validated OCI layout: {message}")]
+    InvalidOciLayout { message: String },
+    #[error("failed to read OCI blob {digest} at {}: {message}", path.display())]
+    OciBlobRead {
+        path: PathBuf,
+        digest: OciDigest,
+        message: String,
+    },
+    #[error("OCI blob {digest} size changed: expected {expected}, got {actual}")]
+    OciBlobSizeDrift {
+        digest: OciDigest,
+        expected: u64,
+        actual: u64,
+    },
+    #[error("OCI blob digest changed: expected {expected}, got {actual}")]
+    OciBlobDigestMismatch {
+        expected: OciDigest,
+        actual: OciDigest,
+    },
     #[error("failed to gzip image layer: {message}")]
     Gzip { message: String },
     #[error("image is too large")]
@@ -706,11 +1054,20 @@ pub enum ImagePushError {
 
 #[cfg(test)]
 mod tests {
-    use super::{PreparedBlobKind, deterministic_gzip, prepare_docker_save, receipt_availability};
+    use super::{
+        LayoutBlob, PreparedBlobKind, ValidatedBlobReader, classify_blob_metadata,
+        deterministic_gzip, layout_push_receipt, prepare_docker_save, receipt_availability,
+    };
     use ployz_core::deploy::{PlatformImage, PushedImageReceipt};
     use ployz_core::ids::MachineId;
-    use ployz_core::image::{ImageContentLeaseExpiresAt, OciDigest, OciPlatform};
+    use ployz_core::image::{
+        IMAGE_BLOB_CHUNK_MAX_BYTES, ImageContentLeaseExpiresAt, OciDigest, OciPlatform,
+    };
     use std::io::Cursor;
+
+    fn digest(byte: char) -> OciDigest {
+        OciDigest::try_new(format!("sha256:{}", byte.to_string().repeat(64))).expect("digest")
+    }
 
     #[test]
     fn deterministic_gzip_has_a_stable_digest() {
@@ -757,6 +1114,195 @@ mod tests {
             .as_str(),
             "sha256:d5a3f65cf1cb1fc648fc9a13993161ff70a76ad60198da84fba7c17c3a8f6a1f"
         );
+    }
+
+    #[test]
+    fn validated_layout_classifies_manifest_config_and_layers() {
+        let manifest = digest('a');
+        let config = digest('b');
+        let layer = digest('c');
+        let manifest_path = std::path::PathBuf::from("manifest");
+        let config_path = std::path::PathBuf::from("config");
+        let layer_path = std::path::PathBuf::from("layer");
+        let blobs = [
+            LayoutBlob {
+                path: &manifest_path,
+                digest: &manifest,
+                size: 10,
+            },
+            LayoutBlob {
+                path: &config_path,
+                digest: &config,
+                size: 20,
+            },
+            LayoutBlob {
+                path: &layer_path,
+                digest: &layer,
+                size: 30,
+            },
+        ];
+
+        let classified =
+            classify_blob_metadata(&manifest, &config, &blobs).expect("classify layout");
+
+        assert_eq!(classified.manifest.digest, &manifest);
+        assert_eq!(classified.config.digest, &config);
+        let [classified_layer] = classified.layers.as_slice() else {
+            panic!("fixture has one layer");
+        };
+        assert_eq!(classified_layer.digest, &layer);
+        assert!(classify_blob_metadata(&digest('d'), &config, &blobs).is_err());
+        assert!(classify_blob_metadata(&manifest, &digest('d'), &blobs).is_err());
+    }
+
+    #[tokio::test]
+    async fn validated_blob_reader_streams_bounded_offsets_and_checks_digest() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("blob");
+        let bytes = vec![7_u8; IMAGE_BLOB_CHUNK_MAX_BYTES + 17];
+        tokio::fs::write(&path, &bytes).await.expect("write blob");
+        let digest = OciDigest::sha256(&bytes);
+        let blob = LayoutBlob {
+            path: &path,
+            digest: &digest,
+            size: u64::try_from(bytes.len()).expect("size"),
+        };
+        let mut reader = ValidatedBlobReader::open(blob).await.expect("open blob");
+        let mut chunks = Vec::new();
+        while let Some((offset, chunk)) = reader.next_chunk().await.expect("read chunk") {
+            chunks.push((offset, chunk.len()));
+        }
+
+        assert_eq!(
+            chunks,
+            vec![
+                (0, IMAGE_BLOB_CHUNK_MAX_BYTES),
+                (IMAGE_BLOB_CHUNK_MAX_BYTES as u64, 17)
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn validated_blob_reader_rejects_size_drift() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("blob");
+        tokio::fs::write(&path, b"short").await.expect("write blob");
+        let digest = OciDigest::sha256(b"short");
+        let result = ValidatedBlobReader::open(LayoutBlob {
+            path: &path,
+            digest: &digest,
+            size: 6,
+        })
+        .await;
+        let Err(error) = result else {
+            panic!("size drift must fail");
+        };
+
+        assert!(matches!(
+            error,
+            super::ImagePushError::OciBlobSizeDrift { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn validated_blob_reader_rejects_growth_after_open() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("blob");
+        tokio::fs::write(&path, b"start").await.expect("write blob");
+        let digest = OciDigest::sha256(b"start");
+        let mut reader = ValidatedBlobReader::open(LayoutBlob {
+            path: &path,
+            digest: &digest,
+            size: 5,
+        })
+        .await
+        .expect("open blob");
+        let mut file = tokio::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .await
+            .expect("open writer");
+        tokio::io::AsyncWriteExt::write_all(&mut file, b"!")
+            .await
+            .expect("grow blob");
+
+        assert!(reader.next_chunk().await.expect("original chunk").is_some());
+        let error = reader
+            .next_chunk()
+            .await
+            .expect_err("growth after open must fail");
+        assert!(matches!(
+            error,
+            super::ImagePushError::OciBlobSizeDrift { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn validated_blob_reader_rejects_digest_drift() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("blob");
+        tokio::fs::write(&path, b"changed")
+            .await
+            .expect("write blob");
+        let expected = OciDigest::sha256(b"initial");
+        let mut reader = ValidatedBlobReader::open(LayoutBlob {
+            path: &path,
+            digest: &expected,
+            size: 7,
+        })
+        .await
+        .expect("open same-sized blob");
+        let error = loop {
+            match reader.next_chunk().await {
+                Ok(Some(_)) => {}
+                Ok(None) => panic!("digest drift must fail"),
+                Err(error) => break error,
+            }
+        };
+
+        assert!(matches!(
+            error,
+            super::ImagePushError::OciBlobDigestMismatch { .. }
+        ));
+    }
+
+    #[test]
+    fn layout_receipt_keeps_layer_accounting_and_earliest_lease() {
+        let platform = OciPlatform::try_new("linux", "amd64").expect("platform");
+        let seed = MachineId::try_new("machine_seed").expect("machine id");
+        let manifest = digest('a');
+        let config = digest('b');
+        let uploaded = digest('c');
+        let reused = digest('d');
+
+        let pushed = layout_push_receipt(
+            &platform,
+            &seed,
+            &manifest,
+            &config,
+            [
+                ImageContentLeaseExpiresAt::try_new(4_200).expect("lease"),
+                ImageContentLeaseExpiresAt::try_new(4_000).expect("lease"),
+                ImageContentLeaseExpiresAt::try_new(4_100).expect("lease"),
+            ],
+            vec![(uploaded.clone(), 11)],
+            vec![(reused.clone(), 13)],
+        )
+        .expect("receipt");
+
+        let (_, image) = pushed
+            .receipt()
+            .platforms()
+            .next()
+            .expect("platform receipt");
+        assert_eq!(image.seed, seed);
+        assert_eq!(image.manifest_digest, manifest);
+        assert_eq!(image.image_id, config);
+        assert_eq!(image.availability_expires_at.unix_seconds(), 3_700);
+        assert_eq!(pushed.uploaded.digests, vec![uploaded]);
+        assert_eq!(pushed.uploaded.bytes, 11);
+        assert_eq!(pushed.reused.digests, vec![reused]);
+        assert_eq!(pushed.reused.bytes, 13);
     }
 
     #[test]
