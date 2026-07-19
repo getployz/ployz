@@ -14,6 +14,7 @@ mod adapters {
 mod certificate;
 pub mod config;
 mod control;
+mod identity;
 mod recovery;
 mod role_testimony;
 mod roles {
