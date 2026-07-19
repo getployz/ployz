@@ -9,9 +9,9 @@ use super::{
     with_evidence,
 };
 use ployz_core::deploy::{
-    ContainerCommand, ContainerRuntimeSpec, DeployPlan, DeployPlanStep, DeployRequest,
-    DeployServicePlacement, DeployServiceSpec, ImageReference, ImageSource, ReplicaSlot,
-    ServiceMode, VolumeName, VolumeSpec,
+    ContainerCommand, ContainerEntrypoint, ContainerRuntimeSpec, DeployPlan, DeployPlanStep,
+    DeployRequest, DeployServicePlacement, DeployServiceSpec, ImageReference, ImageSource,
+    ReplicaSlot, ServiceMode, VolumeName, VolumeSpec,
 };
 use ployz_core::operation::{
     DeployCompletionOutcome, DeployOperationFailure, DeployOperationState,
@@ -185,10 +185,10 @@ async fn submit_failing_system_probe(
     idempotency: &str,
 ) -> ployz_sdk_types::AcceptedOperation {
     let mut runtime = ContainerRuntimeSpec::image_defaults();
-    runtime.command = Some(
+    runtime.entrypoint = Some(ContainerEntrypoint::Argv(
         ContainerCommand::try_new(vec!["/ployz-missing-system-probe".to_owned()])
             .expect("failing probe command"),
-    );
+    ));
     submit_system_probe_with_runtime(core, idempotency, runtime).await
 }
 
