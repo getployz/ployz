@@ -2,8 +2,8 @@ use crate::control::operations::deploy::{
     MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
 };
 use crate::control::role_client::machine::{
-    MachineVolumeTestimonyReadError, NatsMachineContainerRuntime, NatsMachineFactsReader,
-    NatsMachineVolumeTestimonyReader,
+    MachineFactsRefreshError, MachineVolumeTestimonyReadError, NatsMachineContainerRuntime,
+    NatsMachineFactsReader, NatsMachineVolumeTestimonyReader,
 };
 use crate::roles::machine::protocol::{
     MachineBuildCapability, MachineContainerInspectRpcRequest, MachineContainerRemoveDomainError,
@@ -14,10 +14,9 @@ use crate::roles::machine::protocol::{
     MachineContainerStopDomainError, MachineContainerStopRpcRequest,
     MachineContainerStopRpcResponse, MachineDataplanePublicKeyRpcRequest,
     MachineDataplanePublicKeyRpcResponse, MachineDataplaneStatusRpcOk,
-    MachineDataplaneStatusRpcRequest, MachineDataplaneStatusRpcResponse,
-    MachineFactsGetDomainError, MachineFactsGetRpcRequest, MachineFactsGetRpcResponse,
-    MachineImagePull, MachineLogsTailRpcOk, MachineLogsTailRpcRequest, MachineLogsTailRpcResponse,
-    MachineRunContainerOutcome, MachineSubstrateReportRpcRequest,
+    MachineDataplaneStatusRpcRequest, MachineDataplaneStatusRpcResponse, MachineFactsGetRpcRequest,
+    MachineFactsGetRpcResponse, MachineImagePull, MachineLogsTailRpcOk, MachineLogsTailRpcRequest,
+    MachineLogsTailRpcResponse, MachineRunContainerOutcome, MachineSubstrateReportRpcRequest,
     MachineSubstrateReportRpcResponse, MachineVolumeEnsureRpcOk, MachineVolumeEnsureRpcRequest,
     MachineVolumeEnsureRpcResponse, MachineVolumeRemoveDomainError, MachineVolumeRemoveRpcOk,
     MachineVolumeRemoveRpcRequest, MachineVolumeRemoveRpcResponse, MachineVolumeTestimony,
@@ -41,8 +40,9 @@ use ployz_core::deploy::{
 use ployz_core::ids::ContainerId;
 use ployz_core::intent::{ProvisionedVolumePinState, VolumePinState};
 use ployz_core::machine::runtime::{
-    ContainerRuntimeState, MachineContainerFactDelta, MachineFactsSnapshot,
-    ManagedContainerIdentity, ManagedContainerKind,
+    ContainerRuntimeState, MachineContainerFactDelta, MachineContainerTestimony,
+    MachineContainerUnavailableReason, MachineFactsSnapshot, ManagedContainerIdentity,
+    ManagedContainerKind,
 };
 use ployz_core::machine::{VolumeEnsureFailure, VolumeUsageFacts};
 use ployz_core::network::{
@@ -150,7 +150,7 @@ async fn machine_role_service_gets_fresh_facts_without_observation_tick() {
 }
 
 #[tokio::test]
-async fn machine_role_service_preserves_facts_gather_list_failure_message() {
+async fn machine_role_service_preserves_non_docker_testimony_when_docker_is_unavailable() {
     let nats = test_nats().await;
     let _service = start_machine_role_service(
         nats.machine_a.clone(),
@@ -173,17 +173,24 @@ async fn machine_role_service_preserves_facts_gather_list_failure_message() {
     .await
     .expect("facts service responds");
 
+    let MachineFactsGetRpcResponse::Ok(answer) = response else {
+        panic!("running machine responder must preserve its non-Docker testimony");
+    };
+    assert_eq!(answer.facts.machine_id(), &machine_id("machine_a"));
+    assert_eq!(answer.build, MachineBuildCapability::Unavailable);
     assert_eq!(
-        response,
-        MachineFactsGetRpcResponse::DomainError {
-            machine_id: machine_id("machine_a"),
-            error: MachineFactsGetDomainError::GatherFailed {
-                message: failure_message(
-                    "failed to list managed Docker containers: ListExisting { message: \"daemon unavailable\" }"
-                ),
-            },
+        answer.facts.containers(),
+        &MachineContainerTestimony::Unavailable {
+            reason: MachineContainerUnavailableReason::DockerUnavailable,
         }
     );
+    assert!(answer.facts.disk_space().total_bytes > 0);
+    assert!(answer.facts.disk_space().available_bytes <= answer.facts.disk_space().total_bytes);
+    assert_eq!(
+        answer.facts.platform(),
+        &ployz_core::image::OciPlatform::current()
+    );
+    assert!(answer.facts.observed_at_unix_ms() > 0);
 }
 
 #[tokio::test]
@@ -226,6 +233,44 @@ async fn machine_role_service_refreshes_and_publishes_full_facts() {
             .containers()
             .container(&container_id("ctr_existing"))
             .is_some()
+    );
+}
+
+#[tokio::test]
+async fn machine_role_service_does_not_publish_incomplete_container_facts() {
+    let nats = test_nats().await;
+    let mut snapshots = nats
+        .client
+        .subscribe(machine_facts(&machine_id("machine_a")))
+        .await
+        .expect("subscribe machine facts");
+    let _service = start_machine_role_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
+        RecordingRunner::new(RecordingRunnerState::default())
+            .with_list_failure("daemon unavailable"),
+        ready_wireguard_ebpf(),
+        idle_logs(),
+    )
+    .await
+    .expect("machine runtime service starts");
+    nats.client.flush().await.expect("flush subscription");
+
+    let error = NatsMachineFactsReader::new(nats.client)
+        .with_request_timeout(Duration::from_secs(1))
+        .refresh_machine_facts(&machine_id("machine_a"))
+        .await
+        .expect_err("incomplete facts cannot be published");
+
+    assert!(matches!(
+        error,
+        MachineFactsRefreshError::RefreshFailed { .. }
+    ));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), snapshots.next())
+            .await
+            .is_err(),
+        "no incomplete fanout snapshot may be published"
     );
 }
 

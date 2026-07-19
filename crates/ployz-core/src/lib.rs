@@ -16,6 +16,7 @@ pub mod ingress;
 pub mod install;
 pub mod intent;
 pub mod machine;
+pub mod namespace;
 pub mod nats_config;
 pub mod network;
 pub mod operation;

@@ -6,7 +6,8 @@ use crate::control::operator_api::{
     deploy_submit, ingress_configure, init_first_machine_activate, machine_add,
     machine_build_cache_prune, machine_drain, machine_join_redeem, machine_join_report,
     machine_resume, machine_storage_prepare, machine_update, namespace_remove, network_repair,
-    ops_list, ops_status, ops_watch, service_restart, submit_volume_create, volume_remove,
+    ops_list, ops_status, ops_watch, service_restart, submit_volume_create, system_deploy,
+    volume_remove,
 };
 use crate::service_catalog::{IMPLEMENTED_OPERATION_API_ENDPOINTS, api_endpoint_spec, api_service};
 use ployz_nats::service_runtime::{
@@ -25,7 +26,7 @@ use ployz_sdk_types::{
         MachineStoragePrepareApi, MachineUpdateApi, NamespaceRemoveApi, NetworkRepairApi,
         NetworkResolveApi, NetworkStatusApi, OperationApiContract, OpsListApi, OpsStatusApi,
         OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi, ServiceRestartApi,
-        VolumeCreateApi, VolumeListApi, VolumeRemoveApi,
+        SystemDeployApi, VolumeCreateApi, VolumeListApi, VolumeRemoveApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -120,6 +121,14 @@ async fn bind_operation_endpoint(
                 runtime,
                 handlers,
                 |handlers, request| async move { deploy_submit(&handlers, request).await },
+            )
+            .await
+        }
+        OperationApiEndpoint::SystemDeploy => {
+            bind_operation_contract::<SystemDeployApi, _, _>(
+                runtime,
+                handlers,
+                |handlers, request| async move { system_deploy(&handlers, request).await },
             )
             .await
         }

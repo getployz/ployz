@@ -67,7 +67,7 @@ async fn bounded_placement_gather_queries_every_candidate_before_classifying_sil
                 let response =
                     MachineRpcResponse::<MachineFactsGetRpcOk, MachineFactsGetDomainError>::Ok(
                         MachineFactsGetRpcOk {
-                            facts,
+                            facts: facts.into(),
                             build: MachineBuildCapability::Available,
                         },
                     );

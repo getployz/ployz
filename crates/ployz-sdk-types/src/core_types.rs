@@ -56,9 +56,9 @@ pub use ployz_core::intent::{
 };
 pub use ployz_core::machine::roles::{GatewayRole, InstallRolePolicy};
 pub use ployz_core::machine::runtime::{
-    ContainerHealth, ContainerRuntimeState, MachineDiskSpace, MachineFactsRefreshConfirmation,
-    ManagedContainerHealthStatus, ManagedContainerIdentity, ManagedContainerKind,
-    ManagedContainerObservation,
+    ContainerHealth, ContainerRuntimeState, MachineContainerUnavailableReason, MachineDiskSpace,
+    MachineFactsRefreshConfirmation, ManagedContainerHealthStatus, ManagedContainerIdentity,
+    ManagedContainerKind, ManagedContainerObservation,
 };
 pub use ployz_core::machine::{
     DataplaneAdmissionPeer, DataplaneProjectionAdmissionEvidence,

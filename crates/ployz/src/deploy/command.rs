@@ -8,10 +8,12 @@ use ployz_core::deploy::{
 };
 use ployz_core::ids::{NamespaceId, OperationId, ServiceId};
 use ployz_core::operation::{OperationIdempotencyKey, RouteHostname, RoutePort};
-use ployz_sdk_types::{AcceptedOperation, DeploySubmitRequest};
+use ployz_sdk_types::{
+    AcceptedOperation, DeploySubmitRequest, SystemDeployRequest, SystemDeployTarget,
+};
 
 use crate::commands::{PloyzctlCliError, cli_error, invalid_value};
-use crate::deploy::compose::UnsupportedFieldMode;
+use crate::deploy::compose::{RenderedWarning, UnsupportedFieldMode};
 use crate::execution_support::generate_client_deploy_id;
 
 /// Public port the `--route HOST:PORT` shorthand listens on: alpha route
@@ -22,26 +24,111 @@ const DEFAULT_REPLICA_COUNT: u16 = 1;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployCommand {
     pub idempotency_key: OperationIdempotencyKey,
-    pub target: DeployRequest,
+    pub target: DeployCommandTarget,
     pub warnings: Vec<String>,
     pub detach: bool,
     pub from_registry: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeployCommandTarget {
+    Ordinary(DeployRequest),
+    System(SystemDeployTarget),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeploySubmissionRequest {
+    Ordinary(DeploySubmitRequest),
+    System(SystemDeployRequest),
+}
+
 impl DeployCommand {
     #[must_use]
-    pub fn into_request(self, reservation_id: DeployReservationId) -> DeploySubmitRequest {
-        DeploySubmitRequest {
-            registry_credentials: std::collections::BTreeMap::new(),
-            idempotency_key: self.idempotency_key,
-            reservation_id,
-            target: self.target,
+    pub fn into_request(self, reservation_id: DeployReservationId) -> DeploySubmissionRequest {
+        match self.target {
+            DeployCommandTarget::Ordinary(target) => {
+                DeploySubmissionRequest::Ordinary(DeploySubmitRequest {
+                    registry_credentials: BTreeMap::new(),
+                    idempotency_key: self.idempotency_key,
+                    reservation_id,
+                    target,
+                })
+            }
+            DeployCommandTarget::System(target) => {
+                DeploySubmissionRequest::System(SystemDeployRequest {
+                    registry_credentials: BTreeMap::new(),
+                    idempotency_key: self.idempotency_key,
+                    reservation_id,
+                    target,
+                })
+            }
         }
     }
 
     #[must_use]
     pub fn first_service(&self) -> Option<&DeployServiceSpec> {
-        self.target.services.first()
+        self.target.services().first()
+    }
+
+    #[must_use]
+    pub fn reservation_namespace(&self) -> NamespaceId {
+        match &self.target {
+            DeployCommandTarget::Ordinary(target) => target.namespace_id.clone(),
+            DeployCommandTarget::System(_) => ployz_core::namespace::reserved_system_namespace(),
+        }
+    }
+}
+
+impl DeployCommandTarget {
+    #[must_use]
+    pub fn services(&self) -> &[DeployServiceSpec] {
+        match self {
+            Self::Ordinary(target) => &target.services,
+            Self::System(target) => &target.services,
+        }
+    }
+
+    pub fn services_mut(&mut self) -> &mut Vec<DeployServiceSpec> {
+        match self {
+            Self::Ordinary(target) => &mut target.services,
+            Self::System(target) => &mut target.services,
+        }
+    }
+
+    #[must_use]
+    pub fn origin(&self) -> Option<&DeployOrigin> {
+        match self {
+            Self::Ordinary(target) => target.origin.as_ref(),
+            Self::System(target) => target.origin.as_ref(),
+        }
+    }
+
+    #[must_use]
+    pub fn ordinary(&self) -> Option<&DeployRequest> {
+        match self {
+            Self::Ordinary(target) => Some(target),
+            Self::System(_) => None,
+        }
+    }
+}
+
+impl DeploySubmissionRequest {
+    #[must_use]
+    pub fn services(&self) -> &[DeployServiceSpec] {
+        match self {
+            Self::Ordinary(request) => &request.target.services,
+            Self::System(request) => &request.target.services,
+        }
+    }
+
+    pub fn set_registry_credentials(
+        &mut self,
+        credentials: BTreeMap<ServiceId, ployz_core::image::RegistryCredential>,
+    ) {
+        match self {
+            Self::Ordinary(request) => request.registry_credentials = credentials,
+            Self::System(request) => request.registry_credentials = credentials,
+        }
     }
 }
 
@@ -67,6 +154,97 @@ pub(crate) enum ParsedDeployCommand {
     Deploy(DeployCommand),
     History(DeployHistoryCommand),
     Rollback(DeployRollbackCommand),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct SystemDeployCli {
+    #[arg(short = 'f', long = "file", value_name = "FILE")]
+    file: PathBuf,
+    #[arg(long)]
+    allow_unsupported: bool,
+    #[arg(long)]
+    detach: bool,
+    #[arg(long)]
+    from_registry: bool,
+    #[arg(long, value_name = "CAPTION")]
+    origin: Option<String>,
+}
+
+pub(crate) fn system_deploy_command(
+    parsed: SystemDeployCli,
+) -> Result<DeployCommand, PloyzctlCliError> {
+    let origin = parsed
+        .origin
+        .map(DeployOrigin::try_new)
+        .transpose()
+        .map_err(|error| invalid_value("--origin", error))?;
+    let (mut target, warnings) = crate::deploy::compose::parse_compose_file(
+        &parsed.file,
+        Some(ployz_core::namespace::reserved_system_namespace()),
+        if parsed.allow_unsupported {
+            UnsupportedFieldMode::AllowUnsupported
+        } else {
+            UnsupportedFieldMode::Strict
+        },
+    )?;
+    target.origin = origin;
+    let target = system_target_from_compose(target)?;
+    compose_deploy_command(
+        DeployCommandTarget::System(target),
+        warnings,
+        parsed.detach,
+        parsed.from_registry,
+    )
+}
+
+fn compose_deploy_command(
+    target: DeployCommandTarget,
+    warnings: Vec<RenderedWarning>,
+    detach: bool,
+    from_registry: bool,
+) -> Result<DeployCommand, PloyzctlCliError> {
+    let service_id = target
+        .services()
+        .first()
+        .map(|service| service.service_id.clone())
+        .ok_or_else(|| cli_error("compose file must define at least one service"))?;
+    let generated_ids = generate_client_deploy_id(&service_id)
+        .map_err(|error| cli_error(format!("could not generate client operation ids: {error}")))?;
+    Ok(DeployCommand {
+        idempotency_key: generated_ids.idempotency_key,
+        target,
+        warnings: warnings.into_iter().map(|warning| warning.0).collect(),
+        detach,
+        from_registry,
+    })
+}
+
+fn system_target_from_compose(
+    target: DeployRequest,
+) -> Result<SystemDeployTarget, PloyzctlCliError> {
+    if let Some(service) = target
+        .services
+        .iter()
+        .find(|service| !service.runtime.volume_mounts.is_empty())
+    {
+        return Err(invalid_value(
+            "-f",
+            format!(
+                "system deploy does not support Compose volume mounts on service {}",
+                service.service_id.as_str()
+            ),
+        ));
+    }
+    if !target.volumes.is_empty() {
+        return Err(invalid_value(
+            "-f",
+            "system deploy does not support top-level Compose volume declarations",
+        ));
+    }
+    Ok(SystemDeployTarget {
+        origin: target.origin,
+        services: target.services,
+    })
 }
 
 #[derive(Debug, Args)]
@@ -220,21 +398,12 @@ fn deploy_submit_command(parsed: DeployCli) -> Result<DeployCommand, PloyzctlCli
             },
         )?;
         target.origin = origin;
-        let service_id = target
-            .services
-            .first()
-            .map(|service| service.service_id.clone())
-            .ok_or_else(|| cli_error("compose file must define at least one service"))?;
-        let generated_ids = generate_client_deploy_id(&service_id).map_err(|error| {
-            cli_error(format!("could not generate client operation ids: {error}"))
-        })?;
-        return Ok(DeployCommand {
-            idempotency_key: generated_ids.idempotency_key,
-            target,
-            warnings: warnings.into_iter().map(|warning| warning.0).collect(),
+        return compose_deploy_command(
+            DeployCommandTarget::Ordinary(target),
+            warnings,
             detach,
             from_registry,
-        });
+        );
     }
     if allow_unsupported {
         return Err(cli_error("--allow-unsupported requires -f"));
@@ -282,7 +451,7 @@ fn deploy_submit_command(parsed: DeployCli) -> Result<DeployCommand, PloyzctlCli
 
     Ok(DeployCommand {
         idempotency_key: generated_ids.idempotency_key,
-        target: DeployRequest {
+        target: DeployCommandTarget::Ordinary(DeployRequest {
             namespace_id,
             origin,
             volumes: BTreeMap::new(),
@@ -297,7 +466,7 @@ fn deploy_submit_command(parsed: DeployCli) -> Result<DeployCommand, PloyzctlCli
                 depends_on: Vec::new(),
                 routes,
             }],
-        },
+        }),
         warnings: Vec::new(),
         detach,
         from_registry,
