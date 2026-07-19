@@ -182,7 +182,9 @@ fn boot_crash_deploy_target(command: &str) -> DeployRequest {
             service_id: service_id("svc_boot_crash"),
             image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image reference"),
             image_source: ployz_core::deploy::ImageSource::Registry,
-            replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+            mode: ployz_core::deploy::ServiceMode::Replicated {
+                replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+            },
             runtime,
             pre_start: None,
             depends_on: Vec::new(),

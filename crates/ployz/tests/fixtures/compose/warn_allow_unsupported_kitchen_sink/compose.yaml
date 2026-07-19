@@ -4,7 +4,7 @@ services:
     image: nginx:latest
     deploy:
       replicas: 2
-      mode: global
+      mode: replicated
       update_config:
         order: start-first
     healthcheck:

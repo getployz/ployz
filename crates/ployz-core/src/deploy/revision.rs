@@ -28,11 +28,17 @@ pub fn namespace_revision_id_for(
             service.service_id.as_str().as_bytes(),
         );
         hash_frame(&mut hasher, "image", service.image.as_str().as_bytes());
-        hash_frame(
-            &mut hasher,
-            "replicas",
-            service.replicas.get().to_string().as_bytes(),
-        );
+        match service.mode {
+            ServiceMode::Replicated { replicas } => {
+                hash_frame(&mut hasher, "service_mode", b"replicated");
+                hash_frame(
+                    &mut hasher,
+                    "replicas",
+                    replicas.get().to_string().as_bytes(),
+                );
+            }
+            ServiceMode::Global => hash_frame(&mut hasher, "service_mode", b"global"),
+        }
         hash_runtime_spec(&mut hasher, &service.runtime);
 
         match &service.pre_start {

@@ -1,11 +1,13 @@
 use super::*;
 use ployz_core::deploy::{
-    ContainerRuntimeSpec, DeployPhasePlan, DeployRequest, DeployServiceSpec, ImageReference,
-    PlatformImage, PushedImageReceipt, ReplicaCount, ReplicaSlot,
+    ContainerRuntimeSpec, DeployPhasePlan, DeployPlanningInput, DeployPlanningPlacementInput,
+    DeployRequest, DeployServiceSpec, ImageReference, PlatformImage, PushedImageReceipt,
+    ReplicaCount, ReplicaSlot,
 };
 use ployz_core::ids::{MachineId, NamespaceId, NamespaceRevisionId, OperationId, ServiceId};
 use ployz_core::image::{OciDigest, OciPlatform};
 
+use crate::control::operations::deploy::types::ServingIntentDisposition;
 use crate::control::role_client::machine::MachineClockTestimony;
 
 #[test]
@@ -248,9 +250,13 @@ fn pushed_platforms_are_validated_across_all_phases_before_execution() {
             DeployPhasePlan {
                 services: vec![DeployServicePlan {
                     service_id: ServiceId::try_new("api").expect("service id"),
+                    placement: ployz_core::deploy::DeployServicePlacement::Replicated,
                     steps: vec![DeployPlanStep::RunContainer {
                         machine_id: target_machine.clone(),
-                        slot: ReplicaSlot::try_new(1).expect("replica slot"),
+                        slot: ReplicaSlot::Replicated {
+                            number: ployz_core::deploy::ReplicatedReplicaSlot::try_new(1)
+                                .expect("replica slot"),
+                        },
                     }],
                     pre_start: None,
                 }],
@@ -298,7 +304,9 @@ fn pushed_service() -> DeployServiceExecutionCommand {
                 )])
                 .expect("pushed receipt"),
             ),
-            replicas: ReplicaCount::try_new(1).expect("replica count"),
+            mode: ployz_core::deploy::ServiceMode::Replicated {
+                replicas: ReplicaCount::try_new(1).expect("replica count"),
+            },
             keep: None,
             runtime: ContainerRuntimeSpec::image_defaults(),
             pre_start: None,
@@ -307,11 +315,17 @@ fn pushed_service() -> DeployServiceExecutionCommand {
         },
         registry_credential: None,
         route_commits: Vec::new(),
-        volume_pins: Vec::new(),
-        eligible_machines: Vec::new(),
+        planning_input: DeployPlanningInput {
+            service_id: ServiceId::try_new("api").expect("service id"),
+            placement: DeployPlanningPlacementInput::Replicated {
+                eligible_machines: Vec::new(),
+            },
+            existing_replicas: Vec::new(),
+            cleanup_candidates: Vec::new(),
+            volume_pins: Vec::new(),
+        },
+        serving_intent: ServingIntentDisposition::Changed,
         unusable_machines: Vec::new(),
-        existing_replicas: Vec::new(),
-        cleanup_candidates: Vec::new(),
     }
 }
 

@@ -65,6 +65,12 @@ pub(super) struct PromotionPorts<'a, R, C, S> {
     pub namespace_state: &'a mut S,
 }
 
+pub(super) struct ServiceStartPorts<'a, R, N> {
+    pub containers: &'a mut Vec<DeployContainer>,
+    pub recorder: &'a mut R,
+    pub machine_runtime: &'a mut N,
+}
+
 impl CoarsePhaseProgress {
     async fn record<R>(
         self,
@@ -142,6 +148,13 @@ impl<'a> DeployRun<'a> {
             unreachable!("service work requires an active deploy phase");
         };
         phase.completed_services.push(result);
+    }
+
+    fn completed_services(&self) -> &[DeployServiceResult] {
+        match &self.phase {
+            DeployRunPhase::OutsidePhase => &[],
+            DeployRunPhase::During(phase) => &phase.completed_services,
+        }
     }
 
     fn health_check_containers(&self) -> &[DeployContainer] {
@@ -251,10 +264,9 @@ pub(super) async fn start_services<R, N>(
     command: &DeployExecutionCommand,
     phase: &DeployPhasePlan,
     dataplane_members: &[ployz_core::network::DataplaneMember],
-    containers: &mut Vec<DeployContainer>,
+    services_with_cleanup: &std::collections::BTreeSet<ServiceId>,
     run: &mut DeployRun<'_>,
-    recorder: &mut R,
-    machine_runtime: &mut N,
+    ports: ServiceStartPorts<'_, R, N>,
 ) -> Result<(), DeployExecutionFailure>
 where
     R: DeployOperationRecorder,
@@ -266,9 +278,14 @@ where
                 && matches!(service.service.image_source, ImageSource::PushedToSeed(_))
         })
     }) {
-        ensure_images(command, &phase.services, recorder, machine_runtime)
-            .await
-            .map_err(|source| run.fail(source))?;
+        ensure_images(
+            command,
+            &phase.services,
+            ports.recorder,
+            ports.machine_runtime,
+        )
+        .await
+        .map_err(|source| run.fail(source))?;
     }
 
     for service_plan in &phase.services {
@@ -287,7 +304,7 @@ where
                 service,
                 pre_start,
                 dataplane_members,
-                machine_runtime,
+                ports.machine_runtime,
             )
             .await
             .map_err(|source| run.fail_service(source, service.service.service_id.clone()))?;
@@ -299,9 +316,16 @@ where
                     container_id,
                     slot,
                 } => {
-                    let Some(existing) = service.existing_replicas.iter().find(|existing| {
-                        existing.machine_id == *machine_id && existing.container_id == *container_id
-                    }) else {
+                    let Some(existing) =
+                        service
+                            .planning_input
+                            .existing_replicas
+                            .iter()
+                            .find(|existing| {
+                                existing.machine_id == *machine_id
+                                    && existing.container_id == *container_id
+                            })
+                    else {
                         return Err(run.fail_service(
                             DeployExecutionError::PlanInconsistent {
                                 service_id: service.service.service_id.clone(),
@@ -316,7 +340,7 @@ where
                             .namespace_revision_entry_id(&command.request.namespace_id),
                         machine_id: machine_id.clone(),
                         container_id: container_id.clone(),
-                        step_id: deploy_step_id(*slot).map_err(|source| {
+                        step_id: deploy_step_id(*slot, machine_id).map_err(|source| {
                             run.fail_service(
                                 DeployExecutionError::StepId(source),
                                 service.service.service_id.clone(),
@@ -326,7 +350,7 @@ where
                             == ExistingReplicaCreationGate::RequiredAfterInterruption
                             && requires_docker_healthcheck(service),
                     };
-                    containers.push(container.clone());
+                    ports.containers.push(container.clone());
                     run.existing_container(container, existing.creation_gate);
                 }
                 DeployPlanStep::RunContainer { machine_id, slot } => {
@@ -336,7 +360,7 @@ where
                             machine_id: machine_id.clone(),
                         },
                         run_deploy_step(
-                            machine_runtime,
+                            ports.machine_runtime,
                             command,
                             service,
                             machine_id,
@@ -349,11 +373,11 @@ where
                         Ok(started) => started,
                         Err(source) => return Err(run.fail_run_container(service, source)),
                     };
-                    containers.push(started.clone());
+                    ports.containers.push(started.clone());
                     run.container_started(started.clone(), disposition);
                     record_evidence(
                         command,
-                        recorder,
+                        ports.recorder,
                         DeployEvidence::ContainerStarted {
                             machine_id: started.machine_id.clone(),
                             container_id: started.container_id.clone(),
@@ -366,7 +390,11 @@ where
                 }
             }
         }
-        run.service_completed(service_result(service_plan));
+        run.service_completed(service_result(
+            service,
+            service_plan,
+            services_with_cleanup.contains(&service_plan.service_id),
+        ));
     }
 
     Ok(())
@@ -567,6 +595,7 @@ where
     )
     .await
     .map_err(|source| run.fail(source))?;
+    let completed_services = run.completed_services().to_vec();
     run.phase_promoted();
 
     record_evidence(
@@ -575,7 +604,7 @@ where
         DeployEvidence::PhaseFinished {
             phase: phase_number,
             outcome: DeployPhaseOutcome::Promoted,
-            services: phase.services.iter().map(service_result).collect(),
+            services: completed_services,
         },
     )
     .await

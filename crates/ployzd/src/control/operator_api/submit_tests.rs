@@ -57,7 +57,9 @@ fn deploy_admission_rejects_ids_that_cannot_form_internal_dns_labels() {
             service_id,
             image: ImageReference::try_new("nginx:latest").expect("image"),
             image_source: ImageSource::Registry,
-            replicas: ReplicaCount::try_new(1).expect("replicas"),
+            mode: ployz_core::deploy::ServiceMode::Replicated {
+                replicas: ReplicaCount::try_new(1).expect("replicas"),
+            },
             runtime: ContainerRuntimeSpec::image_defaults(),
             pre_start: None,
             depends_on: Vec::new(),
@@ -109,7 +111,9 @@ fn pushed_image_digest_must_match_the_index_digest() {
                     )])
                     .expect("pushed receipt"),
                 ),
-                replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+                mode: ployz_core::deploy::ServiceMode::Replicated {
+                    replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+                },
                 runtime: ContainerRuntimeSpec::image_defaults(),
                 pre_start: None,
                 depends_on: Vec::new(),
@@ -146,7 +150,9 @@ fn deploy_admission_rejects_a_mounted_volume_without_a_declaration() {
                 service_id: ServiceId::try_new("api").expect("service id"),
                 image: ImageReference::try_new("nginx:latest").expect("image"),
                 image_source: ImageSource::Registry,
-                replicas: ReplicaCount::try_new(1).expect("replicas"),
+                mode: ployz_core::deploy::ServiceMode::Replicated {
+                    replicas: ReplicaCount::try_new(1).expect("replicas"),
+                },
                 runtime,
                 pre_start: None,
                 depends_on: Vec::new(),

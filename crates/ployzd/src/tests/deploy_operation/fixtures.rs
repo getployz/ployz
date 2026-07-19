@@ -3,8 +3,8 @@ use ployz_core::deploy::{
     ContainerCommand, ContainerHealthcheck, ContainerHealthcheckTest, ContainerMountPath,
     DatasetName, DependencyCondition, DeployCleanupContainer, DeployRequest, DeployRoute,
     DeployRouteTarget, DeployServiceSpec, HealthcheckShellCommand, ImageReference, PreStartHook,
-    ReplicaCount, ServiceDependency, ServiceVolumeMount, VolumeMaxSizeBytes, VolumeName,
-    VolumeSpec, ZfsPoolName,
+    ReplicaCount, ServiceDependency, ServiceMode, ServiceVolumeMount, VolumeMaxSizeBytes,
+    VolumeName, VolumeSpec, ZfsPoolName,
 };
 use ployz_core::ids::{
     ContainerId, MachineId, NamespaceRevisionEntryId, NamespaceRevisionId, OperationId,
@@ -18,7 +18,7 @@ use ployz_core::machine::runtime::{
 use ployz_core::operation::{
     CertificateProvisionFailure, DeployCleanupFailure, DeployEvidence, DeployRunningStage,
     DeployTransition, FailureMessage, OperatorHint, RetainedArtifact, RouteHostname, RoutePort,
-    RouteTarget,
+    RouteTarget, UnusableMachine,
 };
 pub(crate) use ployz_test_support::containers;
 use ployz_test_support::fixtures::serving_target_entry;
@@ -50,7 +50,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-#[derive(Default)]
 pub(super) struct RecordingOperations {
     pub(super) records: Vec<RecordedOperation>,
     pub(super) phase_records: Vec<DeployEvidence>,
@@ -58,10 +57,29 @@ pub(super) struct RecordingOperations {
     fail_cleanup_evidence_remaining: usize,
     fail_phase_finished_evidence_remaining: usize,
     pub(super) completed_transition_attempts: usize,
+    expected_operation_id: OperationId,
+}
+
+impl Default for RecordingOperations {
+    fn default() -> Self {
+        Self::for_operation(operation_id("op_123"))
+    }
 }
 
 impl RecordingOperations {
-    pub(super) const fn fail_completed_transition_times(times: usize) -> Self {
+    pub(super) fn for_operation(expected_operation_id: OperationId) -> Self {
+        Self {
+            records: Vec::new(),
+            phase_records: Vec::new(),
+            fail_completed_transition_remaining: 0,
+            fail_cleanup_evidence_remaining: 0,
+            fail_phase_finished_evidence_remaining: 0,
+            completed_transition_attempts: 0,
+            expected_operation_id,
+        }
+    }
+
+    pub(super) fn fail_completed_transition_times(times: usize) -> Self {
         Self {
             records: Vec::new(),
             phase_records: Vec::new(),
@@ -69,10 +87,11 @@ impl RecordingOperations {
             fail_cleanup_evidence_remaining: 0,
             fail_phase_finished_evidence_remaining: 0,
             completed_transition_attempts: 0,
+            expected_operation_id: operation_id("op_123"),
         }
     }
 
-    pub(super) const fn fail_cleanup_evidence_times(times: usize) -> Self {
+    pub(super) fn fail_cleanup_evidence_times(times: usize) -> Self {
         Self {
             records: Vec::new(),
             phase_records: Vec::new(),
@@ -80,10 +99,11 @@ impl RecordingOperations {
             fail_cleanup_evidence_remaining: times,
             fail_phase_finished_evidence_remaining: 0,
             completed_transition_attempts: 0,
+            expected_operation_id: operation_id("op_123"),
         }
     }
 
-    pub(super) const fn fail_phase_finished_evidence_times(times: usize) -> Self {
+    pub(super) fn fail_phase_finished_evidence_times(times: usize) -> Self {
         Self {
             records: Vec::new(),
             phase_records: Vec::new(),
@@ -91,6 +111,7 @@ impl RecordingOperations {
             fail_cleanup_evidence_remaining: 0,
             fail_phase_finished_evidence_remaining: times,
             completed_transition_attempts: 0,
+            expected_operation_id: operation_id("op_123"),
         }
     }
 }
@@ -100,6 +121,12 @@ pub(super) enum RecordedOperation {
     Transition(DeployTransition),
     PlanCreated {
         replica_count: usize,
+    },
+    GlobalPlacement {
+        candidates: Vec<MachineId>,
+        selected: Vec<MachineId>,
+        deferred: Vec<UnusableMachine>,
+        draining: Vec<MachineId>,
     },
     ImageAvailabilityVerified,
     HealthCheckStarted,
@@ -120,7 +147,7 @@ impl DeployOperationRecorder for RecordingOperations {
         recorded_operation_id: &OperationId,
         transition: DeployTransition,
     ) -> Result<(), DeployOperationRecordError> {
-        assert_eq!(recorded_operation_id, &operation_id("op_123"));
+        assert_eq!(recorded_operation_id, &self.expected_operation_id);
         if self.fail_completed_transition_remaining > 0
             && matches!(transition, DeployTransition::Completed { .. })
         {
@@ -139,7 +166,7 @@ impl DeployOperationRecorder for RecordingOperations {
         recorded_operation_id: &OperationId,
         evidence: DeployEvidence,
     ) -> Result<(), DeployOperationRecordError> {
-        assert_eq!(recorded_operation_id, &operation_id("op_123"));
+        assert_eq!(recorded_operation_id, &self.expected_operation_id);
         match evidence {
             DeployEvidence::ImageResolved { .. } => {}
             DeployEvidence::PlanCreated { plan } => {
@@ -151,6 +178,30 @@ impl DeployOperationRecorder for RecordingOperations {
                         .map(|service| service.steps.len())
                         .sum(),
                 });
+                if let Some(ployz_core::deploy::DeployServicePlacement::Global {
+                    candidates,
+                    selected,
+                    deferred,
+                    draining,
+                }) = plan
+                    .phases
+                    .iter()
+                    .flat_map(|phase| &phase.services)
+                    .map(|service| &service.placement)
+                    .find(|placement| {
+                        matches!(
+                            placement,
+                            ployz_core::deploy::DeployServicePlacement::Global { .. }
+                        )
+                    })
+                {
+                    self.records.push(RecordedOperation::GlobalPlacement {
+                        candidates: candidates.clone(),
+                        selected: selected.clone(),
+                        deferred: deferred.clone(),
+                        draining: draining.clone(),
+                    });
+                }
             }
             DeployEvidence::ImageAvailabilityVerified { .. } => {
                 self.records
@@ -220,6 +271,7 @@ pub(super) struct RecordingRuntime {
     reuse_existing: bool,
     start_existing: bool,
     fail_start: bool,
+    fail_start_after_first: bool,
     fail_remove: bool,
     fail_stop: bool,
 }
@@ -614,6 +666,7 @@ impl RecordingRuntime {
             reuse_existing: false,
             start_existing: false,
             fail_start: false,
+            fail_start_after_first: false,
             fail_remove: false,
             fail_stop: false,
         }
@@ -638,6 +691,7 @@ impl RecordingRuntime {
             reuse_existing: true,
             start_existing: false,
             fail_start: false,
+            fail_start_after_first: false,
             fail_remove: false,
             fail_stop: false,
         }
@@ -662,6 +716,7 @@ impl RecordingRuntime {
             reuse_existing: false,
             start_existing: true,
             fail_start: false,
+            fail_start_after_first: false,
             fail_remove: false,
             fail_stop: false,
         }
@@ -686,6 +741,7 @@ impl RecordingRuntime {
             reuse_existing: false,
             start_existing: false,
             fail_start: false,
+            fail_start_after_first: false,
             fail_remove: false,
             fail_stop: false,
         }
@@ -713,6 +769,7 @@ impl RecordingRuntime {
             reuse_existing: false,
             start_existing: false,
             fail_start: false,
+            fail_start_after_first: false,
             fail_remove: false,
             fail_stop: false,
         }
@@ -737,6 +794,7 @@ impl RecordingRuntime {
             reuse_existing: false,
             start_existing: false,
             fail_start: true,
+            fail_start_after_first: false,
             fail_remove: false,
             fail_stop: false,
         }
@@ -745,6 +803,12 @@ impl RecordingRuntime {
     pub(super) fn with_remove_failure(mut self) -> Self {
         self.fail_remove = true;
         self
+    }
+
+    pub(super) fn failing_start_after_first<const N: usize>(containers: [&str; N]) -> Self {
+        let mut runtime = Self::with_containers(containers);
+        runtime.fail_start_after_first = true;
+        runtime
     }
 
     pub(super) fn with_hook_outcome(mut self, container_id: &str, exit_code: i64) -> Self {
@@ -852,12 +916,12 @@ impl MachineContainerRuntime for RecordingRuntime {
             });
         };
 
-        if self.fail_start {
+        if self.fail_start || (self.fail_start_after_first && self.requests.len() > 1) {
             return Err(MachineContainerRuntimeError::CreatedContainerStartFailed {
                 machine_id: machine_id.clone(),
-                container_id,
+                inspect_hint: inspect_hint(container_id.as_str()),
                 message: runtime_failure_message("container start failed: exec format error"),
-                inspect_hint: inspect_hint("ctr_created"),
+                container_id,
             });
         }
 
@@ -984,6 +1048,40 @@ pub(super) fn deploy_command(replicas: u16) -> DeployExecutionInput {
     )
 }
 
+pub(super) fn global_deploy_command(
+    eligible_machines: Vec<MachineId>,
+    unusable_machines: Vec<UnusableMachine>,
+    observed_machines: Vec<MachineContainerObservationSnapshot>,
+    namespace_serving_entries: Vec<ServingTargetEntry>,
+) -> DeployExecutionInput {
+    let mut request = target_deploy_request(1);
+    let [service] = request.services.as_mut_slice() else {
+        panic!("one service")
+    };
+    service.mode = ServiceMode::Global;
+    deploy_execution_input(
+        operation_id("op_123"),
+        request,
+        DeployExecutionFacts {
+            machine_platforms: std::collections::BTreeMap::new(),
+            seed_clock_testimony: std::collections::BTreeMap::new(),
+            machine_storage_testimony: std::collections::BTreeMap::new(),
+            unusable_machines,
+            namespace_route_bindings: Vec::new(),
+            namespace_serving_entries,
+            namespace_volume_pins: Vec::new(),
+            dataplane_members: Vec::new(),
+            eligible_machines,
+            namespace_cleanup_candidates: namespace_cleanup_candidates(&observed_machines),
+            observed_machines,
+            automatic_hostname_mode: AutomaticHostnameMode::Disabled,
+            gateway_certificate_targets: Vec::new(),
+            ployz_gateway_certificate_targets: Vec::new(),
+            step_timeout: Duration::from_secs(5),
+        },
+    )
+}
+
 pub(super) fn phased_deploy_command(service_ids: &[&str]) -> DeployExecutionInput {
     execution_input_for_request(phased_request(service_ids), Vec::new(), Vec::new())
 }
@@ -1069,6 +1167,11 @@ pub(super) fn phased_deploy_with_reused_dependency() -> DeployExecutionInput {
         condition: DependencyCondition::Healthy,
     }];
     let database_entry = database.namespace_revision_entry_id(&request.namespace_id);
+    let mut promoted = serving_target_entry("svc_database", "unused");
+    promoted.namespace_revision_entry_id = database_entry.clone();
+    promoted.image = database.image.clone();
+    promoted.mode = database.mode;
+    promoted.volume_names = Vec::new();
     request.services = vec![database, web];
     let observation = containers::observation("machine_a", "ctr_database")
         .with(
@@ -1083,8 +1186,6 @@ pub(super) fn phased_deploy_with_reused_dependency() -> DeployExecutionInput {
         MachineContainerObservationSnapshot::try_new(machine_id("machine_a"), [observation])
             .expect("valid observation"),
     ];
-    let mut promoted = serving_target_entry("svc_database", "unused");
-    promoted.namespace_revision_entry_id = database_entry;
     execution_input_for_request(request, snapshots, vec![promoted])
 }
 
@@ -1315,7 +1416,9 @@ fn routed_deploy_request(replicas: u16) -> DeployRequest {
             service_id: service_id("svc_api"),
             image: image("registry.example/api:rev_2"),
             image_source: ployz_core::deploy::ImageSource::Registry,
-            replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
+            mode: ployz_core::deploy::ServiceMode::Replicated {
+                replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
+            },
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             pre_start: None,
             depends_on: Vec::new(),
@@ -1342,7 +1445,9 @@ pub(super) fn ployz_automatic_deploy_command() -> DeployExecutionInput {
                 service_id: service_id("svc_api"),
                 image: image("registry.example/api:rev_2"),
                 image_source: ployz_core::deploy::ImageSource::Registry,
-                replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+                mode: ployz_core::deploy::ServiceMode::Replicated {
+                    replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+                },
                 runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
                 pre_start: None,
                 depends_on: Vec::new(),
@@ -1435,7 +1540,9 @@ fn pushed_deploy_command(
             service_id: service_id("svc_api"),
             image,
             image_source: ployz_core::deploy::ImageSource::PushedToSeed(receipt),
-            replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
+            mode: ployz_core::deploy::ServiceMode::Replicated {
+                replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
+            },
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             pre_start: None,
             depends_on: Vec::new(),
@@ -1762,7 +1869,9 @@ pub(super) fn target_deploy_request(replicas: u16) -> DeployRequest {
             service_id: service_id("svc_api"),
             image: image("registry.example/api:rev_2"),
             image_source: ployz_core::deploy::ImageSource::Registry,
-            replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
+            mode: ployz_core::deploy::ServiceMode::Replicated {
+                replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
+            },
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             pre_start: None,
             depends_on: Vec::new(),
@@ -1884,7 +1993,7 @@ fn namespace_cleanup_candidates(
     )
 }
 
-fn observed_service_container(
+pub(super) fn observed_service_container(
     machine_id: &str,
     container_id: &str,
     namespace_revision_entry_id: &str,
@@ -1896,7 +2005,7 @@ fn observed_service_container(
     )
 }
 
-fn observed_service_container_with_entry(
+pub(super) fn observed_service_container_with_entry(
     machine_id: &str,
     container_id: &str,
     namespace_revision_entry_id: NamespaceRevisionEntryId,

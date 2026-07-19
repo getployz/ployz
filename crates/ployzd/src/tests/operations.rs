@@ -519,7 +519,9 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
                     &normalized_resolved_target,
                     vec![DeployPlanningInput {
                         service_id: resolved_service_target.service_id,
-                        eligible_machines: vec![machine_id("machine_a")],
+                        placement: ployz_core::deploy::DeployPlanningPlacementInput::Replicated {
+                            eligible_machines: vec![machine_id("machine_a")],
+                        },
                         existing_replicas: Vec::new(),
                         cleanup_candidates: Vec::new(),
                         volume_pins: Vec::new(),
@@ -1057,7 +1059,9 @@ fn deploy_target(service_id: &str) -> DeployRequest {
             service_id: self::service_id(service_id),
             image: image("ghcr.io/acme/api:rev-2"),
             image_source: ployz_core::deploy::ImageSource::Registry,
-            replicas: replicas(1),
+            mode: ployz_core::deploy::ServiceMode::Replicated {
+                replicas: replicas(1),
+            },
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             pre_start: None,
             depends_on: Vec::new(),

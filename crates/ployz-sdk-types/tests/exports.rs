@@ -48,7 +48,7 @@ use ployz_sdk_types::{
     ReplicaCount, ReplicaCountError, RouteHostname, RouteHostnameError, RoutePort, RoutePortError,
     RuntimeSnapshotError, RuntimeSnapshotRequest, RuntimeSnapshotResult, ServiceDependency,
     ServiceId, ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
-    ServiceListResult, ServiceRestartError, ServiceRestartRequest, ServiceSnapshot,
+    ServiceListResult, ServiceMode, ServiceRestartError, ServiceRestartRequest, ServiceSnapshot,
     SubjectTokenError, VolumeCreateError, VolumeCreateRequest, VolumeKind, VolumeListError,
     VolumeListRequest, VolumeListResult, VolumeName, VolumeRemoveError, VolumeRemoveRequest,
     VolumeSnapshot, VolumeStatus, VolumeTestimony,
@@ -92,7 +92,9 @@ fn sdk_exports_core_wire_types() {
             service_id: service_id.clone(),
             image: ImageReference::try_new("ghcr.io/acme/api:rev-1").expect("valid image"),
             image_source: ployz_core::deploy::ImageSource::Registry,
-            replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+            mode: ServiceMode::Replicated {
+                replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+            },
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             pre_start: None,
             depends_on: Vec::new(),
@@ -292,7 +294,9 @@ fn sdk_exports_operation_api_wire_types() {
                 service_id: ServiceId::try_new("svc_api").expect("valid service id"),
                 image: ImageReference::try_new("ghcr.io/acme/api:rev-1").expect("valid image"),
                 image_source: ployz_core::deploy::ImageSource::Registry,
-                replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+                mode: ServiceMode::Replicated {
+                    replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+                },
                 runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
                 pre_start: None,
                 depends_on: Vec::new(),
@@ -309,7 +313,7 @@ fn sdk_exports_operation_api_wire_types() {
     };
     assert_eq!(
         serde_json::to_string(&request).expect("request serializes"),
-        r#"{"idempotency_key":"idem_deploy_123","reservation_id":"1","target":{"namespace_id":"default","services":[{"service_id":"svc_api","image":"ghcr.io/acme/api:rev-1","replicas":1,"runtime":{"command":null,"entrypoint":null,"environment":{},"stop_grace_period":10}}]}}"#
+        r#"{"idempotency_key":"idem_deploy_123","reservation_id":"1","target":{"namespace_id":"default","services":[{"service_id":"svc_api","image":"ghcr.io/acme/api:rev-1","mode":{"kind":"replicated","replicas":1},"runtime":{"command":null,"entrypoint":null,"environment":{},"stop_grace_period":10}}]}}"#
     );
     assert_eq!(
         serde_json::to_string(&response).expect("response serializes"),

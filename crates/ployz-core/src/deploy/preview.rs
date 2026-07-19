@@ -20,7 +20,7 @@ pub struct DeployPreviewTarget {
 pub struct DeployPreviewService {
     pub service_id: ServiceId,
     pub image: DeployPreviewImage,
-    pub replicas: ReplicaCount,
+    pub mode: ServiceMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep: Option<ContainerRetentionCount>,
     pub runtime: ContainerRuntimeSpec,
@@ -113,7 +113,9 @@ mod tests {
             services: vec![DeployPreviewService {
                 service_id: service_id.clone(),
                 image: DeployPreviewImage::PendingBuild,
-                replicas: ReplicaCount::try_new(1).expect("replicas"),
+                mode: ServiceMode::Replicated {
+                    replicas: ReplicaCount::try_new(1).expect("replicas"),
+                },
                 keep: None,
                 runtime: ContainerRuntimeSpec::image_defaults(),
                 pre_start: None,
@@ -149,7 +151,9 @@ mod tests {
             services: vec![DeployPreviewService {
                 service_id: service_id.clone(),
                 image: DeployPreviewImage::PendingBuild,
-                replicas: ReplicaCount::try_new(1).expect("replicas"),
+                mode: ServiceMode::Replicated {
+                    replicas: ReplicaCount::try_new(1).expect("replicas"),
+                },
                 keep: None,
                 runtime: ContainerRuntimeSpec::image_defaults(),
                 pre_start: None,
@@ -175,7 +179,9 @@ mod tests {
         let service = DeployPreviewService {
             service_id: service_id.clone(),
             image: DeployPreviewImage::PendingBuild,
-            replicas: ReplicaCount::try_new(1).expect("replicas"),
+            mode: ServiceMode::Replicated {
+                replicas: ReplicaCount::try_new(1).expect("replicas"),
+            },
             keep: None,
             runtime: ContainerRuntimeSpec::image_defaults(),
             pre_start: None,
@@ -221,7 +227,9 @@ mod tests {
             namespace_revision_entry_id: NamespaceRevisionEntryId::try_new("entry_api")
                 .expect("entry id"),
             image: ImageReference::try_new("ghcr.io/acme/api:current").expect("image"),
-            desired_replicas: ReplicaCount::try_new(1).expect("replicas"),
+            mode: ServiceMode::Replicated {
+                replicas: ReplicaCount::try_new(1).expect("replicas"),
+            },
             volume_names: Vec::new(),
         };
         let plan = DeployPlacementPlan {

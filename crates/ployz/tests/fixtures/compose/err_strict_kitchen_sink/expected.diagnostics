@@ -4,8 +4,8 @@ secrets  unsupported (planned)  secrets are planned separately; remove it or pas
 services.web.build  unsupported (planned)  build images before deploy; remove it or pass --allow-unsupported
 services.web.cgroup_parent  unsupported (unsupported)  cgroup parent is not part of the deploy model; remove it or pass --allow-unsupported
 services.web.configs  unsupported (planned)  configs are not deployed yet; remove it or pass --allow-unsupported
-services.web.deploy.mode  unsupported (planned)  global deploy mode is not deployed yet; remove it or pass --allow-unsupported
 services.web.deploy.placement  unsupported (planned)  placement constraints are not deployed yet; remove it or pass --allow-unsupported
+services.web.deploy.replicas  invalid value  replicas cannot be set when deploy.mode is global
 services.web.deploy.resources.reservations  unsupported (planned)  resource reservations are not deployed yet; remove it or pass --allow-unsupported
 services.web.deploy.restart_policy.delay  unsupported (planned)  restart policy subfields are not deployed yet; remove it or pass --allow-unsupported
 services.web.deploy.update_config  unsupported (planned)  update order is not deployed yet; remove it or pass --allow-unsupported
@@ -28,5 +28,6 @@ services.web.secrets  unsupported (planned)  secrets are planned separately; rem
 services.web.security_opt  unsupported (unsupported)  host capability controls are not deployed yet; remove it or pass --allow-unsupported
 services.web.ulimits  unsupported (unsupported)  ulimits are not deployed yet; remove it or pass --allow-unsupported
 services.web.user  unsupported (unsupported)  container user is not deployed yet; remove it or pass --allow-unsupported
+services.web.volumes  invalid value  global services cannot mount volumes
 services.web.working_dir  unsupported (unsupported)  working directory is not deployed yet; remove it or pass --allow-unsupported
 version  advisory  version is obsolete compose metadata; ignored

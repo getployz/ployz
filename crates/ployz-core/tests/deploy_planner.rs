@@ -2,26 +2,28 @@ use ployz_core::deploy::{
     ContainerCommand, ContainerEntrypoint, ContainerHealthcheck, ContainerHealthcheckTest,
     ContainerMountPath, ContainerRuntimeSpec, DatasetName, DependencyCondition,
     DeployCleanupContainer, DeployPhasePlan, DeployPlan, DeployPlanError, DeployPlanStep,
-    DeployPlanningInput as CoreDeployPlanningInput, DeployPlanningTarget, DeployPreparationInput,
-    DeployRoute, DeployRouteTarget, DeployServicePlan, DeployServiceSpec, EnvName, EnvValue,
-    ExistingReplicaCreationGate, ExistingReplicaPolicy, ExistingServiceReplica,
-    HealthcheckShellCommand, ImageReference, ImageSource, ObservedCleanupCandidate, PlatformImage,
-    PreStartHook, PreStartHookStep, PushedImageReceipt, ReplicaCount, ReplicaSlot,
-    ServiceDependency, ServiceEnvironment, ServiceVolumeMount, StopGracePeriod,
-    VolumeAdmissionFailure, VolumeMaxSizeBytes, VolumeName, VolumeSpec, ZfsPoolName,
-    commit_deploy_route_bindings, namespace_revision_id_for, namespace_route_binding_removals,
-    namespace_serving_target_removals, plan_namespace_deploy, prepare_deploy,
-    validate_deploy_route_bindings,
+    DeployPlanningInput as CoreDeployPlanningInput, DeployPlanningPlacementInput,
+    DeployPlanningTarget, DeployPreparationInput, DeployRequest, DeployRoute, DeployRouteTarget,
+    DeployServicePlacement, DeployServicePlan, DeployServiceSpec, EmptyGlobalSelectionPolicy,
+    EnvName, EnvValue, ExistingReplicaCreationGate, ExistingReplicaPolicy, ExistingServiceReplica,
+    GlobalCandidateDisposition, GlobalPlanningInput, HealthcheckShellCommand, ImageReference,
+    ImageSource, ObservedCleanupCandidate, PlatformImage, PreStartHook, PreStartHookStep,
+    PushedImageReceipt, ReplicaCount, ReplicaSlot, ReplicatedReplicaSlot, ServiceDependency,
+    ServiceEnvironment, ServiceMode, ServiceVolumeMount, StopGracePeriod, VolumeAdmissionFailure,
+    VolumeMaxSizeBytes, VolumeName, VolumeSpec, ZfsPoolName, commit_deploy_route_bindings,
+    namespace_revision_id_for, namespace_route_binding_removals, namespace_serving_target_removals,
+    plan_namespace_deploy, prepare_deploy, validate_deploy_route_bindings,
 };
 use ployz_core::ids::MachineId;
 use ployz_core::image::{OciDigest, OciPlatform};
 use ployz_core::ingress::{AutomaticHostnameLabel, RouteBindingOrigin};
 use ployz_core::intent::{RouteBindingState, VolumePinState};
+use ployz_core::machine::MachineUsabilityReason;
 use ployz_core::machine::runtime::{
     ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerKind,
     ManagedContainerObservation,
 };
-use ployz_core::operation::{RouteHostname, RoutePort, RouteTarget};
+use ployz_core::operation::{RouteHostname, RoutePort, RouteTarget, UnusableMachine};
 use ployz_test_support::containers;
 use ployz_test_support::fixtures::serving_target_entry;
 use ployz_test_support::ids::{
@@ -33,7 +35,11 @@ use std::collections::{BTreeMap, BTreeSet};
 struct DeployPlanningInput {
     service: DeployServiceSpec,
     volumes: BTreeMap<VolumeName, VolumeSpec>,
+    candidate_machines: Vec<MachineId>,
     eligible_machines: Vec<MachineId>,
+    deferred_machines: Vec<UnusableMachine>,
+    draining_machines: Vec<MachineId>,
+    equivalent_target_promoted: bool,
     existing_replicas: Vec<ExistingServiceReplica>,
     cleanup_candidates: Vec<ObservedCleanupCandidate>,
     volume_pins: Vec<VolumePinState>,
@@ -516,10 +522,149 @@ fn deploy_plan_requires_eligible_machine() {
 }
 
 #[test]
+fn global_plan_visits_each_selected_machine_once_and_reuses_only_same_machine() {
+    let mut input = global_planning_input(["machine_b", "machine_a"]);
+    input.existing_replicas = vec![
+        existing_replica("machine_a", "ctr_a"),
+        existing_replica("machine_a", "ctr_a_extra"),
+        existing_replica("machine_deferred", "ctr_deferred"),
+    ];
+    input.cleanup_candidates = vec![
+        cleanup_container_observed("machine_a", "ctr_a", true, None),
+        cleanup_container_observed("machine_a", "ctr_a_extra", true, None),
+        cleanup_container_observed("machine_deferred", "ctr_deferred", true, None),
+        cleanup_container_observed("machine_draining", "ctr_draining", true, None),
+    ];
+    input.candidate_machines.extend([
+        machine_id("machine_deferred"),
+        machine_id("machine_draining"),
+    ]);
+    input.deferred_machines = vec![UnusableMachine {
+        machine_id: machine_id("machine_deferred"),
+        reason: MachineUsabilityReason::FactsUnavailable,
+    }];
+    input.draining_machines = vec![machine_id("machine_draining")];
+
+    let plan = plan_single_service(&input).expect("global plan");
+    let [phase] = plan.phases.as_slice() else {
+        panic!("global plan should contain one phase");
+    };
+    let [service] = phase.services.as_slice() else {
+        panic!("global plan should contain one service");
+    };
+    assert_eq!(
+        service.steps,
+        vec![
+            DeployPlanStep::UseExistingContainer {
+                machine_id: machine_id("machine_a"),
+                container_id: container_id("ctr_a"),
+                slot: ReplicaSlot::Global,
+            },
+            DeployPlanStep::RunContainer {
+                machine_id: machine_id("machine_b"),
+                slot: ReplicaSlot::Global,
+            },
+        ]
+    );
+    assert_eq!(
+        service.placement,
+        DeployServicePlacement::Global {
+            candidates: vec![
+                machine_id("machine_a"),
+                machine_id("machine_b"),
+                machine_id("machine_deferred"),
+                machine_id("machine_draining"),
+            ],
+            selected: vec![machine_id("machine_a"), machine_id("machine_b")],
+            deferred: input.deferred_machines.clone(),
+            draining: vec![machine_id("machine_draining")],
+        }
+    );
+    assert_eq!(
+        plan.cleanup_actions
+            .iter()
+            .map(|action| action.target().container_id.clone())
+            .collect::<Vec<_>>(),
+        vec![container_id("ctr_a_extra"), container_id("ctr_draining")]
+    );
+}
+
+#[test]
+fn global_zero_selected_fails_first_deploy_but_preserves_promoted_target_with_deferral() {
+    let mut input = global_planning_input([]);
+    input.candidate_machines = vec![machine_id("machine_silent")];
+    input.deferred_machines = vec![UnusableMachine {
+        machine_id: machine_id("machine_silent"),
+        reason: MachineUsabilityReason::FactsUnavailable,
+    }];
+    assert_eq!(
+        plan_single_service(&input),
+        Err(DeployPlanError::NoEligibleMachines {
+            service_id: service_id("svc_api"),
+        })
+    );
+
+    input.equivalent_target_promoted = true;
+    let plan = plan_single_service(&input).expect("promoted target stays unchanged");
+    let [phase] = plan.phases.as_slice() else {
+        panic!("global plan should contain one phase");
+    };
+    let [service] = phase.services.as_slice() else {
+        panic!("global plan should contain one service");
+    };
+    assert!(service.steps.is_empty());
+    assert!(matches!(
+        &service.placement,
+        DeployServicePlacement::Global { deferred, .. } if deferred == &input.deferred_machines
+    ));
+}
+
+#[test]
+fn service_mode_changes_namespace_revision_without_changing_entry_identity() {
+    let replicated = deploy_request(2);
+    let mut global = replicated.clone();
+    global.mode = ServiceMode::Global;
+
+    assert_eq!(
+        replicated.namespace_revision_entry_id(&namespace_id("default")),
+        global.namespace_revision_entry_id(&namespace_id("default"))
+    );
+    assert_ne!(
+        namespace_revision_id_for(&namespace_id("default"), &[replicated]),
+        namespace_revision_id_for(&namespace_id("default"), &[global])
+    );
+}
+
+#[test]
+fn global_service_rejects_volume_mounts() {
+    let mut service = service_spec_with_runtime(
+        "svc_api",
+        "ghcr.io/acme/api:rev-1",
+        runtime_with_volume_mount("data", "/data"),
+    );
+    service.mode = ServiceMode::Global;
+    let request = DeployRequest {
+        namespace_id: namespace_id("default"),
+        origin: None,
+        volumes: BTreeMap::from([(
+            VolumeName::try_new("data").expect("volume name"),
+            VolumeSpec::Plain,
+        )]),
+        services: vec![service],
+    };
+    assert!(matches!(
+        DeployPlanningTarget::try_from_deploy(&request),
+        Err(ployz_core::deploy::DeployTargetValidationError::GlobalVolumeMount { .. })
+    ));
+}
+
+#[test]
 fn namespace_planner_rejects_a_service_id_outside_the_validated_request() {
     let input = CoreDeployPlanningInput {
         service_id: service_id("svc_foreign"),
-        eligible_machines: vec![machine_id("machine_a")],
+        placement: DeployPlanningPlacementInput::Replicated {
+            eligible_machines: vec![machine_id("machine_a")],
+        },
         existing_replicas: Vec::new(),
         cleanup_candidates: Vec::new(),
         volume_pins: Vec::new(),
@@ -537,6 +682,38 @@ fn namespace_planner_rejects_a_service_id_outside_the_validated_request() {
         ),
         Err(DeployPlanError::UnknownService {
             service_id: service_id("svc_foreign"),
+        })
+    );
+}
+
+#[test]
+fn namespace_planner_rejects_a_mode_and_placement_mismatch() {
+    let request = normalized_services(vec![deploy_request(1)], BTreeMap::new());
+    let input = CoreDeployPlanningInput {
+        service_id: service_id("svc_api"),
+        placement: DeployPlanningPlacementInput::Global(GlobalPlanningInput::new(
+            BTreeMap::from([(
+                machine_id("machine_a"),
+                GlobalCandidateDisposition::Selected,
+            )]),
+            EmptyGlobalSelectionPolicy::RequireSelected,
+        )),
+        existing_replicas: Vec::new(),
+        cleanup_candidates: Vec::new(),
+        volume_pins: Vec::new(),
+    };
+
+    assert_eq!(
+        plan_namespace_deploy(
+            &request,
+            vec![input],
+            Vec::new(),
+            ployz_core::deploy::DeployPlanningContext {
+                storage_testimony: &BTreeMap::new(),
+            },
+        ),
+        Err(DeployPlanError::PlacementModeMismatch {
+            service_id: service_id("svc_api"),
         })
     );
 }
@@ -1003,7 +1180,11 @@ fn deploy_preparation_evacuates_draining_machine_replicas() {
     let input = DeployPlanningInput {
         service: request,
         volumes: BTreeMap::new(),
+        candidate_machines: prepared.eligible_machines.clone(),
         eligible_machines: prepared.eligible_machines,
+        deferred_machines: Vec::new(),
+        draining_machines: Vec::new(),
+        equivalent_target_promoted: false,
         existing_replicas: prepared.existing_replicas,
         cleanup_candidates: prepared.cleanup_candidates,
         volume_pins: Vec::new(),
@@ -1448,7 +1629,9 @@ fn service_spec(
         service_id: service_id(service),
         image: ImageReference::try_new(image).expect("valid image"),
         image_source: ployz_core::deploy::ImageSource::Registry,
-        replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
+        mode: ServiceMode::Replicated {
+            replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
+        },
         runtime: ContainerRuntimeSpec::image_defaults(),
         pre_start: None,
         depends_on: Vec::new(),
@@ -1468,7 +1651,9 @@ fn service_spec_with_runtime(
         service_id: service_id(service),
         image: ImageReference::try_new(image).expect("valid image"),
         image_source: ployz_core::deploy::ImageSource::Registry,
-        replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+        mode: ServiceMode::Replicated {
+            replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+        },
         runtime,
         pre_start: None,
         depends_on: Vec::new(),
@@ -1521,6 +1706,12 @@ fn args_to_vec(args: impl IntoIterator<Item = &'static str>) -> Vec<String> {
     args.into_iter().map(str::to_owned).collect()
 }
 
+fn replica_slot(number: u16) -> ReplicaSlot {
+    ReplicaSlot::Replicated {
+        number: ReplicatedReplicaSlot::try_new(number).expect("valid replica slot"),
+    }
+}
+
 fn pre_start_hook() -> PreStartHook {
     PreStartHook {
         command: ContainerCommand::try_new(vec!["true".to_owned()]).expect("valid command"),
@@ -1539,11 +1730,23 @@ fn planning_input(
             .iter()
             .map(|machine_id| (machine_id.clone(), Some(ready_storage())))
             .collect(),
+        candidate_machines: eligible_machines.clone(),
         eligible_machines,
+        deferred_machines: Vec::new(),
+        draining_machines: Vec::new(),
+        equivalent_target_promoted: false,
         existing_replicas: Vec::new(),
         cleanup_candidates: Vec::new(),
         volume_pins: Vec::new(),
     }
+}
+
+fn global_planning_input(selected: impl IntoIterator<Item = &'static str>) -> DeployPlanningInput {
+    let eligible_machines = selected.into_iter().map(machine_id).collect::<Vec<_>>();
+    let mut input = planning_input(1, eligible_machines.clone());
+    input.service.mode = ServiceMode::Global;
+    input.candidate_machines = eligible_machines;
+    input
 }
 
 fn route_binding_state(hostname: &str, service: &str) -> RouteBindingState {
@@ -1563,7 +1766,9 @@ fn deploy_request(replicas: u16) -> DeployServiceSpec {
         service_id: service_id("svc_api"),
         image: ImageReference::try_new("ghcr.io/acme/api:rev-1").expect("valid image"),
         image_source: ployz_core::deploy::ImageSource::Registry,
-        replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
+        mode: ServiceMode::Replicated {
+            replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
+        },
         runtime: ContainerRuntimeSpec::image_defaults(),
         pre_start: None,
         depends_on: Vec::new(),
@@ -1602,12 +1807,52 @@ fn plan_inputs(
         &target,
         inputs
             .into_iter()
-            .map(|input| CoreDeployPlanningInput {
-                service_id: input.service.service_id,
-                eligible_machines: input.eligible_machines,
-                existing_replicas: input.existing_replicas,
-                cleanup_candidates: input.cleanup_candidates,
-                volume_pins: input.volume_pins,
+            .map(|input| {
+                let placement = match input.service.mode {
+                    ServiceMode::Replicated { .. } => DeployPlanningPlacementInput::Replicated {
+                        eligible_machines: input.eligible_machines,
+                    },
+                    ServiceMode::Global => {
+                        let candidates = input
+                            .candidate_machines
+                            .into_iter()
+                            .map(|machine_id| {
+                                let disposition = if input.draining_machines.contains(&machine_id) {
+                                    GlobalCandidateDisposition::Draining
+                                } else if let Some(unusable) = input
+                                    .deferred_machines
+                                    .iter()
+                                    .find(|unusable| unusable.machine_id == machine_id)
+                                {
+                                    GlobalCandidateDisposition::Deferred {
+                                        reason: unusable.reason.clone(),
+                                    }
+                                } else if input.eligible_machines.contains(&machine_id) {
+                                    GlobalCandidateDisposition::Selected
+                                } else {
+                                    panic!("global candidate fixture requires a disposition")
+                                };
+                                (machine_id, disposition)
+                            })
+                            .collect();
+                        let empty_selection_policy = if input.equivalent_target_promoted {
+                            EmptyGlobalSelectionPolicy::PreserveEquivalentGlobalTarget
+                        } else {
+                            EmptyGlobalSelectionPolicy::RequireSelected
+                        };
+                        DeployPlanningPlacementInput::Global(GlobalPlanningInput::new(
+                            candidates,
+                            empty_selection_policy,
+                        ))
+                    }
+                };
+                CoreDeployPlanningInput {
+                    service_id: input.service.service_id,
+                    placement,
+                    existing_replicas: input.existing_replicas,
+                    cleanup_candidates: input.cleanup_candidates,
+                    volume_pins: input.volume_pins,
+                }
             })
             .collect(),
         cleanup,
@@ -1655,6 +1900,7 @@ fn deploy_plan_with_volume_pins(
         phases: vec![DeployPhasePlan {
             services: vec![DeployServicePlan {
                 service_id: service_id("svc_api"),
+                placement: DeployServicePlacement::Replicated,
                 steps,
                 pre_start: None,
             }],
@@ -1862,14 +2108,14 @@ fn use_existing_step(machine: &str, container: &str, slot: u16) -> DeployPlanSte
     DeployPlanStep::UseExistingContainer {
         machine_id: machine_id(machine),
         container_id: container_id(container),
-        slot: ReplicaSlot::try_new(slot).expect("valid replica slot"),
+        slot: replica_slot(slot),
     }
 }
 
 fn run_step(machine: &str, slot: u16) -> DeployPlanStep {
     DeployPlanStep::RunContainer {
         machine_id: machine_id(machine),
-        slot: ReplicaSlot::try_new(slot).expect("valid replica slot"),
+        slot: replica_slot(slot),
     }
 }
 

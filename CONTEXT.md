@@ -13,7 +13,7 @@ The internal normalized service graph for a namespace at a point in time. Ployz 
 _Avoid_: User-supplied revision, service revision, active state
 
 **Namespace Revision Entry**:
-One service's normalized desired definition inside a namespace revision. A namespace revision entry can satisfy replicas only through service containers that are equivalent to that entry.
+One service's normalized desired definition inside a namespace revision. A namespace revision entry can satisfy its declared Service Mode only through service containers that are equivalent to that entry.
 _Avoid_: Service revision, service-equivalence identity, container spec hash
 
 **Namespace Revision Entry Identity**:
@@ -49,7 +49,7 @@ A one-off command attached to a service that runs before starting new service co
 _Avoid_: Post-start hook, Compose completed service, job service
 
 **Hook Container**:
-A one-off service-derived container created to run a pre-start hook. Hook containers are operation evidence, not service containers that can satisfy replicas or be served by routes.
+A one-off service-derived container created to run a pre-start hook. Hook containers are operation evidence, not service containers that can satisfy a Service Mode or be served by routes.
 _Avoid_: Job service, replica, sidecar
 
 **Route Binding**:
@@ -385,7 +385,7 @@ A named workload inside a namespace. A service's desired definition belongs to a
 _Avoid_: Cluster-global service
 
 **Service Mode**:
-The replica placement shape for a service. `replicated` means Ployz should run a requested number of replicas; `global` means Ployz should run one replica on each eligible machine.
+The declared placement shape for a service. `replicated` means Ployz should run a requested number of replicas; `global` means Ployz should run one replica on each eligible machine.
 _Avoid_: Scheduling type, replica mode
 
 **Volume**:

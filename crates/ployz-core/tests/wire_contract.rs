@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use ployz_core::deploy::{
     ContainerMountPath, ContainerRuntimeSpec, DatasetName, DatasetNameError, DependencyCondition,
     DeployOrigin, DeployOriginError, DeployPlanningTarget, DeployRequest, DeployServiceSpec,
-    ImageReference, ImageSource, ReplicaCount, ServiceDependency, ServiceVolumeMount,
+    ImageReference, ImageSource, ReplicaCount, ServiceDependency, ServiceMode, ServiceVolumeMount,
     VolumeAdmissionFailure, VolumeMaxSizeBytes, VolumeName, VolumeSpec, ZfsPoolName,
     ZfsPoolNameError,
 };
@@ -752,7 +752,9 @@ fn request_with_volume_mount(
             service_id: service_id("svc_api"),
             image: ImageReference::try_new("nginx:latest").expect("image"),
             image_source: ImageSource::Registry,
-            replicas: ReplicaCount::try_new(1).expect("replicas"),
+            mode: ServiceMode::Replicated {
+                replicas: ReplicaCount::try_new(1).expect("replicas"),
+            },
             runtime,
             pre_start: None,
             depends_on: Vec::new(),
@@ -1084,4 +1086,33 @@ fn service_retention_count_accepts_zero_and_defaults_absent() {
         service.keep,
         Some(ployz_core::deploy::ContainerRetentionCount::new(0))
     );
+}
+
+#[test]
+fn service_mode_has_closed_tagged_wire_shapes() {
+    let replicated = ServiceMode::Replicated {
+        replicas: ReplicaCount::try_new(3).expect("replicas"),
+    };
+    assert_eq!(
+        serde_json::to_value(replicated).expect("service mode json"),
+        serde_json::json!({ "kind": "replicated", "replicas": 3 })
+    );
+    assert_eq!(
+        serde_json::to_value(ServiceMode::Global).expect("service mode json"),
+        serde_json::json!({ "kind": "global" })
+    );
+    assert!(
+        serde_json::from_value::<ServiceMode>(serde_json::json!({
+            "kind": "global",
+            "replicas": 1
+        }))
+        .is_err()
+    );
+
+    for mode in [replicated, ServiceMode::Global] {
+        let encoded = serde_json::to_value(mode).expect("service mode serializes");
+        let decoded =
+            serde_json::from_value::<ServiceMode>(encoded).expect("service mode deserializes");
+        assert_eq!(decoded, mode);
+    }
 }

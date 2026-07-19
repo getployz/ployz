@@ -189,7 +189,7 @@ fn collect_services(
             resolve_durable_machine(target, service.service_id(), &mounted, durable_pins)?;
         let structural_machine = durable_machine
             .clone()
-            .or_else(|| input.eligible_machines.first().cloned())
+            .or_else(|| input.eligible_machines().first().cloned())
             .ok_or_else(|| DeployPlanError::NoEligibleMachines {
                 service_id: service.service_id().clone(),
             })?;
@@ -211,7 +211,7 @@ fn collect_services(
             order,
             service_id: service.service_id().clone(),
             mounted,
-            eligible_machines: input.eligible_machines.clone(),
+            eligible_machines: input.eligible_machines().to_vec(),
             durable_machine,
         });
     }

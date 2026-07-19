@@ -120,6 +120,7 @@ import type {
   ServiceListError,
   ServiceListRequest,
   ServiceSnapshot,
+  ServiceMode,
   PloyzApiEndpoint,
 } from "./generated.ts";
 
@@ -148,7 +149,9 @@ export interface PloyzDeployInput {
   namespaceId?: string;
   serviceId: string;
   image: string;
-  replicas: number;
+  mode?:
+    | { kind: "replicated"; replicas: number }
+    | { kind: "global" };
   keep?: number;
   routes?: Array<{
     hostname: string;
@@ -389,6 +392,13 @@ export function deploySubmitRequest(
   input: PloyzDeployInput,
   reservationId: DeployReservationId,
 ): DeploySubmitRequest {
+  const mode: ServiceMode =
+    input.mode?.kind === "global"
+      ? { kind: "global" }
+      : {
+          kind: "replicated",
+          replicas: replicaCount(input.mode?.replicas ?? 1),
+        };
   return {
     idempotency_key: operationIdempotencyKey(input.idempotencyKey),
     reservation_id: reservationId,
@@ -398,7 +408,7 @@ export function deploySubmitRequest(
         {
           service_id: serviceId(input.serviceId),
           image: imageReference(input.image),
-          replicas: replicaCount(input.replicas),
+          mode,
           keep: input.keep === undefined ? undefined : containerRetentionCount(input.keep),
           runtime: imageDefaultRuntime(),
           routes: (input.routes ?? []).map((route) => ({

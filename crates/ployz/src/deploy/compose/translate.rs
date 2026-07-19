@@ -7,7 +7,7 @@ use ployz_core::deploy::{
     DeployRoute, DeployRouteTarget, DeployServiceSpec, EnvName, EnvValue, HealthcheckDurationNanos,
     HealthcheckRetries, HealthcheckShellCommand, ImageReference, LinuxCapability, MemoryBytes,
     NanoCpus, PidsLimit, PreStartHook, ReplicaCount, ServiceDependency, ServiceEnvironment,
-    StopGracePeriod,
+    ServiceMode, StopGracePeriod,
 };
 use ployz_core::ids::ServiceId;
 use ployz_core::ingress::AutomaticHostnameLabel;
@@ -233,7 +233,7 @@ pub(crate) fn classify_service(
     classify_unrecognized(&mut findings, &service_path, unrecognized);
 
     let deploy_runtime = parse_deploy_runtime(deploy, &service_path, &mut findings);
-    let (replicas, restart_policy, resources, deploy_valid) = deploy_runtime;
+    let (mode, restart_policy, resources, deploy_valid) = deploy_runtime;
     let service_id = ServiceId::try_new(name.clone()).map_err(|error| {
         ComposeFinding::invalid(
             service_path.clone(),
@@ -362,6 +362,13 @@ pub(crate) fn classify_service(
             Vec::new()
         }
     };
+    if matches!(mode, ServiceMode::Global) && !volume_mounts.is_empty() {
+        findings.push(ComposeFinding::invalid(
+            service_path.field("volumes"),
+            "global services cannot mount volumes",
+        ));
+        service_valid = false;
+    }
     let routes = match routes {
         Ok(routes) => routes,
         Err(mut route_findings) => {
@@ -396,7 +403,7 @@ pub(crate) fn classify_service(
             service_id,
             image,
             image_source: ployz_core::deploy::ImageSource::Registry,
-            replicas,
+            mode,
             runtime: ContainerRuntimeSpec {
                 command,
                 entrypoint,
@@ -713,13 +720,15 @@ fn parse_deploy_runtime(
     service_path: &ComposePath,
     findings: &mut Vec<ComposeFinding>,
 ) -> (
-    ReplicaCount,
+    ServiceMode,
     Option<ContainerRestartPolicy>,
     ContainerResourceLimits,
     bool,
 ) {
     let default = (
-        ReplicaCount::try_new(DEFAULT_REPLICA_COUNT).expect("one replica is valid"),
+        ServiceMode::Replicated {
+            replicas: ReplicaCount::try_new(DEFAULT_REPLICA_COUNT).expect("one replica is valid"),
+        },
         None,
         ContainerResourceLimits::default(),
         true,
@@ -737,13 +746,11 @@ fn parse_deploy_runtime(
         unrecognized,
     } = deploy;
     let deploy_path = service_path.field("deploy");
-    push_if_some(
-        findings,
-        &deploy_path,
-        "mode",
-        mode,
-        KnownUnsupported::DeployMode,
-    );
+    let (mode, mode_valid) =
+        match parse_deploy_mode(mode, replicas.is_some(), &deploy_path, findings) {
+            Ok(mode) => (mode, true),
+            Err(mode) => (mode, false),
+        };
     push_if_some(
         findings,
         &deploy_path,
@@ -778,7 +785,10 @@ fn parse_deploy_runtime(
                     message,
                 ));
                 return (
-                    ReplicaCount::try_new(DEFAULT_REPLICA_COUNT).expect("one replica is valid"),
+                    ServiceMode::Replicated {
+                        replicas: ReplicaCount::try_new(DEFAULT_REPLICA_COUNT)
+                            .expect("one replica is valid"),
+                    },
                     restart_policy,
                     resources,
                     false,
@@ -787,21 +797,66 @@ fn parse_deploy_runtime(
         },
         None => DEFAULT_REPLICA_COUNT,
     };
-    match ReplicaCount::try_new(replicas) {
-        Ok(replicas) => (replicas, restart_policy, resources, true),
-        Err(error) => {
+    match (mode, ReplicaCount::try_new(replicas)) {
+        (ParsedDeployMode::Global, Ok(_)) => {
+            (ServiceMode::Global, restart_policy, resources, mode_valid)
+        }
+        (ParsedDeployMode::Replicated, Ok(replicas)) => (
+            ServiceMode::Replicated { replicas },
+            restart_policy,
+            resources,
+            mode_valid,
+        ),
+        (_, Err(error)) => {
             findings.push(ComposeFinding::invalid(
                 deploy_path.field("replicas"),
                 error,
             ));
             (
-                ReplicaCount::try_new(DEFAULT_REPLICA_COUNT).expect("one replica is valid"),
+                ServiceMode::Replicated {
+                    replicas: ReplicaCount::try_new(DEFAULT_REPLICA_COUNT)
+                        .expect("one replica is valid"),
+                },
                 restart_policy,
                 resources,
                 false,
             )
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParsedDeployMode {
+    Replicated,
+    Global,
+}
+
+fn parse_deploy_mode(
+    mode: Option<Value>,
+    replicas_present: bool,
+    deploy_path: &ComposePath,
+    findings: &mut Vec<ComposeFinding>,
+) -> Result<ParsedDeployMode, ParsedDeployMode> {
+    let parsed = match mode {
+        None => ParsedDeployMode::Replicated,
+        Some(Value::String(value)) if value == "replicated" => ParsedDeployMode::Replicated,
+        Some(Value::String(value)) if value == "global" => ParsedDeployMode::Global,
+        Some(_) => {
+            findings.push(ComposeFinding::invalid(
+                deploy_path.field("mode"),
+                "mode must be replicated or global",
+            ));
+            return Err(ParsedDeployMode::Replicated);
+        }
+    };
+    if parsed == ParsedDeployMode::Global && replicas_present {
+        findings.push(ComposeFinding::invalid(
+            deploy_path.field("replicas"),
+            "replicas cannot be set when deploy.mode is global",
+        ));
+        return Err(parsed);
+    }
+    Ok(parsed)
 }
 
 fn parse_replica_count_value(value: Value) -> Result<u16, String> {

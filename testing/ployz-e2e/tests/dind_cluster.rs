@@ -1260,7 +1260,9 @@ async fn assert_direct_push_multi_machine_deploy(core: &CoreContext) {
             service_id: service_id("svc_direct_push"),
             image: ImageReference::try_new(&tag).expect("valid pushed image reference"),
             image_source: ployz_core::deploy::ImageSource::Registry,
-            replicas: ReplicaCount::try_new(2).expect("valid replica count"),
+            mode: ployz_core::deploy::ServiceMode::Replicated {
+                replicas: ReplicaCount::try_new(2).expect("valid replica count"),
+            },
             runtime: ContainerRuntimeSpec::image_defaults(),
             pre_start: None,
             depends_on: Vec::new(),
@@ -1437,7 +1439,7 @@ exit 1",
                         service_id: service.clone(),
                         image: requested.clone(),
                         image_source: ployz_core::deploy::ImageSource::Registry,
-                        replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+                        mode: ployz_core::deploy::ServiceMode::Replicated { replicas: ReplicaCount::try_new(1).expect("valid replica count") },
                         runtime: ContainerRuntimeSpec::image_defaults(),
                         pre_start: None,
                         depends_on: Vec::new(),
@@ -2505,7 +2507,9 @@ fn smoke_deploy_target() -> DeployRequest {
             service_id: service_id("svc_smoke"),
             image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image reference"),
             image_source: ployz_core::deploy::ImageSource::Registry,
-            replicas: ReplicaCount::try_new(2).expect("valid replica count"),
+            mode: ployz_core::deploy::ServiceMode::Replicated {
+                replicas: ReplicaCount::try_new(2).expect("valid replica count"),
+            },
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             pre_start: None,
             depends_on: Vec::new(),
@@ -2530,7 +2534,9 @@ fn auto_hostname_deploy_target() -> DeployRequest {
             service_id: service_id("svc_auto"),
             image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image reference"),
             image_source: ployz_core::deploy::ImageSource::Registry,
-            replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+            mode: ployz_core::deploy::ServiceMode::Replicated {
+                replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+            },
             runtime: ContainerRuntimeSpec::image_defaults(),
             pre_start: None,
             depends_on: Vec::new(),
@@ -2557,7 +2563,9 @@ fn internal_dns_deploy_target() -> DeployRequest {
                 image: ImageReference::try_new(WORKLOAD_IMAGE)
                     .expect("valid workload image reference"),
                 image_source: ployz_core::deploy::ImageSource::Registry,
-                replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+                mode: ployz_core::deploy::ServiceMode::Replicated {
+                    replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+                },
                 runtime: ContainerRuntimeSpec::image_defaults(),
                 pre_start: None,
                 depends_on: Vec::new(),
@@ -2569,7 +2577,9 @@ fn internal_dns_deploy_target() -> DeployRequest {
                 image: ImageReference::try_new(WORKLOAD_IMAGE)
                     .expect("valid workload image reference"),
                 image_source: ployz_core::deploy::ImageSource::Registry,
-                replicas: ReplicaCount::try_new(2).expect("valid replica count"),
+                mode: ployz_core::deploy::ServiceMode::Replicated {
+                    replicas: ReplicaCount::try_new(2).expect("valid replica count"),
+                },
                 runtime: ContainerRuntimeSpec::image_defaults(),
                 pre_start: None,
                 depends_on: Vec::new(),
@@ -2589,7 +2599,9 @@ fn runtime_fields_deploy_target(workload_image: &ImageReference) -> DeployReques
             service_id: service_id("svc_runtime"),
             image: workload_image.clone(),
             image_source: ployz_core::deploy::ImageSource::Registry,
-            replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+            mode: ployz_core::deploy::ServiceMode::Replicated {
+                replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+            },
             runtime: runtime_fields_spec(),
             pre_start: None,
             depends_on: Vec::new(),
@@ -2658,7 +2670,9 @@ fn failing_healthcheck_deploy_target(workload_image: &ImageReference) -> DeployR
             service_id: service_id("svc_bad_health"),
             image: workload_image.clone(),
             image_source: ployz_core::deploy::ImageSource::Registry,
-            replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+            mode: ployz_core::deploy::ServiceMode::Replicated {
+                replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+            },
             runtime,
             pre_start: None,
             depends_on: Vec::new(),
@@ -2705,7 +2719,9 @@ fn pre_start_deploy_target(namespace: &str, hook_command: &str) -> DeployRequest
             service_id: service_id("svc_hooked"),
             image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image"),
             image_source: ployz_core::deploy::ImageSource::Registry,
-            replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+            mode: ployz_core::deploy::ServiceMode::Replicated {
+                replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+            },
             runtime,
             pre_start: Some(PreStartHook {
                 command: ContainerCommand::try_new(vec![
@@ -2771,7 +2787,9 @@ fn depends_on_deploy_target() -> DeployRequest {
                 service_id: service_id("b"),
                 image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image"),
                 image_source: ployz_core::deploy::ImageSource::Registry,
-                replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+                mode: ployz_core::deploy::ServiceMode::Replicated {
+                    replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+                },
                 runtime: dependent(),
                 pre_start: None,
                 depends_on: vec![ServiceDependency {
@@ -2785,7 +2803,9 @@ fn depends_on_deploy_target() -> DeployRequest {
                 service_id: service_id("a"),
                 image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image"),
                 image_source: ployz_core::deploy::ImageSource::Registry,
-                replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+                mode: ployz_core::deploy::ServiceMode::Replicated {
+                    replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+                },
                 runtime: sleeper(),
                 pre_start: None,
                 depends_on: Vec::new(),
@@ -2846,7 +2866,9 @@ fn convergence_deploy_target(command: &str) -> DeployRequest {
             service_id: service_id("svc_converge"),
             image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image reference"),
             image_source: ployz_core::deploy::ImageSource::Registry,
-            replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+            mode: ployz_core::deploy::ServiceMode::Replicated {
+                replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+            },
             runtime,
             pre_start: None,
             depends_on: Vec::new(),
