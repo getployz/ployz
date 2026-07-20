@@ -13,10 +13,9 @@ use crate::control::role_client::machine::{
 use crate::control::role_client::machine_convergence::gather_dataplane_statuses;
 use ployz_core::deploy::{
     AutoHostnameRouteBindingError, DeployPlanningTarget, DeployRequest,
-    DeployRouteBindingValidationError, DeployRouteTarget,
+    DeployRouteBindingValidationError, DeployRouteTarget, EnvironmentRevisionKey,
 };
 use ployz_core::ids::MachineId;
-use ployz_core::ids::OperationId;
 use ployz_core::ingress::{AutomaticHostnameConfiguration, IngressConfiguration};
 use ployz_core::intent::ActiveMachineState;
 use ployz_core::intent::IntentSnapshot;
@@ -43,19 +42,17 @@ struct DeployFactGatherPolicy {
 }
 
 pub async fn load_deploy_execution_facts_from_nats(
-    operation_id: &OperationId,
     request: &DeployRequest,
+    environment_revision_key: &EnvironmentRevisionKey,
     intent_reader: &NatsIntentReader,
     facts_reader: &NatsMachineFactsReader,
     target_store: &PloyzDnsTargetStore,
     projection_store: &IngressProjectionStore,
     step_timeout: Duration,
 ) -> Result<DeployExecutionFacts, DeployFactLoadError> {
-    let target =
-        DeployPlanningTarget::try_from_operation(request, operation_id).map_err(|error| {
-            DeployFactLoadError::InvalidStoredTarget {
-                message: error.to_string(),
-            }
+    let target = DeployPlanningTarget::try_from_operation(request, environment_revision_key)
+        .map_err(|error| DeployFactLoadError::InvalidStoredTarget {
+            message: error.to_string(),
         })?;
     load_planning_facts_from_nats(
         &target,

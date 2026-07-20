@@ -103,6 +103,14 @@ mod tests {
     use crate::ingress::RouteBindingOrigin;
     use crate::operation::{RouteHostname, RoutePort, RouteTarget};
 
+    fn environment_revision_key() -> EnvironmentRevisionKey {
+        let seed = crate::nats_config::NatsUserSeed::try_new(
+            "SUAIZ5LKGG2Y4WC7ZPKS46LSLLJQIFTO6KMSWSU2VN3TC7YRRIKH5WRXJQ",
+        )
+        .expect("valid deterministic controller seed");
+        EnvironmentRevisionKey::derive_from_controller_seed(&seed)
+    }
+
     #[test]
     fn pending_build_survives_preview_normalization_without_an_image_reference() {
         let service_id = ServiceId::try_new("api").expect("service id");
@@ -130,12 +138,16 @@ mod tests {
         assert_eq!(service.service_id, service_id);
         assert_eq!(service.image, DeployPreviewImage::PendingBuild);
         let planning_target =
-            DeployPlanningTarget::try_from_preview(&target).expect("preview target validates");
+            DeployPlanningTarget::try_from_preview(&target, &environment_revision_key())
+                .expect("preview target validates");
         let planning_service = planning_target
             .service(&service_id)
             .expect("planning service");
         assert_eq!(
-            planning_service.namespace_revision_entry_id(planning_target.namespace_id()),
+            planning_service.namespace_revision_entry_id(
+                planning_target.namespace_id(),
+                &environment_revision_key(),
+            ),
             None
         );
     }
@@ -161,7 +173,7 @@ mod tests {
                 routes: Vec::new(),
             }],
         };
-        let error = DeployPlanningTarget::try_from_preview(&target)
+        let error = DeployPlanningTarget::try_from_preview(&target, &environment_revision_key())
             .expect_err("internal service name is invalid");
 
         assert_eq!(
@@ -196,7 +208,7 @@ mod tests {
         };
 
         assert_eq!(
-            DeployPlanningTarget::try_from_preview(&target)
+            DeployPlanningTarget::try_from_preview(&target, &environment_revision_key())
                 .expect_err("duplicate service ids must be rejected"),
             DeployTargetValidationError::DuplicateServiceId { service_id }
         );

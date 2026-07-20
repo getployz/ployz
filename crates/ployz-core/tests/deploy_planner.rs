@@ -3,16 +3,18 @@ use ployz_core::deploy::{
     ContainerMountPath, ContainerRuntimeSpec, DatasetName, DependencyCondition,
     DeployCleanupContainer, DeployPhasePlan, DeployPlan, DeployPlanError, DeployPlanStep,
     DeployPlanningInput as CoreDeployPlanningInput, DeployPlanningPlacementInput,
-    DeployPlanningTarget, DeployPreparationInput, DeployRequest, DeployRoute, DeployRouteTarget,
-    DeployServicePlacement, DeployServicePlan, DeployServiceSpec, EmptyGlobalSelectionPolicy,
-    EnvName, EnvValue, ExistingReplicaCreationGate, ExistingReplicaPolicy, ExistingServiceReplica,
-    GlobalCandidateDisposition, GlobalPlanningInput, HealthcheckShellCommand, ImageReference,
-    ImageSource, ObservedCleanupCandidate, PlatformImage, PreStartHook, PreStartHookStep,
-    PushedImageReceipt, ReplicaCount, ReplicaSlot, ReplicatedReplicaSlot, ServiceDependency,
-    ServiceEnvironment, ServiceMode, ServiceVolumeMount, StopGracePeriod, VolumeAdmissionFailure,
-    VolumeMaxSizeBytes, VolumeName, VolumeSpec, ZfsPoolName, commit_deploy_route_bindings,
-    namespace_revision_id_for, namespace_route_binding_removals, namespace_serving_target_removals,
-    plan_namespace_deploy, prepare_deploy, validate_deploy_route_bindings,
+    DeployPlanningTarget, DeployPreparationInput, DeployPreviewImage, DeployPreviewService,
+    DeployPreviewTarget, DeployRequest, DeployRoute, DeployRouteTarget, DeployServicePlacement,
+    DeployServicePlan, DeployServiceSpec, EmptyGlobalSelectionPolicy, EnvName, EnvValue,
+    EnvironmentRevisionKey, ExistingReplicaCreationGate, ExistingReplicaPolicy,
+    ExistingServiceReplica, GlobalCandidateDisposition, GlobalPlanningInput,
+    HealthcheckShellCommand, ImageReference, ImageSource, ObservedCleanupCandidate, PlatformImage,
+    PreStartHook, PreStartHookStep, PushedImageReceipt, ReplicaCount, ReplicaSlot,
+    ReplicatedReplicaSlot, ServiceDependency, ServiceEnvironment, ServiceMode, ServiceVolumeMount,
+    StopGracePeriod, VolumeAdmissionFailure, VolumeMaxSizeBytes, VolumeName, VolumeSpec,
+    ZfsPoolName, commit_deploy_route_bindings, namespace_revision_id_for,
+    namespace_route_binding_removals, namespace_serving_target_removals, plan_namespace_deploy,
+    prepare_deploy, validate_deploy_route_bindings,
 };
 use ployz_core::ids::MachineId;
 use ployz_core::image::{OciDigest, OciPlatform};
@@ -30,6 +32,22 @@ use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, operation_id, route_hostname, service_id,
 };
 use std::collections::{BTreeMap, BTreeSet};
+
+fn environment_revision_key() -> EnvironmentRevisionKey {
+    let seed = ployz_core::nats_config::NatsUserSeed::try_new(
+        "SUAIZ5LKGG2Y4WC7ZPKS46LSLLJQIFTO6KMSWSU2VN3TC7YRRIKH5WRXJQ",
+    )
+    .expect("valid deterministic controller seed");
+    EnvironmentRevisionKey::derive_from_controller_seed(&seed)
+}
+
+fn different_environment_revision_key() -> EnvironmentRevisionKey {
+    let seed = ployz_core::nats_config::NatsUserSeed::try_new(
+        "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM",
+    )
+    .expect("valid deterministic controller seed");
+    EnvironmentRevisionKey::derive_from_controller_seed(&seed)
+}
 
 #[derive(Clone)]
 struct DeployPlanningInput {
@@ -62,13 +80,13 @@ fn namespace_revision_entry_identity_is_stable_for_same_service_shape() {
     );
 
     assert_eq!(
-        left.namespace_revision_entry_id(&namespace_id("default")),
-        right.namespace_revision_entry_id(&namespace_id("default"))
+        left.namespace_revision_entry_id(&namespace_id("default"), &environment_revision_key()),
+        right.namespace_revision_entry_id(&namespace_id("default"), &environment_revision_key())
     );
     assert_eq!(
-        left.namespace_revision_entry_id(&namespace_id("default"))
+        left.namespace_revision_entry_id(&namespace_id("default"), &environment_revision_key())
             .as_str(),
-        "26c648a60227c8466a084afa8a498ceeb310b697cf65b3494969892e0cc2201c"
+        "e35ac7d61c35ea40d79f32dba8a9a84810df6e5c59d9e8fcca2d7c2cc12c79ef"
     );
 }
 
@@ -77,26 +95,26 @@ fn namespace_revision_entry_identity_changes_for_service_or_image_change() {
     let base = service_spec("svc_api", "ghcr.io/acme/api:rev-1", 1, None);
 
     assert_ne!(
-        base.namespace_revision_entry_id(&namespace_id("default")),
+        base.namespace_revision_entry_id(&namespace_id("default"), &environment_revision_key()),
         service_spec("svc_web", "ghcr.io/acme/api:rev-1", 1, None)
-            .namespace_revision_entry_id(&namespace_id("default"))
+            .namespace_revision_entry_id(&namespace_id("default"), &environment_revision_key())
     );
     assert_eq!(
         service_spec("svc_web", "ghcr.io/acme/api:rev-1", 1, None)
-            .namespace_revision_entry_id(&namespace_id("default"))
+            .namespace_revision_entry_id(&namespace_id("default"), &environment_revision_key())
             .as_str(),
-        "4b18fc13b614879ed2f3971d3be552e951b200f7e66f45736513ba1fa7e8f1f7"
+        "4cb774337383d3f5112a9b79865f55140a4890d7e3a7085e80fa03d659bd9352"
     );
     assert_ne!(
-        base.namespace_revision_entry_id(&namespace_id("default")),
+        base.namespace_revision_entry_id(&namespace_id("default"), &environment_revision_key()),
         service_spec("svc_api", "ghcr.io/acme/api:rev-2", 1, None)
-            .namespace_revision_entry_id(&namespace_id("default"))
+            .namespace_revision_entry_id(&namespace_id("default"), &environment_revision_key())
     );
     assert_eq!(
         service_spec("svc_api", "ghcr.io/acme/api:rev-2", 1, None)
-            .namespace_revision_entry_id(&namespace_id("default"))
+            .namespace_revision_entry_id(&namespace_id("default"), &environment_revision_key())
             .as_str(),
-        "1707fcaf35ffa8c847ae815cc50e9c34f0f02c357cb13f18c3c8be62d2f863f4"
+        "3116ec8dd6c6ad742ae04913d5a4ed42f939ba006c7561aa4598436d20fc6c0e"
     );
 }
 
@@ -104,13 +122,13 @@ fn namespace_revision_entry_identity_changes_for_service_or_image_change() {
 fn mutable_tag_repeats_as_same_namespace_revision_entry_identity() {
     assert_eq!(
         service_spec("svc_api", "nginx:latest", 1, None)
-            .namespace_revision_entry_id(&namespace_id("default"))
+            .namespace_revision_entry_id(&namespace_id("default"), &environment_revision_key())
             .as_str(),
-        "f8266a979cad94098b86e47688deb2d4504ab72e9e4c99f913def40b7e3000fb"
+        "aea0ca3964dfddaeed07ec9fea334e5f2c841dd111e2f5701d9e08a7dad067c6"
     );
     assert_eq!(
         service_spec("svc_api", "nginx:latest", 1, None)
-            .namespace_revision_entry_id(&namespace_id("default")),
+            .namespace_revision_entry_id(&namespace_id("default"), &environment_revision_key()),
         service_spec(
             "svc_api",
             "nginx:latest",
@@ -119,7 +137,7 @@ fn mutable_tag_repeats_as_same_namespace_revision_entry_identity() {
                 endpoint_port: 8080
             })
         )
-        .namespace_revision_entry_id(&namespace_id("default"))
+        .namespace_revision_entry_id(&namespace_id("default"), &environment_revision_key())
     );
 }
 
@@ -131,12 +149,12 @@ fn retention_policy_changes_neither_service_entry_nor_namespace_revision_identit
     let namespace = namespace_id("default");
 
     assert_eq!(
-        without_keep.namespace_revision_entry_id(&namespace),
-        with_keep.namespace_revision_entry_id(&namespace)
+        without_keep.namespace_revision_entry_id(&namespace, &environment_revision_key()),
+        with_keep.namespace_revision_entry_id(&namespace, &environment_revision_key())
     );
     assert_eq!(
-        namespace_revision_id_for(&namespace, &[without_keep]),
-        namespace_revision_id_for(&namespace, &[with_keep])
+        namespace_revision_id_for(&namespace, &[without_keep], &environment_revision_key()),
+        namespace_revision_id_for(&namespace, &[with_keep], &environment_revision_key())
     );
 }
 
@@ -159,12 +177,14 @@ fn pushed_image_identity_uses_index_digest_across_platform_receipts() {
     );
 
     assert_eq!(
-        left.namespace_revision_entry_id(&namespace_id("default")),
-        same_content.namespace_revision_entry_id(&namespace_id("default"))
+        left.namespace_revision_entry_id(&namespace_id("default"), &environment_revision_key()),
+        same_content
+            .namespace_revision_entry_id(&namespace_id("default"), &environment_revision_key())
     );
     assert_ne!(
-        left.namespace_revision_entry_id(&namespace_id("default")),
-        changed_content.namespace_revision_entry_id(&namespace_id("default"))
+        left.namespace_revision_entry_id(&namespace_id("default"), &environment_revision_key()),
+        changed_content
+            .namespace_revision_entry_id(&namespace_id("default"), &environment_revision_key())
     );
 }
 
@@ -221,7 +241,8 @@ fn oci_digest(hex: char) -> OciDigest {
 #[test]
 fn namespace_revision_entry_identity_changes_for_each_runtime_field() {
     let base = service_spec("svc_api", "ghcr.io/acme/api:rev-1", 1, None);
-    let base_id = base.namespace_revision_entry_id(&namespace_id("default"));
+    let base_id =
+        base.namespace_revision_entry_id(&namespace_id("default"), &environment_revision_key());
 
     assert_ne!(
         base_id,
@@ -230,7 +251,7 @@ fn namespace_revision_entry_identity_changes_for_each_runtime_field() {
             "ghcr.io/acme/api:rev-1",
             runtime_with_command(["bundle", "exec"])
         )
-        .namespace_revision_entry_id(&namespace_id("default"))
+        .namespace_revision_entry_id(&namespace_id("default"), &environment_revision_key())
     );
     assert_ne!(
         base_id,
@@ -241,7 +262,7 @@ fn namespace_revision_entry_identity_changes_for_each_runtime_field() {
                 ContainerCommand::try_new(vec!["/init".to_owned()]).expect("non-empty argv")
             ))
         )
-        .namespace_revision_entry_id(&namespace_id("default"))
+        .namespace_revision_entry_id(&namespace_id("default"), &environment_revision_key())
     );
     assert_ne!(
         base_id,
@@ -250,7 +271,7 @@ fn namespace_revision_entry_identity_changes_for_each_runtime_field() {
             "ghcr.io/acme/api:rev-1",
             runtime_with_env([("LOG_LEVEL", "debug")])
         )
-        .namespace_revision_entry_id(&namespace_id("default"))
+        .namespace_revision_entry_id(&namespace_id("default"), &environment_revision_key())
     );
     assert_ne!(
         base_id,
@@ -259,7 +280,7 @@ fn namespace_revision_entry_identity_changes_for_each_runtime_field() {
             "ghcr.io/acme/api:rev-1",
             runtime_with_stop_grace(30)
         )
-        .namespace_revision_entry_id(&namespace_id("default"))
+        .namespace_revision_entry_id(&namespace_id("default"), &environment_revision_key())
     );
     assert_ne!(
         base_id,
@@ -268,7 +289,7 @@ fn namespace_revision_entry_identity_changes_for_each_runtime_field() {
             "ghcr.io/acme/api:rev-1",
             runtime_with_volume_mount("postgres_data", "/var/lib/postgresql/data")
         )
-        .namespace_revision_entry_id(&namespace_id("default"))
+        .namespace_revision_entry_id(&namespace_id("default"), &environment_revision_key())
     );
 }
 
@@ -286,13 +307,13 @@ fn namespace_revision_entry_identity_is_stable_for_environment_order() {
     );
 
     assert_eq!(
-        left.namespace_revision_entry_id(&namespace_id("default")),
-        right.namespace_revision_entry_id(&namespace_id("default"))
+        left.namespace_revision_entry_id(&namespace_id("default"), &environment_revision_key()),
+        right.namespace_revision_entry_id(&namespace_id("default"), &environment_revision_key())
     );
 }
 
 #[test]
-fn operation_scoped_revisions_never_depend_on_environment_values() {
+fn keyed_revisions_change_when_environment_values_change() {
     let left = service_spec_with_runtime(
         "svc_api",
         "ghcr.io/acme/api:rev-1",
@@ -304,42 +325,39 @@ fn operation_scoped_revisions_never_depend_on_environment_values() {
         runtime_with_env([("TOKEN", "second")]),
     );
     let namespace = namespace_id("default");
-    let operation = operation_id("op_deploy");
+    let key = environment_revision_key();
 
-    assert_eq!(
-        left.namespace_revision_entry_id_for_operation(&namespace, &operation),
-        right.namespace_revision_entry_id_for_operation(&namespace, &operation)
+    assert_ne!(
+        left.namespace_revision_entry_id(&namespace, &key),
+        right.namespace_revision_entry_id(&namespace, &key)
     );
-    assert_eq!(
-        ployz_core::deploy::namespace_revision_id_for_operation(&namespace, &[left], &operation),
-        ployz_core::deploy::namespace_revision_id_for_operation(&namespace, &[right], &operation)
+    assert_ne!(
+        ployz_core::deploy::namespace_revision_id_for(&namespace, &[left], &key),
+        ployz_core::deploy::namespace_revision_id_for(&namespace, &[right], &key)
     );
 }
 
 #[test]
-fn environment_revisions_are_scoped_to_the_accepted_operation() {
+fn environment_revisions_are_stable_across_operations_with_the_same_key() {
     let service = service_spec_with_runtime(
         "svc_api",
         "ghcr.io/acme/api:rev-1",
         runtime_with_env([("TOKEN", "secret")]),
     );
     let namespace = namespace_id("default");
+    let key = environment_revision_key();
 
-    assert_ne!(
-        service.namespace_revision_entry_id_for_operation(&namespace, &operation_id("op_one")),
-        service.namespace_revision_entry_id_for_operation(&namespace, &operation_id("op_two"))
+    assert_eq!(
+        service.namespace_revision_entry_id(&namespace, &key),
+        service.namespace_revision_entry_id(&namespace, &key)
     );
-    assert_ne!(
-        ployz_core::deploy::namespace_revision_id_for_operation(
+    assert_eq!(
+        ployz_core::deploy::namespace_revision_id_for(
             &namespace,
             std::slice::from_ref(&service),
-            &operation_id("op_one")
+            &key,
         ),
-        ployz_core::deploy::namespace_revision_id_for_operation(
-            &namespace,
-            &[service],
-            &operation_id("op_two")
-        )
+        ployz_core::deploy::namespace_revision_id_for(&namespace, &[service], &key)
     );
 }
 
@@ -347,22 +365,69 @@ fn environment_revisions_are_scoped_to_the_accepted_operation() {
 fn environment_free_revisions_are_reusable_across_operations() {
     let service = service_spec("svc_api", "ghcr.io/acme/api:rev-1", 1, None);
     let namespace = namespace_id("default");
+    let first_key = environment_revision_key();
+    let second_key = environment_revision_key();
 
     assert_eq!(
-        service.namespace_revision_entry_id_for_operation(&namespace, &operation_id("op_one")),
-        service.namespace_revision_entry_id_for_operation(&namespace, &operation_id("op_two"))
+        service.namespace_revision_entry_id(&namespace, &first_key),
+        service.namespace_revision_entry_id(&namespace, &second_key)
     );
     assert_eq!(
-        ployz_core::deploy::namespace_revision_id_for_operation(
+        ployz_core::deploy::namespace_revision_id_for(
             &namespace,
             std::slice::from_ref(&service),
-            &operation_id("op_one")
+            &first_key,
         ),
-        ployz_core::deploy::namespace_revision_id_for_operation(
-            &namespace,
-            &[service],
-            &operation_id("op_two")
-        )
+        ployz_core::deploy::namespace_revision_id_for(&namespace, &[service], &second_key)
+    );
+}
+
+#[test]
+fn preview_and_execution_use_the_same_environment_identity() {
+    let service = service_spec_with_runtime(
+        "svc_api",
+        "ghcr.io/acme/api:rev-1",
+        runtime_with_env([("TOKEN", "secret")]),
+    );
+    let request = DeployRequest {
+        namespace_id: namespace_id("default"),
+        origin: None,
+        volumes: BTreeMap::new(),
+        services: vec![service.clone()],
+    };
+    let preview = DeployPreviewTarget {
+        namespace_id: request.namespace_id.clone(),
+        origin: None,
+        volumes: BTreeMap::new(),
+        services: vec![DeployPreviewService {
+            service_id: service.service_id.clone(),
+            image: DeployPreviewImage::Concrete {
+                image: service.image.clone(),
+                image_source: service.image_source.clone(),
+            },
+            mode: service.mode,
+            keep: service.keep,
+            runtime: service.runtime.clone(),
+            pre_start: service.pre_start.clone(),
+            depends_on: service.depends_on.clone(),
+            routes: service.routes.clone(),
+        }],
+    };
+    let key = environment_revision_key();
+    let execution_target = DeployPlanningTarget::try_from_operation(&request, &key)
+        .expect("execution target validates");
+    let preview_target =
+        DeployPlanningTarget::try_from_preview(&preview, &key).expect("preview target validates");
+
+    assert_eq!(
+        execution_target
+            .service(&service.service_id)
+            .expect("execution service")
+            .namespace_revision_entry_id_for_target(&execution_target),
+        preview_target
+            .service(&service.service_id)
+            .expect("preview service")
+            .namespace_revision_entry_id_for_target(&preview_target)
     );
 }
 
@@ -682,12 +747,21 @@ fn service_mode_changes_namespace_revision_without_changing_entry_identity() {
     global.mode = ServiceMode::Global;
 
     assert_eq!(
-        replicated.namespace_revision_entry_id(&namespace_id("default")),
-        global.namespace_revision_entry_id(&namespace_id("default"))
+        replicated
+            .namespace_revision_entry_id(&namespace_id("default"), &environment_revision_key()),
+        global.namespace_revision_entry_id(&namespace_id("default"), &environment_revision_key())
     );
     assert_ne!(
-        namespace_revision_id_for(&namespace_id("default"), &[replicated]),
-        namespace_revision_id_for(&namespace_id("default"), &[global])
+        namespace_revision_id_for(
+            &namespace_id("default"),
+            &[replicated],
+            &environment_revision_key(),
+        ),
+        namespace_revision_id_for(
+            &namespace_id("default"),
+            &[global],
+            &environment_revision_key(),
+        )
     );
 }
 
@@ -892,8 +966,16 @@ fn namespace_revision_identity_includes_hooks_and_dependencies() {
     changed.depends_on = vec![dependency("svc_database", DependencyCondition::Started)];
 
     assert_ne!(
-        namespace_revision_id_for(&namespace_id("default"), &[base]),
-        namespace_revision_id_for(&namespace_id("default"), &[changed])
+        namespace_revision_id_for(
+            &namespace_id("default"),
+            &[base],
+            &environment_revision_key(),
+        ),
+        namespace_revision_id_for(
+            &namespace_id("default"),
+            &[changed],
+            &environment_revision_key(),
+        )
     );
 }
 
@@ -962,7 +1044,8 @@ fn pre_start_hook_step_is_absent_when_all_containers_are_reused() {
 #[test]
 fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
     let request = deploy_request(2);
-    let entry_id = request.namespace_revision_entry_id(&namespace_id("default"));
+    let entry_id =
+        request.namespace_revision_entry_id(&namespace_id("default"), &environment_revision_key());
     let normalized = normalized_services(vec![request.clone()], BTreeMap::new());
     let prepared = prepare_deploy(DeployPreparationInput {
         target: &normalized,
@@ -1046,7 +1129,8 @@ fn deploy_preparation_applies_receipt_platforms_to_candidates_and_reusable_repli
         .clone()
         .with_digest(receipt.index_digest())
         .expect("pinned image");
-    let entry_id = request.namespace_revision_entry_id(&namespace_id("default"));
+    let entry_id =
+        request.namespace_revision_entry_id(&namespace_id("default"), &environment_revision_key());
     let normalized = normalized_services(vec![request.clone()], BTreeMap::new());
 
     let prepared = prepare_deploy(DeployPreparationInput {
@@ -1100,7 +1184,8 @@ fn deploy_preparation_applies_receipt_platforms_to_candidates_and_reusable_repli
 #[test]
 fn deploy_preparation_marks_interrupted_replicas_for_creation_gating() {
     let request = deploy_request(2);
-    let entry_id = request.namespace_revision_entry_id(&namespace_id("default"));
+    let entry_id =
+        request.namespace_revision_entry_id(&namespace_id("default"), &environment_revision_key());
     let normalized = normalized_services(vec![request.clone()], BTreeMap::new());
     let prepared = prepare_deploy(DeployPreparationInput {
         target: &normalized,
@@ -1137,7 +1222,7 @@ fn deploy_preparation_marks_interrupted_replicas_for_creation_gating() {
 }
 
 #[test]
-fn environment_replica_reuse_requires_the_same_operation_revision_and_provenance() {
+fn environment_replica_reuse_requires_the_same_key_and_provenance() {
     let mut service = deploy_request(1);
     service.runtime = runtime_with_env([("TOKEN", "secret")]);
     let request = DeployRequest {
@@ -1147,11 +1232,10 @@ fn environment_replica_reuse_requires_the_same_operation_revision_and_provenance
         services: vec![service.clone()],
     };
     let prior_operation = operation_id("op_prior");
-    let current_operation = operation_id("op_current");
-    let prior_entry =
-        service.namespace_revision_entry_id_for_operation(&request.namespace_id, &prior_operation);
-    let current_entry = service
-        .namespace_revision_entry_id_for_operation(&request.namespace_id, &current_operation);
+    let prior_key = environment_revision_key();
+    let current_key = different_environment_revision_key();
+    let prior_entry = service.namespace_revision_entry_id(&request.namespace_id, &prior_key);
+    let current_entry = service.namespace_revision_entry_id(&request.namespace_id, &current_key);
     let mut observed = observed_container(
         "machine_a",
         "ctr_retained",
@@ -1163,7 +1247,7 @@ fn environment_replica_reuse_requires_the_same_operation_revision_and_provenance
     observed.identity.operation_id = prior_operation.clone();
     let observed_machines = vec![observed_machine("machine_a", [observed])];
 
-    let current_target = DeployPlanningTarget::try_from_operation(&request, &current_operation)
+    let current_target = DeployPlanningTarget::try_from_operation(&request, &current_key)
         .expect("current operation target validates");
     let not_reused = prepare_deploy(DeployPreparationInput {
         target: &current_target,
@@ -1181,7 +1265,7 @@ fn environment_replica_reuse_requires_the_same_operation_revision_and_provenance
     assert!(not_reused.existing_replicas.is_empty());
     assert_ne!(prior_entry, current_entry);
 
-    let prior_target = DeployPlanningTarget::try_from_operation(&request, &prior_operation)
+    let prior_target = DeployPlanningTarget::try_from_operation(&request, &prior_key)
         .expect("prior operation target validates");
     let recovered = prepare_deploy(DeployPreparationInput {
         target: &prior_target,
@@ -1209,7 +1293,8 @@ fn environment_replica_reuse_requires_the_same_operation_revision_and_provenance
 #[test]
 fn promoted_entry_still_gates_replica_from_interrupted_provenance() {
     let request = deploy_request(2);
-    let entry_id = request.namespace_revision_entry_id(&namespace_id("default"));
+    let entry_id =
+        request.namespace_revision_entry_id(&namespace_id("default"), &environment_revision_key());
     let normalized = normalized_services(vec![request.clone()], BTreeMap::new());
     let mut completed = observed_container(
         "machine_a",
@@ -1333,7 +1418,8 @@ fn deploy_preparation_evacuates_draining_machine_replicas() {
 fn routed_deploy_preparation_reuses_matching_identity_regardless_of_endpoint_port() {
     let mut request = deploy_request(2);
     set_routes(&mut request, vec![deploy_route("api.example.com", 8080)]);
-    let entry_id = request.namespace_revision_entry_id(&namespace_id("default"));
+    let entry_id =
+        request.namespace_revision_entry_id(&namespace_id("default"), &environment_revision_key());
     let normalized = normalized_services(vec![request.clone()], BTreeMap::new());
 
     let prepared = prepare_deploy(DeployPreparationInput {
@@ -1685,11 +1771,11 @@ fn namespace_revision_entry_id_pins_the_versioned_encoding() {
     // encoding version bump (ADR 0022) - an unintended change here means
     // every running container would be replaced after upgrade.
     let entry_id = service_spec("svc_api", "ghcr.io/acme/api:rev-1", 1, None)
-        .namespace_revision_entry_id(&namespace_id("default"));
+        .namespace_revision_entry_id(&namespace_id("default"), &environment_revision_key());
 
     assert_eq!(
         entry_id.as_str(),
-        "26c648a60227c8466a084afa8a498ceeb310b697cf65b3494969892e0cc2201c"
+        "e35ac7d61c35ea40d79f32dba8a9a84810df6e5c59d9e8fcca2d7c2cc12c79ef"
     );
 }
 
@@ -1735,8 +1821,8 @@ fn namespace_revision_entry_id_differs_across_namespaces() {
     let spec = service_spec("svc_api", "ghcr.io/acme/api:rev-1", 1, None);
 
     assert_ne!(
-        spec.namespace_revision_entry_id(&namespace_id("team-a")),
-        spec.namespace_revision_entry_id(&namespace_id("team-b"))
+        spec.namespace_revision_entry_id(&namespace_id("team-a"), &environment_revision_key()),
+        spec.namespace_revision_entry_id(&namespace_id("team-b"), &environment_revision_key())
     );
 }
 
@@ -1922,9 +2008,9 @@ fn plan_inputs(
         volumes,
         services: inputs.iter().map(|input| input.service.clone()).collect(),
     };
-    let namespace_revision_id = request.namespace_revision_id();
-    let target =
-        DeployPlanningTarget::try_from_deploy(&request).expect("planner fixture normalizes");
+    let namespace_revision_id = request.namespace_revision_id(&environment_revision_key());
+    let target = DeployPlanningTarget::try_from_operation(&request, &environment_revision_key())
+        .expect("planner fixture normalizes");
     let storage_testimony = inputs
         .iter()
         .flat_map(|input| input.storage_testimony.clone())
@@ -1999,7 +2085,8 @@ fn normalized_services(
         volumes,
         services,
     };
-    DeployPlanningTarget::try_from_deploy(&request).expect("planner fixture normalizes")
+    DeployPlanningTarget::try_from_operation(&request, &environment_revision_key())
+        .expect("planner fixture normalizes")
 }
 
 fn deploy_plan(
@@ -2022,6 +2109,7 @@ fn deploy_plan_with_volume_pins(
         namespace_revision_id: namespace_revision_id_for(
             &namespace_id("default"),
             std::slice::from_ref(&input.service),
+            &environment_revision_key(),
         ),
         phases: vec![DeployPhasePlan {
             services: vec![DeployServicePlan {

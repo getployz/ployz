@@ -492,7 +492,10 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
         .await?
         .active
         .namespace_revision_entry_id,
-        resolved_service_target.namespace_revision_entry_id(&namespace_id("default"))
+        resolved_service_target.namespace_revision_entry_id(
+            &namespace_id("default"),
+            &config.environment_revision_key,
+        )
     );
     assert_eq!(
         operation_events(&api, deploy_operation.clone(), accepted.start_sequence).await?,
@@ -532,7 +535,9 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
                     },
                 )
                 .expect("single-machine deploy plan is valid")
-                .with_revision(resolved_target.namespace_revision_id()),
+                .with_revision(
+                    resolved_target.namespace_revision_id(&config.environment_revision_key),
+                ),
             },
             OperationEvent::DeployRunning {
                 operation_id: deploy_operation.clone(),

@@ -3,10 +3,11 @@
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployPlanningInput, DeployPlanningPlacementInput,
     DeployPlanningService, DeployPlanningTarget, DeployPreparationInput, DeployRequest,
-    DeployRouteBindingAddition, EmptyGlobalSelectionPolicy, ExistingReplicaPolicy,
-    GlobalCandidateDisposition, GlobalPlanningInput, PreparedDeploy, RegistryCredential,
-    ServiceMode, commit_deploy_route_bindings, namespace_route_binding_removals,
-    namespace_serving_target_removals, prepare_deploy, validate_deploy_route_bindings,
+    DeployRouteBindingAddition, EmptyGlobalSelectionPolicy, EnvironmentRevisionKey,
+    ExistingReplicaPolicy, GlobalCandidateDisposition, GlobalPlanningInput, PreparedDeploy,
+    RegistryCredential, ServiceMode, commit_deploy_route_bindings,
+    namespace_route_binding_removals, namespace_serving_target_removals, prepare_deploy,
+    validate_deploy_route_bindings,
 };
 use ployz_core::ids::{MachineId, OperationId, RouteBindingId, ServiceId};
 use ployz_core::image::OciPlatform;
@@ -76,6 +77,7 @@ pub struct DeployExecutionFacts {
 pub struct DeployExecutionInput {
     pub(super) operation_id: OperationId,
     pub(super) request: DeployRequest,
+    pub(super) environment_revision_key: EnvironmentRevisionKey,
     pub(super) facts: DeployExecutionFacts,
     pub(super) registry_credentials: BTreeMap<ServiceId, RegistryCredential>,
     /// Provenance allowed to recover matching unpromoted containers.
@@ -87,6 +89,7 @@ impl DeployExecutionInput {
     pub fn new(
         operation_id: OperationId,
         request: DeployRequest,
+        environment_revision_key: EnvironmentRevisionKey,
         facts: DeployExecutionFacts,
         registry_credentials: BTreeMap<ServiceId, RegistryCredential>,
         reusable_interrupted_operation_ids: BTreeSet<OperationId>,
@@ -94,6 +97,7 @@ impl DeployExecutionInput {
         Self {
             operation_id,
             request,
+            environment_revision_key,
             facts,
             registry_credentials,
             reusable_interrupted_operation_ids,
@@ -128,14 +132,26 @@ impl DeployExecutionInput {
 
 #[must_use]
 #[cfg(test)]
+fn test_environment_revision_key() -> EnvironmentRevisionKey {
+    let seed = ployz_core::nats_config::NatsUserSeed::try_new(
+        "SUAIZ5LKGG2Y4WC7ZPKS46LSLLJQIFTO6KMSWSU2VN3TC7YRRIKH5WRXJQ",
+    )
+    .expect("valid deterministic controller seed");
+    EnvironmentRevisionKey::derive_from_controller_seed(&seed)
+}
+
+#[must_use]
+#[cfg(test)]
 pub fn prepare_deploy_execution_command(
     operation_id: OperationId,
     request: ployz_core::deploy::DeployRequest,
     facts: DeployExecutionFacts,
 ) -> DeployExecutionCommand {
+    let environment_revision_key = test_environment_revision_key();
     prepare_deploy_execution_command_with_credentials(
         operation_id,
         request,
+        environment_revision_key,
         facts,
         &BTreeMap::new(),
         &BTreeSet::new(),
@@ -146,11 +162,12 @@ pub fn prepare_deploy_execution_command(
 pub(super) fn prepare_deploy_execution_command_with_credentials(
     operation_id: OperationId,
     request: DeployRequest,
+    environment_revision_key: EnvironmentRevisionKey,
     facts: DeployExecutionFacts,
     registry_credentials: &BTreeMap<ServiceId, RegistryCredential>,
     reusable_interrupted_operation_ids: &BTreeSet<OperationId>,
 ) -> DeployExecutionCommand {
-    let target = DeployPlanningTarget::try_from_operation(&request, &operation_id)
+    let target = DeployPlanningTarget::try_from_operation(&request, &environment_revision_key)
         .expect("volume-declared deploy request is a validated planning target");
     let prepared = prepare_deploy_command(&target, &facts, reusable_interrupted_operation_ids);
     let route_binding_commits = commit_deploy_route_bindings(
@@ -187,6 +204,7 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
     DeployExecutionCommand {
         operation_id,
         request,
+        environment_revision_key,
         services,
         route_binding_removals: prepared.route_binding_removals,
         serving_target_removals: prepared.serving_target_removals,

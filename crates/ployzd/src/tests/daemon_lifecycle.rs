@@ -50,6 +50,16 @@ fn control_role_loads_configured_deploy_machines() {
         config.deploy_machines,
         vec![machine_id("core_1"), machine_id("edge_2")]
     );
+    let seed = ployz_core::nats_config::NatsUserSeed::try_new(TEST_SEED)
+        .expect("valid deterministic controller seed");
+    assert_eq!(
+        config.environment_revision_key,
+        ployz_core::deploy::EnvironmentRevisionKey::derive_from_controller_seed(&seed)
+    );
+    assert_eq!(
+        format!("{:?}", config.environment_revision_key),
+        "EnvironmentRevisionKey([redacted])"
+    );
 }
 
 #[test]

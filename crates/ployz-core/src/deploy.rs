@@ -1,5 +1,6 @@
 //! Deploy policy and planning models.
 
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -7,7 +8,7 @@ use std::num::{NonZeroI64, NonZeroU16, NonZeroU64};
 
 use crate::ids::{
     ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
-    OperationId, RouteBindingId, ServiceId,
+    RouteBindingId, ServiceId,
 };
 use crate::ingress::{AutomaticHostnameLabel, RouteBindingOrigin};
 use crate::intent::{RouteBindingState, ServingTargetEntry, VolumePinState};
@@ -43,9 +44,8 @@ pub use request::{
 pub use request_evidence::*;
 pub use retention::{DeployCleanupAction, DeployCleanupContainer, ObservedCleanupCandidate};
 pub use revision::{
-    canonical_capabilities, namespace_revision_entry_id_for,
-    namespace_revision_entry_id_for_operation, namespace_revision_id_for,
-    namespace_revision_id_for_operation,
+    EnvironmentRevisionKey, canonical_capabilities, namespace_revision_entry_id_for,
+    namespace_revision_id_for,
 };
 pub use routes::*;
 pub use runtime::*;

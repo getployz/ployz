@@ -96,7 +96,7 @@ where
             let failure_record_error = record_operation_failure(
                 &stores.controllers,
                 &accepted,
-                fact_load_failure(&accepted.target, &accepted.operation_id, &source),
+                fact_load_failure(&accepted.target, &stores.environment_revision_key, &source),
             )
             .await
             .err();
@@ -108,8 +108,8 @@ where
     };
 
     let facts = match load_deploy_execution_facts_from_nats(
-        &accepted.operation_id,
         &normalized_request,
+        &stores.environment_revision_key,
         intent_reader,
         facts_reader,
         &stores.ployz_dns_target,
@@ -123,7 +123,7 @@ where
             let failure_record_error = record_operation_failure(
                 &stores.controllers,
                 &accepted,
-                fact_load_failure(&accepted.target, &accepted.operation_id, &source),
+                fact_load_failure(&accepted.target, &stores.environment_revision_key, &source),
             )
             .await
             .err();
@@ -148,7 +148,7 @@ where
                 DeployOperationFailure::PlanningFailed {
                     service_id: normalized_request.status_service_id(),
                     namespace_revision_id: normalized_request
-                        .namespace_revision_id_for_operation(&accepted.operation_id),
+                        .namespace_revision_id(&stores.environment_revision_key),
                     message: FailureMessage::try_new(source.to_string())
                         .expect("rendered recovery evidence failure is non-empty"),
                 },
@@ -163,6 +163,7 @@ where
     };
     let DeployOperationStores {
         intent_change_client,
+        environment_revision_key,
         namespace_intent,
         ployz_dns_target: _,
         ingress_projection: _,
@@ -171,6 +172,7 @@ where
     let input = DeployExecutionInput::new(
         accepted.operation_id.clone(),
         normalized_request,
+        environment_revision_key,
         facts,
         registry_credentials,
         reusable_interrupted_operation_ids,
@@ -216,7 +218,7 @@ async fn record_operation_failure(
 
 fn fact_load_failure(
     request: &ployz_core::deploy::DeployRequest,
-    operation_id: &ployz_core::ids::OperationId,
+    environment_revision_key: &ployz_core::deploy::EnvironmentRevisionKey,
     source: &DeployFactLoadError,
 ) -> DeployOperationFailure {
     match source {
@@ -239,7 +241,7 @@ fn fact_load_failure(
         | DeployFactLoadError::IngressUnavailable { .. } => {
             DeployOperationFailure::PlanningFailed {
                 service_id: request.status_service_id(),
-                namespace_revision_id: request.namespace_revision_id_for_operation(operation_id),
+                namespace_revision_id: request.namespace_revision_id(environment_revision_key),
                 message: FailureMessage::try_new(source.to_string())
                     .expect("rendered fact load failure message is non-empty"),
             }
@@ -250,6 +252,7 @@ fn fact_load_failure(
 #[derive(Debug, Clone)]
 pub struct DeployOperationStores {
     pub intent_change_client: async_nats::Client,
+    pub environment_revision_key: ployz_core::deploy::EnvironmentRevisionKey,
     pub namespace_intent: NamespaceIntentStore,
     pub ployz_dns_target: PloyzDnsTargetStore,
     pub ingress_projection: IngressProjectionStore,
@@ -396,14 +399,22 @@ mod fact_load_failure_tests {
     use ployz_core::deploy::{AutoHostnameRouteBindingError, DeployRouteBindingValidationError};
     use ployz_core::ids::RouteBindingId;
     use ployz_test_support::fixtures::deploy_target;
-    use ployz_test_support::ids::{operation_id, route_hostname, service_id};
+    use ployz_test_support::ids::{route_hostname, service_id};
+
+    fn environment_revision_key() -> ployz_core::deploy::EnvironmentRevisionKey {
+        let seed = ployz_core::nats_config::NatsUserSeed::try_new(
+            "SUAIZ5LKGG2Y4WC7ZPKS46LSLLJQIFTO6KMSWSU2VN3TC7YRRIKH5WRXJQ",
+        )
+        .expect("valid deterministic controller seed");
+        ployz_core::deploy::EnvironmentRevisionKey::derive_from_controller_seed(&seed)
+    }
 
     #[test]
     fn fact_load_failure_preserves_automatic_hostname_collision_identity() {
         let request = deploy_target("svc_api");
         let failure = fact_load_failure(
             &request,
-            &operation_id("op_deploy"),
+            &environment_revision_key(),
             &DeployFactLoadError::InvalidRouteBindings {
                 failure: DeployRouteBindingValidationError::Automatic(
                     AutoHostnameRouteBindingError::HostnameCollision {
@@ -430,7 +441,7 @@ mod fact_load_failure_tests {
         let request = deploy_target("svc_api");
         let failure = fact_load_failure(
             &request,
-            &operation_id("op_deploy"),
+            &environment_revision_key(),
             &DeployFactLoadError::InvalidRouteBindings {
                 failure: DeployRouteBindingValidationError::DuplicateServiceId {
                     service_id: service_id("svc_api"),
@@ -547,6 +558,7 @@ impl DeployOperationDriver {
         let intent_reader = NatsIntentReader::new(client).with_request_timeout(request_timeout);
         super::preview_deploy_from_nats(
             request,
+            &self.stores.environment_revision_key,
             &intent_reader,
             &facts_reader,
             &mut machine_runtime,

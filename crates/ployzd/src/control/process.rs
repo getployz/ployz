@@ -332,6 +332,7 @@ async fn start_control_process_with_client_reload_and_issuer(
     let deploy_driver = DeployOperationDriver::new(
         DeployOperationStores {
             intent_change_client: client.clone(),
+            environment_revision_key: config.environment_revision_key.clone(),
             namespace_intent: namespace_intent.clone(),
             ployz_dns_target: ployz_dns_target.clone(),
             ingress_projection: IngressProjectionStore::new(core_store.clone()),

@@ -1,3 +1,4 @@
+use super::fixtures::environment_revision_key;
 use crate::control::operations::deploy::{
     AutomaticHostnameMode, DeployExecutionCommand, DeployExecutionError, DeployExecutionFacts,
     DeployServiceExecutionCommand, deploy_plan, prepare_deploy_execution_command,
@@ -25,7 +26,7 @@ use ployz_test_support::ids::{
 use std::time::Duration;
 
 #[test]
-fn execution_threads_operation_scoped_environment_revisions_end_to_end() {
+fn execution_threads_keyed_environment_revisions_end_to_end() {
     let mut first_value = deploy_request();
     let [first_service] = first_value.services.as_mut_slice() else {
         panic!("deploy request contains one service");
@@ -61,7 +62,7 @@ fn execution_threads_operation_scoped_environment_revisions_end_to_end() {
         empty_execution_facts(),
     );
 
-    assert_eq!(
+    assert_ne!(
         deploy_plan(&first)
             .expect("first plan")
             .namespace_revision_id,
@@ -69,25 +70,35 @@ fn execution_threads_operation_scoped_environment_revisions_end_to_end() {
             .expect("same operation plan")
             .namespace_revision_id
     );
-    assert_ne!(
-        deploy_plan(&first)
-            .expect("first plan")
+    assert_eq!(
+        deploy_plan(&same_operation)
+            .expect("same operation plan")
             .namespace_revision_id,
         deploy_plan(&next_operation)
             .expect("next operation plan")
             .namespace_revision_id
     );
-    assert_eq!(
-        single_service(&first)
-            .serving_target_entry_state(&namespace_id("default"), first.operation_id()),
-        single_service(&same_operation)
-            .serving_target_entry_state(&namespace_id("default"), same_operation.operation_id(),)
-    );
     assert_ne!(
         single_service(&first)
-            .serving_target_entry_state(&namespace_id("default"), first.operation_id()),
-        single_service(&next_operation)
-            .serving_target_entry_state(&namespace_id("default"), next_operation.operation_id(),)
+            .serving_target_entry_state(
+                &namespace_id("default"),
+                first.environment_revision_key(),
+            ),
+        single_service(&same_operation)
+            .serving_target_entry_state(
+                &namespace_id("default"),
+                same_operation.environment_revision_key(),
+            )
+    );
+    assert_eq!(
+        single_service(&same_operation).serving_target_entry_state(
+            &namespace_id("default"),
+            same_operation.environment_revision_key(),
+        ),
+        single_service(&next_operation).serving_target_entry_state(
+            &namespace_id("default"),
+            next_operation.environment_revision_key(),
+        )
     );
 
     let env_free_first = prepare_deploy_execution_command(
@@ -424,7 +435,8 @@ async fn pushed_receipt_keeps_a_covered_existing_replica_outside_new_placement_c
         .with_digest(receipt.index_digest())
         .expect("pinned image");
     service.image_source = ImageSource::PushedToSeed(receipt);
-    let entry_id = service.namespace_revision_entry_id(&request.namespace_id);
+    let entry_id =
+        service.namespace_revision_entry_id(&request.namespace_id, &environment_revision_key());
     let mut promoted = serving_target_entry("svc_api", "unused");
     promoted.namespace_revision_entry_id = entry_id.clone();
     let facts = DeployExecutionFacts {
@@ -1061,7 +1073,7 @@ fn target_namespace_revision_entry_id() -> NamespaceRevisionEntryId {
     let [service] = request.services.as_slice() else {
         panic!("deploy request fixture has one service");
     };
-    service.namespace_revision_entry_id(&namespace_id("default"))
+    service.namespace_revision_entry_id(&namespace_id("default"), &environment_revision_key())
 }
 
 fn existing_service_replica(

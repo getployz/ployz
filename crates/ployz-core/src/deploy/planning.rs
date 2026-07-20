@@ -104,8 +104,8 @@ pub struct DeployPlanningTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum DeployRevisionScope {
-    Preview,
-    Operation(OperationId),
+    Validation,
+    Keyed(EnvironmentRevisionKey),
 }
 
 impl DeployPlanningTarget {
@@ -119,13 +119,13 @@ impl DeployPlanningTarget {
             request.namespace_id.clone(),
             request.volumes.clone(),
             services,
-            DeployRevisionScope::Preview,
+            DeployRevisionScope::Validation,
         )
     }
 
     pub fn try_from_operation(
         request: &DeployRequest,
-        operation_id: &OperationId,
+        environment_key: &EnvironmentRevisionKey,
     ) -> Result<Self, DeployTargetValidationError> {
         let services = request
             .services
@@ -136,12 +136,13 @@ impl DeployPlanningTarget {
             request.namespace_id.clone(),
             request.volumes.clone(),
             services,
-            DeployRevisionScope::Operation(operation_id.clone()),
+            DeployRevisionScope::Keyed(environment_key.clone()),
         )
     }
 
     pub fn try_from_preview(
         target: &DeployPreviewTarget,
+        environment_key: &EnvironmentRevisionKey,
     ) -> Result<Self, DeployTargetValidationError> {
         let services = target
             .services
@@ -152,7 +153,7 @@ impl DeployPlanningTarget {
             target.namespace_id.clone(),
             target.volumes.clone(),
             services,
-            DeployRevisionScope::Preview,
+            DeployRevisionScope::Keyed(environment_key.clone()),
         )
     }
 
@@ -233,12 +234,12 @@ impl DeployPlanningTarget {
     }
 
     #[must_use]
-    pub fn namespace_revision_id(&self, request: &DeployRequest) -> NamespaceRevisionId {
+    pub fn namespace_revision_id(&self, request: &DeployRequest) -> Option<NamespaceRevisionId> {
         match &self.revision_scope {
-            DeployRevisionScope::Operation(operation_id) => {
-                request.namespace_revision_id_for_operation(operation_id)
+            DeployRevisionScope::Validation => None,
+            DeployRevisionScope::Keyed(environment_key) => {
+                Some(request.namespace_revision_id(environment_key))
             }
-            DeployRevisionScope::Preview => request.namespace_revision_id(),
         }
     }
 
@@ -406,6 +407,7 @@ impl DeployPlanningService {
     pub fn namespace_revision_entry_id(
         &self,
         namespace_id: &NamespaceId,
+        environment_key: &EnvironmentRevisionKey,
     ) -> Option<NamespaceRevisionEntryId> {
         match &self.image {
             DeployPlanningImage::Concrete {
@@ -417,6 +419,7 @@ impl DeployPlanningService {
                 image,
                 image_source,
                 &self.runtime,
+                environment_key,
             )),
             DeployPlanningImage::PendingBuild => None,
         }
@@ -429,22 +432,14 @@ impl DeployPlanningService {
     ) -> Option<NamespaceRevisionEntryId> {
         let (image, image_source) = self.concrete_image()?;
         Some(match &target.revision_scope {
-            DeployRevisionScope::Operation(operation_id) => {
-                namespace_revision_entry_id_for_operation(
-                    target.namespace_id(),
-                    &self.service_id,
-                    image,
-                    image_source,
-                    &self.runtime,
-                    operation_id,
-                )
-            }
-            DeployRevisionScope::Preview => namespace_revision_entry_id_for(
+            DeployRevisionScope::Validation => return None,
+            DeployRevisionScope::Keyed(environment_key) => namespace_revision_entry_id_for(
                 target.namespace_id(),
                 &self.service_id,
                 image,
                 image_source,
                 &self.runtime,
+                environment_key,
             ),
         })
     }

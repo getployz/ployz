@@ -10,6 +10,7 @@ use ployz_core::ids::{
     ContainerId, MachineId, NamespaceRevisionEntryId, NamespaceRevisionId, OperationId,
     RouteBindingId, ServiceId,
 };
+
 use ployz_core::ingress::{AutomaticHostnameLabel, RouteBindingOrigin};
 use ployz_core::intent::{RouteBindingState, ServingTargetEntry, VolumeKind, VolumePinState};
 use ployz_core::machine::runtime::{
@@ -45,6 +46,14 @@ use crate::roles::machine::protocol::{
     MachineContainerRunHookRpcRequest, MachineContainerRunRpcRequest,
     MachineContainerStopRpcRequest, MachineRunContainerOutcome,
 };
+
+pub(super) fn environment_revision_key() -> ployz_core::deploy::EnvironmentRevisionKey {
+    let seed = ployz_core::nats_config::NatsUserSeed::try_new(
+        "SUAIZ5LKGG2Y4WC7ZPKS46LSLLJQIFTO6KMSWSU2VN3TC7YRRIKH5WRXJQ",
+    )
+    .expect("valid deterministic controller seed");
+    ployz_core::deploy::EnvironmentRevisionKey::derive_from_controller_seed(&seed)
+}
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1166,7 +1175,8 @@ pub(super) fn phased_deploy_with_reused_dependency() -> DeployExecutionInput {
         service_id: database.service_id.clone(),
         condition: DependencyCondition::Healthy,
     }];
-    let database_entry = database.namespace_revision_entry_id(&request.namespace_id);
+    let database_entry =
+        database.namespace_revision_entry_id(&request.namespace_id, &environment_revision_key());
     let mut promoted = serving_target_entry("svc_database", "unused");
     promoted.namespace_revision_entry_id = database_entry.clone();
     promoted.image = database.image.clone();
@@ -1898,6 +1908,7 @@ fn deploy_execution_input(
     DeployExecutionInput::new(
         operation_id,
         request,
+        environment_revision_key(),
         facts,
         std::collections::BTreeMap::new(),
         std::collections::BTreeSet::new(),
@@ -2031,7 +2042,7 @@ pub(super) fn target_namespace_revision_id(replicas: u16) -> NamespaceRevisionId
         panic!("target deploy fixture has one service");
     };
     service.image = resolved_registry_image("registry.example/api:rev_2");
-    request.namespace_revision_id()
+    request.namespace_revision_id(&environment_revision_key())
 }
 
 pub(super) fn routed_namespace_revision_id() -> NamespaceRevisionId {
@@ -2040,7 +2051,7 @@ pub(super) fn routed_namespace_revision_id() -> NamespaceRevisionId {
         panic!("routed deploy fixture has one service");
     };
     service.image = resolved_registry_image("registry.example/api:rev_2");
-    request.namespace_revision_id()
+    request.namespace_revision_id(&environment_revision_key())
 }
 
 pub(super) fn target_namespace_revision_entry_id() -> NamespaceRevisionEntryId {
@@ -2050,6 +2061,7 @@ pub(super) fn target_namespace_revision_entry_id() -> NamespaceRevisionEntryId {
         &resolved_registry_image("registry.example/api:rev_2"),
         &ployz_core::deploy::ImageSource::Registry,
         &ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
+        &environment_revision_key(),
     )
 }
 

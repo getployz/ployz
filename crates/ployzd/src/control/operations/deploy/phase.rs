@@ -337,7 +337,7 @@ where
                         service_id: service.service.service_id.clone(),
                         namespace_revision_entry_id: service.namespace_revision_entry_id(
                             &command.request.namespace_id,
-                            &command.operation_id,
+                            &command.environment_revision_key,
                         ),
                         machine_id: machine_id.clone(),
                         container_id: container_id.clone(),
@@ -561,14 +561,16 @@ where
         scope: scope.clone(),
         route_bindings,
         route_binding_removals,
-        first_serving_target_entry: first_service
-            .serving_target_entry_state(&command.request.namespace_id, &command.operation_id),
+        first_serving_target_entry: first_service.serving_target_entry_state(
+            &command.request.namespace_id,
+            &command.environment_revision_key,
+        ),
         remaining_serving_target_entries: remaining_services
             .iter()
             .map(|service| {
                 service.serving_target_entry_state(
                     &command.request.namespace_id,
-                    &command.operation_id,
+                    &command.environment_revision_key,
                 )
             })
             .collect(),

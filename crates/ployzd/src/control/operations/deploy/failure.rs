@@ -37,8 +37,10 @@ fn failure_commit_scope(command: &DeployExecutionCommand) -> ControlPlaneCommitS
     };
     ControlPlaneCommitScope::ServiceEntry {
         service_id: service.service.service_id.clone(),
-        namespace_revision_entry_id: service
-            .namespace_revision_entry_id(&command.request.namespace_id, &command.operation_id),
+        namespace_revision_entry_id: service.namespace_revision_entry_id(
+            &command.request.namespace_id,
+            &command.environment_revision_key,
+        ),
     }
 }
 
