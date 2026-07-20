@@ -40,6 +40,25 @@ pub struct PloyzctlRuntimeConfig {
     pub cluster_context_path: Option<PathBuf>,
     /// Deploy-history root override for embedded runtimes and tests.
     pub deploy_history_root: Option<PathBuf>,
+    /// Build Executor-specific embedded-runtime and test seams.
+    pub build_executor: BuildExecutorRuntimeConfig,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BuildExecutorRuntimeConfig {
+    /// Executor context root override for embedded runtimes and tests.
+    pub context_root: Option<PathBuf>,
+    /// Enrollment transport policy; production defaults to HTTPS only.
+    pub enrollment_transport: EnrollmentTransportPolicy,
+    /// Whole-request enrollment budget override for embedded runtimes and tests.
+    pub enrollment_timeout: Option<Duration>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum EnrollmentTransportPolicy {
+    #[default]
+    HttpsOnly,
+    AllowLoopbackHttp,
 }
 
 impl PloyzctlRuntimeConfig {
@@ -72,6 +91,7 @@ impl PloyzctlRuntimeConfig {
             ssh_install_timeout: None,
             cluster_context_path: None,
             deploy_history_root: None,
+            build_executor: BuildExecutorRuntimeConfig::default(),
         }
     }
 
@@ -173,6 +193,9 @@ pub async fn execute_command(
         PloyzctlCommand::BuildCancel(command) => {
             crate::build::runtime::cancel(command, config).await
         }
+        PloyzctlCommand::BuildEnroll(command) => crate::build::enrollment::enroll(command, config)
+            .await
+            .map_err(Into::into),
         PloyzctlCommand::BuildExecutor(command) => {
             crate::build::external_runtime::run(command, config).await
         }

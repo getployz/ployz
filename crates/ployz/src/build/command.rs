@@ -10,6 +10,7 @@ use ployz_core::ids::{BuildExecutorId, BuildPoolId, OperationId};
 use ployz_core::image::OciPlatform;
 use ployz_core::operation::CancellationReason;
 
+use crate::build::enrollment::EnrollmentUrl;
 use crate::commands::{PloyzctlCliError, cli_error, invalid_value};
 use crate::execution_support::generate_client_build_id;
 
@@ -20,6 +21,14 @@ const DEFAULT_EXECUTOR_WAIT_TIMEOUT_SECONDS: u64 = 600;
 pub enum BuildExecutorRunMode {
     Once { wait_timeout: Duration },
     Watch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuildEnrollCommand {
+    pub enrollment_url: EnrollmentUrl,
+    pub token_env: String,
+    pub pool_id: BuildPoolId,
+    pub executor_id: BuildExecutorId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,6 +117,34 @@ pub(crate) struct BuildExecutorWatchCli {
     workspace_root: Option<PathBuf>,
 }
 
+#[derive(Debug, Args)]
+pub(crate) struct BuildEnrollCli {
+    #[arg(long)]
+    enrollment_url: String,
+    /// Name of the environment variable containing the enrollment token.
+    #[arg(long)]
+    token_env: String,
+    #[arg(long)]
+    pool_id: String,
+    #[arg(long)]
+    executor_id: String,
+}
+
+pub(crate) fn build_enroll_command(
+    parsed: BuildEnrollCli,
+) -> Result<BuildEnrollCommand, PloyzctlCliError> {
+    validate_environment_variable_name("--token-env", &parsed.token_env)?;
+    Ok(BuildEnrollCommand {
+        enrollment_url: EnrollmentUrl::try_new(parsed.enrollment_url)
+            .map_err(|error| invalid_value("--enrollment-url", error))?,
+        token_env: parsed.token_env,
+        pool_id: BuildPoolId::try_new(parsed.pool_id)
+            .map_err(|error| invalid_value("--pool-id", error))?,
+        executor_id: BuildExecutorId::try_new(parsed.executor_id)
+            .map_err(|error| invalid_value("--executor-id", error))?,
+    })
+}
+
 pub(crate) fn build_executor_once_command(
     parsed: BuildExecutorOnceCli,
 ) -> Result<BuildExecutorCommand, PloyzctlCliError> {
@@ -156,14 +193,7 @@ fn build_executor_command(
 pub(crate) fn build_submit_command(
     parsed: BuildSubmitCli,
 ) -> Result<BuildSubmitCommand, PloyzctlCliError> {
-    if parsed.git_secret_env.is_empty()
-        || parsed.git_secret_env.contains('=')
-        || parsed.git_secret_env.chars().any(char::is_whitespace)
-    {
-        return Err(cli_error(
-            "--git-secret-env must name one non-empty environment variable",
-        ));
-    }
+    validate_environment_variable_name("--git-secret-env", &parsed.git_secret_env)?;
     let operation_id = parsed
         .operation_id
         .map(OperationId::try_new)
@@ -217,6 +247,15 @@ pub(crate) fn build_submit_command(
         platforms,
         detach: parsed.detach,
     })
+}
+
+fn validate_environment_variable_name(option: &str, name: &str) -> Result<(), PloyzctlCliError> {
+    if name.is_empty() || name.contains('=') || name.chars().any(char::is_whitespace) {
+        return Err(cli_error(format!(
+            "{option} must name one non-empty environment variable"
+        )));
+    }
+    Ok(())
 }
 
 pub(crate) fn build_cancel_command(
