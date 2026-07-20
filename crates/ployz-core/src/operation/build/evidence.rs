@@ -166,7 +166,7 @@ mod tests {
     use super::*;
     use crate::build::{
         BuildCacheScope, BuildExecutorAssignment, BuildExecutorId, BuildPlatforms, BuildPoolId,
-        BuildTarget, GitSource,
+        BuildSourceEvidence, BuildTarget, GitSource,
     };
     use crate::deploy::{ImageAvailabilityExpiresAt, PlatformImage};
     use crate::ids::{MachineId, OperationId};
@@ -181,16 +181,17 @@ mod tests {
         OperationStatus::build_accepted(
             OperationId::try_new("build-evidence").expect("operation"),
             target,
-            GitSource::try_new(
-                "https://example.com/repo.git",
-                "0123456789abcdef0123456789abcdef01234567",
-                "git",
-                "secret",
-                None::<String>,
-            )
-            .expect("source")
-            .evidence()
-            .into(),
+            BuildSourceEvidence::Git {
+                git: GitSource::try_new(
+                    "https://example.com/repo.git",
+                    "0123456789abcdef0123456789abcdef01234567",
+                    "git",
+                    "secret",
+                    None::<String>,
+                )
+                .expect("source")
+                .evidence(),
+            },
             BuildAdapter::Railpack {
                 cache_scope: BuildCacheScope::try_new("cache").expect("scope"),
             },

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use ployz_build_executor::DockerBuildExecutor;
-use ployz_core::build::LocalSnapshotDigest;
+use ployz_core::build::{BuildContextPath, BuildSource, LocalSnapshotDigest};
 use ployz_core::image::OciPlatform;
 use ployz_core::nats_config::MintedNatsUser;
 
@@ -23,9 +23,11 @@ const APPROVAL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 struct ApprovedCloudInputs {
     command: CurrentTreeDeployCommand,
     runtime_config: PloyzctlRuntimeConfig,
+    source_root: PathBuf,
     workspace_root: PathBuf,
     platform: OciPlatform,
     digest: LocalSnapshotDigest,
+    subdir: Option<BuildContextPath>,
     client: CloudCurrentTreeClient,
     session_secret: String,
     poll_after_seconds: u64,
@@ -40,10 +42,10 @@ pub(super) async fn execute(
     let workspace_root = cwd.join(".ployz").join("build-executor");
     let executor = DockerBuildExecutor::new(workspace_root.clone());
     let source = executor
-        .prepare_local_snapshot(cwd, None)
+        .prepare_local_snapshot(cwd.clone(), None)
         .await
         .map_err(current_tree_error)?;
-    let ployz_core::build::BuildSource::LocalSnapshot { digest, subdir: _ } = source else {
+    let BuildSource::LocalSnapshot { digest, subdir } = source else {
         unreachable!("local snapshot preparation returns local evidence");
     };
     let platform = ployz_build_executor::native_oci_platform().map_err(current_tree_error)?;
@@ -56,9 +58,11 @@ pub(super) async fn execute(
     let result = execute_approved(ApprovedCloudInputs {
         command,
         runtime_config: config.clone(),
+        source_root: cwd,
         workspace_root,
         platform,
         digest,
+        subdir,
         client: client.clone(),
         session_secret: begun.session_secret.clone(),
         poll_after_seconds: begun.poll_after_seconds,
@@ -78,9 +82,11 @@ async fn execute_approved(
     let ApprovedCloudInputs {
         command,
         runtime_config,
+        source_root,
         workspace_root,
         platform,
         digest,
+        subdir,
         client,
         session_secret,
         poll_after_seconds,
@@ -123,6 +129,14 @@ async fn execute_approved(
         .recover_orphans()
         .await
         .map_err(current_tree_error)?;
+    restage_local_snapshot(
+        &DockerBuildExecutor::new(workspace_root.clone()),
+        source_root,
+        &digest,
+        subdir.as_ref(),
+    )
+    .await
+    .map_err(current_tree_error)?;
 
     let material = tempfile::tempdir().map_err(current_tree_error)?;
     let ca_path = material.path().join("nats-ca.pem");
@@ -185,6 +199,51 @@ async fn execute_approved(
     )))
 }
 
+async fn restage_local_snapshot(
+    executor: &DockerBuildExecutor,
+    source_root: PathBuf,
+    expected_digest: &LocalSnapshotDigest,
+    expected_subdir: Option<&BuildContextPath>,
+) -> Result<(), RestageLocalSnapshotError> {
+    let source = executor
+        .prepare_local_snapshot(source_root, expected_subdir.cloned())
+        .await
+        .map_err(RestageLocalSnapshotError::Capture)?;
+    let BuildSource::LocalSnapshot {
+        digest: actual_digest,
+        subdir: actual_subdir,
+    } = source
+    else {
+        return Err(RestageLocalSnapshotError::SourceShapeChanged);
+    };
+    if actual_digest != *expected_digest || actual_subdir.as_ref() != expected_subdir {
+        return Err(RestageLocalSnapshotError::SourceMutated {
+            expected_digest: expected_digest.clone(),
+            actual_digest,
+            expected_subdir: expected_subdir.cloned(),
+            actual_subdir,
+        });
+    }
+    Ok(())
+}
+
+#[derive(Debug, thiserror::Error)]
+enum RestageLocalSnapshotError {
+    #[error("failed to recapture the approved current working tree: {0}")]
+    Capture(ployz_build_executor::LocalSnapshotError),
+    #[error("recaptured current working tree was not a local snapshot")]
+    SourceShapeChanged,
+    #[error(
+        "current working tree changed after Cloud approval (expected {expected_digest} at {expected_subdir:?}, captured {actual_digest} at {actual_subdir:?})"
+    )]
+    SourceMutated {
+        expected_digest: LocalSnapshotDigest,
+        actual_digest: LocalSnapshotDigest,
+        expected_subdir: Option<BuildContextPath>,
+        actual_subdir: Option<BuildContextPath>,
+    },
+}
+
 async fn await_approval(
     client: &CloudCurrentTreeClient,
     session_secret: &str,
@@ -242,5 +301,86 @@ async fn await_terminal(
             return Err(current_tree_error("Cloud deployment observation timed out"));
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn unchanged_source_is_restaged_for_the_prepared_executor() {
+        let source = tempfile::tempdir().expect("source");
+        fs::write(source.path().join("Dockerfile"), "FROM scratch\n").expect("source file");
+        let workspace = tempfile::tempdir().expect("workspace");
+        let executor = DockerBuildExecutor::new(workspace.path().to_path_buf());
+        let BuildSource::LocalSnapshot { digest, subdir } = executor
+            .prepare_local_snapshot(source.path().to_path_buf(), None)
+            .await
+            .expect("initial snapshot")
+        else {
+            panic!("local snapshot")
+        };
+        fs::remove_dir_all(workspace.path()).expect("recovery-equivalent cleanup");
+
+        restage_local_snapshot(
+            &executor,
+            source.path().to_path_buf(),
+            &digest,
+            subdir.as_ref(),
+        )
+        .await
+        .expect("restage unchanged source");
+
+        let staged = workspace
+            .path()
+            .join("prepared")
+            .join(digest.as_str().strip_prefix("sha256:").expect("digest"));
+        let consumed = workspace.path().join("operation").join("source");
+        fs::create_dir_all(consumed.parent().expect("operation directory"))
+            .expect("operation directory");
+        fs::rename(staged, &consumed).expect("prepared executor can consume snapshot");
+        assert_eq!(
+            fs::read_to_string(consumed.join("Dockerfile")).expect("restaged source"),
+            "FROM scratch\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn changed_source_is_rejected_before_execution() {
+        let source = tempfile::tempdir().expect("source");
+        let source_file = source.path().join("Dockerfile");
+        fs::write(&source_file, "FROM scratch\n").expect("source file");
+        let workspace = tempfile::tempdir().expect("workspace");
+        let executor = DockerBuildExecutor::new(workspace.path().to_path_buf());
+        let BuildSource::LocalSnapshot { digest, subdir } = executor
+            .prepare_local_snapshot(source.path().to_path_buf(), None)
+            .await
+            .expect("initial snapshot")
+        else {
+            panic!("local snapshot")
+        };
+        fs::remove_dir_all(workspace.path()).expect("recovery-equivalent cleanup");
+        fs::write(&source_file, "FROM busybox\n").expect("mutated source file");
+
+        let error = restage_local_snapshot(
+            &executor,
+            source.path().to_path_buf(),
+            &digest,
+            subdir.as_ref(),
+        )
+        .await
+        .expect_err("changed source must be rejected");
+
+        assert!(matches!(
+            error,
+            RestageLocalSnapshotError::SourceMutated {
+                expected_digest,
+                actual_digest,
+                ..
+            } if expected_digest == digest && actual_digest != digest
+        ));
     }
 }

@@ -52,12 +52,6 @@ pub enum BuildSourceEvidence {
     },
 }
 
-impl From<GitSourceEvidence> for BuildSourceEvidence {
-    fn from(git: GitSourceEvidence) -> Self {
-        Self::Git { git }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]

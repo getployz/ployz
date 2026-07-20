@@ -28,16 +28,17 @@ fn status_for_target(target: BuildTarget) -> OperationStatus {
     OperationStatus::build_accepted(
         id(),
         target,
-        GitSource::try_new(
-            "https://example.com/repo.git",
-            "0123456789abcdef0123456789abcdef01234567",
-            "git",
-            "secret",
-            None::<String>,
-        )
-        .expect("source")
-        .evidence()
-        .into(),
+        BuildSourceEvidence::Git {
+            git: GitSource::try_new(
+                "https://example.com/repo.git",
+                "0123456789abcdef0123456789abcdef01234567",
+                "git",
+                "secret",
+                None::<String>,
+            )
+            .expect("source")
+            .evidence(),
+        },
         BuildAdapter::Railpack {
             cache_scope: BuildCacheScope::try_new("test").expect("scope"),
         },
@@ -570,14 +571,16 @@ fn submitted_event_and_status_are_credential_free() {
     let event = OperationEvent::BuildSubmitted {
         operation_id: id(),
         target: BuildTarget::Cluster,
-        source: evidence.clone().into(),
+        source: BuildSourceEvidence::Git {
+            git: evidence.clone(),
+        },
         adapter: adapter.clone(),
         platforms: platforms.clone(),
     };
     let status = OperationStatus::build_accepted(
         id(),
         BuildTarget::Cluster,
-        evidence.into(),
+        BuildSourceEvidence::Git { git: evidence },
         adapter,
         platforms,
         EventSequence::try_new(1).expect("sequence"),
@@ -615,7 +618,9 @@ fn submitted_event_must_match_the_admitted_build_contract() {
             OperationEvent::BuildSubmitted {
                 operation_id: id(),
                 target: BuildTarget::Cluster,
-                source: different_source.evidence().into(),
+                source: BuildSourceEvidence::Git {
+                    git: different_source.evidence(),
+                },
                 adapter: status.adapter().clone(),
                 platforms: status.platforms().clone(),
             },
