@@ -46,7 +46,7 @@ pub(crate) async fn submit(
         .build_submit(&BuildSubmitRequest {
             operation_id: command.operation_id,
             target: BuildTarget::Cluster,
-            source,
+            source: source.into(),
             adapter: command.adapter,
             platforms: command.platforms,
         })

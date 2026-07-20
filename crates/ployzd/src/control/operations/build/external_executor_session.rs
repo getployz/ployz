@@ -256,7 +256,7 @@ pub(super) async fn run_external_executor_session(
                 outcome: BuildExecutorSuccessCleanupOutcome::Confirmed,
             },
         image,
-        verified_commit,
+        verified_source,
         toolchain,
         log_summary: _,
     } = ok;
@@ -265,10 +265,10 @@ pub(super) async fn run_external_executor_session(
         .repository()
         .record_build_evidence(
             id,
-            BuildEvidence::VerifiedCommit {
+            BuildEvidence::VerifiedSource {
                 platform: platform.clone(),
                 executor: evidence_executor.clone(),
-                commit: verified_commit,
+                source: verified_source,
             },
         )
         .await
@@ -492,7 +492,7 @@ impl ExternalBuildSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::build::{BuildExecutorId, BuildPoolId, GitSource, VerifiedGitCommit};
+    use ployz_core::build::{BuildExecutorId, BuildPoolId, GitSource, VerifiedBuildSource};
     use ployz_core::deploy::{ImageAvailabilityExpiresAt, PlatformImage};
     use ployz_core::ids::{MachineId, OperationId};
     use ployz_core::image::OciDigest;
@@ -547,7 +547,8 @@ mod tests {
             "secret",
             None::<String>,
         )
-        .expect("source");
+        .expect("source")
+        .into();
         let digest = OciDigest::try_new(format!("sha256:{}", "a".repeat(64))).expect("digest");
         let response = BuildExecutorStartResponse::Ok(Box::new(BuildExecutorStartOk {
             acceptance: BuildExecutorAcceptance {
@@ -563,7 +564,7 @@ mod tests {
                 availability_expires_at: ImageAvailabilityExpiresAt::try_new(4_102_444_800)
                     .expect("expiry"),
             },
-            verified_commit: VerifiedGitCommit::from_source(&source),
+            verified_source: VerifiedBuildSource::from_source(&source),
             toolchain: BuildToolchainEvidence {
                 buildkit_image: digest,
                 adapter: BuildAdapterToolchainEvidence::Dockerfile,

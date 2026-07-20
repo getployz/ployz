@@ -30,6 +30,7 @@ pub async fn build_submit(
     request: BuildSubmitRequest,
 ) -> Result<AcceptedOperation, BuildSubmitError> {
     let operation_id = request.operation_id.clone();
+    validate_build_source_target(&request)?;
     let planned_assignments = external_preflight_for_new_operation(handlers, &request).await?;
     let mut accepted = handlers.controllers().submit_build(BuildSubmitCommand {
         operation_id: request.operation_id,
@@ -62,6 +63,14 @@ pub async fn build_submit(
     );
     handlers.build_driver().start(accepted).await;
     Ok(operation)
+}
+
+fn validate_build_source_target(request: &BuildSubmitRequest) -> Result<(), BuildSubmitError> {
+    request.source.ensure_target(&request.target).map_err(|_| {
+        BuildSubmitError::LocalSnapshotRequiresExternalTarget {
+            operation_id: request.operation_id.clone(),
+        }
+    })
 }
 
 async fn external_preflight_for_new_operation(

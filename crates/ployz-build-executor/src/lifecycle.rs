@@ -5,7 +5,7 @@ use super::plan::{BuildExecutionPlan, PrepareCommand};
 use super::runner::{
     BuildExecutionError, adapter_failure, check_cancelled, infrastructure, platform_failure,
 };
-use ployz_core::build::GitSource;
+use ployz_core::build::BuildSource;
 use ployz_core::ids::OperationId;
 use ployz_core::image::{OciDigest, OciPlatform};
 use ployz_core::operation::BuildPlatformFailure;
@@ -69,7 +69,7 @@ fn validate_docker_server_platform(
 
 pub(super) async fn run_prepare(
     prepare: &PrepareCommand,
-    source: &GitSource,
+    source: &BuildSource,
     cancelled: &mut watch::Receiver<bool>,
 ) -> Result<(), BuildExecutionError> {
     run_prepare_with_timeout(prepare, source, cancelled, RAILPACK_PREPARE_TIMEOUT).await
@@ -77,7 +77,7 @@ pub(super) async fn run_prepare(
 
 async fn run_prepare_with_timeout(
     prepare: &PrepareCommand,
-    source: &GitSource,
+    source: &BuildSource,
     cancelled: &mut watch::Receiver<bool>,
     timeout: Duration,
 ) -> Result<(), BuildExecutionError> {
@@ -194,15 +194,13 @@ async fn run_prepare_with_timeout(
             "Railpack prepare output exceeded its bound",
         ));
     }
-    if combined.contains(source.credential().secret().secret()) {
+    if source.contains_sensitive_value(&combined) {
         return Err(adapter_failure(
             "Railpack prepare attempted to disclose the Git credential",
         ));
     }
     if !status.success() {
-        return Err(adapter_failure(
-            source.credential().redact_secret_in(combined),
-        ));
+        return Err(adapter_failure(source.redact_sensitive_in(combined)));
     }
     Ok(())
 }
@@ -438,7 +436,7 @@ pub(super) struct BuildLogContext<'a> {
 pub(super) async fn run_buildctl(
     builder: &str,
     plan: &BuildExecutionPlan,
-    source: &GitSource,
+    source: &BuildSource,
     cancelled: &mut watch::Receiver<bool>,
     logs: BuildLogContext<'_>,
 ) -> Result<PublishedLogs, BuildExecutionError> {
@@ -468,7 +466,7 @@ pub(super) async fn run_buildctl(
         logs.destination.clone(),
         logs.operation_id.clone(),
         logs.platform.clone(),
-        source.credential().secret().secret(),
+        source.sensitive_value().unwrap_or(""),
         logs.progress,
     );
     while let Some(bytes) = tokio::select! {
@@ -561,10 +559,10 @@ pub(super) fn builder_name(operation_id: &OperationId, platform: &OciPlatform) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::build::GitSource;
+    use ployz_core::build::{BuildSource, GitSource};
     use std::path::PathBuf;
 
-    fn source() -> GitSource {
+    fn source() -> BuildSource {
         GitSource::try_new(
             "https://example.test/repo.git",
             "0123456789abcdef0123456789abcdef01234567",
@@ -573,6 +571,7 @@ mod tests {
             None::<String>,
         )
         .expect("source")
+        .into()
     }
 
     fn shell_prepare(script: &str) -> PrepareCommand {

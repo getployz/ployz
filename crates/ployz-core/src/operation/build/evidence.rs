@@ -1,5 +1,5 @@
 use crate::build::{
-    BuildAdapter, BuildExecutorEvidence, BuildPlatformExecutorAssignment, VerifiedGitCommit,
+    BuildAdapter, BuildExecutorEvidence, BuildPlatformExecutorAssignment, VerifiedBuildSource,
 };
 use crate::deploy::PlatformImage;
 use crate::image::OciPlatform;
@@ -12,10 +12,10 @@ use crate::operation::{EventSequence, OperationProjection, StatusProjectionError
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BuildEvidence {
-    VerifiedCommit {
+    VerifiedSource {
         platform: OciPlatform,
         executor: BuildExecutorEvidence,
-        commit: VerifiedGitCommit,
+        source: VerifiedBuildSource,
     },
     PlatformPlaced {
         platform: OciPlatform,
@@ -58,7 +58,7 @@ impl BuildEvidence {
     #[must_use]
     pub const fn platform(&self) -> &OciPlatform {
         match self {
-            Self::VerifiedCommit { platform, .. }
+            Self::VerifiedSource { platform, .. }
             | Self::PlatformPlaced { platform, .. }
             | Self::ToolchainVerified { platform, .. }
             | Self::PlatformLog { platform, .. }
@@ -72,7 +72,7 @@ impl BuildEvidence {
     #[must_use]
     pub const fn executor(&self) -> &BuildExecutorEvidence {
         match self {
-            Self::VerifiedCommit { executor, .. }
+            Self::VerifiedSource { executor, .. }
             | Self::PlatformPlaced { executor, .. }
             | Self::ToolchainVerified { executor, .. }
             | Self::PlatformLog { executor, .. }
@@ -127,10 +127,8 @@ pub(super) fn project(
     {
         return Err(invalid_transition(fields));
     }
-    if let BuildEvidence::VerifiedCommit { commit, .. } = &evidence
-        && (commit.url != fields.source.url
-            || commit.commit != fields.source.commit
-            || commit.subdir != fields.source.subdir)
+    if let BuildEvidence::VerifiedSource { source, .. } = &evidence
+        && source.evidence() != *fields.source
     {
         return Err(invalid_transition(fields));
     }
@@ -191,7 +189,8 @@ mod tests {
                 None::<String>,
             )
             .expect("source")
-            .evidence(),
+            .evidence()
+            .into(),
             BuildAdapter::Railpack {
                 cache_scope: BuildCacheScope::try_new("cache").expect("scope"),
             },

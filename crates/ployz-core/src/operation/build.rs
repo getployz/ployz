@@ -3,8 +3,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::build::{
-    BuildAdapter, BuildExecutorAssignments, BuildExecutorEvidence, BuildPlatforms, BuildTarget,
-    GitSourceEvidence,
+    BuildAdapter, BuildExecutorAssignments, BuildExecutorEvidence, BuildPlatforms,
+    BuildSourceEvidence, BuildTarget,
 };
 use crate::deploy::PushedImageReceipt;
 use crate::ids::{MachineId, OperationId};
@@ -60,7 +60,7 @@ pub enum BuildOperationState {
 pub struct BuildOperationStatus {
     id: OperationId,
     target: BuildTarget,
-    source: GitSourceEvidence,
+    source: BuildSourceEvidence,
     adapter: BuildAdapter,
     platforms: BuildPlatforms,
     executor_assignments: BuildExecutorAssignments,
@@ -73,7 +73,7 @@ pub struct BuildOperationStatus {
 pub(super) struct BuildOperationStatusWire {
     pub(super) id: OperationId,
     pub(super) target: BuildTarget,
-    pub(super) source: GitSourceEvidence,
+    pub(super) source: BuildSourceEvidence,
     pub(super) adapter: BuildAdapter,
     pub(super) platforms: BuildPlatforms,
     pub(super) executor_assignments: BuildExecutorAssignments,
@@ -192,7 +192,7 @@ impl BuildOperationStatus {
     }
 
     #[must_use]
-    pub const fn source(&self) -> &GitSourceEvidence {
+    pub const fn source(&self) -> &BuildSourceEvidence {
         &self.source
     }
 
@@ -509,7 +509,7 @@ impl BuildTransition {
 pub(super) enum BuildEvent {
     Submitted {
         target: BuildTarget,
-        source: GitSourceEvidence,
+        source: BuildSourceEvidence,
         adapter: BuildAdapter,
         platforms: BuildPlatforms,
     },
@@ -520,7 +520,7 @@ pub(super) enum BuildEvent {
 pub(super) struct BuildFields<'a> {
     pub id: &'a OperationId,
     pub target: &'a BuildTarget,
-    pub source: &'a GitSourceEvidence,
+    pub source: &'a BuildSourceEvidence,
     pub adapter: &'a BuildAdapter,
     pub platforms: &'a BuildPlatforms,
     pub executor_assignments: &'a BuildExecutorAssignments,

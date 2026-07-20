@@ -13,8 +13,8 @@ use crate::tasks::TaskRegistry;
 use futures_util::StreamExt;
 use ployz_core::build::{
     BuildAdapter, BuildCacheScope, BuildExecutorCancelOk, BuildExecutorCleanupOutcome,
-    BuildExecutorStartOk, BuildExecutorSuccessCleanupEvidence, BuildPlatforms, BuildTarget,
-    GitSource, VerifiedGitCommit,
+    BuildExecutorStartOk, BuildExecutorSuccessCleanupEvidence, BuildPlatforms, BuildSource,
+    BuildTarget, GitSource, VerifiedBuildSource,
 };
 use ployz_core::deploy::{ImageAvailabilityExpiresAt, PlatformImage};
 use ployz_core::image::{OciDigest, OciPlatform};
@@ -69,14 +69,15 @@ async fn platform_rpc_failure_records_real_evidence_and_publishes_no_image_index
     let amd64 = OciPlatform::try_new("linux", "amd64").expect("amd64 platform");
     let arm64 = OciPlatform::try_new("linux", "arm64").expect("arm64 platform");
     let operation_id = operation_id("build_mixed_platform_failure");
-    let source = GitSource::try_new(
+    let source: BuildSource = GitSource::try_new(
         "https://example.com/repository.git",
         "0123456789abcdef0123456789abcdef01234567",
         "git",
         "private-token",
         None::<String>,
     )
-    .expect("valid git source");
+    .expect("valid git source")
+    .into();
     let accepted = controllers
         .submit_build(BuildSubmitCommand {
             operation_id: operation_id.clone(),
@@ -127,7 +128,7 @@ async fn platform_rpc_failure_records_real_evidence_and_publishes_no_image_index
         machine_id: arm64_machine.clone(),
         failure: platform_failure.clone(),
     };
-    let verified_commit = VerifiedGitCommit::from_source(&source);
+    let verified_source = VerifiedBuildSource::from_source(&source);
     let toolchain = BuildToolchainEvidence {
         buildkit_image: OciDigest::try_new(format!("sha256:{}", "3".repeat(64)))
             .expect("buildkit digest"),
@@ -150,7 +151,7 @@ async fn platform_rpc_failure_records_real_evidence_and_publishes_no_image_index
                 acceptance: executor_acceptance(&operation_id, &amd64_machine, &amd64),
                 cleanup: BuildExecutorSuccessCleanupEvidence::confirmed(),
                 image: completed_image.clone(),
-                verified_commit: verified_commit.clone(),
+                verified_source: verified_source.clone(),
                 toolchain: toolchain.clone(),
                 log_summary: BuildLogSummary::none(),
             },
@@ -263,15 +264,15 @@ async fn platform_rpc_failure_records_real_evidence_and_publishes_no_image_index
         .expect("replay build evidence");
     assert!(replay.events.iter().any(|record| matches!(
         &record.event,
-        OperationEvent::BuildCommitVerified {
+        OperationEvent::BuildSourceVerified {
             platform,
             executor,
-            commit,
+            source,
             ..
         }
             if platform == &amd64
                 && executor == &cluster_evidence(&amd64_machine)
-                && commit == &verified_commit
+                && source == &verified_source
     )));
     assert!(replay.events.iter().any(|record| matches!(
         &record.event,

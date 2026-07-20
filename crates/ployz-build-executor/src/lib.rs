@@ -13,6 +13,7 @@ pub use oci::ValidatedOciLayout;
 pub use runner::{
     BuildExecutionError, BuildExecutionRequest, BuildExecutionResult, DockerBuildExecutor,
 };
+pub use source::LocalSnapshotError;
 
 pub fn native_oci_platform() -> Result<ployz_core::image::OciPlatform, String> {
     oci_platform(std::env::consts::OS, std::env::consts::ARCH)

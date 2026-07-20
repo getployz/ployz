@@ -36,13 +36,13 @@ async fn binary_build_submit_sends_exact_secret_bearing_request_without_echoing_
             let request: BuildSubmitRequest =
                 serde_json::from_slice(&request.payload).expect("request decodes");
             assert_eq!(request.operation_id.as_str(), "op_build_contract");
-            assert_eq!(
-                request.source.url().as_str(),
-                "https://git.example/repo.git"
-            );
-            assert_eq!(request.source.commit().as_str(), SHA);
-            assert_eq!(request.source.credential().username().as_str(), "builder");
-            assert_eq!(request.source.credential().secret().secret(), SECRET);
+            let ployz_core::build::BuildSource::Git { git } = request.source else {
+                panic!("expected Git source")
+            };
+            assert_eq!(git.url().as_str(), "https://git.example/repo.git");
+            assert_eq!(git.commit().as_str(), SHA);
+            assert_eq!(git.credential().username().as_str(), "builder");
+            assert_eq!(git.credential().secret().secret(), SECRET);
             assert_eq!(request.platforms.iter().count(), 2);
             let BuildAdapter::Dockerfile { dockerfile, target } = request.adapter else {
                 panic!("expected Dockerfile adapter");

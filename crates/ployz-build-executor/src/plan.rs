@@ -1,4 +1,4 @@
-use super::source::CheckedOutGitSource;
+use super::source::PreparedBuildSource;
 use ployz_core::build::{BuildAdapter, RailpackCacheKey, railpack_pins};
 use ployz_core::image::{OciDigest, OciPlatform};
 use ployz_core::install::{InstallArtifactVersion, InstallSha256Digest};
@@ -127,7 +127,7 @@ pub(super) fn buildkit_for_platform(
 }
 
 pub(super) fn lower_build_adapter(
-    checkout: &CheckedOutGitSource,
+    checkout: &PreparedBuildSource,
     adapter: &BuildAdapter,
     platform: &OciPlatform,
     workspace: &Path,
@@ -137,7 +137,10 @@ pub(super) fn lower_build_adapter(
     let output = workspace.join("oci");
     let oci_layout = container_path(workspace, &output)?;
     let platform = format!("{}/{}", platform.os(), platform.architecture());
-    let commit = checkout.commit().commit.as_str();
+    let git_commit = match checkout.verified() {
+        ployz_core::build::VerifiedBuildSource::Git { git } => Some(git.commit.as_str()),
+        ployz_core::build::VerifiedBuildSource::LocalSnapshot { .. } => None,
+    };
     let mut arguments = vec![
         "build".to_owned(),
         "--local".to_owned(),
@@ -164,8 +167,6 @@ pub(super) fn lower_build_adapter(
                 format!("filename={}", dockerfile.to_string_lossy()),
                 "--opt".to_owned(),
                 format!("platform={platform}"),
-                "--opt".to_owned(),
-                format!("build-arg:PLOYZ_GIT_COMMIT={commit}"),
             ]);
             if let Some(target) = target {
                 arguments.extend(["--opt".to_owned(), format!("target={}", target.as_str())]);
@@ -199,8 +200,6 @@ pub(super) fn lower_build_adapter(
                     "build-arg:cache-key={}",
                     RailpackCacheKey::derive(cache_scope).as_str()
                 ),
-                "--opt".to_owned(),
-                format!("build-arg:PLOYZ_GIT_COMMIT={commit}"),
             ]);
             Some(PrepareCommand {
                 program: helper_path.clone(),
@@ -219,6 +218,12 @@ pub(super) fn lower_build_adapter(
             return Err(BuildPlanError::AdapterToolchainMismatch);
         }
     };
+    if let Some(commit) = git_commit {
+        arguments.extend([
+            "--opt".to_owned(),
+            format!("build-arg:PLOYZ_GIT_COMMIT={commit}"),
+        ]);
+    }
     arguments.extend([
         "--output".to_owned(),
         format!("type=oci,dest={oci_layout},tar=false"),
@@ -268,7 +273,7 @@ mod tests {
     use ployz_core::build::{BuildCacheScope, BuildContextPath, GitSource};
     use std::fs;
 
-    fn checkout(temp: &tempfile::TempDir) -> CheckedOutGitSource {
+    fn checkout(temp: &tempfile::TempDir) -> PreparedBuildSource {
         let root = temp.path().join("source");
         let context = root.join("app");
         fs::create_dir_all(&context).expect("context");
@@ -281,9 +286,11 @@ mod tests {
             Some("app"),
         )
         .expect("source");
-        CheckedOutGitSource {
+        PreparedBuildSource {
             context: fs::canonicalize(context).expect("context"),
-            commit: ployz_core::build::VerifiedGitCommit::from_source(&source),
+            verified: ployz_core::build::VerifiedBuildSource::Git {
+                git: ployz_core::build::VerifiedGitCommit::from_source(&source),
+            },
         }
     }
 

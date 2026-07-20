@@ -620,7 +620,7 @@ impl ExternalBuildRuntime {
         Ok(ExternalBuildOutput {
             acceptance: BuildExecutorAcceptance::from_start_request(request),
             image: image.clone(),
-            verified_commit: result.verified_commit,
+            verified_source: result.verified_source,
             toolchain: result.toolchain,
             log_summary,
         })
@@ -691,7 +691,7 @@ impl ExternalBuildRuntime {
 struct ExternalBuildOutput {
     acceptance: BuildExecutorAcceptance,
     image: PlatformImage,
-    verified_commit: ployz_core::build::VerifiedGitCommit,
+    verified_source: ployz_core::build::VerifiedBuildSource,
     toolchain: ployz_core::operation::BuildToolchainEvidence,
     log_summary: BuildLogSummary,
 }
@@ -702,7 +702,7 @@ impl ExternalBuildOutput {
             acceptance: self.acceptance,
             cleanup: BuildExecutorSuccessCleanupEvidence::confirmed(),
             image: self.image,
-            verified_commit: self.verified_commit,
+            verified_source: self.verified_source,
             toolchain: self.toolchain,
             log_summary: self.log_summary,
         }
@@ -829,7 +829,7 @@ fn executor_error(message: impl Into<String>) -> BuildExecutionError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::build::{BuildAdapter, BuildContextPath, GitSource, VerifiedGitCommit};
+    use ployz_core::build::{BuildAdapter, BuildContextPath, GitSource, VerifiedBuildSource};
     use ployz_core::deploy::{ImageAvailabilityExpiresAt, PlatformImage};
     use ployz_core::ids::{BuildExecutorId, BuildPoolId, MachineId, OperationId};
     use ployz_core::image::{OciDigest, OciPlatform};
@@ -1112,7 +1112,7 @@ mod tests {
                 availability_expires_at: ImageAvailabilityExpiresAt::try_new(4_102_444_800)
                     .expect("expiry"),
             },
-            verified_commit: VerifiedGitCommit::from_source(&request.source),
+            verified_source: VerifiedBuildSource::from_source(&request.source),
             toolchain: BuildToolchainEvidence {
                 buildkit_image: digest,
                 adapter: BuildAdapterToolchainEvidence::Dockerfile,
@@ -1144,7 +1144,8 @@ mod tests {
                 "secret",
                 None::<String>,
             )
-            .expect("source"),
+            .expect("source")
+            .into(),
             adapter: BuildAdapter::Dockerfile {
                 dockerfile: BuildContextPath::try_new("Dockerfile").expect("path"),
                 target: None,

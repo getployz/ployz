@@ -1,5 +1,8 @@
 use std::collections::BTreeMap;
 
+use ployz_core::build::{
+    BuildAdapter, BuildCacheScope, BuildPlatforms, BuildSource, BuildTarget, LocalSnapshotDigest,
+};
 use ployz_core::deploy::{
     ContainerMountPath, ContainerRuntimeSpec, DeployPlanningTarget, DeployRequest,
     DeployReservationId, DeployServiceSpec, ImageReference, ImageSource, ReplicaCount,
@@ -9,13 +12,41 @@ use ployz_core::ids::{MachineId, NamespaceId, OperationId, ServiceId};
 use ployz_core::image::OciDigest;
 use ployz_core::operation::OperationIdempotencyKey;
 use ployz_sdk_types::{
-    DeploySubmitError, DeploySubmitRequest, NetworkRepairError, SystemDeployRequest,
-    SystemDeployTarget,
+    BuildSubmitError, BuildSubmitRequest, DeploySubmitError, DeploySubmitRequest,
+    NetworkRepairError, SystemDeployRequest, SystemDeployTarget,
 };
 
 use super::{
-    normalize_deploy_submit, normalize_system_deploy, validate_network_repair_preconditions,
+    normalize_deploy_submit, normalize_system_deploy, validate_build_source_target,
+    validate_network_repair_preconditions,
 };
+
+#[test]
+fn local_snapshot_requires_external_target_before_admission() {
+    let operation_id = OperationId::try_new("build_local_cluster").expect("operation id");
+    let request = BuildSubmitRequest {
+        operation_id: operation_id.clone(),
+        target: BuildTarget::Cluster,
+        source: BuildSource::LocalSnapshot {
+            digest: LocalSnapshotDigest::try_new(format!("sha256:{}", "a".repeat(64)))
+                .expect("digest"),
+            subdir: None,
+        },
+        adapter: BuildAdapter::Railpack {
+            cache_scope: BuildCacheScope::try_new("scope_local").expect("cache scope"),
+        },
+        platforms: BuildPlatforms::try_new([ployz_core::image::OciPlatform::try_new(
+            "linux", "amd64",
+        )
+        .expect("platform")])
+        .expect("platforms"),
+    };
+
+    assert_eq!(
+        validate_build_source_target(&request),
+        Err(BuildSubmitError::LocalSnapshotRequiresExternalTarget { operation_id })
+    );
+}
 
 fn operation_id() -> OperationId {
     OperationId::try_new("op_network_repair").expect("operation id")

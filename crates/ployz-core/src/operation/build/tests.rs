@@ -1,7 +1,7 @@
 use super::*;
 use crate::build::{
     BuildCacheScope, BuildExecutorAssignment, BuildExecutorEvidence, GitCommit, GitRepositoryUrl,
-    GitSource, VerifiedGitCommit,
+    GitSource, VerifiedBuildSource,
 };
 use crate::deploy::PlatformImage;
 use crate::image::{OciDigest, OciPlatform};
@@ -36,7 +36,8 @@ fn status_for_target(target: BuildTarget) -> OperationStatus {
             None::<String>,
         )
         .expect("source")
-        .evidence(),
+        .evidence()
+        .into(),
         BuildAdapter::Railpack {
             cache_scope: BuildCacheScope::try_new("test").expect("scope"),
         },
@@ -569,14 +570,14 @@ fn submitted_event_and_status_are_credential_free() {
     let event = OperationEvent::BuildSubmitted {
         operation_id: id(),
         target: BuildTarget::Cluster,
-        source: evidence.clone(),
+        source: evidence.clone().into(),
         adapter: adapter.clone(),
         platforms: platforms.clone(),
     };
     let status = OperationStatus::build_accepted(
         id(),
         BuildTarget::Cluster,
-        evidence,
+        evidence.into(),
         adapter,
         platforms,
         EventSequence::try_new(1).expect("sequence"),
@@ -614,7 +615,7 @@ fn submitted_event_must_match_the_admitted_build_contract() {
             OperationEvent::BuildSubmitted {
                 operation_id: id(),
                 target: BuildTarget::Cluster,
-                source: different_source.evidence(),
+                source: different_source.evidence().into(),
                 adapter: status.adapter().clone(),
                 platforms: status.platforms().clone(),
             },
@@ -773,15 +774,17 @@ fn verified_build_evidence_is_accepted_while_building() {
     let machine_id = MachineId::try_new("machine-a").expect("machine");
     let OperationProjection::StatusChanged { status: verified } = project_event_from_status(
         &building,
-        OperationEvent::BuildCommitVerified {
+        OperationEvent::BuildSourceVerified {
             operation_id: id(),
             platform: platform.clone(),
             executor: cluster_evidence(&machine_id),
-            commit: VerifiedGitCommit {
-                url: GitRepositoryUrl::try_new("https://example.com/repo.git").expect("url"),
-                commit: GitCommit::try_new("0123456789abcdef0123456789abcdef01234567")
-                    .expect("commit"),
-                subdir: None,
+            source: VerifiedBuildSource::Git {
+                git: crate::build::VerifiedGitCommit {
+                    url: GitRepositoryUrl::try_new("https://example.com/repo.git").expect("url"),
+                    commit: GitCommit::try_new("0123456789abcdef0123456789abcdef01234567")
+                        .expect("commit"),
+                    subdir: None,
+                },
             },
         },
         EventSequence::try_new(5).expect("sequence"),

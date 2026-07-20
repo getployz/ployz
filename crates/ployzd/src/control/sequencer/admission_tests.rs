@@ -52,7 +52,8 @@ fn build_submit_command(operation: &str) -> BuildSubmitCommand {
             "private-token",
             None::<String>,
         )
-        .expect("valid git source"),
+        .expect("valid git source")
+        .into(),
         adapter: BuildAdapter::Railpack {
             cache_scope: BuildCacheScope::try_new("build-scope").expect("valid cache scope"),
         },

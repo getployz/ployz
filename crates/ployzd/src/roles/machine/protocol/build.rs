@@ -86,7 +86,7 @@ pub enum MachineBuildCachePruneDomainError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::build::{BuildExecutorSuccessCleanupEvidence, GitSource, VerifiedGitCommit};
+    use ployz_core::build::{BuildExecutorSuccessCleanupEvidence, GitSource, VerifiedBuildSource};
     use ployz_core::deploy::{ImageAvailabilityExpiresAt, PlatformImage};
     use ployz_core::image::{OciDigest, OciPlatform};
     use ployz_core::operation::{BuildAdapterToolchainEvidence, BuildToolchainEvidence};
@@ -111,7 +111,8 @@ mod tests {
             "redacted-test-value",
             None::<String>,
         )
-        .expect("source");
+        .expect("source")
+        .into();
         let machine_id = MachineId::try_new("machine-a").expect("machine");
         let response = MachineBuildStartRpcOk::from((
             machine_id.clone(),
@@ -125,7 +126,7 @@ mod tests {
                     availability_expires_at: ImageAvailabilityExpiresAt::try_new(4_102_444_800)
                         .expect("expiry"),
                 },
-                verified_commit: VerifiedGitCommit::from_source(&source),
+                verified_source: VerifiedBuildSource::from_source(&source),
                 toolchain: BuildToolchainEvidence {
                     buildkit_image: digest,
                     adapter: BuildAdapterToolchainEvidence::Dockerfile,
@@ -152,7 +153,7 @@ mod tests {
                         "image_id": format!("sha256:{}", "a".repeat(64)),
                         "availability_expires_at": "4102444800",
                     },
-                    "verified_commit": {
+                    "verified_source": {
                         "url": "https://example.test/repo.git",
                         "commit": "0123456789abcdef0123456789abcdef01234567",
                     },
