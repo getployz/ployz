@@ -15,6 +15,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::{fmt, fs};
 
+use ployz_build_executor::{DockerHubRegistryMirror, DockerHubRegistryMirrorError};
 use ployz_nats::connect::{
     NatsClientAuth, NatsClientUrl, NatsClientUrlError, NatsConnectConfig, NatsTlsTrust,
 };
@@ -34,6 +35,7 @@ pub(crate) const PLOYZ_NATS_NKEY_SEED_FILE_ENV: &str = "PLOYZ_NATS_NKEY_SEED_FIL
 pub(crate) const PLOYZ_NATS_AUTHORIZED_USERS_FILE_ENV: &str = "PLOYZ_NATS_AUTHORIZED_USERS_FILE";
 pub(crate) const PLOYZ_CORE_DB_ENV: &str = "PLOYZ_CORE_DB";
 pub(crate) const PLOYZ_LEASE_WORKER_URL_ENV: &str = "PLOYZ_LEASE_WORKER_URL";
+pub(crate) const PLOYZ_BUILD_REGISTRY_MIRROR_ENV: &str = "PLOYZ_BUILD_REGISTRY_MIRROR";
 pub(crate) const PLOYZ_ACME_DIRECTORY_URL_ENV: &str = "PLOYZ_ACME_DIRECTORY_URL";
 pub(crate) const DEFAULT_CORE_DB: &str = "/var/lib/ployz/ployz-core.db";
 pub(crate) const DEFAULT_GATEWAY_CERTIFICATE_STATE_DIR: &str = "/var/lib/ployz/certificates";
@@ -146,6 +148,7 @@ pub fn load_daemon_process_config(
                     connect,
                     artifacts,
                     ployz_native_mesh,
+                    load_build_registry_mirror(&env)?,
                 ),
             )))
         }
@@ -177,6 +180,18 @@ pub fn load_daemon_process_config(
 /// Reads `key` from the environment, treating empty values as unset.
 fn env_value(env: &impl Fn(&str) -> Option<String>, key: &str) -> Option<String> {
     env(key).filter(|value| !value.is_empty())
+}
+
+fn load_build_registry_mirror(
+    env: &impl Fn(&str) -> Option<String>,
+) -> Result<Option<DockerHubRegistryMirror>, DaemonProcessConfigError> {
+    env_value(env, PLOYZ_BUILD_REGISTRY_MIRROR_ENV)
+        .map(|value| {
+            DockerHubRegistryMirror::try_new(value.clone()).map_err(|source| {
+                DaemonProcessConfigError::InvalidBuildRegistryMirror { value, source }
+            })
+        })
+        .transpose()
 }
 
 /// Everything a role needs to make its authenticated NATS connection,
@@ -600,6 +615,10 @@ pub enum DaemonProcessConfigError {
         value: String,
         source: LeaseWorkerUrlError,
     },
+    InvalidBuildRegistryMirror {
+        value: String,
+        source: DockerHubRegistryMirrorError,
+    },
 }
 
 impl fmt::Display for DaemonProcessConfigError {
@@ -708,6 +727,11 @@ impl fmt::Display for DaemonProcessConfigError {
                 formatter,
                 "{}={value:?} is invalid",
                 PLOYZ_LEASE_WORKER_URL_ENV
+            ),
+            Self::InvalidBuildRegistryMirror { value, .. } => write!(
+                formatter,
+                "{}={value:?} is invalid",
+                PLOYZ_BUILD_REGISTRY_MIRROR_ENV
             ),
         }
     }
@@ -841,6 +865,7 @@ pub(crate) struct MachineProcessConfig {
     pub nats: RoleNatsConnect,
     pub artifacts: MachineProcessArtifacts,
     pub ployz_native_mesh: MachinePloyzNativeMeshConfig,
+    pub build_registry_mirror: Option<DockerHubRegistryMirror>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -891,12 +916,14 @@ impl MachineProcessConfig {
         nats: RoleNatsConnect,
         artifacts: MachineProcessArtifacts,
         ployz_native_mesh: MachinePloyzNativeMeshConfig,
+        build_registry_mirror: Option<DockerHubRegistryMirror>,
     ) -> Self {
         Self {
             machine_id,
             nats,
             artifacts,
             ployz_native_mesh,
+            build_registry_mirror,
         }
     }
 }

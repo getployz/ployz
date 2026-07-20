@@ -11,7 +11,8 @@
 # Build context requirements (provided by scripts/build-dind-machine-image.sh):
 #   nginx.tar, registry.tar, umami.tar, and postgres.tar — `docker save`
 #   archives for the host arch.
-FROM debian:bookworm
+ARG BASE_IMAGE=debian:bookworm
+FROM ${BASE_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
@@ -43,6 +44,14 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 
 COPY daemon.json /etc/docker/daemon.json
+ARG DOCKER_HUB_MIRROR=mirror.gcr.io
+ENV PLOYZ_BUILD_REGISTRY_MIRROR=${DOCKER_HUB_MIRROR}
+RUN python3 -c 'import json, os; path="/etc/docker/daemon.json"; value=json.load(open(path)); value["registry-mirrors"]=["https://" + os.environ["PLOYZ_BUILD_REGISTRY_MIRROR"]]; open(path, "w").write(json.dumps(value, indent=2) + "\n")'
+RUN install -d /etc/systemd/system.conf.d \
+  && printf '%s\n' \
+    '[Manager]' \
+    "DefaultEnvironment=PLOYZ_BUILD_REGISTRY_MIRROR=${DOCKER_HUB_MIRROR}" \
+    > /etc/systemd/system.conf.d/ployz-build-registry-mirror.conf
 
 # The harness allocates a TTY so journald can expose every machine's service
 # output through `docker logs` while a scenario is running.
