@@ -248,30 +248,20 @@ impl DeployTree {
                 service_id,
                 handoff,
             } => {
-                let stopped_running = handoff
-                    .superseded
-                    .as_slice()
-                    .iter()
-                    .filter(|participant| {
-                        matches!(
-                            participant.stop_outcome,
-                            ployz_core::deploy::DeployVolumeHandoffStopOutcome::StoppedRunning
-                        )
-                    })
-                    .count();
-                let already_stopped = handoff
-                    .superseded
-                    .as_slice()
-                    .iter()
-                    .filter(|participant| {
-                        matches!(
-                            participant.stop_outcome,
-                            ployz_core::deploy::DeployVolumeHandoffStopOutcome::AlreadyStopped
-                        )
-                    })
-                    .count();
-                let missing =
-                    handoff.superseded.as_slice().len() - stopped_running - already_stopped;
+                let (mut stopped_running, mut already_stopped, mut missing) = (0, 0, 0);
+                for participant in handoff.superseded.as_slice() {
+                    match participant.stop_outcome {
+                        ployz_core::deploy::DeployVolumeHandoffStopOutcome::StoppedRunning => {
+                            stopped_running += 1;
+                        }
+                        ployz_core::deploy::DeployVolumeHandoffStopOutcome::AlreadyStopped => {
+                            already_stopped += 1;
+                        }
+                        ployz_core::deploy::DeployVolumeHandoffStopOutcome::Missing => {
+                            missing += 1;
+                        }
+                    }
+                }
                 self.plain_lines.push(format!(
                     "deploy {}: {} — volume handoff on {}: stopped {} running prior owner(s); {} already stopped; {} missing",
                     operation_id.as_str(),

@@ -45,9 +45,7 @@ struct VolumeOwnerState {
 #[derive(Debug, Clone)]
 enum VolumeOwnerStopState {
     Attempting,
-    StoppedRunning,
-    AlreadyStopped,
-    Missing,
+    Applied(DeployVolumeHandoffStopOutcome),
     Uncertain(DeployVolumeHandoffStopUncertain),
 }
 
@@ -65,11 +63,7 @@ pub(super) struct VolumeHandoffQuiescence {
 
 pub(super) enum ServiceStartTracking {
     Ordinary,
-    VolumeHandoff(VolumeHandoffSession),
-}
-
-pub(super) struct VolumeHandoffSession {
-    service_id: ServiceId,
+    VolumeHandoff(ServiceId),
 }
 
 struct QuiescedService {
@@ -147,10 +141,10 @@ impl ServiceStartTracking {
         machine_id: MachineId,
         expected_identity: ManagedContainerIdentity,
     ) {
-        let Self::VolumeHandoff(session) = self else {
+        let Self::VolumeHandoff(service_id) = self else {
             return;
         };
-        state.begin_consumer_start(&session.service_id, machine_id, expected_identity);
+        state.begin_consumer_start(service_id, machine_id, expected_identity);
     }
 
     pub(super) fn consumer_started(
@@ -158,10 +152,10 @@ impl ServiceStartTracking {
         state: &mut VolumeHandoffRollbackState,
         target: DeployCleanupContainer,
     ) {
-        let Self::VolumeHandoff(session) = self else {
+        let Self::VolumeHandoff(service_id) = self else {
             return;
         };
-        state.consumer_started(&session.service_id, target);
+        state.consumer_started(service_id, target);
     }
 
     pub(super) fn consumer_did_not_start(
@@ -169,10 +163,10 @@ impl ServiceStartTracking {
         state: &mut VolumeHandoffRollbackState,
         expected_identity: &ManagedContainerIdentity,
     ) {
-        let Self::VolumeHandoff(session) = self else {
+        let Self::VolumeHandoff(service_id) = self else {
             return;
         };
-        state.consumer_did_not_start(&session.service_id, expected_identity);
+        state.consumer_did_not_start(service_id, expected_identity);
     }
 
     pub(super) fn ambiguous_consumers(
@@ -181,10 +175,10 @@ impl ServiceStartTracking {
         expected_identity: &ManagedContainerIdentity,
         targets: impl IntoIterator<Item = DeployCleanupContainer>,
     ) {
-        let Self::VolumeHandoff(session) = self else {
+        let Self::VolumeHandoff(service_id) = self else {
             return;
         };
-        state.ambiguous_consumers(&session.service_id, expected_identity, targets);
+        state.ambiguous_consumers(service_id, expected_identity, targets);
     }
 }
 
@@ -239,7 +233,7 @@ where
         match result {
             Ok(outcome) => {
                 let stop_outcome = applied_stop_outcome(outcome);
-                finish_owner_stop(state, service_id, target, outcome);
+                finish_owner_stop(state, service_id, target, stop_outcome);
                 applied_participants.push(DeployVolumeHandoffAppliedParticipant {
                     target: target.clone(),
                     stop_outcome,
@@ -275,9 +269,7 @@ where
         },
     )
     .await?;
-    Ok(ServiceStartTracking::VolumeHandoff(VolumeHandoffSession {
-        service_id: service_id.clone(),
-    }))
+    Ok(ServiceStartTracking::VolumeHandoff(service_id.clone()))
 }
 
 const fn applied_stop_outcome(
@@ -314,14 +306,9 @@ fn finish_owner_stop(
     state: &mut VolumeHandoffRollbackState,
     service_id: &ServiceId,
     target: &DeployCleanupContainer,
-    outcome: MachineContainerStopOutcome,
+    outcome: DeployVolumeHandoffStopOutcome,
 ) {
-    let stop = match outcome {
-        MachineContainerStopOutcome::StoppedRunning => VolumeOwnerStopState::StoppedRunning,
-        MachineContainerStopOutcome::AlreadyStopped => VolumeOwnerStopState::AlreadyStopped,
-        MachineContainerStopOutcome::Missing => VolumeOwnerStopState::Missing,
-    };
-    owner_state_mut(state, service_id, target).stop = stop;
+    owner_state_mut(state, service_id, target).stop = VolumeOwnerStopState::Applied(outcome);
 }
 
 fn finish_owner_stop_uncertain(
@@ -517,13 +504,15 @@ fn restoration_unconfirmed(
 
 fn restart_eligible_for(owner: &VolumeOwnerState) -> bool {
     match &owner.stop {
-        VolumeOwnerStopState::StoppedRunning => true,
+        VolumeOwnerStopState::Applied(DeployVolumeHandoffStopOutcome::StoppedRunning) => true,
         VolumeOwnerStopState::Uncertain(_) => {
             owner.participant.prior_state == DeployVolumeHandoffPriorState::Running
         }
         VolumeOwnerStopState::Attempting
-        | VolumeOwnerStopState::AlreadyStopped
-        | VolumeOwnerStopState::Missing => false,
+        | VolumeOwnerStopState::Applied(
+            DeployVolumeHandoffStopOutcome::AlreadyStopped
+            | DeployVolumeHandoffStopOutcome::Missing,
+        ) => false,
     }
 }
 
