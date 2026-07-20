@@ -57,6 +57,11 @@ const MACHINE_SHUTDOWN_TIMEOUT: Duration =
 const INTENT_MIRROR_RESUBSCRIBE_DELAY: Duration = Duration::from_secs(5);
 const BUILD_WORKSPACE_ROOT: &str = "/var/lib/ployz/builds";
 
+struct MachineBuildProcessInput {
+    images: AvailableImageService,
+    executor: DockerBuildExecutor,
+}
+
 pub struct RunningMachineProcess {
     machine_service: RunningNatsService,
     observer: RunningTask,
@@ -196,6 +201,14 @@ pub async fn start_machine_process(
         )
         .with_mtu_policy(mtu_policy),
     );
+    let build_process = image_state.map(|images| {
+        let executor = DockerBuildExecutor::new(PathBuf::from(BUILD_WORKSPACE_ROOT));
+        let executor = match &config.build_registry_mirror {
+            Some(mirror) => executor.with_docker_hub_registry_mirror(mirror.clone()),
+            None => executor,
+        };
+        MachineBuildProcessInput { images, executor }
+    });
 
     let mut process = start_machine_process_with_ports(
         client,
@@ -208,7 +221,7 @@ pub async fn start_machine_process(
         seed,
         MACHINE_OBSERVATION_INTERVAL,
         config.ployz_native_mesh.wg_ifname.clone(),
-        image_state,
+        build_process,
     )
     .await?;
     process.image_registry = image_registry;
@@ -216,7 +229,7 @@ pub async fn start_machine_process(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn start_machine_process_with_ports<R, P, L>(
+async fn start_machine_process_with_ports<R, P, L>(
     client: NatsClient,
     machine_id: MachineId,
     runner: R,
@@ -227,7 +240,7 @@ pub(crate) async fn start_machine_process_with_ports<R, P, L>(
     seed: NatsClientUrl,
     observation_interval: Duration,
     wg_ifname: String,
-    image_state: Option<AvailableImageService>,
+    build_process: Option<MachineBuildProcessInput>,
 ) -> Result<RunningMachineProcess, MachineProcessError>
 where
     R: Clone
@@ -246,9 +259,11 @@ where
 {
     let endpoint_cache = MachineEndpointCache::new(wg_ifname);
     let projection_state = MachineProjectionState::new();
-    let build_state = match image_state.clone() {
-        Some(images) => {
-            let executor = DockerBuildExecutor::new(PathBuf::from(BUILD_WORKSPACE_ROOT));
+    let image_state = build_process
+        .as_ref()
+        .map(|build_process| build_process.images.clone());
+    let build_state = match build_process {
+        Some(MachineBuildProcessInput { images, executor }) => {
             let runtime = MachineBuildRuntime::new(
                 machine_id.clone(),
                 client.clone(),
