@@ -4,8 +4,8 @@
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployOrigin, DeployPhasePlan, DeployPlan, DeployPlanStep,
     DeployServicePlacement, DeployServicePlan, DeployVolumeHandoffParticipant,
-    DeployVolumeHandoffPlan, DeployVolumeHandoffPriorState, ReplicaSlot, ReplicatedReplicaSlot,
-    VolumeName,
+    DeployVolumeHandoffPlan, DeployVolumeHandoffPriorState, NonEmptyVolumeHandoffParticipants,
+    NonEmptyVolumeNames, ReplicaSlot, ReplicatedReplicaSlot, VolumeName,
 };
 use ployz_core::operation::{
     DeployCompletionOutcome, DeployOperationState, DeployRunningStage, DeployTransition,
@@ -449,11 +449,22 @@ fn volume_handoff_evidence_round_trips_without_runtime_secrets_and_projects() {
         service_id: service_id("svc_api"),
         handoff: DeployVolumeHandoffPlan {
             machine_id: machine_id("machine_a"),
-            volume_names: vec![VolumeName::try_new("data").expect("volume name")],
-            superseded: vec![DeployVolumeHandoffParticipant {
-                target: target.clone(),
-                prior_state: DeployVolumeHandoffPriorState::Running,
-            }],
+            volume_names: NonEmptyVolumeNames::try_new([
+                VolumeName::try_new("data").expect("volume name")
+            ])
+            .expect("non-empty volume names"),
+            superseded: NonEmptyVolumeHandoffParticipants::try_new([
+                DeployVolumeHandoffParticipant {
+                    target: target.clone(),
+                    prior_state: DeployVolumeHandoffPriorState::Running,
+                    shared_volume_names: NonEmptyVolumeNames::try_new([VolumeName::try_new(
+                        "data",
+                    )
+                    .expect("volume name")])
+                    .expect("shared volume"),
+                },
+            ])
+            .expect("handoff participant"),
         },
     };
     let json = serde_json::to_string(&event).expect("handoff evidence serializes");
@@ -719,12 +730,13 @@ fn plan_created_event() -> OperationEvent {
                 services: vec![DeployServicePlan {
                     service_id: service_id("svc_api"),
                     placement: DeployServicePlacement::Replicated,
-                    steps: vec![DeployPlanStep::RunContainer {
-                        machine_id: machine_id("machine_a"),
-                        slot: replica_slot(1),
-                    }],
+                    work: ployz_core::deploy::DeployServiceWork::Ordinary {
+                        steps: vec![DeployPlanStep::RunContainer {
+                            machine_id: machine_id("machine_a"),
+                            slot: replica_slot(1),
+                        }],
+                    },
                     pre_start: None,
-                    volume_handoff: None,
                 }],
             }],
             volume_pin_commits: Vec::new(),

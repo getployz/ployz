@@ -256,16 +256,17 @@ fn pushed_platforms_are_validated_across_all_phases_before_execution() {
             },
             DeployPhasePlan {
                 services: vec![DeployServicePlan {
-                    volume_handoff: None,
                     service_id: ServiceId::try_new("api").expect("service id"),
                     placement: ployz_core::deploy::DeployServicePlacement::Replicated,
-                    steps: vec![DeployPlanStep::RunContainer {
-                        machine_id: target_machine.clone(),
-                        slot: ReplicaSlot::Replicated {
-                            number: ployz_core::deploy::ReplicatedReplicaSlot::try_new(1)
-                                .expect("replica slot"),
-                        },
-                    }],
+                    work: ployz_core::deploy::DeployServiceWork::Ordinary {
+                        steps: vec![DeployPlanStep::RunContainer {
+                            machine_id: target_machine.clone(),
+                            slot: ReplicaSlot::Replicated {
+                                number: ployz_core::deploy::ReplicatedReplicaSlot::try_new(1)
+                                    .expect("replica slot"),
+                            },
+                        }],
+                    },
                     pre_start: None,
                 }],
             },

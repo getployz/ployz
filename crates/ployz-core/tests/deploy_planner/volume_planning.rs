@@ -733,12 +733,54 @@ fn unchanged_named_volume_replica_has_no_handoff() {
         panic!("one service")
     };
 
-    assert!(service.volume_handoff.is_none());
+    assert!(matches!(service.work, DeployServiceWork::Ordinary { .. }));
     assert!(
         !serde_json::to_string(&plan)
             .expect("plan serializes")
             .contains("never-in-plan-evidence")
     );
+}
+
+#[test]
+fn adding_a_first_volume_does_not_handoff_an_unobserved_old_container() {
+    let mut input = planning_input(1, [machine_id("machine_a")]);
+    declare_plain_volume_mounts(&mut input, vec![volume_mount("data", "/data")]);
+    input.volume_pins = vec![volume_pin("data", "machine_a")];
+    input.cleanup_candidates = vec![cleanup_container_observed(
+        "machine_a",
+        "ctr_without_mount_testimony",
+        true,
+        None,
+    )];
+
+    let plan = plan_single_service(&input).expect("first volume plans");
+    let [phase] = plan.phases.as_slice() else {
+        panic!("one phase")
+    };
+    let [service] = phase.services.as_slice() else {
+        panic!("one service")
+    };
+    assert!(matches!(service.work, DeployServiceWork::Ordinary { .. }));
+}
+
+#[test]
+fn replacing_volume_a_with_b_does_not_handoff_the_old_a_consumer() {
+    let mut input = planning_input(1, [machine_id("machine_a")]);
+    declare_plain_volume_mounts(&mut input, vec![volume_mount("volume_b", "/data")]);
+    input.volume_pins = vec![volume_pin("volume_b", "machine_a")];
+    input.cleanup_candidates = vec![with_named_volumes(
+        cleanup_container_observed("machine_a", "ctr_volume_a", true, None),
+        ["volume_a"],
+    )];
+
+    let plan = plan_single_service(&input).expect("replacement volume plans");
+    let [phase] = plan.phases.as_slice() else {
+        panic!("one phase")
+    };
+    let [service] = phase.services.as_slice() else {
+        panic!("one service")
+    };
+    assert!(matches!(service.work, DeployServiceWork::Ordinary { .. }));
 }
 
 #[test]
@@ -757,10 +799,19 @@ fn changed_named_volume_replacement_has_deterministic_exact_handoff_owners() {
         volume_pin("data", "machine_a"),
     ];
     input.cleanup_candidates = vec![
-        cleanup_container_observed("machine_a", "ctr_z", false, None),
+        with_named_volumes(
+            cleanup_container_observed("machine_a", "ctr_z", false, None),
+            ["uploads"],
+        ),
         cleanup_container_observed("machine_b", "ctr_other_machine", true, None),
-        cleanup_container_observed("machine_a", "ctr_a", true, None),
-        cleanup_container_observed("machine_a", "ctr_a", true, None),
+        with_named_volumes(
+            cleanup_container_observed("machine_a", "ctr_a", true, None),
+            ["unrelated", "data", "data"],
+        ),
+        with_named_volumes(
+            cleanup_container_observed("machine_a", "ctr_a", true, None),
+            ["data"],
+        ),
     ];
 
     let plan = plan_single_service(&input).expect("replacement plans");
@@ -770,30 +821,36 @@ fn changed_named_volume_replacement_has_deterministic_exact_handoff_owners() {
     let [service] = phase.services.as_slice() else {
         panic!("one service")
     };
-    let handoff = service
-        .volume_handoff
-        .as_ref()
-        .expect("same-machine replacement requires handoff");
-
+    let DeployServiceWork::VolumeHandoff {
+        replacement,
+        remaining_steps,
+        participants,
+    } = &service.work
+    else {
+        panic!("same-machine replacement requires handoff")
+    };
+    assert_eq!(replacement.machine_id, machine_id("machine_a"));
+    assert_eq!(remaining_steps.len(), 1);
     assert_eq!(
-        handoff,
-        &DeployVolumeHandoffPlan {
-            machine_id: machine_id("machine_a"),
-            volume_names: vec![
-                VolumeName::try_new("data").expect("volume"),
-                VolumeName::try_new("uploads").expect("volume"),
-            ],
-            superseded: vec![
-                DeployVolumeHandoffParticipant {
-                    target: cleanup_container("machine_a", "ctr_a"),
-                    prior_state: DeployVolumeHandoffPriorState::Running,
-                },
-                DeployVolumeHandoffParticipant {
-                    target: cleanup_container("machine_a", "ctr_z"),
-                    prior_state: DeployVolumeHandoffPriorState::Stopped,
-                },
-            ],
-        }
+        participants.as_slice(),
+        &[
+            DeployVolumeHandoffParticipant {
+                target: cleanup_container("machine_a", "ctr_a"),
+                prior_state: DeployVolumeHandoffPriorState::Running,
+                shared_volume_names: ployz_core::deploy::NonEmptyVolumeNames::try_new([
+                    VolumeName::try_new("data").expect("volume"),
+                ])
+                .expect("shared volume"),
+            },
+            DeployVolumeHandoffParticipant {
+                target: cleanup_container("machine_a", "ctr_z"),
+                prior_state: DeployVolumeHandoffPriorState::Stopped,
+                shared_volume_names: ployz_core::deploy::NonEmptyVolumeNames::try_new([
+                    VolumeName::try_new("uploads").expect("volume"),
+                ])
+                .expect("shared volume"),
+            },
+        ]
     );
     assert_eq!(
         plan.cleanup_actions
@@ -810,11 +867,9 @@ fn named_volume_handoff_does_not_cross_service_ownership() {
     let mut api = planning_input(1, [machine_id("machine_a")]);
     declare_plain_volume_mounts(&mut api, vec![volume_mount("shared", "/api")]);
     api.volume_pins = vec![volume_pin("shared", "machine_a")];
-    api.cleanup_candidates = vec![cleanup_container_observed(
-        "machine_a",
-        "ctr_api_old",
-        true,
-        None,
+    api.cleanup_candidates = vec![with_named_volumes(
+        cleanup_container_observed("machine_a", "ctr_api_old", true, None),
+        ["shared"],
     )];
 
     let mut worker = planning_input(1, [machine_id("machine_a")]);
@@ -823,11 +878,9 @@ fn named_volume_handoff_does_not_cross_service_ownership() {
     });
     declare_plain_volume_mounts(&mut worker, vec![volume_mount("shared", "/worker")]);
     worker.volume_pins = vec![volume_pin("shared", "machine_a")];
-    worker.cleanup_candidates = vec![cleanup_container_observed(
-        "machine_a",
-        "ctr_api_old",
-        true,
-        None,
+    worker.cleanup_candidates = vec![with_named_volumes(
+        cleanup_container_observed("machine_a", "ctr_api_old", true, None),
+        ["shared"],
     )];
 
     let plan = plan_inputs(vec![api, worker], Vec::new()).expect("shared volume plans");
@@ -845,8 +898,8 @@ fn named_volume_handoff_does_not_cross_service_ownership() {
         .find(|service| service.service_id == service_id("svc_worker"))
         .expect("worker plan");
 
-    assert!(api.volume_handoff.is_some());
-    assert!(worker.volume_handoff.is_none());
+    assert!(matches!(api.work, DeployServiceWork::VolumeHandoff { .. }));
+    assert!(matches!(worker.work, DeployServiceWork::Ordinary { .. }));
 }
 
 #[test]
@@ -855,11 +908,9 @@ fn retained_stopped_handoff_owner_still_reaches_post_promotion_cleanup() {
     declare_plain_volume_mounts(&mut input, vec![volume_mount("data", "/data")]);
     input.volume_pins = vec![volume_pin("data", "machine_a")];
     input.service.keep = Some(ployz_core::deploy::ContainerRetentionCount::new(1));
-    input.cleanup_candidates = vec![cleanup_container_observed(
-        "machine_a",
-        "ctr_stopped",
-        false,
-        Some(10),
+    input.cleanup_candidates = vec![with_named_volumes(
+        cleanup_container_observed("machine_a", "ctr_stopped", false, Some(10)),
+        ["data"],
     )];
 
     let plan = plan_single_service(&input).expect("replacement plans");
@@ -870,7 +921,10 @@ fn retained_stopped_handoff_owner_still_reaches_post_promotion_cleanup() {
         panic!("one service")
     };
 
-    assert!(service.volume_handoff.is_some());
+    assert!(matches!(
+        service.work,
+        DeployServiceWork::VolumeHandoff { .. }
+    ));
     assert_eq!(
         plan.cleanup_actions
             .iter()

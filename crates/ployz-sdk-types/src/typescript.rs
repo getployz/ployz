@@ -948,15 +948,14 @@ pub fn operation_contract_fixture() -> Value {
                         services: vec![DeployServicePlan {
                             service_id: service_id("svc_api"),
                             placement: DeployServicePlacement::Replicated,
-                            steps: vec![DeployPlanStep::RunContainer {
+                            work: ployz_core::deploy::DeployServiceWork::Ordinary { steps: vec![DeployPlanStep::RunContainer {
                                 machine_id: machine_id("machine_2"),
                                 slot: ReplicaSlot::Replicated {
                                     number: ReplicatedReplicaSlot::try_new(1)
                                         .expect("valid replica slot"),
                                 },
-                            }],
+                            }] },
                             pre_start: None,
-                            volume_handoff: None,
                         }],
                     }],
                     volume_pins: Vec::new(),

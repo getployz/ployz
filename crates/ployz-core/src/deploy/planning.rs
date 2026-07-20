@@ -586,11 +586,8 @@ fn target_machines(phases: &[DeployPhasePlan]) -> Vec<MachineId> {
     let mut machines = phases
         .iter()
         .flat_map(|phase| &phase.services)
-        .flat_map(|service| &service.steps)
-        .map(|step| match step {
-            DeployPlanStep::UseExistingContainer { machine_id, .. }
-            | DeployPlanStep::RunContainer { machine_id, .. } => machine_id.clone(),
-        })
+        .flat_map(|service| service.work.steps())
+        .map(|step| step.machine_id().clone())
         .collect::<Vec<_>>();
     machines.sort();
     machines.dedup();
@@ -606,12 +603,9 @@ fn service_target_machines(
         .flat_map(|phase| &phase.services)
         .find(|service| &service.service_id == service_id)?;
     let mut machines = service
-        .steps
-        .iter()
-        .map(|step| match step {
-            DeployPlanStep::UseExistingContainer { machine_id, .. }
-            | DeployPlanStep::RunContainer { machine_id, .. } => machine_id.clone(),
-        })
+        .work
+        .steps()
+        .map(|step| step.machine_id().clone())
         .chain(service.pre_start.iter().map(|step| step.machine_id.clone()))
         .collect::<Vec<_>>();
     machines.sort();
@@ -632,20 +626,86 @@ pub struct DeployPhasePlan {
 pub struct DeployServicePlan {
     pub service_id: ServiceId,
     pub placement: DeployServicePlacement,
-    pub steps: Vec<DeployPlanStep>,
+    pub work: DeployServiceWork,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pre_start: Option<PreStartHookStep>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub volume_handoff: Option<DeployVolumeHandoffPlan>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DeployServiceWork {
+    Ordinary {
+        steps: Vec<DeployPlanStep>,
+    },
+    VolumeHandoff {
+        replacement: DeployRunContainerStep,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        remaining_steps: Vec<DeployPlanStep>,
+        participants: NonEmptyVolumeHandoffParticipants,
+    },
+}
+
+impl DeployServiceWork {
+    pub fn steps(&self) -> impl Iterator<Item = DeployPlanStepRef<'_>> {
+        let (replacement, remaining): (Option<&DeployRunContainerStep>, &[DeployPlanStep]) =
+            match self {
+                Self::Ordinary { steps } => (None, steps),
+                Self::VolumeHandoff {
+                    replacement,
+                    remaining_steps,
+                    participants: _,
+                } => (Some(replacement), remaining_steps),
+            };
+        replacement
+            .into_iter()
+            .map(DeployPlanStepRef::RunContainer)
+            .chain(remaining.iter().map(DeployPlanStepRef::Step))
+    }
+
+    #[must_use]
+    pub fn volume_handoff_participants(&self) -> Option<&[DeployVolumeHandoffParticipant]> {
+        match self {
+            Self::Ordinary { .. } => None,
+            Self::VolumeHandoff { participants, .. } => Some(participants.as_slice()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum DeployPlanStepRef<'a> {
+    RunContainer(&'a DeployRunContainerStep),
+    Step(&'a DeployPlanStep),
+}
+
+impl DeployPlanStepRef<'_> {
+    #[must_use]
+    pub const fn machine_id(&self) -> &MachineId {
+        match self {
+            Self::RunContainer(step) => &step.machine_id,
+            Self::Step(DeployPlanStep::UseExistingContainer { machine_id, .. })
+            | Self::Step(DeployPlanStep::RunContainer { machine_id, .. }) => machine_id,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
+pub struct DeployRunContainerStep {
+    pub machine_id: MachineId,
+    pub slot: ReplicaSlot,
+}
+
+/// Durable evidence for an applied volume handoff. The executable plan keeps
+/// the same participants inside [`DeployServiceWork::VolumeHandoff`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
 pub struct DeployVolumeHandoffPlan {
     pub machine_id: MachineId,
-    pub volume_names: Vec<VolumeName>,
-    pub superseded: Vec<DeployVolumeHandoffParticipant>,
+    pub volume_names: NonEmptyVolumeNames,
+    pub superseded: NonEmptyVolumeHandoffParticipants,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -654,7 +714,93 @@ pub struct DeployVolumeHandoffPlan {
 pub struct DeployVolumeHandoffParticipant {
     pub target: DeployCleanupContainer,
     pub prior_state: DeployVolumeHandoffPriorState,
+    pub shared_volume_names: NonEmptyVolumeNames,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(
+    try_from = "Vec<DeployVolumeHandoffParticipant>",
+    into = "Vec<DeployVolumeHandoffParticipant>"
+)]
+pub struct NonEmptyVolumeHandoffParticipants(Vec<DeployVolumeHandoffParticipant>);
+
+impl NonEmptyVolumeHandoffParticipants {
+    pub fn try_new(
+        participants: impl IntoIterator<Item = DeployVolumeHandoffParticipant>,
+    ) -> Result<Self, EmptyVolumeHandoffParticipantsError> {
+        let participants = participants.into_iter().collect::<Vec<_>>();
+        if participants.is_empty() {
+            return Err(EmptyVolumeHandoffParticipantsError);
+        }
+        Ok(Self(participants))
+    }
+
+    #[must_use]
+    pub fn as_slice(&self) -> &[DeployVolumeHandoffParticipant] {
+        &self.0
+    }
+}
+
+impl TryFrom<Vec<DeployVolumeHandoffParticipant>> for NonEmptyVolumeHandoffParticipants {
+    type Error = EmptyVolumeHandoffParticipantsError;
+
+    fn try_from(value: Vec<DeployVolumeHandoffParticipant>) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<NonEmptyVolumeHandoffParticipants> for Vec<DeployVolumeHandoffParticipant> {
+    fn from(value: NonEmptyVolumeHandoffParticipants) -> Self {
+        value.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("volume handoff work must contain at least one participant")]
+pub struct EmptyVolumeHandoffParticipantsError;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(try_from = "Vec<VolumeName>", into = "Vec<VolumeName>")]
+pub struct NonEmptyVolumeNames(Vec<VolumeName>);
+
+impl NonEmptyVolumeNames {
+    pub fn try_new(
+        names: impl IntoIterator<Item = VolumeName>,
+    ) -> Result<Self, EmptyVolumeNamesError> {
+        let mut names = names.into_iter().collect::<Vec<_>>();
+        names.sort();
+        names.dedup();
+        if names.is_empty() {
+            return Err(EmptyVolumeNamesError);
+        }
+        Ok(Self(names))
+    }
+
+    #[must_use]
+    pub fn as_slice(&self) -> &[VolumeName] {
+        &self.0
+    }
+}
+
+impl TryFrom<Vec<VolumeName>> for NonEmptyVolumeNames {
+    type Error = EmptyVolumeNamesError;
+
+    fn try_from(value: Vec<VolumeName>) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<NonEmptyVolumeNames> for Vec<VolumeName> {
+    fn from(value: NonEmptyVolumeNames) -> Self {
+        value.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("volume handoff participant must share at least one named volume")]
+pub struct EmptyVolumeNamesError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -821,9 +967,8 @@ pub fn plan_namespace_deploy(
             services.push(DeployServicePlan {
                 service_id: plan.service_id,
                 placement: plan.placement,
-                steps: plan.steps,
+                work: plan.work,
                 pre_start: plan.pre_start,
-                volume_handoff: plan.volume_handoff,
             });
         }
         phase_plans.push(DeployPhasePlan { services });
@@ -955,9 +1100,8 @@ fn dependency_ordered_phases(
 pub struct DeploySingleServicePlan {
     pub service_id: ServiceId,
     pub placement: DeployServicePlacement,
-    pub steps: Vec<DeployPlanStep>,
+    pub work: DeployServiceWork,
     pub pre_start: Option<PreStartHookStep>,
-    pub volume_handoff: Option<DeployVolumeHandoffPlan>,
     pub cleanup_actions: Vec<DeployCleanupAction>,
 }
 
@@ -978,6 +1122,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn handoff_causal_collections_reject_empty_values_and_normalize_names() {
+        assert!(NonEmptyVolumeNames::try_new([]).is_err());
+        assert!(NonEmptyVolumeHandoffParticipants::try_new([]).is_err());
+        let names = NonEmptyVolumeNames::try_new([
+            VolumeName::try_new("uploads").expect("volume"),
+            VolumeName::try_new("data").expect("volume"),
+            VolumeName::try_new("data").expect("volume"),
+        ])
+        .expect("non-empty names");
+        assert_eq!(
+            names.as_slice(),
+            [
+                VolumeName::try_new("data").expect("volume"),
+                VolumeName::try_new("uploads").expect("volume"),
+            ]
+        );
+        assert!(serde_json::from_str::<NonEmptyVolumeNames>("[]").is_err());
+        assert!(serde_json::from_str::<NonEmptyVolumeHandoffParticipants>("[]").is_err());
+    }
+
+    #[test]
     fn service_target_machines_are_deduplicated_across_replicas_and_pre_start() {
         let machine = MachineId::try_new("machine_a").expect("machine id");
         let service_id = ServiceId::try_new("api").expect("service id");
@@ -988,20 +1153,21 @@ mod tests {
                 services: vec![DeployServicePlan {
                     service_id: service_id.clone(),
                     placement: DeployServicePlacement::Replicated,
-                    steps: vec![
-                        DeployPlanStep::RunContainer {
-                            machine_id: machine.clone(),
-                            slot: replicated_slot(1),
-                        },
-                        DeployPlanStep::RunContainer {
-                            machine_id: machine.clone(),
-                            slot: replicated_slot(2),
-                        },
-                    ],
+                    work: DeployServiceWork::Ordinary {
+                        steps: vec![
+                            DeployPlanStep::RunContainer {
+                                machine_id: machine.clone(),
+                                slot: replicated_slot(1),
+                            },
+                            DeployPlanStep::RunContainer {
+                                machine_id: machine.clone(),
+                                slot: replicated_slot(2),
+                            },
+                        ],
+                    },
                     pre_start: Some(PreStartHookStep {
                         machine_id: machine.clone(),
                     }),
-                    volume_handoff: None,
                 }],
             }],
             volume_pin_commits: Vec::new(),

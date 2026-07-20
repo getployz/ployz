@@ -172,15 +172,17 @@ fn volume_backed_promoted_baseline_reuses_or_hands_off_for_every_container_shape
         owner_container.as_str(),
         promoted.namespace_revision_entry_id.clone(),
     );
-    let owner_observation = MachineContainerObservationSnapshot::try_new(
-        owner_machine.clone(),
-        [observed_service_container_with_entry(
-            owner_machine.as_str(),
-            owner_container.as_str(),
-            promoted.namespace_revision_entry_id.clone(),
-        )],
-    )
-    .expect("running owner observation");
+    let mut observed_owner = observed_service_container_with_entry(
+        owner_machine.as_str(),
+        owner_container.as_str(),
+        promoted.namespace_revision_entry_id.clone(),
+    );
+    observed_owner
+        .named_volume_names
+        .insert(volume_name.as_str().to_owned());
+    let owner_observation =
+        MachineContainerObservationSnapshot::try_new(owner_machine.clone(), [observed_owner])
+            .expect("running owner observation");
     let baseline_facts = || DeployExecutionFacts {
         namespace_serving_entries: vec![promoted.clone()],
         namespace_volume_pins: vec![pin.clone()],
@@ -202,17 +204,18 @@ fn volume_backed_promoted_baseline_reuses_or_hands_off_for_every_container_shape
         panic!("one service");
     };
     assert_eq!(
-        unchanged_service.steps,
-        [ployz_core::deploy::DeployPlanStep::UseExistingContainer {
-            machine_id: owner_machine.clone(),
-            container_id: owner_container.clone(),
-            slot: ployz_core::deploy::ReplicaSlot::Replicated {
-                number: ployz_core::deploy::ReplicatedReplicaSlot::try_new(1)
-                    .expect("replica slot"),
-            },
-        }]
+        &unchanged_service.work,
+        &ployz_core::deploy::DeployServiceWork::Ordinary {
+            steps: vec![ployz_core::deploy::DeployPlanStep::UseExistingContainer {
+                machine_id: owner_machine.clone(),
+                container_id: owner_container.clone(),
+                slot: ployz_core::deploy::ReplicaSlot::Replicated {
+                    number: ployz_core::deploy::ReplicatedReplicaSlot::try_new(1)
+                        .expect("replica slot"),
+                },
+            }]
+        }
     );
-    assert!(unchanged_service.volume_handoff.is_none());
     assert!(unchanged_plan.cleanup_actions.is_empty());
     let unchanged_serialized = serde_json::to_string(&(
         &unchanged_plan,
@@ -232,30 +235,31 @@ fn volume_backed_promoted_baseline_reuses_or_hands_off_for_every_container_shape
         let [service] = phase.services.as_slice() else {
             panic!("one service");
         };
-        assert!(matches!(
-            service.steps.as_slice(),
-            [ployz_core::deploy::DeployPlanStep::RunContainer { machine_id, .. }]
-                if machine_id == &owner_machine
-        ));
-        let handoff = service
-            .volume_handoff
-            .as_ref()
-            .expect("replacement needs a volume handoff");
-        assert_eq!(handoff.machine_id, owner_machine);
+        let ployz_core::deploy::DeployServiceWork::VolumeHandoff {
+            replacement,
+            remaining_steps,
+            participants,
+        } = &service.work
+        else {
+            panic!("replacement needs a volume handoff")
+        };
+        assert_eq!(replacement.machine_id, owner_machine);
+        assert!(remaining_steps.is_empty());
         assert_eq!(
-            handoff
-                .superseded
+            participants
+                .as_slice()
                 .iter()
                 .map(|participant| &participant.target)
                 .collect::<Vec<_>>(),
             [&owner.target]
         );
         assert!(matches!(
-            handoff.superseded.as_slice(),
+            participants.as_slice(),
             [ployz_core::deploy::DeployVolumeHandoffParticipant {
                 prior_state: ployz_core::deploy::DeployVolumeHandoffPriorState::Running,
+                shared_volume_names,
                 ..
-            }]
+            }] if shared_volume_names.as_slice() == [volume_name.clone()]
         ));
         let serialized = serde_json::to_string(&(plan, evidence)).expect("evidence serializes");
         assert!(!serialized.contains(baseline_environment_value));
@@ -496,13 +500,17 @@ fn replicated_to_global_reuses_equivalent_container_on_selected_machine() {
         panic!("one service")
     };
     assert!(matches!(
-        service.steps.as_slice(),
-        [ployz_core::deploy::DeployPlanStep::UseExistingContainer {
-            machine_id: step_machine_id,
-            container_id: existing_container_id,
-            slot: ployz_core::deploy::ReplicaSlot::Global,
-        }] if step_machine_id == &machine_id("machine_a")
-            && existing_container_id == &container_id("ctr_target")
+        &service.work,
+        ployz_core::deploy::DeployServiceWork::Ordinary { steps }
+            if matches!(
+                steps.as_slice(),
+                [ployz_core::deploy::DeployPlanStep::UseExistingContainer {
+                    machine_id: step_machine_id,
+                    container_id: existing_container_id,
+                    slot: ployz_core::deploy::ReplicaSlot::Global,
+                }] if step_machine_id == &machine_id("machine_a")
+                    && existing_container_id == &container_id("ctr_target")
+            )
     ));
 }
 

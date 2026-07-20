@@ -206,8 +206,8 @@ fn finalize_service_plan(
         &selected_containers,
         service.keep(),
     );
-    if let Some(handoff) = &volume_handoff {
-        cleanup_actions.extend(handoff.superseded.iter().map(|participant| {
+    if let Some((_, participants)) = &volume_handoff {
+        cleanup_actions.extend(participants.as_slice().iter().map(|participant| {
             DeployCleanupAction::RemoveContainer {
                 target: participant.target.clone(),
             }
@@ -234,9 +234,15 @@ fn finalize_service_plan(
     DeploySingleServicePlan {
         service_id,
         placement,
-        steps,
+        work: match volume_handoff {
+            Some((replacement, participants)) => DeployServiceWork::VolumeHandoff {
+                replacement,
+                remaining_steps: steps.into_iter().skip(1).collect(),
+                participants,
+            },
+            None => DeployServiceWork::Ordinary { steps },
+        },
         pre_start,
-        volume_handoff,
         cleanup_actions,
     }
 }
@@ -246,7 +252,7 @@ fn plan_volume_handoff(
     steps: &[DeployPlanStep],
     cleanup_candidates: &[ObservedCleanupCandidate],
     selected_containers: &[&ContainerId],
-) -> Option<DeployVolumeHandoffPlan> {
+) -> Option<(DeployRunContainerStep, NonEmptyVolumeHandoffParticipants)> {
     let mut volume_names = service
         .runtime()
         .volume_mounts
@@ -259,24 +265,49 @@ fn plan_volume_handoff(
         return None;
     }
 
-    let machine_id = steps.iter().find_map(|step| match step {
-        DeployPlanStep::RunContainer { machine_id, .. } => Some(machine_id.clone()),
-        DeployPlanStep::UseExistingContainer { .. } => None,
-    })?;
+    let (replacement_index, replacement) =
+        steps
+            .iter()
+            .enumerate()
+            .find_map(|(index, step)| match step {
+                DeployPlanStep::RunContainer { machine_id, slot } => Some((
+                    index,
+                    DeployRunContainerStep {
+                        machine_id: machine_id.clone(),
+                        slot: *slot,
+                    },
+                )),
+                DeployPlanStep::UseExistingContainer { .. } => None,
+            })?;
+    if replacement_index != 0 {
+        return None;
+    }
+    let machine_id = &replacement.machine_id;
     let mut superseded = cleanup_candidates
         .iter()
-        .filter(|candidate| {
-            candidate.target.machine_id == machine_id
-                && candidate.target.identity.service_id == *service.service_id()
-                && !selected_containers.contains(&&candidate.target.container_id)
-        })
-        .map(|candidate| DeployVolumeHandoffParticipant {
-            target: candidate.target.clone(),
-            prior_state: if candidate.state.is_running() {
-                DeployVolumeHandoffPriorState::Running
-            } else {
-                DeployVolumeHandoffPriorState::Stopped
-            },
+        .filter_map(|candidate| {
+            if candidate.target.machine_id != *machine_id
+                || candidate.target.identity.service_id != *service.service_id()
+                || selected_containers.contains(&&candidate.target.container_id)
+            {
+                return None;
+            }
+            let shared_volume_names = NonEmptyVolumeNames::try_new(
+                volume_names
+                    .iter()
+                    .filter(|name| candidate.named_volume_names.contains(name.as_str()))
+                    .cloned(),
+            )
+            .ok()?;
+            Some(DeployVolumeHandoffParticipant {
+                target: candidate.target.clone(),
+                prior_state: if candidate.state.is_running() {
+                    DeployVolumeHandoffPriorState::Running
+                } else {
+                    DeployVolumeHandoffPriorState::Stopped
+                },
+                shared_volume_names,
+            })
         })
         .collect::<Vec<_>>();
     superseded.sort_by(|left, right| {
@@ -289,15 +320,10 @@ fn plan_volume_handoff(
         left.target.machine_id == right.target.machine_id
             && left.target.container_id == right.target.container_id
     });
-    if superseded.is_empty() {
-        return None;
-    }
-
-    Some(DeployVolumeHandoffPlan {
-        machine_id,
-        volume_names,
-        superseded,
-    })
+    Some((
+        replacement,
+        NonEmptyVolumeHandoffParticipants::try_new(superseded).ok()?,
+    ))
 }
 
 fn normalize_existing_replicas(replicas: &mut Vec<ExistingServiceReplica>) {
