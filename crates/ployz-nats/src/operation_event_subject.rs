@@ -56,6 +56,24 @@ pub fn operation_event_subject_suffix(event: &OperationEvent) -> String {
             machine_id.as_str(),
             container_id.as_str()
         ),
+        OperationEvent::DeployVolumeHandoffApplied {
+            service_id,
+            handoff,
+            ..
+        } => format!(
+            "deploy.volume_handoff.applied.{}.{}",
+            service_id.as_str(),
+            handoff.machine_id.as_str()
+        ),
+        OperationEvent::DeployVolumeHandoffRollbackFinished {
+            service_id,
+            machine_id,
+            ..
+        } => format!(
+            "deploy.volume_handoff.rollback_finished.{}.{}",
+            service_id.as_str(),
+            machine_id.as_str()
+        ),
         OperationEvent::DeployHealthCheckStarted { .. } => "deploy.health_check.started".to_owned(),
         OperationEvent::DeployPhaseStarted { phase, .. } => format!("deploy.phase.{phase}.started"),
         OperationEvent::DeployPhaseFinished { phase, .. } => {

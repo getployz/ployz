@@ -417,6 +417,177 @@ async fn step_5_retry_and_restore(
         retained_marker = marker.success() && marker.stdout.trim() == "retained";
     }
     assert!(retained_marker, "Postgres named volume lost its marker");
+
+    assert_postgres_volume_handoff(core, config, compose_path).await;
+}
+
+async fn assert_postgres_volume_handoff(
+    core: &CoreContext,
+    config: &PloyzctlRuntimeConfig,
+    compose_path: &Path,
+) {
+    let all_machines = all_machines(core);
+    let old_workloads = namespace_workloads(core, &all_machines, ACCEPTANCE_NAMESPACE).await;
+    let old_databases = old_workloads
+        .iter()
+        .filter(|(_, container)| service_is(container, "db"))
+        .collect::<Vec<_>>();
+    let [(old_machine, old_database)] = old_databases.as_slice() else {
+        panic!("volume handoff requires exactly one existing database: {old_databases:?}");
+    };
+    let old_machine_name = old_machine.name.clone();
+    let old_database_id = old_database.id.clone();
+    let old_entry_identity = old_database
+        .labels
+        .get(NAMESPACE_REVISION_ENTRY_LABEL)
+        .expect("existing database carries its entry identity")
+        .clone();
+
+    std::fs::write(compose_path, umami_volume_handoff_compose())
+        .expect("write harmless database identity change");
+    let operation_id = submit_compose(compose_path, config).await;
+    let status = wait_for_terminal_deploy_status(core, &operation_id, DEPLOY_TERMINAL_BUDGET).await;
+    assert!(matches!(
+        status,
+        OperationStatus::Deploy {
+            state: DeployOperationState::Completed { .. },
+            ..
+        }
+    ));
+
+    let events = terminal_operation_events(core, &operation_id).await;
+    let workloads = namespace_workloads(core, &all_machines, ACCEPTANCE_NAMESPACE).await;
+    let databases = workloads
+        .iter()
+        .filter(|(_, container)| service_is(container, "db"))
+        .collect::<Vec<_>>();
+    let [(new_machine, new_database)] = databases.as_slice() else {
+        panic!("volume handoff must leave exactly one database owner: {databases:?}");
+    };
+    assert_eq!(
+        new_machine.name, old_machine_name,
+        "database placement must remain on the volume-pinned Machine"
+    );
+    assert_ne!(new_database.id, old_database_id);
+    assert_ne!(
+        new_database
+            .labels
+            .get(NAMESPACE_REVISION_ENTRY_LABEL)
+            .expect("replacement database carries its entry identity"),
+        &old_entry_identity,
+        "the harmless runtime change must force a new entry identity"
+    );
+
+    let (handoff_position, handoff) = events
+        .iter()
+        .enumerate()
+        .find_map(|(position, event)| {
+            let OperationEvent::DeployVolumeHandoffApplied {
+                service_id,
+                handoff,
+                ..
+            } = event
+            else {
+                return None;
+            };
+            (service_id.as_str() == "db"
+                && handoff.superseded.as_slice().iter().any(|participant| {
+                    participant.target.container_id.as_str() == old_database_id.as_str()
+                }))
+            .then_some((position, handoff))
+        })
+        .expect("deploy records the old database owner in volume handoff evidence");
+    let old_owner = handoff
+        .superseded
+        .as_slice()
+        .iter()
+        .find(|participant| participant.target.container_id.as_str() == old_database_id.as_str())
+        .expect("handoff names the old database owner");
+    assert_eq!(
+        old_owner.target.machine_id, handoff.machine_id,
+        "handoff must stop the owner on the pinned Machine"
+    );
+    let (new_container_position, new_container_machine_id) = events
+        .iter()
+        .enumerate()
+        .find_map(|(position, event)| {
+            let OperationEvent::DeployContainerStarted {
+                machine_id,
+                container_id,
+                ..
+            } = event
+            else {
+                return None;
+            };
+            (container_id.as_str() == new_database.id.as_str()).then_some((position, machine_id))
+        })
+        .expect("deploy records the replacement database container");
+    assert_eq!(
+        new_container_machine_id, &handoff.machine_id,
+        "replacement must start on the volume-pinned Machine"
+    );
+    assert!(
+        handoff_position < new_container_position,
+        "volume handoff evidence must precede the replacement container event"
+    );
+
+    let promoted_position = events
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                OperationEvent::DeployPhaseFinished {
+                    outcome: ployz_core::operation::DeployPhaseOutcome::Promoted,
+                    services,
+                    ..
+                } if services.iter().any(|result| matches!(
+                    result,
+                    ployz_core::operation::DeployServiceResult::Completed { service_id }
+                        if service_id.as_str() == "db"
+                ))
+            )
+        })
+        .expect("database phase records successful promotion");
+    let cleanup_position = events
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                OperationEvent::DeployCleanupFinished { removed, .. }
+                    if removed.iter().any(|target| {
+                        target.container_id.as_str() == old_database_id.as_str()
+                    })
+            )
+        })
+        .expect("post-promotion cleanup records removal of the old database owner");
+    assert!(
+        promoted_position < cleanup_position,
+        "old database removal must follow successful phase promotion"
+    );
+
+    let old_inspect = core
+        .exec_on(old_machine, &["docker", "inspect", &old_database_id])
+        .await;
+    assert!(
+        !old_inspect.success(),
+        "old database container must be removed after promotion: {old_inspect:?}"
+    );
+    let marker = core
+        .exec_on(
+            new_machine,
+            &[
+                "docker",
+                "exec",
+                &new_database.id,
+                "cat",
+                "/var/lib/postgresql/data/ployz-acceptance-marker",
+            ],
+        )
+        .await;
+    assert!(
+        marker.success() && marker.stdout.trim() == "retained",
+        "Postgres volume marker must survive owner replacement: {marker:?}"
+    );
 }
 
 fn assert_restored_request(
@@ -585,6 +756,16 @@ fn database_service_compose() -> &'static str {
 
 fn umami_compose() -> &'static str {
     include_str!("../fixtures/v1-acceptance-umami.yaml")
+}
+
+fn umami_volume_handoff_compose() -> String {
+    let compose = umami_compose().replacen(
+        "  db:\n    image:",
+        "  db:\n    restart: unless-stopped\n    image:",
+        1,
+    );
+    assert_ne!(compose, umami_compose(), "database fixture shape changed");
+    compose
 }
 
 fn bad_deploy_input_compose() -> String {

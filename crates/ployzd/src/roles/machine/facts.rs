@@ -361,6 +361,7 @@ fn container_snapshot(
             health_status: container.health_status,
             resolved_image_identity: container.resolved_image_identity,
             created_at_unix_seconds: container.created_at_unix_seconds,
+            named_volume_names: container.named_volume_names,
         });
     MachineContainerObservationSnapshot::try_new(machine_id.clone(), containers)
         .map_err(MachineFactsReadError::BuildContainerSnapshot)

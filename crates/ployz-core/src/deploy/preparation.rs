@@ -185,6 +185,7 @@ fn cleanup_candidates(
                 identity: container.identity.clone(),
             },
             state: container.state.clone(),
+            named_volume_names: container.named_volume_names.clone(),
             created_at_unix_seconds: container.created_at_unix_seconds,
             observed_image_identity: container.resolved_image_identity.clone(),
         })

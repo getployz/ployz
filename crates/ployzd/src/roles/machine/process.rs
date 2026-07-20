@@ -577,6 +577,7 @@ pub enum MachineProcessError {
 mod tests {
     use super::*;
     use crate::roles::machine::facts::observation_state;
+    use crate::roles::machine::protocol::MachineContainerStopOutcome;
     use crate::roles::machine::runner::{
         CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
         MachineContainerCreateError, MachineContainerListError, MachineContainerRemoveError,
@@ -851,7 +852,7 @@ mod tests {
             &self,
             container_id: &ContainerId,
             _expected_identity: &ManagedContainerIdentity,
-        ) -> Result<(), MachineContainerStopError> {
+        ) -> Result<MachineContainerStopOutcome, MachineContainerStopError> {
             Err(MachineContainerStopError::Stop {
                 container_id: container_id.clone(),
                 message: "not used".to_owned(),
@@ -1021,7 +1022,7 @@ mod tests {
             &self,
             container_id: &ContainerId,
             _expected_identity: &ManagedContainerIdentity,
-        ) -> Result<(), MachineContainerStopError> {
+        ) -> Result<MachineContainerStopOutcome, MachineContainerStopError> {
             Err(MachineContainerStopError::Stop {
                 container_id: container_id.clone(),
                 message: "not used".to_owned(),
@@ -1065,6 +1066,10 @@ mod tests {
             health_status: None,
             resolved_image_identity: None,
             created_at_unix_seconds: None,
+            named_volume_names: std::collections::BTreeSet::from([
+                ployz_core::deploy::VolumeName::try_new("z-data").expect("volume"),
+                ployz_core::deploy::VolumeName::try_new("a-data").expect("volume"),
+            ]),
         }]);
         let mut facts_sub = nats
             .client
@@ -1088,6 +1093,16 @@ mod tests {
                 .expect("container exists")
                 .state,
             ContainerRuntimeState::running_unroutable()
+        );
+        assert_eq!(
+            snapshot
+                .container(&container_id("ctr_123"))
+                .expect("container exists")
+                .named_volume_names,
+            std::collections::BTreeSet::from([
+                ployz_core::deploy::VolumeName::try_new("a-data").expect("volume"),
+                ployz_core::deploy::VolumeName::try_new("z-data").expect("volume"),
+            ])
         );
     }
 

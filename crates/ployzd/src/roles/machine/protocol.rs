@@ -392,8 +392,35 @@ pub struct MachineContainerStopRpcRequest {
     pub expected_identity: ManagedContainerIdentity,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MachineContainerStopOutcome {
+    StoppedRunning,
+    AlreadyStopped,
+    Missing,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachineContainerStopRpcOk {
+    pub machine_id: MachineId,
+    pub container_id: ContainerId,
+    pub outcome: MachineContainerStopOutcome,
+}
+
+impl MachineRpcResponder for MachineContainerStopRpcOk {
+    fn responder_machine_id(&self) -> &MachineId {
+        let Self {
+            machine_id,
+            container_id: _,
+            outcome: _,
+        } = self;
+        machine_id
+    }
+}
+
 pub type MachineContainerStopRpcResponse =
-    MachineRpcResponse<MachineContainerRpcOk, MachineContainerStopDomainError>;
+    MachineRpcResponse<MachineContainerStopRpcOk, MachineContainerStopDomainError>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
@@ -789,6 +816,39 @@ mod tests {
                 .expect("response deserializes"),
             removed
         );
+
+        for (outcome, wire_outcome) in [
+            (
+                MachineContainerStopOutcome::StoppedRunning,
+                "stopped_running",
+            ),
+            (
+                MachineContainerStopOutcome::AlreadyStopped,
+                "already_stopped",
+            ),
+            (MachineContainerStopOutcome::Missing, "missing"),
+        ] {
+            let stopped = MachineContainerStopRpcResponse::Ok(MachineContainerStopRpcOk {
+                machine_id: machine_id("machine_a"),
+                container_id: container_id("ctr_old"),
+                outcome,
+            });
+            let stopped_json = json!({
+                "status": "ok",
+                "machine_id": "machine_a",
+                "container_id": "ctr_old",
+                "outcome": wire_outcome,
+            });
+            assert_eq!(
+                serde_json::to_value(&stopped).expect("response serializes"),
+                stopped_json
+            );
+            assert_eq!(
+                serde_json::from_value::<MachineContainerStopRpcResponse>(stopped_json)
+                    .expect("response deserializes"),
+                stopped
+            );
+        }
 
         let stop_failed = MachineContainerStopRpcResponse::DomainError {
             machine_id: machine_id("machine_a"),

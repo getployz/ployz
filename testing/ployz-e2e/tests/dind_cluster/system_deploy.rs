@@ -9,7 +9,7 @@ use super::{
     with_evidence,
 };
 use ployz_core::deploy::{
-    ContainerCommand, ContainerEntrypoint, ContainerRuntimeSpec, DeployPlan, DeployPlanStep,
+    ContainerCommand, ContainerEntrypoint, ContainerRuntimeSpec, DeployPlan, DeployPlanStepRef,
     DeployRequest, DeployServicePlacement, DeployServiceSpec, ImageReference, ImageSource,
     ReplicaSlot, ServiceMode, VolumeName, VolumeSpec,
 };
@@ -149,14 +149,16 @@ async fn system_deploy_failure_atomicity_and_retry(core: &CoreContext) {
             .phases
             .iter()
             .flat_map(|phase| &phase.services)
-            .flat_map(|service| &service.steps)
-            .any(|step| matches!(
-                step,
-                DeployPlanStep::RunContainer {
-                    machine_id,
-                    slot: ReplicaSlot::Global,
-                } if machine_id == failed_machine
-            )),
+            .flat_map(|service| service.work.steps())
+            .any(|step| {
+                matches!(
+                    step,
+                    DeployPlanStepRef::RunContainer {
+                        slot: ReplicaSlot::Global,
+                        ..
+                    }
+                ) && step.machine_id() == failed_machine
+            }),
         "failed machine must come from plan-selected work: {failed_plan:?}"
     );
     assert_eq!(system_serving_entry(core).await, before_failure);
@@ -276,19 +278,15 @@ async fn assert_completed_system_deploy(
     );
 
     let mut step_machines = service
-        .steps
-        .iter()
-        .map(|step| match step {
-            DeployPlanStep::RunContainer { machine_id, slot } => {
-                assert_eq!(slot, &ReplicaSlot::Global, "global service slot: {step:?}");
-                machine_id.clone()
-            }
-            DeployPlanStep::UseExistingContainer {
-                machine_id, slot, ..
-            } => {
-                assert_eq!(slot, &ReplicaSlot::Global, "global service slot: {step:?}");
-                machine_id.clone()
-            }
+        .work
+        .steps()
+        .map(|step| {
+            let slot = match &step {
+                DeployPlanStepRef::RunContainer { slot, .. }
+                | DeployPlanStepRef::UseExisting { slot, .. } => slot,
+            };
+            assert_eq!(**slot, ReplicaSlot::Global, "global service slot: {step:?}");
+            step.machine_id().clone()
         })
         .collect::<Vec<_>>();
     let step_count = step_machines.len();

@@ -92,6 +92,7 @@ pub fn observation(machine: &str, container: &str) -> ManagedContainerObservatio
         health_status: None,
         resolved_image_identity: None,
         created_at_unix_seconds: None,
+        named_volume_names: std::collections::BTreeSet::new(),
     }
 }
 
@@ -104,6 +105,7 @@ pub struct ManagedContainerObservationBuilder {
     health_status: Option<ManagedContainerHealthStatus>,
     resolved_image_identity: Option<String>,
     created_at_unix_seconds: Option<i64>,
+    named_volume_names: std::collections::BTreeSet<ployz_core::deploy::VolumeName>,
 }
 
 impl ManagedContainerObservationBuilder {
@@ -159,6 +161,13 @@ impl ManagedContainerObservationBuilder {
     }
 
     #[must_use]
+    pub fn named_volume(mut self, name: &str) -> Self {
+        self.named_volume_names
+            .insert(ployz_core::deploy::VolumeName::try_new(name).expect("valid volume name"));
+        self
+    }
+
+    #[must_use]
     pub fn build(self) -> ManagedContainerObservation {
         ManagedContainerObservation {
             machine_id: machine_id(&self.machine_id),
@@ -168,6 +177,7 @@ impl ManagedContainerObservationBuilder {
             health_status: self.health_status,
             resolved_image_identity: self.resolved_image_identity,
             created_at_unix_seconds: self.created_at_unix_seconds,
+            named_volume_names: self.named_volume_names,
         }
     }
 }

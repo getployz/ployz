@@ -954,6 +954,8 @@ impl DeployEventRenderContext {
             | OperationEvent::DeployPlanCreated { .. }
             | OperationEvent::DeployRunning { .. }
             | OperationEvent::DeployContainerStarted { .. }
+            | OperationEvent::DeployVolumeHandoffApplied { .. }
+            | OperationEvent::DeployVolumeHandoffRollbackFinished { .. }
             | OperationEvent::DeployHealthCheckStarted { .. }
             | OperationEvent::DeployPhaseStarted { .. }
             | OperationEvent::DeployPhaseFinished { .. }
@@ -1209,6 +1211,8 @@ fn render_replayed_event_text(
         | OperationEvent::VolumeCreateRunning { .. }
         | OperationEvent::VolumeCreateCompleted { .. }
         | OperationEvent::VolumeCreateFailed { .. }
+        | OperationEvent::DeployVolumeHandoffApplied { .. }
+        | OperationEvent::DeployVolumeHandoffRollbackFinished { .. }
         | OperationEvent::Cancelled { .. } => {
             format!("{} {}", event.sequence.get(), label)
         }
@@ -1244,6 +1248,10 @@ fn operation_event_label(event: &OperationEvent) -> &'static str {
         OperationEvent::DeployPlanCreated { .. } => "deploy.plan_created",
         OperationEvent::DeployRunning { .. } => "deploy.running",
         OperationEvent::DeployContainerStarted { .. } => "deploy.container_started",
+        OperationEvent::DeployVolumeHandoffApplied { .. } => "deploy.volume_handoff.applied",
+        OperationEvent::DeployVolumeHandoffRollbackFinished { .. } => {
+            "deploy.volume_handoff.rollback_finished"
+        }
         OperationEvent::DeployHealthCheckStarted { .. } => "deploy.health_check_started",
         OperationEvent::DeployPhaseStarted { .. } => "deploy.phase_started",
         OperationEvent::DeployPhaseFinished { .. } => "deploy.phase_finished",

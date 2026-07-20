@@ -3,8 +3,11 @@ use ployz_core::certificate::{ActiveCertState, CertBundleRef, CertValidAt, CertV
 use ployz_core::deploy::{
     ContainerRuntimeSpec, DeployPhasePlan, DeployPlan, DeployPlanStep, DeployRequest,
     DeployRequestEvidence, DeployRoute, DeployRouteTarget, DeployServicePlacement,
-    DeployServicePlan, DeployServiceSpec, ImageReference, ImageSource, PlatformImage,
+    DeployServicePlan, DeployServiceSpec, DeployServiceWork, DeployVolumeHandoffApplied,
+    DeployVolumeHandoffAppliedParticipant, DeployVolumeHandoffStopOutcome, ImageReference,
+    ImageSource, NonEmptyAppliedVolumeHandoffParticipants, NonEmptyVolumeNames, PlatformImage,
     PushedImageReceipt, ReplicaCount, ReplicaSlot, ReplicatedReplicaSlot, VolumeAdmissionFailure,
+    VolumeName,
 };
 use ployz_core::ids::{
     CertId, ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
@@ -14,10 +17,12 @@ use ployz_core::image::{OciDigest, OciPlatform};
 use ployz_core::ingress::AutomaticHostnameLabel;
 use ployz_core::operation::{
     ArtifactUnavailableReason, CertificateProvisionFailure, DeployCompletionOutcome,
-    DeployOperationFailure, DeployRunningStage, EventSequence, FailureMessage, HealthCheckFailure,
-    OperationEvent, OperatorHint, PreStartHookFailure, RetainedArtifact, RouteCutoverFailureReason,
-    RouteHostname, RoutePort,
+    DeployOperationFailure, DeployRunningStage, DeployVolumeHandoffRestartFailure,
+    DeployVolumeHandoffRollbackContainerOutcome, DeployVolumeHandoffRollbackOutcome, EventSequence,
+    FailureMessage, HealthCheckFailure, OperationEvent, OperatorHint, PreStartHookFailure,
+    RetainedArtifact, RouteCutoverFailureReason, RouteHostname, RoutePort,
 };
+use ployz_test_support::containers;
 
 fn operation_id() -> OperationId {
     OperationId::try_new("op_317").expect("valid operation id")
@@ -132,26 +137,30 @@ fn plan() -> DeployPlan {
                     service_id: service_id("web"),
                     placement: DeployServicePlacement::Replicated,
                     pre_start: None,
-                    steps: vec![
-                        DeployPlanStep::RunContainer {
-                            machine_id: machine_id("hetzner-1"),
-                            slot: replica_slot(1),
-                        },
-                        DeployPlanStep::RunContainer {
-                            machine_id: machine_id("hetzner-2"),
-                            slot: replica_slot(2),
-                        },
-                    ],
+                    work: DeployServiceWork::Ordinary {
+                        steps: vec![
+                            DeployPlanStep::RunContainer {
+                                machine_id: machine_id("hetzner-1"),
+                                slot: replica_slot(1),
+                            },
+                            DeployPlanStep::RunContainer {
+                                machine_id: machine_id("hetzner-2"),
+                                slot: replica_slot(2),
+                            },
+                        ],
+                    },
                 },
                 DeployServicePlan {
                     service_id: service_id("worker"),
                     placement: DeployServicePlacement::Replicated,
                     pre_start: None,
-                    steps: vec![DeployPlanStep::UseExistingContainer {
-                        machine_id: machine_id("hetzner-2"),
-                        container_id: container_id("worker-existing"),
-                        slot: replica_slot(1),
-                    }],
+                    work: DeployServiceWork::Ordinary {
+                        steps: vec![DeployPlanStep::UseExistingContainer {
+                            machine_id: machine_id("hetzner-2"),
+                            container_id: container_id("worker-existing"),
+                            slot: replica_slot(1),
+                        }],
+                    },
                 },
             ],
         }],
@@ -359,6 +368,95 @@ fn happy_path_renders_plain_milestones_and_final_tree() {
         )
     );
     assert_eq!(render_success(&tree), "Deploy succeeded.\n");
+}
+
+#[test]
+fn volume_handoff_plain_events_distinguish_actual_stop_and_mixed_rollback_outcomes() {
+    let operation_id = operation_id();
+    let target = |container: &str| ployz_core::deploy::DeployCleanupContainer {
+        machine_id: machine_id("hetzner-1"),
+        container_id: container_id(container),
+        identity: containers::identity("web")
+            .entry("entry-old")
+            .operation("op-old")
+            .step(container)
+            .build(),
+    };
+    let running = target("owner-running");
+    let stopped = target("owner-stopped");
+    let failed = target("owner-failed");
+    let uncertain = target("owner-uncertain");
+    let volume_names = NonEmptyVolumeNames::try_new([VolumeName::try_new("data").expect("volume")])
+        .expect("non-empty volume names");
+    let mut tree = DeployTree::new();
+
+    tree.ingest_page(&[
+        replay(
+            1,
+            OperationEvent::DeployVolumeHandoffApplied {
+                operation_id: operation_id.clone(),
+                service_id: service_id("web"),
+                handoff: DeployVolumeHandoffApplied {
+                    machine_id: machine_id("hetzner-1"),
+                    volume_names: volume_names.clone(),
+                    superseded: NonEmptyAppliedVolumeHandoffParticipants::try_new([
+                        DeployVolumeHandoffAppliedParticipant {
+                            target: running.clone(),
+                            stop_outcome: DeployVolumeHandoffStopOutcome::StoppedRunning,
+                            shared_volume_names: volume_names.clone(),
+                        },
+                        DeployVolumeHandoffAppliedParticipant {
+                            target: stopped,
+                            stop_outcome: DeployVolumeHandoffStopOutcome::AlreadyStopped,
+                            shared_volume_names: volume_names,
+                        },
+                    ])
+                    .expect("non-empty participants"),
+                },
+            },
+        ),
+        replay(
+            2,
+            OperationEvent::DeployVolumeHandoffRollbackFinished {
+                operation_id,
+                service_id: service_id("web"),
+                machine_id: machine_id("hetzner-1"),
+                outcomes: vec![
+                    DeployVolumeHandoffRollbackContainerOutcome {
+                        target: running,
+                        outcome: DeployVolumeHandoffRollbackOutcome::Restarted,
+                    },
+                    DeployVolumeHandoffRollbackContainerOutcome {
+                        target: failed,
+                        outcome: DeployVolumeHandoffRollbackOutcome::RestartFailed {
+                            failure: DeployVolumeHandoffRestartFailure::StartFailed {
+                                message: FailureMessage::try_new("restart rejected")
+                                    .expect("failure message"),
+                                inspect_hint: OperatorHint::try_new(
+                                    "ployz machine container inspect owner-failed",
+                                )
+                                .expect("operator hint"),
+                            },
+                        },
+                    },
+                    DeployVolumeHandoffRollbackContainerOutcome {
+                        target: uncertain,
+                        outcome: DeployVolumeHandoffRollbackOutcome::NotRestartedNewConsumerQuiescenceUnconfirmed,
+                    },
+                ],
+            },
+        ),
+    ]);
+
+    assert_eq!(
+        render_plain_lines(&tree),
+        concat!(
+            "deploy op_317: web — volume handoff on hetzner-1: stopped 1 running prior owner(s); 1 already stopped; 0 missing\n",
+            "deploy op_317: web — volume handoff rollback on hetzner-1: owner-running restarted\n",
+            "deploy op_317: web — volume handoff rollback on hetzner-1: owner-failed restart failed: restart rejected (ployz machine container inspect owner-failed)\n",
+            "deploy op_317: web — volume handoff rollback on hetzner-1: owner-uncertain not restarted: new consumer quiescence unconfirmed\n",
+        )
+    );
 }
 
 #[test]
@@ -610,7 +708,7 @@ fn early_artifact_failure_is_minimal() {
     assert!(output.contains("timeline:  ployz ops status op_317"));
     assert!(!output.contains("logs:"));
     assert!(!output.contains("rollback:"));
-    assert!(!output.contains("Serving is unchanged."));
+    assert!(!output.contains("Durable serving intent is unchanged."));
 }
 
 /// A cutover-or-later failure with nothing retained must not claim "nothing
@@ -651,7 +749,7 @@ fn route_cutover_failure_makes_no_safety_claim() {
     assert!(output.starts_with("Deploy failed — route-cutover-failed, service web.\n"));
     assert!(output.contains("  ✗ route app.example.com rejected: hostname already bound\n"));
     assert!(!output.contains("Nothing changed"));
-    assert!(!output.contains("Serving is unchanged."));
+    assert!(!output.contains("Durable serving intent is unchanged."));
     assert!(!output.contains("logs:"));
     assert!(output.contains("timeline:  ployz ops status op_317"));
     assert!(output.contains("rollback:  ployz deploy rollback -n prod"));
@@ -698,10 +796,66 @@ fn deep_health_failure_keeps_container_evidence_and_hints() {
     assert!(output.starts_with("Deploy failed — health-gate-failed, service web on hetzner-1.\n"));
     assert!(output.contains("  ✗ health check failed: HTTP probe returned status 503\n"));
     assert!(output.contains("    failed container web-1 retained on hetzner-1\n"));
-    assert!(output.contains("Serving is unchanged."));
+    assert!(output.contains("Durable serving intent is unchanged."));
     assert!(output.contains("logs:      ployz logs web -n prod --failed"));
     assert!(output.contains("timeline:  ployz ops status op_317"));
     assert!(output.contains("rollback:  ployz deploy rollback -n prod"));
+}
+
+#[test]
+fn volume_owner_restoration_uncertainty_never_claims_runtime_serving_is_unchanged() {
+    let operation_id = operation_id();
+    let target = ployz_core::deploy::DeployCleanupContainer {
+        machine_id: machine_id("hetzner-1"),
+        container_id: container_id("owner-old"),
+        identity: containers::identity("web").build(),
+    };
+    let mut tree = DeployTree::new();
+    tree.ingest_page(&[
+        replay(
+            1,
+            OperationEvent::DeploySubmitted {
+                operation_id: operation_id.clone(),
+                reservation_id: Some(ployz_core::deploy::DeployReservationId::first()),
+                target: DeployRequestEvidence::from_request(&single_service_target()),
+            },
+        ),
+        replay(
+            2,
+            OperationEvent::DeployFailed {
+                operation_id,
+                failure: DeployOperationFailure::HealthCheckFailed {
+                    health_check: HealthCheckFailure::ProbeFailed {
+                        machine_id: machine_id("hetzner-1"),
+                        container_id: container_id("web-new"),
+                        message: FailureMessage::try_new("replacement unhealthy")
+                            .expect("failure message"),
+                        log_hint: OperatorHint::try_new("ployz logs web --failed")
+                            .expect("operator hint"),
+                    },
+                    retained_artifacts: vec![
+                        RetainedArtifact::VolumeOwnerRestorationUnconfirmed {
+                            target,
+                            reason: ployz_core::operation::DeployVolumeHandoffRestorationUnconfirmed::RestartFailed {
+                                failure: DeployVolumeHandoffRestartFailure::TimedOut {
+                                    timeout_seconds: 30,
+                                    inspect_hint: OperatorHint::try_new("ployz container inspect owner-old")
+                                        .expect("operator hint"),
+                                },
+                            },
+                        },
+                    ],
+                },
+            },
+        ),
+    ]);
+
+    let output = render_failure_block(&tree);
+    assert!(output.contains("Durable serving intent is unchanged."));
+    assert!(output.contains(
+        "Runtime serving may remain interrupted: prior volume-owner restoration was not confirmed."
+    ));
+    assert!(!output.contains("\n  Serving is unchanged.\n"));
 }
 
 #[test]
@@ -766,7 +920,7 @@ fn certificate_dns_preflight_failure_names_scope_and_keeps_container_evidence() 
         "  ✗ certificate DNS preflight failed for app.example.com (namespace revision revision_317): A record does not resolve to this cluster\n"
     ));
     assert!(output.contains("    failed container web-1 retained on hetzner-1\n"));
-    assert!(output.contains("Serving is unchanged."));
+    assert!(output.contains("Durable serving intent is unchanged."));
     assert!(!output.contains("route committed"));
 }
 
@@ -969,6 +1123,6 @@ fn pre_start_failure_keeps_hook_evidence_and_serving_safety() {
         output.contains("  ✗ pre-start hook exited with code 17: database migration rejected\n")
     );
     assert!(output.contains("    failed container web-hook-1 retained on hetzner-1\n"));
-    assert!(output.contains("Serving is unchanged."));
+    assert!(output.contains("Durable serving intent is unchanged."));
     assert!(output.contains("logs:      ployz logs web -n prod --failed"));
 }

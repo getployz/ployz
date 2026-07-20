@@ -21,7 +21,7 @@ use crate::control::role_client::machine::{
 use crate::roles::machine::protocol::{
     MachineContainerRemoveRpcRequest, MachineContainerResolveImageRpcRequest,
     MachineContainerRestartRpcRequest, MachineContainerRunHookRpcOk,
-    MachineContainerRunHookRpcRequest, MachineContainerRunRpcRequest,
+    MachineContainerRunHookRpcRequest, MachineContainerRunRpcRequest, MachineContainerStopOutcome,
     MachineContainerStopRpcRequest, MachineRunContainerOutcome,
 };
 
@@ -97,7 +97,7 @@ pub trait MachineContainerRuntime {
         &mut self,
         machine_id: &MachineId,
         request: MachineContainerStopRpcRequest,
-    ) -> impl Future<Output = Result<(), MachineContainerRuntimeError>> + Send;
+    ) -> impl Future<Output = Result<MachineContainerStopOutcome, MachineContainerRuntimeError>> + Send;
 }
 
 pub trait MachineImageRemovalRuntime {

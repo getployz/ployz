@@ -1,6 +1,7 @@
 //! Pure deploy preparation and placement planning.
 
 mod service_planning;
+mod volume_handoff;
 
 use super::volume_planning::{VolumePlan, build_namespace_volume_plan};
 use super::*;
@@ -8,6 +9,7 @@ use crate::ids::OperationId;
 use service_planning::plan_deploy_service;
 #[cfg(test)]
 use service_planning::replicated_slot;
+pub use volume_handoff::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployPlanningInput {
@@ -586,11 +588,8 @@ fn target_machines(phases: &[DeployPhasePlan]) -> Vec<MachineId> {
     let mut machines = phases
         .iter()
         .flat_map(|phase| &phase.services)
-        .flat_map(|service| &service.steps)
-        .map(|step| match step {
-            DeployPlanStep::UseExistingContainer { machine_id, .. }
-            | DeployPlanStep::RunContainer { machine_id, .. } => machine_id.clone(),
-        })
+        .flat_map(|service| service.work.steps())
+        .map(|step| step.machine_id().clone())
         .collect::<Vec<_>>();
     machines.sort();
     machines.dedup();
@@ -606,12 +605,9 @@ fn service_target_machines(
         .flat_map(|phase| &phase.services)
         .find(|service| &service.service_id == service_id)?;
     let mut machines = service
-        .steps
-        .iter()
-        .map(|step| match step {
-            DeployPlanStep::UseExistingContainer { machine_id, .. }
-            | DeployPlanStep::RunContainer { machine_id, .. } => machine_id.clone(),
-        })
+        .work
+        .steps()
+        .map(|step| step.machine_id().clone())
         .chain(service.pre_start.iter().map(|step| step.machine_id.clone()))
         .collect::<Vec<_>>();
     machines.sort();
@@ -632,9 +628,90 @@ pub struct DeployPhasePlan {
 pub struct DeployServicePlan {
     pub service_id: ServiceId,
     pub placement: DeployServicePlacement,
-    pub steps: Vec<DeployPlanStep>,
+    pub work: DeployServiceWork,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pre_start: Option<PreStartHookStep>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DeployServiceWork {
+    Ordinary {
+        steps: Vec<DeployPlanStep>,
+    },
+    VolumeHandoff {
+        replacement: DeployRunContainerStep,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        remaining_steps: Vec<DeployPlanStep>,
+        participants: NonEmptyVolumeHandoffParticipants,
+    },
+}
+
+impl DeployServiceWork {
+    pub fn steps(&self) -> impl Iterator<Item = DeployPlanStepRef<'_>> {
+        let (replacement, remaining): (Option<&DeployRunContainerStep>, &[DeployPlanStep]) =
+            match self {
+                Self::Ordinary { steps } => (None, steps),
+                Self::VolumeHandoff {
+                    replacement,
+                    remaining_steps,
+                    participants: _,
+                } => (Some(replacement), remaining_steps),
+            };
+        replacement
+            .into_iter()
+            .map(|step| DeployPlanStepRef::RunContainer {
+                machine_id: &step.machine_id,
+                slot: &step.slot,
+            })
+            .chain(remaining.iter().map(|step| match step {
+                DeployPlanStep::UseExistingContainer {
+                    machine_id,
+                    container_id,
+                    slot,
+                } => DeployPlanStepRef::UseExisting {
+                    machine_id,
+                    container_id,
+                    slot,
+                },
+                DeployPlanStep::RunContainer { machine_id, slot } => {
+                    DeployPlanStepRef::RunContainer { machine_id, slot }
+                }
+            }))
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum DeployPlanStepRef<'a> {
+    UseExisting {
+        machine_id: &'a MachineId,
+        container_id: &'a ContainerId,
+        slot: &'a ReplicaSlot,
+    },
+    RunContainer {
+        machine_id: &'a MachineId,
+        slot: &'a ReplicaSlot,
+    },
+}
+
+impl DeployPlanStepRef<'_> {
+    #[must_use]
+    pub const fn machine_id(&self) -> &MachineId {
+        match self {
+            Self::UseExisting { machine_id, .. } | Self::RunContainer { machine_id, .. } => {
+                machine_id
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct DeployRunContainerStep {
+    pub machine_id: MachineId,
+    pub slot: ReplicaSlot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -794,7 +871,7 @@ pub fn plan_namespace_deploy(
             services.push(DeployServicePlan {
                 service_id: plan.service_id,
                 placement: plan.placement,
-                steps: plan.steps,
+                work: plan.work,
                 pre_start: plan.pre_start,
             });
         }
@@ -927,7 +1004,7 @@ fn dependency_ordered_phases(
 pub struct DeploySingleServicePlan {
     pub service_id: ServiceId,
     pub placement: DeployServicePlacement,
-    pub steps: Vec<DeployPlanStep>,
+    pub work: DeployServiceWork,
     pub pre_start: Option<PreStartHookStep>,
     pub cleanup_actions: Vec<DeployCleanupAction>,
 }
@@ -949,6 +1026,69 @@ mod tests {
     use super::*;
 
     #[test]
+    fn service_work_exposes_each_plan_step_through_one_canonical_reference_variant() {
+        let machine_id = MachineId::try_new("machine_a").expect("machine id");
+        let container_id = ContainerId::try_new("ctr_existing").expect("container id");
+        let existing_slot = ReplicaSlot::Replicated {
+            number: ReplicatedReplicaSlot::try_new(1).expect("replica slot"),
+        };
+        let run_slot = ReplicaSlot::Replicated {
+            number: ReplicatedReplicaSlot::try_new(2).expect("replica slot"),
+        };
+        let work = DeployServiceWork::Ordinary {
+            steps: vec![
+                DeployPlanStep::UseExistingContainer {
+                    machine_id: machine_id.clone(),
+                    container_id: container_id.clone(),
+                    slot: existing_slot,
+                },
+                DeployPlanStep::RunContainer {
+                    machine_id: machine_id.clone(),
+                    slot: run_slot,
+                },
+            ],
+        };
+
+        assert!(matches!(
+            work.steps().collect::<Vec<_>>().as_slice(),
+            [
+                DeployPlanStepRef::UseExisting {
+                    machine_id: existing_machine,
+                    container_id: existing_container,
+                    slot: _,
+                },
+                DeployPlanStepRef::RunContainer {
+                    machine_id: run_machine,
+                    slot: _,
+                },
+            ] if *existing_machine == &machine_id
+                && *existing_container == &container_id
+                && *run_machine == &machine_id
+        ));
+    }
+
+    #[test]
+    fn handoff_causal_collections_reject_empty_values_and_normalize_names() {
+        assert!(NonEmptyVolumeNames::try_new([]).is_err());
+        assert!(NonEmptyVolumeHandoffParticipants::try_new([]).is_err());
+        let names = NonEmptyVolumeNames::try_new([
+            VolumeName::try_new("uploads").expect("volume"),
+            VolumeName::try_new("data").expect("volume"),
+            VolumeName::try_new("data").expect("volume"),
+        ])
+        .expect("non-empty names");
+        assert_eq!(
+            names.as_slice(),
+            [
+                VolumeName::try_new("data").expect("volume"),
+                VolumeName::try_new("uploads").expect("volume"),
+            ]
+        );
+        assert!(serde_json::from_str::<NonEmptyVolumeNames>("[]").is_err());
+        assert!(serde_json::from_str::<NonEmptyVolumeHandoffParticipants>("[]").is_err());
+    }
+
+    #[test]
     fn service_target_machines_are_deduplicated_across_replicas_and_pre_start() {
         let machine = MachineId::try_new("machine_a").expect("machine id");
         let service_id = ServiceId::try_new("api").expect("service id");
@@ -959,16 +1099,18 @@ mod tests {
                 services: vec![DeployServicePlan {
                     service_id: service_id.clone(),
                     placement: DeployServicePlacement::Replicated,
-                    steps: vec![
-                        DeployPlanStep::RunContainer {
-                            machine_id: machine.clone(),
-                            slot: replicated_slot(1),
-                        },
-                        DeployPlanStep::RunContainer {
-                            machine_id: machine.clone(),
-                            slot: replicated_slot(2),
-                        },
-                    ],
+                    work: DeployServiceWork::Ordinary {
+                        steps: vec![
+                            DeployPlanStep::RunContainer {
+                                machine_id: machine.clone(),
+                                slot: replicated_slot(1),
+                            },
+                            DeployPlanStep::RunContainer {
+                                machine_id: machine.clone(),
+                                slot: replicated_slot(2),
+                            },
+                        ],
+                    },
                     pre_start: Some(PreStartHookStep {
                         machine_id: machine.clone(),
                     }),

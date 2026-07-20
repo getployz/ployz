@@ -17,7 +17,7 @@ use crate::roles::machine::protocol::{
     MachineContainerRestartRpcRequest, MachineContainerRestartRpcResponse, MachineContainerRpcOk,
     MachineContainerRunHookRpcOk, MachineContainerRunHookRpcRequest,
     MachineContainerRunHookRpcResponse, MachineContainerRunRpcOk, MachineContainerRunRpcRequest,
-    MachineContainerRunRpcResponse, MachineContainerStopDomainError,
+    MachineContainerRunRpcResponse, MachineContainerStopDomainError, MachineContainerStopRpcOk,
     MachineContainerStopRpcRequest, MachineContainerStopRpcResponse, MachineRunContainerOutcome,
     MachineVolumeEnsureRpcOk, MachineVolumeEnsureRpcRequest, MachineVolumeEnsureRpcResponse,
     MachineVolumeRemoveDomainError, MachineVolumeRemoveRpcOk, MachineVolumeRemoveRpcRequest,
@@ -384,7 +384,7 @@ where
         .stop_managed_container(&request.container_id, &request.expected_identity)
         .await
     {
-        Ok(()) => {
+        Ok(outcome) => {
             publish_container_observed_delta(
                 &state.client,
                 &machine_id,
@@ -392,10 +392,13 @@ where
                 &request.container_id,
             )
             .await;
-            machine_success(MachineContainerStopRpcResponse::Ok(MachineContainerRpcOk {
-                machine_id,
-                container_id: request.container_id,
-            }))
+            machine_success(MachineContainerStopRpcResponse::Ok(
+                MachineContainerStopRpcOk {
+                    machine_id,
+                    container_id: request.container_id,
+                    outcome,
+                },
+            ))
         }
         Err(MachineContainerStopError::Stop {
             container_id,
@@ -408,9 +411,6 @@ where
                 inspect_hint: inspect_hint(&container_id),
             },
         }),
-        Err(MachineContainerStopError::ListExisting { message }) => {
-            container_list_error(MachineContainerListError::ListExisting { message })
-        }
     }
 }
 
@@ -489,8 +489,7 @@ fn hook_container_infrastructure_error(
     error: HookContainerInfrastructureError,
 ) -> NatsServiceResponse {
     let message = match error {
-        HookContainerInfrastructureError::List { message }
-        | HookContainerInfrastructureError::TimeoutStopList { message } => {
+        HookContainerInfrastructureError::List { message } => {
             format!("container list failed: {message}")
         }
         HookContainerInfrastructureError::ImagePull { message } => {
@@ -596,6 +595,7 @@ where
             health_status: container.health_status,
             resolved_image_identity: container.resolved_image_identity,
             created_at_unix_seconds: container.created_at_unix_seconds,
+            named_volume_names: container.named_volume_names,
         })
 }
 

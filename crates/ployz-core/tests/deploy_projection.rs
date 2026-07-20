@@ -2,14 +2,19 @@
 //! freshness, and terminal rules.
 
 use ployz_core::deploy::{
-    DeployOrigin, DeployPhasePlan, DeployPlan, DeployPlanStep, DeployServicePlacement,
-    DeployServicePlan, ReplicaSlot, ReplicatedReplicaSlot,
+    DeployCleanupContainer, DeployOrigin, DeployPhasePlan, DeployPlan, DeployPlanStep,
+    DeployServicePlacement, DeployServicePlan, DeployVolumeHandoffApplied,
+    DeployVolumeHandoffAppliedParticipant, DeployVolumeHandoffStopOutcome,
+    NonEmptyAppliedVolumeHandoffParticipants, NonEmptyVolumeNames, ReplicaSlot,
+    ReplicatedReplicaSlot, VolumeName,
 };
 use ployz_core::operation::{
     DeployCompletionOutcome, DeployOperationState, DeployRunningStage, DeployTransition,
+    DeployVolumeHandoffRollbackContainerOutcome, DeployVolumeHandoffRollbackOutcome,
     OperationEvent, OperationProjection, OperationStatus, ProjectionOperationState,
     StatusProjectionError, project_deploy_transition, project_operation_event,
 };
+use ployz_test_support::containers;
 use ployz_test_support::ids::{
     container_id, event_sequence, machine_id, namespace_id, namespace_revision_id, operation_id,
     service_id,
@@ -430,6 +435,86 @@ fn deploy_cleanup_evidence_can_record_from_active_service_commit() {
 }
 
 #[test]
+fn volume_handoff_evidence_round_trips_without_runtime_secrets_and_projects() {
+    let target = DeployCleanupContainer {
+        machine_id: machine_id("machine_a"),
+        container_id: container_id("ctr_old"),
+        identity: containers::identity("svc_api")
+            .entry("entry_old")
+            .operation("op_old")
+            .step("step_old")
+            .build(),
+    };
+    let event = OperationEvent::DeployVolumeHandoffApplied {
+        operation_id: operation_id("op_123"),
+        service_id: service_id("svc_api"),
+        handoff: DeployVolumeHandoffApplied {
+            machine_id: machine_id("machine_a"),
+            volume_names: NonEmptyVolumeNames::try_new([
+                VolumeName::try_new("data").expect("volume name")
+            ])
+            .expect("non-empty volume names"),
+            superseded: NonEmptyAppliedVolumeHandoffParticipants::try_new([
+                DeployVolumeHandoffAppliedParticipant {
+                    target: target.clone(),
+                    stop_outcome: DeployVolumeHandoffStopOutcome::StoppedRunning,
+                    shared_volume_names: NonEmptyVolumeNames::try_new([VolumeName::try_new(
+                        "data",
+                    )
+                    .expect("volume name")])
+                    .expect("shared volume"),
+                },
+            ])
+            .expect("handoff participant"),
+        },
+    };
+    let json = serde_json::to_string(&event).expect("handoff evidence serializes");
+
+    assert_eq!(
+        serde_json::from_str::<OperationEvent>(&json).expect("handoff evidence deserializes"),
+        event
+    );
+    for forbidden in ["environment", "env_value", "revision_key", "hmac", "secret"] {
+        assert!(!json.contains(forbidden), "evidence leaked {forbidden}");
+    }
+
+    let running = OperationStatus::Deploy {
+        id: operation_id("op_123"),
+        namespace_id: namespace_id("default"),
+        service_id: service_id("svc_api"),
+        origin: None,
+        state: DeployOperationState::Running {
+            stage: DeployRunningStage::StartingContainers,
+        },
+        last_event_sequence: event_sequence(4),
+    };
+    assert!(matches!(
+        project_operation_event(&running, event, event_sequence(5)),
+        Ok(OperationProjection::StatusChanged { .. })
+    ));
+
+    let rollback = OperationEvent::DeployVolumeHandoffRollbackFinished {
+        operation_id: operation_id("op_123"),
+        service_id: service_id("svc_api"),
+        machine_id: machine_id("machine_a"),
+        outcomes: vec![DeployVolumeHandoffRollbackContainerOutcome {
+            target,
+            outcome:
+                DeployVolumeHandoffRollbackOutcome::NotRestartedNewConsumerQuiescenceUnconfirmed,
+        }],
+    };
+    let json = serde_json::to_string(&rollback).expect("rollback evidence serializes");
+    assert_eq!(
+        serde_json::from_str::<OperationEvent>(&json).expect("rollback evidence deserializes"),
+        rollback
+    );
+    assert!(matches!(
+        project_operation_event(&running, rollback, event_sequence(5)),
+        Ok(OperationProjection::StatusChanged { .. })
+    ));
+}
+
+#[test]
 fn invalid_deploy_transitions_are_rejected() {
     let accepted = OperationStatus::deploy_accepted(
         operation_id("op_123"),
@@ -646,10 +731,12 @@ fn plan_created_event() -> OperationEvent {
                 services: vec![DeployServicePlan {
                     service_id: service_id("svc_api"),
                     placement: DeployServicePlacement::Replicated,
-                    steps: vec![DeployPlanStep::RunContainer {
-                        machine_id: machine_id("machine_a"),
-                        slot: replica_slot(1),
-                    }],
+                    work: ployz_core::deploy::DeployServiceWork::Ordinary {
+                        steps: vec![DeployPlanStep::RunContainer {
+                            machine_id: machine_id("machine_a"),
+                            slot: replica_slot(1),
+                        }],
+                    },
                     pre_start: None,
                 }],
             }],

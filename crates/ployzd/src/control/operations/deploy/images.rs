@@ -4,9 +4,8 @@ use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ployz_core::deploy::{
-    DeployCleanupAction, DeployPhasePlan, DeployPlan, DeployPlanStep, DeployRequest,
-    DeployServicePlan, IMAGE_AVAILABILITY_SAFETY_MARGIN, ImageReference, ImageSource,
-    RegistryCredential,
+    DeployCleanupAction, DeployPhasePlan, DeployPlan, DeployRequest, DeployServicePlan,
+    IMAGE_AVAILABILITY_SAFETY_MARGIN, ImageReference, ImageSource, RegistryCredential,
 };
 use ployz_core::ids::{MachineId, ServiceId};
 use ployz_core::image::{
@@ -449,11 +448,8 @@ pub(super) fn registry_resolution_machine(
         .iter()
         .flat_map(|phase| &phase.services)
         .find(|plan| &plan.service_id == service_id)
-        .and_then(|plan| plan.steps.first())
-        .map(|step| match step {
-            DeployPlanStep::UseExistingContainer { machine_id, .. }
-            | DeployPlanStep::RunContainer { machine_id, .. } => machine_id.clone(),
-        })
+        .and_then(|plan| plan.work.steps().next())
+        .map(|step| step.machine_id().clone())
 }
 
 pub(super) async fn resolve_registry_image<N>(
@@ -557,11 +553,8 @@ where
             continue;
         };
         let mut target_platforms = BTreeMap::new();
-        for step in &service_plan.steps {
-            let machine_id = match step {
-                DeployPlanStep::UseExistingContainer { machine_id, .. }
-                | DeployPlanStep::RunContainer { machine_id, .. } => machine_id,
-            };
+        for step in service_plan.work.steps() {
+            let machine_id = step.machine_id();
             let target_platform = command
                 .target_platform(machine_id)
                 .map_err(|error| error.into_execution_error())?;
@@ -641,12 +634,9 @@ pub(super) fn validate_pushed_image_availability(
             continue;
         };
         let target_machines = service_plan
-            .steps
-            .iter()
-            .map(|step| match step {
-                DeployPlanStep::UseExistingContainer { machine_id, .. }
-                | DeployPlanStep::RunContainer { machine_id, .. } => machine_id.clone(),
-            })
+            .work
+            .steps()
+            .map(|step| step.machine_id().clone())
             .collect::<Vec<_>>();
         validate_pushed_service_availability(
             &service.service.service_id,

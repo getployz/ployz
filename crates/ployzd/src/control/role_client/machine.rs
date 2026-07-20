@@ -11,7 +11,7 @@ use crate::roles::machine::protocol::{
     MachineContainerRestartRpcRequest, MachineContainerRpcOk, MachineContainerRunDomainError,
     MachineContainerRunHookDomainError, MachineContainerRunHookRpcOk,
     MachineContainerRunHookRpcRequest, MachineContainerRunRpcOk, MachineContainerRunRpcRequest,
-    MachineContainerStopDomainError, MachineContainerStopRpcRequest,
+    MachineContainerStopDomainError, MachineContainerStopRpcOk, MachineContainerStopRpcRequest,
     MachineDataplaneStatusDomainError, MachineDataplaneStatusRpcOk,
     MachineDataplaneStatusRpcRequest, MachineFactsGetDomainError, MachineFactsGetRpcOk,
     MachineFactsGetRpcRequest, MachineFactsRefreshDomainError, MachineFactsRefreshRpcOk,
@@ -1021,7 +1021,7 @@ impl NatsMachineContainerRuntime {
         &self,
         machine_id: &MachineId,
         request: &MachineContainerStopRpcRequest,
-    ) -> Result<MachineContainerRpcOk, MachineCallError<MachineContainerStopDomainError>> {
+    ) -> Result<MachineContainerStopRpcOk, MachineCallError<MachineContainerStopDomainError>> {
         call_machine(
             &self.client,
             self.request_timeout,

@@ -9,7 +9,7 @@ use super::{
     wait_for_ready_dataplane, wait_for_terminal_deploy_status, with_evidence,
 };
 use ployz_core::deploy::{
-    ContainerRuntimeSpec, DeployPlan, DeployPlanStep, DeployRequest, DeployServiceSpec,
+    ContainerRuntimeSpec, DeployPlan, DeployPlanStepRef, DeployRequest, DeployServiceSpec,
     ImageReference, ImageSource, ReplicaCount,
 };
 use ployz_core::intent::ActiveMachineState;
@@ -161,16 +161,14 @@ async fn group_placement_peer_health() {
             .phases
             .iter()
             .flat_map(|phase| &phase.services)
-            .flat_map(|service| &service.steps)
+            .flat_map(|service| service.work.steps())
             .collect::<Vec<_>>();
         assert!(
-            matches!(
-                steps.as_slice(),
-                [
-                    DeployPlanStep::RunContainer { machine_id: first, .. },
-                    DeployPlanStep::RunContainer { machine_id: second, .. },
-                ] if first == &machine_id("edge_2") && second == &machine_id("edge_2")
-            ),
+            steps.len() == 2
+                && steps.iter().all(|step| {
+                    matches!(step, DeployPlanStepRef::RunContainer { .. })
+                        && step.machine_id() == &machine_id("edge_2")
+                }),
             "fixed preliminary set did not leave only edge_2 eligible: {second_plan:?}"
         );
         assert_eq!(

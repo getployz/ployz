@@ -1,4 +1,6 @@
-use ployz_core::deploy::{DeployPlan, DeployPlanStep, DeployServicePlacement, DeployServicePlan};
+use ployz_core::deploy::{
+    DeployPlan, DeployPlanStepRef, DeployServicePlacement, DeployServicePlan,
+};
 use ployz_core::operation::DeployServiceResult;
 
 use super::types::{DeployServiceExecutionCommand, ServingIntentDisposition};
@@ -24,9 +26,9 @@ pub(super) fn service_result(
         && !has_cleanup
         && service.pre_start.is_none()
         && service
-            .steps
-            .iter()
-            .all(|step| matches!(step, DeployPlanStep::UseExistingContainer { .. }))
+            .work
+            .steps()
+            .all(|step| matches!(step, DeployPlanStepRef::UseExisting { .. }))
     {
         DeployServiceResult::Unchanged {
             service_id: service.service_id.clone(),
