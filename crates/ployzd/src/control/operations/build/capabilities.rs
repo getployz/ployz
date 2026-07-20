@@ -1,6 +1,10 @@
+use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use ployz_core::build::{BuildTargetCapabilities, ClusterBuildTargetCapabilities};
+use ployz_core::build::{
+    BuildExecutorReadinessTestimony, BuildTargetCapabilities, ClusterBuildTargetCapabilities,
+    ExternalBuildExecutorCapability, ExternalBuildPoolCapabilities,
+};
 
 use crate::control::intent::service::NatsIntentReader;
 use crate::control::role_client::machine::{
@@ -8,7 +12,7 @@ use crate::control::role_client::machine::{
 };
 use crate::control::role_client::machine_convergence::gather_dataplane_statuses;
 
-use super::external_admission::read_external_build_pool_capabilities;
+use super::external_admission::{ExternalBuildTestimony, gather_external_build_testimony};
 use super::placement::classify_cluster_build_capabilities;
 
 const BUILD_TARGET_CAPABILITY_DEADLINE: Duration = Duration::from_secs(4);
@@ -46,7 +50,7 @@ pub(super) async fn read_build_target_capabilities(
             .map(|machine| (machine.machine_id.clone(), machine.lifecycle))
             .collect::<Vec<_>>();
         let projection = &intent.dataplane_projection;
-        let (placement_facts, dataplane_statuses, external_pools) = tokio::join!(
+        let (placement_facts, dataplane_statuses, external_testimony) = tokio::join!(
             read_machine_placement_facts_with_gather_timeout(
                 &short_facts,
                 machine_lifecycles,
@@ -59,9 +63,9 @@ pub(super) async fn read_build_target_capabilities(
                     .iter()
                     .map(|member| &member.machine_id),
             ),
-            read_external_build_pool_capabilities(client, &intent, now_unix_seconds, None),
+            gather_external_build_testimony(client, &intent, now_unix_seconds, None),
         );
-        let external_pools = external_pools
+        let external_testimony = external_testimony
             .map_err(|message| BuildTargetCapabilitiesReadError::Unavailable { message })?;
         Ok(BuildTargetCapabilities {
             cluster: ClusterBuildTargetCapabilities {
@@ -71,11 +75,48 @@ pub(super) async fn read_build_target_capabilities(
                     &dataplane_statuses,
                 ),
             },
-            external_pools,
+            external_pools: project_external_build_pool_capabilities(external_testimony),
         })
     })
     .await
     .map_err(|_| BuildTargetCapabilitiesReadError::Unavailable {
         message: "capability gather exceeded its four-second deadline".to_owned(),
     })?
+}
+
+pub(super) fn project_external_build_pool_capabilities(
+    testimony: ExternalBuildTestimony,
+) -> Vec<ExternalBuildPoolCapabilities> {
+    let mut pools = BTreeMap::<_, Vec<ExternalBuildExecutorCapability>>::new();
+    for executor in testimony.executors {
+        let (pool_id, capability) = match executor {
+            BuildExecutorReadinessTestimony::Answered {
+                identity,
+                readiness,
+            } => (
+                identity.pool_id.clone(),
+                ExternalBuildExecutorCapability::Answered {
+                    identity,
+                    readiness,
+                },
+            ),
+            BuildExecutorReadinessTestimony::Silent { identity } => (
+                identity.pool_id.clone(),
+                ExternalBuildExecutorCapability::Silent { identity },
+            ),
+        };
+        pools.entry(pool_id).or_default().push(capability);
+    }
+    let reachable_image_seeds = testimony
+        .reachable_image_seeds
+        .into_iter()
+        .collect::<Vec<_>>();
+    pools
+        .into_iter()
+        .map(|(pool_id, executors)| ExternalBuildPoolCapabilities {
+            pool_id,
+            executors,
+            reachable_image_seeds: reachable_image_seeds.clone(),
+        })
+        .collect()
 }
