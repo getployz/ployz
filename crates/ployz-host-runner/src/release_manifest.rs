@@ -166,7 +166,7 @@ impl ReleaseManifest {
 }
 
 fn railpack_entry(contents: &str) -> Result<RailpackManifestEntry, String> {
-    let pins = railpack_pins()?;
+    let pins = railpack_pins().map_err(|error| error.to_string())?;
     let version = manifest_value(contents, "PLOYZ_RAILPACK_VERSION")?;
     if version != pins.version() {
         return Err(format!(
@@ -361,6 +361,29 @@ mod tests {
         ))
         .expect_err("partial Railpack tuple is rejected");
         assert!(partial.contains("PLOYZ_RAILPACK_URL"));
+    }
+
+    #[test]
+    fn release_manifest_reports_an_unsupported_railpack_pin_without_debug_output() {
+        let error = ReleaseManifest::parse(&format!(
+            "PLOYZ_VERSION=0.1.0\n\
+             PLOYZD_URL=https://example.test/ployzd\n\
+             PLOYZD_SHA256={SHA}\n\
+             PLOYZ_EBPF_TC_URL=https://example.test/ployz-ebpf-tc\n\
+             PLOYZ_EBPF_TC_SHA256={SHA}\n\
+             PLOYZ_EBPF_CTL_URL=https://example.test/ployz-ebpf-ctl\n\
+             PLOYZ_EBPF_CTL_SHA256={SHA}\n\
+             PLOYZ_RAILPACK_VERSION=v0.32.0\n\
+             PLOYZ_RAILPACK_URL=https://example.test/railpack\n\
+             PLOYZ_RAILPACK_SHA256={SHA}\n"
+        ))
+        .expect_err("unsupported Railpack version is rejected");
+
+        assert_eq!(
+            error,
+            "release manifest has unsupported PLOYZ_RAILPACK_VERSION=v0.32.0; expected v0.31.0"
+        );
+        assert!(!error.contains("RailpackPinError"));
     }
 
     #[test]

@@ -4,6 +4,68 @@ const RAILPACK_PINS: &str = include_str!(concat!(
 ));
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RailpackDigestKind {
+    Archive,
+    Binary,
+    Frontend,
+}
+
+impl std::fmt::Display for RailpackDigestKind {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = match self {
+            Self::Archive => "archive",
+            Self::Binary => "binary",
+            Self::Frontend => "frontend",
+        };
+        formatter.write_str(name)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RailpackDigestError {
+    MissingSha256Prefix,
+    NotLowercaseHex,
+}
+
+impl std::fmt::Display for RailpackDigestError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingSha256Prefix => formatter.write_str("digest is not a SHA-256 digest"),
+            Self::NotLowercaseHex => {
+                formatter.write_str("SHA-256 is not 64 lowercase hex characters")
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RailpackPinError {
+    #[error("Railpack pin line {line} has no '='")]
+    MalformedLine { line: usize },
+    #[error("Railpack pin {key} is empty")]
+    Empty { key: String },
+    #[error("unknown Railpack pin {key}")]
+    Unknown { key: String },
+    #[error("duplicate Railpack pin {key}")]
+    Duplicate { key: String },
+    #[error("missing Railpack pin {key}")]
+    Missing { key: &'static str },
+    #[error("unsupported Railpack architecture {architecture}")]
+    UnsupportedArchitecture { architecture: String },
+    #[error("Railpack {architecture} archive must be {expected}")]
+    MalformedArchive {
+        architecture: String,
+        expected: String,
+    },
+    #[error("Railpack {architecture} {kind} {reason}")]
+    MalformedDigest {
+        architecture: String,
+        kind: RailpackDigestKind,
+        reason: RailpackDigestError,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RailpackPins<'a> {
     version: &'a str,
     install_path: &'a str,
@@ -68,11 +130,11 @@ impl<'a> RailpackPlatformPins<'a> {
     }
 }
 
-pub fn railpack_pins() -> Result<RailpackPins<'static>, String> {
+pub fn railpack_pins() -> Result<RailpackPins<'static>, RailpackPinError> {
     parse_railpack_pins(RAILPACK_PINS)
 }
 
-fn parse_railpack_pins(contents: &str) -> Result<RailpackPins<'_>, String> {
+fn parse_railpack_pins(contents: &str) -> Result<RailpackPins<'_>, RailpackPinError> {
     let mut version = None;
     let mut install_path = None;
     let mut frontend_reference = None;
@@ -91,10 +153,12 @@ fn parse_railpack_pins(contents: &str) -> Result<RailpackPins<'_>, String> {
             continue;
         }
         let Some((key, value)) = line.split_once('=') else {
-            return Err(format!("Railpack pin line {} has no '='", index + 1));
+            return Err(RailpackPinError::MalformedLine { line: index + 1 });
         };
         if value.is_empty() {
-            return Err(format!("Railpack pin {key} is empty"));
+            return Err(RailpackPinError::Empty {
+                key: key.to_owned(),
+            });
         }
         let slot = match key {
             "RAILPACK_VERSION" => &mut version,
@@ -108,10 +172,16 @@ fn parse_railpack_pins(contents: &str) -> Result<RailpackPins<'_>, String> {
             "RAILPACK_ARM64_ARCHIVE_SHA256" => &mut arm64_archive_sha256,
             "RAILPACK_ARM64_BINARY_SHA256" => &mut arm64_binary_sha256,
             "RAILPACK_ARM64_FRONTEND_DIGEST" => &mut arm64_frontend_digest,
-            _ => return Err(format!("unknown Railpack pin {key}")),
+            _ => {
+                return Err(RailpackPinError::Unknown {
+                    key: key.to_owned(),
+                });
+            }
         };
         if slot.replace(value).is_some() {
-            return Err(format!("duplicate Railpack pin {key}"));
+            return Err(RailpackPinError::Duplicate {
+                key: key.to_owned(),
+            });
         }
     }
 
@@ -139,8 +209,11 @@ fn parse_railpack_pins(contents: &str) -> Result<RailpackPins<'_>, String> {
     })
 }
 
-fn required_pin<'a>(value: Option<&'a str>, key: &str) -> Result<&'a str, String> {
-    value.ok_or_else(|| format!("missing Railpack pin {key}"))
+fn required_pin<'a>(
+    value: Option<&'a str>,
+    key: &'static str,
+) -> Result<&'a str, RailpackPinError> {
+    value.ok_or(RailpackPinError::Missing { key })
 }
 
 fn platform_pins<'a>(
@@ -150,27 +223,34 @@ fn platform_pins<'a>(
     archive_sha256: &'a str,
     binary_sha256: &'a str,
     frontend_digest: &'a str,
-) -> Result<RailpackPlatformPins<'a>, String> {
+) -> Result<RailpackPlatformPins<'a>, RailpackPinError> {
     let archive_architecture = match architecture {
         "amd64" => "x86_64",
         "arm64" => "arm64",
-        _ => return Err(format!("unsupported Railpack architecture {architecture}")),
+        _ => {
+            return Err(RailpackPinError::UnsupportedArchitecture {
+                architecture: architecture.to_owned(),
+            });
+        }
     };
     let expected_archive =
         format!("railpack-{version}-{archive_architecture}-unknown-linux-musl.tar.gz");
     if archive != expected_archive {
-        return Err(format!(
-            "Railpack {architecture} archive must be {expected_archive}"
-        ));
+        return Err(RailpackPinError::MalformedArchive {
+            architecture: architecture.to_owned(),
+            expected: expected_archive,
+        });
     }
-    validate_sha256(architecture, "archive", archive_sha256)?;
-    validate_sha256(architecture, "binary", binary_sha256)?;
+    validate_sha256(architecture, RailpackDigestKind::Archive, archive_sha256)?;
+    validate_sha256(architecture, RailpackDigestKind::Binary, binary_sha256)?;
     let Some(frontend_sha256) = frontend_digest.strip_prefix("sha256:") else {
-        return Err(format!(
-            "Railpack {architecture} frontend digest is not a SHA-256 digest"
-        ));
+        return Err(RailpackPinError::MalformedDigest {
+            architecture: architecture.to_owned(),
+            kind: RailpackDigestKind::Frontend,
+            reason: RailpackDigestError::MissingSha256Prefix,
+        });
     };
-    validate_sha256(architecture, "frontend", frontend_sha256)?;
+    validate_sha256(architecture, RailpackDigestKind::Frontend, frontend_sha256)?;
     Ok(RailpackPlatformPins {
         archive,
         archive_sha256,
@@ -179,7 +259,11 @@ fn platform_pins<'a>(
     })
 }
 
-fn validate_sha256(architecture: &str, kind: &str, digest: &str) -> Result<(), String> {
+fn validate_sha256(
+    architecture: &str,
+    kind: RailpackDigestKind,
+    digest: &str,
+) -> Result<(), RailpackPinError> {
     if digest.len() == 64
         && digest
             .bytes()
@@ -187,9 +271,11 @@ fn validate_sha256(architecture: &str, kind: &str, digest: &str) -> Result<(), S
     {
         Ok(())
     } else {
-        Err(format!(
-            "Railpack {architecture} {kind} SHA-256 is not 64 lowercase hex characters"
-        ))
+        Err(RailpackPinError::MalformedDigest {
+            architecture: architecture.to_owned(),
+            kind,
+            reason: RailpackDigestError::NotLowercaseHex,
+        })
     }
 }
 
@@ -200,9 +286,20 @@ mod tests {
     #[test]
     fn checked_in_pins_are_complete_typed_and_shell_safe() {
         let pins = railpack_pins().expect("checked-in Railpack pins");
-        assert!(pins.install_path().starts_with('/'));
+        assert_eq!(pins.version(), "v0.31.0");
+        assert_eq!(
+            pins.install_path(),
+            "/usr/local/lib/ployz/railpack/v0.31.0/railpack"
+        );
+        assert_eq!(
+            pins.frontend_reference(),
+            "ghcr.io/railwayapp/railpack-frontend"
+        );
         let amd64 = pins.for_architecture("amd64").expect("amd64 pins");
-        assert!(amd64.archive().ends_with(".tar.gz"));
+        assert_eq!(
+            amd64.archive(),
+            "railpack-v0.31.0-x86_64-unknown-linux-musl.tar.gz"
+        );
         assert_eq!(amd64.archive_sha256().len(), 64);
         assert_eq!(amd64.binary_sha256().len(), 64);
         assert!(
@@ -213,20 +310,75 @@ mod tests {
     }
 
     #[test]
-    fn parser_rejects_duplicate_missing_and_malformed_pins() {
+    fn parser_returns_typed_configuration_errors() {
         let duplicate = format!("{RAILPACK_PINS}RAILPACK_VERSION=v0.31.0\n");
-        assert!(parse_railpack_pins(&duplicate).is_err());
+        assert_eq!(
+            parse_railpack_pins(&duplicate),
+            Err(RailpackPinError::Duplicate {
+                key: "RAILPACK_VERSION".to_owned(),
+            })
+        );
         let missing = RAILPACK_PINS.replace("RAILPACK_VERSION=v0.31.0\n", "");
-        assert!(parse_railpack_pins(&missing).is_err());
+        assert_eq!(
+            parse_railpack_pins(&missing),
+            Err(RailpackPinError::Missing {
+                key: "RAILPACK_VERSION",
+            })
+        );
+        assert_eq!(
+            parse_railpack_pins("RAILPACK_VERSION"),
+            Err(RailpackPinError::MalformedLine { line: 1 })
+        );
+        assert_eq!(
+            parse_railpack_pins("UNRECOGNIZED=value"),
+            Err(RailpackPinError::Unknown {
+                key: "UNRECOGNIZED".to_owned(),
+            })
+        );
+        assert_eq!(
+            parse_railpack_pins("RAILPACK_VERSION="),
+            Err(RailpackPinError::Empty {
+                key: "RAILPACK_VERSION".to_owned(),
+            })
+        );
         let bad_archive = RAILPACK_PINS.replace(
             "railpack-v0.31.0-x86_64-unknown-linux-musl.tar.gz",
             "railpack-unexpected.tar.gz",
         );
-        assert!(parse_railpack_pins(&bad_archive).is_err());
+        assert!(matches!(
+            parse_railpack_pins(&bad_archive),
+            Err(RailpackPinError::MalformedArchive { architecture, .. })
+                if architecture == "amd64"
+        ));
         let bad_sha = RAILPACK_PINS.replace(
             "f75416cf4c452db2841d864f54dbfd8e4d77f2d4a02b23b87561e7760fa278fd",
             "not-a-sha",
         );
-        assert!(parse_railpack_pins(&bad_sha).is_err());
+        assert_eq!(
+            parse_railpack_pins(&bad_sha),
+            Err(RailpackPinError::MalformedDigest {
+                architecture: "amd64".to_owned(),
+                kind: RailpackDigestKind::Archive,
+                reason: RailpackDigestError::NotLowercaseHex,
+            })
+        );
+        let bad_frontend = RAILPACK_PINS.replacen("sha256:", "sha512:", 1);
+        assert_eq!(
+            parse_railpack_pins(&bad_frontend),
+            Err(RailpackPinError::MalformedDigest {
+                architecture: "amd64".to_owned(),
+                kind: RailpackDigestKind::Frontend,
+                reason: RailpackDigestError::MissingSha256Prefix,
+            })
+        );
+    }
+
+    #[test]
+    fn platform_parser_returns_typed_unsupported_architecture() {
+        assert!(matches!(
+            platform_pins("riscv64", "v1", "archive", "a", "b", "sha256:c"),
+            Err(RailpackPinError::UnsupportedArchitecture { architecture })
+                if architecture == "riscv64"
+        ));
     }
 }
