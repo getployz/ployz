@@ -191,18 +191,20 @@ async fn execute_approved_cloud(
         }
     };
     if let Err(error) = ready {
-        if !executor_joined {
-            let _ = shutdown_executor(shutdown_tx, executor_task).await;
-        }
-        return Err(error);
+        let shutdown = if executor_joined {
+            Ok(())
+        } else {
+            shutdown_executor(shutdown_tx, executor_task).await
+        };
+        return prefer_shutdown_result(Err(error), shutdown);
     }
     let dispatch = client
-        .dispatch(session_secret, &frozen)
+        .dispatch(session_secret, &frozen, &digest, &minted.public)
         .await
         .map_err(current_tree_error);
     if let Err(error) = dispatch {
-        let _ = shutdown_executor(shutdown_tx, executor_task).await;
-        return Err(error);
+        let shutdown = shutdown_executor(shutdown_tx, executor_task).await;
+        return prefer_shutdown_result(Err(error), shutdown);
     }
     let observed = await_cloud_terminal(&client, session_secret);
     tokio::pin!(observed);
@@ -227,8 +229,7 @@ async fn execute_approved_cloud(
     } else {
         shutdown_executor(shutdown_tx, executor_task).await
     };
-    result?;
-    shutdown_result?;
+    prefer_shutdown_result(result, shutdown_result)?;
     Ok(PloyzctlExecutionOutput::stdout(format!(
         "built current working tree for {}/{}/{} and completed deployment {}\n",
         selected.organization.slug,
@@ -274,7 +275,7 @@ async fn await_cloud_terminal(
             .observe(session_secret)
             .await
             .map_err(current_tree_error)?;
-        if let ObserveState::Terminal { deployment } = state {
+        if let ObserveState::Terminal { deployment, .. } = state {
             return match deployment.status {
                 CloudDeploymentStatus::Applied => Ok(()),
                 CloudDeploymentStatus::Failed => {
@@ -283,6 +284,12 @@ async fn await_cloud_terminal(
                 CloudDeploymentStatus::Cancelled => {
                     Err(current_tree_error("Cloud deployment finished as cancelled"))
                 }
+                CloudDeploymentStatus::Queued
+                | CloudDeploymentStatus::Planning
+                | CloudDeploymentStatus::Building
+                | CloudDeploymentStatus::Deploying => Err(current_tree_error(
+                    "Cloud terminal observation retained a nonterminal deployment status",
+                )),
             };
         }
         if started.elapsed() >= OBSERVE_TIMEOUT {
@@ -445,11 +452,7 @@ async fn execute_standalone(
         } else {
             shutdown_executor(shutdown_tx, executor_task).await
         };
-        match (build, shutdown) {
-            (Ok(receipt), Ok(())) => Ok(receipt),
-            (Err(error), Ok(())) => Err(error),
-            (_, Err(error)) => Err(error),
-        }
+        prefer_shutdown_result(build, shutdown)
     }
     .await;
     let revoke_result = revoke_executor(&api, &config, public_key).await;
@@ -497,6 +500,16 @@ async fn shutdown_executor(
             let _ = task.await;
             Err(current_tree_error("build executor shutdown timed out"))
         }
+    }
+}
+
+fn prefer_shutdown_result<T>(
+    operation: Result<T, PloyzctlExecutionError>,
+    shutdown: Result<(), PloyzctlExecutionError>,
+) -> Result<T, PloyzctlExecutionError> {
+    match shutdown {
+        Ok(()) => operation,
+        Err(error) => Err(error),
     }
 }
 
@@ -617,4 +630,26 @@ fn current_tree_error(message: impl std::fmt::Display) -> PloyzctlExecutionError
         message: message.to_string(),
     }
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shutdown_failure_takes_precedence_over_operation_result() {
+        let operation: Result<(), _> = Err(current_tree_error("deployment failed"));
+        let shutdown = Err(current_tree_error("executor shutdown failed"));
+
+        let error = prefer_shutdown_result(operation, shutdown).expect_err("shutdown failure");
+        assert!(error.to_string().contains("executor shutdown failed"));
+    }
+
+    #[test]
+    fn successful_shutdown_preserves_the_operation_result() {
+        let output = PloyzctlExecutionOutput::stdout("done".to_owned());
+        let result = prefer_shutdown_result(Ok(output), Ok(())).expect("operation result");
+
+        assert_eq!(result.stdout, "done");
+    }
 }

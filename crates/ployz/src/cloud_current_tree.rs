@@ -77,32 +77,78 @@ pub(crate) enum ApprovalState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum CloudDeploymentStatus {
+    Queued,
+    Planning,
+    Building,
+    Deploying,
     Applied,
     Failed,
     Cancelled,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CloudDeploymentObservation {
     pub status: CloudDeploymentStatus,
+    #[serde(rename = "failure_code")]
+    _failure_code: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CloudBuildStatus {
+    Queued,
+    WaitingCi,
+    Submitting,
+    Building,
+    Succeeded,
+    Reused,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CloudBuildObservation {
+    #[serde(rename = "status")]
+    _status: CloudBuildStatus,
+    #[serde(rename = "failure_code")]
+    _failure_code: Option<String>,
+    #[serde(rename = "receipt")]
+    _receipt: Option<serde::de::IgnoredAny>,
+}
+
+#[derive(Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum ObserveState {
-    Pending,
-    Building,
-    Deploying,
+    Dispatched {
+        #[serde(rename = "build")]
+        _build: CloudBuildObservation,
+        #[serde(rename = "deployment")]
+        _deployment: CloudDeploymentObservation,
+    },
     Terminal {
+        #[serde(rename = "build")]
+        _build: CloudBuildObservation,
         deployment: CloudDeploymentObservation,
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 enum CancelState {
-    Cancelled,
+    Cancelled {
+        #[serde(rename = "targetAttemptId")]
+        _target_attempt_id: Option<String>,
+    },
+    Terminal {
+        #[serde(rename = "targetAttemptId")]
+        _target_attempt_id: Option<String>,
+    },
+    Expired {
+        #[serde(rename = "targetAttemptId")]
+        _target_attempt_id: Option<String>,
+    },
 }
 
 #[derive(Serialize)]
@@ -127,8 +173,8 @@ enum CurrentTreeRequest<'a> {
     },
     Dispatch {
         assignment_id: &'a str,
-        build_record_id: &'a str,
-        deployment_id: &'a str,
+        digest: &'a str,
+        public_key: &'a str,
     },
     Observe,
     Cancel,
@@ -246,13 +292,15 @@ impl CloudCurrentTreeClient {
         &self,
         secret: &str,
         frozen: &FrozenBuild,
+        digest: &LocalSnapshotDigest,
+        public_key: &NatsUserPublicKey,
     ) -> Result<(), CloudCurrentTreeError> {
         self.request_result::<serde::de::IgnoredAny>(
             secret,
             &CurrentTreeRequest::Dispatch {
                 assignment_id: &frozen.assignment_id,
-                build_record_id: &frozen.build_record_id,
-                deployment_id: &frozen.deployment_id,
+                digest: digest.as_str(),
+                public_key: public_key.as_str(),
             },
         )
         .await
@@ -538,17 +586,53 @@ mod tests {
             build_record_id: "build-1".to_owned(),
             deployment_id: "deployment-1".to_owned(),
         };
+        let digest =
+            LocalSnapshotDigest::try_new(format!("sha256:{}", "a".repeat(64))).expect("digest");
+        let public_key = ployz_core::nats_config::MintedNatsUser::generate()
+            .expect("NKey")
+            .public;
         CloudCurrentTreeClient::new(&format!("http://{address}"))
             .expect("client")
-            .dispatch("pct_secret", &frozen)
+            .dispatch("pct_secret", &frozen, &digest, &public_key)
             .await
             .expect("dispatch");
         let request = request.await.expect("server");
         assert!(request.contains("authorization: Bearer pct_secret\r\n"));
         assert!(request.ends_with(
-            "{\"action\":\"dispatch\",\"assignment_id\":\"assignment-1\",\"build_record_id\":\"build-1\",\"deployment_id\":\"deployment-1\"}"
+            &format!(
+                "{{\"action\":\"dispatch\",\"assignment_id\":\"assignment-1\",\"digest\":\"{}\",\"public_key\":\"{}\"}}",
+                digest.as_str(),
+                public_key.as_str(),
+            )
         ));
-        assert!(!request.contains("digest"));
         assert!(!request.contains("source"));
+        assert!(!request.contains("build_record_id"));
+        assert!(!request.contains("deployment_id"));
+    }
+
+    #[test]
+    fn observe_contract_accepts_dispatched_and_terminal_payloads() {
+        let dispatched: ResultEnvelope<ObserveState> = serde_json::from_str(
+            r#"{"result":{"status":"dispatched","build":{"status":"building","failure_code":null,"receipt":null},"deployment":{"status":"building","failure_code":null}}}"#,
+        )
+        .expect("dispatched observation");
+        assert!(matches!(dispatched.result, ObserveState::Dispatched { .. }));
+
+        let terminal: ResultEnvelope<ObserveState> = serde_json::from_str(
+            r#"{"result":{"status":"terminal","build":{"status":"succeeded","failure_code":null,"receipt":{}},"deployment":{"status":"applied","failure_code":null}}}"#,
+        )
+        .expect("terminal observation");
+        assert!(matches!(terminal.result, ObserveState::Terminal { .. }));
+    }
+
+    #[test]
+    fn cancel_contract_accepts_every_terminal_session_state() {
+        for status in ["cancelled", "terminal", "expired"] {
+            let body = format!(
+                r#"{{"result":{{"status":"{status}","targetAttemptId":"assignment-1"}}}}"#,
+            );
+            serde_json::from_str::<ResultEnvelope<CancelState>>(&body)
+                .expect("closed cancellation state");
+        }
     }
 }
