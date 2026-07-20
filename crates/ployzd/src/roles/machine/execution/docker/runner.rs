@@ -34,9 +34,9 @@ use bollard::query_parameters::{
 use futures_util::StreamExt;
 use ployz_core::deploy::{
     ContainerEntrypoint, ContainerHealthcheck, ContainerHealthcheckTest, ContainerRestartPolicy,
-    ImageReference, RegistryCredential,
+    ImageReference, RegistryCredential, VolumeName,
 };
-use ployz_core::ids::{ContainerId, SubjectTokenError};
+use ployz_core::ids::{ContainerId, NamespaceId, SubjectTokenError};
 use ployz_core::image::OciDigest;
 use ployz_core::intent::{VolumeKind, VolumePinState};
 use ployz_core::machine::VolumeEnsureFailure;
@@ -233,9 +233,14 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
                 container.state,
                 ExistingManagedContainerState::Running { .. }
             );
-            let details = docker_container_details(docker, &container.container_id, running)
-                .await
-                .map_err(|error| MachineContainerListError::ListExisting { message: error })?;
+            let details = docker_container_details(
+                docker,
+                &container.container_id,
+                &container.identity.namespace_id,
+                running,
+            )
+            .await
+            .map_err(|error| MachineContainerListError::ListExisting { message: error })?;
             container.named_volume_names = details.named_volume_names;
             if let ExistingManagedContainerState::Running {
                 health,
@@ -820,7 +825,7 @@ fn docker_container_state(
 
 struct DockerContainerDetails {
     runtime: DockerContainerRuntimeDetails,
-    named_volume_names: BTreeSet<String>,
+    named_volume_names: BTreeSet<VolumeName>,
 }
 
 enum DockerContainerRuntimeDetails {
@@ -834,13 +839,14 @@ enum DockerContainerRuntimeDetails {
 async fn docker_container_details(
     docker: &Docker,
     container_id: &ContainerId,
+    namespace_id: &NamespaceId,
     running: bool,
 ) -> Result<DockerContainerDetails, String> {
     let inspect = docker
         .inspect_container(container_id.as_str(), None::<InspectContainerOptions>)
         .await
         .map_err(|error| error.to_string())?;
-    let named_volume_names = docker_named_volume_names(&inspect)?;
+    let named_volume_names = docker_named_volume_names(&inspect, namespace_id)?;
     if !running {
         return Ok(DockerContainerDetails {
             runtime: DockerContainerRuntimeDetails::NotRequested,
@@ -876,15 +882,19 @@ async fn docker_container_details(
 
 fn docker_named_volume_names(
     inspect: &ContainerInspectResponse,
-) -> Result<BTreeSet<String>, String> {
+    namespace_id: &NamespaceId,
+) -> Result<BTreeSet<VolumeName>, String> {
     let mounts = inspect
         .mounts
         .as_deref()
         .ok_or_else(|| "Docker inspect omitted container mounts".to_owned())?;
-    named_volume_names_from_mounts(mounts)
+    named_volume_names_from_mounts(mounts, namespace_id)
 }
 
-fn named_volume_names_from_mounts(mounts: &[MountPoint]) -> Result<BTreeSet<String>, String> {
+fn named_volume_names_from_mounts(
+    mounts: &[MountPoint],
+    namespace_id: &NamespaceId,
+) -> Result<BTreeSet<VolumeName>, String> {
     let mut names = BTreeSet::new();
     for mount in mounts {
         let Some(kind) = mount.typ.as_deref() else {
@@ -896,7 +906,9 @@ fn named_volume_names_from_mounts(mounts: &[MountPoint]) -> Result<BTreeSet<Stri
         let Some(name) = mount.name.as_deref().filter(|name| !name.is_empty()) else {
             return Err("Docker inspect named-volume mount omitted its name".to_owned());
         };
-        names.insert(name.to_owned());
+        let volume_name = VolumeName::try_from_stable_storage_name(name, namespace_id)
+            .map_err(|error| format!("invalid Docker named-volume identity `{name}`: {error}"))?;
+        names.insert(volume_name);
     }
     Ok(names)
 }
@@ -1825,10 +1837,13 @@ mod tests {
 
     #[test]
     fn inspect_mounts_expose_only_sorted_deduplicated_named_volumes() {
+        let namespace_id = namespace_id("default");
+        let a_data = VolumeName::try_new("a-data").expect("volume");
+        let z_data = VolumeName::try_new("z-data").expect("volume");
         let mounts = [
             MountPoint {
                 typ: Some("volume".to_owned()),
-                name: Some("z-data".to_owned()),
+                name: Some(z_data.stable_storage_name(&namespace_id)),
                 ..Default::default()
             },
             MountPoint {
@@ -1842,26 +1857,28 @@ mod tests {
             },
             MountPoint {
                 typ: Some("volume".to_owned()),
-                name: Some("a-data".to_owned()),
+                name: Some(a_data.stable_storage_name(&namespace_id)),
                 ..Default::default()
             },
             MountPoint {
                 typ: Some("volume".to_owned()),
-                name: Some("z-data".to_owned()),
+                name: Some(z_data.stable_storage_name(&namespace_id)),
                 ..Default::default()
             },
         ];
 
         assert_eq!(
-            named_volume_names_from_mounts(&mounts).expect("complete mount testimony"),
-            BTreeSet::from(["a-data".to_owned(), "z-data".to_owned()])
+            named_volume_names_from_mounts(&mounts, &namespace_id)
+                .expect("complete mount testimony"),
+            BTreeSet::from([a_data, z_data])
         );
     }
 
     #[test]
     fn empty_mounts_are_complete_empty_testimony() {
         assert_eq!(
-            named_volume_names_from_mounts(&[]).expect("empty mount testimony is complete"),
+            named_volume_names_from_mounts(&[], &namespace_id("default"))
+                .expect("empty mount testimony is complete"),
             BTreeSet::new()
         );
     }
@@ -1869,20 +1886,47 @@ mod tests {
     #[test]
     fn omitted_or_incomplete_inspect_mounts_are_not_empty_testimony() {
         assert_eq!(
-            docker_named_volume_names(&ContainerInspectResponse::default()),
+            docker_named_volume_names(
+                &ContainerInspectResponse::default(),
+                &namespace_id("default")
+            ),
             Err("Docker inspect omitted container mounts".to_owned())
         );
         assert_eq!(
-            named_volume_names_from_mounts(&[MountPoint::default()]),
+            named_volume_names_from_mounts(&[MountPoint::default()], &namespace_id("default")),
             Err("Docker inspect mount omitted its type".to_owned())
         );
         assert_eq!(
-            named_volume_names_from_mounts(&[MountPoint {
-                typ: Some("volume".to_owned()),
-                ..Default::default()
-            }]),
+            named_volume_names_from_mounts(
+                &[MountPoint {
+                    typ: Some("volume".to_owned()),
+                    ..Default::default()
+                }],
+                &namespace_id("default")
+            ),
             Err("Docker inspect named-volume mount omitted its name".to_owned())
         );
+    }
+
+    #[test]
+    fn named_volume_testimony_rejects_noncanonical_and_cross_namespace_storage_names() {
+        let expected_namespace_id = namespace_id("default");
+        let wrong_namespace_name = VolumeName::try_new("data")
+            .expect("volume")
+            .stable_storage_name(&namespace_id("other"));
+
+        for storage_name in ["data".to_owned(), wrong_namespace_name] {
+            let error = named_volume_names_from_mounts(
+                &[MountPoint {
+                    typ: Some("volume".to_owned()),
+                    name: Some(storage_name.clone()),
+                    ..Default::default()
+                }],
+                &expected_namespace_id,
+            )
+            .expect_err("invalid physical identity must fail testimony");
+            assert!(error.contains(&storage_name));
+        }
     }
 
     #[test]

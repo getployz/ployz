@@ -643,7 +643,7 @@ pub struct ManagedContainerObservation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at_unix_seconds: Option<i64>,
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
-    pub named_volume_names: BTreeSet<String>,
+    pub named_volume_names: BTreeSet<crate::deploy::VolumeName>,
 }
 
 impl ManagedContainerObservation {

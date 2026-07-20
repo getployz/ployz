@@ -179,7 +179,7 @@ fn volume_backed_promoted_baseline_reuses_or_hands_off_for_every_container_shape
     );
     observed_owner
         .named_volume_names
-        .insert(volume_name.as_str().to_owned());
+        .insert(volume_name.clone());
     let owner_observation =
         MachineContainerObservationSnapshot::try_new(owner_machine.clone(), [observed_owner])
             .expect("running owner observation");

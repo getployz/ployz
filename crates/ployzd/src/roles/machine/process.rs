@@ -1067,8 +1067,8 @@ mod tests {
             resolved_image_identity: None,
             created_at_unix_seconds: None,
             named_volume_names: std::collections::BTreeSet::from([
-                "ployz-z-data".to_owned(),
-                "ployz-a-data".to_owned(),
+                ployz_core::deploy::VolumeName::try_new("z-data").expect("volume"),
+                ployz_core::deploy::VolumeName::try_new("a-data").expect("volume"),
             ]),
         }]);
         let mut facts_sub = nats
@@ -1100,8 +1100,8 @@ mod tests {
                 .expect("container exists")
                 .named_volume_names,
             std::collections::BTreeSet::from([
-                "ployz-a-data".to_owned(),
-                "ployz-z-data".to_owned(),
+                ployz_core::deploy::VolumeName::try_new("a-data").expect("volume"),
+                ployz_core::deploy::VolumeName::try_new("z-data").expect("volume"),
             ])
         );
     }

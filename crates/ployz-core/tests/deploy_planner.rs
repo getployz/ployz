@@ -2409,7 +2409,10 @@ fn with_named_volumes(
     mut candidate: ObservedCleanupCandidate,
     names: impl IntoIterator<Item = &'static str>,
 ) -> ObservedCleanupCandidate {
-    candidate.named_volume_names = names.into_iter().map(str::to_owned).collect();
+    candidate.named_volume_names = names
+        .into_iter()
+        .map(|name| VolumeName::try_new(name).expect("valid volume name"))
+        .collect();
     candidate
 }
 

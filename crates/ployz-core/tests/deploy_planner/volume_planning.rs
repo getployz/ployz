@@ -95,7 +95,7 @@ fn transitive_pinned_conflict_precedes_unrelated_live_admission() {
 }
 #[test]
 fn volume_backed_service_pins_to_first_eligible_machine() {
-    let mut input = planning_input(2, [machine_id("machine_a"), machine_id("machine_b")]);
+    let mut input = planning_input(1, [machine_id("machine_a"), machine_id("machine_b")]);
     declare_plain_volume_mounts(
         &mut input,
         vec![volume_mount("postgres_data", "/var/lib/postgres")],
@@ -105,7 +105,7 @@ fn volume_backed_service_pins_to_first_eligible_machine() {
         plan_single_service(&input).expect("plan succeeds"),
         deploy_plan_with_volume_pins(
             &input,
-            vec![run_step("machine_a", 1), run_step("machine_a", 2)],
+            vec![run_step("machine_a", 1)],
             vec![volume_pin("postgres_data", "machine_a")],
             Vec::new(),
         )
@@ -377,7 +377,7 @@ fn provisioned_declaration_rejects_shrinking_a_pinned_maximum() {
 
 #[test]
 fn volume_backed_service_uses_existing_pin() {
-    let mut input = planning_input(2, [machine_id("machine_a"), machine_id("machine_b")]);
+    let mut input = planning_input(1, [machine_id("machine_a"), machine_id("machine_b")]);
     declare_plain_volume_mounts(
         &mut input,
         vec![volume_mount("postgres_data", "/var/lib/postgres")],
@@ -386,11 +386,7 @@ fn volume_backed_service_uses_existing_pin() {
 
     assert_eq!(
         plan_single_service(&input).expect("plan succeeds"),
-        deploy_plan(
-            &input,
-            vec![run_step("machine_b", 1), run_step("machine_b", 2)],
-            Vec::new()
-        )
+        deploy_plan(&input, vec![run_step("machine_b", 1)], Vec::new())
     );
 }
 
@@ -412,8 +408,8 @@ fn volume_backed_service_fails_when_existing_pin_is_not_eligible() {
 }
 
 #[test]
-fn volume_backed_service_reuses_only_replicas_on_pinned_machine() {
-    let mut input = planning_input(2, [machine_id("machine_a"), machine_id("machine_b")]);
+fn volume_backed_service_reuses_only_the_container_on_the_pinned_machine() {
+    let mut input = planning_input(1, [machine_id("machine_a"), machine_id("machine_b")]);
     declare_plain_volume_mounts(
         &mut input,
         vec![volume_mount("postgres_data", "/var/lib/postgres")],
@@ -432,10 +428,7 @@ fn volume_backed_service_reuses_only_replicas_on_pinned_machine() {
         plan_single_service(&input).expect("plan succeeds"),
         deploy_plan(
             &input,
-            vec![
-                use_existing_step("machine_b", "ctr_pinned", 1),
-                run_step("machine_b", 2),
-            ],
+            vec![use_existing_step("machine_b", "ctr_pinned", 1)],
             vec![cleanup_container("machine_a", "ctr_off_pin")],
         )
     );
@@ -784,8 +777,79 @@ fn replacing_volume_a_with_b_does_not_handoff_the_old_a_consumer() {
 }
 
 #[test]
+fn canonical_physical_volume_testimony_drives_only_exact_replacement_handoff() {
+    let mut input = planning_input(1, [machine_id("machine_b")]);
+    declare_plain_volume_mounts(
+        &mut input,
+        vec![volume_mount("postgres_data", "/var/lib/postgres")],
+    );
+    input.volume_pins = vec![volume_pin("postgres_data", "machine_b")];
+
+    let first_deploy = plan_single_service(&input).expect("first deploy plans");
+    let [first_phase] = first_deploy.phases.as_slice() else {
+        panic!("one phase")
+    };
+    let [first_service] = first_phase.services.as_slice() else {
+        panic!("one service")
+    };
+    assert!(matches!(
+        first_service.work,
+        DeployServiceWork::Ordinary { .. }
+    ));
+
+    let namespace_id = namespace_id("default");
+    let unrelated_physical = VolumeName::try_new("cache")
+        .expect("volume")
+        .stable_storage_name(&namespace_id);
+    let unrelated_logical =
+        VolumeName::try_from_stable_storage_name(unrelated_physical, &namespace_id)
+            .expect("canonical physical identity decodes");
+    let mut unrelated = cleanup_container_observed("machine_b", "ctr_revision_a", true, None);
+    unrelated.named_volume_names.insert(unrelated_logical);
+    input.cleanup_candidates = vec![unrelated];
+    let unrelated_plan = plan_single_service(&input).expect("unrelated volume replacement plans");
+    let [unrelated_phase] = unrelated_plan.phases.as_slice() else {
+        panic!("one phase")
+    };
+    let [unrelated_service] = unrelated_phase.services.as_slice() else {
+        panic!("one service")
+    };
+    assert!(matches!(
+        unrelated_service.work,
+        DeployServiceWork::Ordinary { .. }
+    ));
+
+    let postgres_physical = VolumeName::try_new("postgres_data")
+        .expect("volume")
+        .stable_storage_name(&namespace_id);
+    let postgres_logical =
+        VolumeName::try_from_stable_storage_name(postgres_physical, &namespace_id)
+            .expect("canonical physical identity decodes");
+    let mut matching = cleanup_container_observed("machine_b", "ctr_revision_a", true, None);
+    matching.named_volume_names.insert(postgres_logical);
+    input.cleanup_candidates = vec![matching];
+    let replacement = plan_single_service(&input).expect("revision B replacement plans");
+    let [replacement_phase] = replacement.phases.as_slice() else {
+        panic!("one phase")
+    };
+    let [replacement_service] = replacement_phase.services.as_slice() else {
+        panic!("one service")
+    };
+    let DeployServiceWork::VolumeHandoff { participants, .. } = &replacement_service.work else {
+        panic!("exact physical-to-logical volume identity requires handoff")
+    };
+    let [participant] = participants.as_slice() else {
+        panic!("one handoff participant")
+    };
+    assert_eq!(
+        participant.shared_volume_names.as_slice(),
+        &[VolumeName::try_new("postgres_data").expect("volume")]
+    );
+}
+
+#[test]
 fn changed_named_volume_replacement_has_deterministic_exact_handoff_owners() {
-    let mut input = planning_input(2, [machine_id("machine_a")]);
+    let mut input = planning_input(1, [machine_id("machine_a")]);
     declare_plain_volume_mounts(
         &mut input,
         vec![
@@ -830,7 +894,7 @@ fn changed_named_volume_replacement_has_deterministic_exact_handoff_owners() {
         panic!("same-machine replacement requires handoff")
     };
     assert_eq!(replacement.machine_id, machine_id("machine_a"));
-    assert_eq!(remaining_steps.len(), 1);
+    assert!(remaining_steps.is_empty());
     assert_eq!(
         participants.as_slice(),
         &[

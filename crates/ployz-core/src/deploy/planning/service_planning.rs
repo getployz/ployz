@@ -295,7 +295,7 @@ fn plan_volume_handoff(
             let shared_volume_names = NonEmptyVolumeNames::try_new(
                 volume_names
                     .iter()
-                    .filter(|name| candidate.named_volume_names.contains(name.as_str()))
+                    .filter(|name| candidate.named_volume_names.contains(*name))
                     .cloned(),
             )
             .ok()?;

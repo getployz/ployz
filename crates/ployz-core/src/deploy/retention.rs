@@ -1,4 +1,6 @@
-use super::{ContainerId, ContainerRetentionCount, MachineId, ManagedContainerIdentity};
+use super::{
+    ContainerId, ContainerRetentionCount, MachineId, ManagedContainerIdentity, VolumeName,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -14,7 +16,7 @@ pub struct DeployCleanupContainer {
 pub struct ObservedCleanupCandidate {
     pub target: DeployCleanupContainer,
     pub state: crate::machine::runtime::ContainerRuntimeState,
-    pub named_volume_names: std::collections::BTreeSet<String>,
+    pub named_volume_names: std::collections::BTreeSet<VolumeName>,
     pub created_at_unix_seconds: Option<i64>,
     pub observed_image_identity: Option<String>,
 }

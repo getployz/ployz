@@ -105,7 +105,7 @@ pub struct ManagedContainerObservationBuilder {
     health_status: Option<ManagedContainerHealthStatus>,
     resolved_image_identity: Option<String>,
     created_at_unix_seconds: Option<i64>,
-    named_volume_names: std::collections::BTreeSet<String>,
+    named_volume_names: std::collections::BTreeSet<ployz_core::deploy::VolumeName>,
 }
 
 impl ManagedContainerObservationBuilder {
@@ -162,7 +162,8 @@ impl ManagedContainerObservationBuilder {
 
     #[must_use]
     pub fn named_volume(mut self, name: &str) -> Self {
-        self.named_volume_names.insert(name.to_owned());
+        self.named_volume_names
+            .insert(ployz_core::deploy::VolumeName::try_new(name).expect("valid volume name"));
         self
     }
 

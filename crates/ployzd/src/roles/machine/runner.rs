@@ -23,7 +23,7 @@ pub struct ExistingManagedContainer {
     pub health_status: Option<ManagedContainerHealthStatus>,
     pub resolved_image_identity: Option<String>,
     pub created_at_unix_seconds: Option<i64>,
-    pub named_volume_names: BTreeSet<String>,
+    pub named_volume_names: BTreeSet<VolumeName>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
