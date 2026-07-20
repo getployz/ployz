@@ -269,27 +269,13 @@ fn is_canonical_provisioned_dataset_name(value: &str) -> bool {
 
 fn parse_stable_storage_name(value: &str) -> Option<(NamespaceId, VolumeName)> {
     let framed = value.strip_prefix("ployz-n")?;
-    let Some((namespace_length, framed)) = take_decimal_prefix(framed) else {
-        return None;
-    };
-    let Some(framed) = framed.strip_prefix('-') else {
-        return None;
-    };
-    let Some(namespace) = framed.get(..namespace_length) else {
-        return None;
-    };
-    let Some(framed) = framed.get(namespace_length..) else {
-        return None;
-    };
-    let Some(framed) = framed.strip_prefix("-v") else {
-        return None;
-    };
-    let Some((volume_length, framed)) = take_decimal_prefix(framed) else {
-        return None;
-    };
-    let Some(volume) = framed.strip_prefix('-') else {
-        return None;
-    };
+    let (namespace_length, framed) = take_decimal_prefix(framed)?;
+    let framed = framed.strip_prefix('-')?;
+    let namespace = framed.get(..namespace_length)?;
+    let framed = framed.get(namespace_length..)?;
+    let framed = framed.strip_prefix("-v")?;
+    let (volume_length, framed) = take_decimal_prefix(framed)?;
+    let volume = framed.strip_prefix('-')?;
     if volume.len() != volume_length {
         return None;
     }
