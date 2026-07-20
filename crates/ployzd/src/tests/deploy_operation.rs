@@ -2698,11 +2698,10 @@ async fn volume_handoff_restarts_a_planning_stopped_owner_found_running_at_point
     .await
     .expect_err("replacement failure restores point-of-use running owner");
 
-    assert_eq!(runtime.restarts.len(), 1);
-    assert_eq!(
-        runtime.restarts[0].1.container_id,
-        container_id("ctr_raced_running")
-    );
+    let [(_, restarted)] = runtime.restarts.as_slice() else {
+        panic!("expected exactly one restart: {:?}", runtime.restarts);
+    };
+    assert_eq!(restarted.container_id, container_id("ctr_raced_running"));
 }
 
 #[tokio::test]
@@ -2870,11 +2869,10 @@ async fn volume_handoff_quiescence_uncertainty_blocks_only_its_service_restart()
     .await
     .expect_err("one service consumer cannot be quiesced");
 
-    assert_eq!(runtime.restarts.len(), 1);
-    assert_eq!(
-        runtime.restarts[0].1.container_id,
-        container_id("ctr_old_worker")
-    );
+    let [(_, restarted)] = runtime.restarts.as_slice() else {
+        panic!("expected exactly one restart: {:?}", runtime.restarts);
+    };
+    assert_eq!(restarted.container_id, container_id("ctr_old_worker"));
     assert!(recorder.records.iter().any(|record| matches!(
         record,
         RecordedOperation::VolumeHandoffRollbackFinished { outcomes }

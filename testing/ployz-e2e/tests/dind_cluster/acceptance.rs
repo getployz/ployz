@@ -491,7 +491,7 @@ async fn assert_postgres_volume_handoff(
                 return None;
             };
             (service_id.as_str() == "db"
-                && handoff.superseded.iter().any(|participant| {
+                && handoff.superseded.as_slice().iter().any(|participant| {
                     participant.target.container_id.as_str() == old_database_id.as_str()
                 }))
             .then_some((position, handoff))
@@ -499,6 +499,7 @@ async fn assert_postgres_volume_handoff(
         .expect("deploy records the old database owner in volume handoff evidence");
     let old_owner = handoff
         .superseded
+        .as_slice()
         .iter()
         .find(|participant| participant.target.container_id.as_str() == old_database_id.as_str())
         .expect("handoff names the old database owner");
