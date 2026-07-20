@@ -1,7 +1,10 @@
 use super::*;
 use crate::control::intent::ingress_intent::IngressIntentStore;
 use crate::control::store::CoreStore;
-use ployz_core::build::{BuildAdapter, BuildCacheScope, BuildPlatforms, BuildTarget, GitSource};
+use ployz_core::build::{
+    BuildAdapter, BuildCacheScope, BuildPlatforms, BuildSource, BuildTarget, GitSource,
+    LocalSnapshotDigest,
+};
 use ployz_core::deploy::{
     ContainerRuntimeSpec, DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec,
     ImageReference, ImageSource, ReplicaCount,
@@ -42,25 +45,123 @@ fn build_cache_prune_command(operation: &str) -> MachineBuildCachePruneSubmitCom
 }
 
 fn build_submit_command(operation: &str) -> BuildSubmitCommand {
-    BuildSubmitCommand {
-        operation_id: operation_id(operation),
-        target: BuildTarget::Cluster,
-        source: GitSource::try_new(
+    build_submit_command_with(
+        operation,
+        BuildTarget::Cluster,
+        BuildPlatforms::try_new([OciPlatform::try_new("linux", "amd64").expect("valid platform")])
+            .expect("non-empty platforms"),
+    )
+}
+
+fn build_submit_command_with(
+    operation: &str,
+    target: BuildTarget,
+    platforms: BuildPlatforms,
+) -> BuildSubmitCommand {
+    BuildSubmitCommand::try_new(
+        operation_id(operation),
+        target,
+        GitSource::try_new(
             "https://example.com/repository.git",
             "0123456789abcdef0123456789abcdef01234567",
             "git",
             "private-token",
             None::<String>,
         )
-        .expect("valid git source"),
-        adapter: BuildAdapter::Railpack {
+        .expect("valid git source")
+        .into(),
+        BuildAdapter::Railpack {
             cache_scope: BuildCacheScope::try_new("build-scope").expect("valid cache scope"),
         },
-        platforms: BuildPlatforms::try_new([
-            OciPlatform::try_new("linux", "amd64").expect("valid platform")
-        ])
-        .expect("non-empty platforms"),
+        platforms,
+    )
+    .expect("valid build submit command")
+}
+
+fn local_snapshot_source() -> BuildSource {
+    BuildSource::LocalSnapshot {
+        digest: LocalSnapshotDigest::try_new(format!("sha256:{}", "a".repeat(64))).expect("digest"),
+        subdir: None,
     }
+}
+
+fn railpack_adapter() -> BuildAdapter {
+    BuildAdapter::Railpack {
+        cache_scope: BuildCacheScope::try_new("build-scope").expect("valid cache scope"),
+    }
+}
+
+#[test]
+fn build_submit_command_rejects_illegal_source_target_platform_coupling() {
+    let single_platform = || {
+        BuildPlatforms::try_new([OciPlatform::try_new("linux", "amd64").expect("valid platform")])
+            .expect("platforms")
+    };
+    let external_target = || BuildTarget::External {
+        pool_id: ployz_core::build::BuildPoolId::try_new("pool-a").expect("pool id"),
+    };
+
+    assert_eq!(
+        BuildSubmitCommand::try_new(
+            operation_id("local_cluster"),
+            BuildTarget::Cluster,
+            local_snapshot_source(),
+            railpack_adapter(),
+            single_platform(),
+        ),
+        Err(BuildSubmitCommandError::LocalSnapshotRequiresExternalTarget)
+    );
+    assert_eq!(
+        BuildSubmitCommand::try_new(
+            operation_id("local_multi"),
+            external_target(),
+            local_snapshot_source(),
+            railpack_adapter(),
+            BuildPlatforms::try_new([
+                OciPlatform::try_new("linux", "amd64").expect("valid platform"),
+                OciPlatform::try_new("linux", "arm64").expect("valid platform"),
+            ])
+            .expect("platforms"),
+        ),
+        Err(BuildSubmitCommandError::LocalSnapshotRequiresSinglePlatform { actual: 2 })
+    );
+    assert!(
+        BuildSubmitCommand::try_new(
+            operation_id("local_external"),
+            external_target(),
+            local_snapshot_source(),
+            railpack_adapter(),
+            single_platform(),
+        )
+        .is_ok()
+    );
+}
+
+#[tokio::test]
+async fn rejected_build_command_creates_no_operation_evidence() {
+    let (_nats, controllers, _intent) = test_controllers().await;
+    let operation_id = operation_id("local_invalid");
+    let command = BuildSubmitCommand::try_new(
+        operation_id.clone(),
+        BuildTarget::Cluster,
+        local_snapshot_source(),
+        railpack_adapter(),
+        BuildPlatforms::try_new([OciPlatform::try_new("linux", "amd64").expect("valid platform")])
+            .expect("platforms"),
+    );
+
+    assert_eq!(
+        command,
+        Err(BuildSubmitCommandError::LocalSnapshotRequiresExternalTarget)
+    );
+    assert!(
+        controllers
+            .repository()
+            .get(&operation_id)
+            .await
+            .expect("status reads")
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -102,10 +203,12 @@ async fn build_submit_rejects_same_operation_id_with_different_request() {
         .submit_build(original)
         .await
         .expect("original submits");
-    let mut conflicting = build_submit_command("build_conflict");
-    conflicting.platforms =
+    let conflicting = build_submit_command_with(
+        "build_conflict",
+        BuildTarget::Cluster,
         BuildPlatforms::try_new([OciPlatform::try_new("linux", "arm64").expect("valid platform")])
-            .expect("non-empty platforms");
+            .expect("non-empty platforms"),
+    );
 
     assert!(matches!(
         controllers.submit_build(conflicting).await,
@@ -123,10 +226,14 @@ async fn build_submit_idempotency_includes_target() {
         .submit_build(original)
         .await
         .expect("cluster build submits");
-    let mut conflicting = build_submit_command("build_target_conflict");
-    conflicting.target = BuildTarget::External {
-        pool_id: ployz_core::build::BuildPoolId::try_new("pool-a").expect("pool id"),
-    };
+    let conflicting = build_submit_command_with(
+        "build_target_conflict",
+        BuildTarget::External {
+            pool_id: ployz_core::build::BuildPoolId::try_new("pool-a").expect("pool id"),
+        },
+        BuildPlatforms::try_new([OciPlatform::try_new("linux", "amd64").expect("valid platform")])
+            .expect("non-empty platforms"),
+    );
 
     assert!(matches!(
         controllers.submit_build(conflicting).await,

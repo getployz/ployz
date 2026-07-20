@@ -4,10 +4,10 @@ use crate::control::operations::deploy::{
     DeployServiceExecutionCommand, deploy_plan, prepare_deploy_execution_command,
 };
 use ployz_core::deploy::{
-    ContainerMountPath, DatasetName, DeployCleanupContainer, DeployRequest, DeployRoute,
-    DeployRouteTarget, DeployServiceSpec, EnvName, EnvValue, ImageAvailabilityExpiresAt,
-    ImageReference, ImageSource, PlatformImage, PushedImageReceipt, ReplicaCount,
-    ServiceEnvironment, ServiceMode, ServiceVolumeMount, VolumeAdmissionFailure,
+    ContainerMountPath, ContainerRestartPolicy, DatasetName, DeployCleanupContainer, DeployRequest,
+    DeployRequestEvidence, DeployRoute, DeployRouteTarget, DeployServiceSpec, EnvName, EnvValue,
+    ImageAvailabilityExpiresAt, ImageReference, ImageSource, PlatformImage, PushedImageReceipt,
+    ReplicaCount, ServiceEnvironment, ServiceMode, ServiceVolumeMount, VolumeAdmissionFailure,
     VolumeMaxSizeBytes, VolumeName, VolumeSpec, ZfsPoolName,
 };
 use ployz_core::ids::{NamespaceRevisionEntryId, RouteBindingId};
@@ -119,6 +119,179 @@ fn execution_threads_keyed_environment_revisions_end_to_end() {
             .expect("env-free next plan")
             .namespace_revision_id
     );
+}
+
+#[test]
+fn volume_backed_promoted_baseline_reuses_or_hands_off_for_every_container_shape_change() {
+    let owner_machine = machine_id("machine_a");
+    let owner_container = container_id("ctr_owner");
+    let volume_name = VolumeName::try_new("data").expect("volume name");
+    let baseline_environment_value = "baseline-environment-value-never-in-evidence";
+    let changed_environment_value = "changed-environment-value-never-in-evidence";
+    let mut baseline = deploy_request();
+    baseline
+        .volumes
+        .insert(volume_name.clone(), VolumeSpec::Plain);
+    let [service] = baseline.services.as_mut_slice() else {
+        panic!("deploy request contains one service");
+    };
+    service.image = service
+        .image
+        .clone()
+        .with_digest(&ployz_core::image::OciDigest::sha256(b"baseline image"))
+        .expect("image accepts digest");
+    service.runtime.environment = ServiceEnvironment::from(std::collections::BTreeMap::from([(
+        EnvName::try_new("TOKEN").expect("environment name"),
+        EnvValue::try_new(baseline_environment_value).expect("environment value"),
+    )]));
+    service.runtime.volume_mounts = vec![ServiceVolumeMount {
+        volume_name: volume_name.clone(),
+        target: ContainerMountPath::try_new("/data").expect("mount path"),
+    }];
+    let pin = VolumePinState::plain(
+        baseline.namespace_id.clone(),
+        volume_name.clone(),
+        owner_machine.clone(),
+    );
+
+    let baseline_command = prepare_deploy_execution_command(
+        operation_id("op_baseline"),
+        baseline.clone(),
+        DeployExecutionFacts {
+            namespace_volume_pins: vec![pin.clone()],
+            eligible_machines: vec![owner_machine.clone()],
+            ..empty_execution_facts()
+        },
+    );
+    let promoted = single_service(&baseline_command).serving_target_entry_state(
+        &baseline.namespace_id,
+        baseline_command.environment_revision_key(),
+    );
+    let owner = cleanup_container_with_entry(
+        owner_machine.as_str(),
+        owner_container.as_str(),
+        promoted.namespace_revision_entry_id.clone(),
+    );
+    let mut observed_owner = observed_service_container_with_entry(
+        owner_machine.as_str(),
+        owner_container.as_str(),
+        promoted.namespace_revision_entry_id.clone(),
+    );
+    observed_owner
+        .named_volume_names
+        .insert(volume_name.clone());
+    let owner_observation =
+        MachineContainerObservationSnapshot::try_new(owner_machine.clone(), [observed_owner])
+            .expect("running owner observation");
+    let baseline_facts = || DeployExecutionFacts {
+        namespace_serving_entries: vec![promoted.clone()],
+        namespace_volume_pins: vec![pin.clone()],
+        eligible_machines: vec![owner_machine.clone()],
+        observed_machines: vec![owner_observation.clone()],
+        ..empty_execution_facts()
+    };
+
+    let unchanged_command = prepare_deploy_execution_command(
+        operation_id("op_unchanged"),
+        baseline.clone(),
+        baseline_facts(),
+    );
+    let unchanged_plan = deploy_plan(&unchanged_command).expect("unchanged baseline plans");
+    let [unchanged_phase] = unchanged_plan.phases.as_slice() else {
+        panic!("one phase");
+    };
+    let [unchanged_service] = unchanged_phase.services.as_slice() else {
+        panic!("one service");
+    };
+    assert_eq!(
+        &unchanged_service.work,
+        &ployz_core::deploy::DeployServiceWork::Ordinary {
+            steps: vec![ployz_core::deploy::DeployPlanStep::UseExistingContainer {
+                machine_id: owner_machine.clone(),
+                container_id: owner_container.clone(),
+                slot: ployz_core::deploy::ReplicaSlot::Replicated {
+                    number: ployz_core::deploy::ReplicatedReplicaSlot::try_new(1)
+                        .expect("replica slot"),
+                },
+            }]
+        }
+    );
+    assert!(unchanged_plan.cleanup_actions.is_empty());
+    let unchanged_serialized = serde_json::to_string(&(
+        &unchanged_plan,
+        DeployRequestEvidence::from_request(&baseline),
+    ))
+    .expect("unchanged evidence serializes");
+    assert!(!unchanged_serialized.contains(baseline_environment_value));
+
+    let assert_replacement = |operation: &str, request: DeployRequest| {
+        let evidence = DeployRequestEvidence::from_request(&request);
+        let command =
+            prepare_deploy_execution_command(operation_id(operation), request, baseline_facts());
+        let plan = deploy_plan(&command).expect("replacement plans");
+        let [phase] = plan.phases.as_slice() else {
+            panic!("one phase");
+        };
+        let [service] = phase.services.as_slice() else {
+            panic!("one service");
+        };
+        let ployz_core::deploy::DeployServiceWork::VolumeHandoff {
+            replacement,
+            remaining_steps,
+            participants,
+        } = &service.work
+        else {
+            panic!("replacement needs a volume handoff")
+        };
+        assert_eq!(replacement.machine_id, owner_machine);
+        assert!(remaining_steps.is_empty());
+        assert_eq!(
+            participants
+                .as_slice()
+                .iter()
+                .map(|participant| &participant.target)
+                .collect::<Vec<_>>(),
+            [&owner.target]
+        );
+        assert!(matches!(
+            participants.as_slice(),
+            [ployz_core::deploy::DeployVolumeHandoffParticipant {
+                prior_state: ployz_core::deploy::DeployVolumeHandoffPriorState::Running,
+                shared_volume_names,
+                ..
+            }] if shared_volume_names.as_slice() == [volume_name.clone()]
+        ));
+        let serialized = serde_json::to_string(&(plan, evidence)).expect("evidence serializes");
+        assert!(!serialized.contains(baseline_environment_value));
+        assert!(!serialized.contains(changed_environment_value));
+    };
+
+    let mut environment_changed = baseline.clone();
+    let [service] = environment_changed.services.as_mut_slice() else {
+        panic!("one service");
+    };
+    service.runtime.environment = ServiceEnvironment::from(std::collections::BTreeMap::from([(
+        EnvName::try_new("TOKEN").expect("environment name"),
+        EnvValue::try_new(changed_environment_value).expect("environment value"),
+    )]));
+    assert_replacement("op_environment_changed", environment_changed);
+
+    let mut image_changed = baseline.clone();
+    let [service] = image_changed.services.as_mut_slice() else {
+        panic!("one service");
+    };
+    service.image = ImageReference::try_new("registry.example/api:rev_3")
+        .expect("image")
+        .with_digest(&ployz_core::image::OciDigest::sha256(b"changed image"))
+        .expect("image accepts digest");
+    assert_replacement("op_image_changed", image_changed);
+
+    let mut runtime_changed = baseline;
+    let [service] = runtime_changed.services.as_mut_slice() else {
+        panic!("one service");
+    };
+    service.runtime.restart_policy = ContainerRestartPolicy::Always;
+    assert_replacement("op_runtime_changed", runtime_changed);
 }
 
 fn empty_execution_facts() -> DeployExecutionFacts {
@@ -327,13 +500,17 @@ fn replicated_to_global_reuses_equivalent_container_on_selected_machine() {
         panic!("one service")
     };
     assert!(matches!(
-        service.steps.as_slice(),
-        [ployz_core::deploy::DeployPlanStep::UseExistingContainer {
-            machine_id: step_machine_id,
-            container_id: existing_container_id,
-            slot: ployz_core::deploy::ReplicaSlot::Global,
-        }] if step_machine_id == &machine_id("machine_a")
-            && existing_container_id == &container_id("ctr_target")
+        &service.work,
+        ployz_core::deploy::DeployServiceWork::Ordinary { steps }
+            if matches!(
+                steps.as_slice(),
+                [ployz_core::deploy::DeployPlanStep::UseExistingContainer {
+                    machine_id: step_machine_id,
+                    container_id: existing_container_id,
+                    slot: ployz_core::deploy::ReplicaSlot::Global,
+                }] if step_machine_id == &machine_id("machine_a")
+                    && existing_container_id == &container_id("ctr_target")
+            )
     ));
 }
 
@@ -1117,6 +1294,7 @@ fn cleanup_container_with_entry(
         state: ployz_core::machine::runtime::ContainerRuntimeState::running_unroutable(),
         created_at_unix_seconds: None,
         observed_image_identity: None,
+        named_volume_names: std::collections::BTreeSet::new(),
     }
 }
 

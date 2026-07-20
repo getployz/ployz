@@ -188,6 +188,15 @@ pub enum DeployTargetValidationError {
         service_id: ServiceId,
         volume_name: VolumeName,
     },
+    #[error(
+        "volume-backed service {} cannot declare {} replicas",
+        .service_id.as_str(),
+        .replicas.get()
+    )]
+    ReplicatedVolumeOwnership {
+        service_id: ServiceId,
+        replicas: ReplicaCount,
+    },
 }
 
 pub(super) fn validate_deploy_target<'a>(
@@ -197,6 +206,15 @@ pub(super) fn validate_deploy_target<'a>(
 ) -> Result<(), DeployTargetValidationError> {
     let services = services.into_iter().collect::<Vec<_>>();
     for (service_id, mode, runtime) in &services {
+        if !runtime.volume_mounts.is_empty()
+            && let ServiceMode::Replicated { replicas } = mode
+            && replicas.get() > 1
+        {
+            return Err(DeployTargetValidationError::ReplicatedVolumeOwnership {
+                service_id: (*service_id).clone(),
+                replicas: *replicas,
+            });
+        }
         for mount in &runtime.volume_mounts {
             if matches!(mode, ServiceMode::Global) {
                 return Err(DeployTargetValidationError::GlobalVolumeMount {
@@ -289,6 +307,45 @@ mod tests {
             DeployPlanningTarget::try_from_deploy(&request)
                 .expect_err("duplicate service ids must be rejected"),
             DeployTargetValidationError::DuplicateServiceId { service_id }
+        );
+    }
+
+    #[test]
+    fn deploy_normalization_rejects_multiple_replicas_for_a_volume_backed_service() {
+        let service_id = ServiceId::try_new("database").expect("service id");
+        let volume_name = VolumeName::try_new("data").expect("volume");
+        let replicas = ReplicaCount::try_new(2).expect("replicas");
+        let request = DeployRequest {
+            namespace_id: NamespaceId::try_new("default").expect("namespace id"),
+            origin: None,
+            volumes: BTreeMap::from([(volume_name.clone(), VolumeSpec::Plain)]),
+            services: vec![DeployServiceSpec {
+                service_id: service_id.clone(),
+                image: ImageReference::try_new("ghcr.io/acme/database:current").expect("image"),
+                image_source: ImageSource::Registry,
+                mode: ServiceMode::Replicated { replicas },
+                keep: None,
+                runtime: ContainerRuntimeSpec {
+                    volume_mounts: vec![ServiceVolumeMount {
+                        volume_name,
+                        target: ContainerMountPath::try_new("/var/lib/database")
+                            .expect("container path"),
+                    }],
+                    ..ContainerRuntimeSpec::image_defaults()
+                },
+                pre_start: None,
+                depends_on: Vec::new(),
+                routes: Vec::new(),
+            }],
+        };
+
+        assert_eq!(
+            DeployPlanningTarget::try_from_deploy(&request)
+                .expect_err("exclusive local storage cannot have multiple consumers"),
+            DeployTargetValidationError::ReplicatedVolumeOwnership {
+                service_id,
+                replicas,
+            }
         );
     }
 }
@@ -395,6 +452,15 @@ impl DeployServiceSpec {
             &self.runtime,
             environment_key,
         )
+    }
+
+    /// Computes the canonical entry identity when no secret environment key is required.
+    #[must_use]
+    pub fn namespace_revision_entry_id_without_environment(
+        &self,
+        namespace_id: &NamespaceId,
+    ) -> Option<NamespaceRevisionEntryId> {
+        super::revision::namespace_revision_entry_id_without_environment_for(namespace_id, self)
     }
 }
 

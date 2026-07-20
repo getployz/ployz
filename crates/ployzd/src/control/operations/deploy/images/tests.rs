@@ -1,8 +1,8 @@
 use super::*;
 use ployz_core::deploy::{
-    ContainerRuntimeSpec, DeployPhasePlan, DeployPlanningInput, DeployPlanningPlacementInput,
-    DeployRequest, DeployServiceSpec, ImageReference, PlatformImage, PushedImageReceipt,
-    ReplicaCount, ReplicaSlot,
+    ContainerRuntimeSpec, DeployPhasePlan, DeployPlanStep, DeployPlanningInput,
+    DeployPlanningPlacementInput, DeployRequest, DeployServiceSpec, ImageReference, PlatformImage,
+    PushedImageReceipt, ReplicaCount, ReplicaSlot,
 };
 use ployz_core::ids::{MachineId, NamespaceId, NamespaceRevisionId, OperationId, ServiceId};
 use ployz_core::image::{OciDigest, OciPlatform};
@@ -258,13 +258,15 @@ fn pushed_platforms_are_validated_across_all_phases_before_execution() {
                 services: vec![DeployServicePlan {
                     service_id: ServiceId::try_new("api").expect("service id"),
                     placement: ployz_core::deploy::DeployServicePlacement::Replicated,
-                    steps: vec![DeployPlanStep::RunContainer {
-                        machine_id: target_machine.clone(),
-                        slot: ReplicaSlot::Replicated {
-                            number: ployz_core::deploy::ReplicatedReplicaSlot::try_new(1)
-                                .expect("replica slot"),
-                        },
-                    }],
+                    work: ployz_core::deploy::DeployServiceWork::Ordinary {
+                        steps: vec![DeployPlanStep::RunContainer {
+                            machine_id: target_machine.clone(),
+                            slot: ReplicaSlot::Replicated {
+                                number: ployz_core::deploy::ReplicatedReplicaSlot::try_new(1)
+                                    .expect("replica slot"),
+                            },
+                        }],
+                    },
                     pre_start: None,
                 }],
             },

@@ -1,6 +1,6 @@
 use ployz_core::deploy::{
-    DeployCleanupContainer, DeployImageReplacementError, DeployPlan, DeployPlanStep, DeployRequest,
-    DeployRequestEvidence, DeployRoute, DeployRouteTarget, ImageSource, ReplicaSlot,
+    DeployCleanupContainer, DeployImageReplacementError, DeployPlan, DeployPlanStepRef,
+    DeployRequest, DeployRequestEvidence, DeployRoute, DeployRouteTarget, ImageSource, ReplicaSlot,
 };
 use ployz_core::ids::{OperationId, ServiceId};
 use ployz_core::image::OciPlatform;
@@ -149,8 +149,8 @@ impl DeployTree {
                     }
                 }
                 for service in plan.phases.iter().flat_map(|phase| &phase.services) {
-                    for step in &service.steps {
-                        if let DeployPlanStep::UseExistingContainer {
+                    for step in service.work.steps() {
+                        if let DeployPlanStepRef::UseExisting {
                             machine_id, slot, ..
                         } = step
                         {
@@ -241,6 +241,78 @@ impl DeployTree {
                 }
                 if let Some(line) = line {
                     self.plain_lines.push(line);
+                }
+            }
+            OperationEvent::DeployVolumeHandoffApplied {
+                operation_id,
+                service_id,
+                handoff,
+            } => {
+                let (mut stopped_running, mut already_stopped, mut missing) = (0, 0, 0);
+                for participant in handoff.superseded.as_slice() {
+                    match participant.stop_outcome {
+                        ployz_core::deploy::DeployVolumeHandoffStopOutcome::StoppedRunning => {
+                            stopped_running += 1;
+                        }
+                        ployz_core::deploy::DeployVolumeHandoffStopOutcome::AlreadyStopped => {
+                            already_stopped += 1;
+                        }
+                        ployz_core::deploy::DeployVolumeHandoffStopOutcome::Missing => {
+                            missing += 1;
+                        }
+                    }
+                }
+                self.plain_lines.push(format!(
+                    "deploy {}: {} — volume handoff on {}: stopped {} running prior owner(s); {} already stopped; {} missing",
+                    operation_id.as_str(),
+                    service_id.as_str(),
+                    handoff.machine_id.as_str(),
+                    stopped_running,
+                    already_stopped,
+                    missing,
+                ));
+            }
+            OperationEvent::DeployVolumeHandoffRollbackFinished {
+                operation_id,
+                service_id,
+                machine_id,
+                outcomes,
+            } => {
+                for outcome in outcomes {
+                    let result = match &outcome.outcome {
+                        ployz_core::operation::DeployVolumeHandoffRollbackOutcome::Restarted => {
+                            "restarted".to_owned()
+                        }
+                        ployz_core::operation::DeployVolumeHandoffRollbackOutcome::RestartFailed {
+                            failure,
+                        } => match failure {
+                            ployz_core::operation::DeployVolumeHandoffRestartFailure::RuntimeUnavailable {
+                                message,
+                                inspect_hint,
+                            } => {
+                                format!("restart failed: runtime unavailable: {} ({})", message.as_str(), inspect_hint.as_str())
+                            }
+                            ployz_core::operation::DeployVolumeHandoffRestartFailure::StartFailed {
+                                message,
+                                inspect_hint,
+                            } => format!("restart failed: {} ({})", message.as_str(), inspect_hint.as_str()),
+                            ployz_core::operation::DeployVolumeHandoffRestartFailure::TimedOut {
+                                timeout_seconds,
+                                inspect_hint,
+                            } => format!("restart failed: timed out after {timeout_seconds}s ({})", inspect_hint.as_str()),
+                        },
+                        ployz_core::operation::DeployVolumeHandoffRollbackOutcome::NotRestartedNewConsumerQuiescenceUnconfirmed => {
+                            "not restarted: new consumer quiescence unconfirmed".to_owned()
+                        }
+                    };
+                    self.plain_lines.push(format!(
+                        "deploy {}: {} — volume handoff rollback on {}: {} {}",
+                        operation_id.as_str(),
+                        service_id.as_str(),
+                        machine_id.as_str(),
+                        outcome.target.container_id.as_str(),
+                        result
+                    ));
                 }
             }
             OperationEvent::DeployHealthCheckStarted { operation_id: _ } => {}
@@ -370,7 +442,7 @@ impl DeployTree {
             OperationEvent::BuildSubmitted { .. }
             | OperationEvent::BuildPlacementStarted { .. }
             | OperationEvent::BuildPlatformPlaced { .. }
-            | OperationEvent::BuildCommitVerified { .. }
+            | OperationEvent::BuildSourceVerified { .. }
             | OperationEvent::BuildPlatformToolchainVerified { .. }
             | OperationEvent::BuildRunning { .. }
             | OperationEvent::BuildPlatformLog { .. }
@@ -460,17 +532,17 @@ impl DeployTree {
         let plan = self.plan()?;
         let mut index = 0;
         for service in plan.phases.iter().flat_map(|phase| &phase.services) {
-            for step in &service.steps {
+            for step in service.work.steps() {
                 match step {
-                    DeployPlanStep::RunContainer { machine_id, slot } if index == wanted => {
+                    DeployPlanStepRef::RunContainer { machine_id, slot } if index == wanted => {
                         return Some((
                             service.service_id.as_str(),
                             machine_id.as_str(),
                             slot_label(slot),
                         ));
                     }
-                    DeployPlanStep::RunContainer { .. } => index += 1,
-                    DeployPlanStep::UseExistingContainer { .. } => {}
+                    DeployPlanStepRef::RunContainer { .. } => index += 1,
+                    DeployPlanStepRef::UseExisting { .. } => {}
                 }
             }
         }
@@ -486,8 +558,8 @@ impl DeployTree {
             .iter()
             .flat_map(|phase| &phase.services)
             .flat_map(|service| {
-                service.steps.iter().filter_map(|step| match step {
-                    DeployPlanStep::RunContainer { machine_id, slot } => Some(format!(
+                service.work.steps().filter_map(|step| match step {
+                    DeployPlanStepRef::RunContainer { machine_id, slot } => Some(format!(
                         "deploy {}: {} — {}.{} healthy on {}",
                         operation_id.as_str(),
                         service.service_id.as_str(),
@@ -495,7 +567,7 @@ impl DeployTree {
                         slot_label(slot),
                         machine_id.as_str()
                     )),
-                    DeployPlanStep::UseExistingContainer { .. } => None,
+                    DeployPlanStepRef::UseExisting { .. } => None,
                 })
             })
             .collect::<Vec<_>>();
@@ -646,14 +718,14 @@ pub(crate) fn render_frame(tree: &DeployTree) -> String {
         let mut run_index = 0;
         for service in plan.phases.iter().flat_map(|phase| &phase.services) {
             let mut lines = Vec::new();
-            for step in &service.steps {
+            for step in service.work.steps() {
                 lines.push(render_service_step(
                     tree,
                     service.service_id.as_str(),
                     step,
                     run_index,
                 ));
-                if matches!(step, DeployPlanStep::RunContainer { .. }) {
+                if matches!(step, DeployPlanStepRef::RunContainer { .. }) {
                     run_index += 1;
                 }
             }
@@ -805,7 +877,14 @@ pub(crate) fn render_failure_block(tree: &DeployTree) -> String {
         FailureSafety::NothingChanged => {
             block.push_str("\n  Nothing changed: the failure happened before any container work.\n")
         }
-        FailureSafety::ServingUnchanged => block.push_str("\n  Serving is unchanged.\n"),
+        FailureSafety::ServingUnchanged => {
+            block.push_str("\n  Durable serving intent is unchanged.\n");
+            if failure_view.volume_owner_restoration_unconfirmed() {
+                block.push_str(
+                    "  Runtime serving may remain interrupted: prior volume-owner restoration was not confirmed.\n",
+                );
+            }
+        }
         FailureSafety::NoClaim => {}
     }
     block.push('\n');
@@ -939,11 +1018,11 @@ fn render_image_lines(tree: &DeployTree, target: &DeployRequest) -> Vec<TreeLine
 fn render_service_step(
     tree: &DeployTree,
     service_id: &str,
-    step: &DeployPlanStep,
+    step: DeployPlanStepRef<'_>,
     run_index: usize,
 ) -> TreeLine {
     match step {
-        DeployPlanStep::UseExistingContainer {
+        DeployPlanStepRef::UseExisting {
             machine_id,
             container_id: _,
             slot,
@@ -955,61 +1034,72 @@ fn render_service_step(
                 machine_id.as_str()
             ),
         },
-        DeployPlanStep::RunContainer { machine_id, slot } => {
-            let name = format!(
-                "{}.{} on {}",
-                service_id,
-                slot_label(slot),
-                machine_id.as_str()
-            );
-            if tree.is_complete_success()
-                || tree.stage().is_some_and(|stage| {
-                    stage_rank(stage) >= stage_rank(DeployRunningStage::EnsuringCertificates)
-                })
-            {
-                return TreeLine::Settled {
-                    text: format!("✓ {name} — healthy"),
-                };
-            }
-            if tree.stage().is_some_and(|stage| {
-                stage_rank(stage) >= stage_rank(DeployRunningStage::WaitingForHealth)
-            }) {
-                let text = format!("{name} — running, waiting for health");
-                return TreeLine::Pending {
-                    active: text.clone(),
-                    idle: text,
-                    phase: PendingPhase::Engaged,
-                };
-            }
-            if matches!(tree.stage(), Some(DeployRunningStage::StartingContainers)) {
-                if run_index < tree.started_containers() {
-                    return TreeLine::Settled {
-                        text: format!("✓ {name} — created"),
-                    };
-                }
-                return TreeLine::Pending {
-                    active: format!("{name} — creating"),
-                    idle: format!("{name} — queued"),
-                    phase: PendingPhase::Queued,
-                };
-            }
-            let step_text = match tree.stage() {
-                Some(DeployRunningStage::EnsuringImages) => "ensuring images",
-                Some(DeployRunningStage::EnsuringVolumes) => "ensuring volumes",
-                Some(DeployRunningStage::StartingContainers)
-                | Some(DeployRunningStage::WaitingForHealth)
-                | Some(DeployRunningStage::EnsuringCertificates)
-                | Some(DeployRunningStage::RouteCutover)
-                | Some(DeployRunningStage::ServingTargetCommit)
-                | Some(DeployRunningStage::RemovingSupersededContainers)
-                | None => "queued",
-            };
-            TreeLine::Pending {
-                active: format!("{name} — {step_text}"),
-                idle: format!("{name} — queued"),
-                phase: PendingPhase::Queued,
-            }
+        DeployPlanStepRef::RunContainer { machine_id, slot } => {
+            render_run_step(tree, service_id, machine_id, slot, run_index)
         }
+    }
+}
+
+fn render_run_step(
+    tree: &DeployTree,
+    service_id: &str,
+    machine_id: &ployz_core::ids::MachineId,
+    slot: &ReplicaSlot,
+    run_index: usize,
+) -> TreeLine {
+    let name = format!(
+        "{}.{} on {}",
+        service_id,
+        slot_label(slot),
+        machine_id.as_str()
+    );
+    if tree.is_complete_success()
+        || tree.stage().is_some_and(|stage| {
+            stage_rank(stage) >= stage_rank(DeployRunningStage::EnsuringCertificates)
+        })
+    {
+        return TreeLine::Settled {
+            text: format!("✓ {name} — healthy"),
+        };
+    }
+    if tree
+        .stage()
+        .is_some_and(|stage| stage_rank(stage) >= stage_rank(DeployRunningStage::WaitingForHealth))
+    {
+        let text = format!("{name} — running, waiting for health");
+        return TreeLine::Pending {
+            active: text.clone(),
+            idle: text,
+            phase: PendingPhase::Engaged,
+        };
+    }
+    if matches!(tree.stage(), Some(DeployRunningStage::StartingContainers)) {
+        if run_index < tree.started_containers() {
+            return TreeLine::Settled {
+                text: format!("✓ {name} — created"),
+            };
+        }
+        return TreeLine::Pending {
+            active: format!("{name} — creating"),
+            idle: format!("{name} — queued"),
+            phase: PendingPhase::Queued,
+        };
+    }
+    let step_text = match tree.stage() {
+        Some(DeployRunningStage::EnsuringImages) => "ensuring images",
+        Some(DeployRunningStage::EnsuringVolumes) => "ensuring volumes",
+        Some(DeployRunningStage::StartingContainers)
+        | Some(DeployRunningStage::WaitingForHealth)
+        | Some(DeployRunningStage::EnsuringCertificates)
+        | Some(DeployRunningStage::RouteCutover)
+        | Some(DeployRunningStage::ServingTargetCommit)
+        | Some(DeployRunningStage::RemovingSupersededContainers)
+        | None => "queued",
+    };
+    TreeLine::Pending {
+        active: format!("{name} — {step_text}"),
+        idle: format!("{name} — queued"),
+        phase: PendingPhase::Queued,
     }
 }
 

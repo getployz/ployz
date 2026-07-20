@@ -5,6 +5,7 @@
 pub mod api_client;
 pub mod build;
 pub mod certificate;
+mod cloud_current_tree;
 pub mod commands;
 mod confirmation;
 pub mod core;

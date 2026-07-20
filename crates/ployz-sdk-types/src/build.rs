@@ -6,14 +6,14 @@ use crate::ops::{AcceptedOperation, OperationApiResponse};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(
-    type = "{ operation_id: OperationId, target?: BuildTarget, source: GitSource, adapter: BuildAdapter, platforms: BuildPlatforms }"
+    type = "{ operation_id: OperationId, target?: BuildTarget, source: BuildSource, adapter: BuildAdapter, platforms: BuildPlatforms }"
 )]
 #[serde(deny_unknown_fields)]
 pub struct BuildSubmitRequest {
     pub operation_id: OperationId,
     #[serde(default = "cluster_build_target")]
     pub target: BuildTarget,
-    pub source: GitSource,
+    pub source: BuildSource,
     pub adapter: BuildAdapter,
     pub platforms: BuildPlatforms,
 }
@@ -41,6 +41,13 @@ pub type BuildSubmitResponse = OperationApiResponse<AcceptedOperation, BuildSubm
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, thiserror::Error)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BuildSubmitError {
+    #[error("local snapshot source requires an external Build Target")]
+    LocalSnapshotRequiresExternalTarget { operation_id: OperationId },
+    #[error("local snapshot source requires exactly one build platform, got {actual}")]
+    LocalSnapshotRequiresSinglePlatform {
+        operation_id: OperationId,
+        actual: usize,
+    },
     #[error("operation {} already exists with a different build request", .operation_id.as_str())]
     OperationConflict { operation_id: OperationId },
     #[error("build pool {} has no capable enrolled executor for {platform:?}", .pool_id.as_str())]
@@ -89,7 +96,7 @@ mod tests {
     use super::*;
 
     fn valid_json() -> serde_json::Value {
-        serde_json::json!({"operation_id":"build-1","source":{"url":"https://example.com/repo.git","commit":"0123456789abcdef0123456789abcdef01234567","credential":{"username":"git","secret":"token"}},"adapter":{"adapter":"railpack","cache_scope":"scope_01J0Y1J7YK7M7SXW3NQW78J4D2"},"platforms":[{"os":"linux","architecture":"amd64"}]})
+        serde_json::json!({"operation_id":"build-1","source":{"source":"git","url":"https://example.com/repo.git","commit":"0123456789abcdef0123456789abcdef01234567","credential":{"username":"git","secret":"token"}},"adapter":{"adapter":"railpack","cache_scope":"scope_01J0Y1J7YK7M7SXW3NQW78J4D2"},"platforms":[{"os":"linux","architecture":"amd64"}]})
     }
 
     #[test]
@@ -128,6 +135,23 @@ mod tests {
     }
 
     #[test]
+    fn local_snapshot_platform_error_keeps_the_actual_count_typed() {
+        let error = BuildSubmitError::LocalSnapshotRequiresSinglePlatform {
+            operation_id: OperationId::try_new("build-local").expect("operation id"),
+            actual: 2,
+        };
+
+        assert_eq!(
+            serde_json::to_value(error).expect("error serializes"),
+            serde_json::json!({
+                "error": "local_snapshot_requires_single_platform",
+                "operation_id": "build-local",
+                "actual": 2,
+            })
+        );
+    }
+
+    #[test]
     fn durable_source_evidence_cannot_serialize_request_credential() {
         let request: BuildSubmitRequest = serde_json::from_value(valid_json()).expect("request");
         assert_eq!(request.target, BuildTarget::Cluster);
@@ -136,10 +160,39 @@ mod tests {
         assert_eq!(
             evidence,
             serde_json::json!({
+                "source": "git",
                 "url": "https://example.com/repo.git",
                 "commit": "0123456789abcdef0123456789abcdef01234567",
             })
         );
+    }
+
+    #[test]
+    fn local_snapshot_wire_is_tagged_strict_and_credential_free() {
+        let mut local = valid_json();
+        local.as_object_mut().expect("request object").insert(
+            "source".into(),
+            serde_json::json!({
+                "source": "local_snapshot",
+                "digest": format!("sha256:{}", "a".repeat(64)),
+                "subdir": "apps/api"
+            }),
+        );
+        let request: BuildSubmitRequest =
+            serde_json::from_value(local.clone()).expect("local snapshot request");
+        assert!(matches!(request.source, BuildSource::LocalSnapshot { .. }));
+        let evidence = serde_json::to_value(request.source.evidence()).expect("evidence");
+        assert_eq!(&evidence, local.get("source").expect("source"));
+
+        local
+            .get_mut("source")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("source object")
+            .insert(
+                "credential".into(),
+                serde_json::json!({"secret": "must-reject"}),
+            );
+        assert!(serde_json::from_value::<BuildSubmitRequest>(local).is_err());
     }
 
     #[test]
@@ -166,7 +219,7 @@ mod tests {
         let declaration = <BuildSubmitRequest as TS>::decl(&ts_rs::Config::default());
         assert_eq!(
             declaration,
-            "type BuildSubmitRequest = { operation_id: OperationId, target?: BuildTarget, source: GitSource, adapter: BuildAdapter, platforms: BuildPlatforms };"
+            "type BuildSubmitRequest = { operation_id: OperationId, target?: BuildTarget, source: BuildSource, adapter: BuildAdapter, platforms: BuildPlatforms };"
         );
     }
 }

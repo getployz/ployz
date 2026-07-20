@@ -601,6 +601,15 @@ test("sdk exports operation subjects", () => {
 test("sdk exports the Rust operation API contract registry", () => {
   assert.deepEqual(OPERATION_API_CONTRACTS, [
     {
+      name: "build.target.capabilities",
+      subject: "plz.v1.rpc.operator.query.build.target.capabilities",
+      execution: "query",
+      request: "BuildTargetCapabilitiesRequest",
+      success: "BuildTargetCapabilities",
+      error: "BuildTargetCapabilitiesError",
+      response: "BuildTargetCapabilitiesResponse",
+    },
+    {
       name: "build.submit",
       subject: "plz.v1.rpc.operator.command.build.submit",
       execution: "accepts_operation",

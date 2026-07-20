@@ -69,8 +69,11 @@ pub use deploy::{
     DeployCompletionOutcome, DeployEvidence, DeployFailureClass, DeployImageCleanup,
     DeployOperationFailure, DeployOperationState, DeployPhaseNumber, DeployPhaseNumberError,
     DeployPhaseOutcome, DeployRunningStage, DeployServiceResult, DeployTransition,
-    HealthCheckFailure, PreStartHookFailure, RetainedArtifact, RouteCutoverFailureReason,
-    UnusableMachine, project_deploy_transition, validate_fresh_deploy_evidence,
+    DeployVolumeHandoffRestartFailure, DeployVolumeHandoffRestorationUnconfirmed,
+    DeployVolumeHandoffRollbackContainerOutcome, DeployVolumeHandoffRollbackOutcome,
+    DeployVolumeHandoffStopUncertain, HealthCheckFailure, PreStartHookFailure, RetainedArtifact,
+    RouteCutoverFailureReason, UnusableMachine, project_deploy_transition,
+    validate_fresh_deploy_evidence,
 };
 pub use events::{OperationEvent, OperationSubject, OperationSubjectRef};
 pub use ingress_configure::{
@@ -304,7 +307,7 @@ impl OperationStatus {
     pub fn build_accepted(
         id: OperationId,
         target: crate::build::BuildTarget,
-        source: crate::build::GitSourceEvidence,
+        source: crate::build::BuildSourceEvidence,
         adapter: crate::build::BuildAdapter,
         platforms: crate::build::BuildPlatforms,
         event_sequence: EventSequence,

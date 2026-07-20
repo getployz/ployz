@@ -2,11 +2,14 @@
 
 use super::*;
 use ployz_core::build::{
-    BuildAdapter, BuildCacheScope, BuildContextPath, BuildPlatforms, GitSource,
+    BuildAdapter, BuildCacheScope, BuildContextPath, BuildPlatforms, BuildSource,
+    BuildSourceEvidence, GitSource, VerifiedBuildSource,
 };
 use ployz_core::deploy::{ImageSource, PlatformImage, PushedImageReceipt};
 use ployz_core::image::{OciDigest, OciPlatform};
-use ployz_core::operation::{BuildCleanupEvidence, BuildOperationState, CancellationReason};
+use ployz_core::operation::{
+    BuildCleanupEvidence, BuildOperationState, BuildOperationStatus, CancellationReason,
+};
 use ployz_e2e::dind::write_file_in_container;
 use ployz_sdk_types::{BuildCancelRequest, BuildSubmitRequest};
 use support::dind::assert::assert_events_in_order;
@@ -76,6 +79,253 @@ pub(super) async fn assert_authenticated_build_journeys(core: &CoreContext) {
     .await;
 }
 
+pub(super) async fn assert_standalone_current_tree_uses_dirty_snapshot(core: &CoreContext) {
+    with_evidence(&core.cluster, async {
+        const NAMESPACE: &str = "current_tree";
+        const SERVICE: &str = "current_tree_web";
+        const BASELINE: &str = "committed-baseline-current-tree";
+        const DIRTY: &str = "dirty-working-tree-current-tree";
+
+        let fixture = tempfile::tempdir().expect("create current-tree fixture");
+        let source = fixture.path().join("source");
+        let state = fixture.path().join("state");
+        std::fs::create_dir_all(&source).expect("create current-tree source");
+        std::fs::create_dir_all(&state).expect("create current-tree state");
+        std::fs::write(
+            source.join("Dockerfile"),
+            format!("FROM {WORKLOAD_IMAGE}\nCOPY index.html /usr/share/nginx/html/index.html\n"),
+        )
+        .expect("write current-tree Dockerfile");
+        std::fs::write(source.join("index.html"), format!("{BASELINE}\n"))
+            .expect("write committed marker");
+        run_test_command(
+            std::process::Command::new("git")
+                .args(["init", "--quiet", "--initial-branch=main"])
+                .arg(&source),
+            "initialize current-tree repository",
+        );
+        for (key, value) in [
+            ("user.name", "Ployz DinD"),
+            ("user.email", "dind@example.invalid"),
+        ] {
+            run_test_command(
+                std::process::Command::new("git")
+                    .args(["-C"])
+                    .arg(&source)
+                    .args(["config", key, value]),
+                "configure current-tree repository",
+            );
+        }
+        run_test_command(
+            std::process::Command::new("git")
+                .args(["-C"])
+                .arg(&source)
+                .args(["add", "."]),
+            "stage current-tree baseline",
+        );
+        run_test_command(
+            std::process::Command::new("git")
+                .args(["-C"])
+                .arg(&source)
+                .args(["commit", "--quiet", "-m", "baseline"]),
+            "commit current-tree baseline",
+        );
+
+        let baseline = run_shipped_ployz(
+            core,
+            &source,
+            &state,
+            [
+                "deploy",
+                "--namespace",
+                NAMESPACE,
+                "--service",
+                SERVICE,
+                "--image",
+                WORKLOAD_IMAGE,
+                "--from-registry",
+            ],
+        )
+        .await;
+        assert!(
+            baseline.status.success(),
+            "baseline shipped deploy failed: {}",
+            String::from_utf8_lossy(&baseline.stderr)
+        );
+
+        let before_builds = core
+            .api
+            .ops_list(&OpsListRequest {
+                active_only: false,
+                before: None,
+            })
+            .await
+            .expect("list operations before current-tree build")
+            .operations
+            .into_iter()
+            .filter_map(|snapshot| {
+                build_operation_status(&snapshot.status).map(|status| status.id().clone())
+            })
+            .collect::<BTreeSet<_>>();
+
+        std::fs::write(source.join("index.html"), format!("{DIRTY}\n"))
+            .expect("write dirty marker");
+        let committed = test_command_stdout(
+            std::process::Command::new("git")
+                .args(["-C"])
+                .arg(&source)
+                .args(["show", "HEAD:index.html"]),
+            "read committed current-tree marker",
+        );
+        assert_eq!(committed.trim(), BASELINE);
+        assert_ne!(committed.trim(), DIRTY);
+        let dirty_status = test_command_stdout(
+            std::process::Command::new("git")
+                .args(["-C"])
+                .arg(&source)
+                .args(["status", "--porcelain"]),
+            "inspect dirty current-tree repository",
+        );
+        assert!(
+            !dirty_status.trim().is_empty(),
+            "current-tree source must remain uncommitted"
+        );
+
+        let current = run_shipped_ployz(
+            core,
+            &source,
+            &state,
+            [
+                "deploy",
+                "--build",
+                "here",
+                "--environment",
+                NAMESPACE,
+                "--service",
+                SERVICE,
+            ],
+        )
+        .await;
+        assert!(
+            current.status.success(),
+            "current-tree shipped deploy failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&current.stdout),
+            String::from_utf8_lossy(&current.stderr)
+        );
+
+        let operations = core
+            .api
+            .ops_list(&OpsListRequest {
+                active_only: false,
+                before: None,
+            })
+            .await
+            .expect("list current-tree operations")
+            .operations;
+        let builds = operations
+            .iter()
+            .filter_map(|snapshot| {
+                build_operation_status(&snapshot.status)
+                    .filter(|status| !before_builds.contains(status.id()))
+            })
+            .collect::<Vec<_>>();
+        let [build] = builds.as_slice() else {
+            panic!("expected one current-tree build, got {builds:?}");
+        };
+        assert!(matches!(
+            build.source(),
+            BuildSourceEvidence::LocalSnapshot { subdir: None, .. }
+        ));
+        let BuildOperationState::Completed { receipt } = build.state() else {
+            panic!("current-tree build did not complete: {build:?}");
+        };
+        let platform_images = receipt.platforms().collect::<Vec<_>>();
+        let [(_, image)] = platform_images.as_slice() else {
+            panic!("current-tree receipt must contain one platform: {receipt:?}");
+        };
+        assert_eq!(image.seed, machine_id("core_1"));
+
+        let containers = managed_workload_containers(core, core.cluster.core()).await;
+        let container = containers
+            .iter()
+            .find(|container| {
+                container.labels.get(SERVICE_ID_LABEL).map(String::as_str) == Some(SERVICE)
+                    && container.labels.get(NAMESPACE_ID_LABEL).map(String::as_str)
+                        == Some(NAMESPACE)
+            })
+            .unwrap_or_else(|| panic!("current-tree workload not running: {containers:?}"));
+        let marker = core
+            .exec_on(
+                core.cluster.core(),
+                &[
+                    "docker",
+                    "exec",
+                    &container.id,
+                    "cat",
+                    "/usr/share/nginx/html/index.html",
+                ],
+            )
+            .await;
+        assert!(marker.success(), "read current-tree marker: {marker:?}");
+        assert_eq!(marker.stdout.trim(), DIRTY);
+        assert_ne!(marker.stdout.trim(), BASELINE);
+    })
+    .await;
+}
+
+fn build_operation_status(status: &OperationStatus) -> Option<&BuildOperationStatus> {
+    match status {
+        OperationStatus::Build { status } => Some(status),
+        OperationStatus::Deploy { .. }
+        | OperationStatus::Cert { .. }
+        | OperationStatus::MachineAdd { .. }
+        | OperationStatus::MachineBuildCachePrune { .. }
+        | OperationStatus::MachineUpdate { .. }
+        | OperationStatus::MachineStoragePrepare { .. }
+        | OperationStatus::MachineLifecycle { .. }
+        | OperationStatus::CoreReplace { .. }
+        | OperationStatus::CredentialGrant { .. }
+        | OperationStatus::NetworkRepair { .. }
+        | OperationStatus::ServiceRestart { .. }
+        | OperationStatus::ManagedDnsReconcile { .. }
+        | OperationStatus::IngressConfigure { .. }
+        | OperationStatus::NamespaceRemove { .. }
+        | OperationStatus::VolumeCreate { .. }
+        | OperationStatus::VolumeRemove { .. } => None,
+    }
+}
+
+async fn run_shipped_ployz<const N: usize>(
+    core: &CoreContext,
+    source: &std::path::Path,
+    state: &std::path::Path,
+    args: [&str; N],
+) -> std::process::Output {
+    tokio::time::timeout(
+        BUILD_BUDGET,
+        tokio::process::Command::new(dind::artifact_dir().join("ployz"))
+            .args(args)
+            .current_dir(source)
+            .env("XDG_STATE_HOME", state)
+            .env("HOME", state)
+            .env("PLOYZ_TELEMETRY", "0")
+            .env_remove("PLOYZ_CLOUD_URL")
+            .env(
+                "PLOYZ_NATS_URL",
+                format!("tls://{}", core.cluster.core().published.nats),
+            )
+            .env("PLOYZ_NATS_CA_FILE", &core.material.ca_file)
+            .env(
+                "PLOYZ_NATS_NKEY_SEED_FILE",
+                &core.material.operator_seed_file,
+            )
+            .output(),
+    )
+    .await
+    .expect("shipped ployz command timed out")
+    .expect("run shipped ployz command")
+}
+
 async fn restart_seed_machine_role(core: &CoreContext) {
     let seed = core.cluster.core();
     let unit = "ployzd-machine-core_1";
@@ -102,14 +352,16 @@ async fn submit_build(
         .build_submit(&BuildSubmitRequest {
             operation_id: operation_id.clone(),
             target: ployz_core::build::BuildTarget::Cluster,
-            source: GitSource::try_new(
-                &git.url,
-                &git.commit,
-                GIT_USERNAME,
-                GIT_SECRET,
-                Some(subdir),
-            )
-            .expect("authenticated exact-commit source"),
+            source: BuildSource::Git {
+                git: GitSource::try_new(
+                    &git.url,
+                    &git.commit,
+                    GIT_USERNAME,
+                    GIT_SECRET,
+                    Some(subdir),
+                )
+                .expect("authenticated exact-commit source"),
+            },
             adapter,
             platforms: BuildPlatforms::try_new([platform.clone()]).expect("native platform"),
         })
@@ -131,7 +383,10 @@ async fn submit_build(
     let BuildOperationState::Completed { receipt } = build_status.state() else {
         panic!("build {operation} did not complete: {status:?}");
     };
-    assert_eq!(build_status.source().commit.as_str(), git.commit);
+    let BuildSourceEvidence::Git { git: source } = build_status.source() else {
+        panic!("authenticated build must retain Git evidence");
+    };
+    assert_eq!(source.commit.as_str(), git.commit);
     let platform_images = receipt.platforms().collect::<Vec<_>>();
     let [(actual_platform, image)] = platform_images.as_slice() else {
         panic!("build {operation} did not return exactly one native image");
@@ -162,7 +417,7 @@ async fn assert_success_evidence(
             ),
             (
                 "commit verified",
-                Box::new(|event| matches!(event, OperationEvent::BuildCommitVerified { .. })),
+                Box::new(|event| matches!(event, OperationEvent::BuildSourceVerified { .. })),
             ),
             (
                 "toolchain verified",
@@ -182,8 +437,10 @@ async fn assert_success_evidence(
     );
     assert!(events.iter().any(|event| matches!(
         event,
-        OperationEvent::BuildCommitVerified { commit, .. }
-            if commit.commit.as_str() == expected_commit
+        OperationEvent::BuildSourceVerified {
+            source: VerifiedBuildSource::Git { git },
+            ..
+        } if git.commit.as_str() == expected_commit
     )));
     if !log_marker.is_empty() {
         let mut logs = String::new();
@@ -251,14 +508,16 @@ async fn assert_build_cancellation(core: &CoreContext, git: &GitFixture, platfor
         .build_submit(&BuildSubmitRequest {
             operation_id: operation_id.clone(),
             target: ployz_core::build::BuildTarget::Cluster,
-            source: GitSource::try_new(
-                &git.url,
-                &git.commit,
-                GIT_USERNAME,
-                GIT_SECRET,
-                Some("slow"),
-            )
-            .expect("slow source"),
+            source: BuildSource::Git {
+                git: GitSource::try_new(
+                    &git.url,
+                    &git.commit,
+                    GIT_USERNAME,
+                    GIT_SECRET,
+                    Some("slow"),
+                )
+                .expect("slow source"),
+            },
             adapter: BuildAdapter::Dockerfile {
                 dockerfile: BuildContextPath::try_new("Dockerfile").expect("Dockerfile path"),
                 target: None,

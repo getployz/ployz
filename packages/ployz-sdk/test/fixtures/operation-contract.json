@@ -143,16 +143,19 @@
                   "kind": "replicated"
                 },
                 "service_id": "svc_api",
-                "steps": [
-                  {
-                    "machine_id": "machine_2",
-                    "slot": {
-                      "kind": "replicated",
-                      "number": 1
-                    },
-                    "step": "run_container"
-                  }
-                ]
+                "work": {
+                  "kind": "ordinary",
+                  "steps": [
+                    {
+                      "machine_id": "machine_2",
+                      "slot": {
+                        "kind": "replicated",
+                        "number": 1
+                      },
+                      "step": "run_container"
+                    }
+                  ]
+                }
               }
             ]
           }

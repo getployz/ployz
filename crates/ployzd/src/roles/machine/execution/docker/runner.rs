@@ -21,10 +21,10 @@ use bollard::Docker;
 use bollard::auth::DockerCredentials;
 use bollard::errors::Error as BollardError;
 use bollard::models::{
-    ContainerCreateBody, ContainerSummary, ContainerSummaryHealthStatusEnum,
-    ContainerSummaryNetworkSettings, ContainerSummaryStateEnum, EndpointSettings, HealthConfig,
-    HealthStatusEnum, HostConfig, Mount, MountType, NetworkingConfig, RestartPolicy,
-    RestartPolicyNameEnum,
+    ContainerCreateBody, ContainerInspectResponse, ContainerSummary,
+    ContainerSummaryHealthStatusEnum, ContainerSummaryNetworkSettings, ContainerSummaryStateEnum,
+    EndpointSettings, HealthConfig, HealthStatusEnum, HostConfig, Mount, MountPoint, MountType,
+    NetworkingConfig, RestartPolicy, RestartPolicyNameEnum,
 };
 use bollard::query_parameters::{
     CreateImageOptionsBuilder, InspectContainerOptions, ListContainersOptionsBuilder,
@@ -34,9 +34,9 @@ use bollard::query_parameters::{
 use futures_util::StreamExt;
 use ployz_core::deploy::{
     ContainerEntrypoint, ContainerHealthcheck, ContainerHealthcheckTest, ContainerRestartPolicy,
-    ImageReference, RegistryCredential,
+    ImageReference, RegistryCredential, VolumeName,
 };
-use ployz_core::ids::{ContainerId, SubjectTokenError};
+use ployz_core::ids::{ContainerId, NamespaceId, SubjectTokenError};
 use ployz_core::image::OciDigest;
 use ployz_core::intent::{VolumeKind, VolumePinState};
 use ployz_core::machine::VolumeEnsureFailure;
@@ -46,7 +46,7 @@ use ployz_core::machine::runtime::{
 use ployz_core::network::{
     EndpointBridgeStatus, INTERNAL_DNS_SUFFIX, MachineEndpointSubnet, endpoint_bridge_gateway_ipv4,
 };
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -229,20 +229,35 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
             })?;
 
         for container in &mut containers {
-            let ExistingManagedContainerState::Running {
+            let running = matches!(
+                container.state,
+                ExistingManagedContainerState::Running { .. }
+            );
+            let details = docker_container_details(
+                docker,
+                &container.container_id,
+                &container.identity.namespace_id,
+                running,
+            )
+            .await
+            .map_err(|error| MachineContainerListError::ListExisting { message: error })?;
+            container.named_volume_names = details.named_volume_names;
+            if let ExistingManagedContainerState::Running {
                 health,
                 started_at_unix_ms,
                 ..
             } = &mut container.state
-            else {
-                continue;
-            };
-            let (observed_health, observed_started_at_unix_ms) =
-                docker_container_details(docker, &container.container_id)
-                    .await
-                    .map_err(|error| MachineContainerListError::ListExisting { message: error })?;
-            *health = observed_health;
-            *started_at_unix_ms = Some(observed_started_at_unix_ms);
+            {
+                let DockerContainerRuntimeDetails::Running {
+                    health: observed_health,
+                    started_at_unix_ms: observed_started_at_unix_ms,
+                } = details.runtime
+                else {
+                    unreachable!("running details were requested for a running summary");
+                };
+                *health = observed_health;
+                *started_at_unix_ms = Some(observed_started_at_unix_ms);
+            }
         }
 
         Ok(containers)
@@ -533,36 +548,11 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
         &self,
         container_id: &ContainerId,
         expected_identity: &ManagedContainerIdentity,
-    ) -> Result<(), MachineContainerStopError> {
-        let existing = self
-            .existing_managed_containers()
-            .await
-            .map_err(|error| match error {
-                MachineContainerListError::ListExisting { message } => {
-                    MachineContainerStopError::ListExisting { message }
-                }
-            })?
-            .into_iter()
-            .find(|container| container.container_id == *container_id);
-        let Some(existing) = existing else {
-            return Ok(());
-        };
-        if existing.identity != *expected_identity {
-            return Err(MachineContainerStopError::Stop {
-                container_id: container_id.clone(),
-                message: format!(
-                    "container identity did not match stop target: expected {:?}, found {:?}",
-                    expected_identity, existing.identity
-                ),
-            });
-        }
-
-        if !matches!(
-            existing.state,
-            ExistingManagedContainerState::Running { .. }
-        ) {
-            return Ok(());
-        }
+    ) -> Result<
+        crate::roles::machine::protocol::MachineContainerStopOutcome,
+        MachineContainerStopError,
+    > {
+        use crate::roles::machine::protocol::MachineContainerStopOutcome;
 
         let docker = self
             .docker()
@@ -571,13 +561,67 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
                 container_id: container_id.clone(),
                 message: error.to_string(),
             })?;
+        let inspect = match docker
+            .inspect_container(container_id.as_str(), None::<InspectContainerOptions>)
+            .await
+        {
+            Ok(inspect) => inspect,
+            Err(error) if is_docker_object_missing(&error) => {
+                return Ok(MachineContainerStopOutcome::Missing);
+            }
+            Err(error) => {
+                return Err(MachineContainerStopError::Stop {
+                    container_id: container_id.clone(),
+                    message: error.to_string(),
+                });
+            }
+        };
+        let labels = inspect
+            .config
+            .and_then(|config| config.labels)
+            .ok_or_else(|| MachineContainerStopError::Stop {
+                container_id: container_id.clone(),
+                message: "Docker inspect omitted container labels".to_owned(),
+            })?;
+        let observed_identity = labels::parse(&btree_from_hashmap(labels)).map_err(|error| {
+            MachineContainerStopError::Stop {
+                container_id: container_id.clone(),
+                message: format!(
+                    "container labels did not contain a valid managed identity: {error:?}"
+                ),
+            }
+        })?;
+        if observed_identity != *expected_identity {
+            return Err(MachineContainerStopError::Stop {
+                container_id: container_id.clone(),
+                message: format!(
+                    "container identity did not match stop target: expected {:?}, found {:?}",
+                    expected_identity, observed_identity
+                ),
+            });
+        }
+        let running = inspect
+            .state
+            .and_then(|state| state.running)
+            .ok_or_else(|| MachineContainerStopError::Stop {
+                container_id: container_id.clone(),
+                message: "Docker inspect omitted container running state".to_owned(),
+            })?;
+        if !running {
+            return Ok(MachineContainerStopOutcome::AlreadyStopped);
+        }
         let options = StopContainerOptionsBuilder::new().build();
         match docker
             .stop_container(container_id.as_str(), Some(options))
             .await
         {
-            Ok(()) => Ok(()),
-            Err(error) if is_docker_object_missing(&error) => Ok(()),
+            Ok(()) => Ok(MachineContainerStopOutcome::StoppedRunning),
+            Err(error) if is_docker_object_missing(&error) => {
+                Ok(MachineContainerStopOutcome::Missing)
+            }
+            Err(BollardError::DockerResponseServerError {
+                status_code: 304, ..
+            }) => Ok(MachineContainerStopOutcome::AlreadyStopped),
             Err(error) => Err(MachineContainerStopError::Stop {
                 container_id: container_id.clone(),
                 message: error.to_string(),
@@ -779,14 +823,36 @@ fn docker_container_state(
     }
 }
 
+struct DockerContainerDetails {
+    runtime: DockerContainerRuntimeDetails,
+    named_volume_names: BTreeSet<VolumeName>,
+}
+
+enum DockerContainerRuntimeDetails {
+    Running {
+        health: ContainerHealth,
+        started_at_unix_ms: u64,
+    },
+    NotRequested,
+}
+
 async fn docker_container_details(
     docker: &Docker,
     container_id: &ContainerId,
-) -> Result<(ContainerHealth, u64), String> {
+    namespace_id: &NamespaceId,
+    running: bool,
+) -> Result<DockerContainerDetails, String> {
     let inspect = docker
         .inspect_container(container_id.as_str(), None::<InspectContainerOptions>)
         .await
         .map_err(|error| error.to_string())?;
+    let named_volume_names = docker_named_volume_names(&inspect, namespace_id)?;
+    if !running {
+        return Ok(DockerContainerDetails {
+            runtime: DockerContainerRuntimeDetails::NotRequested,
+            named_volume_names,
+        });
+    }
     let state = inspect
         .state
         .ok_or_else(|| "Docker inspect omitted container state".to_owned())?;
@@ -805,7 +871,46 @@ async fn docker_container_details(
         .started_at
         .ok_or_else(|| "Docker inspect omitted State.StartedAt".to_owned())?;
     let started_at_unix_ms = parse_docker_started_at(&started_at)?;
-    Ok((health, started_at_unix_ms))
+    Ok(DockerContainerDetails {
+        runtime: DockerContainerRuntimeDetails::Running {
+            health,
+            started_at_unix_ms,
+        },
+        named_volume_names,
+    })
+}
+
+fn docker_named_volume_names(
+    inspect: &ContainerInspectResponse,
+    namespace_id: &NamespaceId,
+) -> Result<BTreeSet<VolumeName>, String> {
+    let mounts = inspect
+        .mounts
+        .as_deref()
+        .ok_or_else(|| "Docker inspect omitted container mounts".to_owned())?;
+    named_volume_names_from_mounts(mounts, namespace_id)
+}
+
+fn named_volume_names_from_mounts(
+    mounts: &[MountPoint],
+    namespace_id: &NamespaceId,
+) -> Result<BTreeSet<VolumeName>, String> {
+    let mut names = BTreeSet::new();
+    for mount in mounts {
+        let Some(kind) = mount.typ.as_deref() else {
+            return Err("Docker inspect mount omitted its type".to_owned());
+        };
+        if kind != "volume" {
+            continue;
+        }
+        let Some(name) = mount.name.as_deref().filter(|name| !name.is_empty()) else {
+            return Err("Docker inspect named-volume mount omitted its name".to_owned());
+        };
+        let volume_name = VolumeName::try_from_stable_storage_name(name, namespace_id)
+            .map_err(|error| format!("invalid Docker named-volume identity `{name}`: {error}"))?;
+        names.insert(volume_name);
+    }
+    Ok(names)
 }
 
 fn parse_docker_started_at(started_at: &str) -> Result<u64, String> {
@@ -1047,6 +1152,7 @@ fn existing_container_from_summary(
         health_status: health_status.or_else(|| summary.status.as_deref().and_then(status_health)),
         resolved_image_identity: summary.image_id,
         created_at_unix_seconds: summary.created,
+        named_volume_names: BTreeSet::new(),
     })
 }
 
@@ -1724,8 +1830,103 @@ mod tests {
                 health_status: None,
                 resolved_image_identity: None,
                 created_at_unix_seconds: None,
+                named_volume_names: Default::default(),
             }
         );
+    }
+
+    #[test]
+    fn inspect_mounts_expose_only_sorted_deduplicated_named_volumes() {
+        let namespace_id = namespace_id("default");
+        let a_data = VolumeName::try_new("a-data").expect("volume");
+        let z_data = VolumeName::try_new("z-data").expect("volume");
+        let mounts = [
+            MountPoint {
+                typ: Some("volume".to_owned()),
+                name: Some(z_data.stable_storage_name(&namespace_id)),
+                ..Default::default()
+            },
+            MountPoint {
+                typ: Some("bind".to_owned()),
+                name: Some("host-path".to_owned()),
+                ..Default::default()
+            },
+            MountPoint {
+                typ: Some("tmpfs".to_owned()),
+                ..Default::default()
+            },
+            MountPoint {
+                typ: Some("volume".to_owned()),
+                name: Some(a_data.stable_storage_name(&namespace_id)),
+                ..Default::default()
+            },
+            MountPoint {
+                typ: Some("volume".to_owned()),
+                name: Some(z_data.stable_storage_name(&namespace_id)),
+                ..Default::default()
+            },
+        ];
+
+        assert_eq!(
+            named_volume_names_from_mounts(&mounts, &namespace_id)
+                .expect("complete mount testimony"),
+            BTreeSet::from([a_data, z_data])
+        );
+    }
+
+    #[test]
+    fn empty_mounts_are_complete_empty_testimony() {
+        assert_eq!(
+            named_volume_names_from_mounts(&[], &namespace_id("default"))
+                .expect("empty mount testimony is complete"),
+            BTreeSet::new()
+        );
+    }
+
+    #[test]
+    fn omitted_or_incomplete_inspect_mounts_are_not_empty_testimony() {
+        assert_eq!(
+            docker_named_volume_names(
+                &ContainerInspectResponse::default(),
+                &namespace_id("default")
+            ),
+            Err("Docker inspect omitted container mounts".to_owned())
+        );
+        assert_eq!(
+            named_volume_names_from_mounts(&[MountPoint::default()], &namespace_id("default")),
+            Err("Docker inspect mount omitted its type".to_owned())
+        );
+        assert_eq!(
+            named_volume_names_from_mounts(
+                &[MountPoint {
+                    typ: Some("volume".to_owned()),
+                    ..Default::default()
+                }],
+                &namespace_id("default")
+            ),
+            Err("Docker inspect named-volume mount omitted its name".to_owned())
+        );
+    }
+
+    #[test]
+    fn named_volume_testimony_rejects_noncanonical_and_cross_namespace_storage_names() {
+        let expected_namespace_id = namespace_id("default");
+        let wrong_namespace_name = VolumeName::try_new("data")
+            .expect("volume")
+            .stable_storage_name(&namespace_id("other"));
+
+        for storage_name in ["data".to_owned(), wrong_namespace_name] {
+            let error = named_volume_names_from_mounts(
+                &[MountPoint {
+                    typ: Some("volume".to_owned()),
+                    name: Some(storage_name.clone()),
+                    ..Default::default()
+                }],
+                &expected_namespace_id,
+            )
+            .expect_err("invalid physical identity must fail testimony");
+            assert!(error.contains(&storage_name));
+        }
     }
 
     #[test]

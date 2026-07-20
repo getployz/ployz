@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::future::Future;
 
 use ployz_core::deploy::{
@@ -10,7 +11,7 @@ use ployz_core::machine::runtime::ContainerHealth;
 use ployz_core::machine::{VolumeEnsureFailure, VolumeUsageFacts};
 use std::net::IpAddr;
 
-use crate::roles::machine::protocol::MachineImagePull;
+use crate::roles::machine::protocol::{MachineContainerStopOutcome, MachineImagePull};
 use ployz_core::machine::runtime::{ManagedContainerHealthStatus, ManagedContainerIdentity};
 use ployz_core::network::{EndpointBridgeStatus, MachineEndpointSubnet};
 
@@ -22,6 +23,7 @@ pub struct ExistingManagedContainer {
     pub health_status: Option<ManagedContainerHealthStatus>,
     pub resolved_image_identity: Option<String>,
     pub created_at_unix_seconds: Option<i64>,
+    pub named_volume_names: BTreeSet<VolumeName>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,9 +103,6 @@ pub enum MachineContainerWaitError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MachineContainerStopError {
-    ListExisting {
-        message: String,
-    },
     Stop {
         container_id: ContainerId,
         message: String,
@@ -216,7 +215,7 @@ pub trait MachineContainerRunner {
         &self,
         container_id: &ContainerId,
         expected_identity: &ManagedContainerIdentity,
-    ) -> impl Future<Output = Result<(), MachineContainerStopError>> + Send;
+    ) -> impl Future<Output = Result<MachineContainerStopOutcome, MachineContainerStopError>> + Send;
 
     fn restart_managed_container(
         &self,

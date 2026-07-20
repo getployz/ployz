@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use ployz_core::build::{
     BuildAdapter, BuildContextPath, BuildExecutorAssignment, BuildExecutorReadiness,
     BuildExecutorReadinessAnswer, BuildExecutorReadinessRequest, BuildExecutorStartDomainError,
-    BuildExecutorStartRequest, BuildExecutorStartResponse, GitSource,
+    BuildExecutorStartRequest, BuildExecutorStartResponse, BuildSource, GitSource,
 };
 use ployz_core::ids::{BuildExecutorId, BuildPoolId, MachineId, OperationId};
 use ployz_core::image::OciPlatform;
@@ -311,14 +311,16 @@ fn start_request(
             executor_id: executor_id.clone(),
             image_seed: MachineId::try_new("missing-image-seed").expect("machine id"),
         },
-        source: GitSource::try_new(
-            "https://git.example/repo.git",
-            "0123456789abcdef0123456789abcdef01234567",
-            "builder",
-            "secret",
-            None::<String>,
-        )
-        .expect("Git source"),
+        source: BuildSource::Git {
+            git: GitSource::try_new(
+                "https://git.example/repo.git",
+                "0123456789abcdef0123456789abcdef01234567",
+                "builder",
+                "secret",
+                None::<String>,
+            )
+            .expect("Git source"),
+        },
         adapter: BuildAdapter::Dockerfile {
             dockerfile: BuildContextPath::try_new("Dockerfile").expect("Dockerfile path"),
             target: None,

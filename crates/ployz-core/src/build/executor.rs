@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use super::{BuildAdapter, GitSource, VerifiedGitCommit};
+use super::{BuildAdapter, BuildSource, VerifiedBuildSource};
 use crate::deploy::PlatformImage;
 use crate::ids::{BuildExecutorId, BuildPoolId, MachineId, OperationId};
 use crate::image::OciPlatform;
@@ -610,7 +610,7 @@ impl From<BuildExecutorEvidence> for BuildExecutorEvidenceWire {
 pub struct BuildExecutorStartRequest {
     pub operation_id: OperationId,
     pub assignment: BuildExecutorAssignment,
-    pub source: GitSource,
+    pub source: BuildSource,
     pub adapter: BuildAdapter,
     pub platform: OciPlatform,
     pub timeout_millis: u64,
@@ -641,7 +641,7 @@ pub struct BuildExecutorStartOk {
     pub acceptance: BuildExecutorAcceptance,
     pub cleanup: BuildExecutorSuccessCleanupEvidence,
     pub image: PlatformImage,
-    pub verified_commit: VerifiedGitCommit,
+    pub verified_source: VerifiedBuildSource,
     pub toolchain: BuildToolchainEvidence,
     #[serde(flatten)]
     pub log_summary: BuildLogSummary,
@@ -812,6 +812,7 @@ pub struct BuildExecutorLogFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::build::GitSource;
     use crate::nats_config::{
         BuildExecutorCredentialExpiresAt, CredentialName, CredentialRole, MintedNatsUser,
     };
@@ -882,7 +883,7 @@ mod tests {
                 )
                 .expect("expiry"),
             },
-            verified_commit: VerifiedGitCommit::from_source(&request.source),
+            verified_source: VerifiedBuildSource::from_source(&request.source),
             toolchain: BuildToolchainEvidence {
                 buildkit_image: digest,
                 adapter: crate::operation::BuildAdapterToolchainEvidence::Dockerfile,
@@ -1059,7 +1060,7 @@ mod tests {
         BuildExecutorStartRequest {
             operation_id: OperationId::try_new("build-1").expect("operation id"),
             assignment: cluster_assignment(),
-            source,
+            source: source.into(),
             adapter: BuildAdapter::Dockerfile {
                 dockerfile: super::super::BuildContextPath::try_new("Dockerfile")
                     .expect("dockerfile path"),

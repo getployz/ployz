@@ -3,12 +3,12 @@
 
 use crate::control::authorization::MintRequest;
 use crate::control::sequencer::{
-    BuildSubmitCommand, CoreReplaceSubmitCommand, CredentialGrantSubmitCommand,
-    IngressConfigureSubmitCommand, IngressConfigureSubmitError, MachineAddBootstrapMaterial,
-    MachineAddBootstrapMaterialError, MachineAddSubmitCommand, MachineLifecycleSubmitCommand,
-    MachineUpdateSubmitCommand, NamespaceRemoveSubmitCommand, NetworkRepairSubmitCommand,
-    OperationControllers, ServiceRestartSubmitCommand, VolumeCreateSubmitCommand,
-    VolumeRemoveSubmitCommand,
+    BuildSubmitCommand, BuildSubmitCommandError, CoreReplaceSubmitCommand,
+    CredentialGrantSubmitCommand, IngressConfigureSubmitCommand, IngressConfigureSubmitError,
+    MachineAddBootstrapMaterial, MachineAddBootstrapMaterialError, MachineAddSubmitCommand,
+    MachineLifecycleSubmitCommand, MachineUpdateSubmitCommand, NamespaceRemoveSubmitCommand,
+    NetworkRepairSubmitCommand, OperationControllers, ServiceRestartSubmitCommand,
+    VolumeCreateSubmitCommand, VolumeRemoveSubmitCommand,
 };
 use ployz_core::build::{BuildPlatformExecutorAssignment, BuildTarget};
 use ployz_core::ids::{MachineId, OperationId};
@@ -41,15 +41,10 @@ pub async fn build_submit(
     handlers: &OperationApiHandlers,
     request: BuildSubmitRequest,
 ) -> Result<AcceptedOperation, BuildSubmitError> {
-    let operation_id = request.operation_id.clone();
-    let planned_assignments = external_preflight_for_new_operation(handlers, &request).await?;
-    let mut accepted = handlers.controllers().submit_build(BuildSubmitCommand {
-        operation_id: request.operation_id,
-        target: request.target,
-        source: request.source,
-        adapter: request.adapter,
-        platforms: request.platforms,
-    }).await.map_err(|error| match error {
+    let command = normalize_build_submit(request)?;
+    let operation_id = command.operation_id().clone();
+    let planned_assignments = external_preflight_for_new_operation(handlers, &command).await?;
+    let mut accepted = handlers.controllers().submit_build(command).await.map_err(|error| match error {
         crate::control::sequencer::SubmitCommandError::Submit(
             crate::control::operation_evidence::SubmitOperationError::DuplicateSequenceMismatch { .. }
         ) => BuildSubmitError::OperationConflict { operation_id: operation_id.clone() },
@@ -76,14 +71,38 @@ pub async fn build_submit(
     Ok(operation)
 }
 
+fn normalize_build_submit(
+    request: BuildSubmitRequest,
+) -> Result<BuildSubmitCommand, BuildSubmitError> {
+    let operation_id = request.operation_id.clone();
+    BuildSubmitCommand::try_new(
+        request.operation_id,
+        request.target,
+        request.source,
+        request.adapter,
+        request.platforms,
+    )
+    .map_err(|error| match error {
+        BuildSubmitCommandError::LocalSnapshotRequiresExternalTarget => {
+            BuildSubmitError::LocalSnapshotRequiresExternalTarget { operation_id }
+        }
+        BuildSubmitCommandError::LocalSnapshotRequiresSinglePlatform { actual } => {
+            BuildSubmitError::LocalSnapshotRequiresSinglePlatform {
+                operation_id,
+                actual,
+            }
+        }
+    })
+}
+
 async fn external_preflight_for_new_operation(
     handlers: &OperationApiHandlers,
-    request: &BuildSubmitRequest,
+    command: &BuildSubmitCommand,
 ) -> Result<Vec<BuildPlatformExecutorAssignment>, BuildSubmitError> {
-    let BuildTarget::External { pool_id } = &request.target else {
+    let BuildTarget::External { pool_id } = command.target() else {
         return Ok(Vec::new());
     };
-    let operation_id = request.operation_id.clone();
+    let operation_id = command.operation_id().clone();
     let existing = handlers
         .controllers()
         .repository()
@@ -98,7 +117,7 @@ async fn external_preflight_for_new_operation(
     }
     handlers
         .build_driver()
-        .preflight_external(pool_id, &request.platforms, &request.adapter)
+        .preflight_external(pool_id, command.platforms(), command.adapter())
         .await
         .map_err(|failure| {
             match failure {

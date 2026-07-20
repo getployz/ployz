@@ -152,8 +152,16 @@ pub enum DeployRollbackSelection {
 
 pub(crate) enum ParsedDeployCommand {
     Deploy(DeployCommand),
+    BuildHere(CurrentTreeDeployCommand),
     History(DeployHistoryCommand),
     Rollback(DeployRollbackCommand),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CurrentTreeDeployCommand {
+    pub organization: Option<String>,
+    pub environment: Option<String>,
+    pub service: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -316,8 +324,78 @@ pub(crate) fn deploy_command(
         Some(DeploySubcommand::Rollback(rollback)) => {
             deploy_rollback_command(rollback).map(ParsedDeployCommand::Rollback)
         }
-        None => deploy_submit_command(parsed.deploy).map(ParsedDeployCommand::Deploy),
+        None => match parsed.deploy.build.as_deref() {
+            Some("here") => {
+                current_tree_deploy_command(parsed.deploy).map(ParsedDeployCommand::BuildHere)
+            }
+            Some(_) => Err(invalid_value("--build", "only 'here' is supported")),
+            None => deploy_submit_command(parsed.deploy).map(ParsedDeployCommand::Deploy),
+        },
     }
+}
+
+fn current_tree_deploy_command(
+    parsed: DeployCli,
+) -> Result<CurrentTreeDeployCommand, PloyzctlCliError> {
+    let DeployCli {
+        build: _,
+        organization,
+        environment,
+        service,
+        file,
+        namespace,
+        image,
+        replicas,
+        global,
+        route,
+        route_hostname,
+        endpoint_port,
+        allow_unsupported,
+        detach,
+        from_registry,
+        origin,
+    } = parsed;
+    if file.is_some()
+        || namespace.is_some()
+        || image.is_some()
+        || replicas.is_some()
+        || global
+        || !route.is_empty()
+        || route_hostname.is_some()
+        || endpoint_port.is_some()
+        || allow_unsupported
+        || detach
+        || from_registry
+        || origin.is_some()
+    {
+        return Err(cli_error(
+            "deploy --build here accepts only --organization, --environment, and --service",
+        ));
+    }
+    Ok(CurrentTreeDeployCommand {
+        organization: optional_selector("--organization", organization)?,
+        environment: optional_selector("--environment", environment)?,
+        service: optional_selector("--service", service)?,
+    })
+}
+
+fn optional_selector(
+    flag: &'static str,
+    value: Option<String>,
+) -> Result<Option<String>, PloyzctlCliError> {
+    value
+        .map(|value| {
+            let value = value.trim();
+            if value.is_empty() || value.chars().any(char::is_control) {
+                Err(invalid_value(
+                    flag,
+                    "selector must be non-empty printable text",
+                ))
+            } else {
+                Ok(value.to_owned())
+            }
+        })
+        .transpose()
 }
 
 fn deploy_history_command(
@@ -352,6 +430,9 @@ fn deploy_rollback_command(
 
 fn deploy_submit_command(parsed: DeployCli) -> Result<DeployCommand, PloyzctlCliError> {
     let DeployCli {
+        build: _,
+        organization: _,
+        environment: _,
         file,
         namespace,
         service,
@@ -482,11 +563,17 @@ fn namespace_id_or_default(namespace: Option<String>) -> Result<NamespaceId, Plo
 
 #[derive(Debug, Args)]
 pub(crate) struct DeployCli {
+    #[arg(long, value_name = "SOURCE")]
+    build: Option<String>,
+    #[arg(long, requires = "build")]
+    organization: Option<String>,
+    #[arg(long, requires = "build")]
+    environment: Option<String>,
     #[arg(short = 'f', long = "file", value_name = "FILE")]
     file: Option<PathBuf>,
     #[arg(short = 'n', long = "namespace")]
     namespace: Option<String>,
-    #[arg(long, hide = true)]
+    #[arg(long)]
     service: Option<String>,
     #[arg(long)]
     image: Option<String>,

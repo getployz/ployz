@@ -174,7 +174,7 @@ pub(super) async fn run_executor_session(
                 outcome: BuildExecutorSuccessCleanupOutcome::Confirmed,
             },
         image,
-        verified_commit,
+        verified_source,
         toolchain,
         log_summary: _,
     } = ok.into_executor();
@@ -183,10 +183,10 @@ pub(super) async fn run_executor_session(
         .repository()
         .record_build_evidence(
             id,
-            BuildEvidence::VerifiedCommit {
+            BuildEvidence::VerifiedSource {
                 platform: platform.clone(),
                 executor: evidence_executor.clone(),
-                commit: verified_commit,
+                source: verified_source,
             },
         )
         .await

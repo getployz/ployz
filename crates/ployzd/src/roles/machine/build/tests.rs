@@ -105,7 +105,8 @@ fn build_request(operation_id: &str, timeout_millis: u64) -> MachineBuildStartRp
             "secret",
             None::<String>,
         )
-        .expect("source"),
+        .expect("source")
+        .into(),
         adapter: ployz_core::build::BuildAdapter::Railpack {
             cache_scope: ployz_core::build::BuildCacheScope::try_new("test").expect("scope"),
         },
@@ -239,7 +240,7 @@ fn successful_machine_output(
             )
             .expect("expiry"),
         },
-        verified_commit: VerifiedGitCommit::from_source(&request.source),
+        verified_source: VerifiedBuildSource::from_source(&request.source),
         toolchain: BuildToolchainEvidence {
             buildkit_image: digest,
             adapter: BuildAdapterToolchainEvidence::Dockerfile,
@@ -361,7 +362,8 @@ async fn unavailable_build_runtime_is_typed_machine_evidence_for_every_handler()
             "secret",
             None::<String>,
         )
-        .expect("source"),
+        .expect("source")
+        .into(),
         adapter: ployz_core::build::BuildAdapter::Railpack {
             cache_scope: ployz_core::build::BuildCacheScope::try_new("test").expect("scope"),
         },

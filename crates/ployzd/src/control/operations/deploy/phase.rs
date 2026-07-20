@@ -1,7 +1,9 @@
 use ployz_core::deploy::{
-    DeployPhasePlan, DeployPlanStep, ExistingReplicaCreationGate, ImageSource,
+    DeployCleanupContainer, DeployPhasePlan, DeployPlanStepRef, DeployServiceWork,
+    ExistingReplicaCreationGate, ImageSource,
 };
-use ployz_core::ids::ServiceId;
+use ployz_core::ids::{ContainerId, MachineId, ServiceId, StepId};
+use ployz_core::machine::runtime::{ManagedContainerIdentity, ManagedContainerKind};
 use ployz_core::operation::{
     ControlPlaneCommitScope, DeployEvidence, DeployPhaseNumber, DeployPhaseOutcome,
     DeployRunningStage, DeployServiceResult,
@@ -9,13 +11,15 @@ use ployz_core::operation::{
 
 use super::failure::DeployExecutionFailure;
 use super::images::ensure_images;
+use super::volume_handoff::{self, ServiceStartTracking, VolumeHandoffRollbackState};
 use super::{
     CertificateProvisioner, DeployContainer, DeployExecutionCommand, DeployExecutionError,
     DeployExecutionStep, DeployHealthCheckError, DeployHealthChecker, DeployOperationRecorder,
     DeployPhasePromotion, DeployServiceExecutionCommand, MachineContainerRuntime,
-    NamespaceStateCommitter, RunContainerDisposition, deploy_step_id, record_evidence,
-    record_running_stage, requires_docker_healthcheck, run_deploy_step, run_pre_start_hook,
-    service_result, with_step_timeout,
+    MachineContainerRuntimeError, NamespaceStateCommitter, PreStartHookRuntimeError,
+    RunContainerDisposition, deploy_step_id, record_evidence, record_running_stage,
+    requires_docker_healthcheck, run_deploy_step, run_pre_start_hook, service_result,
+    with_step_timeout,
 };
 
 #[derive(Debug, Clone)]
@@ -51,6 +55,7 @@ struct ActiveDeployPhase {
     phase_service_ids: Vec<ServiceId>,
     completed_services: Vec<DeployServiceResult>,
     skipped_service_ids: Vec<ServiceId>,
+    volume_handoff: VolumeHandoffRollbackState,
 }
 
 #[derive(Clone, Copy)]
@@ -110,6 +115,7 @@ impl<'a> DeployRun<'a> {
             phase_service_ids,
             completed_services: Vec::new(),
             skipped_service_ids,
+            volume_handoff: VolumeHandoffRollbackState::default(),
         });
     }
 
@@ -117,7 +123,14 @@ impl<'a> DeployRun<'a> {
         &mut self,
         started: DeployContainer,
         disposition: RunContainerDisposition,
+        tracking: &ServiceStartTracking,
     ) {
+        let target = DeployCleanupContainer {
+            machine_id: started.machine_id.clone(),
+            container_id: started.container_id.clone(),
+            identity: super::retained_container_identity(self.command, &started),
+        };
+        tracking.consumer_started(self.volume_handoff_mut(), target);
         match disposition {
             RunContainerDisposition::Created => {
                 let DeployRunPhase::During(phase) = &mut self.phase else {
@@ -128,6 +141,13 @@ impl<'a> DeployRun<'a> {
             }
             RunContainerDisposition::Reused => {}
         }
+    }
+
+    fn volume_handoff_mut(&mut self) -> &mut VolumeHandoffRollbackState {
+        let DeployRunPhase::During(phase) = &mut self.phase else {
+            unreachable!("volume handoff requires an active deploy phase");
+        };
+        &mut phase.volume_handoff
     }
 
     fn existing_container(
@@ -247,16 +267,152 @@ impl<'a> DeployRun<'a> {
         let DeployRunPhase::During(phase) = &self.phase else {
             return failure.with_promoted_phases(self.promoted_phases);
         };
-        failure.with_phase(
-            DeployFailedPhase {
-                phase: phase.phase,
-                service_ids: phase.phase_service_ids.clone(),
-                completed_services: phase.completed_services.clone(),
-                skipped_service_ids: phase.skipped_service_ids.clone(),
-                failed_service_id,
-            },
-            self.promoted_phases,
-        )
+        failure
+            .with_volume_handoff_rollback(phase.volume_handoff.clone())
+            .with_phase(
+                DeployFailedPhase {
+                    phase: phase.phase,
+                    service_ids: phase.phase_service_ids.clone(),
+                    completed_services: phase.completed_services.clone(),
+                    skipped_service_ids: phase.skipped_service_ids.clone(),
+                    failed_service_id,
+                },
+                self.promoted_phases,
+            )
+    }
+}
+
+fn consumer_target(
+    identity: ManagedContainerIdentity,
+    machine_id: MachineId,
+    container_id: ContainerId,
+) -> DeployCleanupContainer {
+    DeployCleanupContainer {
+        machine_id,
+        container_id,
+        identity,
+    }
+}
+
+fn consumer_identity(
+    command: &DeployExecutionCommand,
+    service: &DeployServiceExecutionCommand,
+    step_id: StepId,
+    kind: ManagedContainerKind,
+) -> ManagedContainerIdentity {
+    ManagedContainerIdentity {
+        namespace_id: command.request.namespace_id.clone(),
+        service_id: service.service.service_id.clone(),
+        namespace_revision_entry_id: service.namespace_revision_entry_id(
+            &command.request.namespace_id,
+            &command.environment_revision_key,
+        ),
+        operation_id: command.operation_id().clone(),
+        step_id,
+        kind,
+    }
+}
+
+fn capture_run_failure_consumers(
+    run: &mut DeployRun<'_>,
+    tracking: &ServiceStartTracking,
+    expected_identity: &ManagedContainerIdentity,
+    source: &DeployExecutionError,
+) {
+    if let DeployExecutionError::RunContainer(
+        MachineContainerRuntimeError::OperationStepAmbiguous {
+            machine_id,
+            operation_id: _,
+            step_id: _,
+            container_ids,
+        },
+    ) = source
+        && !container_ids.is_empty()
+    {
+        let targets = container_ids.iter().map(|container_id| {
+            consumer_target(
+                expected_identity.clone(),
+                machine_id.clone(),
+                container_id.clone(),
+            )
+        });
+        tracking.ambiguous_consumers(run.volume_handoff_mut(), expected_identity, targets);
+        return;
+    }
+    if !matches!(
+        source,
+        DeployExecutionError::RunContainer(MachineContainerRuntimeError::Unavailable { .. })
+            | DeployExecutionError::RunContainer(
+                MachineContainerRuntimeError::OperationStepAmbiguous { .. },
+            )
+            | DeployExecutionError::StepTimedOut {
+                step: DeployExecutionStep::RunContainer { .. },
+                ..
+            }
+    ) {
+        tracking.consumer_did_not_start(run.volume_handoff_mut(), expected_identity);
+    }
+}
+
+fn capture_hook_failure_consumers(
+    run: &mut DeployRun<'_>,
+    tracking: &ServiceStartTracking,
+    expected_identity: &ManagedContainerIdentity,
+    source: &DeployExecutionError,
+) {
+    if let DeployExecutionError::PreStartHook(PreStartHookRuntimeError::OperationStepAmbiguous {
+        machine_id,
+        container_ids,
+        ..
+    }) = source
+        && !container_ids.is_empty()
+    {
+        let targets = container_ids.iter().map(|container_id| {
+            consumer_target(
+                expected_identity.clone(),
+                machine_id.clone(),
+                container_id.clone(),
+            )
+        });
+        tracking.ambiguous_consumers(run.volume_handoff_mut(), expected_identity, targets);
+        return;
+    }
+    if let DeployExecutionError::PreStartHook(
+        PreStartHookRuntimeError::WaitFailed {
+            machine_id,
+            container_id,
+            ..
+        }
+        | PreStartHookRuntimeError::TimedOut {
+            machine_id,
+            container_id,
+            ..
+        },
+    ) = source
+    {
+        tracking.ambiguous_consumers(
+            run.volume_handoff_mut(),
+            expected_identity,
+            [consumer_target(
+                expected_identity.clone(),
+                machine_id.clone(),
+                container_id.clone(),
+            )],
+        );
+        return;
+    }
+    if !matches!(
+        source,
+        DeployExecutionError::PreStartHook(PreStartHookRuntimeError::Unavailable { .. })
+            | DeployExecutionError::PreStartHook(
+                PreStartHookRuntimeError::OperationStepAmbiguous { .. }
+            )
+            | DeployExecutionError::StepTimedOut {
+                step: DeployExecutionStep::RunPreStartHook { .. },
+                ..
+            }
+    ) {
+        tracking.consumer_did_not_start(run.volume_handoff_mut(), expected_identity);
     }
 }
 
@@ -298,20 +454,73 @@ where
                 service_id: service_plan.service_id.clone(),
             }));
         };
+        let tracking = match &service_plan.work {
+            DeployServiceWork::Ordinary { steps: _ } => ServiceStartTracking::Ordinary,
+            DeployServiceWork::VolumeHandoff {
+                replacement,
+                remaining_steps: _,
+                participants,
+            } => {
+                let result = volume_handoff::stop_volume_owners(
+                    command,
+                    &service.service.service_id,
+                    &replacement.machine_id,
+                    participants,
+                    run.volume_handoff_mut(),
+                    ports.recorder,
+                    ports.machine_runtime,
+                )
+                .await;
+                result.map_err(|source| {
+                    run.fail_service(source, service.service.service_id.clone())
+                })?
+            }
+        };
         if let Some(pre_start) = &service_plan.pre_start {
-            run_pre_start_hook(
+            let expected_identity = match &tracking {
+                ServiceStartTracking::Ordinary => None,
+                ServiceStartTracking::VolumeHandoff(_) => {
+                    let step_id = StepId::try_new("pre_start").map_err(|source| {
+                        run.fail_service(
+                            DeployExecutionError::StepId(source),
+                            service.service.service_id.clone(),
+                        )
+                    })?;
+                    let identity = consumer_identity(
+                        command,
+                        service,
+                        step_id,
+                        ManagedContainerKind::Predeploy,
+                    );
+                    tracking.begin_consumer_start(
+                        run.volume_handoff_mut(),
+                        pre_start.machine_id.clone(),
+                        identity.clone(),
+                    );
+                    Some(identity)
+                }
+            };
+            let result = run_pre_start_hook(
                 command,
                 service,
                 pre_start,
                 dataplane_members,
                 ports.machine_runtime,
             )
-            .await
-            .map_err(|source| run.fail_service(source, service.service.service_id.clone()))?;
+            .await;
+            if let Err(source) = result {
+                if let Some(expected_identity) = &expected_identity {
+                    capture_hook_failure_consumers(run, &tracking, expected_identity, &source);
+                }
+                return Err(run.fail_service(source, service.service.service_id.clone()));
+            }
+            if let Some(expected_identity) = &expected_identity {
+                tracking.consumer_did_not_start(run.volume_handoff_mut(), expected_identity);
+            }
         }
-        for step in &service_plan.steps {
-            match step {
-                DeployPlanStep::UseExistingContainer {
+        for step in service_plan.work.steps() {
+            let (machine_id, slot) = match step {
+                DeployPlanStepRef::UseExisting {
                     machine_id,
                     container_id,
                     slot,
@@ -353,43 +562,65 @@ where
                     };
                     ports.containers.push(container.clone());
                     run.existing_container(container, existing.creation_gate);
+                    continue;
                 }
-                DeployPlanStep::RunContainer { machine_id, slot } => {
-                    let run_result = with_step_timeout(
-                        command,
-                        DeployExecutionStep::RunContainer {
-                            machine_id: machine_id.clone(),
-                        },
-                        run_deploy_step(
-                            ports.machine_runtime,
-                            command,
-                            service,
-                            machine_id,
-                            *slot,
-                            dataplane_members,
-                        ),
-                    )
-                    .await;
-                    let (started, disposition) = match run_result {
-                        Ok(started) => started,
-                        Err(source) => return Err(run.fail_run_container(service, source)),
-                    };
-                    ports.containers.push(started.clone());
-                    run.container_started(started.clone(), disposition);
-                    record_evidence(
-                        command,
-                        ports.recorder,
-                        DeployEvidence::ContainerStarted {
-                            machine_id: started.machine_id.clone(),
-                            container_id: started.container_id.clone(),
-                        },
-                    )
-                    .await
-                    .map_err(|source| {
-                        run.fail_service(source, service.service.service_id.clone())
+                DeployPlanStepRef::RunContainer { machine_id, slot } => (machine_id, *slot),
+            };
+            let expected_identity = match &tracking {
+                ServiceStartTracking::Ordinary => None,
+                ServiceStartTracking::VolumeHandoff(_) => {
+                    let step_id = deploy_step_id(slot, machine_id).map_err(|source| {
+                        run.fail_service(
+                            DeployExecutionError::StepId(source),
+                            service.service.service_id.clone(),
+                        )
                     })?;
+                    let identity =
+                        consumer_identity(command, service, step_id, ManagedContainerKind::Service);
+                    tracking.begin_consumer_start(
+                        run.volume_handoff_mut(),
+                        machine_id.clone(),
+                        identity.clone(),
+                    );
+                    Some(identity)
                 }
-            }
+            };
+            let run_result = with_step_timeout(
+                command,
+                DeployExecutionStep::RunContainer {
+                    machine_id: machine_id.clone(),
+                },
+                run_deploy_step(
+                    ports.machine_runtime,
+                    command,
+                    service,
+                    machine_id,
+                    slot,
+                    dataplane_members,
+                ),
+            )
+            .await;
+            let (started, disposition) = match run_result {
+                Ok(started) => started,
+                Err(source) => {
+                    if let Some(expected_identity) = &expected_identity {
+                        capture_run_failure_consumers(run, &tracking, expected_identity, &source);
+                    }
+                    return Err(run.fail_run_container(service, source));
+                }
+            };
+            ports.containers.push(started.clone());
+            run.container_started(started.clone(), disposition, &tracking);
+            record_evidence(
+                command,
+                ports.recorder,
+                DeployEvidence::ContainerStarted {
+                    machine_id: started.machine_id.clone(),
+                    container_id: started.container_id.clone(),
+                },
+            )
+            .await
+            .map_err(|source| run.fail_service(source, service.service.service_id.clone()))?;
         }
         run.service_completed(service_result(
             service,
@@ -596,13 +827,12 @@ where
             .await
             .map_err(|source| run.fail(source))?;
     }
-    with_step_timeout(
-        command,
-        DeployExecutionStep::CommitServingTarget { scope },
-        ports.namespace_state.commit_deploy_phase(promotion),
-    )
-    .await
-    .map_err(|source| run.fail(source))?;
+    ports
+        .namespace_state
+        .commit_deploy_phase(promotion)
+        .await
+        .map_err(DeployExecutionError::from)
+        .map_err(|source| run.fail(source))?;
     let completed_services = run.completed_services().to_vec();
     run.phase_promoted();
 

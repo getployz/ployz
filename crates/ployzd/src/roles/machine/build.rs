@@ -16,7 +16,7 @@ use ployz_build_executor::{
 use ployz_core::build::{
     BUILD_CACHE_PRUNE_MAX_EXECUTION_TIMEOUT, BUILD_FORCE_CLEANUP_TIMEOUT,
     BUILD_MAX_EXECUTION_TIMEOUT, BUILD_TASK_DRAIN_TIMEOUT, BuildExecutorCancelOk,
-    BuildExecutorStartOk, BuildExecutorSuccessCleanupEvidence, VerifiedGitCommit,
+    BuildExecutorStartOk, BuildExecutorSuccessCleanupEvidence, VerifiedBuildSource,
 };
 use ployz_core::deploy::PlatformImage;
 use ployz_core::ids::{MachineId, OperationId};
@@ -518,7 +518,7 @@ struct MachineBuildOutput {
     machine_id: MachineId,
     acceptance: BuildExecutorAcceptance,
     image: PlatformImage,
-    verified_commit: VerifiedGitCommit,
+    verified_source: VerifiedBuildSource,
     toolchain: ployz_core::operation::BuildToolchainEvidence,
     log_summary: BuildLogSummary,
 }
@@ -531,7 +531,7 @@ impl MachineBuildOutput {
                 acceptance: self.acceptance,
                 cleanup: BuildExecutorSuccessCleanupEvidence::confirmed(),
                 image: self.image,
-                verified_commit: self.verified_commit,
+                verified_source: self.verified_source,
                 toolchain: self.toolchain,
                 log_summary: self.log_summary,
             },
@@ -651,7 +651,7 @@ impl BuildEffects {
                         image_id: result.layout.image_id().clone(),
                         availability_expires_at,
                     },
-                    verified_commit: result.verified_commit,
+                    verified_source: result.verified_source,
                     toolchain: result.toolchain,
                     log_summary,
                 })

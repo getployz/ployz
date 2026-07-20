@@ -11,7 +11,7 @@ use crate::roles::machine::protocol::{
     MachineContainerRestartDomainError, MachineContainerRestartRpcRequest,
     MachineContainerRestartRpcResponse, MachineContainerRpcOk, MachineContainerRunHookRpcOk,
     MachineContainerRunHookRpcRequest, MachineContainerRunRpcRequest,
-    MachineContainerStopDomainError, MachineContainerStopRpcRequest,
+    MachineContainerStopDomainError, MachineContainerStopOutcome, MachineContainerStopRpcRequest,
     MachineContainerStopRpcResponse, MachineDataplanePublicKeyRpcRequest,
     MachineDataplanePublicKeyRpcResponse, MachineDataplaneStatusRpcOk,
     MachineDataplaneStatusRpcRequest, MachineDataplaneStatusRpcResponse, MachineFactsGetRpcRequest,
@@ -1035,7 +1035,7 @@ async fn machine_role_service_publishes_observed_delta_after_stop() {
         .expect("flush machine service subscription");
     let mut client = NatsMachineContainerRuntime::new(nats.client.clone());
 
-    client
+    let outcome = client
         .stop_container(
             &machine_id("machine_a"),
             MachineContainerStopRpcRequest {
@@ -1046,6 +1046,7 @@ async fn machine_role_service_publishes_observed_delta_after_stop() {
         )
         .await
         .expect("stop succeeds");
+    assert_eq!(outcome, MachineContainerStopOutcome::AlreadyStopped);
 
     match next_container_fact_delta(&mut deltas).await {
         MachineContainerFactDelta::ContainerObserved { observation, .. } => {
@@ -1063,7 +1064,8 @@ async fn machine_role_service_stops_container() {
     let _service = start_machine_role_service(
         nats.machine_a.clone(),
         machine_id("machine_a"),
-        RecordingRunner::new(state.clone()),
+        RecordingRunner::new(state.clone())
+            .with_existing(existing_container("ctr_failed", managed_identity())),
         ready_wireguard_ebpf(),
         idle_logs(),
     )
@@ -1075,7 +1077,7 @@ async fn machine_role_service_stops_container() {
         .expect("flush machine service subscription");
     let mut client = NatsMachineContainerRuntime::new(nats.client);
 
-    client
+    let outcome = client
         .stop_container(
             &machine_id("machine_a"),
             MachineContainerStopRpcRequest {
@@ -1087,7 +1089,40 @@ async fn machine_role_service_stops_container() {
         .await
         .expect("container stop succeeds");
 
+    assert_eq!(outcome, MachineContainerStopOutcome::StoppedRunning);
     assert_eq!(state.stops(), vec![container_id("ctr_failed")]);
+}
+
+#[tokio::test]
+async fn machine_role_service_reports_missing_stop_target() {
+    let nats = test_nats().await;
+    let state = RecordingRunnerState::default();
+    let _service = start_machine_role_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
+        RecordingRunner::new(state.clone()),
+        ready_wireguard_ebpf(),
+        idle_logs(),
+    )
+    .await
+    .expect("machine runtime service starts");
+    nats.machine_a.flush().await.expect("flush subscription");
+    let mut client = NatsMachineContainerRuntime::new(nats.client);
+
+    let outcome = client
+        .stop_container(
+            &machine_id("machine_a"),
+            MachineContainerStopRpcRequest {
+                operation_id: operation_id("op_123"),
+                container_id: container_id("ctr_missing"),
+                expected_identity: managed_identity(),
+            },
+        )
+        .await
+        .expect("missing is a semantic outcome");
+
+    assert_eq!(outcome, MachineContainerStopOutcome::Missing);
+    assert!(state.stops().is_empty());
 }
 
 #[tokio::test]
@@ -1960,7 +1995,7 @@ impl MachineContainerRunner for RecordingRunner {
         &self,
         container_id: &ContainerId,
         _expected_identity: &ManagedContainerIdentity,
-    ) -> Result<(), MachineContainerStopError> {
+    ) -> Result<MachineContainerStopOutcome, MachineContainerStopError> {
         if let Some(RecordingRunnerFailure::Stop {
             container_id: failed_container_id,
             message,
@@ -1973,13 +2008,39 @@ impl MachineContainerRunner for RecordingRunner {
             });
         }
 
-        self.state
-            .inner
-            .lock()
-            .expect("recording runner lock is not poisoned")
-            .stops
-            .push(container_id.clone());
-        Ok(())
+        let observed_state = self
+            .existing
+            .iter()
+            .find(|container| container.container_id == *container_id)
+            .map(|container| &container.state);
+        let outcome = match observed_state {
+            None if self.next_container.as_ref() == Some(container_id) => {
+                self.state
+                    .inner
+                    .lock()
+                    .expect("recording runner lock is not poisoned")
+                    .stops
+                    .push(container_id.clone());
+                MachineContainerStopOutcome::StoppedRunning
+            }
+            None => MachineContainerStopOutcome::Missing,
+            Some(ExistingManagedContainerState::StartableStopped) => {
+                MachineContainerStopOutcome::AlreadyStopped
+            }
+            Some(ExistingManagedContainerState::Running { .. }) => {
+                self.state
+                    .inner
+                    .lock()
+                    .expect("recording runner lock is not poisoned")
+                    .stops
+                    .push(container_id.clone());
+                MachineContainerStopOutcome::StoppedRunning
+            }
+            Some(ExistingManagedContainerState::NotStartable { .. }) => {
+                MachineContainerStopOutcome::AlreadyStopped
+            }
+        };
+        Ok(outcome)
     }
 
     async fn restart_managed_container(
@@ -2270,6 +2331,7 @@ fn existing_container_with_state(
         health_status: None,
         resolved_image_identity: None,
         created_at_unix_seconds: None,
+        named_volume_names: Default::default(),
     }
 }
 

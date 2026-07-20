@@ -95,7 +95,7 @@ fn transitive_pinned_conflict_precedes_unrelated_live_admission() {
 }
 #[test]
 fn volume_backed_service_pins_to_first_eligible_machine() {
-    let mut input = planning_input(2, [machine_id("machine_a"), machine_id("machine_b")]);
+    let mut input = planning_input(1, [machine_id("machine_a"), machine_id("machine_b")]);
     declare_plain_volume_mounts(
         &mut input,
         vec![volume_mount("postgres_data", "/var/lib/postgres")],
@@ -105,7 +105,7 @@ fn volume_backed_service_pins_to_first_eligible_machine() {
         plan_single_service(&input).expect("plan succeeds"),
         deploy_plan_with_volume_pins(
             &input,
-            vec![run_step("machine_a", 1), run_step("machine_a", 2)],
+            vec![run_step("machine_a", 1)],
             vec![volume_pin("postgres_data", "machine_a")],
             Vec::new(),
         )
@@ -377,7 +377,7 @@ fn provisioned_declaration_rejects_shrinking_a_pinned_maximum() {
 
 #[test]
 fn volume_backed_service_uses_existing_pin() {
-    let mut input = planning_input(2, [machine_id("machine_a"), machine_id("machine_b")]);
+    let mut input = planning_input(1, [machine_id("machine_a"), machine_id("machine_b")]);
     declare_plain_volume_mounts(
         &mut input,
         vec![volume_mount("postgres_data", "/var/lib/postgres")],
@@ -386,11 +386,7 @@ fn volume_backed_service_uses_existing_pin() {
 
     assert_eq!(
         plan_single_service(&input).expect("plan succeeds"),
-        deploy_plan(
-            &input,
-            vec![run_step("machine_b", 1), run_step("machine_b", 2)],
-            Vec::new()
-        )
+        deploy_plan(&input, vec![run_step("machine_b", 1)], Vec::new())
     );
 }
 
@@ -412,8 +408,8 @@ fn volume_backed_service_fails_when_existing_pin_is_not_eligible() {
 }
 
 #[test]
-fn volume_backed_service_reuses_only_replicas_on_pinned_machine() {
-    let mut input = planning_input(2, [machine_id("machine_a"), machine_id("machine_b")]);
+fn volume_backed_service_reuses_only_the_container_on_the_pinned_machine() {
+    let mut input = planning_input(1, [machine_id("machine_a"), machine_id("machine_b")]);
     declare_plain_volume_mounts(
         &mut input,
         vec![volume_mount("postgres_data", "/var/lib/postgres")],
@@ -432,10 +428,7 @@ fn volume_backed_service_reuses_only_replicas_on_pinned_machine() {
         plan_single_service(&input).expect("plan succeeds"),
         deploy_plan(
             &input,
-            vec![
-                use_existing_step("machine_b", "ctr_pinned", 1),
-                run_step("machine_b", 2),
-            ],
+            vec![use_existing_step("machine_b", "ctr_pinned", 1)],
             vec![cleanup_container("machine_a", "ctr_off_pin")],
         )
     );
@@ -707,6 +700,301 @@ fn service_with_volumes_on_different_pinned_machines_fails_planning() {
             service_id: service_id("svc_api"),
             machines: vec![machine_id("machine_a"), machine_id("machine_b")],
         })
+    );
+}
+
+#[test]
+fn unchanged_named_volume_replica_has_no_handoff() {
+    let mut input = planning_input(1, [machine_id("machine_a")]);
+    input.service.runtime.environment =
+        runtime_with_env([("DATABASE_PASSWORD", "never-in-plan-evidence")]).environment;
+    declare_plain_volume_mounts(&mut input, vec![volume_mount("data", "/data")]);
+    input.volume_pins = vec![volume_pin("data", "machine_a")];
+    input.existing_replicas = vec![existing_replica("machine_a", "ctr_current")];
+    input.cleanup_candidates = vec![cleanup_container_observed(
+        "machine_a",
+        "ctr_current",
+        true,
+        None,
+    )];
+
+    let plan = plan_single_service(&input).expect("unchanged service plans");
+    let [phase] = plan.phases.as_slice() else {
+        panic!("one phase")
+    };
+    let [service] = phase.services.as_slice() else {
+        panic!("one service")
+    };
+
+    assert!(matches!(service.work, DeployServiceWork::Ordinary { .. }));
+    assert!(
+        !serde_json::to_string(&plan)
+            .expect("plan serializes")
+            .contains("never-in-plan-evidence")
+    );
+}
+
+#[test]
+fn adding_a_first_volume_does_not_handoff_an_unobserved_old_container() {
+    let mut input = planning_input(1, [machine_id("machine_a")]);
+    declare_plain_volume_mounts(&mut input, vec![volume_mount("data", "/data")]);
+    input.volume_pins = vec![volume_pin("data", "machine_a")];
+    input.cleanup_candidates = vec![cleanup_container_observed(
+        "machine_a",
+        "ctr_without_mount_testimony",
+        true,
+        None,
+    )];
+
+    let plan = plan_single_service(&input).expect("first volume plans");
+    let [phase] = plan.phases.as_slice() else {
+        panic!("one phase")
+    };
+    let [service] = phase.services.as_slice() else {
+        panic!("one service")
+    };
+    assert!(matches!(service.work, DeployServiceWork::Ordinary { .. }));
+}
+
+#[test]
+fn replacing_volume_a_with_b_does_not_handoff_the_old_a_consumer() {
+    let mut input = planning_input(1, [machine_id("machine_a")]);
+    declare_plain_volume_mounts(&mut input, vec![volume_mount("volume_b", "/data")]);
+    input.volume_pins = vec![volume_pin("volume_b", "machine_a")];
+    input.cleanup_candidates = vec![with_named_volumes(
+        cleanup_container_observed("machine_a", "ctr_volume_a", true, None),
+        ["volume_a"],
+    )];
+
+    let plan = plan_single_service(&input).expect("replacement volume plans");
+    let [phase] = plan.phases.as_slice() else {
+        panic!("one phase")
+    };
+    let [service] = phase.services.as_slice() else {
+        panic!("one service")
+    };
+    assert!(matches!(service.work, DeployServiceWork::Ordinary { .. }));
+}
+
+#[test]
+fn canonical_physical_volume_testimony_drives_only_exact_replacement_handoff() {
+    let mut input = planning_input(1, [machine_id("machine_b")]);
+    declare_plain_volume_mounts(
+        &mut input,
+        vec![volume_mount("postgres_data", "/var/lib/postgres")],
+    );
+    input.volume_pins = vec![volume_pin("postgres_data", "machine_b")];
+
+    let first_deploy = plan_single_service(&input).expect("first deploy plans");
+    let [first_phase] = first_deploy.phases.as_slice() else {
+        panic!("one phase")
+    };
+    let [first_service] = first_phase.services.as_slice() else {
+        panic!("one service")
+    };
+    assert!(matches!(
+        first_service.work,
+        DeployServiceWork::Ordinary { .. }
+    ));
+
+    let namespace_id = namespace_id("default");
+    let unrelated_physical = VolumeName::try_new("cache")
+        .expect("volume")
+        .stable_storage_name(&namespace_id);
+    let unrelated_logical =
+        VolumeName::try_from_stable_storage_name(unrelated_physical, &namespace_id)
+            .expect("canonical physical identity decodes");
+    let mut unrelated = cleanup_container_observed("machine_b", "ctr_revision_a", true, None);
+    unrelated.named_volume_names.insert(unrelated_logical);
+    input.cleanup_candidates = vec![unrelated];
+    let unrelated_plan = plan_single_service(&input).expect("unrelated volume replacement plans");
+    let [unrelated_phase] = unrelated_plan.phases.as_slice() else {
+        panic!("one phase")
+    };
+    let [unrelated_service] = unrelated_phase.services.as_slice() else {
+        panic!("one service")
+    };
+    assert!(matches!(
+        unrelated_service.work,
+        DeployServiceWork::Ordinary { .. }
+    ));
+
+    let postgres_physical = VolumeName::try_new("postgres_data")
+        .expect("volume")
+        .stable_storage_name(&namespace_id);
+    let postgres_logical =
+        VolumeName::try_from_stable_storage_name(postgres_physical, &namespace_id)
+            .expect("canonical physical identity decodes");
+    let mut matching = cleanup_container_observed("machine_b", "ctr_revision_a", true, None);
+    matching.named_volume_names.insert(postgres_logical);
+    input.cleanup_candidates = vec![matching];
+    let replacement = plan_single_service(&input).expect("revision B replacement plans");
+    let [replacement_phase] = replacement.phases.as_slice() else {
+        panic!("one phase")
+    };
+    let [replacement_service] = replacement_phase.services.as_slice() else {
+        panic!("one service")
+    };
+    let DeployServiceWork::VolumeHandoff { participants, .. } = &replacement_service.work else {
+        panic!("exact physical-to-logical volume identity requires handoff")
+    };
+    let [participant] = participants.as_slice() else {
+        panic!("one handoff participant")
+    };
+    assert_eq!(
+        participant.shared_volume_names.as_slice(),
+        &[VolumeName::try_new("postgres_data").expect("volume")]
+    );
+}
+
+#[test]
+fn changed_named_volume_replacement_has_deterministic_exact_handoff_owners() {
+    let mut input = planning_input(1, [machine_id("machine_a")]);
+    declare_plain_volume_mounts(
+        &mut input,
+        vec![
+            volume_mount("uploads", "/uploads"),
+            volume_mount("data", "/data"),
+            volume_mount("data", "/data-copy"),
+        ],
+    );
+    input.volume_pins = vec![
+        volume_pin("uploads", "machine_a"),
+        volume_pin("data", "machine_a"),
+    ];
+    input.cleanup_candidates = vec![
+        with_named_volumes(
+            cleanup_container_observed("machine_a", "ctr_z", false, None),
+            ["uploads"],
+        ),
+        cleanup_container_observed("machine_b", "ctr_other_machine", true, None),
+        with_named_volumes(
+            cleanup_container_observed("machine_a", "ctr_a", true, None),
+            ["unrelated", "data", "data"],
+        ),
+        with_named_volumes(
+            cleanup_container_observed("machine_a", "ctr_a", true, None),
+            ["data"],
+        ),
+    ];
+
+    let plan = plan_single_service(&input).expect("replacement plans");
+    let [phase] = plan.phases.as_slice() else {
+        panic!("one phase")
+    };
+    let [service] = phase.services.as_slice() else {
+        panic!("one service")
+    };
+    let DeployServiceWork::VolumeHandoff {
+        replacement,
+        remaining_steps,
+        participants,
+    } = &service.work
+    else {
+        panic!("same-machine replacement requires handoff")
+    };
+    assert_eq!(replacement.machine_id, machine_id("machine_a"));
+    assert!(remaining_steps.is_empty());
+    assert_eq!(
+        participants.as_slice(),
+        &[
+            DeployVolumeHandoffParticipant {
+                target: cleanup_container("machine_a", "ctr_a"),
+                prior_state: DeployVolumeHandoffPriorState::Running,
+                shared_volume_names: ployz_core::deploy::NonEmptyVolumeNames::try_new([
+                    VolumeName::try_new("data").expect("volume"),
+                ])
+                .expect("shared volume"),
+            },
+            DeployVolumeHandoffParticipant {
+                target: cleanup_container("machine_a", "ctr_z"),
+                prior_state: DeployVolumeHandoffPriorState::Stopped,
+                shared_volume_names: ployz_core::deploy::NonEmptyVolumeNames::try_new([
+                    VolumeName::try_new("uploads").expect("volume"),
+                ])
+                .expect("shared volume"),
+            },
+        ]
+    );
+    assert_eq!(
+        plan.cleanup_actions
+            .iter()
+            .filter(|action| action.target().machine_id == machine_id("machine_a"))
+            .map(|action| action.target().container_id.clone())
+            .collect::<Vec<_>>(),
+        vec![container_id("ctr_a"), container_id("ctr_z")]
+    );
+}
+
+#[test]
+fn named_volume_handoff_does_not_cross_service_ownership() {
+    let mut api = planning_input(1, [machine_id("machine_a")]);
+    declare_plain_volume_mounts(&mut api, vec![volume_mount("shared", "/api")]);
+    api.volume_pins = vec![volume_pin("shared", "machine_a")];
+    api.cleanup_candidates = vec![with_named_volumes(
+        cleanup_container_observed("machine_a", "ctr_api_old", true, None),
+        ["shared"],
+    )];
+
+    let mut worker = planning_input(1, [machine_id("machine_a")]);
+    update_request(&mut worker.service, |request| {
+        request.service_id = service_id("svc_worker");
+    });
+    declare_plain_volume_mounts(&mut worker, vec![volume_mount("shared", "/worker")]);
+    worker.volume_pins = vec![volume_pin("shared", "machine_a")];
+    worker.cleanup_candidates = vec![with_named_volumes(
+        cleanup_container_observed("machine_a", "ctr_api_old", true, None),
+        ["shared"],
+    )];
+
+    let plan = plan_inputs(vec![api, worker], Vec::new()).expect("shared volume plans");
+    let services = plan
+        .phases
+        .iter()
+        .flat_map(|phase| &phase.services)
+        .collect::<Vec<_>>();
+    let api = services
+        .iter()
+        .find(|service| service.service_id == service_id("svc_api"))
+        .expect("api plan");
+    let worker = services
+        .iter()
+        .find(|service| service.service_id == service_id("svc_worker"))
+        .expect("worker plan");
+
+    assert!(matches!(api.work, DeployServiceWork::VolumeHandoff { .. }));
+    assert!(matches!(worker.work, DeployServiceWork::Ordinary { .. }));
+}
+
+#[test]
+fn retained_stopped_handoff_owner_still_reaches_post_promotion_cleanup() {
+    let mut input = planning_input(1, [machine_id("machine_a")]);
+    declare_plain_volume_mounts(&mut input, vec![volume_mount("data", "/data")]);
+    input.volume_pins = vec![volume_pin("data", "machine_a")];
+    input.service.keep = Some(ployz_core::deploy::ContainerRetentionCount::new(1));
+    input.cleanup_candidates = vec![with_named_volumes(
+        cleanup_container_observed("machine_a", "ctr_stopped", false, Some(10)),
+        ["data"],
+    )];
+
+    let plan = plan_single_service(&input).expect("replacement plans");
+    let [phase] = plan.phases.as_slice() else {
+        panic!("one phase")
+    };
+    let [service] = phase.services.as_slice() else {
+        panic!("one service")
+    };
+
+    assert!(matches!(
+        service.work,
+        DeployServiceWork::VolumeHandoff { .. }
+    ));
+    assert_eq!(
+        plan.cleanup_actions
+            .iter()
+            .map(|action| action.target().clone())
+            .collect::<Vec<_>>(),
+        vec![cleanup_container("machine_a", "ctr_stopped")]
     );
 }
 

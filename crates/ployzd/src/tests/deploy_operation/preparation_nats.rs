@@ -9,7 +9,8 @@ use crate::control::operations::deploy::{
 };
 use crate::control::role_client::machine::NatsMachineFactsReader;
 use crate::roles::machine::protocol::{
-    MachineDataplaneStatusRpcRequest, MachineDataplaneStatusRpcResponse, MachineRpcResponse,
+    MachineContainerStopOutcome, MachineDataplaneStatusRpcRequest,
+    MachineDataplaneStatusRpcResponse, MachineRpcResponse,
 };
 use crate::roles::machine::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
@@ -469,6 +470,7 @@ impl StaticRunner {
                 health_status: container.health_status,
                 resolved_image_identity: container.resolved_image_identity.clone(),
                 created_at_unix_seconds: container.created_at_unix_seconds,
+                named_volume_names: container.named_volume_names.clone(),
             })
             .collect();
         Self {
@@ -569,7 +571,7 @@ impl MachineContainerRunner for StaticRunner {
         &self,
         container_id: &ployz_core::ids::ContainerId,
         _expected_identity: &ployz_core::machine::runtime::ManagedContainerIdentity,
-    ) -> Result<(), MachineContainerStopError> {
+    ) -> Result<MachineContainerStopOutcome, MachineContainerStopError> {
         Err(MachineContainerStopError::Stop {
             container_id: container_id.clone(),
             message: "not used".to_owned(),
@@ -840,6 +842,7 @@ fn cleanup_container_with_entry(
         state: ployz_core::machine::runtime::ContainerRuntimeState::running_unroutable(),
         created_at_unix_seconds: None,
         observed_image_identity: None,
+        named_volume_names: std::collections::BTreeSet::new(),
     }
 }
 

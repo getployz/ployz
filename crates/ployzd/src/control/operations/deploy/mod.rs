@@ -13,6 +13,7 @@ mod preparation;
 mod preview;
 mod step;
 mod types;
+mod volume_handoff;
 
 use ployz_core::deploy::{
     ContainerRestartPolicy, DeployCleanupContainer, DeployPlan, DeployPlanningContext, ImageSource,
@@ -137,10 +138,18 @@ where
     match execute_deploy_after_planning(&command, &mut ports).await {
         Ok(outcome) => Ok(outcome),
         Err(mut failure) => {
+            let quiescence = volume_handoff::quiesce(
+                &command,
+                &mut *ports.machine_runtime,
+                failure.volume_handoff_rollback().clone(),
+            )
+            .await;
+            failure.add_retained_artifacts(quiescence.retained_artifacts().to_vec());
             let (cleanup, cleanup_artifacts) = cleanup_failed_phase_containers(
                 &command,
                 &mut *ports.machine_runtime,
                 failure.failed_phase_cleanup_targets(),
+                quiescence.retained_consumers(),
             )
             .await;
             if !cleanup.is_empty()
@@ -154,6 +163,14 @@ where
                 failure.add_evidence_record_error(error);
             }
             failure.add_retained_artifacts(cleanup_artifacts);
+            volume_handoff::restart_eligible(
+                &command,
+                &mut *ports.recorder,
+                &mut *ports.machine_runtime,
+                quiescence,
+                &mut failure,
+            )
+            .await;
             let phase_failure_evidence =
                 if let phase::DeployFailurePhase::During(phase) = failure.phase() {
                     let mut services = phase
@@ -548,6 +565,7 @@ async fn cleanup_failed_phase_containers<N>(
     command: &DeployExecutionCommand,
     machine_runtime: &mut N,
     containers: &[DeployContainer],
+    retained_volume_consumers: &[DeployCleanupContainer],
 ) -> (Vec<DeployCleanupResult>, Vec<RetainedArtifact>)
 where
     N: MachineContainerRuntime,
@@ -560,6 +578,9 @@ where
             container_id: container.container_id.clone(),
             identity: retained_container_identity(command, container),
         };
+        if retained_volume_consumers.contains(&target) {
+            continue;
+        }
         let stop = machine_runtime.stop_container(
             &container.machine_id,
             MachineContainerStopRpcRequest {
@@ -569,7 +590,7 @@ where
             },
         );
         let stop_error = match tokio::time::timeout(command.step_timeout(), stop).await {
-            Ok(Ok(())) => None,
+            Ok(Ok(_)) => None,
             Ok(Err(error)) => Some(cleanup_failure_message(error)),
             Err(_) => Some(
                 FailureMessage::try_new(format!(

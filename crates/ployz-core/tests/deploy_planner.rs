@@ -5,7 +5,8 @@ use ployz_core::deploy::{
     DeployPlanningInput as CoreDeployPlanningInput, DeployPlanningPlacementInput,
     DeployPlanningTarget, DeployPreparationInput, DeployPreviewImage, DeployPreviewService,
     DeployPreviewTarget, DeployRequest, DeployRoute, DeployRouteTarget, DeployServicePlacement,
-    DeployServicePlan, DeployServiceSpec, EmptyGlobalSelectionPolicy, EnvName, EnvValue,
+    DeployServicePlan, DeployServiceSpec, DeployServiceWork, DeployVolumeHandoffParticipant,
+    DeployVolumeHandoffPriorState, EmptyGlobalSelectionPolicy, EnvName, EnvValue,
     EnvironmentRevisionKey, ExistingReplicaCreationGate, ExistingReplicaPolicy,
     ExistingServiceReplica, GlobalCandidateDisposition, GlobalPlanningInput,
     HealthcheckShellCommand, ImageReference, ImageSource, ObservedCleanupCandidate, PlatformImage,
@@ -674,7 +675,7 @@ fn global_plan_visits_each_selected_machine_once_and_reuses_only_same_machine() 
         panic!("global plan should contain one service");
     };
     assert_eq!(
-        service.steps,
+        service_steps(service),
         vec![
             DeployPlanStep::UseExistingContainer {
                 machine_id: machine_id("machine_a"),
@@ -733,7 +734,7 @@ fn global_zero_selected_fails_first_deploy_but_preserves_promoted_target_with_de
     let [service] = phase.services.as_slice() else {
         panic!("global plan should contain one service");
     };
-    assert!(service.steps.is_empty());
+    assert!(service_steps(service).is_empty());
     assert!(matches!(
         &service.placement,
         DeployServicePlacement::Global { deferred, .. } if deferred == &input.deferred_machines
@@ -2115,7 +2116,7 @@ fn deploy_plan_with_volume_pins(
             services: vec![DeployServicePlan {
                 service_id: service_id("svc_api"),
                 placement: DeployServicePlacement::Replicated,
-                steps,
+                work: ployz_core::deploy::DeployServiceWork::Ordinary { steps },
                 pre_start: None,
             }],
         }],
@@ -2397,9 +2398,37 @@ fn cleanup_container_observed(
         } else {
             ployz_core::machine::runtime::ContainerRuntimeState::Exited
         },
+        named_volume_names: Default::default(),
         created_at_unix_seconds,
         observed_image_identity: Some(OciDigest::sha256(container.as_bytes()).to_string()),
         target,
+    }
+}
+
+fn with_named_volumes(
+    mut candidate: ObservedCleanupCandidate,
+    names: impl IntoIterator<Item = &'static str>,
+) -> ObservedCleanupCandidate {
+    candidate.named_volume_names = names
+        .into_iter()
+        .map(|name| VolumeName::try_new(name).expect("valid volume name"))
+        .collect();
+    candidate
+}
+
+fn service_steps(service: &DeployServicePlan) -> Vec<DeployPlanStep> {
+    match &service.work {
+        DeployServiceWork::Ordinary { steps } => steps.clone(),
+        DeployServiceWork::VolumeHandoff {
+            replacement,
+            remaining_steps,
+            participants: _,
+        } => std::iter::once(DeployPlanStep::RunContainer {
+            machine_id: replacement.machine_id.clone(),
+            slot: replacement.slot,
+        })
+        .chain(remaining_steps.iter().cloned())
+        .collect(),
     }
 }
 

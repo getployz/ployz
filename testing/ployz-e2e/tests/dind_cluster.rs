@@ -221,57 +221,77 @@ async fn group_core_deploy_semantics() {
 
     timed(
         "init_and_activate_first_machine",
-        assert_init_and_activate_first_machine(&core),
+        Box::pin(assert_init_and_activate_first_machine(&core)),
     )
     .await;
     let workload_image = timed(
         "prepare_group_workload_image",
-        prepare_group_workload_image(&core),
+        Box::pin(prepare_group_workload_image(&core)),
     )
     .await;
     timed(
         "auto_hostname_https_survives_core_stop",
-        assert_auto_hostname_https_survives_core_stop(&core, &workload_image),
+        Box::pin(assert_auto_hostname_https_survives_core_stop(
+            &core,
+            &workload_image,
+        )),
     )
     .await;
     timed(
         "namespace_manifest_convergence",
-        assert_namespace_manifest_convergence_sweeps_failed_retry(&core, &workload_image),
+        Box::pin(assert_namespace_manifest_convergence_sweeps_failed_retry(
+            &core,
+            &workload_image,
+        )),
     )
     .await;
     timed(
         "pre_start_hook",
-        assert_pre_start_hook_runs_before_service_and_failure_retains_evidence(&core),
+        Box::pin(assert_pre_start_hook_runs_before_service_and_failure_retains_evidence(&core)),
     )
     .await;
     timed(
         "depends_on_order",
-        assert_services_start_in_depends_on_order(&core),
+        Box::pin(assert_services_start_in_depends_on_order(&core)),
     )
     .await;
     timed(
         "deploy_rollback",
-        rollback::assert_deploy_rollback_replays_pinned_history(&core),
+        Box::pin(rollback::assert_deploy_rollback_replays_pinned_history(
+            &core,
+        )),
     )
     .await;
     timed(
         "boot_crash_failure_journey",
-        rollback::assert_boot_crash_preserves_serving_and_failure_evidence(&core, &workload_image),
+        Box::pin(
+            rollback::assert_boot_crash_preserves_serving_and_failure_evidence(
+                &core,
+                &workload_image,
+            ),
+        ),
     )
     .await;
     timed(
         "private_registry_digest_pinning",
-        assert_private_registry_digest_pinning(&core),
+        Box::pin(assert_private_registry_digest_pinning(&core)),
     )
     .await;
     timed(
         "repush_new_layers",
-        assert_repush_transfers_only_new_layers(&core),
+        Box::pin(assert_repush_transfers_only_new_layers(&core)),
     )
     .await;
     timed(
         "authenticated_source_builds",
-        build::assert_authenticated_build_journeys(&core),
+        Box::pin(build::assert_authenticated_build_journeys(&core)),
+    )
+    .await;
+    timed(
+        "standalone_current_tree_build",
+        Box::pin(build::assert_standalone_current_tree_uses_dirty_snapshot(
+            &core,
+        )),
     )
     .await;
 

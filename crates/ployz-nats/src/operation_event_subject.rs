@@ -15,7 +15,7 @@ pub fn operation_event_subject_suffix(event: &OperationEvent) -> String {
         OperationEvent::BuildSubmitted { .. } => "build.submitted".to_owned(),
         OperationEvent::BuildPlacementStarted { .. } => "build.placement.started".to_owned(),
         OperationEvent::BuildPlatformPlaced { .. } => "build.platform.placed".to_owned(),
-        OperationEvent::BuildCommitVerified { .. } => "build.platform.commit_verified".to_owned(),
+        OperationEvent::BuildSourceVerified { .. } => "build.platform.source_verified".to_owned(),
         OperationEvent::BuildPlatformToolchainVerified { .. } => {
             "build.platform.toolchain_verified".to_owned()
         }
@@ -55,6 +55,24 @@ pub fn operation_event_subject_suffix(event: &OperationEvent) -> String {
             "deploy.container.started.{}.{}",
             machine_id.as_str(),
             container_id.as_str()
+        ),
+        OperationEvent::DeployVolumeHandoffApplied {
+            service_id,
+            handoff,
+            ..
+        } => format!(
+            "deploy.volume_handoff.applied.{}.{}",
+            service_id.as_str(),
+            handoff.machine_id.as_str()
+        ),
+        OperationEvent::DeployVolumeHandoffRollbackFinished {
+            service_id,
+            machine_id,
+            ..
+        } => format!(
+            "deploy.volume_handoff.rollback_finished.{}.{}",
+            service_id.as_str(),
+            machine_id.as_str()
         ),
         OperationEvent::DeployHealthCheckStarted { .. } => "deploy.health_check.started".to_owned(),
         OperationEvent::DeployPhaseStarted { phase, .. } => format!("deploy.phase.{phase}.started"),
