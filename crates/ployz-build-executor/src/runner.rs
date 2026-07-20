@@ -682,25 +682,29 @@ mod tests {
 
     #[test]
     fn docker_hub_registry_mirror_is_a_canonical_bare_authority() {
-        assert_eq!(
-            DockerHubRegistryMirror::try_new("mirror.gcr.io")
-                .expect("valid mirror")
-                .as_str(),
-            "mirror.gcr.io"
-        );
-        assert!(DockerHubRegistryMirror::try_new("cache.example:5000").is_ok());
+        for line in include_str!("../../../config/docker-hub-mirror-validation-vectors.txt").lines()
+        {
+            let (expected, value) = line
+                .split_once(' ')
+                .expect("validation vector has a result");
+            let value = expanded_mirror_validation_vector(value);
+            match expected {
+                "valid" => assert!(
+                    DockerHubRegistryMirror::try_new(&value).is_ok(),
+                    "rejected valid mirror {value:?}"
+                ),
+                "invalid" => assert!(
+                    DockerHubRegistryMirror::try_new(&value).is_err(),
+                    "accepted invalid mirror {value:?}"
+                ),
+                other => panic!("unknown mirror-validation result {other:?}"),
+            }
+        }
         for invalid in [
             "",
-            "https://mirror.gcr.io",
             "user@mirror.gcr.io",
             "mirror.gcr.io/path",
             "mirror.gcr.io?query",
-            "MIRROR.gcr.io",
-            "mirror..gcr.io",
-            "-mirror.gcr.io",
-            "mirror.gcr.io:0",
-            "mirror.gcr.io:05000",
-            "mirror.gcr.io:65536",
             "mirror.gcr.io\"]\n[worker.oci]",
         ] {
             assert!(
@@ -708,9 +712,17 @@ mod tests {
                 "accepted invalid mirror {invalid:?}"
             );
         }
-        let label = "a".repeat(63);
-        let oversized_host = format!("{label}.{label}.{label}.{label}");
-        assert!(DockerHubRegistryMirror::try_new(oversized_host).is_err());
+    }
+
+    fn expanded_mirror_validation_vector(value: &str) -> String {
+        match value {
+            "<oversized-host>" => {
+                let label = "a".repeat(63);
+                format!("{label}.{label}.{label}.{label}")
+            }
+            "<oversized-port>" => "cache.example:999999999999999999999".to_owned(),
+            value => value.to_owned(),
+        }
     }
 
     #[test]

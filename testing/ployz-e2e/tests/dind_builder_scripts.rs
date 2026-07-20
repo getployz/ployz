@@ -141,24 +141,39 @@ fn builder_routes_docker_hub_inputs_through_one_configured_mirror() {
 #[test]
 fn builder_rejects_noncanonical_mirror_authorities() {
     let fixture = FakeDocker::new("ployz-dind-invalid-registry-mirror");
-    let label = "a".repeat(63);
-    let oversized_host = format!("{label}.{label}.{label}.{label}");
-    for invalid in [
-        oversized_host,
-        "cache.example:05000".to_owned(),
-        "cache.example:999999999999999999999".to_owned(),
-    ] {
+    for line in include_str!("../../../config/docker-hub-mirror-validation-vectors.txt").lines() {
+        let (expected, value) = line
+            .split_once(' ')
+            .expect("validation vector has a result");
+        let value = expanded_mirror_validation_vector(value);
         let output = fixture
             .command("scripts/build-dind-machine-image.sh")
             .arg("fingerprint")
-            .env("PLOYZ_DIND_DOCKER_HUB_MIRROR", &invalid)
+            .env("PLOYZ_DIND_DOCKER_HUB_MIRROR", &value)
             .output()
             .expect("DinD builder validates a mirror authority");
-        assert!(
-            !output.status.success(),
-            "accepted invalid mirror {invalid:?}"
-        );
-        assert!(output.stdout.is_empty());
+        match expected {
+            "valid" => assert_success(&output),
+            "invalid" => {
+                assert!(
+                    !output.status.success(),
+                    "accepted invalid mirror {value:?}"
+                );
+                assert!(output.stdout.is_empty());
+            }
+            other => panic!("unknown mirror-validation result {other:?}"),
+        }
+    }
+}
+
+fn expanded_mirror_validation_vector(value: &str) -> String {
+    match value {
+        "<oversized-host>" => {
+            let label = "a".repeat(63);
+            format!("{label}.{label}.{label}.{label}")
+        }
+        "<oversized-port>" => "cache.example:999999999999999999999".to_owned(),
+        value => value.to_owned(),
     }
 }
 
