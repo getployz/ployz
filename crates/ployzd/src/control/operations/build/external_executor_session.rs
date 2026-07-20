@@ -413,6 +413,7 @@ fn map_pre_acceptance_error(error: BuildExecutorStartDomainError) -> BuildPlatfo
         }
         BuildExecutorStartDomainError::AssignmentMismatch { .. }
         | BuildExecutorStartDomainError::ExecutorIdentityMismatch { .. }
+        | BuildExecutorStartDomainError::OperationIdentityMismatch { .. }
         | BuildExecutorStartDomainError::RuntimeUnavailable
         | BuildExecutorStartDomainError::RuntimeStopped
         | BuildExecutorStartDomainError::ToolchainUnavailable {
@@ -510,6 +511,15 @@ mod tests {
         );
         assert!(matches!(
             map_pre_acceptance_error(BuildExecutorStartDomainError::RuntimeUnavailable),
+            BuildPlatformFailure::ExecutorUnavailable { .. }
+        ));
+        assert!(matches!(
+            map_pre_acceptance_error(
+                BuildExecutorStartDomainError::OperationIdentityMismatch {
+                    expected: OperationId::try_new("expected-operation").expect("operation"),
+                    actual: OperationId::try_new("other-operation").expect("operation"),
+                }
+            ),
             BuildPlatformFailure::ExecutorUnavailable { .. }
         ));
     }

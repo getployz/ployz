@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use ployz_core::build::LocalSnapshotDigest;
-use ployz_core::ids::{BuildExecutorId, BuildPoolId};
+use ployz_core::ids::{BuildExecutorId, BuildPoolId, OperationId};
 use ployz_core::image::OciPlatform;
 use ployz_core::install::{MachineJoinRuntimeNatsUrl, MachineJoinTrustedNats};
 use ployz_core::nats_config::{BuildExecutorCredentialExpiresAt, NatsUserPublicKey};
@@ -74,6 +74,7 @@ pub(crate) struct EnvironmentContext {
 pub(crate) struct FrozenBuild {
     pub assignment_id: String,
     pub build_record_id: String,
+    pub operation_id: OperationId,
     pub deployment_id: String,
 }
 
@@ -588,16 +589,18 @@ mod tests {
         let request = tokio::spawn(receive_one_request(
             listener,
             "200 OK",
-            "{\"result\":{\"assignment_id\":\"assignment-1\",\"build_record_id\":\"build-1\",\"deployment_id\":\"deployment-1\"}}",
+            "{\"result\":{\"assignment_id\":\"assignment-1\",\"build_record_id\":\"build-1\",\"operation_id\":\"operation-distinct\",\"deployment_id\":\"deployment-1\"}}",
         ));
         let digest =
             LocalSnapshotDigest::try_new(format!("sha256:{}", "a".repeat(64))).expect("digest");
         let platform = OciPlatform::try_new("linux", "amd64").expect("platform");
-        CloudCurrentTreeClient::new(&format!("http://{address}"))
+        let frozen = CloudCurrentTreeClient::new(&format!("http://{address}"))
             .expect("client")
             .freeze("pct_secret", &digest, &platform)
             .await
             .expect("freeze");
+        assert_eq!(frozen.build_record_id, "build-1");
+        assert_eq!(frozen.operation_id.as_str(), "operation-distinct");
         let request = request.await.expect("server");
         assert!(request.contains(&format!("\"digest\":\"{}\"", digest.as_str())));
         assert!(request.contains("\"architecture\":\"amd64\""));
@@ -615,6 +618,7 @@ mod tests {
         let frozen = FrozenBuild {
             assignment_id: "assignment-1".to_owned(),
             build_record_id: "build-1".to_owned(),
+            operation_id: OperationId::try_new("operation-distinct").expect("operation"),
             deployment_id: "deployment-1".to_owned(),
         };
         let digest =
@@ -655,6 +659,7 @@ mod tests {
         let frozen = FrozenBuild {
             assignment_id: "assignment-1".to_owned(),
             build_record_id: "build-1".to_owned(),
+            operation_id: OperationId::try_new("operation-distinct").expect("operation"),
             deployment_id: "deployment-1".to_owned(),
         };
         let digest =
