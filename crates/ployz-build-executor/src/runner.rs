@@ -59,6 +59,8 @@ impl DockerHubRegistryMirror {
             || !host.split('.').all(valid_dns_label)
             || port.is_some_and(|port| {
                 port.is_empty()
+                    || port.starts_with('0')
+                    || port.len() > 5
                     || !port.bytes().all(|byte| byte.is_ascii_digit())
                     || port.parse::<u16>().map_or(true, |port| port == 0)
             })
@@ -697,6 +699,7 @@ mod tests {
             "mirror..gcr.io",
             "-mirror.gcr.io",
             "mirror.gcr.io:0",
+            "mirror.gcr.io:05000",
             "mirror.gcr.io:65536",
             "mirror.gcr.io\"]\n[worker.oci]",
         ] {
@@ -705,6 +708,9 @@ mod tests {
                 "accepted invalid mirror {invalid:?}"
             );
         }
+        let label = "a".repeat(63);
+        let oversized_host = format!("{label}.{label}.{label}.{label}");
+        assert!(DockerHubRegistryMirror::try_new(oversized_host).is_err());
     }
 
     #[test]
