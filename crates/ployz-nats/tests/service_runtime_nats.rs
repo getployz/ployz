@@ -7,6 +7,7 @@ use ployz_nats::service_runtime::{
 use ployz_nats::services::{
     EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceMetadata, ServiceVersion,
 };
+use ployz_nats::subjects::OperationApiEndpoint;
 use serde::{Deserialize, Serialize};
 use std::future::pending;
 use std::num::NonZeroUsize;
@@ -34,18 +35,39 @@ async fn test_nats() -> TestNats {
     }
 }
 
-async fn wait_for_requester_interest(client: &async_nats::Client) {
-    client
-        .flush()
-        .await
-        .expect("request client observes service interest");
-    tokio::task::yield_now().await;
+async fn request_when_service_is_registered(
+    client: &async_nats::Client,
+    subject: &'static str,
+    payload: Vec<u8>,
+) -> async_nats::Message {
+    timeout(Duration::from_secs(2), async {
+        let mut no_responder_retries = 0;
+        loop {
+            match client.request(subject, payload.clone().into()).await {
+                Ok(response) => return response,
+                Err(error)
+                    if error.kind() == async_nats::RequestErrorKind::NoResponders
+                        && no_responder_retries < 4 =>
+                {
+                    no_responder_retries += 1;
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                Err(error) if error.kind() == async_nats::RequestErrorKind::NoResponders => {
+                    panic!("service registration stayed invisible after bounded retries")
+                }
+                Err(error) => panic!("service request failed: {error}"),
+            }
+        }
+    })
+    .await
+    .expect("service registration becomes visible before timeout")
 }
 
 #[tokio::test]
 async fn service_runtime_responds_to_bound_endpoint() {
     let nats = test_nats().await;
-    let spec = test_service_spec("plz.v1.rpc.operator.query.test.echo");
+    let subject = OperationApiEndpoint::OpsList.subject();
+    let spec = test_service_spec(subject);
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
@@ -57,21 +79,16 @@ async fn service_runtime_responds_to_bound_endpoint() {
         })
         .await
         .expect("endpoint binds");
-    wait_for_requester_interest(&nats.request_client).await;
-
-    let response = nats
-        .request_client
-        .request("plz.v1.rpc.operator.query.test.echo", "hello".into())
-        .await
-        .expect("service responds");
+    let response =
+        request_when_service_is_registered(&nats.request_client, subject, b"hello".to_vec()).await;
 
     assert_eq!(response.payload.as_ref(), b"hello");
 }
 
 #[tokio::test]
-async fn restricted_service_registration_is_available_when_bind_returns() {
+async fn restricted_service_registration_becomes_visible_with_bounded_retry() {
     let nats = test_nats().await;
-    let subject = "plz.v1.rpc.operator.query.test.restricted_echo";
+    let subject = OperationApiEndpoint::OpsList.subject();
     let spec = test_service_spec(subject);
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
@@ -85,18 +102,16 @@ async fn restricted_service_registration_is_available_when_bind_returns() {
         .await
         .expect("restricted endpoint registration flushes");
 
-    let response = nats
-        .request_client
-        .request(subject, "ready".into())
-        .await
-        .expect("restricted endpoint is server-visible when bind returns");
+    let response =
+        request_when_service_is_registered(&nats.request_client, subject, b"ready".to_vec()).await;
     assert_eq!(response.payload.as_ref(), b"ready");
 }
 
 #[tokio::test]
 async fn request_json_round_trips_typed_payloads() {
     let nats = test_nats().await;
-    let spec = test_service_spec("plz.v1.rpc.operator.query.test.json");
+    let subject = OperationApiEndpoint::OpsStatus.subject();
+    let spec = test_service_spec(subject);
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
@@ -108,11 +123,9 @@ async fn request_json_round_trips_typed_payloads() {
         })
         .await
         .expect("endpoint binds");
-    wait_for_requester_interest(&nats.request_client).await;
-
     let response: TestJsonPayload = request_json(
         &nats.request_client,
-        "plz.v1.rpc.operator.query.test.json".to_owned(),
+        subject.to_owned(),
         &TestJsonPayload {
             value: "hello".to_owned(),
         },
@@ -132,7 +145,8 @@ async fn request_json_round_trips_typed_payloads() {
 #[tokio::test]
 async fn request_json_returns_service_error_headers() {
     let nats = test_nats().await;
-    let spec = test_service_spec("plz.v1.rpc.operator.query.test.json_fail");
+    let subject = OperationApiEndpoint::OpsWatch.subject();
+    let spec = test_service_spec(subject);
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
@@ -144,11 +158,9 @@ async fn request_json_returns_service_error_headers() {
         })
         .await
         .expect("endpoint binds");
-    wait_for_requester_interest(&nats.request_client).await;
-
     let error = request_json::<_, TestJsonPayload>(
         &nats.request_client,
-        "plz.v1.rpc.operator.query.test.json_fail".to_owned(),
+        subject.to_owned(),
         &TestJsonPayload {
             value: "hello".to_owned(),
         },
@@ -168,7 +180,8 @@ async fn request_json_returns_service_error_headers() {
 #[tokio::test]
 async fn service_runtime_returns_service_error_headers() {
     let nats = test_nats().await;
-    let spec = test_service_spec("plz.v1.rpc.operator.query.test.fail");
+    let subject = OperationApiEndpoint::MachineList.subject();
+    let spec = test_service_spec(subject);
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
@@ -180,13 +193,8 @@ async fn service_runtime_returns_service_error_headers() {
         })
         .await
         .expect("endpoint binds");
-    wait_for_requester_interest(&nats.request_client).await;
-
-    let response = nats
-        .request_client
-        .request("plz.v1.rpc.operator.query.test.fail", Vec::new().into())
-        .await
-        .expect("service responds");
+    let response =
+        request_when_service_is_registered(&nats.request_client, subject, Vec::new()).await;
     let headers = response.headers.expect("error response carries headers");
 
     assert_eq!(
@@ -207,7 +215,8 @@ async fn service_runtime_returns_service_error_headers() {
 #[tokio::test]
 async fn service_runtime_returns_response_too_large_instead_of_timing_out() {
     let nats = test_nats().await;
-    let spec = test_service_spec("plz.v1.rpc.operator.query.test.oversized");
+    let subject = OperationApiEndpoint::MachineInspect.subject();
+    let spec = test_service_spec(subject);
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let oversized_response = vec![b'x'; nats.service_client.max_payload() + 1];
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
@@ -221,11 +230,9 @@ async fn service_runtime_returns_response_too_large_instead_of_timing_out() {
         })
         .await
         .expect("endpoint binds");
-    wait_for_requester_interest(&nats.request_client).await;
-
     let error = request_json::<_, TestJsonPayload>(
         &nats.request_client,
-        "plz.v1.rpc.operator.query.test.oversized".to_owned(),
+        subject.to_owned(),
         &TestJsonPayload {
             value: "hello".to_owned(),
         },
@@ -247,7 +254,8 @@ async fn service_runtime_returns_response_too_large_instead_of_timing_out() {
 #[tokio::test]
 async fn service_runtime_counts_domain_error_payloads_without_service_error_headers() {
     let nats = test_nats().await;
-    let spec = test_service_spec("plz.v1.rpc.operator.query.test.domain_error");
+    let subject = OperationApiEndpoint::ServiceList.subject();
+    let spec = test_service_spec(subject);
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
@@ -259,16 +267,8 @@ async fn service_runtime_counts_domain_error_payloads_without_service_error_head
         })
         .await
         .expect("endpoint binds");
-    wait_for_requester_interest(&nats.request_client).await;
-
-    let response = nats
-        .request_client
-        .request(
-            "plz.v1.rpc.operator.query.test.domain_error",
-            Vec::new().into(),
-        )
-        .await
-        .expect("service responds");
+    let response =
+        request_when_service_is_registered(&nats.request_client, subject, Vec::new()).await;
 
     assert!(response.headers.is_none());
     assert_eq!(response.payload.as_ref(), br#"{"status":"domain_error"}"#);
@@ -278,7 +278,8 @@ async fn service_runtime_counts_domain_error_payloads_without_service_error_head
 #[tokio::test]
 async fn service_runtime_times_out_slow_handler_and_records_health() {
     let nats = test_nats().await;
-    let spec = test_service_spec("plz.v1.rpc.operator.query.test.timeout");
+    let subject = OperationApiEndpoint::ServiceInspect.subject();
+    let spec = test_service_spec(subject);
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
@@ -298,13 +299,8 @@ async fn service_runtime_times_out_slow_handler_and_records_health() {
         )
         .await
         .expect("endpoint binds");
-    wait_for_requester_interest(&nats.request_client).await;
-
-    let response = nats
-        .request_client
-        .request("plz.v1.rpc.operator.query.test.timeout", Vec::new().into())
-        .await
-        .expect("service responds");
+    let response =
+        request_when_service_is_registered(&nats.request_client, subject, Vec::new()).await;
     let headers = response.headers.expect("timeout response carries headers");
 
     assert_eq!(
@@ -319,7 +315,8 @@ async fn service_runtime_times_out_slow_handler_and_records_health() {
 #[tokio::test]
 async fn service_runtime_shutdown_waits_for_in_flight_request() {
     let nats = test_nats().await;
-    let spec = test_service_spec("plz.v1.rpc.operator.query.test.shutdown");
+    let subject = OperationApiEndpoint::VolumeList.subject();
+    let spec = test_service_spec(subject);
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
@@ -345,16 +342,9 @@ async fn service_runtime_shutdown_waits_for_in_flight_request() {
         })
         .await
         .expect("endpoint binds");
-    wait_for_requester_interest(&nats.request_client).await;
-
     let request = tokio::spawn({
         let client = nats.request_client.clone();
-        async move {
-            client
-                .request("plz.v1.rpc.operator.query.test.shutdown", Vec::new().into())
-                .await
-                .expect("service responds")
-        }
+        async move { request_when_service_is_registered(&client, subject, Vec::new()).await }
     });
     started_rx.await.expect("handler starts");
     let shutdown = tokio::spawn(async move { runtime.shutdown().await });
@@ -373,7 +363,7 @@ async fn service_runtime_shutdown_waits_for_in_flight_request() {
 async fn service_runtime_shutdown_completes_immediately_when_nats_disconnects() {
     let nats = test_nats().await;
     let service_client = nats.service_client.clone();
-    let spec = test_service_spec("plz.v1.rpc.operator.query.test.disconnected_shutdown");
+    let spec = test_service_spec(OperationApiEndpoint::NetworkStatus.subject());
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(service_client.clone(), &spec)
         .await
@@ -403,8 +393,8 @@ async fn service_runtime_shutdown_completes_immediately_when_nats_disconnects() 
 #[tokio::test]
 async fn service_runtime_shutdown_cancels_all_endpoints_after_one_shared_grace_deadline() {
     let nats = test_nats().await;
-    let first_subject = "plz.v1.rpc.operator.query.test.slow_shutdown.first";
-    let second_subject = "plz.v1.rpc.operator.query.test.slow_shutdown.second";
+    let first_subject = OperationApiEndpoint::NetworkResolve.subject();
+    let second_subject = OperationApiEndpoint::CredentialList.subject();
     let spec = test_service_spec_with_two_endpoints(first_subject, second_subject);
     let [first_endpoint, second_endpoint] = spec.endpoints.as_slice() else {
         unreachable!("test service has two endpoints");
@@ -430,15 +420,13 @@ async fn service_runtime_shutdown_cancels_all_endpoints_after_one_shared_grace_d
             .await
             .expect("endpoint binds");
     }
-    wait_for_requester_interest(&nats.request_client).await;
-
     let first_request = tokio::spawn({
         let client = nats.request_client.clone();
-        async move { client.request(first_subject, Vec::new().into()).await }
+        async move { request_when_service_is_registered(&client, first_subject, Vec::new()).await }
     });
     let second_request = tokio::spawn({
         let client = nats.request_client.clone();
-        async move { client.request(second_subject, Vec::new().into()).await }
+        async move { request_when_service_is_registered(&client, second_subject, Vec::new()).await }
     });
     timeout(Duration::from_secs(2), async {
         started_rx.recv().await.expect("first handler starts");
@@ -473,8 +461,8 @@ async fn service_runtime_shutdown_cancels_all_endpoints_after_one_shared_grace_d
 #[tokio::test]
 async fn service_runtime_shutdown_handles_completed_endpoint_before_stuck_endpoint() {
     let nats = test_nats().await;
-    let idle_subject = "plz.v1.rpc.operator.query.test.mixed_shutdown.idle";
-    let stuck_subject = "plz.v1.rpc.operator.query.test.mixed_shutdown.stuck";
+    let idle_subject = OperationApiEndpoint::DeployPreview.subject();
+    let stuck_subject = OperationApiEndpoint::RuntimeSnapshot.subject();
     let spec = test_service_spec_with_two_endpoints(idle_subject, stuck_subject);
     let [idle_endpoint, stuck_endpoint] = spec.endpoints.as_slice() else {
         unreachable!("test service has two endpoints");
@@ -503,11 +491,9 @@ async fn service_runtime_shutdown_handles_completed_endpoint_before_stuck_endpoi
         })
         .await
         .expect("stuck endpoint binds");
-    wait_for_requester_interest(&nats.request_client).await;
-
     let request = tokio::spawn({
         let client = nats.request_client.clone();
-        async move { client.request(stuck_subject, Vec::new().into()).await }
+        async move { request_when_service_is_registered(&client, stuck_subject, Vec::new()).await }
     });
     timeout(Duration::from_secs(2), started_rx.recv())
         .await

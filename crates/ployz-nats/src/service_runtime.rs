@@ -156,8 +156,7 @@ impl RunningNatsService {
         H: Fn(NatsServiceRequest) -> F + Send + Sync + 'static,
         F: Future<Output = NatsServiceResponse> + Send + 'static,
     {
-        self.bind_endpoint_inner(endpoint, policy, EndpointRegistration::RoundTrip, handler)
-            .await
+        self.bind_endpoint_inner(endpoint, policy, handler).await
     }
 
     /// Binds an endpoint for a service principal that cannot safely publish
@@ -189,15 +188,13 @@ impl RunningNatsService {
         H: Fn(NatsServiceRequest) -> F + Send + Sync + 'static,
         F: Future<Output = NatsServiceResponse> + Send + 'static,
     {
-        self.bind_endpoint_inner(endpoint, policy, EndpointRegistration::Restricted, handler)
-            .await
+        self.bind_endpoint_inner(endpoint, policy, handler).await
     }
 
     async fn bind_endpoint_inner<H, F>(
         &mut self,
         endpoint: &NatsServiceEndpointSpec,
         policy: EndpointExecutionPolicy,
-        registration: EndpointRegistration,
         handler: H,
     ) -> Result<(), NatsServiceRuntimeError>
     where
@@ -273,19 +270,16 @@ impl RunningNatsService {
                 .fetch_add(1, Ordering::Relaxed);
         });
         self.endpoint_tasks.push(task);
-        match registration {
-            EndpointRegistration::RoundTrip => {
-                wait_for_service_registration(&self.client, endpoint.subject.as_str()).await?;
-            }
-            EndpointRegistration::Restricted => {
-                self.client.flush().await.map_err(|error| {
-                    NatsServiceRuntimeError::AddEndpoint {
-                        subject: endpoint.subject.clone(),
-                        message: format!("restricted service registration flush failed: {error}"),
-                    }
-                })?;
-            }
-        }
+        timeout(SERVICE_REGISTRATION_TIMEOUT, self.client.flush())
+            .await
+            .map_err(|error| NatsServiceRuntimeError::AddEndpoint {
+                subject: endpoint.subject.clone(),
+                message: format!("subscription flush timed out: {error}"),
+            })?
+            .map_err(|error| NatsServiceRuntimeError::AddEndpoint {
+                subject: endpoint.subject.clone(),
+                message: format!("subscription flush failed: {error}"),
+            })?;
         Ok(())
     }
 
@@ -366,12 +360,6 @@ impl RunningNatsService {
         }
         Ok(())
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EndpointRegistration {
-    RoundTrip,
-    Restricted,
 }
 
 fn response_within_max_payload(
@@ -613,39 +601,6 @@ pub async fn start_nats_service(
         endpoint_tasks: Vec::new(),
         health: Arc::new(NatsServiceHealthCounters::default()),
     })
-}
-
-async fn wait_for_service_registration(
-    client: &async_nats::Client,
-    endpoint_subject: &str,
-) -> Result<(), NatsServiceRuntimeError> {
-    // Receiving this self-message proves the server processed earlier commands
-    // on this connection, including the endpoint subscription.
-    let inbox = client.new_inbox();
-    let mut proof = client.subscribe(inbox.clone()).await.map_err(|error| {
-        NatsServiceRuntimeError::AddEndpoint {
-            subject: endpoint_subject.to_owned(),
-            message: format!("service registration proof subscribe failed: {error}"),
-        }
-    })?;
-    client
-        .publish(inbox, Vec::new().into())
-        .await
-        .map_err(|error| NatsServiceRuntimeError::AddEndpoint {
-            subject: endpoint_subject.to_owned(),
-            message: format!("service registration proof publish failed: {error}"),
-        })?;
-    timeout(SERVICE_REGISTRATION_TIMEOUT, proof.next())
-        .await
-        .map_err(|error| NatsServiceRuntimeError::AddEndpoint {
-            subject: endpoint_subject.to_owned(),
-            message: format!("service registration proof timed out: {error}"),
-        })?
-        .ok_or_else(|| NatsServiceRuntimeError::AddEndpoint {
-            subject: endpoint_subject.to_owned(),
-            message: "service registration proof subscriber closed".to_owned(),
-        })?;
-    Ok(())
 }
 
 fn service_metadata_map(metadata: &ServiceMetadata) -> HashMap<String, String> {

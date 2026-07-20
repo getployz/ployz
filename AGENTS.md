@@ -225,13 +225,21 @@ Live` section above. These rules are about truth semantics, not storage:
 - Implementation subagents run focused tests for their packet. They do not run
   workspace-wide gates, SDK generation, DinD, GitHub publication, or cleanup;
   the parent task serializes and owns those shared operations.
-- Codex-native tasks and subagents never invoke Codex through the CLI or
-  app-server. Use native tools and native subagents only.
-- Before implementation, the supervisor drafts the plan and runs the
-  `opus-advisor` plan gate. Opus reviews only; Codex owns the plan and every
-  implementation decision. `PLAN_REVISE` returns the plan to Codex. An
-  unavailable or unverified advisor stops implementation unless the dispatcher
-  explicitly made the gate best-effort.
+- Codex-native implementation tasks and implementation subagents do not invoke
+  Codex through the CLI or app-server; use native tools and native subagents for
+  implementation. Fresh-context cold reads, plan gates, and review gates may
+  invoke Codex through the CLI when the dispatcher requests it or when the
+  configured external review model is unavailable. Record the CLI model and
+  reasoning effort, keep the invocation read-only, and never use it to edit the
+  candidate.
+- Before implementation, the supervisor drafts the plan and runs an independent
+  plan gate. Use `opus-advisor` when available. When the dispatcher requests
+  Codex CLI or the external review model is unavailable, a fresh-context,
+  read-only Codex CLI `gpt-5.6-sol` High gate is a valid substitute. The advisor
+  reviews only; Codex owns the plan and every implementation decision.
+  `PLAN_REVISE` returns the plan to Codex. An unavailable or unverified required
+  route stops implementation unless the dispatcher explicitly made the gate
+  best-effort.
 
 ## Code Reviews
 
@@ -244,13 +252,17 @@ Live` section above. These rules are about truth semantics, not storage:
   value is its cold read.
 - Implementation receives one four-lane Codex cold-read wave: Standards and
   Spec are `/code-review`'s two axes; thermo-nuclear is the skill above; and
-  ponytail is the `ponytail-review` skill. Every reviewer uses `gpt-5.6-sol`
-  with high reasoning effort. If the tool cannot verify model or effort,
-  record that limitation; do not claim the routing succeeded.
-- Mirror that wave through the `opus-advisor` skill. A small change gets one
-  consolidated Opus cold read with four separate verdicts. A large or risky
-  change gets four independent Opus cold reads, one per lane, producing an
-  eight-review matrix with the four Codex reviews. Treat security, authority,
+  ponytail is the `ponytail-review` skill. Run each lane once through a separate
+  fresh-context, read-only Codex CLI invocation. Every reviewer uses
+  `gpt-5.6-sol` with high reasoning effort. If the CLI cannot verify model or
+  effort, record that limitation; do not claim the routing succeeded. Native
+  subagents remain the implementation route and do not duplicate these cold
+  reads merely for harness symmetry unless the dispatcher explicitly changes
+  the review route.
+- Do not mirror the CLI cold wave through `opus-advisor` or wait for Claude
+  capacity. Add another independent read only for an exceptionally risky seam
+  where it supplies a materially distinct judgment, never to preserve a model
+  or harness matrix. Treat security, authority,
   money, privacy, destructive behavior, persistence, migrations, concurrency,
   distributed state, public contracts, architecture boundaries, or a broad
   multi-module diff as large or risky. The supervisor records the classification.

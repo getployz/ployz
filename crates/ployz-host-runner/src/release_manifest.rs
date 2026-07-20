@@ -166,7 +166,7 @@ impl ReleaseManifest {
 }
 
 fn railpack_entry(contents: &str) -> Result<RailpackManifestEntry, String> {
-    let pins = railpack_pins()?;
+    let pins = railpack_pins().map_err(|error| error.to_string())?;
     let version = manifest_value(contents, "PLOYZ_RAILPACK_VERSION")?;
     if version != pins.version() {
         return Err(format!(
