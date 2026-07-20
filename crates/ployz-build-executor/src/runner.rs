@@ -1,25 +1,27 @@
 use super::ValidatedOciLayout;
 use super::lifecycle::{
-    BUILDER_LABEL, BuildLogContext, CACHE_VOLUME, DOCKER_COMMAND_TIMEOUT, PinnedImageKind,
-    await_buildkit, builder_name, create_builder, prune_buildkit_cache, pull_exact_image,
-    remove_builder, require_success, run_bounded, run_buildctl, run_prepare,
+    BUILDER_LABEL, BUILDER_OWNER_LABEL_KEY, BuildLogContext, CACHE_VOLUME, DOCKER_COMMAND_TIMEOUT,
+    PinnedImageKind, await_buildkit, builder_name, create_builder, prune_buildkit_cache,
+    pull_exact_image, remove_builder, require_success, restore_oci_layout_ownership, run_bounded,
+    run_buildctl, run_prepare,
 };
 use super::logs::{BuildLogProgress, PublishedLogs};
 use super::oci::{OciLayoutError, OciValidationControl, validate_oci_layout};
 use super::plan::{BuildAdapterToolchain, lower_build_adapter, toolchain_for_platform};
-use super::source::checkout_git_source;
+use super::source::{LocalSnapshotError, prepare_build_source, stage_local_snapshot};
 use super::workspace::{
     clean_failed_workspace, prepare_private_directory, prepare_workspace, remove_workspace_tree,
     verify_helper,
 };
 use ployz_core::build::BuildLogSummary;
-use ployz_core::build::{BuildAdapter, GitSource};
+use ployz_core::build::{BuildAdapter, BuildContextPath, BuildSource};
 use ployz_core::ids::OperationId;
 use ployz_core::image::OciPlatform;
 use ployz_core::operation::{
     BuildCachePruneEvidence, BuildPlatformFailure, BuildToolchainEvidence, FailureMessage,
 };
 use rustix::fs::statvfs;
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
@@ -102,6 +104,22 @@ impl DockerBuildExecutor {
         }
     }
 
+    pub async fn prepare_local_snapshot(
+        &self,
+        source_root: PathBuf,
+        subdir: Option<BuildContextPath>,
+    ) -> Result<BuildSource, LocalSnapshotError> {
+        let _effect_guard =
+            self.effect_guard
+                .acquire()
+                .await
+                .map_err(|error| LocalSnapshotError::Io {
+                    action: "acquire build effect guard",
+                    message: error.to_string(),
+                })?;
+        stage_local_snapshot(source_root, self.workspace_root.join("prepared"), subdir).await
+    }
+
     #[must_use]
     pub fn with_docker_hub_registry_mirror(mut self, mirror: DockerHubRegistryMirror) -> Self {
         self.docker_hub_registry_mirror = Some(mirror);
@@ -109,10 +127,17 @@ impl DockerBuildExecutor {
     }
 
     pub async fn recover_orphans(&self) -> Result<(), BuildExecutionError> {
-        let filter = format!("label={BUILDER_LABEL}");
+        let filters = orphan_builder_filters(&workspace_owner_digest(&self.workspace_root));
         let output = run_bounded(
             "docker",
-            ["ps", "-aq", "--filter", filter.as_str()],
+            [
+                "ps",
+                "-aq",
+                "--filter",
+                filters[0].as_str(),
+                "--filter",
+                filters[1].as_str(),
+            ],
             DOCKER_COMMAND_TIMEOUT,
         )
         .await?;
@@ -202,7 +227,7 @@ impl DockerBuildExecutor {
             })
         })?;
         let buildkit_config = self.ensure_host_disk_capacity(&workspace).await?;
-        let checkout = checkout_git_source(source, &workspace)
+        let prepared = prepare_build_source(source, &self.workspace_root, &workspace)
             .await
             .map_err(|error| {
                 platform_failure(BuildPlatformFailure::SourceFetchFailed {
@@ -210,7 +235,7 @@ impl DockerBuildExecutor {
                 })
             })?;
         verify_helper(&toolchain.adapter).await?;
-        let plan = lower_build_adapter(&checkout, adapter, platform, &workspace, &toolchain)
+        let plan = lower_build_adapter(&prepared, adapter, platform, &workspace, &toolchain)
             .map_err(|error| {
                 platform_failure(BuildPlatformFailure::AdapterFailed {
                     message: failure(error.to_string()),
@@ -258,6 +283,7 @@ impl DockerBuildExecutor {
             &builder,
             operation_id,
             platform,
+            &workspace_owner_digest(&self.workspace_root),
             &workspace,
             &buildkit_config,
             &toolchain.buildkit_reference,
@@ -287,11 +313,9 @@ impl DockerBuildExecutor {
             .await
         }
         .await;
+        let ownership = restore_oci_layout_ownership(&builder, &workspace).await;
         let cleanup = remove_builder(&builder).await;
-        let logs = match (build, cleanup) {
-            (Ok(logs), Ok(())) => logs,
-            (Err(error), _) | (Ok(_), Err(error)) => return Err(error),
-        };
+        let logs = finish_builder_run(build, ownership, cleanup)?;
         let layout_path = plan.oci_layout;
         let platform_for_validation = platform.clone();
         let validation_control = OciValidationControl::new(deadline, cancelled.clone());
@@ -305,7 +329,7 @@ impl DockerBuildExecutor {
         .map_err(|error| validation_failure(error, log_summary))?;
         Ok(BuildExecutionResult {
             layout,
-            verified_commit: checkout.commit().clone(),
+            verified_source: prepared.verified().clone(),
             toolchain: toolchain.evidence(),
             log_summary,
         })
@@ -338,6 +362,31 @@ impl DockerBuildExecutor {
             ));
         }
         Ok(config)
+    }
+}
+
+fn workspace_owner_digest(workspace_root: &Path) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"ployz.build_workspace_owner.v1");
+    hasher.update(workspace_root.as_os_str().as_encoded_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+fn orphan_builder_filters(owner: &str) -> [String; 2] {
+    [
+        format!("label={BUILDER_LABEL}"),
+        format!("label={BUILDER_OWNER_LABEL_KEY}={owner}"),
+    ]
+}
+
+fn finish_builder_run(
+    build: Result<PublishedLogs, BuildExecutionError>,
+    ownership: Result<(), BuildExecutionError>,
+    cleanup: Result<(), BuildExecutionError>,
+) -> Result<PublishedLogs, BuildExecutionError> {
+    match build {
+        Ok(logs) => ownership.and(cleanup).map(|()| logs),
+        Err(error) => Err(error),
     }
 }
 
@@ -418,7 +467,7 @@ fn render_buildkit_config(
 #[derive(Clone, Copy)]
 pub struct BuildExecutionRequest<'a> {
     operation_id: &'a OperationId,
-    source: &'a GitSource,
+    source: &'a BuildSource,
     adapter: &'a BuildAdapter,
     platform: &'a OciPlatform,
     log_destination: &'a super::logs::BuildLogDestination,
@@ -428,7 +477,7 @@ impl<'a> BuildExecutionRequest<'a> {
     #[must_use]
     pub const fn new(
         operation_id: &'a OperationId,
-        source: &'a GitSource,
+        source: &'a BuildSource,
         adapter: &'a BuildAdapter,
         platform: &'a OciPlatform,
         log_destination: &'a super::logs::BuildLogDestination,
@@ -468,7 +517,7 @@ impl BuildEffectGuard {
 
 pub struct BuildExecutionResult {
     pub layout: ValidatedOciLayout,
-    pub verified_commit: ployz_core::build::VerifiedGitCommit,
+    pub verified_source: ployz_core::build::VerifiedBuildSource,
     pub toolchain: BuildToolchainEvidence,
     pub log_summary: BuildLogSummary,
 }
@@ -624,6 +673,86 @@ mod tests {
 
         drop(validation_guard);
         cleanup.await.expect("cleanup waiter");
+    }
+
+    #[test]
+    fn orphan_recovery_filters_are_workspace_owner_scoped() {
+        let first = workspace_owner_digest(Path::new("/tmp/ployz-owner-a"));
+        let second = workspace_owner_digest(Path::new("/tmp/ployz-owner-b"));
+        let first_filters = orphan_builder_filters(&first);
+        let second_filters = orphan_builder_filters(&second);
+
+        assert_ne!(first, second);
+        assert_eq!(first_filters[0], "label=com.getployz.build=true");
+        assert_eq!(second_filters[0], "label=com.getployz.build=true");
+        assert_eq!(
+            first_filters[1],
+            format!("label=com.getployz.build.owner={first}")
+        );
+        assert_eq!(
+            second_filters[1],
+            format!("label=com.getployz.build.owner={second}")
+        );
+        assert!(!first_filters.contains(&second_filters[1]));
+        assert!(!second_filters.contains(&first_filters[1]));
+    }
+
+    #[test]
+    fn builder_cleanup_preserves_build_then_ownership_then_removal_precedence() {
+        fn error(action: &'static str) -> BuildExecutionError {
+            infrastructure(action, action)
+        }
+
+        let Err(build_error) = finish_builder_run(
+            Err(error("build")),
+            Err(error("ownership")),
+            Err(error("removal")),
+        ) else {
+            panic!("build failure remains primary");
+        };
+        assert!(matches!(
+            build_error,
+            BuildExecutionError::Infrastructure {
+                action: "build",
+                ..
+            }
+        ));
+
+        let Err(ownership_error) = finish_builder_run(
+            Ok(PublishedLogs {
+                final_sequence: 1,
+                omitted_bytes: 0,
+            }),
+            Err(error("ownership")),
+            Err(error("removal")),
+        ) else {
+            panic!("ownership failure blocks success");
+        };
+        assert!(matches!(
+            ownership_error,
+            BuildExecutionError::Infrastructure {
+                action: "ownership",
+                ..
+            }
+        ));
+
+        let Err(removal_error) = finish_builder_run(
+            Ok(PublishedLogs {
+                final_sequence: 1,
+                omitted_bytes: 0,
+            }),
+            Ok(()),
+            Err(error("removal")),
+        ) else {
+            panic!("builder removal remains mandatory");
+        };
+        assert!(matches!(
+            removal_error,
+            BuildExecutionError::Infrastructure {
+                action: "removal",
+                ..
+            }
+        ));
     }
 
     #[test]

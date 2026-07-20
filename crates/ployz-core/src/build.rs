@@ -2,6 +2,7 @@
 
 mod executor;
 mod railpack;
+mod source_contract;
 
 pub use crate::ids::{BuildExecutorId, BuildPoolId};
 pub use executor::{
@@ -21,6 +22,9 @@ pub use executor::{
 pub use railpack::{
     RailpackDigestKind, RailpackPinError, RailpackPins, RailpackPlatformPins, railpack_pins,
 };
+pub use source_contract::{
+    BuildSourceEvidence, GitSourceEvidence, VerifiedBuildSource, VerifiedGitCommit,
+};
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -39,6 +43,7 @@ const MAX_CREDENTIAL_SECRET_BYTES: usize = 8_192;
 const MAX_BUILD_PATH_BYTES: usize = 1_024;
 const MAX_DOCKERFILE_STAGE_BYTES: usize = 128;
 const MAX_BUILD_CACHE_SCOPE_BYTES: usize = 256;
+const SHA256_HEX_BYTES: usize = 64;
 
 /// Longest build execution budget accepted by a machine.
 pub const BUILD_MAX_EXECUTION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
@@ -160,6 +165,143 @@ impl fmt::Debug for GitSource {
             .field("subdir", &self.subdir)
             .finish()
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BuildSource {
+    Git {
+        #[serde(flatten)]
+        #[cfg_attr(feature = "typescript", ts(flatten))]
+        git: GitSource,
+    },
+    LocalSnapshot {
+        digest: LocalSnapshotDigest,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "typescript", ts(optional))]
+        subdir: Option<BuildContextPath>,
+    },
+}
+
+impl BuildSource {
+    pub fn ensure_target(&self, target: &BuildTarget) -> Result<(), BuildSourceTargetError> {
+        match (self, target) {
+            (Self::Git { .. }, BuildTarget::Cluster | BuildTarget::External { .. })
+            | (Self::LocalSnapshot { .. }, BuildTarget::External { .. }) => Ok(()),
+            (Self::LocalSnapshot { .. }, BuildTarget::Cluster) => {
+                Err(BuildSourceTargetError::LocalSnapshotRequiresExternalTarget)
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn evidence(&self) -> BuildSourceEvidence {
+        match self {
+            Self::Git { git } => BuildSourceEvidence::Git {
+                git: git.evidence(),
+            },
+            Self::LocalSnapshot { digest, subdir } => BuildSourceEvidence::LocalSnapshot {
+                digest: digest.clone(),
+                subdir: subdir.clone(),
+            },
+        }
+    }
+
+    #[must_use]
+    pub const fn subdir(&self) -> Option<&BuildContextPath> {
+        match self {
+            Self::Git { git } => git.subdir(),
+            Self::LocalSnapshot { subdir, .. } => subdir.as_ref(),
+        }
+    }
+
+    #[must_use]
+    pub fn contains_sensitive_value(&self, value: &str) -> bool {
+        match self {
+            Self::Git { git } => value.contains(git.credential().secret().secret()),
+            Self::LocalSnapshot { .. } => false,
+        }
+    }
+
+    #[must_use]
+    pub fn redact_sensitive_in(&self, value: impl Into<String>) -> String {
+        let value = value.into();
+        match self {
+            Self::Git { git } => git.credential().redact_secret_in(value),
+            Self::LocalSnapshot { .. } => value,
+        }
+    }
+
+    #[must_use]
+    pub fn sensitive_value(&self) -> Option<&str> {
+        match self {
+            Self::Git { git } => Some(git.credential().secret().secret()),
+            Self::LocalSnapshot { .. } => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum BuildSourceTargetError {
+    #[error("local snapshot source requires an external Build Target")]
+    LocalSnapshotRequiresExternalTarget,
+}
+
+impl From<GitSource> for BuildSource {
+    fn from(source: GitSource) -> Self {
+        Self::Git { git: source }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "string"))]
+#[serde(try_from = "String", into = "String")]
+pub struct LocalSnapshotDigest(String);
+
+impl LocalSnapshotDigest {
+    pub fn try_new(value: impl Into<String>) -> Result<Self, LocalSnapshotDigestError> {
+        let value = value.into();
+        let Some(hex) = value.strip_prefix("sha256:") else {
+            return Err(LocalSnapshotDigestError::Invalid);
+        };
+        if hex.len() != SHA256_HEX_BYTES || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(LocalSnapshotDigestError::Invalid);
+        }
+        Ok(Self(format!("sha256:{}", hex.to_ascii_lowercase())))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for LocalSnapshotDigest {
+    type Error = LocalSnapshotDigestError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<LocalSnapshotDigest> for String {
+    fn from(value: LocalSnapshotDigest) -> Self {
+        value.0
+    }
+}
+
+impl fmt::Display for LocalSnapshotDigest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum LocalSnapshotDigestError {
+    #[error("local snapshot digest must be sha256 followed by 64 hexadecimal characters")]
+    Invalid,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -513,37 +655,6 @@ impl From<BuildPlatforms> for Vec<OciPlatform> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct GitSourceEvidence {
-    pub url: GitRepositoryUrl,
-    pub commit: GitCommit,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub subdir: Option<BuildContextPath>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct VerifiedGitCommit {
-    pub url: GitRepositoryUrl,
-    pub commit: GitCommit,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub subdir: Option<BuildContextPath>,
-}
-
-impl VerifiedGitCommit {
-    #[must_use]
-    pub fn from_source(source: &GitSource) -> Self {
-        Self {
-            url: source.url().clone(),
-            commit: source.commit().clone(),
-            subdir: source.subdir().cloned(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[cfg_attr(feature = "typescript", ts(type = "string"))]
 #[serde(transparent)]
 pub struct RailpackCacheKey(String);
@@ -740,6 +851,51 @@ mod tests {
                 "subdir": "apps/api",
             })
         );
+    }
+
+    #[test]
+    fn tagged_build_sources_are_strict_and_local_evidence_is_redacted() {
+        let git: BuildSource = source().into();
+        let git_json = serde_json::to_value(&git).expect("Git source");
+        assert_eq!(git_json.get("source"), Some(&serde_json::json!("git")));
+        assert_eq!(
+            VerifiedBuildSource::from_source(&git).evidence(),
+            git.evidence()
+        );
+
+        let digest =
+            LocalSnapshotDigest::try_new(format!("sha256:{}", "A".repeat(64))).expect("digest");
+        assert_eq!(digest.as_str(), format!("sha256:{}", "a".repeat(64)));
+        let local = BuildSource::LocalSnapshot {
+            digest,
+            subdir: Some(BuildContextPath::try_new("apps/api").expect("subdir")),
+        };
+        let encoded = serde_json::to_value(&local).expect("local source");
+        assert_eq!(
+            encoded,
+            serde_json::json!({
+                "source": "local_snapshot",
+                "digest": format!("sha256:{}", "a".repeat(64)),
+                "subdir": "apps/api"
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<BuildSource>(encoded).expect("strict local source"),
+            local
+        );
+        assert!(LocalSnapshotDigest::try_new("sha256:not-a-digest").is_err());
+        assert_eq!(
+            local.ensure_target(&BuildTarget::Cluster),
+            Err(BuildSourceTargetError::LocalSnapshotRequiresExternalTarget)
+        );
+        assert!(
+            local
+                .ensure_target(&BuildTarget::External {
+                    pool_id: BuildPoolId::try_new("local").expect("pool"),
+                })
+                .is_ok()
+        );
+        assert!(git.ensure_target(&BuildTarget::Cluster).is_ok());
     }
 
     #[test]

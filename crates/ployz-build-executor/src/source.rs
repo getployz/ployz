@@ -1,28 +1,35 @@
-use ployz_core::build::{BuildContextPath, GitSource, VerifiedGitCommit};
+use ployz_core::build::{
+    BuildContextPath, BuildSource, GitSource, VerifiedBuildSource, VerifiedGitCommit,
+};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::process::Command;
 
+mod local_snapshot;
+pub use local_snapshot::LocalSnapshotError;
+use local_snapshot::consume_local_snapshot;
+pub(super) use local_snapshot::stage_local_snapshot;
+
 const GIT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const MAX_GIT_ERROR_BYTES: usize = 64 * 1024;
 
 #[derive(Debug)]
-pub(super) struct CheckedOutGitSource {
+pub(super) struct PreparedBuildSource {
     pub(super) context: PathBuf,
-    pub(super) commit: VerifiedGitCommit,
+    pub(super) verified: VerifiedBuildSource,
 }
 
-impl CheckedOutGitSource {
+impl PreparedBuildSource {
     #[must_use]
     pub fn context(&self) -> &Path {
         &self.context
     }
 
     #[must_use]
-    pub const fn commit(&self) -> &VerifiedGitCommit {
-        &self.commit
+    pub const fn verified(&self) -> &VerifiedBuildSource {
+        &self.verified
     }
 
     pub fn resolve_context_path(
@@ -33,10 +40,27 @@ impl CheckedOutGitSource {
     }
 }
 
+pub(super) async fn prepare_build_source(
+    source: &BuildSource,
+    workspace_root: &Path,
+    workspace: &Path,
+) -> Result<PreparedBuildSource, SourcePreparationError> {
+    match source {
+        BuildSource::Git { git } => checkout_git_source(git, workspace)
+            .await
+            .map_err(SourcePreparationError::Git),
+        BuildSource::LocalSnapshot { digest, subdir } => {
+            consume_local_snapshot(workspace_root, workspace, digest, subdir.as_ref())
+                .await
+                .map_err(SourcePreparationError::Local)
+        }
+    }
+}
+
 pub(super) async fn checkout_git_source(
     source: &GitSource,
     workspace: &Path,
-) -> Result<CheckedOutGitSource, GitCheckoutError> {
+) -> Result<PreparedBuildSource, GitCheckoutError> {
     ensure_private_directory(workspace).await?;
     let root = workspace.join("source");
     if tokio::fs::try_exists(&root)
@@ -144,10 +168,20 @@ pub(super) async fn checkout_git_source(
         Some(subdir) => canonical_descendant(&root, &root.join(subdir.as_str()))?,
         None => root.clone(),
     };
-    Ok(CheckedOutGitSource {
+    Ok(PreparedBuildSource {
         context,
-        commit: VerifiedGitCommit::from_source(source),
+        verified: VerifiedBuildSource::Git {
+            git: VerifiedGitCommit::from_source(source),
+        },
     })
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum SourcePreparationError {
+    #[error(transparent)]
+    Git(#[from] GitCheckoutError),
+    #[error(transparent)]
+    Local(#[from] local_snapshot::LocalSnapshotPreparationError),
 }
 
 async fn run_git<const N: usize>(
@@ -307,19 +341,21 @@ mod tests {
     use super::*;
     use std::fs;
 
-    fn source(context: &Path) -> CheckedOutGitSource {
-        CheckedOutGitSource {
+    fn source(context: &Path) -> PreparedBuildSource {
+        PreparedBuildSource {
             context: context.to_path_buf(),
-            commit: VerifiedGitCommit::from_source(
-                &GitSource::try_new(
-                    "https://example.test/repo.git",
-                    "0123456789abcdef0123456789abcdef01234567",
-                    "git",
-                    "secret",
-                    None::<String>,
-                )
-                .expect("source"),
-            ),
+            verified: VerifiedBuildSource::Git {
+                git: VerifiedGitCommit::from_source(
+                    &GitSource::try_new(
+                        "https://example.test/repo.git",
+                        "0123456789abcdef0123456789abcdef01234567",
+                        "git",
+                        "secret",
+                        None::<String>,
+                    )
+                    .expect("source"),
+                ),
+            },
         }
     }
 

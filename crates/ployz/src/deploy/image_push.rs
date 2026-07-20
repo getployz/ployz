@@ -599,15 +599,15 @@ pub async fn prepare_deploy_images(
     from_registry: bool,
 ) -> Result<Vec<ImagePushReceipt>, ImagePushError> {
     if from_registry {
-        for service in services {
-            service.image_source = ImageSource::Registry;
-        }
         return Ok(Vec::new());
     }
     let docker = connect_operator_docker()?;
     let mut seed = None;
     let mut receipts = Vec::new();
     for service in services {
+        if matches!(service.image_source, ImageSource::PushedToSeed(_)) {
+            continue;
+        }
         if !image_exists_locally(&docker, &service.image).await? {
             service.image_source = ImageSource::Registry;
             continue;
