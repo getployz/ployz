@@ -174,7 +174,7 @@ pub async fn execute_command(
             crate::build::runtime::cancel(command, config).await
         }
         PloyzctlCommand::BuildExecutor(command) => {
-            crate::build::external_runtime::run(command, config).await
+            crate::build::external_runtime::run(command, config.clone()).await
         }
         PloyzctlCommand::CorePromote(command) => {
             crate::core::runtime::promote(command, config).await
@@ -187,6 +187,9 @@ pub async fn execute_command(
         }
         PloyzctlCommand::Deploy(command) => {
             crate::deploy::runtime::follow::execute_deploy(command, config).await
+        }
+        PloyzctlCommand::DeployCurrentTree(command) => {
+            crate::deploy::runtime::current_tree::execute(command, config).await
         }
         PloyzctlCommand::SystemDeploy(command) => {
             crate::deploy::runtime::follow::execute_deploy(command, config).await

@@ -54,9 +54,17 @@ const SHUTDOWN_TIMEOUT: Duration = BUILD_TASK_DRAIN_TIMEOUT
 
 pub(crate) async fn run(
     command: BuildExecutorCommand,
-    config: &PloyzctlRuntimeConfig,
+    config: PloyzctlRuntimeConfig,
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
-    let config = with_cluster_context_from_disk(config.clone())?;
+    run_with_ready(command, config, None).await
+}
+
+pub(crate) async fn run_with_ready(
+    command: BuildExecutorCommand,
+    config: PloyzctlRuntimeConfig,
+    ready: Option<oneshot::Sender<()>>,
+) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
+    let config = with_cluster_context_from_disk(config)?;
     let mut connect = nats_connect_config(&config)?;
     connect.principal = executor_principal(&BuildExecutorIdentity {
         pool_id: command.pool_id.clone(),
@@ -89,6 +97,9 @@ pub(crate) async fn run(
         runtime.recover_orphans().await?;
     }
     let service = start_executor_service(client, identity, runtime.clone(), terminal_tx).await?;
+    if let Some(ready) = ready {
+        let _ = ready.send(());
+    }
 
     let wait_result =
         match command.mode {
