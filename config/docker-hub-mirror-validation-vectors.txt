@@ -1,0 +1,11 @@
+valid mirror.gcr.io
+valid cache.example:5000
+invalid https://mirror.gcr.io
+invalid MIRROR.gcr.io
+invalid mirror..gcr.io
+invalid -mirror.gcr.io
+invalid mirror.gcr.io:0
+invalid mirror.gcr.io:05000
+invalid mirror.gcr.io:65536
+invalid <oversized-host>
+invalid <oversized-port>

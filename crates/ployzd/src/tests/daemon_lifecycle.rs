@@ -4,12 +4,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::config::{
     DEFAULT_GATEWAY_CERTIFICATE_STATE_DIR, DaemonProcessConfigError, DaemonProcessConfigInner,
-    PLOYZ_DATAPLANE_BRIDGE_IFNAME_ENV, PLOYZ_DATAPLANE_ENDPOINT_SUBNET_ENV,
-    PLOYZ_DATAPLANE_WG_IFNAME_ENV, PLOYZ_DATAPLANE_WG_MTU_ENV, PLOYZ_DEPLOY_MACHINES_ENV,
-    PLOYZ_EBPF_BYTECODE_ENV, PLOYZ_EBPF_CTL_ENV, PLOYZ_GATEWAY_LISTEN_ADDR_ENV,
-    PLOYZ_JOIN_NKEY_SEED_FILE_ENV, PLOYZ_MACHINE_BOOTSTRAP_URL_ENV, PLOYZ_MACHINE_ID_ENV,
-    PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV, PLOYZ_NATS_CA_FILE_ENV, PLOYZ_NATS_NKEY_SEED_FILE_ENV,
-    PLOYZ_NATS_URL_ENV, load_daemon_process_config,
+    PLOYZ_BUILD_REGISTRY_MIRROR_ENV, PLOYZ_DATAPLANE_BRIDGE_IFNAME_ENV,
+    PLOYZ_DATAPLANE_ENDPOINT_SUBNET_ENV, PLOYZ_DATAPLANE_WG_IFNAME_ENV, PLOYZ_DATAPLANE_WG_MTU_ENV,
+    PLOYZ_DEPLOY_MACHINES_ENV, PLOYZ_EBPF_BYTECODE_ENV, PLOYZ_EBPF_CTL_ENV,
+    PLOYZ_GATEWAY_LISTEN_ADDR_ENV, PLOYZ_JOIN_NKEY_SEED_FILE_ENV, PLOYZ_MACHINE_BOOTSTRAP_URL_ENV,
+    PLOYZ_MACHINE_ID_ENV, PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV, PLOYZ_NATS_CA_FILE_ENV,
+    PLOYZ_NATS_NKEY_SEED_FILE_ENV, PLOYZ_NATS_URL_ENV, load_daemon_process_config,
 };
 use crate::role_cli::{DaemonProcessRole, parse_role_args};
 use ployz_core::network::MachineEndpointSubnet;
@@ -110,6 +110,7 @@ fn nats_client_roles_load_the_host_runner_written_nats_url() {
             PLOYZ_DATAPLANE_WG_IFNAME_ENV => Some("wg-ployz".to_owned()),
             PLOYZ_DATAPLANE_WG_MTU_ENV => Some("1412".to_owned()),
             PLOYZ_DATAPLANE_ENDPOINT_SUBNET_ENV => Some("10.77.2.0/24".to_owned()),
+            PLOYZ_BUILD_REGISTRY_MIRROR_ENV => Some("mirror.gcr.io".to_owned()),
             _ => None,
         },
     )
@@ -146,6 +147,35 @@ fn nats_client_roles_load_the_host_runner_written_nats_url() {
     assert_eq!(config.ployz_native_mesh.wg_ifname, "wg-ployz");
     assert_eq!(config.ployz_native_mesh.wg_mtu, Some(1412));
     assert_eq!(config.ployz_native_mesh.endpoint_subnet, "10.77.2.0/24");
+    assert_eq!(
+        config
+            .build_registry_mirror
+            .as_ref()
+            .expect("configured build mirror")
+            .as_str(),
+        "mirror.gcr.io"
+    );
+}
+
+#[test]
+fn machine_role_rejects_an_unsafe_build_registry_mirror() {
+    let error = load_daemon_process_config(
+        DaemonProcessRole::Machine(machine_id("machine_7")),
+        |name| match name {
+            PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:7422".to_owned()),
+            PLOYZ_NATS_CA_FILE_ENV => Some("/var/lib/ployz/nats/ca.pem".to_owned()),
+            PLOYZ_NATS_NKEY_SEED_FILE_ENV => Some("/var/lib/ployz/nats/machine.seed".to_owned()),
+            PLOYZ_BUILD_REGISTRY_MIRROR_ENV => Some("mirror.gcr.io\"]\n[worker.oci]".to_owned()),
+            _ => None,
+        },
+    )
+    .expect_err("unsafe mirror is rejected");
+
+    assert!(matches!(
+        error,
+        DaemonProcessConfigError::InvalidBuildRegistryMirror { value, .. }
+            if value.contains("worker.oci")
+    ));
 }
 
 #[test]
