@@ -2705,10 +2705,11 @@ async fn volume_handoff_restarts_a_planning_stopped_owner_found_running_at_point
 }
 
 #[tokio::test]
-async fn volume_handoff_stop_timeout_retains_uncertainty_and_restarts_planning_running_owner() {
+async fn volume_handoff_stop_timeout_never_restarts_even_when_delivery_completes_late() {
     let mut recorder = RecordingOperations::default();
-    let mut runtime =
-        RecordingRuntime::with_containers(["unused"]).with_hanging_stop_for("ctr_old");
+    let late_completion = Arc::new(tokio::sync::Notify::new());
+    let mut runtime = RecordingRuntime::with_containers(["unused"])
+        .with_hanging_stop_completing_late("ctr_old", Arc::clone(&late_completion));
 
     let error = execute_deploy(
         volume_backed_replacement_command(&[("ctr_old", true)])
@@ -2728,7 +2729,14 @@ async fn volume_handoff_stop_timeout_retains_uncertainty_and_restarts_planning_r
         panic!("deploy failure")
     };
     assert!(runtime.requests.is_empty());
-    assert_eq!(runtime.restarts.len(), 1);
+    late_completion.notified().await;
+    assert!(runtime.restarts.is_empty());
+    assert!(!recorder.records.iter().any(|record| matches!(
+        record,
+        RecordedOperation::VolumeHandoffRollbackFinished { outcomes }
+            if outcomes.iter().any(|outcome|
+                outcome.outcome == DeployVolumeHandoffRollbackOutcome::Restarted)
+    )));
     assert!(failure.retained_artifacts().iter().any(|artifact| matches!(
         artifact,
         ployz_core::operation::RetainedArtifact::VolumeOwnerStopUncertain {
@@ -2737,6 +2745,61 @@ async fn volume_handoff_stop_timeout_retains_uncertainty_and_restarts_planning_r
             ..
         }
     )));
+    assert!(
+        !failure.retained_artifacts().iter().any(|artifact| matches!(
+            artifact,
+            RetainedArtifact::VolumeOwnerRestorationUnconfirmed { .. }
+        ))
+    );
+}
+
+#[tokio::test]
+async fn volume_handoff_stop_unavailable_after_delivery_never_restarts_after_late_completion() {
+    let mut recorder = RecordingOperations::default();
+    let late_completion = Arc::new(tokio::sync::Notify::new());
+    let mut runtime = RecordingRuntime::with_containers(["unused"])
+        .with_stop_unavailable_after_delivery("ctr_old", Arc::clone(&late_completion));
+
+    let error = execute_deploy(
+        volume_backed_replacement_command(&[("ctr_old", true)]),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            machine_runtime: &mut runtime,
+            health_checker: &mut RecordingHealth::healthy(),
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut RecordingNamespaceState::stored(),
+        },
+    )
+    .await
+    .expect_err("lost stop response fails before a consumer starts");
+
+    let DeployExecutionError::Failed { failure, .. } = error else {
+        panic!("deploy failure")
+    };
+    late_completion.notified().await;
+    assert!(runtime.requests.is_empty());
+    assert!(runtime.restarts.is_empty());
+    assert!(!recorder.records.iter().any(|record| matches!(
+        record,
+        RecordedOperation::VolumeHandoffRollbackFinished { outcomes }
+            if outcomes.iter().any(|outcome|
+                outcome.outcome == DeployVolumeHandoffRollbackOutcome::Restarted)
+    )));
+    assert!(failure.retained_artifacts().iter().any(|artifact| matches!(
+        artifact,
+        RetainedArtifact::VolumeOwnerStopUncertain {
+            prior_state: ployz_core::deploy::DeployVolumeHandoffPriorState::Running,
+            uncertainty:
+                ployz_core::operation::DeployVolumeHandoffStopUncertain::RuntimeUnavailable { .. },
+            ..
+        }
+    )));
+    assert!(
+        !failure.retained_artifacts().iter().any(|artifact| matches!(
+            artifact,
+            RetainedArtifact::VolumeOwnerRestorationUnconfirmed { .. }
+        ))
+    );
 }
 
 #[tokio::test]
@@ -2774,12 +2837,11 @@ async fn volume_handoff_stop_timeout_never_restarts_a_planning_stopped_owner() {
 }
 
 #[tokio::test]
-async fn volume_handoff_partial_owner_stop_failure_restarts_confirmed_and_uncertain_running_owners()
-{
+async fn volume_handoff_partial_owner_stop_failure_restarts_only_confirmed_stopped_owner() {
     let mut recorder = RecordingOperations::default();
     let mut runtime =
         RecordingRuntime::with_containers(["ctr_new"]).with_stop_failure_for("ctr_old_2");
-    execute_deploy(
+    let error = execute_deploy(
         volume_backed_replacement_command(&[("ctr_old_1", true), ("ctr_old_2", true)]),
         DeployExecutionPorts {
             recorder: &mut recorder,
@@ -2792,6 +2854,10 @@ async fn volume_handoff_partial_owner_stop_failure_restarts_confirmed_and_uncert
     .await
     .expect_err("second owner stop fails");
 
+    let DeployExecutionError::Failed { failure, .. } = error else {
+        panic!("deploy failure")
+    };
+
     assert!(runtime.requests.is_empty());
     assert_eq!(
         runtime
@@ -2799,8 +2865,23 @@ async fn volume_handoff_partial_owner_stop_failure_restarts_confirmed_and_uncert
             .iter()
             .map(|(_, request)| request.container_id.clone())
             .collect::<Vec<_>>(),
-        [container_id("ctr_old_1"), container_id("ctr_old_2")]
+        [container_id("ctr_old_1")]
     );
+    assert!(recorder.records.iter().any(|record| matches!(
+        record,
+        RecordedOperation::VolumeHandoffRollbackFinished { outcomes }
+            if matches!(outcomes.as_slice(), [outcome]
+                if outcome.target.container_id == container_id("ctr_old_1")
+                    && outcome.outcome == DeployVolumeHandoffRollbackOutcome::Restarted)
+    )));
+    assert!(failure.retained_artifacts().iter().any(|artifact| matches!(
+        artifact,
+        RetainedArtifact::VolumeOwnerStopUncertain {
+            target,
+            uncertainty: ployz_core::operation::DeployVolumeHandoffStopUncertain::StopFailed { .. },
+            ..
+        } if target.container_id == container_id("ctr_old_2")
+    )));
 }
 
 #[tokio::test]

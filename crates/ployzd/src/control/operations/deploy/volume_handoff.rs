@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployVolumeHandoffApplied, DeployVolumeHandoffAppliedParticipant,
-    DeployVolumeHandoffParticipant, DeployVolumeHandoffPriorState, DeployVolumeHandoffStopOutcome,
+    DeployVolumeHandoffParticipant, DeployVolumeHandoffStopOutcome,
     NonEmptyAppliedVolumeHandoffParticipants, NonEmptyVolumeHandoffParticipants,
     NonEmptyVolumeNames,
 };
@@ -505,10 +505,8 @@ fn restoration_unconfirmed(
 fn restart_eligible_for(owner: &VolumeOwnerState) -> bool {
     match &owner.stop {
         VolumeOwnerStopState::Applied(DeployVolumeHandoffStopOutcome::StoppedRunning) => true,
-        VolumeOwnerStopState::Uncertain(_) => {
-            owner.participant.prior_state == DeployVolumeHandoffPriorState::Running
-        }
         VolumeOwnerStopState::Attempting
+        | VolumeOwnerStopState::Uncertain(_)
         | VolumeOwnerStopState::Applied(
             DeployVolumeHandoffStopOutcome::AlreadyStopped
             | DeployVolumeHandoffStopOutcome::Missing,
