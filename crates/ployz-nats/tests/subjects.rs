@@ -7,11 +7,12 @@ use ployz_core::operation::{
     OperationEvent,
 };
 use ployz_nats::operation_event_subject::operation_event_subject_suffix;
+use ployz_nats::services::service_discovery_subscriptions;
 use ployz_nats::subjects::{
     BUILD_EXECUTOR_SERVICE_NAME, BuildExecutorServiceEndpoint, MachineServiceEndpoint,
     OperationApiEndpoint, OperationApiEndpointExecution, OperationProgressScope,
-    build_executor_log, build_executor_service, build_executor_service_discovery_subscriptions,
-    machine_container_facts, machine_facts, machine_service, operation_progress_watch,
+    build_executor_log, build_executor_service, machine_container_facts, machine_facts,
+    machine_service, operation_progress_watch,
 };
 use ployz_test_support::ids::{container_id, machine_id, namespace_id, operation_id};
 
@@ -242,8 +243,8 @@ fn external_build_executor_subjects_are_exactly_pool_and_executor_scoped() {
 #[test]
 fn external_build_executor_service_discovery_is_narrow_and_fixed() {
     assert_eq!(
-        build_executor_service_discovery_subscriptions(),
-        [
+        service_discovery_subscriptions(&[BUILD_EXECUTOR_SERVICE_NAME]),
+        vec![
             "$SRV.PING".to_owned(),
             "$SRV.PING.plz-build-executor".to_owned(),
             "$SRV.PING.plz-build-executor.*".to_owned(),
@@ -256,7 +257,7 @@ fn external_build_executor_service_discovery_is_narrow_and_fixed() {
         ]
     );
     assert!(
-        build_executor_service_discovery_subscriptions()
+        service_discovery_subscriptions(&[BUILD_EXECUTOR_SERVICE_NAME])
             .iter()
             .all(|subject| subject != "$SRV.>" && !subject.ends_with(".>"))
     );

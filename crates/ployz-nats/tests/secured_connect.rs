@@ -23,13 +23,16 @@ use ployz_nats::connect::{
     NatsConnectConfig, authenticated_connect_options, connect_authenticated,
 };
 use ployz_nats::permissions::{inbox_prefix, inbox_subscribe_scope};
+use ployz_nats::service_runtime::{NatsServiceResponse, start_nats_service};
+use ployz_nats::services::{
+    EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceMetadata, ServiceVersion,
+};
 use ployz_nats::subjects::{
     BUILD_EXECUTOR_SERVICE_NAME, BuildExecutorServiceEndpoint, INTENT_CHANGED, INTENT_GET,
     MachineServiceEndpoint, OPERATOR_INIT_FIRST_MACHINE_ACTIVATE, PENDING_MACHINE_JOINS_CHANGED,
     RUNTIME_SNAPSHOT_SEED, RUNTIME_SNAPSHOT_STREAM, build_executor_log, build_executor_service,
     gateway_status, gateway_status_scope, machine_container_facts, machine_facts,
-    machine_facts_scope, machine_service, machine_service_command_scope,
-    machine_service_query_scope,
+    machine_facts_scope, machine_service,
 };
 use ployz_test_support::nats::SecuredTestNats;
 
@@ -107,14 +110,53 @@ async fn extra_cloud_operator_public_key_can_connect_as_operator() {
     .await
     .expect("secured fixture");
 
-    let client = connect_authenticated(
+    let (client, mut events) = connect_with_event_capture(
         &fixture.config_with_seed(NatsPrincipal::Operator, cloud_user.seed),
-        CONNECT_TIMEOUT,
     )
-    .await
-    .expect("external cloud operator key connects as Operator principal");
+    .await;
 
+    client
+        .publish(INTENT_GET, "cloud intent".into())
+        .await
+        .expect("cloud publishes current Operator endpoint");
     client.flush().await.expect("cloud operator round-trips");
+    assert_no_permission_violation(&mut events).await;
+    client
+        .publish("plz.v1.rpc.operator.query.future.read", "future".into())
+        .await
+        .expect("future publish accepted client-side");
+    client.flush().await.expect("future publish flushes");
+    assert_permission_violation_kind(&mut events, "Publish").await;
+}
+
+#[tokio::test]
+async fn controller_service_registration_needs_no_inbox_publish_authority() {
+    let fixture = SecuredTestNats::start().await.expect("secured fixture");
+    let (controller, mut events) = connect_with_event_capture(&fixture.controller_config()).await;
+    let endpoint = NatsServiceEndpointSpec::new(
+        "init.first_machine.activate",
+        OPERATOR_INIT_FIRST_MACHINE_ACTIVATE,
+        EndpointExecution::MutatesOperation,
+    );
+    let spec = NatsServiceSpec::new(
+        "registration-proof",
+        "plz-api",
+        ServiceVersion::new(0, 1, 0),
+        "registration proof",
+        ServiceMetadata::empty(),
+        vec![endpoint.clone()],
+    );
+    let mut service = start_nats_service(controller, &spec)
+        .await
+        .expect("controller starts service with finite discovery authority");
+    service
+        .bind_endpoint(&endpoint, |_request| async {
+            NatsServiceResponse::ok(b"activated".to_vec())
+        })
+        .await
+        .expect("flush barrier proves endpoint registration");
+    assert_no_permission_violation(&mut events).await;
+    service.shutdown().await.expect("service shuts down");
 }
 
 #[tokio::test]
@@ -320,6 +362,7 @@ async fn external_build_executor_is_denied_other_authority_by_the_server() {
         machine_service(&machine_id, MachineServiceEndpoint::BuildStart),
         "$SRV.PING.some-other-service".to_owned(),
         format!("$SRV.PING.{BUILD_EXECUTOR_SERVICE_NAME}.instance.extra"),
+        "plz.v1.rpc.build_executor.command.pool-a.executor-a.future.run".to_owned(),
     ] {
         let _subscription = executor
             .subscribe(denied)
@@ -353,6 +396,10 @@ async fn external_build_executor_is_denied_other_authority_by_the_server() {
         (
             machine_service(&machine_id, MachineServiceEndpoint::ImageRemove),
             "image-remove",
+        ),
+        (
+            "plz.v1.rpc.machine.command.machine-a.image.layer.push".to_owned(),
+            "future-image-transfer",
         ),
         (machine_facts(&machine_id), "machine-facts"),
         (INTENT_CHANGED.to_owned(), "intent-changed"),
@@ -529,6 +576,18 @@ async fn operator_can_read_intent_and_subscribe_runtime_broadcasts_only() {
             "expected a subscription violation, got: {violation}"
         );
     }
+    for denied in [
+        "plz.v1.rpc.operator.query.future.read",
+        "plz.v1.rpc.operator.command.future.write",
+        "plz.v1.rpc.machine.command.machine-a.image.layer.push",
+    ] {
+        operator
+            .publish(denied, "future".into())
+            .await
+            .expect("future publish accepted client-side");
+        operator.flush().await.expect("future publish flushes");
+        assert_permission_violation_kind(&mut events, "Publish").await;
+    }
 }
 
 #[tokio::test]
@@ -570,7 +629,7 @@ async fn plaintext_connect_to_tls_port_fails() {
 }
 
 #[tokio::test]
-async fn controller_can_publish_to_its_own_inbox_without_permission_violation() {
+async fn controller_cannot_publish_to_its_own_inbox() {
     let fixture = SecuredTestNats::start().await.expect("secured fixture");
     let (controller, mut events) = connect_with_event_capture(&fixture.controller_config()).await;
 
@@ -583,7 +642,7 @@ async fn controller_can_publish_to_its_own_inbox_without_permission_violation() 
         .expect("publish accepted client-side");
     controller.flush().await.expect("flush");
 
-    assert_no_permission_violation(&mut events).await;
+    assert_permission_violation_kind(&mut events, "Publish").await;
 }
 
 #[tokio::test]
@@ -614,7 +673,7 @@ async fn machine_publish_outside_allow_list_gets_permission_violation() {
 }
 
 #[tokio::test]
-async fn machine_can_publish_to_its_own_inbox_without_permission_violation() {
+async fn machine_cannot_publish_to_its_own_inbox() {
     let machine_id = MachineId::try_new("machine-a").expect("valid machine id");
     let fixture = SecuredTestNats::start_with_machines(std::slice::from_ref(&machine_id))
         .await
@@ -638,7 +697,7 @@ async fn machine_can_publish_to_its_own_inbox_without_permission_violation() {
         .expect("publish accepted client-side");
     machine.flush().await.expect("flush");
 
-    assert_no_permission_violation(&mut events).await;
+    assert_permission_violation_kind(&mut events, "Publish").await;
 }
 
 #[tokio::test]
@@ -751,6 +810,28 @@ async fn controller_can_request_first_machine_activation() {
 
     assert_eq!(response.payload.as_ref(), b"activated");
     assert_no_permission_violation(&mut events).await;
+    for denied in [
+        "plz.v1.rpc.operator.command.future.internal",
+        "plz.v1.rpc.core.query.future.get",
+        "plz.v1.rpc.machine.command.machine-a.future.run",
+        "plz.v1.rpc.build_executor.command.pool-a.executor-a.future.run",
+    ] {
+        caller_client
+            .publish(denied, "future".into())
+            .await
+            .expect("future publish accepted client-side");
+        caller_client.flush().await.expect("future publish flushes");
+        assert_permission_violation_kind(&mut events, "Publish").await;
+    }
+    let _unrelated_discovery = caller_client
+        .subscribe("$SRV.PING.unrelated-service.runtime")
+        .await
+        .expect("unrelated discovery accepted client-side");
+    caller_client
+        .flush()
+        .await
+        .expect("unrelated discovery flushes");
+    assert_permission_violation_kind(&mut events, "Subscription").await;
 }
 
 async fn request_when_responder_ready(
@@ -784,14 +865,15 @@ async fn machine_can_serve_machine_rpc_and_service_discovery_subjects() {
     };
     let (machine_client, mut events) = connect_with_event_capture(&config).await;
 
-    let _machine_rpc = machine_client
-        .subscribe(machine_service_query_scope(&machine_id))
-        .await
-        .expect("machine subscribes its machine query service scope");
-    let _machine_command_rpc = machine_client
-        .subscribe(machine_service_command_scope(&machine_id))
-        .await
-        .expect("machine subscribes its machine command service scope");
+    let mut endpoint_subscriptions = Vec::new();
+    for endpoint in MachineServiceEndpoint::ALL.iter().copied() {
+        endpoint_subscriptions.push(
+            machine_client
+                .subscribe(machine_service(&machine_id, endpoint))
+                .await
+                .expect("machine subscribes exact endpoint"),
+        );
+    }
     let _service_ping = machine_client
         .subscribe("$SRV.PING")
         .await
@@ -803,6 +885,25 @@ async fn machine_can_serve_machine_rpc_and_service_discovery_subjects() {
     machine_client.flush().await.expect("flush");
 
     assert_no_permission_violation(&mut events).await;
+    for denied in [
+        "plz.v1.rpc.machine.command.machine-a.future.run".to_owned(),
+        machine_service(
+            &MachineId::try_new("machine-b").expect("machine id"),
+            MachineServiceEndpoint::Inspect,
+        ),
+        "$SRV.PING.plz-machine.runtime.extra".to_owned(),
+        "$SRV.PING.plz-api.runtime".to_owned(),
+    ] {
+        let _denied = machine_client
+            .subscribe(denied)
+            .await
+            .expect("denied subscribe accepted client-side");
+        machine_client
+            .flush()
+            .await
+            .expect("denied subscribe flushes");
+        assert_permission_violation_kind(&mut events, "Subscription").await;
+    }
 }
 
 #[tokio::test]
@@ -873,7 +974,7 @@ async fn join_cannot_sniff_other_principals_inboxes() {
         .expect("machine connects");
     let request_subject = machine_service(&machine_id, MachineServiceEndpoint::Inspect);
     let mut requests = machine_client
-        .subscribe(machine_service_query_scope(&machine_id))
+        .subscribe(request_subject.clone())
         .await
         .expect("machine subscribes its service scope");
     machine_client.flush().await.expect("flush");

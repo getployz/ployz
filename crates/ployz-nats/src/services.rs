@@ -1,8 +1,77 @@
-//! NATS Service API helpers.
+//! NATS Service API protocol helpers, including the canonical `$SRV` discovery subjects.
 
 use std::fmt;
 
-pub const SERVICE_API_PING_SUBJECT: &str = "$SRV.PING";
+pub const API_SERVICE_NAME: &str = "plz-api";
+pub const MACHINE_SERVICE_NAME: &str = "plz-machine";
+pub const GATEWAY_MACHINE_SERVICE_NAME: &str = "plz-gateway-machine";
+pub const DNS_SERVICE_NAME: &str = "plz-dns";
+pub const INTENT_SERVICE_NAME: &str = "plz-intent";
+pub const INGRESS_ENDPOINT_SERVICE_NAME: &str = "plz-ingress-endpoint";
+pub const RUNTIME_PROJECTION_SERVICE_NAME: &str = "plz-runtime-projection";
+pub const BUILD_EXECUTOR_SERVICE_NAME: &str = "plz-build-executor";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceDiscoveryVerb {
+    Ping,
+    Info,
+    Stats,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceDiscoveryTarget<'a> {
+    All,
+    Service { name: &'a str },
+    RuntimeInstance { name: &'a str },
+}
+
+#[must_use]
+pub fn service_discovery_subject(
+    verb: ServiceDiscoveryVerb,
+    target: ServiceDiscoveryTarget<'_>,
+) -> String {
+    let prefix = format!("$SRV.{}", verb.token());
+    match target {
+        ServiceDiscoveryTarget::All => prefix,
+        ServiceDiscoveryTarget::Service { name } => format!("{prefix}.{name}"),
+        ServiceDiscoveryTarget::RuntimeInstance { name } => format!("{prefix}.{name}.*"),
+    }
+}
+
+impl ServiceDiscoveryVerb {
+    pub const ALL: &[Self] = &[Self::Ping, Self::Info, Self::Stats];
+
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Ping => "PING",
+            Self::Info => "INFO",
+            Self::Stats => "STATS",
+        }
+    }
+}
+
+#[must_use]
+pub fn service_discovery_subscriptions(service_names: &[&str]) -> Vec<String> {
+    ServiceDiscoveryVerb::ALL
+        .iter()
+        .flat_map(|verb| {
+            std::iter::once(service_discovery_subject(
+                *verb,
+                ServiceDiscoveryTarget::All,
+            ))
+            .chain(service_names.iter().flat_map(move |name| {
+                [
+                    service_discovery_subject(*verb, ServiceDiscoveryTarget::Service { name }),
+                    service_discovery_subject(
+                        *verb,
+                        ServiceDiscoveryTarget::RuntimeInstance { name },
+                    ),
+                ]
+            }))
+        })
+        .collect()
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NatsServiceSpec {
@@ -172,8 +241,13 @@ impl ServiceDiscoveryQuery<'_> {
     #[must_use]
     pub fn subject(&self) -> String {
         match self {
-            Self::All => SERVICE_API_PING_SUBJECT.to_owned(),
-            Self::Service { name } => format!("{SERVICE_API_PING_SUBJECT}.{name}"),
+            Self::All => {
+                service_discovery_subject(ServiceDiscoveryVerb::Ping, ServiceDiscoveryTarget::All)
+            }
+            Self::Service { name } => service_discovery_subject(
+                ServiceDiscoveryVerb::Ping,
+                ServiceDiscoveryTarget::Service { name },
+            ),
         }
     }
 }
