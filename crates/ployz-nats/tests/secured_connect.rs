@@ -141,7 +141,7 @@ async fn extra_cloud_operator_public_key_can_connect_as_operator() {
 }
 
 #[tokio::test]
-async fn controller_service_registration_needs_no_inbox_publish_authority() {
+async fn controller_service_registration_uses_a_bounded_flush_barrier() {
     let fixture = SecuredTestNats::start().await.expect("secured fixture");
     let (controller, mut events) = connect_with_event_capture(&fixture.controller_config()).await;
     let endpoint = NatsServiceEndpointSpec::new(
@@ -648,19 +648,35 @@ async fn plaintext_connect_to_tls_port_fails() {
 }
 
 #[tokio::test]
-async fn controller_cannot_publish_to_its_own_inbox() {
+async fn controller_can_publish_only_to_its_own_inbox() {
     let fixture = SecuredTestNats::start().await.expect("secured fixture");
     let (controller, mut events) = connect_with_event_capture(&fixture.controller_config()).await;
+    let own_inbox = format!("{}.test", inbox_prefix(&NatsPrincipal::Controller));
+    let mut own_messages = controller
+        .subscribe(own_inbox.clone())
+        .await
+        .expect("controller subscribes its own inbox");
 
     controller
-        .publish(
-            format!("{}.test", inbox_prefix(&NatsPrincipal::Controller)),
-            "service reply".into(),
-        )
+        .publish(own_inbox, "service reply".into())
         .await
         .expect("publish accepted client-side");
     controller.flush().await.expect("flush");
+    let message = tokio::time::timeout(EVENT_TIMEOUT, own_messages.next())
+        .await
+        .expect("own inbox delivery does not time out")
+        .expect("own inbox stays open");
+    assert_eq!(message.payload.as_ref(), b"service reply");
+    assert_no_permission_violation(&mut events).await;
 
+    controller
+        .publish(
+            format!("{}.test", inbox_prefix(&NatsPrincipal::Operator)),
+            "cross-principal reply".into(),
+        )
+        .await
+        .expect("publish accepted client-side");
+    controller.flush().await.expect("cross-inbox flush");
     assert_permission_violation_kind(&mut events, "Publish").await;
 }
 

@@ -372,12 +372,15 @@ fn exhaustive_subject_family_principal_direction_matrix_is_intentional() {
     for owner in MatrixPrincipal::ALL.iter().copied() {
         let subject = format!("{}.reply", inbox_prefix(&owner.principal()));
         let allowed = match owner {
+            MatrixPrincipal::Controller => vec![
+                cell(MatrixPrincipal::Controller, Direction::Publish),
+                cell(MatrixPrincipal::Controller, Direction::Subscribe),
+            ],
             MatrixPrincipal::Operator | MatrixPrincipal::CloudOperator => vec![
                 cell(MatrixPrincipal::Operator, Direction::Subscribe),
                 cell(MatrixPrincipal::CloudOperator, Direction::Subscribe),
             ],
-            MatrixPrincipal::Controller
-            | MatrixPrincipal::MachineA
+            MatrixPrincipal::MachineA
             | MatrixPrincipal::MachineB
             | MatrixPrincipal::ExecutorA
             | MatrixPrincipal::Join => vec![cell(owner, Direction::Subscribe)],

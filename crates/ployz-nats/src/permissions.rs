@@ -464,6 +464,11 @@ fn controller_publications() -> SubjectPermissions {
             .to_owned(),
     );
     allow.extend(core_query_endpoints().map(ToOwned::to_owned));
+    // Controller-hosted services answer Controller-originated requests across
+    // authorization reloads, which can invalidate request-scoped response grants
+    // while a handler is running. The principal-scoped inbox keeps those replies
+    // available without granting publication to any other caller's inbox.
+    allow.push(inbox_subscribe_scope(&NatsPrincipal::Controller));
     allow.extend([
         OPERATION_PROGRESS_SCOPE.to_owned(),
         INTENT_CHANGED.to_owned(),
