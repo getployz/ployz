@@ -274,6 +274,11 @@ async fn group_core_deploy_semantics() {
         build::assert_authenticated_build_journeys(&core),
     )
     .await;
+    timed(
+        "standalone_current_tree_build",
+        build::assert_standalone_current_tree_uses_dirty_snapshot(&core),
+    )
+    .await;
 
     finish(core).await;
 }
