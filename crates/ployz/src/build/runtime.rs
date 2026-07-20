@@ -18,6 +18,18 @@ pub enum BuildExecutionError {
     InvalidGitSource { message: String },
     #[error("Build Executor failed: {message}")]
     ExecutorRuntime { message: String },
+    #[error("Build Executor context is invalid: {message}")]
+    ExecutorContext { message: String },
+    #[error("Build Executor credential is unusable: {message}")]
+    ExecutorCredential { message: String },
+    #[error("Build Executor connection failed: {message}")]
+    ExecutorConnection { message: String },
+    #[error("Build Executor workspace is unavailable: {message}")]
+    ExecutorWorkspace { message: String },
+    #[error("Build Executor signal handling failed: {message}")]
+    ExecutorSignal { message: String },
+    #[error("Build Executor shutdown cleanup could not be confirmed")]
+    ExecutorShutdownCleanupUnconfirmed,
     #[error("Build Executor received no build within {}s", wait_timeout.as_secs())]
     ExecutorIdleTimedOut { wait_timeout: Duration },
 }

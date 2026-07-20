@@ -29,6 +29,7 @@ pub enum PloyzctlCommand {
     Telemetry(TelemetryCommand),
     BuildSubmit(build::BuildSubmitCommand),
     BuildCancel(build::BuildCancelCommand),
+    BuildEnroll(build::BuildEnrollCommand),
     BuildExecutor(build::BuildExecutorCommand),
     CorePromote(core::CorePromoteCommand),
     CoreReplace(core::CoreReplaceCommand),
@@ -81,6 +82,7 @@ impl PloyzctlCommand {
             Self::Telemetry(_) => None,
             Self::BuildSubmit(_) => Some("build submit"),
             Self::BuildCancel(_) => Some("build cancel"),
+            Self::BuildEnroll(_) => Some("build enroll"),
             Self::BuildExecutor(command) => Some(match command.mode {
                 build::BuildExecutorRunMode::Once { .. } => "build once",
                 build::BuildExecutorRunMode::Watch => "build watch",
@@ -246,6 +248,7 @@ enum TelemetryCli {
 enum BuildCli {
     Submit(build::BuildSubmitCli),
     Cancel(build::BuildCancelCli),
+    Enroll(build::BuildEnrollCli),
     Once(build::BuildExecutorOnceCli),
     Watch(build::BuildExecutorWatchCli),
 }
@@ -352,6 +355,9 @@ fn command_from_cli(command: CommandCli) -> Result<PloyzctlCommand, PloyzctlCliE
             }
             BuildCli::Cancel(command) => {
                 build::build_cancel_command(command).map(PloyzctlCommand::BuildCancel)
+            }
+            BuildCli::Enroll(command) => {
+                build::build_enroll_command(command).map(PloyzctlCommand::BuildEnroll)
             }
             BuildCli::Once(command) => {
                 build::build_executor_once_command(command).map(PloyzctlCommand::BuildExecutor)

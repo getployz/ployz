@@ -266,6 +266,7 @@ impl ProductCliHarness {
             nats_ca_file: material.map(|material| material.ca_file.clone()),
             nats_seed_file: material.map(|material| material.operator_seed_file.clone()),
             join_seed_file: material.map(|material| material.join_seed_file.clone()),
+            build_executor: Default::default(),
             nats_connect_timeout: None,
             host_runner_install_timeout: None,
             ops_watch_timeout: None,
