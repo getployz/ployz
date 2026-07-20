@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::num::NonZeroU16;
 
 use crate::certificate::CertificateProvisionFailure;
-use crate::deploy::{DeployCleanupContainer, DeployPlan, ImageReference};
+use crate::deploy::{DeployCleanupContainer, DeployPlan, DeployVolumeHandoffPlan, ImageReference};
 use crate::deploy::{VolumeAdmissionFailure, VolumeName};
 use crate::ids::{
     ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
@@ -720,6 +720,34 @@ impl DeployTransition {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct DeployVolumeHandoffRollbackContainerOutcome {
+    pub target: DeployCleanupContainer,
+    pub outcome: DeployVolumeHandoffRollbackOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DeployVolumeHandoffRollbackOutcome {
+    Restarted,
+    RestartFailed {
+        failure: DeployVolumeHandoffRestartFailure,
+    },
+    NotRestartedNewConsumerQuiescenceUnconfirmed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DeployVolumeHandoffRestartFailure {
+    RuntimeUnavailable,
+    StartFailed { inspect_hint: OperatorHint },
+    TimedOut { inspect_hint: OperatorHint },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployEvidence {
     ImageResolved {
@@ -741,6 +769,15 @@ pub enum DeployEvidence {
     ContainerStarted {
         machine_id: MachineId,
         container_id: ContainerId,
+    },
+    VolumeHandoffApplied {
+        service_id: ServiceId,
+        handoff: DeployVolumeHandoffPlan,
+    },
+    VolumeHandoffRollbackFinished {
+        service_id: ServiceId,
+        machine_id: MachineId,
+        outcomes: Vec<DeployVolumeHandoffRollbackContainerOutcome>,
     },
     HealthCheckStarted,
     PhaseStarted {
@@ -801,6 +838,24 @@ impl DeployEvidence {
                 machine_id: machine_id.clone(),
                 container_id: container_id.clone(),
             },
+            Self::VolumeHandoffApplied {
+                service_id,
+                handoff,
+            } => OperationEvent::DeployVolumeHandoffApplied {
+                operation_id: operation_id.clone(),
+                service_id: service_id.clone(),
+                handoff: handoff.clone(),
+            },
+            Self::VolumeHandoffRollbackFinished {
+                service_id,
+                machine_id,
+                outcomes,
+            } => OperationEvent::DeployVolumeHandoffRollbackFinished {
+                operation_id: operation_id.clone(),
+                service_id: service_id.clone(),
+                machine_id: machine_id.clone(),
+                outcomes: outcomes.clone(),
+            },
             Self::HealthCheckStarted => OperationEvent::DeployHealthCheckStarted {
                 operation_id: operation_id.clone(),
             },
@@ -859,7 +914,9 @@ const fn evidence_requirement(evidence: &DeployEvidence) -> EvidenceRequirement 
         DeployEvidence::ImageAvailabilityVerified { .. } => {
             EvidenceRequirement::RunningStage(DeployRunningStage::EnsuringImages)
         }
-        DeployEvidence::ContainerStarted { .. } => {
+        DeployEvidence::ContainerStarted { .. }
+        | DeployEvidence::VolumeHandoffApplied { .. }
+        | DeployEvidence::VolumeHandoffRollbackFinished { .. } => {
             EvidenceRequirement::RunningStage(DeployRunningStage::StartingContainers)
         }
         DeployEvidence::HealthCheckStarted => {

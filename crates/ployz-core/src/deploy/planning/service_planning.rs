@@ -199,11 +199,20 @@ fn finalize_service_plan(
             DeployPlanStep::RunContainer { .. } => None,
         })
         .collect::<Vec<_>>();
+    let volume_handoff =
+        plan_volume_handoff(service, &steps, &cleanup_candidates, &selected_containers);
     let mut cleanup_actions = super::super::retention::plan_cleanup(
         cleanup_candidates,
         &selected_containers,
         service.keep(),
     );
+    if let Some(handoff) = &volume_handoff {
+        cleanup_actions.extend(handoff.superseded.iter().map(|participant| {
+            DeployCleanupAction::RemoveContainer {
+                target: participant.target.clone(),
+            }
+        }));
+    }
     cleanup_actions.sort_by(|left, right| {
         left.target()
             .machine_id
@@ -227,8 +236,68 @@ fn finalize_service_plan(
         placement,
         steps,
         pre_start,
+        volume_handoff,
         cleanup_actions,
     }
+}
+
+fn plan_volume_handoff(
+    service: &DeployPlanningService,
+    steps: &[DeployPlanStep],
+    cleanup_candidates: &[ObservedCleanupCandidate],
+    selected_containers: &[&ContainerId],
+) -> Option<DeployVolumeHandoffPlan> {
+    let mut volume_names = service
+        .runtime()
+        .volume_mounts
+        .iter()
+        .map(|mount| mount.volume_name.clone())
+        .collect::<Vec<_>>();
+    volume_names.sort();
+    volume_names.dedup();
+    if volume_names.is_empty() {
+        return None;
+    }
+
+    let machine_id = steps.iter().find_map(|step| match step {
+        DeployPlanStep::RunContainer { machine_id, .. } => Some(machine_id.clone()),
+        DeployPlanStep::UseExistingContainer { .. } => None,
+    })?;
+    let mut superseded = cleanup_candidates
+        .iter()
+        .filter(|candidate| {
+            candidate.target.machine_id == machine_id
+                && candidate.target.identity.service_id == *service.service_id()
+                && !selected_containers.contains(&&candidate.target.container_id)
+        })
+        .map(|candidate| DeployVolumeHandoffParticipant {
+            target: candidate.target.clone(),
+            prior_state: if candidate.state.is_running() {
+                DeployVolumeHandoffPriorState::Running
+            } else {
+                DeployVolumeHandoffPriorState::Stopped
+            },
+        })
+        .collect::<Vec<_>>();
+    superseded.sort_by(|left, right| {
+        left.target
+            .machine_id
+            .cmp(&right.target.machine_id)
+            .then_with(|| left.target.container_id.cmp(&right.target.container_id))
+    });
+    superseded.dedup_by(|left, right| {
+        left.target.machine_id == right.target.machine_id
+            && left.target.container_id == right.target.container_id
+    });
+    if superseded.is_empty() {
+        return None;
+    }
+
+    Some(DeployVolumeHandoffPlan {
+        machine_id,
+        volume_names,
+        superseded,
+    })
 }
 
 fn normalize_existing_replicas(replicas: &mut Vec<ExistingServiceReplica>) {

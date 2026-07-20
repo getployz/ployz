@@ -711,6 +711,176 @@ fn service_with_volumes_on_different_pinned_machines_fails_planning() {
 }
 
 #[test]
+fn unchanged_named_volume_replica_has_no_handoff() {
+    let mut input = planning_input(1, [machine_id("machine_a")]);
+    input.service.runtime.environment =
+        runtime_with_env([("DATABASE_PASSWORD", "never-in-plan-evidence")]).environment;
+    declare_plain_volume_mounts(&mut input, vec![volume_mount("data", "/data")]);
+    input.volume_pins = vec![volume_pin("data", "machine_a")];
+    input.existing_replicas = vec![existing_replica("machine_a", "ctr_current")];
+    input.cleanup_candidates = vec![cleanup_container_observed(
+        "machine_a",
+        "ctr_current",
+        true,
+        None,
+    )];
+
+    let plan = plan_single_service(&input).expect("unchanged service plans");
+    let [phase] = plan.phases.as_slice() else {
+        panic!("one phase")
+    };
+    let [service] = phase.services.as_slice() else {
+        panic!("one service")
+    };
+
+    assert!(service.volume_handoff.is_none());
+    assert!(
+        !serde_json::to_string(&plan)
+            .expect("plan serializes")
+            .contains("never-in-plan-evidence")
+    );
+}
+
+#[test]
+fn changed_named_volume_replacement_has_deterministic_exact_handoff_owners() {
+    let mut input = planning_input(2, [machine_id("machine_a")]);
+    declare_plain_volume_mounts(
+        &mut input,
+        vec![
+            volume_mount("uploads", "/uploads"),
+            volume_mount("data", "/data"),
+            volume_mount("data", "/data-copy"),
+        ],
+    );
+    input.volume_pins = vec![
+        volume_pin("uploads", "machine_a"),
+        volume_pin("data", "machine_a"),
+    ];
+    input.cleanup_candidates = vec![
+        cleanup_container_observed("machine_a", "ctr_z", false, None),
+        cleanup_container_observed("machine_b", "ctr_other_machine", true, None),
+        cleanup_container_observed("machine_a", "ctr_a", true, None),
+        cleanup_container_observed("machine_a", "ctr_a", true, None),
+    ];
+
+    let plan = plan_single_service(&input).expect("replacement plans");
+    let [phase] = plan.phases.as_slice() else {
+        panic!("one phase")
+    };
+    let [service] = phase.services.as_slice() else {
+        panic!("one service")
+    };
+    let handoff = service
+        .volume_handoff
+        .as_ref()
+        .expect("same-machine replacement requires handoff");
+
+    assert_eq!(
+        handoff,
+        &DeployVolumeHandoffPlan {
+            machine_id: machine_id("machine_a"),
+            volume_names: vec![
+                VolumeName::try_new("data").expect("volume"),
+                VolumeName::try_new("uploads").expect("volume"),
+            ],
+            superseded: vec![
+                DeployVolumeHandoffParticipant {
+                    target: cleanup_container("machine_a", "ctr_a"),
+                    prior_state: DeployVolumeHandoffPriorState::Running,
+                },
+                DeployVolumeHandoffParticipant {
+                    target: cleanup_container("machine_a", "ctr_z"),
+                    prior_state: DeployVolumeHandoffPriorState::Stopped,
+                },
+            ],
+        }
+    );
+    assert_eq!(
+        plan.cleanup_actions
+            .iter()
+            .filter(|action| action.target().machine_id == machine_id("machine_a"))
+            .map(|action| action.target().container_id.clone())
+            .collect::<Vec<_>>(),
+        vec![container_id("ctr_a"), container_id("ctr_z")]
+    );
+}
+
+#[test]
+fn named_volume_handoff_does_not_cross_service_ownership() {
+    let mut api = planning_input(1, [machine_id("machine_a")]);
+    declare_plain_volume_mounts(&mut api, vec![volume_mount("shared", "/api")]);
+    api.volume_pins = vec![volume_pin("shared", "machine_a")];
+    api.cleanup_candidates = vec![cleanup_container_observed(
+        "machine_a",
+        "ctr_api_old",
+        true,
+        None,
+    )];
+
+    let mut worker = planning_input(1, [machine_id("machine_a")]);
+    update_request(&mut worker.service, |request| {
+        request.service_id = service_id("svc_worker");
+    });
+    declare_plain_volume_mounts(&mut worker, vec![volume_mount("shared", "/worker")]);
+    worker.volume_pins = vec![volume_pin("shared", "machine_a")];
+    worker.cleanup_candidates = vec![cleanup_container_observed(
+        "machine_a",
+        "ctr_api_old",
+        true,
+        None,
+    )];
+
+    let plan = plan_inputs(vec![api, worker], Vec::new()).expect("shared volume plans");
+    let services = plan
+        .phases
+        .iter()
+        .flat_map(|phase| &phase.services)
+        .collect::<Vec<_>>();
+    let api = services
+        .iter()
+        .find(|service| service.service_id == service_id("svc_api"))
+        .expect("api plan");
+    let worker = services
+        .iter()
+        .find(|service| service.service_id == service_id("svc_worker"))
+        .expect("worker plan");
+
+    assert!(api.volume_handoff.is_some());
+    assert!(worker.volume_handoff.is_none());
+}
+
+#[test]
+fn retained_stopped_handoff_owner_still_reaches_post_promotion_cleanup() {
+    let mut input = planning_input(1, [machine_id("machine_a")]);
+    declare_plain_volume_mounts(&mut input, vec![volume_mount("data", "/data")]);
+    input.volume_pins = vec![volume_pin("data", "machine_a")];
+    input.service.keep = Some(ployz_core::deploy::ContainerRetentionCount::new(1));
+    input.cleanup_candidates = vec![cleanup_container_observed(
+        "machine_a",
+        "ctr_stopped",
+        false,
+        Some(10),
+    )];
+
+    let plan = plan_single_service(&input).expect("replacement plans");
+    let [phase] = plan.phases.as_slice() else {
+        panic!("one phase")
+    };
+    let [service] = phase.services.as_slice() else {
+        panic!("one service")
+    };
+
+    assert!(service.volume_handoff.is_some());
+    assert_eq!(
+        plan.cleanup_actions
+            .iter()
+            .map(|action| action.target().clone())
+            .collect::<Vec<_>>(),
+        vec![cleanup_container("machine_a", "ctr_stopped")]
+    );
+}
+
+#[test]
 fn pinned_colocation_conflict_precedes_an_earlier_live_admission_failure() {
     let mut api = planning_input(1, [machine_id("machine_silent")]);
     declare_provisioned_volume(&mut api, "api_data", "/data", 600);

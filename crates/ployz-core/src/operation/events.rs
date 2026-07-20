@@ -8,7 +8,9 @@ use crate::build::{
     VerifiedGitCommit,
 };
 use crate::certificate::AcmeHttp01Challenge;
-use crate::deploy::{DeployCleanupContainer, DeployPlan, DeployReservationId, VolumeName};
+use crate::deploy::{
+    DeployCleanupContainer, DeployPlan, DeployReservationId, DeployVolumeHandoffPlan, VolumeName,
+};
 use crate::ids::{CertId, ContainerId, MachineId, NamespaceId, OperationId, ServiceId};
 use crate::image::OciDigest;
 use crate::ingress::{ActiveCertificateMetadata, IngressConfiguration};
@@ -47,12 +49,12 @@ use super::volume_remove::{VolumeRemoveEvent, VolumeRemoveTransition};
 use super::{
     BuildCachePruneEvidence, CertOperationFailure, CertRunningStage, DeployCleanupFailure,
     DeployCompletionOutcome, DeployOperationFailure, DeployPhaseOutcome, DeployRunningStage,
-    DeployServiceResult, MachineAddOperationState, MachineBuildCachePruneFailure,
-    MachineLifecycleFailure, MachineStoragePrepareFailure, MachineSubstrateVersions,
-    MachineUpdateFailure, NamespaceRemoveFailure, NamespaceRemoveRunningStage,
-    NetworkRepairFailure, NetworkRepairRunningStage, OperationKind, RouteTarget,
-    ServiceRestartFailure, ServiceRestartRunningStage, VolumeCreateFailure, VolumeCreateRequest,
-    VolumeCreateRunningStage, VolumeRemoveFailure, VolumeRemoveRunningStage,
+    DeployServiceResult, DeployVolumeHandoffRollbackContainerOutcome, MachineAddOperationState,
+    MachineBuildCachePruneFailure, MachineLifecycleFailure, MachineStoragePrepareFailure,
+    MachineSubstrateVersions, MachineUpdateFailure, NamespaceRemoveFailure,
+    NamespaceRemoveRunningStage, NetworkRepairFailure, NetworkRepairRunningStage, OperationKind,
+    RouteTarget, ServiceRestartFailure, ServiceRestartRunningStage, VolumeCreateFailure,
+    VolumeCreateRequest, VolumeCreateRunningStage, VolumeRemoveFailure, VolumeRemoveRunningStage,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -242,6 +244,17 @@ pub enum OperationEvent {
         operation_id: OperationId,
         machine_id: MachineId,
         container_id: ContainerId,
+    },
+    DeployVolumeHandoffApplied {
+        operation_id: OperationId,
+        service_id: ServiceId,
+        handoff: DeployVolumeHandoffPlan,
+    },
+    DeployVolumeHandoffRollbackFinished {
+        operation_id: OperationId,
+        service_id: ServiceId,
+        machine_id: MachineId,
+        outcomes: Vec<DeployVolumeHandoffRollbackContainerOutcome>,
     },
     DeployHealthCheckStarted {
         operation_id: OperationId,
@@ -590,6 +603,8 @@ impl OperationEvent {
             | Self::DeployRunning { operation_id, .. }
             | Self::DeployImageAvailabilityVerified { operation_id, .. }
             | Self::DeployContainerStarted { operation_id, .. }
+            | Self::DeployVolumeHandoffApplied { operation_id, .. }
+            | Self::DeployVolumeHandoffRollbackFinished { operation_id, .. }
             | Self::DeployHealthCheckStarted { operation_id }
             | Self::DeployPhaseStarted { operation_id, .. }
             | Self::DeployPhaseFinished { operation_id, .. }
@@ -705,6 +720,8 @@ impl OperationEvent {
             | Self::DeployImageResolved { .. }
             | Self::DeployImageAvailabilityVerified { .. }
             | Self::DeployContainerStarted { .. }
+            | Self::DeployVolumeHandoffApplied { .. }
+            | Self::DeployVolumeHandoffRollbackFinished { .. }
             | Self::DeployPhaseStarted { .. }
             | Self::DeployPhaseFinished { .. }
             | Self::DeployRunning { .. }
@@ -818,6 +835,24 @@ impl OperationEvent {
             } => Some(DeployEvidence::ContainerStarted {
                 machine_id: machine_id.clone(),
                 container_id: container_id.clone(),
+            }),
+            Self::DeployVolumeHandoffApplied {
+                service_id,
+                handoff,
+                ..
+            } => Some(DeployEvidence::VolumeHandoffApplied {
+                service_id: service_id.clone(),
+                handoff: handoff.clone(),
+            }),
+            Self::DeployVolumeHandoffRollbackFinished {
+                service_id,
+                machine_id,
+                outcomes,
+                ..
+            } => Some(DeployEvidence::VolumeHandoffRollbackFinished {
+                service_id: service_id.clone(),
+                machine_id: machine_id.clone(),
+                outcomes: outcomes.clone(),
             }),
             Self::DeployHealthCheckStarted { .. } => Some(DeployEvidence::HealthCheckStarted),
             Self::DeployPhaseStarted {
@@ -1274,6 +1309,30 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 event: DeployEvent::Evidence(DeployEvidence::ContainerStarted {
                     machine_id,
                     container_id,
+                }),
+            },
+            OperationEvent::DeployVolumeHandoffApplied {
+                operation_id,
+                service_id,
+                handoff,
+            } => Self::Deploy {
+                operation_id,
+                event: DeployEvent::Evidence(DeployEvidence::VolumeHandoffApplied {
+                    service_id,
+                    handoff,
+                }),
+            },
+            OperationEvent::DeployVolumeHandoffRollbackFinished {
+                operation_id,
+                service_id,
+                machine_id,
+                outcomes,
+            } => Self::Deploy {
+                operation_id,
+                event: DeployEvent::Evidence(DeployEvidence::VolumeHandoffRollbackFinished {
+                    service_id,
+                    machine_id,
+                    outcomes,
                 }),
             },
             OperationEvent::DeployHealthCheckStarted { operation_id } => Self::Deploy {

@@ -956,6 +956,7 @@ pub fn operation_contract_fixture() -> Value {
                                 },
                             }],
                             pre_start: None,
+                            volume_handoff: None,
                         }],
                     }],
                     volume_pins: Vec::new(),

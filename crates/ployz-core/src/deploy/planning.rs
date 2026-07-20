@@ -635,6 +635,33 @@ pub struct DeployServicePlan {
     pub steps: Vec<DeployPlanStep>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pre_start: Option<PreStartHookStep>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume_handoff: Option<DeployVolumeHandoffPlan>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct DeployVolumeHandoffPlan {
+    pub machine_id: MachineId,
+    pub volume_names: Vec<VolumeName>,
+    pub superseded: Vec<DeployVolumeHandoffParticipant>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct DeployVolumeHandoffParticipant {
+    pub target: DeployCleanupContainer,
+    pub prior_state: DeployVolumeHandoffPriorState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum DeployVolumeHandoffPriorState {
+    Running,
+    Stopped,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -796,6 +823,7 @@ pub fn plan_namespace_deploy(
                 placement: plan.placement,
                 steps: plan.steps,
                 pre_start: plan.pre_start,
+                volume_handoff: plan.volume_handoff,
             });
         }
         phase_plans.push(DeployPhasePlan { services });
@@ -929,6 +957,7 @@ pub struct DeploySingleServicePlan {
     pub placement: DeployServicePlacement,
     pub steps: Vec<DeployPlanStep>,
     pub pre_start: Option<PreStartHookStep>,
+    pub volume_handoff: Option<DeployVolumeHandoffPlan>,
     pub cleanup_actions: Vec<DeployCleanupAction>,
 }
 
@@ -972,6 +1001,7 @@ mod tests {
                     pre_start: Some(PreStartHookStep {
                         machine_id: machine.clone(),
                     }),
+                    volume_handoff: None,
                 }],
             }],
             volume_pin_commits: Vec::new(),
