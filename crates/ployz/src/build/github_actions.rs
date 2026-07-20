@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use crate::build::command::{BuildExecutorCommand, BuildExecutorRunMode};
 use crate::build::external_runtime::WorkspaceStartup;
 use crate::build::runtime::BuildExecutionError;
-use crate::cloud_current_tree::validated_cloud_base_url;
+use crate::cloud_current_tree::{CloudTransportPolicy, validated_cloud_base_url};
 use crate::dispatcher::PloyzctlRuntimeConfig;
 use crate::execution_error::PloyzctlExecutionError;
 use crate::execution_support::PloyzctlExecutionOutput;
@@ -105,8 +105,9 @@ impl RunnerInputs {
         if !is_uuid(&assignment_id) {
             return Err(GithubActionsBuildError::InvalidAssignment);
         }
-        let cloud_url = validated_cloud_base_url(&value(PLOYZ_CLOUD_URL)?, false)
-            .map_err(|_| GithubActionsBuildError::InvalidCloudUrl)?;
+        let cloud_url =
+            validated_cloud_base_url(&value(PLOYZ_CLOUD_URL)?, CloudTransportPolicy::HttpsOnly)
+                .map_err(|_| GithubActionsBuildError::InvalidCloudUrl)?;
         let oidc_request_url = validate_oidc_request_url(&value(ACTIONS_ID_TOKEN_REQUEST_URL)?)?;
         let runner_temp = PathBuf::from(value(RUNNER_TEMP)?);
         if !runner_temp.is_absolute() || !runner_temp.is_dir() {
@@ -144,8 +145,15 @@ const REQUIRED_ENV: [&str; 8] = [
 fn validate_oidc_request_url(value: &str) -> Result<reqwest::Url, GithubActionsBuildError> {
     let url =
         reqwest::Url::parse(value).map_err(|_| GithubActionsBuildError::InvalidOidcRequestUrl)?;
+    let github_job_server = matches!(
+        url.host_str(),
+        Some("pipelines.actions.githubusercontent.com" | "token.actions.githubusercontent.com")
+    );
     if url.scheme() != "https"
-        || url.host_str() != Some("token.actions.githubusercontent.com")
+        || !github_job_server
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.port().is_some()
         || url.cannot_be_a_base()
         || url.query_pairs().any(|(name, _)| name == "audience")
     {
@@ -530,7 +538,8 @@ mod tests {
             ),
             (
                 ACTIONS_ID_TOKEN_REQUEST_URL,
-                "https://token.actions.githubusercontent.com/token".to_owned(),
+                "https://pipelines.actions.githubusercontent.com/abc123/_apis/distributedtask/hubs/build/plans/plan/jobs/job/idtoken?api-version=2.0"
+                    .to_owned(),
             ),
             (ACTIONS_ID_TOKEN_REQUEST_TOKEN, "request-secret".to_owned()),
             (RUNNER_TEMP, temp.display().to_string()),
@@ -603,6 +612,28 @@ mod tests {
             assert_eq!(
                 RunnerInputs::from_pairs(environment).expect_err("invalid"),
                 expected
+            );
+        }
+    }
+
+    #[test]
+    fn oidc_request_url_accepts_only_explicit_github_job_server_hosts() {
+        assert!(validate_oidc_request_url(
+            "https://pipelines.actions.githubusercontent.com/abc123/_apis/distributedtask/hubs/build/plans/plan/jobs/job/idtoken?api-version=2.0"
+        ).is_ok());
+        assert!(
+            validate_oidc_request_url("https://token.actions.githubusercontent.com/token").is_ok()
+        );
+        for malicious in [
+            "https://pipelines.actions.githubusercontent.com.evil.example/token",
+            "https://evil-pipelines.actions.githubusercontent.com/token",
+            "https://attacker@pipelines.actions.githubusercontent.com/token",
+            "https://pipelines.actions.githubusercontent.com:444/token",
+            "http://pipelines.actions.githubusercontent.com/token",
+        ] {
+            assert_eq!(
+                validate_oidc_request_url(malicious).expect_err("malicious URL rejected"),
+                GithubActionsBuildError::InvalidOidcRequestUrl
             );
         }
     }
