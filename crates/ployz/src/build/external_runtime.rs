@@ -64,6 +64,22 @@ pub(crate) async fn run_with_ready(
     config: PloyzctlRuntimeConfig,
     ready: Option<oneshot::Sender<()>>,
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
+    run_controlled(command, config, WorkspaceStartup::Recover, ready, None).await
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WorkspaceStartup {
+    Recover,
+    Prepared,
+}
+
+pub(crate) async fn run_controlled(
+    command: BuildExecutorCommand,
+    config: PloyzctlRuntimeConfig,
+    workspace_startup: WorkspaceStartup,
+    ready: Option<oneshot::Sender<()>>,
+    mut shutdown: Option<oneshot::Receiver<()>>,
+) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
     let config = with_cluster_context_from_disk(config)?;
     let mut connect = nats_connect_config(&config)?;
     connect.principal = executor_principal(&BuildExecutorIdentity {
@@ -93,7 +109,9 @@ pub(crate) async fn run_with_ready(
     let startup_readiness = probe_readiness().await?;
     let (terminal_tx, mut terminal_rx) = tokio::sync::mpsc::unbounded_channel();
     let runtime = ExternalBuildRuntime::new(identity.clone(), client.clone(), workspace_root);
-    if startup_readiness.capability != BuildExecutorCapability::RuntimeUnavailable {
+    if workspace_startup == WorkspaceStartup::Recover
+        && startup_readiness.capability != BuildExecutorCapability::RuntimeUnavailable
+    {
         runtime.recover_orphans().await?;
     }
     let service = start_executor_service(client, identity, runtime.clone(), terminal_tx).await?;
@@ -101,7 +119,7 @@ pub(crate) async fn run_with_ready(
         let _ = ready.send(());
     }
 
-    let wait_result =
+    let wait = async {
         match command.mode {
             BuildExecutorRunMode::Once { wait_timeout } => {
                 wait_for_once_terminal(&mut terminal_rx, wait_timeout).await
@@ -111,7 +129,17 @@ pub(crate) async fn run_with_ready(
                     message: format!("failed to listen for Ctrl-C: {error}"),
                 }
             }),
-        };
+        }
+    };
+    tokio::pin!(wait);
+    let wait_result = if let Some(shutdown) = &mut shutdown {
+        tokio::select! {
+            result = &mut wait => result,
+            _ = shutdown => Ok(()),
+        }
+    } else {
+        wait.await
+    };
 
     runtime.shutdown().await;
     service.shutdown().await.map_err(|error| {

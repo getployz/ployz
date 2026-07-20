@@ -1,4 +1,3 @@
-use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use ployz_core::build::LocalSnapshotDigest;
@@ -10,28 +9,6 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
-const SESSION_FILE_NAME: &str = "current-tree-session.json";
-
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct CloudSession {
-    pub cloud_url: String,
-    pub session_secret: String,
-    pub expires_at: String,
-}
-
-impl std::fmt::Display for CloudSession {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("Cloud current-tree session [redacted]")
-    }
-}
-
-impl std::fmt::Debug for CloudSession {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("CloudSession { secret: [redacted] }")
-    }
-}
-
 #[derive(Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct BeginSession {
@@ -86,6 +63,77 @@ pub(crate) struct ActivatedExecutor {
     pub expires_at: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum ApprovalState {
+    PendingApproval,
+    Approved,
+    ContextSelected,
+    Expired,
+    Cancelled,
+    Terminal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CloudDeploymentStatus {
+    Applied,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CloudDeploymentObservation {
+    pub status: CloudDeploymentStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum ObserveState {
+    Pending,
+    Building,
+    Deploying,
+    Terminal {
+        deployment: CloudDeploymentObservation,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+enum CancelState {
+    Cancelled,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+enum CurrentTreeRequest<'a> {
+    Begin,
+    Poll,
+    ListContexts,
+    SelectContext {
+        organization_id: &'a str,
+        environment_id: &'a str,
+        service_id: &'a str,
+    },
+    Freeze {
+        digest: &'a str,
+        architecture: &'a str,
+    },
+    Activate {
+        assignment_id: &'a str,
+        digest: &'a str,
+        public_key: &'a str,
+    },
+    Dispatch {
+        assignment_id: &'a str,
+        build_record_id: &'a str,
+        deployment_id: &'a str,
+    },
+    Observe,
+    Cancel,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ResultEnvelope<T> {
@@ -109,7 +157,13 @@ impl CloudCurrentTreeClient {
         let base_url = base_url.trim_end_matches('/');
         let url =
             reqwest::Url::parse(base_url).map_err(|_| CloudCurrentTreeError::InvalidCloudUrl)?;
-        if !matches!(url.scheme(), "http" | "https") || url.cannot_be_a_base() {
+        let loopback_http = url.scheme() == "http"
+            && url.host_str().is_some_and(|host| {
+                host.trim_matches(['[', ']'])
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|address| address.is_loopback())
+            });
+        if (url.scheme() != "https" && !loopback_http) || url.cannot_be_a_base() {
             return Err(CloudCurrentTreeError::InvalidCloudUrl);
         }
         let http = reqwest::Client::builder()
@@ -123,23 +177,18 @@ impl CloudCurrentTreeClient {
     }
 
     pub(crate) async fn begin(&self) -> Result<BeginSession, CloudCurrentTreeError> {
-        self.request(None, serde_json::json!({ "action": "begin" }))
-            .await
+        self.request(None, &CurrentTreeRequest::Begin).await
     }
 
-    pub(crate) async fn poll(
-        &self,
-        secret: &str,
-    ) -> Result<serde_json::Value, CloudCurrentTreeError> {
-        self.request_result(secret, serde_json::json!({ "action": "poll" }))
-            .await
+    pub(crate) async fn poll(&self, secret: &str) -> Result<ApprovalState, CloudCurrentTreeError> {
+        self.request_result(secret, &CurrentTreeRequest::Poll).await
     }
 
     pub(crate) async fn contexts(
         &self,
         secret: &str,
     ) -> Result<Vec<ContextSummary>, CloudCurrentTreeError> {
-        self.request_result(secret, serde_json::json!({ "action": "list_contexts" }))
+        self.request_result(secret, &CurrentTreeRequest::ListContexts)
             .await
     }
 
@@ -150,12 +199,11 @@ impl CloudCurrentTreeClient {
     ) -> Result<ContextSummary, CloudCurrentTreeError> {
         self.request_result(
             secret,
-            serde_json::json!({
-                "action": "select_context",
-                "organization_id": context.organization.id,
-                "environment_id": context.environment.id,
-                "service_id": context.service.id,
-            }),
+            &CurrentTreeRequest::SelectContext {
+                organization_id: &context.organization.id,
+                environment_id: &context.environment.id,
+                service_id: &context.service.id,
+            },
         )
         .await
     }
@@ -168,11 +216,10 @@ impl CloudCurrentTreeClient {
     ) -> Result<FrozenBuild, CloudCurrentTreeError> {
         self.request_result(
             secret,
-            serde_json::json!({
-                "action": "freeze",
-                "digest": digest.as_str(),
-                "architecture": platform.architecture(),
-            }),
+            &CurrentTreeRequest::Freeze {
+                digest: digest.as_str(),
+                architecture: platform.architecture(),
+            },
         )
         .await
     }
@@ -186,26 +233,42 @@ impl CloudCurrentTreeClient {
     ) -> Result<ActivatedExecutor, CloudCurrentTreeError> {
         self.request_result(
             secret,
-            serde_json::json!({
-                "action": "activate",
-                "assignment_id": frozen.assignment_id,
-                "digest": digest.as_str(),
-                "public_key": public_key.as_str(),
-            }),
+            &CurrentTreeRequest::Activate {
+                assignment_id: &frozen.assignment_id,
+                digest: digest.as_str(),
+                public_key: public_key.as_str(),
+            },
         )
         .await
+    }
+
+    pub(crate) async fn dispatch(
+        &self,
+        secret: &str,
+        frozen: &FrozenBuild,
+    ) -> Result<(), CloudCurrentTreeError> {
+        self.request_result::<serde::de::IgnoredAny>(
+            secret,
+            &CurrentTreeRequest::Dispatch {
+                assignment_id: &frozen.assignment_id,
+                build_record_id: &frozen.build_record_id,
+                deployment_id: &frozen.deployment_id,
+            },
+        )
+        .await
+        .map(|_| ())
     }
 
     pub(crate) async fn observe(
         &self,
         secret: &str,
-    ) -> Result<serde_json::Value, CloudCurrentTreeError> {
-        self.request_result(secret, serde_json::json!({ "action": "observe" }))
+    ) -> Result<ObserveState, CloudCurrentTreeError> {
+        self.request_result(secret, &CurrentTreeRequest::Observe)
             .await
     }
 
     pub(crate) async fn cancel(&self, secret: &str) -> Result<(), CloudCurrentTreeError> {
-        self.request_result::<serde_json::Value>(secret, serde_json::json!({ "action": "cancel" }))
+        self.request_result::<CancelState>(secret, &CurrentTreeRequest::Cancel)
             .await
             .map(|_| ())
     }
@@ -213,7 +276,7 @@ impl CloudCurrentTreeClient {
     async fn request_result<T: DeserializeOwned>(
         &self,
         secret: &str,
-        body: serde_json::Value,
+        body: &CurrentTreeRequest<'_>,
     ) -> Result<T, CloudCurrentTreeError> {
         self.request::<ResultEnvelope<T>>(Some(secret), body)
             .await
@@ -223,7 +286,7 @@ impl CloudCurrentTreeClient {
     async fn request<T: DeserializeOwned>(
         &self,
         secret: Option<&str>,
-        body: serde_json::Value,
+        body: &CurrentTreeRequest<'_>,
     ) -> Result<T, CloudCurrentTreeError> {
         let mut request = self
             .http
@@ -292,73 +355,6 @@ fn selector_matches(selector: Option<&str>, context: &NamedContext) -> bool {
     })
 }
 
-pub(crate) fn session_path() -> Option<PathBuf> {
-    crate::machine::operator_context::default_cluster_context_path()
-        .and_then(|path| path.parent().map(|parent| parent.join(SESSION_FILE_NAME)))
-}
-
-pub(crate) fn persist_session(
-    path: &Path,
-    session: &CloudSession,
-) -> Result<(), CloudCurrentTreeError> {
-    let Some(parent) = path.parent() else {
-        return Err(CloudCurrentTreeError::SessionStore(
-            "session path has no parent".to_owned(),
-        ));
-    };
-    std::fs::create_dir_all(parent)
-        .map_err(|error| CloudCurrentTreeError::SessionStore(error.to_string()))?;
-    restrict_directory(parent)?;
-    let bytes = serde_json::to_vec(session)
-        .map_err(|error| CloudCurrentTreeError::SessionStore(error.to_string()))?;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    use std::io::Write;
-    let mut file = options
-        .open(path)
-        .map_err(|error| CloudCurrentTreeError::SessionStore(error.to_string()))?;
-    restrict_file(path)?;
-    file.set_len(0)
-        .map_err(|error| CloudCurrentTreeError::SessionStore(error.to_string()))?;
-    file.write_all(&bytes)
-        .and_then(|()| file.sync_all())
-        .map_err(|error| CloudCurrentTreeError::SessionStore(error.to_string()))?;
-    restrict_file(path)
-}
-
-pub(crate) fn remove_session(path: &Path) {
-    let _ = std::fs::remove_file(path);
-}
-
-#[cfg(unix)]
-fn restrict_directory(path: &Path) -> Result<(), CloudCurrentTreeError> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-        .map_err(|error| CloudCurrentTreeError::SessionStore(error.to_string()))
-}
-
-#[cfg(not(unix))]
-fn restrict_directory(_path: &Path) -> Result<(), CloudCurrentTreeError> {
-    Ok(())
-}
-
-#[cfg(unix)]
-fn restrict_file(path: &Path) -> Result<(), CloudCurrentTreeError> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-        .map_err(|error| CloudCurrentTreeError::SessionStore(error.to_string()))
-}
-
-#[cfg(not(unix))]
-fn restrict_file(_path: &Path) -> Result<(), CloudCurrentTreeError> {
-    Ok(())
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum CloudCurrentTreeError {
     #[error("Ployz Cloud URL is invalid")]
@@ -379,8 +375,6 @@ pub(crate) enum CloudCurrentTreeError {
     ResponseTooLarge,
     #[error("Cloud current-tree response was invalid: {0}")]
     InvalidResponse(String),
-    #[error("Cloud current-tree session storage failed: {0}")]
-    SessionStore(String),
 }
 
 #[cfg(test)]
@@ -477,14 +471,12 @@ mod tests {
     }
 
     #[test]
-    fn session_debug_and_display_redact_secret() {
-        let session = CloudSession {
-            cloud_url: "https://cloud.example".to_owned(),
-            session_secret: "pct_secret".to_owned(),
-            expires_at: "later".to_owned(),
-        };
-        assert!(!session.to_string().contains("pct_secret"));
-        assert!(!format!("{session:?}").contains("pct_secret"));
+    fn cloud_url_requires_https_except_literal_loopback_http() {
+        assert!(CloudCurrentTreeClient::new("https://cloud.example").is_ok());
+        assert!(CloudCurrentTreeClient::new("http://127.0.0.1:3000").is_ok());
+        assert!(CloudCurrentTreeClient::new("http://[::1]:3000").is_ok());
+        assert!(CloudCurrentTreeClient::new("http://localhost:3000").is_err());
+        assert!(CloudCurrentTreeClient::new("http://cloud.example").is_err());
     }
 
     #[tokio::test]
@@ -534,29 +526,29 @@ mod tests {
         assert!(!request.contains("source_path"));
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn persisted_session_is_private() {
-        use std::os::unix::fs::PermissionsExt;
-        let temp = tempfile::tempdir().expect("tempdir");
-        let path = temp.path().join("config/ployz/current-tree-session.json");
-        let session = CloudSession {
-            cloud_url: "https://cloud.example".to_owned(),
-            session_secret: "pct_secret".to_owned(),
-            expires_at: "later".to_owned(),
+    #[tokio::test]
+    async fn dispatch_is_authenticated_and_names_only_the_frozen_records() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listen");
+        let address = listener.local_addr().expect("address");
+        let request = tokio::spawn(receive_one_request(listener, "{\"result\":null}"));
+        let frozen = FrozenBuild {
+            assignment_id: "assignment-1".to_owned(),
+            build_record_id: "build-1".to_owned(),
+            deployment_id: "deployment-1".to_owned(),
         };
-        persist_session(&path, &session).expect("persist");
-        assert_eq!(
-            std::fs::metadata(path.parent().expect("parent"))
-                .expect("dir")
-                .permissions()
-                .mode()
-                & 0o777,
-            0o700
-        );
-        assert_eq!(
-            std::fs::metadata(&path).expect("file").permissions().mode() & 0o777,
-            0o600
-        );
+        CloudCurrentTreeClient::new(&format!("http://{address}"))
+            .expect("client")
+            .dispatch("pct_secret", &frozen)
+            .await
+            .expect("dispatch");
+        let request = request.await.expect("server");
+        assert!(request.contains("authorization: Bearer pct_secret\r\n"));
+        assert!(request.ends_with(
+            "{\"action\":\"dispatch\",\"assignment_id\":\"assignment-1\",\"build_record_id\":\"build-1\",\"deployment_id\":\"deployment-1\"}"
+        ));
+        assert!(!request.contains("digest"));
+        assert!(!request.contains("source"));
     }
 }

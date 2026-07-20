@@ -5,8 +5,15 @@ use ployz_build_executor::DockerBuildExecutor;
 use ployz_core::build::{
     BuildAdapter, BuildCacheScope, BuildContextPath, BuildPlatforms, BuildTarget,
 };
-use ployz_core::deploy::{ImageReference, ImageSource};
-use ployz_core::ids::{BuildExecutorId, BuildPoolId, NamespaceId, OperationId, ServiceId};
+use ployz_core::deploy::{
+    DeployPlanningTarget, ImageReference, ImageSource, commit_deploy_route_bindings,
+    validate_deploy_route_bindings,
+};
+use ployz_core::ids::{
+    BuildExecutorId, BuildPoolId, NamespaceId, OperationId, RouteBindingId, ServiceId,
+};
+use ployz_core::ingress::AutomaticHostnameConfiguration;
+use ployz_core::intent::{RouteBindingState, ServingTargetEntry};
 use ployz_core::nats_config::{
     BuildExecutorCredentialExpiresAt, CredentialGrant, CredentialName, CredentialRole,
     MintedNatsUser,
@@ -14,12 +21,12 @@ use ployz_core::nats_config::{
 use ployz_core::operation::{BuildOperationState, OperationOutcome, OperationStatus};
 use ployz_sdk_types::{
     BuildSubmitRequest, CredentialAddRequest, CredentialRemoveRequest, OpsStatusRequest,
+    RuntimeSnapshotRequest, ServiceListRequest,
 };
 
 use crate::build::command::{BuildExecutorCommand, BuildExecutorRunMode};
 use crate::cloud_current_tree::{
-    CloudCurrentTreeClient, CloudSession, persist_session, remove_session, select_context,
-    session_path,
+    ApprovalState, CloudCurrentTreeClient, CloudDeploymentStatus, ObserveState, select_context,
 };
 use crate::deploy::command::CurrentTreeDeployCommand;
 use crate::dispatcher::PloyzctlRuntimeConfig;
@@ -33,9 +40,13 @@ use crate::operation::runtime::replay_request;
 
 use super::DeployExecutionError;
 
+mod standalone;
+use standalone::{select_standalone_service, validate_standalone_template};
+
 const CLOUD_URL_ENV: &str = "PLOYZ_CLOUD_URL";
 const APPROVAL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const OBSERVE_TIMEOUT: Duration = Duration::from_secs(40 * 60);
+const EXECUTOR_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) async fn execute(
     command: CurrentTreeDeployCommand,
@@ -58,6 +69,10 @@ async fn execute_cloud(
     let cwd = std::env::current_dir().map_err(current_tree_error)?;
     let workspace_root = cwd.join(".ployz").join("build-executor");
     let executor = DockerBuildExecutor::new(workspace_root.clone());
+    executor
+        .recover_orphans()
+        .await
+        .map_err(current_tree_error)?;
     let source = executor
         .prepare_local_snapshot(cwd, None)
         .await
@@ -72,18 +87,6 @@ async fn execute_cloud(
         "Open {} and approve code {}",
         begun.browser_url, begun.user_code
     );
-    let stored_path = session_path();
-    if let Some(path) = &stored_path {
-        persist_session(
-            path,
-            &CloudSession {
-                cloud_url: cloud_url.to_owned(),
-                session_secret: begun.session_secret.clone(),
-                expires_at: begun.expires_at.clone(),
-            },
-        )
-        .map_err(current_tree_error)?;
-    }
     let result = execute_approved_cloud(
         command,
         config,
@@ -96,9 +99,6 @@ async fn execute_cloud(
     )
     .await;
     let cancel_result = client.cancel(&begun.session_secret).await;
-    if let Some(path) = &stored_path {
-        remove_session(path);
-    }
     match (result, cancel_result) {
         (Ok(output), Ok(())) => Ok(output),
         (Err(error), Ok(())) => Err(error),
@@ -160,7 +160,9 @@ async fn execute_approved_cloud(
         nats_connect_timeout: config.nats_connect_timeout,
         ..PloyzctlRuntimeConfig::default()
     };
-    let mut executor_task = tokio::spawn(crate::build::external_runtime::run(
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let mut executor_task = tokio::spawn(crate::build::external_runtime::run_controlled(
         BuildExecutorCommand {
             pool_id: activated.pool_id,
             executor_id: activated.executor_id,
@@ -170,27 +172,63 @@ async fn execute_approved_cloud(
             },
         },
         executor_config,
+        crate::build::external_runtime::WorkspaceStartup::Prepared,
+        Some(ready_tx),
+        Some(shutdown_rx),
     ));
+    let (ready, executor_joined) = tokio::select! {
+        ready = ready_rx => (ready.map_err(current_tree_error), false),
+        executor = &mut executor_task => {
+            (match executor.map_err(current_tree_error) {
+                Ok(Ok(_)) => Err(current_tree_error("build executor exited before becoming ready")),
+                Ok(Err(error)) | Err(error) => Err(error),
+            }, true)
+        }
+        signal = tokio::signal::ctrl_c() => {
+            (signal
+                .map_err(current_tree_error)
+                .and_then(|()| Err(current_tree_error("current-tree deploy cancelled"))), false)
+        }
+    };
+    if let Err(error) = ready {
+        if !executor_joined {
+            let _ = shutdown_executor(shutdown_tx, executor_task).await;
+        }
+        return Err(error);
+    }
+    let dispatch = client
+        .dispatch(session_secret, &frozen)
+        .await
+        .map_err(current_tree_error);
+    if let Err(error) = dispatch {
+        let _ = shutdown_executor(shutdown_tx, executor_task).await;
+        return Err(error);
+    }
     let observed = await_cloud_terminal(&client, session_secret);
     tokio::pin!(observed);
-    let result: Result<(), PloyzctlExecutionError> = tokio::select! {
-        terminal = &mut observed => terminal,
+    let (result, executor_joined): (Result<(), PloyzctlExecutionError>, bool) = tokio::select! {
+        terminal = &mut observed => (terminal, false),
         executor = &mut executor_task => {
-            match executor.map_err(current_tree_error) {
+            (match executor.map_err(current_tree_error) {
                 Ok(Ok(_)) => await_cloud_terminal(&client, session_secret).await,
                 Ok(Err(error)) => Err(error),
                 Err(error) => Err(error),
-            }
+            }, true)
         }
         signal = tokio::signal::ctrl_c() => {
-            match signal {
+            (match signal {
                 Ok(()) => Err(current_tree_error("current-tree deploy cancelled")),
                 Err(error) => Err(current_tree_error(error)),
-            }
+            }, false)
         }
     };
-    executor_task.abort();
+    let shutdown_result = if executor_joined {
+        Ok(())
+    } else {
+        shutdown_executor(shutdown_tx, executor_task).await
+    };
     result?;
+    shutdown_result?;
     Ok(PloyzctlExecutionOutput::stdout(format!(
         "built current working tree for {}/{}/{} and completed deployment {}\n",
         selected.organization.slug,
@@ -212,16 +250,11 @@ async fn await_approval(
             .poll(session_secret)
             .await
             .map_err(current_tree_error)?;
-        match state.get("status").and_then(serde_json::Value::as_str) {
-            Some("approved" | "context_selected") => return Ok(()),
-            Some("pending_approval") => {}
-            Some("expired" | "cancelled" | "terminal") => {
+        match state {
+            ApprovalState::Approved | ApprovalState::ContextSelected => return Ok(()),
+            ApprovalState::PendingApproval => {}
+            ApprovalState::Expired | ApprovalState::Cancelled | ApprovalState::Terminal => {
                 return Err(current_tree_error("Cloud approval session is terminal"));
-            }
-            _ => {
-                return Err(current_tree_error(
-                    "Cloud returned an invalid approval state",
-                ));
             }
         }
         if started.elapsed() >= APPROVAL_TIMEOUT {
@@ -241,19 +274,15 @@ async fn await_cloud_terminal(
             .observe(session_secret)
             .await
             .map_err(current_tree_error)?;
-        if state.get("status").and_then(serde_json::Value::as_str) == Some("terminal") {
-            let deployment = state
-                .get("deployment")
-                .and_then(|value| value.get("status"))
-                .and_then(serde_json::Value::as_str);
-            return match deployment {
-                Some("applied") => Ok(()),
-                Some(status) => Err(current_tree_error(format!(
-                    "Cloud deployment finished as {status}"
-                ))),
-                None => Err(current_tree_error(
-                    "Cloud omitted terminal deployment evidence",
-                )),
+        if let ObserveState::Terminal { deployment } = state {
+            return match deployment.status {
+                CloudDeploymentStatus::Applied => Ok(()),
+                CloudDeploymentStatus::Failed => {
+                    Err(current_tree_error("Cloud deployment finished as failed"))
+                }
+                CloudDeploymentStatus::Cancelled => {
+                    Err(current_tree_error("Cloud deployment finished as cancelled"))
+                }
             };
         }
         if started.elapsed() >= OBSERVE_TIMEOUT {
@@ -278,21 +307,36 @@ async fn execute_standalone(
     let history =
         super::history::stream(&config, namespace_id.clone()).map_err(current_tree_error)?;
     let entries = history.load().map_err(current_tree_error)?;
-    let service_id = select_standalone_service(&entries, command.service.as_deref())?;
     let template = entries
-        .iter()
-        .rev()
-        .find(|entry| {
-            entry
-                .request
-                .services
-                .iter()
-                .any(|service| service.service_id == service_id)
-        })
+        .last()
         .ok_or_else(|| current_tree_error("selected service has no successful deploy history"))?;
+    let service_id = select_standalone_service(&template.request, command.service.as_deref())?;
+    let api = operation_api_client(&config).await?;
+    let live_services = api
+        .service_list(&ServiceListRequest {})
+        .await
+        .map_err(api_error)?;
+    let runtime = api
+        .runtime_snapshot(&RuntimeSnapshotRequest {})
+        .await
+        .map_err(api_error)?;
+    validate_standalone_template(
+        &template.request,
+        live_services
+            .services
+            .iter()
+            .map(|service| service.active.clone()),
+        &runtime.snapshot.automatic_hostname_configuration,
+        &runtime.snapshot.routes,
+    )?;
     let cwd = std::env::current_dir().map_err(current_tree_error)?;
     let workspace_root = cwd.join(".ployz").join("build-executor");
-    let source = DockerBuildExecutor::new(workspace_root.clone())
+    let executor = DockerBuildExecutor::new(workspace_root.clone());
+    executor
+        .recover_orphans()
+        .await
+        .map_err(current_tree_error)?;
+    let source = executor
         .prepare_local_snapshot(cwd.clone(), None)
         .await
         .map_err(current_tree_error)?;
@@ -303,7 +347,6 @@ async fn execute_standalone(
     let executor_id =
         BuildExecutorId::try_new(format!("local_{}", nuid::next())).map_err(current_tree_error)?;
     let minted = MintedNatsUser::generate().map_err(current_tree_error)?;
-    let api = operation_api_client(&config).await?;
     let grant_id = generated_operation_id("credential_add")?;
     let expires_at =
         BuildExecutorCredentialExpiresAt::try_new(current_unix_seconds().saturating_add(45 * 60))
@@ -339,7 +382,8 @@ async fn execute_standalone(
             ..PloyzctlRuntimeConfig::default()
         };
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-        let mut executor_task = tokio::spawn(crate::build::external_runtime::run_with_ready(
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let mut executor_task = tokio::spawn(crate::build::external_runtime::run_controlled(
             BuildExecutorCommand {
                 pool_id: pool_id.clone(),
                 executor_id,
@@ -349,24 +393,31 @@ async fn execute_standalone(
                 },
             },
             executor_config,
+            crate::build::external_runtime::WorkspaceStartup::Prepared,
             Some(ready_tx),
+            Some(shutdown_rx),
         ));
-        let ready = tokio::select! {
-            ready = ready_rx => ready.map_err(current_tree_error),
+        let (ready, executor_joined) = tokio::select! {
+            ready = ready_rx => (ready.map_err(current_tree_error), false),
             executor = &mut executor_task => {
-                executor.map_err(current_tree_error)??;
-                Err(current_tree_error("build executor exited before becoming ready"))
+                (match executor.map_err(current_tree_error) {
+                    Ok(Ok(_)) => Err(current_tree_error("build executor exited before becoming ready")),
+                    Ok(Err(error)) | Err(error) => Err(error),
+                }, true)
             }
             signal = tokio::signal::ctrl_c() => {
-                signal.map_err(current_tree_error)?;
-                Err(current_tree_error("current-tree deploy cancelled"))
+                (signal
+                    .map_err(current_tree_error)
+                    .and_then(|()| Err(current_tree_error("current-tree deploy cancelled"))), false)
             }
         };
         if let Err(error) = ready {
-            executor_task.abort();
+            if !executor_joined {
+                let _ = shutdown_executor(shutdown_tx, executor_task).await;
+            }
             return Err(error);
         }
-        let build = tokio::select! {
+        let (build, executor_joined) = tokio::select! {
             result = run_standalone_build(
                 &api,
                 &config,
@@ -374,34 +425,31 @@ async fn execute_standalone(
                 adapter,
                 platform,
                 pool_id,
-            ) => result,
+            ) => (result, false),
             executor = &mut executor_task => {
-                executor.map_err(current_tree_error)??;
-                Err(current_tree_error("build executor exited before the build became terminal"))
+                (match executor.map_err(current_tree_error) {
+                    Ok(Ok(_)) => Err(current_tree_error(
+                        "build executor exited before the build became terminal",
+                    )),
+                    Ok(Err(error)) | Err(error) => Err(error),
+                }, true)
             }
             signal = tokio::signal::ctrl_c() => {
-                signal.map_err(current_tree_error)?;
-                Err(current_tree_error("current-tree deploy cancelled"))
+                (signal
+                    .map_err(current_tree_error)
+                    .and_then(|()| Err(current_tree_error("current-tree deploy cancelled"))), false)
             }
         };
-        let receipt = match build {
-            Ok(receipt) => receipt,
-            Err(error) => {
-                executor_task.abort();
-                return Err(error);
-            }
+        let shutdown = if executor_joined {
+            Ok(())
+        } else {
+            shutdown_executor(shutdown_tx, executor_task).await
         };
-        tokio::select! {
-            executor = &mut executor_task => {
-                let _ = executor.map_err(current_tree_error)??;
-            },
-            signal = tokio::signal::ctrl_c() => {
-                signal.map_err(current_tree_error)?;
-                executor_task.abort();
-                return Err(current_tree_error("current-tree deploy cancelled"));
-            }
+        match (build, shutdown) {
+            (Ok(receipt), Ok(())) => Ok(receipt),
+            (Err(error), Ok(())) => Err(error),
+            (_, Err(error)) => Err(error),
         }
-        Ok(receipt)
     }
     .await;
     let revoke_result = revoke_executor(&api, &config, public_key).await;
@@ -418,6 +466,8 @@ async fn execute_standalone(
         .find(|service| service.service_id == service_id)
         .ok_or_else(|| current_tree_error("deploy history lost selected service"))?;
     service.image = ImageReference::try_new(format!("ployz.local/{}:current", service_id.as_str()))
+        .map_err(current_tree_error)?
+        .with_digest(receipt.index_digest())
         .map_err(current_tree_error)?;
     service.image_source = ImageSource::PushedToSeed(receipt);
     let deploy = crate::deploy::command::DeployCommand {
@@ -427,30 +477,26 @@ async fn execute_standalone(
         target: crate::deploy::command::DeployCommandTarget::Ordinary(target),
         warnings: Vec::new(),
         detach: false,
-        from_registry: true,
+        from_registry: false,
     };
     super::follow::execute_deploy(deploy, &config).await
 }
 
-fn select_standalone_service(
-    entries: &[crate::deploy::history_store::DeployHistoryEntry],
-    selector: Option<&str>,
-) -> Result<ServiceId, PloyzctlExecutionError> {
-    let services = entries
-        .iter()
-        .rev()
-        .flat_map(|entry| entry.request.services.iter())
-        .filter(|service| selector.is_none_or(|value| value == service.service_id.as_str()))
-        .map(|service| service.service_id.clone())
-        .collect::<std::collections::BTreeSet<_>>();
-    match services.len() {
-        0 => Err(current_tree_error(
-            "no matching service exists in deploy history",
-        )),
-        1 => Ok(services.into_iter().next().expect("one service")),
-        count => Err(current_tree_error(format!(
-            "standalone service selection is ambiguous ({count} matches); pass --service"
-        ))),
+async fn shutdown_executor(
+    shutdown: tokio::sync::oneshot::Sender<()>,
+    mut task: tokio::task::JoinHandle<Result<PloyzctlExecutionOutput, PloyzctlExecutionError>>,
+) -> Result<(), PloyzctlExecutionError> {
+    let _ = shutdown.send(());
+    match tokio::time::timeout(EXECUTOR_SHUTDOWN_TIMEOUT, &mut task).await {
+        Ok(joined) => {
+            let _ = joined.map_err(current_tree_error)??;
+            Ok(())
+        }
+        Err(_) => {
+            task.abort();
+            let _ = task.await;
+            Err(current_tree_error("build executor shutdown timed out"))
+        }
     }
 }
 
