@@ -376,7 +376,11 @@ fn exhaustive_subject_family_principal_direction_matrix_is_intentional() {
                 cell(MatrixPrincipal::Operator, Direction::Subscribe),
                 cell(MatrixPrincipal::CloudOperator, Direction::Subscribe),
             ],
-            _ => vec![cell(owner, Direction::Subscribe)],
+            MatrixPrincipal::Controller
+            | MatrixPrincipal::MachineA
+            | MatrixPrincipal::MachineB
+            | MatrixPrincipal::ExecutorA
+            | MatrixPrincipal::Join => vec![cell(owner, Direction::Subscribe)],
         };
         cases.push(MatrixCase {
             label: format!("inbox {owner:?}"),

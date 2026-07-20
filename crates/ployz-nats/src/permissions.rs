@@ -362,14 +362,12 @@ fn api_service_client_publications() -> SubjectPermissions {
     SubjectPermissions::allowing_all(allow)
 }
 
-#[must_use]
 fn core_query_endpoints() -> impl Iterator<Item = &'static str> {
     CoreQueryEndpoint::ALL
         .iter()
         .map(|endpoint| endpoint.subject())
 }
 
-#[must_use]
 fn image_transfer_publications() -> impl Iterator<Item = String> {
     crate::subjects::MachineServiceEndpoint::IMAGE_TRANSFER
         .iter()
