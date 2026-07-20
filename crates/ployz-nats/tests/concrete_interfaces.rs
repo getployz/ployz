@@ -40,6 +40,7 @@ fn sdk_contract_registry_maps_to_every_nats_operation_endpoint() {
     assert_eq!(
         endpoints,
         [
+            OperationApiEndpoint::BuildTargetCapabilities,
             OperationApiEndpoint::BuildSubmit,
             OperationApiEndpoint::BuildCancel,
             OperationApiEndpoint::DeployReserve,

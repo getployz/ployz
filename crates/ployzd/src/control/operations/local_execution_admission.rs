@@ -12,10 +12,12 @@ use ployz_core::network::{DataplaneProjection, DataplaneProjectionMember, Machin
 use ployz_core::operation::{FailureMessage, UnusableMachine};
 
 use crate::control::role_client::machine::MachinePlacementFacts;
+use crate::roles::machine::protocol::MachineBuildCapability;
 
 pub(crate) struct AdmittedLocalExecutionMachine<'a> {
     pub(crate) machine_id: &'a MachineId,
     pub(crate) platform: &'a OciPlatform,
+    pub(crate) build: &'a MachineBuildCapability,
     pub(crate) member: &'a DataplaneProjectionMember,
     pub(crate) status: &'a MachineDataplaneStatus,
 }
@@ -59,6 +61,7 @@ fn admit_local_execution_machine<'a>(
     Ok(AdmittedLocalExecutionMachine {
         machine_id: &candidate.machine_id,
         platform: &facts.platform,
+        build: &facts.build,
         member,
         status,
     })

@@ -8,6 +8,7 @@ use crate::subjects::OperationApiEndpoint;
 use ployz_core::operation::{OperationEventReplayPage, OperationStatusSnapshot};
 use ployz_sdk_types::{
     AcceptedOperation, BuildCancelError, BuildCancelRequest, BuildSubmitError, BuildSubmitRequest,
+    BuildTargetCapabilities, BuildTargetCapabilitiesError, BuildTargetCapabilitiesRequest,
     CoreReplaceError, CoreReplaceReportError, CoreReplaceReportRequest, CoreReplaceReported,
     CoreReplaceRequest, CredentialAddError, CredentialAddRequest, CredentialListError,
     CredentialListRequest, CredentialListResult, CredentialRemoveError, CredentialRemoveRequest,
@@ -31,15 +32,16 @@ use ployz_sdk_types::{
     SystemDeployRequest, VolumeCreateError, VolumeCreateRequest, VolumeListError,
     VolumeListRequest, VolumeListResult, VolumeRemoveError, VolumeRemoveRequest,
     operation_api::{
-        BuildCancelApi, BuildSubmitApi, CoreReplaceApi, CoreReplaceReportApi, CredentialAddApi,
-        CredentialListApi, CredentialRemoveApi, DeployPreviewApi, DeployReserveApi,
-        DeploySubmitApi, IngressConfigureApi, InitFirstMachineActivateApi, LogsTailApi,
-        MachineAddApi, MachineBuildCachePruneApi, MachineDrainApi, MachineInspectApi,
-        MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi, MachineResumeApi,
-        MachineStoragePrepareApi, MachineUpdateApi, NamespaceRemoveApi, NetworkRepairApi,
-        NetworkResolveApi, NetworkStatusApi, OperationApiContract, OpsListApi, OpsStatusApi,
-        OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi, ServiceRestartApi,
-        SystemDeployApi, VolumeCreateApi, VolumeListApi, VolumeRemoveApi,
+        BuildCancelApi, BuildSubmitApi, BuildTargetCapabilitiesApi, CoreReplaceApi,
+        CoreReplaceReportApi, CredentialAddApi, CredentialListApi, CredentialRemoveApi,
+        DeployPreviewApi, DeployReserveApi, DeploySubmitApi, IngressConfigureApi,
+        InitFirstMachineActivateApi, LogsTailApi, MachineAddApi, MachineBuildCachePruneApi,
+        MachineDrainApi, MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi,
+        MachineListApi, MachineResumeApi, MachineStoragePrepareApi, MachineUpdateApi,
+        NamespaceRemoveApi, NetworkRepairApi, NetworkResolveApi, NetworkStatusApi,
+        OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi,
+        ServiceInspectApi, ServiceListApi, ServiceRestartApi, SystemDeployApi, VolumeCreateApi,
+        VolumeListApi, VolumeRemoveApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -54,6 +56,15 @@ pub struct OperationApiClient {
 }
 
 impl OperationApiClient {
+    pub async fn build_target_capabilities(
+        &self,
+        request: &BuildTargetCapabilitiesRequest,
+    ) -> Result<BuildTargetCapabilities, OperationApiClientError<BuildTargetCapabilitiesError>>
+    {
+        self.request_api::<BuildTargetCapabilitiesApi>(request)
+            .await
+    }
+
     pub async fn build_submit(
         &self,
         request: &BuildSubmitRequest,

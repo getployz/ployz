@@ -3,8 +3,9 @@ use ployz_sdk_types::{
     AcceptedOperation, AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue,
     AcmeHttp01Challenge, ActiveCertState, ActiveCertificateMetadata,
     AutomaticHostnameConfiguration, BuildCancelError, BuildCancelRequest, BuildSubmitError,
-    BuildSubmitRequest, CertBundleRef, CertId, CertOperationState, CertRunningStage, CertTextError,
-    CertValidAt, CertValidityWindow, CertificateOwner, CloudBootstrapAttemptId,
+    BuildSubmitRequest, BuildTargetCapabilities, BuildTargetCapabilitiesError,
+    BuildTargetCapabilitiesRequest, CertBundleRef, CertId, CertOperationState, CertRunningStage,
+    CertTextError, CertValidAt, CertValidityWindow, CertificateOwner, CloudBootstrapAttemptId,
     CloudBootstrapCallbackAccepted, CloudBootstrapCallbackRequest, CloudBootstrapCallbackToken,
     CloudBootstrapDecision, CloudBootstrapEnvelope, CloudBootstrapIntent, CloudBootstrapOutcome,
     CloudBootstrapRedemptionId, CloudBootstrapSessionCreateRequest, CloudBootstrapSessionCreated,
@@ -53,14 +54,15 @@ use ployz_sdk_types::{
     VolumeListRequest, VolumeListResult, VolumeName, VolumeRemoveError, VolumeRemoveRequest,
     VolumeSnapshot, VolumeStatus, VolumeTestimony,
     operation_api::{
-        BuildCancelApi, BuildSubmitApi, CoreReplaceApi, CoreReplaceReportApi, CredentialAddApi,
-        CredentialListApi, CredentialRemoveApi, DeployPreviewApi, DeployReserveApi,
-        DeploySubmitApi, IngressConfigureApi, InitFirstMachineActivateApi, LogsTailApi,
-        MachineAddApi, MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi,
-        MachineListApi, MachineStoragePrepareApi, MachineUpdateApi, NamespaceRemoveApi,
-        NetworkRepairApi, NetworkResolveApi, NetworkStatusApi, OperationApiContract, OpsListApi,
-        OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi,
-        ServiceRestartApi, VolumeCreateApi, VolumeListApi, VolumeRemoveApi,
+        BuildCancelApi, BuildSubmitApi, BuildTargetCapabilitiesApi, CoreReplaceApi,
+        CoreReplaceReportApi, CredentialAddApi, CredentialListApi, CredentialRemoveApi,
+        DeployPreviewApi, DeployReserveApi, DeploySubmitApi, IngressConfigureApi,
+        InitFirstMachineActivateApi, LogsTailApi, MachineAddApi, MachineInspectApi,
+        MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi, MachineStoragePrepareApi,
+        MachineUpdateApi, NamespaceRemoveApi, NetworkRepairApi, NetworkResolveApi,
+        NetworkStatusApi, OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi,
+        RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi, ServiceRestartApi, VolumeCreateApi,
+        VolumeListApi, VolumeRemoveApi,
     },
 };
 use ts_rs::{Config, TS};
@@ -555,6 +557,12 @@ fn typescript_contract_fixture_matches_rust_wire_types() {
 
 #[test]
 fn operation_api_contract_registry_owns_endpoint_shapes() {
+    assert_contract::<
+        BuildTargetCapabilitiesApi,
+        BuildTargetCapabilitiesRequest,
+        BuildTargetCapabilities,
+        BuildTargetCapabilitiesError,
+    >();
     assert_contract::<BuildSubmitApi, BuildSubmitRequest, AcceptedOperation, BuildSubmitError>();
     assert_contract::<BuildCancelApi, BuildCancelRequest, AcceptedOperation, BuildCancelError>();
     assert_contract::<DeployReserveApi, DeployReserveRequest, DeployReserved, DeployReserveError>();
@@ -685,6 +693,7 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
     assert_eq!(
         operation_api_contract_endpoints(),
         [
+            OperationApiEndpoint::BuildTargetCapabilities,
             OperationApiEndpoint::BuildSubmit,
             OperationApiEndpoint::BuildCancel,
             OperationApiEndpoint::DeployReserve,

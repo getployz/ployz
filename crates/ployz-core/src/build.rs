@@ -14,9 +14,10 @@ pub use executor::{
     BuildExecutorReadinessRequest, BuildExecutorReadinessTestimony, BuildExecutorStartDomainError,
     BuildExecutorStartOk, BuildExecutorStartRequest, BuildExecutorStartResponse,
     BuildExecutorSuccessCleanupEvidence, BuildExecutorSuccessCleanupOutcome, BuildLogSummary,
-    BuildPlatformExecutorAssignment, BuildTarget, ExternalBuildExecutorCandidate,
-    ExternalBuildPlacementError, place_external_build_platforms,
-    reconcile_build_executor_readiness_at,
+    BuildPlatformExecutorAssignment, BuildTarget, BuildTargetCapabilities,
+    ClusterBuildMachineCapability, ClusterBuildTargetCapabilities, ExternalBuildExecutorCandidate,
+    ExternalBuildExecutorCapability, ExternalBuildPlacementError, ExternalBuildPoolCapabilities,
+    place_external_build_platforms, reconcile_build_executor_readiness_at,
 };
 pub use railpack::{
     RailpackDigestKind, RailpackPinError, RailpackPins, RailpackPlatformPins, railpack_pins,

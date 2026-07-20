@@ -16,14 +16,26 @@ use ployz_core::operation::{CredentialGrantAction, EventSequence, VolumeCreateRe
 use ployz_nats::subjects::{OperationProgressScope, operation_progress_watch};
 use ployz_sdk_types::{
     AcceptedOperation, BuildCancelError, BuildCancelRequest, BuildSubmitError, BuildSubmitRequest,
-    CoreReplaceError, CoreReplaceRequest, CredentialAddError, CredentialAddRequest,
-    CredentialRemoveError, CredentialRemoveRequest, IngressConfigureError, IngressConfigureRequest,
-    MachineAddAccepted, MachineAddError, MachineAddRequest, MachineJoinToken,
-    MachineLifecycleError, MachineLifecycleRequest, MachineUpdateError, MachineUpdateRequest,
-    NamespaceRemoveError, NamespaceRemoveRequest, NetworkRepairError, NetworkRepairRequest,
-    ServiceRestartError, ServiceRestartRequest, VolumeCreateError, VolumeRemoveError,
-    VolumeRemoveRequest,
+    BuildTargetCapabilities, BuildTargetCapabilitiesError, CoreReplaceError, CoreReplaceRequest,
+    CredentialAddError, CredentialAddRequest, CredentialRemoveError, CredentialRemoveRequest,
+    IngressConfigureError, IngressConfigureRequest, MachineAddAccepted, MachineAddError,
+    MachineAddRequest, MachineJoinToken, MachineLifecycleError, MachineLifecycleRequest,
+    MachineUpdateError, MachineUpdateRequest, NamespaceRemoveError, NamespaceRemoveRequest,
+    NetworkRepairError, NetworkRepairRequest, ServiceRestartError, ServiceRestartRequest,
+    VolumeCreateError, VolumeRemoveError, VolumeRemoveRequest,
 };
+
+pub async fn build_target_capabilities(
+    handlers: &OperationApiHandlers,
+) -> Result<BuildTargetCapabilities, BuildTargetCapabilitiesError> {
+    handlers
+        .build_driver()
+        .target_capabilities()
+        .await
+        .map_err(|error| BuildTargetCapabilitiesError::Unavailable {
+            message: error.to_string(),
+        })
+}
 
 pub async fn build_submit(
     handlers: &OperationApiHandlers,

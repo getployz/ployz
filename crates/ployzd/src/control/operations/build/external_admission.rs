@@ -8,10 +8,11 @@ use ployz_core::build::{
     BuildAdapter, BuildExecutorIdentity, BuildExecutorReadiness, BuildExecutorReadinessAnswer,
     BuildExecutorReadinessRequest, BuildExecutorReadinessTestimony,
     BuildPlatformExecutorAssignment, BuildPlatforms, BuildPoolId, ExternalBuildExecutorCandidate,
-    ExternalBuildPlacementError, place_external_build_platforms,
-    reconcile_build_executor_readiness_at,
+    ExternalBuildExecutorCapability, ExternalBuildPlacementError, ExternalBuildPoolCapabilities,
+    place_external_build_platforms, reconcile_build_executor_readiness_at,
 };
 use ployz_core::image::{ImageBlobCheckOk, ImageBlobCheckRequest, ImageRpcDomainError};
+use ployz_core::intent::IntentSnapshot;
 use ployz_core::machine::MachineLifecycle;
 use ployz_core::nats_config::{CredentialGrant, NatsAuthorizationGrant};
 use ployz_nats::service_runtime::request_json;
@@ -55,6 +56,46 @@ pub(super) async fn preflight_external_build(
             message: error.to_string(),
         })?
         .as_secs();
+    let capabilities =
+        read_external_build_pool_capabilities(client, &intent, now_unix_seconds, Some(pool_id))
+            .await
+            .map_err(|message| ExternalBuildAdmissionError::Unavailable { message })?;
+    let pool = capabilities
+        .into_iter()
+        .find(|capabilities| capabilities.pool_id == *pool_id)
+        .unwrap_or_else(|| ExternalBuildPoolCapabilities {
+            pool_id: pool_id.clone(),
+            executors: Vec::new(),
+            reachable_image_seeds: Vec::new(),
+        });
+    let testimony = pool
+        .executors
+        .into_iter()
+        .map(|executor| match executor {
+            ExternalBuildExecutorCapability::Answered {
+                identity,
+                readiness,
+            } => BuildExecutorReadinessTestimony::Answered {
+                identity,
+                readiness,
+            },
+            ExternalBuildExecutorCapability::Silent { identity } => {
+                BuildExecutorReadinessTestimony::Silent { identity }
+            }
+        })
+        .collect();
+    let candidates = candidates_from_testimony(pool_id, platforms, adapter, testimony);
+    let reachable_image_seeds = pool.reachable_image_seeds.into_iter().collect();
+    place_external_build_platforms(pool_id, platforms, &candidates, &reachable_image_seeds)
+        .map_err(ExternalBuildAdmissionError::from)
+}
+
+pub(super) async fn read_external_build_pool_capabilities(
+    client: &async_nats::Client,
+    intent: &IntentSnapshot,
+    now_unix_seconds: u64,
+    pool_filter: Option<&BuildPoolId>,
+) -> Result<Vec<ExternalBuildPoolCapabilities>, String> {
     let credentials = intent
         .nats_authorizations
         .iter()
@@ -63,7 +104,9 @@ pub(super) async fn preflight_external_build(
                 if credential
                     .role
                     .build_executor_identity()
-                    .is_some_and(|identity| identity.pool_id == *pool_id) =>
+                    .is_some_and(|identity| {
+                        pool_filter.is_none_or(|pool_id| identity.pool_id == *pool_id)
+                    }) =>
             {
                 Some(credential.clone())
             }
@@ -75,22 +118,48 @@ pub(super) async fn preflight_external_build(
         .filter(|credential| credential.role.is_active_at(now_unix_seconds))
         .filter_map(|credential| credential.role.build_executor_identity())
         .collect::<Vec<_>>();
-    let readiness_answers = gather_readiness(client, identities).await;
-    let testimony =
-        reconcile_build_executor_readiness_at(&credentials, readiness_answers, now_unix_seconds)
-            .map_err(|error| ExternalBuildAdmissionError::Unavailable {
-                message: error.to_string(),
-            })?;
-    let candidates = candidates_from_testimony(pool_id, platforms, adapter, testimony);
     let active_machines = intent
         .active_machines
-        .into_iter()
+        .iter()
         .filter(|machine| machine.lifecycle == MachineLifecycle::Active)
-        .map(|machine| machine.machine_id)
+        .map(|machine| machine.machine_id.clone())
         .collect::<Vec<_>>();
-    let reachable_image_seeds = gather_reachable_image_seeds(client, active_machines).await;
-    place_external_build_platforms(pool_id, platforms, &candidates, &reachable_image_seeds)
-        .map_err(ExternalBuildAdmissionError::from)
+    let (readiness_answers, reachable_image_seeds) = tokio::join!(
+        gather_readiness(client, identities),
+        gather_reachable_image_seeds(client, active_machines),
+    );
+    let testimony =
+        reconcile_build_executor_readiness_at(&credentials, readiness_answers, now_unix_seconds)
+            .map_err(|error| error.to_string())?;
+    let mut pools = std::collections::BTreeMap::<BuildPoolId, Vec<_>>::new();
+    for testimony in testimony {
+        let (pool_id, testimony) = match testimony {
+            BuildExecutorReadinessTestimony::Answered {
+                identity,
+                readiness,
+            } => (
+                identity.pool_id.clone(),
+                ExternalBuildExecutorCapability::Answered {
+                    identity,
+                    readiness,
+                },
+            ),
+            BuildExecutorReadinessTestimony::Silent { identity } => (
+                identity.pool_id.clone(),
+                ExternalBuildExecutorCapability::Silent { identity },
+            ),
+        };
+        pools.entry(pool_id).or_default().push(testimony);
+    }
+    let reachable_image_seeds = reachable_image_seeds.into_iter().collect::<Vec<_>>();
+    Ok(pools
+        .into_iter()
+        .map(|(pool_id, executors)| ExternalBuildPoolCapabilities {
+            pool_id,
+            executors,
+            reachable_image_seeds: reachable_image_seeds.clone(),
+        })
+        .collect())
 }
 
 async fn gather_readiness(

@@ -29,9 +29,10 @@ pub use queries::{
 #[cfg(test)]
 pub use submit::owned_operation;
 pub use submit::{
-    build_cancel, build_submit, core_replace, credential_add, credential_remove, ingress_configure,
-    machine_add, machine_drain, machine_resume, machine_update, namespace_remove, network_repair,
-    service_restart, submit_volume_create, volume_remove,
+    build_cancel, build_submit, build_target_capabilities, core_replace, credential_add,
+    credential_remove, ingress_configure, machine_add, machine_drain, machine_resume,
+    machine_update, namespace_remove, network_repair, service_restart, submit_volume_create,
+    volume_remove,
 };
 
 use crate::control::authorization::MachineCredentialMint;
