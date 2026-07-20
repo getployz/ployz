@@ -252,19 +252,17 @@ Live` section above. These rules are about truth semantics, not storage:
   value is its cold read.
 - Implementation receives one four-lane Codex cold-read wave: Standards and
   Spec are `/code-review`'s two axes; thermo-nuclear is the skill above; and
-  ponytail is the `ponytail-review` skill. Run each lane once through either a
-  native fresh-context subagent or, when the dispatcher requests it, a separate
-  read-only Codex CLI invocation. Every reviewer uses `gpt-5.6-sol` with high
-  reasoning effort. If the tool cannot verify model or effort, record that
-  limitation; do not claim the routing succeeded. Do not duplicate the same
-  lane across native and CLI harnesses merely for symmetry.
-- Mirror that wave through the `opus-advisor` skill when Opus is available and
-  the dispatcher has not selected CLI-only cold reads. If the dispatcher
-  requests Codex CLI or Opus is unavailable or usage-limited, the four separate
-  read-only CLI lanes above replace the unavailable mirror; do not wait for
-  Claude capacity or add duplicate native reads. Add another independent read
-  only for an exceptionally risky seam where it supplies a materially distinct
-  judgment, never to preserve a model or harness matrix. Treat security, authority,
+  ponytail is the `ponytail-review` skill. Run each lane once through a separate
+  fresh-context, read-only Codex CLI invocation. Every reviewer uses
+  `gpt-5.6-sol` with high reasoning effort. If the CLI cannot verify model or
+  effort, record that limitation; do not claim the routing succeeded. Native
+  subagents remain the implementation route and do not duplicate these cold
+  reads merely for harness symmetry unless the dispatcher explicitly changes
+  the review route.
+- Do not mirror the CLI cold wave through `opus-advisor` or wait for Claude
+  capacity. Add another independent read only for an exceptionally risky seam
+  where it supplies a materially distinct judgment, never to preserve a model
+  or harness matrix. Treat security, authority,
   money, privacy, destructive behavior, persistence, migrations, concurrency,
   distributed state, public contracts, architecture boundaries, or a broad
   multi-module diff as large or risky. The supervisor records the classification.
