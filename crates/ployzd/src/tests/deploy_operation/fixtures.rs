@@ -318,8 +318,8 @@ pub(super) struct RecordingRuntime {
     fail_remove: bool,
     fail_stop: bool,
     fail_stop_for: Vec<ContainerId>,
-    stop_outcomes: Vec<(ContainerId, MachineContainerStopOutcome)>,
-    hang_stop_for: Vec<ContainerId>,
+    stop_outcomes: Vec<(ContainerId, SyntheticStopResult)>,
+    hang_stop_for: Vec<(ContainerId, Option<Arc<tokio::sync::Notify>>)>,
     fail_restart: bool,
     run_failure: Option<SyntheticRunFailure>,
 }
@@ -329,6 +329,14 @@ enum SyntheticRunFailure {
     Ambiguous(Vec<ContainerId>),
     Unavailable,
     Hang,
+}
+
+#[derive(Clone)]
+enum SyntheticStopResult {
+    Outcome(MachineContainerStopOutcome),
+    UnavailableAfterDelivery {
+        late_completion: Arc<tokio::sync::Notify>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -937,13 +945,38 @@ impl RecordingRuntime {
         container_id: &str,
         outcome: MachineContainerStopOutcome,
     ) -> Self {
-        self.stop_outcomes
-            .push((self::container_id(container_id), outcome));
+        self.stop_outcomes.push((
+            self::container_id(container_id),
+            SyntheticStopResult::Outcome(outcome),
+        ));
         self
     }
 
     pub(super) fn with_hanging_stop_for(mut self, container_id: &str) -> Self {
-        self.hang_stop_for.push(self::container_id(container_id));
+        self.hang_stop_for
+            .push((self::container_id(container_id), None));
+        self
+    }
+
+    pub(super) fn with_hanging_stop_completing_late(
+        mut self,
+        container_id: &str,
+        late_completion: Arc<tokio::sync::Notify>,
+    ) -> Self {
+        self.hang_stop_for
+            .push((self::container_id(container_id), Some(late_completion)));
+        self
+    }
+
+    pub(super) fn with_stop_unavailable_after_delivery(
+        mut self,
+        container_id: &str,
+        late_completion: Arc<tokio::sync::Notify>,
+    ) -> Self {
+        self.stop_outcomes.push((
+            self::container_id(container_id),
+            SyntheticStopResult::UnavailableAfterDelivery { late_completion },
+        ));
         self
     }
 
@@ -1186,7 +1219,14 @@ impl MachineContainerRuntime for RecordingRuntime {
         let container_id = request.container_id.clone();
         self.actions.push(RuntimeAction::Stop(container_id.clone()));
         self.stops.push((machine_id.clone(), request));
-        if self.hang_stop_for.contains(&container_id) {
+        if let Some((_, late_completion)) = self
+            .hang_stop_for
+            .iter()
+            .find(|(expected, _)| expected == &container_id)
+        {
+            if let Some(late_completion) = late_completion {
+                notify_late_stop(Arc::clone(late_completion));
+            }
             tokio::time::sleep(Duration::from_secs(60)).await;
         }
         if self.fail_stop || self.fail_stop_for.contains(&container_id) {
@@ -1201,11 +1241,24 @@ impl MachineContainerRuntime for RecordingRuntime {
                 .expect("valid inspect hint"),
             });
         }
-        Ok(self
+        match self
             .stop_outcomes
             .iter()
-            .find_map(|(expected, outcome)| (expected == &container_id).then_some(*outcome))
-            .unwrap_or(MachineContainerStopOutcome::StoppedRunning))
+            .find_map(|(expected, outcome)| (expected == &container_id).then_some(outcome.clone()))
+            .unwrap_or(SyntheticStopResult::Outcome(
+                MachineContainerStopOutcome::StoppedRunning,
+            )) {
+            SyntheticStopResult::Outcome(outcome) => Ok(outcome),
+            SyntheticStopResult::UnavailableAfterDelivery { late_completion } => {
+                notify_late_stop(late_completion);
+                Err(MachineContainerRuntimeError::Unavailable {
+                    machine_id: machine_id.clone(),
+                    reason: MachineRuntimeUnavailableReason::RequestFailed {
+                        message: "synthetic response lost after stop delivery".to_owned(),
+                    },
+                })
+            }
+        }
     }
 
     async fn restart_container(
@@ -1227,6 +1280,13 @@ impl MachineContainerRuntime for RecordingRuntime {
         }
         Ok(())
     }
+}
+
+fn notify_late_stop(late_completion: Arc<tokio::sync::Notify>) {
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        late_completion.notify_one();
+    });
 }
 
 pub(super) fn deploy_command(replicas: u16) -> DeployExecutionInput {
