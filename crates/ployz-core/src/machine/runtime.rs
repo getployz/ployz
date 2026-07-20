@@ -1,6 +1,7 @@
 //! Machine runtime models and live fact testimony.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::net::IpAddr;
 use std::time::Duration;
 
@@ -641,6 +642,8 @@ pub struct ManagedContainerObservation {
     pub resolved_image_identity: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at_unix_seconds: Option<i64>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub named_volume_names: BTreeSet<String>,
 }
 
 impl ManagedContainerObservation {

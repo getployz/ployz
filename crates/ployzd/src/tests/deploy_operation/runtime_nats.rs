@@ -219,6 +219,7 @@ async fn interrupted_deploy_retry_gathers_and_reuses_retained_runtime_work() {
         health_status: None,
         resolved_image_identity: None,
         created_at_unix_seconds: None,
+        named_volume_names: Default::default(),
     };
     let retained_facts = machine_facts(retained_machine_id.clone(), [retained_observation]);
     let target_facts = if retained_machine_id == &machine_id("machine_a") {
@@ -449,6 +450,7 @@ async fn interrupted_scale_up_replica_is_regated_under_a_promoted_entry() {
         health_status: None,
         resolved_image_identity: None,
         created_at_unix_seconds: None,
+        named_volume_names: Default::default(),
     };
     let promoted_facts = if promoted_machine_id == &machine_id("machine_a") {
         &machine_a_facts
@@ -515,6 +517,7 @@ async fn interrupted_scale_up_replica_is_regated_under_a_promoted_entry() {
         health_status: None,
         resolved_image_identity: None,
         created_at_unix_seconds: None,
+        named_volume_names: Default::default(),
     };
     let interrupted_facts = if interrupted_machine_id == &machine_id("machine_a") {
         &machine_a_facts

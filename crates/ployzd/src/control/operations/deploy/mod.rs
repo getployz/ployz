@@ -713,7 +713,7 @@ where
                 },
             );
             match tokio::time::timeout(command.step_timeout(), stop).await {
-                Ok(Ok(())) => None,
+                Ok(Ok(_)) => None,
                 Ok(Err(error)) => Some(cleanup_failure_message(error)),
                 Err(_) => Some(
                     FailureMessage::try_new(format!(

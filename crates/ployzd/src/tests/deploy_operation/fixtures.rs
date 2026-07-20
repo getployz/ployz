@@ -1153,7 +1153,10 @@ impl MachineContainerRuntime for RecordingRuntime {
         &mut self,
         machine_id: &MachineId,
         request: MachineContainerStopRpcRequest,
-    ) -> Result<(), MachineContainerRuntimeError> {
+    ) -> Result<
+        crate::roles::machine::protocol::MachineContainerStopOutcome,
+        MachineContainerRuntimeError,
+    > {
         let container_id = request.container_id.clone();
         self.actions.push(RuntimeAction::Stop(container_id.clone()));
         self.stops.push((machine_id.clone(), request));
@@ -1169,7 +1172,7 @@ impl MachineContainerRuntime for RecordingRuntime {
                 .expect("valid inspect hint"),
             });
         }
-        Ok(())
+        Ok(crate::roles::machine::protocol::MachineContainerStopOutcome::StoppedRunning)
     }
 
     async fn restart_container(

@@ -5,7 +5,8 @@ use ployz_core::machine::runtime::ManagedContainerIdentity;
 use ployz_core::network::MachineEndpointSubnet;
 
 use super::protocol::{
-    MachineContainerRunDomainError, MachineContainerRunHookDomainError, MachineRunContainerOutcome,
+    MachineContainerRunDomainError, MachineContainerRunHookDomainError,
+    MachineContainerStopOutcome, MachineRunContainerOutcome,
 };
 use super::response::{failure_message, inspect_hint, log_hint};
 use super::runner::{
@@ -45,9 +46,6 @@ pub(crate) enum HookContainerInfrastructureError {
     EndpointNetworkSubnetMismatch {
         expected: MachineEndpointSubnet,
         observed: MachineEndpointSubnet,
-    },
-    TimeoutStopList {
-        message: String,
     },
 }
 
@@ -259,19 +257,22 @@ where
                     .stop_managed_container(&container_id, &expected_identity)
                     .await
                 {
-                    Ok(()) => format!(
+                    Ok(MachineContainerStopOutcome::StoppedRunning) => format!(
                         "hook timed out after {}ms and was stopped",
+                        timeout.as_millis()
+                    ),
+                    Ok(MachineContainerStopOutcome::AlreadyStopped) => format!(
+                        "hook timed out after {}ms and was already stopped",
+                        timeout.as_millis()
+                    ),
+                    Ok(MachineContainerStopOutcome::Missing) => format!(
+                        "hook timed out after {}ms and was missing before stop",
                         timeout.as_millis()
                     ),
                     Err(MachineContainerStopError::Stop { message, .. }) => format!(
                         "hook timed out after {}ms and could not be stopped: {message}",
                         timeout.as_millis()
                     ),
-                    Err(MachineContainerStopError::ListExisting { message }) => {
-                        return Err(HookContainerRunError::Infrastructure(
-                            HookContainerInfrastructureError::TimeoutStopList { message },
-                        ));
-                    }
                 };
                 return Err(HookContainerRunError::Domain(
                     MachineContainerRunHookDomainError::TimedOut {

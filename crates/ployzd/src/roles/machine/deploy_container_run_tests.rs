@@ -138,6 +138,7 @@ fn existing_container_with_state(
         health_status: None,
         resolved_image_identity: None,
         created_at_unix_seconds: None,
+        named_volume_names: Default::default(),
     }
 }
 

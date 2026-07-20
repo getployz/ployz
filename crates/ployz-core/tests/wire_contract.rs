@@ -1000,6 +1000,10 @@ fn managed_container_observation_wire_shape_nests_identity() {
         health_status: None,
         resolved_image_identity: None,
         created_at_unix_seconds: None,
+        named_volume_names: std::collections::BTreeSet::from([
+            "ployz-z-data".to_owned(),
+            "ployz-a-data".to_owned(),
+        ]),
     };
 
     assert_eq!(
@@ -1020,6 +1024,7 @@ fn managed_container_observation_wire_shape_nests_identity() {
                 "health": "none",
                 "started_at_unix_ms": 1_783_670_950_123_u64,
             },
+            "named_volume_names": ["ployz-a-data", "ployz-z-data"],
         })
     );
 }

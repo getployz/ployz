@@ -1,4 +1,4 @@
-use crate::roles::machine::protocol::MachineImagePull;
+use crate::roles::machine::protocol::{MachineContainerStopOutcome, MachineImagePull};
 use crate::roles::machine::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
     MachineContainerCreateError, MachineContainerListError, MachineContainerRemoveError,
@@ -218,6 +218,7 @@ impl MachineContainerRunner for ObservingContainerRunner {
             health_status: None,
             resolved_image_identity: None,
             created_at_unix_seconds: None,
+            named_volume_names: Default::default(),
         };
         let snapshot = self
             .snapshot()
@@ -336,11 +337,11 @@ impl MachineContainerRunner for ObservingContainerRunner {
         &self,
         container_id: &ContainerId,
         expected_identity: &ManagedContainerIdentity,
-    ) -> Result<(), MachineContainerStopError> {
+    ) -> Result<MachineContainerStopOutcome, MachineContainerStopError> {
         let snapshot = self.snapshot();
 
         let Some(existing) = snapshot.container(container_id).cloned() else {
-            return Ok(());
+            return Ok(MachineContainerStopOutcome::Missing);
         };
         if observation_identity(&existing) != *expected_identity {
             return Err(MachineContainerStopError::Stop {
@@ -349,6 +350,11 @@ impl MachineContainerRunner for ObservingContainerRunner {
             });
         }
 
+        let outcome = if existing.state.is_running() {
+            MachineContainerStopOutcome::StoppedRunning
+        } else {
+            MachineContainerStopOutcome::AlreadyStopped
+        };
         let snapshot = snapshot
             .with_container_replaced(ManagedContainerObservation {
                 state: ContainerRuntimeState::Exited,
@@ -359,7 +365,7 @@ impl MachineContainerRunner for ObservingContainerRunner {
                 message: error.to_string(),
             })?;
         self.replace_snapshot(snapshot);
-        Ok(())
+        Ok(outcome)
     }
 
     async fn restart_managed_container(
@@ -586,6 +592,7 @@ fn existing_container_from_observation(
         health_status: observation.health_status,
         resolved_image_identity: observation.resolved_image_identity.clone(),
         created_at_unix_seconds: observation.created_at_unix_seconds,
+        named_volume_names: observation.named_volume_names.clone(),
     }
 }
 

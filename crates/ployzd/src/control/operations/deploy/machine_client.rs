@@ -17,7 +17,8 @@ use crate::roles::machine::protocol::{
     MachineContainerRestartDomainError, MachineContainerRestartRpcRequest,
     MachineContainerRunDomainError, MachineContainerRunHookDomainError,
     MachineContainerRunHookRpcOk, MachineContainerRunHookRpcRequest, MachineContainerRunRpcRequest,
-    MachineContainerStopDomainError, MachineContainerStopRpcRequest, MachineRunContainerOutcome,
+    MachineContainerStopDomainError, MachineContainerStopOutcome, MachineContainerStopRpcRequest,
+    MachineRunContainerOutcome,
 };
 
 use super::{
@@ -172,10 +173,10 @@ impl MachineContainerRuntime for NatsMachineContainerRuntime {
         &mut self,
         machine_id: &MachineId,
         request: MachineContainerStopRpcRequest,
-    ) -> Result<(), MachineContainerRuntimeError> {
+    ) -> Result<MachineContainerStopOutcome, MachineContainerRuntimeError> {
         self.request_container_stop(machine_id, &request)
             .await
-            .map(|_| ())
+            .map(|ok| ok.outcome)
             .map_err(|error| match error {
                 MachineCallError::Unavailable(reason) => unavailable(machine_id, reason),
                 MachineCallError::Domain(MachineContainerStopDomainError::StopFailed {
