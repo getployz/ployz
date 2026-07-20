@@ -2,77 +2,33 @@
 
 use ployz_core::ids::MachineId;
 use ployz_nats::services::{
-    EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceMetadata,
+    API_SERVICE_NAME, DNS_SERVICE_NAME, EndpointExecution, GATEWAY_MACHINE_SERVICE_NAME,
+    INGRESS_ENDPOINT_SERVICE_NAME, INTENT_SERVICE_NAME, MACHINE_SERVICE_NAME,
+    NatsServiceEndpointSpec, NatsServiceSpec, RUNTIME_PROJECTION_SERVICE_NAME, ServiceMetadata,
     ServiceMetadataEntry, ServiceVersion,
 };
 #[cfg(test)]
 use ployz_nats::services::{ServiceDiscoveryQuery, ServicePing, discover_services};
 use ployz_nats::subjects::{
-    INGRESS_ENDPOINT_GET, INTENT_GET, MachineServiceEndpoint, OperationApiEndpoint,
-    OperationApiEndpointExecution, RUNTIME_SNAPSHOT_SEED, machine_service,
+    CoreQueryEndpoint, MachineServiceEndpoint, OperationApiEndpoint, OperationApiEndpointExecution,
+    RUNTIME_SNAPSHOT_SEED, machine_service,
 };
 
-pub const API_SERVICE_NAME: &str = "plz-api";
 pub const API_SERVICE_ID: &str = "plz-api.core";
 pub const API_SERVICE_DESCRIPTION: &str = "Ployz operator-facing command service";
-pub const MACHINE_SERVICE_NAME: &str = "plz-machine";
 pub const MACHINE_SERVICE_DESCRIPTION: &str = "Ployz machine-local runtime service";
-pub const GATEWAY_MACHINE_SERVICE_NAME: &str = "plz-gateway-machine";
 pub const GATEWAY_MACHINE_SERVICE_DESCRIPTION: &str =
     "Ployz gateway machine-local certificate service";
-pub const DNS_SERVICE_NAME: &str = "plz-dns";
 pub const DNS_SERVICE_DESCRIPTION: &str = "Ployz machine-local DNS role service";
-pub const INTENT_SERVICE_NAME: &str = "plz-intent";
 pub const INTENT_SERVICE_ID: &str = "plz-intent.core";
 pub const INTENT_SERVICE_DESCRIPTION: &str = "Ployz operator intent service";
-pub const INGRESS_ENDPOINT_SERVICE_NAME: &str = "plz-ingress-endpoint";
 pub const INGRESS_ENDPOINT_SERVICE_ID: &str = "plz-ingress-endpoint.core";
 pub const INGRESS_ENDPOINT_SERVICE_DESCRIPTION: &str =
     "Ployz canonical ingress endpoint projection";
-pub const RUNTIME_PROJECTION_SERVICE_NAME: &str = "plz-runtime-projection";
 pub const RUNTIME_PROJECTION_SERVICE_ID: &str = "plz-runtime-projection.core";
 pub const RUNTIME_PROJECTION_SERVICE_DESCRIPTION: &str = "Ployz passive runtime projection";
 pub const SERVICE_VERSION: ServiceVersion = ServiceVersion::new(0, 1, 0);
-pub const IMPLEMENTED_OPERATION_API_ENDPOINTS: &[OperationApiEndpoint] = &[
-    OperationApiEndpoint::BuildSubmit,
-    OperationApiEndpoint::BuildCancel,
-    OperationApiEndpoint::CredentialAdd,
-    OperationApiEndpoint::CredentialList,
-    OperationApiEndpoint::CredentialRemove,
-    OperationApiEndpoint::IngressConfigure,
-    OperationApiEndpoint::DeployReserve,
-    OperationApiEndpoint::DeployPreview,
-    OperationApiEndpoint::DeploySubmit,
-    OperationApiEndpoint::SystemDeploy,
-    OperationApiEndpoint::ServiceRestart,
-    OperationApiEndpoint::NamespaceRemove,
-    OperationApiEndpoint::VolumeRemove,
-    OperationApiEndpoint::VolumeCreate,
-    OperationApiEndpoint::InitFirstMachineActivate,
-    OperationApiEndpoint::MachineAdd,
-    OperationApiEndpoint::MachineBuildCachePrune,
-    OperationApiEndpoint::MachineUpdate,
-    OperationApiEndpoint::MachineStoragePrepare,
-    OperationApiEndpoint::MachineDrain,
-    OperationApiEndpoint::MachineResume,
-    OperationApiEndpoint::CoreReplace,
-    OperationApiEndpoint::CoreReplaceReport,
-    OperationApiEndpoint::MachineList,
-    OperationApiEndpoint::MachineInspect,
-    OperationApiEndpoint::NetworkStatus,
-    OperationApiEndpoint::NetworkResolve,
-    OperationApiEndpoint::NetworkRepair,
-    OperationApiEndpoint::MachineJoinRedeem,
-    OperationApiEndpoint::MachineJoinReport,
-    OperationApiEndpoint::ServiceList,
-    OperationApiEndpoint::VolumeList,
-    OperationApiEndpoint::ServiceInspect,
-    OperationApiEndpoint::RuntimeSnapshot,
-    OperationApiEndpoint::LogsTail,
-    OperationApiEndpoint::OpsList,
-    OperationApiEndpoint::OpsStatus,
-    OperationApiEndpoint::OpsWatch,
-];
+pub const IMPLEMENTED_OPERATION_API_ENDPOINTS: &[OperationApiEndpoint] = OperationApiEndpoint::ALL;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg(test)]
@@ -140,7 +96,7 @@ pub fn api_service() -> NatsServiceSpec {
 
 #[must_use]
 pub fn api_endpoints() -> Vec<NatsServiceEndpointSpec> {
-    IMPLEMENTED_OPERATION_API_ENDPOINTS
+    OperationApiEndpoint::ALL
         .iter()
         .copied()
         .map(api_endpoint_spec)
@@ -161,7 +117,7 @@ pub fn intent_service() -> NatsServiceSpec {
 
 #[must_use]
 pub fn intent_get_endpoint_spec() -> NatsServiceEndpointSpec {
-    NatsServiceEndpointSpec::new("intent.get", INTENT_GET, EndpointExecution::Query)
+    core_query_endpoint_spec(CoreQueryEndpoint::IntentGet)
 }
 
 #[must_use]
@@ -178,9 +134,14 @@ pub fn ingress_endpoint_service() -> NatsServiceSpec {
 
 #[must_use]
 pub fn ingress_endpoint_get_spec() -> NatsServiceEndpointSpec {
+    core_query_endpoint_spec(CoreQueryEndpoint::IngressEndpointGet)
+}
+
+#[must_use]
+pub fn core_query_endpoint_spec(endpoint: CoreQueryEndpoint) -> NatsServiceEndpointSpec {
     NatsServiceEndpointSpec::new(
-        "ingress.endpoint.get",
-        INGRESS_ENDPOINT_GET,
+        endpoint.name(),
+        endpoint.subject(),
         EndpointExecution::Query,
     )
 }
