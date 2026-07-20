@@ -1,8 +1,8 @@
 use super::*;
 use ployz_core::deploy::{
-    ContainerRuntimeSpec, DeployPhasePlan, DeployPlanningInput, DeployPlanningPlacementInput,
-    DeployRequest, DeployServiceSpec, ImageReference, PlatformImage, PushedImageReceipt,
-    ReplicaCount, ReplicaSlot,
+    ContainerRuntimeSpec, DeployPhasePlan, DeployPlanStep, DeployPlanningInput,
+    DeployPlanningPlacementInput, DeployRequest, DeployServiceSpec, ImageReference, PlatformImage,
+    PushedImageReceipt, ReplicaCount, ReplicaSlot,
 };
 use ployz_core::ids::{MachineId, NamespaceId, NamespaceRevisionId, OperationId, ServiceId};
 use ployz_core::image::{OciDigest, OciPlatform};

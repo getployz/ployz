@@ -273,16 +273,17 @@ async fn interrupted_deploy_retry_gathers_and_reuses_retained_runtime_work() {
             phase
                 .services
                 .iter()
-                .flat_map(|service| service.steps.iter().cloned())
+                .flat_map(|service| service.work.steps())
                 .any(|step| {
                     matches!(
                         step,
-                        DeployPlanStep::UseExistingContainer {
+                        ployz_core::deploy::DeployPlanStepRef::Step(
+                            DeployPlanStep::UseExistingContainer {
                             machine_id,
                             container_id: existing_container_id,
                             ..
-                        } if machine_id == retained_machine_id.clone()
-                            && existing_container_id == container_id("ctr_retained")
+                        }) if machine_id == retained_machine_id
+                            && existing_container_id == &container_id("ctr_retained")
                     )
                 })
         }),

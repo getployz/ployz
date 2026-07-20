@@ -116,6 +116,13 @@ impl<'a> DeployFailureView<'a> {
                 | RetainedArtifact::ContainerStopFailed { machine_id, .. } => {
                     push_unique(&mut machines, machine_id);
                 }
+                RetainedArtifact::VolumeOwnerStopUncertain { target, .. }
+                | RetainedArtifact::VolumeConsumerQuiescenceUncertain { target, .. } => {
+                    push_unique(&mut machines, &target.machine_id);
+                }
+                RetainedArtifact::VolumeConsumerStartUncertain { machine_id, .. } => {
+                    push_unique(&mut machines, machine_id);
+                }
             }
         }
         machines
@@ -161,6 +168,15 @@ impl<'a> DeployFailureView<'a> {
                     container_id,
                     log_command: log_hint.as_str().to_owned(),
                 }),
+                RetainedArtifact::VolumeConsumerQuiescenceUncertain { target, .. } => {
+                    containers.push(DeployFailureContainerEvidence {
+                        machine_id: &target.machine_id,
+                        container_id: &target.container_id,
+                        log_command: format!("ployzctl logs {}", target.container_id.as_str()),
+                    });
+                }
+                RetainedArtifact::VolumeOwnerStopUncertain { .. }
+                | RetainedArtifact::VolumeConsumerStartUncertain { .. } => {}
             }
         }
         containers

@@ -150,7 +150,7 @@ fn volume_backed_promoted_baseline_reuses_or_hands_off_for_every_container_shape
     }];
     let pin = VolumePinState::plain(
         baseline.namespace_id.clone(),
-        volume_name,
+        volume_name.clone(),
         owner_machine.clone(),
     );
 
@@ -1294,6 +1294,7 @@ fn cleanup_container_with_entry(
         state: ployz_core::machine::runtime::ContainerRuntimeState::running_unroutable(),
         created_at_unix_seconds: None,
         observed_image_identity: None,
+        named_volume_names: std::collections::BTreeSet::new(),
     }
 }
 

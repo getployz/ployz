@@ -3,8 +3,9 @@ use ployz_core::certificate::{ActiveCertState, CertBundleRef, CertValidAt, CertV
 use ployz_core::deploy::{
     ContainerRuntimeSpec, DeployPhasePlan, DeployPlan, DeployPlanStep, DeployRequest,
     DeployRequestEvidence, DeployRoute, DeployRouteTarget, DeployServicePlacement,
-    DeployServicePlan, DeployServiceSpec, DeployVolumeHandoffParticipant, DeployVolumeHandoffPlan,
-    DeployVolumeHandoffPriorState, ImageReference, ImageSource, PlatformImage, PushedImageReceipt,
+    DeployServicePlan, DeployServiceSpec, DeployServiceWork, DeployVolumeHandoffParticipant,
+    DeployVolumeHandoffPlan, DeployVolumeHandoffPriorState, ImageReference, ImageSource,
+    NonEmptyVolumeHandoffParticipants, NonEmptyVolumeNames, PlatformImage, PushedImageReceipt,
     ReplicaCount, ReplicaSlot, ReplicatedReplicaSlot, VolumeAdmissionFailure, VolumeName,
 };
 use ployz_core::ids::{
@@ -132,31 +133,33 @@ fn plan() -> DeployPlan {
         phases: vec![DeployPhasePlan {
             services: vec![
                 DeployServicePlan {
-                    volume_handoff: None,
                     service_id: service_id("web"),
                     placement: DeployServicePlacement::Replicated,
                     pre_start: None,
-                    steps: vec![
-                        DeployPlanStep::RunContainer {
-                            machine_id: machine_id("hetzner-1"),
-                            slot: replica_slot(1),
-                        },
-                        DeployPlanStep::RunContainer {
-                            machine_id: machine_id("hetzner-2"),
-                            slot: replica_slot(2),
-                        },
-                    ],
+                    work: DeployServiceWork::Ordinary {
+                        steps: vec![
+                            DeployPlanStep::RunContainer {
+                                machine_id: machine_id("hetzner-1"),
+                                slot: replica_slot(1),
+                            },
+                            DeployPlanStep::RunContainer {
+                                machine_id: machine_id("hetzner-2"),
+                                slot: replica_slot(2),
+                            },
+                        ],
+                    },
                 },
                 DeployServicePlan {
-                    volume_handoff: None,
                     service_id: service_id("worker"),
                     placement: DeployServicePlacement::Replicated,
                     pre_start: None,
-                    steps: vec![DeployPlanStep::UseExistingContainer {
-                        machine_id: machine_id("hetzner-2"),
-                        container_id: container_id("worker-existing"),
-                        slot: replica_slot(1),
-                    }],
+                    work: DeployServiceWork::Ordinary {
+                        steps: vec![DeployPlanStep::UseExistingContainer {
+                            machine_id: machine_id("hetzner-2"),
+                            container_id: container_id("worker-existing"),
+                            slot: replica_slot(1),
+                        }],
+                    },
                 },
             ],
         }],
@@ -382,6 +385,8 @@ fn volume_handoff_plain_events_distinguish_prior_state_and_mixed_rollback_outcom
     let stopped = target("owner-stopped");
     let failed = target("owner-failed");
     let uncertain = target("owner-uncertain");
+    let volume_names = NonEmptyVolumeNames::try_new([VolumeName::try_new("data").expect("volume")])
+        .expect("non-empty volume names");
     let mut tree = DeployTree::new();
 
     tree.ingest_page(&[
@@ -392,17 +397,20 @@ fn volume_handoff_plain_events_distinguish_prior_state_and_mixed_rollback_outcom
                 service_id: service_id("web"),
                 handoff: DeployVolumeHandoffPlan {
                     machine_id: machine_id("hetzner-1"),
-                    volume_names: vec![VolumeName::try_new("data").expect("volume")],
-                    superseded: vec![
+                    volume_names: volume_names.clone(),
+                    superseded: NonEmptyVolumeHandoffParticipants::try_new([
                         DeployVolumeHandoffParticipant {
                             target: running.clone(),
                             prior_state: DeployVolumeHandoffPriorState::Running,
+                            shared_volume_names: volume_names.clone(),
                         },
                         DeployVolumeHandoffParticipant {
                             target: stopped,
                             prior_state: DeployVolumeHandoffPriorState::Stopped,
+                            shared_volume_names: volume_names,
                         },
-                    ],
+                    ])
+                    .expect("non-empty participants"),
                 },
             },
         ),
@@ -421,6 +429,8 @@ fn volume_handoff_plain_events_distinguish_prior_state_and_mixed_rollback_outcom
                         target: failed,
                         outcome: DeployVolumeHandoffRollbackOutcome::RestartFailed {
                             failure: DeployVolumeHandoffRestartFailure::StartFailed {
+                                message: FailureMessage::try_new("restart rejected")
+                                    .expect("failure message"),
                                 inspect_hint: OperatorHint::try_new(
                                     "ployz machine container inspect owner-failed",
                                 )
@@ -442,7 +452,7 @@ fn volume_handoff_plain_events_distinguish_prior_state_and_mixed_rollback_outcom
         concat!(
             "deploy op_317: web — volume handoff on hetzner-1: stopped 1 running prior owner(s); 1 prior owner(s) were already stopped\n",
             "deploy op_317: web — volume handoff rollback on hetzner-1: owner-running restarted\n",
-            "deploy op_317: web — volume handoff rollback on hetzner-1: owner-failed restart failed: start failed (ployz machine container inspect owner-failed)\n",
+            "deploy op_317: web — volume handoff rollback on hetzner-1: owner-failed restart failed: restart rejected (ployz machine container inspect owner-failed)\n",
             "deploy op_317: web — volume handoff rollback on hetzner-1: owner-uncertain not restarted: new consumer quiescence unconfirmed\n",
         )
     );

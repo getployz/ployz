@@ -1,6 +1,6 @@
 use ployz_core::deploy::{
-    DeployCleanupContainer, DeployPhasePlan, DeployPlanStep, ExistingReplicaCreationGate,
-    ImageSource,
+    DeployCleanupContainer, DeployPhasePlan, DeployPlanStep, DeployPlanStepRef, DeployServiceWork,
+    ExistingReplicaCreationGate, ImageSource,
 };
 use ployz_core::ids::{ContainerId, MachineId, ServiceId, StepId};
 use ployz_core::machine::runtime::{ManagedContainerIdentity, ManagedContainerKind};
@@ -471,21 +471,31 @@ where
                 service_id: service_plan.service_id.clone(),
             }));
         };
-        if let Some(handoff) = &service_plan.volume_handoff {
-            let result = volume_handoff::stop_volume_owners(
-                command,
-                &service.service.service_id,
-                handoff,
-                run.volume_handoff_mut(),
-                ports.recorder,
-                ports.machine_runtime,
-            )
-            .await;
-            result
-                .map_err(|source| run.fail_service(source, service.service.service_id.clone()))?;
-        }
+        let is_volume_handoff = match &service_plan.work {
+            DeployServiceWork::Ordinary { steps: _ } => false,
+            DeployServiceWork::VolumeHandoff {
+                replacement,
+                remaining_steps: _,
+                participants,
+            } => {
+                let result = volume_handoff::stop_volume_owners(
+                    command,
+                    &service.service.service_id,
+                    &replacement.machine_id,
+                    participants,
+                    run.volume_handoff_mut(),
+                    ports.recorder,
+                    ports.machine_runtime,
+                )
+                .await;
+                result.map_err(|source| {
+                    run.fail_service(source, service.service.service_id.clone())
+                })?;
+                true
+            }
+        };
         if let Some(pre_start) = &service_plan.pre_start {
-            let expected_identity = if service_plan.volume_handoff.is_some() {
+            let expected_identity = if is_volume_handoff {
                 let step_id = StepId::try_new("pre_start").map_err(|source| {
                     run.fail_service(
                         DeployExecutionError::StepId(source),
@@ -522,13 +532,13 @@ where
                     .consumer_did_not_start(&service.service.service_id, expected_identity);
             }
         }
-        for step in &service_plan.steps {
-            match step {
-                DeployPlanStep::UseExistingContainer {
+        for step in service_plan.work.steps() {
+            let (machine_id, slot) = match step {
+                DeployPlanStepRef::Step(DeployPlanStep::UseExistingContainer {
                     machine_id,
                     container_id,
                     slot,
-                } => {
+                }) => {
                     let Some(existing) =
                         service
                             .planning_input
@@ -566,79 +576,69 @@ where
                     };
                     ports.containers.push(container.clone());
                     run.existing_container(container, existing.creation_gate);
+                    continue;
                 }
-                DeployPlanStep::RunContainer { machine_id, slot } => {
-                    let expected_identity = if service_plan.volume_handoff.is_some() {
-                        let step_id = deploy_step_id(*slot, machine_id).map_err(|source| {
-                            run.fail_service(
-                                DeployExecutionError::StepId(source),
-                                service.service.service_id.clone(),
-                            )
-                        })?;
-                        let identity = consumer_identity(
-                            command,
-                            service,
-                            step_id,
-                            ManagedContainerKind::Service,
-                        );
-                        run.volume_handoff_mut().begin_consumer_start(
-                            &service.service.service_id,
-                            machine_id.clone(),
-                            identity.clone(),
-                        );
-                        Some(identity)
-                    } else {
-                        None
-                    };
-                    let run_result = with_step_timeout(
-                        command,
-                        DeployExecutionStep::RunContainer {
-                            machine_id: machine_id.clone(),
-                        },
-                        run_deploy_step(
-                            ports.machine_runtime,
-                            command,
-                            service,
-                            machine_id,
-                            *slot,
-                            dataplane_members,
-                        ),
-                    )
-                    .await;
-                    let (started, disposition) = match run_result {
-                        Ok(started) => started,
-                        Err(source) => {
-                            if let Some(expected_identity) = &expected_identity {
-                                capture_run_failure_consumers(
-                                    service,
-                                    run,
-                                    expected_identity,
-                                    &source,
-                                );
-                            }
-                            return Err(run.fail_run_container(service, source));
-                        }
-                    };
-                    ports.containers.push(started.clone());
-                    run.container_started(
-                        started.clone(),
-                        disposition,
-                        service_plan.volume_handoff.is_some(),
-                    );
-                    record_evidence(
-                        command,
-                        ports.recorder,
-                        DeployEvidence::ContainerStarted {
-                            machine_id: started.machine_id.clone(),
-                            container_id: started.container_id.clone(),
-                        },
-                    )
-                    .await
-                    .map_err(|source| {
-                        run.fail_service(source, service.service.service_id.clone())
-                    })?;
+                DeployPlanStepRef::RunContainer(replacement) => {
+                    (&replacement.machine_id, replacement.slot)
                 }
-            }
+                DeployPlanStepRef::Step(DeployPlanStep::RunContainer { machine_id, slot }) => {
+                    (machine_id, *slot)
+                }
+            };
+            let expected_identity = if is_volume_handoff {
+                let step_id = deploy_step_id(slot, machine_id).map_err(|source| {
+                    run.fail_service(
+                        DeployExecutionError::StepId(source),
+                        service.service.service_id.clone(),
+                    )
+                })?;
+                let identity =
+                    consumer_identity(command, service, step_id, ManagedContainerKind::Service);
+                run.volume_handoff_mut().begin_consumer_start(
+                    &service.service.service_id,
+                    machine_id.clone(),
+                    identity.clone(),
+                );
+                Some(identity)
+            } else {
+                None
+            };
+            let run_result = with_step_timeout(
+                command,
+                DeployExecutionStep::RunContainer {
+                    machine_id: machine_id.clone(),
+                },
+                run_deploy_step(
+                    ports.machine_runtime,
+                    command,
+                    service,
+                    machine_id,
+                    slot,
+                    dataplane_members,
+                ),
+            )
+            .await;
+            let (started, disposition) = match run_result {
+                Ok(started) => started,
+                Err(source) => {
+                    if let Some(expected_identity) = &expected_identity {
+                        capture_run_failure_consumers(service, run, expected_identity, &source);
+                    }
+                    return Err(run.fail_run_container(service, source));
+                }
+            };
+            ports.containers.push(started.clone());
+            run.container_started(started.clone(), disposition, is_volume_handoff);
+            record_evidence(
+                command,
+                ports.recorder,
+                DeployEvidence::ContainerStarted {
+                    machine_id: started.machine_id.clone(),
+                    container_id: started.container_id.clone(),
+                },
+            )
+            .await
+            .map_err(|source| run.fail_service(source, service.service.service_id.clone()))?;
         }
         run.service_completed(service_result(
             service,

@@ -901,11 +901,13 @@ async fn registry_tag_preview_matches_reusing_execution_plan() {
         panic!("preview has one service")
     };
     assert!(matches!(
-        preview_service.steps.as_slice(),
-        [ployz_core::deploy::DeployPlanStep::UseExistingContainer {
-            machine_id,
-            ..
-        }] if machine_id == &machine
+        &preview_service.work,
+        ployz_core::deploy::DeployServiceWork::Ordinary { steps }
+            if matches!(steps.as_slice(),
+                [ployz_core::deploy::DeployPlanStep::UseExistingContainer {
+                    machine_id,
+                    ..
+                }] if machine_id == &machine)
     ));
     assert!(preview.projection.cleanup_candidates.is_empty());
 
@@ -1074,13 +1076,10 @@ async fn deploy_preview_returns_pending_service_platforms_without_runtime_effect
         .phases
         .iter()
         .flat_map(|phase| &phase.services)
-        .flat_map(|service| &service.steps)
-        .map(|step| match step {
-            ployz_core::deploy::DeployPlanStep::UseExistingContainer { machine_id, .. }
-            | ployz_core::deploy::DeployPlanStep::RunContainer { machine_id, .. } => machine_id,
-        })
+        .flat_map(|service| service.work.steps())
+        .map(|step| step.machine_id().clone())
         .collect::<Vec<_>>();
-    assert_eq!(target_machines, [&machine_id("machine_a")]);
+    assert_eq!(target_machines, [machine_id("machine_a")]);
     assert_eq!(
         preview
             .build_platform_requirements

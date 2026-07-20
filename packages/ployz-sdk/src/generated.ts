@@ -286,7 +286,21 @@ volume_pin_commits?: Array<VolumePinState>, volume_ensures?: Array<VolumePinStat
 
 export type DeployPhasePlan = { services: Array<DeployServicePlan>, };
 
-export type DeployServicePlan = { service_id: ServiceId, placement: DeployServicePlacement, steps: Array<DeployPlanStep>, pre_start?: PreStartHookStep | null, volume_handoff?: DeployVolumeHandoffPlan | null, };
+export type DeployServicePlan = { service_id: ServiceId, placement: DeployServicePlacement, work: DeployServiceWork, pre_start?: PreStartHookStep | null, };
+
+export type DeployServiceWork = { "kind": "ordinary", steps: Array<DeployPlanStep>, } | { "kind": "volume_handoff", replacement: DeployRunContainerStep, remaining_steps?: Array<DeployPlanStep>, participants: NonEmptyVolumeHandoffParticipants, };
+
+export type DeployRunContainerStep = { machine_id: MachineId, slot: ReplicaSlot, };
+
+export type DeployVolumeHandoffPlan = { machine_id: MachineId, volume_names: NonEmptyVolumeNames, superseded: NonEmptyVolumeHandoffParticipants, };
+
+export type DeployVolumeHandoffParticipant = { target: DeployCleanupContainer, prior_state: DeployVolumeHandoffPriorState, shared_volume_names: NonEmptyVolumeNames, };
+
+export type DeployVolumeHandoffPriorState = "running" | "stopped";
+
+export type NonEmptyVolumeHandoffParticipants = Array<DeployVolumeHandoffParticipant>;
+
+export type NonEmptyVolumeNames = Array<VolumeName>;
 
 export type DeployServicePlacement = { "kind": "replicated" } | { "kind": "global", candidates: Array<MachineId>, selected: Array<MachineId>, deferred: Array<UnusableMachine>, draining: Array<MachineId>, };
 
@@ -518,7 +532,15 @@ export type RoutePort = SafeInteger<"RoutePort">;
 
 export type RouteTarget = { hostname: RouteHostname, };
 
-export type RetainedArtifact = { "type": "created_container", machine_id: MachineId, container_id: ContainerId, inspect_hint: OperatorHint, } | { "type": "started_container", machine_id: MachineId, container_id: ContainerId, log_hint: OperatorHint, } | { "type": "container_stop_failed", machine_id: MachineId, container_id: ContainerId, message: FailureMessage, inspect_hint: OperatorHint, };
+export type RetainedArtifact = { "type": "created_container", machine_id: MachineId, container_id: ContainerId, inspect_hint: OperatorHint, } | { "type": "started_container", machine_id: MachineId, container_id: ContainerId, log_hint: OperatorHint, } | { "type": "container_stop_failed", machine_id: MachineId, container_id: ContainerId, message: FailureMessage, inspect_hint: OperatorHint, } | { "type": "volume_owner_stop_uncertain", target: DeployCleanupContainer, prior_state: DeployVolumeHandoffPriorState, uncertainty: DeployVolumeHandoffStopUncertain, } | { "type": "volume_consumer_quiescence_uncertain", target: DeployCleanupContainer, uncertainty: DeployVolumeHandoffStopUncertain, } | { "type": "volume_consumer_start_uncertain", machine_id: MachineId, expected_identity: ManagedContainerIdentity, message: FailureMessage, inspect_hint: OperatorHint, };
+
+export type DeployVolumeHandoffStopUncertain = { "reason": "runtime_unavailable", message: FailureMessage, inspect_hint: OperatorHint, } | { "reason": "stop_failed", message: FailureMessage, inspect_hint: OperatorHint, } | { "reason": "timed_out", timeout_seconds: number, inspect_hint: OperatorHint, };
+
+export type DeployVolumeHandoffRestartFailure = { "reason": "runtime_unavailable", message: FailureMessage, inspect_hint: OperatorHint, } | { "reason": "start_failed", message: FailureMessage, inspect_hint: OperatorHint, } | { "reason": "timed_out", timeout_seconds: number, inspect_hint: OperatorHint, };
+
+export type DeployVolumeHandoffRollbackOutcome = { "outcome": "restarted" } | { "outcome": "restart_failed", failure: DeployVolumeHandoffRestartFailure, } | { "outcome": "not_restarted_new_consumer_quiescence_unconfirmed" };
+
+export type DeployVolumeHandoffRollbackContainerOutcome = { target: DeployCleanupContainer, outcome: DeployVolumeHandoffRollbackOutcome, };
 
 export type HealthCheckFailure = { "reason": "probe_failed", machine_id: MachineId, container_id: ContainerId, message: FailureMessage, log_hint: OperatorHint, } | { "reason": "timed_out", timeout_seconds: number, };
 

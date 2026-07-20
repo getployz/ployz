@@ -842,6 +842,7 @@ fn cleanup_container_with_entry(
         state: ployz_core::machine::runtime::ContainerRuntimeState::running_unroutable(),
         created_at_unix_seconds: None,
         observed_image_identity: None,
+        named_volume_names: std::collections::BTreeSet::new(),
     }
 }
 

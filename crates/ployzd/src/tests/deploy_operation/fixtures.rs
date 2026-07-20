@@ -206,7 +206,7 @@ impl DeployOperationRecorder for RecordingOperations {
                         .phases
                         .iter()
                         .flat_map(|phase| &phase.services)
-                        .map(|service| service.steps.len())
+                        .map(|service| service.work.steps().count())
                         .sum(),
                 });
                 if let Some(ployz_core::deploy::DeployServicePlacement::Global {
@@ -476,8 +476,8 @@ impl NamespaceStateCommitter for RecordingNamespaceState {
                 self.serving_removals.push(entry.service_id);
                 Ok(())
             }
-            ServingCommitBehavior::Hang => {
-                tokio::time::sleep(Duration::from_secs(60)).await;
+            ServingCommitBehavior::Slow(delay) => {
+                tokio::time::sleep(delay).await;
                 Ok(())
             }
             ServingCommitBehavior::LoseLock => Err(NamespaceCommitError::ServingTargetLockLost {
@@ -1850,6 +1850,7 @@ pub(super) fn two_service_volume_backed_replacement_command() -> DeployExecution
                 .operation("op_existing")
                 .step("existing_api"),
         )
+        .named_volume("api_data")
         .running_unroutable()
         .build();
     let worker_observation = containers::observation("machine_a", "ctr_old_worker")
@@ -1859,6 +1860,7 @@ pub(super) fn two_service_volume_backed_replacement_command() -> DeployExecution
                 .operation("op_existing")
                 .step("existing_worker"),
         )
+        .named_volume("worker_data")
         .running_unroutable()
         .build();
     let snapshot = MachineContainerObservationSnapshot::try_new(
@@ -1931,6 +1933,7 @@ pub(super) fn volume_and_ordinary_replacement_command() -> DeployExecutionInput 
                 .operation("op_existing")
                 .step("existing_api"),
         )
+        .named_volume("api_data")
         .running_unroutable()
         .build();
     let snapshot =
@@ -1985,12 +1988,14 @@ fn volume_backed_replacement_command_with_options(
     with_hook: bool,
 ) -> DeployExecutionInput {
     let observations = old_containers.iter().map(|(container, running)| {
-        let observation = containers::observation("machine_a", container).with(
-            containers::identity("svc_api")
-                .entry("entry_old")
-                .operation("op_existing")
-                .step(&format!("existing_{container}")),
-        );
+        let observation = containers::observation("machine_a", container)
+            .with(
+                containers::identity("svc_api")
+                    .entry("entry_old")
+                    .operation("op_existing")
+                    .step(&format!("existing_{container}")),
+            )
+            .named_volume("postgres_data");
         if *running {
             observation.running_unroutable().build()
         } else {

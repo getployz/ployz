@@ -5,8 +5,8 @@ mod runtime_nats;
 
 use crate::control::operations::deploy::{
     CertificateProvisioner, DeployCleanupResult, DeployExecutionError, DeployExecutionInput,
-    DeployExecutionOutcome, DeployExecutionPorts, DeployExecutionStep, DeployHealthCheckError,
-    DeployHealthChecker, DeployOperationRecorder, DeployTerminalEvent, MachineContainerRuntime,
+    DeployExecutionOutcome, DeployExecutionPorts, DeployHealthCheckError, DeployHealthChecker,
+    DeployOperationRecorder, DeployTerminalEvent, MachineContainerRuntime,
     MachineContainerRuntimeError, MachineImageRemovalRuntime, NamespaceStateCommitter,
     execute_deploy_operation,
 };
@@ -262,7 +262,7 @@ async fn replicated_to_global_reuse_reports_completed_service_work() {
     let mut health = RecordingHealth::healthy();
     let mut namespace_state = RecordingNamespaceState::stored();
 
-    let error = execute_deploy(
+    execute_deploy(
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
@@ -323,7 +323,7 @@ async fn global_draining_cleanup_reports_completed_service_work() {
     let mut health = RecordingHealth::healthy();
     let mut namespace_state = RecordingNamespaceState::stored();
 
-    let error = execute_deploy(
+    execute_deploy(
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
@@ -2742,7 +2742,8 @@ async fn volume_handoff_stop_timeout_never_restarts_a_planning_stopped_owner() {
 }
 
 #[tokio::test]
-async fn volume_handoff_partial_owner_stop_failure_restarts_only_confirmed_stops() {
+async fn volume_handoff_partial_owner_stop_failure_restarts_confirmed_and_uncertain_running_owners()
+{
     let mut recorder = RecordingOperations::default();
     let mut runtime =
         RecordingRuntime::with_containers(["ctr_new"]).with_stop_failure_for("ctr_old_2");
@@ -2760,13 +2761,13 @@ async fn volume_handoff_partial_owner_stop_failure_restarts_only_confirmed_stops
     .expect_err("second owner stop fails");
 
     assert!(runtime.requests.is_empty());
-    assert_eq!(runtime.restarts.len(), 1);
     assert_eq!(
         runtime
             .restarts
-            .first()
-            .map(|(_, request)| &request.container_id),
-        Some(&container_id("ctr_old_1"))
+            .iter()
+            .map(|(_, request)| request.container_id.clone())
+            .collect::<Vec<_>>(),
+        [container_id("ctr_old_1"), container_id("ctr_old_2")]
     );
 }
 

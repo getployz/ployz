@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployVolumeHandoffParticipant, DeployVolumeHandoffPlan,
-    DeployVolumeHandoffPriorState,
+    DeployVolumeHandoffPriorState, NonEmptyVolumeHandoffParticipants, NonEmptyVolumeNames,
 };
 use ployz_core::ids::{MachineId, ServiceId};
 use ployz_core::machine::runtime::ManagedContainerIdentity;
@@ -142,7 +142,8 @@ impl VolumeHandoffQuiescence {
 pub(super) async fn stop_volume_owners<R, N>(
     command: &DeployExecutionCommand,
     service_id: &ServiceId,
-    handoff: &DeployVolumeHandoffPlan,
+    replacement_machine_id: &MachineId,
+    participants: &NonEmptyVolumeHandoffParticipants,
     state: &mut VolumeHandoffRollbackState,
     recorder: &mut R,
     machine_runtime: &mut N,
@@ -151,7 +152,7 @@ where
     R: DeployOperationRecorder,
     N: MachineContainerRuntime,
 {
-    for participant in &handoff.superseded {
+    for participant in participants.as_slice() {
         begin_owner_stop(state, service_id, participant.clone());
         let target = &participant.target;
         let result = with_step_timeout(
@@ -185,12 +186,22 @@ where
         }
     }
 
+    let handoff =
+        DeployVolumeHandoffPlan {
+            machine_id: replacement_machine_id.clone(),
+            volume_names: NonEmptyVolumeNames::try_new(participants.as_slice().iter().flat_map(
+                |participant| participant.shared_volume_names.as_slice().iter().cloned(),
+            ))
+            .expect("volume handoff participants share at least one volume"),
+            superseded: participants.clone(),
+        };
+
     record_evidence(
         command,
         recorder,
         DeployEvidence::VolumeHandoffApplied {
             service_id: service_id.clone(),
-            handoff: handoff.clone(),
+            handoff,
         },
     )
     .await
