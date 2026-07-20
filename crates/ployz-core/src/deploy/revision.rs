@@ -2,10 +2,52 @@
 
 use super::*;
 
+const KEY_DERIVATION_DOMAIN: &[u8] = b"ployz.environment_revision_key.v1";
+const ENVIRONMENT_IDENTITY_DOMAIN: &[u8] = b"ployz.environment_revision_identity.v1";
+
+/// Process-local key for opaque environment equality inside revision ids.
+#[derive(Clone, PartialEq, Eq)]
+pub struct EnvironmentRevisionKey([u8; 32]);
+
+impl EnvironmentRevisionKey {
+    #[must_use]
+    pub fn derive_from_controller_seed(seed: &crate::nats_config::NatsUserSeed) -> Self {
+        Self::derive(seed.secret().as_bytes())
+    }
+
+    fn derive(controller_seed: &[u8]) -> Self {
+        let mut hmac = Hmac::<Sha256>::new_from_slice(controller_seed)
+            .expect("HMAC accepts controller seed material of any length");
+        hmac.update(KEY_DERIVATION_DOMAIN);
+        Self(hmac.finalize().into_bytes().into())
+    }
+
+    fn environment_identity(&self, environment: &ServiceEnvironment) -> Option<[u8; 32]> {
+        if environment.is_empty() {
+            return None;
+        }
+        let mut hmac =
+            Hmac::<Sha256>::new_from_slice(&self.0).expect("HMAC accepts a SHA-256-sized key");
+        hmac.update(ENVIRONMENT_IDENTITY_DOMAIN);
+        for (name, value) in environment.iter() {
+            hmac_frame(&mut hmac, "name", name.as_str().as_bytes());
+            hmac_frame(&mut hmac, "value", value.as_str().as_bytes());
+        }
+        Some(hmac.finalize().into_bytes().into())
+    }
+}
+
+impl std::fmt::Debug for EnvironmentRevisionKey {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("EnvironmentRevisionKey([redacted])")
+    }
+}
+
 #[must_use]
 pub fn namespace_revision_id_for(
     namespace_id: &NamespaceId,
     services: &[DeployServiceSpec],
+    environment_key: &EnvironmentRevisionKey,
 ) -> NamespaceRevisionId {
     let mut services = services.iter().collect::<Vec<_>>();
     services.sort_by(|left, right| left.service_id.cmp(&right.service_id));
@@ -40,6 +82,7 @@ pub fn namespace_revision_id_for(
             ServiceMode::Global => hash_frame(&mut hasher, "service_mode", b"global"),
         }
         hash_runtime_spec(&mut hasher, &service.runtime);
+        hash_environment_identity(&mut hasher, environment_key, &service.runtime.environment);
 
         match &service.pre_start {
             Some(pre_start) => {
@@ -106,6 +149,7 @@ pub fn namespace_revision_entry_id_for(
     image: &ImageReference,
     image_source: &ImageSource,
     runtime: &ContainerRuntimeSpec,
+    environment_key: &EnvironmentRevisionKey,
 ) -> NamespaceRevisionEntryId {
     let mut hasher = Sha256::new();
     hash_frame(
@@ -131,6 +175,7 @@ pub fn namespace_revision_entry_id_for(
         }
     }
     hash_runtime_spec(&mut hasher, runtime);
+    hash_environment_identity(&mut hasher, environment_key, &runtime.environment);
     let digest = hasher.finalize();
     NamespaceRevisionEntryId::try_new(format!("{digest:x}"))
         .expect("sha256 hex digest is a subject token")
@@ -140,7 +185,7 @@ fn hash_runtime_spec(hasher: &mut Sha256, runtime: &ContainerRuntimeSpec) {
     let ContainerRuntimeSpec {
         command,
         entrypoint,
-        environment,
+        environment: _,
         stop_grace_period,
         volume_mounts,
         healthcheck,
@@ -171,10 +216,6 @@ fn hash_runtime_spec(hasher: &mut Sha256, runtime: &ContainerRuntimeSpec) {
         None => hash_frame(hasher, "entrypoint", b"none"),
     }
 
-    for (name, value) in environment.iter() {
-        hash_frame(hasher, "env_name", name.as_str().as_bytes());
-        hash_frame(hasher, "env_value", value.as_str().as_bytes());
-    }
     hash_frame(
         hasher,
         "stop_grace_period",
@@ -216,6 +257,22 @@ fn hash_runtime_spec(hasher: &mut Sha256, runtime: &ContainerRuntimeSpec) {
     if let Some(pids) = resources.pids {
         hash_frame(hasher, "pids", pids.get().to_string().as_bytes());
     }
+}
+
+fn hash_environment_identity(
+    hasher: &mut Sha256,
+    key: &EnvironmentRevisionKey,
+    environment: &ServiceEnvironment,
+) {
+    if let Some(identity) = key.environment_identity(environment) {
+        hash_frame(hasher, "environment_identity", &identity);
+    }
+}
+
+fn hmac_frame(hmac: &mut Hmac<Sha256>, tag: &str, bytes: &[u8]) {
+    hmac.update(tag.as_bytes());
+    hmac.update(&(bytes.len() as u64).to_be_bytes());
+    hmac.update(bytes);
 }
 
 fn hash_frame(hasher: &mut Sha256, tag: &str, bytes: &[u8]) {
@@ -285,5 +342,66 @@ fn hash_healthcheck(hasher: &mut Sha256, healthcheck: &ContainerHealthcheck) {
             "healthcheck_start_period",
             value.as_nanos().to_string().as_bytes(),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn environment(entries: &[(&str, &str)]) -> ServiceEnvironment {
+        ServiceEnvironment::from(
+            entries
+                .iter()
+                .map(|(name, value)| {
+                    (
+                        EnvName::try_new(*name).expect("environment name"),
+                        EnvValue::try_new(*value).expect("environment value"),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>(),
+        )
+    }
+
+    #[test]
+    fn environment_identity_is_canonical_and_keyed() {
+        let first_key = EnvironmentRevisionKey::derive(b"controller-seed-a");
+        let same_key = EnvironmentRevisionKey::derive(b"controller-seed-a");
+        let other_key = EnvironmentRevisionKey::derive(b"controller-seed-b");
+        let ordered = environment(&[("ALPHA", "one"), ("BETA", "two")]);
+        let reversed = environment(&[("BETA", "two"), ("ALPHA", "one")]);
+
+        assert_eq!(
+            first_key.environment_identity(&ordered),
+            same_key.environment_identity(&reversed)
+        );
+        assert_ne!(
+            first_key.environment_identity(&ordered),
+            first_key.environment_identity(&environment(&[("ALPHA", "changed"), ("BETA", "two")]))
+        );
+        assert_ne!(
+            first_key.environment_identity(&ordered),
+            first_key.environment_identity(&environment(&[("RENAMED", "one"), ("BETA", "two")]))
+        );
+        assert_ne!(
+            first_key.environment_identity(&ordered),
+            other_key.environment_identity(&ordered)
+        );
+        assert_eq!(
+            first_key.environment_identity(&ServiceEnvironment::empty()),
+            None
+        );
+        assert_eq!(
+            other_key.environment_identity(&ServiceEnvironment::empty()),
+            None
+        );
+    }
+
+    #[test]
+    fn environment_revision_key_debug_is_redacted() {
+        let key = EnvironmentRevisionKey::derive(b"sentinel-controller-seed");
+        let rendered = format!("{key:?}");
+        assert_eq!(rendered, "EnvironmentRevisionKey([redacted])");
+        assert!(!rendered.contains("sentinel"));
     }
 }

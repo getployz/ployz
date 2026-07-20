@@ -144,7 +144,8 @@ pub(super) async fn watch_deploy_operation(
         config.ops_watch_timeout(),
         config.ops_watch_poll_interval(),
         |events| {
-            tree.ingest_page(events);
+            tree.try_ingest_page(events)
+                .map_err(|source| DeployExecutionError::InconsistentEvidence { source })?;
             if matches!(mode, DeployOutputMode::Terminal) {
                 tree.tick_spinner();
             }

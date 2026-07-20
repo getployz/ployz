@@ -406,23 +406,31 @@
           "operation_id": "op_123",
           "reservation_id": "1",
           "target": {
-            "namespace_id": "default",
-            "services": [
+            "environment_names": [
               {
-                "image": "ghcr.io/acme/api:rev-2",
-                "mode": {
-                  "kind": "replicated",
-                  "replicas": 2
-                },
-                "runtime": {
-                  "command": null,
-                  "entrypoint": null,
-                  "environment": {},
-                  "stop_grace_period": 10
-                },
+                "names": [],
                 "service_id": "svc_api"
               }
-            ]
+            ],
+            "request": {
+              "namespace_id": "default",
+              "services": [
+                {
+                  "image": "ghcr.io/acme/api:rev-2",
+                  "mode": {
+                    "kind": "replicated",
+                    "replicas": 2
+                  },
+                  "runtime": {
+                    "command": null,
+                    "entrypoint": null,
+                    "environment": {},
+                    "stop_grace_period": 10
+                  },
+                  "service_id": "svc_api"
+                }
+              ]
+            }
           }
         },
         "recorded_at_unix_ms": "1784116800123",
@@ -483,23 +491,31 @@
             "operation_id": "op_123",
             "reservation_id": "1",
             "target": {
-              "namespace_id": "default",
-              "services": [
+              "environment_names": [
                 {
-                  "image": "ghcr.io/acme/api:rev-2",
-                  "mode": {
-                    "kind": "replicated",
-                    "replicas": 2
-                  },
-                  "runtime": {
-                    "command": null,
-                    "entrypoint": null,
-                    "environment": {},
-                    "stop_grace_period": 10
-                  },
+                  "names": [],
                   "service_id": "svc_api"
                 }
-              ]
+              ],
+              "request": {
+                "namespace_id": "default",
+                "services": [
+                  {
+                    "image": "ghcr.io/acme/api:rev-2",
+                    "mode": {
+                      "kind": "replicated",
+                      "replicas": 2
+                    },
+                    "runtime": {
+                      "command": null,
+                      "entrypoint": null,
+                      "environment": {},
+                      "stop_grace_period": 10
+                    },
+                    "service_id": "svc_api"
+                  }
+                ]
+              }
             }
           },
           "recorded_at_unix_ms": "1784116800123",

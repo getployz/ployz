@@ -297,10 +297,10 @@ docker push {v2} >/dev/null"
         let [v1_entry, v2_entry] = entries.as_slice() else {
             panic!("expected v1 and v2 history, got {entries:?}");
         };
-        let [v1_service] = v1_entry.request.services.as_slice() else {
+        let [v1_service] = v1_entry.request.request().services.as_slice() else {
             panic!("v1 history must contain one service");
         };
-        let [v2_service] = v2_entry.request.services.as_slice() else {
+        let [v2_service] = v2_entry.request.request().services.as_slice() else {
             panic!("v2 history must contain one service");
         };
         let v1_operation = v1_entry.operation_id.clone();
@@ -345,6 +345,7 @@ docker push {v2} >/dev/null"
         assert_eq!(
             rollback_entry
                 .request
+                .request()
                 .origin
                 .as_ref()
                 .map(|origin| origin.as_str()),
@@ -353,6 +354,7 @@ docker push {v2} >/dev/null"
         assert!(
             rollback_entry
                 .request
+                .request()
                 .services
                 .iter()
                 .any(|service| service.image == v1_resolved)
@@ -363,8 +365,8 @@ docker push {v2} >/dev/null"
                 event,
                 OperationEvent::DeploySubmitted { operation_id, target, .. }
                     if operation_id == &rollback_operation
-                        && target.origin.as_ref().is_some_and(|origin| origin.as_str() == "rollback")
-                        && target.services.iter().any(|service| service.image == v1_resolved)
+                        && target.request().origin.as_ref().is_some_and(|origin| origin.as_str() == "rollback")
+                        && target.request().services.iter().any(|service| service.image == v1_resolved)
             )),
             "rollback did not replay v1's pinned request: {rollback_events:?}"
         );
@@ -508,7 +510,7 @@ curl -fsSI -H 'Accept: application/vnd.oci.image.manifest.v1+json, application/v
             failed_events.iter().any(|event| matches!(
                 event,
                 OperationEvent::DeploySubmitted { target, .. }
-                    if target.services.iter().any(|service| service.image == v2_resolved)
+                    if target.request().services.iter().any(|service| service.image == v2_resolved)
             )),
             "failed rollback did not submit v2's pinned digest: {failed_events:?}"
         );

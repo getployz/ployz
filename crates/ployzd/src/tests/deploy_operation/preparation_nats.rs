@@ -345,6 +345,7 @@ async fn prepare_command_from_nats(
         crate::control::intent::ingress_intent::IngressProjectionStore::new(store);
     let facts = load_deploy_execution_facts_from_nats(
         &request,
+        &environment_revision_key(),
         intent_reader,
         facts_reader,
         &ployz_dns_target,
@@ -732,7 +733,7 @@ fn target_namespace_revision_entry_id() -> NamespaceRevisionEntryId {
     let [service] = request.services.as_slice() else {
         panic!("deploy request fixture has one service");
     };
-    service.namespace_revision_entry_id(&namespace_id("default"))
+    service.namespace_revision_entry_id(&namespace_id("default"), &environment_revision_key())
 }
 
 fn promoted_target_entry() -> ployz_core::intent::ServingTargetEntry {
@@ -851,3 +852,4 @@ fn stopped_cleanup_container(
     target.state = ployz_core::machine::runtime::ContainerRuntimeState::Exited;
     target
 }
+use super::fixtures::environment_revision_key;

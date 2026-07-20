@@ -101,8 +101,11 @@ impl DeployRequest {
     }
 
     #[must_use]
-    pub fn namespace_revision_id(&self) -> NamespaceRevisionId {
-        namespace_revision_id_for(&self.namespace_id, &self.services)
+    pub fn namespace_revision_id(
+        &self,
+        environment_key: &EnvironmentRevisionKey,
+    ) -> NamespaceRevisionId {
+        namespace_revision_id_for(&self.namespace_id, &self.services, environment_key)
     }
 
     #[must_use]
@@ -374,14 +377,15 @@ pub struct PreStartHook {
 
 impl DeployServiceSpec {
     pub(super) const NAMESPACE_REVISION_ENTRY_ENCODING_VERSION: &'static str =
-        "ployz.namespace_revision_entry.v9";
+        "ployz.namespace_revision_entry.v11";
     pub(super) const NAMESPACE_REVISION_ENCODING_VERSION: &'static str =
-        "ployz.namespace_revision.v7";
+        "ployz.namespace_revision.v9";
 
     #[must_use]
     pub fn namespace_revision_entry_id(
         &self,
         namespace_id: &NamespaceId,
+        environment_key: &EnvironmentRevisionKey,
     ) -> NamespaceRevisionEntryId {
         namespace_revision_entry_id_for(
             namespace_id,
@@ -389,6 +393,7 @@ impl DeployServiceSpec {
             &self.image,
             &self.image_source,
             &self.runtime,
+            environment_key,
         )
     }
 }

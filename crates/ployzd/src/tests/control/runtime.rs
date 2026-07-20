@@ -774,6 +774,7 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
             &entry.image,
             &ployz_core::deploy::ImageSource::Registry,
             &ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
+            &config.environment_revision_key,
         )
     );
     assert_eq!(

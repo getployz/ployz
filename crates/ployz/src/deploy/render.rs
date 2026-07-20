@@ -1,6 +1,6 @@
 use ployz_core::deploy::{
-    DeployCleanupContainer, DeployPlan, DeployPlanStep, DeployRequest, DeployRoute,
-    DeployRouteTarget, ImageSource, ReplicaSlot,
+    DeployCleanupContainer, DeployImageReplacementError, DeployPlan, DeployPlanStep, DeployRequest,
+    DeployRequestEvidence, DeployRoute, DeployRouteTarget, ImageSource, ReplicaSlot,
 };
 use ployz_core::ids::{OperationId, ServiceId};
 use ployz_core::image::OciPlatform;
@@ -26,7 +26,7 @@ pub(crate) struct DeployTree {
 
 struct ObservedDeploy {
     operation_id: OperationId,
-    target: DeployRequest,
+    target: DeployRequestEvidence,
     verified_image_platforms: BTreeSet<(ServiceId, OciPlatform)>,
     work: DeployWork,
     result: DeployResult,
@@ -76,17 +76,27 @@ impl DeployTree {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn ingest_page(&mut self, events: &[ReplayedOperationEvent]) {
+        self.try_ingest_page(events)
+            .expect("test deploy evidence is internally consistent");
+    }
+
+    pub(crate) fn try_ingest_page(
+        &mut self,
+        events: &[ReplayedOperationEvent],
+    ) -> Result<(), DeployImageReplacementError> {
         for replayed in events {
-            self.ingest(&replayed.event);
+            self.ingest(&replayed.event)?;
         }
+        Ok(())
     }
 
     pub(crate) fn tick_spinner(&mut self) {
         self.spinner_frame = (self.spinner_frame + 1) % SPINNER_FRAMES.len();
     }
 
-    fn ingest(&mut self, event: &OperationEvent) {
+    fn ingest(&mut self, event: &OperationEvent) -> Result<(), DeployImageReplacementError> {
         match event {
             OperationEvent::DeploySubmitted {
                 operation_id,
@@ -103,7 +113,7 @@ impl DeployTree {
                 self.plain_lines.push(format!(
                     "deploy {}: planning — {} services",
                     operation_id.as_str(),
-                    target.services.len()
+                    target.request().services.len()
                 ));
             }
             OperationEvent::DeployPlanningStarted { operation_id: _ } => {}
@@ -114,14 +124,10 @@ impl DeployTree {
                 resolved,
                 ..
             } => {
-                if let Some(deploy) = &mut self.deploy
-                    && let Some(service) = deploy
+                if let Some(deploy) = &mut self.deploy {
+                    deploy
                         .target
-                        .services
-                        .iter_mut()
-                        .find(|service| service.service_id == *service_id)
-                {
-                    service.image = resolved.clone();
+                        .replace_service_image(service_id, resolved.clone())?;
                 }
                 self.plain_lines.push(format!(
                     "deploy {}: image {} — {} → {}",
@@ -133,7 +139,7 @@ impl DeployTree {
             }
             OperationEvent::DeployPlanCreated { operation_id, plan } => {
                 if let Some(deploy) = &self.deploy {
-                    let target = &deploy.target;
+                    let target = deploy.target.request();
                     for image in distinct_images(target) {
                         self.plain_lines.push(format!(
                             "deploy {}: images — {} planned",
@@ -443,6 +449,7 @@ impl DeployTree {
             | OperationEvent::VolumeCreateFailed { .. }
             | OperationEvent::OperationInterrupted { .. } => {}
         }
+        Ok(())
     }
 
     /// The `wanted`-th `RunContainer` step in plan order. Container-started
@@ -499,7 +506,7 @@ impl DeployTree {
         let Some(deploy) = &self.deploy else {
             return;
         };
-        let lines = deploy_routes(&deploy.target)
+        let lines = deploy_routes(deploy.target.request())
             .map(|(service_id, route)| {
                 format!(
                     "deploy {}: routes — {}",
@@ -570,6 +577,7 @@ impl DeployTree {
         self.deploy
             .as_ref()?
             .target
+            .request()
             .services
             .iter()
             .find(|service| &service.service_id == service_id)
@@ -582,6 +590,7 @@ impl DeployTree {
         };
         deploy
             .target
+            .request()
             .services
             .iter()
             .filter(|service| service.image.as_str() == image)
@@ -630,7 +639,7 @@ pub(crate) fn render_frame(tree: &DeployTree) -> String {
         return String::new();
     };
     let operation_id = &deploy.operation_id;
-    let target = &deploy.target;
+    let target = deploy.target.request();
 
     let mut groups = vec![("images".to_owned(), render_image_lines(tree, target))];
     if let Some(plan) = tree.plan() {
@@ -764,13 +773,14 @@ pub(crate) fn render_failure_block(tree: &DeployTree) -> String {
     let DeployResult::Failed { failure } = &deploy.result else {
         return String::new();
     };
-    let target_service = match deploy.target.services.as_slice() {
+    let target = deploy.target.request();
+    let target_service = match target.services.as_slice() {
         [service] => Some(&service.service_id),
         [] | [_, _, ..] => None,
     };
     let failure_view = DeployFailureView::new(failure, target_service);
     let service = failure_view.service();
-    let cause = failure_cause(&deploy.target, failure);
+    let cause = failure_cause(target, failure);
     let safety = failure_view.safety();
     let machines = failure_view.machines();
     let retained_containers = failure_view.containers();
@@ -802,7 +812,7 @@ pub(crate) fn render_failure_block(tree: &DeployTree) -> String {
     if !retained_containers.is_empty() && service != "unknown" {
         block.push_str(&format!(
             "  logs:      ployz logs {service} -n {} --failed\n",
-            deploy.target.namespace_id.as_str()
+            deploy.target.request().namespace_id.as_str()
         ));
     }
     block.push_str(&format!(
@@ -812,7 +822,7 @@ pub(crate) fn render_failure_block(tree: &DeployTree) -> String {
     if !matches!(safety, FailureSafety::NothingChanged) {
         block.push_str(&format!(
             "  rollback:  ployz deploy rollback -n {}\n",
-            deploy.target.namespace_id.as_str()
+            deploy.target.request().namespace_id.as_str()
         ));
     }
     block

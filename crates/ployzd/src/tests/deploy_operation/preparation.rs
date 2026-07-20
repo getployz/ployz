@@ -1,12 +1,14 @@
+use super::fixtures::environment_revision_key;
 use crate::control::operations::deploy::{
     AutomaticHostnameMode, DeployExecutionCommand, DeployExecutionError, DeployExecutionFacts,
     DeployServiceExecutionCommand, deploy_plan, prepare_deploy_execution_command,
 };
 use ployz_core::deploy::{
     ContainerMountPath, DatasetName, DeployCleanupContainer, DeployRequest, DeployRoute,
-    DeployRouteTarget, DeployServiceSpec, ImageAvailabilityExpiresAt, ImageReference, ImageSource,
-    PlatformImage, PushedImageReceipt, ReplicaCount, ServiceMode, ServiceVolumeMount,
-    VolumeAdmissionFailure, VolumeMaxSizeBytes, VolumeName, VolumeSpec, ZfsPoolName,
+    DeployRouteTarget, DeployServiceSpec, EnvName, EnvValue, ImageAvailabilityExpiresAt,
+    ImageReference, ImageSource, PlatformImage, PushedImageReceipt, ReplicaCount,
+    ServiceEnvironment, ServiceMode, ServiceVolumeMount, VolumeAdmissionFailure,
+    VolumeMaxSizeBytes, VolumeName, VolumeSpec, ZfsPoolName,
 };
 use ployz_core::ids::{NamespaceRevisionEntryId, RouteBindingId};
 use ployz_core::ingress::{AutomaticHostnameLabel, RouteBindingOrigin};
@@ -22,6 +24,122 @@ use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, namespace_revision_entry_id, operation_id, service_id,
 };
 use std::time::Duration;
+
+#[test]
+fn execution_threads_keyed_environment_revisions_end_to_end() {
+    let mut first_value = deploy_request();
+    let [first_service] = first_value.services.as_mut_slice() else {
+        panic!("deploy request contains one service");
+    };
+    first_service.runtime.environment =
+        ServiceEnvironment::from(std::collections::BTreeMap::from([(
+            EnvName::try_new("TOKEN").expect("environment name"),
+            EnvValue::try_new("first").expect("environment value"),
+        )]));
+    let mut second_value = first_value.clone();
+    let [second_service] = second_value.services.as_mut_slice() else {
+        panic!("deploy request contains one service");
+    };
+    second_service.runtime.environment =
+        ServiceEnvironment::from(std::collections::BTreeMap::from([(
+            EnvName::try_new("TOKEN").expect("environment name"),
+            EnvValue::try_new("second").expect("environment value"),
+        )]));
+
+    let first = prepare_deploy_execution_command(
+        operation_id("op_first"),
+        first_value,
+        empty_execution_facts(),
+    );
+    let same_operation = prepare_deploy_execution_command(
+        operation_id("op_first"),
+        second_value.clone(),
+        empty_execution_facts(),
+    );
+    let next_operation = prepare_deploy_execution_command(
+        operation_id("op_next"),
+        second_value,
+        empty_execution_facts(),
+    );
+
+    assert_ne!(
+        deploy_plan(&first)
+            .expect("first plan")
+            .namespace_revision_id,
+        deploy_plan(&same_operation)
+            .expect("same operation plan")
+            .namespace_revision_id
+    );
+    assert_eq!(
+        deploy_plan(&same_operation)
+            .expect("same operation plan")
+            .namespace_revision_id,
+        deploy_plan(&next_operation)
+            .expect("next operation plan")
+            .namespace_revision_id
+    );
+    assert_ne!(
+        single_service(&first)
+            .serving_target_entry_state(
+                &namespace_id("default"),
+                first.environment_revision_key(),
+            ),
+        single_service(&same_operation)
+            .serving_target_entry_state(
+                &namespace_id("default"),
+                same_operation.environment_revision_key(),
+            )
+    );
+    assert_eq!(
+        single_service(&same_operation).serving_target_entry_state(
+            &namespace_id("default"),
+            same_operation.environment_revision_key(),
+        ),
+        single_service(&next_operation).serving_target_entry_state(
+            &namespace_id("default"),
+            next_operation.environment_revision_key(),
+        )
+    );
+
+    let env_free_first = prepare_deploy_execution_command(
+        operation_id("op_free_first"),
+        deploy_request(),
+        empty_execution_facts(),
+    );
+    let env_free_next = prepare_deploy_execution_command(
+        operation_id("op_free_next"),
+        deploy_request(),
+        empty_execution_facts(),
+    );
+    assert_eq!(
+        deploy_plan(&env_free_first)
+            .expect("env-free first plan")
+            .namespace_revision_id,
+        deploy_plan(&env_free_next)
+            .expect("env-free next plan")
+            .namespace_revision_id
+    );
+}
+
+fn empty_execution_facts() -> DeployExecutionFacts {
+    DeployExecutionFacts {
+        namespace_route_bindings: Vec::new(),
+        namespace_serving_entries: Vec::new(),
+        namespace_volume_pins: Vec::new(),
+        eligible_machines: vec![machine_id("machine_a")],
+        unusable_machines: Vec::new(),
+        dataplane_members: Vec::new(),
+        observed_machines: Vec::new(),
+        machine_platforms: std::collections::BTreeMap::new(),
+        seed_clock_testimony: std::collections::BTreeMap::new(),
+        machine_storage_testimony: std::collections::BTreeMap::new(),
+        namespace_cleanup_candidates: Vec::new(),
+        automatic_hostname_mode: AutomaticHostnameMode::Disabled,
+        gateway_certificate_targets: Vec::new(),
+        ployz_gateway_certificate_targets: Vec::new(),
+        step_timeout: Duration::from_secs(5),
+    }
+}
 
 #[tokio::test]
 async fn separates_reusable_replicas_from_cleanup_candidates() {
@@ -317,7 +435,8 @@ async fn pushed_receipt_keeps_a_covered_existing_replica_outside_new_placement_c
         .with_digest(receipt.index_digest())
         .expect("pinned image");
     service.image_source = ImageSource::PushedToSeed(receipt);
-    let entry_id = service.namespace_revision_entry_id(&request.namespace_id);
+    let entry_id =
+        service.namespace_revision_entry_id(&request.namespace_id, &environment_revision_key());
     let mut promoted = serving_target_entry("svc_api", "unused");
     promoted.namespace_revision_entry_id = entry_id.clone();
     let facts = DeployExecutionFacts {
@@ -954,7 +1073,7 @@ fn target_namespace_revision_entry_id() -> NamespaceRevisionEntryId {
     let [service] = request.services.as_slice() else {
         panic!("deploy request fixture has one service");
     };
-    service.namespace_revision_entry_id(&namespace_id("default"))
+    service.namespace_revision_entry_id(&namespace_id("default"), &environment_revision_key())
 }
 
 fn existing_service_replica(

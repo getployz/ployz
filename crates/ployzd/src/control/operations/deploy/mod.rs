@@ -82,6 +82,7 @@ where
     let DeployExecutionInput {
         operation_id,
         request,
+        environment_revision_key,
         facts,
         registry_credentials,
         reusable_interrupted_operation_ids,
@@ -89,6 +90,7 @@ where
     let provisional_command = preparation::prepare_deploy_execution_command_with_credentials(
         operation_id.clone(),
         request.clone(),
+        environment_revision_key.clone(),
         facts.clone(),
         &registry_credentials,
         &reusable_interrupted_operation_ids,
@@ -126,6 +128,7 @@ where
     let command = preparation::prepare_deploy_execution_command_with_credentials(
         operation_id,
         request,
+        environment_revision_key,
         facts,
         &registry_credentials,
         &reusable_interrupted_operation_ids,
@@ -420,10 +423,13 @@ where
 pub(crate) fn deploy_plan(
     command: &DeployExecutionCommand,
 ) -> Result<DeployPlan, DeployExecutionError> {
-    let target = ployz_core::deploy::DeployPlanningTarget::try_from_deploy(&command.request)
-        .map_err(|error| DeployExecutionError::InternalInvariant {
-            message: error.to_string(),
-        })?;
+    let target = ployz_core::deploy::DeployPlanningTarget::try_from_operation(
+        &command.request,
+        &command.environment_revision_key,
+    )
+    .map_err(|error| DeployExecutionError::InternalInvariant {
+        message: error.to_string(),
+    })?;
     plan_namespace_deploy(
         &target,
         command
@@ -436,7 +442,13 @@ pub(crate) fn deploy_plan(
             storage_testimony: &command.storage_testimony,
         },
     )
-    .map(|plan| plan.with_revision(command.request.namespace_revision_id()))
+    .map(|plan| {
+        plan.with_revision(
+            target
+                .namespace_revision_id(&command.request)
+                .expect("execution planning target has a revision key"),
+        )
+    })
     .map_err(DeployExecutionError::from)
 }
 
@@ -463,9 +475,10 @@ where
     let identity = ManagedContainerIdentity {
         namespace_id: command.request.namespace_id.clone(),
         service_id: service.service.service_id.clone(),
-        namespace_revision_entry_id: service
-            .service
-            .namespace_revision_entry_id(&command.request.namespace_id),
+        namespace_revision_entry_id: service.namespace_revision_entry_id(
+            &command.request.namespace_id,
+            &command.environment_revision_key,
+        ),
         operation_id: command.operation_id.clone(),
         step_id,
         kind: ManagedContainerKind::Predeploy,
@@ -929,9 +942,10 @@ where
         container: ManagedContainerIdentity {
             namespace_id: command.request.namespace_id.clone(),
             service_id: service.service.service_id.clone(),
-            namespace_revision_entry_id: service
-                .service
-                .namespace_revision_entry_id(&command.request.namespace_id),
+            namespace_revision_entry_id: service.namespace_revision_entry_id(
+                &command.request.namespace_id,
+                &command.environment_revision_key,
+            ),
             operation_id: command.operation_id.clone(),
             step_id: step_id.clone(),
             kind: ManagedContainerKind::Service,
@@ -956,9 +970,10 @@ where
             (
                 DeployContainer {
                     service_id: service.service.service_id.clone(),
-                    namespace_revision_entry_id: service
-                        .service
-                        .namespace_revision_entry_id(&command.request.namespace_id),
+                    namespace_revision_entry_id: service.namespace_revision_entry_id(
+                        &command.request.namespace_id,
+                        &command.environment_revision_key,
+                    ),
                     machine_id: machine_id.clone(),
                     container_id: outcome.container_id().clone(),
                     step_id,
