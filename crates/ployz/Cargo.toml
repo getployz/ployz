@@ -35,6 +35,7 @@ tar = "0.4.45"
 tempfile = "3"
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "signal", "sync", "time"] }
+ureq = { version = "3", default-features = false, features = ["json", "rustls"] }
 wait-timeout.workspace = true
 
 [dev-dependencies]

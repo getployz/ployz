@@ -46,6 +46,8 @@ pub struct SecuredTestNats {
     port: u16,
     ca_path: PathBuf,
     authorized_users_path: PathBuf,
+    config_path: PathBuf,
+    base_authorizations: Vec<NatsAuthorizationGrant>,
     controller_seed: NatsUserSeed,
     user_seed: NatsUserSeed,
     join_seed: NatsUserSeed,
@@ -117,6 +119,7 @@ impl SecuredTestNats {
                 minted,
             ));
         }
+        let base_authorizations = authorized.clone();
         for credential in extra_credentials {
             authorized.push(NatsAuthorizationGrant::Credential(credential.clone()));
         }
@@ -151,6 +154,8 @@ impl SecuredTestNats {
             port,
             ca_path: tls.ca_path,
             authorized_users_path,
+            config_path,
+            base_authorizations,
             controller_seed: controller.seed,
             user_seed: user.seed,
             join_seed: join.seed,
@@ -190,6 +195,49 @@ impl SecuredTestNats {
     #[must_use]
     pub fn server_pid(&self) -> u32 {
         self.server.child.id()
+    }
+
+    /// Replaces external credentials in the rendered authorization include.
+    /// The caller owns signaling the server after the file is durable.
+    pub fn replace_external_credentials(
+        &self,
+        credentials: &[CredentialGrant],
+    ) -> Result<(), FixtureError> {
+        let mut authorized = self.base_authorizations.clone();
+        authorized.extend(
+            credentials
+                .iter()
+                .cloned()
+                .map(NatsAuthorizationGrant::Credential),
+        );
+        fs::write(
+            &self.authorized_users_path,
+            render_authorized_users(&authorized),
+        )?;
+        Ok(())
+    }
+
+    /// Restarts the real server on the same client port so existing clients
+    /// exercise their reconnect path.
+    pub async fn restart(&mut self) -> Result<(), FixtureError> {
+        self.restart_after(Duration::ZERO).await
+    }
+
+    /// Restarts after a bounded outage so callers can queue work while the
+    /// secured server is unavailable.
+    pub async fn restart_after(&mut self, outage: Duration) -> Result<(), FixtureError> {
+        self.server.stop()?;
+        tokio::time::sleep(outage).await;
+        self.server =
+            FixtureNatsServer::spawn_on_port(&self.config_path, self._dir.path(), self.port)?;
+        let actual = self.server.wait_for_client_port(self._dir.path()).await?;
+        if actual != self.port {
+            return Err(Box::new(io::Error::other(format!(
+                "restarted nats-server used port {actual}, expected {}",
+                self.port
+            ))));
+        }
+        self.wait_until_ready().await
     }
 
     #[must_use]
@@ -395,11 +443,27 @@ struct FixtureNatsServer {
 
 impl FixtureNatsServer {
     fn spawn(config_path: &Path, ports_file_dir: &Path) -> Result<Self, FixtureError> {
+        Self::spawn_with_port(config_path, ports_file_dir, "-1")
+    }
+
+    fn spawn_on_port(
+        config_path: &Path,
+        ports_file_dir: &Path,
+        port: u16,
+    ) -> Result<Self, FixtureError> {
+        Self::spawn_with_port(config_path, ports_file_dir, &port.to_string())
+    }
+
+    fn spawn_with_port(
+        config_path: &Path,
+        ports_file_dir: &Path,
+        port: &str,
+    ) -> Result<Self, FixtureError> {
         let mut child = Command::new("nats-server")
             .arg("--config")
             .arg(config_path)
             .arg("--port")
-            .arg("-1")
+            .arg(port)
             .arg("--ports_file_dir")
             .arg(ports_file_dir)
             .stdin(Stdio::null())
@@ -408,6 +472,12 @@ impl FixtureNatsServer {
             .spawn()?;
         let stderr = child.stderr.take();
         Ok(Self { child, stderr })
+    }
+
+    fn stop(&mut self) -> Result<(), FixtureError> {
+        self.child.kill()?;
+        self.child.wait()?;
+        Ok(())
     }
 
     async fn wait_for_client_port(&mut self, ports_file_dir: &Path) -> Result<u16, FixtureError> {

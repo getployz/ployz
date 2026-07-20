@@ -1,5 +1,6 @@
 //! Command-level aggregation of shared and feature-owned execution failures.
 
+use crate::build::enrollment::BuildEnrollmentError;
 use crate::build::runtime::BuildExecutionError;
 use crate::core::runtime::CoreRuntimeError;
 use crate::deploy::runtime::DeployExecutionError;
@@ -22,6 +23,8 @@ pub enum PloyzctlExecutionError {
     Core(CoreRuntimeError),
     #[error(transparent)]
     Build(#[from] BuildExecutionError),
+    #[error(transparent)]
+    BuildEnrollment(#[from] BuildEnrollmentError),
     #[error(transparent)]
     Machine(MachineExecutionError),
     #[error(transparent)]

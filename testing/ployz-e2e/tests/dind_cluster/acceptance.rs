@@ -345,6 +345,7 @@ async fn step_5_retry_and_restore(
         | PloyzctlExecutionError::Support(_)
         | PloyzctlExecutionError::Core(_)
         | PloyzctlExecutionError::Build(_)
+        | PloyzctlExecutionError::BuildEnrollment(_)
         | PloyzctlExecutionError::Machine(_)
         | PloyzctlExecutionError::Namespace(_)
         | PloyzctlExecutionError::Volume(_) => {
