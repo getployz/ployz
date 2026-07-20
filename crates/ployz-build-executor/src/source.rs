@@ -1,24 +1,19 @@
 use ployz_core::build::{
-    BuildContextPath, BuildSource, GitSource, LocalSnapshotDigest, VerifiedBuildSource,
-    VerifiedGitCommit,
+    BuildContextPath, BuildSource, GitSource, VerifiedBuildSource, VerifiedGitCommit,
 };
-use sha2::{Digest, Sha256};
 use std::ffi::OsStr;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::process::Command;
 
 mod local_snapshot;
+pub use local_snapshot::LocalSnapshotError;
 use local_snapshot::consume_local_snapshot;
 pub(super) use local_snapshot::stage_local_snapshot;
 
 const GIT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const MAX_GIT_ERROR_BYTES: usize = 64 * 1024;
-const MAX_SNAPSHOT_BYTES: u64 = 1024 * 1024 * 1024;
-const MAX_SNAPSHOT_ENTRIES: usize = 100_000;
-const SNAPSHOT_DIGEST_VERSION: &[u8] = b"ployz.local-snapshot.v1";
 
 #[derive(Debug)]
 pub(super) struct PreparedBuildSource {
@@ -55,7 +50,9 @@ pub(super) async fn prepare_build_source(
             .await
             .map_err(SourcePreparationError::Git),
         BuildSource::LocalSnapshot { digest, subdir } => {
-            consume_local_snapshot(workspace_root, workspace, digest, subdir.as_ref()).await
+            consume_local_snapshot(workspace_root, workspace, digest, subdir.as_ref())
+                .await
+                .map_err(SourcePreparationError::Local)
         }
     }
 }
@@ -179,319 +176,12 @@ pub(super) async fn checkout_git_source(
     })
 }
 
-fn stage_local_snapshot_blocking(
-    source_root: &Path,
-    prepared_root: &Path,
-    subdir: Option<BuildContextPath>,
-) -> Result<BuildSource, LocalSnapshotError> {
-    let source_root = std::fs::canonicalize(source_root)
-        .map_err(|error| snapshot_io("canonicalize local source", error))?;
-    if !source_root.is_dir() {
-        return Err(LocalSnapshotError::SourceNotDirectory);
-    }
-    std::fs::create_dir_all(prepared_root)
-        .map_err(|error| snapshot_io("create prepared snapshot root", error))?;
-    set_private_directory_sync(prepared_root)?;
-    let staging = prepared_root.join("staging");
-    if staging.exists() {
-        std::fs::remove_dir_all(&staging)
-            .map_err(|error| snapshot_io("remove prior staged snapshot", error))?;
-    }
-    std::fs::create_dir(&staging).map_err(|error| snapshot_io("create staged snapshot", error))?;
-    set_private_directory_sync(&staging)?;
-    let result =
-        copy_snapshot_tree(&source_root, &staging).and_then(|()| digest_snapshot(&staging));
-    let digest = match result {
-        Ok(digest) => digest,
-        Err(error) => {
-            let _ = std::fs::remove_dir_all(&staging);
-            return Err(error);
-        }
-    };
-    let armed = prepared_root.join(digest_directory(&digest));
-    if armed.exists() {
-        std::fs::remove_dir_all(&armed)
-            .map_err(|error| snapshot_io("replace prepared local snapshot", error))?;
-    }
-    std::fs::rename(&staging, &armed).map_err(|error| snapshot_io("arm local snapshot", error))?;
-    Ok(BuildSource::LocalSnapshot { digest, subdir })
-}
-
-fn copy_snapshot_tree(
-    source_root: &Path,
-    destination_root: &Path,
-) -> Result<(), LocalSnapshotError> {
-    let mut entries = vec![PathBuf::new()];
-    let mut copied_bytes = 0_u64;
-    let mut entry_count = 0_usize;
-    let mut index = 0;
-    while index < entries.len() {
-        let relative = entries
-            .get(index)
-            .cloned()
-            .ok_or(LocalSnapshotError::EntryLimitExceeded)?;
-        index += 1;
-        let source = source_root.join(&relative);
-        let mut children = std::fs::read_dir(&source)
-            .map_err(|error| snapshot_io("read local source directory", error))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| snapshot_io("read local source entry", error))?;
-        children.sort_by(|left, right| {
-            left.file_name()
-                .as_encoded_bytes()
-                .cmp(right.file_name().as_encoded_bytes())
-        });
-        for child in children {
-            entry_count = entry_count.saturating_add(1);
-            if entry_count > MAX_SNAPSHOT_ENTRIES {
-                return Err(LocalSnapshotError::EntryLimitExceeded);
-            }
-            let name = child.file_name();
-            let name_text = name.to_str().ok_or(LocalSnapshotError::NonPortablePath)?;
-            if relative.as_os_str().is_empty() && matches!(name_text, ".git" | ".ployz") {
-                continue;
-            }
-            let child_relative = relative.join(name_text);
-            let source_path = child.path();
-            let destination = destination_root.join(&child_relative);
-            let before = std::fs::symlink_metadata(&source_path)
-                .map_err(|error| snapshot_io("inspect local source entry", error))?;
-            let file_type = before.file_type();
-            if file_type.is_dir() {
-                std::fs::create_dir(&destination)
-                    .map_err(|error| snapshot_io("create snapshot directory", error))?;
-                set_private_directory_sync(&destination)?;
-                entries.push(child_relative);
-            } else if file_type.is_file() {
-                copied_bytes = copied_bytes
-                    .checked_add(before.len())
-                    .ok_or(LocalSnapshotError::ByteLimitExceeded)?;
-                if copied_bytes > MAX_SNAPSHOT_BYTES {
-                    return Err(LocalSnapshotError::ByteLimitExceeded);
-                }
-                std::fs::copy(&source_path, &destination)
-                    .map_err(|error| snapshot_io("copy local source file", error))?;
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let mode = if before.permissions().mode() & 0o111 == 0 {
-                        0o600
-                    } else {
-                        0o700
-                    };
-                    std::fs::set_permissions(&destination, std::fs::Permissions::from_mode(mode))
-                        .map_err(|error| snapshot_io("set snapshot file permissions", error))?;
-                }
-                let after = std::fs::symlink_metadata(&source_path)
-                    .map_err(|error| snapshot_io("reinspect local source file", error))?;
-                if metadata_changed(&before, &after) {
-                    return Err(LocalSnapshotError::SourceMutated {
-                        path: child_relative,
-                    });
-                }
-            } else if file_type.is_symlink() {
-                let target = std::fs::read_link(&source_path)
-                    .map_err(|error| snapshot_io("read local source symlink", error))?;
-                validate_relative_symlink(&child_relative, &target)?;
-                #[cfg(unix)]
-                std::os::unix::fs::symlink(&target, &destination)
-                    .map_err(|error| snapshot_io("copy local source symlink", error))?;
-                #[cfg(not(unix))]
-                return Err(LocalSnapshotError::UnsupportedFileType {
-                    path: child_relative,
-                });
-            } else {
-                return Err(LocalSnapshotError::UnsupportedFileType {
-                    path: child_relative,
-                });
-            }
-        }
-    }
-    Ok(())
-}
-
-fn digest_snapshot(root: &Path) -> Result<LocalSnapshotDigest, LocalSnapshotError> {
-    let mut paths = Vec::new();
-    collect_snapshot_paths(root, Path::new(""), &mut paths)?;
-    paths.sort_by(|left, right| {
-        left.as_os_str()
-            .as_encoded_bytes()
-            .cmp(right.as_os_str().as_encoded_bytes())
-    });
-    let mut hasher = Sha256::new();
-    frame(&mut hasher, SNAPSHOT_DIGEST_VERSION);
-    for relative in paths {
-        let relative_text = relative
-            .to_str()
-            .ok_or(LocalSnapshotError::NonPortablePath)?;
-        let path = root.join(&relative);
-        let metadata = std::fs::symlink_metadata(&path)
-            .map_err(|error| snapshot_io("inspect staged snapshot", error))?;
-        frame(&mut hasher, relative_text.as_bytes());
-        if metadata.file_type().is_dir() {
-            frame(&mut hasher, b"directory");
-        } else if metadata.file_type().is_symlink() {
-            frame(&mut hasher, b"symlink");
-            let target = std::fs::read_link(&path)
-                .map_err(|error| snapshot_io("read staged symlink", error))?;
-            frame(&mut hasher, target.as_os_str().as_encoded_bytes());
-        } else if metadata.file_type().is_file() {
-            #[cfg(unix)]
-            let executable = {
-                use std::os::unix::fs::PermissionsExt;
-                metadata.permissions().mode() & 0o111 != 0
-            };
-            #[cfg(not(unix))]
-            let executable = false;
-            frame(&mut hasher, if executable { b"file+x" } else { b"file" });
-            let mut file = std::fs::File::open(&path)
-                .map_err(|error| snapshot_io("open staged file", error))?;
-            hasher.update(metadata.len().to_be_bytes());
-            let mut buffer = [0_u8; 64 * 1024];
-            loop {
-                let read = file
-                    .read(&mut buffer)
-                    .map_err(|error| snapshot_io("read staged file", error))?;
-                if read == 0 {
-                    break;
-                }
-                let Some(bytes) = buffer.get(..read) else {
-                    return Err(LocalSnapshotError::DigestInvariant);
-                };
-                hasher.update(bytes);
-            }
-        } else {
-            return Err(LocalSnapshotError::UnsupportedFileType { path: relative });
-        }
-    }
-    LocalSnapshotDigest::try_new(format!("sha256:{:x}", hasher.finalize()))
-        .map_err(|_| LocalSnapshotError::DigestInvariant)
-}
-
-fn collect_snapshot_paths(
-    root: &Path,
-    relative: &Path,
-    paths: &mut Vec<PathBuf>,
-) -> Result<(), LocalSnapshotError> {
-    for entry in std::fs::read_dir(root.join(relative))
-        .map_err(|error| snapshot_io("read staged directory", error))?
-    {
-        let entry = entry.map_err(|error| snapshot_io("read staged entry", error))?;
-        let child = relative.join(entry.file_name());
-        paths.push(child.clone());
-        if entry
-            .file_type()
-            .map_err(|error| snapshot_io("inspect staged entry type", error))?
-            .is_dir()
-        {
-            collect_snapshot_paths(root, &child, paths)?;
-        }
-    }
-    Ok(())
-}
-
-fn frame(hasher: &mut Sha256, bytes: &[u8]) {
-    hasher.update((bytes.len() as u64).to_be_bytes());
-    hasher.update(bytes);
-}
-
-fn validate_relative_symlink(path: &Path, target: &Path) -> Result<(), LocalSnapshotError> {
-    use std::path::Component;
-    if target.is_absolute() || target.to_str().is_none() {
-        return Err(LocalSnapshotError::EscapingSymlink {
-            path: path.to_path_buf(),
-        });
-    }
-    let mut depth = path
-        .parent()
-        .map_or(0, |parent| parent.components().count());
-    for component in target.components() {
-        match component {
-            Component::Normal(_) | Component::CurDir => {
-                depth += usize::from(matches!(component, Component::Normal(_)))
-            }
-            Component::ParentDir if depth > 0 => depth -= 1,
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                return Err(LocalSnapshotError::EscapingSymlink {
-                    path: path.to_path_buf(),
-                });
-            }
-        }
-    }
-    Ok(())
-}
-
-fn metadata_changed(before: &std::fs::Metadata, after: &std::fs::Metadata) -> bool {
-    before.len() != after.len() || before.modified().ok() != after.modified().ok()
-}
-
-fn digest_directory(digest: &LocalSnapshotDigest) -> &str {
-    digest
-        .as_str()
-        .strip_prefix("sha256:")
-        .expect("validated local snapshot digest")
-}
-
-fn set_private_directory_sync(path: &Path) -> Result<(), LocalSnapshotError> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-            .map_err(|error| snapshot_io("set snapshot directory permissions", error))?;
-    }
-    Ok(())
-}
-
-fn snapshot_io(action: &'static str, error: std::io::Error) -> LocalSnapshotError {
-    LocalSnapshotError::Io {
-        action,
-        message: error.to_string(),
-    }
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum SourcePreparationError {
     #[error(transparent)]
     Git(#[from] GitCheckoutError),
     #[error(transparent)]
-    Local(#[from] LocalSnapshotError),
-    #[error("prepared local snapshot {digest} is absent")]
-    MissingLocalSnapshot { digest: LocalSnapshotDigest },
-    #[error("prepared local snapshot digest {actual} does not match requested {expected}")]
-    LocalDigestMismatch {
-        expected: LocalSnapshotDigest,
-        actual: LocalSnapshotDigest,
-    },
-    #[error("failed to {action}: {message}")]
-    Io {
-        action: &'static str,
-        message: String,
-    },
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum LocalSnapshotError {
-    #[error("local snapshot source must be a directory")]
-    SourceNotDirectory,
-    #[error("local snapshot exceeds the 1 GiB byte limit")]
-    ByteLimitExceeded,
-    #[error("local snapshot exceeds the 100000 entry limit")]
-    EntryLimitExceeded,
-    #[error("local snapshot contains a non-portable path")]
-    NonPortablePath,
-    #[error("local snapshot symlink escapes its root: {path:?}")]
-    EscapingSymlink { path: PathBuf },
-    #[error("local snapshot contains an unsupported file type: {path:?}")]
-    UnsupportedFileType { path: PathBuf },
-    #[error("local source changed while it was captured: {path:?}")]
-    SourceMutated { path: PathBuf },
-    #[error("local snapshot digest invariant failed")]
-    DigestInvariant,
-    #[error("failed to {action}: {message}")]
-    Io {
-        action: &'static str,
-        message: String,
-    },
+    Local(#[from] local_snapshot::LocalSnapshotPreparationError),
 }
 
 async fn run_git<const N: usize>(
@@ -722,70 +412,5 @@ mod tests {
                 0o700
             );
         }
-    }
-
-    #[tokio::test]
-    async fn local_snapshot_is_deterministic_excludes_ployz_and_consumes_once() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let source_root = temp.path().join("project");
-        let prepared_root = temp.path().join("executor/prepared");
-        fs::create_dir_all(source_root.join("src")).expect("source dirs");
-        fs::create_dir_all(source_root.join(".ployz/nested")).expect("ployz dir");
-        fs::write(source_root.join("src/main.rs"), "fn main() {}\n").expect("source");
-        fs::write(source_root.join(".ployz/nested/credential"), "secret").expect("secret");
-
-        let first = stage_local_snapshot(
-            source_root.clone(),
-            prepared_root.clone(),
-            Some(BuildContextPath::try_new("src").expect("subdir")),
-        )
-        .await
-        .expect("first snapshot");
-        let second = stage_local_snapshot(
-            source_root,
-            prepared_root,
-            Some(BuildContextPath::try_new("src").expect("subdir")),
-        )
-        .await
-        .expect("second snapshot");
-        assert_eq!(first, second);
-        let BuildSource::LocalSnapshot { digest, subdir } = first else {
-            panic!("local source")
-        };
-        let workspace_root = temp.path().join("executor");
-        let workspace = workspace_root.join("operation/linux-amd64");
-        fs::create_dir_all(&workspace).expect("workspace");
-        let prepared =
-            consume_local_snapshot(&workspace_root, &workspace, &digest, subdir.as_ref())
-                .await
-                .expect("consume snapshot");
-        assert!(prepared.context().ends_with("source/src"));
-        assert!(prepared.context().join("main.rs").exists());
-        assert!(!workspace.join("source/.ployz").exists());
-        assert!(matches!(
-            consume_local_snapshot(
-                &workspace_root,
-                &workspace_root.join("second"),
-                &digest,
-                subdir.as_ref()
-            )
-            .await,
-            Err(SourcePreparationError::MissingLocalSnapshot { .. })
-        ));
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn local_snapshot_rejects_symlinks_that_escape_the_source() {
-        use std::os::unix::fs::symlink;
-
-        let temp = tempfile::tempdir().expect("tempdir");
-        let source_root = temp.path().join("project");
-        fs::create_dir(&source_root).expect("source root");
-        symlink("../secret", source_root.join("escape")).expect("symlink");
-        let error = stage_local_snapshot(source_root, temp.path().join("prepared"), None)
-            .await
-            .expect_err("escaping link rejected");
-        assert!(matches!(error, LocalSnapshotError::EscapingSymlink { .. }));
     }
 }
