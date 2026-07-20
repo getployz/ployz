@@ -646,6 +646,11 @@ fn create_or_adopt_deploy_claim(
     if let Some(existing) =
         query_json::<StoredDeployClaim>(conn, "SELECT json FROM deploy_claims WHERE key = ?1", key)?
     {
+        if existing.target != value.target {
+            return Ok(AdoptResult::Conflict(
+                "deploy idempotency key was already claimed for different request evidence",
+            ));
+        }
         return Ok(AdoptResult::Value(existing));
     }
     conn.execute(

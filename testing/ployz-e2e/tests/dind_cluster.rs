@@ -18,6 +18,8 @@
 mod acceptance;
 #[path = "dind_cluster/build.rs"]
 mod build;
+#[path = "dind_cluster/deploy_environment.rs"]
+mod deploy_environment;
 #[path = "dind_cluster/network.rs"]
 mod network;
 #[path = "dind_cluster/placement.rs"]
@@ -1218,6 +1220,14 @@ async fn serial_smoke() {
         timed(
             "runtime_fields_deploy",
             scenario_runtime_fields_deploy(&core, &workload_image),
+        )
+        .await;
+        timed(
+            "deploy_environment_evidence_boundary",
+            deploy_environment::scenario_deploy_environment_evidence_boundary(
+                &core,
+                &workload_image,
+            ),
         )
         .await;
         timed(

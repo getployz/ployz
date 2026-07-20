@@ -19,15 +19,15 @@ use ployz_sdk_types::{
     CredentialAddError, CredentialAddRequest, CredentialListError, CredentialListRequest,
     CredentialListResult, CredentialRemoveError, CredentialRemoveRequest, DependencyCondition,
     DeployOperationState, DeployPhaseNumber, DeployPhaseNumberError, DeployPreview,
-    DeployPreviewError, DeployPreviewRequest, DeployRequest, DeployReservationId,
-    DeployReserveError, DeployReserveRequest, DeployReserved, DeployRunningStage,
-    DeployServiceSpec, DeploySubmitError, DeploySubmitRequest, DeploySubmitResponse, EventSequence,
-    EventSequenceError, GatewayHttpFailure, GatewayProcessAttempt, GatewayProcessHealth,
-    GatewayStatusPublishFailure, GatewayWatchFailure, GitSource, HostPortAssurance, ImageReference,
-    ImageReferenceError, IngressConfiguration, IngressConfigureError, IngressConfigureRequest,
-    IngressEndpointProjectionIdentity, InitFirstMachineActivateError,
-    InitFirstMachineActivateRequest, InitFirstMachineActivated, InstallContractError,
-    InstallRolePolicy, LogsTailError, LogsTailRequest, LogsTailResult,
+    DeployPreviewError, DeployPreviewRequest, DeployRequest, DeployRequestEvidence,
+    DeployReservationId, DeployReserveError, DeployReserveRequest, DeployReserved,
+    DeployRunningStage, DeployServiceSpec, DeploySubmitError, DeploySubmitRequest,
+    DeploySubmitResponse, EventSequence, EventSequenceError, GatewayHttpFailure,
+    GatewayProcessAttempt, GatewayProcessHealth, GatewayStatusPublishFailure, GatewayWatchFailure,
+    GitSource, HostPortAssurance, ImageReference, ImageReferenceError, IngressConfiguration,
+    IngressConfigureError, IngressConfigureRequest, IngressEndpointProjectionIdentity,
+    InitFirstMachineActivateError, InitFirstMachineActivateRequest, InitFirstMachineActivated,
+    InstallContractError, InstallRolePolicy, LogsTailError, LogsTailRequest, LogsTailResult,
     MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineAddAccepted, MachineAddError, MachineAddRequest,
     MachineAddResponse, MachineBootstrapUrl, MachineInspectError, MachineInspectRequest,
     MachineJoinBundle, MachineJoinMaterial, MachineJoinRedeemError, MachineJoinRedeemRequest,
@@ -73,6 +73,19 @@ fn git_source_typescript_subdir_is_optional() {
         "{declaration}"
     );
     assert!(!declaration.contains("subdir: BuildContextPath | null"));
+}
+
+#[test]
+fn deploy_submitted_typescript_uses_redacted_request_evidence() {
+    let event = OperationEvent::decl(&Config::default());
+    let evidence = DeployRequestEvidence::decl(&Config::default());
+
+    assert!(event.contains("target: DeployRequestEvidence"), "{event}");
+    assert!(evidence.contains("request: DeployRequest"), "{evidence}");
+    assert!(
+        evidence.contains("environment_names: Array<ServiceEnvironmentNames>"),
+        "{evidence}"
+    );
 }
 
 #[test]

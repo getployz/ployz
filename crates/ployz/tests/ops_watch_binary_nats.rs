@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ployz::dispatcher::{PLOYZ_NATS_CA_FILE_ENV, PLOYZ_NATS_NKEY_SEED_FILE_ENV};
-use ployz_core::deploy::{DeployServiceSpec, ImageReference, ReplicaCount};
+use ployz_core::deploy::{DeployRequestEvidence, DeployServiceSpec, ImageReference, ReplicaCount};
 use ployz_core::ids::NamespaceId;
 use ployz_core::operation::{
     DeployOperationFailure, ManagedDnsReconcileOperationState, ManagedDnsReconcileSubject,
@@ -58,7 +58,7 @@ async fn binary_ops_watch_replays_terminal_event_after_a_caught_up_page() {
                                     reservation_id: Some(
                                         ployz_core::deploy::DeployReservationId::first(),
                                     ),
-                                    target: deploy_request(),
+                                    target: DeployRequestEvidence::from_request(&deploy_request()),
                                 },
                             )])
                         }

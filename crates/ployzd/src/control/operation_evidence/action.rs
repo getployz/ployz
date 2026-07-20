@@ -117,9 +117,9 @@ impl OperationAction for DeployOperationSubmission {
     ) -> OperationStatus {
         OperationStatus::deploy_accepted(
             operation_id,
-            payload.target.namespace_id.clone(),
+            payload.target.request().namespace_id.clone(),
             payload.target.status_service_id(),
-            payload.target.origin.clone(),
+            payload.target.request().origin.clone(),
             sequence,
         )
     }

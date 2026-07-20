@@ -25,6 +25,14 @@ use ployz_test_support::ids::{
     service_id,
 };
 
+fn environment_revision_key() -> ployz_core::deploy::EnvironmentRevisionKey {
+    let seed = ployz_core::nats_config::NatsUserSeed::try_new(
+        "SUAIZ5LKGG2Y4WC7ZPKS46LSLLJQIFTO6KMSWSU2VN3TC7YRRIKH5WRXJQ",
+    )
+    .expect("valid deterministic controller seed");
+    ployz_core::deploy::EnvironmentRevisionKey::derive_from_controller_seed(&seed)
+}
+
 #[test]
 fn operation_state_serializes_with_stable_wire_names() {
     let state = DeployOperationState::Running {
@@ -730,8 +738,8 @@ fn volume_declaration_changes_do_not_change_the_namespace_revision() {
     )]));
 
     assert_eq!(
-        plain.namespace_revision_id(),
-        provisioned.namespace_revision_id()
+        plain.namespace_revision_id(&environment_revision_key()),
+        provisioned.namespace_revision_id(&environment_revision_key())
     );
 }
 

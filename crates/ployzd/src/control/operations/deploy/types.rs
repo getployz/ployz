@@ -1,6 +1,6 @@
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployPlanningInput, DeployPlanningTarget, DeployRequest,
-    DeployRouteBindingAddition, DeployServiceSpec, RegistryCredential,
+    DeployRouteBindingAddition, DeployServiceSpec, EnvironmentRevisionKey, RegistryCredential,
 };
 #[cfg(test)]
 use ployz_core::deploy::{
@@ -48,6 +48,7 @@ pub(super) struct DeployPreviewPlanningCommand {
 pub struct DeployExecutionCommand {
     pub(super) operation_id: OperationId,
     pub(super) request: DeployRequest,
+    pub(super) environment_revision_key: EnvironmentRevisionKey,
     pub(super) services: Vec<DeployServiceExecutionCommand>,
     pub(super) route_binding_removals: Vec<RouteBindingState>,
     pub(super) serving_target_removals: Vec<ServingTargetEntry>,
@@ -85,6 +86,18 @@ impl DeployExecutionCommand {
     #[must_use]
     pub fn operation_id(&self) -> &OperationId {
         &self.operation_id
+    }
+
+    #[must_use]
+    #[cfg(test)]
+    pub fn environment_revision_key(&self) -> &EnvironmentRevisionKey {
+        &self.environment_revision_key
+    }
+
+    #[must_use]
+    pub fn namespace_revision_id(&self) -> NamespaceRevisionId {
+        self.request
+            .namespace_revision_id(&self.environment_revision_key)
     }
 
     #[must_use]
@@ -253,15 +266,29 @@ impl DeployServiceExecutionCommand {
     }
 
     #[must_use]
-    pub fn serving_target_entry_state(&self, namespace_id: &NamespaceId) -> ServingTargetEntry {
+    pub fn serving_target_entry_state(
+        &self,
+        namespace_id: &NamespaceId,
+        environment_revision_key: &EnvironmentRevisionKey,
+    ) -> ServingTargetEntry {
         serving_target_entry(
             namespace_id,
             &self.service.service_id,
-            self.service.namespace_revision_entry_id(namespace_id),
+            self.namespace_revision_entry_id(namespace_id, environment_revision_key),
             &self.service.image,
             self.service.mode,
             &self.service.runtime,
         )
+    }
+
+    #[must_use]
+    pub(super) fn namespace_revision_entry_id(
+        &self,
+        namespace_id: &NamespaceId,
+        environment_revision_key: &EnvironmentRevisionKey,
+    ) -> NamespaceRevisionEntryId {
+        self.service
+            .namespace_revision_entry_id(namespace_id, environment_revision_key)
     }
 
     #[must_use]

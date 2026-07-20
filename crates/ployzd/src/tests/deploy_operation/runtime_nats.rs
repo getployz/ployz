@@ -71,12 +71,13 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
         .services
         .first()
         .expect("resolved fixture has one service")
-        .namespace_revision_entry_id(&namespace_id("default"));
+        .namespace_revision_entry_id(&namespace_id("default"), &environment_revision_key());
 
     let outcome = run_deploy_operation(
         accepted,
         DeployOperationStores {
             intent_change_client: nats.client.clone(),
+            environment_revision_key: environment_revision_key(),
             namespace_intent: nats.namespace_intent.clone(),
             ployz_dns_target: nats.ployz_dns_target.clone(),
             ingress_projection: nats.ingress_projection.clone(),
@@ -95,7 +96,7 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
     .expect("accepted deploy runs");
     assert_eq!(
         outcome.namespace_revision_id,
-        resolved_request.namespace_revision_id()
+        resolved_request.namespace_revision_id(&environment_revision_key())
     );
     tokio::time::timeout(Duration::from_secs(1), intent_changed.next())
         .await
@@ -177,6 +178,7 @@ async fn interrupted_deploy_retry_gathers_and_reuses_retained_runtime_work() {
             accepted,
             DeployOperationStores {
                 intent_change_client: nats.client.clone(),
+                environment_revision_key: environment_revision_key(),
                 namespace_intent: nats.namespace_intent.clone(),
                 ployz_dns_target: nats.ployz_dns_target.clone(),
                 ingress_projection: nats.ingress_projection.clone(),
@@ -252,6 +254,7 @@ async fn interrupted_deploy_retry_gathers_and_reuses_retained_runtime_work() {
             target: preview_target_from_deploy(resolved_deploy_request(2)),
             registry_credentials: std::collections::BTreeMap::new(),
         },
+        &environment_revision_key(),
         &intent_reader,
         &facts_reader,
         &mut preview_runtime,
@@ -311,6 +314,7 @@ async fn interrupted_deploy_retry_gathers_and_reuses_retained_runtime_work() {
         retry,
         DeployOperationStores {
             intent_change_client: nats.client.clone(),
+            environment_revision_key: environment_revision_key(),
             namespace_intent: nats.namespace_intent.clone(),
             ployz_dns_target: nats.ployz_dns_target.clone(),
             ingress_projection: nats.ingress_projection.clone(),
@@ -414,6 +418,7 @@ async fn interrupted_scale_up_replica_is_regated_under_a_promoted_entry() {
         initial,
         DeployOperationStores {
             intent_change_client: nats.client.clone(),
+            environment_revision_key: environment_revision_key(),
             namespace_intent: nats.namespace_intent.clone(),
             ployz_dns_target: nats.ployz_dns_target.clone(),
             ingress_projection: nats.ingress_projection.clone(),
@@ -474,6 +479,7 @@ async fn interrupted_scale_up_replica_is_regated_under_a_promoted_entry() {
             scale_up,
             DeployOperationStores {
                 intent_change_client: nats.client.clone(),
+                environment_revision_key: environment_revision_key(),
                 namespace_intent: nats.namespace_intent.clone(),
                 ployz_dns_target: nats.ployz_dns_target.clone(),
                 ingress_projection: nats.ingress_projection.clone(),
@@ -557,6 +563,7 @@ async fn interrupted_scale_up_replica_is_regated_under_a_promoted_entry() {
         retry,
         DeployOperationStores {
             intent_change_client: nats.client.clone(),
+            environment_revision_key: environment_revision_key(),
             namespace_intent: nats.namespace_intent.clone(),
             ployz_dns_target: nats.ployz_dns_target.clone(),
             ingress_projection: nats.ingress_projection.clone(),
@@ -624,6 +631,7 @@ async fn idempotent_completed_deploy_retry_releases_namespace_lock() {
         accepted,
         DeployOperationStores {
             intent_change_client: nats.client.clone(),
+            environment_revision_key: environment_revision_key(),
             namespace_intent: nats.namespace_intent.clone(),
             ployz_dns_target: nats.ployz_dns_target.clone(),
             ingress_projection: nats.ingress_projection.clone(),
@@ -691,6 +699,7 @@ async fn health_failure_records_failed_operation_without_committing_active_state
         accepted,
         DeployOperationStores {
             intent_change_client: nats.client.clone(),
+            environment_revision_key: environment_revision_key(),
             namespace_intent: nats.namespace_intent.clone(),
             ployz_dns_target: nats.ployz_dns_target.clone(),
             ingress_projection: nats.ingress_projection.clone(),
@@ -758,6 +767,7 @@ async fn duplicate_driver_execution_does_not_release_the_original_namespace_lock
     let driver = DeployOperationDriver::new(
         DeployOperationStores {
             intent_change_client: nats.client.clone(),
+            environment_revision_key: environment_revision_key(),
             namespace_intent: nats.namespace_intent.clone(),
             ployz_dns_target: nats.ployz_dns_target.clone(),
             ingress_projection: nats.ingress_projection.clone(),
@@ -816,6 +826,7 @@ async fn missing_machine_responder_marks_deploy_failed_without_committing_active
         accepted,
         DeployOperationStores {
             intent_change_client: nats.client.clone(),
+            environment_revision_key: environment_revision_key(),
             namespace_intent: nats.namespace_intent.clone(),
             ployz_dns_target: nats.ployz_dns_target.clone(),
             ingress_projection: nats.ingress_projection.clone(),
@@ -902,6 +913,7 @@ async fn machine_service_timeout_marks_deploy_failed_without_committing_active_s
         accepted,
         DeployOperationStores {
             intent_change_client: nats.client.clone(),
+            environment_revision_key: environment_revision_key(),
             namespace_intent: nats.namespace_intent.clone(),
             ployz_dns_target: nats.ployz_dns_target.clone(),
             ingress_projection: nats.ingress_projection.clone(),
