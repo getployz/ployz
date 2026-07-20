@@ -53,7 +53,8 @@ impl ConnectedExecutor {
         client: async_nats::Client,
         workspace_root: PathBuf,
         completion: CompletionMode,
-        state: Option<Arc<Mutex<RuntimeState>>>,
+        state: Arc<Mutex<RuntimeState>>,
+        admission_generation: AdmissionGeneration,
     ) -> Result<Self, BuildExecutionError> {
         let readiness = probe_readiness().await?;
         let runtime =
@@ -63,8 +64,9 @@ impl ConnectedExecutor {
         }
         let service =
             start_executor_service(client.clone(), identity, runtime.clone(), completion).await?;
-        runtime.open_admission().await;
-        eprintln!("Build Executor {}", health_description(&readiness));
+        if runtime.open_admission(admission_generation).await {
+            eprintln!("Build Executor {}", health_description(&readiness));
+        }
         Ok(Self {
             client,
             runtime,
@@ -143,12 +145,19 @@ async fn run_connected_once(
     credential_expires_at: ployz_core::nats_config::BuildExecutorCredentialExpiresAt,
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
     let (terminal_tx, terminal_rx) = oneshot::channel();
+    let state = Arc::new(Mutex::new(RuntimeState::new_connected()));
+    let admission_generation = state
+        .lock()
+        .await
+        .admission_generation()
+        .expect("once mode initializes a connected generation");
     let session = ConnectedExecutor::start(
         identity,
         client,
         workspace_root,
         CompletionMode::once(terminal_tx),
-        None,
+        state,
+        admission_generation,
     )
     .await?;
     let wait_result =
@@ -180,7 +189,8 @@ async fn run_watch(
         session.client.clone(),
         workspace_root,
         CompletionMode::Watch,
-        Some(session.runtime_state()),
+        session.runtime_state(),
+        session.admission_generation(),
     )
     .await?;
     let wait_result = session
@@ -346,9 +356,21 @@ pub(super) struct ExternalBuildRuntime {
 }
 
 pub(super) struct RuntimeState {
+    connection: RuntimeConnection,
     admission: RuntimeAdmission,
     active: Option<ActiveBuild>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeConnection {
+    AwaitingInitial,
+    Connected(AdmissionGeneration),
+    Disconnected(AdmissionGeneration),
+    Terminal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct AdmissionGeneration(u64);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RuntimeAdmission {
@@ -360,6 +382,15 @@ enum RuntimeAdmission {
 impl RuntimeState {
     pub(super) fn new_closed() -> Self {
         Self {
+            connection: RuntimeConnection::AwaitingInitial,
+            admission: RuntimeAdmission::Closed,
+            active: None,
+        }
+    }
+
+    fn new_connected() -> Self {
+        Self {
+            connection: RuntimeConnection::Connected(AdmissionGeneration(0)),
             admission: RuntimeAdmission::Closed,
             active: None,
         }
@@ -387,13 +418,54 @@ impl RuntimeState {
     }
 
     pub(super) fn terminate_admission(&mut self) {
+        self.connection = RuntimeConnection::Terminal;
         self.admission = RuntimeAdmission::Terminal;
     }
 
-    fn open_admission(&mut self) {
-        if self.admission != RuntimeAdmission::Terminal {
-            self.admission = RuntimeAdmission::Open;
+    pub(super) fn record_connected(&mut self) {
+        self.connection = match self.connection {
+            RuntimeConnection::AwaitingInitial => {
+                RuntimeConnection::Connected(AdmissionGeneration(0))
+            }
+            RuntimeConnection::Disconnected(generation) => RuntimeConnection::Connected(generation),
+            RuntimeConnection::Connected(generation) => RuntimeConnection::Connected(generation),
+            RuntimeConnection::Terminal => RuntimeConnection::Terminal,
+        };
+    }
+
+    pub(super) fn record_disconnected(&mut self) {
+        if self.connection == RuntimeConnection::Terminal {
+            return;
         }
+        let generation = match self.connection {
+            RuntimeConnection::AwaitingInitial => 0,
+            RuntimeConnection::Connected(AdmissionGeneration(generation))
+            | RuntimeConnection::Disconnected(AdmissionGeneration(generation)) => generation,
+            RuntimeConnection::Terminal => unreachable!("terminal handled above"),
+        };
+        let Some(generation) = generation.checked_add(1) else {
+            self.terminate_admission();
+            return;
+        };
+        self.connection = RuntimeConnection::Disconnected(AdmissionGeneration(generation));
+        self.close_admission();
+    }
+
+    pub(super) fn admission_generation(&self) -> Option<AdmissionGeneration> {
+        let RuntimeConnection::Connected(generation) = self.connection else {
+            return None;
+        };
+        Some(generation)
+    }
+
+    fn open_admission(&mut self, generation: AdmissionGeneration) -> bool {
+        if self.connection == RuntimeConnection::Connected(generation)
+            && self.admission != RuntimeAdmission::Terminal
+        {
+            self.admission = RuntimeAdmission::Open;
+            return true;
+        }
+        false
     }
 }
 
@@ -410,13 +482,13 @@ impl ExternalBuildRuntime {
         identity: BuildExecutorIdentity,
         client: async_nats::Client,
         workspace_root: PathBuf,
-        state: Option<Arc<Mutex<RuntimeState>>>,
+        state: Arc<Mutex<RuntimeState>>,
     ) -> Self {
         Self {
             identity,
             client,
             executor: Arc::new(DockerBuildExecutor::new(workspace_root)),
-            state: state.unwrap_or_else(|| Arc::new(Mutex::new(RuntimeState::new_closed()))),
+            state,
             changed: Arc::new(Notify::new()),
         }
     }
@@ -432,8 +504,8 @@ impl ExternalBuildRuntime {
         self.state.lock().await.close_admission();
     }
 
-    pub(super) async fn open_admission(&self) {
-        self.state.lock().await.open_admission();
+    pub(super) async fn open_admission(&self, generation: AdmissionGeneration) -> bool {
+        self.state.lock().await.open_admission(generation)
     }
 
     pub(super) async fn start(

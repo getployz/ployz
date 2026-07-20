@@ -48,6 +48,7 @@ pub(super) struct WatchSession {
     events: tokio::sync::mpsc::UnboundedReceiver<Event>,
     shutdown: Pin<Box<dyn Future<Output = Result<(), std::io::Error>> + Send>>,
     runtime_state: Arc<tokio::sync::Mutex<super::external_runtime::RuntimeState>>,
+    admission_generation: super::external_runtime::AdmissionGeneration,
 }
 
 pub(super) fn executor_connect_config(
@@ -109,7 +110,7 @@ pub(super) async fn connect_watch(
     credential_expires_at: BuildExecutorCredentialExpiresAt,
     connect_timeout: Duration,
 ) -> Result<WatchConnect, BuildExecutionError> {
-    let (events_tx, events) = tokio::sync::mpsc::unbounded_channel();
+    let (events_tx, mut events) = tokio::sync::mpsc::unbounded_channel();
     let runtime_state = Arc::new(tokio::sync::Mutex::new(
         super::external_runtime::RuntimeState::new_closed(),
     ));
@@ -128,14 +129,17 @@ pub(super) async fn connect_watch(
                     let runtime_state = Arc::clone(&runtime_state);
                     async move {
                         match classify_event(&event) {
+                            ConnectionEvent::Connected => {
+                                runtime_state.lock().await.record_connected();
+                            }
                             ConnectionEvent::TransientDisconnect => {
-                                runtime_state.lock().await.close_admission();
+                                runtime_state.lock().await.record_disconnected();
                             }
                             ConnectionEvent::TerminalAuthorization
                             | ConnectionEvent::TerminalConnection => {
                                 runtime_state.lock().await.terminate_admission();
                             }
-                            ConnectionEvent::Connected | ConnectionEvent::Ignore => {}
+                            ConnectionEvent::Ignore => {}
                         }
                         let _ = events_tx.send(event);
                     }
@@ -185,12 +189,79 @@ pub(super) async fn connect_watch(
             () = tokio::time::sleep(expiry) => return Err(expired_error(credential_expires_at)),
         }
     };
+    let expiry =
+        credential_lifetime(credential_expires_at, SystemTime::now()).map_err(|error| {
+            BuildExecutionError::ExecutorCredential {
+                message: error.to_string(),
+            }
+        })?;
+    let expiry = tokio::time::sleep(expiry);
+    tokio::pin!(expiry);
+    let admission_generation = tokio::select! {
+        signal = &mut shutdown => {
+            signal.map_err(|error| BuildExecutionError::ExecutorSignal { message: error.to_string() })?;
+            eprintln!("Build Executor stopping");
+            eprintln!("Build Executor stopped");
+            return Ok(WatchConnect::Stopped);
+        }
+        () = &mut expiry => return Err(expired_error(credential_expires_at)),
+        result = wait_for_initial_connection_ack(
+            &mut events,
+            &runtime_state,
+            connect_timeout,
+        ) => {
+            result?
+        }
+    };
     Ok(WatchConnect::Connected(WatchSession {
         client,
         events,
         shutdown,
         runtime_state,
+        admission_generation,
     }))
+}
+
+async fn wait_for_initial_connection_ack(
+    events: &mut tokio::sync::mpsc::UnboundedReceiver<Event>,
+    runtime_state: &Arc<tokio::sync::Mutex<super::external_runtime::RuntimeState>>,
+    budget: Duration,
+) -> Result<super::external_runtime::AdmissionGeneration, BuildExecutionError> {
+    let acknowledgement = async {
+        loop {
+            match events.recv().await.map(|event| classify_event(&event)) {
+                Some(ConnectionEvent::Connected) => {
+                    if let Some(generation) = runtime_state.lock().await.admission_generation() {
+                        return Ok(generation);
+                    }
+                }
+                Some(ConnectionEvent::TransientDisconnect | ConnectionEvent::Ignore) => {}
+                Some(ConnectionEvent::TerminalAuthorization) => {
+                    return Err(BuildExecutionError::ExecutorCredential {
+                        message: "NATS rejected Build Executor authorization".to_owned(),
+                    });
+                }
+                Some(ConnectionEvent::TerminalConnection) => {
+                    return Err(BuildExecutionError::ExecutorConnection {
+                        message: "NATS closed the Build Executor connection".to_owned(),
+                    });
+                }
+                None => {
+                    return Err(BuildExecutionError::ExecutorConnection {
+                        message: "NATS connection event stream closed".to_owned(),
+                    });
+                }
+            }
+        }
+    };
+    tokio::time::timeout(budget, acknowledgement)
+        .await
+        .map_err(|_| BuildExecutionError::ExecutorConnection {
+            message: format!(
+                "NATS connection acknowledgement timed out after {}ms",
+                budget.as_millis()
+            ),
+        })?
 }
 
 pub(super) async fn connect_once(
@@ -239,6 +310,11 @@ impl WatchSession {
         Arc::clone(&self.runtime_state)
     }
 
+    #[must_use]
+    pub(super) fn admission_generation(&self) -> super::external_runtime::AdmissionGeneration {
+        self.admission_generation
+    }
+
     pub async fn wait(
         &mut self,
         credential_expires_at: BuildExecutorCredentialExpiresAt,
@@ -264,11 +340,19 @@ impl WatchSession {
                 }
                 () = &mut expiry => return Err(expired_error(credential_expires_at)),
                 () = &mut reconnect_probe, if disconnected => {
+                    let admission_generation = self.runtime_state.lock().await.admission_generation();
+                    let Some(admission_generation) = admission_generation else {
+                        reconnect_probe.as_mut().reset(tokio::time::Instant::now() + Duration::from_secs(1));
+                        continue;
+                    };
                     match probe_health().await {
                         Ok(health_description) => {
-                            runtime.open_admission().await;
-                            disconnected = false;
-                            eprintln!("Build Executor {health_description}");
+                            if runtime.open_admission(admission_generation).await {
+                                disconnected = false;
+                                eprintln!("Build Executor {health_description}");
+                            } else {
+                                reconnect_probe.as_mut().reset(tokio::time::Instant::now() + Duration::from_secs(1));
+                            }
                         }
                         Err(error) => {
                             eprintln!("Build Executor health probe failed: {error}");
@@ -439,17 +523,11 @@ pub(super) fn default_workspace_root(
 #[cfg(unix)]
 pub(super) async fn shutdown_signal() -> Result<(), std::io::Error> {
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    let interrupt = tokio::signal::ctrl_c();
-    let terminate = async move {
-        terminate.recv().await.map(|_| ()).ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::BrokenPipe, "SIGTERM listener closed")
-        })
-    };
-    tokio::pin!(interrupt);
-    tokio::pin!(terminate);
     tokio::select! {
-        result = &mut interrupt => result,
-        result = &mut terminate => result,
+        result = tokio::signal::ctrl_c() => result,
+        signal = terminate.recv() => signal.map(|_| ()).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::BrokenPipe, "SIGTERM listener closed")
+        }),
     }
 }
 
@@ -537,5 +615,81 @@ mod tests {
             credential_lifetime(current, now),
             Err(CredentialExpiryError::Expired { expires_at: 100 })
         );
+    }
+
+    #[tokio::test]
+    async fn initial_ack_requires_a_current_connected_event() {
+        let state = Arc::new(tokio::sync::Mutex::new(
+            super::super::external_runtime::RuntimeState::new_closed(),
+        ));
+        let (events_tx, mut events) = tokio::sync::mpsc::unbounded_channel();
+        state.lock().await.record_connected();
+        let expected = state
+            .lock()
+            .await
+            .admission_generation()
+            .expect("connected generation");
+        events_tx.send(Event::Connected).expect("connected event");
+
+        assert_eq!(
+            wait_for_initial_connection_ack(&mut events, &state, Duration::from_secs(1)).await,
+            Ok(expected)
+        );
+    }
+
+    #[tokio::test]
+    async fn initial_ack_ignores_disconnect_and_reports_terminal_or_closed_stream() {
+        let state = Arc::new(tokio::sync::Mutex::new(
+            super::super::external_runtime::RuntimeState::new_closed(),
+        ));
+        let (events_tx, mut events) = tokio::sync::mpsc::unbounded_channel();
+        state.lock().await.record_connected();
+        events_tx.send(Event::Connected).expect("connected event");
+        state.lock().await.record_disconnected();
+        events_tx
+            .send(Event::Disconnected)
+            .expect("disconnect event");
+        drop(events_tx);
+        let error = wait_for_initial_connection_ack(&mut events, &state, Duration::from_secs(1))
+            .await
+            .expect_err("disconnect is not an acknowledgement");
+        assert!(matches!(
+            error,
+            BuildExecutionError::ExecutorConnection { message }
+                if message == "NATS connection event stream closed"
+        ));
+
+        let (events_tx, mut events) = tokio::sync::mpsc::unbounded_channel();
+        events_tx
+            .send(Event::ServerError(ServerError::AuthorizationViolation))
+            .expect("terminal event");
+        assert!(matches!(
+            wait_for_initial_connection_ack(&mut events, &state, Duration::from_secs(1)).await,
+            Err(BuildExecutionError::ExecutorCredential { .. })
+        ));
+
+        let (events_tx, mut events) = tokio::sync::mpsc::unbounded_channel();
+        events_tx.send(Event::Closed).expect("closed event");
+        assert!(matches!(
+            wait_for_initial_connection_ack(&mut events, &state, Duration::from_secs(1)).await,
+            Err(BuildExecutionError::ExecutorConnection { message })
+                if message == "NATS closed the Build Executor connection"
+        ));
+    }
+
+    #[tokio::test]
+    async fn initial_ack_honors_a_zero_connection_budget() {
+        let state = Arc::new(tokio::sync::Mutex::new(
+            super::super::external_runtime::RuntimeState::new_closed(),
+        ));
+        let (_events_tx, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let error = wait_for_initial_connection_ack(&mut events, &state, Duration::ZERO)
+            .await
+            .expect_err("zero budget times out");
+        assert!(matches!(
+            error,
+            BuildExecutionError::ExecutorConnection { message }
+                if message == "NATS connection acknowledgement timed out after 0ms"
+        ));
     }
 }

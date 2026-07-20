@@ -191,10 +191,7 @@ fn readiness_is_closed_and_adapter_specific() {
 
 #[tokio::test]
 async fn one_active_registration_rechecks_after_the_preflight_race_window() {
-    let mut state = RuntimeState {
-        admission: RuntimeAdmission::Open,
-        active: None,
-    };
+    let mut state = accepting_state(None);
     state.ensure_accepting().expect("initial preflight");
     let (first, _first_rx, first_task) = active_build("op_build_first");
     state.register(first).expect("first registration");
@@ -211,10 +208,7 @@ async fn one_active_registration_rechecks_after_the_preflight_race_window() {
 async fn cancel_requires_the_exact_active_operation_and_full_assignment() {
     let (active, mut cancelled, task) = active_build("op_build_first");
     let assignment = active.assignment.clone();
-    let mut state = RuntimeState {
-        admission: RuntimeAdmission::Open,
-        active: Some(active),
-    };
+    let mut state = accepting_state(Some(active));
     let mismatched_assignment = BuildExecutorAssignment::External {
         pool_id: identity().pool_id,
         executor_id: identity().executor_id,
@@ -292,41 +286,80 @@ async fn once_credential_expiry_wins_when_the_idle_budget_elapses_together() {
 #[tokio::test]
 async fn terminal_admission_never_reopens_and_closing_does_not_cancel_active_build() {
     let (active, cancelled, task) = active_build("op_build_first");
-    let mut state = RuntimeState {
-        admission: RuntimeAdmission::Open,
-        active: Some(active),
-    };
-    state.close_admission();
+    let mut state = accepting_state(Some(active));
+    let generation = state.admission_generation().expect("connected generation");
+    state.record_disconnected();
     assert!(!*cancelled.borrow());
-    state.admission = RuntimeAdmission::Terminal;
-    state.open_admission();
+    state.terminate_admission();
+    assert!(!state.open_admission(generation));
     assert_eq!(state.admission, RuntimeAdmission::Terminal);
     task.abort();
 }
 
 #[test]
-fn reconnect_admission_stays_blocked_until_a_successful_probe_reopens_it() {
-    let mut state = RuntimeState {
-        admission: RuntimeAdmission::Open,
-        active: None,
+fn initial_ack_records_connected_generation_without_opening_admission() {
+    let mut state = RuntimeState::new_closed();
+    assert_eq!(state.connection, RuntimeConnection::AwaitingInitial);
+    assert_eq!(state.admission_generation(), None);
+
+    state.record_connected();
+
+    assert_eq!(state.admission_generation(), Some(AdmissionGeneration(0)));
+    assert_eq!(
+        state.ensure_accepting(),
+        Err(BuildExecutorStartDomainError::RuntimeStopped)
+    );
+}
+
+#[tokio::test]
+async fn paused_startup_and_reconnect_health_cannot_open_a_stale_generation() {
+    let (active, cancelled, task) = active_build("op_build_first");
+    let state = Arc::new(Mutex::new(RuntimeState::new_closed()));
+    let startup_generation = {
+        let mut state = state.lock().await;
+        state.record_connected();
+        state.admission_generation().expect("startup generation")
     };
-    state.close_admission();
+    let (startup_paused, resume_startup, startup_open) =
+        paused_open(Arc::clone(&state), startup_generation);
+    startup_paused.await.expect("startup reached open barrier");
+    state.lock().await.record_disconnected();
+    resume_startup.send(()).expect("resume startup");
+    assert!(!startup_open.await.expect("startup open task"));
     assert_eq!(
-        state.ensure_accepting(),
+        state.lock().await.ensure_accepting(),
         Err(BuildExecutorStartDomainError::RuntimeStopped)
     );
 
-    let failed_probe: Result<(), ()> = Err(());
-    if failed_probe.is_ok() {
-        state.open_admission();
-    }
-    assert_eq!(
-        state.ensure_accepting(),
-        Err(BuildExecutorStartDomainError::RuntimeStopped)
+    let reconnect_generation = {
+        let mut state = state.lock().await;
+        state.active = Some(active);
+        state.record_connected();
+        state
+            .admission_generation()
+            .expect("reconnected generation")
+    };
+    let (health_paused, resume_health, health_open) =
+        paused_open(Arc::clone(&state), reconnect_generation);
+    health_paused.await.expect("health reached open barrier");
+    state.lock().await.record_disconnected();
+    resume_health.send(()).expect("resume health");
+    assert!(!health_open.await.expect("health open task"));
+    assert!(
+        !*cancelled.borrow(),
+        "disconnect does not cancel active work"
     );
 
-    state.open_admission();
-    assert_eq!(state.ensure_accepting(), Ok(()));
+    let mut state = state.lock().await;
+    state.record_connected();
+    let current_generation = state.admission_generation().expect("current generation");
+    assert!(state.open_admission(current_generation));
+    assert_eq!(state.admission, RuntimeAdmission::Open);
+    assert!(
+        !*cancelled.borrow(),
+        "reopening does not cancel active work"
+    );
+    task.abort();
 }
 
 #[test]
@@ -484,6 +517,32 @@ fn active_build(
         cancel_rx,
         task,
     )
+}
+
+fn accepting_state(active: Option<ActiveBuild>) -> RuntimeState {
+    let mut state = RuntimeState::new_connected();
+    let generation = state.admission_generation().expect("connected generation");
+    assert!(state.open_admission(generation));
+    state.active = active;
+    state
+}
+
+fn paused_open(
+    state: Arc<Mutex<RuntimeState>>,
+    generation: AdmissionGeneration,
+) -> (
+    oneshot::Receiver<()>,
+    oneshot::Sender<()>,
+    tokio::task::JoinHandle<bool>,
+) {
+    let (paused_tx, paused_rx) = oneshot::channel();
+    let (resume_tx, resume_rx) = oneshot::channel();
+    let task = tokio::spawn(async move {
+        paused_tx.send(()).expect("report paused open");
+        resume_rx.await.expect("resume paused open");
+        state.lock().await.open_admission(generation)
+    });
+    (paused_rx, resume_tx, task)
 }
 
 fn future_expiry(seconds: u64) -> ployz_core::nats_config::BuildExecutorCredentialExpiresAt {

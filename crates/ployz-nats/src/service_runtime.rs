@@ -156,19 +156,6 @@ impl RunningNatsService {
         H: Fn(NatsServiceRequest) -> F + Send + Sync + 'static,
         F: Future<Output = NatsServiceResponse> + Send + 'static,
     {
-        self.bind_endpoint_inner(endpoint, policy, handler).await
-    }
-
-    async fn bind_endpoint_inner<H, F>(
-        &mut self,
-        endpoint: &NatsServiceEndpointSpec,
-        policy: EndpointExecutionPolicy,
-        handler: H,
-    ) -> Result<(), NatsServiceRuntimeError>
-    where
-        H: Fn(NatsServiceRequest) -> F + Send + Sync + 'static,
-        F: Future<Output = NatsServiceResponse> + Send + 'static,
-    {
         let Some(service) = self.service.as_ref() else {
             return Err(NatsServiceRuntimeError::Stopped);
         };
