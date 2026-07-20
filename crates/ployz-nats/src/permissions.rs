@@ -9,25 +9,21 @@ use ployz_core::nats_config::{
 use ployz_core::security::NatsPrincipal;
 
 use crate::server_config::quote_nats_string;
+use crate::services::{ProductServiceName, service_discovery_subscriptions};
 use crate::subjects::{
-    BUILD_EXECUTOR_RPC_BUILD_CANCEL_SCOPE, BUILD_EXECUTOR_RPC_BUILD_START_SCOPE,
-    BUILD_EXECUTOR_RPC_READINESS_SCOPE, BUILD_EXECUTOR_SIGNAL_LOG_SCOPE,
-    BuildExecutorServiceEndpoint, CORE_RPC_QUERY_SCOPE, INGRESS_ENDPOINT_CHANGED,
-    INGRESS_ENDPOINT_GET, INTENT_CHANGED, INTENT_GET, JOIN_MACHINE_REDEEM, JOIN_MACHINE_REPORT,
-    MACHINE_RPC_COMMAND_SCOPE, MACHINE_RPC_QUERY_SCOPE, OPERATION_PROGRESS_SCOPE,
-    OPERATOR_INIT_FIRST_MACHINE_ACTIVATE, OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE,
-    OPERATOR_MACHINE_IMAGE_QUERY_SCOPE, OPERATOR_RPC_COMMAND_SCOPE, OPERATOR_RPC_QUERY_SCOPE,
-    PENDING_MACHINE_JOINS_CHANGED, RUNTIME_SNAPSHOT_STREAM, build_executor_log_publish_scope,
-    build_executor_service, build_executor_service_discovery_subscriptions, gateway_status,
-    gateway_status_scope, machine_build_log_publish_scope, machine_build_log_subscribe_scope,
-    machine_container_facts, machine_facts, machine_facts_scope, machine_service_command_scope,
-    machine_service_query_scope,
+    BUILD_EXECUTOR_SIGNAL_LOG_SCOPE, BuildExecutorServiceEndpoint, CoreQueryEndpoint,
+    INGRESS_ENDPOINT_CHANGED, INTENT_CHANGED, JOIN_MACHINE_REDEEM, JOIN_MACHINE_REPORT,
+    OPERATION_PROGRESS_SCOPE, OperationApiCaller, OperationApiEndpoint,
+    PENDING_MACHINE_JOINS_CHANGED, RUNTIME_SNAPSHOT_SEED, RUNTIME_SNAPSHOT_STREAM,
+    build_executor_log_publish_scope, build_executor_service, build_executor_service_scope,
+    gateway_status, gateway_status_scope, machine_build_log_publish_scope,
+    machine_build_log_subscribe_scope, machine_container_facts, machine_facts, machine_facts_scope,
+    machine_service, machine_service_scope,
 };
 use std::time::Duration;
 
 const SYSTEM_EVENTS: &str = "$SYS.>";
 const SYSTEM_REQUESTS: &str = "$SYS.REQ.>";
-const NATS_SERVICE_DISCOVERY_SCOPE: &str = "$SRV.>";
 const PRINCIPAL_MARKER_PREFIX: &str = "# ployz-principal: ";
 const CREDENTIAL_NAME_MARKER_PREFIX: &str = "# ployz-credential-name: ";
 const CREDENTIAL_ROLE_MARKER_PREFIX: &str = "# ployz-credential-role: ";
@@ -278,13 +274,15 @@ impl NatsPermissionProfile {
         let inbox_scope = inbox_subscribe_scope(&principal);
         match &principal {
             NatsPrincipal::Machine { machine_id } => {
-                let mut publish_allow = request_reply_publications(&principal);
-                publish_allow.push(INTENT_GET.to_owned());
-                publish_allow.push(INGRESS_ENDPOINT_GET.to_owned());
-                publish_allow.push(machine_facts(machine_id));
-                publish_allow.push(machine_container_facts(machine_id));
-                publish_allow.push(gateway_status(machine_id));
-                publish_allow.push(machine_build_log_publish_scope(machine_id));
+                let publish_allow = core_query_endpoints()
+                    .map(ToOwned::to_owned)
+                    .chain([
+                        machine_facts(machine_id),
+                        machine_container_facts(machine_id),
+                        gateway_status(machine_id),
+                        machine_build_log_publish_scope(machine_id),
+                    ])
+                    .collect();
                 Self {
                     principal: principal.clone(),
                     publish: SubjectPermissions::allowing_all(publish_allow),
@@ -299,11 +297,11 @@ impl NatsPermissionProfile {
                 executor_id,
             } => Self {
                 principal: principal.clone(),
-                publish: SubjectPermissions::allowing([
-                    build_executor_log_publish_scope(pool_id, executor_id),
-                    OPERATOR_MACHINE_IMAGE_QUERY_SCOPE.to_owned(),
-                    OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE.to_owned(),
-                ]),
+                publish: SubjectPermissions::allowing_all(
+                    std::iter::once(build_executor_log_publish_scope(pool_id, executor_id))
+                        .chain(image_transfer_publications())
+                        .collect(),
+                ),
                 subscribe: build_executor_service_server_subscriptions(
                     pool_id,
                     executor_id,
@@ -353,43 +351,54 @@ impl NatsPermissionProfile {
 
 #[must_use]
 fn api_service_client_publications() -> SubjectPermissions {
-    SubjectPermissions::allowing([
-        OPERATOR_RPC_QUERY_SCOPE.to_owned(),
-        OPERATOR_RPC_COMMAND_SCOPE.to_owned(),
-        OPERATOR_MACHINE_IMAGE_QUERY_SCOPE.to_owned(),
-        OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE.to_owned(),
-        INTENT_GET.to_owned(),
-        INGRESS_ENDPOINT_GET.to_owned(),
-    ])
+    let mut allow: Vec<String> = OperationApiEndpoint::ALL
+        .iter()
+        .filter(|endpoint| endpoint.caller() == OperationApiCaller::Operator)
+        .map(|endpoint| endpoint.subject().to_owned())
+        .collect();
+    allow.push(RUNTIME_SNAPSHOT_SEED.to_owned());
+    allow.extend(core_query_endpoints().map(ToOwned::to_owned));
+    allow.extend(image_transfer_publications());
+    SubjectPermissions::allowing_all(allow)
 }
 
-#[must_use]
-fn machine_service_client_publications() -> SubjectPermissions {
-    SubjectPermissions::allowing([
-        MACHINE_RPC_QUERY_SCOPE.to_owned(),
-        MACHINE_RPC_COMMAND_SCOPE.to_owned(),
-    ])
+fn core_query_endpoints() -> impl Iterator<Item = &'static str> {
+    CoreQueryEndpoint::ALL
+        .iter()
+        .map(|endpoint| endpoint.subject())
+}
+
+fn image_transfer_publications() -> impl Iterator<Item = String> {
+    crate::subjects::MachineServiceEndpoint::IMAGE_TRANSFER
+        .iter()
+        .copied()
+        .map(machine_service_scope)
 }
 
 #[must_use]
 fn controller_subscriptions(inbox_scope: String) -> SubjectPermissions {
-    SubjectPermissions::allowing([
-        OPERATOR_RPC_QUERY_SCOPE.to_owned(),
-        OPERATOR_RPC_COMMAND_SCOPE.to_owned(),
-        JOIN_MACHINE_REDEEM.to_owned(),
-        JOIN_MACHINE_REPORT.to_owned(),
-        CORE_RPC_QUERY_SCOPE.to_owned(),
-        MACHINE_RPC_QUERY_SCOPE.to_owned(),
-        INTENT_GET.to_owned(),
+    let mut allow: Vec<String> = OperationApiEndpoint::ALL
+        .iter()
+        .map(|endpoint| endpoint.subject().to_owned())
+        .collect();
+    allow.extend(core_query_endpoints().map(ToOwned::to_owned));
+    allow.extend([
+        RUNTIME_SNAPSHOT_SEED.to_owned(),
         INTENT_CHANGED.to_owned(),
         INGRESS_ENDPOINT_CHANGED.to_owned(),
         machine_facts_scope(),
         machine_build_log_subscribe_scope(),
         BUILD_EXECUTOR_SIGNAL_LOG_SCOPE.to_owned(),
         gateway_status_scope(),
-        NATS_SERVICE_DISCOVERY_SCOPE.to_owned(),
-        inbox_scope,
-    ])
+    ]);
+    allow.extend(service_discovery_subscriptions(&[
+        ProductServiceName::Api,
+        ProductServiceName::Intent,
+        ProductServiceName::IngressEndpoint,
+        ProductServiceName::RuntimeProjection,
+    ]));
+    allow.push(inbox_scope);
+    SubjectPermissions::allowing_all(allow)
 }
 
 #[must_use]
@@ -398,24 +407,14 @@ fn build_executor_service_server_subscriptions(
     executor_id: &BuildExecutorId,
     inbox_scope: String,
 ) -> SubjectPermissions {
-    let mut allow = vec![
-        build_executor_service(
-            pool_id,
-            executor_id,
-            BuildExecutorServiceEndpoint::ReadinessGet,
-        ),
-        build_executor_service(
-            pool_id,
-            executor_id,
-            BuildExecutorServiceEndpoint::BuildStart,
-        ),
-        build_executor_service(
-            pool_id,
-            executor_id,
-            BuildExecutorServiceEndpoint::BuildCancel,
-        ),
-    ];
-    allow.extend(build_executor_service_discovery_subscriptions());
+    let mut allow: Vec<String> = BuildExecutorServiceEndpoint::ALL
+        .iter()
+        .copied()
+        .map(|endpoint| build_executor_service(pool_id, executor_id, endpoint))
+        .collect();
+    allow.extend(service_discovery_subscriptions(&[
+        ProductServiceName::BuildExecutor,
+    ]));
     allow.push(inbox_scope);
     SubjectPermissions::allowing_all(allow)
 }
@@ -425,29 +424,52 @@ fn machine_service_server_subscriptions(
     machine_id: &MachineId,
     inbox_scope: String,
 ) -> SubjectPermissions {
-    SubjectPermissions::allowing([
-        machine_service_query_scope(machine_id),
-        machine_service_command_scope(machine_id),
+    let mut allow: Vec<String> = crate::subjects::MachineServiceEndpoint::ALL
+        .iter()
+        .copied()
+        .map(|endpoint| machine_service(machine_id, endpoint))
+        .collect();
+    allow.extend([
         INTENT_CHANGED.to_owned(),
         INGRESS_ENDPOINT_CHANGED.to_owned(),
         PENDING_MACHINE_JOINS_CHANGED.to_owned(),
         machine_facts_scope(),
         gateway_status_scope(),
-        NATS_SERVICE_DISCOVERY_SCOPE.to_owned(),
-        inbox_scope,
-    ])
+    ]);
+    allow.extend(service_discovery_subscriptions(&[
+        ProductServiceName::Machine,
+        ProductServiceName::GatewayMachine,
+        ProductServiceName::Dns,
+    ]));
+    allow.push(inbox_scope);
+    SubjectPermissions::allowing_all(allow)
 }
 
 #[must_use]
 fn controller_publications() -> SubjectPermissions {
-    let mut allow = request_reply_publications(&NatsPrincipal::Controller);
-    allow.push(OPERATOR_INIT_FIRST_MACHINE_ACTIVATE.to_owned());
-    allow.extend(machine_service_client_publications().into_allowed_subjects());
+    let mut allow: Vec<String> = crate::subjects::MachineServiceEndpoint::ALL
+        .iter()
+        .copied()
+        .map(machine_service_scope)
+        .collect();
+    allow.extend(
+        BuildExecutorServiceEndpoint::ALL
+            .iter()
+            .copied()
+            .map(build_executor_service_scope),
+    );
+    allow.push(
+        OperationApiEndpoint::InitFirstMachineActivate
+            .subject()
+            .to_owned(),
+    );
+    allow.extend(core_query_endpoints().map(ToOwned::to_owned));
+    // Controller-hosted services answer Controller-originated requests across
+    // authorization reloads, which can invalidate request-scoped response grants
+    // while a handler is running. The principal-scoped inbox keeps those replies
+    // available without granting publication to any other caller's inbox.
+    allow.push(inbox_subscribe_scope(&NatsPrincipal::Controller));
     allow.extend([
-        BUILD_EXECUTOR_RPC_READINESS_SCOPE.to_owned(),
-        BUILD_EXECUTOR_RPC_BUILD_START_SCOPE.to_owned(),
-        BUILD_EXECUTOR_RPC_BUILD_CANCEL_SCOPE.to_owned(),
-        CORE_RPC_QUERY_SCOPE.to_owned(),
         OPERATION_PROGRESS_SCOPE.to_owned(),
         INTENT_CHANGED.to_owned(),
         INGRESS_ENDPOINT_CHANGED.to_owned(),
@@ -455,11 +477,6 @@ fn controller_publications() -> SubjectPermissions {
         RUNTIME_SNAPSHOT_STREAM.to_owned(),
     ]);
     SubjectPermissions::allowing_all(allow)
-}
-
-#[must_use]
-fn request_reply_publications(principal: &NatsPrincipal) -> Vec<String> {
-    vec![inbox_subscribe_scope(principal)]
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -497,11 +514,6 @@ impl SubjectPermissions {
     #[must_use]
     pub fn denied_subjects(&self) -> &[String] {
         &self.deny
-    }
-
-    #[must_use]
-    fn into_allowed_subjects(self) -> Vec<String> {
-        self.allow
     }
 }
 
