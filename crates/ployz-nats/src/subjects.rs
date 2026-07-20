@@ -1,5 +1,6 @@
 //! Concrete NATS subject construction.
 
+pub use crate::services::BUILD_EXECUTOR_SERVICE_NAME;
 use ployz_core::ids::{BuildExecutorId, BuildPoolId, MachineId, NamespaceId, OperationId};
 use ployz_core::operation::{
     DeployRunningStage, NamespaceRemoveRunningStage, NetworkRepairRunningStage,
@@ -7,21 +8,6 @@ use ployz_core::operation::{
 };
 
 pub const OPERATION_PROGRESS_SCOPE: &str = "plz.v1.progress.>";
-pub const OPERATOR_RPC_QUERY_SCOPE: &str = "plz.v1.rpc.operator.query.>";
-pub const OPERATOR_RPC_COMMAND_SCOPE: &str = "plz.v1.rpc.operator.command.>";
-pub const JOIN_RPC_COMMAND_SCOPE: &str = "plz.v1.rpc.join.command.>";
-pub const CORE_RPC_QUERY_SCOPE: &str = "plz.v1.rpc.core.query.>";
-pub const MACHINE_RPC_QUERY_SCOPE: &str = "plz.v1.rpc.machine.query.>";
-pub const MACHINE_RPC_COMMAND_SCOPE: &str = "plz.v1.rpc.machine.command.>";
-pub const OPERATOR_MACHINE_IMAGE_QUERY_SCOPE: &str = "plz.v1.rpc.machine.query.*.image.>";
-pub const OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE: &str = "plz.v1.rpc.machine.command.*.image.>";
-pub const BUILD_EXECUTOR_SERVICE_NAME: &str = "plz-build-executor";
-pub const BUILD_EXECUTOR_RPC_READINESS_SCOPE: &str =
-    "plz.v1.rpc.build_executor.query.*.*.readiness.get";
-pub const BUILD_EXECUTOR_RPC_BUILD_START_SCOPE: &str =
-    "plz.v1.rpc.build_executor.command.*.*.build.start";
-pub const BUILD_EXECUTOR_RPC_BUILD_CANCEL_SCOPE: &str =
-    "plz.v1.rpc.build_executor.command.*.*.build.cancel";
 pub const BUILD_EXECUTOR_SIGNAL_LOG_SCOPE: &str =
     "plz.v1.signal.build_executor.*.*.build.operation.*.log";
 pub const INTENT_GET: &str = "plz.v1.rpc.core.query.intent.get";
@@ -31,6 +17,32 @@ pub const INGRESS_ENDPOINT_CHANGED: &str = "plz.v1.signal.ingress.endpoint.chang
 pub const PENDING_MACHINE_JOINS_CHANGED: &str = "plz.v1.signal.machine.join.pending";
 pub const RUNTIME_SNAPSHOT_STREAM: &str = "plz.v1.projection.runtime.snapshot";
 pub const RUNTIME_SNAPSHOT_SEED: &str = "plz.v1.rpc.operator.query.runtime.snapshot.seed";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoreQueryEndpoint {
+    IntentGet,
+    IngressEndpointGet,
+}
+
+impl CoreQueryEndpoint {
+    pub const ALL: &[Self] = &[Self::IntentGet, Self::IngressEndpointGet];
+
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::IntentGet => "intent.get",
+            Self::IngressEndpointGet => "ingress.endpoint.get",
+        }
+    }
+
+    #[must_use]
+    pub const fn subject(self) -> &'static str {
+        match self {
+            Self::IntentGet => INTENT_GET,
+            Self::IngressEndpointGet => INGRESS_ENDPOINT_GET,
+        }
+    }
+}
 
 pub const OPERATOR_DEPLOY_SUBMIT: &str = "plz.v1.rpc.operator.command.deploy.submit";
 pub const OPERATOR_SYSTEM_DEPLOY: &str = "plz.v1.rpc.operator.command.system.deploy";
@@ -117,6 +129,12 @@ pub enum OperationApiEndpoint {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationApiCaller {
+    Operator,
+    Join,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationApiEndpointExecution {
     AcceptsOperation,
     MutatesOperation,
@@ -124,6 +142,89 @@ pub enum OperationApiEndpointExecution {
 }
 
 impl OperationApiEndpoint {
+    pub const ALL: &[Self] = &[
+        Self::BuildSubmit,
+        Self::BuildCancel,
+        Self::DeployReserve,
+        Self::DeployPreview,
+        Self::DeploySubmit,
+        Self::SystemDeploy,
+        Self::InitFirstMachineActivate,
+        Self::MachineAdd,
+        Self::MachineBuildCachePrune,
+        Self::MachineUpdate,
+        Self::MachineStoragePrepare,
+        Self::MachineDrain,
+        Self::MachineResume,
+        Self::MachineList,
+        Self::MachineInspect,
+        Self::NetworkStatus,
+        Self::NetworkResolve,
+        Self::NetworkRepair,
+        Self::MachineJoinRedeem,
+        Self::MachineJoinReport,
+        Self::ServiceList,
+        Self::ServiceInspect,
+        Self::ServiceRestart,
+        Self::NamespaceRemove,
+        Self::VolumeList,
+        Self::VolumeCreate,
+        Self::VolumeRemove,
+        Self::RuntimeSnapshot,
+        Self::LogsTail,
+        Self::OpsList,
+        Self::OpsStatus,
+        Self::OpsWatch,
+        Self::CoreReplace,
+        Self::CoreReplaceReport,
+        Self::CredentialAdd,
+        Self::CredentialList,
+        Self::CredentialRemove,
+        Self::IngressConfigure,
+    ];
+
+    #[must_use]
+    pub const fn caller(self) -> OperationApiCaller {
+        match self {
+            Self::MachineJoinRedeem | Self::MachineJoinReport => OperationApiCaller::Join,
+            Self::BuildSubmit
+            | Self::BuildCancel
+            | Self::DeployReserve
+            | Self::DeployPreview
+            | Self::DeploySubmit
+            | Self::SystemDeploy
+            | Self::InitFirstMachineActivate
+            | Self::MachineAdd
+            | Self::MachineBuildCachePrune
+            | Self::MachineUpdate
+            | Self::MachineStoragePrepare
+            | Self::MachineDrain
+            | Self::MachineResume
+            | Self::MachineList
+            | Self::MachineInspect
+            | Self::NetworkStatus
+            | Self::NetworkResolve
+            | Self::NetworkRepair
+            | Self::ServiceList
+            | Self::ServiceInspect
+            | Self::ServiceRestart
+            | Self::NamespaceRemove
+            | Self::VolumeList
+            | Self::VolumeCreate
+            | Self::VolumeRemove
+            | Self::RuntimeSnapshot
+            | Self::LogsTail
+            | Self::OpsList
+            | Self::OpsStatus
+            | Self::OpsWatch
+            | Self::CoreReplace
+            | Self::CoreReplaceReport
+            | Self::CredentialAdd
+            | Self::CredentialList
+            | Self::CredentialRemove
+            | Self::IngressConfigure => OperationApiCaller::Operator,
+        }
+    }
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
@@ -371,16 +472,6 @@ pub fn machine_service(machine_id: &MachineId, endpoint: MachineServiceEndpoint)
 }
 
 #[must_use]
-pub fn machine_service_query_scope(machine_id: &MachineId) -> String {
-    format!("plz.v1.rpc.machine.query.{}.>", machine_id.as_str())
-}
-
-#[must_use]
-pub fn machine_service_command_scope(machine_id: &MachineId) -> String {
-    format!("plz.v1.rpc.machine.command.{}.>", machine_id.as_str())
-}
-
-#[must_use]
 pub fn machine_build_log(machine_id: &MachineId, operation_id: &OperationId) -> String {
     format!(
         "plz.v1.signal.machine.{}.build.operation.{}.log",
@@ -410,6 +501,8 @@ pub enum BuildExecutorServiceEndpoint {
 }
 
 impl BuildExecutorServiceEndpoint {
+    pub const ALL: &[Self] = &[Self::ReadinessGet, Self::BuildStart, Self::BuildCancel];
+
     #[must_use]
     const fn execution_class(self) -> &'static str {
         match self {
@@ -426,6 +519,15 @@ impl BuildExecutorServiceEndpoint {
             Self::BuildCancel => "build.cancel",
         }
     }
+}
+
+#[must_use]
+pub fn build_executor_service_scope(endpoint: BuildExecutorServiceEndpoint) -> String {
+    format!(
+        "plz.v1.rpc.build_executor.{}.*.*.{}",
+        endpoint.execution_class(),
+        endpoint.subject_suffix()
+    )
 }
 
 #[must_use]
@@ -467,21 +569,6 @@ pub fn build_executor_log_publish_scope(
         pool_id.as_str(),
         executor_id.as_str()
     )
-}
-
-#[must_use]
-pub fn build_executor_service_discovery_subscriptions() -> [String; 9] {
-    [
-        "$SRV.PING".to_owned(),
-        format!("$SRV.PING.{BUILD_EXECUTOR_SERVICE_NAME}"),
-        format!("$SRV.PING.{BUILD_EXECUTOR_SERVICE_NAME}.*"),
-        "$SRV.INFO".to_owned(),
-        format!("$SRV.INFO.{BUILD_EXECUTOR_SERVICE_NAME}"),
-        format!("$SRV.INFO.{BUILD_EXECUTOR_SERVICE_NAME}.*"),
-        "$SRV.STATS".to_owned(),
-        format!("$SRV.STATS.{BUILD_EXECUTOR_SERVICE_NAME}"),
-        format!("$SRV.STATS.{BUILD_EXECUTOR_SERVICE_NAME}.*"),
-    ]
 }
 
 #[must_use]
@@ -608,6 +695,52 @@ pub enum MachineServiceEndpointExecution {
 }
 
 impl MachineServiceEndpoint {
+    pub const ALL: &[Self] = &[
+        Self::Inspect,
+        Self::FactsGet,
+        Self::FactsRefresh,
+        Self::DnsResolve,
+        Self::DnsStatus,
+        Self::ContainerInspect,
+        Self::ContainerResolveImage,
+        Self::ContainerRun,
+        Self::ContainerRunHook,
+        Self::ContainerRestart,
+        Self::ContainerStop,
+        Self::ContainerRemove,
+        Self::VolumeEnsure,
+        Self::VolumeRemove,
+        Self::VolumeTestimony,
+        Self::DataplanePublicKey,
+        Self::DataplaneStatus,
+        Self::SubstrateUpdate,
+        Self::SubstrateReport,
+        Self::StoragePrepare,
+        Self::StoragePrepareReport,
+        Self::LogsTail,
+        Self::ImageBlobCheck,
+        Self::ImageBlobPush,
+        Self::ImageManifestPush,
+        Self::ImageEnsure,
+        Self::ImageRemove,
+        Self::BuildStart,
+        Self::BuildCancel,
+        Self::BuildCachePrune,
+        Self::CertificateArtifactStatus,
+        Self::CertificateArtifactPush,
+        Self::CertificateArtifactRemove,
+        Self::CertificateChallengeApply,
+        Self::CertificateChallengeRemove,
+        Self::CertificateChallengeStatus,
+        Self::GatewayStatusGet,
+    ];
+
+    pub const IMAGE_TRANSFER: &[Self] = &[
+        Self::ImageBlobCheck,
+        Self::ImageBlobPush,
+        Self::ImageManifestPush,
+    ];
+
     #[must_use]
     pub const fn as_subject(self) -> &'static str {
         match self {
@@ -693,6 +826,15 @@ impl MachineServiceEndpoint {
             | Self::CertificateChallengeRemove => MachineServiceEndpointExecution::Command,
         }
     }
+}
+
+#[must_use]
+pub fn machine_service_scope(endpoint: MachineServiceEndpoint) -> String {
+    let class = match endpoint.execution() {
+        MachineServiceEndpointExecution::Query => "query",
+        MachineServiceEndpointExecution::Command => "command",
+    };
+    format!("plz.v1.rpc.machine.{class}.*.{}", endpoint.as_subject())
 }
 
 #[cfg(test)]

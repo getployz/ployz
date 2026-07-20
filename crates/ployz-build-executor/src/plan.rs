@@ -80,7 +80,7 @@ pub(super) fn toolchain_for_platform(
 pub(super) fn railpack_toolchain_for_platform(
     platform: &OciPlatform,
 ) -> Result<BuildAdapterToolchain, BuildPlanError> {
-    let pins = railpack_pins().map_err(invalid_pin)?;
+    let pins = railpack_pins().map_err(|error| invalid_pin(error.to_string()))?;
     let railpack = pins
         .for_architecture(platform.architecture())
         .ok_or_else(|| BuildPlanError::UnsupportedPlatform {
