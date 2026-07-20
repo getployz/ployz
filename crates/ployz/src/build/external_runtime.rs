@@ -56,15 +56,7 @@ pub(crate) async fn run(
     command: BuildExecutorCommand,
     config: PloyzctlRuntimeConfig,
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
-    run_with_ready(command, config, None).await
-}
-
-pub(crate) async fn run_with_ready(
-    command: BuildExecutorCommand,
-    config: PloyzctlRuntimeConfig,
-    ready: Option<oneshot::Sender<()>>,
-) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
-    run_controlled(command, config, WorkspaceStartup::Recover, ready, None).await
+    run_controlled(command, config, WorkspaceStartup::Recover, None, None).await
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

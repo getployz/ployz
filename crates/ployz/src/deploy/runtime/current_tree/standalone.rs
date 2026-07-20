@@ -1,4 +1,280 @@
-use super::*;
+use std::path::Path;
+
+use ployz_build_executor::DockerBuildExecutor;
+use ployz_core::build::{
+    BuildAdapter, BuildCacheScope, BuildContextPath, BuildPlatforms, BuildTarget,
+};
+use ployz_core::deploy::{
+    DeployPlanningTarget, ImageReference, ImageSource, commit_deploy_route_bindings,
+    validate_deploy_route_bindings,
+};
+use ployz_core::ids::{
+    BuildExecutorId, BuildPoolId, NamespaceId, OperationId, RouteBindingId, ServiceId,
+};
+use ployz_core::ingress::AutomaticHostnameConfiguration;
+use ployz_core::intent::{RouteBindingState, ServingTargetEntry};
+use ployz_core::nats_config::{
+    BuildExecutorCredentialExpiresAt, CredentialGrant, CredentialName, CredentialRole,
+    MintedNatsUser,
+};
+use ployz_core::operation::{BuildOperationState, OperationOutcome, OperationStatus};
+use ployz_sdk_types::{
+    BuildSubmitRequest, CredentialAddRequest, CredentialRemoveRequest, OpsStatusRequest,
+    RuntimeSnapshotRequest, ServiceListRequest,
+};
+
+use crate::build::command::{BuildExecutorCommand, BuildExecutorRunMode};
+use crate::build::embedded_executor;
+use crate::deploy::command::CurrentTreeDeployCommand;
+use crate::dispatcher::PloyzctlRuntimeConfig;
+use crate::execution_error::PloyzctlExecutionError;
+use crate::execution_support::{
+    PloyzctlExecutionOutput, api_error, current_unix_seconds, generate_client_build_id,
+    generate_client_deploy_id, operation_api_client, watch_operation_until_terminal,
+};
+use crate::operation::runtime::replay_request;
+
+use super::{OBSERVE_TIMEOUT, current_tree_error, write_private};
+
+pub(super) async fn execute(
+    command: CurrentTreeDeployCommand,
+    config: &PloyzctlRuntimeConfig,
+) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
+    if command.organization.is_some() {
+        return Err(current_tree_error(
+            "--organization applies only when PLOYZ_CLOUD_URL is configured",
+        ));
+    }
+    let config = crate::execution_support::with_cluster_context_from_disk(config.clone())?;
+    let environment = command.environment.as_deref().unwrap_or("default");
+    let namespace_id = NamespaceId::try_new(environment).map_err(current_tree_error)?;
+    let history =
+        super::super::history::stream(&config, namespace_id.clone()).map_err(current_tree_error)?;
+    let entries = history.load().map_err(current_tree_error)?;
+    let template = entries
+        .last()
+        .ok_or_else(|| current_tree_error("selected service has no successful deploy history"))?;
+    let service_id = select_standalone_service(&template.request, command.service.as_deref())?;
+    let api = operation_api_client(&config).await?;
+    let live_services = api
+        .service_list(&ServiceListRequest {})
+        .await
+        .map_err(api_error)?;
+    let runtime = api
+        .runtime_snapshot(&RuntimeSnapshotRequest {})
+        .await
+        .map_err(api_error)?;
+    validate_standalone_template(
+        &template.request,
+        live_services
+            .services
+            .iter()
+            .map(|service| service.active.clone()),
+        &runtime.snapshot.automatic_hostname_configuration,
+        &runtime.snapshot.routes,
+    )?;
+    let cwd = std::env::current_dir().map_err(current_tree_error)?;
+    let workspace_root = cwd.join(".ployz").join("build-executor");
+    let executor = DockerBuildExecutor::new(workspace_root.clone());
+    executor
+        .recover_orphans()
+        .await
+        .map_err(current_tree_error)?;
+    let source = executor
+        .prepare_local_snapshot(cwd.clone(), None)
+        .await
+        .map_err(current_tree_error)?;
+    let platform = ployz_build_executor::native_oci_platform().map_err(current_tree_error)?;
+    let adapter = standalone_adapter(&cwd, &service_id)?;
+    let pool_id =
+        BuildPoolId::try_new(format!("local_{}", nuid::next())).map_err(current_tree_error)?;
+    let executor_id =
+        BuildExecutorId::try_new(format!("local_{}", nuid::next())).map_err(current_tree_error)?;
+    let minted = MintedNatsUser::generate().map_err(current_tree_error)?;
+    let grant_id = generated_operation_id("credential_add")?;
+    let expires_at =
+        BuildExecutorCredentialExpiresAt::try_new(current_unix_seconds().saturating_add(45 * 60))
+            .map_err(current_tree_error)?;
+    let grant = api
+        .credential_add(&CredentialAddRequest {
+            operation_id: grant_id,
+            grant: CredentialGrant {
+                public_key: minted.public.clone(),
+                name: CredentialName::try_new("Current working tree executor")
+                    .map_err(current_tree_error)?,
+                role: CredentialRole::BuildExecutor {
+                    pool_id: pool_id.clone(),
+                    executor_id: executor_id.clone(),
+                    expires_at,
+                },
+            },
+        })
+        .await
+        .map_err(api_error)?;
+    require_operation_success(&api, grant.operation_id, &config).await?;
+
+    let public_key = minted.public.clone();
+    let material = tempfile::tempdir().map_err(current_tree_error)?;
+    let seed_path = material.path().join("executor.nk");
+    write_private(&seed_path, minted.seed.secret(), 0o600)?;
+    let executor_config = PloyzctlRuntimeConfig {
+        nats_url: config.nats_url.clone(),
+        nats_ca_file: config.nats_ca_file.clone(),
+        nats_seed_file: Some(seed_path),
+        nats_connect_timeout: config.nats_connect_timeout,
+        ..PloyzctlRuntimeConfig::default()
+    };
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let executor = crate::build::external_runtime::run_controlled(
+        BuildExecutorCommand {
+            pool_id: pool_id.clone(),
+            executor_id,
+            workspace_root: Some(workspace_root),
+            mode: BuildExecutorRunMode::Once {
+                wait_timeout: OBSERVE_TIMEOUT,
+            },
+        },
+        executor_config,
+        crate::build::external_runtime::WorkspaceStartup::Prepared,
+        Some(ready_tx),
+        Some(shutdown_rx),
+    );
+    let build_result = embedded_executor::run_once(
+        executor,
+        ready_rx,
+        shutdown_tx,
+        || run_standalone_build(&api, &config, source, adapter, platform, pool_id),
+        tokio::signal::ctrl_c(),
+    )
+    .await;
+    let revoke_result = revoke_executor(&api, &config, public_key).await;
+    let receipt = match (build_result, revoke_result) {
+        (Ok(receipt), Ok(())) => receipt,
+        (Err(error), Ok(())) => return Err(error),
+        (_, Err(error)) => return Err(error),
+    };
+
+    let mut target = template.request.clone();
+    let service = target
+        .services
+        .iter_mut()
+        .find(|service| service.service_id == service_id)
+        .ok_or_else(|| current_tree_error("deploy history lost selected service"))?;
+    service.image = ImageReference::try_new(format!("ployz.local/{}:current", service_id.as_str()))
+        .map_err(current_tree_error)?
+        .with_digest(receipt.index_digest())
+        .map_err(current_tree_error)?;
+    service.image_source = ImageSource::PushedToSeed(receipt);
+    let deploy = crate::deploy::command::DeployCommand {
+        idempotency_key: generate_client_deploy_id(&service_id)
+            .map_err(current_tree_error)?
+            .idempotency_key,
+        target: crate::deploy::command::DeployCommandTarget::Ordinary(target),
+        warnings: Vec::new(),
+        detach: false,
+        from_registry: false,
+    };
+    super::super::follow::execute_deploy(deploy, &config).await
+}
+
+fn standalone_adapter(
+    cwd: &Path,
+    service_id: &ServiceId,
+) -> Result<BuildAdapter, PloyzctlExecutionError> {
+    if cwd.join("Dockerfile").is_file() {
+        return Ok(BuildAdapter::Dockerfile {
+            dockerfile: BuildContextPath::try_new("Dockerfile").map_err(current_tree_error)?,
+            target: None,
+        });
+    }
+    Ok(BuildAdapter::Railpack {
+        cache_scope: BuildCacheScope::try_new(format!(
+            "local-current-tree-{}",
+            service_id.as_str()
+        ))
+        .map_err(current_tree_error)?,
+    })
+}
+
+async fn run_standalone_build(
+    api: &crate::api_client::OperationApiClient,
+    config: &PloyzctlRuntimeConfig,
+    source: ployz_core::build::BuildSource,
+    adapter: BuildAdapter,
+    platform: ployz_core::image::OciPlatform,
+    pool_id: BuildPoolId,
+) -> Result<ployz_core::deploy::PushedImageReceipt, PloyzctlExecutionError> {
+    let generated = generate_client_build_id().map_err(current_tree_error)?;
+    let accepted = api
+        .build_submit(&BuildSubmitRequest {
+            operation_id: generated.operation_id.clone(),
+            target: BuildTarget::External { pool_id },
+            source,
+            adapter,
+            platforms: BuildPlatforms::try_new([platform]).map_err(current_tree_error)?,
+        })
+        .await
+        .map_err(api_error)?;
+    require_operation_success(api, accepted.operation_id.clone(), config).await?;
+    let snapshot = api
+        .ops_status(&OpsStatusRequest {
+            operation_id: accepted.operation_id,
+        })
+        .await
+        .map_err(api_error)?;
+    let OperationStatus::Build { status } = snapshot.status else {
+        return Err(current_tree_error(
+            "build status returned the wrong operation kind",
+        ));
+    };
+    let BuildOperationState::Completed { receipt } = status.state() else {
+        return Err(current_tree_error(
+            "build finished without a signed receipt",
+        ));
+    };
+    Ok(receipt.clone())
+}
+
+async fn revoke_executor(
+    api: &crate::api_client::OperationApiClient,
+    config: &PloyzctlRuntimeConfig,
+    public_key: ployz_core::nats_config::NatsUserPublicKey,
+) -> Result<(), PloyzctlExecutionError> {
+    let accepted = api
+        .credential_remove(&CredentialRemoveRequest {
+            operation_id: generated_operation_id("credential_remove")?,
+            public_key,
+        })
+        .await
+        .map_err(api_error)?;
+    require_operation_success(api, accepted.operation_id, config).await
+}
+
+async fn require_operation_success(
+    api: &crate::api_client::OperationApiClient,
+    operation_id: OperationId,
+    config: &PloyzctlRuntimeConfig,
+) -> Result<(), PloyzctlExecutionError> {
+    let (_, outcome) = watch_operation_until_terminal(
+        api,
+        replay_request(operation_id.clone()),
+        config.ops_watch_timeout(),
+        config.ops_watch_poll_interval(),
+    )
+    .await?;
+    match outcome {
+        OperationOutcome::Succeeded => Ok(()),
+        OperationOutcome::Failed | OperationOutcome::Cancelled => Err(current_tree_error(format!(
+            "operation {} did not succeed",
+            operation_id.as_str()
+        ))),
+    }
+}
+
+fn generated_operation_id(prefix: &str) -> Result<OperationId, PloyzctlExecutionError> {
+    OperationId::try_new(format!("op_{prefix}_{}", nuid::next())).map_err(current_tree_error)
+}
 
 pub(super) fn select_standalone_service(
     request: &ployz_core::deploy::DeployRequest,

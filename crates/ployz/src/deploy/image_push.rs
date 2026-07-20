@@ -599,7 +599,6 @@ pub async fn prepare_deploy_images(
     from_registry: bool,
 ) -> Result<Vec<ImagePushReceipt>, ImagePushError> {
     if from_registry {
-        preserve_receipts_or_mark_registry(services);
         return Ok(Vec::new());
     }
     let docker = connect_operator_docker()?;
@@ -629,19 +628,6 @@ pub async fn prepare_deploy_images(
         receipts.push(receipt);
     }
     Ok(receipts)
-}
-
-fn preserve_receipts_or_mark_registry(services: &mut [DeployServiceSpec]) {
-    for service in services {
-        service.image_source = source_for_registry_mode(&service.image_source);
-    }
-}
-
-fn source_for_registry_mode(source: &ImageSource) -> ImageSource {
-    match source {
-        ImageSource::PushedToSeed(receipt) => ImageSource::PushedToSeed(receipt.clone()),
-        ImageSource::Registry => ImageSource::Registry,
-    }
 }
 
 async fn select_seed(api: &OperationApiClient) -> Result<MachineId, ImagePushError> {
@@ -1103,9 +1089,9 @@ mod tests {
     use super::{
         LayoutBlob, PreparedBlobKind, ValidatedBlobReader, classify_blob_metadata,
         deterministic_gzip, layout_push_receipt, prepare_docker_save, probe_image_seed,
-        receipt_availability, source_for_registry_mode,
+        receipt_availability,
     };
-    use ployz_core::deploy::{ImageSource, PlatformImage, PushedImageReceipt};
+    use ployz_core::deploy::{PlatformImage, PushedImageReceipt};
     use ployz_core::ids::MachineId;
     use ployz_core::image::{
         IMAGE_BLOB_CHUNK_MAX_BYTES, ImageBlobCheckOk, ImageBlobCheckRequest,
@@ -1394,29 +1380,6 @@ mod tests {
         assert_eq!(pushed.uploaded.bytes, 11);
         assert_eq!(pushed.reused.digests, vec![reused]);
         assert_eq!(pushed.reused.bytes, 13);
-    }
-
-    #[test]
-    fn registry_mode_preserves_a_digest_pinned_push_receipt() {
-        let platform = OciPlatform::try_new("linux", "amd64").expect("platform");
-        let seed = MachineId::try_new("machine_seed").expect("machine id");
-        let pushed = layout_push_receipt(
-            &platform,
-            &seed,
-            &digest('a'),
-            &digest('b'),
-            [ImageContentLeaseExpiresAt::try_new(4_200).expect("lease")],
-            Vec::new(),
-            Vec::new(),
-        )
-        .expect("receipt");
-        let source = ImageSource::PushedToSeed(pushed.receipt().clone());
-
-        assert_eq!(source_for_registry_mode(&source), source);
-        assert_eq!(
-            source_for_registry_mode(&ImageSource::Registry),
-            ImageSource::Registry
-        );
     }
 
     #[test]

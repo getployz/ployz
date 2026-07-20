@@ -190,6 +190,8 @@ struct ResultEnvelope<T> {
 #[serde(deny_unknown_fields)]
 struct ErrorEnvelope {
     error: String,
+    #[serde(default)]
+    code: Option<String>,
 }
 
 #[derive(Clone)]
@@ -356,9 +358,15 @@ impl CloudCurrentTreeClient {
             return Err(CloudCurrentTreeError::ResponseTooLarge);
         }
         if !status.is_success() {
-            let message = serde_json::from_slice::<ErrorEnvelope>(&bytes)
+            let envelope = serde_json::from_slice::<ErrorEnvelope>(&bytes).ok();
+            if envelope.as_ref().and_then(|error| error.code.as_deref())
+                == Some("no_reachable_image_seed")
+            {
+                return Err(CloudCurrentTreeError::NoReachableImageSeed);
+            }
+            let message = envelope
                 .map(|error| error.error)
-                .unwrap_or_else(|_| "Cloud current-tree request failed".to_owned());
+                .unwrap_or_else(|| "Cloud current-tree request failed".to_owned());
             return Err(match status.as_u16() {
                 401 | 403 => CloudCurrentTreeError::ApprovalExpired,
                 409 => CloudCurrentTreeError::Conflict(message),
@@ -413,6 +421,8 @@ pub(crate) enum CloudCurrentTreeError {
     ContextNotFound,
     #[error("Cloud build context is ambiguous ({matches} matches); pass explicit selectors")]
     ContextAmbiguous { matches: usize },
+    #[error("no reachable image seed is available for the current-tree build")]
+    NoReachableImageSeed,
     #[error("Cloud current-tree request conflicted: {0}")]
     Conflict(String),
     #[error("Cloud current-tree request was rejected: {0}")]
@@ -429,7 +439,11 @@ pub(crate) enum CloudCurrentTreeError {
 mod tests {
     use super::*;
 
-    async fn receive_one_request(listener: tokio::net::TcpListener, body: &'static str) -> String {
+    async fn receive_one_request(
+        listener: tokio::net::TcpListener,
+        status: &'static str,
+        body: &'static str,
+    ) -> String {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let (mut stream, _) = listener.accept().await.expect("accept");
@@ -463,7 +477,7 @@ mod tests {
             request.extend_from_slice(chunk.get(..read).expect("read fits buffer"));
         }
         let response = format!(
-            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
             body.len()
         );
         stream
@@ -535,6 +549,7 @@ mod tests {
         let address = listener.local_addr().expect("address");
         let request = tokio::spawn(receive_one_request(
             listener,
+            "200 OK",
             "{\"result\":{\"status\":\"cancelled\"}}",
         ));
         CloudCurrentTreeClient::new(&format!("http://{address}"))
@@ -557,6 +572,7 @@ mod tests {
         let address = listener.local_addr().expect("address");
         let request = tokio::spawn(receive_one_request(
             listener,
+            "200 OK",
             "{\"result\":{\"assignment_id\":\"assignment-1\",\"build_record_id\":\"build-1\",\"deployment_id\":\"deployment-1\"}}",
         ));
         let digest =
@@ -580,7 +596,7 @@ mod tests {
             .await
             .expect("listen");
         let address = listener.local_addr().expect("address");
-        let request = tokio::spawn(receive_one_request(listener, "{\"result\":null}"));
+        let request = tokio::spawn(receive_one_request(listener, "200 OK", "{\"result\":null}"));
         let frozen = FrozenBuild {
             assignment_id: "assignment-1".to_owned(),
             build_record_id: "build-1".to_owned(),
@@ -608,6 +624,38 @@ mod tests {
         assert!(!request.contains("source"));
         assert!(!request.contains("build_record_id"));
         assert!(!request.contains("deployment_id"));
+    }
+
+    #[tokio::test]
+    async fn stable_no_seed_code_decodes_to_typed_error() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listen");
+        let address = listener.local_addr().expect("address");
+        let request = tokio::spawn(receive_one_request(
+            listener,
+            "409 Conflict",
+            "{\"error\":\"no seed can receive the image\",\"code\":\"no_reachable_image_seed\"}",
+        ));
+        let frozen = FrozenBuild {
+            assignment_id: "assignment-1".to_owned(),
+            build_record_id: "build-1".to_owned(),
+            deployment_id: "deployment-1".to_owned(),
+        };
+        let digest =
+            LocalSnapshotDigest::try_new(format!("sha256:{}", "a".repeat(64))).expect("digest");
+        let public_key = ployz_core::nats_config::MintedNatsUser::generate()
+            .expect("NKey")
+            .public;
+        let error = CloudCurrentTreeClient::new(&format!("http://{address}"))
+            .expect("client")
+            .activate("pct_secret", &frozen, &digest, &public_key)
+            .await
+            .expect_err("typed rejection");
+        assert_eq!(error, CloudCurrentTreeError::NoReachableImageSeed);
+        let request = request.await.expect("server");
+        assert!(request.contains("\"action\":\"activate\""));
+        assert!(!request.contains("\"action\":\"dispatch\""));
     }
 
     #[test]
