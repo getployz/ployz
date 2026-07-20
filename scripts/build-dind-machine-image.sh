@@ -22,7 +22,9 @@ source "${ROOT_DIR}/config/railpack-pins.env"
 
 MACHINE_IMAGE="${PLOYZ_DIND_MACHINE_IMAGE:-ployz-dind-machine:local}"
 BUILD_IMAGE="${PLOYZ_DIND_BUILD_IMAGE:-rust:1.91-bookworm}"
+MACHINE_BASE_IMAGE="${PLOYZ_DIND_MACHINE_BASE_IMAGE:-debian:bookworm}"
 BUILDER_IMAGE="${PLOYZ_DIND_BUILDER_IMAGE:-ployz-dind-builder:rust-1.91-bookworm-v2}"
+DOCKER_HUB_MIRROR="${PLOYZ_DIND_DOCKER_HUB_MIRROR:-mirror.gcr.io}"
 NATS_SERVER_VERSION="${PLOYZ_DIND_NATS_SERVER_VERSION:-2.14.2}"
 WORKLOAD_IMAGE="${PLOYZ_DIND_WORKLOAD_IMAGE:-nginx:1.27-alpine}"
 REGISTRY_IMAGE="${PLOYZ_DIND_REGISTRY_IMAGE:-registry:2.8.3}"
@@ -54,31 +56,114 @@ command -v docker >/dev/null 2>&1 || {
   exit 1
 }
 
+validate_registry_mirror() {
+  local value="$1" host port label
+  case "${value}" in
+    ""|*[^a-z0-9.:-]*|*::*|.*|*.|*:)
+      echo "PLOYZ_DIND_DOCKER_HUB_MIRROR must be a lowercase DNS host with an optional port" >&2
+      return 1
+      ;;
+  esac
+  host="${value%%:*}"
+  port="${value#*:}"
+  if [ "${port}" != "${value}" ]; then
+    case "${port}" in
+      ""|*[!0-9]*)
+        echo "PLOYZ_DIND_DOCKER_HUB_MIRROR has an invalid port" >&2
+        return 1
+        ;;
+    esac
+    if [ "${port}" -lt 1 ] || [ "${port}" -gt 65535 ]; then
+      echo "PLOYZ_DIND_DOCKER_HUB_MIRROR port must be between 1 and 65535" >&2
+      return 1
+    fi
+  fi
+  IFS=. read -r -a labels <<< "${host}"
+  for label in "${labels[@]}"; do
+    if [ -z "${label}" ] || [ "${#label}" -gt 63 ] \
+      || [[ ! "${label}" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]; then
+      echo "PLOYZ_DIND_DOCKER_HUB_MIRROR contains an invalid DNS label" >&2
+      return 1
+    fi
+  done
+}
+
+docker_hub_source() {
+  local image="$1" first remainder
+  first="${image%%/*}"
+  if [ "${first}" = "${image}" ]; then
+    printf '%s/library/%s\n' "${DOCKER_HUB_MIRROR}" "${image}"
+  elif [ "${first}" = "docker.io" ] \
+    || [ "${first}" = "index.docker.io" ] \
+    || [ "${first}" = "registry-1.docker.io" ]; then
+    remainder="${image#*/}"
+    if [[ "${remainder}" == */* ]]; then
+      printf '%s/%s\n' "${DOCKER_HUB_MIRROR}" "${remainder}"
+    else
+      printf '%s/library/%s\n' "${DOCKER_HUB_MIRROR}" "${remainder}"
+    fi
+  elif [[ "${first}" == *.* ]] || [[ "${first}" == *:* ]] || [ "${first}" = "localhost" ]; then
+    printf '%s\n' "${image}"
+  else
+    printf '%s/%s\n' "${DOCKER_HUB_MIRROR}" "${image}"
+  fi
+}
+
+validate_registry_mirror "${DOCKER_HUB_MIRROR}"
+BUILD_IMAGE_SOURCE="$(docker_hub_source "${BUILD_IMAGE}")"
+MACHINE_BASE_IMAGE_SOURCE="$(docker_hub_source "${MACHINE_BASE_IMAGE}")"
+WORKLOAD_IMAGE_SOURCE="$(docker_hub_source "${WORKLOAD_IMAGE}")"
+REGISTRY_IMAGE_SOURCE="$(docker_hub_source "${REGISTRY_IMAGE}")"
+UMAMI_IMAGE_SOURCE="$(docker_hub_source "${UMAMI_IMAGE}")"
+POSTGRES_IMAGE_SOURCE="$(docker_hub_source "${POSTGRES_IMAGE}")"
+
 image_digest() {
   docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$1"
 }
 
-machine_fingerprint() {
-  local platform digest_dir workload_pid registry_pid umami_pid postgres_pid
+machine_fingerprint() (
+  local platform digest_dir failed name pid file
+  local workload_pid registry_pid umami_pid postgres_pid
   platform="$(docker_platform "${PLOYZ_DIND_PLATFORM:-}")"
   digest_dir="$(mktemp -d "${TMPDIR:-/tmp}/ployz-dind-fingerprint.XXXXXX")"
-  image_digest "${WORKLOAD_IMAGE}" > "${digest_dir}/workload" & workload_pid=$!
-  image_digest "${REGISTRY_IMAGE}" > "${digest_dir}/registry" & registry_pid=$!
-  image_digest "${UMAMI_IMAGE}" > "${digest_dir}/umami" & umami_pid=$!
-  image_digest "${POSTGRES_IMAGE}" > "${digest_dir}/postgres" & postgres_pid=$!
-  wait "${workload_pid}"
-  wait "${registry_pid}"
-  wait "${umami_pid}"
-  wait "${postgres_pid}"
+  trap 'rm -rf "${digest_dir}"' EXIT
+  image_digest "${WORKLOAD_IMAGE_SOURCE}" > "${digest_dir}/workload" & workload_pid=$!
+  image_digest "${REGISTRY_IMAGE_SOURCE}" > "${digest_dir}/registry" & registry_pid=$!
+  image_digest "${UMAMI_IMAGE_SOURCE}" > "${digest_dir}/umami" & umami_pid=$!
+  image_digest "${POSTGRES_IMAGE_SOURCE}" > "${digest_dir}/postgres" & postgres_pid=$!
+  failed=0
+  for name in workload registry umami postgres; do
+    case "${name}" in
+      workload) pid="${workload_pid}" ;;
+      registry) pid="${registry_pid}" ;;
+      umami) pid="${umami_pid}" ;;
+      postgres) pid="${postgres_pid}" ;;
+    esac
+    if ! wait "${pid}"; then
+      failed=1
+    fi
+  done
+  if [ "${failed}" -ne 0 ]; then
+    echo "one or more DinD manifest inspections failed" >&2
+    return 1
+  fi
+  for file in workload registry umami postgres; do
+    if [ ! -s "${digest_dir}/${file}" ]; then
+      echo "DinD manifest inspection returned an empty digest for ${file}" >&2
+      return 1
+    fi
+  done
   {
     printf '%s\0' \
       "platform=${platform}" \
       "nats=${NATS_SERVER_VERSION}" \
-      "workload=${WORKLOAD_IMAGE}@$(<"${digest_dir}/workload")" \
-      "registry=${REGISTRY_IMAGE}@$(<"${digest_dir}/registry")" \
-      "umami=${UMAMI_IMAGE}@$(<"${digest_dir}/umami")" \
-      "postgres=${POSTGRES_IMAGE}@$(<"${digest_dir}/postgres")"
-    local file
+      "docker_hub_mirror=${DOCKER_HUB_MIRROR}" \
+      "build_image=${BUILD_IMAGE_SOURCE}" \
+      "machine_base_image=${MACHINE_BASE_IMAGE_SOURCE}" \
+      "workload=${WORKLOAD_IMAGE}|${WORKLOAD_IMAGE_SOURCE}@$(<"${digest_dir}/workload")" \
+      "registry=${REGISTRY_IMAGE}|${REGISTRY_IMAGE_SOURCE}@$(<"${digest_dir}/registry")" \
+      "umami=${UMAMI_IMAGE}|${UMAMI_IMAGE_SOURCE}@$(<"${digest_dir}/umami")" \
+      "postgres=${POSTGRES_IMAGE}|${POSTGRES_IMAGE_SOURCE}@$(<"${digest_dir}/postgres")"
     for file in Dockerfile daemon.json ployz-dind-images.service; do
       printf '%s\0' "${file}"
       cat "${CONTEXT_DIR}/${file}"
@@ -87,8 +172,7 @@ machine_fingerprint() {
     printf '%s\0' build-script
     cat "${BASH_SOURCE[0]}"
   } | sha256_stdin
-  rm -rf "${digest_dir}"
-}
+)
 
 if [ "${mode}" = "fingerprint" ]; then
   machine_fingerprint
@@ -107,7 +191,7 @@ ensure_builder_image() {
     --platform "${want_platform}" \
     --tag "${BUILDER_IMAGE}" \
     - <<DOCKERFILE
-FROM ${BUILD_IMAGE}
+FROM ${BUILD_IMAGE_SOURCE}
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \\
   && apt-get install -y --no-install-recommends clang cmake lld llvm pkg-config protobuf-compiler \\
@@ -223,19 +307,19 @@ mv /target/release/railpack.source.tmp /target/release/railpack.source'
 }
 
 bake_workload_tarball() {
-  local platform name image save_image tar stamp image_id stamp_value temp_tar temp_stamp
+  local platform name image source_image save_image tar stamp image_id stamp_value temp_tar temp_stamp
   platform="$(docker_platform "${PLOYZ_DIND_PLATFORM:-}")"
   mkdir -p "${WORKLOAD_STAMP_DIR}"
-  while read -r name image; do
-    docker pull --platform "${platform}" "${image}"
+  while read -r name image source_image; do
+    docker pull --platform "${platform}" "${source_image}"
     save_image="${image%@*}"
-    if [ "${save_image}" != "${image}" ]; then
-      docker tag "${image}" "${save_image}"
+    if [ "${source_image}" != "${save_image}" ]; then
+      docker tag "${source_image}" "${save_image}"
     fi
     tar="${CONTEXT_DIR}/${name}.tar"
     stamp="${WORKLOAD_STAMP_DIR}/${name}.stamp"
     image_id="$(docker image inspect --format '{{.Id}}' "${save_image}")"
-    stamp_value="${platform} ${image} ${image_id}"
+    stamp_value="${platform} ${image} ${source_image} ${image_id}"
     if [ -f "${tar}" ] && [ "$(cat "${stamp}" 2>/dev/null || true)" = "${stamp_value}" ]; then
       continue
     fi
@@ -250,10 +334,10 @@ bake_workload_tarball() {
     printf '%s\n' "${stamp_value}" > "${temp_stamp}"
     mv "${temp_stamp}" "${stamp}"
   done <<EOF
-nginx ${WORKLOAD_IMAGE}
-registry ${REGISTRY_IMAGE}
-umami ${UMAMI_IMAGE}
-postgres ${POSTGRES_IMAGE}
+nginx ${WORKLOAD_IMAGE} ${WORKLOAD_IMAGE_SOURCE}
+registry ${REGISTRY_IMAGE} ${REGISTRY_IMAGE_SOURCE}
+umami ${UMAMI_IMAGE} ${UMAMI_IMAGE_SOURCE}
+postgres ${POSTGRES_IMAGE} ${POSTGRES_IMAGE_SOURCE}
 EOF
 }
 
@@ -264,6 +348,8 @@ build_machine_image() {
     --platform "$(docker_platform "${PLOYZ_DIND_PLATFORM:-}")" \
     --label dev.ployz.dind.managed=true \
     --label "dev.ployz.dind.fingerprint=${fingerprint}" \
+    --build-arg "BASE_IMAGE=${MACHINE_BASE_IMAGE_SOURCE}" \
+    --build-arg "DOCKER_HUB_MIRROR=${DOCKER_HUB_MIRROR}" \
     --build-arg "NATS_SERVER_VERSION=${NATS_SERVER_VERSION}" \
     --tag "${MACHINE_IMAGE}" \
     "${CONTEXT_DIR}"

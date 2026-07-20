@@ -12,6 +12,7 @@ pub use logs::{BuildLogDestination, BuildLogProgress};
 pub use oci::ValidatedOciLayout;
 pub use runner::{
     BuildExecutionError, BuildExecutionRequest, BuildExecutionResult, DockerBuildExecutor,
+    DockerHubRegistryMirror, DockerHubRegistryMirrorError,
 };
 
 pub fn native_oci_platform() -> Result<ployz_core::image::OciPlatform, String> {

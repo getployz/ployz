@@ -51,6 +51,95 @@ fn dind_builder_modes_label_machine_image_and_cache_workload_tars() {
 
 #[cfg(unix)]
 #[test]
+fn dind_fingerprint_is_atomic_across_every_manifest_failure() {
+    let fixture = FakeDocker::new("ployz-dind-fingerprint-failure");
+    seed_workload_tars(&fixture);
+
+    for image in [
+        "mirror.gcr.io/library/nginx:1.27-alpine",
+        "mirror.gcr.io/library/registry:2.8.3",
+        "ghcr.io/umami-software/umami:postgresql-latest@sha256:8edfe4beaef13f9d1300619fa264ef250a3688df9cc54d24ca830ca31cb475ec",
+        "mirror.gcr.io/library/postgres:15-alpine@sha256:3d0f7584ed7d04e27fa050d6683a74746608faf21f202be78460d679cc56461f",
+    ] {
+        fixture.clear_log();
+        let fingerprint = fixture.run_builder_with_inspect_failure(&["fingerprint"], image);
+        assert!(!fingerprint.status.success());
+        assert!(fingerprint.stdout.is_empty(), "partial fingerprint escaped");
+        assert_stderr_contains(&fingerprint, "429 Too Many Requests");
+
+        fixture.clear_log();
+        let full = fixture.run_builder_with_inspect_failure(&[], image);
+        assert!(!full.status.success());
+        assert!(
+            full.stdout.is_empty(),
+            "failed full build printed a fingerprint"
+        );
+        let log = fixture.log();
+        assert!(!log.contains("dev.ployz.dind.fingerprint="));
+        assert!(!log.lines().any(|line| line.starts_with("build --platform")));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn dind_fingerprint_has_one_stable_success_vector() {
+    let fixture = FakeDocker::new("ployz-dind-fingerprint-vector");
+
+    let first = fixture.fingerprint();
+    let second = fixture.fingerprint();
+
+    assert_eq!(first, second);
+    assert_eq!(
+        first,
+        "240b6ac89a75a7c97d3ac01388804d783ae4f06e35815ead19676305808b2f8f"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn dind_builder_routes_docker_hub_inputs_through_one_configured_mirror() {
+    let fixture = FakeDocker::new("ployz-dind-registry-mirror");
+    let output = fixture
+        .command("scripts/build-dind-machine-image.sh")
+        .env("PLOYZ_DIND_SKIP_BUILD", "1")
+        .env("PLOYZ_DIND_DOCKER_HUB_MIRROR", "cache.example:5000")
+        .env(
+            "PLOYZ_DIND_MACHINE_BASE_IMAGE",
+            "docker.io/library/debian:bookworm",
+        )
+        .env(
+            "PLOYZ_DIND_WORKLOAD_IMAGE",
+            "registry-1.docker.io/library/nginx:1.27-alpine",
+        )
+        .output()
+        .expect("DinD builder can use a configured mirror");
+
+    assert_success(&output);
+    let log = fixture.log();
+    for source in [
+        "cache.example:5000/library/nginx:1.27-alpine",
+        "cache.example:5000/library/registry:2.8.3",
+        "cache.example:5000/library/postgres:15-alpine@sha256:3d0f7584ed7d04e27fa050d6683a74746608faf21f202be78460d679cc56461f",
+    ] {
+        assert!(log.contains(source), "missing mirrored source {source}");
+    }
+    assert!(
+        log.contains(
+            "ghcr.io/umami-software/umami:postgresql-latest@sha256:8edfe4beaef13f9d1300619fa264ef250a3688df9cc54d24ca830ca31cb475ec"
+        ),
+        "explicit non-Docker-Hub registries stay unchanged"
+    );
+    assert!(log.contains("--build-arg BASE_IMAGE=cache.example:5000/library/debian:bookworm"));
+    assert!(log.contains("--build-arg DOCKER_HUB_MIRROR=cache.example:5000"));
+    assert!(
+        log.lines().any(|line| line.contains("save -o")
+            && line.ends_with(" registry-1.docker.io/library/nginx:1.27-alpine")),
+        "machine tarball preserves an explicitly qualified logical Docker Hub reference"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn dind_builder_exports_railpack_through_the_root_builder() {
     use std::os::unix::fs::PermissionsExt;
 
@@ -709,7 +798,13 @@ printf '%s\n' "$*" >> "${PLOYZ_FAKE_LOG}"
 if [ "${0##*/}" = cargo ]; then exit 0; fi
 case "${1:-}" in
   info) printf 'amd64\n' ;;
-  buildx) printf 'sha256:%s\n' "${6}" ;;
+  buildx)
+    if [ "${6}" = "${PLOYZ_FAKE_INSPECT_FAILURE:-}" ]; then
+      printf '429 Too Many Requests for %s\n' "${6}" >&2
+      exit 1
+    fi
+    printf 'sha256:%s\n' "${6}"
+    ;;
   image) case "${4:-}" in
     *dev.ployz.dind.fingerprint*) printf '%s\n' "${PLOYZ_FAKE_MACHINE_IDENTITY:-}" ;;
     *Architecture*) printf 'linux/amd64\n' ;;
@@ -769,6 +864,15 @@ esac
             .env("PLOYZ_DIND_SKIP_BUILD", "1")
             .output()
             .expect("DinD builder can run")
+    }
+
+    fn run_builder_with_inspect_failure(&self, args: &[&str], image: &str) -> Output {
+        self.command("scripts/build-dind-machine-image.sh")
+            .args(args)
+            .env("PLOYZ_DIND_SKIP_BUILD", "1")
+            .env("PLOYZ_FAKE_INSPECT_FAILURE", image)
+            .output()
+            .expect("DinD builder can model manifest failure")
     }
 
     fn run_dind(&self, filter: Option<&str>, identity: &str, skip: bool) -> Output {
@@ -846,16 +950,26 @@ chmod 0755 "${destination}/railpack"
 fn seed_workload_tars(fake: &FakeDocker) {
     let stamps = fake.0.join("target/workload-image-stamps");
     fs::create_dir_all(&stamps).expect("stamp dir can be created");
-    for (name, image) in [
-        ("nginx", "nginx:1.27-alpine"),
-        ("registry", "registry:2.8.3"),
+    for (name, image, source) in [
+        (
+            "nginx",
+            "nginx:1.27-alpine",
+            "mirror.gcr.io/library/nginx:1.27-alpine",
+        ),
+        (
+            "registry",
+            "registry:2.8.3",
+            "mirror.gcr.io/library/registry:2.8.3",
+        ),
         (
             "umami",
+            "ghcr.io/umami-software/umami:postgresql-latest@sha256:8edfe4beaef13f9d1300619fa264ef250a3688df9cc54d24ca830ca31cb475ec",
             "ghcr.io/umami-software/umami:postgresql-latest@sha256:8edfe4beaef13f9d1300619fa264ef250a3688df9cc54d24ca830ca31cb475ec",
         ),
         (
             "postgres",
             "postgres:15-alpine@sha256:3d0f7584ed7d04e27fa050d6683a74746608faf21f202be78460d679cc56461f",
+            "mirror.gcr.io/library/postgres:15-alpine@sha256:3d0f7584ed7d04e27fa050d6683a74746608faf21f202be78460d679cc56461f",
         ),
     ] {
         let saved_image = image
@@ -865,7 +979,7 @@ fn seed_workload_tars(fake: &FakeDocker) {
             .expect("workload tar can be written");
         fs::write(
             stamps.join(format!("{name}.stamp")),
-            format!("linux/amd64 {image} sha256:{saved_image}\n"),
+            format!("linux/amd64 {image} {source} sha256:{saved_image}\n"),
         )
         .expect("workload stamp can be written");
     }

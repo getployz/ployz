@@ -31,7 +31,7 @@ use crate::roles::machine::service::{
     start_machine_role_service_with_endpoint_cache_and_image,
 };
 use futures_util::StreamExt;
-use ployz_build_executor::{BuildExecutionError, DockerBuildExecutor};
+use ployz_build_executor::{BuildExecutionError, DockerBuildExecutor, DockerHubRegistryMirror};
 use ployz_core::build::BUILD_CACHE_PRUNE_MAX_EXECUTION_TIMEOUT;
 use ployz_core::ids::MachineId;
 use ployz_core::image::IMAGE_MESH_REGISTRY_PORT;
@@ -209,6 +209,7 @@ pub async fn start_machine_process(
         MACHINE_OBSERVATION_INTERVAL,
         config.ployz_native_mesh.wg_ifname.clone(),
         image_state,
+        config.build_registry_mirror.clone(),
     )
     .await?;
     process.image_registry = image_registry;
@@ -228,6 +229,7 @@ pub(crate) async fn start_machine_process_with_ports<R, P, L>(
     observation_interval: Duration,
     wg_ifname: String,
     image_state: Option<AvailableImageService>,
+    build_registry_mirror: Option<DockerHubRegistryMirror>,
 ) -> Result<RunningMachineProcess, MachineProcessError>
 where
     R: Clone
@@ -249,6 +251,10 @@ where
     let build_state = match image_state.clone() {
         Some(images) => {
             let executor = DockerBuildExecutor::new(PathBuf::from(BUILD_WORKSPACE_ROOT));
+            let executor = match build_registry_mirror {
+                Some(mirror) => executor.with_docker_hub_registry_mirror(mirror),
+                None => executor,
+            };
             let runtime = MachineBuildRuntime::new(
                 machine_id.clone(),
                 client.clone(),
@@ -652,6 +658,7 @@ mod tests {
             NatsClientUrl::try_new("tls://127.0.0.1:4222").expect("seed url"),
             Duration::from_secs(60),
             "ployz-wg0".to_owned(),
+            None,
             None,
         )
         .await
