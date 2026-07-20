@@ -18,7 +18,9 @@ pub use executor::{
     ExternalBuildPlacementError, place_external_build_platforms,
     reconcile_build_executor_readiness_at,
 };
-pub use railpack::{RailpackPins, RailpackPlatformPins, railpack_pins};
+pub use railpack::{
+    RailpackDigestKind, RailpackPinError, RailpackPins, RailpackPlatformPins, railpack_pins,
+};
 
 use std::collections::BTreeSet;
 use std::fmt;
