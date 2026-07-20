@@ -307,7 +307,7 @@ impl OperationStatus {
     pub fn build_accepted(
         id: OperationId,
         target: crate::build::BuildTarget,
-        source: crate::build::GitSourceEvidence,
+        source: crate::build::BuildSourceEvidence,
         adapter: crate::build::BuildAdapter,
         platforms: crate::build::BuildPlatforms,
         event_sequence: EventSequence,

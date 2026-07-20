@@ -319,11 +319,14 @@ const fn operation_kind_name(kind: OperationKind) -> &'static str {
 
 fn operation_subject(status: &OperationStatus) -> String {
     match status {
-        OperationStatus::Build { status } => format!(
-            "source {} commit {}",
-            status.source().url.as_str(),
-            status.source().commit.as_str()
-        ),
+        OperationStatus::Build { status } => match status.source() {
+            ployz_core::build::BuildSourceEvidence::Git { git } => {
+                format!("source {} commit {}", git.url.as_str(), git.commit.as_str())
+            }
+            ployz_core::build::BuildSourceEvidence::LocalSnapshot { digest, .. } => {
+                format!("local snapshot {digest}")
+            }
+        },
         OperationStatus::Deploy { service_id, .. } => {
             format!("service {}", service_id.as_str())
         }
@@ -934,7 +937,7 @@ impl DeployEventRenderContext {
             OperationEvent::BuildSubmitted { .. }
             | OperationEvent::BuildPlacementStarted { .. }
             | OperationEvent::BuildPlatformPlaced { .. }
-            | OperationEvent::BuildCommitVerified { .. }
+            | OperationEvent::BuildSourceVerified { .. }
             | OperationEvent::BuildPlatformToolchainVerified { .. }
             | OperationEvent::BuildRunning { .. }
             | OperationEvent::BuildPlatformLog { .. }
@@ -1126,7 +1129,7 @@ fn render_replayed_event_text(
         OperationEvent::BuildSubmitted { .. }
         | OperationEvent::BuildPlacementStarted { .. }
         | OperationEvent::BuildPlatformPlaced { .. }
-        | OperationEvent::BuildCommitVerified { .. }
+        | OperationEvent::BuildSourceVerified { .. }
         | OperationEvent::BuildPlatformToolchainVerified { .. }
         | OperationEvent::BuildRunning { .. }
         | OperationEvent::BuildPlatformLogTruncated { .. }
@@ -1225,7 +1228,7 @@ fn operation_event_label(event: &OperationEvent) -> &'static str {
         OperationEvent::BuildSubmitted { .. } => "build.submitted",
         OperationEvent::BuildPlacementStarted { .. } => "build.placement_started",
         OperationEvent::BuildPlatformPlaced { .. } => "build.platform_placed",
-        OperationEvent::BuildCommitVerified { .. } => "build.commit_verified",
+        OperationEvent::BuildSourceVerified { .. } => "build.source_verified",
         OperationEvent::BuildPlatformToolchainVerified { .. } => {
             "build.platform_toolchain_verified"
         }

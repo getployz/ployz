@@ -1,4 +1,5 @@
 pub(crate) mod compose;
+pub(crate) mod current_tree;
 pub(crate) mod follow;
 pub(crate) mod history;
 pub(crate) mod rollback;
@@ -23,6 +24,8 @@ pub enum DeployExecutionError {
     },
     #[error("could not generate client operation ids: {message}")]
     GenerateClientOperationIds { message: String },
+    #[error("current working tree deploy failed: {message}")]
+    CurrentTree { message: String },
     #[error("{message}")]
     History { message: String },
     #[error(

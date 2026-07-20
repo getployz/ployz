@@ -19,6 +19,7 @@ use ployz_core::build::{
 };
 use ployz_core::deploy::PlatformImage;
 use ployz_core::operation::{BuildPlatformFailure, FailureMessage};
+use ployz_nats::connect::connect_authenticated;
 use ployz_nats::service_runtime::RunningNatsService;
 use ployz_nats::subjects::build_executor_log;
 use tokio::sync::{Mutex, Notify, oneshot, watch};
@@ -30,12 +31,14 @@ use super::external_service::{CompletionMode, start_executor_service};
 use super::runtime::BuildExecutionError;
 use super::watch_lifecycle::{
     WatchConnect, connect_once, connect_watch, credential_lifetime, executor_connect_config,
-    resolve_workspace_root,
+    executor_principal, resolve_workspace_root,
 };
 use crate::deploy::image_push::{probe_image_seed, push_validated_oci_layout};
 use crate::dispatcher::PloyzctlRuntimeConfig;
 use crate::execution_error::PloyzctlExecutionError;
-use crate::execution_support::PloyzctlExecutionOutput;
+use crate::execution_support::{
+    PloyzctlExecutionOutput, nats_connect_config, with_cluster_context_from_disk,
+};
 
 const SHUTDOWN_TIMEOUT: Duration = BUILD_TASK_DRAIN_TIMEOUT
     .saturating_add(BUILD_FORCE_CLEANUP_TIMEOUT)
@@ -45,6 +48,7 @@ struct ConnectedExecutor {
     client: async_nats::Client,
     runtime: ExternalBuildRuntime,
     service: RunningNatsService,
+    admission_opened: bool,
 }
 
 impl ConnectedExecutor {
@@ -55,22 +59,27 @@ impl ConnectedExecutor {
         completion: CompletionMode,
         state: Arc<Mutex<RuntimeState>>,
         admission_generation: AdmissionGeneration,
+        workspace_startup: WorkspaceStartup,
     ) -> Result<Self, BuildExecutionError> {
         let readiness = probe_readiness().await?;
         let runtime =
             ExternalBuildRuntime::new(identity.clone(), client.clone(), workspace_root, state);
-        if readiness.capability != BuildExecutorCapability::RuntimeUnavailable {
+        if workspace_startup == WorkspaceStartup::Recover
+            && readiness.capability != BuildExecutorCapability::RuntimeUnavailable
+        {
             runtime.recover_orphans().await?;
         }
         let service =
             start_executor_service(client.clone(), identity, runtime.clone(), completion).await?;
-        if runtime.open_admission(admission_generation).await {
+        let admission_opened = runtime.open_admission(admission_generation).await;
+        if admission_opened {
             eprintln!("Build Executor {}", health_description(&readiness));
         }
         Ok(Self {
             client,
             runtime,
             service,
+            admission_opened,
         })
     }
 
@@ -137,6 +146,100 @@ pub(crate) async fn run(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WorkspaceStartup {
+    Recover,
+    Prepared,
+}
+
+pub(crate) async fn run_controlled(
+    command: BuildExecutorCommand,
+    config: PloyzctlRuntimeConfig,
+    workspace_startup: WorkspaceStartup,
+    ready: Option<oneshot::Sender<()>>,
+    mut shutdown: Option<oneshot::Receiver<()>>,
+) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
+    let config = with_cluster_context_from_disk(config)?;
+    let identity = BuildExecutorIdentity {
+        pool_id: command.pool_id.clone(),
+        executor_id: command.executor_id.clone(),
+    };
+    let mut connect = nats_connect_config(&config)?;
+    connect.principal = executor_principal(&identity);
+    let client = connect_authenticated(&connect, config.nats_connect_timeout())
+        .await
+        .map_err(crate::execution_support::ExecutionSupportError::NatsConnect)?;
+    let workspace_root = resolve_workspace_root(command.workspace_root.as_deref(), &identity)?;
+    let (terminal_tx, terminal_rx) = oneshot::channel();
+    let state = Arc::new(Mutex::new(RuntimeState::new_connected()));
+    let admission_generation = state
+        .lock()
+        .await
+        .admission_generation()
+        .expect("controlled mode initializes a connected generation");
+    let session = ConnectedExecutor::start(
+        identity,
+        client,
+        workspace_root,
+        CompletionMode::once(terminal_tx),
+        state,
+        admission_generation,
+        workspace_startup,
+    )
+    .await?;
+    if !session.admission_opened {
+        session.shutdown().await?;
+        return Err(BuildExecutionError::ExecutorConnection {
+            message: "Build Executor disconnected before admission opened".to_owned(),
+        }
+        .into());
+    }
+    if let Some(ready) = ready {
+        let _ = ready.send(());
+    }
+
+    let wait =
+        async {
+            match command.mode {
+                BuildExecutorRunMode::Once { wait_timeout } => {
+                    wait_for_controlled_terminal(terminal_rx, wait_timeout).await
+                }
+                BuildExecutorRunMode::Watch => tokio::signal::ctrl_c().await.map_err(|error| {
+                    BuildExecutionError::ExecutorSignal {
+                        message: error.to_string(),
+                    }
+                }),
+            }
+        };
+    tokio::pin!(wait);
+    let wait_result = if let Some(shutdown) = &mut shutdown {
+        tokio::select! {
+            result = &mut wait => result,
+            _ = shutdown => Ok(()),
+        }
+    } else {
+        wait.await
+    };
+    let shutdown_result = session.shutdown().await;
+    finish_executor_session(wait_result, shutdown_result)?;
+    Ok(PloyzctlExecutionOutput::stdout(
+        "Build Executor stopped.\n".to_owned(),
+    ))
+}
+
+async fn wait_for_controlled_terminal(
+    terminal: oneshot::Receiver<()>,
+    wait_timeout: Duration,
+) -> Result<(), BuildExecutionError> {
+    match timeout(wait_timeout, terminal).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) => Err(BuildExecutionError::ExecutorRuntime {
+            message: "Build Executor terminal channel closed".to_owned(),
+        }),
+        Err(_) => Err(BuildExecutionError::ExecutorIdleTimedOut { wait_timeout }),
+    }
+}
+
 async fn run_connected_once(
     identity: BuildExecutorIdentity,
     client: async_nats::Client,
@@ -158,6 +261,7 @@ async fn run_connected_once(
         CompletionMode::once(terminal_tx),
         state,
         admission_generation,
+        WorkspaceStartup::Recover,
     )
     .await?;
     let wait_result =
@@ -191,6 +295,7 @@ async fn run_watch(
         CompletionMode::Watch,
         session.runtime_state(),
         session.admission_generation(),
+        WorkspaceStartup::Recover,
     )
     .await?;
     let wait_result = session
@@ -703,7 +808,7 @@ impl ExternalBuildRuntime {
         Ok(ExternalBuildOutput {
             acceptance: BuildExecutorAcceptance::from_start_request(request),
             image: image.clone(),
-            verified_commit: result.verified_commit,
+            verified_source: result.verified_source,
             toolchain: result.toolchain,
             log_summary,
         })
@@ -789,7 +894,7 @@ fn shutdown_cleanup_result(
 struct ExternalBuildOutput {
     acceptance: BuildExecutorAcceptance,
     image: PlatformImage,
-    verified_commit: ployz_core::build::VerifiedGitCommit,
+    verified_source: ployz_core::build::VerifiedBuildSource,
     toolchain: ployz_core::operation::BuildToolchainEvidence,
     log_summary: BuildLogSummary,
 }
@@ -800,7 +905,7 @@ impl ExternalBuildOutput {
             acceptance: self.acceptance,
             cleanup: BuildExecutorSuccessCleanupEvidence::confirmed(),
             image: self.image,
-            verified_commit: self.verified_commit,
+            verified_source: self.verified_source,
             toolchain: self.toolchain,
             log_summary: self.log_summary,
         }

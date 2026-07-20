@@ -5,10 +5,11 @@ use super::plan::{BuildExecutionPlan, PrepareCommand};
 use super::runner::{
     BuildExecutionError, adapter_failure, check_cancelled, infrastructure, platform_failure,
 };
-use ployz_core::build::GitSource;
+use ployz_core::build::BuildSource;
 use ployz_core::ids::OperationId;
 use ployz_core::image::{OciDigest, OciPlatform};
 use ployz_core::operation::BuildPlatformFailure;
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
@@ -69,7 +70,7 @@ fn validate_docker_server_platform(
 
 pub(super) async fn run_prepare(
     prepare: &PrepareCommand,
-    source: &GitSource,
+    source: &BuildSource,
     cancelled: &mut watch::Receiver<bool>,
 ) -> Result<(), BuildExecutionError> {
     run_prepare_with_timeout(prepare, source, cancelled, RAILPACK_PREPARE_TIMEOUT).await
@@ -77,7 +78,7 @@ pub(super) async fn run_prepare(
 
 async fn run_prepare_with_timeout(
     prepare: &PrepareCommand,
-    source: &GitSource,
+    source: &BuildSource,
     cancelled: &mut watch::Receiver<bool>,
     timeout: Duration,
 ) -> Result<(), BuildExecutionError> {
@@ -194,15 +195,13 @@ async fn run_prepare_with_timeout(
             "Railpack prepare output exceeded its bound",
         ));
     }
-    if combined.contains(source.credential().secret().secret()) {
+    if source.contains_sensitive_value(&combined) {
         return Err(adapter_failure(
             "Railpack prepare attempted to disclose the Git credential",
         ));
     }
     if !status.success() {
-        return Err(adapter_failure(
-            source.credential().redact_secret_in(combined),
-        ));
+        return Err(adapter_failure(source.redact_sensitive_in(combined)));
     }
     Ok(())
 }
@@ -438,7 +437,7 @@ pub(super) struct BuildLogContext<'a> {
 pub(super) async fn run_buildctl(
     builder: &str,
     plan: &BuildExecutionPlan,
-    source: &GitSource,
+    source: &BuildSource,
     cancelled: &mut watch::Receiver<bool>,
     logs: BuildLogContext<'_>,
 ) -> Result<PublishedLogs, BuildExecutionError> {
@@ -468,7 +467,7 @@ pub(super) async fn run_buildctl(
         logs.destination.clone(),
         logs.operation_id.clone(),
         logs.platform.clone(),
-        source.credential().secret().secret(),
+        source.sensitive_value().unwrap_or(""),
         logs.progress,
     );
     while let Some(bytes) = tokio::select! {
@@ -549,6 +548,30 @@ pub(super) async fn remove_builder(container: &str) -> Result<(), BuildExecution
     }
 }
 
+pub(super) async fn restore_oci_layout_ownership(
+    builder: &str,
+    workspace: &Path,
+) -> Result<(), BuildExecutionError> {
+    let metadata = tokio::fs::metadata(workspace)
+        .await
+        .map_err(|error| infrastructure("read build workspace ownership", error.to_string()))?;
+    let arguments = ownership_restore_arguments(builder, metadata.uid(), metadata.gid());
+    let arguments = arguments.each_ref().map(String::as_str);
+    let restored = run_bounded("docker", arguments, DOCKER_COMMAND_TIMEOUT).await?;
+    require_success("restore OCI output ownership", &restored)
+}
+
+fn ownership_restore_arguments(builder: &str, uid: u32, gid: u32) -> [String; 6] {
+    [
+        "exec".to_owned(),
+        builder.to_owned(),
+        "chown".to_owned(),
+        "-R".to_owned(),
+        format!("{uid}:{gid}"),
+        "/workspace/oci".to_owned(),
+    ]
+}
+
 pub(super) fn builder_name(operation_id: &OperationId, platform: &OciPlatform) -> String {
     format!(
         "ployz-build-{}-{}-{}",
@@ -561,10 +584,10 @@ pub(super) fn builder_name(operation_id: &OperationId, platform: &OciPlatform) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::build::GitSource;
+    use ployz_core::build::{BuildSource, GitSource};
     use std::path::PathBuf;
 
-    fn source() -> GitSource {
+    fn source() -> BuildSource {
         GitSource::try_new(
             "https://example.test/repo.git",
             "0123456789abcdef0123456789abcdef01234567",
@@ -573,6 +596,7 @@ mod tests {
             None::<String>,
         )
         .expect("source")
+        .into()
     }
 
     fn shell_prepare(script: &str) -> PrepareCommand {
@@ -589,6 +613,22 @@ mod tests {
         assert_eq!(
             builder_name(&operation, &platform),
             "ployz-build-build-01-linux-arm64"
+        );
+    }
+
+    #[test]
+    fn ownership_restore_uses_exact_oci_path_without_a_shell() {
+        assert_eq!(
+            ownership_restore_arguments("builder-1", 1001, 1002),
+            [
+                "exec",
+                "builder-1",
+                "chown",
+                "-R",
+                "1001:1002",
+                "/workspace/oci",
+            ]
+            .map(str::to_owned)
         );
     }
 

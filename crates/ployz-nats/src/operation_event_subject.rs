@@ -15,7 +15,7 @@ pub fn operation_event_subject_suffix(event: &OperationEvent) -> String {
         OperationEvent::BuildSubmitted { .. } => "build.submitted".to_owned(),
         OperationEvent::BuildPlacementStarted { .. } => "build.placement.started".to_owned(),
         OperationEvent::BuildPlatformPlaced { .. } => "build.platform.placed".to_owned(),
-        OperationEvent::BuildCommitVerified { .. } => "build.platform.commit_verified".to_owned(),
+        OperationEvent::BuildSourceVerified { .. } => "build.platform.source_verified".to_owned(),
         OperationEvent::BuildPlatformToolchainVerified { .. } => {
             "build.platform.toolchain_verified".to_owned()
         }

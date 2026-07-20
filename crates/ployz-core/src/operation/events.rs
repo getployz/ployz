@@ -4,8 +4,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::build::{
-    BuildAdapter, BuildExecutorEvidence, BuildPlatforms, BuildTarget, GitSourceEvidence,
-    VerifiedGitCommit,
+    BuildAdapter, BuildExecutorEvidence, BuildPlatforms, BuildSourceEvidence, BuildTarget,
+    VerifiedBuildSource,
 };
 use crate::certificate::AcmeHttp01Challenge;
 use crate::deploy::{
@@ -116,7 +116,7 @@ pub enum OperationEvent {
     BuildSubmitted {
         operation_id: OperationId,
         target: BuildTarget,
-        source: GitSourceEvidence,
+        source: BuildSourceEvidence,
         adapter: BuildAdapter,
         platforms: BuildPlatforms,
     },
@@ -130,13 +130,13 @@ pub enum OperationEvent {
         #[cfg_attr(feature = "typescript", ts(flatten))]
         executor: BuildExecutorEvidence,
     },
-    BuildCommitVerified {
+    BuildSourceVerified {
         operation_id: OperationId,
         platform: crate::image::OciPlatform,
         #[serde(flatten)]
         #[cfg_attr(feature = "typescript", ts(flatten))]
         executor: BuildExecutorEvidence,
-        commit: VerifiedGitCommit,
+        source: VerifiedBuildSource,
     },
     BuildPlatformToolchainVerified {
         operation_id: OperationId,
@@ -584,7 +584,7 @@ impl OperationEvent {
             Self::BuildSubmitted { operation_id, .. }
             | Self::BuildPlacementStarted { operation_id }
             | Self::BuildPlatformPlaced { operation_id, .. }
-            | Self::BuildCommitVerified { operation_id, .. }
+            | Self::BuildSourceVerified { operation_id, .. }
             | Self::BuildPlatformToolchainVerified { operation_id, .. }
             | Self::BuildRunning { operation_id }
             | Self::BuildPlatformLog { operation_id, .. }
@@ -703,7 +703,7 @@ impl OperationEvent {
             Self::BuildSubmitted { .. }
             | Self::BuildPlacementStarted { .. }
             | Self::BuildPlatformPlaced { .. }
-            | Self::BuildCommitVerified { .. }
+            | Self::BuildSourceVerified { .. }
             | Self::BuildPlatformToolchainVerified { .. }
             | Self::BuildRunning { .. }
             | Self::BuildPlatformLog { .. }
@@ -884,7 +884,7 @@ impl OperationEvent {
             Self::BuildSubmitted { .. }
             | Self::BuildPlacementStarted { .. }
             | Self::BuildPlatformPlaced { .. }
-            | Self::BuildCommitVerified { .. }
+            | Self::BuildSourceVerified { .. }
             | Self::BuildPlatformToolchainVerified { .. }
             | Self::BuildRunning { .. }
             | Self::BuildPlatformLog { .. }
@@ -1120,17 +1120,17 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 operation_id,
                 event: BuildEvent::Evidence(BuildEvidence::PlatformPlaced { platform, executor }),
             },
-            OperationEvent::BuildCommitVerified {
+            OperationEvent::BuildSourceVerified {
                 operation_id,
                 platform,
                 executor,
-                commit,
+                source,
             } => Self::Build {
                 operation_id,
-                event: BuildEvent::Evidence(BuildEvidence::VerifiedCommit {
+                event: BuildEvent::Evidence(BuildEvidence::VerifiedSource {
                     platform,
                     executor,
-                    commit,
+                    source,
                 }),
             },
             OperationEvent::BuildPlatformToolchainVerified {

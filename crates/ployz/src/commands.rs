@@ -35,6 +35,7 @@ pub enum PloyzctlCommand {
     CoreReplace(core::CoreReplaceCommand),
     ComposeCheck(compose::ComposeCheckCommand),
     Deploy(deploy::DeployCommand),
+    DeployCurrentTree(deploy::CurrentTreeDeployCommand),
     SystemDeploy(deploy::DeployCommand),
     DeployHistory(deploy::DeployHistoryCommand),
     DeployRollback(deploy::DeployRollbackCommand),
@@ -90,6 +91,7 @@ impl PloyzctlCommand {
             Self::CoreReplace(_) => Some("core demote"),
             Self::ComposeCheck(_) => Some("compose check"),
             Self::Deploy(_) => Some("deploy"),
+            Self::DeployCurrentTree(_) => Some("deploy --build here"),
             Self::SystemDeploy(_) => Some("system deploy"),
             Self::DeployHistory(_) => Some("deploy history"),
             Self::DeployRollback(_) => Some("deploy rollback"),
@@ -378,6 +380,9 @@ fn command_from_cli(command: CommandCli) -> Result<PloyzctlCommand, PloyzctlCliE
         CommandCli::Deploy(command) => {
             deploy::deploy_command(command).map(|command| match command {
                 deploy::ParsedDeployCommand::Deploy(command) => PloyzctlCommand::Deploy(command),
+                deploy::ParsedDeployCommand::BuildHere(command) => {
+                    PloyzctlCommand::DeployCurrentTree(command)
+                }
                 deploy::ParsedDeployCommand::History(command) => {
                     PloyzctlCommand::DeployHistory(command)
                 }

@@ -1,7 +1,9 @@
 use std::path::Path;
 
 use super::*;
-use ployz_core::build::{BuildAdapter, BuildContextPath, GitSource, VerifiedGitCommit};
+use ployz_core::build::{
+    BuildAdapter, BuildContextPath, BuildSource, GitSource, VerifiedBuildSource,
+};
 use ployz_core::deploy::{ImageAvailabilityExpiresAt, PlatformImage};
 use ployz_core::ids::{BuildExecutorId, BuildPoolId, MachineId, OperationId};
 use ployz_core::image::{OciDigest, OciPlatform};
@@ -454,7 +456,7 @@ fn successful_output(
             availability_expires_at: ImageAvailabilityExpiresAt::try_new(4_102_444_800)
                 .expect("expiry"),
         },
-        verified_commit: VerifiedGitCommit::from_source(&request.source),
+        verified_source: VerifiedBuildSource::from_source(&request.source),
         toolchain: BuildToolchainEvidence {
             buildkit_image: digest,
             adapter: BuildAdapterToolchainEvidence::Dockerfile,
@@ -479,14 +481,16 @@ fn start_request() -> BuildExecutorStartRequest {
             executor_id: identity.executor_id,
             image_seed: MachineId::try_new("machine_seed").expect("machine"),
         },
-        source: GitSource::try_new(
-            "https://git.example/repo.git",
-            SHA,
-            "builder",
-            "secret",
-            None::<String>,
-        )
-        .expect("source"),
+        source: BuildSource::Git {
+            git: GitSource::try_new(
+                "https://git.example/repo.git",
+                SHA,
+                "builder",
+                "secret",
+                None::<String>,
+            )
+            .expect("source"),
+        },
         adapter: BuildAdapter::Dockerfile {
             dockerfile: BuildContextPath::try_new("Dockerfile").expect("path"),
             target: None,

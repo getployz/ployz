@@ -3324,6 +3324,7 @@ dependencies = [
  "ployz-sdk-types",
  "ployz-telemetry",
  "ployz-test-support",
+ "reqwest 0.13.4",
  "serde",
  "serde_json",
  "serde_yaml",

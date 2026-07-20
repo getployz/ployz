@@ -452,7 +452,7 @@ impl DeployTree {
             OperationEvent::BuildSubmitted { .. }
             | OperationEvent::BuildPlacementStarted { .. }
             | OperationEvent::BuildPlatformPlaced { .. }
-            | OperationEvent::BuildCommitVerified { .. }
+            | OperationEvent::BuildSourceVerified { .. }
             | OperationEvent::BuildPlatformToolchainVerified { .. }
             | OperationEvent::BuildRunning { .. }
             | OperationEvent::BuildPlatformLog { .. }

@@ -60,15 +60,15 @@ impl OperationRepository {
 
 fn build_evidence_event(operation_id: &OperationId, evidence: BuildEvidence) -> OperationEvent {
     match evidence {
-        BuildEvidence::VerifiedCommit {
+        BuildEvidence::VerifiedSource {
             platform,
             executor,
-            commit,
-        } => OperationEvent::BuildCommitVerified {
+            source,
+        } => OperationEvent::BuildSourceVerified {
             operation_id: operation_id.clone(),
             platform,
             executor,
-            commit,
+            source,
         },
         BuildEvidence::PlatformPlaced { platform, executor } => {
             OperationEvent::BuildPlatformPlaced {

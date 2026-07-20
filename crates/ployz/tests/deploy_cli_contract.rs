@@ -2,9 +2,49 @@ use std::process::{Command, Output};
 
 use ployz::commands::{PloyzctlCommand, parse_command};
 use ployz::deploy::command::{
-    DeployCommand, DeployCommandTarget, DeployOutput, DeployRollbackCommand,
-    DeployRollbackSelection, DeploySubmissionRequest,
+    CurrentTreeDeployCommand, DeployCommand, DeployCommandTarget, DeployOutput,
+    DeployRollbackCommand, DeployRollbackSelection, DeploySubmissionRequest,
 };
+
+#[test]
+fn current_tree_build_parses_only_explicit_context_selectors() {
+    let command = parse_command(
+        [
+            "deploy",
+            "--build",
+            "here",
+            "--organization",
+            "acme",
+            "--environment",
+            "production",
+            "--service",
+            "api",
+        ]
+        .map(str::to_owned),
+    )
+    .expect("current tree deploy parses");
+
+    assert_eq!(
+        command,
+        PloyzctlCommand::DeployCurrentTree(CurrentTreeDeployCommand {
+            organization: Some("acme".to_owned()),
+            environment: Some("production".to_owned()),
+            service: Some("api".to_owned()),
+        })
+    );
+}
+
+#[test]
+fn current_tree_build_rejects_unknown_sources_and_ordinary_deploy_flags() {
+    for args in [
+        vec!["deploy", "--build", "there"],
+        vec!["deploy", "--build", "here", "--image", "nginx"],
+        vec!["deploy", "--build", "here", "--detach"],
+        vec!["deploy", "--organization", "acme", "--image", "nginx"],
+    ] {
+        assert!(parse_command(args.into_iter().map(str::to_owned)).is_err());
+    }
+}
 use ployz_core::deploy::{
     DeployOrigin, DeployReservationId, DeployRoute, DeployRouteTarget, DeployServiceSpec,
     ImageReference, ReplicaCount, ServiceMode,

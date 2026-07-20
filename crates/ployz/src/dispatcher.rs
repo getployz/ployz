@@ -211,6 +211,9 @@ pub async fn execute_command(
         PloyzctlCommand::Deploy(command) => {
             crate::deploy::runtime::follow::execute_deploy(command, config).await
         }
+        PloyzctlCommand::DeployCurrentTree(command) => {
+            crate::deploy::runtime::current_tree::execute(command, config).await
+        }
         PloyzctlCommand::SystemDeploy(command) => {
             crate::deploy::runtime::follow::execute_deploy(command, config).await
         }

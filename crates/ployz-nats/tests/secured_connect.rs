@@ -265,7 +265,8 @@ async fn external_build_executor_serves_its_endpoints_logs_and_image_requests() 
             "redacted-test-value",
             None::<String>,
         )
-        .expect("source"),
+        .expect("source")
+        .into(),
         adapter: BuildAdapter::Dockerfile {
             dockerfile: BuildContextPath::try_new("Dockerfile").expect("dockerfile path"),
             target: None,
