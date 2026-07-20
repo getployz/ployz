@@ -225,8 +225,13 @@ Live` section above. These rules are about truth semantics, not storage:
 - Implementation subagents run focused tests for their packet. They do not run
   workspace-wide gates, SDK generation, DinD, GitHub publication, or cleanup;
   the parent task serializes and owns those shared operations.
-- Codex-native tasks and subagents never invoke Codex through the CLI or
-  app-server. Use native tools and native subagents only.
+- Codex-native implementation tasks and implementation subagents do not invoke
+  Codex through the CLI or app-server; use native tools and native subagents for
+  implementation. Fresh-context cold reads, plan gates, and review gates may
+  invoke Codex through the CLI when the dispatcher requests it or when the
+  configured external review model is unavailable. Record the CLI model and
+  reasoning effort, keep the invocation read-only, and never use it to edit the
+  candidate.
 - Before implementation, the supervisor drafts the plan and runs the
   `opus-advisor` plan gate. Opus reviews only; Codex owns the plan and every
   implementation decision. `PLAN_REVISE` returns the plan to Codex. An
