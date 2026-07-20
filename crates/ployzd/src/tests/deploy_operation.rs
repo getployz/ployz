@@ -2653,6 +2653,7 @@ async fn volume_handoff_quiescence_failure_never_restarts_an_old_owner() {
     let mut recorder = RecordingOperations::default();
     let mut runtime =
         RecordingRuntime::with_containers(["ctr_new"]).with_stop_failure_for("ctr_new");
+    let mut namespace_state = RecordingNamespaceState::stored();
     execute_deploy(
         volume_backed_replacement_command(&[("ctr_old", true)]),
         DeployExecutionPorts {
@@ -2660,13 +2661,155 @@ async fn volume_handoff_quiescence_failure_never_restarts_an_old_owner() {
             machine_runtime: &mut runtime,
             health_checker: &mut RecordingHealth::unhealthy("machine_a", "ctr_new"),
             certificate_provisioner: &mut RecordingCertificates::successful(),
-            namespace_state: &mut RecordingNamespaceState::stored(),
+            namespace_state: &mut namespace_state,
         },
     )
     .await
     .expect_err("new consumer cannot be quiesced");
 
     assert!(runtime.restarts.is_empty());
+    assert!(namespace_state.phase_requests.is_empty());
+    assert!(recorder.records.iter().any(|record| matches!(
+        record,
+        RecordedOperation::VolumeHandoffRollbackFinished { outcomes }
+            if matches!(outcomes.as_slice(), [outcome]
+                if outcome.outcome
+                    == DeployVolumeHandoffRollbackOutcome::NotRestartedNewConsumerQuiescenceUnconfirmed)
+    )));
+}
+
+#[tokio::test]
+async fn volume_handoff_ambiguity_quiesces_every_known_consumer_before_restarting_owner() {
+    let mut recorder = RecordingOperations::default();
+    let mut runtime = RecordingRuntime::with_containers(["unused"])
+        .with_run_ambiguity(["ctr_new_1", "ctr_new_2"]);
+    let mut namespace_state = RecordingNamespaceState::stored();
+
+    execute_deploy(
+        volume_backed_replacement_command(&[("ctr_old", true)]),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            machine_runtime: &mut runtime,
+            health_checker: &mut RecordingHealth::healthy(),
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect_err("ambiguous replacement run fails");
+
+    assert_eq!(
+        runtime.actions,
+        vec![
+            RuntimeAction::Stop(container_id("ctr_old")),
+            RuntimeAction::Stop(container_id("ctr_new_1")),
+            RuntimeAction::Stop(container_id("ctr_new_2")),
+            RuntimeAction::Restart(container_id("ctr_old")),
+        ]
+    );
+    assert!(namespace_state.phase_requests.is_empty());
+    assert!(recorder.records.iter().any(|record| matches!(
+        record,
+        RecordedOperation::VolumeHandoffRollbackFinished { outcomes }
+            if matches!(outcomes.as_slice(), [outcome]
+                if outcome.outcome == DeployVolumeHandoffRollbackOutcome::Restarted)
+    )));
+}
+
+#[tokio::test]
+async fn volume_handoff_empty_ambiguity_does_not_restart_without_quiescence_evidence() {
+    let mut recorder = RecordingOperations::default();
+    let mut runtime = RecordingRuntime::with_containers(["unused"]).with_run_ambiguity([]);
+    let mut namespace_state = RecordingNamespaceState::stored();
+
+    execute_deploy(
+        volume_backed_replacement_command(&[("ctr_old", true)]),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            machine_runtime: &mut runtime,
+            health_checker: &mut RecordingHealth::healthy(),
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect_err("empty ambiguity leaves replacement state unknown");
+
+    assert_eq!(
+        runtime.actions,
+        vec![RuntimeAction::Stop(container_id("ctr_old"))]
+    );
+    assert!(runtime.restarts.is_empty());
+    assert!(namespace_state.phase_requests.is_empty());
+    assert!(recorder.records.iter().any(|record| matches!(
+        record,
+        RecordedOperation::VolumeHandoffRollbackFinished { outcomes }
+            if matches!(outcomes.as_slice(), [outcome]
+                if outcome.outcome
+                    == DeployVolumeHandoffRollbackOutcome::NotRestartedNewConsumerQuiescenceUnconfirmed)
+    )));
+}
+
+#[tokio::test]
+async fn volume_handoff_runtime_unavailable_does_not_restart_without_quiescence_evidence() {
+    let mut recorder = RecordingOperations::default();
+    let mut runtime = RecordingRuntime::with_containers(["unused"]).with_run_unavailable();
+    let mut namespace_state = RecordingNamespaceState::stored();
+
+    execute_deploy(
+        volume_backed_replacement_command(&[("ctr_old", true)]),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            machine_runtime: &mut runtime,
+            health_checker: &mut RecordingHealth::healthy(),
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect_err("unavailable runtime leaves replacement state unknown");
+
+    assert_eq!(
+        runtime.actions,
+        vec![RuntimeAction::Stop(container_id("ctr_old"))]
+    );
+    assert!(runtime.restarts.is_empty());
+    assert!(namespace_state.phase_requests.is_empty());
+    assert!(recorder.records.iter().any(|record| matches!(
+        record,
+        RecordedOperation::VolumeHandoffRollbackFinished { outcomes }
+            if matches!(outcomes.as_slice(), [outcome]
+                if outcome.outcome
+                    == DeployVolumeHandoffRollbackOutcome::NotRestartedNewConsumerQuiescenceUnconfirmed)
+    )));
+}
+
+#[tokio::test]
+async fn volume_handoff_run_timeout_does_not_restart_without_quiescence_evidence() {
+    let mut recorder = RecordingOperations::default();
+    let mut runtime = RecordingRuntime::with_containers(["unused"]).with_hanging_run();
+    let mut namespace_state = RecordingNamespaceState::stored();
+
+    execute_deploy(
+        volume_backed_replacement_command(&[("ctr_old", true)])
+            .with_step_timeout(Duration::from_millis(1)),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            machine_runtime: &mut runtime,
+            health_checker: &mut RecordingHealth::healthy(),
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect_err("replacement run timeout leaves replacement state unknown");
+
+    assert_eq!(
+        runtime.actions,
+        vec![RuntimeAction::Stop(container_id("ctr_old"))]
+    );
+    assert!(runtime.restarts.is_empty());
+    assert!(namespace_state.phase_requests.is_empty());
     assert!(recorder.records.iter().any(|record| matches!(
         record,
         RecordedOperation::VolumeHandoffRollbackFinished { outcomes }
@@ -2680,6 +2823,7 @@ async fn volume_handoff_quiescence_failure_never_restarts_an_old_owner() {
 async fn volume_handoff_start_failure_restarts_old_owner_without_quiescing_unstarted_container() {
     let mut recorder = RecordingOperations::default();
     let mut runtime = RecordingRuntime::failing_start("ctr_new");
+    let mut namespace_state = RecordingNamespaceState::stored();
     execute_deploy(
         volume_backed_replacement_command(&[("ctr_old", true)]),
         DeployExecutionPorts {
@@ -2687,7 +2831,7 @@ async fn volume_handoff_start_failure_restarts_old_owner_without_quiescing_unsta
             machine_runtime: &mut runtime,
             health_checker: &mut RecordingHealth::healthy(),
             certificate_provisioner: &mut RecordingCertificates::successful(),
-            namespace_state: &mut RecordingNamespaceState::stored(),
+            namespace_state: &mut namespace_state,
         },
     )
     .await
@@ -2701,6 +2845,13 @@ async fn volume_handoff_start_failure_restarts_old_owner_without_quiescing_unsta
             RuntimeAction::Restart(container_id("ctr_old")),
         ]
     );
+    assert!(namespace_state.phase_requests.is_empty());
+    assert!(recorder.records.iter().any(|record| matches!(
+        record,
+        RecordedOperation::VolumeHandoffRollbackFinished { outcomes }
+            if matches!(outcomes.as_slice(), [outcome]
+                if outcome.outcome == DeployVolumeHandoffRollbackOutcome::Restarted)
+    )));
 }
 
 #[tokio::test]

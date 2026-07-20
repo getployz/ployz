@@ -322,6 +322,14 @@ pub(super) struct RecordingRuntime {
     fail_stop: bool,
     fail_stop_for: Vec<ContainerId>,
     fail_restart: bool,
+    run_failure: Option<SyntheticRunFailure>,
+}
+
+#[derive(Clone)]
+enum SyntheticRunFailure {
+    Ambiguous(Vec<ContainerId>),
+    Unavailable,
+    Hang,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -729,6 +737,7 @@ impl RecordingRuntime {
             fail_stop: false,
             fail_stop_for: Vec::new(),
             fail_restart: false,
+            run_failure: None,
         }
     }
 
@@ -758,6 +767,7 @@ impl RecordingRuntime {
             fail_stop: false,
             fail_stop_for: Vec::new(),
             fail_restart: false,
+            run_failure: None,
         }
     }
 
@@ -787,6 +797,7 @@ impl RecordingRuntime {
             fail_stop: false,
             fail_stop_for: Vec::new(),
             fail_restart: false,
+            run_failure: None,
         }
     }
 
@@ -816,6 +827,7 @@ impl RecordingRuntime {
             fail_stop: false,
             fail_stop_for: Vec::new(),
             fail_restart: false,
+            run_failure: None,
         }
     }
 
@@ -848,6 +860,7 @@ impl RecordingRuntime {
             fail_stop: false,
             fail_stop_for: Vec::new(),
             fail_restart: false,
+            run_failure: None,
         }
     }
 
@@ -877,6 +890,7 @@ impl RecordingRuntime {
             fail_stop: false,
             fail_stop_for: Vec::new(),
             fail_restart: false,
+            run_failure: None,
         }
     }
 
@@ -909,6 +923,23 @@ impl RecordingRuntime {
 
     pub(super) fn with_restart_failure(mut self) -> Self {
         self.fail_restart = true;
+        self
+    }
+
+    pub(super) fn with_run_ambiguity<const N: usize>(mut self, containers: [&str; N]) -> Self {
+        self.run_failure = Some(SyntheticRunFailure::Ambiguous(
+            containers.into_iter().map(container_id).collect(),
+        ));
+        self
+    }
+
+    pub(super) fn with_run_unavailable(mut self) -> Self {
+        self.run_failure = Some(SyntheticRunFailure::Unavailable);
+        self
+    }
+
+    pub(super) fn with_hanging_run(mut self) -> Self {
+        self.run_failure = Some(SyntheticRunFailure::Hang);
         self
     }
 }
@@ -987,7 +1018,30 @@ impl MachineContainerRuntime for RecordingRuntime {
             hang_reached.notify_one();
             tokio::time::sleep(Duration::from_secs(60)).await;
         }
+        let identity = request.container.clone();
         self.requests.push((machine_id.clone(), request));
+        match self.run_failure.clone() {
+            Some(SyntheticRunFailure::Ambiguous(container_ids)) => {
+                return Err(MachineContainerRuntimeError::OperationStepAmbiguous {
+                    machine_id: machine_id.clone(),
+                    operation_id: identity.operation_id,
+                    step_id: identity.step_id,
+                    container_ids,
+                });
+            }
+            Some(SyntheticRunFailure::Unavailable) => {
+                return Err(MachineContainerRuntimeError::Unavailable {
+                    machine_id: machine_id.clone(),
+                    reason: MachineRuntimeUnavailableReason::RequestFailed {
+                        message: "synthetic runtime failure".to_owned(),
+                    },
+                });
+            }
+            Some(SyntheticRunFailure::Hang) => {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+            }
+            None => {}
+        }
         if self.fail_after_first && self.requests.len() > 1 {
             return Err(MachineContainerRuntimeError::Unavailable {
                 machine_id: machine_id.clone(),
