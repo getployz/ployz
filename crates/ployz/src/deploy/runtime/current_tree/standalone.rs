@@ -54,7 +54,16 @@ pub(super) async fn execute(
     let template = entries
         .last()
         .ok_or_else(|| current_tree_error("selected service has no successful deploy history"))?;
-    let service_id = select_standalone_service(&template.request, command.service.as_deref())?;
+    let template_request = template
+        .request
+        .clone()
+        .try_into_rollback_request()
+        .map_err(|error| {
+            current_tree_error(format!(
+                "current-tree deploy cannot restore redacted environment values: {error}"
+            ))
+        })?;
+    let service_id = select_standalone_service(&template_request, command.service.as_deref())?;
     let api = operation_api_client(&config).await?;
     let live_services = api
         .service_list(&ServiceListRequest {})
@@ -65,7 +74,7 @@ pub(super) async fn execute(
         .await
         .map_err(api_error)?;
     validate_standalone_template(
-        &template.request,
+        &template_request,
         live_services
             .services
             .iter()
@@ -155,7 +164,7 @@ pub(super) async fn execute(
         (_, Err(error)) => return Err(error),
     };
 
-    let mut target = template.request.clone();
+    let mut target = template_request;
     let service = target
         .services
         .iter_mut()
@@ -307,19 +316,37 @@ pub(super) fn validate_standalone_template(
         .services
         .iter()
         .map(|service| {
+            let mut volume_names = service
+                .runtime
+                .volume_mounts
+                .iter()
+                .map(|mount| mount.volume_name.clone())
+                .collect::<Vec<_>>();
+            volume_names.sort();
             (
                 service.service_id.clone(),
-                service.namespace_revision_entry_id(&request.namespace_id),
+                service.image.clone(),
+                service.mode,
+                volume_names,
             )
         })
         .collect::<Vec<_>>();
-    expected_services.sort();
+    expected_services.sort_by(|left, right| left.0.cmp(&right.0));
     let mut actual_services = live_services
         .into_iter()
         .filter(|service| service.namespace_id == request.namespace_id)
-        .map(|service| (service.service_id, service.namespace_revision_entry_id))
+        .map(|service| {
+            let mut volume_names = service.volume_names;
+            volume_names.sort();
+            (
+                service.service_id,
+                service.image,
+                service.mode,
+                volume_names,
+            )
+        })
         .collect::<Vec<_>>();
-    actual_services.sort();
+    actual_services.sort_by(|left, right| left.0.cmp(&right.0));
     if expected_services != actual_services {
         return Err(current_tree_error(
             "newest successful deploy no longer matches the active namespace service set",
@@ -424,7 +451,8 @@ mod tests {
         ServingTargetEntry {
             namespace_id: request.namespace_id.clone(),
             service_id: service.service_id.clone(),
-            namespace_revision_entry_id: service.namespace_revision_entry_id(&request.namespace_id),
+            namespace_revision_entry_id: NamespaceRevisionEntryId::try_new("entry_test")
+                .expect("entry id"),
             image: service.image.clone(),
             mode: service.mode,
             volume_names: Vec::new(),
@@ -446,11 +474,10 @@ mod tests {
     }
 
     #[test]
-    fn changed_entry_identity_rejects_stale_history() {
+    fn changed_image_rejects_stale_history() {
         let request = request(&["api"]);
         let mut live = live_service(&request, 0);
-        live.namespace_revision_entry_id =
-            NamespaceRevisionEntryId::try_new("entry_stale").expect("entry id");
+        live.image = ImageReference::try_new("ghcr.io/acme/api:changed").expect("changed image");
 
         let error = validate_standalone_template(
             &request,

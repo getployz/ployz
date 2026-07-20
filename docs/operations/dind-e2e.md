@@ -102,6 +102,7 @@ prerequisite evidence; they do not add steps to this scenario.
 | `PLOYZ_DIND_ARTIFACT_DIR` | Host directory with the linux binaries (default `/tmp/ployz-dind-machine-target/release`). |
 | `PLOYZ_DIND_TARGET_DIR` | Build target dir used by the build script and the wrapper's marker file (default `/tmp/ployz-dind-machine-target`). |
 | `PLOYZ_DIND_BUILDER_IMAGE` | Shared native/eBPF builder image (default `ployz-dind-builder:rust-1.91-bookworm-v2`). |
+| `PLOYZ_DIND_DOCKER_HUB_MIRROR` | Lowercase DNS authority, with an optional port, used for every Docker Hub dependency (default `mirror.gcr.io`). It is part of the machine fingerprint and configures host-side pulls, the inner Docker daemon, and machine-local BuildKit. Explicit non-Docker-Hub registries and the logical image references saved into the machine remain unchanged. |
 | `PLOYZ_DIND_UMAMI_IMAGE` | Build-time registry or mirror reference for Umami (default `ghcr.io/umami-software/umami:postgresql-latest@sha256:8edfe4beaef13f9d1300619fa264ef250a3688df9cc54d24ca830ca31cb475ec`). The selected image is sealed into the machine image and passed to acceptance at runtime. |
 | `PLOYZ_DIND_POSTGRES_IMAGE` | Build-time registry or mirror reference for Postgres (default `postgres:15-alpine@sha256:3d0f7584ed7d04e27fa050d6683a74746608faf21f202be78460d679cc56461f`). The selected image is sealed into the machine image and passed to acceptance at runtime. |
 | `PLOYZ_DIND_WORKERS` | Concurrent compatible groups: `1`, `2` (default), or `3`. The heavyweight acceptance group stays serial. |

@@ -12,6 +12,7 @@ pub use logs::{BuildLogDestination, BuildLogProgress};
 pub use oci::ValidatedOciLayout;
 pub use runner::{
     BuildExecutionError, BuildExecutionRequest, BuildExecutionResult, DockerBuildExecutor,
+    DockerHubRegistryMirror, DockerHubRegistryMirrorError,
 };
 pub use source::LocalSnapshotError;
 

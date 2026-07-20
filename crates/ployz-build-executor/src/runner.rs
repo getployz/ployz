@@ -36,6 +36,60 @@ const BUILDKIT_CONFIG: &str = "buildkitd.toml";
 pub struct DockerBuildExecutor {
     workspace_root: PathBuf,
     effect_guard: BuildEffectGuard,
+    docker_hub_registry_mirror: Option<DockerHubRegistryMirror>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DockerHubRegistryMirror(String);
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("Docker Hub registry mirror must be a lowercase DNS host with an optional port")]
+pub struct DockerHubRegistryMirrorError;
+
+impl DockerHubRegistryMirror {
+    pub fn try_new(value: impl Into<String>) -> Result<Self, DockerHubRegistryMirrorError> {
+        let value = value.into();
+        let (host, port) = match value.split_once(':') {
+            Some((host, port)) if !port.contains(':') => (host, Some(port)),
+            Some(_) => return Err(DockerHubRegistryMirrorError),
+            None => (value.as_str(), None),
+        };
+        if host.is_empty()
+            || host.len() > 253
+            || !host.split('.').all(valid_dns_label)
+            || port.is_some_and(|port| {
+                port.is_empty()
+                    || port.starts_with('0')
+                    || port.len() > 5
+                    || !port.bytes().all(|byte| byte.is_ascii_digit())
+                    || port.parse::<u16>().map_or(true, |port| port == 0)
+            })
+        {
+            return Err(DockerHubRegistryMirrorError);
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+fn valid_dns_label(label: &str) -> bool {
+    !label.is_empty()
+        && label.len() <= 63
+        && label
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        && label
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphanumeric)
+        && label
+            .as_bytes()
+            .last()
+            .is_some_and(u8::is_ascii_alphanumeric)
 }
 
 impl DockerBuildExecutor {
@@ -44,6 +98,7 @@ impl DockerBuildExecutor {
         Self {
             workspace_root,
             effect_guard: BuildEffectGuard::default(),
+            docker_hub_registry_mirror: None,
         }
     }
 
@@ -61,6 +116,12 @@ impl DockerBuildExecutor {
                     message: error.to_string(),
                 })?;
         stage_local_snapshot(source_root, self.workspace_root.join("prepared"), subdir).await
+    }
+
+    #[must_use]
+    pub fn with_docker_hub_registry_mirror(mut self, mirror: DockerHubRegistryMirror) -> Self {
+        self.docker_hub_registry_mirror = Some(mirror);
+        self
     }
 
     pub async fn recover_orphans(&self) -> Result<(), BuildExecutionError> {
@@ -279,7 +340,7 @@ impl DockerBuildExecutor {
         let mut capacity = build_disk_space(workspace)?;
         let policy = BuildDiskPolicy::for_capacity(capacity);
         let config = workspace.join(BUILDKIT_CONFIG);
-        write_buildkit_config(&config, policy).await?;
+        write_buildkit_config(&config, policy, self.docker_hub_registry_mirror.as_ref()).await?;
         if capacity.available_bytes < policy.required_free_bytes {
             prune_buildkit_cache().await?;
             capacity = build_disk_space(workspace)?;
@@ -343,17 +404,31 @@ fn bytes_from_blocks(blocks: u64, block_size: u64) -> u64 {
 async fn write_buildkit_config(
     path: &Path,
     policy: BuildDiskPolicy,
+    docker_hub_registry_mirror: Option<&DockerHubRegistryMirror>,
 ) -> Result<(), BuildExecutionError> {
-    tokio::fs::write(path, render_buildkit_config(policy))
-        .await
-        .map_err(|error| infrastructure("write BuildKit configuration", error.to_string()))
+    tokio::fs::write(
+        path,
+        render_buildkit_config(policy, docker_hub_registry_mirror),
+    )
+    .await
+    .map_err(|error| infrastructure("write BuildKit configuration", error.to_string()))
 }
 
-fn render_buildkit_config(policy: BuildDiskPolicy) -> String {
-    format!(
+fn render_buildkit_config(
+    policy: BuildDiskPolicy,
+    docker_hub_registry_mirror: Option<&DockerHubRegistryMirror>,
+) -> String {
+    let mut config = format!(
         "[worker.oci]\ngc = true\nreservedSpace = {}\nmaxUsedSpace = {}\nminFreeSpace = {}\n",
         policy.cache_reserved_bytes, policy.cache_max_bytes, policy.cache_min_free_bytes
-    )
+    );
+    if let Some(mirror) = docker_hub_registry_mirror {
+        config.push_str(&format!(
+            "\n[registry.\"docker.io\"]\nmirrors = [\"{}\"]\n",
+            mirror.as_str()
+        ));
+    }
+    config
 }
 
 #[derive(Clone, Copy)]
@@ -608,13 +683,78 @@ mod tests {
     #[test]
     fn buildkit_config_wires_native_gc_thresholds() {
         assert_eq!(
-            render_buildkit_config(BuildDiskPolicy {
-                cache_reserved_bytes: 1,
-                cache_max_bytes: 2,
-                cache_min_free_bytes: 3,
-                required_free_bytes: 3,
-            }),
+            render_buildkit_config(
+                BuildDiskPolicy {
+                    cache_reserved_bytes: 1,
+                    cache_max_bytes: 2,
+                    cache_min_free_bytes: 3,
+                    required_free_bytes: 3,
+                },
+                None,
+            ),
             "[worker.oci]\ngc = true\nreservedSpace = 1\nmaxUsedSpace = 2\nminFreeSpace = 3\n"
+        );
+    }
+
+    #[test]
+    fn docker_hub_registry_mirror_is_a_canonical_bare_authority() {
+        for line in include_str!("../../../config/docker-hub-mirror-validation-vectors.txt").lines()
+        {
+            let (expected, value) = line
+                .split_once(' ')
+                .expect("validation vector has a result");
+            let value = expanded_mirror_validation_vector(value);
+            match expected {
+                "valid" => assert!(
+                    DockerHubRegistryMirror::try_new(&value).is_ok(),
+                    "rejected valid mirror {value:?}"
+                ),
+                "invalid" => assert!(
+                    DockerHubRegistryMirror::try_new(&value).is_err(),
+                    "accepted invalid mirror {value:?}"
+                ),
+                other => panic!("unknown mirror-validation result {other:?}"),
+            }
+        }
+        for invalid in [
+            "",
+            "user@mirror.gcr.io",
+            "mirror.gcr.io/path",
+            "mirror.gcr.io?query",
+            "mirror.gcr.io\"]\n[worker.oci]",
+        ] {
+            assert!(
+                DockerHubRegistryMirror::try_new(invalid).is_err(),
+                "accepted invalid mirror {invalid:?}"
+            );
+        }
+    }
+
+    fn expanded_mirror_validation_vector(value: &str) -> String {
+        match value {
+            "<oversized-host>" => {
+                let label = "a".repeat(63);
+                format!("{label}.{label}.{label}.{label}")
+            }
+            "<oversized-port>" => "cache.example:999999999999999999999".to_owned(),
+            value => value.to_owned(),
+        }
+    }
+
+    #[test]
+    fn buildkit_config_routes_docker_hub_through_the_validated_mirror() {
+        let mirror = DockerHubRegistryMirror::try_new("mirror.gcr.io").expect("valid mirror");
+        assert_eq!(
+            render_buildkit_config(
+                BuildDiskPolicy {
+                    cache_reserved_bytes: 1,
+                    cache_max_bytes: 2,
+                    cache_min_free_bytes: 3,
+                    required_free_bytes: 3,
+                },
+                Some(&mirror),
+            ),
+            "[worker.oci]\ngc = true\nreservedSpace = 1\nmaxUsedSpace = 2\nminFreeSpace = 3\n\n[registry.\"docker.io\"]\nmirrors = [\"mirror.gcr.io\"]\n"
         );
     }
 
