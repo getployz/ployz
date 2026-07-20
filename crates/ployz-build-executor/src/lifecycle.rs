@@ -18,6 +18,7 @@ use tokio::process::Command;
 use tokio::sync::{mpsc, watch};
 
 pub(super) const BUILDER_LABEL: &str = "com.getployz.build=true";
+pub(super) const BUILDER_OWNER_LABEL_KEY: &str = "com.getployz.build.owner";
 pub(super) const CACHE_VOLUME: &str = "ployz-buildkit-cache-v1";
 const COMMAND_OUTPUT_LIMIT_BYTES: usize = 256 * 1024;
 const RAILPACK_PREPARE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
@@ -321,6 +322,7 @@ pub(super) async fn create_builder(
     name: &str,
     operation_id: &OperationId,
     platform: &OciPlatform,
+    owner: &str,
     workspace: &Path,
     config: &Path,
     image: &str,
@@ -334,12 +336,8 @@ pub(super) async fn create_builder(
         "type=bind,src={},dst=/etc/buildkit/buildkitd.toml,readonly",
         config.to_string_lossy()
     );
-    let operation_label = format!("com.getployz.build.operation={}", operation_id.as_str());
-    let platform_label = format!(
-        "com.getployz.build.platform={}/{}",
-        platform.os(),
-        platform.architecture()
-    );
+    let [build_label, owner_label, operation_label, platform_label] =
+        builder_create_labels(operation_id, platform, owner);
     let created = run_bounded(
         "docker",
         [
@@ -347,7 +345,9 @@ pub(super) async fn create_builder(
             "--name",
             name,
             "--label",
-            BUILDER_LABEL,
+            build_label.as_str(),
+            "--label",
+            owner_label.as_str(),
             "--label",
             operation_label.as_str(),
             "--label",
@@ -369,6 +369,23 @@ pub(super) async fn create_builder(
     )
     .await?;
     require_success("create BuildKit container", &created)
+}
+
+fn builder_create_labels(
+    operation_id: &OperationId,
+    platform: &OciPlatform,
+    owner: &str,
+) -> [String; 4] {
+    [
+        BUILDER_LABEL.to_owned(),
+        format!("{BUILDER_OWNER_LABEL_KEY}={owner}"),
+        format!("com.getployz.build.operation={}", operation_id.as_str()),
+        format!(
+            "com.getployz.build.platform={}/{}",
+            platform.os(),
+            platform.architecture()
+        ),
+    ]
 }
 
 pub(super) async fn prune_buildkit_cache() -> Result<(), BuildExecutionError> {
@@ -613,6 +630,23 @@ mod tests {
         assert_eq!(
             builder_name(&operation, &platform),
             "ployz-build-build-01-linux-arm64"
+        );
+    }
+
+    #[test]
+    fn builder_creation_carries_exact_owner_label() {
+        let operation = OperationId::try_new("build-01").expect("operation");
+        let platform = OciPlatform::try_new("linux", "arm64").expect("platform");
+
+        assert_eq!(
+            builder_create_labels(&operation, &platform, "owner-digest"),
+            [
+                "com.getployz.build=true",
+                "com.getployz.build.owner=owner-digest",
+                "com.getployz.build.operation=build-01",
+                "com.getployz.build.platform=linux/arm64",
+            ]
+            .map(str::to_owned)
         );
     }
 

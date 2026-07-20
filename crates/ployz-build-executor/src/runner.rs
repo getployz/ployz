@@ -1,9 +1,9 @@
 use super::ValidatedOciLayout;
 use super::lifecycle::{
-    BUILDER_LABEL, BuildLogContext, CACHE_VOLUME, DOCKER_COMMAND_TIMEOUT, PinnedImageKind,
-    await_buildkit, builder_name, create_builder, prune_buildkit_cache, pull_exact_image,
-    remove_builder, require_success, restore_oci_layout_ownership, run_bounded, run_buildctl,
-    run_prepare,
+    BUILDER_LABEL, BUILDER_OWNER_LABEL_KEY, BuildLogContext, CACHE_VOLUME, DOCKER_COMMAND_TIMEOUT,
+    PinnedImageKind, await_buildkit, builder_name, create_builder, prune_buildkit_cache,
+    pull_exact_image, remove_builder, require_success, restore_oci_layout_ownership, run_bounded,
+    run_buildctl, run_prepare,
 };
 use super::logs::{BuildLogProgress, PublishedLogs};
 use super::oci::{OciLayoutError, OciValidationControl, validate_oci_layout};
@@ -21,6 +21,7 @@ use ployz_core::operation::{
     BuildCachePruneEvidence, BuildPlatformFailure, BuildToolchainEvidence, FailureMessage,
 };
 use rustix::fs::statvfs;
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
@@ -126,10 +127,17 @@ impl DockerBuildExecutor {
     }
 
     pub async fn recover_orphans(&self) -> Result<(), BuildExecutionError> {
-        let filter = format!("label={BUILDER_LABEL}");
+        let filters = orphan_builder_filters(&workspace_owner_digest(&self.workspace_root));
         let output = run_bounded(
             "docker",
-            ["ps", "-aq", "--filter", filter.as_str()],
+            [
+                "ps",
+                "-aq",
+                "--filter",
+                filters[0].as_str(),
+                "--filter",
+                filters[1].as_str(),
+            ],
             DOCKER_COMMAND_TIMEOUT,
         )
         .await?;
@@ -275,6 +283,7 @@ impl DockerBuildExecutor {
             &builder,
             operation_id,
             platform,
+            &workspace_owner_digest(&self.workspace_root),
             &workspace,
             &buildkit_config,
             &toolchain.buildkit_reference,
@@ -354,6 +363,20 @@ impl DockerBuildExecutor {
         }
         Ok(config)
     }
+}
+
+fn workspace_owner_digest(workspace_root: &Path) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"ployz.build_workspace_owner.v1");
+    hasher.update(workspace_root.as_os_str().as_encoded_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+fn orphan_builder_filters(owner: &str) -> [String; 2] {
+    [
+        format!("label={BUILDER_LABEL}"),
+        format!("label={BUILDER_OWNER_LABEL_KEY}={owner}"),
+    ]
 }
 
 fn finish_builder_run(
@@ -650,6 +673,28 @@ mod tests {
 
         drop(validation_guard);
         cleanup.await.expect("cleanup waiter");
+    }
+
+    #[test]
+    fn orphan_recovery_filters_are_workspace_owner_scoped() {
+        let first = workspace_owner_digest(Path::new("/tmp/ployz-owner-a"));
+        let second = workspace_owner_digest(Path::new("/tmp/ployz-owner-b"));
+        let first_filters = orphan_builder_filters(&first);
+        let second_filters = orphan_builder_filters(&second);
+
+        assert_ne!(first, second);
+        assert_eq!(first_filters[0], "label=com.getployz.build=true");
+        assert_eq!(second_filters[0], "label=com.getployz.build=true");
+        assert_eq!(
+            first_filters[1],
+            format!("label=com.getployz.build.owner={first}")
+        );
+        assert_eq!(
+            second_filters[1],
+            format!("label=com.getployz.build.owner={second}")
+        );
+        assert!(!first_filters.contains(&second_filters[1]));
+        assert!(!second_filters.contains(&first_filters[1]));
     }
 
     #[test]
