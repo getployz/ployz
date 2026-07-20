@@ -9,6 +9,25 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
+
+pub(crate) fn validated_cloud_base_url(
+    base_url: &str,
+    allow_loopback_http: bool,
+) -> Result<reqwest::Url, CloudCurrentTreeError> {
+    let base_url = base_url.trim_end_matches('/');
+    let url = reqwest::Url::parse(base_url).map_err(|_| CloudCurrentTreeError::InvalidCloudUrl)?;
+    let loopback_http = allow_loopback_http
+        && url.scheme() == "http"
+        && url.host_str().is_some_and(|host| {
+            host.trim_matches(['[', ']'])
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|address| address.is_loopback())
+        });
+    if (url.scheme() != "https" && !loopback_http) || url.cannot_be_a_base() {
+        return Err(CloudCurrentTreeError::InvalidCloudUrl);
+    }
+    Ok(url)
+}
 #[derive(Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct BeginSession {
@@ -202,24 +221,13 @@ pub(crate) struct CloudCurrentTreeClient {
 
 impl CloudCurrentTreeClient {
     pub(crate) fn new(base_url: &str) -> Result<Self, CloudCurrentTreeError> {
-        let base_url = base_url.trim_end_matches('/');
-        let url =
-            reqwest::Url::parse(base_url).map_err(|_| CloudCurrentTreeError::InvalidCloudUrl)?;
-        let loopback_http = url.scheme() == "http"
-            && url.host_str().is_some_and(|host| {
-                host.trim_matches(['[', ']'])
-                    .parse::<std::net::IpAddr>()
-                    .is_ok_and(|address| address.is_loopback())
-            });
-        if (url.scheme() != "https" && !loopback_http) || url.cannot_be_a_base() {
-            return Err(CloudCurrentTreeError::InvalidCloudUrl);
-        }
+        let url = validated_cloud_base_url(base_url, true)?;
         let http = reqwest::Client::builder()
             .timeout(REQUEST_TIMEOUT)
             .build()
             .map_err(|error| CloudCurrentTreeError::Transport(error.to_string()))?;
         Ok(Self {
-            base_url: base_url.to_owned(),
+            base_url: url.as_str().trim_end_matches('/').to_owned(),
             http,
         })
     }
