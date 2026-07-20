@@ -4,9 +4,11 @@ pub use ployz_core::build::{
     BuildExecutorIdentity, BuildExecutorOrigin, BuildExecutorReadiness,
     BuildExecutorReadinessAnswer, BuildPlatformExecutorAssignment, BuildPlatforms,
     BuildPlatformsError, BuildPoolId, BuildSource, BuildSourceEvidence, BuildTarget,
-    DockerfileStageName, GitBasicCredential, GitCommit, GitCredentialSecret, GitCredentialUsername,
-    GitRepositoryUrl, GitSource, GitSourceError, GitSourceEvidence, LocalSnapshotDigest,
-    RailpackCacheKey, VerifiedBuildSource, VerifiedGitCommit,
+    BuildTargetCapabilities, ClusterBuildMachineCapability, ClusterBuildTargetCapabilities,
+    DockerfileStageName, ExternalBuildExecutorCapability, ExternalBuildPoolCapabilities,
+    GitBasicCredential, GitCommit, GitCredentialSecret, GitCredentialUsername, GitRepositoryUrl,
+    GitSource, GitSourceError, GitSourceEvidence, LocalSnapshotDigest, RailpackCacheKey,
+    VerifiedBuildSource, VerifiedGitCommit,
 };
 pub use ployz_core::certificate::{
     AcmeChallengeError, AcmeChallengeToken, AcmeChallengeTtlError, AcmeChallengeTtlSeconds,

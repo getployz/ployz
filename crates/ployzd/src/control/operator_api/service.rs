@@ -1,9 +1,9 @@
 //! NATS Service API wiring for daemon commands.
 
 use crate::control::operator_api::{
-    OperationApiHandlers, build_cancel, build_submit, core_replace, core_replace_report,
-    credential_add, credential_list, credential_remove, deploy_preview, deploy_reserve,
-    deploy_submit, ingress_configure, init_first_machine_activate, machine_add,
+    OperationApiHandlers, build_cancel, build_submit, build_target_capabilities, core_replace,
+    core_replace_report, credential_add, credential_list, credential_remove, deploy_preview,
+    deploy_reserve, deploy_submit, ingress_configure, init_first_machine_activate, machine_add,
     machine_build_cache_prune, machine_drain, machine_join_redeem, machine_join_report,
     machine_resume, machine_storage_prepare, machine_update, namespace_remove, network_repair,
     ops_list, ops_status, ops_watch, service_restart, submit_volume_create, system_deploy,
@@ -18,15 +18,16 @@ use ployz_nats::subjects::OperationApiEndpoint;
 use ployz_sdk_types::{
     OperationApiResponse,
     operation_api::{
-        BuildCancelApi, BuildSubmitApi, CoreReplaceApi, CoreReplaceReportApi, CredentialAddApi,
-        CredentialListApi, CredentialRemoveApi, DeployPreviewApi, DeployReserveApi,
-        DeploySubmitApi, IngressConfigureApi, InitFirstMachineActivateApi, LogsTailApi,
-        MachineAddApi, MachineBuildCachePruneApi, MachineDrainApi, MachineInspectApi,
-        MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi, MachineResumeApi,
-        MachineStoragePrepareApi, MachineUpdateApi, NamespaceRemoveApi, NetworkRepairApi,
-        NetworkResolveApi, NetworkStatusApi, OperationApiContract, OpsListApi, OpsStatusApi,
-        OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi, ServiceRestartApi,
-        SystemDeployApi, VolumeCreateApi, VolumeListApi, VolumeRemoveApi,
+        BuildCancelApi, BuildSubmitApi, BuildTargetCapabilitiesApi, CoreReplaceApi,
+        CoreReplaceReportApi, CredentialAddApi, CredentialListApi, CredentialRemoveApi,
+        DeployPreviewApi, DeployReserveApi, DeploySubmitApi, IngressConfigureApi,
+        InitFirstMachineActivateApi, LogsTailApi, MachineAddApi, MachineBuildCachePruneApi,
+        MachineDrainApi, MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi,
+        MachineListApi, MachineResumeApi, MachineStoragePrepareApi, MachineUpdateApi,
+        NamespaceRemoveApi, NetworkRepairApi, NetworkResolveApi, NetworkStatusApi,
+        OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi,
+        ServiceInspectApi, ServiceListApi, ServiceRestartApi, SystemDeployApi, VolumeCreateApi,
+        VolumeListApi, VolumeRemoveApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -38,6 +39,7 @@ const MACHINE_JOIN_REPORT_HANDLER_TIMEOUT: Duration = Duration::from_secs(105);
 const NETWORK_RESOLVE_HANDLER_TIMEOUT: Duration = Duration::from_secs(35);
 const NETWORK_STATUS_HANDLER_TIMEOUT: Duration = Duration::from_secs(65);
 const DEPLOY_PREVIEW_HANDLER_TIMEOUT: Duration = Duration::from_secs(9);
+const BUILD_TARGET_CAPABILITIES_HANDLER_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub async fn start_operation_api_service_with_handlers(
     client: ployz_nats::service_runtime::NatsClient,
@@ -62,6 +64,14 @@ async fn bind_operation_endpoint(
     endpoint: OperationApiEndpoint,
 ) -> Result<(), ApiServiceError> {
     match endpoint {
+        OperationApiEndpoint::BuildTargetCapabilities => {
+            bind_operation_contract::<BuildTargetCapabilitiesApi, _, _>(
+                runtime,
+                handlers,
+                |handlers, _request| async move { build_target_capabilities(&handlers).await },
+            )
+            .await
+        }
         OperationApiEndpoint::BuildSubmit => bind_operation_contract::<BuildSubmitApi, _, _>(
             runtime, handlers, |handlers, request| async move { build_submit(&handlers, request).await }
         ).await,
@@ -409,7 +419,9 @@ where
 
 fn operation_endpoint_policy(endpoint: OperationApiEndpoint) -> EndpointExecutionPolicy {
     let mut policy = EndpointExecutionPolicy::default();
-    if endpoint == OperationApiEndpoint::DeployPreview {
+    if endpoint == OperationApiEndpoint::BuildTargetCapabilities {
+        policy.request_timeout = BUILD_TARGET_CAPABILITIES_HANDLER_TIMEOUT;
+    } else if endpoint == OperationApiEndpoint::DeployPreview {
         policy.request_timeout = DEPLOY_PREVIEW_HANDLER_TIMEOUT;
     } else if endpoint == OperationApiEndpoint::MachineJoinReport {
         policy.request_timeout = MACHINE_JOIN_REPORT_HANDLER_TIMEOUT;
@@ -496,6 +508,17 @@ mod tests {
             crate::control::operations::deploy::driver::DEPLOY_PREVIEW_NATS_REQUEST_TIMEOUT;
 
         assert!(nested_request_budget * 4 < policy.request_timeout);
+        assert!(
+            policy.request_timeout
+                < ployz_nats::operation_api_client::DEFAULT_OPERATION_API_REQUEST_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn build_target_capabilities_owns_a_short_absolute_deadline() {
+        let policy = operation_endpoint_policy(OperationApiEndpoint::BuildTargetCapabilities);
+
+        assert_eq!(policy.request_timeout, Duration::from_secs(5));
         assert!(
             policy.request_timeout
                 < ployz_nats::operation_api_client::DEFAULT_OPERATION_API_REQUEST_TIMEOUT

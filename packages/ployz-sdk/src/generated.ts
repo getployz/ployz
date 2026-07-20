@@ -154,6 +154,20 @@ export type BuildExecutorCredentialExpiresAt = Brand<string, "BuildExecutorCrede
 
 export type BuildTarget = { "target": "cluster" } | { "target": "external", pool_id: BuildPoolId, };
 
+export type BuildTargetCapabilitiesRequest = Record<symbol, never>;
+
+export type BuildTargetCapabilities = { cluster: ClusterBuildTargetCapabilities, external_pools: Array<ExternalBuildPoolCapabilities>, };
+
+export type BuildTargetCapabilitiesError = { "error": "unavailable", message: string, };
+
+export type ClusterBuildTargetCapabilities = { machines: Array<ClusterBuildMachineCapability>, };
+
+export type ClusterBuildMachineCapability = { "observation": "answered", machine_id: MachineId, native_platform: OciPlatform, capability: BuildExecutorCapability, } | { "observation": "unavailable", machine_id: MachineId, reason: MachineUsabilityReason, };
+
+export type ExternalBuildPoolCapabilities = { pool_id: BuildPoolId, executors: Array<ExternalBuildExecutorCapability>, reachable_image_seeds: Array<MachineId>, };
+
+export type ExternalBuildExecutorCapability = { "observation": "answered", identity: BuildExecutorIdentity, readiness: BuildExecutorReadiness, } | { "observation": "silent", identity: BuildExecutorIdentity, };
+
 export type BuildExecutorOrigin = { "origin": "cluster", machine_id: MachineId, } | { "origin": "external", pool_id: BuildPoolId, executor_id: BuildExecutorId, };
 
 export type BuildExecutorAssignment = { "executor": "cluster", machine_id: MachineId, } | { "executor": "external", pool_id: BuildPoolId, executor_id: BuildExecutorId, image_seed: MachineId, };
@@ -1151,6 +1165,8 @@ export type OpsStatusError = { "error": "no_such_operation", operation_id: Opera
 
 export type OpsWatchError = { "error": "no_such_operation", operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, };
 
+export type BuildTargetCapabilitiesResponse = OperationApiResponse<BuildTargetCapabilities, BuildTargetCapabilitiesError>;
+
 export type BuildSubmitResponse = OperationApiResponse<AcceptedOperation, BuildSubmitError>;
 
 export type BuildCancelResponse = OperationApiResponse<AcceptedOperation, BuildCancelError>;
@@ -1230,6 +1246,7 @@ export type OpsWatchRequest = OperationEventReplayRequest;
 export type OpsWatchResponse = OperationApiResponse<OperationEventReplayPage, OpsWatchError>;
 
 export const OPERATION_API_CONTRACTS = [
+  { name: "build.target.capabilities", subject: "plz.v1.rpc.operator.query.build.target.capabilities", execution: "query", request: "BuildTargetCapabilitiesRequest", success: "BuildTargetCapabilities", error: "BuildTargetCapabilitiesError", response: "BuildTargetCapabilitiesResponse" },
   { name: "build.submit", subject: "plz.v1.rpc.operator.command.build.submit", execution: "accepts_operation", request: "BuildSubmitRequest", success: "AcceptedOperation", error: "BuildSubmitError", response: "BuildSubmitResponse" },
   { name: "build.cancel", subject: "plz.v1.rpc.operator.command.build.cancel", execution: "mutates_operation", request: "BuildCancelRequest", success: "AcceptedOperation", error: "BuildCancelError", response: "BuildCancelResponse" },
   { name: "deploy.reserve", subject: "plz.v1.rpc.operator.command.deploy.reserve", execution: "mutates_operation", request: "DeployReserveRequest", success: "DeployReserved", error: "DeployReserveError", response: "DeployReserveResponse" },
@@ -1273,6 +1290,7 @@ export const OPERATION_API_CONTRACTS = [
 export type PloyzApiEndpoint = (typeof OPERATION_API_CONTRACTS)[number]["name"];
 
 export type OperationApiRequestByEndpoint = {
+  "build.target.capabilities": BuildTargetCapabilitiesRequest;
   "build.submit": BuildSubmitRequest;
   "build.cancel": BuildCancelRequest;
   "deploy.reserve": DeployReserveRequest;
@@ -1314,6 +1332,7 @@ export type OperationApiRequestByEndpoint = {
 };
 
 export type OperationApiResponseByEndpoint = {
+  "build.target.capabilities": BuildTargetCapabilitiesResponse;
   "build.submit": BuildSubmitResponse;
   "build.cancel": BuildCancelResponse;
   "deploy.reserve": DeployReserveResponse;

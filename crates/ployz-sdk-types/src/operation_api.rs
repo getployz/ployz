@@ -2,6 +2,7 @@
 
 use crate::{
     AcceptedOperation, BuildCancelError, BuildCancelRequest, BuildSubmitError, BuildSubmitRequest,
+    BuildTargetCapabilities, BuildTargetCapabilitiesError, BuildTargetCapabilitiesRequest,
     CoreReplaceError, CoreReplaceReportError, CoreReplaceReportRequest, CoreReplaceReported,
     CoreReplaceRequest, CredentialAddError, CredentialAddRequest, CredentialListError,
     CredentialListRequest, CredentialListResult, CredentialRemoveError, CredentialRemoveRequest,
@@ -30,6 +31,7 @@ use ployz_core::operation::OperationEventReplayPage;
 /// Transport-neutral identifier for one public operation API contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationApiEndpoint {
+    BuildTargetCapabilities,
     BuildSubmit,
     BuildCancel,
     DeployReserve,
@@ -84,6 +86,7 @@ pub trait OperationApiContract {
 macro_rules! operation_api_contracts {
     ($macro:ident) => {
         $macro!(
+            $crate::operation_api::BuildTargetCapabilitiesApi,
             $crate::operation_api::BuildSubmitApi,
             $crate::operation_api::BuildCancelApi,
             $crate::operation_api::DeployReserveApi,
@@ -124,6 +127,18 @@ macro_rules! operation_api_contracts {
             $crate::operation_api::OpsWatchApi
         );
     };
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BuildTargetCapabilitiesApi;
+
+impl OperationApiContract for BuildTargetCapabilitiesApi {
+    type Request = BuildTargetCapabilitiesRequest;
+    type Success = BuildTargetCapabilities;
+    type Error = BuildTargetCapabilitiesError;
+
+    const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::BuildTargetCapabilities;
+    const RESPONSE_ALIAS: &'static str = "BuildTargetCapabilitiesResponse";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

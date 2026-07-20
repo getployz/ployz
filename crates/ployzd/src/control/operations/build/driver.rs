@@ -75,6 +75,14 @@ pub(crate) enum BuildCancelDisposition {
 }
 
 impl BuildOperationDriver {
+    pub(crate) async fn target_capabilities(
+        &self,
+    ) -> Result<ployz_core::build::BuildTargetCapabilities, super::BuildTargetCapabilitiesReadError>
+    {
+        super::capabilities::read_build_target_capabilities(&self.client, &self.facts, &self.intent)
+            .await
+    }
+
     pub(crate) fn new(
         client: async_nats::Client,
         facts: NatsMachineFactsReader,

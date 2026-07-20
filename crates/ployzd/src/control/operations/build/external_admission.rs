@@ -11,7 +11,9 @@ use ployz_core::build::{
     ExternalBuildPlacementError, place_external_build_platforms,
     reconcile_build_executor_readiness_at,
 };
+use ployz_core::ids::MachineId;
 use ployz_core::image::{ImageBlobCheckOk, ImageBlobCheckRequest, ImageRpcDomainError};
+use ployz_core::intent::IntentSnapshot;
 use ployz_core::machine::MachineLifecycle;
 use ployz_core::nats_config::{CredentialGrant, NatsAuthorizationGrant};
 use ployz_nats::service_runtime::request_json;
@@ -20,6 +22,12 @@ use ployz_nats::subjects::{
 };
 
 const EXTERNAL_BUILD_ADMISSION_TIMEOUT: Duration = Duration::from_secs(3);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ExternalBuildTestimony {
+    pub(super) executors: Vec<BuildExecutorReadinessTestimony<BuildExecutorReadiness>>,
+    pub(super) reachable_image_seeds: BTreeSet<MachineId>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ExternalBuildAdmissionError {
@@ -55,6 +63,26 @@ pub(super) async fn preflight_external_build(
             message: error.to_string(),
         })?
         .as_secs();
+    let testimony =
+        gather_external_build_testimony(client, &intent, now_unix_seconds, Some(pool_id))
+            .await
+            .map_err(|message| ExternalBuildAdmissionError::Unavailable { message })?;
+    let candidates = candidates_from_testimony(pool_id, platforms, adapter, testimony.executors);
+    place_external_build_platforms(
+        pool_id,
+        platforms,
+        &candidates,
+        &testimony.reachable_image_seeds,
+    )
+    .map_err(ExternalBuildAdmissionError::from)
+}
+
+pub(super) async fn gather_external_build_testimony(
+    client: &async_nats::Client,
+    intent: &IntentSnapshot,
+    now_unix_seconds: u64,
+    pool_filter: Option<&BuildPoolId>,
+) -> Result<ExternalBuildTestimony, String> {
     let credentials = intent
         .nats_authorizations
         .iter()
@@ -63,7 +91,9 @@ pub(super) async fn preflight_external_build(
                 if credential
                     .role
                     .build_executor_identity()
-                    .is_some_and(|identity| identity.pool_id == *pool_id) =>
+                    .is_some_and(|identity| {
+                        pool_filter.is_none_or(|pool_id| identity.pool_id == *pool_id)
+                    }) =>
             {
                 Some(credential.clone())
             }
@@ -75,22 +105,23 @@ pub(super) async fn preflight_external_build(
         .filter(|credential| credential.role.is_active_at(now_unix_seconds))
         .filter_map(|credential| credential.role.build_executor_identity())
         .collect::<Vec<_>>();
-    let readiness_answers = gather_readiness(client, identities).await;
-    let testimony =
-        reconcile_build_executor_readiness_at(&credentials, readiness_answers, now_unix_seconds)
-            .map_err(|error| ExternalBuildAdmissionError::Unavailable {
-                message: error.to_string(),
-            })?;
-    let candidates = candidates_from_testimony(pool_id, platforms, adapter, testimony);
     let active_machines = intent
         .active_machines
-        .into_iter()
+        .iter()
         .filter(|machine| machine.lifecycle == MachineLifecycle::Active)
-        .map(|machine| machine.machine_id)
+        .map(|machine| machine.machine_id.clone())
         .collect::<Vec<_>>();
-    let reachable_image_seeds = gather_reachable_image_seeds(client, active_machines).await;
-    place_external_build_platforms(pool_id, platforms, &candidates, &reachable_image_seeds)
-        .map_err(ExternalBuildAdmissionError::from)
+    let (readiness_answers, reachable_image_seeds) = tokio::join!(
+        gather_readiness(client, identities),
+        gather_reachable_image_seeds(client, active_machines),
+    );
+    let testimony =
+        reconcile_build_executor_readiness_at(&credentials, readiness_answers, now_unix_seconds)
+            .map_err(|error| error.to_string())?;
+    Ok(ExternalBuildTestimony {
+        executors: testimony,
+        reachable_image_seeds,
+    })
 }
 
 async fn gather_readiness(
@@ -204,7 +235,10 @@ impl From<ExternalBuildPlacementError> for ExternalBuildAdmissionError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::build::{BuildAdapter, BuildExecutorCapability};
+    use ployz_core::build::{
+        BuildAdapter, BuildExecutorAssignment, BuildExecutorCapability,
+        ExternalBuildExecutorCapability,
+    };
     use ployz_core::ids::BuildExecutorId;
     use ployz_core::image::OciPlatform;
 
@@ -260,5 +294,64 @@ mod tests {
                 .map(|candidate| candidate.executor_id.as_str()),
             Some("ready")
         );
+    }
+
+    #[test]
+    fn internal_testimony_has_independent_admission_and_api_projections() {
+        let pool_id = BuildPoolId::try_new("pool-a").expect("pool");
+        let executor_id = BuildExecutorId::try_new("ready").expect("executor");
+        let machine_id = MachineId::try_new("seed-a").expect("machine");
+        let testimony = ExternalBuildTestimony {
+            executors: vec![BuildExecutorReadinessTestimony::Answered {
+                identity: BuildExecutorIdentity {
+                    pool_id: pool_id.clone(),
+                    executor_id: executor_id.clone(),
+                },
+                readiness: BuildExecutorReadiness {
+                    native_platform: platform(),
+                    capability: BuildExecutorCapability::DockerfileAndRailpack,
+                },
+            }],
+            reachable_image_seeds: BTreeSet::from([machine_id.clone()]),
+        };
+        let candidates = candidates_from_testimony(
+            &pool_id,
+            &BuildPlatforms::try_new([platform()]).expect("platforms"),
+            &BuildAdapter::Railpack {
+                cache_scope: ployz_core::build::BuildCacheScope::try_new("scope").expect("scope"),
+            },
+            testimony.executors.clone(),
+        );
+        let assignments = place_external_build_platforms(
+            &pool_id,
+            &BuildPlatforms::try_new([platform()]).expect("platforms"),
+            &candidates,
+            &testimony.reachable_image_seeds,
+        )
+        .expect("internal testimony admits the build");
+        let capabilities =
+            super::super::capabilities::project_external_build_pool_capabilities(testimony);
+
+        assert_eq!(
+            candidates.first().map(|candidate| &candidate.executor_id),
+            Some(&executor_id)
+        );
+        assert!(matches!(
+            assignments.as_slice(),
+            [BuildPlatformExecutorAssignment {
+                executor: BuildExecutorAssignment::External { image_seed, .. },
+                ..
+            }] if image_seed == &machine_id
+        ));
+        let [capability] = capabilities.as_slice() else {
+            panic!("one pool capability expected");
+        };
+        assert_eq!(capability.pool_id, pool_id);
+        assert_eq!(capability.reachable_image_seeds, vec![machine_id]);
+        assert!(matches!(
+            capability.executors.as_slice(),
+            [ExternalBuildExecutorCapability::Answered { identity, .. }]
+                if identity.executor_id == executor_id
+        ));
     }
 }

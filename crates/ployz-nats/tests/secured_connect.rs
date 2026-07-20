@@ -30,10 +30,10 @@ use ployz_nats::services::{
 use ployz_nats::subjects::{
     BUILD_EXECUTOR_SERVICE_NAME, BuildExecutorServiceEndpoint, CoreQueryEndpoint, INTENT_CHANGED,
     INTENT_GET, JOIN_MACHINE_REDEEM, JOIN_MACHINE_REPORT, MachineServiceEndpoint,
-    OPERATOR_INIT_FIRST_MACHINE_ACTIVATE, PENDING_MACHINE_JOINS_CHANGED, RUNTIME_SNAPSHOT_SEED,
-    RUNTIME_SNAPSHOT_STREAM, build_executor_log, build_executor_service, gateway_status,
-    gateway_status_scope, machine_container_facts, machine_facts, machine_facts_scope,
-    machine_service,
+    OPERATOR_INIT_FIRST_MACHINE_ACTIVATE, OperationApiEndpoint, PENDING_MACHINE_JOINS_CHANGED,
+    RUNTIME_SNAPSHOT_SEED, RUNTIME_SNAPSHOT_STREAM, build_executor_log, build_executor_service,
+    gateway_status, gateway_status_scope, machine_container_facts, machine_facts,
+    machine_facts_scope, machine_service,
 };
 use ployz_test_support::nats::SecuredTestNats;
 
@@ -168,6 +168,51 @@ async fn controller_service_registration_uses_a_bounded_flush_barrier() {
         .expect("flush barrier proves endpoint registration");
     assert_no_permission_violation(&mut events).await;
     service.shutdown().await.expect("service shuts down");
+}
+
+#[tokio::test]
+async fn build_target_capabilities_is_operator_only_on_secured_nats() {
+    let machine_id = MachineId::try_new("machine-a").expect("machine id");
+    let pool_id = BuildPoolId::try_new("pool-a").expect("pool id");
+    let executor_id = BuildExecutorId::try_new("executor-a").expect("executor id");
+    let minted = MintedNatsUser::generate().expect("executor nkey mints");
+    let credential = external_executor_credential(&minted, &pool_id, &executor_id);
+    let fixture = SecuredTestNats::start_with_machines_and_credentials(
+        std::slice::from_ref(&machine_id),
+        std::slice::from_ref(&credential),
+    )
+    .await
+    .expect("secured fixture");
+    let subject = OperationApiEndpoint::BuildTargetCapabilities.subject();
+
+    let (operator, mut operator_events) = connect_with_event_capture(&fixture.user_config()).await;
+    operator
+        .publish(subject, "{}".into())
+        .await
+        .expect("operator publish is accepted client-side");
+    operator.flush().await.expect("operator publish flushes");
+    assert_no_permission_violation(&mut operator_events).await;
+
+    let machine_config = fixture
+        .machine_config(&machine_id)
+        .expect("fixture minted machine");
+    let (machine, mut machine_events) = connect_with_event_capture(&machine_config).await;
+    machine
+        .publish(subject, "{}".into())
+        .await
+        .expect("machine publish is accepted client-side");
+    machine.flush().await.expect("machine publish flushes");
+    assert_permission_violation_kind(&mut machine_events, "Publish").await;
+
+    let principal = external_executor_principal(&pool_id, &executor_id);
+    let (executor, mut executor_events) =
+        connect_with_event_capture(&fixture.config_with_seed(principal, minted.seed)).await;
+    executor
+        .publish(subject, "{}".into())
+        .await
+        .expect("executor publish is accepted client-side");
+    executor.flush().await.expect("executor publish flushes");
+    assert_permission_violation_kind(&mut executor_events, "Publish").await;
 }
 
 #[tokio::test]

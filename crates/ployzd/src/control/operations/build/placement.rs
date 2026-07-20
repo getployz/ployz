@@ -1,6 +1,6 @@
-use std::collections::BTreeSet;
-
-use ployz_core::build::{BuildAdapter, BuildPlatforms};
+use ployz_core::build::{
+    BuildAdapter, BuildExecutorCapability, BuildPlatforms, ClusterBuildMachineCapability,
+};
 use ployz_core::ids::MachineId;
 use ployz_core::image::OciPlatform;
 use ployz_core::machine::MachineUsabilityReason;
@@ -29,39 +29,44 @@ pub(crate) fn place_build_platforms(
     projection: &DataplaneProjection,
     dataplane_statuses: &[(MachineId, Result<MachineDataplaneStatus, FailureMessage>)],
 ) -> Result<Vec<ClusterBuildExecutorAssignment>, Box<BuildOperationFailure>> {
-    let build_unavailable = facts
-        .iter()
-        .filter_map(|candidate| {
-            let answer = candidate.answer.as_ref()?;
-            (!build_capability_supports_adapter(&answer.build, adapter))
-                .then_some(&candidate.machine_id)
-        })
-        .collect::<BTreeSet<_>>();
-    let (admitted, shared_unusable) =
-        classify_local_execution_admission(facts, projection, dataplane_statuses);
+    let capabilities = classify_cluster_build_capabilities(facts, projection, dataplane_statuses);
     let mut assignments = Vec::new();
     for platform in platforms.iter() {
-        let mut unusable = shared_unusable.clone();
+        let mut unusable = Vec::new();
         let mut eligible = Vec::new();
-        for candidate in &admitted {
-            if build_unavailable.contains(candidate.machine_id) {
-                unusable.push(UnusableMachine {
-                    machine_id: candidate.machine_id.clone(),
+        for candidate in &capabilities {
+            match candidate {
+                ClusterBuildMachineCapability::Answered {
+                    machine_id,
+                    native_platform: _,
+                    capability,
+                } if !capability.supports(adapter) => unusable.push(UnusableMachine {
+                    machine_id: machine_id.clone(),
                     reason: MachineUsabilityReason::BuildUnavailable,
-                });
-                continue;
-            }
-            if *candidate.platform == *platform {
-                eligible.push(candidate.machine_id.clone());
-            } else {
-                unusable.push(UnusableMachine {
-                    machine_id: candidate.machine_id.clone(),
+                }),
+                ClusterBuildMachineCapability::Answered {
+                    machine_id,
+                    native_platform,
+                    capability: _,
+                } if *native_platform == *platform => eligible.push(machine_id.clone()),
+                ClusterBuildMachineCapability::Answered {
+                    machine_id,
+                    native_platform,
+                    capability: _,
+                } => unusable.push(UnusableMachine {
+                    machine_id: machine_id.clone(),
                     reason: MachineUsabilityReason::PlatformMismatch {
                         supported: BuildPlatforms::try_new([platform.clone()])
                             .expect("one requested platform is non-empty"),
-                        reported: candidate.platform.clone(),
+                        reported: native_platform.clone(),
                     },
-                });
+                }),
+                ClusterBuildMachineCapability::Unavailable { machine_id, reason } => {
+                    unusable.push(UnusableMachine {
+                        machine_id: machine_id.clone(),
+                        reason: reason.clone(),
+                    });
+                }
             }
         }
         unusable.sort_by(|left, right| left.machine_id.cmp(&right.machine_id));
@@ -79,20 +84,45 @@ pub(crate) fn place_build_platforms(
     Ok(assignments)
 }
 
-fn build_capability_supports_adapter(
-    capability: &MachineBuildCapability,
-    adapter: &BuildAdapter,
-) -> bool {
+pub(crate) fn classify_cluster_build_capabilities(
+    facts: &[MachinePlacementFacts],
+    projection: &DataplaneProjection,
+    dataplane_statuses: &[(MachineId, Result<MachineDataplaneStatus, FailureMessage>)],
+) -> Vec<ClusterBuildMachineCapability> {
+    let (admitted, unusable) =
+        classify_local_execution_admission(facts, projection, dataplane_statuses);
+    let admitted = admitted
+        .into_iter()
+        .map(|candidate| ClusterBuildMachineCapability::Answered {
+            machine_id: candidate.machine_id.clone(),
+            native_platform: candidate.platform.clone(),
+            capability: build_executor_capability(candidate.build),
+        });
+    let unavailable =
+        unusable
+            .into_iter()
+            .map(|candidate| ClusterBuildMachineCapability::Unavailable {
+                machine_id: candidate.machine_id,
+                reason: candidate.reason,
+            });
+    let mut capabilities = admitted.chain(unavailable).collect::<Vec<_>>();
+    capabilities
+        .sort_by(|left, right| capability_machine_id(left).cmp(capability_machine_id(right)));
+    capabilities
+}
+
+fn capability_machine_id(capability: &ClusterBuildMachineCapability) -> &MachineId {
     match capability {
-        MachineBuildCapability::Available => true,
-        MachineBuildCapability::Unavailable => false,
-        MachineBuildCapability::RailpackUnavailable => match adapter {
-            BuildAdapter::Dockerfile {
-                dockerfile: _,
-                target: _,
-            } => true,
-            BuildAdapter::Railpack { cache_scope: _ } => false,
-        },
+        ClusterBuildMachineCapability::Answered { machine_id, .. }
+        | ClusterBuildMachineCapability::Unavailable { machine_id, .. } => machine_id,
+    }
+}
+
+fn build_executor_capability(capability: &MachineBuildCapability) -> BuildExecutorCapability {
+    match capability {
+        MachineBuildCapability::Available => BuildExecutorCapability::DockerfileAndRailpack,
+        MachineBuildCapability::RailpackUnavailable => BuildExecutorCapability::DockerfileOnly,
+        MachineBuildCapability::Unavailable => BuildExecutorCapability::RuntimeUnavailable,
     }
 }
 
@@ -111,6 +141,7 @@ mod tests {
         NativeDataplaneProjectionStatus, WireGuardConfiguredMtu, WireGuardDetectedMtu,
         WireGuardInterfaceMtu, WireGuardPublicKey, WireGuardStatus,
     };
+    use std::collections::BTreeSet;
 
     use crate::control::role_client::machine::{
         MachinePlacementFacts, MachinePlacementFactsAnswer,
@@ -281,6 +312,35 @@ mod tests {
                 .first()
                 .map(|assignment| assignment.machine_id.as_str()),
             Some("a-no-railpack")
+        );
+    }
+
+    #[test]
+    fn capability_testimony_preserves_adapter_platform_and_silence() {
+        let amd64 = platform("linux", "amd64");
+        let facts = vec![
+            answering_with_build_capability(
+                "dockerfile-only",
+                amd64.clone(),
+                MachineBuildCapability::RailpackUnavailable,
+            ),
+            silent("silent"),
+        ];
+        let (projection, statuses) = ready_dataplane(&facts);
+
+        assert_eq!(
+            classify_cluster_build_capabilities(&facts, &projection, &statuses),
+            vec![
+                ClusterBuildMachineCapability::Answered {
+                    machine_id: MachineId::try_new("dockerfile-only").expect("machine id"),
+                    native_platform: amd64,
+                    capability: BuildExecutorCapability::DockerfileOnly,
+                },
+                ClusterBuildMachineCapability::Unavailable {
+                    machine_id: MachineId::try_new("silent").expect("machine id"),
+                    reason: MachineUsabilityReason::FactsUnavailable,
+                },
+            ]
         );
     }
 

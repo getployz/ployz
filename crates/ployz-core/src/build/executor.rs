@@ -8,6 +8,7 @@ use super::{BuildAdapter, BuildSource, VerifiedBuildSource};
 use crate::deploy::PlatformImage;
 use crate::ids::{BuildExecutorId, BuildPoolId, MachineId, OperationId};
 use crate::image::OciPlatform;
+use crate::machine::MachineUsabilityReason;
 use crate::nats_config::CredentialGrant;
 use crate::operation::{
     BuildLogChunk, BuildPlatformFailure, BuildToolchainEvidence, FailureMessage,
@@ -53,6 +54,59 @@ pub enum BuildExecutorCapability {
     DockerfileAndRailpack,
     DockerfileOnly,
     RuntimeUnavailable,
+}
+
+/// Point-of-use Build Target capability testimony for the operator UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct BuildTargetCapabilities {
+    pub cluster: ClusterBuildTargetCapabilities,
+    pub external_pools: Vec<ExternalBuildPoolCapabilities>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct ClusterBuildTargetCapabilities {
+    pub machines: Vec<ClusterBuildMachineCapability>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "observation", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ClusterBuildMachineCapability {
+    Answered {
+        machine_id: MachineId,
+        native_platform: OciPlatform,
+        capability: BuildExecutorCapability,
+    },
+    Unavailable {
+        machine_id: MachineId,
+        reason: MachineUsabilityReason,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct ExternalBuildPoolCapabilities {
+    pub pool_id: BuildPoolId,
+    pub executors: Vec<ExternalBuildExecutorCapability>,
+    pub reachable_image_seeds: Vec<MachineId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "observation", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ExternalBuildExecutorCapability {
+    Answered {
+        identity: BuildExecutorIdentity,
+        readiness: BuildExecutorReadiness,
+    },
+    Silent {
+        identity: BuildExecutorIdentity,
+    },
 }
 
 impl BuildExecutorCapability {

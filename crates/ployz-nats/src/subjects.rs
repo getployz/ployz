@@ -48,6 +48,8 @@ pub const OPERATOR_DEPLOY_SUBMIT: &str = "plz.v1.rpc.operator.command.deploy.sub
 pub const OPERATOR_SYSTEM_DEPLOY: &str = "plz.v1.rpc.operator.command.system.deploy";
 pub const OPERATOR_DEPLOY_PREVIEW: &str = "plz.v1.rpc.operator.query.deploy.preview";
 pub const OPERATOR_BUILD_SUBMIT: &str = "plz.v1.rpc.operator.command.build.submit";
+pub const OPERATOR_BUILD_TARGET_CAPABILITIES: &str =
+    "plz.v1.rpc.operator.query.build.target.capabilities";
 pub const OPERATOR_BUILD_CANCEL: &str = "plz.v1.rpc.operator.command.build.cancel";
 pub const OPERATOR_DEPLOY_RESERVE: &str = "plz.v1.rpc.operator.command.deploy.reserve";
 pub const OPERATOR_OPS_LIST: &str = "plz.v1.rpc.operator.query.ops.list";
@@ -88,6 +90,7 @@ pub const OPERATOR_INGRESS_CONFIGURE: &str = "plz.v1.rpc.operator.command.ingres
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationApiEndpoint {
+    BuildTargetCapabilities,
     BuildSubmit,
     BuildCancel,
     DeployReserve,
@@ -143,6 +146,7 @@ pub enum OperationApiEndpointExecution {
 
 impl OperationApiEndpoint {
     pub const ALL: &[Self] = &[
+        Self::BuildTargetCapabilities,
         Self::BuildSubmit,
         Self::BuildCancel,
         Self::DeployReserve,
@@ -187,7 +191,8 @@ impl OperationApiEndpoint {
     pub const fn caller(self) -> OperationApiCaller {
         match self {
             Self::MachineJoinRedeem | Self::MachineJoinReport => OperationApiCaller::Join,
-            Self::BuildSubmit
+            Self::BuildTargetCapabilities
+            | Self::BuildSubmit
             | Self::BuildCancel
             | Self::DeployReserve
             | Self::DeployPreview
@@ -228,6 +233,7 @@ impl OperationApiEndpoint {
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
+            Self::BuildTargetCapabilities => "build.target.capabilities",
             Self::BuildSubmit => "build.submit",
             Self::BuildCancel => "build.cancel",
             Self::DeployReserve => "deploy.reserve",
@@ -272,6 +278,7 @@ impl OperationApiEndpoint {
     #[must_use]
     pub const fn subject(self) -> &'static str {
         match self {
+            Self::BuildTargetCapabilities => OPERATOR_BUILD_TARGET_CAPABILITIES,
             Self::BuildSubmit => OPERATOR_BUILD_SUBMIT,
             Self::BuildCancel => OPERATOR_BUILD_CANCEL,
             Self::DeployReserve => OPERATOR_DEPLOY_RESERVE,
@@ -340,7 +347,8 @@ impl OperationApiEndpoint {
             | Self::MachineJoinRedeem
             | Self::MachineJoinReport
             | Self::CoreReplaceReport => OperationApiEndpointExecution::MutatesOperation,
-            Self::MachineList
+            Self::BuildTargetCapabilities
+            | Self::MachineList
             | Self::DeployPreview
             | Self::MachineInspect
             | Self::NetworkStatus
@@ -363,6 +371,7 @@ impl From<ployz_sdk_types::operation_api::OperationApiEndpoint> for OperationApi
         use ployz_sdk_types::operation_api::OperationApiEndpoint as Core;
 
         match endpoint {
+            Core::BuildTargetCapabilities => Self::BuildTargetCapabilities,
             Core::BuildSubmit => Self::BuildSubmit,
             Core::BuildCancel => Self::BuildCancel,
             Core::DeployReserve => Self::DeployReserve,
@@ -843,6 +852,18 @@ mod build_contract_tests {
 
     #[test]
     fn build_endpoint_metadata_is_stable() {
+        assert_eq!(
+            OperationApiEndpoint::BuildTargetCapabilities.name(),
+            "build.target.capabilities"
+        );
+        assert_eq!(
+            OperationApiEndpoint::BuildTargetCapabilities.subject(),
+            "plz.v1.rpc.operator.query.build.target.capabilities"
+        );
+        assert_eq!(
+            OperationApiEndpoint::BuildTargetCapabilities.execution(),
+            OperationApiEndpointExecution::Query
+        );
         assert_eq!(OperationApiEndpoint::BuildSubmit.name(), "build.submit");
         assert_eq!(
             OperationApiEndpoint::BuildSubmit.subject(),
@@ -865,6 +886,12 @@ mod build_contract_tests {
 
     #[test]
     fn sdk_registry_maps_to_build_endpoints() {
+        assert_eq!(
+            OperationApiEndpoint::from(
+                ployz_sdk_types::operation_api::OperationApiEndpoint::BuildTargetCapabilities
+            ),
+            OperationApiEndpoint::BuildTargetCapabilities
+        );
         assert_eq!(
             OperationApiEndpoint::from(
                 ployz_sdk_types::operation_api::OperationApiEndpoint::BuildSubmit
