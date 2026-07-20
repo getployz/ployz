@@ -11,7 +11,7 @@ use ployz_core::operation::{
 };
 use std::time::Duration;
 
-use super::phase::{DeployFailedPhase, DeployFailurePhase};
+use super::phase::{DeployFailedPhase, DeployFailurePhase, VolumeHandoffRollbackState};
 use super::{
     DeployContainer, DeployExecutionCommand, DeployExecutionStep, DeployFailureRecordError,
     DeployOperationRecordError, DeployOperationRecorder, MachineVolumeEnsureError,
@@ -51,6 +51,7 @@ pub(super) struct DeployExecutionFailure {
     failed_phase_cleanup_targets: Vec<DeployContainer>,
     phase: DeployFailurePhase,
     promoted_phases: u16,
+    volume_handoff_rollback: VolumeHandoffRollbackState,
     evidence_record_error: Option<DeployFailureRecordError>,
 }
 
@@ -77,6 +78,7 @@ impl DeployExecutionFailure {
             failed_phase_cleanup_targets: retained_stop_targets.to_vec(),
             phase: DeployFailurePhase::OutsidePhase,
             promoted_phases: 0,
+            volume_handoff_rollback: VolumeHandoffRollbackState::default(),
             evidence_record_error: None,
         }
     }
@@ -92,6 +94,19 @@ impl DeployExecutionFailure {
     pub(super) fn with_promoted_phases(mut self, promoted_phases: u16) -> Self {
         self.promoted_phases = promoted_phases;
         self
+    }
+
+    #[must_use]
+    pub(super) fn with_volume_handoff_rollback(
+        mut self,
+        rollback: VolumeHandoffRollbackState,
+    ) -> Self {
+        self.volume_handoff_rollback = rollback;
+        self
+    }
+
+    pub(super) fn volume_handoff_rollback(&self) -> &VolumeHandoffRollbackState {
+        &self.volume_handoff_rollback
     }
 
     pub(super) fn failed_phase_cleanup_targets(&self) -> &[DeployContainer] {
@@ -430,6 +445,9 @@ impl DeployExecutionStep {
             Self::RecordOperationEvent => "record_operation_event",
             Self::RunContainer { .. } => "run_container",
             Self::RunPreStartHook { .. } => "run_pre_start_hook",
+            Self::StopVolumeOwner { .. } => "stop_volume_owner",
+            Self::QuiesceVolumeConsumer { .. } => "quiesce_volume_consumer",
+            Self::RestartVolumeOwner { .. } => "restart_volume_owner",
             Self::WaitHealthy => "wait_healthy",
             Self::EnsureCertificate { .. } => "ensure_certificate",
             Self::CommitVolumePins => "commit_volume_pins",
@@ -459,6 +477,15 @@ impl DeployExecutionStep {
                 },
                 retained_artifacts,
             },
+            Self::StopVolumeOwner { machine_id, .. }
+            | Self::QuiesceVolumeConsumer { machine_id, .. }
+            | Self::RestartVolumeOwner { machine_id, .. } => {
+                DeployOperationFailure::RuntimeUnavailable {
+                    machine_id: machine_id.clone(),
+                    message: timeout_failure_message(self.as_str(), timeout),
+                    retained_artifacts,
+                }
+            }
             Self::WaitHealthy => DeployOperationFailure::HealthCheckFailed {
                 health_check: HealthCheckFailure::TimedOut {
                     timeout_seconds: timeout_seconds(timeout),

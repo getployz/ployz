@@ -2,7 +2,7 @@ use std::future::Future;
 use std::time::Duration;
 
 use ployz_core::deploy::{ReplicaSlot, VolumeName};
-use ployz_core::ids::{MachineId, StepId, SubjectTokenError};
+use ployz_core::ids::{ContainerId, MachineId, StepId, SubjectTokenError};
 use ployz_core::operation::{ControlPlaneCommitScope, RouteHostname, RouteTarget};
 
 use super::{DeployExecutionCommand, DeployExecutionError};
@@ -35,6 +35,18 @@ pub enum DeployExecutionStep {
     },
     RunPreStartHook {
         machine_id: MachineId,
+    },
+    StopVolumeOwner {
+        machine_id: MachineId,
+        container_id: ContainerId,
+    },
+    QuiesceVolumeConsumer {
+        machine_id: MachineId,
+        container_id: ContainerId,
+    },
+    RestartVolumeOwner {
+        machine_id: MachineId,
+        container_id: ContainerId,
     },
     WaitHealthy,
     EnsureCertificate {

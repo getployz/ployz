@@ -243,6 +243,43 @@ impl DeployTree {
                     self.plain_lines.push(line);
                 }
             }
+            OperationEvent::DeployVolumeHandoffApplied {
+                operation_id,
+                service_id,
+                handoff,
+            } => {
+                self.plain_lines.push(format!(
+                    "deploy {}: {} — prepared volume handoff from {} prior container(s) on {}",
+                    operation_id.as_str(),
+                    service_id.as_str(),
+                    handoff.superseded.len(),
+                    handoff.machine_id.as_str()
+                ));
+            }
+            OperationEvent::DeployVolumeHandoffRollbackFinished {
+                operation_id,
+                service_id,
+                machine_id,
+                outcomes,
+            } => {
+                let restarted = outcomes
+                    .iter()
+                    .filter(|outcome| {
+                        matches!(
+                            outcome.outcome,
+                            ployz_core::operation::DeployVolumeHandoffRollbackOutcome::Restarted
+                        )
+                    })
+                    .count();
+                self.plain_lines.push(format!(
+                    "deploy {}: {} — volume handoff rollback on {} restarted {}/{} prior owner(s)",
+                    operation_id.as_str(),
+                    service_id.as_str(),
+                    machine_id.as_str(),
+                    restarted,
+                    outcomes.len()
+                ));
+            }
             OperationEvent::DeployHealthCheckStarted { operation_id: _ } => {}
             OperationEvent::DeployPhaseStarted { .. }
             | OperationEvent::DeployPhaseFinished { .. } => {}

@@ -19,8 +19,9 @@ use ployz_core::machine::runtime::ManagedContainerKind;
 use ployz_core::operation::{
     CertInterruptionStage, CertificateInterruptionNextAction, CertificateProvisionFailure,
     DeployCompletionOutcome, DeployEvidence, DeployOperationFailure, DeployPhaseOutcome,
-    DeployRunningStage, DeployServiceResult, DeployTransition, FailureMessage,
-    OperationInterruptionCause, PreStartHookFailure, RouteHostname, RouteTarget, UnusableMachine,
+    DeployRunningStage, DeployServiceResult, DeployTransition, DeployVolumeHandoffRestartFailure,
+    DeployVolumeHandoffRollbackOutcome, FailureMessage, OperationInterruptionCause,
+    PreStartHookFailure, RouteHostname, RouteTarget, UnusableMachine,
 };
 use ployz_test_support::ids::{failure_message, namespace_id};
 use std::sync::Arc;
@@ -2456,4 +2457,319 @@ async fn deploy_worker_records_retained_artifacts_when_namespace_lock_is_lost_be
             }
         }))
     );
+}
+
+#[tokio::test]
+async fn volume_handoff_stops_only_running_owner_before_start_and_removes_after_promotion() {
+    let mut recorder = RecordingOperations::default();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_new"]);
+    let mut health = RecordingHealth::healthy();
+    let mut namespace_state = RecordingNamespaceState::stored();
+
+    execute_deploy(
+        volume_backed_replacement_command(&[("ctr_old_running", true), ("ctr_old_stopped", false)]),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect("volume replacement succeeds");
+
+    assert_eq!(
+        runtime.actions.get(..2),
+        Some(
+            &[
+                RuntimeAction::Stop(container_id("ctr_old_running")),
+                RuntimeAction::Run(container_id("ctr_new")),
+            ][..]
+        )
+    );
+    assert!(runtime.restarts.is_empty());
+    let promoted = recorder.phase_records.iter().any(|evidence| {
+        matches!(
+            evidence,
+            DeployEvidence::PhaseFinished {
+                outcome: DeployPhaseOutcome::Promoted,
+                ..
+            }
+        )
+    });
+    assert!(promoted);
+    assert!(
+        runtime
+            .removals
+            .iter()
+            .any(|(_, request)| { request.container_id == container_id("ctr_old_running") })
+    );
+}
+
+#[tokio::test]
+async fn volume_handoff_health_failure_quiesces_new_consumer_then_restarts_old_owner() {
+    let mut recorder = RecordingOperations::default();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_new"]);
+    let mut health = RecordingHealth::unhealthy("machine_a", "ctr_new");
+    let mut namespace_state = RecordingNamespaceState::stored();
+
+    execute_deploy(
+        volume_backed_replacement_command(&[("ctr_old", true)]),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect_err("unhealthy replacement fails");
+
+    assert_eq!(
+        runtime.actions.get(..4),
+        Some(
+            &[
+                RuntimeAction::Stop(container_id("ctr_old")),
+                RuntimeAction::Run(container_id("ctr_new")),
+                RuntimeAction::Stop(container_id("ctr_new")),
+                RuntimeAction::Restart(container_id("ctr_old")),
+            ][..]
+        )
+    );
+    assert!(recorder.records.iter().any(|record| matches!(
+        record,
+        RecordedOperation::VolumeHandoffRollbackFinished { outcomes }
+            if matches!(outcomes.as_slice(), [outcome]
+                if outcome.outcome == DeployVolumeHandoffRollbackOutcome::Restarted)
+    )));
+}
+
+#[tokio::test]
+async fn volume_handoff_commit_failure_rolls_back_but_post_commit_evidence_failure_does_not() {
+    let command = volume_backed_replacement_command(&[("ctr_old", true)]);
+    let mut recorder = RecordingOperations::default();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_new"]);
+    let mut health = RecordingHealth::healthy();
+    execute_deploy(
+        command,
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut RecordingNamespaceState::lost_lock_serving_commits(),
+        },
+    )
+    .await
+    .expect_err("failed promotion rolls back");
+    assert_eq!(runtime.restarts.len(), 1);
+
+    let mut recorder = RecordingOperations::fail_phase_finished_evidence_times(1);
+    let mut runtime = RecordingRuntime::with_containers(["ctr_new"]);
+    execute_deploy(
+        volume_backed_replacement_command(&[("ctr_old", true)]),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            machine_runtime: &mut runtime,
+            health_checker: &mut RecordingHealth::healthy(),
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut RecordingNamespaceState::stored(),
+        },
+    )
+    .await
+    .expect_err("post-commit evidence failure remains a deploy failure");
+    assert!(runtime.restarts.is_empty());
+}
+
+#[tokio::test]
+async fn volume_handoff_restart_failure_is_typed_and_pre_stopped_owner_is_never_restarted() {
+    let mut recorder = RecordingOperations::default();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_new"]).with_restart_failure();
+    execute_deploy(
+        volume_backed_replacement_command(&[("ctr_old", true), ("ctr_pre_stopped", false)]),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            machine_runtime: &mut runtime,
+            health_checker: &mut RecordingHealth::unhealthy("machine_a", "ctr_new"),
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut RecordingNamespaceState::stored(),
+        },
+    )
+    .await
+    .expect_err("health failure exposes rollback result");
+
+    assert_eq!(runtime.restarts.len(), 1);
+    assert_eq!(
+        runtime
+            .restarts
+            .first()
+            .map(|(_, request)| &request.container_id),
+        Some(&container_id("ctr_old"))
+    );
+    assert!(recorder.records.iter().any(|record| matches!(
+        record,
+        RecordedOperation::VolumeHandoffRollbackFinished { outcomes }
+            if matches!(outcomes.as_slice(), [outcome]
+                if matches!(outcome.outcome,
+                    DeployVolumeHandoffRollbackOutcome::RestartFailed {
+                        failure: DeployVolumeHandoffRestartFailure::StartFailed { .. }
+                    }))
+    )));
+}
+
+#[tokio::test]
+async fn volume_handoff_partial_owner_stop_failure_restarts_only_confirmed_stops() {
+    let mut recorder = RecordingOperations::default();
+    let mut runtime =
+        RecordingRuntime::with_containers(["ctr_new"]).with_stop_failure_for("ctr_old_2");
+    execute_deploy(
+        volume_backed_replacement_command(&[("ctr_old_1", true), ("ctr_old_2", true)]),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            machine_runtime: &mut runtime,
+            health_checker: &mut RecordingHealth::healthy(),
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut RecordingNamespaceState::stored(),
+        },
+    )
+    .await
+    .expect_err("second owner stop fails");
+
+    assert!(runtime.requests.is_empty());
+    assert_eq!(runtime.restarts.len(), 1);
+    assert_eq!(
+        runtime
+            .restarts
+            .first()
+            .map(|(_, request)| &request.container_id),
+        Some(&container_id("ctr_old_1"))
+    );
+}
+
+#[tokio::test]
+async fn volume_handoff_quiescence_failure_never_restarts_an_old_owner() {
+    let mut recorder = RecordingOperations::default();
+    let mut runtime =
+        RecordingRuntime::with_containers(["ctr_new"]).with_stop_failure_for("ctr_new");
+    execute_deploy(
+        volume_backed_replacement_command(&[("ctr_old", true)]),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            machine_runtime: &mut runtime,
+            health_checker: &mut RecordingHealth::unhealthy("machine_a", "ctr_new"),
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut RecordingNamespaceState::stored(),
+        },
+    )
+    .await
+    .expect_err("new consumer cannot be quiesced");
+
+    assert!(runtime.restarts.is_empty());
+    assert!(recorder.records.iter().any(|record| matches!(
+        record,
+        RecordedOperation::VolumeHandoffRollbackFinished { outcomes }
+            if matches!(outcomes.as_slice(), [outcome]
+                if outcome.outcome
+                    == DeployVolumeHandoffRollbackOutcome::NotRestartedNewConsumerQuiescenceUnconfirmed)
+    )));
+}
+
+#[tokio::test]
+async fn volume_handoff_start_failure_restarts_old_owner_without_quiescing_unstarted_container() {
+    let mut recorder = RecordingOperations::default();
+    let mut runtime = RecordingRuntime::failing_start("ctr_new");
+    execute_deploy(
+        volume_backed_replacement_command(&[("ctr_old", true)]),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            machine_runtime: &mut runtime,
+            health_checker: &mut RecordingHealth::healthy(),
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut RecordingNamespaceState::stored(),
+        },
+    )
+    .await
+    .expect_err("replacement start fails");
+
+    assert_eq!(
+        runtime.actions,
+        vec![
+            RuntimeAction::Stop(container_id("ctr_old")),
+            RuntimeAction::Run(container_id("ctr_new")),
+            RuntimeAction::Restart(container_id("ctr_old")),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn volume_handoff_hook_exit_restarts_old_owner_but_ambiguous_hook_failure_does_not() {
+    let mut recorder = RecordingOperations::default();
+    let mut runtime =
+        RecordingRuntime::with_containers(["ctr_new"]).with_hook_outcome("ctr_hook", 1);
+    execute_deploy(
+        volume_backed_replacement_command_with_hook(&[("ctr_old", true)]),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            machine_runtime: &mut runtime,
+            health_checker: &mut RecordingHealth::healthy(),
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut RecordingNamespaceState::stored(),
+        },
+    )
+    .await
+    .expect_err("failed hook exits before starting the service");
+    assert_eq!(runtime.restarts.len(), 1);
+    assert!(runtime.requests.is_empty());
+
+    let mut recorder = RecordingOperations::default();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_new"]);
+    execute_deploy(
+        volume_backed_replacement_command_with_hook(&[("ctr_old", true)]),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            machine_runtime: &mut runtime,
+            health_checker: &mut RecordingHealth::healthy(),
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut RecordingNamespaceState::stored(),
+        },
+    )
+    .await
+    .expect_err("missing hook response leaves consumer state ambiguous");
+    assert!(runtime.restarts.is_empty());
+    assert!(recorder.records.iter().any(|record| matches!(
+        record,
+        RecordedOperation::VolumeHandoffRollbackFinished { outcomes }
+            if matches!(outcomes.as_slice(), [outcome]
+                if outcome.outcome
+                    == DeployVolumeHandoffRollbackOutcome::NotRestartedNewConsumerQuiescenceUnconfirmed)
+    )));
+}
+
+#[tokio::test]
+async fn volume_handoff_applied_evidence_failure_rolls_back_before_any_new_consumer_runs() {
+    let mut recorder = RecordingOperations::fail_handoff_applied_evidence_once();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_new"]);
+    execute_deploy(
+        volume_backed_replacement_command(&[("ctr_old", true)]),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            machine_runtime: &mut runtime,
+            health_checker: &mut RecordingHealth::healthy(),
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut RecordingNamespaceState::stored(),
+        },
+    )
+    .await
+    .expect_err("handoff evidence is required before starting the replacement");
+
+    assert_eq!(
+        runtime.actions,
+        vec![
+            RuntimeAction::Stop(container_id("ctr_old")),
+            RuntimeAction::Restart(container_id("ctr_old")),
+        ]
+    );
+    assert!(runtime.requests.is_empty());
 }

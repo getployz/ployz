@@ -256,6 +256,7 @@ fn pushed_platforms_are_validated_across_all_phases_before_execution() {
             },
             DeployPhasePlan {
                 services: vec![DeployServicePlan {
+                    volume_handoff: None,
                     service_id: ServiceId::try_new("api").expect("service id"),
                     placement: ployz_core::deploy::DeployServicePlacement::Replicated,
                     steps: vec![DeployPlanStep::RunContainer {

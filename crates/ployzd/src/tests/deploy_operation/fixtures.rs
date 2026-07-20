@@ -18,8 +18,8 @@ use ployz_core::machine::runtime::{
 };
 use ployz_core::operation::{
     CertificateProvisionFailure, DeployCleanupFailure, DeployEvidence, DeployRunningStage,
-    DeployTransition, FailureMessage, OperatorHint, RetainedArtifact, RouteHostname, RoutePort,
-    RouteTarget, UnusableMachine,
+    DeployTransition, DeployVolumeHandoffRollbackContainerOutcome, FailureMessage, OperatorHint,
+    RetainedArtifact, RouteHostname, RoutePort, RouteTarget, UnusableMachine,
 };
 pub(crate) use ployz_test_support::containers;
 use ployz_test_support::fixtures::serving_target_entry;
@@ -65,6 +65,7 @@ pub(super) struct RecordingOperations {
     fail_completed_transition_remaining: usize,
     fail_cleanup_evidence_remaining: usize,
     fail_phase_finished_evidence_remaining: usize,
+    fail_handoff_applied_evidence_remaining: usize,
     pub(super) completed_transition_attempts: usize,
     expected_operation_id: OperationId,
 }
@@ -83,6 +84,7 @@ impl RecordingOperations {
             fail_completed_transition_remaining: 0,
             fail_cleanup_evidence_remaining: 0,
             fail_phase_finished_evidence_remaining: 0,
+            fail_handoff_applied_evidence_remaining: 0,
             completed_transition_attempts: 0,
             expected_operation_id,
         }
@@ -95,6 +97,7 @@ impl RecordingOperations {
             fail_completed_transition_remaining: times,
             fail_cleanup_evidence_remaining: 0,
             fail_phase_finished_evidence_remaining: 0,
+            fail_handoff_applied_evidence_remaining: 0,
             completed_transition_attempts: 0,
             expected_operation_id: operation_id("op_123"),
         }
@@ -107,6 +110,7 @@ impl RecordingOperations {
             fail_completed_transition_remaining: 0,
             fail_cleanup_evidence_remaining: times,
             fail_phase_finished_evidence_remaining: 0,
+            fail_handoff_applied_evidence_remaining: 0,
             completed_transition_attempts: 0,
             expected_operation_id: operation_id("op_123"),
         }
@@ -119,6 +123,20 @@ impl RecordingOperations {
             fail_completed_transition_remaining: 0,
             fail_cleanup_evidence_remaining: 0,
             fail_phase_finished_evidence_remaining: times,
+            fail_handoff_applied_evidence_remaining: 0,
+            completed_transition_attempts: 0,
+            expected_operation_id: operation_id("op_123"),
+        }
+    }
+
+    pub(super) fn fail_handoff_applied_evidence_once() -> Self {
+        Self {
+            records: Vec::new(),
+            phase_records: Vec::new(),
+            fail_completed_transition_remaining: 0,
+            fail_cleanup_evidence_remaining: 0,
+            fail_phase_finished_evidence_remaining: 0,
+            fail_handoff_applied_evidence_remaining: 1,
             completed_transition_attempts: 0,
             expected_operation_id: operation_id("op_123"),
         }
@@ -142,6 +160,10 @@ pub(super) enum RecordedOperation {
     ContainerStarted {
         machine_id: MachineId,
         container_id: ContainerId,
+    },
+    VolumeHandoffApplied,
+    VolumeHandoffRollbackFinished {
+        outcomes: Vec<DeployVolumeHandoffRollbackContainerOutcome>,
     },
     CleanupFinished {
         removed: Vec<DeployCleanupContainer>,
@@ -225,6 +247,19 @@ impl DeployOperationRecorder for RecordingOperations {
                     container_id,
                 });
             }
+            DeployEvidence::VolumeHandoffApplied { .. } => {
+                if self.fail_handoff_applied_evidence_remaining > 0 {
+                    self.fail_handoff_applied_evidence_remaining -= 1;
+                    return Err(DeployOperationRecordError::Synthetic {
+                        message: "volume handoff evidence record failed",
+                    });
+                }
+                self.records.push(RecordedOperation::VolumeHandoffApplied);
+            }
+            DeployEvidence::VolumeHandoffRollbackFinished { outcomes, .. } => {
+                self.records
+                    .push(RecordedOperation::VolumeHandoffRollbackFinished { outcomes });
+            }
             DeployEvidence::HealthCheckStarted => {
                 self.records.push(RecordedOperation::HealthCheckStarted);
             }
@@ -263,10 +298,12 @@ impl DeployOperationRecorder for RecordingOperations {
 }
 
 pub(super) struct RecordingRuntime {
+    pub(super) actions: Vec<RuntimeAction>,
     pub(super) resolutions: Vec<(MachineId, MachineContainerResolveImageRpcRequest)>,
     pub(super) requests: Vec<(MachineId, MachineContainerRunRpcRequest)>,
     pub(super) hook_requests: Vec<(MachineId, MachineContainerRunHookRpcRequest)>,
     pub(super) stops: Vec<(MachineId, MachineContainerStopRpcRequest)>,
+    pub(super) restarts: Vec<(MachineId, MachineContainerRestartRpcRequest)>,
     pub(super) removals: Vec<(MachineId, MachineContainerRemoveRpcRequest)>,
     pub(super) image_removals: Vec<(MachineId, ployz_core::image::ImageRemoveRequest)>,
     pub(super) image_ensures: Vec<(MachineId, ployz_core::image::ImageEnsureRequest)>,
@@ -283,6 +320,16 @@ pub(super) struct RecordingRuntime {
     fail_start_after_first: bool,
     fail_remove: bool,
     fail_stop: bool,
+    fail_stop_for: Vec<ContainerId>,
+    fail_restart: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum RuntimeAction {
+    Run(ContainerId),
+    Stop(ContainerId),
+    Restart(ContainerId),
+    Remove(ContainerId),
 }
 
 /// How the fake handles serving-target commits; routes always record.
@@ -658,10 +705,12 @@ impl RecordingRuntime {
 
     pub(super) fn with_containers<const N: usize>(containers: [&str; N]) -> Self {
         Self {
+            actions: Vec::new(),
             resolutions: Vec::new(),
             requests: Vec::new(),
             hook_requests: Vec::new(),
             stops: Vec::new(),
+            restarts: Vec::new(),
             removals: Vec::new(),
             image_removals: Vec::new(),
             image_ensures: Vec::new(),
@@ -678,15 +727,19 @@ impl RecordingRuntime {
             fail_start_after_first: false,
             fail_remove: false,
             fail_stop: false,
+            fail_stop_for: Vec::new(),
+            fail_restart: false,
         }
     }
 
     pub(super) fn reusing_containers<const N: usize>(containers: [&str; N]) -> Self {
         Self {
+            actions: Vec::new(),
             resolutions: Vec::new(),
             requests: Vec::new(),
             hook_requests: Vec::new(),
             stops: Vec::new(),
+            restarts: Vec::new(),
             removals: Vec::new(),
             image_removals: Vec::new(),
             image_ensures: Vec::new(),
@@ -703,15 +756,19 @@ impl RecordingRuntime {
             fail_start_after_first: false,
             fail_remove: false,
             fail_stop: false,
+            fail_stop_for: Vec::new(),
+            fail_restart: false,
         }
     }
 
     pub(super) fn starting_existing_containers<const N: usize>(containers: [&str; N]) -> Self {
         Self {
+            actions: Vec::new(),
             resolutions: Vec::new(),
             requests: Vec::new(),
             hook_requests: Vec::new(),
             stops: Vec::new(),
+            restarts: Vec::new(),
             removals: Vec::new(),
             image_removals: Vec::new(),
             image_ensures: Vec::new(),
@@ -728,15 +785,19 @@ impl RecordingRuntime {
             fail_start_after_first: false,
             fail_remove: false,
             fail_stop: false,
+            fail_stop_for: Vec::new(),
+            fail_restart: false,
         }
     }
 
     pub(super) fn failing_after_first_container() -> Self {
         Self {
+            actions: Vec::new(),
             resolutions: Vec::new(),
             requests: Vec::new(),
             hook_requests: Vec::new(),
             stops: Vec::new(),
+            restarts: Vec::new(),
             removals: Vec::new(),
             image_removals: Vec::new(),
             image_ensures: Vec::new(),
@@ -753,6 +814,8 @@ impl RecordingRuntime {
             fail_start_after_first: false,
             fail_remove: false,
             fail_stop: false,
+            fail_stop_for: Vec::new(),
+            fail_restart: false,
         }
     }
 
@@ -761,10 +824,12 @@ impl RecordingRuntime {
         hang_reached: Arc<tokio::sync::Notify>,
     ) -> Self {
         Self {
+            actions: Vec::new(),
             resolutions: Vec::new(),
             requests: Vec::new(),
             hook_requests: Vec::new(),
             stops: Vec::new(),
+            restarts: Vec::new(),
             removals: Vec::new(),
             image_removals: Vec::new(),
             image_ensures: Vec::new(),
@@ -781,15 +846,19 @@ impl RecordingRuntime {
             fail_start_after_first: false,
             fail_remove: false,
             fail_stop: false,
+            fail_stop_for: Vec::new(),
+            fail_restart: false,
         }
     }
 
     pub(super) fn failing_start(container_id: &str) -> Self {
         Self {
+            actions: Vec::new(),
             resolutions: Vec::new(),
             requests: Vec::new(),
             hook_requests: Vec::new(),
             stops: Vec::new(),
+            restarts: Vec::new(),
             removals: Vec::new(),
             image_removals: Vec::new(),
             image_ensures: Vec::new(),
@@ -806,6 +875,8 @@ impl RecordingRuntime {
             fail_start_after_first: false,
             fail_remove: false,
             fail_stop: false,
+            fail_stop_for: Vec::new(),
+            fail_restart: false,
         }
     }
 
@@ -828,6 +899,16 @@ impl RecordingRuntime {
 
     pub(super) fn with_stop_failure(mut self) -> Self {
         self.fail_stop = true;
+        self
+    }
+
+    pub(super) fn with_stop_failure_for(mut self, container_id: &str) -> Self {
+        self.fail_stop_for.push(self::container_id(container_id));
+        self
+    }
+
+    pub(super) fn with_restart_failure(mut self) -> Self {
+        self.fail_restart = true;
         self
     }
 }
@@ -924,6 +1005,7 @@ impl MachineContainerRuntime for RecordingRuntime {
                 },
             });
         };
+        self.actions.push(RuntimeAction::Run(container_id.clone()));
 
         if self.fail_start || (self.fail_start_after_first && self.requests.len() > 1) {
             return Err(MachineContainerRuntimeError::CreatedContainerStartFailed {
@@ -970,6 +1052,8 @@ impl MachineContainerRuntime for RecordingRuntime {
         request: MachineContainerRemoveRpcRequest,
     ) -> Result<(), PreStartHookRuntimeError> {
         let container_id = request.container_id.clone();
+        self.actions
+            .push(RuntimeAction::Remove(container_id.clone()));
         self.removals.push((machine_id.clone(), request));
         if self.fail_remove {
             return Err(PreStartHookRuntimeError::CleanupFailed {
@@ -992,6 +1076,8 @@ impl MachineContainerRuntime for RecordingRuntime {
         request: MachineContainerRemoveRpcRequest,
     ) -> Result<(), MachineContainerRuntimeError> {
         let container_id = request.container_id.clone();
+        self.actions
+            .push(RuntimeAction::Remove(container_id.clone()));
         self.removals.push((machine_id.clone(), request));
         if self.fail_remove {
             return Err(MachineContainerRuntimeError::RemoveContainerFailed {
@@ -1015,8 +1101,9 @@ impl MachineContainerRuntime for RecordingRuntime {
         request: MachineContainerStopRpcRequest,
     ) -> Result<(), MachineContainerRuntimeError> {
         let container_id = request.container_id.clone();
+        self.actions.push(RuntimeAction::Stop(container_id.clone()));
         self.stops.push((machine_id.clone(), request));
-        if self.fail_stop {
+        if self.fail_stop || self.fail_stop_for.contains(&container_id) {
             return Err(MachineContainerRuntimeError::StopContainerFailed {
                 machine_id: machine_id.clone(),
                 container_id: container_id.clone(),
@@ -1037,14 +1124,17 @@ impl MachineContainerRuntime for RecordingRuntime {
         request: MachineContainerRestartRpcRequest,
     ) -> Result<(), MachineContainerRuntimeError> {
         let container_id = request.container_id.clone();
-        self.stops.push((
-            machine_id.clone(),
-            MachineContainerStopRpcRequest {
-                operation_id: request.operation_id,
-                container_id,
-                expected_identity: request.expected_identity,
-            },
-        ));
+        self.actions
+            .push(RuntimeAction::Restart(container_id.clone()));
+        self.restarts.push((machine_id.clone(), request));
+        if self.fail_restart {
+            return Err(MachineContainerRuntimeError::RestartContainerFailed {
+                machine_id: machine_id.clone(),
+                container_id: container_id.clone(),
+                message: runtime_failure_message("container restart failed: permission denied"),
+                inspect_hint: inspect_hint(container_id.as_str()),
+            });
+        }
         Ok(())
     }
 }
@@ -1645,6 +1735,84 @@ pub(super) fn deploy_command_without_eligible_machines(replicas: u16) -> DeployE
 
 pub(super) fn volume_backed_deploy_command(replicas: u16) -> DeployExecutionInput {
     volume_backed_deploy_command_with_pins(replicas, Vec::new())
+}
+
+pub(super) fn volume_backed_replacement_command(
+    old_containers: &[(&str, bool)],
+) -> DeployExecutionInput {
+    volume_backed_replacement_command_with_options(old_containers, false)
+}
+
+pub(super) fn volume_backed_replacement_command_with_hook(
+    old_containers: &[(&str, bool)],
+) -> DeployExecutionInput {
+    volume_backed_replacement_command_with_options(old_containers, true)
+}
+
+fn volume_backed_replacement_command_with_options(
+    old_containers: &[(&str, bool)],
+    with_hook: bool,
+) -> DeployExecutionInput {
+    let observations = old_containers.iter().map(|(container, running)| {
+        let observation = containers::observation("machine_a", container).with(
+            containers::identity("svc_api")
+                .entry("entry_old")
+                .operation("op_existing")
+                .step(&format!("existing_{container}")),
+        );
+        if *running {
+            observation.running_unroutable().build()
+        } else {
+            observation.exited().build()
+        }
+    });
+    let snapshot =
+        MachineContainerObservationSnapshot::try_new(machine_id("machine_a"), observations)
+            .expect("valid volume-owner observations");
+    let mut request = target_deploy_request(1);
+    request
+        .volumes
+        .insert(volume_name("postgres_data"), VolumeSpec::Plain);
+    let [service] = request.services.as_mut_slice() else {
+        panic!("deploy request fixture has one service");
+    };
+    service.runtime.volume_mounts = vec![ServiceVolumeMount {
+        volume_name: volume_name("postgres_data"),
+        target: ContainerMountPath::try_new("/var/lib/postgresql/data").expect("valid mount path"),
+    }];
+    if with_hook {
+        service.pre_start = Some(PreStartHook {
+            command: ContainerCommand::try_new(vec!["true".to_owned()])
+                .expect("valid hook command"),
+        });
+    }
+    deploy_execution_input(
+        operation_id("op_123"),
+        request,
+        DeployExecutionFacts {
+            machine_platforms: std::collections::BTreeMap::new(),
+            seed_clock_testimony: std::collections::BTreeMap::new(),
+            machine_storage_testimony: std::collections::BTreeMap::new(),
+            unusable_machines: Vec::new(),
+            namespace_route_bindings: Vec::new(),
+            namespace_serving_entries: Vec::new(),
+            namespace_volume_pins: vec![VolumePinState::plain(
+                namespace_id("default"),
+                volume_name("postgres_data"),
+                machine_id("machine_a"),
+            )],
+            dataplane_members: Vec::new(),
+            eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
+            namespace_cleanup_candidates: namespace_cleanup_candidates(std::slice::from_ref(
+                &snapshot,
+            )),
+            observed_machines: vec![snapshot],
+            automatic_hostname_mode: AutomaticHostnameMode::Disabled,
+            gateway_certificate_targets: Vec::new(),
+            ployz_gateway_certificate_targets: Vec::new(),
+            step_timeout: Duration::from_secs(5),
+        },
+    )
 }
 
 fn volume_backed_deploy_command_with_pins(

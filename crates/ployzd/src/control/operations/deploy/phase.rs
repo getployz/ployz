@@ -1,7 +1,9 @@
 use ployz_core::deploy::{
-    DeployPhasePlan, DeployPlanStep, ExistingReplicaCreationGate, ImageSource,
+    DeployCleanupContainer, DeployPhasePlan, DeployPlanStep, DeployVolumeHandoffPlan,
+    DeployVolumeHandoffPriorState, ExistingReplicaCreationGate, ImageSource,
 };
-use ployz_core::ids::ServiceId;
+use ployz_core::ids::{ContainerId, MachineId, ServiceId, StepId};
+use ployz_core::machine::runtime::{ManagedContainerIdentity, ManagedContainerKind};
 use ployz_core::operation::{
     ControlPlaneCommitScope, DeployEvidence, DeployPhaseNumber, DeployPhaseOutcome,
     DeployRunningStage, DeployServiceResult,
@@ -13,10 +15,12 @@ use super::{
     CertificateProvisioner, DeployContainer, DeployExecutionCommand, DeployExecutionError,
     DeployExecutionStep, DeployHealthCheckError, DeployHealthChecker, DeployOperationRecorder,
     DeployPhasePromotion, DeployServiceExecutionCommand, MachineContainerRuntime,
-    NamespaceStateCommitter, RunContainerDisposition, deploy_step_id, record_evidence,
-    record_running_stage, requires_docker_healthcheck, run_deploy_step, run_pre_start_hook,
-    service_result, with_step_timeout,
+    MachineContainerRuntimeError, NamespaceStateCommitter, PreStartHookRuntimeError,
+    RunContainerDisposition, deploy_step_id, record_evidence, record_running_stage,
+    requires_docker_healthcheck, run_deploy_step, run_pre_start_hook, service_result,
+    with_step_timeout,
 };
+use crate::roles::machine::protocol::MachineContainerStopRpcRequest;
 
 #[derive(Debug, Clone)]
 pub(super) enum DeployFailurePhase {
@@ -51,6 +55,14 @@ struct ActiveDeployPhase {
     phase_service_ids: Vec<ServiceId>,
     completed_services: Vec<DeployServiceResult>,
     skipped_service_ids: Vec<ServiceId>,
+    volume_handoff: VolumeHandoffRollbackState,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(super) struct VolumeHandoffRollbackState {
+    pub stopped_owners: Vec<DeployCleanupContainer>,
+    pub new_consumers: Vec<DeployCleanupContainer>,
+    pub new_consumer_quiescence_uncertain: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -110,6 +122,7 @@ impl<'a> DeployRun<'a> {
             phase_service_ids,
             completed_services: Vec::new(),
             skipped_service_ids,
+            volume_handoff: VolumeHandoffRollbackState::default(),
         });
     }
 
@@ -117,7 +130,21 @@ impl<'a> DeployRun<'a> {
         &mut self,
         started: DeployContainer,
         disposition: RunContainerDisposition,
+        volume_handoff: bool,
     ) {
+        if volume_handoff {
+            let target = DeployCleanupContainer {
+                machine_id: started.machine_id.clone(),
+                container_id: started.container_id.clone(),
+                identity: super::retained_container_identity(self.command, &started),
+            };
+            let DeployRunPhase::During(phase) = &mut self.phase else {
+                unreachable!("container work requires an active deploy phase");
+            };
+            if !phase.volume_handoff.new_consumers.contains(&target) {
+                phase.volume_handoff.new_consumers.push(target);
+            }
+        }
         match disposition {
             RunContainerDisposition::Created => {
                 let DeployRunPhase::During(phase) = &mut self.phase else {
@@ -127,6 +154,31 @@ impl<'a> DeployRun<'a> {
                 phase.phase_created_containers.push(started);
             }
             RunContainerDisposition::Reused => {}
+        }
+    }
+
+    fn volume_owner_stopped(&mut self, target: DeployCleanupContainer) {
+        let DeployRunPhase::During(phase) = &mut self.phase else {
+            unreachable!("volume handoff requires an active deploy phase");
+        };
+        if !phase.volume_handoff.stopped_owners.contains(&target) {
+            phase.volume_handoff.stopped_owners.push(target);
+        }
+    }
+
+    fn mark_new_consumer_quiescence_uncertain(&mut self) {
+        let DeployRunPhase::During(phase) = &mut self.phase else {
+            unreachable!("volume handoff requires an active deploy phase");
+        };
+        phase.volume_handoff.new_consumer_quiescence_uncertain = true;
+    }
+
+    fn known_volume_consumer(&mut self, target: DeployCleanupContainer) {
+        let DeployRunPhase::During(phase) = &mut self.phase else {
+            unreachable!("volume handoff requires an active deploy phase");
+        };
+        if !phase.volume_handoff.new_consumers.contains(&target) {
+            phase.volume_handoff.new_consumers.push(target);
         }
     }
 
@@ -247,16 +299,208 @@ impl<'a> DeployRun<'a> {
         let DeployRunPhase::During(phase) = &self.phase else {
             return failure.with_promoted_phases(self.promoted_phases);
         };
-        failure.with_phase(
-            DeployFailedPhase {
-                phase: phase.phase,
-                service_ids: phase.phase_service_ids.clone(),
-                completed_services: phase.completed_services.clone(),
-                skipped_service_ids: phase.skipped_service_ids.clone(),
-                failed_service_id,
+        failure
+            .with_volume_handoff_rollback(phase.volume_handoff.clone())
+            .with_phase(
+                DeployFailedPhase {
+                    phase: phase.phase,
+                    service_ids: phase.phase_service_ids.clone(),
+                    completed_services: phase.completed_services.clone(),
+                    skipped_service_ids: phase.skipped_service_ids.clone(),
+                    failed_service_id,
+                },
+                self.promoted_phases,
+            )
+    }
+}
+
+async fn stop_volume_owners<R, N>(
+    command: &DeployExecutionCommand,
+    service_id: &ServiceId,
+    handoff: &DeployVolumeHandoffPlan,
+    run: &mut DeployRun<'_>,
+    recorder: &mut R,
+    machine_runtime: &mut N,
+) -> Result<(), DeployExecutionFailure>
+where
+    R: DeployOperationRecorder,
+    N: MachineContainerRuntime,
+{
+    for participant in handoff
+        .superseded
+        .iter()
+        .filter(|participant| participant.prior_state == DeployVolumeHandoffPriorState::Running)
+    {
+        let target = &participant.target;
+        with_step_timeout(
+            command,
+            DeployExecutionStep::StopVolumeOwner {
+                machine_id: target.machine_id.clone(),
+                container_id: target.container_id.clone(),
             },
-            self.promoted_phases,
+            async {
+                machine_runtime
+                    .stop_container(
+                        &target.machine_id,
+                        MachineContainerStopRpcRequest {
+                            operation_id: command.operation_id().clone(),
+                            container_id: target.container_id.clone(),
+                            expected_identity: target.identity.clone(),
+                        },
+                    )
+                    .await
+                    .map_err(DeployExecutionError::RunContainer)
+            },
         )
+        .await
+        .map_err(|source| run.fail_service(source, service_id.clone()))?;
+        run.volume_owner_stopped(target.clone());
+    }
+
+    record_evidence(
+        command,
+        recorder,
+        DeployEvidence::VolumeHandoffApplied {
+            service_id: service_id.clone(),
+            handoff: handoff.clone(),
+        },
+    )
+    .await
+    .map_err(|source| run.fail_service(source, service_id.clone()))
+}
+
+fn consumer_target(
+    command: &DeployExecutionCommand,
+    service: &DeployServiceExecutionCommand,
+    machine_id: MachineId,
+    container_id: ContainerId,
+    step_id: StepId,
+    kind: ManagedContainerKind,
+) -> DeployCleanupContainer {
+    DeployCleanupContainer {
+        machine_id,
+        container_id,
+        identity: ManagedContainerIdentity {
+            namespace_id: command.request.namespace_id.clone(),
+            service_id: service.service.service_id.clone(),
+            namespace_revision_entry_id: service.namespace_revision_entry_id(
+                &command.request.namespace_id,
+                &command.environment_revision_key,
+            ),
+            operation_id: command.operation_id().clone(),
+            step_id,
+            kind,
+        },
+    }
+}
+
+fn capture_run_failure_consumers(
+    command: &DeployExecutionCommand,
+    service: &DeployServiceExecutionCommand,
+    run: &mut DeployRun<'_>,
+    source: &DeployExecutionError,
+) {
+    if let DeployExecutionError::RunContainer(
+        MachineContainerRuntimeError::OperationStepAmbiguous {
+            machine_id,
+            operation_id: _,
+            step_id,
+            container_ids,
+        },
+    ) = source
+        && !container_ids.is_empty()
+    {
+        for container_id in container_ids {
+            run.known_volume_consumer(consumer_target(
+                command,
+                service,
+                machine_id.clone(),
+                container_id.clone(),
+                step_id.clone(),
+                ManagedContainerKind::Service,
+            ));
+        }
+        return;
+    }
+    if matches!(
+        source,
+        DeployExecutionError::RunContainer(MachineContainerRuntimeError::Unavailable { .. })
+            | DeployExecutionError::RunContainer(
+                MachineContainerRuntimeError::OperationStepAmbiguous { .. },
+            )
+            | DeployExecutionError::StepTimedOut {
+                step: DeployExecutionStep::RunContainer { .. },
+                ..
+            }
+    ) {
+        run.mark_new_consumer_quiescence_uncertain();
+    }
+}
+
+fn capture_hook_failure_consumers(
+    command: &DeployExecutionCommand,
+    service: &DeployServiceExecutionCommand,
+    run: &mut DeployRun<'_>,
+    source: &DeployExecutionError,
+) {
+    let Ok(step_id) = StepId::try_new("pre_start") else {
+        run.mark_new_consumer_quiescence_uncertain();
+        return;
+    };
+    if let DeployExecutionError::PreStartHook(PreStartHookRuntimeError::OperationStepAmbiguous {
+        machine_id,
+        container_ids,
+        ..
+    }) = source
+        && !container_ids.is_empty()
+    {
+        for container_id in container_ids {
+            run.known_volume_consumer(consumer_target(
+                command,
+                service,
+                machine_id.clone(),
+                container_id.clone(),
+                step_id.clone(),
+                ManagedContainerKind::Predeploy,
+            ));
+        }
+        return;
+    }
+    if let DeployExecutionError::PreStartHook(
+        PreStartHookRuntimeError::WaitFailed {
+            machine_id,
+            container_id,
+            ..
+        }
+        | PreStartHookRuntimeError::TimedOut {
+            machine_id,
+            container_id,
+            ..
+        },
+    ) = source
+    {
+        run.known_volume_consumer(consumer_target(
+            command,
+            service,
+            machine_id.clone(),
+            container_id.clone(),
+            step_id,
+            ManagedContainerKind::Predeploy,
+        ));
+        return;
+    }
+    if matches!(
+        source,
+        DeployExecutionError::PreStartHook(PreStartHookRuntimeError::Unavailable { .. })
+            | DeployExecutionError::PreStartHook(
+                PreStartHookRuntimeError::OperationStepAmbiguous { .. }
+            )
+            | DeployExecutionError::StepTimedOut {
+                step: DeployExecutionStep::RunPreStartHook { .. },
+                ..
+            }
+    ) {
+        run.mark_new_consumer_quiescence_uncertain();
     }
 }
 
@@ -298,16 +542,32 @@ where
                 service_id: service_plan.service_id.clone(),
             }));
         };
+        if let Some(handoff) = &service_plan.volume_handoff {
+            stop_volume_owners(
+                command,
+                &service.service.service_id,
+                handoff,
+                run,
+                ports.recorder,
+                ports.machine_runtime,
+            )
+            .await?;
+        }
         if let Some(pre_start) = &service_plan.pre_start {
-            run_pre_start_hook(
+            let result = run_pre_start_hook(
                 command,
                 service,
                 pre_start,
                 dataplane_members,
                 ports.machine_runtime,
             )
-            .await
-            .map_err(|source| run.fail_service(source, service.service.service_id.clone()))?;
+            .await;
+            if let Err(source) = result {
+                if service_plan.volume_handoff.is_some() {
+                    capture_hook_failure_consumers(command, service, run, &source);
+                }
+                return Err(run.fail_service(source, service.service.service_id.clone()));
+            }
         }
         for step in &service_plan.steps {
             match step {
@@ -372,10 +632,19 @@ where
                     .await;
                     let (started, disposition) = match run_result {
                         Ok(started) => started,
-                        Err(source) => return Err(run.fail_run_container(service, source)),
+                        Err(source) => {
+                            if service_plan.volume_handoff.is_some() {
+                                capture_run_failure_consumers(command, service, run, &source);
+                            }
+                            return Err(run.fail_run_container(service, source));
+                        }
                     };
                     ports.containers.push(started.clone());
-                    run.container_started(started.clone(), disposition);
+                    run.container_started(
+                        started.clone(),
+                        disposition,
+                        service_plan.volume_handoff.is_some(),
+                    );
                     record_evidence(
                         command,
                         ports.recorder,

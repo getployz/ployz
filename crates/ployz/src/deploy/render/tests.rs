@@ -129,6 +129,7 @@ fn plan() -> DeployPlan {
         phases: vec![DeployPhasePlan {
             services: vec![
                 DeployServicePlan {
+                    volume_handoff: None,
                     service_id: service_id("web"),
                     placement: DeployServicePlacement::Replicated,
                     pre_start: None,
@@ -144,6 +145,7 @@ fn plan() -> DeployPlan {
                     ],
                 },
                 DeployServicePlan {
+                    volume_handoff: None,
                     service_id: service_id("worker"),
                     placement: DeployServicePlacement::Replicated,
                     pre_start: None,
