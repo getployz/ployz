@@ -9,11 +9,7 @@ use ployz_core::nats_config::{
 use ployz_core::security::NatsPrincipal;
 
 use crate::server_config::quote_nats_string;
-use crate::services::{
-    API_SERVICE_NAME, BUILD_EXECUTOR_SERVICE_NAME, DNS_SERVICE_NAME, GATEWAY_MACHINE_SERVICE_NAME,
-    INGRESS_ENDPOINT_SERVICE_NAME, INTENT_SERVICE_NAME, MACHINE_SERVICE_NAME,
-    RUNTIME_PROJECTION_SERVICE_NAME, service_discovery_subscriptions,
-};
+use crate::services::{ProductServiceName, service_discovery_subscriptions};
 use crate::subjects::{
     BUILD_EXECUTOR_SIGNAL_LOG_SCOPE, BuildExecutorServiceEndpoint, CoreQueryEndpoint,
     INGRESS_ENDPOINT_CHANGED, INTENT_CHANGED, JOIN_MACHINE_REDEEM, JOIN_MACHINE_REPORT,
@@ -398,10 +394,10 @@ fn controller_subscriptions(inbox_scope: String) -> SubjectPermissions {
         gateway_status_scope(),
     ]);
     allow.extend(service_discovery_subscriptions(&[
-        API_SERVICE_NAME,
-        INTENT_SERVICE_NAME,
-        INGRESS_ENDPOINT_SERVICE_NAME,
-        RUNTIME_PROJECTION_SERVICE_NAME,
+        ProductServiceName::Api,
+        ProductServiceName::Intent,
+        ProductServiceName::IngressEndpoint,
+        ProductServiceName::RuntimeProjection,
     ]));
     allow.push(inbox_scope);
     SubjectPermissions::allowing_all(allow)
@@ -419,7 +415,7 @@ fn build_executor_service_server_subscriptions(
         .map(|endpoint| build_executor_service(pool_id, executor_id, endpoint))
         .collect();
     allow.extend(service_discovery_subscriptions(&[
-        BUILD_EXECUTOR_SERVICE_NAME,
+        ProductServiceName::BuildExecutor,
     ]));
     allow.push(inbox_scope);
     SubjectPermissions::allowing_all(allow)
@@ -443,9 +439,9 @@ fn machine_service_server_subscriptions(
         gateway_status_scope(),
     ]);
     allow.extend(service_discovery_subscriptions(&[
-        MACHINE_SERVICE_NAME,
-        GATEWAY_MACHINE_SERVICE_NAME,
-        DNS_SERVICE_NAME,
+        ProductServiceName::Machine,
+        ProductServiceName::GatewayMachine,
+        ProductServiceName::Dns,
     ]));
     allow.push(inbox_scope);
     SubjectPermissions::allowing_all(allow)

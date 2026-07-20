@@ -4,17 +4,15 @@ use ployz_nats::permissions::{NatsPermissionProfile, inbox_prefix, inbox_subscri
 use ployz_nats::services::{
     API_SERVICE_NAME, BUILD_EXECUTOR_SERVICE_NAME, DNS_SERVICE_NAME, GATEWAY_MACHINE_SERVICE_NAME,
     INGRESS_ENDPOINT_SERVICE_NAME, INTENT_SERVICE_NAME, MACHINE_SERVICE_NAME,
-    RUNTIME_PROJECTION_SERVICE_NAME, service_discovery_subscriptions,
+    RUNTIME_PROJECTION_SERVICE_NAME,
 };
 use ployz_nats::subjects::{
-    BUILD_EXECUTOR_SIGNAL_LOG_SCOPE, BuildExecutorServiceEndpoint, CoreQueryEndpoint,
-    INGRESS_ENDPOINT_CHANGED, INGRESS_ENDPOINT_GET, INTENT_CHANGED, INTENT_GET,
-    JOIN_MACHINE_REDEEM, JOIN_MACHINE_REPORT, MachineServiceEndpoint, OPERATION_PROGRESS_SCOPE,
-    OperationApiCaller, OperationApiEndpoint, PENDING_MACHINE_JOINS_CHANGED, RUNTIME_SNAPSHOT_SEED,
-    RUNTIME_SNAPSHOT_STREAM, build_executor_log, build_executor_log_publish_scope,
-    build_executor_service, build_executor_service_scope, gateway_status, gateway_status_scope,
-    machine_build_log, machine_build_log_subscribe_scope, machine_container_facts, machine_facts,
-    machine_facts_scope, machine_service, machine_service_scope,
+    BuildExecutorServiceEndpoint, CoreQueryEndpoint, INGRESS_ENDPOINT_CHANGED, INTENT_CHANGED,
+    MachineServiceEndpoint, OperationApiCaller, OperationApiEndpoint,
+    PENDING_MACHINE_JOINS_CHANGED, RUNTIME_SNAPSHOT_SEED, RUNTIME_SNAPSHOT_STREAM,
+    build_executor_log, build_executor_log_publish_scope, build_executor_service,
+    build_executor_service_scope, gateway_status, machine_build_log, machine_container_facts,
+    machine_facts, machine_service, machine_service_scope,
 };
 use ployz_test_support::ids::machine_id;
 
@@ -351,11 +349,15 @@ fn exhaustive_subject_family_principal_direction_matrix_is_intentional() {
         });
         for (service, owner) in discovery_roles.iter().copied() {
             let owners = match owner {
-                MatrixPrincipal::MachineA => vec![
+                MatrixPrincipal::MachineA | MatrixPrincipal::MachineB => vec![
                     cell(MatrixPrincipal::MachineA, Direction::Subscribe),
                     cell(MatrixPrincipal::MachineB, Direction::Subscribe),
                 ],
-                _ => vec![cell(owner, Direction::Subscribe)],
+                MatrixPrincipal::Controller
+                | MatrixPrincipal::Operator
+                | MatrixPrincipal::CloudOperator
+                | MatrixPrincipal::ExecutorA
+                | MatrixPrincipal::Join => vec![cell(owner, Direction::Subscribe)],
             };
             for suffix in [service.to_owned(), format!("{service}.runtime")] {
                 cases.push(MatrixCase {
@@ -423,303 +425,6 @@ fn executor(pool: &str, executor: &str) -> NatsPrincipal {
 }
 
 #[test]
-fn operation_and_core_query_permissions_are_closed_over_current_inventories() {
-    for endpoint in OperationApiEndpoint::ALL.iter().copied() {
-        let subject = endpoint.subject();
-        assert!(permits(
-            NatsPrincipal::Controller,
-            Direction::Subscribe,
-            subject
-        ));
-        assert_eq!(
-            permits(NatsPrincipal::Operator, Direction::Publish, subject),
-            endpoint.caller() == OperationApiCaller::Operator,
-            "operator authority for {subject}"
-        );
-        assert_eq!(
-            permits(NatsPrincipal::Join, Direction::Publish, subject),
-            endpoint.caller() == OperationApiCaller::Join,
-            "join authority for {subject}"
-        );
-    }
-
-    for subject in [INTENT_GET, INGRESS_ENDPOINT_GET] {
-        assert!(permits(
-            NatsPrincipal::Operator,
-            Direction::Publish,
-            subject
-        ));
-        assert!(permits(
-            NatsPrincipal::Controller,
-            Direction::Publish,
-            subject
-        ));
-        assert!(permits(
-            NatsPrincipal::Controller,
-            Direction::Subscribe,
-            subject
-        ));
-        assert!(permits(
-            NatsPrincipal::Machine {
-                machine_id: machine_id("machine-a")
-            },
-            Direction::Publish,
-            subject
-        ));
-    }
-    assert!(permits(
-        NatsPrincipal::Operator,
-        Direction::Publish,
-        RUNTIME_SNAPSHOT_SEED
-    ));
-    assert!(permits(
-        NatsPrincipal::Controller,
-        Direction::Subscribe,
-        RUNTIME_SNAPSHOT_SEED
-    ));
-    assert!(permits(
-        NatsPrincipal::Controller,
-        Direction::Publish,
-        OperationApiEndpoint::InitFirstMachineActivate.subject()
-    ));
-    for endpoint in OperationApiEndpoint::ALL.iter().copied() {
-        if endpoint != OperationApiEndpoint::InitFirstMachineActivate {
-            assert!(!permits(
-                NatsPrincipal::Controller,
-                Direction::Publish,
-                endpoint.subject()
-            ));
-        }
-    }
-
-    for future in [
-        "plz.v1.rpc.operator.query.future.read",
-        "plz.v1.rpc.operator.command.future.write",
-        "plz.v1.rpc.join.command.machine.future",
-        "plz.v1.rpc.core.query.future.get",
-    ] {
-        assert!(!permits(
-            NatsPrincipal::Operator,
-            Direction::Publish,
-            future
-        ));
-        assert!(!permits(
-            NatsPrincipal::Controller,
-            Direction::Subscribe,
-            future
-        ));
-    }
-}
-
-#[test]
-fn machine_endpoint_matrix_is_exhaustive_and_identity_fenced() {
-    let machine_a = machine_id("machine-a");
-    let machine_b = machine_id("machine-b");
-    let principal_a = NatsPrincipal::Machine {
-        machine_id: machine_a.clone(),
-    };
-    let external = executor("pool-a", "executor-a");
-
-    for endpoint in MachineServiceEndpoint::ALL.iter().copied() {
-        let own = machine_service(&machine_a, endpoint);
-        let cross = machine_service(&machine_b, endpoint);
-        let image_transfer = MachineServiceEndpoint::IMAGE_TRANSFER.contains(&endpoint);
-        assert!(permits(NatsPrincipal::Controller, Direction::Publish, &own));
-        assert!(permits(principal_a.clone(), Direction::Subscribe, &own));
-        assert!(!permits(principal_a.clone(), Direction::Subscribe, &cross));
-        assert_eq!(
-            permits(NatsPrincipal::Operator, Direction::Publish, &own),
-            image_transfer,
-            "operator image authority for {own}"
-        );
-        assert_eq!(
-            permits(external.clone(), Direction::Publish, &own),
-            image_transfer,
-            "executor image authority for {own}"
-        );
-    }
-
-    for future in [
-        "plz.v1.rpc.machine.query.machine-a.future.get",
-        "plz.v1.rpc.machine.command.machine-a.future.run",
-        "plz.v1.rpc.machine.command.machine-a.image.future.push",
-    ] {
-        assert!(!permits(
-            NatsPrincipal::Controller,
-            Direction::Publish,
-            future
-        ));
-        assert!(!permits(principal_a.clone(), Direction::Subscribe, future));
-        assert!(!permits(
-            NatsPrincipal::Operator,
-            Direction::Publish,
-            future
-        ));
-        assert!(!permits(external.clone(), Direction::Publish, future));
-    }
-}
-
-#[test]
-fn build_executor_endpoint_matrix_is_exhaustive_and_identity_fenced() {
-    let pool_a = BuildPoolId::try_new("pool-a").expect("pool");
-    let pool_b = BuildPoolId::try_new("pool-b").expect("pool");
-    let executor_a = BuildExecutorId::try_new("executor-a").expect("executor");
-    let executor_b = BuildExecutorId::try_new("executor-b").expect("executor");
-    let principal = executor("pool-a", "executor-a");
-
-    for endpoint in BuildExecutorServiceEndpoint::ALL.iter().copied() {
-        let own = build_executor_service(&pool_a, &executor_a, endpoint);
-        let cross_pool = build_executor_service(&pool_b, &executor_a, endpoint);
-        let cross_executor = build_executor_service(&pool_a, &executor_b, endpoint);
-        assert!(permits(NatsPrincipal::Controller, Direction::Publish, &own));
-        assert!(permits(principal.clone(), Direction::Subscribe, &own));
-        assert!(!permits(
-            principal.clone(),
-            Direction::Subscribe,
-            &cross_pool
-        ));
-        assert!(!permits(
-            principal.clone(),
-            Direction::Subscribe,
-            &cross_executor
-        ));
-    }
-    assert!(!permits(
-        NatsPrincipal::Controller,
-        Direction::Publish,
-        "plz.v1.rpc.build_executor.command.pool-a.executor-a.future.run"
-    ));
-    assert!(!permits(
-        principal,
-        Direction::Subscribe,
-        "plz.v1.rpc.build_executor.command.pool-a.executor-a.future.run"
-    ));
-}
-
-#[test]
-fn discovery_permissions_are_finite_per_runtime_role() {
-    let controller = NatsPrincipal::Controller;
-    let machine = NatsPrincipal::Machine {
-        machine_id: machine_id("machine-a"),
-    };
-    let executor = executor("pool-a", "executor-a");
-    let control_services = [
-        API_SERVICE_NAME,
-        INTENT_SERVICE_NAME,
-        INGRESS_ENDPOINT_SERVICE_NAME,
-        RUNTIME_PROJECTION_SERVICE_NAME,
-    ];
-    let machine_services = [
-        MACHINE_SERVICE_NAME,
-        GATEWAY_MACHINE_SERVICE_NAME,
-        DNS_SERVICE_NAME,
-    ];
-
-    for subject in service_discovery_subscriptions(&control_services) {
-        assert!(permits(
-            controller.clone(),
-            Direction::Subscribe,
-            &subject.replace('*', "runtime")
-        ));
-    }
-    for subject in service_discovery_subscriptions(&machine_services) {
-        assert!(permits(
-            machine.clone(),
-            Direction::Subscribe,
-            &subject.replace('*', "runtime")
-        ));
-    }
-    for subject in service_discovery_subscriptions(&[BUILD_EXECUTOR_SERVICE_NAME]) {
-        assert!(permits(
-            executor.clone(),
-            Direction::Subscribe,
-            &subject.replace('*', "runtime")
-        ));
-    }
-
-    for (principal, unrelated) in [
-        (controller, "$SRV.PING.unrelated.runtime"),
-        (machine, "$SRV.INFO.plz-api.runtime"),
-        (executor, "$SRV.STATS.plz-machine.runtime"),
-    ] {
-        assert!(!permits(principal, Direction::Subscribe, unrelated));
-    }
-}
-
-#[test]
-fn fixed_families_and_inboxes_preserve_only_declared_authority() {
-    let machine = NatsPrincipal::Machine {
-        machine_id: machine_id("machine-a"),
-    };
-    let executor = executor("pool-a", "executor-a");
-    let cases = [
-        (
-            NatsPrincipal::Controller,
-            Direction::Publish,
-            "plz.v1.progress.cluster.operation.op-a.completed",
-            true,
-        ),
-        (
-            NatsPrincipal::Operator,
-            Direction::Subscribe,
-            "plz.v1.progress.cluster.operation.op-a.completed",
-            true,
-        ),
-        (
-            NatsPrincipal::Controller,
-            Direction::Subscribe,
-            "plz.v1.testimony.machine.machine-a.snapshot",
-            true,
-        ),
-        (
-            machine.clone(),
-            Direction::Publish,
-            "plz.v1.testimony.machine.machine-a.snapshot",
-            true,
-        ),
-        (
-            machine.clone(),
-            Direction::Publish,
-            "plz.v1.testimony.machine.machine-b.snapshot",
-            false,
-        ),
-        (
-            executor.clone(),
-            Direction::Publish,
-            "plz.v1.signal.build_executor.pool-a.executor-a.build.operation.op-a.log",
-            true,
-        ),
-        (
-            executor,
-            Direction::Publish,
-            "plz.v1.signal.build_executor.pool-a.executor-b.build.operation.op-a.log",
-            false,
-        ),
-    ];
-    for (principal, direction, subject, expected) in cases {
-        assert_eq!(
-            permits(principal, direction, subject),
-            expected,
-            "{subject}"
-        );
-    }
-
-    for principal in [NatsPrincipal::Controller, machine] {
-        let inbox = format!("{}.request", inbox_prefix(&principal));
-        assert!(permits(principal.clone(), Direction::Subscribe, &inbox));
-        assert!(!permits(principal, Direction::Publish, &inbox));
-    }
-    let join = NatsPermissionProfile::render(NatsPrincipal::Join);
-    assert_eq!(
-        join.publish.allowed_subjects(),
-        &[
-            JOIN_MACHINE_REDEEM.to_owned(),
-            JOIN_MACHINE_REPORT.to_owned()
-        ]
-    );
-}
-
-#[test]
 fn non_system_rpc_image_and_discovery_grants_never_end_in_terminal_wildcards() {
     let principals = [
         NatsPrincipal::Controller,
@@ -767,19 +472,6 @@ fn inventory_scopes_and_fixed_scopes_match_their_intended_families() {
                 endpoint,
             )
         ));
-    }
-    for fixed in [
-        OPERATION_PROGRESS_SCOPE,
-        machine_facts_scope().as_str(),
-        gateway_status_scope().as_str(),
-        machine_build_log_subscribe_scope().as_str(),
-        BUILD_EXECUTOR_SIGNAL_LOG_SCOPE,
-        INTENT_CHANGED,
-        INGRESS_ENDPOINT_CHANGED,
-        PENDING_MACHINE_JOINS_CHANGED,
-        RUNTIME_SNAPSHOT_STREAM,
-    ] {
-        assert!(!fixed.is_empty());
     }
     assert_eq!(
         build_executor_log_publish_scope(

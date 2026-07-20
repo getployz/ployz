@@ -28,11 +28,12 @@ use ployz_nats::services::{
     EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceMetadata, ServiceVersion,
 };
 use ployz_nats::subjects::{
-    BUILD_EXECUTOR_SERVICE_NAME, BuildExecutorServiceEndpoint, INTENT_CHANGED, INTENT_GET,
-    MachineServiceEndpoint, OPERATOR_INIT_FIRST_MACHINE_ACTIVATE, PENDING_MACHINE_JOINS_CHANGED,
-    RUNTIME_SNAPSHOT_SEED, RUNTIME_SNAPSHOT_STREAM, build_executor_log, build_executor_service,
-    gateway_status, gateway_status_scope, machine_container_facts, machine_facts,
-    machine_facts_scope, machine_service,
+    BUILD_EXECUTOR_SERVICE_NAME, BuildExecutorServiceEndpoint, CoreQueryEndpoint, INTENT_CHANGED,
+    INTENT_GET, JOIN_MACHINE_REDEEM, JOIN_MACHINE_REPORT, MachineServiceEndpoint,
+    OPERATOR_INIT_FIRST_MACHINE_ACTIVATE, PENDING_MACHINE_JOINS_CHANGED, RUNTIME_SNAPSHOT_SEED,
+    RUNTIME_SNAPSHOT_STREAM, build_executor_log, build_executor_service, gateway_status,
+    gateway_status_scope, machine_container_facts, machine_facts, machine_facts_scope,
+    machine_service,
 };
 use ployz_test_support::nats::SecuredTestNats;
 
@@ -103,8 +104,9 @@ async fn wrong_seed_is_rejected() {
 #[tokio::test]
 async fn extra_cloud_operator_public_key_can_connect_as_operator() {
     let cloud_user = MintedNatsUser::generate().expect("cloud nkey mints");
+    let machine_id = MachineId::try_new("machine-a").expect("machine id");
     let fixture = SecuredTestNats::start_with_machines_and_extra_users(
-        &[],
+        std::slice::from_ref(&machine_id),
         std::slice::from_ref(&cloud_user.public),
     )
     .await
@@ -119,13 +121,22 @@ async fn extra_cloud_operator_public_key_can_connect_as_operator() {
         .publish(INTENT_GET, "cloud intent".into())
         .await
         .expect("cloud publishes current Operator endpoint");
+    for endpoint in MachineServiceEndpoint::IMAGE_TRANSFER.iter().copied() {
+        client
+            .publish(machine_service(&machine_id, endpoint), "image".into())
+            .await
+            .expect("cloud-as-Operator publishes image transfer endpoint");
+    }
     client.flush().await.expect("cloud operator round-trips");
     assert_no_permission_violation(&mut events).await;
     client
-        .publish("plz.v1.rpc.operator.query.future.read", "future".into())
+        .publish(
+            machine_service(&machine_id, MachineServiceEndpoint::ContainerRun),
+            "non-image".into(),
+        )
         .await
-        .expect("future publish accepted client-side");
-    client.flush().await.expect("future publish flushes");
+        .expect("non-image publish accepted client-side");
+    client.flush().await.expect("non-image publish flushes");
     assert_permission_violation_kind(&mut events, "Publish").await;
 }
 
@@ -540,9 +551,10 @@ async fn build_executor_grant_preserves_operator_and_machine_traffic() {
 }
 
 #[tokio::test]
-async fn operator_can_read_intent_and_subscribe_runtime_broadcasts_only() {
+async fn operator_can_read_runtime_and_publish_only_image_transfer_machine_commands() {
     let fixture = SecuredTestNats::start().await.expect("secured fixture");
     let (operator, mut events) = connect_with_event_capture(&fixture.user_config()).await;
+    let machine_id = MachineId::try_new("machine-a").expect("machine id");
 
     let _runtime_snapshots = operator
         .subscribe(RUNTIME_SNAPSHOT_STREAM)
@@ -556,6 +568,12 @@ async fn operator_can_read_intent_and_subscribe_runtime_broadcasts_only() {
         .publish(RUNTIME_SNAPSHOT_SEED, "{}".into())
         .await
         .expect("operator publishes runtime seed request");
+    for endpoint in MachineServiceEndpoint::IMAGE_TRANSFER.iter().copied() {
+        operator
+            .publish(machine_service(&machine_id, endpoint), "image".into())
+            .await
+            .expect("Operator publishes image transfer endpoint");
+    }
     operator.flush().await.expect("flush allowed subjects");
     assert_no_permission_violation(&mut events).await;
 
@@ -577,9 +595,10 @@ async fn operator_can_read_intent_and_subscribe_runtime_broadcasts_only() {
         );
     }
     for denied in [
-        "plz.v1.rpc.operator.query.future.read",
-        "plz.v1.rpc.operator.command.future.write",
-        "plz.v1.rpc.machine.command.machine-a.image.layer.push",
+        "plz.v1.rpc.operator.query.future.read".to_owned(),
+        "plz.v1.rpc.operator.command.future.write".to_owned(),
+        "plz.v1.rpc.machine.command.machine-a.image.layer.push".to_owned(),
+        machine_service(&machine_id, MachineServiceEndpoint::ContainerRun),
     ] {
         operator
             .publish(denied, "future".into())
@@ -738,6 +757,34 @@ async fn machine_fact_writes_are_fenced_to_its_own_subjects() {
         violation.contains("Publish"),
         "expected a publish violation, got: {violation}"
     );
+}
+
+#[tokio::test]
+async fn machine_can_publish_every_core_query_but_not_a_future_query() {
+    let machine_id = MachineId::try_new("machine-a").expect("valid machine id");
+    let fixture = SecuredTestNats::start_with_machines(std::slice::from_ref(&machine_id))
+        .await
+        .expect("secured fixture");
+    let config = fixture
+        .machine_config(&machine_id)
+        .expect("fixture mints requested machine");
+    let (machine, mut events) = connect_with_event_capture(&config).await;
+
+    for endpoint in CoreQueryEndpoint::ALL.iter().copied() {
+        machine
+            .publish(endpoint.subject(), "query".into())
+            .await
+            .expect("machine publishes current Core query endpoint");
+    }
+    machine.flush().await.expect("allowed Core queries flush");
+    assert_no_permission_violation(&mut events).await;
+
+    machine
+        .publish("plz.v1.rpc.core.query.future.get", "future".into())
+        .await
+        .expect("future Core query publish accepted client-side");
+    machine.flush().await.expect("future Core query flushes");
+    assert_permission_violation_kind(&mut events, "Publish").await;
 }
 
 #[tokio::test]
@@ -907,9 +954,18 @@ async fn machine_can_serve_machine_rpc_and_service_discovery_subjects() {
 }
 
 #[tokio::test]
-async fn join_cannot_publish_general_operation_api_subjects() {
+async fn join_can_publish_join_endpoints_but_not_general_operation_api_subjects() {
     let fixture = SecuredTestNats::start().await.expect("secured fixture");
     let (join_client, mut events) = connect_with_event_capture(&fixture.join_config()).await;
+    for subject in [JOIN_MACHINE_REDEEM, JOIN_MACHINE_REPORT] {
+        join_client
+            .publish(subject, "join".into())
+            .await
+            .expect("Join publishes current join endpoint");
+    }
+    join_client.flush().await.expect("allowed joins flush");
+    assert_no_permission_violation(&mut events).await;
+
     join_client
         .publish(OPERATOR_INIT_FIRST_MACHINE_ACTIVATE, "activate".into())
         .await

@@ -2,14 +2,53 @@
 
 use std::fmt;
 
-pub const API_SERVICE_NAME: &str = "plz-api";
-pub const MACHINE_SERVICE_NAME: &str = "plz-machine";
-pub const GATEWAY_MACHINE_SERVICE_NAME: &str = "plz-gateway-machine";
-pub const DNS_SERVICE_NAME: &str = "plz-dns";
-pub const INTENT_SERVICE_NAME: &str = "plz-intent";
-pub const INGRESS_ENDPOINT_SERVICE_NAME: &str = "plz-ingress-endpoint";
-pub const RUNTIME_PROJECTION_SERVICE_NAME: &str = "plz-runtime-projection";
-pub const BUILD_EXECUTOR_SERVICE_NAME: &str = "plz-build-executor";
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProductServiceName {
+    Api,
+    Machine,
+    GatewayMachine,
+    Dns,
+    Intent,
+    IngressEndpoint,
+    RuntimeProjection,
+    BuildExecutor,
+}
+
+impl ProductServiceName {
+    pub const ALL: &[Self] = &[
+        Self::Api,
+        Self::Machine,
+        Self::GatewayMachine,
+        Self::Dns,
+        Self::Intent,
+        Self::IngressEndpoint,
+        Self::RuntimeProjection,
+        Self::BuildExecutor,
+    ];
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Api => "plz-api",
+            Self::Machine => "plz-machine",
+            Self::GatewayMachine => "plz-gateway-machine",
+            Self::Dns => "plz-dns",
+            Self::Intent => "plz-intent",
+            Self::IngressEndpoint => "plz-ingress-endpoint",
+            Self::RuntimeProjection => "plz-runtime-projection",
+            Self::BuildExecutor => "plz-build-executor",
+        }
+    }
+}
+
+pub const API_SERVICE_NAME: &str = ProductServiceName::Api.as_str();
+pub const MACHINE_SERVICE_NAME: &str = ProductServiceName::Machine.as_str();
+pub const GATEWAY_MACHINE_SERVICE_NAME: &str = ProductServiceName::GatewayMachine.as_str();
+pub const DNS_SERVICE_NAME: &str = ProductServiceName::Dns.as_str();
+pub const INTENT_SERVICE_NAME: &str = ProductServiceName::Intent.as_str();
+pub const INGRESS_ENDPOINT_SERVICE_NAME: &str = ProductServiceName::IngressEndpoint.as_str();
+pub const RUNTIME_PROJECTION_SERVICE_NAME: &str = ProductServiceName::RuntimeProjection.as_str();
+pub const BUILD_EXECUTOR_SERVICE_NAME: &str = ProductServiceName::BuildExecutor.as_str();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceDiscoveryVerb {
@@ -52,7 +91,7 @@ impl ServiceDiscoveryVerb {
 }
 
 #[must_use]
-pub fn service_discovery_subscriptions(service_names: &[&str]) -> Vec<String> {
+pub fn service_discovery_subscriptions(service_names: &[ProductServiceName]) -> Vec<String> {
     ServiceDiscoveryVerb::ALL
         .iter()
         .flat_map(|verb| {
@@ -60,7 +99,8 @@ pub fn service_discovery_subscriptions(service_names: &[&str]) -> Vec<String> {
                 *verb,
                 ServiceDiscoveryTarget::All,
             ))
-            .chain(service_names.iter().flat_map(move |name| {
+            .chain(service_names.iter().copied().flat_map(move |name| {
+                let name = name.as_str();
                 [
                     service_discovery_subject(*verb, ServiceDiscoveryTarget::Service { name }),
                     service_discovery_subject(
