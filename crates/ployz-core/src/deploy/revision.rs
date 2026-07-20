@@ -181,6 +181,24 @@ pub fn namespace_revision_entry_id_for(
         .expect("sha256 hex digest is a subject token")
 }
 
+#[must_use]
+pub(super) fn namespace_revision_entry_id_without_environment_for(
+    namespace_id: &NamespaceId,
+    service: &DeployServiceSpec,
+) -> Option<NamespaceRevisionEntryId> {
+    if !service.runtime.environment.is_empty() {
+        return None;
+    }
+    Some(namespace_revision_entry_id_for(
+        namespace_id,
+        &service.service_id,
+        &service.image,
+        &service.image_source,
+        &service.runtime,
+        &EnvironmentRevisionKey([0; 32]),
+    ))
+}
+
 fn hash_runtime_spec(hasher: &mut Sha256, runtime: &ContainerRuntimeSpec) {
     let ContainerRuntimeSpec {
         command,
@@ -403,5 +421,49 @@ mod tests {
         let rendered = format!("{key:?}");
         assert_eq!(rendered, "EnvironmentRevisionKey([redacted])");
         assert!(!rendered.contains("sentinel"));
+    }
+
+    #[test]
+    fn environment_free_entry_identity_reuses_canonical_encoding() {
+        let namespace_id = NamespaceId::try_new("production").expect("namespace");
+        let service = DeployServiceSpec {
+            service_id: ServiceId::try_new("api").expect("service"),
+            image: ImageReference::try_new("ghcr.io/acme/api:current").expect("image"),
+            image_source: ImageSource::Registry,
+            mode: ServiceMode::Global,
+            keep: None,
+            runtime: ContainerRuntimeSpec::image_defaults(),
+            pre_start: None,
+            depends_on: Vec::new(),
+            routes: Vec::new(),
+        };
+        let key = EnvironmentRevisionKey::derive(b"irrelevant-for-empty-environment");
+
+        assert_eq!(
+            service.namespace_revision_entry_id_without_environment(&namespace_id),
+            Some(service.namespace_revision_entry_id(&namespace_id, &key))
+        );
+    }
+
+    #[test]
+    fn environmentful_entry_identity_requires_controller_key() {
+        let namespace_id = NamespaceId::try_new("production").expect("namespace");
+        let mut service = DeployServiceSpec {
+            service_id: ServiceId::try_new("api").expect("service"),
+            image: ImageReference::try_new("ghcr.io/acme/api:current").expect("image"),
+            image_source: ImageSource::Registry,
+            mode: ServiceMode::Global,
+            keep: None,
+            runtime: ContainerRuntimeSpec::image_defaults(),
+            pre_start: None,
+            depends_on: Vec::new(),
+            routes: Vec::new(),
+        };
+        service.runtime.environment = environment(&[("TOKEN", "secret")]);
+
+        assert_eq!(
+            service.namespace_revision_entry_id_without_environment(&namespace_id),
+            None
+        );
     }
 }

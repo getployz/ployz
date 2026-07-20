@@ -453,6 +453,15 @@ impl DeployServiceSpec {
             environment_key,
         )
     }
+
+    /// Computes the canonical entry identity when no secret environment key is required.
+    #[must_use]
+    pub fn namespace_revision_entry_id_without_environment(
+        &self,
+        namespace_id: &NamespaceId,
+    ) -> Option<NamespaceRevisionEntryId> {
+        super::revision::namespace_revision_entry_id_without_environment_for(namespace_id, self)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
