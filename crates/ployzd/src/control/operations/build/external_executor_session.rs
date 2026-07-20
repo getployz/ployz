@@ -514,12 +514,10 @@ mod tests {
             BuildPlatformFailure::ExecutorUnavailable { .. }
         ));
         assert!(matches!(
-            map_pre_acceptance_error(
-                BuildExecutorStartDomainError::OperationIdentityMismatch {
-                    expected: OperationId::try_new("expected-operation").expect("operation"),
-                    actual: OperationId::try_new("other-operation").expect("operation"),
-                }
-            ),
+            map_pre_acceptance_error(BuildExecutorStartDomainError::OperationIdentityMismatch {
+                expected: OperationId::try_new("expected-operation").expect("operation"),
+                actual: OperationId::try_new("other-operation").expect("operation"),
+            }),
             BuildPlatformFailure::ExecutorUnavailable { .. }
         ));
     }

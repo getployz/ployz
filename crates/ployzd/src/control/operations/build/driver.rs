@@ -790,6 +790,12 @@ pub(super) fn machine_failure(
         }) => BuildPlatformFailure::MachineUnavailable {
             message: failure_message("machine rejected external executor identity provenance"),
         },
+        MachineCallError::Domain(MachineBuildStartDomainError::OperationIdentityMismatch {
+            expected: _,
+            actual: _,
+        }) => BuildPlatformFailure::MachineUnavailable {
+            message: failure_message("machine rejected build operation identity provenance"),
+        },
         MachineCallError::Domain(MachineBuildStartDomainError::ToolchainUnavailable {
             adapter: _,
         }) => BuildPlatformFailure::MachineUnavailable {

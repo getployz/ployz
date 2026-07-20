@@ -603,6 +603,26 @@ fn already_running_is_stable_machine_unavailable_evidence() {
 }
 
 #[test]
+fn operation_identity_mismatch_is_stable_machine_unavailable_evidence() {
+    let failure = machine_failure(
+        OciPlatform::try_new("linux", "amd64").expect("platform"),
+        MachineId::try_new("machine-a").expect("machine id"),
+        MachineCallError::Domain(MachineBuildStartDomainError::OperationIdentityMismatch {
+            expected: OperationId::try_new("build-expected").expect("operation id"),
+            actual: OperationId::try_new("build-actual").expect("operation id"),
+        }),
+    );
+
+    assert!(matches!(
+        failure,
+        BuildOperationFailure::PlatformFailed {
+            failure: BuildPlatformFailure::MachineUnavailable { message },
+            ..
+        } if message.as_str() == "machine rejected build operation identity provenance"
+    ));
+}
+
+#[test]
 fn terminal_acceptance_rejects_wrong_executor_provenance() {
     let operation_id = OperationId::try_new("build-1").expect("operation id");
     let machine_id = MachineId::try_new("machine-a").expect("machine id");
