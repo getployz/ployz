@@ -104,10 +104,9 @@ pub(super) async fn execute(
         })
         .await
         .map_err(api_error)?;
-    require_operation_success(&api, grant.operation_id, &config).await?;
-
     let public_key = minted.public.clone();
     let build_result = async {
+        require_operation_success(&api, grant.operation_id, &config).await?;
         let material = tempfile::tempdir().map_err(current_tree_error)?;
         let seed_path = material.path().join("executor.nk");
         write_private(&seed_path, minted.seed.secret(), 0o600)?;
@@ -581,11 +580,11 @@ mod tests {
     }
 
     #[test]
-    fn credential_scope_preserves_setup_failure_after_successful_revoke() {
-        let setup = current_tree_error("setup failed");
-        let error = finish_executor_credential_scope::<()>(Err(setup), Ok(()))
-            .expect_err("setup failure preserved");
-        assert!(error.to_string().contains("setup failed"));
+    fn credential_scope_preserves_grant_observation_failure_after_successful_revoke() {
+        let observation = current_tree_error("grant observation failed");
+        let error = finish_executor_credential_scope::<()>(Err(observation), Ok(()))
+            .expect_err("grant observation failure preserved");
+        assert!(error.to_string().contains("grant observation failed"));
     }
 
     #[test]
