@@ -2,7 +2,8 @@ use super::ValidatedOciLayout;
 use super::lifecycle::{
     BUILDER_LABEL, BuildLogContext, CACHE_VOLUME, DOCKER_COMMAND_TIMEOUT, PinnedImageKind,
     await_buildkit, builder_name, create_builder, prune_buildkit_cache, pull_exact_image,
-    remove_builder, require_success, run_bounded, run_buildctl, run_prepare,
+    remove_builder, require_success, restore_oci_layout_ownership, run_bounded, run_buildctl,
+    run_prepare,
 };
 use super::logs::{BuildLogProgress, PublishedLogs};
 use super::oci::{OciLayoutError, OciValidationControl, validate_oci_layout};
@@ -303,11 +304,9 @@ impl DockerBuildExecutor {
             .await
         }
         .await;
+        let ownership = restore_oci_layout_ownership(&builder, &workspace).await;
         let cleanup = remove_builder(&builder).await;
-        let logs = match (build, cleanup) {
-            (Ok(logs), Ok(())) => logs,
-            (Err(error), _) | (Ok(_), Err(error)) => return Err(error),
-        };
+        let logs = finish_builder_run(build, ownership, cleanup)?;
         let layout_path = plan.oci_layout;
         let platform_for_validation = platform.clone();
         let validation_control = OciValidationControl::new(deadline, cancelled.clone());
@@ -354,6 +353,17 @@ impl DockerBuildExecutor {
             ));
         }
         Ok(config)
+    }
+}
+
+fn finish_builder_run(
+    build: Result<PublishedLogs, BuildExecutionError>,
+    ownership: Result<(), BuildExecutionError>,
+    cleanup: Result<(), BuildExecutionError>,
+) -> Result<PublishedLogs, BuildExecutionError> {
+    match build {
+        Ok(logs) => ownership.and(cleanup).map(|()| logs),
+        Err(error) => Err(error),
     }
 }
 
@@ -640,6 +650,64 @@ mod tests {
 
         drop(validation_guard);
         cleanup.await.expect("cleanup waiter");
+    }
+
+    #[test]
+    fn builder_cleanup_preserves_build_then_ownership_then_removal_precedence() {
+        fn error(action: &'static str) -> BuildExecutionError {
+            infrastructure(action, action)
+        }
+
+        let Err(build_error) = finish_builder_run(
+            Err(error("build")),
+            Err(error("ownership")),
+            Err(error("removal")),
+        ) else {
+            panic!("build failure remains primary");
+        };
+        assert!(matches!(
+            build_error,
+            BuildExecutionError::Infrastructure {
+                action: "build",
+                ..
+            }
+        ));
+
+        let Err(ownership_error) = finish_builder_run(
+            Ok(PublishedLogs {
+                final_sequence: 1,
+                omitted_bytes: 0,
+            }),
+            Err(error("ownership")),
+            Err(error("removal")),
+        ) else {
+            panic!("ownership failure blocks success");
+        };
+        assert!(matches!(
+            ownership_error,
+            BuildExecutionError::Infrastructure {
+                action: "ownership",
+                ..
+            }
+        ));
+
+        let Err(removal_error) = finish_builder_run(
+            Ok(PublishedLogs {
+                final_sequence: 1,
+                omitted_bytes: 0,
+            }),
+            Ok(()),
+            Err(error("removal")),
+        ) else {
+            panic!("builder removal remains mandatory");
+        };
+        assert!(matches!(
+            removal_error,
+            BuildExecutionError::Infrastructure {
+                action: "removal",
+                ..
+            }
+        ));
     }
 
     #[test]

@@ -9,6 +9,7 @@ use ployz_core::build::BuildSource;
 use ployz_core::ids::OperationId;
 use ployz_core::image::{OciDigest, OciPlatform};
 use ployz_core::operation::BuildPlatformFailure;
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
@@ -547,6 +548,30 @@ pub(super) async fn remove_builder(container: &str) -> Result<(), BuildExecution
     }
 }
 
+pub(super) async fn restore_oci_layout_ownership(
+    builder: &str,
+    workspace: &Path,
+) -> Result<(), BuildExecutionError> {
+    let metadata = tokio::fs::metadata(workspace)
+        .await
+        .map_err(|error| infrastructure("read build workspace ownership", error.to_string()))?;
+    let arguments = ownership_restore_arguments(builder, metadata.uid(), metadata.gid());
+    let arguments = arguments.each_ref().map(String::as_str);
+    let restored = run_bounded("docker", arguments, DOCKER_COMMAND_TIMEOUT).await?;
+    require_success("restore OCI output ownership", &restored)
+}
+
+fn ownership_restore_arguments(builder: &str, uid: u32, gid: u32) -> [String; 6] {
+    [
+        "exec".to_owned(),
+        builder.to_owned(),
+        "chown".to_owned(),
+        "-R".to_owned(),
+        format!("{uid}:{gid}"),
+        "/workspace/oci".to_owned(),
+    ]
+}
+
 pub(super) fn builder_name(operation_id: &OperationId, platform: &OciPlatform) -> String {
     format!(
         "ployz-build-{}-{}-{}",
@@ -588,6 +613,22 @@ mod tests {
         assert_eq!(
             builder_name(&operation, &platform),
             "ployz-build-build-01-linux-arm64"
+        );
+    }
+
+    #[test]
+    fn ownership_restore_uses_exact_oci_path_without_a_shell() {
+        assert_eq!(
+            ownership_restore_arguments("builder-1", 1001, 1002),
+            [
+                "exec",
+                "builder-1",
+                "chown",
+                "-R",
+                "1001:1002",
+                "/workspace/oci",
+            ]
+            .map(str::to_owned)
         );
     }
 
