@@ -63,6 +63,7 @@ use ployz_sdk_types::{
     ServiceInspectRequest,
 };
 
+mod build_submit;
 mod credential_grant;
 mod machine_lifecycle;
 mod ops_list;

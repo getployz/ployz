@@ -29,6 +29,11 @@ pub type BuildSubmitResponse = OperationApiResponse<AcceptedOperation, BuildSubm
 pub enum BuildSubmitError {
     #[error("local snapshot source requires an external Build Target")]
     LocalSnapshotRequiresExternalTarget { operation_id: OperationId },
+    #[error("local snapshot source requires exactly one build platform, got {actual}")]
+    LocalSnapshotRequiresSinglePlatform {
+        operation_id: OperationId,
+        actual: usize,
+    },
     #[error("operation {} already exists with a different build request", .operation_id.as_str())]
     OperationConflict { operation_id: OperationId },
     #[error("build pool {} has no capable enrolled executor for {platform:?}", .pool_id.as_str())]
@@ -113,6 +118,23 @@ mod tests {
                 serde_json::json!("https://example.com/repo#main"),
             );
         assert!(serde_json::from_value::<BuildSubmitRequest>(fragment).is_err());
+    }
+
+    #[test]
+    fn local_snapshot_platform_error_keeps_the_actual_count_typed() {
+        let error = BuildSubmitError::LocalSnapshotRequiresSinglePlatform {
+            operation_id: OperationId::try_new("build-local").expect("operation id"),
+            actual: 2,
+        };
+
+        assert_eq!(
+            serde_json::to_value(error).expect("error serializes"),
+            serde_json::json!({
+                "error": "local_snapshot_requires_single_platform",
+                "operation_id": "build-local",
+                "actual": 2,
+            })
+        );
     }
 
     #[test]

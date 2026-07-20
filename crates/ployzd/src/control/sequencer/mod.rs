@@ -60,11 +60,68 @@ pub struct DeploySubmitCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildSubmitCommand {
-    pub operation_id: OperationId,
-    pub target: BuildTarget,
-    pub source: BuildSource,
-    pub adapter: BuildAdapter,
-    pub platforms: BuildPlatforms,
+    operation_id: OperationId,
+    target: BuildTarget,
+    source: BuildSource,
+    adapter: BuildAdapter,
+    platforms: BuildPlatforms,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum BuildSubmitCommandError {
+    #[error("local snapshot source requires an external Build Target")]
+    LocalSnapshotRequiresExternalTarget,
+    #[error("local snapshot source requires exactly one build platform, got {actual}")]
+    LocalSnapshotRequiresSinglePlatform { actual: usize },
+}
+
+impl BuildSubmitCommand {
+    pub(crate) fn try_new(
+        operation_id: OperationId,
+        target: BuildTarget,
+        source: BuildSource,
+        adapter: BuildAdapter,
+        platforms: BuildPlatforms,
+    ) -> Result<Self, BuildSubmitCommandError> {
+        source
+            .ensure_target(&target)
+            .map_err(|_| BuildSubmitCommandError::LocalSnapshotRequiresExternalTarget)?;
+        let platform_count = platforms.iter().len();
+        if matches!(source, BuildSource::LocalSnapshot { .. }) && platform_count != 1 {
+            return Err(
+                BuildSubmitCommandError::LocalSnapshotRequiresSinglePlatform {
+                    actual: platform_count,
+                },
+            );
+        }
+        Ok(Self {
+            operation_id,
+            target,
+            source,
+            adapter,
+            platforms,
+        })
+    }
+
+    #[must_use]
+    pub(crate) const fn operation_id(&self) -> &OperationId {
+        &self.operation_id
+    }
+
+    #[must_use]
+    pub(crate) const fn target(&self) -> &BuildTarget {
+        &self.target
+    }
+
+    #[must_use]
+    pub(crate) const fn adapter(&self) -> &BuildAdapter {
+        &self.adapter
+    }
+
+    #[must_use]
+    pub(crate) const fn platforms(&self) -> &BuildPlatforms {
+        &self.platforms
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

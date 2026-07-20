@@ -17,7 +17,7 @@ use ployz_sdk_types::{
 };
 
 use super::{
-    normalize_deploy_submit, normalize_system_deploy, validate_build_source_target,
+    normalize_build_submit, normalize_deploy_submit, normalize_system_deploy,
     validate_network_repair_preconditions,
 };
 
@@ -43,8 +43,40 @@ fn local_snapshot_requires_external_target_before_admission() {
     };
 
     assert_eq!(
-        validate_build_source_target(&request),
+        normalize_build_submit(request),
         Err(BuildSubmitError::LocalSnapshotRequiresExternalTarget { operation_id })
+    );
+}
+
+#[test]
+fn local_snapshot_requires_one_platform_before_admission() {
+    let operation_id = OperationId::try_new("build_local_multi_platform").expect("operation id");
+    let request = BuildSubmitRequest {
+        operation_id: operation_id.clone(),
+        target: BuildTarget::External {
+            pool_id: ployz_core::build::BuildPoolId::try_new("pool_local").expect("pool id"),
+        },
+        source: BuildSource::LocalSnapshot {
+            digest: LocalSnapshotDigest::try_new(format!("sha256:{}", "a".repeat(64)))
+                .expect("digest"),
+            subdir: None,
+        },
+        adapter: BuildAdapter::Railpack {
+            cache_scope: BuildCacheScope::try_new("scope_local").expect("cache scope"),
+        },
+        platforms: BuildPlatforms::try_new([
+            ployz_core::image::OciPlatform::try_new("linux", "amd64").expect("platform"),
+            ployz_core::image::OciPlatform::try_new("linux", "arm64").expect("platform"),
+        ])
+        .expect("platforms"),
+    };
+
+    assert_eq!(
+        normalize_build_submit(request),
+        Err(BuildSubmitError::LocalSnapshotRequiresSinglePlatform {
+            operation_id,
+            actual: 2,
+        })
     );
 }
 

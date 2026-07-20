@@ -79,16 +79,19 @@ async fn platform_rpc_failure_records_real_evidence_and_publishes_no_image_index
     .expect("valid git source")
     .into();
     let accepted = controllers
-        .submit_build(BuildSubmitCommand {
-            operation_id: operation_id.clone(),
-            target: BuildTarget::Cluster,
-            source: source.clone(),
-            adapter: BuildAdapter::Railpack {
-                cache_scope: BuildCacheScope::try_new("mixed-platform").expect("valid cache scope"),
-            },
-            platforms: BuildPlatforms::try_new([amd64.clone(), arm64.clone()])
-                .expect("two platforms"),
-        })
+        .submit_build(
+            BuildSubmitCommand::try_new(
+                operation_id.clone(),
+                BuildTarget::Cluster,
+                source.clone(),
+                BuildAdapter::Railpack {
+                    cache_scope: BuildCacheScope::try_new("mixed-platform")
+                        .expect("valid cache scope"),
+                },
+                BuildPlatforms::try_new([amd64.clone(), arm64.clone()]).expect("two platforms"),
+            )
+            .expect("valid build submit command"),
+        )
         .await
         .expect("build submits");
     repository
