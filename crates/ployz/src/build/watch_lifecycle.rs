@@ -3,17 +3,20 @@
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_nats::{ClientError, Event, ServerError};
 use ployz_core::build::BuildExecutorIdentity;
-use ployz_core::nats_config::{BuildExecutorCredentialExpiresAt, NatsUserSeed};
+use ployz_core::nats_config::BuildExecutorCredentialExpiresAt;
 use ployz_core::security::NatsPrincipal;
 use ployz_nats::connect::{
     NatsClientAuth, NatsConnectConfig, NatsTlsTrust, authenticated_connect_options,
 };
 
-use super::executor_context::{load_executor_context, resolve_executor_context_root};
+use super::executor_context::{
+    ExecutorIdentityPaths, load_executor_context, resolve_executor_context_root,
+};
 use super::runtime::BuildExecutionError;
 use crate::dispatcher::PloyzctlRuntimeConfig;
 
@@ -44,6 +47,7 @@ pub(super) struct WatchSession {
     pub client: async_nats::Client,
     events: tokio::sync::mpsc::UnboundedReceiver<Event>,
     shutdown: Pin<Box<dyn Future<Output = Result<(), std::io::Error>> + Send>>,
+    runtime_state: Arc<tokio::sync::Mutex<super::external_runtime::RuntimeState>>,
 }
 
 pub(super) fn executor_connect_config(
@@ -54,28 +58,15 @@ pub(super) fn executor_connect_config(
         .ok_or_else(|| BuildExecutionError::ExecutorContext {
             message: "neither XDG_CONFIG_HOME nor HOME is available".to_owned(),
         })?;
-    let inputs = load_executor_context(&root, &identity.pool_id, &identity.executor_id).map_err(
-        |error| BuildExecutionError::ExecutorContext {
+    let paths = ExecutorIdentityPaths::new(&root, identity.clone());
+    let inputs =
+        load_executor_context(&paths).map_err(|error| BuildExecutionError::ExecutorContext {
             message: error.to_string(),
-        },
-    )?;
-    let raw_seed = std::fs::read_to_string(&inputs.nats_seed_file).map_err(|error| {
-        BuildExecutionError::ExecutorContext {
-            message: format!(
-                "executor seed {} is unreadable: {error}",
-                inputs.nats_seed_file.display()
-            ),
-        }
-    })?;
-    let seed = NatsUserSeed::try_new(raw_seed.trim()).map_err(|error| {
-        BuildExecutionError::ExecutorContext {
-            message: format!("executor seed is invalid: {error}"),
-        }
-    })?;
+        })?;
     Ok((
         NatsConnectConfig {
             url: inputs.nats_url,
-            auth: NatsClientAuth::NkeySeed(seed),
+            auth: NatsClientAuth::NkeySeed(inputs.nats_seed),
             trust: NatsTlsTrust::ClusterCa(inputs.nats_ca_file),
             principal: executor_principal(identity),
         },
@@ -119,6 +110,9 @@ pub(super) async fn connect_watch(
     connect_timeout: Duration,
 ) -> Result<WatchConnect, BuildExecutionError> {
     let (events_tx, events) = tokio::sync::mpsc::unbounded_channel();
+    let runtime_state = Arc::new(tokio::sync::Mutex::new(
+        super::external_runtime::RuntimeState::new_closed(),
+    ));
     let mut shutdown: Pin<Box<dyn Future<Output = Result<(), std::io::Error>> + Send>> =
         Box::pin(shutdown_signal());
     let mut attempt = 0;
@@ -128,9 +122,21 @@ pub(super) async fn connect_watch(
             .reconnect_delay_callback(reconnect_delay)
             .event_callback({
                 let events_tx = events_tx.clone();
+                let runtime_state = Arc::clone(&runtime_state);
                 move |event| {
                     let events_tx = events_tx.clone();
+                    let runtime_state = Arc::clone(&runtime_state);
                     async move {
+                        match classify_event(&event) {
+                            ConnectionEvent::TransientDisconnect => {
+                                runtime_state.lock().await.close_admission();
+                            }
+                            ConnectionEvent::TerminalAuthorization
+                            | ConnectionEvent::TerminalConnection => {
+                                runtime_state.lock().await.terminate_admission();
+                            }
+                            ConnectionEvent::Connected | ConnectionEvent::Ignore => {}
+                        }
                         let _ = events_tx.send(event);
                     }
                 }
@@ -146,7 +152,7 @@ pub(super) async fn connect_watch(
         tokio::select! {
             result = connection => match result {
                 Ok(Ok(client)) => break client,
-                Ok(Err(error)) if is_authorization_error(&error.to_string()) => {
+                Ok(Err(error)) if is_terminal_connect_error(&error) => {
                     return Err(BuildExecutionError::ExecutorCredential { message: error.to_string() });
                 }
                 Ok(Err(_)) | Err(_) => {}
@@ -183,13 +189,60 @@ pub(super) async fn connect_watch(
         client,
         events,
         shutdown,
+        runtime_state,
     }))
 }
 
+pub(super) async fn connect_once(
+    connect: &NatsConnectConfig,
+    credential_expires_at: BuildExecutorCredentialExpiresAt,
+    connect_timeout: Duration,
+) -> Result<async_nats::Client, BuildExecutionError> {
+    let expiry =
+        credential_lifetime(credential_expires_at, SystemTime::now()).map_err(|error| {
+            BuildExecutionError::ExecutorCredential {
+                message: error.to_string(),
+            }
+        })?;
+    let connection = authenticated_connect_options(connect).connect(connect.url.as_str());
+    tokio::select! {
+        biased;
+        () = tokio::time::sleep(expiry) => Err(expired_error(credential_expires_at)),
+        result = tokio::time::timeout(connect_timeout, connection) => match result {
+            Ok(Ok(client)) => Ok(client),
+            Ok(Err(error)) if is_terminal_connect_error(&error) => {
+                Err(BuildExecutionError::ExecutorCredential { message: error.to_string() })
+            }
+            Ok(Err(error)) => Err(BuildExecutionError::ExecutorConnection {
+                message: error.to_string(),
+            }),
+            Err(_) => Err(BuildExecutionError::ExecutorConnection {
+                message: format!("NATS connection timed out after {}ms", connect_timeout.as_millis()),
+            }),
+        },
+    }
+}
+
+fn is_terminal_connect_error(error: &async_nats::ConnectError) -> bool {
+    matches!(
+        error.kind(),
+        async_nats::ConnectErrorKind::Authentication
+            | async_nats::ConnectErrorKind::AuthorizationViolation
+    )
+}
+
 impl WatchSession {
+    #[must_use]
+    pub(super) fn runtime_state(
+        &self,
+    ) -> Arc<tokio::sync::Mutex<super::external_runtime::RuntimeState>> {
+        Arc::clone(&self.runtime_state)
+    }
+
     pub async fn wait(
         &mut self,
         credential_expires_at: BuildExecutorCredentialExpiresAt,
+        runtime: &super::external_runtime::ExternalBuildRuntime,
         mut probe_health: impl AsyncFnMut() -> Result<String, BuildExecutionError>,
     ) -> Result<(), BuildExecutionError> {
         let expiry =
@@ -200,6 +253,8 @@ impl WatchSession {
             })?;
         let expiry = tokio::time::sleep(expiry);
         tokio::pin!(expiry);
+        let reconnect_probe = tokio::time::sleep(Duration::from_secs(86_400));
+        tokio::pin!(reconnect_probe);
         let mut disconnected = false;
         loop {
             tokio::select! {
@@ -208,30 +263,47 @@ impl WatchSession {
                     return Ok(());
                 }
                 () = &mut expiry => return Err(expired_error(credential_expires_at)),
+                () = &mut reconnect_probe, if disconnected => {
+                    match probe_health().await {
+                        Ok(health_description) => {
+                            runtime.open_admission().await;
+                            disconnected = false;
+                            eprintln!("Build Executor {health_description}");
+                        }
+                        Err(error) => {
+                            eprintln!("Build Executor health probe failed: {error}");
+                            reconnect_probe.as_mut().reset(tokio::time::Instant::now() + Duration::from_secs(1));
+                        }
+                    }
+                }
                 event = self.events.recv() => match event.map(|event| classify_event(&event)) {
                     Some(ConnectionEvent::TransientDisconnect) => {
+                        runtime.close_admission().await;
                         disconnected = true;
                         eprintln!("Build Executor disconnected; retrying");
                     }
                     Some(ConnectionEvent::Connected) if disconnected => {
-                        disconnected = false;
-                        let health_description = probe_health().await?;
-                        eprintln!("Build Executor {health_description}");
+                        reconnect_probe.as_mut().reset(tokio::time::Instant::now());
                     }
                     Some(ConnectionEvent::TerminalAuthorization) => {
+                        runtime.close_admission().await;
                         return Err(BuildExecutionError::ExecutorCredential {
                             message: "NATS rejected Build Executor authorization".to_owned(),
                         });
                     }
                     Some(ConnectionEvent::TerminalConnection) => {
+                        runtime.close_admission().await;
                         return Err(BuildExecutionError::ExecutorConnection {
                             message: "NATS closed the Build Executor connection".to_owned(),
                         });
                     }
                     Some(ConnectionEvent::Connected | ConnectionEvent::Ignore) => {}
-                    None => return Err(BuildExecutionError::ExecutorConnection {
-                        message: "NATS connection event stream closed".to_owned(),
-                    }),
+                    None => {
+                        runtime.close_admission().await;
+                        return Err(BuildExecutionError::ExecutorConnection {
+                            message: "NATS connection event stream closed".to_owned(),
+                        });
+                    }
                 }
             }
         }
@@ -364,28 +436,21 @@ pub(super) fn default_workspace_root(
     )
 }
 
-pub(super) async fn select_shutdown<I, T>(interrupt: I, terminate: T) -> Result<(), std::io::Error>
-where
-    I: Future<Output = Result<(), std::io::Error>>,
-    T: Future<Output = Result<(), std::io::Error>>,
-{
+#[cfg(unix)]
+pub(super) async fn shutdown_signal() -> Result<(), std::io::Error> {
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let interrupt = tokio::signal::ctrl_c();
+    let terminate = async move {
+        terminate.recv().await.map(|_| ()).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::BrokenPipe, "SIGTERM listener closed")
+        })
+    };
     tokio::pin!(interrupt);
     tokio::pin!(terminate);
     tokio::select! {
         result = &mut interrupt => result,
         result = &mut terminate => result,
     }
-}
-
-#[cfg(unix)]
-pub(super) async fn shutdown_signal() -> Result<(), std::io::Error> {
-    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    select_shutdown(tokio::signal::ctrl_c(), async move {
-        terminate.recv().await.map(|_| ()).ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::BrokenPipe, "SIGTERM listener closed")
-        })
-    })
-    .await
 }
 
 #[cfg(not(unix))]
@@ -460,20 +525,6 @@ mod tests {
             ))
         );
         assert_eq!(default_workspace_root("p", "e", None, None), None);
-    }
-
-    #[tokio::test]
-    async fn sigterm_source_stops_without_an_os_process() {
-        select_shutdown(std::future::pending(), async { Ok(()) })
-            .await
-            .expect("synthetic SIGTERM");
-    }
-
-    #[tokio::test]
-    async fn sigint_source_stops_without_an_os_process() {
-        select_shutdown(async { Ok(()) }, std::future::pending())
-            .await
-            .expect("synthetic SIGINT");
     }
 
     #[test]

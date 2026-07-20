@@ -159,38 +159,6 @@ impl RunningNatsService {
         self.bind_endpoint_inner(endpoint, policy, handler).await
     }
 
-    /// Binds an endpoint for a service principal that cannot safely publish
-    /// registration probes to its own reply inbox.
-    pub async fn bind_restricted_endpoint<H, F>(
-        &mut self,
-        endpoint: &NatsServiceEndpointSpec,
-        handler: H,
-    ) -> Result<(), NatsServiceRuntimeError>
-    where
-        H: Fn(NatsServiceRequest) -> F + Send + Sync + 'static,
-        F: Future<Output = NatsServiceResponse> + Send + 'static,
-    {
-        self.bind_restricted_endpoint_with_policy(
-            endpoint,
-            EndpointExecutionPolicy::default(),
-            handler,
-        )
-        .await
-    }
-
-    pub async fn bind_restricted_endpoint_with_policy<H, F>(
-        &mut self,
-        endpoint: &NatsServiceEndpointSpec,
-        policy: EndpointExecutionPolicy,
-        handler: H,
-    ) -> Result<(), NatsServiceRuntimeError>
-    where
-        H: Fn(NatsServiceRequest) -> F + Send + Sync + 'static,
-        F: Future<Output = NatsServiceResponse> + Send + 'static,
-    {
-        self.bind_endpoint_inner(endpoint, policy, handler).await
-    }
-
     async fn bind_endpoint_inner<H, F>(
         &mut self,
         endpoint: &NatsServiceEndpointSpec,

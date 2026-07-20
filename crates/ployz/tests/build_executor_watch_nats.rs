@@ -3,9 +3,12 @@ use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ployz_core::build::{
-    BuildExecutorReadiness, BuildExecutorReadinessAnswer, BuildExecutorReadinessRequest,
+    BuildAdapter, BuildContextPath, BuildExecutorAssignment, BuildExecutorReadiness,
+    BuildExecutorReadinessAnswer, BuildExecutorReadinessRequest, BuildExecutorStartDomainError,
+    BuildExecutorStartRequest, BuildExecutorStartResponse, GitSource,
 };
-use ployz_core::ids::{BuildExecutorId, BuildPoolId};
+use ployz_core::ids::{BuildExecutorId, BuildPoolId, MachineId, OperationId};
+use ployz_core::image::OciPlatform;
 use ployz_core::nats_config::{
     BuildExecutorCredentialExpiresAt, CredentialGrant, CredentialName, CredentialRole,
     MintedNatsUser,
@@ -28,8 +31,39 @@ async fn watch_service_recovers_after_real_secured_nats_disconnect_and_stops_bou
     request_readiness(&controller, &fixture.readiness_subject, &mut process).await;
     request_endpoint(&controller, &fixture.start_subject, &mut process).await;
     request_endpoint(&controller, &fixture.cancel_subject, &mut process).await;
-    fixture.nats.restart().await.expect("real NATS restarts");
+    let queued_request = start_request(&fixture.pool_id, &fixture.executor_id);
+    let queued = request_start_across_outage(&controller, &fixture.start_subject, &queued_request);
+    let restart = fixture.nats.restart_after(Duration::from_millis(500));
+    let (restart, queued) = tokio::join!(restart, queued);
+    restart.expect("real NATS restarts");
+    let (queued, observed_outage) = queued;
+    assert!(
+        observed_outage,
+        "start attempt overlaps the secured NATS outage"
+    );
     request_readiness(&controller, &fixture.readiness_subject, &mut process).await;
+    let reopened = if matches!(
+        queued,
+        BuildExecutorStartResponse::DomainError {
+            error: BuildExecutorStartDomainError::RuntimeStopped
+        }
+    ) {
+        request_start_when_admitted(
+            &controller,
+            &fixture.start_subject,
+            &queued_request,
+            &mut process,
+        )
+        .await
+    } else {
+        queued
+    };
+    assert!(!matches!(
+        reopened,
+        BuildExecutorStartResponse::DomainError {
+            error: BuildExecutorStartDomainError::RuntimeStopped
+        }
+    ));
 
     signal(process.id(), "TERM");
     let output = process.wait_bounded(PROCESS_TIMEOUT);
@@ -59,6 +93,11 @@ async fn watch_exits_when_real_secured_nats_revokes_its_credential() {
         .replace_external_credentials(&[])
         .expect("credential revocation renders");
     signal(fixture.nats.server_pid(), "HUP");
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    connect_authenticated(&fixture.nats.user_config(), TEST_NATS_CONNECT_TIMEOUT)
+        .await
+        .expect("founder Operator remains authorized after external credential replacement");
 
     let output = process.wait_bounded(PROCESS_TIMEOUT);
     assert!(!output.status.success(), "revocation must be terminal");
@@ -123,7 +162,6 @@ impl WatchFixture {
                 "executor_id": executor_id.as_str(),
                 "runtime_nats_url": nats.client_url().as_str(),
                 "nats_ca_file": "materials/material-test/ca.pem",
-                "nats_seed_file": "nkey.seed",
                 "credential_expires_at": expires_at.to_string(),
             }))
             .expect("context encodes"),
@@ -196,6 +234,98 @@ async fn request_endpoint(client: &async_nats::Client, subject: &str, process: &
             "executor endpoint {subject} did not answer"
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+async fn request_start(
+    client: &async_nats::Client,
+    subject: &str,
+    request: &BuildExecutorStartRequest,
+) -> Option<BuildExecutorStartResponse> {
+    let payload = serde_json::to_vec(request).expect("start request encodes");
+    let response = tokio::time::timeout(
+        Duration::from_millis(500),
+        client.request(subject.to_owned(), payload.into()),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    serde_json::from_slice(&response.payload).ok()
+}
+
+async fn request_start_across_outage(
+    client: &async_nats::Client,
+    subject: &str,
+    request: &BuildExecutorStartRequest,
+) -> (BuildExecutorStartResponse, bool) {
+    let deadline = tokio::time::Instant::now() + PROCESS_TIMEOUT;
+    let mut observed_outage = false;
+    loop {
+        if let Some(response) = request_start(client, subject, request).await {
+            return (response, observed_outage);
+        }
+        observed_outage = true;
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "queued start answers"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+async fn request_start_when_admitted(
+    client: &async_nats::Client,
+    subject: &str,
+    request: &BuildExecutorStartRequest,
+    process: &mut GuardedChild,
+) -> BuildExecutorStartResponse {
+    let deadline = tokio::time::Instant::now() + PROCESS_TIMEOUT;
+    loop {
+        let Some(response) = request_start(client, subject, request).await else {
+            assert_process_running(process);
+            assert!(tokio::time::Instant::now() < deadline, "admission reopens");
+            continue;
+        };
+        if !matches!(
+            response,
+            BuildExecutorStartResponse::DomainError {
+                error: BuildExecutorStartDomainError::RuntimeStopped
+            }
+        ) {
+            return response;
+        }
+        assert_process_running(process);
+        assert!(tokio::time::Instant::now() < deadline, "admission reopens");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+fn start_request(
+    pool_id: &BuildPoolId,
+    executor_id: &BuildExecutorId,
+) -> BuildExecutorStartRequest {
+    BuildExecutorStartRequest {
+        operation_id: OperationId::try_new("op-watch-reconnect").expect("operation id"),
+        assignment: BuildExecutorAssignment::External {
+            pool_id: pool_id.clone(),
+            executor_id: executor_id.clone(),
+            image_seed: MachineId::try_new("missing-image-seed").expect("machine id"),
+        },
+        source: GitSource::try_new(
+            "https://git.example/repo.git",
+            "0123456789abcdef0123456789abcdef01234567",
+            "builder",
+            "secret",
+            None::<String>,
+        )
+        .expect("Git source"),
+        adapter: BuildAdapter::Dockerfile {
+            dockerfile: BuildContextPath::try_new("Dockerfile").expect("Dockerfile path"),
+            target: None,
+        },
+        platform: OciPlatform::try_new(std::env::consts::OS, std::env::consts::ARCH)
+            .expect("native platform"),
+        timeout_millis: 1_000,
     }
 }
 

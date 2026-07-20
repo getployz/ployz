@@ -86,28 +86,6 @@ async fn service_runtime_responds_to_bound_endpoint() {
 }
 
 #[tokio::test]
-async fn restricted_service_registration_becomes_visible_with_bounded_retry() {
-    let nats = test_nats().await;
-    let subject = OperationApiEndpoint::OpsList.subject();
-    let spec = test_service_spec(subject);
-    let endpoint = spec.endpoints.first().expect("test endpoint is present");
-    let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
-        .await
-        .expect("service starts");
-
-    runtime
-        .bind_restricted_endpoint(endpoint, |request| async move {
-            NatsServiceResponse::ok(request.payload)
-        })
-        .await
-        .expect("restricted endpoint registration flushes");
-
-    let response =
-        request_when_service_is_registered(&nats.request_client, subject, b"ready".to_vec()).await;
-    assert_eq!(response.payload.as_ref(), b"ready");
-}
-
-#[tokio::test]
 async fn request_json_round_trips_typed_payloads() {
     let nats = test_nats().await;
     let subject = OperationApiEndpoint::OpsStatus.subject();

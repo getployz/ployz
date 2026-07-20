@@ -11,10 +11,10 @@ use serde::{Deserialize, Serialize};
 
 use super::command::BuildEnrollCommand;
 use super::executor_context::{
-    ExecutorContextError, ExecutorContextPublication, identity_paths, load_or_create_identity,
-    publish_executor_context, resolve_executor_context_root,
+    ExecutorContextError, ExecutorContextPublication, ExecutorIdentityPaths,
+    load_or_create_identity, publish_executor_context, resolve_executor_context_root,
 };
-use crate::dispatcher::PloyzctlRuntimeConfig;
+use crate::dispatcher::{EnrollmentTransportPolicy, PloyzctlRuntimeConfig};
 use crate::execution_support::PloyzctlExecutionOutput;
 
 #[derive(Clone, PartialEq, Eq)]
@@ -110,27 +110,7 @@ struct EnrollmentResponse {
     executor_id: String,
     runtime_nats_url: String,
     nats_ca_pem: String,
-    credential_expires_at: PositiveDecimal,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(try_from = "String")]
-struct PositiveDecimal(u64);
-
-impl TryFrom<String> for PositiveDecimal {
-    type Error = &'static str;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
-            return Err("must be a positive decimal string");
-        }
-        value
-            .parse::<u64>()
-            .ok()
-            .filter(|parsed| *parsed > 0)
-            .map(Self)
-            .ok_or("must be a positive decimal string")
-    }
+    credential_expires_at: BuildExecutorCredentialExpiresAt,
 }
 
 pub(crate) async fn enroll(
@@ -143,7 +123,10 @@ pub(crate) async fn enroll(
         pool_id,
         executor_id,
     } = command;
-    if enrollment_url.is_loopback_http() && !config.build_executor.allow_insecure_enrollment {
+    if enrollment_url.is_loopback_http()
+        && config.build_executor.enrollment_transport
+            != EnrollmentTransportPolicy::AllowLoopbackHttp
+    {
         return Err(BuildEnrollmentError::HttpsRequired);
     }
     let token = std::env::var(&token_env)
@@ -160,7 +143,11 @@ async fn enroll_with_token(
     config: &PloyzctlRuntimeConfig,
 ) -> Result<PloyzctlExecutionOutput, BuildEnrollmentError> {
     let root = executor_context_root(config)?;
-    let paths = identity_paths(&root, &pool_id, &executor_id);
+    let executor_identity = ployz_core::build::BuildExecutorIdentity {
+        pool_id: pool_id.clone(),
+        executor_id: executor_id.clone(),
+    };
+    let paths = ExecutorIdentityPaths::new(&root, executor_identity);
     let identity = load_or_create_identity(&paths)?;
     let request = EnrollmentRequest {
         pool_id: pool_id.as_str().to_owned(),
@@ -189,14 +176,9 @@ async fn enroll_with_token(
         &paths,
         ExecutorContextPublication {
             organization_id: &organization_id,
-            pool_id: &pool_id,
-            executor_id: &executor_id,
             nats_url,
             ca_pem: ca_pem.as_str(),
-            credential_expires_at: BuildExecutorCredentialExpiresAt::try_new(
-                response.credential_expires_at.0,
-            )
-            .map_err(|_| BuildEnrollmentError::InvalidResponse)?,
+            credential_expires_at: response.credential_expires_at,
         },
     )?;
     Ok(PloyzctlExecutionOutput::stdout(format!(
@@ -312,13 +294,16 @@ mod tests {
     use std::sync::mpsc;
     use std::thread;
 
+    use ployz_core::build::BuildExecutorIdentity;
     use ployz_core::ids::{BuildExecutorId, BuildPoolId};
     use serde_json::Value;
 
     use super::{BuildEnrollmentError, EnrollmentToken, EnrollmentUrl, enroll, enroll_with_token};
     use crate::build::command::BuildEnrollCommand;
-    use crate::build::executor_context::{identity_paths, load_executor_context};
-    use crate::dispatcher::{BuildExecutorRuntimeConfig, PloyzctlRuntimeConfig};
+    use crate::build::executor_context::{ExecutorIdentityPaths, load_executor_context};
+    use crate::dispatcher::{
+        BuildExecutorRuntimeConfig, EnrollmentTransportPolicy, PloyzctlRuntimeConfig,
+    };
 
     const TOKEN: &str = "enrollment-secret-never-persist";
     const TOKEN_ENV: &str = "PLOYZ_TEST_BUILD_ENROLLMENT_TOKEN";
@@ -329,6 +314,22 @@ mod tests {
         assert_eq!(
             EnrollmentToken::try_new(String::new()),
             Err(BuildEnrollmentError::EmptyToken)
+        );
+    }
+
+    #[tokio::test]
+    async fn loopback_http_requires_explicit_test_transport_policy() {
+        let command = BuildEnrollCommand {
+            enrollment_url: EnrollmentUrl::try_new("http://127.0.0.1:1/enroll")
+                .expect("loopback URL shape"),
+            token_env: TOKEN_ENV.to_owned(),
+            pool_id: BuildPoolId::try_new("homelab").expect("pool id"),
+            executor_id: BuildExecutorId::try_new("builder-1").expect("executor id"),
+        };
+
+        assert_eq!(
+            enroll(command, &PloyzctlRuntimeConfig::default()).await,
+            Err(BuildEnrollmentError::HttpsRequired)
         );
     }
 
@@ -361,12 +362,18 @@ mod tests {
         let root = temporary.path().join("executor-contexts");
         let pool_id = BuildPoolId::try_new("homelab").expect("pool id");
         let executor_id = BuildExecutorId::try_new("builder-1").expect("executor id");
-        let paths = identity_paths(&root, &pool_id, &executor_id);
+        let paths = ExecutorIdentityPaths::new(
+            &root,
+            BuildExecutorIdentity {
+                pool_id: pool_id.clone(),
+                executor_id: executor_id.clone(),
+            },
+        );
         let (url, requests, server) = ambiguous_then_success_server(paths.seed.clone());
         let config = PloyzctlRuntimeConfig {
             build_executor: BuildExecutorRuntimeConfig {
                 context_root: Some(root.clone()),
-                allow_insecure_enrollment: true,
+                enrollment_transport: EnrollmentTransportPolicy::AllowLoopbackHttp,
                 enrollment_timeout: None,
             },
             nats_seed_file: Some(temporary.path().join("operator.seed")),
@@ -402,13 +409,12 @@ mod tests {
             vec!["executor_id", "pool_id", "public_key"]
         );
 
-        let connection =
-            load_executor_context(&root, &pool_id, &executor_id).expect("executor context loads");
-        assert_eq!(connection.nats_seed_file, paths.seed);
-        assert_ne!(
-            connection.nats_seed_file,
-            config.nats_seed_file.expect("operator seed")
+        let connection = load_executor_context(&paths).expect("executor context loads");
+        assert_eq!(
+            connection.nats_seed.secret(),
+            fs::read_to_string(&paths.seed).expect("executor seed")
         );
+        assert_ne!(paths.seed, config.nats_seed_file.expect("operator seed"));
         assert_eq!(
             connection.credential_expires_at.unix_seconds(),
             1_900_000_000
@@ -433,12 +439,18 @@ mod tests {
         let root = temporary.path().join("executor-contexts");
         let pool_id = BuildPoolId::try_new("homelab").expect("pool id");
         let executor_id = BuildExecutorId::try_new("builder-1").expect("executor id");
-        let paths = identity_paths(&root, &pool_id, &executor_id);
+        let paths = ExecutorIdentityPaths::new(
+            &root,
+            BuildExecutorIdentity {
+                pool_id: pool_id.clone(),
+                executor_id: executor_id.clone(),
+            },
+        );
         let (url, server) = single_response_server("other-builder");
         let config = PloyzctlRuntimeConfig {
             build_executor: BuildExecutorRuntimeConfig {
                 context_root: Some(root),
-                allow_insecure_enrollment: true,
+                enrollment_transport: EnrollmentTransportPolicy::AllowLoopbackHttp,
                 enrollment_timeout: None,
             },
             ..PloyzctlRuntimeConfig::default()
@@ -466,7 +478,7 @@ mod tests {
         let config = PloyzctlRuntimeConfig {
             build_executor: BuildExecutorRuntimeConfig {
                 context_root: Some(root),
-                allow_insecure_enrollment: true,
+                enrollment_transport: EnrollmentTransportPolicy::AllowLoopbackHttp,
                 enrollment_timeout: Some(std::time::Duration::from_millis(50)),
             },
             ..PloyzctlRuntimeConfig::default()

@@ -1,6 +1,5 @@
 //! External Build Executor command runtime.
 
-use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,38 +9,28 @@ use ployz_build_executor::{
     BuildLogDestination, BuildLogProgress, DockerBuildExecutor,
 };
 use ployz_core::build::{
-    BUILD_FORCE_CLEANUP_TIMEOUT, BUILD_MAX_EXECUTION_TIMEOUT, BUILD_START_ENDPOINT_TIMEOUT,
-    BUILD_TASK_DRAIN_TIMEOUT, BuildAdapterKind, BuildExecutorAcceptance, BuildExecutorAssignment,
+    BUILD_FORCE_CLEANUP_TIMEOUT, BUILD_MAX_EXECUTION_TIMEOUT, BUILD_TASK_DRAIN_TIMEOUT,
+    BuildAdapterKind, BuildExecutorAcceptance, BuildExecutorAssignment,
     BuildExecutorCancelDomainError, BuildExecutorCancelOk, BuildExecutorCancelOutcome,
-    BuildExecutorCancelRequest, BuildExecutorCancelResponse, BuildExecutorCapability,
-    BuildExecutorCleanupOutcome, BuildExecutorIdentity, BuildExecutorReadiness,
-    BuildExecutorReadinessAnswer, BuildExecutorReadinessRequest, BuildExecutorStartDomainError,
-    BuildExecutorStartOk, BuildExecutorStartRequest, BuildExecutorStartResponse,
-    BuildExecutorSuccessCleanupEvidence, BuildLogSummary,
+    BuildExecutorCancelRequest, BuildExecutorCapability, BuildExecutorCleanupOutcome,
+    BuildExecutorIdentity, BuildExecutorReadiness, BuildExecutorStartDomainError,
+    BuildExecutorStartOk, BuildExecutorStartRequest, BuildExecutorSuccessCleanupEvidence,
+    BuildLogSummary,
 };
 use ployz_core::deploy::PlatformImage;
 use ployz_core::operation::{BuildPlatformFailure, FailureMessage};
-use ployz_nats::connect::connect_authenticated;
-use ployz_nats::service_runtime::{
-    EndpointExecutionPolicy, NatsServiceRequest, NatsServiceResponse, RunningNatsService,
-    decode_json_request, start_nats_service,
-};
-use ployz_nats::services::{
-    EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceMetadata,
-    ServiceMetadataEntry, ServiceVersion,
-};
-use ployz_nats::subjects::{
-    BUILD_EXECUTOR_SERVICE_NAME, BuildExecutorServiceEndpoint, build_executor_log,
-    build_executor_service,
-};
+use ployz_nats::service_runtime::RunningNatsService;
+use ployz_nats::subjects::build_executor_log;
 use tokio::sync::{Mutex, Notify, oneshot, watch};
 use tokio::task::AbortHandle;
 use tokio::time::{Instant, timeout};
 
 use super::command::{BuildExecutorCommand, BuildExecutorRunMode};
+use super::external_service::{CompletionMode, start_executor_service};
 use super::runtime::BuildExecutionError;
 use super::watch_lifecycle::{
-    WatchConnect, connect_watch, executor_connect_config, resolve_workspace_root,
+    WatchConnect, connect_once, connect_watch, credential_lifetime, executor_connect_config,
+    resolve_workspace_root,
 };
 use crate::deploy::image_push::{probe_image_seed, push_validated_oci_layout};
 use crate::dispatcher::PloyzctlRuntimeConfig;
@@ -63,15 +52,18 @@ impl ConnectedExecutor {
         identity: BuildExecutorIdentity,
         client: async_nats::Client,
         workspace_root: PathBuf,
-        terminal: tokio::sync::mpsc::UnboundedSender<()>,
+        completion: CompletionMode,
+        state: Option<Arc<Mutex<RuntimeState>>>,
     ) -> Result<Self, BuildExecutionError> {
         let readiness = probe_readiness().await?;
-        let runtime = ExternalBuildRuntime::new(identity.clone(), client.clone(), workspace_root);
+        let runtime =
+            ExternalBuildRuntime::new(identity.clone(), client.clone(), workspace_root, state);
         if readiness.capability != BuildExecutorCapability::RuntimeUnavailable {
             runtime.recover_orphans().await?;
         }
         let service =
-            start_executor_service(client.clone(), identity, runtime.clone(), terminal).await?;
+            start_executor_service(client.clone(), identity, runtime.clone(), completion).await?;
+        runtime.open_admission().await;
         eprintln!("Build Executor {}", health_description(&readiness));
         Ok(Self {
             client,
@@ -115,12 +107,20 @@ pub(crate) async fn run(
 
     match command.mode {
         BuildExecutorRunMode::Once { wait_timeout } => {
-            let client = connect_authenticated(&connect, config.nats_connect_timeout())
-                .await
-                .map_err(|error| BuildExecutionError::ExecutorConnection {
-                    message: error.to_string(),
-                })?;
-            run_connected_once(identity, client, workspace_root, wait_timeout).await
+            let client = connect_once(
+                &connect,
+                credential_expires_at,
+                config.nats_connect_timeout(),
+            )
+            .await?;
+            run_connected_once(
+                identity,
+                client,
+                workspace_root,
+                wait_timeout,
+                credential_expires_at,
+            )
+            .await
         }
         BuildExecutorRunMode::Watch => {
             run_watch(
@@ -140,10 +140,19 @@ async fn run_connected_once(
     client: async_nats::Client,
     workspace_root: PathBuf,
     wait_timeout: Duration,
+    credential_expires_at: ployz_core::nats_config::BuildExecutorCredentialExpiresAt,
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
-    let (terminal_tx, mut terminal_rx) = tokio::sync::mpsc::unbounded_channel();
-    let session = ConnectedExecutor::start(identity, client, workspace_root, terminal_tx).await?;
-    let wait_result = wait_for_once_terminal(&mut terminal_rx, wait_timeout).await;
+    let (terminal_tx, terminal_rx) = oneshot::channel();
+    let session = ConnectedExecutor::start(
+        identity,
+        client,
+        workspace_root,
+        CompletionMode::once(terminal_tx),
+        None,
+    )
+    .await?;
+    let wait_result =
+        wait_for_once_terminal(terminal_rx, wait_timeout, credential_expires_at).await;
     let shutdown_result = session.shutdown().await;
     finish_executor_session(wait_result, shutdown_result)?;
     Ok(PloyzctlExecutionOutput::stdout(
@@ -166,16 +175,20 @@ async fn run_watch(
             ));
         }
     };
-    let (terminal_tx, _terminal_rx) = tokio::sync::mpsc::unbounded_channel();
     let connected = ConnectedExecutor::start(
         identity,
         session.client.clone(),
         workspace_root,
-        terminal_tx,
+        CompletionMode::Watch,
+        Some(session.runtime_state()),
     )
     .await?;
     let wait_result = session
-        .wait(credential_expires_at, current_health_description)
+        .wait(
+            credential_expires_at,
+            &connected.runtime,
+            current_health_description,
+        )
         .await;
     eprintln!("Build Executor stopping");
     let shutdown_result = connected.shutdown().await;
@@ -202,45 +215,58 @@ async fn current_health_description() -> Result<String, BuildExecutionError> {
 }
 
 fn health_description(readiness: &BuildExecutorReadiness) -> String {
+    let (state, capability) = match readiness.capability {
+        BuildExecutorCapability::DockerfileAndRailpack => ("ready", "dockerfile_and_railpack"),
+        BuildExecutorCapability::DockerfileOnly => ("ready", "dockerfile_only"),
+        BuildExecutorCapability::RuntimeUnavailable => ("degraded", "runtime_unavailable"),
+    };
     format!(
         "{} {}/{} {}",
-        health_state(readiness.capability),
+        state,
         readiness.native_platform.os(),
         readiness.native_platform.architecture(),
-        capability_name(readiness.capability),
+        capability,
     )
 }
 
-fn capability_name(capability: BuildExecutorCapability) -> &'static str {
-    match capability {
-        BuildExecutorCapability::DockerfileAndRailpack => "dockerfile_and_railpack",
-        BuildExecutorCapability::DockerfileOnly => "dockerfile_only",
-        BuildExecutorCapability::RuntimeUnavailable => "runtime_unavailable",
-    }
-}
-
-fn health_state(capability: BuildExecutorCapability) -> &'static str {
-    match capability {
-        BuildExecutorCapability::DockerfileAndRailpack
-        | BuildExecutorCapability::DockerfileOnly => "ready",
-        BuildExecutorCapability::RuntimeUnavailable => "degraded",
-    }
-}
-
 async fn wait_for_once_terminal(
-    terminal: &mut tokio::sync::mpsc::UnboundedReceiver<()>,
+    terminal: oneshot::Receiver<()>,
     wait_timeout: Duration,
+    credential_expires_at: ployz_core::nats_config::BuildExecutorCredentialExpiresAt,
 ) -> Result<(), BuildExecutionError> {
-    match timeout(wait_timeout, terminal.recv()).await {
-        Ok(Some(())) => Ok(()),
-        Ok(None) => Err(BuildExecutionError::ExecutorRuntime {
+    let expiry = credential_lifetime(credential_expires_at, std::time::SystemTime::now()).map_err(
+        |error| BuildExecutionError::ExecutorCredential {
+            message: error.to_string(),
+        },
+    )?;
+    wait_for_once_terminal_with_lifetime(terminal, wait_timeout, expiry, credential_expires_at)
+        .await
+}
+
+async fn wait_for_once_terminal_with_lifetime(
+    terminal: oneshot::Receiver<()>,
+    wait_timeout: Duration,
+    credential_lifetime: Duration,
+    credential_expires_at: ployz_core::nats_config::BuildExecutorCredentialExpiresAt,
+) -> Result<(), BuildExecutionError> {
+    tokio::select! {
+        biased;
+        () = tokio::time::sleep(credential_lifetime) => Err(BuildExecutionError::ExecutorCredential {
+            message: format!(
+                "Build Executor credential expired at Unix timestamp {}",
+                credential_expires_at.unix_seconds()
+            ),
+        }),
+        result = terminal => result.map_err(|_| BuildExecutionError::ExecutorRuntime {
             message: "Build Executor terminal channel closed".to_owned(),
         }),
-        Err(_) => Err(BuildExecutionError::ExecutorIdleTimedOut { wait_timeout }),
+        () = tokio::time::sleep(wait_timeout) => {
+            Err(BuildExecutionError::ExecutorIdleTimedOut { wait_timeout })
+        }
     }
 }
 
-async fn probe_readiness() -> Result<BuildExecutorReadiness, BuildExecutionError> {
+pub(super) async fn probe_readiness() -> Result<BuildExecutorReadiness, BuildExecutionError> {
     let native_platform = ployz_build_executor::native_oci_platform().map_err(|message| {
         BuildExecutionError::ExecutorRuntime {
             message: format!("failed to determine native build platform: {message}"),
@@ -310,164 +336,8 @@ fn validate_start_provenance_and_timeout(
     Ok(())
 }
 
-async fn start_executor_service(
-    client: async_nats::Client,
-    identity: BuildExecutorIdentity,
-    runtime: ExternalBuildRuntime,
-    terminal: tokio::sync::mpsc::UnboundedSender<()>,
-) -> Result<RunningNatsService, BuildExecutionError> {
-    let endpoints = executor_endpoints(&identity);
-    let [readiness_endpoint, start_endpoint, cancel_endpoint] = &endpoints;
-    let spec = NatsServiceSpec::new(
-        format!(
-            "{BUILD_EXECUTOR_SERVICE_NAME}.{}.{}",
-            identity.pool_id.as_str(),
-            identity.executor_id.as_str()
-        ),
-        BUILD_EXECUTOR_SERVICE_NAME,
-        ServiceVersion::new(1, 0, 0),
-        "External Dockerfile and Railpack build executor",
-        ServiceMetadata::from_entries(vec![
-            ServiceMetadataEntry::new("pool_id", identity.pool_id.as_str()),
-            ServiceMetadataEntry::new("executor_id", identity.executor_id.as_str()),
-        ]),
-        endpoints.to_vec(),
-    );
-    let mut service = start_nats_service(client, &spec)
-        .await
-        .map_err(|error| executor_error(error.to_string()))?;
-
-    let readiness_identity = identity.clone();
-    service
-        .bind_restricted_endpoint(readiness_endpoint, move |request| {
-            let identity = readiness_identity.clone();
-            async move {
-                match decode_json_request::<BuildExecutorReadinessRequest>(&request) {
-                    Ok(BuildExecutorReadinessRequest {}) => match probe_readiness().await {
-                        Ok(readiness) => {
-                            NatsServiceResponse::json_ok(&BuildExecutorReadinessAnswer {
-                                identity,
-                                readiness,
-                            })
-                        }
-                        Err(error) => NatsServiceResponse::transport_error(
-                            ployz_nats::service_runtime::NatsServiceError::internal(
-                                error.to_string(),
-                            ),
-                        ),
-                    },
-                    Err(response) => response,
-                }
-            }
-        })
-        .await
-        .map_err(|error| executor_error(error.to_string()))?;
-
-    let start_runtime = runtime.clone();
-    service
-        .bind_restricted_endpoint_with_policy(
-            start_endpoint,
-            EndpointExecutionPolicy::new(NonZeroUsize::MIN, BUILD_START_ENDPOINT_TIMEOUT),
-            move |request| {
-                let runtime = start_runtime.clone();
-                let terminal = terminal.clone();
-                async move {
-                    let response = handle_start(runtime, request).await;
-                    notify_terminal_start(&response, &terminal);
-                    response
-                }
-            },
-        )
-        .await
-        .map_err(|error| executor_error(error.to_string()))?;
-
-    let cancel_runtime = runtime;
-    service
-        .bind_restricted_endpoint(cancel_endpoint, move |request| {
-            let runtime = cancel_runtime.clone();
-            async move { handle_cancel(runtime, request).await }
-        })
-        .await
-        .map_err(|error| executor_error(error.to_string()))?;
-    Ok(service)
-}
-
-fn notify_terminal_start(
-    response: &NatsServiceResponse,
-    terminal: &tokio::sync::mpsc::UnboundedSender<()>,
-) {
-    if matches!(
-        response,
-        NatsServiceResponse::Ok { .. } | NatsServiceResponse::DomainError { .. }
-    ) {
-        let _ = terminal.send(());
-    }
-}
-
-fn executor_endpoints(identity: &BuildExecutorIdentity) -> [NatsServiceEndpointSpec; 3] {
-    [
-        executor_endpoint(identity, BuildExecutorServiceEndpoint::ReadinessGet),
-        executor_endpoint(identity, BuildExecutorServiceEndpoint::BuildStart),
-        executor_endpoint(identity, BuildExecutorServiceEndpoint::BuildCancel),
-    ]
-}
-
-fn executor_endpoint(
-    identity: &BuildExecutorIdentity,
-    endpoint: BuildExecutorServiceEndpoint,
-) -> NatsServiceEndpointSpec {
-    let (name, execution) = match endpoint {
-        BuildExecutorServiceEndpoint::ReadinessGet => ("readiness.get", EndpointExecution::Query),
-        BuildExecutorServiceEndpoint::BuildStart => ("build.start", EndpointExecution::MachineRpc),
-        BuildExecutorServiceEndpoint::BuildCancel => {
-            ("build.cancel", EndpointExecution::MachineRpc)
-        }
-    };
-    NatsServiceEndpointSpec::new(
-        name,
-        build_executor_service(&identity.pool_id, &identity.executor_id, endpoint),
-        execution,
-    )
-}
-
-async fn handle_start(
-    runtime: ExternalBuildRuntime,
-    request: NatsServiceRequest,
-) -> NatsServiceResponse {
-    let request = match decode_json_request::<BuildExecutorStartRequest>(&request) {
-        Ok(request) => request,
-        Err(response) => return response,
-    };
-    match runtime.start(request).await {
-        Ok(ok) => NatsServiceResponse::json_ok(&BuildExecutorStartResponse::Ok(Box::new(ok))),
-        Err(error) => {
-            NatsServiceResponse::json_domain_error(&BuildExecutorStartResponse::DomainError {
-                error,
-            })
-        }
-    }
-}
-
-async fn handle_cancel(
-    runtime: ExternalBuildRuntime,
-    request: NatsServiceRequest,
-) -> NatsServiceResponse {
-    let request = match decode_json_request::<BuildExecutorCancelRequest>(&request) {
-        Ok(request) => request,
-        Err(response) => return response,
-    };
-    match runtime.cancel(request).await {
-        Ok(ok) => NatsServiceResponse::json_ok(&BuildExecutorCancelResponse::Ok(ok)),
-        Err(error) => {
-            NatsServiceResponse::json_domain_error(&BuildExecutorCancelResponse::DomainError {
-                error,
-            })
-        }
-    }
-}
-
 #[derive(Clone)]
-struct ExternalBuildRuntime {
+pub(super) struct ExternalBuildRuntime {
     identity: BuildExecutorIdentity,
     client: async_nats::Client,
     executor: Arc<DockerBuildExecutor>,
@@ -475,14 +345,27 @@ struct ExternalBuildRuntime {
     changed: Arc<Notify>,
 }
 
-struct RuntimeState {
-    accepting: bool,
+pub(super) struct RuntimeState {
+    admission: RuntimeAdmission,
     active: Option<ActiveBuild>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeAdmission {
+    Closed,
+    Open,
+    Terminal,
+}
+
 impl RuntimeState {
+    pub(super) fn new_closed() -> Self {
+        Self {
+            admission: RuntimeAdmission::Closed,
+            active: None,
+        }
+    }
     fn ensure_accepting(&self) -> Result<(), BuildExecutorStartDomainError> {
-        if !self.accepting {
+        if self.admission != RuntimeAdmission::Open {
             return Err(BuildExecutorStartDomainError::RuntimeStopped);
         }
         if self.active.is_some() {
@@ -495,6 +378,22 @@ impl RuntimeState {
         self.ensure_accepting()?;
         self.active = Some(active);
         Ok(())
+    }
+
+    pub(super) fn close_admission(&mut self) {
+        if self.admission != RuntimeAdmission::Terminal {
+            self.admission = RuntimeAdmission::Closed;
+        }
+    }
+
+    pub(super) fn terminate_admission(&mut self) {
+        self.admission = RuntimeAdmission::Terminal;
+    }
+
+    fn open_admission(&mut self) {
+        if self.admission != RuntimeAdmission::Terminal {
+            self.admission = RuntimeAdmission::Open;
+        }
     }
 }
 
@@ -511,15 +410,13 @@ impl ExternalBuildRuntime {
         identity: BuildExecutorIdentity,
         client: async_nats::Client,
         workspace_root: PathBuf,
+        state: Option<Arc<Mutex<RuntimeState>>>,
     ) -> Self {
         Self {
             identity,
             client,
             executor: Arc::new(DockerBuildExecutor::new(workspace_root)),
-            state: Arc::new(Mutex::new(RuntimeState {
-                accepting: true,
-                active: None,
-            })),
+            state: state.unwrap_or_else(|| Arc::new(Mutex::new(RuntimeState::new_closed()))),
             changed: Arc::new(Notify::new()),
         }
     }
@@ -531,7 +428,15 @@ impl ExternalBuildRuntime {
             .map_err(|error| executor_error(error.to_string()))
     }
 
-    async fn start(
+    pub(super) async fn close_admission(&self) {
+        self.state.lock().await.close_admission();
+    }
+
+    pub(super) async fn open_admission(&self) {
+        self.state.lock().await.open_admission();
+    }
+
+    pub(super) async fn start(
         &self,
         request: BuildExecutorStartRequest,
     ) -> Result<BuildExecutorStartOk, BuildExecutorStartDomainError> {
@@ -732,7 +637,7 @@ impl ExternalBuildRuntime {
         })
     }
 
-    async fn cancel(
+    pub(super) async fn cancel(
         &self,
         request: BuildExecutorCancelRequest,
     ) -> Result<BuildExecutorCancelOk, BuildExecutorCancelDomainError> {
@@ -743,7 +648,7 @@ impl ExternalBuildRuntime {
     async fn shutdown(&self) -> Result<(), BuildExecutionError> {
         let cleanup_target = {
             let mut state = self.state.lock().await;
-            state.accepting = false;
+            state.terminate_admission();
             state.active.as_ref().map(|active| {
                 let _ = active.cancel.send(true);
                 (
@@ -941,449 +846,12 @@ fn failure(message: impl Into<String>) -> FailureMessage {
     FailureMessage::try_new(message.into()).expect("Build Executor failures are non-empty")
 }
 
-fn executor_error(message: impl Into<String>) -> BuildExecutionError {
+pub(super) fn executor_error(message: impl Into<String>) -> BuildExecutionError {
     BuildExecutionError::ExecutorRuntime {
         message: message.into(),
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use std::path::Path;
-
-    use super::*;
-    use ployz_core::build::{BuildAdapter, BuildContextPath, GitSource, VerifiedGitCommit};
-    use ployz_core::deploy::{ImageAvailabilityExpiresAt, PlatformImage};
-    use ployz_core::ids::{BuildExecutorId, BuildPoolId, MachineId, OperationId};
-    use ployz_core::image::{OciDigest, OciPlatform};
-    use ployz_core::operation::{BuildAdapterToolchainEvidence, BuildToolchainEvidence};
-    use ployz_core::security::NatsPrincipal;
-    use ployz_nats::connect::{NatsClientAuth, NatsClientUrl, NatsTlsTrust};
-
-    use crate::build::executor_context::{
-        ExecutorContextPublication, identity_paths, load_or_create_identity,
-        publish_executor_context,
-    };
-    use crate::build::watch_lifecycle::executor_principal;
-
-    const SHA: &str = "0123456789abcdef0123456789abcdef01234567";
-
-    #[test]
-    fn shutdown_failure_precedes_wait_failure_after_both_complete() {
-        let error = finish_executor_session(
-            Err(BuildExecutionError::ExecutorIdleTimedOut {
-                wait_timeout: Duration::from_secs(1),
-            }),
-            Err(PloyzctlExecutionError::from(
-                BuildExecutionError::ExecutorRuntime {
-                    message: "cleanup evidence failed".to_owned(),
-                },
-            )),
-        )
-        .expect_err("cleanup failure takes precedence");
-
-        assert!(error.to_string().contains("cleanup evidence failed"));
-        assert!(!error.to_string().contains("idle"));
-    }
-
-    #[test]
-    fn configured_identity_drives_principal_and_exact_endpoint_subjects() {
-        let identity = identity();
-
-        assert_eq!(
-            executor_principal(&identity),
-            NatsPrincipal::BuildExecutor {
-                pool_id: identity.pool_id.clone(),
-                executor_id: identity.executor_id.clone(),
-            }
-        );
-        let [readiness, start, cancel] = executor_endpoints(&identity);
-        assert_eq!(
-            readiness.subject,
-            "plz.v1.rpc.build_executor.query.pool_ci.executor_1.readiness.get"
-        );
-        assert_eq!(
-            start.subject,
-            "plz.v1.rpc.build_executor.command.pool_ci.executor_1.build.start"
-        );
-        assert_eq!(
-            cancel.subject,
-            "plz.v1.rpc.build_executor.command.pool_ci.executor_1.build.cancel"
-        );
-    }
-
-    #[test]
-    fn executor_context_is_the_only_connection_authority() {
-        let temporary = tempfile::tempdir().expect("temporary context root");
-        let identity = identity();
-        let paths = identity_paths(temporary.path(), &identity.pool_id, &identity.executor_id);
-        load_or_create_identity(&paths).expect("executor identity");
-        publish_executor_context(
-            &paths,
-            ExecutorContextPublication {
-                organization_id: &ployz_core::ids::SubjectToken::try_new("org-1")
-                    .expect("organization id"),
-                pool_id: &identity.pool_id,
-                executor_id: &identity.executor_id,
-                nats_url: NatsClientUrl::try_new("tls://executor.example:4222").expect("NATS URL"),
-                ca_pem: "executor-ca",
-                credential_expires_at:
-                    ployz_core::nats_config::BuildExecutorCredentialExpiresAt::try_new(u64::MAX)
-                        .expect("expiry"),
-            },
-        )
-        .expect("published executor context");
-        let config = PloyzctlRuntimeConfig {
-            nats_url: Some("tls://operator.example:4222".to_owned()),
-            nats_ca_file: Some(PathBuf::from("operator-ca")),
-            nats_seed_file: Some(PathBuf::from("operator-seed")),
-            build_executor: crate::dispatcher::BuildExecutorRuntimeConfig {
-                context_root: Some(temporary.path().to_owned()),
-                ..crate::dispatcher::BuildExecutorRuntimeConfig::default()
-            },
-            ..PloyzctlRuntimeConfig::default()
-        };
-
-        let (connect, expires_at) =
-            executor_connect_config(&config, &identity).expect("executor connection config");
-
-        assert_eq!(connect.url.as_str(), "tls://executor.example:4222");
-        assert_eq!(connect.principal, executor_principal(&identity));
-        assert_eq!(expires_at.unix_seconds(), u64::MAX);
-        assert!(matches!(connect.auth, NatsClientAuth::NkeySeed(_)));
-        assert!(
-            matches!(connect.trust, NatsTlsTrust::ClusterCa(path) if path != Path::new("operator-ca"))
-        );
-    }
-
-    #[test]
-    fn explicit_workspace_wins_and_shutdown_cleanup_fails_closed() {
-        let explicit = Path::new("/explicit/workspace");
-        assert_eq!(
-            resolve_workspace_root(Some(explicit), &identity()).expect("explicit workspace"),
-            explicit
-        );
-        assert_eq!(
-            shutdown_cleanup_result(BuildExecutorCleanupOutcome::Confirmed),
-            Ok(())
-        );
-        assert_eq!(
-            shutdown_cleanup_result(BuildExecutorCleanupOutcome::Unconfirmed),
-            Err(BuildExecutionError::ExecutorShutdownCleanupUnconfirmed)
-        );
-    }
-
-    #[test]
-    fn provenance_and_timeout_fail_before_acceptance() {
-        let identity = identity();
-        let mut request = start_request();
-        assert_eq!(
-            validate_start_provenance_and_timeout(&identity, &request),
-            Ok(())
-        );
-
-        request.assignment = BuildExecutorAssignment::External {
-            pool_id: BuildPoolId::try_new("pool_other").expect("pool"),
-            executor_id: identity.executor_id.clone(),
-            image_seed: MachineId::try_new("machine_seed").expect("machine"),
-        };
-        assert!(matches!(
-            validate_start_provenance_and_timeout(&identity, &request),
-            Err(BuildExecutorStartDomainError::ExecutorIdentityMismatch { .. })
-        ));
-
-        request = start_request();
-        request.timeout_millis = 0;
-        assert!(matches!(
-            validate_start_provenance_and_timeout(&identity, &request),
-            Err(BuildExecutorStartDomainError::InvalidTimeout { timeout_millis: 0 })
-        ));
-        request.timeout_millis =
-            u64::try_from(BUILD_MAX_EXECUTION_TIMEOUT.as_millis()).expect("timeout") + 1;
-        assert!(matches!(
-            validate_start_provenance_and_timeout(&identity, &request),
-            Err(BuildExecutorStartDomainError::InvalidTimeout { .. })
-        ));
-    }
-
-    #[test]
-    fn readiness_is_closed_and_adapter_specific() {
-        let mut request = start_request();
-        let native = OciPlatform::try_new("linux", "amd64").expect("platform");
-        let unavailable = BuildExecutorReadiness {
-            native_platform: native.clone(),
-            capability: BuildExecutorCapability::RuntimeUnavailable,
-        };
-        assert_eq!(
-            validate_point_of_use_readiness(&request, &unavailable),
-            Err(BuildExecutorStartDomainError::RuntimeUnavailable)
-        );
-
-        request.platform = OciPlatform::try_new("linux", "arm64").expect("platform");
-        let docker_only = BuildExecutorReadiness {
-            native_platform: native.clone(),
-            capability: BuildExecutorCapability::DockerfileOnly,
-        };
-        assert!(matches!(
-            validate_point_of_use_readiness(&request, &docker_only),
-            Err(BuildExecutorStartDomainError::PlatformMismatch { .. })
-        ));
-
-        request.platform = native;
-        request.adapter = BuildAdapter::Railpack {
-            cache_scope: ployz_core::build::BuildCacheScope::try_new("scope").expect("cache scope"),
-        };
-        assert_eq!(
-            validate_point_of_use_readiness(&request, &docker_only),
-            Err(BuildExecutorStartDomainError::ToolchainUnavailable {
-                adapter: BuildAdapterKind::Railpack,
-            })
-        );
-    }
-
-    #[tokio::test]
-    async fn one_active_registration_rechecks_after_the_preflight_race_window() {
-        let mut state = RuntimeState {
-            accepting: true,
-            active: None,
-        };
-        state.ensure_accepting().expect("initial preflight");
-        let (first, _first_rx, first_task) = active_build("op_build_first");
-        state.register(first).expect("first registration");
-        let (second, _second_rx, second_task) = active_build("op_build_second");
-        assert!(matches!(
-            state.register(second),
-            Err(BuildExecutorStartDomainError::AlreadyRunning)
-        ));
-        first_task.abort();
-        second_task.abort();
-    }
-
-    #[tokio::test]
-    async fn cancel_requires_the_exact_active_operation_and_full_assignment() {
-        let (active, mut cancelled, task) = active_build("op_build_first");
-        let assignment = active.assignment.clone();
-        let mut state = RuntimeState {
-            accepting: true,
-            active: Some(active),
-        };
-        let mismatched_assignment = BuildExecutorAssignment::External {
-            pool_id: identity().pool_id,
-            executor_id: identity().executor_id,
-            image_seed: MachineId::try_new("machine_other").expect("machine"),
-        };
-        assert!(matches!(
-            cancel_active(
-                &mut state,
-                BuildExecutorCancelRequest {
-                    operation_id: OperationId::try_new("op_build_first").expect("operation"),
-                    assignment: mismatched_assignment,
-                },
-            ),
-            Err(BuildExecutorCancelDomainError::AssignmentMismatch { .. })
-        ));
-        assert!(!*cancelled.borrow());
-
-        let not_running = cancel_active(
-            &mut state,
-            BuildExecutorCancelRequest {
-                operation_id: OperationId::try_new("op_build_other").expect("operation"),
-                assignment: assignment.clone(),
-            },
-        )
-        .expect("wrong operation is not active");
-        assert_eq!(not_running.outcome, BuildExecutorCancelOutcome::NotRunning);
-        assert!(!*cancelled.borrow());
-
-        let requested = cancel_active(
-            &mut state,
-            BuildExecutorCancelRequest {
-                operation_id: OperationId::try_new("op_build_first").expect("operation"),
-                assignment,
-            },
-        )
-        .expect("exact cancel");
-        assert_eq!(requested.outcome, BuildExecutorCancelOutcome::Requested);
-        cancelled.changed().await.expect("cancellation delivered");
-        assert!(*cancelled.borrow());
-        task.abort();
-    }
-
-    #[tokio::test]
-    async fn once_distinguishes_any_terminal_start_response_from_idle_timeout() {
-        let (terminal_tx, mut terminal_rx) = tokio::sync::mpsc::unbounded_channel();
-        let rejection =
-            NatsServiceResponse::json_domain_error(&BuildExecutorStartResponse::DomainError {
-                error: BuildExecutorStartDomainError::AlreadyRunning,
-            });
-        notify_terminal_start(&rejection, &terminal_tx);
-        wait_for_once_terminal(&mut terminal_rx, Duration::from_secs(1))
-            .await
-            .expect("preacceptance rejection is terminal");
-
-        let (_idle_tx, mut idle_rx) = tokio::sync::mpsc::unbounded_channel();
-        assert_eq!(
-            wait_for_once_terminal(&mut idle_rx, Duration::from_millis(1)).await,
-            Err(BuildExecutionError::ExecutorIdleTimedOut {
-                wait_timeout: Duration::from_millis(1),
-            })
-        );
-    }
-
-    #[test]
-    fn timeout_and_seed_probe_failures_keep_typed_external_provenance() {
-        let request = start_request();
-        let acceptance = BuildExecutorAcceptance::from_start_request(&request);
-        let timeout = external_build_error(
-            EngineError::TimedOut {
-                log_summary: BuildLogSummary::new(7, 11),
-            },
-            BuildExecutorCleanupOutcome::Unconfirmed,
-            acceptance.clone(),
-        );
-        assert_eq!(
-            timeout,
-            BuildExecutorStartDomainError::TimedOut {
-                acceptance: Box::new(acceptance),
-                message: failure("build exceeded its operation deadline"),
-                cleanup: BuildExecutorCleanupOutcome::Unconfirmed,
-                log_summary: BuildLogSummary::new(7, 11),
-            }
-        );
-
-        let image_seed = request.assignment.image_seed().clone();
-        assert_eq!(
-            map_seed_probe(
-                image_seed.clone(),
-                Err(
-                    crate::deploy::image_push::ImagePushError::UnexpectedResponse {
-                        message: "unreachable".to_owned(),
-                    }
-                ),
-            ),
-            Err(BuildExecutorStartDomainError::ImageSeedUnavailable { image_seed })
-        );
-    }
-
-    #[test]
-    fn successful_push_with_unconfirmed_cleanup_is_a_typed_platform_failure() {
-        let request = start_request();
-        let acceptance = BuildExecutorAcceptance::from_start_request(&request);
-        let log_summary = BuildLogSummary::new(9, 17);
-        let result = finish_external_build(
-            Ok(successful_output(&request, log_summary)),
-            BuildExecutorCleanupOutcome::Unconfirmed,
-            acceptance.clone(),
-        );
-
-        assert_eq!(
-            result,
-            Err(BuildExecutorStartDomainError::PlatformFailed {
-                acceptance: Box::new(acceptance),
-                failure: BuildPlatformFailure::ExecutorUnavailable {
-                    message: failure("build workspace cleanup did not finish successfully"),
-                },
-                log_summary,
-            })
-        );
-    }
-
-    #[test]
-    fn successful_push_with_confirmed_cleanup_carries_positive_proof() {
-        let request = start_request();
-        let acceptance = BuildExecutorAcceptance::from_start_request(&request);
-        let log_summary = BuildLogSummary::new(9, 17);
-        let success = finish_external_build(
-            Ok(successful_output(&request, log_summary)),
-            BuildExecutorCleanupOutcome::Confirmed,
-            acceptance.clone(),
-        )
-        .expect("confirmed cleanup permits success");
-
-        assert_eq!(success.acceptance, acceptance);
-        assert_eq!(
-            success.cleanup,
-            BuildExecutorSuccessCleanupEvidence::confirmed()
-        );
-        assert_eq!(success.log_summary, log_summary);
-    }
-
-    fn successful_output(
-        request: &BuildExecutorStartRequest,
-        log_summary: BuildLogSummary,
-    ) -> ExternalBuildOutput {
-        let digest = OciDigest::try_new(format!("sha256:{}", "a".repeat(64))).expect("digest");
-        ExternalBuildOutput {
-            acceptance: BuildExecutorAcceptance::from_start_request(request),
-            image: PlatformImage {
-                seed: request.assignment.image_seed().clone(),
-                manifest_digest: digest.clone(),
-                image_id: digest.clone(),
-                availability_expires_at: ImageAvailabilityExpiresAt::try_new(4_102_444_800)
-                    .expect("expiry"),
-            },
-            verified_commit: VerifiedGitCommit::from_source(&request.source),
-            toolchain: BuildToolchainEvidence {
-                buildkit_image: digest,
-                adapter: BuildAdapterToolchainEvidence::Dockerfile,
-            },
-            log_summary,
-        }
-    }
-
-    fn identity() -> BuildExecutorIdentity {
-        BuildExecutorIdentity {
-            pool_id: BuildPoolId::try_new("pool_ci").expect("pool"),
-            executor_id: BuildExecutorId::try_new("executor_1").expect("executor"),
-        }
-    }
-
-    fn start_request() -> BuildExecutorStartRequest {
-        let identity = identity();
-        BuildExecutorStartRequest {
-            operation_id: OperationId::try_new("op_build_external").expect("operation"),
-            assignment: BuildExecutorAssignment::External {
-                pool_id: identity.pool_id,
-                executor_id: identity.executor_id,
-                image_seed: MachineId::try_new("machine_seed").expect("machine"),
-            },
-            source: GitSource::try_new(
-                "https://git.example/repo.git",
-                SHA,
-                "builder",
-                "secret",
-                None::<String>,
-            )
-            .expect("source"),
-            adapter: BuildAdapter::Dockerfile {
-                dockerfile: BuildContextPath::try_new("Dockerfile").expect("path"),
-                target: None,
-            },
-            platform: OciPlatform::try_new("linux", "amd64").expect("platform"),
-            timeout_millis: 1_000,
-        }
-    }
-
-    fn active_build(
-        operation_id: &str,
-    ) -> (
-        ActiveBuild,
-        watch::Receiver<bool>,
-        tokio::task::JoinHandle<()>,
-    ) {
-        let request = start_request();
-        let (cancel, cancel_rx) = watch::channel(false);
-        let task = tokio::spawn(std::future::pending());
-        (
-            ActiveBuild {
-                operation_id: OperationId::try_new(operation_id).expect("operation"),
-                assignment: request.assignment,
-                platform: request.platform,
-                cancel,
-                supervisor: task.abort_handle(),
-            },
-            cancel_rx,
-            task,
-        )
-    }
-}
+#[path = "external_runtime/tests.rs"]
+mod tests;

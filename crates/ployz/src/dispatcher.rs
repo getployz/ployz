@@ -48,10 +48,17 @@ pub struct PloyzctlRuntimeConfig {
 pub struct BuildExecutorRuntimeConfig {
     /// Executor context root override for embedded runtimes and tests.
     pub context_root: Option<PathBuf>,
-    /// Permits loopback HTTP enrollment servers in deterministic tests.
-    pub allow_insecure_enrollment: bool,
+    /// Enrollment transport policy; production defaults to HTTPS only.
+    pub enrollment_transport: EnrollmentTransportPolicy,
     /// Whole-request enrollment budget override for embedded runtimes and tests.
     pub enrollment_timeout: Option<Duration>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum EnrollmentTransportPolicy {
+    #[default]
+    HttpsOnly,
+    AllowLoopbackHttp,
 }
 
 impl PloyzctlRuntimeConfig {

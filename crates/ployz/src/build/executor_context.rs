@@ -4,6 +4,7 @@ use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
+use ployz_core::build::BuildExecutorIdentity;
 use ployz_core::ids::{BuildExecutorId, BuildPoolId, SubjectToken};
 use ployz_core::nats_config::{
     BuildExecutorCredentialExpiresAt, MintedNatsUser, NatsServerConfigError, NatsUserSeed,
@@ -27,12 +28,13 @@ pub(super) struct ExecutorContext {
     pub executor_id: BuildExecutorId,
     pub nats_url: NatsClientUrl,
     pub nats_ca_file: PathBuf,
-    pub nats_seed_file: PathBuf,
+    pub nats_seed: NatsUserSeed,
     pub credential_expires_at: BuildExecutorCredentialExpiresAt,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ExecutorIdentityPaths {
+    identity: BuildExecutorIdentity,
     pub directory: PathBuf,
     pub context: PathBuf,
     pub seed: PathBuf,
@@ -46,8 +48,27 @@ struct ExecutorContextFile {
     executor_id: BuildExecutorId,
     runtime_nats_url: String,
     nats_ca_file: PathBuf,
-    nats_seed_file: PathBuf,
     credential_expires_at: BuildExecutorCredentialExpiresAt,
+}
+
+impl ExecutorIdentityPaths {
+    #[must_use]
+    pub fn new(root: &Path, identity: BuildExecutorIdentity) -> Self {
+        let directory = root
+            .join(identity.pool_id.as_str())
+            .join(identity.executor_id.as_str());
+        Self {
+            identity,
+            context: directory.join(CONTEXT_FILE),
+            seed: directory.join(SEED_FILE),
+            directory,
+        }
+    }
+
+    #[must_use]
+    pub const fn identity(&self) -> &BuildExecutorIdentity {
+        &self.identity
+    }
 }
 
 #[must_use]
@@ -70,11 +91,8 @@ pub(super) fn resolve_executor_context_root(configured: Option<&Path>) -> Option
 }
 
 pub(super) fn load_executor_context(
-    root: &Path,
-    pool_id: &BuildPoolId,
-    executor_id: &BuildExecutorId,
+    paths: &ExecutorIdentityPaths,
 ) -> Result<ExecutorContext, ExecutorContextError> {
-    let paths = identity_paths(root, pool_id, executor_id);
     let raw = fs::read_to_string(&paths.context).map_err(|error| ExecutorContextError::Read {
         path: paths.context.clone(),
         message: error.to_string(),
@@ -90,20 +108,20 @@ pub(super) fn load_executor_context(
         executor_id: stored_executor_id,
         runtime_nats_url,
         nats_ca_file,
-        nats_seed_file,
         credential_expires_at,
     } = file;
-    if stored_pool_id != *pool_id || stored_executor_id != *executor_id {
+    if stored_pool_id != paths.identity.pool_id || stored_executor_id != paths.identity.executor_id
+    {
         return Err(ExecutorContextError::IdentityMismatch);
     }
-    if !is_private_ca_reference(&nats_ca_file) || nats_seed_file != Path::new(SEED_FILE) {
+    if !is_private_ca_reference(&nats_ca_file) {
         return Err(ExecutorContextError::InvalidMaterialReference);
     }
-    let seed = fs::read_to_string(&paths.seed).map_err(|error| ExecutorContextError::Read {
+    let raw_seed = fs::read_to_string(&paths.seed).map_err(|error| ExecutorContextError::Read {
         path: paths.seed.clone(),
         message: error.to_string(),
     })?;
-    NatsUserSeed::try_new(seed).map_err(ExecutorContextError::Nkey)?;
+    let nats_seed = NatsUserSeed::try_new(raw_seed).map_err(ExecutorContextError::Nkey)?;
     Ok(ExecutorContext {
         organization_id,
         pool_id: stored_pool_id,
@@ -111,22 +129,9 @@ pub(super) fn load_executor_context(
         nats_url: NatsClientUrl::try_new(runtime_nats_url)
             .map_err(ExecutorContextError::InvalidNatsUrl)?,
         nats_ca_file: paths.directory.join(nats_ca_file),
-        nats_seed_file: paths.seed,
+        nats_seed,
         credential_expires_at,
     })
-}
-
-pub(super) fn identity_paths(
-    root: &Path,
-    pool_id: &BuildPoolId,
-    executor_id: &BuildExecutorId,
-) -> ExecutorIdentityPaths {
-    let directory = root.join(pool_id.as_str()).join(executor_id.as_str());
-    ExecutorIdentityPaths {
-        context: directory.join(CONTEXT_FILE),
-        seed: directory.join(SEED_FILE),
-        directory,
-    }
 }
 
 pub(super) fn load_or_create_identity(
@@ -163,8 +168,6 @@ pub(super) fn load_or_create_identity(
 
 pub(super) struct ExecutorContextPublication<'a> {
     pub organization_id: &'a SubjectToken,
-    pub pool_id: &'a BuildPoolId,
-    pub executor_id: &'a BuildExecutorId,
     pub nats_url: NatsClientUrl,
     pub ca_pem: &'a str,
     pub credential_expires_at: BuildExecutorCredentialExpiresAt,
@@ -176,21 +179,19 @@ pub(super) fn publish_executor_context(
 ) -> Result<ExecutorContext, ExecutorContextError> {
     let ExecutorContextPublication {
         organization_id,
-        pool_id,
-        executor_id,
         nats_url,
         ca_pem,
         credential_expires_at,
     } = publication;
     prepare_identity_hierarchy(paths)?;
     let (ca_directory, ca_relative) = create_ca_generation(paths, ca_pem)?;
+    let identity = paths.identity();
     let file = ExecutorContextFile {
         organization_id: organization_id.clone(),
-        pool_id: pool_id.clone(),
-        executor_id: executor_id.clone(),
+        pool_id: identity.pool_id.clone(),
+        executor_id: identity.executor_id.clone(),
         runtime_nats_url: nats_url.as_str().to_owned(),
         nats_ca_file: ca_relative,
-        nats_seed_file: PathBuf::from(SEED_FILE),
         credential_expires_at,
     };
     let mut payload =
@@ -203,19 +204,7 @@ pub(super) fn publish_executor_context(
         let _ = fs::remove_dir_all(ca_directory);
         return Err(error);
     }
-    let Some(pool_directory) = paths.directory.parent() else {
-        return Err(ExecutorContextError::Write {
-            path: paths.context.clone(),
-            message: "executor context path has no pool directory".to_owned(),
-        });
-    };
-    let Some(root) = pool_directory.parent() else {
-        return Err(ExecutorContextError::Write {
-            path: paths.context.clone(),
-            message: "executor context path has no identity root".to_owned(),
-        });
-    };
-    load_executor_context(root, pool_id, executor_id)
+    load_executor_context(paths)
 }
 
 fn load_identity_seed(path: &Path, raw: String) -> Result<MintedNatsUser, ExecutorContextError> {
@@ -386,7 +375,7 @@ pub(super) enum ExecutorContextError {
     Write { path: PathBuf, message: String },
     #[error("executor context identity does not match the requested executor")]
     IdentityMismatch,
-    #[error("executor context must reference its own generated CA and nkey.seed")]
+    #[error("executor context must reference its own generated CA")]
     InvalidMaterialReference,
     #[error("executor context has an invalid NATS URL: {0}")]
     InvalidNatsUrl(NatsClientUrlError),
@@ -405,12 +394,13 @@ mod tests {
     use std::sync::Arc;
     use std::thread;
 
+    use ployz_core::build::BuildExecutorIdentity;
     use ployz_core::ids::{BuildExecutorId, BuildPoolId};
     use ployz_nats::connect::NatsClientUrl;
 
     use super::{
-        ExecutorContextPublication, identity_paths, load_executor_context, load_or_create_identity,
-        publish_executor_context,
+        ExecutorContextPublication, ExecutorIdentityPaths, load_executor_context,
+        load_or_create_identity, publish_executor_context,
     };
 
     #[test]
@@ -419,17 +409,29 @@ mod tests {
         let root = Arc::new(temporary.path().join("contexts"));
         let pool_id = BuildPoolId::try_new("homelab").expect("pool id");
         let executor_id = BuildExecutorId::try_new("builder-1").expect("executor id");
-        let paths = identity_paths(&root, &pool_id, &executor_id);
+        let paths = ExecutorIdentityPaths::new(
+            &root,
+            BuildExecutorIdentity {
+                pool_id: pool_id.clone(),
+                executor_id: executor_id.clone(),
+            },
+        );
         load_or_create_identity(&paths).expect("identity exists");
-        publish(&paths, &pool_id, &executor_id, "one");
+        publish(&paths, "one");
 
         let reader_root = Arc::clone(&root);
         let reader_pool = pool_id.clone();
         let reader_executor = executor_id.clone();
         let reader = thread::spawn(move || {
             for _ in 0..100 {
-                let context = load_executor_context(&reader_root, &reader_pool, &reader_executor)
-                    .expect("published context loads");
+                let paths = ExecutorIdentityPaths::new(
+                    &reader_root,
+                    BuildExecutorIdentity {
+                        pool_id: reader_pool.clone(),
+                        executor_id: reader_executor.clone(),
+                    },
+                );
+                let context = load_executor_context(&paths).expect("published context loads");
                 let ca = fs::read_to_string(&context.nats_ca_file).expect("published CA reads");
                 let expected = context
                     .nats_url
@@ -442,24 +444,35 @@ mod tests {
         });
         for index in 0..50 {
             let generation = if index % 2 == 0 { "two" } else { "one" };
-            publish(&paths, &pool_id, &executor_id, generation);
+            publish(&paths, generation);
         }
         reader.join().expect("reader exits");
     }
 
-    fn publish(
-        paths: &super::ExecutorIdentityPaths,
-        pool_id: &BuildPoolId,
-        executor_id: &BuildExecutorId,
-        generation: &str,
-    ) {
+    #[test]
+    fn context_json_omits_fixed_seed_path_and_loads_validated_seed() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let identity = BuildExecutorIdentity {
+            pool_id: BuildPoolId::try_new("homelab").expect("pool id"),
+            executor_id: BuildExecutorId::try_new("builder-1").expect("executor id"),
+        };
+        let paths = ExecutorIdentityPaths::new(temporary.path(), identity);
+        let minted = load_or_create_identity(&paths).expect("identity exists");
+        publish(&paths, "one");
+
+        let json = fs::read_to_string(&paths.context).expect("context reads");
+        assert!(!json.contains("nats_seed_file"));
+        assert!(json.contains("\"credential_expires_at\": \"1\""));
+        let context = load_executor_context(&paths).expect("context loads");
+        assert_eq!(context.nats_seed.secret(), minted.seed.secret());
+    }
+
+    fn publish(paths: &super::ExecutorIdentityPaths, generation: &str) {
         publish_executor_context(
             paths,
             ExecutorContextPublication {
                 organization_id: &ployz_core::ids::SubjectToken::try_new("org-1")
                     .expect("organization id"),
-                pool_id,
-                executor_id,
                 nats_url: NatsClientUrl::try_new(format!("tls://{generation}.example:4222"))
                     .expect("NATS URL"),
                 ca_pem: generation,

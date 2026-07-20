@@ -119,14 +119,10 @@ impl SecuredTestNats {
                 minted,
             ));
         }
+        let base_authorizations = authorized.clone();
         for credential in extra_credentials {
             authorized.push(NatsAuthorizationGrant::Credential(credential.clone()));
         }
-        let base_authorizations = authorized
-            .iter()
-            .filter(|grant| !matches!(grant, NatsAuthorizationGrant::Credential(_)))
-            .cloned()
-            .collect();
         let authorized_users_path = dir.path().join("authorized-users.conf");
         fs::write(&authorized_users_path, render_authorized_users(&authorized))?;
 
@@ -224,7 +220,14 @@ impl SecuredTestNats {
     /// Restarts the real server on the same client port so existing clients
     /// exercise their reconnect path.
     pub async fn restart(&mut self) -> Result<(), FixtureError> {
+        self.restart_after(Duration::ZERO).await
+    }
+
+    /// Restarts after a bounded outage so callers can queue work while the
+    /// secured server is unavailable.
+    pub async fn restart_after(&mut self, outage: Duration) -> Result<(), FixtureError> {
         self.server.stop()?;
+        tokio::time::sleep(outage).await;
         self.server =
             FixtureNatsServer::spawn_on_port(&self.config_path, self._dir.path(), self.port)?;
         let actual = self.server.wait_for_client_port(self._dir.path()).await?;
