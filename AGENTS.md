@@ -232,11 +232,14 @@ Live` section above. These rules are about truth semantics, not storage:
   configured external review model is unavailable. Record the CLI model and
   reasoning effort, keep the invocation read-only, and never use it to edit the
   candidate.
-- Before implementation, the supervisor drafts the plan and runs the
-  `opus-advisor` plan gate. Opus reviews only; Codex owns the plan and every
-  implementation decision. `PLAN_REVISE` returns the plan to Codex. An
-  unavailable or unverified advisor stops implementation unless the dispatcher
-  explicitly made the gate best-effort.
+- Before implementation, the supervisor drafts the plan and runs an independent
+  plan gate. Use `opus-advisor` when available. When the dispatcher requests
+  Codex CLI or the external review model is unavailable, a fresh-context,
+  read-only Codex CLI `gpt-5.6-sol` High gate is a valid substitute. The advisor
+  reviews only; Codex owns the plan and every implementation decision.
+  `PLAN_REVISE` returns the plan to Codex. An unavailable or unverified required
+  route stops implementation unless the dispatcher explicitly made the gate
+  best-effort.
 
 ## Code Reviews
 
@@ -252,10 +255,14 @@ Live` section above. These rules are about truth semantics, not storage:
   ponytail is the `ponytail-review` skill. Every reviewer uses `gpt-5.6-sol`
   with high reasoning effort. If the tool cannot verify model or effort,
   record that limitation; do not claim the routing succeeded.
-- Mirror that wave through the `opus-advisor` skill. A small change gets one
-  consolidated Opus cold read with four separate verdicts. A large or risky
-  change gets four independent Opus cold reads, one per lane, producing an
-  eight-review matrix with the four Codex reviews. Treat security, authority,
+- Mirror that wave through the `opus-advisor` skill when Opus is available. If
+  the dispatcher requests Codex CLI or Opus is unavailable or usage-limited,
+  substitute fresh-context, read-only Codex CLI `gpt-5.6-sol` High reads for the
+  required Opus reads; do not wait for Claude capacity. A small change gets one
+  consolidated substitute cold read with four separate verdicts. A large or
+  risky change gets four independent substitute cold reads, one per lane,
+  preserving the eight-review matrix with the four native Codex reviews. Treat
+  security, authority,
   money, privacy, destructive behavior, persistence, migrations, concurrency,
   distributed state, public contracts, architecture boundaries, or a broad
   multi-module diff as large or risky. The supervisor records the classification.
