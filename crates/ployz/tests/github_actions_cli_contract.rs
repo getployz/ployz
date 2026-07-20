@@ -4,7 +4,7 @@ use ployz::commands::{PloyzctlCommand, parse_command};
 fn github_actions_build_is_one_closed_command() {
     assert!(matches!(
         parse_command(["build", "github-actions"].map(str::to_owned)),
-        Ok(PloyzctlCommand::BuildGithubActions(_))
+        Ok(PloyzctlCommand::BuildGithubActions)
     ));
     assert!(
         parse_command(["build", "github-actions", "--pool-id", "pool"].map(str::to_owned)).is_err()

@@ -36,16 +36,6 @@ const MAX_EXCHANGE_RESPONSE_BYTES: usize = 64 * 1024;
 #[derive(Debug, Args, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct GithubActionsBuildCli {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct GithubActionsBuildCommand;
-
-#[must_use]
-pub(crate) const fn github_actions_build_command(
-    GithubActionsBuildCli {}: GithubActionsBuildCli,
-) -> GithubActionsBuildCommand {
-    GithubActionsBuildCommand
-}
-
 #[derive(Debug)]
 struct RunnerInputs {
     assignment_id: String,
@@ -339,7 +329,6 @@ async fn decode_json_response<T: DeserializeOwned>(
 }
 
 pub(crate) async fn execute(
-    GithubActionsBuildCommand: GithubActionsBuildCommand,
     config: &PloyzctlRuntimeConfig,
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
     let inputs = RunnerInputs::from_environment().map_err(execution_error)?;
@@ -553,11 +542,28 @@ mod tests {
     fn runner_inputs_are_closed_and_native() {
         let temp = tempfile::tempdir().expect("tempdir");
         let inputs = RunnerInputs::from_pairs(valid_environment(temp.path())).expect("inputs");
+        assert_eq!(inputs.assignment_id, "00000000-0000-4000-8000-000000000501");
         assert_eq!(
             inputs.audience().expect("audience"),
             "https://cloud.example/github-actions-build-authority"
         );
         assert_eq!(inputs.platform.os(), "linux");
+    }
+
+    #[test]
+    fn runner_requires_the_exact_assignment_environment_name() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut environment = valid_environment(temp.path());
+        environment.retain(|(key, _)| key != PLOYZ_BUILD_ASSIGNMENT_ID);
+        environment.push((
+            OsString::from("PLOYZ_BUILD_ATTEMPT_ID"),
+            OsString::from("00000000-0000-4000-8000-000000000501"),
+        ));
+
+        assert_eq!(
+            RunnerInputs::from_pairs(environment).expect_err("wrong variable is ignored"),
+            GithubActionsBuildError::MissingRunnerVariable
+        );
     }
 
     #[test]
@@ -764,7 +770,25 @@ mod tests {
         assert!(request.contains(public_key.as_str()));
         assert!(!request.contains(minted.seed.secret()));
         assert!(!request.contains("seed"));
-        assert!(request.contains("00000000-0000-4000-8000-000000000501"));
+        let body = request
+            .split_once("\r\n\r\n")
+            .map(|(_, body)| body)
+            .expect("HTTP request body");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(body).expect("exchange request JSON"),
+            serde_json::json!({
+                "assignmentId": "00000000-0000-4000-8000-000000000501",
+                "platform": {
+                    "os": "linux",
+                    "architecture": match std::env::consts::ARCH {
+                        "x86_64" => "amd64",
+                        "aarch64" => "arm64",
+                        other => panic!("unsupported test architecture {other}"),
+                    },
+                },
+                "publicKey": public_key.as_str(),
+            })
+        );
     }
 
     #[tokio::test]

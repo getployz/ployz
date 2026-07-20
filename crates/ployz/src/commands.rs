@@ -31,7 +31,7 @@ pub enum PloyzctlCommand {
     BuildCancel(build::BuildCancelCommand),
     BuildEnroll(build::BuildEnrollCommand),
     BuildExecutor(build::BuildExecutorCommand),
-    BuildGithubActions(crate::build::github_actions::GithubActionsBuildCommand),
+    BuildGithubActions,
     CorePromote(core::CorePromoteCommand),
     CoreReplace(core::CoreReplaceCommand),
     ComposeCheck(compose::ComposeCheckCommand),
@@ -88,7 +88,7 @@ impl PloyzctlCommand {
                 build::BuildExecutorRunMode::Once { .. } => "build once",
                 build::BuildExecutorRunMode::Watch => "build watch",
             }),
-            Self::BuildGithubActions(_) => Some("build github-actions"),
+            Self::BuildGithubActions => Some("build github-actions"),
             Self::CorePromote(_) => Some("core promote"),
             Self::CoreReplace(_) => Some("core demote"),
             Self::ComposeCheck(_) => Some("compose check"),
@@ -368,9 +368,9 @@ fn command_from_cli(command: CommandCli) -> Result<PloyzctlCommand, PloyzctlCliE
             BuildCli::Watch(command) => {
                 build::build_executor_watch_command(command).map(PloyzctlCommand::BuildExecutor)
             }
-            BuildCli::GithubActions(command) => Ok(PloyzctlCommand::BuildGithubActions(
-                crate::build::github_actions::github_actions_build_command(command),
-            )),
+            BuildCli::GithubActions(crate::build::github_actions::GithubActionsBuildCli {}) => {
+                Ok(PloyzctlCommand::BuildGithubActions)
+            }
         },
         CommandCli::Init(command) => {
             machine::machine_init_command(command).map(PloyzctlCommand::MachineInit)
