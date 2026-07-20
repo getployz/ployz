@@ -1,5 +1,6 @@
 //! External Build Executor command runtime.
 
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,6 +19,7 @@ use ployz_core::build::{
     BuildLogSummary,
 };
 use ployz_core::deploy::PlatformImage;
+use ployz_core::nats_config::BuildExecutorCredentialExpiresAt;
 use ployz_core::operation::{BuildPlatformFailure, FailureMessage};
 use ployz_nats::service_runtime::RunningNatsService;
 use ployz_nats::subjects::build_executor_log;
@@ -46,6 +48,7 @@ const SHUTDOWN_TIMEOUT: Duration = BUILD_TASK_DRAIN_TIMEOUT
 struct ExecutorStartup {
     workspace: WorkspaceStartup,
     admission: BuildExecutorAdmission,
+    credential_expires_at: BuildExecutorCredentialExpiresAt,
 }
 
 struct ConnectedExecutor {
@@ -53,6 +56,25 @@ struct ConnectedExecutor {
     runtime: ExternalBuildRuntime,
     service: RunningNatsService,
     admission_opened: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExecutorStartupStage {
+    ReadinessProbe,
+    OrphanRecovery,
+    ServiceBinding,
+    AdmissionOpening,
+}
+
+impl ExecutorStartupStage {
+    const fn description(self) -> &'static str {
+        match self {
+            Self::ReadinessProbe => "readiness probe",
+            Self::OrphanRecovery => "orphan recovery",
+            Self::ServiceBinding => "service binding",
+            Self::AdmissionOpening => "admission opening",
+        }
+    }
 }
 
 impl ConnectedExecutor {
@@ -68,8 +90,20 @@ impl ConnectedExecutor {
         let ExecutorStartup {
             workspace,
             admission,
+            credential_expires_at,
         } = startup;
-        let readiness = probe_readiness().await?;
+        let readiness = match await_startup_stage(
+            credential_expires_at,
+            ExecutorStartupStage::ReadinessProbe,
+            probe_readiness(),
+        )
+        .await
+        {
+            Ok(readiness) => readiness,
+            Err(error) => {
+                return Err(finish_failed_startup(error, client, None, None).await);
+            }
+        };
         let runtime = ExternalBuildRuntime::new(
             identity.clone(),
             client.clone(),
@@ -79,12 +113,38 @@ impl ConnectedExecutor {
         );
         if workspace == WorkspaceStartup::Recover
             && readiness.capability != BuildExecutorCapability::RuntimeUnavailable
+            && let Err(error) = await_startup_stage(
+                credential_expires_at,
+                ExecutorStartupStage::OrphanRecovery,
+                runtime.recover_orphans(),
+            )
+            .await
         {
-            runtime.recover_orphans().await?;
+            return Err(finish_failed_startup(error, client, Some(&runtime), None).await);
         }
-        let service =
-            start_executor_service(client.clone(), identity, runtime.clone(), completion).await?;
-        let admission_opened = runtime.open_admission(admission_generation).await;
+        let service = match await_startup_stage(
+            credential_expires_at,
+            ExecutorStartupStage::ServiceBinding,
+            start_executor_service(client.clone(), identity, runtime.clone(), completion),
+        )
+        .await
+        {
+            Ok(service) => service,
+            Err(error) => {
+                return Err(finish_failed_startup(error, client, Some(&runtime), None).await);
+            }
+        };
+        let admission_opened = match runtime
+            .open_admission_before_expiry(admission_generation, credential_expires_at)
+            .await
+        {
+            Ok(opened) => opened,
+            Err(error) => {
+                return Err(
+                    finish_failed_startup(error, client, Some(&runtime), Some(service)).await,
+                );
+            }
+        };
         if admission_opened {
             eprintln!("Build Executor {}", health_description(&readiness));
         }
@@ -116,6 +176,113 @@ impl ConnectedExecutor {
         service_result?;
         client_result
     }
+}
+
+fn ensure_startup_authority(
+    credential_expires_at: BuildExecutorCredentialExpiresAt,
+    stage: ExecutorStartupStage,
+) -> Result<(), BuildExecutionError> {
+    ensure_startup_authority_at(credential_expires_at, stage, std::time::SystemTime::now())
+}
+
+async fn await_startup_stage<T, F>(
+    credential_expires_at: BuildExecutorCredentialExpiresAt,
+    stage: ExecutorStartupStage,
+    future: F,
+) -> Result<T, BuildExecutionError>
+where
+    F: Future<Output = Result<T, BuildExecutionError>>,
+{
+    let lifetime = credential_lifetime(credential_expires_at, std::time::SystemTime::now())
+        .map_err(|error| startup_credential_error(stage, error))?;
+    await_startup_stage_with_lifetime(credential_expires_at, stage, lifetime, future).await
+}
+
+async fn await_startup_stage_with_lifetime<T, F>(
+    credential_expires_at: BuildExecutorCredentialExpiresAt,
+    stage: ExecutorStartupStage,
+    lifetime: Duration,
+    future: F,
+) -> Result<T, BuildExecutionError>
+where
+    F: Future<Output = Result<T, BuildExecutionError>>,
+{
+    tokio::select! {
+        biased;
+        () = tokio::time::sleep(lifetime) => {
+            Err(startup_expired_error(credential_expires_at, stage))
+        }
+        result = future => {
+            let result = result?;
+            ensure_startup_authority(credential_expires_at, stage)?;
+            Ok(result)
+        }
+    }
+}
+
+fn ensure_startup_authority_at(
+    credential_expires_at: BuildExecutorCredentialExpiresAt,
+    stage: ExecutorStartupStage,
+    now: std::time::SystemTime,
+) -> Result<(), BuildExecutionError> {
+    credential_lifetime(credential_expires_at, now)
+        .map(|_| ())
+        .map_err(|error| startup_credential_error(stage, error))
+}
+
+fn startup_credential_error(
+    stage: ExecutorStartupStage,
+    error: impl std::fmt::Display,
+) -> BuildExecutionError {
+    BuildExecutionError::ExecutorCredential {
+        message: format!(
+            "Build Executor credential cannot continue {}: {error}",
+            stage.description()
+        ),
+    }
+}
+
+fn startup_expired_error(
+    credential_expires_at: BuildExecutorCredentialExpiresAt,
+    stage: ExecutorStartupStage,
+) -> BuildExecutionError {
+    BuildExecutionError::ExecutorCredential {
+        message: format!(
+            "Build Executor credential expired during {} at Unix timestamp {}",
+            stage.description(),
+            credential_expires_at.unix_seconds()
+        ),
+    }
+}
+
+async fn finish_failed_startup(
+    startup_error: BuildExecutionError,
+    client: async_nats::Client,
+    runtime: Option<&ExternalBuildRuntime>,
+    service: Option<RunningNatsService>,
+) -> BuildExecutionError {
+    let runtime_result = if let Some(runtime) = runtime {
+        runtime.shutdown().await
+    } else {
+        Ok(())
+    };
+    let service_result = if let Some(service) = service {
+        service
+            .shutdown()
+            .await
+            .map_err(|error| executor_error(error.to_string()))
+    } else {
+        Ok(())
+    };
+    let client_result = client
+        .drain()
+        .await
+        .map_err(|error| executor_error(format!("failed to drain NATS client: {error}")));
+    runtime_result
+        .and(service_result)
+        .and(client_result)
+        .err()
+        .unwrap_or(startup_error)
 }
 
 pub(crate) async fn run(
@@ -207,6 +374,7 @@ pub(crate) async fn run_controlled(
         ExecutorStartup {
             workspace: workspace_startup,
             admission: command.admission,
+            credential_expires_at,
         },
     )
     .await?;
@@ -292,6 +460,7 @@ async fn run_connected_once(
         ExecutorStartup {
             workspace: WorkspaceStartup::Recover,
             admission,
+            credential_expires_at,
         },
     )
     .await?;
@@ -330,6 +499,7 @@ async fn run_watch(
         ExecutorStartup {
             workspace: WorkspaceStartup::Recover,
             admission,
+            credential_expires_at,
         },
     )
     .await?;
@@ -617,6 +787,20 @@ impl RuntimeState {
         }
         false
     }
+
+    fn open_admission_before_expiry_at(
+        &mut self,
+        generation: AdmissionGeneration,
+        credential_expires_at: BuildExecutorCredentialExpiresAt,
+        now: std::time::SystemTime,
+    ) -> Result<bool, BuildExecutionError> {
+        ensure_startup_authority_at(
+            credential_expires_at,
+            ExecutorStartupStage::AdmissionOpening,
+            now,
+        )?;
+        Ok(self.open_admission(generation))
+    }
 }
 
 struct ActiveBuild {
@@ -658,6 +842,19 @@ impl ExternalBuildRuntime {
 
     pub(super) async fn open_admission(&self, generation: AdmissionGeneration) -> bool {
         self.state.lock().await.open_admission(generation)
+    }
+
+    async fn open_admission_before_expiry(
+        &self,
+        generation: AdmissionGeneration,
+        credential_expires_at: BuildExecutorCredentialExpiresAt,
+    ) -> Result<bool, BuildExecutionError> {
+        let mut state = self.state.lock().await;
+        state.open_admission_before_expiry_at(
+            generation,
+            credential_expires_at,
+            std::time::SystemTime::now(),
+        )
     }
 
     pub(super) async fn start(

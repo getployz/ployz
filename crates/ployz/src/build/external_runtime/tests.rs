@@ -332,6 +332,84 @@ async fn controlled_watch_rejects_expired_authority_before_waiting_for_a_signal(
     ));
 }
 
+#[test]
+fn every_startup_stage_rejects_authority_at_expiry() {
+    let expires_at =
+        ployz_core::nats_config::BuildExecutorCredentialExpiresAt::try_new(100).expect("expiry");
+    let at_expiry = std::time::UNIX_EPOCH + Duration::from_secs(100);
+
+    for stage in [
+        ExecutorStartupStage::ReadinessProbe,
+        ExecutorStartupStage::OrphanRecovery,
+        ExecutorStartupStage::ServiceBinding,
+        ExecutorStartupStage::AdmissionOpening,
+    ] {
+        let error = ensure_startup_authority_at(expires_at, stage, at_expiry)
+            .expect_err("authority closes at its expiry");
+        assert!(matches!(
+            error,
+            BuildExecutionError::ExecutorCredential { .. }
+        ));
+        assert!(error.to_string().contains(stage.description()));
+    }
+}
+
+#[tokio::test]
+async fn every_paused_startup_stage_is_interrupted_at_expiry() {
+    let expires_at = future_expiry(60);
+
+    for stage in [
+        ExecutorStartupStage::ReadinessProbe,
+        ExecutorStartupStage::OrphanRecovery,
+        ExecutorStartupStage::ServiceBinding,
+    ] {
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stage_owned = StartupStageDrop(Arc::clone(&dropped));
+        let error = await_startup_stage_with_lifetime::<(), _>(
+            expires_at,
+            stage,
+            Duration::ZERO,
+            async move {
+                let _stage_owned = stage_owned;
+                std::future::pending().await
+            },
+        )
+        .await
+        .expect_err("expiry interrupts a paused startup stage");
+        assert!(matches!(
+            error,
+            BuildExecutionError::ExecutorCredential { .. }
+        ));
+        assert!(error.to_string().contains(stage.description()));
+        assert!(
+            dropped.load(std::sync::atomic::Ordering::SeqCst),
+            "interrupting the stage drops its partial resources"
+        );
+    }
+}
+
+#[test]
+fn expired_authority_cannot_open_admission() {
+    let mut state = RuntimeState::new_connected();
+    let generation = state.admission_generation().expect("connected generation");
+    let expires_at =
+        ployz_core::nats_config::BuildExecutorCredentialExpiresAt::try_new(100).expect("expiry");
+    let at_expiry = std::time::UNIX_EPOCH + Duration::from_secs(100);
+
+    let error = state
+        .open_admission_before_expiry_at(generation, expires_at, at_expiry)
+        .expect_err("authority closes before admission");
+    assert!(matches!(
+        error,
+        BuildExecutionError::ExecutorCredential { .. }
+    ));
+    assert_eq!(
+        state.ensure_accepting(),
+        Err(BuildExecutorStartDomainError::RuntimeStopped)
+    );
+    assert_eq!(state.admission, RuntimeAdmission::Closed);
+}
+
 #[tokio::test]
 async fn terminal_admission_never_reopens_and_closing_does_not_cancel_active_build() {
     let (active, cancelled, task) = active_build("op_build_first");
@@ -603,4 +681,12 @@ fn future_expiry(seconds: u64) -> ployz_core::nats_config::BuildExecutorCredenti
         .as_secs();
     ployz_core::nats_config::BuildExecutorCredentialExpiresAt::try_new(now + seconds)
         .expect("future expiry")
+}
+
+struct StartupStageDrop(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for StartupStageDrop {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
 }
