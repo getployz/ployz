@@ -154,6 +154,7 @@ mod tests {
                         "availability_expires_at": "4102444800",
                     },
                     "verified_source": {
+                        "source": "git",
                         "url": "https://example.test/repo.git",
                         "commit": "0123456789abcdef0123456789abcdef01234567",
                     },
