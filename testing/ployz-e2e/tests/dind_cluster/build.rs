@@ -7,7 +7,9 @@ use ployz_core::build::{
 };
 use ployz_core::deploy::{ImageSource, PlatformImage, PushedImageReceipt};
 use ployz_core::image::{OciDigest, OciPlatform};
-use ployz_core::operation::{BuildCleanupEvidence, BuildOperationState, CancellationReason};
+use ployz_core::operation::{
+    BuildCleanupEvidence, BuildOperationState, BuildOperationStatus, CancellationReason,
+};
 use ployz_e2e::dind::write_file_in_container;
 use ployz_sdk_types::{BuildCancelRequest, BuildSubmitRequest};
 use support::dind::assert::assert_events_in_order;
@@ -161,9 +163,8 @@ pub(super) async fn assert_standalone_current_tree_uses_dirty_snapshot(core: &Co
             .expect("list operations before current-tree build")
             .operations
             .into_iter()
-            .filter_map(|snapshot| match snapshot.status {
-                OperationStatus::Build { status } => Some(status.id().clone()),
-                _ => None,
+            .filter_map(|snapshot| {
+                build_operation_status(&snapshot.status).map(|status| status.id().clone())
             })
             .collect::<BTreeSet<_>>();
 
@@ -223,11 +224,9 @@ pub(super) async fn assert_standalone_current_tree_uses_dirty_snapshot(core: &Co
             .operations;
         let builds = operations
             .iter()
-            .filter_map(|snapshot| match &snapshot.status {
-                OperationStatus::Build { status } if !before_builds.contains(status.id()) => {
-                    Some(status)
-                }
-                _ => None,
+            .filter_map(|snapshot| {
+                build_operation_status(&snapshot.status)
+                    .filter(|status| !before_builds.contains(status.id()))
             })
             .collect::<Vec<_>>();
         let [build] = builds.as_slice() else {
@@ -272,6 +271,28 @@ pub(super) async fn assert_standalone_current_tree_uses_dirty_snapshot(core: &Co
         assert_ne!(marker.stdout.trim(), BASELINE);
     })
     .await;
+}
+
+fn build_operation_status(status: &OperationStatus) -> Option<&BuildOperationStatus> {
+    match status {
+        OperationStatus::Build { status } => Some(status),
+        OperationStatus::Deploy { .. }
+        | OperationStatus::Cert { .. }
+        | OperationStatus::MachineAdd { .. }
+        | OperationStatus::MachineBuildCachePrune { .. }
+        | OperationStatus::MachineUpdate { .. }
+        | OperationStatus::MachineStoragePrepare { .. }
+        | OperationStatus::MachineLifecycle { .. }
+        | OperationStatus::CoreReplace { .. }
+        | OperationStatus::CredentialGrant { .. }
+        | OperationStatus::NetworkRepair { .. }
+        | OperationStatus::ServiceRestart { .. }
+        | OperationStatus::ManagedDnsReconcile { .. }
+        | OperationStatus::IngressConfigure { .. }
+        | OperationStatus::NamespaceRemove { .. }
+        | OperationStatus::VolumeCreate { .. }
+        | OperationStatus::VolumeRemove { .. } => None,
+    }
 }
 
 async fn run_shipped_ployz<const N: usize>(
