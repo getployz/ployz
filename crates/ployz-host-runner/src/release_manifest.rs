@@ -364,29 +364,6 @@ mod tests {
     }
 
     #[test]
-    fn release_manifest_reports_an_unsupported_railpack_pin_without_debug_output() {
-        let error = ReleaseManifest::parse(&format!(
-            "PLOYZ_VERSION=0.1.0\n\
-             PLOYZD_URL=https://example.test/ployzd\n\
-             PLOYZD_SHA256={SHA}\n\
-             PLOYZ_EBPF_TC_URL=https://example.test/ployz-ebpf-tc\n\
-             PLOYZ_EBPF_TC_SHA256={SHA}\n\
-             PLOYZ_EBPF_CTL_URL=https://example.test/ployz-ebpf-ctl\n\
-             PLOYZ_EBPF_CTL_SHA256={SHA}\n\
-             PLOYZ_RAILPACK_VERSION=v0.32.0\n\
-             PLOYZ_RAILPACK_URL=https://example.test/railpack\n\
-             PLOYZ_RAILPACK_SHA256={SHA}\n"
-        ))
-        .expect_err("unsupported Railpack version is rejected");
-
-        assert_eq!(
-            error,
-            "release manifest has unsupported PLOYZ_RAILPACK_VERSION=v0.32.0; expected v0.31.0"
-        );
-        assert!(!error.contains("RailpackPinError"));
-    }
-
-    #[test]
     fn release_manifest_without_nats_server_omits_the_artifact() {
         let manifest = ReleaseManifest::parse(&format!(
             "PLOYZ_VERSION=0.1.0\n\

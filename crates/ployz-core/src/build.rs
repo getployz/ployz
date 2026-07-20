@@ -19,8 +19,7 @@ pub use executor::{
     reconcile_build_executor_readiness_at,
 };
 pub use railpack::{
-    RailpackDigestError, RailpackDigestKind, RailpackPinError, RailpackPins, RailpackPlatformPins,
-    railpack_pins,
+    RailpackDigestKind, RailpackPinError, RailpackPins, RailpackPlatformPins, railpack_pins,
 };
 
 use std::collections::BTreeSet;

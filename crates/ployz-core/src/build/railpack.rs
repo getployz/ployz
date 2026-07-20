@@ -21,23 +21,6 @@ impl std::fmt::Display for RailpackDigestKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RailpackDigestError {
-    MissingSha256Prefix,
-    NotLowercaseHex,
-}
-
-impl std::fmt::Display for RailpackDigestError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::MissingSha256Prefix => formatter.write_str("digest is not a SHA-256 digest"),
-            Self::NotLowercaseHex => {
-                formatter.write_str("SHA-256 is not 64 lowercase hex characters")
-            }
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RailpackPinError {
     #[error("Railpack pin line {line} has no '='")]
@@ -50,18 +33,17 @@ pub enum RailpackPinError {
     Duplicate { key: String },
     #[error("missing Railpack pin {key}")]
     Missing { key: &'static str },
-    #[error("unsupported Railpack architecture {architecture}")]
-    UnsupportedArchitecture { architecture: String },
     #[error("Railpack {architecture} archive must be {expected}")]
     MalformedArchive {
         architecture: String,
         expected: String,
     },
-    #[error("Railpack {architecture} {kind} {reason}")]
+    #[error("Railpack {architecture} frontend digest is not a SHA-256 digest")]
+    MalformedFrontendDigest { architecture: String },
+    #[error("Railpack {architecture} {kind} SHA-256 is not 64 lowercase hex characters")]
     MalformedDigest {
         architecture: String,
         kind: RailpackDigestKind,
-        reason: RailpackDigestError,
     },
 }
 
@@ -192,6 +174,7 @@ fn parse_railpack_pins(contents: &str) -> Result<RailpackPins<'_>, RailpackPinEr
         frontend_reference: required_pin(frontend_reference, "RAILPACK_FRONTEND_REFERENCE")?,
         amd64: platform_pins(
             "amd64",
+            "x86_64",
             version,
             required_pin(amd64_archive, "RAILPACK_AMD64_ARCHIVE")?,
             required_pin(amd64_archive_sha256, "RAILPACK_AMD64_ARCHIVE_SHA256")?,
@@ -199,6 +182,7 @@ fn parse_railpack_pins(contents: &str) -> Result<RailpackPins<'_>, RailpackPinEr
             required_pin(amd64_frontend_digest, "RAILPACK_AMD64_FRONTEND_DIGEST")?,
         )?,
         arm64: platform_pins(
+            "arm64",
             "arm64",
             version,
             required_pin(arm64_archive, "RAILPACK_ARM64_ARCHIVE")?,
@@ -218,21 +202,13 @@ fn required_pin<'a>(
 
 fn platform_pins<'a>(
     architecture: &str,
+    archive_architecture: &str,
     version: &str,
     archive: &'a str,
     archive_sha256: &'a str,
     binary_sha256: &'a str,
     frontend_digest: &'a str,
 ) -> Result<RailpackPlatformPins<'a>, RailpackPinError> {
-    let archive_architecture = match architecture {
-        "amd64" => "x86_64",
-        "arm64" => "arm64",
-        _ => {
-            return Err(RailpackPinError::UnsupportedArchitecture {
-                architecture: architecture.to_owned(),
-            });
-        }
-    };
     let expected_archive =
         format!("railpack-{version}-{archive_architecture}-unknown-linux-musl.tar.gz");
     if archive != expected_archive {
@@ -244,10 +220,8 @@ fn platform_pins<'a>(
     validate_sha256(architecture, RailpackDigestKind::Archive, archive_sha256)?;
     validate_sha256(architecture, RailpackDigestKind::Binary, binary_sha256)?;
     let Some(frontend_sha256) = frontend_digest.strip_prefix("sha256:") else {
-        return Err(RailpackPinError::MalformedDigest {
+        return Err(RailpackPinError::MalformedFrontendDigest {
             architecture: architecture.to_owned(),
-            kind: RailpackDigestKind::Frontend,
-            reason: RailpackDigestError::MissingSha256Prefix,
         });
     };
     validate_sha256(architecture, RailpackDigestKind::Frontend, frontend_sha256)?;
@@ -274,7 +248,6 @@ fn validate_sha256(
         Err(RailpackPinError::MalformedDigest {
             architecture: architecture.to_owned(),
             kind,
-            reason: RailpackDigestError::NotLowercaseHex,
         })
     }
 }
@@ -345,11 +318,17 @@ mod tests {
             "railpack-v0.31.0-x86_64-unknown-linux-musl.tar.gz",
             "railpack-unexpected.tar.gz",
         );
+        let archive_error = parse_railpack_pins(&bad_archive).expect_err("archive is malformed");
         assert!(matches!(
-            parse_railpack_pins(&bad_archive),
-            Err(RailpackPinError::MalformedArchive { architecture, .. })
+            archive_error,
+            RailpackPinError::MalformedArchive { ref architecture, .. }
                 if architecture == "amd64"
         ));
+        assert_eq!(
+            archive_error.to_string(),
+            "Railpack amd64 archive must be railpack-v0.31.0-x86_64-unknown-linux-musl.tar.gz"
+        );
+        assert!(!archive_error.to_string().contains("railpack-unexpected"));
         let bad_sha = RAILPACK_PINS.replace(
             "f75416cf4c452db2841d864f54dbfd8e4d77f2d4a02b23b87561e7760fa278fd",
             "not-a-sha",
@@ -359,26 +338,14 @@ mod tests {
             Err(RailpackPinError::MalformedDigest {
                 architecture: "amd64".to_owned(),
                 kind: RailpackDigestKind::Archive,
-                reason: RailpackDigestError::NotLowercaseHex,
             })
         );
         let bad_frontend = RAILPACK_PINS.replacen("sha256:", "sha512:", 1);
         assert_eq!(
             parse_railpack_pins(&bad_frontend),
-            Err(RailpackPinError::MalformedDigest {
+            Err(RailpackPinError::MalformedFrontendDigest {
                 architecture: "amd64".to_owned(),
-                kind: RailpackDigestKind::Frontend,
-                reason: RailpackDigestError::MissingSha256Prefix,
             })
         );
-    }
-
-    #[test]
-    fn platform_parser_returns_typed_unsupported_architecture() {
-        assert!(matches!(
-            platform_pins("riscv64", "v1", "archive", "a", "b", "sha256:c"),
-            Err(RailpackPinError::UnsupportedArchitecture { architecture })
-                if architecture == "riscv64"
-        ));
     }
 }
