@@ -13,6 +13,7 @@ mod preparation;
 mod preview;
 mod step;
 mod types;
+mod volume_handoff;
 
 use ployz_core::deploy::{
     ContainerRestartPolicy, DeployCleanupContainer, DeployPlan, DeployPlanningContext, ImageSource,
@@ -23,9 +24,7 @@ use ployz_core::machine::runtime::ManagedContainerKind;
 use ployz_core::operation::{
     ControlPlaneCommitScope, DeployCleanupFailure, DeployCompletionOutcome, DeployEvidence,
     DeployImageCleanup, DeployPhaseNumber, DeployPhaseOutcome, DeployRunningStage,
-    DeployServiceResult, DeployTransition, DeployVolumeHandoffRestartFailure,
-    DeployVolumeHandoffRollbackContainerOutcome, DeployVolumeHandoffRollbackOutcome,
-    FailureMessage, OperatorHint, RetainedArtifact,
+    DeployServiceResult, DeployTransition, FailureMessage, OperatorHint, RetainedArtifact,
 };
 
 pub use crate::control::role_client::machine::MachineVolumeEnsureError;
@@ -60,9 +59,8 @@ pub use step::{DeployExecutionStep, DeployFailureRecordError, DeployOperationRec
 use step::{deploy_step_id, with_step_timeout};
 
 use crate::roles::machine::protocol::{
-    MachineContainerRemoveRpcRequest, MachineContainerRestartRpcRequest,
-    MachineContainerRunHookRpcRequest, MachineContainerRunRpcRequest,
-    MachineContainerStopRpcRequest,
+    MachineContainerRemoveRpcRequest, MachineContainerRunHookRpcRequest,
+    MachineContainerRunRpcRequest, MachineContainerStopRpcRequest,
 };
 use ployz_core::machine::runtime::ManagedContainerIdentity;
 pub use types::{
@@ -140,18 +138,18 @@ where
     match execute_deploy_after_planning(&command, &mut ports).await {
         Ok(outcome) => Ok(outcome),
         Err(mut failure) => {
-            let quiesced_volume_consumers = rollback_volume_handoff(
+            let quiescence = volume_handoff::quiesce(
                 &command,
-                &mut *ports.recorder,
                 &mut *ports.machine_runtime,
-                &mut failure,
+                failure.volume_handoff_rollback().clone(),
             )
             .await;
+            failure.add_retained_artifacts(quiescence.retained_artifacts().to_vec());
             let (cleanup, cleanup_artifacts) = cleanup_failed_phase_containers(
                 &command,
                 &mut *ports.machine_runtime,
                 failure.failed_phase_cleanup_targets(),
-                &quiesced_volume_consumers,
+                quiescence.retained_consumers(),
             )
             .await;
             if !cleanup.is_empty()
@@ -165,6 +163,14 @@ where
                 failure.add_evidence_record_error(error);
             }
             failure.add_retained_artifacts(cleanup_artifacts);
+            volume_handoff::restart_eligible(
+                &command,
+                &mut *ports.recorder,
+                &mut *ports.machine_runtime,
+                quiescence,
+                &mut failure,
+            )
+            .await;
             let phase_failure_evidence =
                 if let phase::DeployFailurePhase::During(phase) = failure.phase() {
                     let mut services = phase
@@ -555,140 +561,11 @@ fn hook_execution_timeout(command: &DeployExecutionCommand) -> std::time::Durati
     std::time::Duration::from_millis(bounded)
 }
 
-async fn rollback_volume_handoff<R, N>(
-    command: &DeployExecutionCommand,
-    recorder: &mut R,
-    machine_runtime: &mut N,
-    failure: &mut DeployExecutionFailure,
-) -> Vec<DeployCleanupContainer>
-where
-    R: DeployOperationRecorder,
-    N: MachineContainerRuntime,
-{
-    let rollback = failure.volume_handoff_rollback().clone();
-    if rollback.stopped_owners.is_empty() {
-        return Vec::new();
-    }
-
-    let mut quiesced = Vec::new();
-    let mut quiescence_confirmed = !rollback.new_consumer_quiescence_uncertain;
-    for consumer in &rollback.new_consumers {
-        let result = with_step_timeout(
-            command,
-            DeployExecutionStep::QuiesceVolumeConsumer {
-                machine_id: consumer.machine_id.clone(),
-                container_id: consumer.container_id.clone(),
-            },
-            async {
-                machine_runtime
-                    .stop_container(
-                        &consumer.machine_id,
-                        MachineContainerStopRpcRequest {
-                            operation_id: command.operation_id.clone(),
-                            container_id: consumer.container_id.clone(),
-                            expected_identity: consumer.identity.clone(),
-                        },
-                    )
-                    .await
-                    .map_err(DeployExecutionError::RunContainer)
-            },
-        )
-        .await;
-        if result.is_ok() {
-            quiesced.push(consumer.clone());
-        } else {
-            quiescence_confirmed = false;
-        }
-    }
-
-    let mut outcomes = Vec::with_capacity(rollback.stopped_owners.len());
-    for target in rollback.stopped_owners {
-        let outcome = if quiescence_confirmed {
-            match with_step_timeout(
-                command,
-                DeployExecutionStep::RestartVolumeOwner {
-                    machine_id: target.machine_id.clone(),
-                    container_id: target.container_id.clone(),
-                },
-                async {
-                    machine_runtime
-                        .restart_container(
-                            &target.machine_id,
-                            MachineContainerRestartRpcRequest {
-                                operation_id: command.operation_id.clone(),
-                                container_id: target.container_id.clone(),
-                                expected_identity: target.identity.clone(),
-                            },
-                        )
-                        .await
-                        .map_err(DeployExecutionError::RunContainer)
-                },
-            )
-            .await
-            {
-                Ok(()) => DeployVolumeHandoffRollbackOutcome::Restarted,
-                Err(DeployExecutionError::RunContainer(
-                    MachineContainerRuntimeError::RestartContainerFailed { inspect_hint, .. },
-                )) => DeployVolumeHandoffRollbackOutcome::RestartFailed {
-                    failure: DeployVolumeHandoffRestartFailure::StartFailed { inspect_hint },
-                },
-                Err(DeployExecutionError::StepTimedOut {
-                    step: DeployExecutionStep::RestartVolumeOwner { .. },
-                    ..
-                }) => DeployVolumeHandoffRollbackOutcome::RestartFailed {
-                    failure: DeployVolumeHandoffRestartFailure::TimedOut {
-                        inspect_hint: inspect_hint(&target.container_id),
-                    },
-                },
-                Err(_) => DeployVolumeHandoffRollbackOutcome::RestartFailed {
-                    failure: DeployVolumeHandoffRestartFailure::RuntimeUnavailable,
-                },
-            }
-        } else {
-            DeployVolumeHandoffRollbackOutcome::NotRestartedNewConsumerQuiescenceUnconfirmed
-        };
-        outcomes.push(DeployVolumeHandoffRollbackContainerOutcome { target, outcome });
-    }
-
-    let mut groups = Vec::new();
-    for outcome in outcomes {
-        let key = (
-            outcome.target.identity.service_id.clone(),
-            outcome.target.machine_id.clone(),
-        );
-        if let Some((_, grouped)) = groups
-            .iter_mut()
-            .find(|(existing, _): &&mut ((_, _), Vec<_>)| *existing == key)
-        {
-            grouped.push(outcome);
-        } else {
-            groups.push((key, vec![outcome]));
-        }
-    }
-    for ((service_id, machine_id), outcomes) in groups {
-        if let Some(error) = record_failure_evidence(
-            command,
-            recorder,
-            DeployEvidence::VolumeHandoffRollbackFinished {
-                service_id,
-                machine_id,
-                outcomes,
-            },
-        )
-        .await
-        {
-            failure.add_evidence_record_error(error);
-        }
-    }
-
-    quiesced
-}
-
 async fn cleanup_failed_phase_containers<N>(
     command: &DeployExecutionCommand,
     machine_runtime: &mut N,
     containers: &[DeployContainer],
-    already_stopped: &[DeployCleanupContainer],
+    retained_volume_consumers: &[DeployCleanupContainer],
 ) -> (Vec<DeployCleanupResult>, Vec<RetainedArtifact>)
 where
     N: MachineContainerRuntime,
@@ -701,28 +578,27 @@ where
             container_id: container.container_id.clone(),
             identity: retained_container_identity(command, container),
         };
-        let stop_error = if already_stopped.contains(&target) {
-            None
-        } else {
-            let stop = machine_runtime.stop_container(
-                &container.machine_id,
-                MachineContainerStopRpcRequest {
-                    operation_id: command.operation_id.clone(),
-                    container_id: container.container_id.clone(),
-                    expected_identity: target.identity.clone(),
-                },
-            );
-            match tokio::time::timeout(command.step_timeout(), stop).await {
-                Ok(Ok(_)) => None,
-                Ok(Err(error)) => Some(cleanup_failure_message(error)),
-                Err(_) => Some(
-                    FailureMessage::try_new(format!(
-                        "failed-phase container stop timed out after {} seconds",
-                        command.step_timeout().as_secs()
-                    ))
-                    .expect("generated failed-phase stop failure message is non-empty"),
-                ),
-            }
+        if retained_volume_consumers.contains(&target) {
+            continue;
+        }
+        let stop = machine_runtime.stop_container(
+            &container.machine_id,
+            MachineContainerStopRpcRequest {
+                operation_id: command.operation_id.clone(),
+                container_id: container.container_id.clone(),
+                expected_identity: target.identity.clone(),
+            },
+        );
+        let stop_error = match tokio::time::timeout(command.step_timeout(), stop).await {
+            Ok(Ok(_)) => None,
+            Ok(Err(error)) => Some(cleanup_failure_message(error)),
+            Err(_) => Some(
+                FailureMessage::try_new(format!(
+                    "failed-phase container stop timed out after {} seconds",
+                    command.step_timeout().as_secs()
+                ))
+                .expect("generated failed-phase stop failure message is non-empty"),
+            ),
         };
         if let Some(message) = stop_error {
             retained.push(container_stop_failed_artifact(container, message.clone()));

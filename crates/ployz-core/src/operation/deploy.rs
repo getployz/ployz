@@ -15,6 +15,7 @@ use crate::ids::{
 };
 use crate::image::OciDigest;
 use crate::machine::MachineUsabilityReason;
+use crate::machine::runtime::ManagedContainerIdentity;
 
 use super::events::OperationEvent;
 use super::projection::{
@@ -590,6 +591,21 @@ pub enum RetainedArtifact {
         message: FailureMessage,
         inspect_hint: OperatorHint,
     },
+    VolumeOwnerStopUncertain {
+        target: DeployCleanupContainer,
+        prior_state: crate::deploy::DeployVolumeHandoffPriorState,
+        uncertainty: DeployVolumeHandoffStopUncertain,
+    },
+    VolumeConsumerQuiescenceUncertain {
+        target: DeployCleanupContainer,
+        uncertainty: DeployVolumeHandoffStopUncertain,
+    },
+    VolumeConsumerStartUncertain {
+        machine_id: MachineId,
+        expected_identity: ManagedContainerIdentity,
+        message: FailureMessage,
+        inspect_hint: OperatorHint,
+    },
 }
 
 impl RetainedArtifact {
@@ -614,9 +630,30 @@ impl RetainedArtifact {
                 container_id: _,
                 message: _,
                 inspect_hint: _,
-            } => false,
+            }
+            | RetainedArtifact::VolumeOwnerStopUncertain { .. }
+            | RetainedArtifact::VolumeConsumerStartUncertain { .. } => false,
+            RetainedArtifact::VolumeConsumerQuiescenceUncertain { .. } => true,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DeployVolumeHandoffStopUncertain {
+    RuntimeUnavailable {
+        message: FailureMessage,
+        inspect_hint: OperatorHint,
+    },
+    StopFailed {
+        message: FailureMessage,
+        inspect_hint: OperatorHint,
+    },
+    TimedOut {
+        timeout_seconds: u32,
+        inspect_hint: OperatorHint,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -743,9 +780,18 @@ pub enum DeployVolumeHandoffRollbackOutcome {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DeployVolumeHandoffRestartFailure {
-    RuntimeUnavailable,
-    StartFailed { inspect_hint: OperatorHint },
-    TimedOut { inspect_hint: OperatorHint },
+    RuntimeUnavailable {
+        message: FailureMessage,
+        inspect_hint: OperatorHint,
+    },
+    StartFailed {
+        message: FailureMessage,
+        inspect_hint: OperatorHint,
+    },
+    TimedOut {
+        timeout_seconds: u32,
+        inspect_hint: OperatorHint,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

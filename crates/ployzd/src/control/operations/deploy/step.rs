@@ -60,9 +60,6 @@ pub enum DeployExecutionStep {
     RemoveRoute {
         route: RouteTarget,
     },
-    CommitServingTarget {
-        scope: ControlPlaneCommitScope,
-    },
     RemoveServingTarget {
         scope: ControlPlaneCommitScope,
     },

@@ -39,6 +39,7 @@ use std::time::Duration;
 
 const DEPLOY_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 pub(crate) const DEPLOY_PREVIEW_NATS_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
+const INTENT_CHANGED_PUBLISH_TIMEOUT: Duration = Duration::from_secs(2);
 /// A container without a Docker healthcheck must stay running this long
 /// before deploy completion commits it: a fast-exiting process can be
 /// sampled alive once, and one running observation is not survival.
@@ -284,10 +285,10 @@ impl NamespaceIntentCommitter {
     }
 
     async fn publish_intent_changed(&self) {
-        let _ = self
+        let publish = self
             .intent_change_client
-            .publish(INTENT_CHANGED, Vec::new().into())
-            .await;
+            .publish(INTENT_CHANGED, Vec::new().into());
+        let _ = tokio::time::timeout(INTENT_CHANGED_PUBLISH_TIMEOUT, publish).await;
     }
 }
 

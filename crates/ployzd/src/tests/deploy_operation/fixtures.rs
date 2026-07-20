@@ -43,7 +43,7 @@ use crate::control::role_client::machine::MachineImageResolveError;
 use crate::roles::machine::protocol::{
     MachineContainerRemoveRpcRequest, MachineContainerResolveImageRpcRequest,
     MachineContainerRestartRpcRequest, MachineContainerRunHookRpcOk,
-    MachineContainerRunHookRpcRequest, MachineContainerRunRpcRequest,
+    MachineContainerRunHookRpcRequest, MachineContainerRunRpcRequest, MachineContainerStopOutcome,
     MachineContainerStopRpcRequest, MachineRunContainerOutcome,
 };
 
@@ -321,6 +321,8 @@ pub(super) struct RecordingRuntime {
     fail_remove: bool,
     fail_stop: bool,
     fail_stop_for: Vec<ContainerId>,
+    stop_outcomes: Vec<(ContainerId, MachineContainerStopOutcome)>,
+    hang_stop_for: Vec<ContainerId>,
     fail_restart: bool,
     run_failure: Option<SyntheticRunFailure>,
 }
@@ -343,7 +345,7 @@ pub(super) enum RuntimeAction {
 /// How the fake handles serving-target commits; routes always record.
 pub(super) enum ServingCommitBehavior {
     Commit,
-    Hang,
+    Slow(Duration),
     LoseLock,
 }
 
@@ -368,8 +370,8 @@ impl RecordingNamespaceState {
         Self::with_serving_behavior(ServingCommitBehavior::Commit)
     }
 
-    pub(super) fn hanging_serving_commits() -> Self {
-        Self::with_serving_behavior(ServingCommitBehavior::Hang)
+    pub(super) fn slow_serving_commits(delay: Duration) -> Self {
+        Self::with_serving_behavior(ServingCommitBehavior::Slow(delay))
     }
 
     pub(super) fn lost_lock_serving_commits() -> Self {
@@ -426,8 +428,8 @@ impl NamespaceStateCommitter for RecordingNamespaceState {
         }
         match self.serving_behavior {
             ServingCommitBehavior::Commit => {}
-            ServingCommitBehavior::Hang => {
-                tokio::time::sleep(Duration::from_secs(60)).await;
+            ServingCommitBehavior::Slow(delay) => {
+                tokio::time::sleep(delay).await;
             }
             ServingCommitBehavior::LoseLock => {
                 return Err(NamespaceCommitError::ServingTargetLockLost { scope });
@@ -736,6 +738,8 @@ impl RecordingRuntime {
             fail_remove: false,
             fail_stop: false,
             fail_stop_for: Vec::new(),
+            stop_outcomes: Vec::new(),
+            hang_stop_for: Vec::new(),
             fail_restart: false,
             run_failure: None,
         }
@@ -766,6 +770,8 @@ impl RecordingRuntime {
             fail_remove: false,
             fail_stop: false,
             fail_stop_for: Vec::new(),
+            stop_outcomes: Vec::new(),
+            hang_stop_for: Vec::new(),
             fail_restart: false,
             run_failure: None,
         }
@@ -796,6 +802,8 @@ impl RecordingRuntime {
             fail_remove: false,
             fail_stop: false,
             fail_stop_for: Vec::new(),
+            stop_outcomes: Vec::new(),
+            hang_stop_for: Vec::new(),
             fail_restart: false,
             run_failure: None,
         }
@@ -826,6 +834,8 @@ impl RecordingRuntime {
             fail_remove: false,
             fail_stop: false,
             fail_stop_for: Vec::new(),
+            stop_outcomes: Vec::new(),
+            hang_stop_for: Vec::new(),
             fail_restart: false,
             run_failure: None,
         }
@@ -859,6 +869,8 @@ impl RecordingRuntime {
             fail_remove: false,
             fail_stop: false,
             fail_stop_for: Vec::new(),
+            stop_outcomes: Vec::new(),
+            hang_stop_for: Vec::new(),
             fail_restart: false,
             run_failure: None,
         }
@@ -889,6 +901,8 @@ impl RecordingRuntime {
             fail_remove: false,
             fail_stop: false,
             fail_stop_for: Vec::new(),
+            stop_outcomes: Vec::new(),
+            hang_stop_for: Vec::new(),
             fail_restart: false,
             run_failure: None,
         }
@@ -918,6 +932,21 @@ impl RecordingRuntime {
 
     pub(super) fn with_stop_failure_for(mut self, container_id: &str) -> Self {
         self.fail_stop_for.push(self::container_id(container_id));
+        self
+    }
+
+    pub(super) fn with_stop_outcome(
+        mut self,
+        container_id: &str,
+        outcome: MachineContainerStopOutcome,
+    ) -> Self {
+        self.stop_outcomes
+            .push((self::container_id(container_id), outcome));
+        self
+    }
+
+    pub(super) fn with_hanging_stop_for(mut self, container_id: &str) -> Self {
+        self.hang_stop_for.push(self::container_id(container_id));
         self
     }
 
@@ -1160,6 +1189,9 @@ impl MachineContainerRuntime for RecordingRuntime {
         let container_id = request.container_id.clone();
         self.actions.push(RuntimeAction::Stop(container_id.clone()));
         self.stops.push((machine_id.clone(), request));
+        if self.hang_stop_for.contains(&container_id) {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        }
         if self.fail_stop || self.fail_stop_for.contains(&container_id) {
             return Err(MachineContainerRuntimeError::StopContainerFailed {
                 machine_id: machine_id.clone(),
@@ -1172,7 +1204,11 @@ impl MachineContainerRuntime for RecordingRuntime {
                 .expect("valid inspect hint"),
             });
         }
-        Ok(crate::roles::machine::protocol::MachineContainerStopOutcome::StoppedRunning)
+        Ok(self
+            .stop_outcomes
+            .iter()
+            .find_map(|(expected, outcome)| (expected == &container_id).then_some(*outcome))
+            .unwrap_or(MachineContainerStopOutcome::StoppedRunning))
     }
 
     async fn restart_container(
@@ -1804,6 +1840,144 @@ pub(super) fn volume_backed_replacement_command_with_hook(
     old_containers: &[(&str, bool)],
 ) -> DeployExecutionInput {
     volume_backed_replacement_command_with_options(old_containers, true)
+}
+
+pub(super) fn two_service_volume_backed_replacement_command() -> DeployExecutionInput {
+    let api_observation = containers::observation("machine_a", "ctr_old_api")
+        .with(
+            containers::identity("svc_api")
+                .entry("entry_old_api")
+                .operation("op_existing")
+                .step("existing_api"),
+        )
+        .running_unroutable()
+        .build();
+    let worker_observation = containers::observation("machine_a", "ctr_old_worker")
+        .with(
+            containers::identity("svc_worker")
+                .entry("entry_old_worker")
+                .operation("op_existing")
+                .step("existing_worker"),
+        )
+        .running_unroutable()
+        .build();
+    let snapshot = MachineContainerObservationSnapshot::try_new(
+        machine_id("machine_a"),
+        [api_observation, worker_observation],
+    )
+    .expect("valid per-service volume-owner observations");
+    let mut request = target_deploy_request(1);
+    let [api] = request.services.as_mut_slice() else {
+        panic!("deploy request fixture has one service");
+    };
+    api.runtime.volume_mounts = vec![ServiceVolumeMount {
+        volume_name: volume_name("api_data"),
+        target: ContainerMountPath::try_new("/data").expect("valid mount path"),
+    }];
+    let mut worker = api.clone();
+    worker.service_id = service_id("svc_worker");
+    worker.runtime.volume_mounts = vec![ServiceVolumeMount {
+        volume_name: volume_name("worker_data"),
+        target: ContainerMountPath::try_new("/data").expect("valid mount path"),
+    }];
+    request.services.push(worker);
+    request
+        .volumes
+        .insert(volume_name("api_data"), VolumeSpec::Plain);
+    request
+        .volumes
+        .insert(volume_name("worker_data"), VolumeSpec::Plain);
+    deploy_execution_input(
+        operation_id("op_123"),
+        request,
+        DeployExecutionFacts {
+            machine_platforms: std::collections::BTreeMap::new(),
+            seed_clock_testimony: std::collections::BTreeMap::new(),
+            machine_storage_testimony: std::collections::BTreeMap::new(),
+            unusable_machines: Vec::new(),
+            namespace_route_bindings: Vec::new(),
+            namespace_serving_entries: Vec::new(),
+            namespace_volume_pins: vec![
+                VolumePinState::plain(
+                    namespace_id("default"),
+                    volume_name("api_data"),
+                    machine_id("machine_a"),
+                ),
+                VolumePinState::plain(
+                    namespace_id("default"),
+                    volume_name("worker_data"),
+                    machine_id("machine_a"),
+                ),
+            ],
+            dataplane_members: Vec::new(),
+            eligible_machines: vec![machine_id("machine_a")],
+            namespace_cleanup_candidates: namespace_cleanup_candidates(std::slice::from_ref(
+                &snapshot,
+            )),
+            observed_machines: vec![snapshot],
+            automatic_hostname_mode: AutomaticHostnameMode::Disabled,
+            gateway_certificate_targets: Vec::new(),
+            ployz_gateway_certificate_targets: Vec::new(),
+            step_timeout: Duration::from_secs(5),
+        },
+    )
+}
+
+pub(super) fn volume_and_ordinary_replacement_command() -> DeployExecutionInput {
+    let old_owner = containers::observation("machine_a", "ctr_old_api")
+        .with(
+            containers::identity("svc_api")
+                .entry("entry_old_api")
+                .operation("op_existing")
+                .step("existing_api"),
+        )
+        .running_unroutable()
+        .build();
+    let snapshot =
+        MachineContainerObservationSnapshot::try_new(machine_id("machine_a"), [old_owner])
+            .expect("valid volume owner observation");
+    let mut request = target_deploy_request(1);
+    let [api] = request.services.as_mut_slice() else {
+        panic!("deploy request fixture has one service");
+    };
+    let mut worker = api.clone();
+    worker.service_id = service_id("svc_worker");
+    api.runtime.volume_mounts = vec![ServiceVolumeMount {
+        volume_name: volume_name("api_data"),
+        target: ContainerMountPath::try_new("/data").expect("valid mount path"),
+    }];
+    worker.runtime.volume_mounts.clear();
+    request.services.push(worker);
+    request
+        .volumes
+        .insert(volume_name("api_data"), VolumeSpec::Plain);
+    deploy_execution_input(
+        operation_id("op_123"),
+        request,
+        DeployExecutionFacts {
+            machine_platforms: std::collections::BTreeMap::new(),
+            seed_clock_testimony: std::collections::BTreeMap::new(),
+            machine_storage_testimony: std::collections::BTreeMap::new(),
+            unusable_machines: Vec::new(),
+            namespace_route_bindings: Vec::new(),
+            namespace_serving_entries: Vec::new(),
+            namespace_volume_pins: vec![VolumePinState::plain(
+                namespace_id("default"),
+                volume_name("api_data"),
+                machine_id("machine_a"),
+            )],
+            dataplane_members: Vec::new(),
+            eligible_machines: vec![machine_id("machine_a")],
+            namespace_cleanup_candidates: namespace_cleanup_candidates(std::slice::from_ref(
+                &snapshot,
+            )),
+            observed_machines: vec![snapshot],
+            automatic_hostname_mode: AutomaticHostnameMode::Disabled,
+            gateway_certificate_targets: Vec::new(),
+            ployz_gateway_certificate_targets: Vec::new(),
+            step_timeout: Duration::from_secs(5),
+        },
+    )
 }
 
 fn volume_backed_replacement_command_with_options(

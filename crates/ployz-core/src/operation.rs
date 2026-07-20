@@ -70,9 +70,9 @@ pub use deploy::{
     DeployOperationFailure, DeployOperationState, DeployPhaseNumber, DeployPhaseNumberError,
     DeployPhaseOutcome, DeployRunningStage, DeployServiceResult, DeployTransition,
     DeployVolumeHandoffRestartFailure, DeployVolumeHandoffRollbackContainerOutcome,
-    DeployVolumeHandoffRollbackOutcome, HealthCheckFailure, PreStartHookFailure, RetainedArtifact,
-    RouteCutoverFailureReason, UnusableMachine, project_deploy_transition,
-    validate_fresh_deploy_evidence,
+    DeployVolumeHandoffRollbackOutcome, DeployVolumeHandoffStopUncertain, HealthCheckFailure,
+    PreStartHookFailure, RetainedArtifact, RouteCutoverFailureReason, UnusableMachine,
+    project_deploy_transition, validate_fresh_deploy_evidence,
 };
 pub use events::{OperationEvent, OperationSubject, OperationSubjectRef};
 pub use ingress_configure::{

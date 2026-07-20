@@ -11,6 +11,7 @@ use crate::control::operations::deploy::{
     execute_deploy_operation,
 };
 use crate::control::role_client::machine::{MachineClockTestimony, MachineVolumeEnsureError};
+use crate::roles::machine::protocol::MachineContainerStopOutcome;
 use fixtures::*;
 use ployz_core::deploy::{ContainerCommand, ContainerRestartPolicy, ReplicaCount, ServiceMode};
 use ployz_core::intent::{ServingTargetEntry, VolumePinState};
@@ -261,7 +262,7 @@ async fn replicated_to_global_reuse_reports_completed_service_work() {
     let mut health = RecordingHealth::healthy();
     let mut namespace_state = RecordingNamespaceState::stored();
 
-    execute_deploy(
+    let error = execute_deploy(
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
@@ -322,7 +323,7 @@ async fn global_draining_cleanup_reports_completed_service_work() {
     let mut health = RecordingHealth::healthy();
     let mut namespace_state = RecordingNamespaceState::stored();
 
-    execute_deploy(
+    let error = execute_deploy(
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
@@ -2357,14 +2358,15 @@ async fn deploy_worker_keeps_success_when_completed_event_fails_after_active_com
 }
 
 #[tokio::test]
-async fn deploy_worker_marks_failed_when_active_commit_times_out() {
+async fn deploy_worker_awaits_slow_active_commit_beyond_the_machine_step_budget() {
     let mut recorder = RecordingOperations::default();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
-    let mut namespace_state = RecordingNamespaceState::hanging_serving_commits();
+    let mut namespace_state =
+        RecordingNamespaceState::slow_serving_commits(Duration::from_millis(10));
     let command = deploy_command(1).with_step_timeout(Duration::from_millis(1));
 
-    let error = execute_deploy(
+    let outcome = execute_deploy(
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
@@ -2375,36 +2377,15 @@ async fn deploy_worker_marks_failed_when_active_commit_times_out() {
         },
     )
     .await
-    .expect_err("active commit timeout fails the operation");
+    .expect("the definitive namespace transaction outlives machine step budgets");
 
-    let DeployExecutionError::Failed {
-        source, failure, ..
-    } = error
-    else {
-        panic!("deploy must record a terminal failure");
-    };
-    assert!(matches!(
-        *failure,
-        DeployOperationFailure::ControlPlaneCommitFailed { .. }
-    ));
-    assert!(matches!(
-        *source,
-        DeployExecutionError::StepTimedOut {
-            step: DeployExecutionStep::CommitServingTarget { .. },
-            ..
-        }
-    ));
-    assert_eq!(runtime.stops.len(), 1);
-    assert_eq!(runtime.removals.len(), 1);
-    assert!(matches!(
-        recorder.records.last(),
-        Some(RecordedOperation::Transition(DeployTransition::Failed {
-            failure: DeployOperationFailure::ControlPlaneCommitFailed {
-                retained_artifacts,
-                ..
-            }
-        })) if retained_artifacts.is_empty()
-    ));
+    assert_eq!(
+        outcome.completion_outcome,
+        DeployCompletionOutcome::Completed
+    );
+    assert_eq!(namespace_state.phase_requests.len(), 1);
+    assert!(runtime.stops.is_empty());
+    assert!(runtime.removals.is_empty());
 }
 
 #[tokio::test]
@@ -2461,9 +2442,12 @@ async fn deploy_worker_records_retained_artifacts_when_namespace_lock_is_lost_be
 }
 
 #[tokio::test]
-async fn volume_handoff_stops_only_running_owner_before_start_and_removes_after_promotion() {
+async fn volume_handoff_checks_every_planned_owner_before_start_and_removes_after_promotion() {
     let mut recorder = RecordingOperations::default();
-    let mut runtime = RecordingRuntime::with_containers(["ctr_new"]);
+    let mut runtime = RecordingRuntime::with_containers(["ctr_new"]).with_stop_outcome(
+        "ctr_old_stopped",
+        MachineContainerStopOutcome::AlreadyStopped,
+    );
     let mut health = RecordingHealth::healthy();
     let mut namespace_state = RecordingNamespaceState::stored();
 
@@ -2481,10 +2465,11 @@ async fn volume_handoff_stops_only_running_owner_before_start_and_removes_after_
     .expect("volume replacement succeeds");
 
     assert_eq!(
-        runtime.actions.get(..2),
+        runtime.actions.get(..3),
         Some(
             &[
                 RuntimeAction::Stop(container_id("ctr_old_running")),
+                RuntimeAction::Stop(container_id("ctr_old_stopped")),
                 RuntimeAction::Run(container_id("ctr_new")),
             ][..]
         )
@@ -2548,6 +2533,43 @@ async fn volume_handoff_health_failure_quiesces_new_consumer_then_restarts_old_o
 }
 
 #[tokio::test]
+async fn volume_handoff_cleans_ordinary_siblings_before_restarting_the_old_owner() {
+    let mut recorder = RecordingOperations::default();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_new_api", "ctr_new_worker"]);
+
+    execute_deploy(
+        volume_and_ordinary_replacement_command(),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            machine_runtime: &mut runtime,
+            health_checker: &mut RecordingHealth::unhealthy("machine_a", "ctr_new_api"),
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut RecordingNamespaceState::stored(),
+        },
+    )
+    .await
+    .expect_err("failed phase rolls back the volume handoff");
+
+    let ordinary_remove = runtime
+        .actions
+        .iter()
+        .position(|action| action == &RuntimeAction::Remove(container_id("ctr_new_worker")))
+        .expect("ordinary sibling is removed");
+    let old_restart = runtime
+        .actions
+        .iter()
+        .position(|action| action == &RuntimeAction::Restart(container_id("ctr_old_api")))
+        .expect("old owner is restarted");
+    assert!(ordinary_remove < old_restart);
+    assert!(
+        !runtime
+            .removals
+            .iter()
+            .any(|(_, request)| { request.container_id == container_id("ctr_new_api") })
+    );
+}
+
+#[tokio::test]
 async fn volume_handoff_commit_failure_rolls_back_but_post_commit_evidence_failure_does_not() {
     let command = volume_backed_replacement_command(&[("ctr_old", true)]);
     let mut recorder = RecordingOperations::default();
@@ -2587,7 +2609,12 @@ async fn volume_handoff_commit_failure_rolls_back_but_post_commit_evidence_failu
 #[tokio::test]
 async fn volume_handoff_restart_failure_is_typed_and_pre_stopped_owner_is_never_restarted() {
     let mut recorder = RecordingOperations::default();
-    let mut runtime = RecordingRuntime::with_containers(["ctr_new"]).with_restart_failure();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_new"])
+        .with_stop_outcome(
+            "ctr_pre_stopped",
+            MachineContainerStopOutcome::AlreadyStopped,
+        )
+        .with_restart_failure();
     execute_deploy(
         volume_backed_replacement_command(&[("ctr_old", true), ("ctr_pre_stopped", false)]),
         DeployExecutionPorts {
@@ -2617,6 +2644,100 @@ async fn volume_handoff_restart_failure_is_typed_and_pre_stopped_owner_is_never_
                     DeployVolumeHandoffRollbackOutcome::RestartFailed {
                         failure: DeployVolumeHandoffRestartFailure::StartFailed { .. }
                     }))
+    )));
+}
+
+#[tokio::test]
+async fn volume_handoff_restarts_a_planning_stopped_owner_found_running_at_point_of_use() {
+    let mut recorder = RecordingOperations::default();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_new"]);
+
+    execute_deploy(
+        volume_backed_replacement_command(&[("ctr_raced_running", false)]),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            machine_runtime: &mut runtime,
+            health_checker: &mut RecordingHealth::unhealthy("machine_a", "ctr_new"),
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut RecordingNamespaceState::stored(),
+        },
+    )
+    .await
+    .expect_err("replacement failure restores point-of-use running owner");
+
+    assert_eq!(runtime.restarts.len(), 1);
+    assert_eq!(
+        runtime.restarts[0].1.container_id,
+        container_id("ctr_raced_running")
+    );
+}
+
+#[tokio::test]
+async fn volume_handoff_stop_timeout_retains_uncertainty_and_restarts_planning_running_owner() {
+    let mut recorder = RecordingOperations::default();
+    let mut runtime =
+        RecordingRuntime::with_containers(["unused"]).with_hanging_stop_for("ctr_old");
+
+    let error = execute_deploy(
+        volume_backed_replacement_command(&[("ctr_old", true)])
+            .with_step_timeout(Duration::from_millis(1)),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            machine_runtime: &mut runtime,
+            health_checker: &mut RecordingHealth::healthy(),
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut RecordingNamespaceState::stored(),
+        },
+    )
+    .await
+    .expect_err("indeterminate owner stop fails before a consumer starts");
+
+    let DeployExecutionError::Failed { failure, .. } = error else {
+        panic!("deploy failure")
+    };
+    assert!(runtime.requests.is_empty());
+    assert_eq!(runtime.restarts.len(), 1);
+    assert!(failure.retained_artifacts().iter().any(|artifact| matches!(
+        artifact,
+        ployz_core::operation::RetainedArtifact::VolumeOwnerStopUncertain {
+            prior_state: ployz_core::deploy::DeployVolumeHandoffPriorState::Running,
+            uncertainty: ployz_core::operation::DeployVolumeHandoffStopUncertain::TimedOut { .. },
+            ..
+        }
+    )));
+}
+
+#[tokio::test]
+async fn volume_handoff_stop_timeout_never_restarts_a_planning_stopped_owner() {
+    let mut recorder = RecordingOperations::default();
+    let mut runtime =
+        RecordingRuntime::with_containers(["unused"]).with_hanging_stop_for("ctr_old");
+
+    let error = execute_deploy(
+        volume_backed_replacement_command(&[("ctr_old", false)])
+            .with_step_timeout(Duration::from_millis(1)),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            machine_runtime: &mut runtime,
+            health_checker: &mut RecordingHealth::healthy(),
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut RecordingNamespaceState::stored(),
+        },
+    )
+    .await
+    .expect_err("indeterminate planning-stopped owner remains retained");
+
+    let DeployExecutionError::Failed { failure, .. } = error else {
+        panic!("deploy failure")
+    };
+    assert!(runtime.restarts.is_empty());
+    assert!(failure.retained_artifacts().iter().any(|artifact| matches!(
+        artifact,
+        ployz_core::operation::RetainedArtifact::VolumeOwnerStopUncertain {
+            prior_state: ployz_core::deploy::DeployVolumeHandoffPriorState::Stopped,
+            uncertainty: ployz_core::operation::DeployVolumeHandoffStopUncertain::TimedOut { .. },
+            ..
+        }
     )));
 }
 
@@ -2655,7 +2776,7 @@ async fn volume_handoff_quiescence_failure_never_restarts_an_old_owner() {
     let mut runtime =
         RecordingRuntime::with_containers(["ctr_new"]).with_stop_failure_for("ctr_new");
     let mut namespace_state = RecordingNamespaceState::stored();
-    execute_deploy(
+    let error = execute_deploy(
         volume_backed_replacement_command(&[("ctr_old", true)]),
         DeployExecutionPorts {
             recorder: &mut recorder,
@@ -2668,6 +2789,9 @@ async fn volume_handoff_quiescence_failure_never_restarts_an_old_owner() {
     .await
     .expect_err("new consumer cannot be quiesced");
 
+    let DeployExecutionError::Failed { failure, .. } = error else {
+        panic!("deploy failure")
+    };
     assert!(runtime.restarts.is_empty());
     assert!(namespace_state.phase_requests.is_empty());
     assert!(recorder.records.iter().any(|record| matches!(
@@ -2676,6 +2800,47 @@ async fn volume_handoff_quiescence_failure_never_restarts_an_old_owner() {
             if matches!(outcomes.as_slice(), [outcome]
                 if outcome.outcome
                     == DeployVolumeHandoffRollbackOutcome::NotRestartedNewConsumerQuiescenceUnconfirmed)
+    )));
+    assert!(failure.retained_artifacts().iter().any(|artifact| matches!(
+        artifact,
+        ployz_core::operation::RetainedArtifact::VolumeConsumerQuiescenceUncertain {
+            target,
+            ..
+        } if target.container_id == container_id("ctr_new")
+    )));
+}
+
+#[tokio::test]
+async fn volume_handoff_quiescence_uncertainty_blocks_only_its_service_restart() {
+    let mut recorder = RecordingOperations::default();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_new_api", "ctr_new_worker"])
+        .with_stop_failure_for("ctr_new_api");
+
+    execute_deploy(
+        two_service_volume_backed_replacement_command(),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            machine_runtime: &mut runtime,
+            health_checker: &mut RecordingHealth::unhealthy("machine_a", "ctr_new_api"),
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut RecordingNamespaceState::stored(),
+        },
+    )
+    .await
+    .expect_err("one service consumer cannot be quiesced");
+
+    assert_eq!(runtime.restarts.len(), 1);
+    assert_eq!(
+        runtime.restarts[0].1.container_id,
+        container_id("ctr_old_worker")
+    );
+    assert!(recorder.records.iter().any(|record| matches!(
+        record,
+        RecordedOperation::VolumeHandoffRollbackFinished { outcomes }
+            if outcomes.iter().any(|outcome|
+                outcome.target.container_id == container_id("ctr_old_api")
+                    && outcome.outcome
+                        == DeployVolumeHandoffRollbackOutcome::NotRestartedNewConsumerQuiescenceUnconfirmed)
     )));
 }
 
@@ -2791,7 +2956,7 @@ async fn volume_handoff_run_timeout_does_not_restart_without_quiescence_evidence
     let mut runtime = RecordingRuntime::with_containers(["unused"]).with_hanging_run();
     let mut namespace_state = RecordingNamespaceState::stored();
 
-    execute_deploy(
+    let error = execute_deploy(
         volume_backed_replacement_command(&[("ctr_old", true)])
             .with_step_timeout(Duration::from_millis(1)),
         DeployExecutionPorts {
@@ -2805,6 +2970,9 @@ async fn volume_handoff_run_timeout_does_not_restart_without_quiescence_evidence
     .await
     .expect_err("replacement run timeout leaves replacement state unknown");
 
+    let DeployExecutionError::Failed { failure, .. } = error else {
+        panic!("deploy failure")
+    };
     assert_eq!(
         runtime.actions,
         vec![RuntimeAction::Stop(container_id("ctr_old"))]
@@ -2817,6 +2985,13 @@ async fn volume_handoff_run_timeout_does_not_restart_without_quiescence_evidence
             if matches!(outcomes.as_slice(), [outcome]
                 if outcome.outcome
                     == DeployVolumeHandoffRollbackOutcome::NotRestartedNewConsumerQuiescenceUnconfirmed)
+    )));
+    assert!(failure.retained_artifacts().iter().any(|artifact| matches!(
+        artifact,
+        ployz_core::operation::RetainedArtifact::VolumeConsumerStartUncertain {
+            expected_identity,
+            ..
+        } if expected_identity.service_id == service_id("svc_api")
     )));
 }
 

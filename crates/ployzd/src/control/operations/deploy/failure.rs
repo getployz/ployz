@@ -11,7 +11,8 @@ use ployz_core::operation::{
 };
 use std::time::Duration;
 
-use super::phase::{DeployFailedPhase, DeployFailurePhase, VolumeHandoffRollbackState};
+use super::phase::{DeployFailedPhase, DeployFailurePhase};
+use super::volume_handoff::VolumeHandoffRollbackState;
 use super::{
     DeployContainer, DeployExecutionCommand, DeployExecutionStep, DeployFailureRecordError,
     DeployOperationRecordError, DeployOperationRecorder, MachineVolumeEnsureError,
@@ -454,7 +455,6 @@ impl DeployExecutionStep {
             Self::EnsureVolume { .. } => "ensure_volume",
             Self::RemoveRoute { .. } => "remove_route",
             Self::RemoveServingTarget { .. } => "remove_serving_target",
-            Self::CommitServingTarget { .. } => "commit_serving_target_entry",
         }
     }
 
@@ -517,13 +517,6 @@ impl DeployExecutionStep {
                 },
                 retained_artifacts,
             },
-            Self::CommitServingTarget { scope } => {
-                DeployOperationFailure::ControlPlaneCommitFailed {
-                    scope: scope.clone(),
-                    message: timeout_failure_message("serving target commit", timeout),
-                    retained_artifacts,
-                }
-            }
             Self::RemoveServingTarget { scope } => {
                 DeployOperationFailure::ControlPlaneCommitFailed {
                     scope: scope.clone(),
