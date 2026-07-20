@@ -248,12 +248,24 @@ impl DeployTree {
                 service_id,
                 handoff,
             } => {
+                let stopped = handoff
+                    .superseded
+                    .iter()
+                    .filter(|participant| {
+                        matches!(
+                            participant.prior_state,
+                            ployz_core::deploy::DeployVolumeHandoffPriorState::Running
+                        )
+                    })
+                    .count();
+                let already_stopped = handoff.superseded.len() - stopped;
                 self.plain_lines.push(format!(
-                    "deploy {}: {} — prepared volume handoff from {} prior container(s) on {}",
+                    "deploy {}: {} — volume handoff on {}: stopped {} running prior owner(s); {} prior owner(s) were already stopped",
                     operation_id.as_str(),
                     service_id.as_str(),
-                    handoff.superseded.len(),
-                    handoff.machine_id.as_str()
+                    handoff.machine_id.as_str(),
+                    stopped,
+                    already_stopped
                 ));
             }
             OperationEvent::DeployVolumeHandoffRollbackFinished {
@@ -262,23 +274,37 @@ impl DeployTree {
                 machine_id,
                 outcomes,
             } => {
-                let restarted = outcomes
-                    .iter()
-                    .filter(|outcome| {
-                        matches!(
-                            outcome.outcome,
-                            ployz_core::operation::DeployVolumeHandoffRollbackOutcome::Restarted
-                        )
-                    })
-                    .count();
-                self.plain_lines.push(format!(
-                    "deploy {}: {} — volume handoff rollback on {} restarted {}/{} prior owner(s)",
-                    operation_id.as_str(),
-                    service_id.as_str(),
-                    machine_id.as_str(),
-                    restarted,
-                    outcomes.len()
-                ));
+                for outcome in outcomes {
+                    let result = match &outcome.outcome {
+                        ployz_core::operation::DeployVolumeHandoffRollbackOutcome::Restarted => {
+                            "restarted".to_owned()
+                        }
+                        ployz_core::operation::DeployVolumeHandoffRollbackOutcome::RestartFailed {
+                            failure,
+                        } => match failure {
+                            ployz_core::operation::DeployVolumeHandoffRestartFailure::RuntimeUnavailable => {
+                                "restart failed: runtime unavailable".to_owned()
+                            }
+                            ployz_core::operation::DeployVolumeHandoffRestartFailure::StartFailed {
+                                inspect_hint,
+                            } => format!("restart failed: start failed ({})", inspect_hint.as_str()),
+                            ployz_core::operation::DeployVolumeHandoffRestartFailure::TimedOut {
+                                inspect_hint,
+                            } => format!("restart failed: timed out ({})", inspect_hint.as_str()),
+                        },
+                        ployz_core::operation::DeployVolumeHandoffRollbackOutcome::NotRestartedNewConsumerQuiescenceUnconfirmed => {
+                            "not restarted: new consumer quiescence unconfirmed".to_owned()
+                        }
+                    };
+                    self.plain_lines.push(format!(
+                        "deploy {}: {} — volume handoff rollback on {}: {} {}",
+                        operation_id.as_str(),
+                        service_id.as_str(),
+                        machine_id.as_str(),
+                        outcome.target.container_id.as_str(),
+                        result
+                    ));
+                }
             }
             OperationEvent::DeployHealthCheckStarted { operation_id: _ } => {}
             OperationEvent::DeployPhaseStarted { .. }
