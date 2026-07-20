@@ -22,7 +22,7 @@ use ployz_core::operation::{
     DeployCompletionOutcome, DeployEvidence, DeployOperationFailure, DeployPhaseOutcome,
     DeployRunningStage, DeployServiceResult, DeployTransition, DeployVolumeHandoffRestartFailure,
     DeployVolumeHandoffRollbackOutcome, FailureMessage, OperationInterruptionCause,
-    PreStartHookFailure, RouteHostname, RouteTarget, UnusableMachine,
+    PreStartHookFailure, RetainedArtifact, RouteHostname, RouteTarget, UnusableMachine,
 };
 use ployz_test_support::ids::{failure_message, namespace_id};
 use std::sync::Arc;
@@ -2444,15 +2444,21 @@ async fn deploy_worker_records_retained_artifacts_when_namespace_lock_is_lost_be
 #[tokio::test]
 async fn volume_handoff_checks_every_planned_owner_before_start_and_removes_after_promotion() {
     let mut recorder = RecordingOperations::default();
-    let mut runtime = RecordingRuntime::with_containers(["ctr_new"]).with_stop_outcome(
-        "ctr_old_stopped",
-        MachineContainerStopOutcome::AlreadyStopped,
-    );
+    let mut runtime = RecordingRuntime::with_containers(["ctr_new"])
+        .with_stop_outcome(
+            "ctr_old_stopped",
+            MachineContainerStopOutcome::AlreadyStopped,
+        )
+        .with_stop_outcome("ctr_old_missing", MachineContainerStopOutcome::Missing);
     let mut health = RecordingHealth::healthy();
     let mut namespace_state = RecordingNamespaceState::stored();
 
     execute_deploy(
-        volume_backed_replacement_command(&[("ctr_old_running", true), ("ctr_old_stopped", false)]),
+        volume_backed_replacement_command(&[
+            ("ctr_old_running", true),
+            ("ctr_old_stopped", false),
+            ("ctr_old_missing", false),
+        ]),
         DeployExecutionPorts {
             recorder: &mut recorder,
             machine_runtime: &mut runtime,
@@ -2465,15 +2471,29 @@ async fn volume_handoff_checks_every_planned_owner_before_start_and_removes_afte
     .expect("volume replacement succeeds");
 
     assert_eq!(
-        runtime.actions.get(..3),
+        runtime.actions.get(..4),
         Some(
             &[
+                RuntimeAction::Stop(container_id("ctr_old_missing")),
                 RuntimeAction::Stop(container_id("ctr_old_running")),
                 RuntimeAction::Stop(container_id("ctr_old_stopped")),
                 RuntimeAction::Run(container_id("ctr_new")),
             ][..]
         )
     );
+    assert!(recorder.records.iter().any(|record| matches!(
+        record,
+        RecordedOperation::VolumeHandoffApplied { handoff }
+            if handoff.superseded.as_slice().iter().any(|participant|
+                participant.target.container_id == container_id("ctr_old_running")
+                    && participant.stop_outcome == ployz_core::deploy::DeployVolumeHandoffStopOutcome::StoppedRunning)
+                && handoff.superseded.as_slice().iter().any(|participant|
+                    participant.target.container_id == container_id("ctr_old_stopped")
+                        && participant.stop_outcome == ployz_core::deploy::DeployVolumeHandoffStopOutcome::AlreadyStopped)
+                && handoff.superseded.as_slice().iter().any(|participant|
+                    participant.target.container_id == container_id("ctr_old_missing")
+                        && participant.stop_outcome == ployz_core::deploy::DeployVolumeHandoffStopOutcome::Missing)
+    )));
     assert!(runtime.restarts.is_empty());
     let promoted = recorder.phase_records.iter().any(|evidence| {
         matches!(
@@ -2615,7 +2635,7 @@ async fn volume_handoff_restart_failure_is_typed_and_pre_stopped_owner_is_never_
             MachineContainerStopOutcome::AlreadyStopped,
         )
         .with_restart_failure();
-    execute_deploy(
+    let error = execute_deploy(
         volume_backed_replacement_command(&[("ctr_old", true), ("ctr_pre_stopped", false)]),
         DeployExecutionPorts {
             recorder: &mut recorder,
@@ -2627,6 +2647,10 @@ async fn volume_handoff_restart_failure_is_typed_and_pre_stopped_owner_is_never_
     )
     .await
     .expect_err("health failure exposes rollback result");
+
+    let DeployExecutionError::Failed { failure, .. } = error else {
+        panic!("deploy failure")
+    };
 
     assert_eq!(runtime.restarts.len(), 1);
     assert_eq!(
@@ -2644,6 +2668,15 @@ async fn volume_handoff_restart_failure_is_typed_and_pre_stopped_owner_is_never_
                     DeployVolumeHandoffRollbackOutcome::RestartFailed {
                         failure: DeployVolumeHandoffRestartFailure::StartFailed { .. }
                     }))
+    )));
+    assert!(failure.retained_artifacts().iter().any(|artifact| matches!(
+        artifact,
+        RetainedArtifact::VolumeOwnerRestorationUnconfirmed {
+            target,
+            reason: ployz_core::operation::DeployVolumeHandoffRestorationUnconfirmed::RestartFailed {
+                failure: DeployVolumeHandoffRestartFailure::StartFailed { .. },
+            },
+        } if target.container_id == container_id("ctr_old")
     )));
 }
 
@@ -2808,6 +2841,13 @@ async fn volume_handoff_quiescence_failure_never_restarts_an_old_owner() {
             target,
             ..
         } if target.container_id == container_id("ctr_new")
+    )));
+    assert!(failure.retained_artifacts().iter().any(|artifact| matches!(
+        artifact,
+        RetainedArtifact::VolumeOwnerRestorationUnconfirmed {
+            target,
+            reason: ployz_core::operation::DeployVolumeHandoffRestorationUnconfirmed::NewConsumerQuiescenceUnconfirmed,
+        } if target.container_id == container_id("ctr_old")
     )));
 }
 

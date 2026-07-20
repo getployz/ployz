@@ -9,7 +9,7 @@ use crate::build::{
 };
 use crate::certificate::AcmeHttp01Challenge;
 use crate::deploy::{
-    DeployCleanupContainer, DeployPlan, DeployReservationId, DeployVolumeHandoffPlan, VolumeName,
+    DeployCleanupContainer, DeployPlan, DeployReservationId, DeployVolumeHandoffApplied, VolumeName,
 };
 use crate::ids::{CertId, ContainerId, MachineId, NamespaceId, OperationId, ServiceId};
 use crate::image::OciDigest;
@@ -248,7 +248,7 @@ pub enum OperationEvent {
     DeployVolumeHandoffApplied {
         operation_id: OperationId,
         service_id: ServiceId,
-        handoff: DeployVolumeHandoffPlan,
+        handoff: DeployVolumeHandoffApplied,
     },
     DeployVolumeHandoffRollbackFinished {
         operation_id: OperationId,

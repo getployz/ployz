@@ -117,6 +117,7 @@ impl<'a> DeployFailureView<'a> {
                     push_unique(&mut machines, machine_id);
                 }
                 RetainedArtifact::VolumeOwnerStopUncertain { target, .. }
+                | RetainedArtifact::VolumeOwnerRestorationUnconfirmed { target, .. }
                 | RetainedArtifact::VolumeConsumerQuiescenceUncertain { target, .. } => {
                     push_unique(&mut machines, &target.machine_id);
                 }
@@ -176,6 +177,7 @@ impl<'a> DeployFailureView<'a> {
                     });
                 }
                 RetainedArtifact::VolumeOwnerStopUncertain { .. }
+                | RetainedArtifact::VolumeOwnerRestorationUnconfirmed { .. }
                 | RetainedArtifact::VolumeConsumerStartUncertain { .. } => {}
             }
         }
@@ -249,6 +251,15 @@ impl<'a> DeployFailureView<'a> {
             DeployOperationFailure::ControlPlaneCommitFailed { .. }
             | DeployOperationFailure::RouteCutoverFailed { .. } => FailureSafety::NoClaim,
         }
+    }
+
+    pub(crate) fn volume_owner_restoration_unconfirmed(&self) -> bool {
+        self.failure.retained_artifacts().iter().any(|artifact| {
+            matches!(
+                artifact,
+                RetainedArtifact::VolumeOwnerRestorationUnconfirmed { .. }
+            )
+        })
     }
 
     pub(crate) const fn image_failure_service(&self) -> Option<&'a ServiceId> {

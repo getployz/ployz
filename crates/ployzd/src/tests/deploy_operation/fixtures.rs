@@ -2,9 +2,9 @@ use ployz_core::certificate::{ActiveCertState, CertBundleRef, CertValidAt, CertV
 use ployz_core::deploy::{
     ContainerCommand, ContainerHealthcheck, ContainerHealthcheckTest, ContainerMountPath,
     DatasetName, DependencyCondition, DeployCleanupContainer, DeployRequest, DeployRoute,
-    DeployRouteTarget, DeployServiceSpec, HealthcheckShellCommand, ImageReference, PreStartHook,
-    ReplicaCount, ServiceDependency, ServiceMode, ServiceVolumeMount, VolumeMaxSizeBytes,
-    VolumeName, VolumeSpec, ZfsPoolName,
+    DeployRouteTarget, DeployServiceSpec, DeployVolumeHandoffApplied, HealthcheckShellCommand,
+    ImageReference, PreStartHook, ReplicaCount, ServiceDependency, ServiceMode, ServiceVolumeMount,
+    VolumeMaxSizeBytes, VolumeName, VolumeSpec, ZfsPoolName,
 };
 use ployz_core::ids::{
     ContainerId, MachineId, NamespaceRevisionEntryId, NamespaceRevisionId, OperationId,
@@ -131,14 +131,8 @@ impl RecordingOperations {
 
     pub(super) fn fail_handoff_applied_evidence_once() -> Self {
         Self {
-            records: Vec::new(),
-            phase_records: Vec::new(),
-            fail_completed_transition_remaining: 0,
-            fail_cleanup_evidence_remaining: 0,
-            fail_phase_finished_evidence_remaining: 0,
             fail_handoff_applied_evidence_remaining: 1,
-            completed_transition_attempts: 0,
-            expected_operation_id: operation_id("op_123"),
+            ..Self::default()
         }
     }
 }
@@ -161,7 +155,9 @@ pub(super) enum RecordedOperation {
         machine_id: MachineId,
         container_id: ContainerId,
     },
-    VolumeHandoffApplied,
+    VolumeHandoffApplied {
+        handoff: DeployVolumeHandoffApplied,
+    },
     VolumeHandoffRollbackFinished {
         outcomes: Vec<DeployVolumeHandoffRollbackContainerOutcome>,
     },
@@ -247,14 +243,15 @@ impl DeployOperationRecorder for RecordingOperations {
                     container_id,
                 });
             }
-            DeployEvidence::VolumeHandoffApplied { .. } => {
+            DeployEvidence::VolumeHandoffApplied { handoff, .. } => {
                 if self.fail_handoff_applied_evidence_remaining > 0 {
                     self.fail_handoff_applied_evidence_remaining -= 1;
                     return Err(DeployOperationRecordError::Synthetic {
                         message: "volume handoff evidence record failed",
                     });
                 }
-                self.records.push(RecordedOperation::VolumeHandoffApplied);
+                self.records
+                    .push(RecordedOperation::VolumeHandoffApplied { handoff });
             }
             DeployEvidence::VolumeHandoffRollbackFinished { outcomes, .. } => {
                 self.records

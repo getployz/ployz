@@ -1,7 +1,6 @@
 use ployz_core::deploy::{
-    DeployCleanupContainer, DeployImageReplacementError, DeployPlan, DeployPlanStep,
-    DeployPlanStepRef, DeployRequest, DeployRequestEvidence, DeployRoute, DeployRouteTarget,
-    ImageSource, ReplicaSlot,
+    DeployCleanupContainer, DeployImageReplacementError, DeployPlan, DeployPlanStepRef,
+    DeployRequest, DeployRequestEvidence, DeployRoute, DeployRouteTarget, ImageSource, ReplicaSlot,
 };
 use ployz_core::ids::{OperationId, ServiceId};
 use ployz_core::image::OciPlatform;
@@ -151,11 +150,9 @@ impl DeployTree {
                 }
                 for service in plan.phases.iter().flat_map(|phase| &phase.services) {
                     for step in service.work.steps() {
-                        if let DeployPlanStepRef::Step(DeployPlanStep::UseExistingContainer {
-                            machine_id,
-                            slot,
-                            ..
-                        }) = step
+                        if let DeployPlanStepRef::UseExisting {
+                            machine_id, slot, ..
+                        } = step
                         {
                             self.plain_lines.push(format!(
                                 "deploy {}: {} — {}.{} already at target on {}",
@@ -251,25 +248,38 @@ impl DeployTree {
                 service_id,
                 handoff,
             } => {
-                let stopped = handoff
+                let stopped_running = handoff
                     .superseded
                     .as_slice()
                     .iter()
                     .filter(|participant| {
                         matches!(
-                            participant.prior_state,
-                            ployz_core::deploy::DeployVolumeHandoffPriorState::Running
+                            participant.stop_outcome,
+                            ployz_core::deploy::DeployVolumeHandoffStopOutcome::StoppedRunning
                         )
                     })
                     .count();
-                let already_stopped = handoff.superseded.as_slice().len() - stopped;
+                let already_stopped = handoff
+                    .superseded
+                    .as_slice()
+                    .iter()
+                    .filter(|participant| {
+                        matches!(
+                            participant.stop_outcome,
+                            ployz_core::deploy::DeployVolumeHandoffStopOutcome::AlreadyStopped
+                        )
+                    })
+                    .count();
+                let missing =
+                    handoff.superseded.as_slice().len() - stopped_running - already_stopped;
                 self.plain_lines.push(format!(
-                    "deploy {}: {} — volume handoff on {}: stopped {} running prior owner(s); {} prior owner(s) were already stopped",
+                    "deploy {}: {} — volume handoff on {}: stopped {} running prior owner(s); {} already stopped; {} missing",
                     operation_id.as_str(),
                     service_id.as_str(),
                     handoff.machine_id.as_str(),
-                    stopped,
-                    already_stopped
+                    stopped_running,
+                    already_stopped,
+                    missing,
                 ));
             }
             OperationEvent::DeployVolumeHandoffRollbackFinished {
@@ -534,25 +544,15 @@ impl DeployTree {
         for service in plan.phases.iter().flat_map(|phase| &phase.services) {
             for step in service.work.steps() {
                 match step {
-                    DeployPlanStepRef::RunContainer(step) if index == wanted => {
-                        return Some((
-                            service.service_id.as_str(),
-                            step.machine_id.as_str(),
-                            slot_label(&step.slot),
-                        ));
-                    }
-                    DeployPlanStepRef::Step(DeployPlanStep::RunContainer { machine_id, slot })
-                        if index == wanted =>
-                    {
+                    DeployPlanStepRef::RunContainer { machine_id, slot } if index == wanted => {
                         return Some((
                             service.service_id.as_str(),
                             machine_id.as_str(),
                             slot_label(slot),
                         ));
                     }
-                    DeployPlanStepRef::RunContainer(_)
-                    | DeployPlanStepRef::Step(DeployPlanStep::RunContainer { .. }) => index += 1,
-                    DeployPlanStepRef::Step(DeployPlanStep::UseExistingContainer { .. }) => {}
+                    DeployPlanStepRef::RunContainer { .. } => index += 1,
+                    DeployPlanStepRef::UseExisting { .. } => {}
                 }
             }
         }
@@ -569,25 +569,15 @@ impl DeployTree {
             .flat_map(|phase| &phase.services)
             .flat_map(|service| {
                 service.work.steps().filter_map(|step| match step {
-                    DeployPlanStepRef::RunContainer(step) => Some(format!(
+                    DeployPlanStepRef::RunContainer { machine_id, slot } => Some(format!(
                         "deploy {}: {} — {}.{} healthy on {}",
                         operation_id.as_str(),
                         service.service_id.as_str(),
                         service.service_id.as_str(),
-                        slot_label(&step.slot),
-                        step.machine_id.as_str()
+                        slot_label(slot),
+                        machine_id.as_str()
                     )),
-                    DeployPlanStepRef::Step(DeployPlanStep::RunContainer { machine_id, slot }) => {
-                        Some(format!(
-                            "deploy {}: {} — {}.{} healthy on {}",
-                            operation_id.as_str(),
-                            service.service_id.as_str(),
-                            service.service_id.as_str(),
-                            slot_label(slot),
-                            machine_id.as_str()
-                        ))
-                    }
-                    DeployPlanStepRef::Step(DeployPlanStep::UseExistingContainer { .. }) => None,
+                    DeployPlanStepRef::UseExisting { .. } => None,
                 })
             })
             .collect::<Vec<_>>();
@@ -745,11 +735,7 @@ pub(crate) fn render_frame(tree: &DeployTree) -> String {
                     step,
                     run_index,
                 ));
-                if matches!(
-                    step,
-                    DeployPlanStepRef::RunContainer(_)
-                        | DeployPlanStepRef::Step(DeployPlanStep::RunContainer { .. })
-                ) {
+                if matches!(step, DeployPlanStepRef::RunContainer { .. }) {
                     run_index += 1;
                 }
             }
@@ -901,7 +887,14 @@ pub(crate) fn render_failure_block(tree: &DeployTree) -> String {
         FailureSafety::NothingChanged => {
             block.push_str("\n  Nothing changed: the failure happened before any container work.\n")
         }
-        FailureSafety::ServingUnchanged => block.push_str("\n  Serving is unchanged.\n"),
+        FailureSafety::ServingUnchanged => {
+            block.push_str("\n  Durable serving intent is unchanged.\n");
+            if failure_view.volume_owner_restoration_unconfirmed() {
+                block.push_str(
+                    "  Runtime serving may remain interrupted: prior volume-owner restoration was not confirmed.\n",
+                );
+            }
+        }
         FailureSafety::NoClaim => {}
     }
     block.push('\n');
@@ -1039,11 +1032,11 @@ fn render_service_step(
     run_index: usize,
 ) -> TreeLine {
     match step {
-        DeployPlanStepRef::Step(DeployPlanStep::UseExistingContainer {
+        DeployPlanStepRef::UseExisting {
             machine_id,
             container_id: _,
             slot,
-        }) => TreeLine::Settled {
+        } => TreeLine::Settled {
             text: format!(
                 "✓ no changes — already at target ({}.{} on {})",
                 service_id,
@@ -1051,10 +1044,7 @@ fn render_service_step(
                 machine_id.as_str()
             ),
         },
-        DeployPlanStepRef::RunContainer(step) => {
-            render_run_step(tree, service_id, &step.machine_id, &step.slot, run_index)
-        }
-        DeployPlanStepRef::Step(DeployPlanStep::RunContainer { machine_id, slot }) => {
+        DeployPlanStepRef::RunContainer { machine_id, slot } => {
             render_run_step(tree, service_id, machine_id, slot, run_index)
         }
     }

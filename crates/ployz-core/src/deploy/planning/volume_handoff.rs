@@ -1,14 +1,72 @@
 use super::super::*;
 
-/// Durable evidence for an applied volume handoff. The executable plan keeps
-/// the same participants inside [`DeployServiceWork::VolumeHandoff`].
+/// Durable evidence for a volume handoff whose owner stops were confirmed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-pub struct DeployVolumeHandoffPlan {
+pub struct DeployVolumeHandoffApplied {
     pub machine_id: MachineId,
     pub volume_names: NonEmptyVolumeNames,
-    pub superseded: NonEmptyVolumeHandoffParticipants,
+    pub superseded: NonEmptyAppliedVolumeHandoffParticipants,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct DeployVolumeHandoffAppliedParticipant {
+    pub target: DeployCleanupContainer,
+    pub stop_outcome: DeployVolumeHandoffStopOutcome,
+    pub shared_volume_names: NonEmptyVolumeNames,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum DeployVolumeHandoffStopOutcome {
+    StoppedRunning,
+    AlreadyStopped,
+    Missing,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(
+    try_from = "Vec<DeployVolumeHandoffAppliedParticipant>",
+    into = "Vec<DeployVolumeHandoffAppliedParticipant>"
+)]
+pub struct NonEmptyAppliedVolumeHandoffParticipants(Vec<DeployVolumeHandoffAppliedParticipant>);
+
+impl NonEmptyAppliedVolumeHandoffParticipants {
+    pub fn try_new(
+        participants: impl IntoIterator<Item = DeployVolumeHandoffAppliedParticipant>,
+    ) -> Result<Self, EmptyVolumeHandoffParticipantsError> {
+        let participants = participants.into_iter().collect::<Vec<_>>();
+        if participants.is_empty() {
+            return Err(EmptyVolumeHandoffParticipantsError);
+        }
+        Ok(Self(participants))
+    }
+
+    #[must_use]
+    pub fn as_slice(&self) -> &[DeployVolumeHandoffAppliedParticipant] {
+        &self.0
+    }
+}
+
+impl TryFrom<Vec<DeployVolumeHandoffAppliedParticipant>>
+    for NonEmptyAppliedVolumeHandoffParticipants
+{
+    type Error = EmptyVolumeHandoffParticipantsError;
+
+    fn try_from(value: Vec<DeployVolumeHandoffAppliedParticipant>) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<NonEmptyAppliedVolumeHandoffParticipants> for Vec<DeployVolumeHandoffAppliedParticipant> {
+    fn from(value: NonEmptyAppliedVolumeHandoffParticipants) -> Self {
+        value.0
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

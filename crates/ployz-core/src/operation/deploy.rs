@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 use std::num::NonZeroU16;
 
 use crate::certificate::CertificateProvisionFailure;
-use crate::deploy::{DeployCleanupContainer, DeployPlan, DeployVolumeHandoffPlan, ImageReference};
+use crate::deploy::{
+    DeployCleanupContainer, DeployPlan, DeployVolumeHandoffApplied, ImageReference,
+};
 use crate::deploy::{VolumeAdmissionFailure, VolumeName};
 use crate::ids::{
     ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
@@ -606,6 +608,10 @@ pub enum RetainedArtifact {
         message: FailureMessage,
         inspect_hint: OperatorHint,
     },
+    VolumeOwnerRestorationUnconfirmed {
+        target: DeployCleanupContainer,
+        reason: DeployVolumeHandoffRestorationUnconfirmed,
+    },
 }
 
 impl RetainedArtifact {
@@ -632,6 +638,7 @@ impl RetainedArtifact {
                 inspect_hint: _,
             }
             | RetainedArtifact::VolumeOwnerStopUncertain { .. }
+            | RetainedArtifact::VolumeOwnerRestorationUnconfirmed { .. }
             | RetainedArtifact::VolumeConsumerStartUncertain { .. } => false,
             RetainedArtifact::VolumeConsumerQuiescenceUncertain { .. } => true,
         }
@@ -794,6 +801,16 @@ pub enum DeployVolumeHandoffRestartFailure {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DeployVolumeHandoffRestorationUnconfirmed {
+    RestartFailed {
+        failure: DeployVolumeHandoffRestartFailure,
+    },
+    NewConsumerQuiescenceUnconfirmed,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployEvidence {
     ImageResolved {
@@ -818,7 +835,7 @@ pub enum DeployEvidence {
     },
     VolumeHandoffApplied {
         service_id: ServiceId,
-        handoff: DeployVolumeHandoffPlan,
+        handoff: DeployVolumeHandoffApplied,
     },
     VolumeHandoffRollbackFinished {
         service_id: ServiceId,

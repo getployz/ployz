@@ -1,15 +1,17 @@
 use std::collections::BTreeMap;
 
 use ployz_core::deploy::{
-    DeployCleanupContainer, DeployVolumeHandoffParticipant, DeployVolumeHandoffPlan,
-    DeployVolumeHandoffPriorState, NonEmptyVolumeHandoffParticipants, NonEmptyVolumeNames,
+    DeployCleanupContainer, DeployVolumeHandoffApplied, DeployVolumeHandoffAppliedParticipant,
+    DeployVolumeHandoffParticipant, DeployVolumeHandoffPriorState, DeployVolumeHandoffStopOutcome,
+    NonEmptyAppliedVolumeHandoffParticipants, NonEmptyVolumeHandoffParticipants,
+    NonEmptyVolumeNames,
 };
 use ployz_core::ids::{MachineId, ServiceId};
 use ployz_core::machine::runtime::ManagedContainerIdentity;
 use ployz_core::operation::{
-    DeployEvidence, DeployVolumeHandoffRestartFailure, DeployVolumeHandoffRollbackContainerOutcome,
-    DeployVolumeHandoffRollbackOutcome, DeployVolumeHandoffStopUncertain, FailureMessage,
-    OperatorHint, RetainedArtifact,
+    DeployEvidence, DeployVolumeHandoffRestartFailure, DeployVolumeHandoffRestorationUnconfirmed,
+    DeployVolumeHandoffRollbackContainerOutcome, DeployVolumeHandoffRollbackOutcome,
+    DeployVolumeHandoffStopUncertain, FailureMessage, OperatorHint, RetainedArtifact,
 };
 
 use super::failure::DeployExecutionFailure;
@@ -59,6 +61,15 @@ pub(super) struct VolumeHandoffQuiescence {
     services: BTreeMap<ServiceId, QuiescedService>,
     retained_consumers: Vec<DeployCleanupContainer>,
     retained_artifacts: Vec<RetainedArtifact>,
+}
+
+pub(super) enum ServiceStartTracking {
+    Ordinary,
+    VolumeHandoff(VolumeHandoffSession),
+}
+
+pub(super) struct VolumeHandoffSession {
+    service_id: ServiceId,
 }
 
 struct QuiescedService {
@@ -129,6 +140,54 @@ impl VolumeHandoffRollbackState {
     }
 }
 
+impl ServiceStartTracking {
+    pub(super) fn begin_consumer_start(
+        &self,
+        state: &mut VolumeHandoffRollbackState,
+        machine_id: MachineId,
+        expected_identity: ManagedContainerIdentity,
+    ) {
+        let Self::VolumeHandoff(session) = self else {
+            return;
+        };
+        state.begin_consumer_start(&session.service_id, machine_id, expected_identity);
+    }
+
+    pub(super) fn consumer_started(
+        &self,
+        state: &mut VolumeHandoffRollbackState,
+        target: DeployCleanupContainer,
+    ) {
+        let Self::VolumeHandoff(session) = self else {
+            return;
+        };
+        state.consumer_started(&session.service_id, target);
+    }
+
+    pub(super) fn consumer_did_not_start(
+        &self,
+        state: &mut VolumeHandoffRollbackState,
+        expected_identity: &ManagedContainerIdentity,
+    ) {
+        let Self::VolumeHandoff(session) = self else {
+            return;
+        };
+        state.consumer_did_not_start(&session.service_id, expected_identity);
+    }
+
+    pub(super) fn ambiguous_consumers(
+        &self,
+        state: &mut VolumeHandoffRollbackState,
+        expected_identity: &ManagedContainerIdentity,
+        targets: impl IntoIterator<Item = DeployCleanupContainer>,
+    ) {
+        let Self::VolumeHandoff(session) = self else {
+            return;
+        };
+        state.ambiguous_consumers(&session.service_id, expected_identity, targets);
+    }
+}
+
 impl VolumeHandoffQuiescence {
     pub(super) fn retained_consumers(&self) -> &[DeployCleanupContainer] {
         &self.retained_consumers
@@ -147,11 +206,12 @@ pub(super) async fn stop_volume_owners<R, N>(
     state: &mut VolumeHandoffRollbackState,
     recorder: &mut R,
     machine_runtime: &mut N,
-) -> Result<(), DeployExecutionError>
+) -> Result<ServiceStartTracking, DeployExecutionError>
 where
     R: DeployOperationRecorder,
     N: MachineContainerRuntime,
 {
+    let mut applied_participants = Vec::new();
     for participant in participants.as_slice() {
         begin_owner_stop(state, service_id, participant.clone());
         let target = &participant.target;
@@ -177,7 +237,15 @@ where
         )
         .await;
         match result {
-            Ok(outcome) => finish_owner_stop(state, service_id, target, outcome),
+            Ok(outcome) => {
+                let stop_outcome = applied_stop_outcome(outcome);
+                finish_owner_stop(state, service_id, target, outcome);
+                applied_participants.push(DeployVolumeHandoffAppliedParticipant {
+                    target: target.clone(),
+                    stop_outcome,
+                    shared_volume_names: participant.shared_volume_names.clone(),
+                });
+            }
             Err(error) => {
                 let uncertainty = stop_uncertainty(command, target, &error);
                 finish_owner_stop_uncertain(state, service_id, target, uncertainty);
@@ -186,14 +254,16 @@ where
         }
     }
 
+    let superseded = NonEmptyAppliedVolumeHandoffParticipants::try_new(applied_participants)
+        .expect("volume handoff contains at least one applied participant");
     let handoff =
-        DeployVolumeHandoffPlan {
+        DeployVolumeHandoffApplied {
             machine_id: replacement_machine_id.clone(),
             volume_names: NonEmptyVolumeNames::try_new(participants.as_slice().iter().flat_map(
                 |participant| participant.shared_volume_names.as_slice().iter().cloned(),
             ))
             .expect("volume handoff participants share at least one volume"),
-            superseded: participants.clone(),
+            superseded,
         };
 
     record_evidence(
@@ -204,7 +274,24 @@ where
             handoff,
         },
     )
-    .await
+    .await?;
+    Ok(ServiceStartTracking::VolumeHandoff(VolumeHandoffSession {
+        service_id: service_id.clone(),
+    }))
+}
+
+const fn applied_stop_outcome(
+    outcome: MachineContainerStopOutcome,
+) -> DeployVolumeHandoffStopOutcome {
+    match outcome {
+        MachineContainerStopOutcome::StoppedRunning => {
+            DeployVolumeHandoffStopOutcome::StoppedRunning
+        }
+        MachineContainerStopOutcome::AlreadyStopped => {
+            DeployVolumeHandoffStopOutcome::AlreadyStopped
+        }
+        MachineContainerStopOutcome::Missing => DeployVolumeHandoffStopOutcome::Missing,
+    }
 }
 
 fn begin_owner_stop(
@@ -377,6 +464,14 @@ pub(super) async fn restart_eligible<R, N>(
             } else {
                 DeployVolumeHandoffRollbackOutcome::NotRestartedNewConsumerQuiescenceUnconfirmed
             };
+            if let Some(reason) = restoration_unconfirmed(&outcome) {
+                failure.add_retained_artifacts(vec![
+                    RetainedArtifact::VolumeOwnerRestorationUnconfirmed {
+                        target: target.clone(),
+                        reason,
+                    },
+                ]);
+            }
             outcomes.push(DeployVolumeHandoffRollbackContainerOutcome { target, outcome });
         }
         let mut by_machine: BTreeMap<MachineId, Vec<_>> = BTreeMap::new();
@@ -400,6 +495,22 @@ pub(super) async fn restart_eligible<R, N>(
             {
                 failure.add_evidence_record_error(error);
             }
+        }
+    }
+}
+
+fn restoration_unconfirmed(
+    outcome: &DeployVolumeHandoffRollbackOutcome,
+) -> Option<DeployVolumeHandoffRestorationUnconfirmed> {
+    match outcome {
+        DeployVolumeHandoffRollbackOutcome::Restarted => None,
+        DeployVolumeHandoffRollbackOutcome::RestartFailed { failure } => {
+            Some(DeployVolumeHandoffRestorationUnconfirmed::RestartFailed {
+                failure: failure.clone(),
+            })
+        }
+        DeployVolumeHandoffRollbackOutcome::NotRestartedNewConsumerQuiescenceUnconfirmed => {
+            Some(DeployVolumeHandoffRestorationUnconfirmed::NewConsumerQuiescenceUnconfirmed)
         }
     }
 }
@@ -561,4 +672,31 @@ fn operation_hint(command: &DeployExecutionCommand) -> OperatorHint {
         command.operation_id().as_str()
     ))
     .expect("generated operation hint is non-empty")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ployz_test_support::{containers, ids};
+
+    #[test]
+    fn ordinary_service_tracking_cannot_enroll_volume_handoff_rollback_state() {
+        let tracking = ServiceStartTracking::Ordinary;
+        let mut state = VolumeHandoffRollbackState::default();
+        let identity = containers::identity("svc_api").build();
+
+        tracking.begin_consumer_start(&mut state, ids::machine_id("machine_a"), identity.clone());
+        tracking.consumer_started(
+            &mut state,
+            DeployCleanupContainer {
+                machine_id: ids::machine_id("machine_a"),
+                container_id: ids::container_id("ctr_new"),
+                identity: identity.clone(),
+            },
+        );
+        tracking.consumer_did_not_start(&mut state, &identity);
+        tracking.ambiguous_consumers(&mut state, &identity, []);
+
+        assert!(state.services.is_empty());
+    }
 }

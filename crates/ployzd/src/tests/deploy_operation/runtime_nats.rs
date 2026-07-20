@@ -22,7 +22,7 @@ use crate::roles::machine::protocol::{MachineFactsGetRpcOk, MachineFactsGetRpcRe
 use crate::tasks::TaskRegistry;
 use futures_util::StreamExt;
 use ployz_core::deploy::{
-    DeployPlanStep, DeployPreviewImage, DeployPreviewService, DeployPreviewTarget, DeployRequest,
+    DeployPreviewImage, DeployPreviewService, DeployPreviewTarget, DeployRequest,
     DeployServiceSpec, ReplicaCount,
 };
 use ployz_core::install::MachineBootstrapUrl;
@@ -277,12 +277,11 @@ async fn interrupted_deploy_retry_gathers_and_reuses_retained_runtime_work() {
                 .any(|step| {
                     matches!(
                         step,
-                        ployz_core::deploy::DeployPlanStepRef::Step(
-                            DeployPlanStep::UseExistingContainer {
+                        ployz_core::deploy::DeployPlanStepRef::UseExisting {
                             machine_id,
                             container_id: existing_container_id,
                             ..
-                        }) if machine_id == retained_machine_id
+                        } if machine_id == retained_machine_id
                             && existing_container_id == &container_id("ctr_retained")
                     )
                 })

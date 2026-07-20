@@ -3,9 +3,10 @@
 
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployOrigin, DeployPhasePlan, DeployPlan, DeployPlanStep,
-    DeployServicePlacement, DeployServicePlan, DeployVolumeHandoffParticipant,
-    DeployVolumeHandoffPlan, DeployVolumeHandoffPriorState, NonEmptyVolumeHandoffParticipants,
-    NonEmptyVolumeNames, ReplicaSlot, ReplicatedReplicaSlot, VolumeName,
+    DeployServicePlacement, DeployServicePlan, DeployVolumeHandoffApplied,
+    DeployVolumeHandoffAppliedParticipant, DeployVolumeHandoffStopOutcome,
+    NonEmptyAppliedVolumeHandoffParticipants, NonEmptyVolumeNames, ReplicaSlot,
+    ReplicatedReplicaSlot, VolumeName,
 };
 use ployz_core::operation::{
     DeployCompletionOutcome, DeployOperationState, DeployRunningStage, DeployTransition,
@@ -447,16 +448,16 @@ fn volume_handoff_evidence_round_trips_without_runtime_secrets_and_projects() {
     let event = OperationEvent::DeployVolumeHandoffApplied {
         operation_id: operation_id("op_123"),
         service_id: service_id("svc_api"),
-        handoff: DeployVolumeHandoffPlan {
+        handoff: DeployVolumeHandoffApplied {
             machine_id: machine_id("machine_a"),
             volume_names: NonEmptyVolumeNames::try_new([
                 VolumeName::try_new("data").expect("volume name")
             ])
             .expect("non-empty volume names"),
-            superseded: NonEmptyVolumeHandoffParticipants::try_new([
-                DeployVolumeHandoffParticipant {
+            superseded: NonEmptyAppliedVolumeHandoffParticipants::try_new([
+                DeployVolumeHandoffAppliedParticipant {
                     target: target.clone(),
-                    prior_state: DeployVolumeHandoffPriorState::Running,
+                    stop_outcome: DeployVolumeHandoffStopOutcome::StoppedRunning,
                     shared_volume_names: NonEmptyVolumeNames::try_new([VolumeName::try_new(
                         "data",
                     )

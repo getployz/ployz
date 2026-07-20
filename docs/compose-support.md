@@ -58,7 +58,7 @@ Supported and translated fields become a Ployz deploy request. Unsupported and u
 | `volumes.*.x-ployz.max-size` | Ployz-specific extension | Declares a Provisioned Volume with a positive byte quantity such as `10G`. |
 | `services.*.ulimits` | Unsupported (unsupported) | ulimits are not deployed yet |
 | `services.*.user` | Unsupported (unsupported) | container user is not deployed yet |
-| `services.*.volumes` | Translated (limited) | Named-volume short and long syntax map to service mounts for replicated services. Global services cannot mount volumes. Bind, anonymous, tmpfs, read-only, and mount-option forms are rejected. A mount without a top-level declaration is synthesized as Plain. |
+| `services.*.volumes` | Translated (limited) | Named-volume short and long syntax map to service mounts for replicated services with exactly one replica. Global and multi-replica services cannot mount volumes. Bind, anonymous, tmpfs, read-only, and mount-option forms are rejected. A mount without a top-level declaration is synthesized as Plain. |
 | `services.*.working_dir` | Unsupported (unsupported) | working directory is not deployed yet |
 | `services.*.x-pre_deploy` | Unsupported | rename the hook to Compose `pre_start` |
 | Any other field | Unsupported | Unknown field; remove it or pass `--allow-unsupported`. |

@@ -25,14 +25,16 @@ pub use ployz_core::deploy::{
     DeployReservationId, DeployReservationNumberError, DeployRollbackEnvironment,
     DeployRollbackEnvironmentError, DeployRoute, DeployRouteTarget, DeployRunContainerStep,
     DeployServicePlacement, DeployServicePlan, DeployServiceSpec, DeployServiceWork,
-    DeployVolumeHandoffParticipant, DeployVolumeHandoffPlan, DeployVolumeHandoffPriorState,
+    DeployVolumeHandoffApplied, DeployVolumeHandoffAppliedParticipant,
+    DeployVolumeHandoffParticipant, DeployVolumeHandoffPriorState, DeployVolumeHandoffStopOutcome,
     EnvName, EnvNameError, EnvValue, EnvValueError, HealthcheckDurationNanos, HealthcheckRetries,
     HealthcheckShellCommand, ImageAvailabilityExpiresAt, ImageAvailabilityTimestampError,
     ImageReference, ImageReferenceError, ImageSource, LinuxCapability, MemoryBytes, NanoCpus,
-    NonEmptyVolumeHandoffParticipants, NonEmptyVolumeNames, PidsLimit, PlatformImage, PreStartHook,
-    PreStartHookStep, PushedImageReceipt, PushedImageReceiptError, RegistryCredential,
-    RegistryCredentialError, RegistryCredentialSecret, RegistryCredentialUsername, ReplicaCount,
-    ReplicaCountError, ReplicaSlot, ReplicatedReplicaSlot, ServiceDependency, ServiceEnvironment,
+    NonEmptyAppliedVolumeHandoffParticipants, NonEmptyVolumeHandoffParticipants,
+    NonEmptyVolumeNames, PidsLimit, PlatformImage, PreStartHook, PreStartHookStep,
+    PushedImageReceipt, PushedImageReceiptError, RegistryCredential, RegistryCredentialError,
+    RegistryCredentialSecret, RegistryCredentialUsername, ReplicaCount, ReplicaCountError,
+    ReplicaSlot, ReplicatedReplicaSlot, ServiceDependency, ServiceEnvironment,
     ServiceEnvironmentNames, ServiceMode, ServiceVolumeMount, StopGracePeriod, VolumeMaxSizeBytes,
     VolumeMaxSizeError, VolumeName, VolumeNameError, VolumeSpec, ZfsPoolName, ZfsPoolNameError,
 };
@@ -137,8 +139,8 @@ pub use ployz_core::operation::{
     DeployImageCleanup, DeployInterruptionStage, DeployOperationFailure, DeployOperationState,
     DeployPhaseNumber, DeployPhaseNumberError, DeployPhaseOutcome, DeployRunningStage,
     DeployServiceResult, DeployVolumeHandoffRestartFailure,
-    DeployVolumeHandoffRollbackContainerOutcome, DeployVolumeHandoffRollbackOutcome,
-    DeployVolumeHandoffStopUncertain, PreStartHookFailure,
+    DeployVolumeHandoffRestorationUnconfirmed, DeployVolumeHandoffRollbackContainerOutcome,
+    DeployVolumeHandoffRollbackOutcome, DeployVolumeHandoffStopUncertain, PreStartHookFailure,
 };
 pub use ployz_core::security::NatsPrincipal;
 pub use ployz_core::storage::StorageEffectFailure;

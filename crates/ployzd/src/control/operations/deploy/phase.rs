@@ -1,5 +1,5 @@
 use ployz_core::deploy::{
-    DeployCleanupContainer, DeployPhasePlan, DeployPlanStep, DeployPlanStepRef, DeployServiceWork,
+    DeployCleanupContainer, DeployPhasePlan, DeployPlanStepRef, DeployServiceWork,
     ExistingReplicaCreationGate, ImageSource,
 };
 use ployz_core::ids::{ContainerId, MachineId, ServiceId, StepId};
@@ -11,7 +11,7 @@ use ployz_core::operation::{
 
 use super::failure::DeployExecutionFailure;
 use super::images::ensure_images;
-use super::volume_handoff::{self, VolumeHandoffRollbackState};
+use super::volume_handoff::{self, ServiceStartTracking, VolumeHandoffRollbackState};
 use super::{
     CertificateProvisioner, DeployContainer, DeployExecutionCommand, DeployExecutionError,
     DeployExecutionStep, DeployHealthCheckError, DeployHealthChecker, DeployOperationRecorder,
@@ -123,21 +123,14 @@ impl<'a> DeployRun<'a> {
         &mut self,
         started: DeployContainer,
         disposition: RunContainerDisposition,
-        volume_handoff: bool,
+        tracking: &ServiceStartTracking,
     ) {
-        if volume_handoff {
-            let target = DeployCleanupContainer {
-                machine_id: started.machine_id.clone(),
-                container_id: started.container_id.clone(),
-                identity: super::retained_container_identity(self.command, &started),
-            };
-            let DeployRunPhase::During(phase) = &mut self.phase else {
-                unreachable!("container work requires an active deploy phase");
-            };
-            phase
-                .volume_handoff
-                .consumer_started(&started.service_id, target);
-        }
+        let target = DeployCleanupContainer {
+            machine_id: started.machine_id.clone(),
+            container_id: started.container_id.clone(),
+            identity: super::retained_container_identity(self.command, &started),
+        };
+        tracking.consumer_started(self.volume_handoff_mut(), target);
         match disposition {
             RunContainerDisposition::Created => {
                 let DeployRunPhase::During(phase) = &mut self.phase else {
@@ -321,8 +314,8 @@ fn consumer_identity(
 }
 
 fn capture_run_failure_consumers(
-    service: &DeployServiceExecutionCommand,
     run: &mut DeployRun<'_>,
+    tracking: &ServiceStartTracking,
     expected_identity: &ManagedContainerIdentity,
     source: &DeployExecutionError,
 ) {
@@ -343,11 +336,7 @@ fn capture_run_failure_consumers(
                 container_id.clone(),
             )
         });
-        run.volume_handoff_mut().ambiguous_consumers(
-            &service.service.service_id,
-            expected_identity,
-            targets,
-        );
+        tracking.ambiguous_consumers(run.volume_handoff_mut(), expected_identity, targets);
         return;
     }
     if !matches!(
@@ -361,14 +350,13 @@ fn capture_run_failure_consumers(
                 ..
             }
     ) {
-        run.volume_handoff_mut()
-            .consumer_did_not_start(&service.service.service_id, expected_identity);
+        tracking.consumer_did_not_start(run.volume_handoff_mut(), expected_identity);
     }
 }
 
 fn capture_hook_failure_consumers(
-    service: &DeployServiceExecutionCommand,
     run: &mut DeployRun<'_>,
+    tracking: &ServiceStartTracking,
     expected_identity: &ManagedContainerIdentity,
     source: &DeployExecutionError,
 ) {
@@ -386,11 +374,7 @@ fn capture_hook_failure_consumers(
                 container_id.clone(),
             )
         });
-        run.volume_handoff_mut().ambiguous_consumers(
-            &service.service.service_id,
-            expected_identity,
-            targets,
-        );
+        tracking.ambiguous_consumers(run.volume_handoff_mut(), expected_identity, targets);
         return;
     }
     if let DeployExecutionError::PreStartHook(
@@ -406,8 +390,8 @@ fn capture_hook_failure_consumers(
         },
     ) = source
     {
-        run.volume_handoff_mut().ambiguous_consumers(
-            &service.service.service_id,
+        tracking.ambiguous_consumers(
+            run.volume_handoff_mut(),
             expected_identity,
             [consumer_target(
                 expected_identity.clone(),
@@ -428,8 +412,7 @@ fn capture_hook_failure_consumers(
                 ..
             }
     ) {
-        run.volume_handoff_mut()
-            .consumer_did_not_start(&service.service.service_id, expected_identity);
+        tracking.consumer_did_not_start(run.volume_handoff_mut(), expected_identity);
     }
 }
 
@@ -471,8 +454,8 @@ where
                 service_id: service_plan.service_id.clone(),
             }));
         };
-        let is_volume_handoff = match &service_plan.work {
-            DeployServiceWork::Ordinary { steps: _ } => false,
+        let tracking = match &service_plan.work {
+            DeployServiceWork::Ordinary { steps: _ } => ServiceStartTracking::Ordinary,
             DeployServiceWork::VolumeHandoff {
                 replacement,
                 remaining_steps: _,
@@ -490,28 +473,32 @@ where
                 .await;
                 result.map_err(|source| {
                     run.fail_service(source, service.service.service_id.clone())
-                })?;
-                true
+                })?
             }
         };
         if let Some(pre_start) = &service_plan.pre_start {
-            let expected_identity = if is_volume_handoff {
-                let step_id = StepId::try_new("pre_start").map_err(|source| {
-                    run.fail_service(
-                        DeployExecutionError::StepId(source),
-                        service.service.service_id.clone(),
-                    )
-                })?;
-                let identity =
-                    consumer_identity(command, service, step_id, ManagedContainerKind::Predeploy);
-                run.volume_handoff_mut().begin_consumer_start(
-                    &service.service.service_id,
-                    pre_start.machine_id.clone(),
-                    identity.clone(),
-                );
-                Some(identity)
-            } else {
-                None
+            let expected_identity = match &tracking {
+                ServiceStartTracking::Ordinary => None,
+                ServiceStartTracking::VolumeHandoff(_) => {
+                    let step_id = StepId::try_new("pre_start").map_err(|source| {
+                        run.fail_service(
+                            DeployExecutionError::StepId(source),
+                            service.service.service_id.clone(),
+                        )
+                    })?;
+                    let identity = consumer_identity(
+                        command,
+                        service,
+                        step_id,
+                        ManagedContainerKind::Predeploy,
+                    );
+                    tracking.begin_consumer_start(
+                        run.volume_handoff_mut(),
+                        pre_start.machine_id.clone(),
+                        identity.clone(),
+                    );
+                    Some(identity)
+                }
             };
             let result = run_pre_start_hook(
                 command,
@@ -523,22 +510,21 @@ where
             .await;
             if let Err(source) = result {
                 if let Some(expected_identity) = &expected_identity {
-                    capture_hook_failure_consumers(service, run, expected_identity, &source);
+                    capture_hook_failure_consumers(run, &tracking, expected_identity, &source);
                 }
                 return Err(run.fail_service(source, service.service.service_id.clone()));
             }
             if let Some(expected_identity) = &expected_identity {
-                run.volume_handoff_mut()
-                    .consumer_did_not_start(&service.service.service_id, expected_identity);
+                tracking.consumer_did_not_start(run.volume_handoff_mut(), expected_identity);
             }
         }
         for step in service_plan.work.steps() {
             let (machine_id, slot) = match step {
-                DeployPlanStepRef::Step(DeployPlanStep::UseExistingContainer {
+                DeployPlanStepRef::UseExisting {
                     machine_id,
                     container_id,
                     slot,
-                }) => {
+                } => {
                     let Some(existing) =
                         service
                             .planning_input
@@ -578,30 +564,26 @@ where
                     run.existing_container(container, existing.creation_gate);
                     continue;
                 }
-                DeployPlanStepRef::RunContainer(replacement) => {
-                    (&replacement.machine_id, replacement.slot)
-                }
-                DeployPlanStepRef::Step(DeployPlanStep::RunContainer { machine_id, slot }) => {
-                    (machine_id, *slot)
-                }
+                DeployPlanStepRef::RunContainer { machine_id, slot } => (machine_id, *slot),
             };
-            let expected_identity = if is_volume_handoff {
-                let step_id = deploy_step_id(slot, machine_id).map_err(|source| {
-                    run.fail_service(
-                        DeployExecutionError::StepId(source),
-                        service.service.service_id.clone(),
-                    )
-                })?;
-                let identity =
-                    consumer_identity(command, service, step_id, ManagedContainerKind::Service);
-                run.volume_handoff_mut().begin_consumer_start(
-                    &service.service.service_id,
-                    machine_id.clone(),
-                    identity.clone(),
-                );
-                Some(identity)
-            } else {
-                None
+            let expected_identity = match &tracking {
+                ServiceStartTracking::Ordinary => None,
+                ServiceStartTracking::VolumeHandoff(_) => {
+                    let step_id = deploy_step_id(slot, machine_id).map_err(|source| {
+                        run.fail_service(
+                            DeployExecutionError::StepId(source),
+                            service.service.service_id.clone(),
+                        )
+                    })?;
+                    let identity =
+                        consumer_identity(command, service, step_id, ManagedContainerKind::Service);
+                    tracking.begin_consumer_start(
+                        run.volume_handoff_mut(),
+                        machine_id.clone(),
+                        identity.clone(),
+                    );
+                    Some(identity)
+                }
             };
             let run_result = with_step_timeout(
                 command,
@@ -622,13 +604,13 @@ where
                 Ok(started) => started,
                 Err(source) => {
                     if let Some(expected_identity) = &expected_identity {
-                        capture_run_failure_consumers(service, run, expected_identity, &source);
+                        capture_run_failure_consumers(run, &tracking, expected_identity, &source);
                     }
                     return Err(run.fail_run_container(service, source));
                 }
             };
             ports.containers.push(started.clone());
-            run.container_started(started.clone(), disposition, is_volume_handoff);
+            run.container_started(started.clone(), disposition, &tracking);
             record_evidence(
                 command,
                 ports.recorder,

@@ -661,24 +661,47 @@ impl DeployServiceWork {
             };
         replacement
             .into_iter()
-            .map(DeployPlanStepRef::RunContainer)
-            .chain(remaining.iter().map(DeployPlanStepRef::Step))
+            .map(|step| DeployPlanStepRef::RunContainer {
+                machine_id: &step.machine_id,
+                slot: &step.slot,
+            })
+            .chain(remaining.iter().map(|step| match step {
+                DeployPlanStep::UseExistingContainer {
+                    machine_id,
+                    container_id,
+                    slot,
+                } => DeployPlanStepRef::UseExisting {
+                    machine_id,
+                    container_id,
+                    slot,
+                },
+                DeployPlanStep::RunContainer { machine_id, slot } => {
+                    DeployPlanStepRef::RunContainer { machine_id, slot }
+                }
+            }))
     }
 }
 
 #[derive(Debug, Clone, Copy)]
 pub enum DeployPlanStepRef<'a> {
-    RunContainer(&'a DeployRunContainerStep),
-    Step(&'a DeployPlanStep),
+    UseExisting {
+        machine_id: &'a MachineId,
+        container_id: &'a ContainerId,
+        slot: &'a ReplicaSlot,
+    },
+    RunContainer {
+        machine_id: &'a MachineId,
+        slot: &'a ReplicaSlot,
+    },
 }
 
 impl DeployPlanStepRef<'_> {
     #[must_use]
     pub const fn machine_id(&self) -> &MachineId {
         match self {
-            Self::RunContainer(step) => &step.machine_id,
-            Self::Step(DeployPlanStep::UseExistingContainer { machine_id, .. })
-            | Self::Step(DeployPlanStep::RunContainer { machine_id, .. }) => machine_id,
+            Self::UseExisting { machine_id, .. } | Self::RunContainer { machine_id, .. } => {
+                machine_id
+            }
         }
     }
 }
@@ -1001,6 +1024,48 @@ fn planning_service<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn service_work_exposes_each_plan_step_through_one_canonical_reference_variant() {
+        let machine_id = MachineId::try_new("machine_a").expect("machine id");
+        let container_id = ContainerId::try_new("ctr_existing").expect("container id");
+        let existing_slot = ReplicaSlot::Replicated {
+            number: ReplicatedReplicaSlot::try_new(1).expect("replica slot"),
+        };
+        let run_slot = ReplicaSlot::Replicated {
+            number: ReplicatedReplicaSlot::try_new(2).expect("replica slot"),
+        };
+        let work = DeployServiceWork::Ordinary {
+            steps: vec![
+                DeployPlanStep::UseExistingContainer {
+                    machine_id: machine_id.clone(),
+                    container_id: container_id.clone(),
+                    slot: existing_slot,
+                },
+                DeployPlanStep::RunContainer {
+                    machine_id: machine_id.clone(),
+                    slot: run_slot,
+                },
+            ],
+        };
+
+        assert!(matches!(
+            work.steps().collect::<Vec<_>>().as_slice(),
+            [
+                DeployPlanStepRef::UseExisting {
+                    machine_id: existing_machine,
+                    container_id: existing_container,
+                    slot: _,
+                },
+                DeployPlanStepRef::RunContainer {
+                    machine_id: run_machine,
+                    slot: _,
+                },
+            ] if *existing_machine == &machine_id
+                && *existing_container == &container_id
+                && *run_machine == &machine_id
+        ));
+    }
 
     #[test]
     fn handoff_causal_collections_reject_empty_values_and_normalize_names() {
