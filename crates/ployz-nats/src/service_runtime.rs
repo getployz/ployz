@@ -168,17 +168,6 @@ impl RunningNatsService {
                 subject: endpoint.subject.clone(),
                 message: error.to_string(),
             })?;
-        timeout(SERVICE_REGISTRATION_TIMEOUT, self.client.flush())
-            .await
-            .map_err(|error| NatsServiceRuntimeError::AddEndpoint {
-                subject: endpoint.subject.clone(),
-                message: format!("subscription flush timed out: {error}"),
-            })?
-            .map_err(|error| NatsServiceRuntimeError::AddEndpoint {
-                subject: endpoint.subject.clone(),
-                message: format!("subscription flush failed: {error}"),
-            })?;
-
         let handler = Arc::new(handler);
         let health = Arc::clone(&self.health);
         let client = self.client.clone();
@@ -236,6 +225,16 @@ impl RunningNatsService {
                 .fetch_add(1, Ordering::Relaxed);
         });
         self.endpoint_tasks.push(task);
+        timeout(SERVICE_REGISTRATION_TIMEOUT, self.client.flush())
+            .await
+            .map_err(|error| NatsServiceRuntimeError::AddEndpoint {
+                subject: endpoint.subject.clone(),
+                message: format!("subscription flush timed out: {error}"),
+            })?
+            .map_err(|error| NatsServiceRuntimeError::AddEndpoint {
+                subject: endpoint.subject.clone(),
+                message: format!("subscription flush failed: {error}"),
+            })?;
         Ok(())
     }
 
