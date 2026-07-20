@@ -128,7 +128,32 @@ fn provenance_and_timeout_fail_before_acceptance() {
     let identity = identity();
     let mut request = start_request();
     assert_eq!(
-        validate_start_provenance_and_timeout(&identity, &request),
+        validate_start_provenance_and_timeout(
+            &identity,
+            &BuildExecutorAdmission::AnyOperation,
+            &request,
+        ),
+        Ok(())
+    );
+
+    let expected_operation = OperationId::try_new("op_expected").expect("operation");
+    assert!(matches!(
+        validate_start_provenance_and_timeout(
+            &identity,
+            &BuildExecutorAdmission::ExactOperation(expected_operation.clone()),
+            &request,
+        ),
+        Err(BuildExecutorStartDomainError::OperationIdentityMismatch {
+            expected,
+            actual,
+        }) if expected == expected_operation && actual == request.operation_id
+    ));
+    assert_eq!(
+        validate_start_provenance_and_timeout(
+            &identity,
+            &BuildExecutorAdmission::ExactOperation(request.operation_id.clone()),
+            &request,
+        ),
         Ok(())
     );
 
@@ -138,20 +163,32 @@ fn provenance_and_timeout_fail_before_acceptance() {
         image_seed: MachineId::try_new("machine_seed").expect("machine"),
     };
     assert!(matches!(
-        validate_start_provenance_and_timeout(&identity, &request),
+        validate_start_provenance_and_timeout(
+            &identity,
+            &BuildExecutorAdmission::AnyOperation,
+            &request,
+        ),
         Err(BuildExecutorStartDomainError::ExecutorIdentityMismatch { .. })
     ));
 
     request = start_request();
     request.timeout_millis = 0;
     assert!(matches!(
-        validate_start_provenance_and_timeout(&identity, &request),
+        validate_start_provenance_and_timeout(
+            &identity,
+            &BuildExecutorAdmission::AnyOperation,
+            &request,
+        ),
         Err(BuildExecutorStartDomainError::InvalidTimeout { timeout_millis: 0 })
     ));
     request.timeout_millis =
         u64::try_from(BUILD_MAX_EXECUTION_TIMEOUT.as_millis()).expect("timeout") + 1;
     assert!(matches!(
-        validate_start_provenance_and_timeout(&identity, &request),
+        validate_start_provenance_and_timeout(
+            &identity,
+            &BuildExecutorAdmission::AnyOperation,
+            &request,
+        ),
         Err(BuildExecutorStartDomainError::InvalidTimeout { .. })
     ));
 }
@@ -282,6 +319,16 @@ async fn once_credential_expiry_wins_when_the_idle_budget_elapses_together() {
     assert!(matches!(
         error,
         BuildExecutionError::ExecutorCredential { .. }
+    ));
+}
+
+#[tokio::test]
+async fn controlled_watch_rejects_expired_authority_before_waiting_for_a_signal() {
+    let expired = ployz_core::nats_config::BuildExecutorCredentialExpiresAt::try_new(1)
+        .expect("positive expiry");
+    assert!(matches!(
+        wait_for_controlled_stop(expired).await,
+        Err(BuildExecutionError::ExecutorCredential { .. })
     ));
 }
 

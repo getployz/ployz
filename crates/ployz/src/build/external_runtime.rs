@@ -19,14 +19,13 @@ use ployz_core::build::{
 };
 use ployz_core::deploy::PlatformImage;
 use ployz_core::operation::{BuildPlatformFailure, FailureMessage};
-use ployz_nats::connect::connect_authenticated;
 use ployz_nats::service_runtime::RunningNatsService;
 use ployz_nats::subjects::build_executor_log;
 use tokio::sync::{Mutex, Notify, oneshot, watch};
 use tokio::task::AbortHandle;
 use tokio::time::{Instant, timeout};
 
-use super::command::{BuildExecutorCommand, BuildExecutorRunMode};
+use super::command::{BuildExecutorAdmission, BuildExecutorCommand, BuildExecutorRunMode};
 use super::external_service::{CompletionMode, start_executor_service};
 use super::runtime::BuildExecutionError;
 use super::watch_lifecycle::{
@@ -44,6 +43,11 @@ const SHUTDOWN_TIMEOUT: Duration = BUILD_TASK_DRAIN_TIMEOUT
     .saturating_add(BUILD_FORCE_CLEANUP_TIMEOUT)
     .saturating_add(Duration::from_secs(5));
 
+struct ExecutorStartup {
+    workspace: WorkspaceStartup,
+    admission: BuildExecutorAdmission,
+}
+
 struct ConnectedExecutor {
     client: async_nats::Client,
     runtime: ExternalBuildRuntime,
@@ -59,12 +63,21 @@ impl ConnectedExecutor {
         completion: CompletionMode,
         state: Arc<Mutex<RuntimeState>>,
         admission_generation: AdmissionGeneration,
-        workspace_startup: WorkspaceStartup,
+        startup: ExecutorStartup,
     ) -> Result<Self, BuildExecutionError> {
+        let ExecutorStartup {
+            workspace,
+            admission,
+        } = startup;
         let readiness = probe_readiness().await?;
-        let runtime =
-            ExternalBuildRuntime::new(identity.clone(), client.clone(), workspace_root, state);
-        if workspace_startup == WorkspaceStartup::Recover
+        let runtime = ExternalBuildRuntime::new(
+            identity.clone(),
+            client.clone(),
+            workspace_root,
+            admission,
+            state,
+        );
+        if workspace == WorkspaceStartup::Recover
             && readiness.capability != BuildExecutorCapability::RuntimeUnavailable
         {
             runtime.recover_orphans().await?;
@@ -115,6 +128,7 @@ pub(crate) async fn run(
     };
     let (connect, credential_expires_at) = executor_connect_config(config, &identity)?;
     let workspace_root = resolve_workspace_root(command.workspace_root.as_deref(), &identity)?;
+    let admission = command.admission;
 
     match command.mode {
         BuildExecutorRunMode::Once { wait_timeout } => {
@@ -128,6 +142,7 @@ pub(crate) async fn run(
                 identity,
                 client,
                 workspace_root,
+                admission,
                 wait_timeout,
                 credential_expires_at,
             )
@@ -138,6 +153,7 @@ pub(crate) async fn run(
                 identity,
                 connect,
                 workspace_root,
+                admission,
                 credential_expires_at,
                 config.nats_connect_timeout(),
             )
@@ -156,6 +172,7 @@ pub(crate) async fn run_controlled(
     command: BuildExecutorCommand,
     config: PloyzctlRuntimeConfig,
     workspace_startup: WorkspaceStartup,
+    credential_expires_at: ployz_core::nats_config::BuildExecutorCredentialExpiresAt,
     ready: Option<oneshot::Sender<()>>,
     mut shutdown: Option<oneshot::Receiver<()>>,
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
@@ -166,9 +183,12 @@ pub(crate) async fn run_controlled(
     };
     let mut connect = nats_connect_config(&config)?;
     connect.principal = executor_principal(&identity);
-    let client = connect_authenticated(&connect, config.nats_connect_timeout())
-        .await
-        .map_err(crate::execution_support::ExecutionSupportError::NatsConnect)?;
+    let client = connect_once(
+        &connect,
+        credential_expires_at,
+        config.nats_connect_timeout(),
+    )
+    .await?;
     let workspace_root = resolve_workspace_root(command.workspace_root.as_deref(), &identity)?;
     let (terminal_tx, terminal_rx) = oneshot::channel();
     let state = Arc::new(Mutex::new(RuntimeState::new_connected()));
@@ -184,7 +204,10 @@ pub(crate) async fn run_controlled(
         CompletionMode::once(terminal_tx),
         state,
         admission_generation,
-        workspace_startup,
+        ExecutorStartup {
+            workspace: workspace_startup,
+            admission: command.admission,
+        },
     )
     .await?;
     if !session.admission_opened {
@@ -198,19 +221,14 @@ pub(crate) async fn run_controlled(
         let _ = ready.send(());
     }
 
-    let wait =
-        async {
-            match command.mode {
-                BuildExecutorRunMode::Once { wait_timeout } => {
-                    wait_for_controlled_terminal(terminal_rx, wait_timeout).await
-                }
-                BuildExecutorRunMode::Watch => tokio::signal::ctrl_c().await.map_err(|error| {
-                    BuildExecutionError::ExecutorSignal {
-                        message: error.to_string(),
-                    }
-                }),
+    let wait = async {
+        match command.mode {
+            BuildExecutorRunMode::Once { wait_timeout } => {
+                wait_for_once_terminal(terminal_rx, wait_timeout, credential_expires_at).await
             }
-        };
+            BuildExecutorRunMode::Watch => wait_for_controlled_stop(credential_expires_at).await,
+        }
+    };
     tokio::pin!(wait);
     let wait_result = if let Some(shutdown) = &mut shutdown {
         tokio::select! {
@@ -227,16 +245,25 @@ pub(crate) async fn run_controlled(
     ))
 }
 
-async fn wait_for_controlled_terminal(
-    terminal: oneshot::Receiver<()>,
-    wait_timeout: Duration,
+async fn wait_for_controlled_stop(
+    credential_expires_at: ployz_core::nats_config::BuildExecutorCredentialExpiresAt,
 ) -> Result<(), BuildExecutionError> {
-    match timeout(wait_timeout, terminal).await {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(_)) => Err(BuildExecutionError::ExecutorRuntime {
-            message: "Build Executor terminal channel closed".to_owned(),
+    let expiry = credential_lifetime(credential_expires_at, std::time::SystemTime::now()).map_err(
+        |error| BuildExecutionError::ExecutorCredential {
+            message: error.to_string(),
+        },
+    )?;
+    tokio::select! {
+        biased;
+        () = tokio::time::sleep(expiry) => Err(BuildExecutionError::ExecutorCredential {
+            message: format!(
+                "Build Executor credential expired at Unix timestamp {}",
+                credential_expires_at.unix_seconds()
+            ),
         }),
-        Err(_) => Err(BuildExecutionError::ExecutorIdleTimedOut { wait_timeout }),
+        signal = tokio::signal::ctrl_c() => signal.map_err(|error| {
+            BuildExecutionError::ExecutorSignal { message: error.to_string() }
+        }),
     }
 }
 
@@ -244,6 +271,7 @@ async fn run_connected_once(
     identity: BuildExecutorIdentity,
     client: async_nats::Client,
     workspace_root: PathBuf,
+    admission: BuildExecutorAdmission,
     wait_timeout: Duration,
     credential_expires_at: ployz_core::nats_config::BuildExecutorCredentialExpiresAt,
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
@@ -261,7 +289,10 @@ async fn run_connected_once(
         CompletionMode::once(terminal_tx),
         state,
         admission_generation,
-        WorkspaceStartup::Recover,
+        ExecutorStartup {
+            workspace: WorkspaceStartup::Recover,
+            admission,
+        },
     )
     .await?;
     let wait_result =
@@ -277,6 +308,7 @@ async fn run_watch(
     identity: BuildExecutorIdentity,
     connect: ployz_nats::connect::NatsConnectConfig,
     workspace_root: PathBuf,
+    admission: BuildExecutorAdmission,
     credential_expires_at: ployz_core::nats_config::BuildExecutorCredentialExpiresAt,
     connect_timeout: Duration,
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
@@ -295,7 +327,10 @@ async fn run_watch(
         CompletionMode::Watch,
         session.runtime_state(),
         session.admission_generation(),
-        WorkspaceStartup::Recover,
+        ExecutorStartup {
+            workspace: WorkspaceStartup::Recover,
+            admission,
+        },
     )
     .await?;
     let wait_result = session
@@ -426,6 +461,7 @@ fn validate_point_of_use_readiness(
 
 fn validate_start_provenance_and_timeout(
     identity: &BuildExecutorIdentity,
+    admission: &BuildExecutorAdmission,
     request: &BuildExecutorStartRequest,
 ) -> Result<(), BuildExecutorStartDomainError> {
     match &request.assignment {
@@ -442,6 +478,14 @@ fn validate_start_provenance_and_timeout(
             });
         }
     }
+    if let BuildExecutorAdmission::ExactOperation(expected) = admission
+        && *expected != request.operation_id
+    {
+        return Err(BuildExecutorStartDomainError::OperationIdentityMismatch {
+            expected: expected.clone(),
+            actual: request.operation_id.clone(),
+        });
+    }
     let requested_timeout = Duration::from_millis(request.timeout_millis);
     if requested_timeout.is_zero() || requested_timeout > BUILD_MAX_EXECUTION_TIMEOUT {
         return Err(BuildExecutorStartDomainError::InvalidTimeout {
@@ -454,6 +498,7 @@ fn validate_start_provenance_and_timeout(
 #[derive(Clone)]
 pub(super) struct ExternalBuildRuntime {
     identity: BuildExecutorIdentity,
+    admission: BuildExecutorAdmission,
     client: async_nats::Client,
     executor: Arc<DockerBuildExecutor>,
     state: Arc<Mutex<RuntimeState>>,
@@ -587,10 +632,12 @@ impl ExternalBuildRuntime {
         identity: BuildExecutorIdentity,
         client: async_nats::Client,
         workspace_root: PathBuf,
+        admission: BuildExecutorAdmission,
         state: Arc<Mutex<RuntimeState>>,
     ) -> Self {
         Self {
             identity,
+            admission,
             client,
             executor: Arc::new(DockerBuildExecutor::new(workspace_root)),
             state,
@@ -617,7 +664,7 @@ impl ExternalBuildRuntime {
         &self,
         request: BuildExecutorStartRequest,
     ) -> Result<BuildExecutorStartOk, BuildExecutorStartDomainError> {
-        validate_start_provenance_and_timeout(&self.identity, &request)?;
+        validate_start_provenance_and_timeout(&self.identity, &self.admission, &request)?;
         {
             let state = self.state.lock().await;
             state.ensure_accepting()?;

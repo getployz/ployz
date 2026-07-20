@@ -6,13 +6,14 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::Args;
-use ployz_core::ids::{BuildExecutorId, BuildPoolId};
+use ployz_core::ids::{BuildExecutorId, BuildPoolId, OperationId};
 use ployz_core::image::OciPlatform;
 use ployz_core::install::{MachineJoinRuntimeNatsUrl, MachineJoinTrustedNats};
+use ployz_core::nats_config::BuildExecutorCredentialExpiresAt;
 use ployz_core::nats_config::{MintedNatsUser, NatsUserPublicKey};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use crate::build::command::{BuildExecutorCommand, BuildExecutorRunMode};
+use crate::build::command::{BuildExecutorAdmission, BuildExecutorCommand, BuildExecutorRunMode};
 use crate::build::external_runtime::WorkspaceStartup;
 use crate::build::runtime::BuildExecutionError;
 use crate::cloud_current_tree::{CloudTransportPolicy, validated_cloud_base_url};
@@ -181,9 +182,10 @@ struct ExchangeResponse {
     trusted_nats: MachineJoinTrustedNats,
     pool_id: BuildPoolId,
     executor_id: BuildExecutorId,
+    operation_id: OperationId,
     platform: OciPlatform,
-    #[serde(rename = "expires_at")]
-    _expires_at: String,
+    #[serde(deserialize_with = "super::deserialize_credential_expiry")]
+    expires_at: BuildExecutorCredentialExpiresAt,
 }
 
 struct TemporaryNatsMaterial {
@@ -374,9 +376,15 @@ pub(crate) async fn execute(
     };
     let workspace_root = inputs.runner_temp.join("ployz-build-executor");
     let output = crate::build::external_runtime::run_controlled(
-        one_shot_command(authority.pool_id, authority.executor_id, workspace_root),
+        one_shot_command(
+            authority.pool_id,
+            authority.executor_id,
+            authority.operation_id,
+            workspace_root,
+        ),
         runtime_config,
         WorkspaceStartup::Recover,
+        authority.expires_at,
         None,
         None,
     )
@@ -387,12 +395,14 @@ pub(crate) async fn execute(
 fn one_shot_command(
     pool_id: BuildPoolId,
     executor_id: BuildExecutorId,
+    operation_id: OperationId,
     workspace_root: PathBuf,
 ) -> BuildExecutorCommand {
     BuildExecutorCommand {
         pool_id,
         executor_id,
         workspace_root: Some(workspace_root),
+        admission: BuildExecutorAdmission::ExactOperation(operation_id),
         mode: BuildExecutorRunMode::Once {
             wait_timeout: EXECUTOR_WAIT_TIMEOUT,
         },
@@ -713,12 +723,18 @@ mod tests {
     #[test]
     fn wrapper_invokes_the_existing_bounded_once_runtime() {
         let workspace = PathBuf::from("/tmp/ployz-build-executor-test");
+        let operation_id = OperationId::try_new("op_expected").expect("operation id");
         let command = one_shot_command(
             BuildPoolId::try_new("hosted-builders").expect("pool id"),
             BuildExecutorId::try_new("gha-executor1").expect("executor id"),
+            operation_id.clone(),
             workspace.clone(),
         );
         assert_eq!(command.workspace_root, Some(workspace));
+        assert_eq!(
+            command.admission,
+            BuildExecutorAdmission::ExactOperation(operation_id)
+        );
         assert_eq!(
             command.mode,
             BuildExecutorRunMode::Once {
@@ -736,7 +752,7 @@ mod tests {
         let minted = MintedNatsUser::generate().expect("NKey");
         let public_key = minted.public.clone();
         let response = format!(
-            "{{\"runtime_nats_url\":\"tls://core.example:4222\",\"trusted_nats\":{{\"ca_pem\":\"-----BEGIN CERTIFICATE-----\\nTUlJQg==\\n-----END CERTIFICATE-----\\n\"}},\"pool_id\":\"hosted-builders\",\"executor_id\":\"gha-executor1\",\"platform\":{{\"os\":\"linux\",\"architecture\":\"{}\"}},\"expires_at\":\"2026-07-20T12:00:00Z\"}}",
+            "{{\"runtime_nats_url\":\"tls://core.example:4222\",\"trusted_nats\":{{\"ca_pem\":\"-----BEGIN CERTIFICATE-----\\nTUlJQg==\\n-----END CERTIFICATE-----\\n\"}},\"pool_id\":\"hosted-builders\",\"executor_id\":\"gha-executor1\",\"operation_id\":\"op_exact_assignment\",\"platform\":{{\"os\":\"linux\",\"architecture\":\"{}\"}},\"expires_at\":\"2026-07-20T12:00:00Z\"}}",
             match std::env::consts::ARCH {
                 "x86_64" => "amd64",
                 "aarch64" => "arm64",
@@ -765,6 +781,8 @@ mod tests {
             .await
             .expect("exchange");
         assert_eq!(authority.platform, platform);
+        assert_eq!(authority.operation_id.as_str(), "op_exact_assignment");
+        assert_eq!(authority.expires_at.unix_seconds(), 1_784_548_800);
         let request = request.await.expect("server");
         assert!(request.contains("authorization: Bearer oidc-secret\r\n"));
         assert!(request.contains(public_key.as_str()));

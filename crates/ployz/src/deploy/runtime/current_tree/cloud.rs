@@ -3,10 +3,11 @@ use std::time::Duration;
 
 use ployz_build_executor::DockerBuildExecutor;
 use ployz_core::build::{BuildContextPath, BuildSource, LocalSnapshotDigest};
+use ployz_core::ids::OperationId;
 use ployz_core::image::OciPlatform;
 use ployz_core::nats_config::MintedNatsUser;
 
-use crate::build::command::{BuildExecutorCommand, BuildExecutorRunMode};
+use crate::build::command::{BuildExecutorAdmission, BuildExecutorCommand, BuildExecutorRunMode};
 use crate::build::embedded_executor;
 use crate::cloud_current_tree::{
     ApprovalState, CloudCurrentTreeClient, CloudDeploymentStatus, ObserveState, select_context,
@@ -157,12 +158,16 @@ async fn execute_approved(
             pool_id: activated.pool_id,
             executor_id: activated.executor_id,
             workspace_root: Some(workspace_root),
+            admission: BuildExecutorAdmission::ExactOperation(
+                OperationId::try_new(frozen.build_record_id.clone()).map_err(current_tree_error)?,
+            ),
             mode: BuildExecutorRunMode::Once {
                 wait_timeout: OBSERVE_TIMEOUT,
             },
         },
         executor_config,
         crate::build::external_runtime::WorkspaceStartup::Prepared,
+        activated.expires_at,
         Some(ready_tx),
         Some(shutdown_rx),
     );

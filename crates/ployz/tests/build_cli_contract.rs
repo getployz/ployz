@@ -1,5 +1,6 @@
 use ployz::build::command::{
-    BuildCancelCommand, BuildExecutorCommand, BuildExecutorRunMode, BuildSubmitCommand,
+    BuildCancelCommand, BuildExecutorAdmission, BuildExecutorCommand, BuildExecutorRunMode,
+    BuildSubmitCommand,
 };
 use ployz::commands::{PloyzctlCommand, parse_command};
 use ployz_core::build::BuildAdapter;
@@ -168,6 +169,7 @@ fn external_executor_once_and_watch_parse_exact_identity_and_lifecycle() {
         pool_id,
         executor_id,
         workspace_root,
+        admission,
         mode: BuildExecutorRunMode::Once { wait_timeout },
     }) = command
     else {
@@ -175,6 +177,7 @@ fn external_executor_once_and_watch_parse_exact_identity_and_lifecycle() {
     };
     assert_eq!(pool_id.as_str(), "pool_ci");
     assert_eq!(executor_id.as_str(), "executor_1");
+    assert_eq!(admission, BuildExecutorAdmission::AnyOperation);
     assert_eq!(
         workspace_root.expect("workspace"),
         std::path::Path::new("/tmp/ployz-builds")

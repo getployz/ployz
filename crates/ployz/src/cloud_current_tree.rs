@@ -4,7 +4,7 @@ use ployz_core::build::LocalSnapshotDigest;
 use ployz_core::ids::{BuildExecutorId, BuildPoolId};
 use ployz_core::image::OciPlatform;
 use ployz_core::install::{MachineJoinRuntimeNatsUrl, MachineJoinTrustedNats};
-use ployz_core::nats_config::NatsUserPublicKey;
+use ployz_core::nats_config::{BuildExecutorCredentialExpiresAt, NatsUserPublicKey};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -85,7 +85,8 @@ pub(crate) struct ActivatedExecutor {
     pub pool_id: BuildPoolId,
     pub executor_id: BuildExecutorId,
     pub platform: OciPlatform,
-    pub expires_at: String,
+    #[serde(deserialize_with = "crate::build::deserialize_credential_expiry")]
+    pub expires_at: BuildExecutorCredentialExpiresAt,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
