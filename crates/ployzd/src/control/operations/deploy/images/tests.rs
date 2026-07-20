@@ -222,6 +222,13 @@ fn pushed_platforms_are_validated_across_all_phases_before_execution() {
     let command = DeployExecutionCommand {
         operation_id: OperationId::try_new("op_platform_validation").expect("operation id"),
         request,
+        environment_revision_key: {
+            let seed = ployz_core::nats_config::NatsUserSeed::try_new(
+                "SUAIZ5LKGG2Y4WC7ZPKS46LSLLJQIFTO6KMSWSU2VN3TC7YRRIKH5WRXJQ",
+            )
+            .expect("valid deterministic controller seed");
+            ployz_core::deploy::EnvironmentRevisionKey::derive_from_controller_seed(&seed)
+        },
         services: vec![service],
         route_binding_removals: Vec::new(),
         serving_target_removals: Vec::new(),

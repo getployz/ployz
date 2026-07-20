@@ -1,10 +1,10 @@
 use super::*;
 use ployz_core::certificate::{ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow};
 use ployz_core::deploy::{
-    ContainerRuntimeSpec, DeployPhasePlan, DeployPlan, DeployPlanStep, DeployRequest, DeployRoute,
-    DeployRouteTarget, DeployServicePlacement, DeployServicePlan, DeployServiceSpec,
-    ImageReference, ImageSource, PlatformImage, PushedImageReceipt, ReplicaCount, ReplicaSlot,
-    ReplicatedReplicaSlot, VolumeAdmissionFailure,
+    ContainerRuntimeSpec, DeployPhasePlan, DeployPlan, DeployPlanStep, DeployRequest,
+    DeployRequestEvidence, DeployRoute, DeployRouteTarget, DeployServicePlacement,
+    DeployServicePlan, DeployServiceSpec, ImageReference, ImageSource, PlatformImage,
+    PushedImageReceipt, ReplicaCount, ReplicaSlot, ReplicatedReplicaSlot, VolumeAdmissionFailure,
 };
 use ployz_core::ids::{
     CertId, ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
@@ -185,7 +185,7 @@ fn happy_events() -> Vec<ReplayedOperationEvent> {
             OperationEvent::DeploySubmitted {
                 operation_id: operation_id.clone(),
                 reservation_id: Some(ployz_core::deploy::DeployReservationId::first()),
-                target: target(),
+                target: DeployRequestEvidence::from_request(&target()),
             },
         ),
         replay(
@@ -279,6 +279,44 @@ fn happy_tree() -> DeployTree {
     let mut tree = DeployTree::new();
     tree.ingest_page(&happy_events());
     tree
+}
+
+#[test]
+fn image_resolution_for_unknown_service_surfaces_inconsistent_evidence() {
+    let operation_id = operation_id();
+    let mut tree = DeployTree::new();
+    let error = tree
+        .try_ingest_page(&[
+            replay(
+                1,
+                OperationEvent::DeploySubmitted {
+                    operation_id: operation_id.clone(),
+                    reservation_id: Some(ployz_core::deploy::DeployReservationId::first()),
+                    target: DeployRequestEvidence::from_request(&single_service_target()),
+                },
+            ),
+            replay(
+                2,
+                OperationEvent::DeployImageResolved {
+                    operation_id,
+                    service_id: service_id("unknown"),
+                    machine_id: machine_id("hetzner-1"),
+                    requested: ImageReference::try_new("ghcr.io/acme/unknown:1")
+                        .expect("requested image"),
+                    resolved: ImageReference::try_new(
+                        "ghcr.io/acme/unknown@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    )
+                    .expect("resolved image"),
+                    credential_supplied: false,
+                },
+            ),
+        ])
+        .expect_err("unknown service evidence is inconsistent");
+
+    assert_eq!(
+        error.to_string(),
+        "deploy request does not contain service unknown"
+    );
 }
 
 #[test]
@@ -434,7 +472,7 @@ fn pushed_image_stays_pending_until_availability_is_verified() {
             OperationEvent::DeploySubmitted {
                 operation_id: operation_id.clone(),
                 reservation_id: Some(ployz_core::deploy::DeployReservationId::first()),
-                target,
+                target: DeployRequestEvidence::from_request(&target),
             },
         ),
         replay(
@@ -512,7 +550,7 @@ fn partial_completion_stays_distinct_from_success() {
             OperationEvent::DeploySubmitted {
                 operation_id: operation_id.clone(),
                 reservation_id: Some(ployz_core::deploy::DeployReservationId::first()),
-                target: single_service_target(),
+                target: DeployRequestEvidence::from_request(&single_service_target()),
             },
         ),
         replay(
@@ -543,7 +581,7 @@ fn early_artifact_failure_is_minimal() {
             OperationEvent::DeploySubmitted {
                 operation_id: operation_id.clone(),
                 reservation_id: Some(ployz_core::deploy::DeployReservationId::first()),
-                target: target(),
+                target: DeployRequestEvidence::from_request(&target()),
             },
         ),
         replay(
@@ -588,7 +626,7 @@ fn route_cutover_failure_makes_no_safety_claim() {
             OperationEvent::DeploySubmitted {
                 operation_id: operation_id.clone(),
                 reservation_id: Some(ployz_core::deploy::DeployReservationId::first()),
-                target: single_service_target(),
+                target: DeployRequestEvidence::from_request(&single_service_target()),
             },
         ),
         replay(
@@ -629,7 +667,7 @@ fn deep_health_failure_keeps_container_evidence_and_hints() {
             OperationEvent::DeploySubmitted {
                 operation_id: operation_id.clone(),
                 reservation_id: Some(ployz_core::deploy::DeployReservationId::first()),
-                target: single_service_target(),
+                target: DeployRequestEvidence::from_request(&single_service_target()),
             },
         ),
         replay(
@@ -706,7 +744,7 @@ fn certificate_dns_preflight_failure_names_scope_and_keeps_container_evidence() 
             OperationEvent::DeploySubmitted {
                 operation_id: operation_id.clone(),
                 reservation_id: Some(ployz_core::deploy::DeployReservationId::first()),
-                target: single_service_target(),
+                target: DeployRequestEvidence::from_request(&single_service_target()),
             },
         ),
         replay(
@@ -895,7 +933,7 @@ fn pre_start_failure_keeps_hook_evidence_and_serving_safety() {
             OperationEvent::DeploySubmitted {
                 operation_id: operation_id.clone(),
                 reservation_id: Some(ployz_core::deploy::DeployReservationId::first()),
-                target: single_service_target(),
+                target: DeployRequestEvidence::from_request(&single_service_target()),
             },
         ),
         replay(

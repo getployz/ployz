@@ -99,6 +99,13 @@ pub struct DeployPlanningTarget {
     namespace_id: NamespaceId,
     volumes: BTreeMap<VolumeName, VolumeSpec>,
     services: Vec<DeployPlanningService>,
+    revision_scope: DeployRevisionScope,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DeployRevisionScope {
+    Validation,
+    Keyed(EnvironmentRevisionKey),
 }
 
 impl DeployPlanningTarget {
@@ -112,11 +119,30 @@ impl DeployPlanningTarget {
             request.namespace_id.clone(),
             request.volumes.clone(),
             services,
+            DeployRevisionScope::Validation,
+        )
+    }
+
+    pub fn try_from_operation(
+        request: &DeployRequest,
+        environment_key: &EnvironmentRevisionKey,
+    ) -> Result<Self, DeployTargetValidationError> {
+        let services = request
+            .services
+            .iter()
+            .map(DeployPlanningService::from_deploy)
+            .collect::<Vec<_>>();
+        Self::try_new(
+            request.namespace_id.clone(),
+            request.volumes.clone(),
+            services,
+            DeployRevisionScope::Keyed(environment_key.clone()),
         )
     }
 
     pub fn try_from_preview(
         target: &DeployPreviewTarget,
+        environment_key: &EnvironmentRevisionKey,
     ) -> Result<Self, DeployTargetValidationError> {
         let services = target
             .services
@@ -127,6 +153,7 @@ impl DeployPlanningTarget {
             target.namespace_id.clone(),
             target.volumes.clone(),
             services,
+            DeployRevisionScope::Keyed(environment_key.clone()),
         )
     }
 
@@ -134,6 +161,7 @@ impl DeployPlanningTarget {
         namespace_id: NamespaceId,
         volumes: BTreeMap<VolumeName, VolumeSpec>,
         services: Vec<DeployPlanningService>,
+        revision_scope: DeployRevisionScope,
     ) -> Result<Self, DeployTargetValidationError> {
         let mut service_ids = BTreeSet::new();
         for service in &services {
@@ -168,6 +196,7 @@ impl DeployPlanningTarget {
             namespace_id,
             volumes,
             services,
+            revision_scope,
         })
     }
 
@@ -202,6 +231,16 @@ impl DeployPlanningTarget {
     #[must_use]
     pub fn services(&self) -> &[DeployPlanningService] {
         &self.services
+    }
+
+    #[must_use]
+    pub fn namespace_revision_id(&self, request: &DeployRequest) -> Option<NamespaceRevisionId> {
+        match &self.revision_scope {
+            DeployRevisionScope::Validation => None,
+            DeployRevisionScope::Keyed(environment_key) => {
+                Some(request.namespace_revision_id(environment_key))
+            }
+        }
     }
 
     pub fn validate_registry_credential_service_ids<'a>(
@@ -368,6 +407,7 @@ impl DeployPlanningService {
     pub fn namespace_revision_entry_id(
         &self,
         namespace_id: &NamespaceId,
+        environment_key: &EnvironmentRevisionKey,
     ) -> Option<NamespaceRevisionEntryId> {
         match &self.image {
             DeployPlanningImage::Concrete {
@@ -379,9 +419,29 @@ impl DeployPlanningService {
                 image,
                 image_source,
                 &self.runtime,
+                environment_key,
             )),
             DeployPlanningImage::PendingBuild => None,
         }
+    }
+
+    #[must_use]
+    pub fn namespace_revision_entry_id_for_target(
+        &self,
+        target: &DeployPlanningTarget,
+    ) -> Option<NamespaceRevisionEntryId> {
+        let (image, image_source) = self.concrete_image()?;
+        Some(match &target.revision_scope {
+            DeployRevisionScope::Validation => return None,
+            DeployRevisionScope::Keyed(environment_key) => namespace_revision_entry_id_for(
+                target.namespace_id(),
+                &self.service_id,
+                image,
+                image_source,
+                &self.runtime,
+                environment_key,
+            ),
+        })
     }
 }
 

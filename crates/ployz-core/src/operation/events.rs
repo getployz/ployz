@@ -8,9 +8,7 @@ use crate::build::{
     VerifiedGitCommit,
 };
 use crate::certificate::AcmeHttp01Challenge;
-use crate::deploy::{
-    DeployCleanupContainer, DeployPlan, DeployRequest, DeployReservationId, VolumeName,
-};
+use crate::deploy::{DeployCleanupContainer, DeployPlan, DeployReservationId, VolumeName};
 use crate::ids::{CertId, ContainerId, MachineId, NamespaceId, OperationId, ServiceId};
 use crate::image::OciDigest;
 use crate::ingress::{ActiveCertificateMetadata, IngressConfiguration};
@@ -212,7 +210,7 @@ pub enum OperationEvent {
         operation_id: OperationId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reservation_id: Option<DeployReservationId>,
-        target: DeployRequest,
+        target: crate::deploy::DeployRequestEvidence,
     },
     DeployPlanningStarted {
         operation_id: OperationId,

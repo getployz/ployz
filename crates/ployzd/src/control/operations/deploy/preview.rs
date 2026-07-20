@@ -5,7 +5,8 @@ use futures_util::future::join_all;
 use ployz_core::build::BuildPlatforms;
 use ployz_core::deploy::{
     DeployPlacementPlan, DeployPlanError, DeployPlanningContext, DeployPlanningTarget,
-    DeployPreviewImage, DeployPreviewTarget, ImageSource, plan_namespace_deploy,
+    DeployPreviewImage, DeployPreviewTarget, EnvironmentRevisionKey, ImageSource,
+    plan_namespace_deploy,
 };
 use ployz_core::operation::{FailureMessage, UnusableMachine};
 use ployz_sdk_types::{DeployPreview, DeployPreviewError, DeployPreviewRequest};
@@ -29,6 +30,7 @@ pub(crate) struct DeployPreviewStores<'a> {
 
 pub async fn preview_deploy_from_nats(
     request: DeployPreviewRequest,
+    environment_revision_key: &EnvironmentRevisionKey,
     intent_reader: &NatsIntentReader,
     facts_reader: &NatsMachineFactsReader,
     machine_runtime: &mut (impl MachineContainerRuntime + Clone),
@@ -39,7 +41,7 @@ pub async fn preview_deploy_from_nats(
         mut target,
         registry_credentials,
     } = request;
-    let planning_target = DeployPlanningTarget::try_from_preview(&target)
+    let planning_target = DeployPlanningTarget::try_from_preview(&target, environment_revision_key)
         .map_err(|error| invalid_target(error.to_string()))?;
     planning_target
         .validate_registry_credential_service_ids(registry_credentials.keys())
@@ -80,7 +82,7 @@ pub async fn preview_deploy_from_nats(
         machine_runtime,
     )
     .await?;
-    let planning_target = DeployPlanningTarget::try_from_preview(&target)
+    let planning_target = DeployPlanningTarget::try_from_preview(&target, environment_revision_key)
         .map_err(|error| invalid_target(error.to_string()))?;
     let command = super::preparation::prepare_deploy_preview_command(
         planning_target,

@@ -1,5 +1,6 @@
 //! Role-specific daemon configuration.
 
+use ployz_core::deploy::EnvironmentRevisionKey;
 use ployz_core::ids::MachineId;
 use ployz_core::install::{
     InstallContractError, MachineBootstrapUrl, MachineJoinSecretDelivery, MachineJoinTemplate,
@@ -718,6 +719,7 @@ impl std::error::Error for DaemonProcessConfigError {}
 pub(crate) struct ControlProcessConfig {
     pub nats: NatsServerLaunch,
     pub nats_connect: NatsConnectConfig,
+    pub environment_revision_key: EnvironmentRevisionKey,
     pub nats_authorization: ControlNatsAuthorizationConfig,
     pub core_db_path: PathBuf,
     /// A machine-local intent mirror to seed a fresh core store from at startup,
@@ -741,8 +743,12 @@ impl ControlProcessConfig {
         first_deploy_machine: MachineId,
         nats_connect: NatsConnectConfig,
     ) -> Self {
+        let NatsClientAuth::NkeySeed(controller_seed) = &nats_connect.auth;
         Self {
             nats,
+            environment_revision_key: EnvironmentRevisionKey::derive_from_controller_seed(
+                controller_seed,
+            ),
             nats_connect,
             nats_authorization: ControlNatsAuthorizationConfig::in_default_paths(),
             core_db_path: PathBuf::from(DEFAULT_CORE_DB),

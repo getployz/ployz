@@ -31,9 +31,9 @@ use crate::roles::machine::service::{
 use async_trait::async_trait;
 use ployz::api_client::OperationApiClient;
 use ployz_core::deploy::{
-    DeployPlanningInput, DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec,
-    ImageAvailabilityExpiresAt, ImageReference, ImageSource, PlatformImage, PushedImageReceipt,
-    ReplicaCount, VolumeName, plan_namespace_deploy,
+    DeployPlanningInput, DeployRequest, DeployRequestEvidence, DeployRoute, DeployRouteTarget,
+    DeployServiceSpec, ImageAvailabilityExpiresAt, ImageReference, ImageSource, PlatformImage,
+    PushedImageReceipt, ReplicaCount, VolumeName, plan_namespace_deploy,
 };
 use ployz_core::ids::{CertId, OperationId};
 use ployz_core::install::{HostPortAssurance, MachineBootstrapUrl};
@@ -335,7 +335,7 @@ async fn e2e_deploy_submit_service_accepts_operation_over_real_nats()
         OperationEvent::DeploySubmitted {
             operation_id: accepted.operation_id,
             reservation_id: Some(reservation_id),
-            target: deploy_target("svc_api"),
+            target: DeployRequestEvidence::from_request(&deploy_target("svc_api")),
         }
     );
 
@@ -492,7 +492,10 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
         .await?
         .active
         .namespace_revision_entry_id,
-        resolved_service_target.namespace_revision_entry_id(&namespace_id("default"))
+        resolved_service_target.namespace_revision_entry_id(
+            &namespace_id("default"),
+            &config.environment_revision_key,
+        )
     );
     assert_eq!(
         operation_events(&api, deploy_operation.clone(), accepted.start_sequence).await?,
@@ -500,7 +503,7 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
             OperationEvent::DeploySubmitted {
                 operation_id: deploy_operation.clone(),
                 reservation_id: Some(ployz_core::deploy::DeployReservationId::first()),
-                target: deploy_target("svc_api"),
+                target: DeployRequestEvidence::from_request(&deploy_target("svc_api")),
             },
             OperationEvent::DeployPlanningStarted {
                 operation_id: deploy_operation.clone(),
@@ -532,7 +535,9 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
                     },
                 )
                 .expect("single-machine deploy plan is valid")
-                .with_revision(resolved_target.namespace_revision_id()),
+                .with_revision(
+                    resolved_target.namespace_revision_id(&config.environment_revision_key),
+                ),
             },
             OperationEvent::DeployRunning {
                 operation_id: deploy_operation.clone(),

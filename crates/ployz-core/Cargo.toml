@@ -13,6 +13,7 @@ default = []
 typescript = ["dep:ts-rs"]
 
 [dependencies]
+hmac.workspace = true
 ipnet = { version = "2", features = ["serde"] }
 nkeys = "0.4"
 serde.workspace = true

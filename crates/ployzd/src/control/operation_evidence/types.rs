@@ -47,13 +47,13 @@ pub struct MachineJoinIdentity {
 pub struct StoredDeployClaim {
     pub operation_id: OperationId,
     pub reservation_id: DeployReservationId,
-    pub target: ployz_core::deploy::DeployRequest,
+    pub target: ployz_core::deploy::DeployRequestEvidence,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct DeployOperationPayload {
     pub(super) reservation_id: Option<DeployReservationId>,
-    pub(super) target: ployz_core::deploy::DeployRequest,
+    pub(super) target: ployz_core::deploy::DeployRequestEvidence,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

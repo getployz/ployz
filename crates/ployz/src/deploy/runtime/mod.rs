@@ -17,10 +17,18 @@ pub enum DeployExecutionError {
     },
     #[error("failed to write deploy progress: {message}")]
     WriteProgress { message: String },
+    #[error("deploy progress evidence is inconsistent: {source}")]
+    InconsistentEvidence {
+        source: ployz_core::deploy::DeployImageReplacementError,
+    },
     #[error("could not generate client operation ids: {message}")]
     GenerateClientOperationIds { message: String },
     #[error("{message}")]
     History { message: String },
+    #[error(
+        "rollback cannot restore redacted environment values ({affected}); resubmit the deploy input with those environment values"
+    )]
+    RollbackEnvironment { affected: String },
 }
 
 impl From<DeployExecutionError> for PloyzctlExecutionError {

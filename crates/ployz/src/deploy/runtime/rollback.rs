@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, IsTerminal, Write};
 
-use ployz_core::deploy::{DeployOrigin, DeployRequest};
+use ployz_core::deploy::{DeployOrigin, DeployRequest, DeployRequestEvidence};
 use ployz_sdk_types::DeploySubmitRequest;
 
 use crate::deploy::command::{
@@ -25,7 +25,7 @@ pub(crate) async fn execute(
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
     let config = with_cluster_context_from_disk(config.clone())?;
     let namespace_id = command.namespace_id.clone();
-    let target = prepare_rollback_target(select_request(command, &config)?);
+    let target = prepare_rollback_target(rollback_request(select_request(command, &config)?)?);
     let connect = nats_connect_config(&config)?;
     let api = operation_api_client_with_connect(&config, connect).await?;
     let reservation_id = deploy_follow::reserve_deploy(&api, namespace_id.clone()).await?;
@@ -56,14 +56,38 @@ pub(crate) async fn execute(
 
 fn prepare_rollback_target(mut target: DeployRequest) -> DeployRequest {
     target.origin = Some(DeployOrigin::try_new("rollback").expect("rollback origin is valid"));
-    target.synthesize_plain_volume_declarations();
     target
+}
+
+fn rollback_request(
+    evidence: DeployRequestEvidence,
+) -> Result<DeployRequest, PloyzctlExecutionError> {
+    evidence.try_into_rollback_request().map_err(|error| {
+        let mut affected = error
+            .affected()
+            .iter()
+            .map(|service| {
+                let names = service
+                    .environment_names()
+                    .iter()
+                    .map(|name| name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!("{}: {names}", service.service_id().as_str())
+            })
+            .collect::<Vec<_>>();
+        affected.sort();
+        DeployExecutionError::RollbackEnvironment {
+            affected: affected.join("; "),
+        }
+        .into()
+    })
 }
 
 fn select_request(
     command: DeployRollbackCommand,
     config: &PloyzctlRuntimeConfig,
-) -> Result<DeployRequest, PloyzctlExecutionError> {
+) -> Result<DeployRequestEvidence, PloyzctlExecutionError> {
     let stdin = io::stdin();
     let stdout = io::stdout();
     select_request_with_io(
@@ -81,7 +105,7 @@ fn select_request_with_io<R: BufRead, W: Write>(
     stdin_is_terminal: bool,
     input: &mut R,
     output: &mut W,
-) -> Result<DeployRequest, PloyzctlExecutionError> {
+) -> Result<DeployRequestEvidence, PloyzctlExecutionError> {
     let entries = deploy_history::stream(config, command.namespace_id)
         .map_err(|error| deploy_history_error(error.to_string()))?
         .load()
@@ -126,7 +150,7 @@ fn select_request_with_io<R: BufRead, W: Write>(
                 .and_then(|()| {
                     for (index, entry) in prior.iter().rev().enumerate() {
                         write!(output, "  {}) {}", index + 1, entry.operation_id.as_str())?;
-                        for service in &entry.request.services {
+                        for service in &entry.request.request().services {
                             write!(
                                 output,
                                 "  {}={}",
@@ -183,8 +207,8 @@ fn deploy_history_error(message: impl Into<String>) -> PloyzctlExecutionError {
 mod tests {
     use super::*;
     use ployz_core::deploy::{
-        ContainerMountPath, ContainerRuntimeSpec, DeployServiceSpec, ImageReference, ImageSource,
-        ReplicaCount, ServiceVolumeMount, VolumeName, VolumeSpec,
+        ContainerRuntimeSpec, DeployRequestEvidence, DeployServiceSpec, EnvName, EnvValue,
+        ImageReference, ImageSource, ReplicaCount, ServiceEnvironment,
     };
     use ployz_test_support::ids::{namespace_id, operation_id, service_id};
     use std::io::Cursor;
@@ -210,6 +234,24 @@ mod tests {
         }
     }
 
+    fn request_with_environment(image: &str) -> DeployRequest {
+        let mut request = request(image);
+        let [service] = request.services.as_mut_slice() else {
+            panic!("one service in test request");
+        };
+        service.runtime.environment = ServiceEnvironment::from(BTreeMap::from([
+            (
+                EnvName::try_new("DATABASE_URL").expect("valid environment name"),
+                EnvValue::try_new("postgres://secret").expect("valid environment value"),
+            ),
+            (
+                EnvName::try_new("API_TOKEN").expect("valid environment name"),
+                EnvValue::try_new("sentinel-token").expect("valid environment value"),
+            ),
+        ]));
+        request
+    }
+
     fn runtime_config(temporary: &tempfile::TempDir) -> PloyzctlRuntimeConfig {
         let ca_file = temporary.path().join("ca.pem");
         std::fs::write(&ca_file, "test ca").expect("CA writes");
@@ -228,6 +270,14 @@ mod tests {
         operation: &str,
         image: &str,
     ) {
+        append_history_request(history, operation, request(image));
+    }
+
+    fn append_history_request(
+        history: &crate::deploy::history_store::DeployHistory,
+        operation: &str,
+        request: DeployRequest,
+    ) {
         history
             .append_success(crate::deploy::history_store::DeployHistoryEntry {
                 recorded_at:
@@ -235,7 +285,7 @@ mod tests {
                         1_750_000_000,
                     ),
                 operation_id: operation_id(operation),
-                request: request(image),
+                request: DeployRequestEvidence::from_request(&request),
             })
             .expect("history entry persists");
     }
@@ -265,8 +315,8 @@ mod tests {
         (config, namespace_id)
     }
 
-    fn selected_image(request: &DeployRequest) -> &str {
-        let [service] = request.services.as_slice() else {
+    fn selected_image(evidence: &DeployRequestEvidence) -> &str {
+        let [service] = evidence.request().services.as_slice() else {
             panic!("one selected service");
         };
         service.image.as_str()
@@ -295,33 +345,62 @@ mod tests {
             selected_image(&selected),
             "ghcr.io/acme/web@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         );
+
+        let prepared = prepare_rollback_target(
+            rollback_request(selected).expect("environment-free evidence is replayable"),
+        );
+        assert_eq!(
+            selected_image(&DeployRequestEvidence::from_request(&prepared)),
+            "ghcr.io/acme/web@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+        assert_eq!(
+            prepared.origin,
+            Some(DeployOrigin::try_new("rollback").expect("valid rollback origin"))
+        );
     }
 
     #[test]
-    fn rollback_synthesizes_plain_declarations_for_legacy_history_requests() {
-        let mut legacy = request("nginx:latest");
-        let service = legacy.services.first_mut().expect("test service");
-        service.runtime.volume_mounts = vec![ServiceVolumeMount {
-            volume_name: VolumeName::try_new("data").expect("volume name"),
-            target: ContainerMountPath::try_new("/data").expect("mount path"),
-        }];
-        let mut legacy_json = serde_json::to_value(legacy).expect("request serializes");
-        legacy_json
-            .as_object_mut()
-            .expect("request is an object")
-            .remove("volumes");
-        let legacy = serde_json::from_value(legacy_json).expect("legacy history request loads");
+    fn every_rollback_selection_refuses_redacted_environment_before_submission() {
+        for (selection, input, terminal) in [
+            (
+                DeployRollbackSelection::Operation(operation_id("op_first")),
+                Vec::new(),
+                false,
+            ),
+            (DeployRollbackSelection::LastGood, Vec::new(), false),
+            (DeployRollbackSelection::Interactive, b"\n".to_vec(), true),
+        ] {
+            let temporary = tempfile::tempdir().expect("temporary directory");
+            let config = runtime_config(&temporary);
+            let namespace_id = namespace_id("default");
+            let history = deploy_history::stream(&config, namespace_id.clone())
+                .expect("history stream resolves");
+            let pinned = "ghcr.io/acme/web@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+            append_history_request(&history, "op_first", request_with_environment(pinned));
+            append_history_request(&history, "op_last_good", request_with_environment(pinned));
+            append_history_entry(&history, "op_newest", pinned);
+            let mut input = Cursor::new(input);
+            let mut output = Vec::new();
 
-        let prepared = prepare_rollback_target(legacy);
-
-        assert_eq!(
-            prepared
-                .volumes
-                .get(&VolumeName::try_new("data").expect("volume name")),
-            Some(&VolumeSpec::Plain)
-        );
-        ployz_core::deploy::DeployPlanningTarget::try_from_deploy(&prepared)
-            .expect("prepared rollback request is admissible");
+            let evidence = select_request_with_io(
+                DeployRollbackCommand {
+                    namespace_id,
+                    selection,
+                },
+                &config,
+                terminal,
+                &mut input,
+                &mut output,
+            )
+            .expect("history selection succeeds");
+            let error = rollback_request(evidence)
+                .expect_err("redacted environment cannot be reconstructed");
+            let message = error.to_string();
+            assert!(message.contains("web: API_TOKEN,DATABASE_URL"));
+            assert!(message.contains("resubmit the deploy input"));
+            assert!(!message.contains("postgres://secret"));
+            assert!(!message.contains("sentinel-token"));
+        }
     }
 
     #[test]

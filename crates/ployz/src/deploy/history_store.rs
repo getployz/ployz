@@ -4,7 +4,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use ployz_core::deploy::DeployRequest;
+use ployz_core::deploy::DeployRequestEvidence;
 use ployz_core::ids::{NamespaceId, OperationId};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -63,7 +63,7 @@ impl DeployHistoryTimestamp {
 pub struct DeployHistoryEntry {
     pub recorded_at: DeployHistoryTimestamp,
     pub operation_id: OperationId,
-    pub request: DeployRequest,
+    pub request: DeployRequestEvidence,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,14 +128,16 @@ impl DeployHistory {
     }
 
     fn validate(&self, entry: &DeployHistoryEntry) -> Result<(), DeployHistoryError> {
-        if entry.request.namespace_id != self.namespace_id {
+        let request = entry.request.request();
+        if request.namespace_id != self.namespace_id {
             return Err(DeployHistoryError::NamespaceMismatch {
                 expected: self.namespace_id.as_str().to_owned(),
-                actual: entry.request.namespace_id.as_str().to_owned(),
+                actual: request.namespace_id.as_str().to_owned(),
             });
         }
         if let Some(service) = entry
             .request
+            .request()
             .services
             .iter()
             .find(|service| service.image.pinned_digest().is_none())
@@ -218,21 +220,22 @@ fn deploy_history_root(
 pub fn render_history(entries: &[DeployHistoryEntry]) -> String {
     let mut rendered = String::new();
     for entry in entries {
-        let service_count = entry.request.services.len();
+        let request = entry.request.request();
+        let service_count = request.services.len();
         rendered.push_str(&format!(
             "{}  {}  {}",
             entry.recorded_at.unix_seconds(),
             entry.operation_id.as_str(),
-            entry.request.namespace_id.as_str(),
+            request.namespace_id.as_str(),
         ));
-        if let Some(origin) = &entry.request.origin {
+        if let Some(origin) = &request.origin {
             rendered.push_str(&format!("  {}", origin.as_str()));
         }
         rendered.push_str(&format!(
             "  {service_count} service{}",
             if service_count == 1 { "" } else { "s" }
         ));
-        for service in &entry.request.services {
+        for service in &request.services {
             rendered.push_str(&format!(
                 "  {}={}",
                 service.service_id.as_str(),
@@ -293,7 +296,8 @@ pub enum DeployHistoryError {
 mod tests {
     use super::*;
     use ployz_core::deploy::{
-        ContainerRuntimeSpec, DeployServiceSpec, ImageReference, ImageSource, ReplicaCount,
+        ContainerRuntimeSpec, DeployRequest, DeployRequestEvidence, DeployServiceSpec, EnvName,
+        EnvValue, ImageReference, ImageSource, ReplicaCount, ServiceEnvironment,
     };
     use ployz_core::ids::ServiceId;
     use std::ffi::OsString;
@@ -324,10 +328,10 @@ mod tests {
             recorded_at: DeployHistoryTimestamp::from_unix_seconds(1_750_000_000 + sequence),
             operation_id: OperationId::try_new(format!("op_{sequence}"))
                 .expect("valid operation id"),
-            request: request(
+            request: DeployRequestEvidence::from_request(&request(
                 "prod",
                 "ghcr.io/acme/web@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            ),
+            )),
         }
     }
 
@@ -393,7 +397,10 @@ mod tests {
             NamespaceId::try_new("prod").expect("valid namespace"),
         );
         let unpinned = DeployHistoryEntry {
-            request: request("prod", "ghcr.io/acme/web:latest"),
+            request: DeployRequestEvidence::from_request(&request(
+                "prod",
+                "ghcr.io/acme/web:latest",
+            )),
             ..entry(1)
         };
 
@@ -412,10 +419,10 @@ mod tests {
             NamespaceId::try_new("prod").expect("valid namespace"),
         );
         let wrong_namespace = DeployHistoryEntry {
-            request: request(
+            request: DeployRequestEvidence::from_request(&request(
                 "staging",
                 "ghcr.io/acme/web@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            ),
+            )),
             ..entry(2)
         };
 
@@ -442,10 +449,17 @@ mod tests {
 
     #[test]
     fn inspector_renders_concise_oldest_to_newest_lines() {
-        let mut from_compose = entry(2);
-        from_compose.request.origin = Some(
+        let mut from_compose_request = request(
+            "prod",
+            "ghcr.io/acme/web@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        from_compose_request.origin = Some(
             ployz_core::deploy::DeployOrigin::try_new("compose: production").expect("valid origin"),
         );
+        let from_compose = DeployHistoryEntry {
+            request: DeployRequestEvidence::from_request(&from_compose_request),
+            ..entry(2)
+        };
 
         assert_eq!(
             render_history(&[entry(1), from_compose]),
@@ -485,7 +499,10 @@ mod tests {
         let parent = history.path().parent().expect("history parent").to_owned();
         std::fs::create_dir_all(parent).expect("create history parent");
         let unpinned = DeployHistoryEntry {
-            request: request("prod", "ghcr.io/acme/web:latest"),
+            request: DeployRequestEvidence::from_request(&request(
+                "prod",
+                "ghcr.io/acme/web:latest",
+            )),
             ..entry(1)
         };
         std::fs::write(
@@ -498,6 +515,41 @@ mod tests {
             history.load(),
             Err(DeployHistoryError::UnpinnedImage { .. })
         ));
+    }
+
+    #[test]
+    fn persisted_history_redacts_environment_values_but_keeps_names() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let history = DeployHistory::new(
+            temporary.path().to_owned(),
+            ClusterFingerprint("a".repeat(64)),
+            NamespaceId::try_new("prod").expect("valid namespace"),
+        );
+        let mut request = request(
+            "prod",
+            "ghcr.io/acme/web@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        let sentinel = "history-secret-sentinel";
+        let [service] = request.services.as_mut_slice() else {
+            panic!("one service in test request");
+        };
+        service.runtime.environment =
+            ServiceEnvironment::from(std::collections::BTreeMap::from([(
+                EnvName::try_new("DATABASE_URL").expect("valid environment name"),
+                EnvValue::try_new(sentinel).expect("valid environment value"),
+            )]));
+        history
+            .append_success(DeployHistoryEntry {
+                request: DeployRequestEvidence::from_request(&request),
+                ..entry(1)
+            })
+            .expect("append redacted evidence");
+
+        let json = std::fs::read_to_string(history.path()).expect("history JSON reads");
+        assert!(!json.contains(sentinel));
+        assert!(json.contains("DATABASE_URL"));
+        assert!(!json.contains("\"fingerprints\""));
+        assert!(!json.contains("v1:sha256:"));
     }
 
     #[cfg(unix)]

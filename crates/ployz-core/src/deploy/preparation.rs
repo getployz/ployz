@@ -27,7 +27,7 @@ pub fn prepare_deploy(
         &[],
     )?;
     let mut existing_replicas = existing_replicas(
-        target.namespace_id(),
+        target,
         service,
         &observed_machines,
         &draining_machines,
@@ -113,13 +113,13 @@ pub fn namespace_serving_target_removals(
 /// until convergence, but not counting them here means the plan places their
 /// replacement on an eligible machine and cleanup removes the original.
 fn existing_replicas(
-    namespace_id: &NamespaceId,
+    target: &DeployPlanningTarget,
     service: &DeployPlanningService,
     observed_machines: &[MachineContainerObservationSnapshot],
     draining_machines: &[MachineId],
     policy: &ExistingReplicaPolicy,
 ) -> Vec<ExistingServiceReplica> {
-    let Some(namespace_revision_entry_id) = service.namespace_revision_entry_id(namespace_id)
+    let Some(namespace_revision_entry_id) = service.namespace_revision_entry_id_for_target(target)
     else {
         return Vec::new();
     };
@@ -130,7 +130,7 @@ fn existing_replicas(
             !draining_machines.contains(&container.machine_id)
                 && container.state.is_running()
                 && container.identity.is_service_entry(
-                    namespace_id,
+                    target.namespace_id(),
                     service.service_id(),
                     &namespace_revision_entry_id,
                 )

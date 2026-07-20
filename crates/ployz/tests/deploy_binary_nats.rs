@@ -5,8 +5,8 @@ use ployz::deploy::history_store::{
 };
 use ployz::dispatcher::{PLOYZ_NATS_CA_FILE_ENV, PLOYZ_NATS_NKEY_SEED_FILE_ENV};
 use ployz_core::deploy::{
-    ContainerRuntimeSpec, DeployOrigin, DeployRequest, DeployServiceSpec, ImageReference,
-    ImageSource, ReplicaCount,
+    ContainerRuntimeSpec, DeployOrigin, DeployRequest, DeployRequestEvidence, DeployServiceSpec,
+    EnvName, EnvValue, ImageReference, ImageSource, ReplicaCount, ServiceEnvironment,
 };
 use ployz_core::ids::{NamespaceId, ServiceId};
 use ployz_core::operation::{
@@ -156,7 +156,7 @@ async fn binary_rollback_replays_the_selected_pinned_payload_as_a_new_deploy() {
         .append_success(DeployHistoryEntry {
             recorded_at: DeployHistoryTimestamp::from_unix_seconds(1_750_000_000),
             operation_id: operation_id("op_selected"),
-            request: selected_request.clone(),
+            request: DeployRequestEvidence::from_request(&selected_request),
         })
         .expect("selected history entry persists");
 
@@ -228,10 +228,10 @@ async fn binary_rollback_replays_the_selected_pinned_payload_as_a_new_deploy() {
                             OperationEvent::DeploySubmitted {
                                 operation_id: operation_id("op_rollback"),
                                 reservation_id: Some(DeployReservationId::first()),
-                                target: pinned_request(Some(
+                                target: DeployRequestEvidence::from_request(&pinned_request(Some(
                                     DeployOrigin::try_new("rollback")
                                         .expect("valid rollback origin"),
-                                )),
+                                ))),
                             },
                         ),
                         replayed(
@@ -277,9 +277,62 @@ async fn binary_rollback_replays_the_selected_pinned_payload_as_a_new_deploy() {
     };
     assert_eq!(rollback.operation_id, operation_id("op_rollback"));
     assert_eq!(
-        rollback.request.origin,
+        rollback.request.request().origin,
         Some(DeployOrigin::try_new("rollback").expect("valid rollback origin"))
     );
+}
+
+#[test]
+fn binary_rollback_refuses_redacted_environment_before_nats_setup() {
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let state_home = temporary.path().join("state");
+    let ca_file = temporary.path().join("ca.pem");
+    std::fs::write(&ca_file, "test CA").expect("CA writes");
+    let nats_url = "tls://127.0.0.1:1";
+    let namespace_id = NamespaceId::try_new("default").expect("valid namespace");
+    let history = DeployHistory::new(
+        state_home.join("ployz/deploy-history"),
+        ClusterFingerprint::from_connection(nats_url, &ca_file).expect("cluster fingerprint"),
+        namespace_id,
+    );
+    let mut request = pinned_request(None);
+    let [service] = request.services.as_mut_slice() else {
+        panic!("one service in test request");
+    };
+    service.runtime.environment = ServiceEnvironment::from(std::collections::BTreeMap::from([(
+        EnvName::try_new("API_TOKEN").expect("valid environment name"),
+        EnvValue::try_new("binary-secret-sentinel").expect("valid environment value"),
+    )]));
+    history
+        .append_success(DeployHistoryEntry {
+            recorded_at: DeployHistoryTimestamp::from_unix_seconds(1_750_000_000),
+            operation_id: operation_id("op_selected"),
+            request: DeployRequestEvidence::from_request(&request),
+        })
+        .expect("selected history entry persists");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--nats")
+        .arg(nats_url)
+        .env_remove("HOME")
+        .env_remove("XDG_CONFIG_HOME")
+        .env("XDG_STATE_HOME", state_home)
+        .env(PLOYZ_NATS_CA_FILE_ENV, ca_file)
+        .env(
+            PLOYZ_NATS_NKEY_SEED_FILE_ENV,
+            temporary.path().join("deliberately-missing.seed"),
+        )
+        .args(["deploy", "rollback", "--to", "op_selected"])
+        .output()
+        .expect("ployz binary runs");
+
+    assert!(!output.status.success());
+    assert_eq!(stdout(&output), "");
+    let error = stderr(&output);
+    assert!(error.contains("svc_api: API_TOKEN"), "{error}");
+    assert!(error.contains("resubmit the deploy input"), "{error}");
+    assert!(!error.contains("binary-secret-sentinel"), "{error}");
+    assert!(!error.contains("deliberately-missing.seed"), "{error}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -338,7 +391,7 @@ async fn binary_foreground_deploy_exits_non_zero_when_operation_fails() {
                             OperationEvent::DeploySubmitted {
                                 operation_id: operation_id("op_deploy_failed"),
                                 reservation_id: Some(DeployReservationId::first()),
-                                target: forward_request(),
+                                target: DeployRequestEvidence::from_request(&forward_request()),
                             },
                         ),
                         replayed(
