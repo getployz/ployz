@@ -136,9 +136,11 @@ fn core_promote_template_keeps_provenance_with_platform_neutral_release() {
     let rendered = plan
         .steps()
         .iter()
-        .find_map(|step| match step {
-            HostRunnerStep::WriteMachineJoinTemplate(target) => Some(target.render()),
-            _ => None,
+        .find_map(|step| {
+            let HostRunnerStep::WriteMachineJoinTemplate(target) = step else {
+                return None;
+            };
+            Some(target.render())
         })
         .expect("promotion writes join template");
     let template: ployz_core::install::MachineJoinTemplate =

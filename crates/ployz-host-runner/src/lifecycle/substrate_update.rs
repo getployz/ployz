@@ -572,7 +572,9 @@ mod tests {
         let root = tempfile::tempdir().expect("tempdir");
         let path = root.path().join("machine-join-template.json");
         let mut legacy = legacy_template();
-        legacy["join_bundle"]["material"]["ebpf_ctl"]["version"] =
+        *legacy
+            .pointer_mut("/join_bundle/material/ebpf_ctl/version")
+            .expect("fixture carries eBPF controller version") =
             serde_json::json!("v0.0.2-alpha.85");
         let original = serde_json::to_vec_pretty(&legacy).expect("legacy template serializes");
         fs::write(&path, &original).expect("write legacy template");
@@ -590,7 +592,11 @@ mod tests {
         let root = tempfile::tempdir().expect("tempdir");
         let path = root.path().join("machine-join-template.json");
         let mut legacy = legacy_template();
-        legacy["join_bundle"]["material"]["unexpected"] = serde_json::json!(true);
+        legacy
+            .pointer_mut("/join_bundle/material")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("fixture carries join material")
+            .insert("unexpected".to_owned(), serde_json::json!(true));
         let original = serde_json::to_vec_pretty(&legacy).expect("legacy template serializes");
         fs::write(&path, &original).expect("write legacy template");
         let version = ExactPloyzVersion::try_new("v0.0.2-alpha.88").expect("exact version");
@@ -606,8 +612,9 @@ mod tests {
         let root = tempfile::tempdir().expect("tempdir");
         let path = root.path().join("machine-join-template.json");
         let mut legacy = legacy_template();
-        legacy["join_bundle"]["material"]["railpack"]["install_path"] =
-            serde_json::json!("/tmp/railpack");
+        *legacy
+            .pointer_mut("/join_bundle/material/railpack/install_path")
+            .expect("fixture carries Railpack install path") = serde_json::json!("/tmp/railpack");
         let original = serde_json::to_vec_pretty(&legacy).expect("legacy template serializes");
         fs::write(&path, &original).expect("write legacy template");
         let version = ExactPloyzVersion::try_new("v0.0.2-alpha.88").expect("exact version");
