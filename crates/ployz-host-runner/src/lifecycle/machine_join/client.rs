@@ -29,11 +29,10 @@ use ployz_nats::connect::{
     NatsClientAuth, NatsClientUrl, NatsClientUrlError, NatsConnectConfig, NatsTlsTrust,
     connect_authenticated,
 };
-use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
+use ployz_nats::operation_api_client::OperationApiClient;
 use ployz_sdk_types::{
-    MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed,
-    MachineJoinReportOutcome, MachineJoinReportRequest, MachineJoinReportedOutcome,
-    MachineJoinToken,
+    MachineJoinRedeemed, MachineJoinReportOutcome, MachineJoinReportRequest,
+    MachineJoinReportedOutcome, MachineJoinToken,
 };
 
 use crate::release_manifest::{
@@ -42,14 +41,17 @@ use crate::release_manifest::{
 };
 use crate::runtime::{
     DEFAULT_NATS_CONNECT_TIMEOUT, HOST_RUNNER_STATE_DIR, PLOYZ_JOIN_NKEY_SEED_ENV,
-    PLOYZ_NATS_CA_FILE_ENV, PLOYZ_NATS_URL_ENV, REDEEM_MATERIAL_ATTEMPTS,
-    REDEEM_MATERIAL_RETRY_DELAY, failure_message, failure_summary,
+    PLOYZ_NATS_CA_FILE_ENV, PLOYZ_NATS_URL_ENV, failure_message, failure_summary,
 };
 use ployz_core::install::{
     FirstMachineInstallArtifacts, MachineJoinSubstrateRelease, ReleasePlatformFailure,
 };
 
 const JOIN_REPORT_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+
+mod authorization;
+
+use authorization::redeem_across_authorization_reload;
 
 pub(crate) fn run_start_command(startup: HostRunnerStartup) -> ExitCode {
     if let Some(join) = &startup.join {
@@ -139,10 +141,13 @@ impl HostRunnerJoinRedeemer for JoinRedeemer {
             .map_err(|error| failure_message(&format!("failed to start async runtime: {error}")))?;
 
         let redeemed = runtime.block_on(async move {
-            let client = connect_authenticated(&connect, DEFAULT_NATS_CONNECT_TIMEOUT)
-                .await
-                .map_err(|error| failure_message(&error.to_string()))?;
-            redeem_until_material_ready(&OperationApiClient::new(client), join_token).await
+            redeem_across_authorization_reload(&connect, join_token, |retry| {
+                eprintln!(
+                    "join authorization unavailable; retrying redemption ({}/{})",
+                    retry.attempt, retry.attempts
+                );
+            })
+            .await
         })?;
 
         Ok(redeemed)
@@ -158,44 +163,6 @@ impl HostRunnerJoinResolver for JoinTargetResolver {
     ) -> Result<HostRunnerJoinTarget, JoinTargetResolutionFailure> {
         resolve_host_runner_join_target(redeemed)
     }
-}
-
-/// Redeems the join token, retrying boundedly while the core's mint worker
-/// has not reached `material-ready` yet. Any other failure is terminal.
-async fn redeem_until_material_ready(
-    api: &OperationApiClient,
-    join_token: MachineJoinToken,
-) -> Result<MachineJoinRedeemed, FailureMessage> {
-    let mut last_not_ready = String::new();
-    for _ in 0..REDEEM_MATERIAL_ATTEMPTS {
-        match api
-            .machine_join_redeem(&MachineJoinRedeemRequest {
-                join_token: join_token.clone(),
-            })
-            .await
-        {
-            Ok(redeemed) => return Ok(redeemed),
-            Err(OperationApiClientError::Domain {
-                error: MachineJoinRedeemError::MaterialNotReady { operation_id },
-                ..
-            }) => {
-                last_not_ready = format!(
-                    "operation {} has not reached material-ready",
-                    operation_id.as_str()
-                );
-                tokio::time::sleep(REDEEM_MATERIAL_RETRY_DELAY).await;
-            }
-            Err(error) => {
-                return Err(failure_message(&format!(
-                    "failed to redeem join token: {error}"
-                )));
-            }
-        }
-    }
-
-    Err(failure_message(&format!(
-        "join material did not become ready within {REDEEM_MATERIAL_ATTEMPTS} attempts: {last_not_ready}"
-    )))
 }
 
 pub(crate) struct JoinReporter {
@@ -545,6 +512,26 @@ mod tests {
     use crate::release_manifest::{ReleaseManifest, ReleasePlatform};
 
     const SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    #[path = "authorization_tests.rs"]
+    mod authorization_tests;
+
+    fn redeemed_machine() -> MachineJoinRedeemed {
+        MachineJoinRedeemed {
+            operation_id: OperationId::try_new("op_machine").expect("operation id"),
+            machine_id: MachineId::try_new("machine_2").expect("machine id"),
+            name: MachineName::try_new("edge_2").expect("machine name"),
+            roles: InstallRolePolicy::install_all().without_gateway(),
+            host_port_assurance: ployz_core::install::HostPortAssurance::External,
+            endpoint_subnet: endpoint_subnet("10.198.2.0/24"),
+            join_bundle: machine_join_bundle(),
+            secret_delivery: machine_join_secret_delivery(),
+            joined_at: JoinTokenRedeemedAt::try_new(60).expect("redeemed at"),
+            last_event_sequence: ployz_core::operation::EventSequence::try_new(8)
+                .expect("event sequence"),
+            result: MachineJoinRedeemResult::Joined,
+        }
+    }
 
     #[test]
     fn joining_host_resolves_arm64_artifacts_from_its_local_release_manifest() {
