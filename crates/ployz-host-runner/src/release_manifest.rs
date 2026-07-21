@@ -6,6 +6,40 @@ use ployz_core::install::{
     InstallArtifactVersion, InstallSha256Digest, NatsServerInstallSpec,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReleasePlatform {
+    LinuxAmd64,
+    LinuxArm64,
+}
+
+impl ReleasePlatform {
+    pub fn from_target(os: &str, arch: &str) -> Result<Self, String> {
+        match (os, arch) {
+            ("linux", "x86_64") => Ok(Self::LinuxAmd64),
+            ("linux", "aarch64") => Ok(Self::LinuxArm64),
+            _ => Err(format!("unsupported release platform {os}/{arch}")),
+        }
+    }
+
+    #[must_use]
+    pub const fn manifest_slug(self) -> &'static str {
+        match self {
+            Self::LinuxAmd64 => "linux-amd64",
+            Self::LinuxArm64 => "linux-arm64",
+        }
+    }
+
+    fn from_manifest_slug(value: &str) -> Result<Self, String> {
+        match value {
+            "linux-amd64" => Ok(Self::LinuxAmd64),
+            "linux-arm64" => Ok(Self::LinuxArm64),
+            _ => Err(format!(
+                "release manifest has unsupported PLOYZ_RELEASE_PLATFORM={value}"
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExactPloyzVersion(String);
 
@@ -74,6 +108,7 @@ pub enum ExactPloyzVersionError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseManifest {
+    platform: ReleasePlatform,
     version: String,
     ployzd_url: String,
     ployzd_sha256: String,
@@ -105,6 +140,10 @@ struct RailpackManifestEntry {
 impl ReleaseManifest {
     pub fn parse(contents: &str) -> Result<Self, String> {
         Ok(Self {
+            platform: ReleasePlatform::from_manifest_slug(&manifest_value(
+                contents,
+                "PLOYZ_RELEASE_PLATFORM",
+            )?)?,
             version: manifest_value(contents, "PLOYZ_VERSION")?,
             ployzd_url: manifest_value(contents, "PLOYZD_URL")?,
             ployzd_sha256: manifest_value(contents, "PLOYZD_SHA256")?,
@@ -117,22 +156,32 @@ impl ReleaseManifest {
         })
     }
 
+    #[must_use]
+    pub const fn platform(&self) -> ReleasePlatform {
+        self.platform
+    }
+
+    #[must_use]
+    pub fn ployz_version(&self) -> &str {
+        &self.version
+    }
+
     pub fn install_artifacts(&self) -> Result<FirstMachineInstallArtifacts, String> {
         Ok(FirstMachineInstallArtifacts {
             ployzd: artifact_spec(
-                &self.version,
+                self.ployz_version(),
                 &self.ployzd_url,
                 &self.ployzd_sha256,
                 "/usr/local/bin/ployzd",
             )?,
             ebpf_bytecode: artifact_spec(
-                &self.version,
+                self.ployz_version(),
                 &self.ebpf_tc_url,
                 &self.ebpf_tc_sha256,
                 "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
             )?,
             ebpf_ctl: artifact_spec(
-                &self.version,
+                self.ployz_version(),
                 &self.ebpf_ctl_url,
                 &self.ebpf_ctl_sha256,
                 "/usr/local/bin/ployz-ebpf-ctl",
@@ -242,12 +291,8 @@ fn artifact_spec(
 }
 
 fn release_platform() -> &'static str {
-    match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("linux", "x86_64") => "linux-amd64",
-        ("linux", "aarch64") => "linux-arm64",
-        ("linux", "arm") => "linux-arm64",
-        _ => "unsupported",
-    }
+    ReleasePlatform::from_target(std::env::consts::OS, std::env::consts::ARCH)
+        .map_or("unsupported", ReleasePlatform::manifest_slug)
 }
 
 fn manifest_value(contents: &str, key: &str) -> Result<String, String> {
@@ -274,11 +319,66 @@ pub(crate) fn read_release_manifest_text(url: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ExactPloyzVersion, ReleaseManifest, persisted_release_manifest_url,
+        ExactPloyzVersion, ReleaseManifest, ReleasePlatform, persisted_release_manifest_url,
         read_release_manifest_text, release_manifest_url,
     };
 
     const SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    fn manifest_without_nats(platform: Option<&str>) -> String {
+        let platform = platform
+            .map(|platform| format!("PLOYZ_RELEASE_PLATFORM={platform}\n"))
+            .unwrap_or_default();
+        format!(
+            "{platform}PLOYZ_VERSION=0.1.0\n\
+             PLOYZD_URL=https://example.test/ployzd\n\
+             PLOYZD_SHA256={SHA}\n\
+             PLOYZ_EBPF_TC_URL=https://example.test/ployz-ebpf-tc\n\
+             PLOYZ_EBPF_TC_SHA256={SHA}\n\
+             PLOYZ_EBPF_CTL_URL=https://example.test/ployz-ebpf-ctl\n\
+             PLOYZ_EBPF_CTL_SHA256={SHA}\n\
+             PLOYZ_RAILPACK_VERSION=v0.31.0\n\
+             PLOYZ_RAILPACK_URL=https://example.test/railpack\n\
+             PLOYZ_RAILPACK_SHA256={SHA}\n"
+        )
+    }
+
+    #[test]
+    fn release_platform_derives_linux_amd64_from_rust_target_names() {
+        assert_eq!(
+            ReleasePlatform::from_target("linux", "x86_64"),
+            Ok(ReleasePlatform::LinuxAmd64)
+        );
+    }
+
+    #[test]
+    fn release_platform_derives_linux_arm64_from_rust_target_names() {
+        assert_eq!(
+            ReleasePlatform::from_target("linux", "aarch64"),
+            Ok(ReleasePlatform::LinuxArm64)
+        );
+    }
+
+    #[test]
+    fn release_platform_rejects_unknown_architecture() {
+        assert_eq!(
+            ReleasePlatform::from_target("linux", "riscv64").expect_err("arch is unsupported"),
+            "unsupported release platform linux/riscv64"
+        );
+    }
+
+    #[test]
+    fn release_platform_rejects_unknown_operating_system() {
+        assert_eq!(
+            ReleasePlatform::from_target("windows", "x86_64").expect_err("os is unsupported"),
+            "unsupported release platform windows/x86_64"
+        );
+    }
+
+    #[test]
+    fn release_platform_uses_canonical_manifest_slug() {
+        assert_eq!(ReleasePlatform::LinuxAmd64.manifest_slug(), "linux-amd64");
+    }
 
     #[test]
     fn exact_version_builds_github_release_manifest_url() {
@@ -299,7 +399,8 @@ mod tests {
     #[test]
     fn release_manifest_builds_host_runner_artifacts() {
         let manifest = ReleaseManifest::parse(&format!(
-            "PLOYZ_VERSION=0.1.0\n\
+            "PLOYZ_RELEASE_PLATFORM=linux-amd64\n\
+             PLOYZ_VERSION=0.1.0\n\
              PLOYZD_URL=https://example.test/ployzd\n\
              PLOYZD_SHA256={SHA}\n\
              PLOYZ_EBPF_TC_URL=https://example.test/ployz-ebpf-tc\n\
@@ -336,9 +437,45 @@ mod tests {
     }
 
     #[test]
+    fn release_manifest_requires_release_platform() {
+        let error = ReleaseManifest::parse(&manifest_without_nats(None))
+            .expect_err("platform is required release identity");
+
+        assert_eq!(error, "release manifest is missing PLOYZ_RELEASE_PLATFORM");
+    }
+
+    #[test]
+    fn release_manifest_rejects_unknown_release_platform() {
+        let error = ReleaseManifest::parse(&manifest_without_nats(Some("linux-riscv64")))
+            .expect_err("platform is unsupported");
+
+        assert_eq!(
+            error,
+            "release manifest has unsupported PLOYZ_RELEASE_PLATFORM=linux-riscv64"
+        );
+    }
+
+    #[test]
+    fn release_manifest_exposes_typed_platform() {
+        let manifest = ReleaseManifest::parse(&manifest_without_nats(Some("linux-arm64")))
+            .expect("manifest parses");
+
+        assert_eq!(manifest.platform(), ReleasePlatform::LinuxArm64);
+    }
+
+    #[test]
+    fn release_manifest_exposes_ployz_release_version() {
+        let manifest = ReleaseManifest::parse(&manifest_without_nats(Some("linux-amd64")))
+            .expect("manifest parses");
+
+        assert_eq!(manifest.ployz_version(), "0.1.0");
+    }
+
+    #[test]
     fn release_manifest_requires_the_complete_railpack_tuple() {
         let missing = ReleaseManifest::parse(&format!(
-            "PLOYZ_VERSION=0.1.0\n\
+            "PLOYZ_RELEASE_PLATFORM=linux-amd64\n\
+             PLOYZ_VERSION=0.1.0\n\
              PLOYZD_URL=https://example.test/ployzd\n\
              PLOYZD_SHA256={SHA}\n\
              PLOYZ_EBPF_TC_URL=https://example.test/ployz-ebpf-tc\n\
@@ -350,7 +487,8 @@ mod tests {
         assert!(missing.contains("PLOYZ_RAILPACK_VERSION"));
 
         let partial = ReleaseManifest::parse(&format!(
-            "PLOYZ_VERSION=0.1.0\n\
+            "PLOYZ_RELEASE_PLATFORM=linux-amd64\n\
+             PLOYZ_VERSION=0.1.0\n\
              PLOYZD_URL=https://example.test/ployzd\n\
              PLOYZD_SHA256={SHA}\n\
              PLOYZ_EBPF_TC_URL=https://example.test/ployz-ebpf-tc\n\
@@ -365,19 +503,8 @@ mod tests {
 
     #[test]
     fn release_manifest_without_nats_server_omits_the_artifact() {
-        let manifest = ReleaseManifest::parse(&format!(
-            "PLOYZ_VERSION=0.1.0\n\
-             PLOYZD_URL=https://example.test/ployzd\n\
-             PLOYZD_SHA256={SHA}\n\
-             PLOYZ_EBPF_TC_URL=https://example.test/ployz-ebpf-tc\n\
-             PLOYZ_EBPF_TC_SHA256={SHA}\n\
-             PLOYZ_EBPF_CTL_URL=https://example.test/ployz-ebpf-ctl\n\
-             PLOYZ_EBPF_CTL_SHA256={SHA}\n\
-             PLOYZ_RAILPACK_VERSION=v0.31.0\n\
-             PLOYZ_RAILPACK_URL=https://example.test/railpack\n\
-             PLOYZ_RAILPACK_SHA256={SHA}\n"
-        ))
-        .expect("manifest parses");
+        let manifest = ReleaseManifest::parse(&manifest_without_nats(Some("linux-amd64")))
+            .expect("manifest parses");
         let artifacts = manifest.install_artifacts().expect("artifacts build");
 
         assert!(artifacts.nats_server.is_none());
@@ -386,7 +513,8 @@ mod tests {
     #[test]
     fn release_manifest_with_partial_nats_server_entry_is_rejected() {
         let error = ReleaseManifest::parse(&format!(
-            "PLOYZ_VERSION=0.1.0\n\
+            "PLOYZ_RELEASE_PLATFORM=linux-amd64\n\
+             PLOYZ_VERSION=0.1.0\n\
              PLOYZD_URL=https://example.test/ployzd\n\
              PLOYZD_SHA256={SHA}\n\
              PLOYZ_EBPF_TC_URL=https://example.test/ployz-ebpf-tc\n\
