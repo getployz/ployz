@@ -123,7 +123,7 @@ App-token authentication.
 
 | # | Claim | Proof |
 | --- | --- | --- |
-| 14 | Managed URL `https://<service>-<env4>.<lease>.up.ployz.app` → 200 | `real-host` — green today |
+| 14 | Hosted Dashboard assigns `https://<service>-<env4>.<lease>.up.ployz.app` and it returns 200 | `manual` |
 | 15 | Custom domain → CNAME to the lease apex → certificate → 200 | `manual` |
 | 16 | Route survives a control-daemon restart | `real-host` — green today |
 
@@ -145,7 +145,7 @@ App-token authentication.
 | 23 | F2: typed failure, failed container retained for inspection | `dind` |
 | 24 | **F2: the previous version is still serving** | `dind` — see below |
 | 25 | F2: retry is a new operation, prior failure's evidence kept | `dind` |
-| 26 | F3: core down ⇒ operations fail typed rather than hanging | `dind` |
+| 26 | F3: core down ⇒ the request fails within its bound as typed `NoResponders` or `TimedOut`, with no operation accepted | `dind` (rejection) + `manual` (no accepted operation) |
 | 27 | F3: gateway/DNS keep serving last-known-good | `dind` |
 
 ## Single-sitting procedure
@@ -171,9 +171,9 @@ App-token authentication.
 6. Prove that the Dockerfile and Railpack adapters each build native `amd64`
    and `arm64` artifacts. Record the platform-independent index evidence and
    replicas placed on both machines.
-7. Request the managed hostname and prove HTTPS 200. Configure the custom
-   domain's CNAME to the lease apex, wait for its certificate, and prove HTTPS
-   200.
+7. Record the exact managed hostname assigned by the hosted Dashboard and
+   prove HTTPS 200. Configure the custom domain's CNAME to the lease apex, wait
+   for its certificate, and prove HTTPS 200.
 8. Write a distinctive row to the volume-backed database, redeploy, and read
    the same row. On the machine holding the volume, record the actual ZFS
    dataset. In the Dashboard, record the hosted Cloud ZFS opt-in and its
@@ -216,12 +216,17 @@ App-token authentication.
 
 ### F3 — core unavailable
 
-1. Stop the control-plane core while the successful version is serving.
-2. Attempt an operation and record its typed terminal failure and bounded
-   timing. Confirm the gateway and DNS continue serving last-known-good.
-3. Link the exact-candidate DinD evidence proving claims 26–27; the human
-   observation does not replace that `dind` proof.
-4. Restore the core, record recovery, and capture the finish timestamp.
+1. Record `ployz ops list`, then stop the control-plane core while the
+   successful version is serving.
+2. Attempt an operation with a unique input marker and preserve its bounded
+   non-zero `NoResponders` or `TimedOut` request rejection. Confirm the gateway
+   and DNS continue serving last-known-good.
+3. Link the exact-candidate DinD evidence proving the bounded rejection and
+   last-known-good serving. The before/after operation lists supply claim 26's
+   separate `manual` proof that nothing was accepted.
+4. Restore the core, record `ployz ops list` again, and prove the rejected
+   request created no operation or evidence. Record recovery and capture the
+   finish timestamp.
 5. Preserve commands, output, timings, Dashboard screenshots, and evidence
    locations for F3. Delete the ephemeral branch after preserving its final S
    SHA and the guarded deletion command and output. Do not delete or change
@@ -297,7 +302,7 @@ guards, and neither `main` nor a standing `scenario/*` ref changed: **yes**.
 - [ ] 11. One platform-independent index digest — `unit`
 - [ ] 12. All-or-nothing: one arch fails ⇒ no index published — `unit`
 - [ ] 13. Replicas land on both machines — `real-host`
-- [ ] 14. Managed URL `https://<service>-<env4>.<lease>.up.ployz.app` → 200 — `real-host`
+- [ ] 14. Hosted Dashboard assigns `https://<service>-<env4>.<lease>.up.ployz.app` and it returns 200 — `manual`
 - [ ] 15. Custom domain → CNAME to the lease apex → certificate → 200 — `manual`
 - [ ] 16. Route survives a control-daemon restart — `real-host`
 - [ ] 17. Write a row → redeploy → the row survives — `manual`
@@ -309,7 +314,7 @@ guards, and neither `main` nor a standing `scenario/*` ref changed: **yes**.
 - [ ] 23. F2: typed failure, failed container retained for inspection — `dind`
 - [ ] 24. **F2: the previous version is still serving** — `dind`
 - [ ] 25. F2: retry is a new operation, prior failure's evidence kept — `dind`
-- [ ] 26. F3: core down ⇒ operations fail typed rather than hanging — `dind`
+- [ ] 26. F3: core down ⇒ the request fails within its bound as typed `NoResponders` or `TimedOut`, with no operation accepted — `dind` (rejection) + `manual` (no accepted operation)
 - [ ] 27. F3: gateway/DNS keep serving last-known-good — `dind`
 
 ### Required seam evidence
@@ -323,7 +328,7 @@ guards, and neither `main` nor a standing `scenario/*` ref changed: **yes**.
 - Hosted Cloud ZFS opt-in: `<evidence>`
 - F1 failure and fresh push: `<evidence>`
 - F2 failure, fresh operation id, and prior evidence preservation: `<evidence>`
-- F3 typed failure and last-known-good serving: `<evidence>`
+- F3 bounded typed request rejection and last-known-good serving (`dind`), plus before/after no-accepted-operation evidence (`manual`): `<evidence>`
 
 All 27 claims are checked without substitution: **yes**.
 ```
