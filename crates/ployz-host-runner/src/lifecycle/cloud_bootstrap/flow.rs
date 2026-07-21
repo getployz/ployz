@@ -49,6 +49,7 @@ use super::super::machine_join::client::{
     CloudJoinTokenConsumer, JoinRedeemer, JoinReporter, JoinTargetResolver,
 };
 use super::super::machine_join::execution::JoinTargetResolutionFailure;
+use crate::lifecycle::installed_substrate::InstalledSubstrateRelease;
 use crate::runtime::{
     CLOUD_BOOTSTRAP_MAX_POLLS, DEFAULT_NATS_CONNECT_TIMEOUT, HOST_RUNNER_STATE_DIR,
     failure_message, failure_summary,
@@ -283,7 +284,7 @@ fn run_cloud_founder_bootstrap(
     envelope: &CloudBootstrapEnvelope,
     client: &CloudClient,
 ) -> ExitCode {
-    let install = match build_cloud_founder_install_spec(&founder, envelope) {
+    let (install, manifest_contents) = match build_cloud_founder_install_spec(&founder, envelope) {
         Ok(install) => install,
         Err(message) => {
             return persist_post_failed_callback(
@@ -309,6 +310,22 @@ fn run_cloud_founder_bootstrap(
             );
         }
     };
+    let installed_release = match InstalledSubstrateRelease::persisted_manifest(
+        target.ployzd_artifact.substrate_release().clone(),
+        manifest_contents,
+    ) {
+        Ok(installed) => installed,
+        Err(message) => {
+            return persist_post_failed_callback(
+                envelope,
+                client,
+                CloudBootstrapFailure::EnvelopeInvalid {
+                    message: failure_message(&message),
+                },
+            );
+        }
+    };
+    target = target.with_installed_substrate_release(installed_release);
     target = target.with_additional_credential(CredentialGrant {
         public_key: founder.cloud_nats_user_public_key,
         name: CredentialName::try_new("Ployz Cloud").expect("Cloud credential name is non-empty"),
@@ -436,8 +453,8 @@ fn activate_cloud_founder_machine(
 fn build_cloud_founder_install_spec(
     founder: &CloudFounderBootstrap,
     envelope: &CloudBootstrapEnvelope,
-) -> Result<FirstMachineInstallSpec, String> {
-    let manifest = load_release_manifest()?;
+) -> Result<(FirstMachineInstallSpec, String), String> {
+    let (manifest, manifest_contents) = load_release_manifest()?;
     let suffix = envelope
         .redemption_id
         .as_str()
@@ -450,7 +467,7 @@ fn build_cloud_founder_install_spec(
             }
         })
         .collect::<String>();
-    Ok(FirstMachineInstallSpec {
+    let install = FirstMachineInstallSpec {
         machine_id: MachineId::try_new(format!("cloud_founder_{suffix}"))
             .map_err(|error| error.to_string())?,
         dataplane_endpoint_supernet: ployz_core::network::MachineEndpointSupernet::default_v1(),
@@ -469,7 +486,8 @@ fn build_cloud_founder_install_spec(
             .map_err(|error| error.to_string())?,
         machine_join_runtime_nats_url: founder.runtime_nats_url.clone(),
         artifacts: manifest.install_artifacts()?,
-    })
+    };
+    Ok((install, manifest_contents))
 }
 
 fn public_ip_from_runtime_nats_url(
@@ -488,10 +506,11 @@ fn public_ip_from_runtime_nats_url(
         .map_err(|_| "Cloud founder runtime NATS URL must use a public IP host for v1".to_owned())
 }
 
-fn load_release_manifest() -> Result<ReleaseManifest, String> {
+fn load_release_manifest() -> Result<(ReleaseManifest, String), String> {
     let url = release_manifest_url();
     let contents = crate::release_manifest::read_release_manifest_text(&url)?;
-    ReleaseManifest::parse(&contents).map_err(|error| error.to_string())
+    let manifest = ReleaseManifest::parse(&contents).map_err(|error| error.to_string())?;
+    Ok((manifest, contents))
 }
 
 fn release_manifest_url() -> String {

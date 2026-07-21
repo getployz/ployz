@@ -100,7 +100,7 @@ fn render_step_label(step: &HostRunnerStepLabel) -> String {
         }
         HostRunnerStepLabel::StoreInstalledSubstrateRelease(release) => format!(
             "store-installed-substrate-release {}",
-            release.version.as_str()
+            release.release.version.as_str()
         ),
     }
 }

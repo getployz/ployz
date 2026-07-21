@@ -99,7 +99,7 @@ fn first_machine_install_starts_nats_and_core_roles_without_join_token() {
     assert!(plan.steps().iter().any(|step| matches!(
         step,
         HostRunnerStep::StoreInstalledSubstrateRelease(release)
-            if release.version.as_str() == "0.1.0"
+            if release.release.version.as_str() == "0.1.0"
     )));
 }
 

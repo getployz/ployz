@@ -43,10 +43,12 @@ fn host_runner_join_installs_ployzd_and_only_assigned_role_units() {
     assert!(
         plan.steps()
             .contains(&HostRunnerStep::StoreInstalledSubstrateRelease(
-                ployz_core::install::MachineJoinSubstrateRelease {
-                    version: ployz_core::install::ExactPloyzVersion::try_new("0.1.0")
-                        .expect("exact release"),
-                },
+                crate::lifecycle::installed_substrate::InstalledSubstrateRelease::public_exact(
+                    ployz_core::install::MachineJoinSubstrateRelease {
+                        version: ployz_core::install::ExactPloyzVersion::try_new("0.1.0")
+                            .expect("exact release"),
+                    },
+                ),
             ))
     );
     assert!(

@@ -27,6 +27,7 @@ use crate::execution::{
 use crate::lifecycle::assigned_substrate::{
     AssignedHostPort, AssignedSubstrateState, SubstrateAssignment,
 };
+use crate::lifecycle::installed_substrate::InstalledSubstrateRelease;
 use crate::recovery::ClusterNatsIdentity;
 
 use super::nats_material::{DEFAULT_NATS_PORT, first_machine_listener, tls_loopback_nats_url};
@@ -84,7 +85,7 @@ pub enum HostRunnerStep {
     WriteSupervisorUnit(SupervisorUnitSpec),
     StartSupervisorUnit(SupervisorUnitTarget),
     StoreJoinMaterial(HostRunnerJoinMaterial),
-    StoreInstalledSubstrateRelease(MachineJoinSubstrateRelease),
+    StoreInstalledSubstrateRelease(InstalledSubstrateRelease),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,7 +111,7 @@ pub enum HostRunnerStepLabel {
     ReportJoinResult,
     ConsumeJoinTokenFile,
     StoreJoinMaterial(RedactedJoinMaterial),
-    StoreInstalledSubstrateRelease(MachineJoinSubstrateRelease),
+    StoreInstalledSubstrateRelease(InstalledSubstrateRelease),
 }
 
 impl HostRunnerStepLabel {
@@ -427,6 +428,7 @@ pub struct HostRunnerJoinTarget {
     pub roles: NonEmptyRoleSet,
     pub role_environment: PloyzdRoleEnvironmentTarget,
     pub host_port_assurance: HostPortAssurance,
+    pub installed_substrate_release: InstalledSubstrateRelease,
 }
 
 impl HostRunnerJoinTarget {
@@ -448,6 +450,8 @@ impl HostRunnerJoinTarget {
                     .to_path_buf(),
             )
             .with_ebpf_ctl_path(dataplane_artifacts.ebpf_ctl.install_path().to_path_buf());
+        let installed_substrate_release =
+            InstalledSubstrateRelease::public_exact(ployzd_artifact.substrate_release().clone());
         Self {
             material,
             ployzd_artifact,
@@ -456,7 +460,17 @@ impl HostRunnerJoinTarget {
             roles,
             role_environment,
             host_port_assurance,
+            installed_substrate_release,
         }
+    }
+
+    #[must_use]
+    pub(crate) fn with_installed_substrate_release(
+        mut self,
+        installed_substrate_release: InstalledSubstrateRelease,
+    ) -> Self {
+        self.installed_substrate_release = installed_substrate_release;
+        self
     }
 }
 
@@ -516,6 +530,7 @@ pub struct FirstMachineInstallTarget {
     machine_join_template_file: Option<AbsoluteInstallPath>,
     machine_join_cluster_name: MachineJoinClusterName,
     machine_join_runtime_nats_url: MachineJoinRuntimeNatsUrl,
+    installed_substrate_release: InstalledSubstrateRelease,
 }
 
 impl FirstMachineInstallTarget {
@@ -561,6 +576,8 @@ impl FirstMachineInstallTarget {
         let founder_credential_name =
             CredentialName::try_new(format!("Founder operator ({})", machine_id.as_str()))
                 .expect("machine id forms a non-empty founder credential name");
+        let installed_substrate_release =
+            InstalledSubstrateRelease::public_exact(ployzd_artifact.substrate_release().clone());
         Self {
             machine_id,
             dataplane_endpoint_supernet,
@@ -586,6 +603,7 @@ impl FirstMachineInstallTarget {
                 "tls://127.0.0.1:{DEFAULT_NATS_PORT}"
             ))
             .expect("default runtime NATS URL is valid"),
+            installed_substrate_release,
         }
     }
 
@@ -686,6 +704,15 @@ impl FirstMachineInstallTarget {
             .role_environment
             .with_dataplane_endpoint_supernet(dataplane_endpoint_supernet.clone());
         self.dataplane_endpoint_supernet = dataplane_endpoint_supernet;
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn with_installed_substrate_release(
+        mut self,
+        installed_substrate_release: InstalledSubstrateRelease,
+    ) -> Self {
+        self.installed_substrate_release = installed_substrate_release;
         self
     }
 }
@@ -1028,7 +1055,7 @@ fn host_runner_join_install_steps(target: HostRunnerJoinTarget) -> Vec<HostRunne
         target.dataplane_artifacts.ebpf_ctl.clone(),
     ));
     steps.push(HostRunnerStep::StoreInstalledSubstrateRelease(
-        target.ployzd_artifact.substrate_release().clone(),
+        target.installed_substrate_release,
     ));
 
     for role in target.roles.roles {
@@ -1286,9 +1313,7 @@ pub fn first_machine_install_plan(target: FirstMachineInstallTarget) -> HostRunn
         HostRunnerStep::InstallArtifact(target.dataplane_artifacts.ebpf_ctl.clone()),
         HostRunnerStep::InstallArtifact(target.nats_server_artifact.clone()),
         HostRunnerStep::InstallArtifact(target.railpack_artifact.clone()),
-        HostRunnerStep::StoreInstalledSubstrateRelease(
-            target.ployzd_artifact.substrate_release().clone(),
-        ),
+        HostRunnerStep::StoreInstalledSubstrateRelease(target.installed_substrate_release),
         HostRunnerStep::WriteNatsTlsMaterial(NatsTlsMaterialTarget::new(
             target.nats_material.clone(),
             &target.nats_identity,

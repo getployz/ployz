@@ -4,6 +4,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use super::assigned_substrate::load_assigned_substrate_state;
+use super::installed_substrate::InstalledSubstrateRelease;
 use super::machine_join::prepare_machine_join_template_release_promotion;
 use crate::cli::{HostRunnerSubstrateUpdate, HostRunnerSubstrateUpdateSource};
 use crate::execution::supervisor::execute_supervisor_commands;
@@ -58,13 +59,14 @@ pub(crate) fn run_substrate_update_command(update: HostRunnerSubstrateUpdate) ->
         }
     };
     let update_label = update.source.label();
-    let manifest = match load_substrate_update_manifest(&update.source) {
+    let loaded_manifest = match load_substrate_update_manifest(&update.source) {
         Ok(manifest) => manifest,
         Err(message) => {
             eprintln!("{message}");
             return ExitCode::FAILURE;
         }
     };
+    let manifest = &loaded_manifest.manifest;
     let local_platform =
         match ReleasePlatform::from_target(std::env::consts::OS, std::env::consts::ARCH) {
             Ok(platform) => platform,
@@ -146,24 +148,34 @@ pub(crate) fn run_substrate_update_command(update: HostRunnerSubstrateUpdate) ->
     {
         steps.push(HostRunnerStep::InstallArtifact(nats_server));
     }
-    steps.push(HostRunnerStep::StoreInstalledSubstrateRelease(
-        MachineJoinSubstrateRelease {
-            version: target_version.clone(),
-        },
-    ));
-    let plan = HostRunnerStepPlan::from_steps(steps);
-    let template_promotion = match prepare_machine_join_template_release_promotion(
-        Path::new(MACHINE_JOIN_TEMPLATE_PATH),
-        &target_version,
-    ) {
-        Ok(promotion) => promotion,
+    let installed_release = match loaded_manifest.installed_release() {
+        Ok(installed) => installed,
         Err(message) => {
-            eprintln!(
-                "ployz host substrate-update join-template promotion failed: {}",
-                message.as_str()
-            );
+            eprintln!("release manifest provenance is invalid: {message}");
             return ExitCode::FAILURE;
         }
+    };
+    steps.push(HostRunnerStep::StoreInstalledSubstrateRelease(
+        installed_release,
+    ));
+    let plan = HostRunnerStepPlan::from_steps(steps);
+    let template_promotion = match should_promote_join_template(&update.source) {
+        true => {
+            match prepare_machine_join_template_release_promotion(
+                Path::new(MACHINE_JOIN_TEMPLATE_PATH),
+                &target_version,
+            ) {
+                Ok(promotion) => Some(promotion),
+                Err(message) => {
+                    eprintln!(
+                        "ployz host substrate-update join-template promotion failed: {}",
+                        message.as_str()
+                    );
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+        false => None,
     };
     let stdout = std::io::stdout();
     let mut recorder = HostRunnerTextRecorder::new(stdout.lock());
@@ -187,7 +199,9 @@ pub(crate) fn run_substrate_update_command(update: HostRunnerSubstrateUpdate) ->
             return ExitCode::FAILURE;
         }
     }
-    if let Err(message) = template_promotion.commit() {
+    if let Some(template_promotion) = template_promotion
+        && let Err(message) = template_promotion.commit()
+    {
         eprintln!(
             "ployz host substrate-update join-template promotion failed: {}",
             message.as_str()
@@ -256,10 +270,14 @@ fn write_substrate_update_evidence(
 
 fn load_substrate_update_manifest(
     source: &HostRunnerSubstrateUpdateSource,
-) -> Result<ReleaseManifest, String> {
+) -> Result<LoadedSubstrateUpdateManifest, String> {
     match source {
         HostRunnerSubstrateUpdateSource::Version(version) => {
-            load_versioned_release_manifest(&release_manifest_url(version))
+            let manifest = load_versioned_release_manifest(&release_manifest_url(version))?;
+            Ok(LoadedSubstrateUpdateManifest {
+                manifest,
+                persisted_contents: None,
+            })
         }
         HostRunnerSubstrateUpdateSource::ManifestFile(path) => {
             let contents = std::fs::read_to_string(path).map_err(|error| {
@@ -268,9 +286,36 @@ fn load_substrate_update_manifest(
                     path.display()
                 )
             })?;
-            ReleaseManifest::parse(&contents).map_err(|error| error.to_string())
+            let manifest = ReleaseManifest::parse(&contents).map_err(|error| error.to_string())?;
+            Ok(LoadedSubstrateUpdateManifest {
+                manifest,
+                persisted_contents: Some(contents),
+            })
         }
     }
+}
+
+struct LoadedSubstrateUpdateManifest {
+    manifest: ReleaseManifest,
+    persisted_contents: Option<String>,
+}
+
+impl LoadedSubstrateUpdateManifest {
+    fn installed_release(&self) -> Result<InstalledSubstrateRelease, String> {
+        let release = MachineJoinSubstrateRelease {
+            version: self.manifest.version().clone(),
+        };
+        match &self.persisted_contents {
+            Some(contents) => {
+                InstalledSubstrateRelease::persisted_manifest(release, contents.clone())
+            }
+            None => Ok(InstalledSubstrateRelease::public_exact(release)),
+        }
+    }
+}
+
+fn should_promote_join_template(source: &HostRunnerSubstrateUpdateSource) -> bool {
+    matches!(source, HostRunnerSubstrateUpdateSource::Version(_))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -335,9 +380,55 @@ fn failure_message(message: impl Into<String>) -> FailureMessage {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::PathBuf;
 
-    use super::{InstalledUpdateUnit, installed_update_units};
+    use super::{
+        InstalledUpdateUnit, LoadedSubstrateUpdateManifest, installed_update_units,
+        should_promote_join_template,
+    };
+    use crate::cli::HostRunnerSubstrateUpdateSource;
     use crate::execution::SupervisorBackend;
+    use crate::lifecycle::installed_substrate::InstalledSubstrateManifestSource;
+    use crate::release_manifest::ReleaseManifest;
+
+    const SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    fn dev_manifest() -> String {
+        format!(
+            "PLOYZ_RELEASE_PLATFORM=linux-amd64\n\
+             PLOYZ_VERSION=dev-aabbccdd\n\
+             PLOYZD_URL=/var/lib/ployz/dev-releases/dev-aabbccdd/ployzd\n\
+             PLOYZD_SHA256={SHA}\n\
+             PLOYZ_EBPF_TC_URL=/var/lib/ployz/dev-releases/dev-aabbccdd/ployz-ebpf-tc\n\
+             PLOYZ_EBPF_TC_SHA256={SHA}\n\
+             PLOYZ_EBPF_CTL_URL=/var/lib/ployz/dev-releases/dev-aabbccdd/ployz-ebpf-ctl\n\
+             PLOYZ_EBPF_CTL_SHA256={SHA}\n\
+             PLOYZ_RAILPACK_VERSION=v0.31.0\n\
+             PLOYZ_RAILPACK_URL=https://example.test/railpack\n\
+             PLOYZ_RAILPACK_SHA256={SHA}\n"
+        )
+    }
+
+    #[test]
+    fn manifest_file_update_persists_source_without_promoting_join_template() {
+        let contents = dev_manifest();
+        let loaded = LoadedSubstrateUpdateManifest {
+            manifest: ReleaseManifest::parse(&contents).expect("manifest parses"),
+            persisted_contents: Some(contents.clone()),
+        };
+        let source = HostRunnerSubstrateUpdateSource::ManifestFile(PathBuf::from(
+            "/var/lib/ployz/dev-releases/dev-aabbccdd/release.env",
+        ));
+
+        assert!(!should_promote_join_template(&source));
+        assert_eq!(
+            loaded
+                .installed_release()
+                .expect("source persists")
+                .manifest_source,
+            InstalledSubstrateManifestSource::PersistedManifest { contents }
+        );
+    }
 
     #[test]
     fn installed_update_units_discovers_nats_and_ployzd_units() {

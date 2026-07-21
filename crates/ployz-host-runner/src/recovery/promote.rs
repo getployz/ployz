@@ -13,7 +13,9 @@ use crate::execution::{HostRunnerLocalConfig, HostRunnerLocalEffects, Supervisor
 use crate::lifecycle::assigned_substrate::{
     AssignedSubstrateState, SubstrateAssignment, load_assigned_substrate_state,
 };
-use crate::lifecycle::installed_substrate::load_installed_substrate_release;
+use crate::lifecycle::installed_substrate::{
+    InstalledSubstrateManifestSource, InstalledSubstrateRelease, load_installed_substrate_release,
+};
 use crate::lifecycle::machine_join::{
     JOIN_CORE_SEEDS_FILE, JOIN_MATERIAL_DIR, JOIN_MATERIAL_FILE, JOIN_RECOVERY_KEY_FILE,
     JOIN_TRUSTED_CA_FILE, parse_dataplane_endpoint_supernet_from_join_material,
@@ -23,15 +25,10 @@ use crate::plan::{
     CorePromoteTarget, HostRunnerTextRecorder, PloyzReleaseArtifact, core_promote_plan,
 };
 use crate::plan::{HostRunnerPlanTerminal, execute_host_runner_plan};
-use crate::release_manifest::{ReleasePlatform, release_manifest_url};
-use ployz_core::install::{
-    ExactPloyzVersion, MachineJoinClusterName, MachineJoinRuntimeNatsUrl,
-    MachineJoinSubstrateRelease,
-};
+use crate::release_manifest::{ReleaseManifest, ReleasePlatform, release_manifest_url};
+use ployz_core::install::{ExactPloyzVersion, MachineJoinClusterName, MachineJoinRuntimeNatsUrl};
 
-use crate::env_config::{
-    default_machine_join_template_file, load_versioned_release_manifest, local_release_manifest_url,
-};
+use crate::env_config::{default_machine_join_template_file, load_versioned_release_manifest};
 use crate::runtime::{
     CORE_PROMOTE_RESULT_BEGIN, CORE_PROMOTE_RESULT_END, HOST_RUNNER_STATE_DIR, failure_summary,
 };
@@ -65,12 +62,7 @@ pub(crate) fn run_core_promote_command(promote: HostRunnerCorePromote) -> ExitCo
             return ExitCode::FAILURE;
         }
     };
-    let manifest_url = if release.as_str().starts_with("dev-") {
-        local_release_manifest_url(Path::new("/etc/ployz/release.env"))
-    } else {
-        release_manifest_url(&release)
-    };
-    let manifest = match load_versioned_release_manifest(&manifest_url) {
+    let manifest = match load_promotion_manifest(&installed_release) {
         Ok(manifest) => manifest,
         Err(message) => {
             eprintln!("{message}");
@@ -211,19 +203,34 @@ pub(crate) fn run_core_promote_command(promote: HostRunnerCorePromote) -> ExitCo
 }
 
 fn promotion_release(
-    installed: &MachineJoinSubstrateRelease,
+    installed: &InstalledSubstrateRelease,
     requested: Option<&ExactPloyzVersion>,
 ) -> Result<ExactPloyzVersion, String> {
     if let Some(requested) = requested
-        && requested != &installed.version
+        && requested != &installed.release.version
     {
         return Err(format!(
             "requested promotion release {} differs from installed substrate release {}",
             requested.as_str(),
-            installed.version.as_str()
+            installed.release.version.as_str()
         ));
     }
-    Ok(installed.version.clone())
+    Ok(installed.release.version.clone())
+}
+
+fn load_promotion_manifest(
+    installed: &InstalledSubstrateRelease,
+) -> Result<ReleaseManifest, String> {
+    match &installed.manifest_source {
+        InstalledSubstrateManifestSource::PublicExactRelease => {
+            load_versioned_release_manifest(&release_manifest_url(&installed.release.version))
+        }
+        InstalledSubstrateManifestSource::PersistedManifest { contents } => {
+            ReleaseManifest::parse(contents).map_err(|error| {
+                format!("persisted installed release manifest is invalid: {error}")
+            })
+        }
+    }
 }
 
 fn check_core_promote_preflight() -> Result<(), String> {
@@ -434,10 +441,11 @@ mod tests {
         AssignedSubstrateState, SubstrateAssignment, write_assigned_substrate_state,
     };
     use crate::lifecycle::installed_substrate::{
-        load_installed_substrate_release, store_installed_substrate_release,
+        InstalledSubstrateRelease, load_installed_substrate_release,
+        store_installed_substrate_release,
     };
 
-    use super::{promoted_assigned_substrate, promotion_release};
+    use super::{load_promotion_manifest, promoted_assigned_substrate, promotion_release};
 
     #[test]
     fn promotion_adds_nats_without_losing_assignments_or_assurance() {
@@ -498,7 +506,8 @@ mod tests {
         let founder_selected = MachineJoinSubstrateRelease {
             version: ExactPloyzVersion::try_new("0.1.0").expect("exact installed release"),
         };
-        store_installed_substrate_release(state_dir.path(), &founder_selected)
+        let installed_release = InstalledSubstrateRelease::public_exact(founder_selected.clone());
+        store_installed_substrate_release(state_dir.path(), &installed_release)
             .expect("join-installed release persists");
         let installed = load_installed_substrate_release(state_dir.path())
             .expect("promotion loads installed release");
@@ -513,6 +522,45 @@ mod tests {
             promotion_release(&installed, Some(&requested))
                 .expect_err("different override must be rejected"),
             "requested promotion release 0.2.0 differs from installed substrate release 0.1.0"
+        );
+    }
+
+    #[test]
+    fn promotion_reloads_the_manifest_persisted_by_a_local_update() {
+        let sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let contents = format!(
+            "PLOYZ_RELEASE_PLATFORM=linux-amd64\n\
+             PLOYZ_VERSION=dev-aabbccdd\n\
+             PLOYZD_URL=/var/lib/ployz/dev/ployzd\n\
+             PLOYZD_SHA256={sha}\n\
+             PLOYZ_EBPF_TC_URL=/var/lib/ployz/dev/ployz-ebpf-tc\n\
+             PLOYZ_EBPF_TC_SHA256={sha}\n\
+             PLOYZ_EBPF_CTL_URL=/var/lib/ployz/dev/ployz-ebpf-ctl\n\
+             PLOYZ_EBPF_CTL_SHA256={sha}\n\
+             PLOYZ_RAILPACK_VERSION=v0.31.0\n\
+             PLOYZ_RAILPACK_URL=https://example.test/railpack\n\
+             PLOYZ_RAILPACK_SHA256={sha}\n\
+             PLOYZ_NATS_SERVER_VERSION=2.14.2\n\
+             PLOYZ_NATS_SERVER_URL=https://example.test/nats-server\n\
+             PLOYZ_NATS_SERVER_SHA256={sha}\n"
+        );
+        let installed = InstalledSubstrateRelease::persisted_manifest(
+            MachineJoinSubstrateRelease {
+                version: ExactPloyzVersion::try_new("dev-aabbccdd").expect("exact release"),
+            },
+            contents,
+        )
+        .expect("local update provenance persists");
+
+        let manifest = load_promotion_manifest(&installed).expect("promotion reloads source");
+
+        assert_eq!(manifest.version().as_str(), "dev-aabbccdd");
+        assert!(
+            manifest
+                .install_artifacts()
+                .expect("artifacts remain available")
+                .nats_server
+                .is_some()
         );
     }
 }

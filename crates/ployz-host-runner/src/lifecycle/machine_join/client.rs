@@ -487,6 +487,7 @@ fn resolve_join_artifacts_from_manifests(
     })
 }
 
+#[derive(Debug)]
 struct ResolvedJoinArtifacts {
     artifacts: FirstMachineInstallArtifacts,
     installed_release: InstalledSubstrateRelease,
@@ -525,12 +526,11 @@ mod tests {
         load_join_artifacts_from_release_env, resolve_host_runner_join_target_with_artifacts,
         resolve_join_artifacts, resolve_join_artifacts_from_manifests,
     };
-    use crate::execution::ArtifactKind;
     use crate::lifecycle::installed_substrate::{
-        load_installed_substrate_release, store_installed_substrate_release,
+        InstalledSubstrateManifestSource, load_installed_substrate_release,
+        store_installed_substrate_release,
     };
     use crate::lifecycle::machine_join::execution::JoinTargetResolutionFailure;
-    use crate::plan::PloyzReleaseArtifact;
     use ployz_core::ids::{MachineId, OperationId};
     use ployz_core::install::{
         ExactPloyzVersion, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
@@ -658,24 +658,49 @@ mod tests {
         )
         .expect("founder-selected release resolves independently of installed channel");
 
-        assert_eq!(artifacts.ployzd.version.as_str(), "0.1.0");
+        assert_eq!(artifacts.artifacts.ployzd.version.as_str(), "0.1.0");
         assert_eq!(
-            artifacts.ployzd.source.as_str(),
+            artifacts.installed_release.manifest_source,
+            InstalledSubstrateManifestSource::PublicExactRelease
+        );
+        assert_eq!(
+            artifacts.artifacts.ployzd.source.as_str(),
             "https://example.test/ployzd-linux-arm64"
         );
 
-        let artifact = crate::execution::artifact_target(ArtifactKind::Ployzd, &artifacts.ployzd)
-            .expect("resolved Ployz artifact is valid");
-        let release = PloyzReleaseArtifact::try_new(artifact).expect("release is exact");
         let state_dir = tempfile::tempdir().expect("state dir");
-        store_installed_substrate_release(state_dir.path(), release.substrate_release())
+        store_installed_substrate_release(state_dir.path(), &artifacts.installed_release)
             .expect("installed exact identity persists");
         assert_eq!(
             load_installed_substrate_release(state_dir.path())
                 .expect("installed exact identity loads")
+                .release
                 .version
                 .as_str(),
             "0.1.0"
+        );
+    }
+
+    #[test]
+    fn matching_custom_join_manifest_persists_the_exact_source_bytes() {
+        let expected = MachineJoinSubstrateRelease {
+            version: ExactPloyzVersion::try_new("0.1.0").expect("exact release"),
+        };
+        let installed = release_manifest_contents("linux-arm64", "custom-arm64", "0.1.0");
+
+        let resolved = resolve_join_artifacts_from_manifests(
+            &expected,
+            ReleasePlatform::LinuxArm64,
+            &installed,
+            |_| panic!("matching local manifests do not fetch a fallback"),
+        )
+        .expect("matching local manifest resolves");
+
+        assert_eq!(
+            resolved.installed_release.manifest_source,
+            InstalledSubstrateManifestSource::PersistedManifest {
+                contents: installed,
+            }
         );
     }
 
