@@ -328,6 +328,17 @@ mod tests {
     }
 
     #[test]
+    fn first_machine_activation_does_not_retry_authorization_rejection() {
+        let error = PloyzctlExecutionError::Support(ExecutionSupportError::NatsConnect(
+            NatsConnectError::AuthorizationViolation {
+                url: "nats://core.example:4222".to_owned(),
+            },
+        ));
+
+        assert!(!activation_retryable(&error));
+    }
+
+    #[test]
     fn first_machine_activation_retries_consumed_token_replay() {
         let error = MachineExecutionError::FirstMachineActivateApi {
             source: OperationApiClientError::Domain {

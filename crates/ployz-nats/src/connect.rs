@@ -7,7 +7,8 @@
 
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
-use std::sync::Once;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Once};
 use std::time::Duration;
 
 use ployz_core::nats_config::NatsUserSeed;
@@ -180,6 +181,69 @@ pub async fn connect_authenticated(
     connect_authenticated_pool(config, &[config.url.as_str().to_owned()], timeout).await
 }
 
+/// An authenticated client paired with typed evidence of a delayed server-side
+/// authorization rejection.
+#[derive(Debug, Clone)]
+pub struct AuthorizationObservedClient {
+    client: async_nats::Client,
+    authorization: Arc<AuthorizationObservation>,
+}
+
+#[derive(Debug, Default)]
+struct AuthorizationObservation {
+    rejected: AtomicBool,
+    changed: tokio::sync::Notify,
+}
+
+impl AuthorizationObservedClient {
+    #[must_use]
+    pub fn client(&self) -> async_nats::Client {
+        self.client.clone()
+    }
+
+    #[must_use]
+    pub async fn authorization_rejected_within(&self, timeout: Duration) -> bool {
+        if self.authorization.rejected.load(Ordering::Acquire) {
+            return true;
+        }
+        let changed = self.authorization.changed.notified();
+        if self.authorization.rejected.load(Ordering::Acquire) {
+            return true;
+        }
+        tokio::time::timeout(timeout, changed).await.is_ok()
+            && self.authorization.rejected.load(Ordering::Acquire)
+    }
+}
+
+/// Connects like [`connect_authenticated`] while retaining typed evidence when
+/// NATS reports an authorization violation after the initial handshake.
+pub async fn connect_authenticated_observing_authorization(
+    config: &NatsConnectConfig,
+    timeout: Duration,
+) -> Result<AuthorizationObservedClient, NatsConnectError> {
+    let authorization = Arc::new(AuthorizationObservation::default());
+    let observed = Arc::clone(&authorization);
+    let options = authenticated_connect_options(config).event_callback(move |event| {
+        let observed = Arc::clone(&observed);
+        async move {
+            if matches!(
+                event,
+                async_nats::Event::ServerError(async_nats::ServerError::AuthorizationViolation)
+            ) {
+                observed.rejected.store(true, Ordering::Release);
+                observed.changed.notify_waiters();
+            }
+        }
+    });
+    let client =
+        connect_authenticated_with_options(options, &[config.url.as_str().to_owned()], timeout)
+            .await?;
+    Ok(AuthorizationObservedClient {
+        client,
+        authorization,
+    })
+}
+
 /// Connect authenticated to a whole failover pool (the configured core plus
 /// Reachable Machines from the cached mirror), tried in order. Used at machine
 /// startup so a reboot *during* a core outage still reaches a promoted core
@@ -191,6 +255,14 @@ pub async fn connect_authenticated_pool(
     timeout: Duration,
 ) -> Result<async_nats::Client, NatsConnectError> {
     let options = authenticated_connect_options(config);
+    connect_authenticated_with_options(options, servers, timeout).await
+}
+
+async fn connect_authenticated_with_options(
+    options: async_nats::ConnectOptions,
+    servers: &[String],
+    timeout: Duration,
+) -> Result<async_nats::Client, NatsConnectError> {
     // async-nats tries each server in order, each under its own connection timeout.
     // `timeout` is the per-server budget; scale the total by the pool size so a
     // black-holed seed can't burn the whole budget before a live candidate is tried.
@@ -198,10 +270,7 @@ pub async fn connect_authenticated_pool(
     let total = timeout.saturating_mul(factor);
     match tokio::time::timeout(total, options.connect(servers.to_vec())).await {
         Ok(Ok(client)) => Ok(client),
-        Ok(Err(error)) => Err(NatsConnectError::Connect {
-            url: servers.join(","),
-            message: error.to_string(),
-        }),
+        Ok(Err(error)) => Err(connect_error(servers.join(","), error)),
         Err(_) => Err(NatsConnectError::Timeout {
             url: servers.join(","),
             timeout,
@@ -220,10 +289,7 @@ pub async fn connect_with_timeout(
     install_rustls_crypto_provider();
     match tokio::time::timeout(timeout, async_nats::connect(nats_url.as_str())).await {
         Ok(Ok(client)) => Ok(client),
-        Ok(Err(error)) => Err(NatsConnectError::Connect {
-            url: nats_url.as_str().to_owned(),
-            message: error.to_string(),
-        }),
+        Ok(Err(error)) => Err(connect_error(nats_url.as_str().to_owned(), error)),
         Err(_) => Err(NatsConnectError::Timeout {
             url: nats_url.as_str().to_owned(),
             timeout,
@@ -238,8 +304,21 @@ fn install_rustls_crypto_provider() {
     });
 }
 
+fn connect_error(url: String, error: async_nats::ConnectError) -> NatsConnectError {
+    if error.kind() == async_nats::ConnectErrorKind::AuthorizationViolation {
+        NatsConnectError::AuthorizationViolation { url }
+    } else {
+        NatsConnectError::Connect {
+            url,
+            message: error.to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum NatsConnectError {
+    #[error("NATS authorization was rejected at {url}")]
+    AuthorizationViolation { url: String },
     #[error("failed to connect to NATS at {url}: {message}")]
     Connect { url: String, message: String },
     #[error("failed to connect to NATS at {url} within {}ms", timeout.as_millis())]

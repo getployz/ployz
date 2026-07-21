@@ -26,8 +26,8 @@ use ployz_core::operation::FailureMessage;
 use ployz_core::roles::plan_joined_machine_process_set;
 use ployz_core::security::NatsPrincipal;
 use ployz_nats::connect::{
-    NatsClientAuth, NatsClientUrl, NatsClientUrlError, NatsConnectConfig, NatsTlsTrust,
-    connect_authenticated,
+    NatsClientAuth, NatsClientUrl, NatsClientUrlError, NatsConnectConfig, NatsConnectError,
+    NatsTlsTrust, connect_authenticated, connect_authenticated_observing_authorization,
 };
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
 use ployz_sdk_types::{
@@ -50,6 +50,8 @@ use ployz_core::install::{
 };
 
 const JOIN_REPORT_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+const JOIN_AUTHORIZATION_ATTEMPTS: usize = 10;
+const JOIN_AUTHORIZATION_RETRY_DELAY: Duration = Duration::from_millis(50);
 
 pub(crate) fn run_start_command(startup: HostRunnerStartup) -> ExitCode {
     if let Some(join) = &startup.join {
@@ -139,14 +141,77 @@ impl HostRunnerJoinRedeemer for JoinRedeemer {
             .map_err(|error| failure_message(&format!("failed to start async runtime: {error}")))?;
 
         let redeemed = runtime.block_on(async move {
-            let client = connect_authenticated(&connect, DEFAULT_NATS_CONNECT_TIMEOUT)
-                .await
-                .map_err(|error| failure_message(&error.to_string()))?;
-            redeem_until_material_ready(&OperationApiClient::new(client), join_token).await
+            redeem_across_authorization_reload(&connect, join_token).await
         })?;
 
         Ok(redeemed)
     }
+}
+
+async fn redeem_across_authorization_reload(
+    connect: &NatsConnectConfig,
+    join_token: MachineJoinToken,
+) -> Result<MachineJoinRedeemed, FailureMessage> {
+    for attempt in 1..=JOIN_AUTHORIZATION_ATTEMPTS {
+        let observed = match connect_authenticated_observing_authorization(
+            connect,
+            DEFAULT_NATS_CONNECT_TIMEOUT,
+        )
+        .await
+        {
+            Ok(observed) => observed,
+            Err(error @ NatsConnectError::AuthorizationViolation { .. }) => {
+                retry_authorization_rejection(attempt, &error).await?;
+                continue;
+            }
+            Err(error) => return Err(failure_message(&error.to_string())),
+        };
+        let api = OperationApiClient::new(observed.client());
+        match api
+            .machine_join_redeem(&MachineJoinRedeemRequest {
+                join_token: join_token.clone(),
+            })
+            .await
+        {
+            Ok(redeemed) => return Ok(redeemed),
+            Err(OperationApiClientError::Domain {
+                error: MachineJoinRedeemError::MaterialNotReady { .. },
+                ..
+            }) => return redeem_until_material_ready(&api, join_token).await,
+            Err(error) => {
+                if observed
+                    .authorization_rejected_within(JOIN_AUTHORIZATION_RETRY_DELAY)
+                    .await
+                {
+                    let rejection = NatsConnectError::AuthorizationViolation {
+                        url: connect.url.as_str().to_owned(),
+                    };
+                    retry_authorization_rejection(attempt, &rejection).await?;
+                    continue;
+                }
+                return Err(failure_message(&format!(
+                    "failed to redeem join token: {error}"
+                )));
+            }
+        }
+    }
+    unreachable!("authorization exhaustion returns from the final attempt")
+}
+
+async fn retry_authorization_rejection(
+    attempt: usize,
+    error: &NatsConnectError,
+) -> Result<(), FailureMessage> {
+    if attempt == JOIN_AUTHORIZATION_ATTEMPTS {
+        return Err(failure_message(&format!(
+            "join authorization remained unavailable after {attempt} attempts: {error}"
+        )));
+    }
+    eprintln!(
+        "join authorization unavailable; retrying redemption ({attempt}/{JOIN_AUTHORIZATION_ATTEMPTS})"
+    );
+    tokio::time::sleep(JOIN_AUTHORIZATION_RETRY_DELAY).await;
+    Ok(())
 }
 
 pub(crate) struct JoinTargetResolver;
@@ -523,8 +588,9 @@ impl HostRunnerJoinTokenConsumer for StartupJoinTokenConsumer {
 #[cfg(test)]
 mod tests {
     use super::{
-        load_join_artifacts_from_release_env, resolve_host_runner_join_target_with_artifacts,
-        resolve_join_artifacts, resolve_join_artifacts_from_manifests,
+        load_join_artifacts_from_release_env, redeem_across_authorization_reload,
+        resolve_host_runner_join_target_with_artifacts, resolve_join_artifacts,
+        resolve_join_artifacts_from_manifests,
     };
     use crate::lifecycle::installed_substrate::{
         InstalledSubstrateManifestSource, load_installed_substrate_release,
@@ -540,11 +606,220 @@ mod tests {
     use ployz_core::machine::{JoinTokenRedeemedAt, MachineName};
     use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
     use ployz_core::roles::InstallRolePolicy;
-    use ployz_sdk_types::{MachineJoinRedeemResult, MachineJoinRedeemed};
+    use ployz_sdk_types::{
+        MachineJoinRedeemError, MachineJoinRedeemResponse, MachineJoinRedeemResult,
+        MachineJoinRedeemed, MachineJoinToken, OperationApiResponse,
+    };
 
     use crate::release_manifest::{ReleaseManifest, ReleasePlatform};
+    use ployz_core::security::NatsPrincipal;
+    use ployz_nats::connect::{NatsConnectError, connect_authenticated};
+    use ployz_nats::permissions::{parse_authorized_users, render_authorized_users};
+    use ployz_nats::service_runtime::{NatsServiceResponse, start_nats_service};
+    use ployz_nats::services::{
+        EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceMetadata,
+        ServiceVersion,
+    };
+    use ployz_nats::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
+    use ployz_test_support::nats::SecuredTestNats;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
 
     const SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    #[tokio::test]
+    async fn redemption_retries_fresh_join_transport_across_authorization_reload() {
+        let nats = SecuredTestNats::start().await.expect("secured NATS");
+        let expected = redeemed_machine();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let service = redeem_service(&nats, {
+            let expected = expected.clone();
+            let calls = Arc::clone(&calls);
+            move || {
+                calls.fetch_add(1, Ordering::Relaxed);
+                OperationApiResponse::Ok {
+                    value: expected.clone(),
+                }
+            }
+        })
+        .await;
+        let authorization_path = nats.authorized_users_path().to_path_buf();
+        let original = std::fs::read_to_string(&authorization_path).expect("authorization file");
+        remove_join_authority(&nats, &original);
+
+        let config = nats.join_config();
+        wait_for_join_rejection(&config).await;
+
+        let restore = tokio::spawn({
+            let authorization_path = authorization_path.clone();
+            let pid = nats.server_pid();
+            async move {
+                tokio::time::sleep(Duration::from_millis(125)).await;
+                std::fs::write(authorization_path, original).expect("restore Join principal");
+                signal_reload(pid);
+            }
+        });
+
+        let redeemed = redeem_across_authorization_reload(
+            &config,
+            MachineJoinToken::try_new("join_once_123").expect("join token"),
+        )
+        .await
+        .expect("redemption crosses authorization reload");
+        restore.await.expect("restore task");
+        assert_eq!(redeemed, expected);
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        service.shutdown().await.expect("service shuts down");
+    }
+
+    #[tokio::test]
+    async fn redemption_reports_typed_authorization_exhaustion() {
+        let nats = SecuredTestNats::start().await.expect("secured NATS");
+        let original =
+            std::fs::read_to_string(nats.authorized_users_path()).expect("authorization file");
+        remove_join_authority(&nats, &original);
+        let config = nats.join_config();
+        wait_for_join_rejection(&config).await;
+
+        let failure = redeem_across_authorization_reload(
+            &config,
+            MachineJoinToken::try_new("join_once_123").expect("join token"),
+        )
+        .await
+        .expect_err("missing Join authority exhausts its bounded retry");
+
+        assert!(failure.as_str().contains("after 10 attempts"));
+        assert!(failure.as_str().contains("NATS authorization was rejected"));
+    }
+
+    #[tokio::test]
+    async fn redemption_does_not_retry_non_authorization_domain_failure() {
+        let nats = SecuredTestNats::start().await.expect("secured NATS");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let service = redeem_service(&nats, {
+            let calls = Arc::clone(&calls);
+            move || {
+                calls.fetch_add(1, Ordering::Relaxed);
+                OperationApiResponse::DomainError {
+                    error: MachineJoinRedeemError::UnknownJoinToken,
+                }
+            }
+        })
+        .await;
+
+        let failure = redeem_across_authorization_reload(
+            &nats.join_config(),
+            MachineJoinToken::try_new("join_once_123").expect("join token"),
+        )
+        .await
+        .expect_err("domain rejection is terminal");
+
+        assert!(failure.as_str().contains("failed to redeem join token"));
+        assert!(!failure.as_str().contains("authorization"));
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        service.shutdown().await.expect("service shuts down");
+    }
+
+    async fn redeem_service(
+        nats: &SecuredTestNats,
+        response: impl Fn() -> MachineJoinRedeemResponse + Send + Sync + 'static,
+    ) -> ployz_nats::service_runtime::RunningNatsService {
+        let endpoint = OperationApiEndpoint::MachineJoinRedeem;
+        let endpoint = NatsServiceEndpointSpec::new(
+            endpoint.name(),
+            endpoint.subject(),
+            endpoint_execution(endpoint.execution()),
+        );
+        let spec = NatsServiceSpec::new(
+            "join-reload-test",
+            "plz-api",
+            ServiceVersion::new(0, 1, 0),
+            "join reload test",
+            ServiceMetadata::empty(),
+            vec![endpoint.clone()],
+        );
+        let controller = connect_authenticated(&nats.controller_config(), Duration::from_secs(2))
+            .await
+            .expect("controller connects");
+        let mut service = start_nats_service(controller, &spec)
+            .await
+            .expect("service starts");
+        service
+            .bind_endpoint(&endpoint, move |_request| {
+                let response = response();
+                async move {
+                    NatsServiceResponse::ok(
+                        serde_json::to_vec(&response).expect("response serializes"),
+                    )
+                }
+            })
+            .await
+            .expect("redeem endpoint binds");
+        service
+    }
+
+    const fn endpoint_execution(execution: OperationApiEndpointExecution) -> EndpointExecution {
+        match execution {
+            OperationApiEndpointExecution::AcceptsOperation => EndpointExecution::AcceptsOperation,
+            OperationApiEndpointExecution::MutatesOperation => EndpointExecution::MutatesOperation,
+            OperationApiEndpointExecution::Query => EndpointExecution::Query,
+        }
+    }
+
+    fn remove_join_authority(nats: &SecuredTestNats, original: &str) {
+        let without_join = parse_authorized_users(original)
+            .expect("authorization parses")
+            .into_iter()
+            .filter(|grant| grant.principal() != NatsPrincipal::Join)
+            .collect::<Vec<_>>();
+        std::fs::write(
+            nats.authorized_users_path(),
+            render_authorized_users(&without_join),
+        )
+        .expect("temporarily remove Join principal");
+        signal_reload(nats.server_pid());
+    }
+
+    async fn wait_for_join_rejection(config: &ployz_nats::connect::NatsConnectConfig) {
+        for _ in 0..20 {
+            if matches!(
+                connect_authenticated(config, Duration::from_millis(100)).await,
+                Err(NatsConnectError::AuthorizationViolation { .. })
+            ) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("NATS did not apply removal of Join authority");
+    }
+
+    fn signal_reload(pid: u32) {
+        assert!(
+            std::process::Command::new("kill")
+                .args(["-HUP", &pid.to_string()])
+                .status()
+                .expect("signal NATS")
+                .success()
+        );
+    }
+
+    fn redeemed_machine() -> MachineJoinRedeemed {
+        MachineJoinRedeemed {
+            operation_id: OperationId::try_new("op_machine").expect("operation id"),
+            machine_id: MachineId::try_new("machine_2").expect("machine id"),
+            name: MachineName::try_new("edge_2").expect("machine name"),
+            roles: InstallRolePolicy::install_all().without_gateway(),
+            host_port_assurance: ployz_core::install::HostPortAssurance::External,
+            endpoint_subnet: endpoint_subnet("10.198.2.0/24"),
+            join_bundle: machine_join_bundle(),
+            secret_delivery: machine_join_secret_delivery(),
+            joined_at: JoinTokenRedeemedAt::try_new(60).expect("redeemed at"),
+            last_event_sequence: ployz_core::operation::EventSequence::try_new(8)
+                .expect("event sequence"),
+            result: MachineJoinRedeemResult::Joined,
+        }
+    }
 
     #[test]
     fn joining_host_resolves_arm64_artifacts_from_its_local_release_manifest() {
