@@ -21,10 +21,11 @@ use ployz_core::install::{InstallArtifactVersion, MachineJoinSubstrateRelease};
 use ployz_core::operation::FailureMessage;
 use serde::Serialize;
 
-use crate::env_config::load_versioned_release_manifest;
+use crate::env_config::{default_machine_join_template_file, load_versioned_release_manifest};
 use crate::runtime::{HOST_RUNNER_STATE_DIR, SUBSTRATE_VERSION_FILE, failure_summary};
 
-const MACHINE_JOIN_TEMPLATE_PATH: &str = "/etc/ployz/machine-join-template.json";
+const MACHINE_ENV_PATH: &str = "/etc/ployz/ployzd-machine.env";
+const MACHINE_JOIN_TEMPLATE_FILE_ENV: &str = "PLOYZ_MACHINE_JOIN_TEMPLATE_FILE";
 
 pub(crate) fn run_substrate_update_command(update: HostRunnerSubstrateUpdate) -> ExitCode {
     let assigned_substrate = match load_assigned_substrate_state(Path::new(HOST_RUNNER_STATE_DIR)) {
@@ -59,6 +60,19 @@ pub(crate) fn run_substrate_update_command(update: HostRunnerSubstrateUpdate) ->
         }
     };
     let update_label = update.source.label();
+    let template_path = if should_promote_join_template(&update.source) {
+        match inherited_machine_join_template_file().and_then(|inherited| {
+            resolve_machine_join_template_file(inherited, Path::new(MACHINE_ENV_PATH))
+        }) {
+            Ok(path) => Some(path),
+            Err(message) => {
+                eprintln!("ployz host substrate-update join-template path is invalid: {message}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        None
+    };
     let loaded_manifest = match load_substrate_update_manifest(&update.source) {
         Ok(manifest) => manifest,
         Err(message) => {
@@ -159,10 +173,10 @@ pub(crate) fn run_substrate_update_command(update: HostRunnerSubstrateUpdate) ->
         installed_release,
     ));
     let plan = HostRunnerStepPlan::from_steps(steps);
-    let template_promotion = match should_promote_join_template(&update.source) {
-        true => {
+    let template_promotion = match template_path {
+        Some(path) => {
             match prepare_machine_join_template_release_promotion(
-                Path::new(MACHINE_JOIN_TEMPLATE_PATH),
+                Path::new(path.as_str()),
                 &target_version,
             ) {
                 Ok(promotion) => Some(promotion),
@@ -175,7 +189,7 @@ pub(crate) fn run_substrate_update_command(update: HostRunnerSubstrateUpdate) ->
                 }
             }
         }
-        false => None,
+        None => None,
     };
     let stdout = std::io::stdout();
     let mut recorder = HostRunnerTextRecorder::new(stdout.lock());
@@ -318,6 +332,53 @@ fn should_promote_join_template(source: &HostRunnerSubstrateUpdateSource) -> boo
     matches!(source, HostRunnerSubstrateUpdateSource::Version(_))
 }
 
+fn inherited_machine_join_template_file() -> Result<Option<String>, String> {
+    match std::env::var(MACHINE_JOIN_TEMPLATE_FILE_ENV) {
+        Ok(value) if value.is_empty() => Ok(None),
+        Ok(value) => Ok(Some(value)),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => Err(format!(
+            "{MACHINE_JOIN_TEMPLATE_FILE_ENV} is not valid UTF-8"
+        )),
+    }
+}
+
+fn resolve_machine_join_template_file(
+    inherited: Option<String>,
+    machine_env_path: &Path,
+) -> Result<ployz_core::install::AbsoluteInstallPath, String> {
+    if let Some(value) = inherited {
+        return ployz_core::install::AbsoluteInstallPath::try_new(value.clone()).map_err(|error| {
+            format!("{MACHINE_JOIN_TEMPLATE_FILE_ENV}={value:?} is invalid: {error}")
+        });
+    }
+    let contents = match std::fs::read_to_string(machine_env_path) {
+        Ok(contents) => Some(contents),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(format!(
+                "failed to read existing machine environment {}: {error}",
+                machine_env_path.display()
+            ));
+        }
+    };
+    if let Some(value) = contents.as_deref().and_then(|contents| {
+        contents.lines().find_map(|line| {
+            line.strip_prefix(MACHINE_JOIN_TEMPLATE_FILE_ENV)?
+                .strip_prefix('=')
+                .map(str::to_owned)
+        })
+    }) {
+        return ployz_core::install::AbsoluteInstallPath::try_new(value.clone()).map_err(|error| {
+            format!(
+                "{} has invalid {MACHINE_JOIN_TEMPLATE_FILE_ENV}={value:?}: {error}",
+                machine_env_path.display()
+            )
+        });
+    }
+    default_machine_join_template_file()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum InstalledUpdateUnit {
     Nats,
@@ -384,7 +445,7 @@ mod tests {
 
     use super::{
         InstalledUpdateUnit, LoadedSubstrateUpdateManifest, installed_update_units,
-        should_promote_join_template,
+        resolve_machine_join_template_file, should_promote_join_template,
     };
     use crate::cli::HostRunnerSubstrateUpdateSource;
     use crate::execution::SupervisorBackend;
@@ -428,6 +489,100 @@ mod tests {
                 .manifest_source,
             InstalledSubstrateManifestSource::PersistedManifest { contents }
         );
+    }
+
+    #[test]
+    fn join_template_path_prefers_inherited_configuration() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let machine_env = root.path().join("ployzd-machine.env");
+        fs::write(
+            &machine_env,
+            "PLOYZ_MACHINE_JOIN_TEMPLATE_FILE=/persisted/template.json\n",
+        )
+        .expect("machine env writes");
+
+        let path = resolve_machine_join_template_file(
+            Some("/inherited/template.json".to_owned()),
+            &machine_env,
+        )
+        .expect("inherited path resolves");
+
+        assert_eq!(path.as_str(), "/inherited/template.json");
+    }
+
+    #[test]
+    fn join_template_path_uses_exact_persisted_assignment() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let machine_env = root.path().join("ployzd-machine.env");
+        fs::write(
+            &machine_env,
+            "PLOYZ_MACHINE_ID=machine_1\nPLOYZ_MACHINE_JOIN_TEMPLATE_FILE=/persisted/template.json\n",
+        )
+        .expect("machine env writes");
+
+        let path = resolve_machine_join_template_file(None, &machine_env)
+            .expect("persisted path resolves");
+
+        assert_eq!(path.as_str(), "/persisted/template.json");
+    }
+
+    #[test]
+    fn join_template_path_defaults_when_file_or_exact_key_is_missing() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let missing = root.path().join("missing.env");
+        assert_eq!(
+            resolve_machine_join_template_file(None, &missing)
+                .expect("missing file defaults")
+                .as_str(),
+            "/etc/ployz/machine-join-template.json"
+        );
+
+        let machine_env = root.path().join("ployzd-machine.env");
+        fs::write(
+            &machine_env,
+            "export PLOYZ_MACHINE_JOIN_TEMPLATE_FILE=/compatibility/path.json\n",
+        )
+        .expect("machine env writes");
+        assert_eq!(
+            resolve_machine_join_template_file(None, &machine_env)
+                .expect("noncanonical key is absent")
+                .as_str(),
+            "/etc/ployz/machine-join-template.json"
+        );
+    }
+
+    #[test]
+    fn join_template_path_rejects_invalid_inherited_or_persisted_values() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let machine_env = root.path().join("ployzd-machine.env");
+        assert!(
+            resolve_machine_join_template_file(Some("relative.json".to_owned()), &machine_env)
+                .expect_err("relative inherited path fails")
+                .contains("PLOYZ_MACHINE_JOIN_TEMPLATE_FILE")
+        );
+
+        fs::write(
+            &machine_env,
+            "PLOYZ_MACHINE_JOIN_TEMPLATE_FILE=relative.json\n",
+        )
+        .expect("machine env writes");
+        assert!(
+            resolve_machine_join_template_file(None, &machine_env)
+                .expect_err("relative persisted path fails")
+                .contains("ployzd-machine.env")
+        );
+    }
+
+    #[test]
+    fn join_template_path_rejects_unreadable_existing_environment() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let machine_env = root.path().join("ployzd-machine.env");
+        fs::create_dir(&machine_env).expect("directory stands in for unreadable file");
+
+        let error = resolve_machine_join_template_file(None, &machine_env)
+            .expect_err("existing unreadable environment fails");
+
+        assert!(error.contains("failed to read existing machine environment"));
     }
 
     #[test]

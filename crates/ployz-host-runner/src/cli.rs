@@ -553,6 +553,24 @@ fn validate_direct_first_machine_install_spec(
             )));
         }
     }
+    let Some(nats_server) = &spec.artifacts.nats_server else {
+        return Err(HostRunnerCliError::DirectFirstMachineInstallSpec(
+            "nats-server must be the packaged 2.14.2 artifact; use `ployz machine init --release-manifest` to create the install spec"
+                .to_owned(),
+        ));
+    };
+    let nats_source = format!(
+        "https://github.com/nats-io/nats-server/releases/download/v2.14.2/nats-server-v2.14.2-{platform}.tar.gz"
+    );
+    if nats_server.version.as_str() != "2.14.2"
+        || nats_server.source.as_str() != nats_source
+        || nats_server.binary.as_str() != "/usr/local/bin/nats-server"
+        || nats_server.config.as_str() != "/etc/nats/nats-server.conf"
+    {
+        return Err(HostRunnerCliError::DirectFirstMachineInstallSpec(format!(
+            "nats-server must be the packaged 2.14.2 {platform} artifact at /usr/local/bin/nats-server with config /etc/nats/nats-server.conf; use `ployz machine init --release-manifest` to create the install spec"
+        )));
+    }
     Ok(())
 }
 
@@ -1104,6 +1122,69 @@ mod tests {
     }
 
     #[test]
+    fn parser_rejects_missing_or_noncanonical_direct_first_machine_nats() {
+        let canonical = serde_json::from_str::<serde_json::Value>(
+            &canonical_first_machine_install_spec(FIRST_MACHINE_INSTALL_SPEC),
+        )
+        .expect("canonical spec parses");
+
+        let mut missing = canonical.clone();
+        missing
+            .pointer_mut("/artifacts")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("spec carries artifacts")
+            .remove("nats_server");
+        assert_direct_nats_rejected(missing, "missing-nats");
+
+        for (label, pointer, value) in [
+            ("nats-version", "/artifacts/nats_server/version", "2.13.0"),
+            (
+                "nats-custom-source",
+                "/artifacts/nats_server/source",
+                "https://artifacts.example.test/nats-server.tar.gz",
+            ),
+            (
+                "nats-binary",
+                "/artifacts/nats_server/binary",
+                "/opt/nats-server",
+            ),
+            (
+                "nats-config",
+                "/artifacts/nats_server/config",
+                "/opt/nats.conf",
+            ),
+        ] {
+            let mut invalid = canonical.clone();
+            *invalid
+                .pointer_mut(pointer)
+                .expect("fixture pointer exists") = serde_json::Value::String(value.to_owned());
+            assert_direct_nats_rejected(invalid, label);
+        }
+
+        let platform = crate::release_manifest::ReleasePlatform::from_target(
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+        )
+        .expect("test runs on a supported release platform")
+        .manifest_slug();
+        let other_platform = if platform == "linux-amd64" {
+            "linux-arm64"
+        } else {
+            "linux-amd64"
+        };
+        let mut opposite_platform = canonical;
+        let source = opposite_platform
+            .pointer("/artifacts/nats_server/source")
+            .and_then(serde_json::Value::as_str)
+            .expect("fixture carries NATS source")
+            .replace(platform, other_platform);
+        *opposite_platform
+            .pointer_mut("/artifacts/nats_server/source")
+            .expect("fixture carries NATS source") = serde_json::Value::String(source);
+        assert_direct_nats_rejected(opposite_platform, "nats-opposite-platform");
+    }
+
+    #[test]
     fn parser_rejects_mutable_first_machine_ployz_release() {
         let spec = FIRST_MACHINE_INSTALL_SPEC.replacen(
             "\"version\": \"0.1.0\"",
@@ -1262,6 +1343,21 @@ mod tests {
         path
     }
 
+    fn assert_direct_nats_rejected(spec: serde_json::Value, label: &str) {
+        let rendered = serde_json::to_string_pretty(&spec).expect("spec serializes");
+        let path = write_temp_spec_with(&rendered, label);
+
+        let error = load_command(["install".into(), "--spec".into(), path.into()])
+            .expect_err("noncanonical direct NATS is rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("ployz machine init --release-manifest"),
+            "{label}: {error}"
+        );
+    }
+
     fn canonical_first_machine_install_spec(spec: &str) -> String {
         let platform = crate::release_manifest::ReleasePlatform::from_target(
             std::env::consts::OS,
@@ -1285,6 +1381,12 @@ mod tests {
         .replace(
             "\"source\": \"/tmp/railpack\"",
             &format!("\"source\": \"{base}/railpack-{platform}\""),
+        )
+        .replace(
+            "\"source\": \"/tmp/nats-server\"",
+            &format!(
+                "\"source\": \"https://github.com/nats-io/nats-server/releases/download/v2.14.2/nats-server-v2.14.2-{platform}.tar.gz\""
+            ),
         )
     }
 
@@ -1323,7 +1425,7 @@ mod tests {
                 "install_path": "/usr/local/lib/ployz/railpack/v0.31.0/railpack"
             },
             "nats_server": {
-                "version": "2.12.0",
+                "version": "2.14.2",
                 "source": "/tmp/nats-server",
                 "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "binary": "/usr/local/bin/nats-server",
@@ -1366,7 +1468,7 @@ mod tests {
                 "install_path": "/usr/local/lib/ployz/railpack/v0.31.0/railpack"
             },
             "nats_server": {
-                "version": "2.12.0",
+                "version": "2.14.2",
                 "source": "/tmp/nats-server",
                 "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "binary": "/usr/local/bin/nats-server",
