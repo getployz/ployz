@@ -6,10 +6,10 @@ use std::path::PathBuf;
 
 use ployz_core::ids::MachineId;
 use ployz_core::install::{
-    AbsoluteInstallPath, HostPortAssurance, MachineBootstrapUrl, MachineJoinBundle,
-    MachineJoinClusterName, MachineJoinMaterial, MachineJoinRuntimeNatsUrl,
-    MachineJoinSecretDelivery, MachineJoinTemplate, MachineJoinTrustedNats,
-    NatsMachineMaterialPaths, WrappedCaKey, WrappedCoreSeeds,
+    AbsoluteInstallPath, ExactPloyzVersion, HostPortAssurance, MachineBootstrapUrl,
+    MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial, MachineJoinRuntimeNatsUrl,
+    MachineJoinSecretDelivery, MachineJoinSubstrateRelease, MachineJoinTemplate,
+    MachineJoinTrustedNats, NatsMachineMaterialPaths, WrappedCaKey, WrappedCoreSeeds,
 };
 use ployz_core::nats_config::{
     CredentialGrant, CredentialName, NatsCaCertificatePem, NatsUserSeed,
@@ -478,9 +478,18 @@ pub struct FirstMachineInstallTarget {
     pub machine_public_ip: Option<IpAddr>,
     pub nats_server_unit: NatsServerUnitTarget,
     pub role_environment: PloyzdRoleEnvironmentTarget,
+    substrate_release: MachineJoinSubstrateRelease,
     machine_join_template_file: Option<AbsoluteInstallPath>,
     machine_join_cluster_name: MachineJoinClusterName,
     machine_join_runtime_nats_url: MachineJoinRuntimeNatsUrl,
+}
+
+fn machine_join_substrate_release(
+    ployzd_artifact: &ArtifactTarget,
+) -> Result<MachineJoinSubstrateRelease, ployz_core::install::ExactPloyzVersionError> {
+    Ok(MachineJoinSubstrateRelease {
+        version: ExactPloyzVersion::try_new(ployzd_artifact.version.as_str())?,
+    })
 }
 
 impl FirstMachineInstallTarget {
@@ -491,6 +500,7 @@ impl FirstMachineInstallTarget {
     pub fn new(
         machine_id: MachineId,
         ployzd_artifact: ArtifactTarget,
+        substrate_release: MachineJoinSubstrateRelease,
         dataplane_artifacts: DataplaneArtifactTargets,
         railpack_artifact: ArtifactTarget,
         nats_server_artifact: ArtifactTarget,
@@ -544,6 +554,7 @@ impl FirstMachineInstallTarget {
             machine_public_ip: None,
             nats_server_unit,
             role_environment,
+            substrate_release,
             machine_join_template_file: None,
             machine_join_cluster_name: MachineJoinClusterName::try_new("ployz")
                 .expect("default cluster name is valid"),
@@ -1069,6 +1080,7 @@ pub struct CorePromoteTarget {
     pub machine_public_ip: Option<IpAddr>,
     pub nats_server_unit: NatsServerUnitTarget,
     pub role_environment: PloyzdRoleEnvironmentTarget,
+    pub substrate_release: MachineJoinSubstrateRelease,
     pub machine_join_template_file: AbsoluteInstallPath,
     pub machine_join_cluster_name: MachineJoinClusterName,
     pub machine_join_runtime_nats_url: MachineJoinRuntimeNatsUrl,
@@ -1099,6 +1111,8 @@ impl CorePromoteTarget {
         machine_join_cluster_name: MachineJoinClusterName,
         machine_join_runtime_nats_url: MachineJoinRuntimeNatsUrl,
     ) -> Self {
+        let substrate_release = machine_join_substrate_release(&ployzd_artifact)
+            .expect("core promotion ployzd artifact version is exact");
         let nats_material = NatsMachineMaterialPaths::in_default_state_dir();
         let nats_server_unit = NatsServerUnitTarget::new(
             nats_server_artifact.install_path().to_path_buf(),
@@ -1130,6 +1144,7 @@ impl CorePromoteTarget {
             machine_public_ip,
             nats_server_unit,
             role_environment,
+            substrate_release,
             machine_join_template_file,
             machine_join_cluster_name,
             machine_join_runtime_nats_url,
@@ -1200,10 +1215,7 @@ pub fn core_promote_plan(target: CorePromoteTarget) -> HostRunnerStepPlan {
                         },
                         recovery_key_wrapped: target.recovery_key_wrapped.clone(),
                         core_seeds_wrapped: target.core_seeds_wrapped.clone(),
-                        ployzd: target.ployzd_artifact.install_spec(),
-                        ebpf_bytecode: target.dataplane_artifacts.ebpf_bytecode.install_spec(),
-                        ebpf_ctl: target.dataplane_artifacts.ebpf_ctl.install_spec(),
-                        railpack: target.railpack_artifact.install_spec(),
+                        substrate_release: target.substrate_release,
                     },
                 },
             },
@@ -1288,10 +1300,7 @@ pub fn first_machine_install_plan(target: FirstMachineInstallTarget) -> HostRunn
                     },
                     recovery_key_wrapped: target.recovery_key_wrapped.clone(),
                     core_seeds_wrapped: target.core_seeds_wrapped.clone(),
-                    ployzd: target.ployzd_artifact.install_spec(),
-                    ebpf_bytecode: target.dataplane_artifacts.ebpf_bytecode.install_spec(),
-                    ebpf_ctl: target.dataplane_artifacts.ebpf_ctl.install_spec(),
-                    railpack: target.railpack_artifact.install_spec(),
+                    substrate_release: target.substrate_release.clone(),
                 },
             },
         };

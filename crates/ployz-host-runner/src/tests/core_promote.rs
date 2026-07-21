@@ -12,7 +12,9 @@ use ployz_core::install::{
 };
 use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy};
 use ployz_test_support::ids::machine_id;
-use support::artifacts::{nats_server_artifact, ployzd_artifact, railpack_artifact};
+use support::artifacts::{
+    nats_server_artifact, ployzd_artifact, railpack_artifact, substrate_release,
+};
 use support::bootstrap::*;
 
 const MIRRORED_MACHINE_PUBLIC: &str = "UBCXCMGAZQZN55X5TTTWMB5CZNZIKJHEDZJOJ3TV63NKPJ6FRXSR2ZO4";
@@ -24,6 +26,7 @@ fn promote_target() -> CorePromoteTarget {
     let first_machine = FirstMachineInstallTarget::new(
         machine_id("core_2"),
         ployzd_artifact(),
+        substrate_release(),
         dataplane_artifacts(),
         railpack_artifact(),
         nats_server_artifact(),
@@ -63,6 +66,7 @@ fn promote_target() -> CorePromoteTarget {
                 AbsoluteInstallPath::try_new("/etc/ployz/machine-join-template.json")
                     .expect("valid template path"),
             ),
+        substrate_release: substrate_release(),
         machine_join_template_file: AbsoluteInstallPath::try_new(
             "/etc/ployz/machine-join-template.json",
         )
@@ -121,6 +125,32 @@ fn core_promote_plan_adds_the_core_without_reinstalling_machine_units() {
     assert!(!plan.steps().contains(&HostRunnerStep::StartSupervisorUnit(
         SupervisorUnitTarget::PloyzdRole(DaemonProcessRole::Machine(machine_id("core_2")))
     )));
+}
+
+#[test]
+fn core_promote_template_keeps_provenance_with_platform_neutral_release() {
+    let target = promote_target();
+    let expected_recovery_key = target.recovery_key_wrapped.clone();
+    let expected_core_seeds = target.core_seeds_wrapped.clone();
+    let plan = core_promote_plan(target);
+    let rendered = plan
+        .steps()
+        .iter()
+        .find_map(|step| match step {
+            HostRunnerStep::WriteMachineJoinTemplate(target) => Some(target.render()),
+            _ => None,
+        })
+        .expect("promotion writes join template");
+    let template: ployz_core::install::MachineJoinTemplate =
+        serde_json::from_str(&rendered).expect("join template parses");
+    let material = template.join_bundle.material;
+
+    assert_eq!(material.substrate_release.version.as_str(), "0.1.0");
+    assert_eq!(material.cluster_name.as_str(), "ployz");
+    assert_eq!(material.recovery_key_wrapped, expected_recovery_key);
+    assert_eq!(material.core_seeds_wrapped, expected_core_seeds);
+    assert!(!rendered.contains("https://example.invalid/"));
+    assert!(!rendered.contains("\"ployzd\""));
 }
 
 #[test]

@@ -42,7 +42,7 @@ use ployz_nats::connect::NatsClientUrl;
 use ployz_sdk_types::MachineJoinReportFailure;
 use ployz_test_support::ids::{failure_message, machine_id, operation_id};
 use std::sync::OnceLock;
-use support::artifacts::{artifact_version as version, sha256_digest as digest};
+use support::artifacts::{artifact_version as version, sha256_digest as digest, substrate_release};
 
 #[test]
 fn externally_assured_host_ports_skip_firewall_and_store_assignment() {
@@ -165,6 +165,7 @@ fn local_effects_install_first_machine_process_units() {
         FirstMachineInstallTarget::new(
             machine_id("machine_1"),
             ployzd_artifact,
+            substrate_release(),
             dataplane_artifacts(&root),
             railpack_artifact(&root),
             nats_server_artifact(&nats_source, &nats_install_path),
@@ -288,6 +289,7 @@ fn first_machine_install_writes_machine_bootstrap_url_when_configured() {
     let target = FirstMachineInstallTarget::new(
         machine_id("machine_1"),
         ployzd_artifact(&ployzd_source, &root.join("bin/ployzd")),
+        substrate_release(),
         dataplane_artifacts(&root),
         railpack_artifact(&root),
         nats_server_artifact(&nats_source, &root.join("bin/nats-server")),
@@ -339,6 +341,7 @@ fn first_machine_install_writes_machine_join_template_file_when_configured() {
     let target = FirstMachineInstallTarget::new(
         machine_id("machine_1"),
         ployzd_artifact(&ployzd_source, &root.join("bin/ployzd")),
+        substrate_release(),
         dataplane_artifacts(&root),
         railpack_artifact(&root),
         nats_server_artifact(&nats_source, &root.join("bin/nats-server")),
@@ -374,14 +377,41 @@ fn first_machine_install_writes_machine_join_template_file_when_configured() {
             ctl = root.join("bin/ployz-ebpf-ctl").display()
         )
     );
+    let rendered = fs::read_to_string(&template_path).expect("join template writes");
     let template: ployz_core::install::MachineJoinTemplate =
-        serde_json::from_str(&fs::read_to_string(&template_path).expect("join template writes"))
-            .expect("join template parses");
+        serde_json::from_str(&rendered).expect("join template parses");
     assert_eq!(template.join_bundle.material.cluster_name.as_str(), "ployz");
     assert_eq!(
         template.join_bundle.material.runtime_nats_url.as_str(),
         "tls://127.0.0.1:4222"
     );
+    assert_eq!(
+        template
+            .join_bundle
+            .material
+            .substrate_release
+            .version
+            .as_str(),
+        "0.1.0"
+    );
+    assert_eq!(
+        template.join_bundle.material.trusted_nats.ca_pem.as_str(),
+        test_identity().ca.as_str()
+    );
+    assert_eq!(
+        template
+            .join_bundle
+            .material
+            .recovery_key_wrapped
+            .as_bytes(),
+        b"wrapped-ca-key"
+    );
+    assert_eq!(
+        template.join_bundle.material.core_seeds_wrapped.as_bytes(),
+        b"wrapped-core-seeds"
+    );
+    assert!(!rendered.contains("https://example.invalid/"));
+    assert!(!rendered.contains("\"ployzd\""));
 }
 
 #[test]
@@ -1373,6 +1403,7 @@ fn local_effects_write_nats_config_before_nats_unit() {
         FirstMachineInstallTarget::new(
             machine_id("machine_1"),
             ployzd_artifact,
+            substrate_release(),
             dataplane_artifacts(&root),
             railpack_artifact(&root),
             nats_server_artifact(&nats_source, &nats_install_path),
@@ -1446,6 +1477,7 @@ fn local_effects_render_role_units_from_the_artifact_installed_by_the_plan() {
         FirstMachineInstallTarget::new(
             machine_id("machine_1"),
             ployzd_artifact(&source, &install_path),
+            substrate_release(),
             dataplane_artifacts(&root),
             railpack_artifact(&root),
             nats_server_artifact(&nats_source, &nats_install_path),
@@ -2100,6 +2132,7 @@ fn first_machine_plan_with_ployzd(
         FirstMachineInstallTarget::new(
             machine_id("machine_1"),
             ployzd,
+            substrate_release(),
             dataplane_artifacts(root),
             railpack_artifact(root),
             nats_server_artifact(&nats_source, &root.join("bin/nats-server")),

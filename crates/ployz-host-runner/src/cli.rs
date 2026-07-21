@@ -22,7 +22,9 @@ use ployz_core::deploy::{DatasetName, VolumeMaxSizeBytes, ZfsPoolName};
 use ployz_core::ids::OperationId;
 use ployz_core::install::{ExactPloyzVersion, ExactPloyzVersionError};
 use ployz_core::install::{
-    FirstMachineInstallArtifacts, FirstMachineInstallSpec, InstallArtifactSpec,
+    ExactPloyzVersion as CoreExactPloyzVersion,
+    ExactPloyzVersionError as CoreExactPloyzVersionError, FirstMachineInstallArtifacts,
+    FirstMachineInstallSpec, InstallArtifactSpec, MachineJoinSubstrateRelease,
     NatsServerInstallSpec, WrappedCaKey,
 };
 use ployz_nats::connect::{NatsClientUrl, NatsClientUrlError};
@@ -523,6 +525,10 @@ pub fn first_machine_install_target_from_spec(
         machine_join_cluster_name,
         machine_join_runtime_nats_url,
     } = install;
+    let substrate_release = MachineJoinSubstrateRelease {
+        version: CoreExactPloyzVersion::try_new(ployzd.version.as_str())
+            .map_err(HostRunnerCliError::FirstMachinePloyzVersion)?,
+    };
     let ployzd_artifact = artifact_target(ArtifactKind::Ployzd, &ployzd)?;
     let ebpf_bytecode_artifact = artifact_target(ArtifactKind::EbpfBytecode, &ebpf_bytecode)?;
     let ebpf_ctl_artifact = artifact_target(ArtifactKind::EbpfCtl, &ebpf_ctl)?;
@@ -577,6 +583,7 @@ pub fn first_machine_install_target_from_spec(
     let mut target = FirstMachineInstallTarget::new(
         machine_id,
         ployzd_artifact,
+        substrate_release,
         DataplaneArtifactTargets::new(ebpf_bytecode_artifact, ebpf_ctl_artifact),
         railpack_artifact,
         nats_server_artifact,
@@ -644,6 +651,7 @@ pub enum HostRunnerCliError {
     JoinTokenFile(JoinTokenFileError),
     CloudHost(CloudHostError),
     ExactPloyzVersion(ExactPloyzVersionError),
+    FirstMachinePloyzVersion(CoreExactPloyzVersionError),
     MissingNatsServerArtifact,
     ArtifactTarget(ArtifactTargetError),
     SupervisorUnit(SupervisorUnitFileError),
@@ -710,6 +718,7 @@ impl fmt::Display for HostRunnerCliError {
             Self::JoinTokenFile(error) => write!(formatter, "{error}"),
             Self::CloudHost(error) => write!(formatter, "{error}"),
             Self::ExactPloyzVersion(error) => write!(formatter, "{error}"),
+            Self::FirstMachinePloyzVersion(error) => write!(formatter, "{error}"),
             Self::MissingNatsServerArtifact => formatter.write_str(
                 "first-machine install requires a nats-server artifact, \
                  but the release manifest carries none",
@@ -968,6 +977,24 @@ mod tests {
         assert_eq!(
             target.roles,
             ployz_core::roles::InstallRolePolicy::install_all()
+        );
+    }
+
+    #[test]
+    fn parser_rejects_mutable_first_machine_ployz_release() {
+        let spec = FIRST_MACHINE_INSTALL_SPEC.replacen(
+            "\"version\": \"0.1.0\"",
+            "\"version\": \"alpha\"",
+            1,
+        );
+        let path = write_temp_spec_with(&spec, "mutable-ployz-release");
+
+        let error = load_command(["install".into(), "--spec".into(), path.into()])
+            .expect_err("mutable Ployz release is rejected");
+
+        assert_eq!(
+            error.to_string(),
+            "release version must be exact, got mutable \"alpha\""
         );
     }
 
