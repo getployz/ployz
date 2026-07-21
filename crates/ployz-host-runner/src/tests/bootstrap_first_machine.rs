@@ -37,6 +37,8 @@ fn first_machine_install_starts_nats_and_core_roles_without_join_token() {
     assert!(installs_artifact_kind(&plan, ArtifactKind::EbpfCtl));
     assert!(installs_artifact_kind(&plan, ArtifactKind::NatsServer));
     assert!(installs_artifact_kind(&plan, ArtifactKind::Railpack));
+    assert!(plan.steps().contains(&HostRunnerStep::PrepareDataplaneHost));
+    assert!(plan.steps().contains(&HostRunnerStep::PrepareBuildHost));
     assert!(writes_nats_server_unit(&plan));
     assert!(writes_ployzd_role_units(&plan));
     assert!(
@@ -136,6 +138,7 @@ fn first_machine_names_founder_and_cloud_credentials() {
             | HostRunnerStep::AssureHostPorts(_)
             | HostRunnerStep::StoreAssignedSubstrate(_)
             | HostRunnerStep::PrepareDataplaneHost
+            | HostRunnerStep::PrepareBuildHost
             | HostRunnerStep::PrepareContainerRuntime(_, _)
             | HostRunnerStep::VerifyContainerRuntime(_)
             | HostRunnerStep::InstallArtifact(_)
@@ -243,6 +246,7 @@ fn first_machine_public_ip_flips_the_listener_external_in_the_secured_config() {
             | HostRunnerStep::AssureHostPorts(_)
             | HostRunnerStep::StoreAssignedSubstrate(_)
             | HostRunnerStep::PrepareDataplaneHost
+            | HostRunnerStep::PrepareBuildHost
             | HostRunnerStep::PrepareContainerRuntime(_, _)
             | HostRunnerStep::VerifyContainerRuntime(_)
             | HostRunnerStep::InstallArtifact(_)
@@ -325,6 +329,7 @@ fn first_machine_plan_derives_role_supernet_after_environment_overrides() {
             | HostRunnerStep::AssureHostPorts(_)
             | HostRunnerStep::StoreAssignedSubstrate(_)
             | HostRunnerStep::PrepareDataplaneHost
+            | HostRunnerStep::PrepareBuildHost
             | HostRunnerStep::PrepareContainerRuntime(_, _)
             | HostRunnerStep::VerifyContainerRuntime(_)
             | HostRunnerStep::InstallArtifact(_)

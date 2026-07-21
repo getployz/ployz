@@ -82,6 +82,7 @@ impl<R: HostRunnerCommandRunner> HostRunnerStepEffects for HostRunnerLocalEffect
             HostRunnerStep::AssureHostPorts(state) => self.assure_host_ports(state),
             HostRunnerStep::StoreAssignedSubstrate(state) => self.store_assigned_substrate(state),
             HostRunnerStep::PrepareDataplaneHost => self.prepare_dataplane_host(),
+            HostRunnerStep::PrepareBuildHost => self.prepare_build_host(),
             HostRunnerStep::PrepareContainerRuntime(runtime, endpoint_supernet) => {
                 self.prepare_container_runtime(*runtime, endpoint_supernet)
             }
@@ -320,6 +321,51 @@ impl<R: HostRunnerCommandRunner> HostRunnerLocalEffects<R> {
         }
         Err(failure_message(
             "dataplane host packages installed but wg/ip/tc/tun are not ready",
+        ))
+    }
+
+    fn prepare_build_host(&mut self) -> Result<(), HostRunnerStepEffectError> {
+        self.prepare_build_packages().map_err(|message| {
+            HostRunnerStepEffectError::new(
+                HostRunnerStepFailureReason::BuildHostPrepareFailed,
+                message,
+            )
+        })
+    }
+
+    fn prepare_build_packages(&mut self) -> Result<(), FailureMessage> {
+        if self.runner.build_host_ready() {
+            return Ok(());
+        }
+        match self.host_platform()?.package_family() {
+            HostPackageFamily::Debian => {
+                self.require_long_command("apt-get", &["update"])?;
+                self.require_long_command(
+                    "env",
+                    &[
+                        "DEBIAN_FRONTEND=noninteractive",
+                        "apt-get",
+                        "install",
+                        "-y",
+                        "git",
+                    ],
+                )?;
+            }
+            HostPackageFamily::Rpm => self.require_rpm_command(&["install", "-y", "git"])?,
+            HostPackageFamily::Arch => {
+                self.require_long_command("pacman", &["-S", "--noconfirm", "--needed", "git"])?;
+            }
+            HostPackageFamily::Alpine => self.require_long_command("apk", &["add", "git"])?,
+            HostPackageFamily::Suse => {
+                self.require_long_command("zypper", &["refresh"])?;
+                self.require_long_command("zypper", &["--non-interactive", "install", "git"])?;
+            }
+        }
+        if self.runner.build_host_ready() {
+            return Ok(());
+        }
+        Err(failure_message(
+            "build host packages installed but git is not ready",
         ))
     }
 

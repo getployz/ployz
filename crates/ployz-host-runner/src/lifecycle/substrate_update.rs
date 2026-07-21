@@ -150,11 +150,19 @@ pub(crate) fn run_substrate_update_command(update: HostRunnerSubstrateUpdate) ->
         HostRunnerStep::PreflightHostPorts(assigned_substrate.clone()),
         HostRunnerStep::AssureHostPorts(assigned_substrate),
         HostRunnerStep::PrepareDataplaneHost,
+    ];
+    if units
+        .iter()
+        .any(|unit| matches!(unit, InstalledUpdateUnit::Machine(_)))
+    {
+        steps.push(HostRunnerStep::PrepareBuildHost);
+    }
+    steps.extend([
         HostRunnerStep::InstallArtifact(railpack),
         HostRunnerStep::InstallArtifact(ployzd),
         HostRunnerStep::InstallArtifact(ebpf_bytecode),
         HostRunnerStep::InstallArtifact(ebpf_ctl),
-    ];
+    ]);
     if let Some(nats_server) = nats_server
         && units
             .iter()
@@ -382,6 +390,7 @@ fn resolve_machine_join_template_file(
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum InstalledUpdateUnit {
     Nats,
+    Machine(String),
     Ployzd(String),
 }
 
@@ -389,6 +398,7 @@ impl InstalledUpdateUnit {
     fn unit_name(&self) -> &str {
         match self {
             Self::Nats => "nats-server.service",
+            Self::Machine(unit) => unit,
             Self::Ployzd(unit) => unit,
         }
     }
@@ -409,8 +419,9 @@ fn installed_update_units(
         let Some(file_name) = file_name.to_str() else {
             continue;
         };
-        let managed = supervisor.is_managed_ployzd_service_file(file_name);
-        if managed {
+        if supervisor.is_machine_ployzd_service_file(file_name) {
+            units.push(InstalledUpdateUnit::Machine(file_name.to_owned()));
+        } else if supervisor.is_managed_ployzd_service_file(file_name) {
             units.push(InstalledUpdateUnit::Ployzd(file_name.to_owned()));
         }
     }
@@ -428,6 +439,7 @@ fn restart_installed_update_units(
         .iter()
         .map(|unit| match unit {
             InstalledUpdateUnit::Nats => supervisor.service_name(&SupervisorUnitTarget::NatsServer),
+            InstalledUpdateUnit::Machine(service) => service.clone(),
             InstalledUpdateUnit::Ployzd(service) => service.clone(),
         })
         .collect::<Vec<_>>();
@@ -599,7 +611,7 @@ mod tests {
             vec![
                 InstalledUpdateUnit::Nats,
                 InstalledUpdateUnit::Ployzd("ployzd-gateway.service".to_owned()),
-                InstalledUpdateUnit::Ployzd("ployzd-machine-machine_1.service".to_owned()),
+                InstalledUpdateUnit::Machine("ployzd-machine-machine_1.service".to_owned()),
             ]
         );
     }
@@ -617,6 +629,32 @@ mod tests {
                 InstalledUpdateUnit::Nats,
                 InstalledUpdateUnit::Ployzd("ployzd-dns".to_owned()),
             ]
+        );
+    }
+
+    #[test]
+    fn installed_update_units_classify_machine_roles() {
+        let systemd = tempfile::tempdir().expect("tempdir");
+        fs::write(systemd.path().join("ployzd-machine-machine_1.service"), "")
+            .expect("write machine unit");
+        fs::write(systemd.path().join("ployzd-gateway.service"), "").expect("write gateway unit");
+        assert_eq!(
+            installed_update_units(systemd.path(), SupervisorBackend::Systemd).expect("units load"),
+            vec![
+                InstalledUpdateUnit::Ployzd("ployzd-gateway.service".to_owned()),
+                InstalledUpdateUnit::Machine("ployzd-machine-machine_1.service".to_owned()),
+            ]
+        );
+
+        let openrc = tempfile::tempdir().expect("tempdir");
+        fs::write(openrc.path().join("ployzd-machine-machine_1"), "")
+            .expect("write machine service");
+        assert_eq!(
+            installed_update_units(openrc.path(), SupervisorBackend::OpenRc)
+                .expect("services load"),
+            vec![InstalledUpdateUnit::Machine(
+                "ployzd-machine-machine_1".to_owned()
+            )]
         );
     }
 }

@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 
 use super::command::HostRunnerCommandRunner;
 use super::host_platform::SupervisorKind;
-use super::service::{SupervisorUnitFileError, SupervisorUnitSpec, SupervisorUnitTarget};
+use super::service::{
+    PLOYZD_MACHINE_UNIT_PREFIX, SupervisorUnitFileError, SupervisorUnitSpec, SupervisorUnitTarget,
+};
 use ployz_core::operation::FailureMessage;
 use ployz_core::roles::DaemonProcessRole;
 
@@ -86,6 +88,12 @@ impl SupervisorBackend {
                 Self::Systemd => file_name.ends_with(".service"),
                 Self::OpenRc => !file_name.contains('.'),
             }
+    }
+
+    #[must_use]
+    pub(crate) fn is_machine_ployzd_service_file(self, file_name: &str) -> bool {
+        self.is_managed_ployzd_service_file(file_name)
+            && file_name.starts_with(PLOYZD_MACHINE_UNIT_PREFIX)
     }
 
     #[must_use]

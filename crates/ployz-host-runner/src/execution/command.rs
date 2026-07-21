@@ -46,6 +46,9 @@ pub trait HostRunnerCommandRunner {
     fn dataplane_host_ready(&mut self) -> bool {
         false
     }
+    fn build_host_ready(&mut self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -285,6 +288,10 @@ impl HostRunnerCommandRunner for SystemHostRunnerCommandRunner {
 
     fn dataplane_host_ready(&mut self) -> bool {
         dataplane_host_ready(self.timeout)
+    }
+
+    fn build_host_ready(&mut self) -> bool {
+        command_success("git", &["--version"], self.timeout)
     }
 }
 
