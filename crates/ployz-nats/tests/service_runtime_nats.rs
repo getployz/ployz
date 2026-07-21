@@ -291,7 +291,7 @@ async fn service_runtime_times_out_slow_handler_and_records_health() {
     assert_eq!(runtime.health().request_timeouts, 1);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn deadline_endpoint_drops_pending_request_without_synthesizing_timeout() {
     let nats = test_nats().await;
     let subject = OperationApiEndpoint::LogsTail.subject();
@@ -303,18 +303,21 @@ async fn deadline_endpoint_drops_pending_request_without_synthesizing_timeout() 
     let Some(max_concurrent_requests) = NonZeroUsize::new(1) else {
         unreachable!("test concurrency is non-zero");
     };
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     let (started_tx, started_rx) = oneshot::channel();
+    let (cancelled_tx, mut cancelled_rx) = mpsc::unbounded_channel();
     let started_tx = std::sync::Mutex::new(Some(started_tx));
 
     runtime
         .bind_endpoint_with_policy(
             endpoint,
-            EndpointExecutionPolicy::new(max_concurrent_requests, Duration::from_secs(2))
+            EndpointExecutionPolicy::new(max_concurrent_requests, Duration::from_secs(31))
                 .with_authority_deadline(deadline),
             move |_request| {
                 let started_tx = started_tx.lock().expect("started signal lock").take();
+                let cancelled_tx = cancelled_tx.clone();
                 async move {
+                    let _cancelled = SendOnDrop(cancelled_tx);
                     if let Some(started_tx) = started_tx {
                         let _ = started_tx.send(());
                     }
@@ -331,19 +334,55 @@ async fn deadline_endpoint_drops_pending_request_without_synthesizing_timeout() 
         .await
         .expect("reply inbox subscribes");
     nats.request_client
-        .publish_with_reply(subject, inbox, Vec::new().into())
+        .publish_with_reply(subject, inbox.clone(), Vec::new().into())
         .await
         .expect("deadline request publishes");
     nats.request_client
         .flush()
         .await
         .expect("deadline request flushes");
-    timeout(Duration::from_secs(1), started_rx)
-        .await
-        .expect("handler starts before deadline")
-        .expect("handler start signal sends");
+    let mut started_rx = started_rx;
+    timeout(Duration::from_secs(5), async {
+        let mut no_responder_retries = 0;
+        loop {
+            tokio::select! {
+                started = &mut started_rx => {
+                    started.expect("handler start signal sends");
+                    break;
+                }
+                response = replies.next() => {
+                    let response = response.expect("reply inbox remains open");
+                    assert_eq!(response.status, Some(async_nats::StatusCode::NO_RESPONDERS));
+                    assert!(
+                        no_responder_retries < 4,
+                        "deadline endpoint registration stayed invisible after bounded retries"
+                    );
+                    no_responder_retries += 1;
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    nats.request_client
+                        .publish_with_reply(subject, inbox.clone(), Vec::new().into())
+                        .await
+                        .expect("deadline request retry publishes");
+                    nats.request_client
+                        .flush()
+                        .await
+                        .expect("deadline request retry flushes");
+                }
+            }
+        }
+    })
+    .await
+    .expect("handler starts before deadline");
 
-    tokio::time::sleep_until(deadline + Duration::from_millis(50)).await;
+    let until_after_deadline =
+        deadline.saturating_duration_since(tokio::time::Instant::now()) + Duration::from_millis(50);
+    tokio::time::pause();
+    tokio::time::advance(until_after_deadline).await;
+    timeout(Duration::from_secs(1), cancelled_rx.recv())
+        .await
+        .expect("authority deadline cancels the admitted handler")
+        .expect("handler cancellation signal sends");
+    assert_eq!(runtime.health().endpoint_tasks_finished, 1);
     assert!(
         timeout(Duration::from_millis(100), replies.next())
             .await
