@@ -232,14 +232,14 @@ fn readiness_is_closed_and_adapter_specific() {
 async fn one_active_registration_rechecks_after_the_preflight_race_window() {
     let mut state = accepting_state(None);
     state.ensure_accepting().expect("initial preflight");
-    let expires_at = future_expiry(60);
+    let expires_at = future_expiry(600);
     let (first, _first_rx, first_task) = active_build("op_build_first");
     state
-        .register_before_expiry_at(first, expires_at, std::time::SystemTime::now())
+        .register_before_terminal_margin_at(first, expires_at, std::time::SystemTime::now())
         .expect("first registration");
     let (second, _second_rx, second_task) = active_build("op_build_second");
     assert!(matches!(
-        state.register_before_expiry_at(second, expires_at, std::time::SystemTime::now()),
+        state.register_before_terminal_margin_at(second, expires_at, std::time::SystemTime::now()),
         Err(BuildExecutorStartDomainError::AlreadyRunning)
     ));
     first_task.abort();
@@ -325,16 +325,6 @@ async fn once_credential_expiry_wins_when_the_idle_budget_elapses_together() {
     ));
 }
 
-#[tokio::test]
-async fn controlled_watch_rejects_expired_authority_before_waiting_for_a_signal() {
-    let expired = ployz_core::nats_config::BuildExecutorCredentialExpiresAt::try_new(1)
-        .expect("positive expiry");
-    assert!(matches!(
-        wait_for_controlled_stop(expired).await,
-        Err(BuildExecutionError::ExecutorCredential { .. })
-    ));
-}
-
 #[test]
 fn every_startup_stage_rejects_authority_at_expiry() {
     let expires_at =
@@ -373,6 +363,49 @@ fn admission_requires_more_than_the_complete_terminal_response_budget() {
     assert!(error.to_string().contains("insufficient lifetime"));
     ensure_terminal_response_budget_at(expires_at, just_before_boundary, AUTHORITY_TERMINAL_MARGIN)
         .expect("any lifetime beyond the required margin may open admission");
+}
+
+#[test]
+fn startup_stage_consumption_is_rechecked_atomically_when_admission_opens() {
+    let expires_at = BuildExecutorCredentialExpiresAt::try_new(205).expect("expiry");
+    let before_final_stage = std::time::UNIX_EPOCH + Duration::from_secs(99);
+    let after_final_stage = std::time::UNIX_EPOCH + Duration::from_secs(100);
+    let mut state = RuntimeState::new_connected();
+    let generation = state.admission_generation().expect("connected generation");
+
+    ensure_terminal_response_budget_at(expires_at, before_final_stage, AUTHORITY_TERMINAL_MARGIN)
+        .expect("startup may begin with more than the margin");
+    let error = state
+        .open_admission_before_terminal_margin_at(generation, expires_at, after_final_stage)
+        .expect_err("stage consumption reaches the exact margin");
+    assert!(matches!(
+        error,
+        BuildExecutionError::ExecutorCredential { .. }
+    ));
+    assert_eq!(state.admission, RuntimeAdmission::Closed);
+}
+
+#[tokio::test]
+async fn start_registration_closes_admission_when_preflight_races_into_the_margin() {
+    let expires_at = BuildExecutorCredentialExpiresAt::try_new(205).expect("expiry");
+    let before_preflight = std::time::UNIX_EPOCH + Duration::from_secs(99);
+    let after_preflight = std::time::UNIX_EPOCH + Duration::from_secs(100);
+    let mut state = RuntimeState::new_connected();
+    let generation = state.admission_generation().expect("connected generation");
+    assert!(
+        state
+            .open_admission_before_terminal_margin_at(generation, expires_at, before_preflight)
+            .expect("admission check")
+    );
+    let (active, _cancelled, task) = active_build("op_margin_race");
+
+    assert_eq!(
+        state.register_before_terminal_margin_at(active, expires_at, after_preflight),
+        Err(BuildExecutorStartDomainError::RuntimeStopped)
+    );
+    assert_eq!(state.admission, RuntimeAdmission::Closed);
+    assert!(state.active.is_none());
+    task.abort();
 }
 
 #[tokio::test(start_paused = true)]
@@ -464,6 +497,74 @@ async fn controlled_shutdown_uses_signal_only_without_an_external_coordinator() 
         .expect("external coordinator stops controlled execution");
 }
 
+#[tokio::test(start_paused = true)]
+async fn controlled_watch_does_not_bypass_external_shutdown_with_os_signal() {
+    let expires_at = future_expiry(600);
+    let lifetime = AUTHORITY_TERMINAL_MARGIN + Duration::from_secs(5);
+    let (external_tx, external_rx) = oneshot::channel();
+    let mut shutdown = controlled_shutdown_future_with_signal(Some(external_rx), async { Ok(()) });
+    let admission_closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let closed = Arc::clone(&admission_closed);
+    let wait = tokio::spawn(async move {
+        wait_for_controlled_watch_with_lifetime(expires_at, lifetime, &mut shutdown, async move {
+            closed.store(true, std::sync::atomic::Ordering::SeqCst);
+        })
+        .await
+    });
+
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_secs(5)).await;
+    tokio::task::yield_now().await;
+    assert!(admission_closed.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(!wait.is_finished(), "mock OS signal must be ignored");
+    external_tx.send(()).expect("external coordinator sends");
+    assert_eq!(wait.await.expect("wait task"), Ok((Ok(()), true)));
+}
+
+#[tokio::test]
+async fn controlled_watch_without_external_shutdown_is_driven_by_os_signal() {
+    let expires_at = future_expiry(600);
+    let mut shutdown = controlled_shutdown_future_with_signal(None, async { Ok(()) });
+    assert_eq!(
+        wait_for_controlled_watch_with_lifetime(
+            expires_at,
+            AUTHORITY_TERMINAL_MARGIN + Duration::from_secs(5),
+            &mut shutdown,
+            async {},
+        )
+        .await,
+        Ok((Ok(()), true))
+    );
+}
+
+#[tokio::test]
+async fn controlled_watch_rejects_expired_authority_before_waiting_for_shutdown() {
+    let expired = BuildExecutorCredentialExpiresAt::try_new(1).expect("positive expiry");
+    let mut shutdown = Box::pin(std::future::pending::<Result<(), PloyzctlExecutionError>>());
+    let error = wait_for_controlled_watch(expired, &mut shutdown, async {})
+        .await
+        .expect_err("expired authority fails before waiting");
+    assert!(error.to_string().contains("credential"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn pending_client_drain_fails_closed_at_the_response_budget() {
+    let drain = tokio::spawn(async {
+        bounded_client_drain(
+            std::future::pending::<Result<(), std::io::Error>>(),
+            "test cleanup",
+        )
+        .await
+    });
+    tokio::task::yield_now().await;
+    tokio::time::advance(BUILD_ENDPOINT_RESPONSE_MARGIN).await;
+    let error = drain
+        .await
+        .expect("drain task")
+        .expect_err("pending drain times out");
+    assert!(error.to_string().contains("timed out draining NATS client"));
+}
+
 #[tokio::test]
 async fn every_paused_startup_stage_is_interrupted_at_expiry() {
     let expires_at = future_expiry(60);
@@ -507,7 +608,7 @@ fn expired_authority_cannot_open_admission() {
     let at_expiry = std::time::UNIX_EPOCH + Duration::from_secs(100);
 
     let error = state
-        .open_admission_before_expiry_at(generation, expires_at, at_expiry)
+        .open_admission_before_terminal_margin_at(generation, expires_at, at_expiry)
         .expect_err("authority closes before admission");
     assert!(matches!(
         error,
@@ -521,20 +622,20 @@ fn expired_authority_cannot_open_admission() {
 }
 
 #[test]
-fn readiness_requires_open_connected_authority_before_expiry() {
+fn readiness_requires_open_connected_authority_before_terminal_margin() {
     let expires_at =
-        ployz_core::nats_config::BuildExecutorCredentialExpiresAt::try_new(101).expect("expiry");
-    let before_expiry = std::time::UNIX_EPOCH + Duration::from_millis(100_500);
-    let at_expiry = std::time::UNIX_EPOCH + Duration::from_secs(101);
+        ployz_core::nats_config::BuildExecutorCredentialExpiresAt::try_new(300).expect("expiry");
+    let before_margin = std::time::UNIX_EPOCH + Duration::from_secs(100);
+    let at_margin = std::time::UNIX_EPOCH + Duration::from_secs(195);
     let mut state = RuntimeState::new_connected();
 
-    assert!(!state.readiness_authorized_before_expiry_at(expires_at, before_expiry));
+    assert!(!state.readiness_authorized_before_terminal_margin_at(expires_at, before_margin));
     let generation = state.admission_generation().expect("connected generation");
     assert!(state.open_admission(generation));
-    assert!(state.readiness_authorized_before_expiry_at(expires_at, before_expiry));
-    assert!(!state.readiness_authorized_before_expiry_at(expires_at, at_expiry));
+    assert!(state.readiness_authorized_before_terminal_margin_at(expires_at, before_margin));
+    assert!(!state.readiness_authorized_before_terminal_margin_at(expires_at, at_margin));
     state.record_disconnected();
-    assert!(!state.readiness_authorized_before_expiry_at(expires_at, before_expiry));
+    assert!(!state.readiness_authorized_before_terminal_margin_at(expires_at, before_margin));
 }
 
 #[tokio::test]
@@ -548,7 +649,7 @@ async fn start_registration_atomically_closes_at_credential_expiry() {
     assert!(state.open_admission(generation));
 
     assert_eq!(
-        state.register_before_expiry_at(active, expires_at, at_expiry),
+        state.register_before_terminal_margin_at(active, expires_at, at_expiry),
         Err(BuildExecutorStartDomainError::RuntimeStopped)
     );
     assert_eq!(state.admission, RuntimeAdmission::Closed);

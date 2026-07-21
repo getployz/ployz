@@ -220,11 +220,9 @@ impl ConnectedExecutor {
                 (runtime_result, Ok(()))
             }
         };
-        let client_result = client.drain().await.map_err(|error| {
-            PloyzctlExecutionError::from(BuildExecutionError::ExecutorRuntime {
-                message: format!("failed to drain NATS client: {error}"),
-            })
-        });
+        let client_result = bounded_client_drain(client.drain(), "executor shutdown")
+            .await
+            .map_err(PloyzctlExecutionError::from);
         runtime_result?;
         service_result?;
         client_result
@@ -270,6 +268,14 @@ fn ensure_terminal_response_budget_at(
         });
     }
     Ok(())
+}
+
+fn has_terminal_response_budget_at(
+    credential_expires_at: BuildExecutorCredentialExpiresAt,
+    now: std::time::SystemTime,
+) -> bool {
+    credential_lifetime(credential_expires_at, now)
+        .is_ok_and(|remaining| remaining > AUTHORITY_TERMINAL_MARGIN)
 }
 
 fn ensure_startup_authority(
@@ -361,10 +367,7 @@ async fn finish_failed_startup(
     } else {
         Ok(())
     };
-    let client_result = client
-        .drain()
-        .await
-        .map_err(|error| executor_error(format!("failed to drain NATS client: {error}")));
+    let client_result = bounded_client_drain(client.drain(), "failed startup").await;
     runtime_result
         .and(client_result)
         .err()
@@ -485,11 +488,9 @@ pub(crate) async fn run_controlled(
             .shutdown()
             .await
             .map_err(PloyzctlExecutionError::from);
-        let client_result = cleanup_client.drain().await.map_err(|error| {
-            PloyzctlExecutionError::from(BuildExecutionError::ExecutorRuntime {
-                message: format!("failed to drain NATS client after cancelled startup: {error}"),
-            })
-        });
+        let client_result = bounded_client_drain(cleanup_client.drain(), "cancelled startup")
+            .await
+            .map_err(PloyzctlExecutionError::from);
         runtime_result?;
         client_result
     };
@@ -521,15 +522,8 @@ pub(crate) async fn run_controlled(
             .await
         }
         BuildExecutorRunMode::Watch => {
-            let wait = wait_for_controlled_stop(credential_expires_at);
-            tokio::pin!(wait);
-            tokio::select! {
-                biased;
-                result = &mut shutdown => {
-                    result.map(|()| (Ok(()), true))
-                },
-                result = &mut wait => Ok((result, false)),
-            }
+            let close_admission = session.runtime.close_admission();
+            wait_for_controlled_watch(credential_expires_at, &mut shutdown, close_admission).await
         }
     };
     let (wait_result, cancelled, control_error) = match wait_outcome {
@@ -684,25 +678,72 @@ fn credential_expiry_error(
     }
 }
 
-async fn wait_for_controlled_stop(
-    credential_expires_at: ployz_core::nats_config::BuildExecutorCredentialExpiresAt,
-) -> Result<(), BuildExecutionError> {
-    let expiry = credential_lifetime(credential_expires_at, std::time::SystemTime::now()).map_err(
-        |error| BuildExecutionError::ExecutorCredential {
+async fn wait_for_controlled_watch(
+    credential_expires_at: BuildExecutorCredentialExpiresAt,
+    shutdown: &mut (impl Future<Output = Result<(), PloyzctlExecutionError>> + Unpin),
+    close_admission: impl Future<Output = ()>,
+) -> Result<(Result<(), BuildExecutionError>, bool), PloyzctlExecutionError> {
+    let lifetime = credential_lifetime(credential_expires_at, std::time::SystemTime::now())
+        .map_err(|error| BuildExecutionError::ExecutorCredential {
             message: error.to_string(),
-        },
-    )?;
+        })?;
+    wait_for_controlled_watch_with_lifetime(
+        credential_expires_at,
+        lifetime,
+        shutdown,
+        close_admission,
+    )
+    .await
+}
+
+async fn wait_for_controlled_watch_with_lifetime(
+    credential_expires_at: BuildExecutorCredentialExpiresAt,
+    credential_lifetime: Duration,
+    shutdown: &mut (impl Future<Output = Result<(), PloyzctlExecutionError>> + Unpin),
+    close_admission: impl Future<Output = ()>,
+) -> Result<(Result<(), BuildExecutionError>, bool), PloyzctlExecutionError> {
+    let hard_expiry = tokio::time::sleep(credential_lifetime);
+    let pre_expiry =
+        tokio::time::sleep(credential_lifetime.saturating_sub(AUTHORITY_TERMINAL_MARGIN));
+    tokio::pin!(hard_expiry, pre_expiry);
     tokio::select! {
         biased;
-        () = tokio::time::sleep(expiry) => Err(BuildExecutionError::ExecutorCredential {
-            message: format!(
-                "Build Executor credential expired at Unix timestamp {}",
-                credential_expires_at.unix_seconds()
-            ),
-        }),
-        signal = tokio::signal::ctrl_c() => signal.map_err(|error| {
-            BuildExecutionError::ExecutorSignal { message: error.to_string() }
-        }),
+        result = &mut *shutdown => {
+            result?;
+            return Ok((Ok(()), true));
+        }
+        () = &mut hard_expiry => {
+            return Ok((Err(credential_expiry_error(credential_expires_at)), true));
+        }
+        () = &mut pre_expiry => {}
+    }
+    close_admission.await;
+    tokio::select! {
+        biased;
+        () = &mut hard_expiry => Ok((Err(credential_expiry_error(credential_expires_at)), true)),
+        result = &mut *shutdown => {
+            result?;
+            Ok((Ok(()), true))
+        }
+    }
+}
+
+async fn bounded_client_drain<E>(
+    drain: impl Future<Output = Result<(), E>>,
+    context: &'static str,
+) -> Result<(), BuildExecutionError>
+where
+    E: std::fmt::Display,
+{
+    match timeout(BUILD_ENDPOINT_RESPONSE_MARGIN, drain).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(executor_error(format!(
+            "failed to drain NATS client during {context}: {error}"
+        ))),
+        Err(_) => Err(executor_error(format!(
+            "timed out draining NATS client during {context} after {}ms",
+            BUILD_ENDPOINT_RESPONSE_MARGIN.as_millis()
+        ))),
     }
 }
 
@@ -1024,25 +1065,25 @@ impl RuntimeState {
         Ok(())
     }
 
-    fn ensure_accepting_before_expiry_at(
+    fn ensure_accepting_before_terminal_margin_at(
         &mut self,
         credential_expires_at: BuildExecutorCredentialExpiresAt,
         now: std::time::SystemTime,
     ) -> Result<(), BuildExecutorStartDomainError> {
-        if credential_lifetime(credential_expires_at, now).is_err() {
+        if !has_terminal_response_budget_at(credential_expires_at, now) {
             self.close_admission();
             return Err(BuildExecutorStartDomainError::RuntimeStopped);
         }
         self.ensure_accepting()
     }
 
-    fn register_before_expiry_at(
+    fn register_before_terminal_margin_at(
         &mut self,
         active: ActiveBuild,
         credential_expires_at: BuildExecutorCredentialExpiresAt,
         now: std::time::SystemTime,
     ) -> Result<(), BuildExecutorStartDomainError> {
-        self.ensure_accepting_before_expiry_at(credential_expires_at, now)?;
+        self.ensure_accepting_before_terminal_margin_at(credential_expires_at, now)?;
         self.active = Some(active);
         Ok(())
     }
@@ -1104,28 +1145,24 @@ impl RuntimeState {
         false
     }
 
-    fn open_admission_before_expiry_at(
+    fn open_admission_before_terminal_margin_at(
         &mut self,
         generation: AdmissionGeneration,
         credential_expires_at: BuildExecutorCredentialExpiresAt,
         now: std::time::SystemTime,
     ) -> Result<bool, BuildExecutionError> {
-        ensure_startup_authority_at(
-            credential_expires_at,
-            ExecutorStartupStage::AdmissionOpening,
-            now,
-        )?;
+        ensure_terminal_response_budget_at(credential_expires_at, now, AUTHORITY_TERMINAL_MARGIN)?;
         Ok(self.open_admission(generation))
     }
 
-    fn readiness_authorized_before_expiry_at(
+    fn readiness_authorized_before_terminal_margin_at(
         &self,
         credential_expires_at: BuildExecutorCredentialExpiresAt,
         now: std::time::SystemTime,
     ) -> bool {
         self.admission == RuntimeAdmission::Open
             && matches!(self.connection, RuntimeConnection::Connected(_))
-            && credential_lifetime(credential_expires_at, now).is_ok()
+            && has_terminal_response_budget_at(credential_expires_at, now)
     }
 }
 
@@ -1174,7 +1211,7 @@ impl ExternalBuildRuntime {
         credential_expires_at: BuildExecutorCredentialExpiresAt,
     ) -> Result<bool, BuildExecutionError> {
         let mut state = self.state.lock().await;
-        state.open_admission_before_expiry_at(
+        state.open_admission_before_terminal_margin_at(
             generation,
             credential_expires_at,
             std::time::SystemTime::now(),
@@ -1185,7 +1222,7 @@ impl ExternalBuildRuntime {
         self.state
             .lock()
             .await
-            .readiness_authorized_before_expiry_at(
+            .readiness_authorized_before_terminal_margin_at(
                 self.credential_expires_at,
                 std::time::SystemTime::now(),
             )
@@ -1198,7 +1235,7 @@ impl ExternalBuildRuntime {
         validate_start_provenance_and_timeout(&self.identity, &self.admission, &request)?;
         {
             let mut state = self.state.lock().await;
-            state.ensure_accepting_before_expiry_at(
+            state.ensure_accepting_before_terminal_margin_at(
                 self.credential_expires_at,
                 std::time::SystemTime::now(),
             )?;
@@ -1248,7 +1285,7 @@ impl ExternalBuildRuntime {
                 cancel,
                 supervisor: supervisor.abort_handle(),
             };
-            if let Err(error) = state.register_before_expiry_at(
+            if let Err(error) = state.register_before_terminal_margin_at(
                 active,
                 self.credential_expires_at,
                 std::time::SystemTime::now(),
