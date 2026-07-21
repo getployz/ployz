@@ -26,7 +26,7 @@ use ployz_nats::connect::{
 use ployz_nats::operation_api_client::OperationApiClient;
 use ployz_sdk_types::{MachineAddAccepted, MachineAddRequest, MachineListRequest};
 
-use super::join::{INSTALLER_WRAPPER_PATH, write_installer_wrapper};
+use super::join::{INSTALLER_WRAPPER_PATH, RELEASE_MANIFEST_PATH, write_installer_wrapper};
 use super::{CONNECT_TIMEOUT, NATS_MATERIAL_DIR, with_evidence};
 use ployz_test_support::fs::make_executable;
 use ployz_test_support::ids::machine_name;
@@ -220,9 +220,6 @@ async fn collect_cluster_material(docker: &Docker, core: &DindMachine) -> Cluste
 // Product quick-start path (machine init / machine add over stand-in ssh)
 // ---------------------------------------------------------------------------
 
-/// Where the harness writes the local release manifest inside a machine.
-const RELEASE_MANIFEST_PATH: &str = "/tmp/ployz-release.env";
-
 /// Host-side plumbing for product CLI runs against one machine: a
 /// docker-exec-backed stand-in `ssh` plus isolated product state.
 pub struct ProductCliHarness {
@@ -281,18 +278,20 @@ impl ProductCliHarness {
 
 /// Writes the release manifest the product `machine init` resolves artifacts
 /// from: the baked artifact mount as absolute-path sources with pinned shas.
-async fn write_release_manifest(docker: &Docker, core: &DindMachine, shas: &ArtifactShas) {
+async fn write_release_manifest(docker: &Docker, cluster: &DindCluster, shas: &ArtifactShas) {
     let target_platform = dind::platform(docker).await.expect("resolve DinD platform");
     let manifest = release_manifest(shas, target_platform);
-    write_file_in_container(
-        docker,
-        &core.container_id,
-        RELEASE_MANIFEST_PATH,
-        &manifest,
-        "0644",
-    )
-    .await
-    .expect("write release manifest");
+    for machine in std::iter::once(cluster.core()).chain(cluster.edges()) {
+        write_file_in_container(
+            docker,
+            &machine.container_id,
+            RELEASE_MANIFEST_PATH,
+            &manifest,
+            "0644",
+        )
+        .await
+        .expect("write release manifest");
+    }
 }
 
 fn release_manifest(shas: &ArtifactShas, target_platform: dind::DindPlatform) -> String {
@@ -337,7 +336,7 @@ async fn product_init_core(
     start_stub_lease_worker(docker, cluster).await;
 
     let shas = ArtifactShas::read(docker, &core).await;
-    write_release_manifest(docker, &core, &shas).await;
+    write_release_manifest(docker, cluster, &shas).await;
     write_installer_wrapper(docker, &core).await;
 
     let harness = ProductCliHarness::new(&core);
