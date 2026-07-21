@@ -104,6 +104,26 @@ fn failed_reload() -> NatsReloadOutcome {
     })
 }
 
+#[tokio::test(start_paused = true)]
+async fn credential_verification_rejects_a_late_authorization_disconnect() {
+    let connected = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let disconnect = tokio::spawn({
+        let connected = Arc::clone(&connected);
+        async move {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+            connected.store(false, Ordering::SeqCst);
+        }
+    });
+
+    assert!(
+        !connection_remains_authenticated(|| connected.load(Ordering::SeqCst)).await,
+        "the late authorization failure prevents credential admission"
+    );
+    disconnect
+        .await
+        .expect("scripted authorization disconnect completes");
+}
+
 async fn store_with(grants: &[CredentialGrant]) -> NatsAuthorizationStore {
     let store = NatsAuthorizationStore::new(CoreStore::open_in_memory().await.expect("store"));
     for grant in grants {

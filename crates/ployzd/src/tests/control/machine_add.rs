@@ -20,6 +20,7 @@ use ployz_core::nats_config::{
 };
 use ployz_core::operation::MachineAddOperationState;
 use ployz_core::operation::OperationStatus;
+use ployz_nats::connect::connect_authenticated;
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
 use ployz_nats::permissions::{parse_authorized_users, render_authorized_users};
 use ployz_nats::service_runtime::NatsServiceRequestFailure;
@@ -47,6 +48,7 @@ use crate::control::operation_evidence::{
 };
 use crate::control::store::CoreStore;
 use crate::recovery::{IntentMirror, PendingMachineJoinMirror};
+use ployz_core::security::NatsPrincipal;
 
 static MACHINE_ADD_MINT_TEST_LOCK: OnceLock<Arc<Mutex<()>>> = OnceLock::new();
 
@@ -744,6 +746,74 @@ async fn machine_join_redeem_waits_for_material_ready() {
 
     reload.release();
     redeem_when_ready(&join_api, &accepted.join_token).await;
+
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+}
+
+#[tokio::test]
+async fn machine_join_redeem_waits_for_credential_reload_to_apply() {
+    let _guard = lock_machine_add_mint_test().await;
+    let nats = TestNats::start().await;
+    let reload = RecordingReload::deferred_signal(nats.server().server_pid());
+    let config = nats.control_config();
+    let runtime = nats
+        .start_control_with_reload(&config, reload.clone())
+        .await;
+    let api = nats.api();
+    let join_api = nats.join_api();
+
+    let accepted = machine_add(
+        &api,
+        "op_reload_propagation",
+        "idem_reload_propagation",
+        "machine_reload_propagation",
+    )
+    .await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while reload.outcomes().is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("reload callback returns before NATS applies the credential");
+
+    let before_reload = join_api
+        .machine_join_redeem(&MachineJoinRedeemRequest {
+            join_token: accepted.join_token.clone(),
+        })
+        .await
+        .expect_err("join material stays unavailable until the credential is usable");
+    assert!(matches!(
+        before_reload,
+        OperationApiClientError::Domain {
+            error: MachineJoinRedeemError::MaterialNotReady { .. },
+            ..
+        }
+    ));
+
+    assert!(matches!(
+        reload.apply_deferred_signal(),
+        crate::control::authorization::NatsReloadOutcome::Reloaded(_)
+    ));
+    let redeemed = redeem_when_ready(&join_api, &accepted.join_token).await;
+    let machine_id = machine_id("machine_reload_propagation");
+    let machine_config = nats.server().config_with_seed(
+        NatsPrincipal::Machine {
+            machine_id: machine_id.clone(),
+        },
+        redeemed.secret_delivery.nats_credentials,
+    );
+    let machine = connect_authenticated(&machine_config, Duration::from_secs(2))
+        .await
+        .expect("redeemed machine credential connects");
+    NatsIntentReader::new(machine)
+        .with_request_timeout(Duration::from_secs(5))
+        .intent()
+        .await
+        .expect("redeemed machine credential performs an authorized Core query");
 
     runtime
         .shutdown()

@@ -844,8 +844,14 @@ async fn verify_credential(config: &NatsConnectConfig) -> Result<(), RenderFailu
     for _ in 0..VERIFY_ATTEMPTS {
         match connect_authenticated(config, VERIFY_CONNECT_TIMEOUT).await {
             Ok(client) => {
-                drop(client);
-                return Ok(());
+                if connection_remains_authenticated(|| {
+                    client.connection_state() == async_nats::connection::State::Connected
+                })
+                .await
+                {
+                    return Ok(());
+                }
+                last_error = "credential connection did not remain authenticated".to_owned();
             }
             Err(error) => {
                 last_error = error.to_string();
@@ -856,6 +862,15 @@ async fn verify_credential(config: &NatsConnectConfig) -> Result<(), RenderFailu
     Err(RenderFailure::Verify {
         message: last_error,
     })
+}
+
+async fn connection_remains_authenticated(is_connected: impl FnOnce() -> bool) -> bool {
+    // async-nats can expose Connected after the first non-error server frame,
+    // before a following authorization violation changes the connection state.
+    // Keep the verifier's client alive for one propagation interval so that
+    // delayed rejection is observed before join material becomes available.
+    tokio::time::sleep(VERIFY_RETRY_DELAY).await;
+    is_connected()
 }
 
 #[cfg(test)]
