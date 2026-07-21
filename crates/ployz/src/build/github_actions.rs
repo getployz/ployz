@@ -115,11 +115,22 @@ impl RunnerInputs {
     }
 
     fn audience(&self) -> Result<String, GithubActionsBuildError> {
-        self.cloud_url
-            .join("/github-actions-build-authority")
-            .map(|url| url.to_string())
-            .map_err(|_| GithubActionsBuildError::InvalidCloudUrl)
+        cloud_endpoint(&self.cloud_url, "github-actions-build-authority").map(|url| url.to_string())
     }
+}
+
+fn cloud_endpoint(
+    base: &reqwest::Url,
+    relative_path: &str,
+) -> Result<reqwest::Url, GithubActionsBuildError> {
+    let mut base = base.clone();
+    if !base.path().ends_with('/') {
+        let mut path = base.path().to_owned();
+        path.push('/');
+        base.set_path(&path);
+    }
+    base.join(relative_path)
+        .map_err(|_| GithubActionsBuildError::InvalidCloudUrl)
 }
 
 const REQUIRED_ENV: [&str; 8] = [
@@ -222,6 +233,7 @@ impl GithubActionsClient {
     fn new(cloud_url: reqwest::Url) -> Result<Self, GithubActionsBuildError> {
         let http = reqwest::Client::builder()
             .timeout(HTTP_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|_| GithubActionsBuildError::HttpUnavailable)?;
         Ok(Self { http, cloud_url })
@@ -262,10 +274,10 @@ impl GithubActionsClient {
         public_key: &NatsUserPublicKey,
         oidc_token: &str,
     ) -> Result<ExchangeResponse, GithubActionsBuildError> {
-        let url = self
-            .cloud_url
-            .join("/api/builds/github-actions-authority/exchange")
-            .map_err(|_| GithubActionsBuildError::InvalidCloudUrl)?;
+        let url = cloud_endpoint(
+            &self.cloud_url,
+            "api/builds/github-actions-authority/exchange",
+        )?;
         let response = self
             .http
             .post(url)
@@ -476,9 +488,10 @@ mod tests {
     async fn receive_request(
         listener: tokio::net::TcpListener,
         status: &'static str,
-        headers: &'static str,
+        headers: impl Into<String> + Send + 'static,
         body: String,
     ) -> String {
+        let headers = headers.into();
         let (mut stream, _) = listener.accept().await.expect("accept");
         let mut request = Vec::new();
         let header_end = loop {
@@ -558,6 +571,28 @@ mod tests {
             "https://cloud.example/github-actions-build-authority"
         );
         assert_eq!(inputs.platform.os(), "linux");
+    }
+
+    #[test]
+    fn cloud_authority_paths_preserve_the_validated_base_prefix() {
+        let base = validated_cloud_base_url(
+            "https://cloud.example/ployz/proxy",
+            CloudTransportPolicy::HttpsOnly,
+        )
+        .expect("cloud base");
+
+        assert_eq!(
+            cloud_endpoint(&base, "github-actions-build-authority")
+                .expect("audience URL")
+                .as_str(),
+            "https://cloud.example/ployz/proxy/github-actions-build-authority"
+        );
+        assert_eq!(
+            cloud_endpoint(&base, "api/builds/github-actions-authority/exchange")
+                .expect("exchange URL")
+                .as_str(),
+            "https://cloud.example/ployz/proxy/api/builds/github-actions-authority/exchange"
+        );
     }
 
     #[test]
@@ -767,7 +802,7 @@ mod tests {
         ));
         let platform = ployz_build_executor::native_oci_platform().expect("native platform");
         let client = GithubActionsClient::new(
-            reqwest::Url::parse(&format!("http://{address}")).expect("test URL"),
+            reqwest::Url::parse(&format!("http://{address}/proxy")).expect("test URL"),
         )
         .expect("client");
 
@@ -784,6 +819,7 @@ mod tests {
         assert_eq!(authority.operation_id.as_str(), "op_exact_assignment");
         assert_eq!(authority.expires_at.unix_seconds(), 1_784_548_800);
         let request = request.await.expect("server");
+        assert!(request.starts_with("POST /proxy/api/builds/github-actions-authority/exchange "));
         assert!(request.contains("authorization: Bearer oidc-secret\r\n"));
         assert!(request.contains(public_key.as_str()));
         assert!(!request.contains(minted.seed.secret()));
@@ -936,6 +972,50 @@ mod tests {
             );
             server.await.expect("server");
         }
+    }
+
+    #[tokio::test]
+    async fn authority_client_never_follows_redirects() {
+        let redirect_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("redirect listener");
+        let redirect_address = redirect_listener.local_addr().expect("redirect address");
+        let target_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("target listener");
+        let target_address = target_listener.local_addr().expect("target address");
+        let redirect = tokio::spawn(receive_request(
+            redirect_listener,
+            "302 Found",
+            format!("location: http://{target_address}/stolen\r\n"),
+            String::new(),
+        ));
+        let platform = ployz_build_executor::native_oci_platform().expect("native platform");
+        let public_key = MintedNatsUser::generate().expect("NKey").public;
+        let client = GithubActionsClient::new(
+            reqwest::Url::parse(&format!("http://{redirect_address}")).expect("test URL"),
+        )
+        .expect("client");
+
+        assert_eq!(
+            client
+                .exchange(
+                    "00000000-0000-4000-8000-000000000501",
+                    &platform,
+                    &public_key,
+                    "oidc-secret",
+                )
+                .await
+                .expect_err("redirect is not followed"),
+            GithubActionsBuildError::ExchangeFailed
+        );
+        redirect.await.expect("redirect server");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), target_listener.accept())
+                .await
+                .is_err(),
+            "redirect target must not receive the authority bearer token"
+        );
     }
 
     #[test]
