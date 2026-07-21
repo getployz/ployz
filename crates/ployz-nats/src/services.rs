@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use crate::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProductServiceName {
     Api,
@@ -227,6 +229,17 @@ impl NatsServiceEndpointSpec {
             subject: subject.into(),
             execution,
         }
+    }
+}
+
+impl From<OperationApiEndpoint> for NatsServiceEndpointSpec {
+    fn from(endpoint: OperationApiEndpoint) -> Self {
+        let execution = match endpoint.execution() {
+            OperationApiEndpointExecution::AcceptsOperation => EndpointExecution::AcceptsOperation,
+            OperationApiEndpointExecution::MutatesOperation => EndpointExecution::MutatesOperation,
+            OperationApiEndpointExecution::Query => EndpointExecution::Query,
+        };
+        Self::new(endpoint.name(), endpoint.subject(), execution)
     }
 }
 

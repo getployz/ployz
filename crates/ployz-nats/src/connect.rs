@@ -191,14 +191,6 @@ pub async fn connect_authenticated_pool(
     timeout: Duration,
 ) -> Result<async_nats::Client, NatsConnectError> {
     let options = authenticated_connect_options(config);
-    connect_authenticated_with_options(options, servers, timeout).await
-}
-
-async fn connect_authenticated_with_options(
-    options: async_nats::ConnectOptions,
-    servers: &[String],
-    timeout: Duration,
-) -> Result<async_nats::Client, NatsConnectError> {
     // async-nats tries each server in order, each under its own connection timeout.
     // `timeout` is the per-server budget; scale the total by the pool size so a
     // black-holed seed can't burn the whole budget before a live candidate is tried.

@@ -8,9 +8,9 @@ use ployz_nats::connect::{NatsConnectError, connect_authenticated};
 use ployz_nats::permissions::{parse_authorized_users, render_authorized_users};
 use ployz_nats::service_runtime::{NatsServiceResponse, start_nats_service};
 use ployz_nats::services::{
-    EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceMetadata, ServiceVersion,
+    NatsServiceEndpointSpec, NatsServiceSpec, ServiceMetadata, ServiceVersion,
 };
-use ployz_nats::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
+use ployz_nats::subjects::OperationApiEndpoint;
 use ployz_sdk_types::{
     MachineJoinRedeemError, MachineJoinRedeemResponse, MachineJoinToken, OperationApiResponse,
 };
@@ -177,12 +177,7 @@ async fn redeem_service(
     nats: &SecuredTestNats,
     response: impl Fn() -> MachineJoinRedeemResponse + Send + Sync + 'static,
 ) -> ployz_nats::service_runtime::RunningNatsService {
-    let endpoint = OperationApiEndpoint::MachineJoinRedeem;
-    let endpoint = NatsServiceEndpointSpec::new(
-        endpoint.name(),
-        endpoint.subject(),
-        endpoint_execution(endpoint.execution()),
-    );
+    let endpoint = NatsServiceEndpointSpec::from(OperationApiEndpoint::MachineJoinRedeem);
     let spec = NatsServiceSpec::new(
         "join-reload-test",
         "plz-api",
@@ -207,14 +202,6 @@ async fn redeem_service(
         .await
         .expect("redeem endpoint binds");
     service
-}
-
-const fn endpoint_execution(execution: OperationApiEndpointExecution) -> EndpointExecution {
-    match execution {
-        OperationApiEndpointExecution::AcceptsOperation => EndpointExecution::AcceptsOperation,
-        OperationApiEndpointExecution::MutatesOperation => EndpointExecution::MutatesOperation,
-        OperationApiEndpointExecution::Query => EndpointExecution::Query,
-    }
 }
 
 fn remove_join_authority(nats: &SecuredTestNats, original: &str) {
