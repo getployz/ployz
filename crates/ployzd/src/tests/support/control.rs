@@ -189,6 +189,7 @@ pub struct RecordingReload {
 #[derive(Clone)]
 enum ReloadBehavior {
     Signal(u32),
+    DeferredSignal(u32),
     GatedSignal {
         pid: u32,
         released: Arc<AtomicBool>,
@@ -219,6 +220,20 @@ impl RecordingReload {
         }
     }
 
+    pub fn deferred_signal(pid: u32) -> Self {
+        Self {
+            behavior: ReloadBehavior::DeferredSignal(pid),
+            outcomes: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    pub fn apply_deferred_signal(&self) -> NatsReloadOutcome {
+        let ReloadBehavior::DeferredSignal(pid) = &self.behavior else {
+            panic!("reload behavior is not deferred");
+        };
+        SignalNatsReloadRunner::new(*pid).reload()
+    }
+
     pub fn failing() -> Self {
         Self {
             behavior: ReloadBehavior::Fail,
@@ -243,7 +258,9 @@ impl RecordingReload {
             | ReloadBehavior::FailThenGatedSignal { released, .. } => {
                 released.store(true, Ordering::SeqCst);
             }
-            ReloadBehavior::Signal(_) | ReloadBehavior::Fail => {}
+            ReloadBehavior::Signal(_)
+            | ReloadBehavior::DeferredSignal(_)
+            | ReloadBehavior::Fail => {}
         }
     }
 
@@ -259,6 +276,10 @@ impl NatsReloadRunner for RecordingReload {
     fn reload(&self) -> NatsReloadOutcome {
         let outcome = match &self.behavior {
             ReloadBehavior::Signal(pid) => SignalNatsReloadRunner::new(*pid).reload(),
+            ReloadBehavior::DeferredSignal(_) => NatsReloadOutcome::Reloaded(NatsReloadEvidence {
+                command: "test-deferred-signal".to_owned(),
+                output: "reload accepted".to_owned(),
+            }),
             ReloadBehavior::GatedSignal { pid, released } => {
                 while !released.load(Ordering::SeqCst) {
                     std::thread::sleep(Duration::from_millis(10));
