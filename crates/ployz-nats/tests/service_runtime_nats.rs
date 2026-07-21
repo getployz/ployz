@@ -383,6 +383,7 @@ async fn deadline_endpoint_drops_pending_request_without_synthesizing_timeout() 
         .expect("authority deadline cancels the admitted handler")
         .expect("handler cancellation signal sends");
     assert_eq!(runtime.health().endpoint_tasks_finished, 1);
+    tokio::time::resume();
     assert!(
         timeout(Duration::from_millis(100), replies.next())
             .await
