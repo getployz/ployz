@@ -65,6 +65,7 @@ run_dind() {
   PLOYZ_DIND_E2E=1 \
     PLOYZ_DIND_MACHINE_IMAGE="${MACHINE_IMAGE}" \
     PLOYZ_DIND_ARTIFACT_DIR="${ARTIFACT_DIR}" \
+    PLOYZ_DIND_PLATFORM="${platform}" \
     cargo test -p ployz-e2e --test dind_cluster -- --test-threads="${workers}" --nocapture "$@"
 }
 

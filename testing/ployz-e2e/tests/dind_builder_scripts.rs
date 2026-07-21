@@ -217,6 +217,10 @@ fn filtered_dind_reuses_matching_substrate_and_unfiltered_is_full() {
     assert!(log.contains("index .Config.Labels \"dev.ployz.dind.fingerprint\""));
     assert!(log.contains("--env CARGO_INCREMENTAL=1"));
     assert!(!log.contains("pull --platform"));
+    assert!(
+        log.contains("cargo-env PLOYZ_DIND_PLATFORM=linux/amd64"),
+        "DinD wrapper must pass its normalized platform to the test process: {log}"
+    );
 
     for identity in ["", "linux/arm64 wrong", "linux/amd64 stale"] {
         fixture.clear_log();
@@ -256,7 +260,10 @@ impl FakeDocker {
             r#"#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "${PLOYZ_FAKE_LOG}"
-if [ "${0##*/}" = cargo ]; then exit 0; fi
+if [ "${0##*/}" = cargo ]; then
+  printf 'cargo-env PLOYZ_DIND_PLATFORM=%s\n' "${PLOYZ_DIND_PLATFORM:-}" >> "${PLOYZ_FAKE_LOG}"
+  exit 0
+fi
 case "${1:-}" in
   info) printf 'amd64\n' ;;
   buildx)

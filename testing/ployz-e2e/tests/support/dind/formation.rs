@@ -282,7 +282,9 @@ impl ProductCliHarness {
 /// Writes the release manifest the product `machine init` resolves artifacts
 /// from: the baked artifact mount as absolute-path sources with pinned shas.
 async fn write_release_manifest(docker: &Docker, core: &DindMachine, shas: &ArtifactShas) {
-    let manifest = release_manifest(shas);
+    let target_platform = std::env::var("PLOYZ_DIND_PLATFORM")
+        .expect("PLOYZ_DIND_PLATFORM must be set by scripts/dind-e2e.sh");
+    let manifest = release_manifest(shas, &target_platform);
     write_file_in_container(
         docker,
         &core.container_id,
@@ -294,10 +296,20 @@ async fn write_release_manifest(docker: &Docker, core: &DindMachine, shas: &Arti
     .expect("write release manifest");
 }
 
-fn release_manifest(shas: &ArtifactShas) -> String {
+fn release_manifest_platform(target_platform: &str) -> &'static str {
+    match target_platform {
+        "linux/amd64" => "linux-amd64",
+        "linux/arm64" => "linux-arm64",
+        unsupported => panic!("unsupported normalized DinD platform {unsupported}"),
+    }
+}
+
+fn release_manifest(shas: &ArtifactShas, target_platform: &str) -> String {
     let railpack_version = railpack_pins().expect("checked-in Railpack pins").version();
+    let release_platform = release_manifest_platform(target_platform);
     let manifest = format!(
         "PLOYZ_VERSION=local\n\
+         PLOYZ_RELEASE_PLATFORM={release_platform}\n\
          PLOYZD_URL={ARTIFACTS_MOUNT_PATH}/ployzd\n\
          PLOYZD_SHA256={}\n\
          PLOYZ_EBPF_TC_URL={ARTIFACTS_MOUNT_PATH}/ployz-ebpf-tc\n\
@@ -572,19 +584,22 @@ pub async fn finish(core: CoreContext) {
 
 #[cfg(test)]
 mod tests {
-    use super::{ARTIFACTS_MOUNT_PATH, ArtifactShas, release_manifest};
+    use super::{ARTIFACTS_MOUNT_PATH, ArtifactShas, release_manifest, release_manifest_platform};
     use ployz_core::build::railpack_pins;
 
     #[test]
     fn release_manifest_includes_pinned_railpack_artifact() {
-        let manifest = release_manifest(&ArtifactShas {
-            ployzd: "ployzd-sha".to_owned(),
-            ebpf_bytecode: "ebpf-bytecode-sha".to_owned(),
-            ebpf_ctl: "ebpf-ctl-sha".to_owned(),
-            railpack: "railpack-sha".to_owned(),
-            nats_server: "nats-sha".to_owned(),
-            nats_server_version: "2.14.2".to_owned(),
-        });
+        let manifest = release_manifest(
+            &ArtifactShas {
+                ployzd: "ployzd-sha".to_owned(),
+                ebpf_bytecode: "ebpf-bytecode-sha".to_owned(),
+                ebpf_ctl: "ebpf-ctl-sha".to_owned(),
+                railpack: "railpack-sha".to_owned(),
+                nats_server: "nats-sha".to_owned(),
+                nats_server_version: "2.14.2".to_owned(),
+            },
+            "linux/arm64",
+        );
 
         for required in [
             &format!(
@@ -593,11 +608,24 @@ mod tests {
             ),
             &format!("PLOYZ_RAILPACK_URL={ARTIFACTS_MOUNT_PATH}/railpack"),
             "PLOYZ_RAILPACK_SHA256=railpack-sha",
+            "PLOYZ_RELEASE_PLATFORM=linux-arm64",
         ] {
             assert!(
                 manifest.lines().any(|line| line == required),
                 "release manifest omitted {required:?}: {manifest}"
             );
         }
+    }
+
+    #[test]
+    fn dind_platforms_map_to_release_manifest_slugs() {
+        assert_eq!(release_manifest_platform("linux/amd64"), "linux-amd64");
+        assert_eq!(release_manifest_platform("linux/arm64"), "linux-arm64");
+    }
+
+    #[test]
+    #[should_panic(expected = "unsupported normalized DinD platform linux/riscv64")]
+    fn unsupported_dind_platform_fails_loudly() {
+        let _ = release_manifest_platform("linux/riscv64");
     }
 }
