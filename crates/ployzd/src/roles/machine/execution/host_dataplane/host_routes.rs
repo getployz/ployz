@@ -167,7 +167,7 @@ impl HostDataplaneRouteProgramming {
     ) -> Vec<HostCommandPlan> {
         let mut args = vec![
             "route".to_owned(),
-            "sync-ifname".to_owned(),
+            "replace-all-ifname".to_owned(),
             self.wg_ifname.clone(),
         ];
         args.extend(
@@ -206,7 +206,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn route_programming_adds_only_peer_endpoint_subnets() {
+    fn route_programming_replaces_whole_map_with_only_peer_endpoint_subnets() {
         let route_programming = HostDataplaneRouteProgramming {
             ebpf_ctl_program: "/usr/local/bin/ployz-ebpf-ctl".to_owned(),
             bridge_ifname: "br-ployz".to_owned(),
@@ -284,7 +284,7 @@ mod tests {
             requirements.contains(&HostCommandPlan::provisioning_command(
                 PloyzNativeMeshComponent::EbpfForwarding,
                 "/usr/local/bin/ployz-ebpf-ctl",
-                ["route", "sync-ifname", "ployz-wg0", "10.42.2.0/24"]
+                ["route", "replace-all-ifname", "ployz-wg0", "10.42.2.0/24"]
             ))
         );
         assert!(!requirements.iter().any(|plan| {
@@ -297,6 +297,29 @@ mod tests {
                 } if args.iter().any(|arg| arg == "10.42.1.0/24")
             )
         }));
+    }
+
+    #[test]
+    fn route_programming_replaces_whole_map_with_empty_set_without_peers() {
+        let route_programming = HostDataplaneRouteProgramming {
+            ebpf_ctl_program: "/usr/local/bin/ployz-ebpf-ctl".to_owned(),
+            bridge_ifname: "br-ployz".to_owned(),
+            wg_ifname: "ployz-wg0".to_owned(),
+            ebpf_pin_path: None,
+        };
+        let routes = [WireGuardEbpfEndpointRoute {
+            machine_id: machine_id("machine_a"),
+            endpoint_subnet: "10.42.1.0/24".to_owned(),
+        }];
+
+        assert_eq!(
+            route_programming.ebpf_plans_for(&machine_id("machine_a"), &routes),
+            [HostCommandPlan::provisioning_command(
+                PloyzNativeMeshComponent::EbpfForwarding,
+                "/usr/local/bin/ployz-ebpf-ctl",
+                ["route", "replace-all-ifname", "ployz-wg0"]
+            )]
+        );
     }
 
     #[test]

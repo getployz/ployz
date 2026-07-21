@@ -20,15 +20,17 @@ mod host_commands;
 mod host_network;
 mod host_routes;
 mod host_status;
+mod wireguard_reconciliation;
 
 #[cfg(test)]
 use host_commands::HostCommandAction;
 use host_commands::{HostCommandPlan, HostDataplaneEvidence, default_command_plans, unavailable};
 pub use host_network::WireGuardMtuPolicy;
 pub(crate) use host_network::resolve_wireguard_mtu;
-use host_network::{ensure_private_key, ensure_wireguard_interface, public_key_from_private_key};
+use host_network::{ensure_private_key, public_key_from_private_key};
 use host_routes::HostDataplaneRouteProgramming;
 pub(crate) use host_status::dataplane_status_budget;
+use wireguard_reconciliation::{WireGuardReconciliation, ensure_wireguard_interface};
 
 const HOST_DATAPLANE_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 pub const DEFAULT_WIREGUARD_PRIVATE_KEY: &str = "/etc/ployz/wireguard.key";
@@ -89,6 +91,7 @@ pub struct PloyzNativeMeshPreparer {
     listen_port: u16,
     mtu_policy: WireGuardMtuPolicy,
     wg_ifname: String,
+    interface_mutation: Arc<tokio::sync::Mutex<()>>,
     endpoint_rotation: Arc<WireGuardEndpointRotation>,
     command_timeout: Duration,
 }
@@ -108,6 +111,7 @@ impl PloyzNativeMeshPreparer {
             ebpf_pin_path,
         } = config;
         let ebpf_ctl_program = ebpf_ctl_path.display().to_string();
+        let interface_mutation = Arc::new(tokio::sync::Mutex::new(()));
         Self {
             machine_id,
             plans: default_command_plans(
@@ -125,7 +129,11 @@ impl PloyzNativeMeshPreparer {
                 wg_ifname: wg_ifname.clone(),
                 ebpf_pin_path,
             }),
-            endpoint_rotation: Arc::new(WireGuardEndpointRotation::new(wg_ifname.clone())),
+            endpoint_rotation: Arc::new(WireGuardEndpointRotation::new(
+                wg_ifname.clone(),
+                Arc::clone(&interface_mutation),
+            )),
+            interface_mutation,
             public_key: HostWireGuardPublicKey::LocalKey {
                 private_key_path: private_key_path.clone(),
             },
@@ -142,11 +150,16 @@ impl PloyzNativeMeshPreparer {
         machine_id: MachineId,
         plans: impl IntoIterator<Item = HostCommandPlan>,
     ) -> Self {
+        let interface_mutation = Arc::new(tokio::sync::Mutex::new(()));
         Self {
             machine_id,
             plans: plans.into_iter().collect(),
             route_programming: None,
-            endpoint_rotation: Arc::new(WireGuardEndpointRotation::new(String::new())),
+            endpoint_rotation: Arc::new(WireGuardEndpointRotation::new(
+                String::new(),
+                Arc::clone(&interface_mutation),
+            )),
+            interface_mutation,
             public_key: HostWireGuardPublicKey::Static(
                 WireGuardPublicKey::try_new("test-public-key").expect("test public key is valid"),
             ),
@@ -205,7 +218,7 @@ impl MachinePloyzNativeMeshPreparer for PloyzNativeMeshPreparer {
         peers: &[WireGuardPeer],
     ) -> Result<WireGuardReady, WireGuardEbpfPrepareError> {
         let mut wireguard = Vec::new();
-        let reconciliation = self.endpoint_rotation.reconciliation.lock().await;
+        let _interface_mutation = self.interface_mutation.lock().await;
         if !self.wg_ifname.is_empty() {
             let private_key = ensure_private_key(&self.private_key_path).map_err(|message| {
                 unavailable(
@@ -215,15 +228,17 @@ impl MachinePloyzNativeMeshPreparer for PloyzNativeMeshPreparer {
                 )
             })?;
             let mtu = resolve_wireguard_mtu(self.mtu_policy, &self.wg_ifname).await;
-            ensure_wireguard_interface(
-                &self.wg_ifname,
-                &private_key,
-                self.listen_port,
+            ensure_wireguard_interface(WireGuardReconciliation {
+                ifname: &self.wg_ifname,
+                private_key: &private_key,
+                private_key_path: &self.private_key_path,
+                listen_port: self.listen_port,
                 mtu,
                 endpoint_routes,
                 peers,
-                &self.machine_id,
-            )
+                local_machine_id: &self.machine_id,
+                command_timeout: self.command_timeout,
+            })
             .await
             .map_err(|message| {
                 unavailable(
@@ -266,7 +281,6 @@ impl MachinePloyzNativeMeshPreparer for PloyzNativeMeshPreparer {
             peers,
             self.command_timeout,
         );
-        drop(reconciliation);
         // The plans above already provisioned the WireGuard interface, so
         // the public key only needs to be read here.
         let public_key = self
@@ -396,7 +410,7 @@ struct WireGuardEndpointRotation {
     /// for the life of the mesh preparer and exits when the preparer is dropped (its
     /// `Weak` upgrade fails), so there is no stop/restart to coordinate.
     spawned: AtomicBool,
-    reconciliation: tokio::sync::Mutex<()>,
+    interface_mutation: Arc<tokio::sync::Mutex<()>>,
     peers: Mutex<std::collections::BTreeMap<String, RotatingWireGuardPeer>>,
 }
 
@@ -409,11 +423,11 @@ struct RotatingWireGuardPeer {
 }
 
 impl WireGuardEndpointRotation {
-    fn new(wg_ifname: String) -> Self {
+    fn new(wg_ifname: String, interface_mutation: Arc<tokio::sync::Mutex<()>>) -> Self {
         Self {
             wg_ifname,
             spawned: AtomicBool::new(false),
-            reconciliation: tokio::sync::Mutex::new(()),
+            interface_mutation,
             peers: Mutex::new(std::collections::BTreeMap::new()),
         }
     }
@@ -464,12 +478,14 @@ impl WireGuardEndpointRotation {
             let key = peer.public_key.as_str().to_owned();
             present.insert(key.clone());
             match state.get_mut(&key) {
-                Some(existing) if existing.endpoints == peer.candidate_endpoints => {}
                 Some(existing) => {
-                    existing.endpoints = peer.candidate_endpoints.clone();
-                    if !existing.endpoints.contains(&existing.active_endpoint) {
-                        existing.active_endpoint = peer.active_endpoint;
-                        existing.last_endpoint_change = Instant::now();
+                    existing.endpoint_subnet.clone_from(&peer.endpoint_subnet);
+                    if existing.endpoints != peer.candidate_endpoints {
+                        existing.endpoints = peer.candidate_endpoints.clone();
+                        if !existing.endpoints.contains(&existing.active_endpoint) {
+                            existing.active_endpoint = peer.active_endpoint;
+                            existing.last_endpoint_change = Instant::now();
+                        }
                     }
                 }
                 None => {
@@ -489,7 +505,7 @@ impl WireGuardEndpointRotation {
     }
 
     async fn rotate_once(&self, _command_timeout: Duration) {
-        let _reconciliation = self.reconciliation.lock().await;
+        let _interface_mutation = self.interface_mutation.lock().await;
         let Some(handshakes) = read_latest_handshakes(&self.wg_ifname).await else {
             return;
         };
@@ -595,7 +611,7 @@ mod tests {
 
     #[test]
     fn rotations_due_advances_a_never_connected_peer_after_the_settle_window() {
-        let rotation = WireGuardEndpointRotation::new("wg-test".to_owned());
+        let rotation = test_endpoint_rotation();
         let a: std::net::SocketAddr = "1.2.3.4:51820".parse().expect("addr");
         let b: std::net::SocketAddr = "5.6.7.8:51820".parse().expect("addr");
         rotation.peers.lock().expect("lock").insert(
@@ -620,7 +636,7 @@ mod tests {
 
     #[test]
     fn rotations_due_holds_a_freshly_rotated_peer_within_the_settle_window() {
-        let rotation = WireGuardEndpointRotation::new("wg-test".to_owned());
+        let rotation = test_endpoint_rotation();
         let a: std::net::SocketAddr = "1.2.3.4:51820".parse().expect("addr");
         let b: std::net::SocketAddr = "5.6.7.8:51820".parse().expect("addr");
         rotation.peers.lock().expect("lock").insert(
@@ -638,6 +654,49 @@ mod tests {
             rotation
                 .rotations_due(&std::collections::BTreeMap::new())
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn intent_refreshes_rotating_peer_subnet_without_resetting_progress() {
+        let rotation = test_endpoint_rotation();
+        let a: std::net::SocketAddr = "1.2.3.4:51820".parse().expect("addr");
+        let b: std::net::SocketAddr = "5.6.7.8:51820".parse().expect("addr");
+        let public_key =
+            WireGuardPublicKey::try_new(defguard_wireguard_rs::key::Key::generate().to_string())
+                .expect("public key");
+        let machine = machine_id("machine_b");
+        rotation.update_peers(
+            machine_id("machine_a"),
+            &[WireGuardPeer {
+                machine_id: machine.clone(),
+                endpoint_subnet: "10.42.2.0/24".to_owned(),
+                active_endpoint: a,
+                candidate_endpoints: vec![a, b],
+                public_key: public_key.clone(),
+            }],
+        );
+        {
+            let mut state = rotation.peers.lock().expect("lock");
+            let peer = state.get_mut(public_key.as_str()).expect("tracked peer");
+            peer.last_endpoint_change = Instant::now()
+                .checked_sub(ENDPOINT_SETTLE * 2)
+                .expect("past instant");
+        }
+        rotation.update_peers(
+            machine_id("machine_a"),
+            &[WireGuardPeer {
+                machine_id: machine,
+                endpoint_subnet: "10.42.9.0/24".to_owned(),
+                active_endpoint: a,
+                candidate_endpoints: vec![a, b],
+                public_key: public_key.clone(),
+            }],
+        );
+
+        assert_eq!(
+            rotation.rotations_due(&std::collections::BTreeMap::new()),
+            vec![(public_key.as_str().to_owned(), b, "10.42.9.0/24".to_owned())]
         );
     }
 
@@ -818,6 +877,10 @@ mod tests {
 
     fn machine_id(value: &str) -> MachineId {
         MachineId::try_new(value).expect("valid machine id")
+    }
+
+    fn test_endpoint_rotation() -> WireGuardEndpointRotation {
+        WireGuardEndpointRotation::new("wg-test".to_owned(), Arc::new(tokio::sync::Mutex::new(())))
     }
 
     fn with_wireguard_evidence(plan: HostCommandPlan) -> [HostCommandPlan; 2] {

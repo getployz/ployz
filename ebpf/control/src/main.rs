@@ -52,13 +52,8 @@ fn run(args: Vec<String>) -> Result<EbpfCtlOutcome, String> {
             return attachment_status(&bridge_ifname, pin_path);
         }
         EbpfCtlCommand::Route { action } => match action {
-            RouteCommand::Add { subnet, ifindex } => route_add(subnet, ifindex, pin_path),
-            RouteCommand::AddIfname { subnet, ifname } => {
-                route_add_ifname(subnet, &ifname, pin_path)
-            }
-            RouteCommand::Del { subnet } => route_del(subnet, pin_path),
-            RouteCommand::SyncIfname { ifname, subnets } => {
-                route_sync_ifname(&ifname, &subnets, pin_path)
+            RouteCommand::ReplaceAllIfname { ifname, subnets } => {
+                route_replace_all_ifname(&ifname, &subnets, pin_path)
             }
         },
     }
@@ -103,21 +98,7 @@ enum EbpfCtlCommand {
 
 #[derive(Debug, Subcommand)]
 enum RouteCommand {
-    Add {
-        #[arg(value_parser = parse_ipv4_subnet)]
-        subnet: ipnet::Ipv4Net,
-        ifindex: u32,
-    },
-    AddIfname {
-        #[arg(value_parser = parse_ipv4_subnet)]
-        subnet: ipnet::Ipv4Net,
-        ifname: String,
-    },
-    Del {
-        #[arg(value_parser = parse_ipv4_subnet)]
-        subnet: ipnet::Ipv4Net,
-    },
-    SyncIfname {
+    ReplaceAllIfname {
         ifname: String,
         #[arg(value_parser = parse_ipv4_subnet)]
         subnets: Vec<ipnet::Ipv4Net>,
@@ -226,63 +207,21 @@ fn attachment_status(_bridge: &str, _pin_path: Option<&str>) -> Result<EbpfCtlOu
 }
 
 #[cfg(target_os = "linux")]
-fn route_add(subnet: ipnet::Ipv4Net, ifindex: u32, pin_path: Option<&str>) -> Result<(), String> {
-    linux::route_add(subnet, ifindex, pin_path.unwrap_or(DEFAULT_PIN_PATH))
-}
-
-#[cfg(not(target_os = "linux"))]
-fn route_add(
-    _subnet: ipnet::Ipv4Net,
-    _ifindex: u32,
-    _pin_path: Option<&str>,
-) -> Result<(), String> {
-    Err("route add requires Linux".to_owned())
-}
-
-#[cfg(target_os = "linux")]
-fn route_add_ifname(
-    subnet: ipnet::Ipv4Net,
-    ifname: &str,
-    pin_path: Option<&str>,
-) -> Result<(), String> {
-    linux::route_add_ifname(subnet, ifname, pin_path.unwrap_or(DEFAULT_PIN_PATH))
-}
-
-#[cfg(not(target_os = "linux"))]
-fn route_add_ifname(
-    _subnet: ipnet::Ipv4Net,
-    _ifname: &str,
-    _pin_path: Option<&str>,
-) -> Result<(), String> {
-    Err("route add-ifname requires Linux".to_owned())
-}
-
-#[cfg(target_os = "linux")]
-fn route_del(subnet: ipnet::Ipv4Net, pin_path: Option<&str>) -> Result<(), String> {
-    linux::route_del(subnet, pin_path.unwrap_or(DEFAULT_PIN_PATH))
-}
-
-#[cfg(not(target_os = "linux"))]
-fn route_del(_subnet: ipnet::Ipv4Net, _pin_path: Option<&str>) -> Result<(), String> {
-    Err("route del requires Linux".to_owned())
-}
-
-#[cfg(target_os = "linux")]
-fn route_sync_ifname(
+fn route_replace_all_ifname(
     ifname: &str,
     subnets: &[ipnet::Ipv4Net],
     pin_path: Option<&str>,
 ) -> Result<(), String> {
-    linux::route_sync_ifname(ifname, subnets, pin_path.unwrap_or(DEFAULT_PIN_PATH))
+    linux::route_replace_all_ifname(ifname, subnets, pin_path.unwrap_or(DEFAULT_PIN_PATH))
 }
 
 #[cfg(not(target_os = "linux"))]
-fn route_sync_ifname(
+fn route_replace_all_ifname(
     _ifname: &str,
     _subnets: &[ipnet::Ipv4Net],
     _pin_path: Option<&str>,
 ) -> Result<(), String> {
-    Err("route sync-ifname requires Linux".to_owned())
+    Err("route replace-all-ifname requires Linux".to_owned())
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -294,9 +233,27 @@ fn subnet_to_key(subnet: ipnet::Ipv4Net) -> ployz_ebpf_common::RouteKey {
     }
 }
 
+#[cfg(any(target_os = "linux", test))]
+fn stale_route_keys(
+    observed: &[ployz_ebpf_common::RouteKey],
+    desired: &[ployz_ebpf_common::RouteKey],
+) -> Vec<ployz_ebpf_common::RouteKey> {
+    observed
+        .iter()
+        .copied()
+        .filter(|observed| {
+            !desired.iter().any(|desired| {
+                desired.network == observed.network && desired.prefix_len == observed.prefix_len
+            })
+        })
+        .collect()
+}
+
 #[cfg(target_os = "linux")]
 mod linux {
-    use super::{EbpfCtlOutcome, subnet_to_key, tc_filter_has_program, validate_bytecode};
+    use super::{
+        EbpfCtlOutcome, stale_route_keys, subnet_to_key, tc_filter_has_program, validate_bytecode,
+    };
     use aya::Ebpf;
     use aya::programs::links::{FdLink, LinkOrder, PinnedLink};
     use aya::programs::tc::{NlOptions, TcAttachOptions};
@@ -556,31 +513,7 @@ mod linux {
         .all(|path| Path::new(path).exists())
     }
 
-    pub fn route_add(subnet: ipnet::Ipv4Net, ifindex: u32, pin_path: &str) -> Result<(), String> {
-        let mut map = open_routes_map(pin_path)?;
-        map.insert(
-            PodRouteKey(subnet_to_key(subnet)),
-            PodRouteEntry(RouteEntry { ifindex }),
-            0,
-        )
-        .map_err(|error| format!("insert route {subnet}: {error}"))
-    }
-
-    pub fn route_add_ifname(
-        subnet: ipnet::Ipv4Net,
-        ifname: &str,
-        pin_path: &str,
-    ) -> Result<(), String> {
-        route_add(subnet, resolve_ifindex(ifname)?, pin_path)
-    }
-
-    pub fn route_del(subnet: ipnet::Ipv4Net, pin_path: &str) -> Result<(), String> {
-        let mut map = open_routes_map(pin_path)?;
-        let _ = map.remove(&PodRouteKey(subnet_to_key(subnet)));
-        Ok(())
-    }
-
-    pub fn route_sync_ifname(
+    pub fn route_replace_all_ifname(
         ifname: &str,
         subnets: &[ipnet::Ipv4Net],
         pin_path: &str,
@@ -600,13 +533,10 @@ mod linux {
             .keys()
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| format!("list pinned routes: {error}"))?;
-        for key in observed {
-            if !desired.iter().any(|desired| {
-                desired.network == key.0.network && desired.prefix_len == key.0.prefix_len
-            }) {
-                map.remove(&key)
-                    .map_err(|error| format!("remove stale route: {error}"))?;
-            }
+        let observed = observed.iter().map(|key| key.0).collect::<Vec<_>>();
+        for key in stale_route_keys(&observed, &desired) {
+            map.remove(&PodRouteKey(key))
+                .map_err(|error| format!("remove stale route: {error}"))?;
         }
         Ok(())
     }
@@ -662,6 +592,21 @@ mod tests {
     }
 
     #[test]
+    fn whole_map_replacement_selects_only_observed_keys_absent_from_desired() {
+        let retained = subnet_to_key("10.42.2.0/24".parse().expect("valid subnet"));
+        let stale = subnet_to_key("10.42.3.0/24".parse().expect("valid subnet"));
+        let new = subnet_to_key("10.42.4.0/24".parse().expect("valid subnet"));
+
+        let selected = stale_route_keys(&[retained, stale], &[retained, new]);
+
+        let [selected] = selected.as_slice() else {
+            panic!("exactly one stale route expected: {}", selected.len());
+        };
+        assert_eq!(selected.network, stale.network);
+        assert_eq!(selected.prefix_len, stale.prefix_len);
+    }
+
+    #[test]
     fn invalid_commands_report_usage() {
         let error = run(Vec::new()).expect_err("empty args fail");
 
@@ -675,14 +620,15 @@ mod tests {
             "--pin-path".to_owned(),
             "/sys/fs/bpf/ployz-core".to_owned(),
             "route".to_owned(),
-            "add".to_owned(),
+            "replace-all-ifname".to_owned(),
+            "missing-wg".to_owned(),
             "10.42.2.0/24".to_owned(),
-            "7".to_owned(),
         ])
-        .expect_err("route add requires Linux on this test platform");
+        .expect_err("route replacement requires a live Linux interface and map");
 
         assert!(
-            error.contains("route add requires Linux")
+            error.contains("route replace-all-ifname requires Linux")
+                || error.contains("interface missing-wg not found")
                 || error.contains("No such file")
                 || error.contains("open pinned ROUTES map")
         );
@@ -692,13 +638,26 @@ mod tests {
     fn invalid_subnet_is_rejected_before_route_execution() {
         let error = run(vec![
             "route".to_owned(),
-            "add".to_owned(),
+            "replace-all-ifname".to_owned(),
+            "ployz-wg0".to_owned(),
             "not-a-subnet".to_owned(),
-            "1".to_owned(),
         ])
         .expect_err("invalid subnet fails");
 
         assert!(error.contains("invalid IPv4 subnet"));
+    }
+
+    #[test]
+    fn legacy_route_mutation_commands_are_not_exposed() {
+        for action in ["add", "add-ifname", "del", "sync-ifname"] {
+            let error = EbpfCtlCli::try_parse_from(["ployz-ebpf-ctl", "route", action])
+                .expect_err("legacy route command must be rejected")
+                .to_string();
+            assert!(
+                error.contains("unrecognized subcommand"),
+                "{action}: {error}"
+            );
+        }
     }
 
     #[test]
