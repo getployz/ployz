@@ -26,7 +26,7 @@ use crate::plan::{
 };
 use crate::plan::{HostRunnerPlanTerminal, execute_host_runner_plan};
 use crate::release_manifest::{ReleaseManifest, ReleasePlatform, release_manifest_url};
-use ployz_core::install::{ExactPloyzVersion, MachineJoinClusterName, MachineJoinRuntimeNatsUrl};
+use ployz_core::install::{MachineJoinClusterName, MachineJoinRuntimeNatsUrl};
 
 use crate::env_config::{default_machine_join_template_file, load_versioned_release_manifest};
 use crate::runtime::{
@@ -55,22 +55,39 @@ pub(crate) fn run_core_promote_command(promote: HostRunnerCorePromote) -> ExitCo
             return ExitCode::FAILURE;
         }
     };
-    let release = promotion_release(&installed_release, promote.version.as_ref());
-    let manifest = match load_promotion_manifest(&installed_release, promote.version.as_ref()) {
+    let installed_manifest = match load_installed_promotion_manifest(&installed_release) {
         Ok(manifest) => manifest,
         Err(message) => {
             eprintln!("{message}");
             return ExitCode::FAILURE;
         }
     };
-    if manifest.version() != &release {
+    if installed_manifest.version() != &installed_release.release.version {
         eprintln!(
-            "release manifest version {} does not match selected promotion release {}",
-            manifest.version().as_str(),
-            release.as_str()
+            "installed release manifest version {} does not match installed substrate release {}",
+            installed_manifest.version().as_str(),
+            installed_release.release.version.as_str()
         );
         return ExitCode::FAILURE;
     }
+    let requested_nats_manifest = match promote.version.as_ref() {
+        Some(version) => match load_versioned_release_manifest(&release_manifest_url(version)) {
+            Ok(manifest) if manifest.version() == version => Some(manifest),
+            Ok(manifest) => {
+                eprintln!(
+                    "requested release manifest version {} does not match requested NATS release {}",
+                    manifest.version().as_str(),
+                    version.as_str()
+                );
+                return ExitCode::FAILURE;
+            }
+            Err(message) => {
+                eprintln!("{message}");
+                return ExitCode::FAILURE;
+            }
+        },
+        None => None,
+    };
     let local_platform =
         match ReleasePlatform::from_target(std::env::consts::OS, std::env::consts::ARCH) {
             Ok(platform) => platform,
@@ -79,18 +96,16 @@ pub(crate) fn run_core_promote_command(promote: HostRunnerCorePromote) -> ExitCo
                 return ExitCode::FAILURE;
             }
         };
-    let artifacts = match manifest.install_artifacts_for(local_platform) {
+    let (artifacts, nats_server_spec) = match promotion_artifacts(
+        &installed_manifest,
+        requested_nats_manifest.as_ref(),
+        local_platform,
+    ) {
         Ok(artifacts) => artifacts,
         Err(message) => {
-            eprintln!("release manifest is invalid: {message}");
+            eprintln!("core promotion release manifest is invalid: {message}");
             return ExitCode::FAILURE;
         }
-    };
-    // A promoted core runs its own nats-server; a manifest without one (a dev
-    // substrate push) cannot promote.
-    let Some(nats_server_spec) = artifacts.nats_server else {
-        eprintln!("release manifest carries no nats-server artifact; core-promote requires one");
-        return ExitCode::FAILURE;
     };
     let nats_server_artifact = match artifact_target(
         ArtifactKind::NatsServer,
@@ -196,25 +211,12 @@ pub(crate) fn run_core_promote_command(promote: HostRunnerCorePromote) -> ExitCo
     }
 }
 
-fn promotion_release(
+fn load_installed_promotion_manifest(
     installed: &InstalledSubstrateRelease,
-    requested: Option<&ExactPloyzVersion>,
-) -> ExactPloyzVersion {
-    requested
-        .cloned()
-        .unwrap_or_else(|| installed.release.version.clone())
-}
-
-fn load_promotion_manifest(
-    installed: &InstalledSubstrateRelease,
-    requested: Option<&ExactPloyzVersion>,
 ) -> Result<ReleaseManifest, String> {
-    if let Some(url) = public_promotion_manifest_url(installed, requested) {
-        return load_versioned_release_manifest(&url);
-    }
     match &installed.manifest_source {
         InstalledSubstrateManifestSource::PublicExactRelease => {
-            unreachable!("public exact releases always produce a manifest URL")
+            load_versioned_release_manifest(&release_manifest_url(&installed.release.version))
         }
         InstalledSubstrateManifestSource::PersistedManifest { contents } => {
             ReleaseManifest::parse(contents).map_err(|error| {
@@ -224,18 +226,30 @@ fn load_promotion_manifest(
     }
 }
 
-fn public_promotion_manifest_url(
-    installed: &InstalledSubstrateRelease,
-    requested: Option<&ExactPloyzVersion>,
-) -> Option<String> {
-    requested
-        .or(match &installed.manifest_source {
-            InstalledSubstrateManifestSource::PublicExactRelease => {
-                Some(&installed.release.version)
-            }
-            InstalledSubstrateManifestSource::PersistedManifest { .. } => None,
-        })
-        .map(release_manifest_url)
+fn promotion_artifacts(
+    installed_manifest: &ReleaseManifest,
+    requested_nats_manifest: Option<&ReleaseManifest>,
+    local_platform: ReleasePlatform,
+) -> Result<
+    (
+        ployz_core::install::FirstMachineInstallArtifacts,
+        ployz_core::install::NatsServerInstallSpec,
+    ),
+    String,
+> {
+    let mut artifacts = installed_manifest.install_artifacts_for(local_platform)?;
+    if let Some(manifest) = requested_nats_manifest {
+        artifacts.nats_server = manifest.nats_server_install_spec_for(local_platform)?;
+    }
+    let nats_server = artifacts.nats_server.take().ok_or_else(|| {
+        if requested_nats_manifest.is_some() {
+            "requested release manifest carries no nats-server artifact".to_owned()
+        } else {
+            "installed substrate manifest carries no nats-server artifact; pass --version to select one"
+                .to_owned()
+        }
+    })?;
+    Ok((artifacts, nats_server))
 }
 
 fn check_core_promote_preflight() -> Result<(), String> {
@@ -449,11 +463,10 @@ mod tests {
         InstalledSubstrateRelease, load_installed_substrate_release,
         store_installed_substrate_release,
     };
-    use crate::release_manifest::release_manifest_url;
+    use crate::release_manifest::{ReleaseManifest, ReleasePlatform, release_manifest_url};
 
     use super::{
-        load_promotion_manifest, promoted_assigned_substrate, promotion_release,
-        public_promotion_manifest_url,
+        load_installed_promotion_manifest, promoted_assigned_substrate, promotion_artifacts,
     };
 
     #[test]
@@ -510,69 +523,139 @@ mod tests {
     }
 
     #[test]
-    fn promotion_defaults_to_installed_release_and_accepts_an_explicit_override() {
+    fn promotion_without_override_keeps_installed_manifest_provenance() {
         let state_dir = tempfile::tempdir().expect("state dir");
-        let founder_selected = MachineJoinSubstrateRelease {
-            version: ExactPloyzVersion::try_new("0.1.0").expect("exact installed release"),
-        };
-        let installed_release = InstalledSubstrateRelease::public_exact(founder_selected.clone());
+        let platform = local_platform();
+        let contents = manifest_contents(platform, "dev-installed", "installed", Some("2.14.2"));
+        let installed_release = InstalledSubstrateRelease::persisted_manifest(
+            MachineJoinSubstrateRelease {
+                version: ExactPloyzVersion::try_new("dev-installed")
+                    .expect("exact installed release"),
+            },
+            contents,
+        )
+        .expect("installed provenance is valid");
         store_installed_substrate_release(state_dir.path(), &installed_release)
             .expect("join-installed release persists");
         let installed = load_installed_substrate_release(state_dir.path())
             .expect("promotion loads installed release");
+        let manifest = load_installed_promotion_manifest(&installed)
+            .expect("promotion reloads installed source");
+        let (artifacts, nats) = promotion_artifacts(&manifest, None, platform)
+            .expect("installed manifest carries promotion artifacts");
 
-        assert_eq!(
-            promotion_release(&installed, None),
-            founder_selected.version
-        );
-
-        let requested = ExactPloyzVersion::try_new("0.2.0").expect("exact requested release");
-        assert_eq!(promotion_release(&installed, Some(&requested)), requested);
+        assert_eq!(manifest.version().as_str(), "dev-installed");
+        assert_eq!(artifacts.ployzd.source.as_str(), "https://installed/ployzd");
+        assert_eq!(nats.source.as_str(), "https://installed/nats-server");
     }
 
     #[test]
-    fn promotion_reloads_the_manifest_persisted_by_a_local_update() {
+    fn promotion_override_replaces_only_nats_server() {
+        let platform = local_platform();
+        let installed = ReleaseManifest::parse(&manifest_contents(
+            platform,
+            "dev-installed",
+            "installed",
+            Some("2.13.0"),
+        ))
+        .expect("installed manifest parses");
+        let requested_version =
+            ExactPloyzVersion::try_new("0.2.0").expect("exact requested release");
+        let requested_contents = manifest_contents(
+            platform,
+            requested_version.as_str(),
+            "requested",
+            Some("2.14.2"),
+        )
+        .replace("https://requested/ployzd", "unused-relative-ployzd");
+        let requested =
+            ReleaseManifest::parse(&requested_contents).expect("requested manifest parses");
+
+        let (artifacts, nats) = promotion_artifacts(&installed, Some(&requested), platform)
+            .expect("override supplies NATS");
+        let ployzd = crate::plan::PloyzReleaseArtifact::try_new(
+            crate::execution::artifact_target(
+                crate::execution::ArtifactKind::Ployzd,
+                &artifacts.ployzd,
+            )
+            .expect("installed ployzd artifact is valid"),
+        )
+        .expect("installed Ployz identity is exact");
+
+        assert_eq!(artifacts.ployzd.source.as_str(), "https://installed/ployzd");
+        assert_eq!(
+            artifacts.ebpf_bytecode.source.as_str(),
+            "https://installed/ployz-ebpf-tc"
+        );
+        assert_eq!(
+            artifacts.railpack.source.as_str(),
+            "https://installed/railpack"
+        );
+        assert_eq!(nats.version.as_str(), "2.14.2");
+        assert_eq!(nats.source.as_str(), "https://requested/nats-server");
+        assert_eq!(ployzd.substrate_release().version.as_str(), "dev-installed");
+        assert_eq!(
+            release_manifest_url(&requested_version),
+            format!(
+                "https://github.com/getployz/ployz/releases/download/v0.2.0/ployz-release-{}.env",
+                platform.manifest_slug()
+            )
+        );
+    }
+
+    #[test]
+    fn promotion_without_override_reports_missing_installed_nats() {
+        let platform = local_platform();
+        let installed = ReleaseManifest::parse(&manifest_contents(
+            platform,
+            "dev-installed",
+            "installed",
+            None,
+        ))
+        .expect("installed manifest parses");
+
+        let error = promotion_artifacts(&installed, None, platform)
+            .expect_err("promotion requires installed NATS without override");
+
+        assert_eq!(
+            error,
+            "installed substrate manifest carries no nats-server artifact; pass --version to select one"
+        );
+    }
+
+    fn local_platform() -> ReleasePlatform {
+        ReleasePlatform::from_target(std::env::consts::OS, std::env::consts::ARCH)
+            .expect("tests run on a supported release platform")
+    }
+
+    fn manifest_contents(
+        platform: ReleasePlatform,
+        version: &str,
+        source: &str,
+        nats_version: Option<&str>,
+    ) -> String {
         let sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-        let contents = format!(
-            "PLOYZ_RELEASE_PLATFORM=linux-amd64\n\
-             PLOYZ_VERSION=dev-aabbccdd\n\
-             PLOYZD_URL=/var/lib/ployz/dev/ployzd\n\
+        let nats = nats_version.map_or_else(String::new, |nats_version| {
+            format!(
+                "PLOYZ_NATS_SERVER_VERSION={nats_version}\n\
+                 PLOYZ_NATS_SERVER_URL=https://{source}/nats-server\n\
+                 PLOYZ_NATS_SERVER_SHA256={sha}\n"
+            )
+        });
+        format!(
+            "PLOYZ_RELEASE_PLATFORM={}\n\
+             PLOYZ_VERSION={version}\n\
+             PLOYZD_URL=https://{source}/ployzd\n\
              PLOYZD_SHA256={sha}\n\
-             PLOYZ_EBPF_TC_URL=/var/lib/ployz/dev/ployz-ebpf-tc\n\
+             PLOYZ_EBPF_TC_URL=https://{source}/ployz-ebpf-tc\n\
              PLOYZ_EBPF_TC_SHA256={sha}\n\
-             PLOYZ_EBPF_CTL_URL=/var/lib/ployz/dev/ployz-ebpf-ctl\n\
+             PLOYZ_EBPF_CTL_URL=https://{source}/ployz-ebpf-ctl\n\
              PLOYZ_EBPF_CTL_SHA256={sha}\n\
              PLOYZ_RAILPACK_VERSION=v0.31.0\n\
-             PLOYZ_RAILPACK_URL=https://example.test/railpack\n\
+             PLOYZ_RAILPACK_URL=https://{source}/railpack\n\
              PLOYZ_RAILPACK_SHA256={sha}\n\
-             PLOYZ_NATS_SERVER_VERSION=2.14.2\n\
-             PLOYZ_NATS_SERVER_URL=https://example.test/nats-server\n\
-             PLOYZ_NATS_SERVER_SHA256={sha}\n"
-        );
-        let installed = InstalledSubstrateRelease::persisted_manifest(
-            MachineJoinSubstrateRelease {
-                version: ExactPloyzVersion::try_new("dev-aabbccdd").expect("exact release"),
-            },
-            contents,
+             {nats}",
+            platform.manifest_slug()
         )
-        .expect("local update provenance persists");
-
-        let manifest = load_promotion_manifest(&installed, None).expect("promotion reloads source");
-
-        assert_eq!(manifest.version().as_str(), "dev-aabbccdd");
-        assert!(
-            manifest
-                .install_artifacts()
-                .expect("artifacts remain available")
-                .nats_server
-                .is_some()
-        );
-
-        let requested = ExactPloyzVersion::try_new("0.2.0").expect("exact requested release");
-        let expected_url = release_manifest_url(&requested);
-        assert_eq!(
-            public_promotion_manifest_url(&installed, Some(&requested)).as_deref(),
-            Some(expected_url.as_str())
-        );
     }
 }

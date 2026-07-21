@@ -133,14 +133,16 @@ impl ReleaseManifest {
         &self,
         local_platform: ReleasePlatform,
     ) -> Result<FirstMachineInstallArtifacts, String> {
-        if self.platform != local_platform {
-            return Err(format!(
-                "release manifest platform {} does not match host platform {}",
-                self.platform.manifest_slug(),
-                local_platform.manifest_slug()
-            ));
-        }
+        self.require_platform(local_platform)?;
         self.install_artifacts()
+    }
+
+    pub fn nats_server_install_spec_for(
+        &self,
+        local_platform: ReleasePlatform,
+    ) -> Result<Option<NatsServerInstallSpec>, String> {
+        self.require_platform(local_platform)?;
+        self.nats_server_install_spec()
     }
 
     pub fn install_artifacts(&self) -> Result<FirstMachineInstallArtifacts, String> {
@@ -169,25 +171,39 @@ impl ReleaseManifest {
                 &self.railpack.sha256,
                 &self.railpack.install_path,
             )?,
-            nats_server: self
-                .nats_server
-                .as_ref()
-                .map(|entry| {
-                    Ok::<_, String>(NatsServerInstallSpec {
-                        version: InstallArtifactVersion::try_new(&entry.version)
-                            .map_err(|error| error.to_string())?,
-                        source: InstallArtifactSource::try_new(&entry.url)
-                            .map_err(|error| error.to_string())?,
-                        sha256: InstallSha256Digest::try_new(&entry.sha256)
-                            .map_err(|error| error.to_string())?,
-                        binary: AbsoluteInstallPath::try_new("/usr/local/bin/nats-server")
-                            .map_err(|error| error.to_string())?,
-                        config: AbsoluteInstallPath::try_new("/etc/nats/nats-server.conf")
-                            .map_err(|error| error.to_string())?,
-                    })
-                })
-                .transpose()?,
+            nats_server: self.nats_server_install_spec()?,
         })
+    }
+
+    fn require_platform(&self, local_platform: ReleasePlatform) -> Result<(), String> {
+        if self.platform == local_platform {
+            return Ok(());
+        }
+        Err(format!(
+            "release manifest platform {} does not match host platform {}",
+            self.platform.manifest_slug(),
+            local_platform.manifest_slug()
+        ))
+    }
+
+    fn nats_server_install_spec(&self) -> Result<Option<NatsServerInstallSpec>, String> {
+        self.nats_server
+            .as_ref()
+            .map(|entry| {
+                Ok(NatsServerInstallSpec {
+                    version: InstallArtifactVersion::try_new(&entry.version)
+                        .map_err(|error| error.to_string())?,
+                    source: InstallArtifactSource::try_new(&entry.url)
+                        .map_err(|error| error.to_string())?,
+                    sha256: InstallSha256Digest::try_new(&entry.sha256)
+                        .map_err(|error| error.to_string())?,
+                    binary: AbsoluteInstallPath::try_new("/usr/local/bin/nats-server")
+                        .map_err(|error| error.to_string())?,
+                    config: AbsoluteInstallPath::try_new("/etc/nats/nats-server.conf")
+                        .map_err(|error| error.to_string())?,
+                })
+            })
+            .transpose()
     }
 }
 
