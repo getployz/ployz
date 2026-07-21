@@ -283,7 +283,7 @@
           ],
           "runtime_nats_url": "nats://127.0.0.1:7422",
           "substrate_release": {
-            "version": "v0.1.0"
+            "version": "0.1.0"
           },
           "trusted_nats": {
             "ca_pem": "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"
@@ -321,7 +321,7 @@
           ],
           "runtime_nats_url": "nats://127.0.0.1:7422",
           "substrate_release": {
-            "version": "v0.1.0"
+            "version": "0.1.0"
           },
           "trusted_nats": {
             "ca_pem": "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"
