@@ -58,6 +58,7 @@ pub(super) async fn start_executor_service(
     identity: BuildExecutorIdentity,
     runtime: ExternalBuildRuntime,
     completion: CompletionMode,
+    authority_deadline: tokio::time::Instant,
 ) -> Result<RunningNatsService, BuildExecutionError> {
     let endpoints = executor_endpoints(&identity);
     let [readiness_endpoint, start_endpoint, cancel_endpoint] = &endpoints;
@@ -83,11 +84,15 @@ pub(super) async fn start_executor_service(
     let readiness_identity = identity.clone();
     let readiness_runtime = runtime.clone();
     service
-        .bind_endpoint(readiness_endpoint, move |request| {
-            let identity = readiness_identity.clone();
-            let runtime = readiness_runtime.clone();
-            async move { handle_readiness(identity, runtime, request).await }
-        })
+        .bind_endpoint_with_policy(
+            readiness_endpoint,
+            EndpointExecutionPolicy::default().with_authority_deadline(authority_deadline),
+            move |request| {
+                let identity = readiness_identity.clone();
+                let runtime = readiness_runtime.clone();
+                async move { handle_readiness(identity, runtime, request).await }
+            },
+        )
         .await
         .map_err(|error| executor_error(error.to_string()))?;
 
@@ -95,7 +100,8 @@ pub(super) async fn start_executor_service(
     service
         .bind_endpoint_with_policy(
             start_endpoint,
-            EndpointExecutionPolicy::new(NonZeroUsize::MIN, BUILD_START_ENDPOINT_TIMEOUT),
+            EndpointExecutionPolicy::new(NonZeroUsize::MIN, BUILD_START_ENDPOINT_TIMEOUT)
+                .with_authority_deadline(authority_deadline),
             move |request| {
                 let runtime = start_runtime.clone();
                 let completion = completion.clone();
@@ -110,10 +116,14 @@ pub(super) async fn start_executor_service(
         .map_err(|error| executor_error(error.to_string()))?;
 
     service
-        .bind_endpoint(cancel_endpoint, move |request| {
-            let runtime = runtime.clone();
-            async move { handle_cancel(runtime, request).await }
-        })
+        .bind_endpoint_with_policy(
+            cancel_endpoint,
+            EndpointExecutionPolicy::default().with_authority_deadline(authority_deadline),
+            move |request| {
+                let runtime = runtime.clone();
+                async move { handle_cancel(runtime, request).await }
+            },
+        )
         .await
         .map_err(|error| executor_error(error.to_string()))?;
     Ok(service)

@@ -484,6 +484,86 @@ async fn controlled_shutdown_drops_partial_startup_before_cleanup() {
 }
 
 #[tokio::test]
+async fn controlled_startup_cancellation_stops_an_accepted_build_before_returning() {
+    let nats = ployz_test_support::nats::TestNats::start().await;
+    let workspace = tempfile::tempdir().expect("workspace");
+    let expires_at = future_expiry(60);
+    let state = Arc::new(Mutex::new(RuntimeState::new_connected()));
+    let generation = state
+        .lock()
+        .await
+        .admission_generation()
+        .expect("connected generation");
+    assert!(state.lock().await.open_admission(generation));
+    let runtime = ExternalBuildRuntime::new(
+        identity(),
+        nats.controller.clone(),
+        workspace.path().to_owned(),
+        BuildExecutorAdmission::AnyOperation,
+        expires_at,
+        Arc::clone(&state),
+    );
+    let request = start_request();
+    let operation_id = request.operation_id.clone();
+    let (cancel, mut cancel_rx) = watch::channel(false);
+    let (cancelled_tx, cancelled_rx) = oneshot::channel();
+    let task_runtime = runtime.clone();
+    let task_operation_id = operation_id.clone();
+    let supervisor = tokio::spawn(async move {
+        cancel_rx
+            .changed()
+            .await
+            .expect("shutdown sends cancellation");
+        assert!(*cancel_rx.borrow());
+        let _ = cancelled_tx.send(());
+        task_runtime.remove_active(&task_operation_id).await;
+    });
+    state.lock().await.active = Some(ActiveBuild {
+        operation_id,
+        assignment: request.assignment,
+        platform: request.platform,
+        cancel,
+        supervisor: supervisor.abort_handle(),
+    });
+
+    let service_dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let startup_service = StartupStageDrop(Arc::clone(&service_dropped));
+    let (startup_paused_tx, startup_paused_rx) = oneshot::channel();
+    let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
+    tokio::spawn(async move {
+        startup_paused_rx.await.expect("startup reaches pause");
+        shutdown_tx.send(()).expect("controlled shutdown sends");
+    });
+    let cleanup_runtime = runtime.clone();
+    let cleanup_saw_service_drop = Arc::clone(&service_dropped);
+    let result = await_startup_or_shutdown(
+        async move {
+            let _startup_service = startup_service;
+            startup_paused_tx.send(()).expect("startup reports pause");
+            std::future::pending::<Result<(), BuildExecutionError>>().await
+        },
+        &mut shutdown_rx,
+        async move {
+            assert!(
+                cleanup_saw_service_drop.load(std::sync::atomic::Ordering::SeqCst),
+                "partial service drops before runtime cleanup"
+            );
+            cleanup_runtime.shutdown().await
+        },
+    )
+    .await
+    .expect("controlled cleanup succeeds");
+
+    assert_eq!(result, None);
+    timeout(Duration::from_secs(1), cancelled_rx)
+        .await
+        .expect("accepted build cancellation is bounded")
+        .expect("accepted build observes cancellation");
+    supervisor.await.expect("accepted supervisor exits");
+    assert!(state.lock().await.active.is_none());
+}
+
+#[tokio::test]
 async fn terminal_admission_never_reopens_and_closing_does_not_cancel_active_build() {
     let (active, cancelled, task) = active_build("op_build_first");
     let mut state = accepting_state(Some(active));

@@ -47,7 +47,6 @@ const SHUTDOWN_TIMEOUT: Duration = BUILD_TASK_DRAIN_TIMEOUT
 
 struct ExecutorStartup {
     workspace: WorkspaceStartup,
-    admission: BuildExecutorAdmission,
     credential_expires_at: BuildExecutorCredentialExpiresAt,
 }
 
@@ -56,6 +55,12 @@ struct ConnectedExecutor {
     runtime: ExternalBuildRuntime,
     service: RunningNatsService,
     admission_opened: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExecutorShutdownMode {
+    Graceful,
+    Force,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,17 +86,21 @@ impl ConnectedExecutor {
     async fn start(
         identity: BuildExecutorIdentity,
         client: async_nats::Client,
-        workspace_root: PathBuf,
         completion: CompletionMode,
-        state: Arc<Mutex<RuntimeState>>,
         admission_generation: AdmissionGeneration,
+        runtime: ExternalBuildRuntime,
         startup: ExecutorStartup,
     ) -> Result<Self, BuildExecutionError> {
         let ExecutorStartup {
             workspace,
-            admission,
             credential_expires_at,
         } = startup;
+        let authority_deadline = match executor_authority_deadline(credential_expires_at) {
+            Ok(deadline) => deadline,
+            Err(error) => {
+                return Err(finish_failed_startup(error, client, Some(&runtime), None).await);
+            }
+        };
         let readiness = match await_startup_stage(
             credential_expires_at,
             ExecutorStartupStage::ReadinessProbe,
@@ -101,17 +110,9 @@ impl ConnectedExecutor {
         {
             Ok(readiness) => readiness,
             Err(error) => {
-                return Err(finish_failed_startup(error, client, None, None).await);
+                return Err(finish_failed_startup(error, client, Some(&runtime), None).await);
             }
         };
-        let runtime = ExternalBuildRuntime::new(
-            identity.clone(),
-            client.clone(),
-            workspace_root,
-            admission,
-            credential_expires_at,
-            state,
-        );
         if workspace == WorkspaceStartup::Recover
             && readiness.capability != BuildExecutorCapability::RuntimeUnavailable
             && let Err(error) = await_startup_stage(
@@ -126,7 +127,13 @@ impl ConnectedExecutor {
         let service = match await_startup_stage(
             credential_expires_at,
             ExecutorStartupStage::ServiceBinding,
-            start_executor_service(client.clone(), identity, runtime.clone(), completion),
+            start_executor_service(
+                client.clone(),
+                identity,
+                runtime.clone(),
+                completion,
+                authority_deadline,
+            ),
         )
         .await
         {
@@ -170,18 +177,37 @@ impl ConnectedExecutor {
         })
     }
 
-    async fn shutdown(self) -> Result<(), PloyzctlExecutionError> {
-        let runtime_result = self
-            .runtime
-            .shutdown()
-            .await
-            .map_err(PloyzctlExecutionError::from);
-        let service_result = self.service.shutdown().await.map_err(|error| {
-            PloyzctlExecutionError::from(BuildExecutionError::ExecutorRuntime {
-                message: error.to_string(),
-            })
-        });
-        let client_result = self.client.drain().await.map_err(|error| {
+    async fn shutdown(self, mode: ExecutorShutdownMode) -> Result<(), PloyzctlExecutionError> {
+        let ConnectedExecutor {
+            client,
+            runtime,
+            service,
+            admission_opened: _,
+        } = self;
+        runtime.close_admission().await;
+        let (runtime_result, service_result) = match mode {
+            ExecutorShutdownMode::Graceful => {
+                let runtime_result = runtime
+                    .shutdown()
+                    .await
+                    .map_err(PloyzctlExecutionError::from);
+                let service_result = service.shutdown().await.map_err(|error| {
+                    PloyzctlExecutionError::from(BuildExecutionError::ExecutorRuntime {
+                        message: error.to_string(),
+                    })
+                });
+                (runtime_result, service_result)
+            }
+            ExecutorShutdownMode::Force => {
+                drop(service);
+                let runtime_result = runtime
+                    .shutdown()
+                    .await
+                    .map_err(PloyzctlExecutionError::from);
+                (runtime_result, Ok(()))
+            }
+        };
+        let client_result = client.drain().await.map_err(|error| {
             PloyzctlExecutionError::from(BuildExecutionError::ExecutorRuntime {
                 message: format!("failed to drain NATS client: {error}"),
             })
@@ -190,6 +216,19 @@ impl ConnectedExecutor {
         service_result?;
         client_result
     }
+}
+
+fn executor_authority_deadline(
+    credential_expires_at: BuildExecutorCredentialExpiresAt,
+) -> Result<Instant, BuildExecutionError> {
+    let now = Instant::now();
+    let lifetime = credential_lifetime(credential_expires_at, std::time::SystemTime::now())
+        .map_err(|error| startup_credential_error(ExecutorStartupStage::ReadinessProbe, error))?;
+    now.checked_add(lifetime)
+        .ok_or_else(|| BuildExecutionError::ExecutorCredential {
+            message: "Build Executor credential expiry exceeds the monotonic clock range"
+                .to_owned(),
+        })
 }
 
 fn ensure_startup_authority(
@@ -275,16 +314,9 @@ async fn finish_failed_startup(
     runtime: Option<&ExternalBuildRuntime>,
     service: Option<RunningNatsService>,
 ) -> BuildExecutionError {
+    drop(service);
     let runtime_result = if let Some(runtime) = runtime {
         runtime.shutdown().await
-    } else {
-        Ok(())
-    };
-    let service_result = if let Some(service) = service {
-        service
-            .shutdown()
-            .await
-            .map_err(|error| executor_error(error.to_string()))
     } else {
         Ok(())
     };
@@ -293,7 +325,6 @@ async fn finish_failed_startup(
         .await
         .map_err(|error| executor_error(format!("failed to drain NATS client: {error}")));
     runtime_result
-        .and(service_result)
         .and(client_result)
         .err()
         .unwrap_or(startup_error)
@@ -387,29 +418,42 @@ pub(crate) async fn run_controlled(
         .await
         .admission_generation()
         .expect("controlled mode initializes a connected generation");
+    let runtime = ExternalBuildRuntime::new(
+        identity.clone(),
+        client.clone(),
+        workspace_root,
+        command.admission,
+        credential_expires_at,
+        state,
+    );
     let cleanup_client = client.clone();
+    let cleanup_runtime = runtime.clone();
     let startup = ConnectedExecutor::start(
         identity,
         client,
-        workspace_root,
         CompletionMode::once(terminal_tx),
-        state,
         admission_generation,
+        runtime,
         ExecutorStartup {
             workspace: workspace_startup,
-            admission: command.admission,
             credential_expires_at,
         },
     );
     let session = if let Some(shutdown) = &mut shutdown {
         let cleanup = async move {
-            cleanup_client.drain().await.map_err(|error| {
+            let runtime_result = cleanup_runtime
+                .shutdown()
+                .await
+                .map_err(PloyzctlExecutionError::from);
+            let client_result = cleanup_client.drain().await.map_err(|error| {
                 PloyzctlExecutionError::from(BuildExecutionError::ExecutorRuntime {
                     message: format!(
                         "failed to drain NATS client after cancelled startup: {error}"
                     ),
                 })
-            })
+            });
+            runtime_result?;
+            client_result
         };
         let startup = async move { startup.await.map_err(PloyzctlExecutionError::from) };
         let Some(session) = await_startup_or_shutdown(startup, shutdown, cleanup).await? else {
@@ -420,7 +464,7 @@ pub(crate) async fn run_controlled(
         startup.await?
     };
     if !session.admission_opened {
-        session.shutdown().await?;
+        session.shutdown(ExecutorShutdownMode::Force).await?;
         return Err(BuildExecutionError::ExecutorConnection {
             message: "Build Executor disconnected before admission opened".to_owned(),
         }
@@ -439,15 +483,20 @@ pub(crate) async fn run_controlled(
         }
     };
     tokio::pin!(wait);
-    let wait_result = if let Some(shutdown) = &mut shutdown {
+    let (wait_result, cancelled) = if let Some(shutdown) = &mut shutdown {
         tokio::select! {
-            result = &mut wait => result,
-            _ = shutdown => Ok(()),
+            result = &mut wait => (result, false),
+            _ = shutdown => (Ok(()), true),
         }
     } else {
-        wait.await
+        (wait.await, false)
     };
-    let shutdown_result = session.shutdown().await;
+    let shutdown_mode = if cancelled || credential_expired(&wait_result) {
+        ExecutorShutdownMode::Force
+    } else {
+        ExecutorShutdownMode::Graceful
+    };
+    let shutdown_result = session.shutdown(shutdown_mode).await;
     finish_executor_session(wait_result, shutdown_result)?;
     Ok(controlled_stopped_output())
 }
@@ -510,23 +559,34 @@ async fn run_connected_once(
         .await
         .admission_generation()
         .expect("once mode initializes a connected generation");
+    let runtime = ExternalBuildRuntime::new(
+        identity.clone(),
+        client.clone(),
+        workspace_root,
+        admission,
+        credential_expires_at,
+        state,
+    );
     let session = ConnectedExecutor::start(
         identity,
         client,
-        workspace_root,
         CompletionMode::once(terminal_tx),
-        state,
         admission_generation,
+        runtime,
         ExecutorStartup {
             workspace: WorkspaceStartup::Recover,
-            admission,
             credential_expires_at,
         },
     )
     .await?;
     let wait_result =
         wait_for_once_terminal(terminal_rx, wait_timeout, credential_expires_at).await;
-    let shutdown_result = session.shutdown().await;
+    let shutdown_mode = if credential_expired(&wait_result) {
+        ExecutorShutdownMode::Force
+    } else {
+        ExecutorShutdownMode::Graceful
+    };
+    let shutdown_result = session.shutdown(shutdown_mode).await;
     finish_executor_session(wait_result, shutdown_result)?;
     Ok(PloyzctlExecutionOutput::stdout(
         "Build Executor stopped.\n".to_owned(),
@@ -549,16 +609,23 @@ async fn run_watch(
             ));
         }
     };
+    let runtime_state = session.runtime_state();
+    let runtime = ExternalBuildRuntime::new(
+        identity.clone(),
+        session.client.clone(),
+        workspace_root,
+        admission,
+        credential_expires_at,
+        runtime_state,
+    );
     let connected = ConnectedExecutor::start(
         identity,
         session.client.clone(),
-        workspace_root,
         CompletionMode::Watch,
-        session.runtime_state(),
         session.admission_generation(),
+        runtime,
         ExecutorStartup {
             workspace: WorkspaceStartup::Recover,
-            admission,
             credential_expires_at,
         },
     )
@@ -571,7 +638,12 @@ async fn run_watch(
         )
         .await;
     eprintln!("Build Executor stopping");
-    let shutdown_result = connected.shutdown().await;
+    let shutdown_mode = if credential_expired(&wait_result) {
+        ExecutorShutdownMode::Force
+    } else {
+        ExecutorShutdownMode::Graceful
+    };
+    let shutdown_result = connected.shutdown(shutdown_mode).await;
     finish_executor_session(wait_result, shutdown_result)?;
     eprintln!("Build Executor stopped");
     Ok(PloyzctlExecutionOutput::stdout(
@@ -586,6 +658,10 @@ fn finish_executor_session(
     shutdown_result?;
     wait_result?;
     Ok(())
+}
+
+fn credential_expired(result: &Result<(), BuildExecutionError>) -> bool {
+    matches!(result, Err(BuildExecutionError::ExecutorCredential { .. }))
 }
 
 async fn current_health_description() -> Result<String, BuildExecutionError> {

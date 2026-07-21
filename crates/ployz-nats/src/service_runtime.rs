@@ -142,7 +142,7 @@ impl RunningNatsService {
         H: Fn(NatsServiceRequest) -> F + Send + Sync + 'static,
         F: Future<Output = NatsServiceResponse> + Send + 'static,
     {
-        self.bind_endpoint_with_policy(endpoint, EndpointExecutionPolicy::default(), handler)
+        self.bind_endpoint_inner(endpoint, EndpointExecutionPolicy::default(), handler)
             .await
     }
 
@@ -156,9 +156,25 @@ impl RunningNatsService {
         H: Fn(NatsServiceRequest) -> F + Send + Sync + 'static,
         F: Future<Output = NatsServiceResponse> + Send + 'static,
     {
+        self.bind_endpoint_inner(endpoint, policy, handler).await
+    }
+
+    async fn bind_endpoint_inner<H, F>(
+        &mut self,
+        endpoint: &NatsServiceEndpointSpec,
+        policy: EndpointExecutionPolicy,
+        handler: H,
+    ) -> Result<(), NatsServiceRuntimeError>
+    where
+        H: Fn(NatsServiceRequest) -> F + Send + Sync + 'static,
+        F: Future<Output = NatsServiceResponse> + Send + 'static,
+    {
         let Some(service) = self.service.as_ref() else {
             return Err(NatsServiceRuntimeError::Stopped);
         };
+        if policy.authority.is_expired() {
+            return Ok(());
+        }
         let requests = service
             .endpoint_builder()
             .name(endpoint.name)
@@ -175,8 +191,8 @@ impl RunningNatsService {
             .endpoint_tasks_started
             .fetch_add(1, Ordering::Relaxed);
         let task = tokio::spawn(async move {
-            requests
-                .for_each_concurrent(policy.max_concurrent_requests.get(), |request| {
+            let serve =
+                requests.for_each_concurrent(policy.max_concurrent_requests.get(), |request| {
                     let handler = Arc::clone(&handler);
                     let health = Arc::clone(&health);
                     let client = client.clone();
@@ -218,8 +234,18 @@ impl RunningNatsService {
                             health.response_failures.fetch_add(1, Ordering::Relaxed);
                         }
                     }
-                })
-                .await;
+                });
+            tokio::pin!(serve);
+            match policy.authority {
+                EndpointAuthority::Unbounded => serve.await,
+                EndpointAuthority::Deadline(deadline) => {
+                    tokio::select! {
+                        biased;
+                        () = tokio::time::sleep_until(deadline) => {}
+                        () = &mut serve => {}
+                    }
+                }
+            }
             health
                 .endpoint_tasks_finished
                 .fetch_add(1, Ordering::Relaxed);
@@ -317,6 +343,18 @@ impl RunningNatsService {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EndpointAuthority {
+    Unbounded,
+    Deadline(tokio::time::Instant),
+}
+
+impl EndpointAuthority {
+    fn is_expired(self) -> bool {
+        matches!(self, Self::Deadline(deadline) if deadline <= tokio::time::Instant::now())
+    }
+}
+
 fn response_within_max_payload(
     response: NatsServiceResponse,
     max_payload: usize,
@@ -372,6 +410,7 @@ impl Drop for RunningNatsService {
 pub struct EndpointExecutionPolicy {
     pub max_concurrent_requests: NonZeroUsize,
     pub request_timeout: Duration,
+    authority: EndpointAuthority,
 }
 
 impl EndpointExecutionPolicy {
@@ -380,7 +419,14 @@ impl EndpointExecutionPolicy {
         Self {
             max_concurrent_requests,
             request_timeout,
+            authority: EndpointAuthority::Unbounded,
         }
+    }
+
+    #[must_use]
+    pub const fn with_authority_deadline(mut self, deadline: tokio::time::Instant) -> Self {
+        self.authority = EndpointAuthority::Deadline(deadline);
+        self
     }
 }
 
@@ -392,6 +438,7 @@ impl Default for EndpointExecutionPolicy {
         Self {
             max_concurrent_requests,
             request_timeout: Duration::from_secs(30),
+            authority: EndpointAuthority::Unbounded,
         }
     }
 }
