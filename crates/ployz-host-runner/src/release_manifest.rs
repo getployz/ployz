@@ -4,6 +4,7 @@ use ployz_core::build::railpack_pins;
 use ployz_core::install::{
     AbsoluteInstallPath, ExactPloyzVersion, FirstMachineInstallArtifacts, InstallArtifactSource,
     InstallArtifactSpec, InstallArtifactVersion, InstallSha256Digest, NatsServerInstallSpec,
+    ReleasePlatformFailure,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,10 +15,8 @@ pub enum ReleasePlatform {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ReleaseManifestError {
-    #[error("release manifest is missing PLOYZ_RELEASE_PLATFORM")]
-    MissingPlatform,
-    #[error("release manifest has unsupported PLOYZ_RELEASE_PLATFORM={platform}")]
-    UnsupportedPlatform { platform: String },
+    #[error("release manifest platform is invalid: {failure:?}")]
+    Platform { failure: ReleasePlatformFailure },
     #[error("{message}")]
     Invalid { message: String },
 }
@@ -49,8 +48,10 @@ impl ReleasePlatform {
         match value {
             "linux-amd64" => Ok(Self::LinuxAmd64),
             "linux-arm64" => Ok(Self::LinuxArm64),
-            _ => Err(ReleaseManifestError::UnsupportedPlatform {
-                platform: value.to_owned(),
+            _ => Err(ReleaseManifestError::Platform {
+                failure: ReleasePlatformFailure::Unsupported {
+                    platform: value.to_owned(),
+                },
             }),
         }
     }
@@ -89,8 +90,11 @@ struct RailpackManifestEntry {
 
 impl ReleaseManifest {
     pub fn parse(contents: &str) -> Result<Self, ReleaseManifestError> {
-        let platform = manifest_value(contents, "PLOYZ_RELEASE_PLATFORM")
-            .map_err(|_| ReleaseManifestError::MissingPlatform)?;
+        let platform = manifest_value(contents, "PLOYZ_RELEASE_PLATFORM").map_err(|_| {
+            ReleaseManifestError::Platform {
+                failure: ReleasePlatformFailure::Missing,
+            }
+        })?;
         Ok(Self {
             platform: ReleasePlatform::from_manifest_slug(&platform)?,
             version: ExactPloyzVersion::try_new(manifest_value(contents, "PLOYZ_VERSION")?)
@@ -295,7 +299,8 @@ pub(crate) fn read_release_manifest_text(url: &str) -> Result<String, String> {
 mod tests {
     use super::{
         ExactPloyzVersion, ReleaseManifest, ReleaseManifestError, ReleasePlatform,
-        persisted_release_manifest_url, read_release_manifest_text, release_manifest_url,
+        ReleasePlatformFailure, persisted_release_manifest_url, read_release_manifest_text,
+        release_manifest_url,
     };
 
     const SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -416,7 +421,12 @@ mod tests {
         let error = ReleaseManifest::parse(&manifest_without_nats(None))
             .expect_err("platform is required release identity");
 
-        assert_eq!(error, ReleaseManifestError::MissingPlatform);
+        assert_eq!(
+            error,
+            ReleaseManifestError::Platform {
+                failure: ReleasePlatformFailure::Missing,
+            }
+        );
     }
 
     #[test]
@@ -426,8 +436,10 @@ mod tests {
 
         assert_eq!(
             error,
-            ReleaseManifestError::UnsupportedPlatform {
-                platform: "linux-riscv64".to_owned(),
+            ReleaseManifestError::Platform {
+                failure: ReleasePlatformFailure::Unsupported {
+                    platform: "linux-riscv64".to_owned(),
+                },
             }
         );
     }

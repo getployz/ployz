@@ -58,7 +58,8 @@ pub use ployz_core::install::{
     InstallContractError, InstallSha256Digest, MachineBootstrapUrl, MachineJoinBundle,
     MachineJoinClusterName, MachineJoinMaterial, MachineJoinRuntimeNatsUrl,
     MachineJoinSecretDelivery, MachineJoinSubstrateRelease, MachineJoinTemplate,
-    MachineJoinTrustedNats, NatsServerInstallSpec, WrappedCaKey, WrappedCoreSeeds,
+    MachineJoinTrustedNats, NatsServerInstallSpec, ReleasePlatformFailure, WrappedCaKey,
+    WrappedCoreSeeds,
 };
 pub use ployz_core::intent::recovery::ControlPlaneEpoch;
 pub use ployz_core::intent::{

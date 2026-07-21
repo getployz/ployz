@@ -218,9 +218,12 @@ pub enum MachineJoinReportOutcome {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MachineJoinReportFailure {
-    BootstrapFailed { message: FailureMessage },
-    ReleasePlatformMissing,
-    ReleasePlatformUnsupported { platform: String },
+    BootstrapFailed {
+        message: FailureMessage,
+    },
+    ReleasePlatform {
+        failure: crate::core_types::ReleasePlatformFailure,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -236,9 +239,8 @@ pub enum MachineJoinReportedFailure {
     BootstrapFailed {
         message: FailureMessage,
     },
-    ReleasePlatformMissing,
-    ReleasePlatformUnsupported {
-        platform: String,
+    ReleasePlatform {
+        failure: crate::core_types::ReleasePlatformFailure,
     },
     DataplaneProjectionAdmissionFailed {
         evidence: crate::core_types::DataplaneProjectionAdmissionEvidence,

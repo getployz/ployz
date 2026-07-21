@@ -180,10 +180,10 @@ pub enum MachineAddFailure {
     JoinTokenExpired { expired_at: JoinTokenExpiresAt },
     #[error("machine bootstrap failed: {message}")]
     BootstrapFailed { message: FailureMessage },
-    #[error("machine bootstrap release manifest is missing its platform")]
-    ReleasePlatformMissing,
-    #[error("machine bootstrap release platform is unsupported: {platform}")]
-    ReleasePlatformUnsupported { platform: String },
+    #[error("machine bootstrap release platform failed: {failure:?}")]
+    ReleasePlatform {
+        failure: crate::install::ReleasePlatformFailure,
+    },
     #[error("machine readiness failed: {evidence}")]
     ReadinessFailed { evidence: MachineReadinessEvidence },
     #[error("dataplane projection admission failed for {}: {}", .evidence.machine_id.as_str(), .evidence.reason)]

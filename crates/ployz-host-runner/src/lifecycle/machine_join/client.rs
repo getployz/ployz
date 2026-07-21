@@ -44,7 +44,9 @@ use crate::runtime::{
     PLOYZ_NATS_CA_FILE_ENV, PLOYZ_NATS_URL_ENV, REDEEM_MATERIAL_ATTEMPTS,
     REDEEM_MATERIAL_RETRY_DELAY, failure_message, failure_summary,
 };
-use ployz_core::install::{FirstMachineInstallArtifacts, MachineJoinSubstrateRelease};
+use ployz_core::install::{
+    FirstMachineInstallArtifacts, MachineJoinSubstrateRelease, ReleasePlatformFailure,
+};
 
 const JOIN_REPORT_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -390,11 +392,11 @@ fn load_local_join_artifacts(
     expected: &MachineJoinSubstrateRelease,
 ) -> Result<FirstMachineInstallArtifacts, JoinTargetResolutionFailure> {
     let platform = ReleasePlatform::from_target(std::env::consts::OS, std::env::consts::ARCH)
-        .map_err(
-            |_| JoinTargetResolutionFailure::ReleasePlatformUnsupported {
+        .map_err(|_| JoinTargetResolutionFailure::ReleasePlatform {
+            failure: ReleasePlatformFailure::Unsupported {
                 platform: format!("{}/{}", std::env::consts::OS, std::env::consts::ARCH),
             },
-        )?;
+        })?;
     load_join_artifacts_from_release_env(
         std::path::Path::new("/etc/ployz/release.env"),
         expected,
@@ -427,11 +429,8 @@ fn other_resolution_failure(message: impl Into<String>) -> JoinTargetResolutionF
 
 fn manifest_resolution_failure(error: ReleaseManifestError) -> JoinTargetResolutionFailure {
     match error {
-        ReleaseManifestError::MissingPlatform => {
-            JoinTargetResolutionFailure::ReleasePlatformMissing
-        }
-        ReleaseManifestError::UnsupportedPlatform { platform } => {
-            JoinTargetResolutionFailure::ReleasePlatformUnsupported { platform }
+        ReleaseManifestError::Platform { failure } => {
+            JoinTargetResolutionFailure::ReleasePlatform { failure }
         }
         ReleaseManifestError::Invalid { message } => other_resolution_failure(message),
     }
@@ -509,7 +508,7 @@ mod tests {
     use ployz_core::install::{
         ExactPloyzVersion, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
         MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinSubstrateRelease,
-        MachineJoinTrustedNats,
+        MachineJoinTrustedNats, ReleasePlatformFailure,
     };
     use ployz_core::machine::{JoinTokenRedeemedAt, MachineName};
     use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
@@ -659,7 +658,12 @@ mod tests {
         )
         .expect_err("missing exact-release platform fails closed");
 
-        assert_eq!(failure, JoinTargetResolutionFailure::ReleasePlatformMissing);
+        assert_eq!(
+            failure,
+            JoinTargetResolutionFailure::ReleasePlatform {
+                failure: ReleasePlatformFailure::Missing,
+            }
+        );
     }
 
     #[test]
@@ -680,8 +684,10 @@ mod tests {
 
         assert_eq!(
             failure,
-            JoinTargetResolutionFailure::ReleasePlatformUnsupported {
-                platform: "linux-riscv64".to_owned(),
+            JoinTargetResolutionFailure::ReleasePlatform {
+                failure: ReleasePlatformFailure::Unsupported {
+                    platform: "linux-riscv64".to_owned(),
+                },
             }
         );
     }

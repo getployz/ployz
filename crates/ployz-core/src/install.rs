@@ -10,7 +10,7 @@ pub mod validation;
 pub use artifacts::{
     ExactPloyzVersion, ExactPloyzVersionError, FirstMachineInstallArtifacts, InstallArtifactSource,
     InstallArtifactSpec, InstallArtifactVersion, InstallSha256Digest, MachineJoinSubstrateRelease,
-    NatsServerInstallSpec,
+    NatsServerInstallSpec, ReleasePlatformFailure,
 };
 pub use join::{
     DEFAULT_MACHINE_BOOTSTRAP_URL, MachineBootstrapUrl, MachineJoinBundle, MachineJoinClusterName,

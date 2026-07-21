@@ -1,5 +1,6 @@
 //! Machine Join keeps Redemption acceptance before local work and Report as later evidence.
 
+use ployz_core::install::ReleasePlatformFailure;
 use ployz_core::operation::FailureMessage;
 use ployz_sdk_types::{MachineJoinRedeemed, MachineJoinReportFailure};
 
@@ -42,32 +43,28 @@ pub trait HostRunnerJoinTokenConsumer {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JoinTargetResolutionFailure {
-    ReleasePlatformMissing,
-    ReleasePlatformUnsupported { platform: String },
+    ReleasePlatform { failure: ReleasePlatformFailure },
     Other { message: FailureMessage },
 }
 
 impl JoinTargetResolutionFailure {
     fn message(&self) -> FailureMessage {
         match self {
-            Self::ReleasePlatformMissing => {
-                failure_message("release manifest is missing PLOYZ_RELEASE_PLATFORM")
-            }
-            Self::ReleasePlatformUnsupported { platform } => {
-                failure_message(&format!("unsupported release platform {platform}"))
-            }
+            Self::ReleasePlatform {
+                failure: ReleasePlatformFailure::Missing,
+            } => failure_message("release manifest is missing PLOYZ_RELEASE_PLATFORM"),
+            Self::ReleasePlatform {
+                failure: ReleasePlatformFailure::Unsupported { platform },
+            } => failure_message(&format!("unsupported release platform {platform}")),
             Self::Other { message } => message.clone(),
         }
     }
 
     fn report_failure(&self) -> MachineJoinReportFailure {
         match self {
-            Self::ReleasePlatformMissing => MachineJoinReportFailure::ReleasePlatformMissing,
-            Self::ReleasePlatformUnsupported { platform } => {
-                MachineJoinReportFailure::ReleasePlatformUnsupported {
-                    platform: platform.clone(),
-                }
-            }
+            Self::ReleasePlatform { failure } => MachineJoinReportFailure::ReleasePlatform {
+                failure: failure.clone(),
+            },
             Self::Other { message } => MachineJoinReportFailure::BootstrapFailed {
                 message: message.clone(),
             },
@@ -76,10 +73,31 @@ impl JoinTargetResolutionFailure {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HostRunnerJoinExecution {
-    pub execution: HostRunnerPlanExecution,
-    pub redeemed: Option<MachineJoinRedeemed>,
-    pub resolution_failure: Option<JoinTargetResolutionFailure>,
+pub enum HostRunnerJoinExecution {
+    UnredeemedFailure {
+        execution: HostRunnerPlanExecution,
+        failure: Box<HostRunnerPlanFailure>,
+    },
+    RedeemedExecution {
+        execution: HostRunnerPlanExecution,
+        redeemed: MachineJoinRedeemed,
+    },
+    ResolutionFailure {
+        execution: HostRunnerPlanExecution,
+        redeemed: MachineJoinRedeemed,
+        failure: JoinTargetResolutionFailure,
+    },
+}
+
+impl HostRunnerJoinExecution {
+    #[must_use]
+    pub fn into_execution(self) -> HostRunnerPlanExecution {
+        match self {
+            Self::UnredeemedFailure { execution, .. }
+            | Self::RedeemedExecution { execution, .. }
+            | Self::ResolutionFailure { execution, .. } => execution,
+        }
+    }
 }
 
 #[must_use]
@@ -101,7 +119,7 @@ pub fn execute_host_runner_join(
         effects,
         recorder,
     )
-    .execution
+    .into_execution()
 }
 
 #[must_use]
@@ -118,29 +136,37 @@ pub fn execute_host_runner_join_with_redeemed(
     let redeemed = match redeem_join_token(token, redeemer, recorder, &mut events) {
         Ok(redeemed) => redeemed,
         Err(execution) => {
-            return HostRunnerJoinExecution {
+            let failure = match &execution.terminal {
+                HostRunnerPlanTerminal::Failed(failure) => failure.clone(),
+                HostRunnerPlanTerminal::Completed => {
+                    unreachable!("failed redemption action returned completed execution")
+                }
+            };
+            return HostRunnerJoinExecution::UnredeemedFailure {
                 execution: *execution,
-                redeemed: None,
-                resolution_failure: None,
+                failure,
             };
         }
     };
     let target = match resolve_join_target(&redeemed, resolver, recorder, &mut events) {
         Ok(target) => target,
-        Err((execution, resolution_failure)) => {
+        Err((execution, Some(failure))) => {
             let terminal = execution.terminal.clone();
             events = execution.events;
-            report_join_failure(
-                &terminal,
-                resolution_failure.as_ref(),
-                reporter,
-                recorder,
-                &mut events,
-            );
-            return HostRunnerJoinExecution {
+            report_join_failure(&terminal, Some(&failure), reporter, recorder, &mut events);
+            return HostRunnerJoinExecution::ResolutionFailure {
                 execution: HostRunnerPlanExecution { events, terminal },
-                redeemed: Some(redeemed),
-                resolution_failure,
+                redeemed,
+                failure,
+            };
+        }
+        Err((execution, None)) => {
+            let terminal = execution.terminal.clone();
+            events = execution.events;
+            report_join_failure(&terminal, None, reporter, recorder, &mut events);
+            return HostRunnerJoinExecution::RedeemedExecution {
+                execution: HostRunnerPlanExecution { events, terminal },
+                redeemed,
             };
         }
     };
@@ -151,13 +177,12 @@ pub fn execute_host_runner_join_with_redeemed(
     events.append(&mut material_execution.events);
     if material_terminal != HostRunnerPlanTerminal::Completed {
         report_join_failure(&material_terminal, None, reporter, recorder, &mut events);
-        return HostRunnerJoinExecution {
+        return HostRunnerJoinExecution::RedeemedExecution {
             execution: HostRunnerPlanExecution {
                 events,
                 terminal: material_terminal,
             },
-            redeemed: Some(redeemed),
-            resolution_failure: None,
+            redeemed,
         };
     }
 
@@ -167,13 +192,12 @@ pub fn execute_host_runner_join_with_redeemed(
     events.append(&mut plan_execution.events);
     if plan_terminal != HostRunnerPlanTerminal::Completed {
         report_join_failure(&plan_terminal, None, reporter, recorder, &mut events);
-        return HostRunnerJoinExecution {
+        return HostRunnerJoinExecution::RedeemedExecution {
             execution: HostRunnerPlanExecution {
                 events,
                 terminal: plan_terminal,
             },
-            redeemed: Some(redeemed),
-            resolution_failure: None,
+            redeemed,
         };
     }
 
@@ -187,10 +211,9 @@ pub fn execute_host_runner_join_with_redeemed(
         let terminal = execution.terminal.clone();
         events = execution.events;
         report_join_failure(&terminal, None, reporter, recorder, &mut events);
-        return HostRunnerJoinExecution {
+        return HostRunnerJoinExecution::RedeemedExecution {
             execution: HostRunnerPlanExecution { events, terminal },
-            redeemed: Some(redeemed),
-            resolution_failure: None,
+            redeemed,
         };
     }
 
@@ -201,20 +224,18 @@ pub fn execute_host_runner_join_with_redeemed(
         HostRunnerStepFailureReason::JoinReportFailed,
         || reporter.report_join_completed(),
     ) {
-        return HostRunnerJoinExecution {
+        return HostRunnerJoinExecution::RedeemedExecution {
             execution: *execution,
-            redeemed: Some(redeemed),
-            resolution_failure: None,
+            redeemed,
         };
     }
 
-    HostRunnerJoinExecution {
+    HostRunnerJoinExecution::RedeemedExecution {
         execution: HostRunnerPlanExecution {
             events,
             terminal: HostRunnerPlanTerminal::Completed,
         },
-        redeemed: Some(redeemed),
-        resolution_failure: None,
+        redeemed,
     }
 }
 

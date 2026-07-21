@@ -223,8 +223,10 @@ fn host_runner_join_reports_target_resolution_failure_after_redemption() {
     let mut redeemer = RecordingJoinRedeemer::default();
     let mut resolver = RecordingJoinResolver {
         failure: Some(
-            crate::lifecycle::machine_join::execution::JoinTargetResolutionFailure::ReleasePlatformUnsupported {
-                platform: "linux/riscv64".to_owned(),
+            crate::lifecycle::machine_join::execution::JoinTargetResolutionFailure::ReleasePlatform {
+                failure: ployz_core::install::ReleasePlatformFailure::Unsupported {
+                    platform: "linux/riscv64".to_owned(),
+                },
             },
         ),
     };
@@ -256,8 +258,10 @@ fn host_runner_join_reports_target_resolution_failure_after_redemption() {
     assert_eq!(
         reporter.reports,
         vec![JoinReport::Failed {
-            failure: MachineJoinReportFailure::ReleasePlatformUnsupported {
-                platform: "linux/riscv64".to_owned(),
+            failure: MachineJoinReportFailure::ReleasePlatform {
+                failure: ployz_core::install::ReleasePlatformFailure::Unsupported {
+                    platform: "linux/riscv64".to_owned(),
+                },
             },
         }]
     );
@@ -269,7 +273,9 @@ fn host_runner_join_reports_missing_release_platform_without_install_effects() {
     let mut redeemer = RecordingJoinRedeemer::default();
     let mut resolver = RecordingJoinResolver {
         failure: Some(
-            crate::lifecycle::machine_join::execution::JoinTargetResolutionFailure::ReleasePlatformMissing,
+            crate::lifecycle::machine_join::execution::JoinTargetResolutionFailure::ReleasePlatform {
+                failure: ployz_core::install::ReleasePlatformFailure::Missing,
+            },
         ),
     };
     let mut effects = RecordingEffects::default();
@@ -300,7 +306,9 @@ fn host_runner_join_reports_missing_release_platform_without_install_effects() {
     assert_eq!(
         reporter.reports,
         vec![JoinReport::Failed {
-            failure: MachineJoinReportFailure::ReleasePlatformMissing,
+            failure: MachineJoinReportFailure::ReleasePlatform {
+                failure: ployz_core::install::ReleasePlatformFailure::Missing,
+            },
         }]
     );
 }

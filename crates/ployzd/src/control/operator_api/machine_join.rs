@@ -220,15 +220,11 @@ fn reported_join_failure(
             },
             MachineJoinReportedFailure::BootstrapFailed { message },
         ),
-        MachineJoinReportFailure::ReleasePlatformMissing => (
-            MachineAddFailure::ReleasePlatformMissing,
-            MachineJoinReportedFailure::ReleasePlatformMissing,
-        ),
-        MachineJoinReportFailure::ReleasePlatformUnsupported { platform } => (
-            MachineAddFailure::ReleasePlatformUnsupported {
-                platform: platform.clone(),
+        MachineJoinReportFailure::ReleasePlatform { failure } => (
+            MachineAddFailure::ReleasePlatform {
+                failure: failure.clone(),
             },
-            MachineJoinReportedFailure::ReleasePlatformUnsupported { platform },
+            MachineJoinReportedFailure::ReleasePlatform { failure },
         ),
     }
 }
@@ -463,6 +459,7 @@ fn machine_join_redeemed(redemption: MachineJoinRedemption) -> MachineJoinRedeem
 
 #[cfg(test)]
 mod tests {
+    use ployz_core::install::ReleasePlatformFailure;
     use ployz_core::machine::MachineAddFailure;
     use ployz_sdk_types::{MachineJoinReportFailure, MachineJoinReportedFailure};
 
@@ -471,22 +468,34 @@ mod tests {
     #[test]
     fn release_platform_failures_remain_typed_when_core_records_the_join() {
         assert_eq!(
-            reported_join_failure(MachineJoinReportFailure::ReleasePlatformMissing),
+            reported_join_failure(MachineJoinReportFailure::ReleasePlatform {
+                failure: ReleasePlatformFailure::Missing,
+            }),
             (
-                MachineAddFailure::ReleasePlatformMissing,
-                MachineJoinReportedFailure::ReleasePlatformMissing,
+                MachineAddFailure::ReleasePlatform {
+                    failure: ReleasePlatformFailure::Missing,
+                },
+                MachineJoinReportedFailure::ReleasePlatform {
+                    failure: ReleasePlatformFailure::Missing,
+                },
             )
         );
         assert_eq!(
-            reported_join_failure(MachineJoinReportFailure::ReleasePlatformUnsupported {
-                platform: "linux-riscv64".to_owned(),
-            }),
-            (
-                MachineAddFailure::ReleasePlatformUnsupported {
+            reported_join_failure(MachineJoinReportFailure::ReleasePlatform {
+                failure: ReleasePlatformFailure::Unsupported {
                     platform: "linux-riscv64".to_owned(),
                 },
-                MachineJoinReportedFailure::ReleasePlatformUnsupported {
-                    platform: "linux-riscv64".to_owned(),
+            }),
+            (
+                MachineAddFailure::ReleasePlatform {
+                    failure: ReleasePlatformFailure::Unsupported {
+                        platform: "linux-riscv64".to_owned(),
+                    },
+                },
+                MachineJoinReportedFailure::ReleasePlatform {
+                    failure: ReleasePlatformFailure::Unsupported {
+                        platform: "linux-riscv64".to_owned(),
+                    },
                 },
             )
         );

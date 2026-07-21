@@ -29,6 +29,14 @@ pub struct MachineJoinSubstrateRelease {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ReleasePlatformFailure {
+    Missing,
+    Unsupported { platform: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[cfg_attr(feature = "typescript", ts(type = "string"))]
 #[serde(try_from = "String", into = "String")]
 pub struct ExactPloyzVersion(String);
