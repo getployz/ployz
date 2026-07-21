@@ -11,6 +11,7 @@ use ployz_nats::operation_api_client::{
     DEFAULT_OPERATION_API_REQUEST_TIMEOUT, OperationApiClientError,
 };
 use ployz_nats::service_runtime::NatsServiceRequestFailure;
+use ployz_nats::subjects::INTENT_CHANGED;
 use ployz_sdk_types::{
     DeployReserveRequest, NetworkDataplaneTestimony, NetworkInternalDnsTestimony,
     NetworkRepairRequest, NetworkResolveMachineTestimony, NetworkResolveRequest,
@@ -60,6 +61,7 @@ async fn group_network_repair() {
             .await
             .expect("read network intent");
         wait_for_ready_dataplane(&core, &intent.dataplane_projection).await;
+        assert_unchanged_reconciliation_preserves_handshake(&core, &controller, &intent).await;
 
         let deadline = Instant::now() + Duration::from_secs(30);
         let status = loop {
@@ -251,6 +253,265 @@ async fn group_network_repair() {
     .await;
 
     finish(core).await;
+}
+
+async fn assert_unchanged_reconciliation_preserves_handshake(
+    core: &CoreContext,
+    controller: &async_nats::Client,
+    intent: &ployz_core::intent::IntentSnapshot,
+) {
+    let source = core.cluster.core();
+    let [edge] = core.cluster.edges() else {
+        panic!("handshake preservation requires exactly one edge")
+    };
+    let Some(peer) = intent
+        .dataplane_projection
+        .declared_members()
+        .iter()
+        .find(|member| member.machine_id == machine_id("edge_2"))
+    else {
+        panic!("dataplane projection omitted edge_2")
+    };
+    let peer_subnet = peer.endpoint_subnet.as_string();
+    let peer_address = peer.endpoint_subnet.host_address().to_string();
+    let primed = core
+        .exec_on(source, &["ping", "-c", "1", "-W", "2", &peer_address])
+        .await;
+    assert!(
+        primed.success(),
+        "prime WireGuard handshake failed: {primed:?}"
+    );
+    set_wireguard_udp_block(core, source, edge, "-I").await;
+    let baseline =
+        wait_for_stable_handshake(core, source, peer.wireguard_public_key.as_str()).await;
+
+    let deleted = core
+        .exec_on(
+            source,
+            &["ip", "route", "del", &peer_subnet, "dev", "ployz-wg0"],
+        )
+        .await;
+    assert!(
+        deleted.success(),
+        "delete route sentinel failed: {deleted:?}"
+    );
+    publish_intent_invalidation(controller).await;
+    wait_for_route(core, source, &peer_subnet, true).await;
+    assert_eq!(
+        latest_handshake(core, source, peer.wireguard_public_key.as_str()).await,
+        baseline,
+        "unchanged reconciliation reset the WireGuard handshake epoch"
+    );
+
+    let rogue_subnet = "192.0.2.255/32";
+    let drifted = core
+        .exec_on(
+            source,
+            &[
+                "wg",
+                "set",
+                "ployz-wg0",
+                "peer",
+                peer.wireguard_public_key.as_str(),
+                "allowed-ips",
+                rogue_subnet,
+            ],
+        )
+        .await;
+    assert!(drifted.success(), "drift allowed IP failed: {drifted:?}");
+    let rogue_route = core
+        .exec_on(
+            source,
+            &[
+                "ip",
+                "route",
+                "add",
+                rogue_subnet,
+                "dev",
+                "ployz-wg0",
+                "proto",
+                "boot",
+                "scope",
+                "link",
+            ],
+        )
+        .await;
+    assert!(
+        rogue_route.success(),
+        "add rogue route failed: {rogue_route:?}"
+    );
+    publish_intent_invalidation(controller).await;
+    wait_for_allowed_ip(
+        core,
+        source,
+        peer.wireguard_public_key.as_str(),
+        &peer_subnet,
+    )
+    .await;
+    wait_for_route(core, source, rogue_subnet, false).await;
+
+    set_wireguard_udp_block(core, source, edge, "-D").await;
+}
+
+async fn publish_intent_invalidation(controller: &async_nats::Client) {
+    controller
+        .publish(INTENT_CHANGED, Vec::new().into())
+        .await
+        .expect("intent invalidation publishes");
+    controller
+        .flush()
+        .await
+        .expect("intent invalidation flushes");
+}
+
+async fn wait_for_stable_handshake(
+    core: &CoreContext,
+    machine: &ployz_e2e::dind::DindMachine,
+    public_key: &str,
+) -> u64 {
+    let deadline = Instant::now() + OVERLAY_FIRST_CONTACT_BUDGET;
+    loop {
+        let first = latest_handshake(core, machine, public_key).await;
+        tokio::time::sleep(Duration::from_millis(1_100)).await;
+        let second = latest_handshake(core, machine, public_key).await;
+        if first > 0 && first == second {
+            return first;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "WireGuard handshake did not freeze: {first} then {second}"
+        );
+    }
+}
+
+async fn latest_handshake(
+    core: &CoreContext,
+    machine: &ployz_e2e::dind::DindMachine,
+    public_key: &str,
+) -> u64 {
+    let outcome = core
+        .exec_on(machine, &["wg", "show", "ployz-wg0", "latest-handshakes"])
+        .await;
+    assert!(
+        outcome.success(),
+        "read latest handshakes failed: {outcome:?}"
+    );
+    outcome
+        .stdout
+        .lines()
+        .find_map(|line| {
+            let mut fields = line.split_whitespace();
+            match (fields.next(), fields.next()) {
+                (Some(key), Some(epoch)) if key == public_key => epoch.parse().ok(),
+                _ => None,
+            }
+        })
+        .unwrap_or_else(|| panic!("latest handshakes omitted peer {public_key}: {outcome:?}"))
+}
+
+async fn set_wireguard_udp_block(
+    core: &CoreContext,
+    left: &ployz_e2e::dind::DindMachine,
+    right: &ployz_e2e::dind::DindMachine,
+    action: &str,
+) {
+    for (machine, destination) in [(left, right.bridge_ip), (right, left.bridge_ip)] {
+        let destination = destination.to_string();
+        let outcome = if action == "-I" {
+            core.exec_on(
+                machine,
+                &[
+                    "iptables",
+                    "-I",
+                    "OUTPUT",
+                    "1",
+                    "-p",
+                    "udp",
+                    "-d",
+                    &destination,
+                    "--dport",
+                    "51820",
+                    "-j",
+                    "DROP",
+                ],
+            )
+            .await
+        } else {
+            core.exec_on(
+                machine,
+                &[
+                    "iptables",
+                    "-D",
+                    "OUTPUT",
+                    "-p",
+                    "udp",
+                    "-d",
+                    &destination,
+                    "--dport",
+                    "51820",
+                    "-j",
+                    "DROP",
+                ],
+            )
+            .await
+        };
+        assert!(
+            outcome.success(),
+            "update WireGuard UDP block failed: {outcome:?}"
+        );
+    }
+}
+
+async fn wait_for_route(
+    core: &CoreContext,
+    machine: &ployz_e2e::dind::DindMachine,
+    subnet: &str,
+    present: bool,
+) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let outcome = core
+            .exec_on(
+                machine,
+                &["ip", "route", "show", "exact", subnet, "dev", "ployz-wg0"],
+            )
+            .await;
+        assert!(outcome.success(), "inspect route failed: {outcome:?}");
+        if (!outcome.stdout.trim().is_empty()) == present {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "route {subnet} did not converge: {outcome:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+async fn wait_for_allowed_ip(
+    core: &CoreContext,
+    machine: &ployz_e2e::dind::DindMachine,
+    public_key: &str,
+    subnet: &str,
+) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let outcome = core
+            .exec_on(machine, &["wg", "show", "ployz-wg0", "allowed-ips"])
+            .await;
+        assert!(outcome.success(), "inspect allowed IPs failed: {outcome:?}");
+        if outcome.stdout.lines().any(|line| {
+            let mut fields = line.split_whitespace();
+            fields.next() == Some(public_key) && fields.collect::<Vec<_>>() == [subnet]
+        }) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "allowed IP did not converge: {outcome:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
 }
 
 fn routed_internal_dns_deploy_target() -> DeployRequest {

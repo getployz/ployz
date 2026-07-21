@@ -205,6 +205,7 @@ impl MachinePloyzNativeMeshPreparer for PloyzNativeMeshPreparer {
         peers: &[WireGuardPeer],
     ) -> Result<WireGuardReady, WireGuardEbpfPrepareError> {
         let mut wireguard = Vec::new();
+        let reconciliation = self.endpoint_rotation.reconciliation.lock().await;
         if !self.wg_ifname.is_empty() {
             let private_key = ensure_private_key(&self.private_key_path).map_err(|message| {
                 unavailable(
@@ -265,6 +266,7 @@ impl MachinePloyzNativeMeshPreparer for PloyzNativeMeshPreparer {
             peers,
             self.command_timeout,
         );
+        drop(reconciliation);
         // The plans above already provisioned the WireGuard interface, so
         // the public key only needs to be read here.
         let public_key = self
@@ -394,6 +396,7 @@ struct WireGuardEndpointRotation {
     /// for the life of the mesh preparer and exits when the preparer is dropped (its
     /// `Weak` upgrade fails), so there is no stop/restart to coordinate.
     spawned: AtomicBool,
+    reconciliation: tokio::sync::Mutex<()>,
     peers: Mutex<std::collections::BTreeMap<String, RotatingWireGuardPeer>>,
 }
 
@@ -410,6 +413,7 @@ impl WireGuardEndpointRotation {
         Self {
             wg_ifname,
             spawned: AtomicBool::new(false),
+            reconciliation: tokio::sync::Mutex::new(()),
             peers: Mutex::new(std::collections::BTreeMap::new()),
         }
     }
@@ -485,6 +489,7 @@ impl WireGuardEndpointRotation {
     }
 
     async fn rotate_once(&self, _command_timeout: Duration) {
+        let _reconciliation = self.reconciliation.lock().await;
         let Some(handshakes) = read_latest_handshakes(&self.wg_ifname).await else {
             return;
         };

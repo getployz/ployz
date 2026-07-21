@@ -165,25 +165,22 @@ impl HostDataplaneRouteProgramming {
         machine_id: &MachineId,
         endpoint_routes: &[WireGuardEbpfEndpointRoute],
     ) -> Vec<HostCommandPlan> {
-        endpoint_routes
-            .iter()
-            .filter(|route| route.machine_id != *machine_id)
-            .map(|route| {
-                HostCommandPlan::provisioning_command(
-                    PloyzNativeMeshComponent::EbpfForwarding,
-                    self.ebpf_ctl_program.clone(),
-                    ebpf_ctl_args(
-                        &self.ebpf_pin_path,
-                        [
-                            "route".to_owned(),
-                            "add-ifname".to_owned(),
-                            route.endpoint_subnet.clone(),
-                            self.wg_ifname.clone(),
-                        ],
-                    ),
-                )
-            })
-            .collect()
+        let mut args = vec![
+            "route".to_owned(),
+            "sync-ifname".to_owned(),
+            self.wg_ifname.clone(),
+        ];
+        args.extend(
+            endpoint_routes
+                .iter()
+                .filter(|route| route.machine_id != *machine_id)
+                .map(|route| route.endpoint_subnet.clone()),
+        );
+        vec![HostCommandPlan::provisioning_command(
+            PloyzNativeMeshComponent::EbpfForwarding,
+            self.ebpf_ctl_program.clone(),
+            ebpf_ctl_args(&self.ebpf_pin_path, args),
+        )]
     }
 }
 
@@ -287,7 +284,7 @@ mod tests {
             requirements.contains(&HostCommandPlan::provisioning_command(
                 PloyzNativeMeshComponent::EbpfForwarding,
                 "/usr/local/bin/ployz-ebpf-ctl",
-                ["route", "add-ifname", "10.42.2.0/24", "ployz-wg0"]
+                ["route", "sync-ifname", "ployz-wg0", "10.42.2.0/24"]
             ))
         );
         assert!(!requirements.iter().any(|plan| {
@@ -297,7 +294,7 @@ mod tests {
                     component: PloyzNativeMeshComponent::EbpfForwarding,
                     args,
                     ..
-                } if args == &["route", "add-ifname", "10.42.1.0/24", "ployz-wg0"]
+                } if args.iter().any(|arg| arg == "10.42.1.0/24")
             )
         }));
     }

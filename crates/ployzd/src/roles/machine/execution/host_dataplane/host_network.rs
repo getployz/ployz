@@ -3,7 +3,8 @@ use defguard_wireguard_rs::Kernel;
 #[cfg(not(target_os = "linux"))]
 use defguard_wireguard_rs::Userspace;
 use defguard_wireguard_rs::{
-    InterfaceConfiguration, WGApi, WireguardInterfaceApi, key::Key, net::IpAddrMask, peer::Peer,
+    InterfaceConfiguration, WGApi, WireguardInterfaceApi, host::Host, key::Key, net::IpAddrMask,
+    peer::Peer,
 };
 #[cfg(target_os = "linux")]
 use futures_util::TryStreamExt;
@@ -13,10 +14,10 @@ use ployz_core::network::{
 };
 #[cfg(target_os = "linux")]
 use rtnetlink::{
-    LinkUnspec, RouteMessageBuilder,
+    AddressMessageBuilder, LinkUnspec, RouteMessageBuilder,
     packet_route::{
         link::LinkAttribute,
-        route::{RouteAttribute, RouteMetric},
+        route::{RouteAttribute, RouteMetric, RouteProtocol, RouteScope},
     },
 };
 use std::io::Write;
@@ -359,7 +360,8 @@ pub(super) async fn ensure_wireguard_interface(
         .ok_or_else(|| "local endpoint route is missing".to_owned())
         .and_then(|route| wireguard_host_cidr(&route.endpoint_subnet))?;
     let mut api = WGApi::<HostWireGuardApi>::new(wg_ifname).map_err(|source| source.to_string())?;
-    if !interface_exists(wg_ifname)? {
+    let existed = interface_exists(wg_ifname)?;
+    if !existed {
         api.create_interface()
             .map_err(|source| source.to_string())?;
     }
@@ -368,7 +370,7 @@ pub(super) async fn ensure_wireguard_interface(
         .filter(|peer| peer.machine_id != *local_machine_id)
         .map(to_defguard_peer)
         .collect::<Result<Vec<_>, _>>()?;
-    api.configure_interface(&InterfaceConfiguration {
+    let configuration = InterfaceConfiguration {
         name: wg_ifname.to_owned(),
         prvkey: private_key.to_owned(),
         addresses: vec![local_host_cidr.parse::<IpAddrMask>().map_err(|source| {
@@ -378,12 +380,317 @@ pub(super) async fn ensure_wireguard_interface(
         peers: wg_peers.clone(),
         mtu: Some(mtu),
         fwmark: None,
-    })
-    .map_err(|source| source.to_string())?;
+    };
+    let mut stale_routes = Vec::new();
+    if existed {
+        let observed = api
+            .read_interface_data()
+            .map_err(|source| source.to_string())?;
+        let peer_plan = peer_reconciliation(&observed, peers)?;
+        stale_routes.clone_from(&peer_plan.stale_routes);
+        let private_key = Key::try_from(private_key)
+            .map_err(|source| format!("parse WireGuard private key: {source}"))?;
+        let private_key_matches =
+            wireguard_private_key_matches(observed.private_key.as_ref(), &private_key);
+        let listen_port_matches = observed.listen_port == listen_port;
+        if private_key_matches && listen_port_matches {
+            #[cfg(target_os = "linux")]
+            reconcile_wireguard_link(wg_ifname, &local_host_cidr, mtu).await?;
+            apply_peer_reconciliation(&api, peer_plan)?;
+        } else {
+            api.configure_interface(&configuration)
+                .map_err(|source| source.to_string())?;
+        }
+    } else {
+        api.configure_interface(&configuration)
+            .map_err(|source| source.to_string())?;
+    }
     api.configure_peer_routing(&wg_peers)
         .map_err(|source| source.to_string())?;
     #[cfg(target_os = "linux")]
+    remove_stale_peer_routes(wg_ifname, &stale_routes).await?;
+    #[cfg(target_os = "linux")]
     set_link_up(wg_ifname).await?;
+    Ok(())
+}
+
+fn wireguard_private_key_matches(observed: Option<&Key>, desired: &Key) -> bool {
+    observed.is_some_and(|observed| observed.public_key() == desired.public_key())
+}
+
+#[derive(Debug, PartialEq)]
+struct PeerReconciliation {
+    upserts: Vec<Peer>,
+    replacements: Vec<Peer>,
+    removals: Vec<Key>,
+    stale_routes: Vec<IpAddrMask>,
+}
+
+fn peer_reconciliation(
+    observed: &Host,
+    desired: &[WireGuardPeer],
+) -> Result<PeerReconciliation, String> {
+    let mut desired_keys = std::collections::HashSet::new();
+    let mut upserts = Vec::new();
+    let mut replacements = Vec::new();
+    for peer in desired {
+        let mut desired_peer = to_defguard_peer(peer)?;
+        desired_keys.insert(desired_peer.public_key.clone());
+        let Some(observed_peer) = observed.peers.get(&desired_peer.public_key) else {
+            upserts.push(desired_peer);
+            continue;
+        };
+        if let Some(endpoint) = observed_peer
+            .endpoint
+            .filter(|endpoint| peer.candidate_endpoints.contains(endpoint))
+        {
+            desired_peer.endpoint = Some(endpoint);
+        }
+        if peer_configuration_matches(observed_peer, &desired_peer, &peer.candidate_endpoints) {
+            continue;
+        }
+        if configured_preshared_key(observed_peer).is_some()
+            && configured_preshared_key(&desired_peer).is_none()
+        {
+            replacements.push(desired_peer);
+        } else {
+            upserts.push(desired_peer);
+        }
+    }
+    let removals = observed
+        .peers
+        .keys()
+        .filter(|key| !desired_keys.contains(*key))
+        .cloned()
+        .collect();
+    let desired_routes = desired
+        .iter()
+        .map(to_defguard_peer)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flat_map(|peer| peer.allowed_ips)
+        .collect::<std::collections::HashSet<_>>();
+    let stale_routes = observed
+        .peers
+        .values()
+        .flat_map(|peer| peer.allowed_ips.iter())
+        .filter(|route| !desired_routes.contains(*route))
+        .cloned()
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    Ok(PeerReconciliation {
+        upserts,
+        replacements,
+        removals,
+        stale_routes,
+    })
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug, PartialEq, Eq)]
+struct LinkReconciliation {
+    index: u32,
+    add_address: bool,
+    stale_addresses: Vec<Ipv4Net>,
+    set_mtu: bool,
+    bring_up: bool,
+}
+
+#[cfg(target_os = "linux")]
+fn link_reconciliation(
+    index: u32,
+    observed_addresses: &[Ipv4Net],
+    observed_mtu: u32,
+    observed_up: bool,
+    desired_address: Ipv4Net,
+    desired_mtu: u32,
+) -> LinkReconciliation {
+    LinkReconciliation {
+        index,
+        add_address: !observed_addresses.contains(&desired_address),
+        stale_addresses: observed_addresses
+            .iter()
+            .copied()
+            .filter(|address| *address != desired_address)
+            .collect(),
+        set_mtu: observed_mtu != desired_mtu,
+        bring_up: !observed_up,
+    }
+}
+
+#[cfg(target_os = "linux")]
+async fn reconcile_wireguard_link(
+    ifname: &str,
+    local_host_cidr: &str,
+    mtu: u32,
+) -> Result<(), String> {
+    let desired_address = local_host_cidr
+        .parse::<Ipv4Net>()
+        .map_err(|source| format!("parse WireGuard address {local_host_cidr}: {source}"))?;
+    let interface = getifs::interfaces()
+        .map_err(|source| source.to_string())?
+        .into_iter()
+        .find(|interface| interface.name().as_str() == ifname)
+        .ok_or_else(|| format!("WireGuard interface {ifname} disappeared during reconciliation"))?;
+    let addresses = interface
+        .ipv4_addrs()
+        .map_err(|source| format!("read WireGuard interface {ifname} addresses: {source}"))?
+        .into_iter()
+        .map(|address| {
+            Ipv4Net::new(address.addr(), address.prefix_len()).map_err(|source| {
+                format!("read WireGuard interface {ifname} address {address}: {source}")
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let plan = link_reconciliation(
+        interface.index(),
+        &addresses,
+        interface.mtu(),
+        interface.flags().contains(getifs::Flags::UP),
+        desired_address,
+        mtu,
+    );
+    apply_link_reconciliation(plan, desired_address, mtu).await
+}
+
+#[cfg(target_os = "linux")]
+async fn apply_link_reconciliation(
+    LinkReconciliation {
+        index,
+        add_address,
+        stale_addresses,
+        set_mtu,
+        bring_up,
+    }: LinkReconciliation,
+    desired_address: Ipv4Net,
+    mtu: u32,
+) -> Result<(), String> {
+    let (connection, handle, _) =
+        rtnetlink::new_connection().map_err(|source| source.to_string())?;
+    tokio::spawn(connection);
+    if add_address {
+        handle
+            .address()
+            .add(
+                index,
+                std::net::IpAddr::V4(desired_address.addr()),
+                desired_address.prefix_len(),
+            )
+            .execute()
+            .await
+            .map_err(|source| format!("add WireGuard address {desired_address}: {source}"))?;
+    }
+    if set_mtu || bring_up {
+        let mut link = LinkUnspec::new_with_index(index);
+        if set_mtu {
+            link = link.mtu(mtu);
+        }
+        if bring_up {
+            link = link.up();
+        }
+        handle
+            .link()
+            .set(link.build())
+            .execute()
+            .await
+            .map_err(|source| format!("repair WireGuard link {index}: {source}"))?;
+    }
+    for address in stale_addresses {
+        let message = AddressMessageBuilder::<Ipv4Addr>::new()
+            .index(index)
+            .address(address.addr(), address.prefix_len())
+            .build();
+        handle
+            .address()
+            .del(message)
+            .execute()
+            .await
+            .map_err(|source| format!("remove stale WireGuard address {address}: {source}"))?;
+    }
+    Ok(())
+}
+
+fn peer_configuration_matches(
+    observed: &Peer,
+    desired: &Peer,
+    candidate_endpoints: &[std::net::SocketAddr],
+) -> bool {
+    observed.public_key == desired.public_key
+        && configured_preshared_key(observed) == configured_preshared_key(desired)
+        && observed.persistent_keepalive_interval == desired.persistent_keepalive_interval
+        && observed.allowed_ips.len() == desired.allowed_ips.len()
+        && observed
+            .allowed_ips
+            .iter()
+            .all(|allowed_ip| desired.allowed_ips.contains(allowed_ip))
+        && observed.endpoint.is_some_and(|endpoint| {
+            desired.endpoint == Some(endpoint) || candidate_endpoints.contains(&endpoint)
+        })
+}
+
+fn configured_preshared_key(peer: &Peer) -> Option<&Key> {
+    peer.preshared_key
+        .as_ref()
+        .filter(|key| key.as_slice().iter().any(|byte| *byte != 0))
+}
+
+fn apply_peer_reconciliation<A: WireguardInterfaceApi>(
+    api: &A,
+    PeerReconciliation {
+        upserts,
+        replacements,
+        removals,
+        stale_routes: _,
+    }: PeerReconciliation,
+) -> Result<(), String> {
+    for peer in &upserts {
+        api.configure_peer(peer)
+            .map_err(|source| source.to_string())?;
+    }
+    for peer in &replacements {
+        api.remove_peer(&peer.public_key)
+            .map_err(|source| source.to_string())?;
+        api.configure_peer(peer)
+            .map_err(|source| source.to_string())?;
+    }
+    for public_key in &removals {
+        api.remove_peer(public_key)
+            .map_err(|source| source.to_string())?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+async fn remove_stale_peer_routes(ifname: &str, stale_routes: &[IpAddrMask]) -> Result<(), String> {
+    if stale_routes.is_empty() {
+        return Ok(());
+    }
+    let interface = getifs::interfaces()
+        .map_err(|source| source.to_string())?
+        .into_iter()
+        .find(|interface| interface.name().as_str() == ifname)
+        .ok_or_else(|| format!("WireGuard interface {ifname} disappeared during route cleanup"))?;
+    let (connection, handle, _) =
+        rtnetlink::new_connection().map_err(|source| source.to_string())?;
+    tokio::spawn(connection);
+    for route in stale_routes {
+        let std::net::IpAddr::V4(address) = route.address else {
+            continue;
+        };
+        let message = RouteMessageBuilder::<Ipv4Addr>::new()
+            .destination_prefix(address, route.cidr)
+            .output_interface(interface.index())
+            .protocol(RouteProtocol::Boot)
+            .scope(RouteScope::Link)
+            .build();
+        match handle.route().del(message).execute().await {
+            Ok(()) => {}
+            Err(rtnetlink::Error::NetlinkError(error))
+                if error.code.is_some_and(|code| code.get() == -3) => {}
+            Err(source) => return Err(format!("remove stale WireGuard route {route}: {source}")),
+        }
+    }
     Ok(())
 }
 
@@ -499,7 +806,11 @@ pub(super) fn wireguard_host_cidr(endpoint_subnet: &str) -> Result<String, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use defguard_wireguard_rs::error::WireguardInterfaceError;
+    use std::cell::RefCell;
+    use std::net::IpAddr;
     use std::os::unix::fs::PermissionsExt;
+    use std::time::{Duration, SystemTime};
 
     #[test]
     fn wireguard_mtu_from_egress_subtracts_overhead_and_clamps() {
@@ -579,5 +890,200 @@ mod tests {
         );
         assert!(wireguard_host_cidr("10.42.7.0/25").is_err());
         assert!(wireguard_host_cidr("10.42.7.12/24").is_err());
+    }
+
+    #[test]
+    fn unchanged_peer_runtime_evidence_requires_no_mutation() {
+        let desired = desired_peer("10.42.2.0/24", 51820);
+        let mut observed_peer = to_defguard_peer(&desired).expect("peer renders");
+        observed_peer.last_handshake = Some(SystemTime::UNIX_EPOCH + Duration::from_secs(42));
+        observed_peer.rx_bytes = 100;
+        observed_peer.tx_bytes = 200;
+        observed_peer.protocol_version = Some(1);
+        observed_peer.preshared_key = Some(Key::default());
+        let observed = host_with_peer(observed_peer);
+
+        let plan = peer_reconciliation(&observed, &[desired]).expect("plan succeeds");
+
+        assert_eq!(
+            plan,
+            PeerReconciliation {
+                upserts: Vec::new(),
+                replacements: Vec::new(),
+                removals: Vec::new(),
+                stale_routes: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn kernel_normalized_private_key_keeps_the_same_effective_identity() {
+        let desired = Key::generate();
+        let mut normalized_bytes = desired.as_array();
+        normalized_bytes[0] &= 248;
+        normalized_bytes[31] &= 127;
+        normalized_bytes[31] |= 64;
+        let normalized = Key::new(normalized_bytes);
+
+        assert_ne!(normalized, desired);
+        assert!(wireguard_private_key_matches(Some(&normalized), &desired));
+    }
+
+    #[test]
+    fn declared_rotated_endpoint_requires_no_mutation() {
+        let mut desired = desired_peer("10.42.2.0/24", 51820);
+        let rotated = "192.0.2.2:51820".parse().expect("rotated endpoint");
+        desired.candidate_endpoints.push(rotated);
+        let mut observed_peer = to_defguard_peer(&desired).expect("peer renders");
+        observed_peer.endpoint = Some(rotated);
+        let observed = host_with_peer(observed_peer);
+
+        let plan = peer_reconciliation(&observed, &[desired]).expect("plan succeeds");
+
+        assert!(plan.upserts.is_empty() && plan.replacements.is_empty());
+    }
+
+    #[test]
+    fn changed_allowed_ip_is_upserted_without_replacing_peer() {
+        let desired = desired_peer("10.42.3.0/24", 51820);
+        let mut observed_peer = to_defguard_peer(&desired).expect("peer renders");
+        observed_peer.allowed_ips = vec!["10.42.2.0/24".parse().expect("old subnet")];
+        let observed = host_with_peer(observed_peer);
+
+        let plan = peer_reconciliation(&observed, &[desired]).expect("plan succeeds");
+
+        assert_eq!(plan.upserts.len(), 1);
+        assert!(plan.replacements.is_empty());
+        assert_eq!(
+            plan.stale_routes,
+            vec!["10.42.2.0/24".parse().expect("old subnet")]
+        );
+    }
+
+    #[test]
+    fn rogue_peer_is_removed_after_desired_upsert() {
+        let desired = desired_peer("10.42.2.0/24", 51820);
+        let rogue_key = Key::generate();
+        let observed = host_with_peer(Peer::new(rogue_key.clone()));
+
+        let plan = peer_reconciliation(&observed, &[desired]).expect("plan succeeds");
+
+        assert_eq!(plan.upserts.len(), 1);
+        assert_eq!(plan.removals, vec![rogue_key]);
+    }
+
+    #[test]
+    fn peer_executor_applies_desired_peers_before_removing_rogue_peers() {
+        let desired = desired_peer("10.42.2.0/24", 51820);
+        let rogue_key = Key::generate();
+        let observed = host_with_peer(Peer::new(rogue_key));
+        let plan = peer_reconciliation(&observed, &[desired]).expect("plan succeeds");
+        let api = RecordingWireGuardApi::default();
+
+        apply_peer_reconciliation(&api, plan).expect("execution succeeds");
+
+        assert_eq!(
+            api.actions.into_inner(),
+            vec![PeerAction::Configure, PeerAction::Remove]
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn link_planner_repairs_each_field_without_full_configuration() {
+        let desired = "10.42.1.1/24".parse::<Ipv4Net>().expect("desired address");
+        let stale = "10.42.9.1/24".parse::<Ipv4Net>().expect("stale address");
+
+        let plan = link_reconciliation(7, &[stale], 1280, false, desired, 1420);
+
+        assert_eq!(
+            plan,
+            LinkReconciliation {
+                index: 7,
+                add_address: true,
+                stale_addresses: vec![stale],
+                set_mtu: true,
+                bring_up: true,
+            }
+        );
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum PeerAction {
+        Configure,
+        Remove,
+    }
+
+    #[derive(Default)]
+    struct RecordingWireGuardApi {
+        actions: RefCell<Vec<PeerAction>>,
+    }
+
+    impl WireguardInterfaceApi for RecordingWireGuardApi {
+        fn create_interface(&mut self) -> Result<(), WireguardInterfaceError> {
+            Ok(())
+        }
+
+        fn assign_address(&self, _address: &IpAddrMask) -> Result<(), WireguardInterfaceError> {
+            Ok(())
+        }
+
+        fn configure_peer_routing(&self, _peers: &[Peer]) -> Result<(), WireguardInterfaceError> {
+            Ok(())
+        }
+
+        fn configure_interface(
+            &self,
+            _config: &InterfaceConfiguration,
+        ) -> Result<(), WireguardInterfaceError> {
+            Ok(())
+        }
+
+        fn remove_interface(&self) -> Result<(), WireguardInterfaceError> {
+            Ok(())
+        }
+
+        fn configure_peer(&self, _peer: &Peer) -> Result<(), WireguardInterfaceError> {
+            self.actions.borrow_mut().push(PeerAction::Configure);
+            Ok(())
+        }
+
+        fn remove_peer(&self, _peer_pubkey: &Key) -> Result<(), WireguardInterfaceError> {
+            self.actions.borrow_mut().push(PeerAction::Remove);
+            Ok(())
+        }
+
+        fn read_interface_data(&self) -> Result<Host, WireguardInterfaceError> {
+            Ok(Host::new(51820, Key::generate()))
+        }
+
+        fn configure_dns(
+            &self,
+            _dns: &[IpAddr],
+            _search_domains: &[&str],
+        ) -> Result<(), WireguardInterfaceError> {
+            Ok(())
+        }
+    }
+
+    fn desired_peer(endpoint_subnet: &str, port: u16) -> WireGuardPeer {
+        let active_endpoint = format!("192.0.2.1:{port}").parse().expect("endpoint");
+        WireGuardPeer {
+            machine_id: ployz_core::ids::MachineId::try_new("edge").expect("machine id is valid"),
+            endpoint_subnet: endpoint_subnet.to_owned(),
+            active_endpoint,
+            candidate_endpoints: vec![active_endpoint],
+            public_key: WireGuardPublicKey::try_new(Key::generate().to_string())
+                .expect("public key is valid"),
+        }
+    }
+
+    fn host_with_peer(peer: Peer) -> Host {
+        let mut host = Host::new(
+            ployz_core::network::DEFAULT_WIREGUARD_LISTEN_PORT,
+            Key::generate(),
+        );
+        host.peers.insert(peer.public_key.clone(), peer);
+        host
     }
 }

@@ -57,6 +57,9 @@ fn run(args: Vec<String>) -> Result<EbpfCtlOutcome, String> {
                 route_add_ifname(subnet, &ifname, pin_path)
             }
             RouteCommand::Del { subnet } => route_del(subnet, pin_path),
+            RouteCommand::SyncIfname { ifname, subnets } => {
+                route_sync_ifname(&ifname, &subnets, pin_path)
+            }
         },
     }
     .map(|()| EbpfCtlOutcome::Completed)
@@ -113,6 +116,11 @@ enum RouteCommand {
     Del {
         #[arg(value_parser = parse_ipv4_subnet)]
         subnet: ipnet::Ipv4Net,
+    },
+    SyncIfname {
+        ifname: String,
+        #[arg(value_parser = parse_ipv4_subnet)]
+        subnets: Vec<ipnet::Ipv4Net>,
     },
 }
 
@@ -257,6 +265,24 @@ fn route_del(subnet: ipnet::Ipv4Net, pin_path: Option<&str>) -> Result<(), Strin
 #[cfg(not(target_os = "linux"))]
 fn route_del(_subnet: ipnet::Ipv4Net, _pin_path: Option<&str>) -> Result<(), String> {
     Err("route del requires Linux".to_owned())
+}
+
+#[cfg(target_os = "linux")]
+fn route_sync_ifname(
+    ifname: &str,
+    subnets: &[ipnet::Ipv4Net],
+    pin_path: Option<&str>,
+) -> Result<(), String> {
+    linux::route_sync_ifname(ifname, subnets, pin_path.unwrap_or(DEFAULT_PIN_PATH))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn route_sync_ifname(
+    _ifname: &str,
+    _subnets: &[ipnet::Ipv4Net],
+    _pin_path: Option<&str>,
+) -> Result<(), String> {
+    Err("route sync-ifname requires Linux".to_owned())
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -551,6 +577,37 @@ mod linux {
     pub fn route_del(subnet: ipnet::Ipv4Net, pin_path: &str) -> Result<(), String> {
         let mut map = open_routes_map(pin_path)?;
         let _ = map.remove(&PodRouteKey(subnet_to_key(subnet)));
+        Ok(())
+    }
+
+    pub fn route_sync_ifname(
+        ifname: &str,
+        subnets: &[ipnet::Ipv4Net],
+        pin_path: &str,
+    ) -> Result<(), String> {
+        let ifindex = resolve_ifindex(ifname)?;
+        let desired = subnets
+            .iter()
+            .copied()
+            .map(subnet_to_key)
+            .collect::<Vec<_>>();
+        let mut map = open_routes_map(pin_path)?;
+        for key in &desired {
+            map.insert(PodRouteKey(*key), PodRouteEntry(RouteEntry { ifindex }), 0)
+                .map_err(|error| format!("insert desired route: {error}"))?;
+        }
+        let observed = map
+            .keys()
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("list pinned routes: {error}"))?;
+        for key in observed {
+            if !desired.iter().any(|desired| {
+                desired.network == key.0.network && desired.prefix_len == key.0.prefix_len
+            }) {
+                map.remove(&key)
+                    .map_err(|error| format!("remove stale route: {error}"))?;
+            }
+        }
         Ok(())
     }
 
