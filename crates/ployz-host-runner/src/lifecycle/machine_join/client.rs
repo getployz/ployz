@@ -420,7 +420,8 @@ mod tests {
 
         let target = host_runner_join_target(redeemed)
             .expect("redeemed bundle converts")
-            .target;
+            .target
+            .expect("valid fixture resolves a join target");
 
         assert_eq!(
             target.host_port_assurance,
@@ -456,7 +457,8 @@ mod tests {
 
         let target = host_runner_join_target(redeemed)
             .expect("redeemed bundle converts")
-            .target;
+            .target
+            .expect("valid fixture resolves a join target");
 
         let rendered = target
             .role_environment
@@ -483,7 +485,8 @@ mod tests {
 
         let target = host_runner_join_target(redeemed)
             .expect("redeemed bundle converts")
-            .target;
+            .target
+            .expect("valid fixture resolves a join target");
         let rendered = target.role_environment.render_for_role(
             &ployz_core::roles::DaemonProcessRole::Machine(
                 MachineId::try_new("machine_255").expect("valid machine id"),
