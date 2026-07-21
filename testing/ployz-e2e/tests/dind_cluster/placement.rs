@@ -116,6 +116,29 @@ async fn group_placement_peer_health() {
             [machine_id("core_1"), machine_id("edge_2")],
             "first deploy runtime did not match its plan"
         );
+        for machine in [core.cluster.core(), edge_2] {
+            let restored = core
+                .exec_on(
+                    machine,
+                    &[
+                        "iptables",
+                        "-D",
+                        "OUTPUT",
+                        "-o",
+                        "ployz-wg0",
+                        "-p",
+                        "icmp",
+                        "-j",
+                        "DROP",
+                    ],
+                )
+                .await;
+            assert!(
+                restored.success(),
+                "restore RTT probes on {} failed: {restored:?}",
+                machine.name
+            );
+        }
 
         let restarted = core
             .exec_on(edge_3, &["systemctl", "start", "ployzd-machine-edge_3"])
@@ -126,6 +149,7 @@ async fn group_placement_peer_health() {
         );
         assert_unit_active(&core, edge_3, "ployzd-machine-edge_3").await;
         wait_for_machine_observations(&core, &machine_id("edge_3")).await;
+        prime_wireguard_handshake_graph(&core, &intent.dataplane_projection).await;
         wait_for_ready_dataplane(&core, &intent.dataplane_projection).await;
 
         set_wireguard_pair_block(
@@ -305,6 +329,38 @@ fn projection_member<'a>(
         .iter()
         .find(|member| member.machine_id == machine_id(machine))
         .unwrap_or_else(|| panic!("projection omitted {machine}"))
+}
+
+async fn prime_wireguard_handshake_graph(core: &CoreContext, projection: &DataplaneProjection) {
+    let [edge_2, _] = core.cluster.edges() else {
+        panic!("placement scenario requires exactly two edge machines");
+    };
+    for (source, destination) in [
+        (core.cluster.core(), machine_id("edge_2")),
+        (core.cluster.core(), machine_id("edge_3")),
+        (edge_2, machine_id("edge_3")),
+    ] {
+        let destination_member = projection
+            .declared_members()
+            .iter()
+            .find(|member| member.machine_id == destination)
+            .unwrap_or_else(|| panic!("projection omitted {destination:?}"));
+        let address = destination_member
+            .endpoint_subnet
+            .host_address()
+            .to_string();
+        let primed = core
+            .exec_on(
+                source,
+                &["ping", "-I", "ployz-wg0", "-c", "1", "-W", "2", &address],
+            )
+            .await;
+        assert!(
+            primed.success(),
+            "prime WireGuard pair from {} to {destination:?} failed: {primed:?}",
+            source.name
+        );
+    }
 }
 
 async fn reset_wireguard_peer(
