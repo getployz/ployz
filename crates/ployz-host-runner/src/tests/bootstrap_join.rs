@@ -2,7 +2,9 @@ use super::support;
 
 use crate::execution::SupervisorUnitTarget;
 use crate::execution::{ArtifactKind, ArtifactTarget};
-use crate::lifecycle::machine_join::execution::execute_host_runner_join;
+use crate::lifecycle::machine_join::execution::{
+    HostRunnerJoinExecution, execute_host_runner_join, execute_host_runner_join_with_redeemed,
+};
 use crate::plan::HostRunnerPlanFailure;
 use crate::plan::{
     ContainerRuntime, HostRunnerJoinTarget, HostRunnerStep, HostRunnerStepFailure,
@@ -235,7 +237,7 @@ fn host_runner_join_reports_target_resolution_failure_after_redemption() {
     let mut token_consumer = RecordingTokenConsumer::default();
     let mut recorder = RecordingRecorder::default();
 
-    let execution = execute_host_runner_join(
+    let outcome = execute_host_runner_join_with_redeemed(
         &token,
         &mut redeemer,
         &mut resolver,
@@ -244,6 +246,14 @@ fn host_runner_join_reports_target_resolution_failure_after_redemption() {
         &mut effects,
         &mut recorder,
     );
+    let HostRunnerJoinExecution::ResolutionFailure {
+        execution,
+        redeemed,
+        failure,
+    } = outcome
+    else {
+        panic!("missing platform must retain redeemed evidence in a typed resolution failure");
+    };
 
     assert!(matches!(
         execution.terminal.failure(),
@@ -253,6 +263,15 @@ fn host_runner_join_reports_target_resolution_failure_after_redemption() {
             message,
         })) if message.as_str() == "unsupported release platform linux/riscv64"
     ));
+    assert_eq!(redeemed.operation_id.as_str(), "op_machine");
+    assert_eq!(
+        failure,
+        crate::lifecycle::machine_join::execution::JoinTargetResolutionFailure::ReleasePlatform {
+            failure: ployz_core::install::ReleasePlatformFailure::Unsupported {
+                platform: "linux/riscv64".to_owned(),
+            },
+        }
+    );
     assert!(effects.calls.is_empty());
     assert_eq!(token_consumer.consumed, 0);
     assert_eq!(
