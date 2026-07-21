@@ -98,6 +98,10 @@ fn render_step_label(step: &HostRunnerStepLabel) -> String {
         HostRunnerStepLabel::StoreJoinMaterial(material) => {
             format!("store-join-material {}", material.machine_id.as_str())
         }
+        HostRunnerStepLabel::StoreInstalledSubstrateRelease(release) => format!(
+            "store-installed-substrate-release {}",
+            release.version.as_str()
+        ),
     }
 }
 
@@ -156,6 +160,9 @@ fn render_failure_reason(reason: HostRunnerStepFailureReason) -> &'static str {
         HostRunnerStepFailureReason::JoinReportFailed => "join-report-failed",
         HostRunnerStepFailureReason::JoinTokenConsumeFailed => "join-token-consume-failed",
         HostRunnerStepFailureReason::JoinMaterialStoreFailed => "join-material-store-failed",
+        HostRunnerStepFailureReason::InstalledSubstrateReleaseStoreFailed => {
+            "installed-substrate-release-store-failed"
+        }
         HostRunnerStepFailureReason::ContainerRuntimePrepareFailed => {
             "container-runtime-prepare-failed"
         }

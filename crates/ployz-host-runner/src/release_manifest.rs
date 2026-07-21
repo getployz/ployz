@@ -129,6 +129,20 @@ impl ReleaseManifest {
         &self.version
     }
 
+    pub fn install_artifacts_for(
+        &self,
+        local_platform: ReleasePlatform,
+    ) -> Result<FirstMachineInstallArtifacts, String> {
+        if self.platform != local_platform {
+            return Err(format!(
+                "release manifest platform {} does not match host platform {}",
+                self.platform.manifest_slug(),
+                local_platform.manifest_slug()
+            ));
+        }
+        self.install_artifacts()
+    }
+
     pub fn install_artifacts(&self) -> Result<FirstMachineInstallArtifacts, String> {
         Ok(FirstMachineInstallArtifacts {
             ployzd: artifact_spec(
@@ -413,6 +427,21 @@ mod tests {
                 .binary
                 .as_str(),
             "/usr/local/bin/nats-server"
+        );
+    }
+
+    #[test]
+    fn release_manifest_rejects_artifacts_for_another_local_platform() {
+        let manifest = ReleaseManifest::parse(&manifest_without_nats(Some("linux-amd64")))
+            .expect("manifest parses");
+
+        let error = manifest
+            .install_artifacts_for(ReleasePlatform::LinuxArm64)
+            .expect_err("another platform must fail before install planning");
+
+        assert_eq!(
+            error,
+            "release manifest platform linux-amd64 does not match host platform linux-arm64"
         );
     }
 

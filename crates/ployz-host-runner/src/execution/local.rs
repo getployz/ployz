@@ -25,6 +25,7 @@ use super::supervisor::{
 use crate::lifecycle::assigned_substrate::{
     AssignedHostPort, AssignedSubstrateState, write_assigned_substrate_state,
 };
+use crate::lifecycle::installed_substrate::store_installed_substrate_release;
 use crate::lifecycle::machine_join::{
     JOIN_CORE_SEEDS_FILE, JOIN_MATERIAL_DIR, JOIN_MATERIAL_FILE, JOIN_NATS_CREDENTIALS_FILE,
     JOIN_RECOVERY_KEY_FILE, JOIN_TRUSTED_CA_FILE, render_redacted_join_material,
@@ -113,6 +114,10 @@ impl<R: HostRunnerCommandRunner> HostRunnerStepEffects for HostRunnerLocalEffect
                 self.start_supervisor_unit(target).map_err(Into::into)
             }
             HostRunnerStep::StoreJoinMaterial(material) => self.store_join_material(material),
+            HostRunnerStep::StoreInstalledSubstrateRelease(release) => {
+                store_installed_substrate_release(&self.config.state_dir, release)
+                    .map_err(Into::into)
+            }
         }
     }
 }

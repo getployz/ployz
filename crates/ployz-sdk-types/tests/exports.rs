@@ -382,7 +382,7 @@ fn sdk_exports_operation_api_wire_types() {
     );
     assert_eq!(
         serde_json::to_string(&machine_response).expect("response serializes"),
-        r#"{"status":"ok","value":{"accepted":{"operation_id":"op_machine","watch_subject":"plz.v1.progress.machine.machine_2.operation.op_machine.>","start_sequence":"7"},"machine_id":"machine_2","bootstrap_url":"https://get.ployz.sh","join_bundle":{"material":{"cluster_name":"prod","dataplane_endpoint_supernet":"10.198.0.0/16","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"ca_pem":"-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"},"recovery_key_wrapped":[1,2,3],"core_seeds_wrapped":[4,5,6],"substrate_release":{"version":"v0.1.0"}}},"join_token":"join_once_123","join_secret_delivery":{"nats_credentials":"SUAIZ5LKGG2Y4WC7ZPKS46LSLLJQIFTO6KMSWSU2VN3TC7YRRIKH5WRXJQ"}}}"#
+        r#"{"status":"ok","value":{"accepted":{"operation_id":"op_machine","watch_subject":"plz.v1.progress.machine.machine_2.operation.op_machine.>","start_sequence":"7"},"machine_id":"machine_2","bootstrap_url":"https://get.ployz.sh","join_bundle":{"material":{"cluster_name":"prod","dataplane_endpoint_supernet":"10.198.0.0/16","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"ca_pem":"-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"},"recovery_key_wrapped":[1,2,3],"core_seeds_wrapped":[4,5,6],"substrate_release":{"version":"0.1.0"}}},"join_token":"join_once_123","join_secret_delivery":{"nats_credentials":"SUAIZ5LKGG2Y4WC7ZPKS46LSLLJQIFTO6KMSWSU2VN3TC7YRRIKH5WRXJQ"}}}"#
     );
 
     let redeem_request = MachineJoinRedeemRequest {
@@ -422,7 +422,7 @@ fn sdk_exports_operation_api_wire_types() {
     );
     assert_eq!(
         serde_json::to_string(&join_template).expect("join template serializes"),
-        r#"{"join_bundle":{"material":{"cluster_name":"prod","dataplane_endpoint_supernet":"10.198.0.0/16","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"ca_pem":"-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"},"recovery_key_wrapped":[1,2,3],"core_seeds_wrapped":[4,5,6],"substrate_release":{"version":"v0.1.0"}}}}"#
+        r#"{"join_bundle":{"material":{"cluster_name":"prod","dataplane_endpoint_supernet":"10.198.0.0/16","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"ca_pem":"-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"},"recovery_key_wrapped":[1,2,3],"core_seeds_wrapped":[4,5,6],"substrate_release":{"version":"0.1.0"}}}}"#
     );
 }
 

@@ -18,7 +18,7 @@ use crate::execution::{
 use crate::plan::HostRunnerPlanTerminal;
 use crate::plan::{
     HostRunnerJoinMaterial, HostRunnerJoinTarget, HostRunnerTextRecorder, JoinToken,
-    NonEmptyRoleSet, PloyzdRoleEnvironmentTarget, RoleNatsCredentials,
+    NonEmptyRoleSet, PloyzReleaseArtifact, PloyzdRoleEnvironmentTarget, RoleNatsCredentials,
 };
 use ployz_core::nats_config::NatsUserSeed;
 use ployz_core::operation::FailureMessage;
@@ -352,6 +352,8 @@ fn resolve_host_runner_join_target_with_artifacts(
     .map_err(|error| failure_message(&format!("invalid join material: {error:?}")))?;
     let ployzd_artifact = artifact_target(ArtifactKind::Ployzd, &artifacts.ployzd)
         .map_err(|error| failure_message(&format!("invalid ployzd install target: {error}")))?;
+    let ployzd_artifact = PloyzReleaseArtifact::try_new(ployzd_artifact)
+        .map_err(|error| failure_message(&format!("invalid Ployz release: {error}")))?;
     let ebpf_bytecode_artifact =
         artifact_target(ArtifactKind::EbpfBytecode, &artifacts.ebpf_bytecode).map_err(|error| {
             failure_message(&format!("invalid eBPF bytecode install target: {error}"))
@@ -468,13 +470,6 @@ fn resolve_join_artifacts(
     manifest: &ReleaseManifest,
     local_platform: ReleasePlatform,
 ) -> Result<FirstMachineInstallArtifacts, String> {
-    if manifest.platform() != local_platform {
-        return Err(format!(
-            "installed release platform {} does not match joining host platform {}",
-            manifest.platform().manifest_slug(),
-            local_platform.manifest_slug()
-        ));
-    }
     if manifest.version() != &expected.version {
         return Err(format!(
             "installed release {} does not match cluster join release {}",
@@ -482,7 +477,7 @@ fn resolve_join_artifacts(
             expected.version.as_str()
         ));
     }
-    manifest.install_artifacts()
+    manifest.install_artifacts_for(local_platform)
 }
 
 struct StartupJoinTokenConsumer {
@@ -503,7 +498,12 @@ mod tests {
         load_join_artifacts_from_release_env, resolve_host_runner_join_target_with_artifacts,
         resolve_join_artifacts, resolve_join_artifacts_from_manifests,
     };
+    use crate::execution::ArtifactKind;
+    use crate::lifecycle::installed_substrate::{
+        load_installed_substrate_release, store_installed_substrate_release,
+    };
     use crate::lifecycle::machine_join::execution::JoinTargetResolutionFailure;
+    use crate::plan::PloyzReleaseArtifact;
     use ployz_core::ids::{MachineId, OperationId};
     use ployz_core::install::{
         ExactPloyzVersion, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
@@ -571,7 +571,7 @@ mod tests {
 
         assert_eq!(
             error,
-            "installed release platform linux-amd64 does not match joining host platform linux-arm64"
+            "release manifest platform linux-amd64 does not match host platform linux-arm64"
         );
     }
 
@@ -635,6 +635,20 @@ mod tests {
         assert_eq!(
             artifacts.ployzd.source.as_str(),
             "https://example.test/ployzd-linux-arm64"
+        );
+
+        let artifact = crate::execution::artifact_target(ArtifactKind::Ployzd, &artifacts.ployzd)
+            .expect("resolved Ployz artifact is valid");
+        let release = PloyzReleaseArtifact::try_new(artifact).expect("release is exact");
+        let state_dir = tempfile::tempdir().expect("state dir");
+        store_installed_substrate_release(state_dir.path(), release.substrate_release())
+            .expect("installed exact identity persists");
+        assert_eq!(
+            load_installed_substrate_release(state_dir.path())
+                .expect("installed exact identity loads")
+                .version
+                .as_str(),
+            "0.1.0"
         );
     }
 

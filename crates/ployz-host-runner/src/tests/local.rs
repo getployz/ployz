@@ -1518,7 +1518,7 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
             WrappedCoreSeeds::new(b"wrapped-core-seeds".to_vec()),
         )
         .expect("valid join material"),
-        ployzd_artifact(&source, &root.join("join/bin/ployzd")),
+        ployz_release_artifact(ployzd_artifact(&source, &root.join("join/bin/ployzd"))),
         dataplane_artifacts(&root),
         railpack_artifact(&root),
         NonEmptyRoleSet::try_new(vec![

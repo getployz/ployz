@@ -14,9 +14,9 @@ use crate::execution::{
 };
 use crate::plan::{HostPrerequisite, HostRunnerStep, HostRunnerStepPlan, HostRunnerTextRecorder};
 use crate::plan::{HostRunnerPlanTerminal, execute_host_runner_plan};
-use crate::release_manifest::{ReleaseManifest, release_manifest_url};
+use crate::release_manifest::{ReleaseManifest, ReleasePlatform, release_manifest_url};
 use ployz_core::ids::OperationId;
-use ployz_core::install::InstallArtifactVersion;
+use ployz_core::install::{InstallArtifactVersion, MachineJoinSubstrateRelease};
 use ployz_core::operation::FailureMessage;
 use serde::Serialize;
 
@@ -65,7 +65,15 @@ pub(crate) fn run_substrate_update_command(update: HostRunnerSubstrateUpdate) ->
             return ExitCode::FAILURE;
         }
     };
-    let artifacts = match manifest.install_artifacts() {
+    let local_platform =
+        match ReleasePlatform::from_target(std::env::consts::OS, std::env::consts::ARCH) {
+            Ok(platform) => platform,
+            Err(message) => {
+                eprintln!("{message}");
+                return ExitCode::FAILURE;
+            }
+        };
+    let artifacts = match manifest.install_artifacts_for(local_platform) {
         Ok(artifacts) => artifacts,
         Err(message) => {
             eprintln!("release manifest is invalid: {message}");
@@ -73,14 +81,7 @@ pub(crate) fn run_substrate_update_command(update: HostRunnerSubstrateUpdate) ->
         }
     };
     let ployzd_version = artifacts.ployzd.version.clone();
-    let target_version =
-        match ployz_core::install::ExactPloyzVersion::try_new(ployzd_version.as_str()) {
-            Ok(version) => version,
-            Err(error) => {
-                eprintln!("release manifest Ployz version is invalid: {error}");
-                return ExitCode::FAILURE;
-            }
-        };
+    let target_version = manifest.version().clone();
     let ployzd = match artifact_target(ArtifactKind::Ployzd, &artifacts.ployzd) {
         Ok(target) => target,
         Err(error) => {
@@ -145,6 +146,11 @@ pub(crate) fn run_substrate_update_command(update: HostRunnerSubstrateUpdate) ->
     {
         steps.push(HostRunnerStep::InstallArtifact(nats_server));
     }
+    steps.push(HostRunnerStep::StoreInstalledSubstrateRelease(
+        MachineJoinSubstrateRelease {
+            version: target_version.clone(),
+        },
+    ));
     let plan = HostRunnerStepPlan::from_steps(steps);
     let template_promotion = match prepare_machine_join_template_release_promotion(
         Path::new(MACHINE_JOIN_TEMPLATE_PATH),

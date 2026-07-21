@@ -84,6 +84,7 @@ pub enum HostRunnerStep {
     WriteSupervisorUnit(SupervisorUnitSpec),
     StartSupervisorUnit(SupervisorUnitTarget),
     StoreJoinMaterial(HostRunnerJoinMaterial),
+    StoreInstalledSubstrateRelease(MachineJoinSubstrateRelease),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,6 +110,7 @@ pub enum HostRunnerStepLabel {
     ReportJoinResult,
     ConsumeJoinTokenFile,
     StoreJoinMaterial(RedactedJoinMaterial),
+    StoreInstalledSubstrateRelease(MachineJoinSubstrateRelease),
 }
 
 impl HostRunnerStepLabel {
@@ -159,6 +161,9 @@ impl HostRunnerStepLabel {
             }
             HostRunnerStep::StoreJoinMaterial(material) => {
                 Self::StoreJoinMaterial(material.redacted())
+            }
+            HostRunnerStep::StoreInstalledSubstrateRelease(release) => {
+                Self::StoreInstalledSubstrateRelease(release.clone())
             }
         }
     }
@@ -416,7 +421,7 @@ fn line_value(field: JoinMaterialField, value: String) -> Result<String, JoinMat
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostRunnerJoinTarget {
     pub material: HostRunnerJoinMaterial,
-    pub ployzd_artifact: ArtifactTarget,
+    pub ployzd_artifact: PloyzReleaseArtifact,
     pub dataplane_artifacts: DataplaneArtifactTargets,
     pub railpack_artifact: ArtifactTarget,
     pub roles: NonEmptyRoleSet,
@@ -428,7 +433,7 @@ impl HostRunnerJoinTarget {
     #[must_use]
     pub fn new(
         material: HostRunnerJoinMaterial,
-        ployzd_artifact: ArtifactTarget,
+        ployzd_artifact: PloyzReleaseArtifact,
         dataplane_artifacts: DataplaneArtifactTargets,
         railpack_artifact: ArtifactTarget,
         roles: NonEmptyRoleSet,
@@ -480,7 +485,7 @@ impl PloyzReleaseArtifact {
     }
 
     #[must_use]
-    const fn substrate_release(&self) -> &MachineJoinSubstrateRelease {
+    pub const fn substrate_release(&self) -> &MachineJoinSubstrateRelease {
         &self.substrate_release
     }
 }
@@ -1013,7 +1018,7 @@ fn host_runner_join_install_steps(target: HostRunnerJoinTarget) -> Vec<HostRunne
             target.material.dataplane_endpoint_supernet().clone(),
         ),
         HostRunnerStep::VerifyContainerRuntime(ContainerRuntime::Docker),
-        HostRunnerStep::InstallArtifact(target.ployzd_artifact.clone()),
+        HostRunnerStep::InstallArtifact(target.ployzd_artifact.artifact().clone()),
         HostRunnerStep::InstallArtifact(target.railpack_artifact.clone()),
     ];
     steps.push(HostRunnerStep::InstallArtifact(
@@ -1021,6 +1026,9 @@ fn host_runner_join_install_steps(target: HostRunnerJoinTarget) -> Vec<HostRunne
     ));
     steps.push(HostRunnerStep::InstallArtifact(
         target.dataplane_artifacts.ebpf_ctl.clone(),
+    ));
+    steps.push(HostRunnerStep::StoreInstalledSubstrateRelease(
+        target.ployzd_artifact.substrate_release().clone(),
     ));
 
     for role in target.roles.roles {
@@ -1034,7 +1042,7 @@ fn host_runner_join_install_steps(target: HostRunnerJoinTarget) -> Vec<HostRunne
         steps.push(HostRunnerStep::WriteSupervisorUnit(
             SupervisorUnitSpec::PloyzdRole {
                 role: role.clone(),
-                artifact: target.ployzd_artifact.clone(),
+                artifact: target.ployzd_artifact.artifact().clone(),
                 environment_file: target.role_environment.file_for_role(&role),
             },
         ));
@@ -1278,6 +1286,9 @@ pub fn first_machine_install_plan(target: FirstMachineInstallTarget) -> HostRunn
         HostRunnerStep::InstallArtifact(target.dataplane_artifacts.ebpf_ctl.clone()),
         HostRunnerStep::InstallArtifact(target.nats_server_artifact.clone()),
         HostRunnerStep::InstallArtifact(target.railpack_artifact.clone()),
+        HostRunnerStep::StoreInstalledSubstrateRelease(
+            target.ployzd_artifact.substrate_release().clone(),
+        ),
         HostRunnerStep::WriteNatsTlsMaterial(NatsTlsMaterialTarget::new(
             target.nats_material.clone(),
             &target.nats_identity,
@@ -1434,6 +1445,7 @@ pub enum HostRunnerStepFailureReason {
     JoinReportFailed,
     JoinTokenConsumeFailed,
     JoinMaterialStoreFailed,
+    InstalledSubstrateReleaseStoreFailed,
     DataplaneHostPrepareFailed,
     ContainerRuntimePrepareFailed,
     ContainerRuntimeVerifyFailed,
@@ -1461,6 +1473,9 @@ impl HostRunnerStepFailureReason {
             HostRunnerStep::WriteSupervisorUnit(_) => Self::SupervisorWriteFailed,
             HostRunnerStep::StartSupervisorUnit(_) => Self::SupervisorStartFailed,
             HostRunnerStep::StoreJoinMaterial(_) => Self::JoinMaterialStoreFailed,
+            HostRunnerStep::StoreInstalledSubstrateRelease(_) => {
+                Self::InstalledSubstrateReleaseStoreFailed
+            }
         }
     }
 }

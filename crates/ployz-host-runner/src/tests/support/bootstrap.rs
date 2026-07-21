@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 
 use super::artifacts::{
     artifact_source as source, artifact_version as version, nats_server_artifact,
-    ployz_release_artifact, ployzd_artifact, railpack_artifact, sha256_digest as digest,
+    ployz_release_artifact, railpack_artifact, sha256_digest as digest,
 };
 use crate::execution::{ArtifactKind, ArtifactTarget, DataplaneArtifactTargets};
 use crate::execution::{PloyzdRoleEnvironmentFile, SupervisorUnitTarget};
@@ -146,7 +146,7 @@ impl HostRunnerJoinResolver for RecordingJoinResolver {
         }
         Ok(HostRunnerJoinTarget::new(
             host_runner_join_material(),
-            ployzd_artifact(),
+            ployz_release_artifact(),
             dataplane_artifacts(),
             railpack_artifact(),
             NonEmptyRoleSet::try_new(vec![DaemonProcessRole::Machine(machine_id("machine_7"))])

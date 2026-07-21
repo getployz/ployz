@@ -15,7 +15,7 @@ use crate::plan::{
 use ployz_core::roles::DaemonProcessRole;
 use ployz_sdk_types::MachineJoinReportFailure;
 use ployz_test_support::ids::{failure_message, machine_id};
-use support::artifacts::{ployzd_artifact, railpack_artifact};
+use support::artifacts::{ployz_release_artifact, ployzd_artifact, railpack_artifact};
 use support::bootstrap::*;
 
 #[test]
@@ -27,7 +27,7 @@ fn host_runner_join_installs_ployzd_and_only_assigned_role_units() {
     let material = host_runner_join_material();
     let plan = host_runner_join_local_install_plan(HostRunnerJoinTarget::new(
         material.clone(),
-        ployzd_artifact(),
+        ployz_release_artifact(),
         dataplane_artifacts(),
         railpack_artifact(),
         NonEmptyRoleSet::try_new(roles.clone()).expect("non-empty unique roles"),
@@ -40,6 +40,15 @@ fn host_runner_join_installs_ployzd_and_only_assigned_role_units() {
     assert!(installs_artifact_kind(&plan, ArtifactKind::EbpfCtl));
     assert!(installs_artifact_kind(&plan, ArtifactKind::Railpack));
     assert!(writes_ployzd_role_units(&plan));
+    assert!(
+        plan.steps()
+            .contains(&HostRunnerStep::StoreInstalledSubstrateRelease(
+                ployz_core::install::MachineJoinSubstrateRelease {
+                    version: ployz_core::install::ExactPloyzVersion::try_new("0.1.0")
+                        .expect("exact release"),
+                },
+            ))
+    );
     assert!(
         plan.steps()
             .contains(&HostRunnerStep::StoreJoinMaterial(material))

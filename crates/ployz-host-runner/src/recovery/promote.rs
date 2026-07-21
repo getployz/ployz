@@ -13,6 +13,7 @@ use crate::execution::{HostRunnerLocalConfig, HostRunnerLocalEffects, Supervisor
 use crate::lifecycle::assigned_substrate::{
     AssignedSubstrateState, SubstrateAssignment, load_assigned_substrate_state,
 };
+use crate::lifecycle::installed_substrate::load_installed_substrate_release;
 use crate::lifecycle::machine_join::{
     JOIN_CORE_SEEDS_FILE, JOIN_MATERIAL_DIR, JOIN_MATERIAL_FILE, JOIN_RECOVERY_KEY_FILE,
     JOIN_TRUSTED_CA_FILE, parse_dataplane_endpoint_supernet_from_join_material,
@@ -22,8 +23,11 @@ use crate::plan::{
     CorePromoteTarget, HostRunnerTextRecorder, PloyzReleaseArtifact, core_promote_plan,
 };
 use crate::plan::{HostRunnerPlanTerminal, execute_host_runner_plan};
-use crate::release_manifest::release_manifest_url;
-use ployz_core::install::{MachineJoinClusterName, MachineJoinRuntimeNatsUrl};
+use crate::release_manifest::{ReleasePlatform, release_manifest_url};
+use ployz_core::install::{
+    ExactPloyzVersion, MachineJoinClusterName, MachineJoinRuntimeNatsUrl,
+    MachineJoinSubstrateRelease,
+};
 
 use crate::env_config::{
     default_machine_join_template_file, load_versioned_release_manifest, local_release_manifest_url,
@@ -46,11 +50,25 @@ pub(crate) fn run_core_promote_command(promote: HostRunnerCorePromote) -> ExitCo
         };
     }
 
-    // The installed release supplies the core nats-server + ployzd binaries;
-    // --version is an explicit operator override.
-    let manifest_url = match &promote.version {
-        Some(version) => release_manifest_url(version),
-        None => local_release_manifest_url(Path::new("/etc/ployz/release.env")),
+    let installed_release = match load_installed_substrate_release(Path::new(HOST_RUNNER_STATE_DIR))
+    {
+        Ok(release) => release,
+        Err(message) => {
+            eprintln!("ployz host core-promote: {message}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let release = match promotion_release(&installed_release, promote.version.as_ref()) {
+        Ok(release) => release,
+        Err(message) => {
+            eprintln!("ployz host core-promote: {message}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let manifest_url = if release.as_str().starts_with("dev-") {
+        local_release_manifest_url(Path::new("/etc/ployz/release.env"))
+    } else {
+        release_manifest_url(&release)
     };
     let manifest = match load_versioned_release_manifest(&manifest_url) {
         Ok(manifest) => manifest,
@@ -59,7 +77,23 @@ pub(crate) fn run_core_promote_command(promote: HostRunnerCorePromote) -> ExitCo
             return ExitCode::FAILURE;
         }
     };
-    let artifacts = match manifest.install_artifacts() {
+    if manifest.version() != &release {
+        eprintln!(
+            "release manifest version {} does not match installed substrate release {}",
+            manifest.version().as_str(),
+            release.as_str()
+        );
+        return ExitCode::FAILURE;
+    }
+    let local_platform =
+        match ReleasePlatform::from_target(std::env::consts::OS, std::env::consts::ARCH) {
+            Ok(platform) => platform,
+            Err(message) => {
+                eprintln!("{message}");
+                return ExitCode::FAILURE;
+            }
+        };
+    let artifacts = match manifest.install_artifacts_for(local_platform) {
         Ok(artifacts) => artifacts,
         Err(message) => {
             eprintln!("release manifest is invalid: {message}");
@@ -176,7 +210,24 @@ pub(crate) fn run_core_promote_command(promote: HostRunnerCorePromote) -> ExitCo
     }
 }
 
+fn promotion_release(
+    installed: &MachineJoinSubstrateRelease,
+    requested: Option<&ExactPloyzVersion>,
+) -> Result<ExactPloyzVersion, String> {
+    if let Some(requested) = requested
+        && requested != &installed.version
+    {
+        return Err(format!(
+            "requested promotion release {} differs from installed substrate release {}",
+            requested.as_str(),
+            installed.version.as_str()
+        ));
+    }
+    Ok(installed.version.clone())
+}
+
 fn check_core_promote_preflight() -> Result<(), String> {
+    load_installed_substrate_release(Path::new(HOST_RUNNER_STATE_DIR))?;
     promoted_assigned_substrate(Path::new(HOST_RUNNER_STATE_DIR))?;
     let join_dir = PathBuf::from(HOST_RUNNER_STATE_DIR).join(JOIN_MATERIAL_DIR);
     require_promote_file(&join_dir.join(JOIN_CORE_SEEDS_FILE), JOIN_CORE_SEEDS_FILE)?;
@@ -377,13 +428,16 @@ fn read_promote_file(path: &std::path::Path) -> Result<String, String> {
 mod tests {
     use std::collections::BTreeSet;
 
-    use ployz_core::install::HostPortAssurance;
+    use ployz_core::install::{ExactPloyzVersion, HostPortAssurance, MachineJoinSubstrateRelease};
 
     use crate::lifecycle::assigned_substrate::{
         AssignedSubstrateState, SubstrateAssignment, write_assigned_substrate_state,
     };
+    use crate::lifecycle::installed_substrate::{
+        load_installed_substrate_release, store_installed_substrate_release,
+    };
 
-    use super::promoted_assigned_substrate;
+    use super::{promoted_assigned_substrate, promotion_release};
 
     #[test]
     fn promotion_adds_nats_without_losing_assignments_or_assurance() {
@@ -436,5 +490,29 @@ mod tests {
 
         assert!(error.contains("failed to parse assigned substrate state"));
         assert!(error.contains("restore"));
+    }
+
+    #[test]
+    fn advanced_channel_join_identity_governs_later_promotion() {
+        let state_dir = tempfile::tempdir().expect("state dir");
+        let founder_selected = MachineJoinSubstrateRelease {
+            version: ExactPloyzVersion::try_new("0.1.0").expect("exact installed release"),
+        };
+        store_installed_substrate_release(state_dir.path(), &founder_selected)
+            .expect("join-installed release persists");
+        let installed = load_installed_substrate_release(state_dir.path())
+            .expect("promotion loads installed release");
+
+        assert_eq!(
+            promotion_release(&installed, None).expect("installed release is authoritative"),
+            founder_selected.version
+        );
+
+        let requested = ExactPloyzVersion::try_new("0.2.0").expect("exact requested release");
+        assert_eq!(
+            promotion_release(&installed, Some(&requested))
+                .expect_err("different override must be rejected"),
+            "requested promotion release 0.2.0 differs from installed substrate release 0.1.0"
+        );
     }
 }

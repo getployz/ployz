@@ -96,6 +96,11 @@ fn first_machine_install_starts_nats_and_core_roles_without_join_token() {
             .iter()
             .any(|step| matches!(step, HostRunnerStep::StoreJoinMaterial(_)))
     );
+    assert!(plan.steps().iter().any(|step| matches!(
+        step,
+        HostRunnerStep::StoreInstalledSubstrateRelease(release)
+            if release.version.as_str() == "0.1.0"
+    )));
 }
 
 #[test]
@@ -141,7 +146,8 @@ fn first_machine_names_founder_and_cloud_credentials() {
             | HostRunnerStep::WritePloyzdRoleEnvironment(_)
             | HostRunnerStep::WriteSupervisorUnit(_)
             | HostRunnerStep::StartSupervisorUnit(_)
-            | HostRunnerStep::StoreJoinMaterial(_) => None,
+            | HostRunnerStep::StoreJoinMaterial(_)
+            | HostRunnerStep::StoreInstalledSubstrateRelease(_) => None,
         })
         .expect("first-machine plan writes authorized users");
 
@@ -247,7 +253,8 @@ fn first_machine_public_ip_flips_the_listener_external_in_the_secured_config() {
             | HostRunnerStep::WriteMachineJoinTemplate(_)
             | HostRunnerStep::WriteSupervisorUnit(_)
             | HostRunnerStep::StartSupervisorUnit(_)
-            | HostRunnerStep::StoreJoinMaterial(_) => None,
+            | HostRunnerStep::StoreJoinMaterial(_)
+            | HostRunnerStep::StoreInstalledSubstrateRelease(_) => None,
         })
         .expect("first-machine plan writes the nats config");
 
@@ -329,7 +336,8 @@ fn first_machine_plan_derives_role_supernet_after_environment_overrides() {
             | HostRunnerStep::WriteMachineJoinTemplate(_)
             | HostRunnerStep::WriteSupervisorUnit(_)
             | HostRunnerStep::StartSupervisorUnit(_)
-            | HostRunnerStep::StoreJoinMaterial(_) => None,
+            | HostRunnerStep::StoreJoinMaterial(_)
+            | HostRunnerStep::StoreInstalledSubstrateRelease(_) => None,
         })
         .expect("first-machine plan writes the control environment");
 
