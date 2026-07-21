@@ -6,10 +6,10 @@ use std::path::PathBuf;
 
 use ployz_core::ids::MachineId;
 use ployz_core::install::{
-    AbsoluteInstallPath, HostPortAssurance, MachineBootstrapUrl, MachineJoinBundle,
-    MachineJoinClusterName, MachineJoinMaterial, MachineJoinRuntimeNatsUrl,
-    MachineJoinSecretDelivery, MachineJoinTemplate, MachineJoinTrustedNats,
-    NatsMachineMaterialPaths, WrappedCaKey, WrappedCoreSeeds,
+    AbsoluteInstallPath, ExactPloyzVersion, HostPortAssurance, MachineBootstrapUrl,
+    MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial, MachineJoinRuntimeNatsUrl,
+    MachineJoinSecretDelivery, MachineJoinSubstrateRelease, MachineJoinTemplate,
+    MachineJoinTrustedNats, NatsMachineMaterialPaths, WrappedCaKey, WrappedCoreSeeds,
 };
 use ployz_core::nats_config::{
     CredentialGrant, CredentialName, NatsCaCertificatePem, NatsUserSeed,
@@ -27,6 +27,7 @@ use crate::execution::{
 use crate::lifecycle::assigned_substrate::{
     AssignedHostPort, AssignedSubstrateState, SubstrateAssignment,
 };
+use crate::lifecycle::installed_substrate::InstalledSubstrateRelease;
 use crate::recovery::ClusterNatsIdentity;
 
 use super::nats_material::{DEFAULT_NATS_PORT, first_machine_listener, tls_loopback_nats_url};
@@ -84,6 +85,7 @@ pub enum HostRunnerStep {
     WriteSupervisorUnit(SupervisorUnitSpec),
     StartSupervisorUnit(SupervisorUnitTarget),
     StoreJoinMaterial(HostRunnerJoinMaterial),
+    StoreInstalledSubstrateRelease(InstalledSubstrateRelease),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,9 +107,11 @@ pub enum HostRunnerStepLabel {
     WriteSupervisorUnit(SupervisorUnitTarget),
     StartSupervisorUnit(SupervisorUnitTarget),
     RedeemJoinToken,
+    ResolveJoinTarget,
     ReportJoinResult,
     ConsumeJoinTokenFile,
     StoreJoinMaterial(RedactedJoinMaterial),
+    StoreInstalledSubstrateRelease(InstalledSubstrateRelease),
 }
 
 impl HostRunnerStepLabel {
@@ -158,6 +162,9 @@ impl HostRunnerStepLabel {
             }
             HostRunnerStep::StoreJoinMaterial(material) => {
                 Self::StoreJoinMaterial(material.redacted())
+            }
+            HostRunnerStep::StoreInstalledSubstrateRelease(release) => {
+                Self::StoreInstalledSubstrateRelease(release.clone())
             }
         }
     }
@@ -415,19 +422,20 @@ fn line_value(field: JoinMaterialField, value: String) -> Result<String, JoinMat
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostRunnerJoinTarget {
     pub material: HostRunnerJoinMaterial,
-    pub ployzd_artifact: ArtifactTarget,
+    pub ployzd_artifact: PloyzReleaseArtifact,
     pub dataplane_artifacts: DataplaneArtifactTargets,
     pub railpack_artifact: ArtifactTarget,
     pub roles: NonEmptyRoleSet,
     pub role_environment: PloyzdRoleEnvironmentTarget,
     pub host_port_assurance: HostPortAssurance,
+    pub installed_substrate_release: InstalledSubstrateRelease,
 }
 
 impl HostRunnerJoinTarget {
     #[must_use]
     pub fn new(
         material: HostRunnerJoinMaterial,
-        ployzd_artifact: ArtifactTarget,
+        ployzd_artifact: PloyzReleaseArtifact,
         dataplane_artifacts: DataplaneArtifactTargets,
         railpack_artifact: ArtifactTarget,
         roles: NonEmptyRoleSet,
@@ -442,6 +450,8 @@ impl HostRunnerJoinTarget {
                     .to_path_buf(),
             )
             .with_ebpf_ctl_path(dataplane_artifacts.ebpf_ctl.install_path().to_path_buf());
+        let installed_substrate_release =
+            InstalledSubstrateRelease::public_exact(ployzd_artifact.substrate_release().clone());
         Self {
             material,
             ployzd_artifact,
@@ -450,7 +460,47 @@ impl HostRunnerJoinTarget {
             roles,
             role_environment,
             host_port_assurance,
+            installed_substrate_release,
         }
+    }
+
+    #[must_use]
+    pub(crate) fn with_installed_substrate_release(
+        mut self,
+        installed_substrate_release: InstalledSubstrateRelease,
+    ) -> Self {
+        self.installed_substrate_release = installed_substrate_release;
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PloyzReleaseArtifact {
+    artifact: ArtifactTarget,
+    substrate_release: MachineJoinSubstrateRelease,
+}
+
+impl PloyzReleaseArtifact {
+    pub fn try_new(
+        artifact: ArtifactTarget,
+    ) -> Result<Self, ployz_core::install::ExactPloyzVersionError> {
+        let substrate_release = MachineJoinSubstrateRelease {
+            version: ExactPloyzVersion::try_new(artifact.version.as_str())?,
+        };
+        Ok(Self {
+            artifact,
+            substrate_release,
+        })
+    }
+
+    #[must_use]
+    pub const fn artifact(&self) -> &ArtifactTarget {
+        &self.artifact
+    }
+
+    #[must_use]
+    pub const fn substrate_release(&self) -> &MachineJoinSubstrateRelease {
+        &self.substrate_release
     }
 }
 
@@ -458,7 +508,7 @@ impl HostRunnerJoinTarget {
 pub struct FirstMachineInstallTarget {
     pub machine_id: MachineId,
     pub dataplane_endpoint_supernet: MachineEndpointSupernet,
-    pub ployzd_artifact: ArtifactTarget,
+    pub ployzd_artifact: PloyzReleaseArtifact,
     pub dataplane_artifacts: DataplaneArtifactTargets,
     pub railpack_artifact: ArtifactTarget,
     pub nats_server_artifact: ArtifactTarget,
@@ -480,6 +530,7 @@ pub struct FirstMachineInstallTarget {
     machine_join_template_file: Option<AbsoluteInstallPath>,
     machine_join_cluster_name: MachineJoinClusterName,
     machine_join_runtime_nats_url: MachineJoinRuntimeNatsUrl,
+    installed_substrate_release: InstalledSubstrateRelease,
 }
 
 impl FirstMachineInstallTarget {
@@ -489,7 +540,7 @@ impl FirstMachineInstallTarget {
     #[must_use]
     pub fn new(
         machine_id: MachineId,
-        ployzd_artifact: ArtifactTarget,
+        ployzd_artifact: PloyzReleaseArtifact,
         dataplane_artifacts: DataplaneArtifactTargets,
         railpack_artifact: ArtifactTarget,
         nats_server_artifact: ArtifactTarget,
@@ -525,6 +576,8 @@ impl FirstMachineInstallTarget {
         let founder_credential_name =
             CredentialName::try_new(format!("Founder operator ({})", machine_id.as_str()))
                 .expect("machine id forms a non-empty founder credential name");
+        let installed_substrate_release =
+            InstalledSubstrateRelease::public_exact(ployzd_artifact.substrate_release().clone());
         Self {
             machine_id,
             dataplane_endpoint_supernet,
@@ -550,6 +603,7 @@ impl FirstMachineInstallTarget {
                 "tls://127.0.0.1:{DEFAULT_NATS_PORT}"
             ))
             .expect("default runtime NATS URL is valid"),
+            installed_substrate_release,
         }
     }
 
@@ -650,6 +704,15 @@ impl FirstMachineInstallTarget {
             .role_environment
             .with_dataplane_endpoint_supernet(dataplane_endpoint_supernet.clone());
         self.dataplane_endpoint_supernet = dataplane_endpoint_supernet;
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn with_installed_substrate_release(
+        mut self,
+        installed_substrate_release: InstalledSubstrateRelease,
+    ) -> Self {
+        self.installed_substrate_release = installed_substrate_release;
         self
     }
 }
@@ -982,7 +1045,7 @@ fn host_runner_join_install_steps(target: HostRunnerJoinTarget) -> Vec<HostRunne
             target.material.dataplane_endpoint_supernet().clone(),
         ),
         HostRunnerStep::VerifyContainerRuntime(ContainerRuntime::Docker),
-        HostRunnerStep::InstallArtifact(target.ployzd_artifact.clone()),
+        HostRunnerStep::InstallArtifact(target.ployzd_artifact.artifact().clone()),
         HostRunnerStep::InstallArtifact(target.railpack_artifact.clone()),
     ];
     steps.push(HostRunnerStep::InstallArtifact(
@@ -990,6 +1053,9 @@ fn host_runner_join_install_steps(target: HostRunnerJoinTarget) -> Vec<HostRunne
     ));
     steps.push(HostRunnerStep::InstallArtifact(
         target.dataplane_artifacts.ebpf_ctl.clone(),
+    ));
+    steps.push(HostRunnerStep::StoreInstalledSubstrateRelease(
+        target.installed_substrate_release,
     ));
 
     for role in target.roles.roles {
@@ -1003,7 +1069,7 @@ fn host_runner_join_install_steps(target: HostRunnerJoinTarget) -> Vec<HostRunne
         steps.push(HostRunnerStep::WriteSupervisorUnit(
             SupervisorUnitSpec::PloyzdRole {
                 role: role.clone(),
-                artifact: target.ployzd_artifact.clone(),
+                artifact: target.ployzd_artifact.artifact().clone(),
                 environment_file: target.role_environment.file_for_role(&role),
             },
         ));
@@ -1058,7 +1124,7 @@ pub struct CorePromoteTarget {
     pub dataplane_endpoint_supernet: MachineEndpointSupernet,
     pub assigned_substrate: AssignedSubstrateState,
     pub nats_server_artifact: ArtifactTarget,
-    pub ployzd_artifact: ArtifactTarget,
+    pub ployzd_artifact: PloyzReleaseArtifact,
     pub dataplane_artifacts: DataplaneArtifactTargets,
     pub railpack_artifact: ArtifactTarget,
     pub nats_identity: ClusterNatsIdentity,
@@ -1084,7 +1150,7 @@ impl CorePromoteTarget {
     pub fn assemble(
         machine_id: MachineId,
         nats_server_artifact: ArtifactTarget,
-        ployzd_artifact: ArtifactTarget,
+        ployzd_artifact: PloyzReleaseArtifact,
         dataplane_artifacts: DataplaneArtifactTargets,
         railpack_artifact: ArtifactTarget,
         nats_identity: ClusterNatsIdentity,
@@ -1199,10 +1265,7 @@ pub fn core_promote_plan(target: CorePromoteTarget) -> HostRunnerStepPlan {
                         },
                         recovery_key_wrapped: target.recovery_key_wrapped.clone(),
                         core_seeds_wrapped: target.core_seeds_wrapped.clone(),
-                        ployzd: target.ployzd_artifact.install_spec(),
-                        ebpf_bytecode: target.dataplane_artifacts.ebpf_bytecode.install_spec(),
-                        ebpf_ctl: target.dataplane_artifacts.ebpf_ctl.install_spec(),
-                        railpack: target.railpack_artifact.install_spec(),
+                        substrate_release: target.ployzd_artifact.substrate_release().clone(),
                     },
                 },
             },
@@ -1213,7 +1276,7 @@ pub fn core_promote_plan(target: CorePromoteTarget) -> HostRunnerStepPlan {
         }),
         HostRunnerStep::WriteSupervisorUnit(SupervisorUnitSpec::PloyzdRole {
             role: control.clone(),
-            artifact: target.ployzd_artifact.clone(),
+            artifact: target.ployzd_artifact.artifact().clone(),
             environment_file: target.role_environment.file_for_role(&control),
         }),
         HostRunnerStep::StartSupervisorUnit(SupervisorUnitTarget::PloyzdRole(control)),
@@ -1245,11 +1308,12 @@ pub fn first_machine_install_plan(target: FirstMachineInstallTarget) -> HostRunn
             target.dataplane_endpoint_supernet.clone(),
         ),
         HostRunnerStep::VerifyContainerRuntime(ContainerRuntime::Docker),
-        HostRunnerStep::InstallArtifact(target.ployzd_artifact.clone()),
+        HostRunnerStep::InstallArtifact(target.ployzd_artifact.artifact().clone()),
         HostRunnerStep::InstallArtifact(target.dataplane_artifacts.ebpf_bytecode.clone()),
         HostRunnerStep::InstallArtifact(target.dataplane_artifacts.ebpf_ctl.clone()),
         HostRunnerStep::InstallArtifact(target.nats_server_artifact.clone()),
         HostRunnerStep::InstallArtifact(target.railpack_artifact.clone()),
+        HostRunnerStep::StoreInstalledSubstrateRelease(target.installed_substrate_release),
         HostRunnerStep::WriteNatsTlsMaterial(NatsTlsMaterialTarget::new(
             target.nats_material.clone(),
             &target.nats_identity,
@@ -1287,10 +1351,7 @@ pub fn first_machine_install_plan(target: FirstMachineInstallTarget) -> HostRunn
                     },
                     recovery_key_wrapped: target.recovery_key_wrapped.clone(),
                     core_seeds_wrapped: target.core_seeds_wrapped.clone(),
-                    ployzd: target.ployzd_artifact.install_spec(),
-                    ebpf_bytecode: target.dataplane_artifacts.ebpf_bytecode.install_spec(),
-                    ebpf_ctl: target.dataplane_artifacts.ebpf_ctl.install_spec(),
-                    railpack: target.railpack_artifact.install_spec(),
+                    substrate_release: target.ployzd_artifact.substrate_release().clone(),
                 },
             },
         };
@@ -1310,7 +1371,7 @@ pub fn first_machine_install_plan(target: FirstMachineInstallTarget) -> HostRunn
         steps.push(HostRunnerStep::WriteSupervisorUnit(
             SupervisorUnitSpec::PloyzdRole {
                 role: role.clone(),
-                artifact: target.ployzd_artifact.clone(),
+                artifact: target.ployzd_artifact.artifact().clone(),
                 environment_file: role_environment.file_for_role(role),
             },
         ));
@@ -1405,9 +1466,11 @@ pub enum HostRunnerStepFailureReason {
     SupervisorWriteFailed,
     SupervisorStartFailed,
     JoinTokenRedeemFailed,
+    JoinTargetResolutionFailed,
     JoinReportFailed,
     JoinTokenConsumeFailed,
     JoinMaterialStoreFailed,
+    InstalledSubstrateReleaseStoreFailed,
     DataplaneHostPrepareFailed,
     ContainerRuntimePrepareFailed,
     ContainerRuntimeVerifyFailed,
@@ -1435,6 +1498,9 @@ impl HostRunnerStepFailureReason {
             HostRunnerStep::WriteSupervisorUnit(_) => Self::SupervisorWriteFailed,
             HostRunnerStep::StartSupervisorUnit(_) => Self::SupervisorStartFailed,
             HostRunnerStep::StoreJoinMaterial(_) => Self::JoinMaterialStoreFailed,
+            HostRunnerStep::StoreInstalledSubstrateRelease(_) => {
+                Self::InstalledSubstrateReleaseStoreFailed
+            }
         }
     }
 }

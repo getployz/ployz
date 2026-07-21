@@ -501,46 +501,10 @@ fn temp_join_template_file() -> String {
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).expect("join template dir can be created");
     let path = dir.join("join-template.json");
+    let template = ployz_test_support::fixtures::machine_join_template();
     fs::write(
         &path,
-        r#"{
-  "join_bundle": {
-    "material": {
-      "cluster_name": "prod",
-      "runtime_nats_url": "nats://127.0.0.1:7422",
-      "trusted_nats": {
-        "ca_pem": "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"
-      },
-      "recovery_key_wrapped": [1, 2, 3],
-      "core_seeds_wrapped": [4, 5, 6],
-      "ployzd": {
-        "version": "0.1.0",
-        "source": "/tmp/ployzd",
-        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "install_path": "/usr/local/bin/ployzd"
-      },
-      "ebpf_bytecode": {
-        "version": "0.1.0",
-        "source": "/tmp/ployz-ebpf-tc",
-        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "install_path": "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"
-      },
-      "ebpf_ctl": {
-        "version": "0.1.0",
-        "source": "/tmp/ployz-ebpf-ctl",
-        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "install_path": "/usr/local/bin/ployz-ebpf-ctl"
-      },
-      "railpack": {
-        "version": "v0.31.0",
-        "source": "/tmp/railpack",
-        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "install_path": "/usr/local/lib/ployz/railpack/v0.31.0/railpack"
-      }
-    }
-  }
-}
-"#,
+        serde_json::to_vec_pretty(&template).expect("join template serializes"),
     )
     .expect("join template can be written");
     path.to_str().expect("temp path is utf-8").to_owned()

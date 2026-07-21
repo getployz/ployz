@@ -10,20 +10,20 @@ use crate::execution::{
 };
 use crate::execution::{NatsServerUnitTarget, SupervisorUnitFileError};
 use crate::lifecycle::machine_join::{JoinTokenFileError, read_join_token_file};
-use crate::plan::{FirstMachineInstallTarget, JoinMaterialError, JoinToken};
+use crate::plan::{FirstMachineInstallTarget, JoinMaterialError, JoinToken, PloyzReleaseArtifact};
 use crate::recovery::environment::resolve_founder_recovery_secret;
 use crate::recovery::{
     CoreSeeds, NatsIdentityError, ServerCertificateSans, generate_cluster_nats_identity,
     wrap_core_seeds,
 };
 use crate::recovery::{RecoverySecretError, wrap};
-use crate::release_manifest::{ExactPloyzVersion, ExactPloyzVersionError};
 use clap::{Parser, Subcommand};
 use ployz_core::deploy::{DatasetName, VolumeMaxSizeBytes, ZfsPoolName};
 use ployz_core::ids::OperationId;
+use ployz_core::install::{ExactPloyzVersion, ExactPloyzVersionError};
 use ployz_core::install::{
-    FirstMachineInstallArtifacts, FirstMachineInstallSpec, InstallArtifactSpec,
-    NatsServerInstallSpec, WrappedCaKey,
+    ExactPloyzVersionError as CoreExactPloyzVersionError, FirstMachineInstallArtifacts,
+    FirstMachineInstallSpec, InstallArtifactSpec, NatsServerInstallSpec, WrappedCaKey,
 };
 use ployz_nats::connect::{NatsClientUrl, NatsClientUrlError};
 use ployz_sdk_types::CloudBootstrapToken;
@@ -221,6 +221,7 @@ pub fn load_command(
         }
         Some(HostRunnerSubcommand::FirstMachineInstall { spec }) => {
             let spec = read_first_machine_install_spec(spec)?;
+            validate_direct_first_machine_install_spec(&spec)?;
             Ok(HostRunnerCommand::FirstMachineInstall(Box::new(
                 first_machine_install_target_from_spec(spec)?,
             )))
@@ -494,6 +495,85 @@ fn read_first_machine_install_spec(
     serde_json::from_str(&bytes).map_err(|error| HostRunnerCliError::ParseSpec { source, error })
 }
 
+fn validate_direct_first_machine_install_spec(
+    spec: &FirstMachineInstallSpec,
+) -> Result<(), HostRunnerCliError> {
+    let release = ExactPloyzVersion::try_new(spec.artifacts.ployzd.version.as_str())
+        .map_err(HostRunnerCliError::FirstMachinePloyzVersion)?;
+    let platform = crate::release_manifest::ReleasePlatform::from_target(
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+    )
+    .map_err(HostRunnerCliError::DirectFirstMachineInstallSpec)?;
+    let platform = platform.manifest_slug();
+    let base = format!(
+        "https://github.com/getployz/ployz/releases/download/{}",
+        release.tag()
+    );
+    let railpack = ployz_core::build::railpack_pins()
+        .map_err(|error| HostRunnerCliError::DirectFirstMachineInstallSpec(error.to_string()))?;
+    for (name, artifact, version, asset, install_path) in [
+        (
+            "ployzd",
+            &spec.artifacts.ployzd,
+            release.as_str(),
+            "ployzd",
+            "/usr/local/bin/ployzd",
+        ),
+        (
+            "eBPF bytecode",
+            &spec.artifacts.ebpf_bytecode,
+            release.as_str(),
+            "ployz-ebpf-tc",
+            "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
+        ),
+        (
+            "eBPF controller",
+            &spec.artifacts.ebpf_ctl,
+            release.as_str(),
+            "ployz-ebpf-ctl",
+            "/usr/local/bin/ployz-ebpf-ctl",
+        ),
+        (
+            "Railpack",
+            &spec.artifacts.railpack,
+            railpack.version(),
+            "railpack",
+            railpack.install_path(),
+        ),
+    ] {
+        let expected_source = format!("{base}/{asset}-{platform}");
+        if artifact.version.as_str() != version
+            || artifact.source.as_str() != expected_source
+            || artifact.install_path.as_str() != install_path
+        {
+            return Err(HostRunnerCliError::DirectFirstMachineInstallSpec(format!(
+                "{name} must be the canonical {platform} asset for release {} at {install_path}; use `ployz machine init --release-manifest` to create the install spec",
+                release.as_str()
+            )));
+        }
+    }
+    let Some(nats_server) = &spec.artifacts.nats_server else {
+        return Err(HostRunnerCliError::DirectFirstMachineInstallSpec(
+            "nats-server must be the packaged 2.14.2 artifact; use `ployz machine init --release-manifest` to create the install spec"
+                .to_owned(),
+        ));
+    };
+    let nats_source = format!(
+        "https://github.com/nats-io/nats-server/releases/download/v2.14.2/nats-server-v2.14.2-{platform}.tar.gz"
+    );
+    if nats_server.version.as_str() != "2.14.2"
+        || nats_server.source.as_str() != nats_source
+        || nats_server.binary.as_str() != "/usr/local/bin/nats-server"
+        || nats_server.config.as_str() != "/etc/nats/nats-server.conf"
+    {
+        return Err(HostRunnerCliError::DirectFirstMachineInstallSpec(format!(
+            "nats-server must be the packaged 2.14.2 {platform} artifact at /usr/local/bin/nats-server with config /etc/nats/nats-server.conf; use `ployz machine init --release-manifest` to create the install spec"
+        )));
+    }
+    Ok(())
+}
+
 /// The machine hostname covered by the server certificate SANs. A host
 /// without a UTF-8 hostname simply gets no hostname SAN.
 fn machine_hostname() -> Option<String> {
@@ -524,6 +604,8 @@ pub fn first_machine_install_target_from_spec(
         machine_join_runtime_nats_url,
     } = install;
     let ployzd_artifact = artifact_target(ArtifactKind::Ployzd, &ployzd)?;
+    let ployzd_artifact = PloyzReleaseArtifact::try_new(ployzd_artifact)
+        .map_err(HostRunnerCliError::FirstMachinePloyzVersion)?;
     let ebpf_bytecode_artifact = artifact_target(ArtifactKind::EbpfBytecode, &ebpf_bytecode)?;
     let ebpf_ctl_artifact = artifact_target(ArtifactKind::EbpfCtl, &ebpf_ctl)?;
     let railpack_artifact = artifact_target(ArtifactKind::Railpack, &railpack)?;
@@ -644,6 +726,8 @@ pub enum HostRunnerCliError {
     JoinTokenFile(JoinTokenFileError),
     CloudHost(CloudHostError),
     ExactPloyzVersion(ExactPloyzVersionError),
+    FirstMachinePloyzVersion(CoreExactPloyzVersionError),
+    DirectFirstMachineInstallSpec(String),
     MissingNatsServerArtifact,
     ArtifactTarget(ArtifactTargetError),
     SupervisorUnit(SupervisorUnitFileError),
@@ -710,6 +794,13 @@ impl fmt::Display for HostRunnerCliError {
             Self::JoinTokenFile(error) => write!(formatter, "{error}"),
             Self::CloudHost(error) => write!(formatter, "{error}"),
             Self::ExactPloyzVersion(error) => write!(formatter, "{error}"),
+            Self::FirstMachinePloyzVersion(error) => write!(formatter, "{error}"),
+            Self::DirectFirstMachineInstallSpec(message) => {
+                write!(
+                    formatter,
+                    "invalid direct first-machine install spec: {message}"
+                )
+            }
             Self::MissingNatsServerArtifact => formatter.write_str(
                 "first-machine install requires a nats-server artifact, \
                  but the release manifest carries none",
@@ -972,6 +1063,146 @@ mod tests {
     }
 
     #[test]
+    fn parser_rejects_noncanonical_direct_first_machine_artifacts() {
+        let canonical = canonical_first_machine_install_spec(FIRST_MACHINE_INSTALL_SPEC);
+        let platform = crate::release_manifest::ReleasePlatform::from_target(
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+        )
+        .expect("test runs on a supported release platform")
+        .manifest_slug();
+        let other_platform = if platform == "linux-amd64" {
+            "linux-arm64"
+        } else {
+            "linux-amd64"
+        };
+        for (label, from, to) in [
+            (
+                "custom-source",
+                format!(
+                    "https://github.com/getployz/ployz/releases/download/v0.1.0/ployzd-{platform}"
+                ),
+                "https://artifacts.example.test/ployzd".to_owned(),
+            ),
+            (
+                "wrong-tag",
+                "releases/download/v0.1.0/ployz-ebpf-tc".to_owned(),
+                "releases/download/v0.2.0/ployz-ebpf-tc".to_owned(),
+            ),
+            (
+                "wrong-version",
+                "\"version\": \"0.1.0\"".to_owned(),
+                "\"version\": \"0.2.0\"".to_owned(),
+            ),
+            (
+                "wrong-platform",
+                format!("ployz-ebpf-ctl-{platform}"),
+                format!("ployz-ebpf-ctl-{other_platform}"),
+            ),
+            (
+                "wrong-path",
+                "/usr/local/lib/ployz/railpack/v0.31.0/railpack".to_owned(),
+                "/opt/railpack".to_owned(),
+            ),
+        ] {
+            let invalid = canonical.replacen(&from, &to, 1);
+            assert_ne!(invalid, canonical, "fixture replacement {label} applies");
+            let path = write_temp_spec_with(&invalid, label);
+
+            let error = load_command(["install".into(), "--spec".into(), path.into()])
+                .expect_err("noncanonical direct artifact is rejected");
+
+            assert!(
+                error
+                    .to_string()
+                    .contains("ployz machine init --release-manifest"),
+                "{label}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn parser_rejects_missing_or_noncanonical_direct_first_machine_nats() {
+        let canonical = serde_json::from_str::<serde_json::Value>(
+            &canonical_first_machine_install_spec(FIRST_MACHINE_INSTALL_SPEC),
+        )
+        .expect("canonical spec parses");
+
+        let mut missing = canonical.clone();
+        missing
+            .pointer_mut("/artifacts")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("spec carries artifacts")
+            .remove("nats_server");
+        assert_direct_nats_rejected(missing, "missing-nats");
+
+        for (label, pointer, value) in [
+            ("nats-version", "/artifacts/nats_server/version", "2.13.0"),
+            (
+                "nats-custom-source",
+                "/artifacts/nats_server/source",
+                "https://artifacts.example.test/nats-server.tar.gz",
+            ),
+            (
+                "nats-binary",
+                "/artifacts/nats_server/binary",
+                "/opt/nats-server",
+            ),
+            (
+                "nats-config",
+                "/artifacts/nats_server/config",
+                "/opt/nats.conf",
+            ),
+        ] {
+            let mut invalid = canonical.clone();
+            *invalid
+                .pointer_mut(pointer)
+                .expect("fixture pointer exists") = serde_json::Value::String(value.to_owned());
+            assert_direct_nats_rejected(invalid, label);
+        }
+
+        let platform = crate::release_manifest::ReleasePlatform::from_target(
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+        )
+        .expect("test runs on a supported release platform")
+        .manifest_slug();
+        let other_platform = if platform == "linux-amd64" {
+            "linux-arm64"
+        } else {
+            "linux-amd64"
+        };
+        let mut opposite_platform = canonical;
+        let source = opposite_platform
+            .pointer("/artifacts/nats_server/source")
+            .and_then(serde_json::Value::as_str)
+            .expect("fixture carries NATS source")
+            .replace(platform, other_platform);
+        *opposite_platform
+            .pointer_mut("/artifacts/nats_server/source")
+            .expect("fixture carries NATS source") = serde_json::Value::String(source);
+        assert_direct_nats_rejected(opposite_platform, "nats-opposite-platform");
+    }
+
+    #[test]
+    fn parser_rejects_mutable_first_machine_ployz_release() {
+        let spec = FIRST_MACHINE_INSTALL_SPEC.replacen(
+            "\"version\": \"0.1.0\"",
+            "\"version\": \"alpha\"",
+            1,
+        );
+        let path = write_temp_spec_with(&spec, "mutable-ployz-release");
+
+        let error = load_command(["install".into(), "--spec".into(), path.into()])
+            .expect_err("mutable Ployz release is rejected");
+
+        assert_eq!(
+            error.to_string(),
+            "release version must be exact, got mutable \"alpha\""
+        );
+    }
+
+    #[test]
     fn parser_rejects_explicit_dns_opt_out_in_spec() {
         let path = write_temp_spec_with(FIRST_MACHINE_INSTALL_SPEC_NO_DNS, "no-dns");
         assert!(load_command(["install".into(), "--spec".into(), path.into()]).is_err());
@@ -1108,8 +1339,55 @@ mod tests {
             "ployz-first-machine-install-{label}-{}.json",
             std::process::id()
         ));
-        fs::write(&path, spec).expect("write spec");
+        fs::write(&path, canonical_first_machine_install_spec(spec)).expect("write spec");
         path
+    }
+
+    fn assert_direct_nats_rejected(spec: serde_json::Value, label: &str) {
+        let rendered = serde_json::to_string_pretty(&spec).expect("spec serializes");
+        let path = write_temp_spec_with(&rendered, label);
+
+        let error = load_command(["install".into(), "--spec".into(), path.into()])
+            .expect_err("noncanonical direct NATS is rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("ployz machine init --release-manifest"),
+            "{label}: {error}"
+        );
+    }
+
+    fn canonical_first_machine_install_spec(spec: &str) -> String {
+        let platform = crate::release_manifest::ReleasePlatform::from_target(
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+        )
+        .expect("test runs on a supported release platform")
+        .manifest_slug();
+        let base = "https://github.com/getployz/ployz/releases/download/v0.1.0";
+        spec.replace(
+            "\"source\": \"/tmp/ployzd\"",
+            &format!("\"source\": \"{base}/ployzd-{platform}\""),
+        )
+        .replace(
+            "\"source\": \"/tmp/ployz-ebpf-tc\"",
+            &format!("\"source\": \"{base}/ployz-ebpf-tc-{platform}\""),
+        )
+        .replace(
+            "\"source\": \"/tmp/ployz-ebpf-ctl\"",
+            &format!("\"source\": \"{base}/ployz-ebpf-ctl-{platform}\""),
+        )
+        .replace(
+            "\"source\": \"/tmp/railpack\"",
+            &format!("\"source\": \"{base}/railpack-{platform}\""),
+        )
+        .replace(
+            "\"source\": \"/tmp/nats-server\"",
+            &format!(
+                "\"source\": \"https://github.com/nats-io/nats-server/releases/download/v2.14.2/nats-server-v2.14.2-{platform}.tar.gz\""
+            ),
+        )
     }
 
     const FIRST_MACHINE_INSTALL_SPEC_NO_DNS: &str = r#"{
@@ -1147,7 +1425,7 @@ mod tests {
                 "install_path": "/usr/local/lib/ployz/railpack/v0.31.0/railpack"
             },
             "nats_server": {
-                "version": "2.12.0",
+                "version": "2.14.2",
                 "source": "/tmp/nats-server",
                 "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "binary": "/usr/local/bin/nats-server",
@@ -1190,7 +1468,7 @@ mod tests {
                 "install_path": "/usr/local/lib/ployz/railpack/v0.31.0/railpack"
             },
             "nats_server": {
-                "version": "2.12.0",
+                "version": "2.14.2",
                 "source": "/tmp/nats-server",
                 "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "binary": "/usr/local/bin/nats-server",

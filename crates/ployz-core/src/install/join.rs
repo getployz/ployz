@@ -8,7 +8,7 @@ use url::Url;
 use crate::nats_config::NatsUserSeed;
 use crate::network::MachineEndpointSupernet;
 
-use super::artifacts::InstallArtifactSpec;
+use super::artifacts::MachineJoinSubstrateRelease;
 use super::nats::{MachineJoinRuntimeNatsUrl, MachineJoinTrustedNats};
 use super::validation::{InstallContractError, has_invisible_characters};
 
@@ -136,10 +136,7 @@ pub struct MachineJoinMaterial {
     /// secret (ADR 0031), delivered so a promoted core reuses them verbatim rather
     /// than rotating (which would lock out the operator and Cloud).
     pub core_seeds_wrapped: WrappedCoreSeeds,
-    pub ployzd: InstallArtifactSpec,
-    pub ebpf_bytecode: InstallArtifactSpec,
-    pub ebpf_ctl: InstallArtifactSpec,
-    pub railpack: InstallArtifactSpec,
+    pub substrate_release: MachineJoinSubstrateRelease,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

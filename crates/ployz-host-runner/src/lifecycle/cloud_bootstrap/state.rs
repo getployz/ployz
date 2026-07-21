@@ -370,9 +370,9 @@ mod tests {
     };
     use ployz_core::ids::{MachineId, OperationId};
     use ployz_core::install::{
-        AbsoluteInstallPath, InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion,
-        InstallSha256Digest, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
-        MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTrustedNats,
+        ExactPloyzVersion, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
+        MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinSubstrateRelease,
+        MachineJoinTrustedNats,
     };
     use ployz_core::machine::{JoinTokenRedeemedAt, MachineName};
     use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
@@ -569,29 +569,10 @@ mod tests {
                 },
                 recovery_key_wrapped: ployz_core::install::WrappedCaKey::new(vec![1, 2, 3]),
                 core_seeds_wrapped: ployz_core::install::WrappedCoreSeeds::new(vec![4, 5, 6]),
-                ployzd: join_artifact("/tmp/ployzd", "/usr/local/bin/ployzd"),
-                ebpf_bytecode: join_artifact(
-                    "/tmp/ployz-ebpf-tc",
-                    "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
-                ),
-                ebpf_ctl: join_artifact("/tmp/ployz-ebpf-ctl", "/usr/local/bin/ployz-ebpf-ctl"),
-                railpack: join_artifact(
-                    "/tmp/railpack",
-                    "/usr/local/lib/ployz/railpack/v0.31.0/railpack",
-                ),
+                substrate_release: MachineJoinSubstrateRelease {
+                    version: ExactPloyzVersion::try_new("0.1.0").expect("exact release"),
+                },
             },
-        }
-    }
-
-    fn join_artifact(source: &str, install_path: &str) -> InstallArtifactSpec {
-        InstallArtifactSpec {
-            version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
-            source: InstallArtifactSource::try_new(source).expect("valid source"),
-            sha256: InstallSha256Digest::try_new(
-                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            )
-            .expect("valid digest"),
-            install_path: AbsoluteInstallPath::try_new(install_path).expect("valid install path"),
         }
     }
 

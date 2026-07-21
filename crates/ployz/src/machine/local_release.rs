@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use ployz_core::install::{InstallArtifactSpec, MachineJoinMaterial};
+use ployz_core::install::MachineJoinMaterial;
 use sha2::{Digest as _, Sha256};
 
 use crate::shell::shell_quote;
@@ -39,13 +39,6 @@ impl Artifact {
 pub struct LocalReleaseBundle {
     directory: PathBuf,
     version: String,
-    artifacts: [LocalArtifact; 4],
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct LocalArtifact {
-    source: String,
-    sha256: String,
 }
 
 impl LocalReleaseBundle {
@@ -78,8 +71,8 @@ impl LocalReleaseBundle {
         let nats_sha256 = manifest_value(&manifest, "PLOYZ_NATS_SERVER_SHA256")?;
         let ployz_script_sha256 = sha256_file(&directory.join("ployz.sh"))?;
         let mut identity = Sha256::new();
-        for (descriptor, artifact) in ARTIFACTS.into_iter().zip(&artifacts) {
-            identity.update(format!("{} {}\n", descriptor.name, artifact.sha256));
+        for (descriptor, sha256) in ARTIFACTS.into_iter().zip(&artifacts) {
+            identity.update(format!("{} {sha256}\n", descriptor.name));
         }
         identity.update(format!("ployz.sh {ployz_script_sha256}\n"));
         identity.update(format!("platform {platform}\n"));
@@ -104,11 +97,7 @@ impl LocalReleaseBundle {
             return Err("install.sh does not match the canonical local-release wrapper".into());
         }
 
-        Ok(Self {
-            directory,
-            version,
-            artifacts,
-        })
+        Ok(Self { directory, version })
     }
 
     #[must_use]
@@ -117,12 +106,8 @@ impl LocalReleaseBundle {
     }
 
     pub fn validate_join_material(&self, material: &MachineJoinMaterial) -> Result<(), String> {
-        for (name, local, accepted) in [
-            ("ployzd", &self.artifacts[1], &material.ployzd),
-            ("ployz-ebpf-ctl", &self.artifacts[2], &material.ebpf_ctl),
-            ("ployz-ebpf-tc", &self.artifacts[3], &material.ebpf_bytecode),
-        ] {
-            validate_join_artifact(name, &self.version, local, accepted)?;
+        if self.version != material.substrate_release.version.as_str() {
+            return Err("local release does not match the cluster machine-join release".into());
         }
         Ok(())
     }
@@ -183,7 +168,7 @@ fn validate_artifact(
     manifest: &str,
     remote_directory: &str,
     artifact: Artifact,
-) -> Result<LocalArtifact, String> {
+) -> Result<String, String> {
     let path = directory.join(artifact.name);
     require_regular_file(&path)?;
     let source = manifest_value(manifest, &artifact.url_key())?;
@@ -199,24 +184,7 @@ fn validate_artifact(
             artifact.name
         ));
     }
-    Ok(LocalArtifact { source, sha256 })
-}
-
-fn validate_join_artifact(
-    name: &str,
-    version: &str,
-    local: &LocalArtifact,
-    accepted: &InstallArtifactSpec,
-) -> Result<(), String> {
-    if accepted.version.as_str() != version
-        || accepted.source.as_str() != local.source
-        || accepted.sha256.as_str() != local.sha256
-    {
-        return Err(format!(
-            "local {name} does not match the cluster machine-join release"
-        ));
-    }
-    Ok(())
+    Ok(sha256)
 }
 
 fn validate_version(version: &str) -> Result<(), String> {
@@ -323,5 +291,29 @@ mod tests {
         LocalReleaseBundle::open(directory.clone()).expect("valid bundle");
         fs::write(directory.join("ployzd"), "tampered").expect("tamper artifact");
         assert!(LocalReleaseBundle::open(directory).is_err());
+    }
+
+    #[test]
+    fn join_validation_compares_only_the_exact_release_identity() {
+        let bundle = LocalReleaseBundle {
+            directory: PathBuf::from("/unused"),
+            version: "dev-0123456789abcdef".to_owned(),
+        };
+        let mut material = ployz_test_support::fixtures::machine_join_material(
+            "nats://127.0.0.1:7422",
+            ployz_test_support::fixtures::TEST_CA_PEM,
+        );
+        material.substrate_release.version =
+            ployz_core::install::ExactPloyzVersion::try_new("dev-0123456789abcdef")
+                .expect("exact local release version");
+
+        bundle
+            .validate_join_material(&material)
+            .expect("same exact release is accepted");
+
+        material.substrate_release.version =
+            ployz_core::install::ExactPloyzVersion::try_new("dev-fedcba9876543210")
+                .expect("different exact local release version");
+        assert!(bundle.validate_join_material(&material).is_err());
     }
 }

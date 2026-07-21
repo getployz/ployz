@@ -2,7 +2,9 @@ use super::support;
 
 use crate::execution::SupervisorUnitTarget;
 use crate::execution::{ArtifactKind, ArtifactTarget};
-use crate::lifecycle::machine_join::execution::execute_host_runner_join;
+use crate::lifecycle::machine_join::execution::{
+    HostRunnerJoinExecution, execute_host_runner_join, execute_host_runner_join_with_redeemed,
+};
 use crate::plan::HostRunnerPlanFailure;
 use crate::plan::{
     ContainerRuntime, HostRunnerJoinTarget, HostRunnerStep, HostRunnerStepFailure,
@@ -13,7 +15,7 @@ use crate::plan::{
 use ployz_core::roles::DaemonProcessRole;
 use ployz_sdk_types::MachineJoinReportFailure;
 use ployz_test_support::ids::{failure_message, machine_id};
-use support::artifacts::{ployzd_artifact, railpack_artifact};
+use support::artifacts::{ployz_release_artifact, ployzd_artifact, railpack_artifact};
 use support::bootstrap::*;
 
 #[test]
@@ -25,7 +27,7 @@ fn host_runner_join_installs_ployzd_and_only_assigned_role_units() {
     let material = host_runner_join_material();
     let plan = host_runner_join_local_install_plan(HostRunnerJoinTarget::new(
         material.clone(),
-        ployzd_artifact(),
+        ployz_release_artifact(),
         dataplane_artifacts(),
         railpack_artifact(),
         NonEmptyRoleSet::try_new(roles.clone()).expect("non-empty unique roles"),
@@ -38,6 +40,17 @@ fn host_runner_join_installs_ployzd_and_only_assigned_role_units() {
     assert!(installs_artifact_kind(&plan, ArtifactKind::EbpfCtl));
     assert!(installs_artifact_kind(&plan, ArtifactKind::Railpack));
     assert!(writes_ployzd_role_units(&plan));
+    assert!(
+        plan.steps()
+            .contains(&HostRunnerStep::StoreInstalledSubstrateRelease(
+                crate::lifecycle::installed_substrate::InstalledSubstrateRelease::public_exact(
+                    ployz_core::install::MachineJoinSubstrateRelease {
+                        version: ployz_core::install::ExactPloyzVersion::try_new("0.1.0")
+                            .expect("exact release"),
+                    },
+                ),
+            ))
+    );
     assert!(
         plan.steps()
             .contains(&HostRunnerStep::StoreJoinMaterial(material))
@@ -183,6 +196,7 @@ fn host_runner_join_executor_redacts_join_token_from_progress() {
     let mut effects = RecordingEffects {
         ..RecordingEffects::default()
     };
+    let mut resolver = RecordingJoinResolver::default();
     let mut reporter = RecordingJoinReporter::default();
     let mut token_consumer = RecordingTokenConsumer::default();
     let mut recorder = RecordingRecorder::default();
@@ -190,6 +204,7 @@ fn host_runner_join_executor_redacts_join_token_from_progress() {
     let execution = execute_host_runner_join(
         &token,
         &mut redeemer,
+        &mut resolver,
         &mut reporter,
         &mut token_consumer,
         &mut effects,
@@ -216,11 +231,125 @@ fn host_runner_join_executor_redacts_join_token_from_progress() {
 }
 
 #[test]
+fn host_runner_join_reports_target_resolution_failure_after_redemption() {
+    let token = JoinToken::try_new("join_secret").expect("valid join token");
+    let mut redeemer = RecordingJoinRedeemer::default();
+    let mut resolver = RecordingJoinResolver {
+        failure: Some(
+            crate::lifecycle::machine_join::execution::JoinTargetResolutionFailure::ReleasePlatform {
+                failure: ployz_core::install::ReleasePlatformFailure::Unsupported {
+                    platform: "linux/riscv64".to_owned(),
+                },
+            },
+        ),
+    };
+    let mut effects = RecordingEffects::default();
+    let mut reporter = RecordingJoinReporter::default();
+    let mut token_consumer = RecordingTokenConsumer::default();
+    let mut recorder = RecordingRecorder::default();
+
+    let outcome = execute_host_runner_join_with_redeemed(
+        &token,
+        &mut redeemer,
+        &mut resolver,
+        &mut reporter,
+        &mut token_consumer,
+        &mut effects,
+        &mut recorder,
+    );
+    let HostRunnerJoinExecution::ResolutionFailure {
+        execution,
+        redeemed,
+        failure,
+    } = outcome
+    else {
+        panic!("missing platform must retain redeemed evidence in a typed resolution failure");
+    };
+
+    assert!(matches!(
+        execution.terminal.failure(),
+        Some(HostRunnerPlanFailure::Step(HostRunnerStepFailure {
+            step: HostRunnerStepLabel::ResolveJoinTarget,
+            reason: HostRunnerStepFailureReason::JoinTargetResolutionFailed,
+            message,
+        })) if message.as_str() == "unsupported release platform linux/riscv64"
+    ));
+    assert_eq!(redeemed.operation_id.as_str(), "op_machine");
+    assert_eq!(
+        failure,
+        crate::lifecycle::machine_join::execution::JoinTargetResolutionFailure::ReleasePlatform {
+            failure: ployz_core::install::ReleasePlatformFailure::Unsupported {
+                platform: "linux/riscv64".to_owned(),
+            },
+        }
+    );
+    assert!(effects.calls.is_empty());
+    assert_eq!(token_consumer.consumed, 0);
+    assert_eq!(
+        reporter.reports,
+        vec![JoinReport::Failed {
+            failure: MachineJoinReportFailure::ReleasePlatform {
+                failure: ployz_core::install::ReleasePlatformFailure::Unsupported {
+                    platform: "linux/riscv64".to_owned(),
+                },
+            },
+        }]
+    );
+}
+
+#[test]
+fn host_runner_join_reports_missing_release_platform_without_install_effects() {
+    let token = JoinToken::try_new("join_secret").expect("valid join token");
+    let mut redeemer = RecordingJoinRedeemer::default();
+    let mut resolver = RecordingJoinResolver {
+        failure: Some(
+            crate::lifecycle::machine_join::execution::JoinTargetResolutionFailure::ReleasePlatform {
+                failure: ployz_core::install::ReleasePlatformFailure::Missing,
+            },
+        ),
+    };
+    let mut effects = RecordingEffects::default();
+    let mut reporter = RecordingJoinReporter::default();
+    let mut token_consumer = RecordingTokenConsumer::default();
+    let mut recorder = RecordingRecorder::default();
+
+    let execution = execute_host_runner_join(
+        &token,
+        &mut redeemer,
+        &mut resolver,
+        &mut reporter,
+        &mut token_consumer,
+        &mut effects,
+        &mut recorder,
+    );
+
+    assert!(matches!(
+        execution.terminal.failure(),
+        Some(HostRunnerPlanFailure::Step(HostRunnerStepFailure {
+            step: HostRunnerStepLabel::ResolveJoinTarget,
+            reason: HostRunnerStepFailureReason::JoinTargetResolutionFailed,
+            ..
+        }))
+    ));
+    assert!(effects.calls.is_empty());
+    assert_eq!(token_consumer.consumed, 0);
+    assert_eq!(
+        reporter.reports,
+        vec![JoinReport::Failed {
+            failure: MachineJoinReportFailure::ReleasePlatform {
+                failure: ployz_core::install::ReleasePlatformFailure::Missing,
+            },
+        }]
+    );
+}
+
+#[test]
 fn host_runner_join_keeps_token_when_material_store_fails() {
     let token = JoinToken::try_new("join_secret").expect("valid join token");
     let material = host_runner_join_material();
     let redacted = material.redacted();
     let mut redeemer = RecordingJoinRedeemer::default();
+    let mut resolver = RecordingJoinResolver::default();
     let mut effects = RecordingEffects {
         fail_on: Some(HostRunnerStepLabel::StoreJoinMaterial(redacted.clone())),
         ..RecordingEffects::default()
@@ -232,6 +361,7 @@ fn host_runner_join_keeps_token_when_material_store_fails() {
     let execution = execute_host_runner_join(
         &token,
         &mut redeemer,
+        &mut resolver,
         &mut reporter,
         &mut token_consumer,
         &mut effects,
@@ -261,6 +391,7 @@ fn host_runner_join_keeps_token_when_material_store_fails() {
 fn host_runner_join_keeps_token_when_install_fails_after_redemption() {
     let token = JoinToken::try_new("join_secret").expect("valid join token");
     let mut redeemer = RecordingJoinRedeemer::default();
+    let mut resolver = RecordingJoinResolver::default();
     let mut effects = RecordingEffects {
         fail_on: Some(HostRunnerStepLabel::InstallArtifact(ployzd_artifact())),
         ..RecordingEffects::default()
@@ -272,6 +403,7 @@ fn host_runner_join_keeps_token_when_install_fails_after_redemption() {
     let execution = execute_host_runner_join(
         &token,
         &mut redeemer,
+        &mut resolver,
         &mut reporter,
         &mut token_consumer,
         &mut effects,
@@ -304,6 +436,7 @@ fn host_runner_join_keeps_token_when_install_fails_after_redemption() {
 fn host_runner_join_reports_docker_prepare_failure_after_redemption() {
     let token = JoinToken::try_new("join_secret").expect("valid join token");
     let mut redeemer = RecordingJoinRedeemer::default();
+    let mut resolver = RecordingJoinResolver::default();
     let mut effects = RecordingEffects {
         fail_on: Some(HostRunnerStepLabel::PrepareContainerRuntime(
             ContainerRuntime::Docker,
@@ -317,6 +450,7 @@ fn host_runner_join_reports_docker_prepare_failure_after_redemption() {
     let execution = execute_host_runner_join(
         &token,
         &mut redeemer,
+        &mut resolver,
         &mut reporter,
         &mut token_consumer,
         &mut effects,
@@ -346,6 +480,7 @@ fn host_runner_join_reports_docker_prepare_failure_after_redemption() {
 fn host_runner_join_does_not_report_completed_when_token_consume_fails() {
     let token = JoinToken::try_new("join_secret").expect("valid join token");
     let mut redeemer = RecordingJoinRedeemer::default();
+    let mut resolver = RecordingJoinResolver::default();
     let mut reporter = RecordingJoinReporter::default();
     let mut effects = RecordingEffects {
         ..RecordingEffects::default()
@@ -359,6 +494,7 @@ fn host_runner_join_does_not_report_completed_when_token_consume_fails() {
     let execution = execute_host_runner_join(
         &token,
         &mut redeemer,
+        &mut resolver,
         &mut reporter,
         &mut token_consumer,
         &mut effects,

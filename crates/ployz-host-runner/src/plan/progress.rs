@@ -92,11 +92,16 @@ fn render_step_label(step: &HostRunnerStepLabel) -> String {
             format!("start-unit {}", target.unit_name())
         }
         HostRunnerStepLabel::RedeemJoinToken => "redeem-join-token".to_owned(),
+        HostRunnerStepLabel::ResolveJoinTarget => "resolve-join-target".to_owned(),
         HostRunnerStepLabel::ReportJoinResult => "report-join-result".to_owned(),
         HostRunnerStepLabel::ConsumeJoinTokenFile => "consume-join-token-file".to_owned(),
         HostRunnerStepLabel::StoreJoinMaterial(material) => {
             format!("store-join-material {}", material.machine_id.as_str())
         }
+        HostRunnerStepLabel::StoreInstalledSubstrateRelease(release) => format!(
+            "store-installed-substrate-release {}",
+            release.release.version.as_str()
+        ),
     }
 }
 
@@ -151,9 +156,13 @@ fn render_failure_reason(reason: HostRunnerStepFailureReason) -> &'static str {
         HostRunnerStepFailureReason::SupervisorWriteFailed => "supervisor-write-failed",
         HostRunnerStepFailureReason::SupervisorStartFailed => "supervisor-start-failed",
         HostRunnerStepFailureReason::JoinTokenRedeemFailed => "join-token-redeem-failed",
+        HostRunnerStepFailureReason::JoinTargetResolutionFailed => "join-target-resolution-failed",
         HostRunnerStepFailureReason::JoinReportFailed => "join-report-failed",
         HostRunnerStepFailureReason::JoinTokenConsumeFailed => "join-token-consume-failed",
         HostRunnerStepFailureReason::JoinMaterialStoreFailed => "join-material-store-failed",
+        HostRunnerStepFailureReason::InstalledSubstrateReleaseStoreFailed => {
+            "installed-substrate-release-store-failed"
+        }
         HostRunnerStepFailureReason::ContainerRuntimePrepareFailed => {
             "container-runtime-prepare-failed"
         }

@@ -18,9 +18,9 @@ use ployz::machine::operator_context::{
 use ployz::machine::runtime::{MachineExecutionError, remote::RemoteMachineExecutionError};
 use ployz::ssh::SshTarget;
 use ployz_core::install::{
-    AbsoluteInstallPath, InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion,
-    InstallSha256Digest, MachineBootstrapUrl, MachineJoinBundle, MachineJoinClusterName,
-    MachineJoinMaterial, MachineJoinRuntimeNatsUrl, MachineJoinTrustedNats,
+    ExactPloyzVersion, MachineBootstrapUrl, MachineJoinBundle, MachineJoinClusterName,
+    MachineJoinMaterial, MachineJoinRuntimeNatsUrl, MachineJoinSubstrateRelease,
+    MachineJoinTrustedNats,
 };
 use ployz_core::nats_config::NatsCaCertificatePem;
 use ployz_core::operation::MachineAddOperationState;
@@ -333,12 +333,6 @@ fn accepted_operation(
 }
 
 fn machine_join_bundle() -> MachineJoinBundle {
-    let artifact = |source: &str, install_path: &str| InstallArtifactSpec {
-        version: InstallArtifactVersion::try_new("0.0.1").expect("valid version"),
-        source: InstallArtifactSource::try_new(source).expect("valid source"),
-        sha256: InstallSha256Digest::try_new(TEST_SHA).expect("valid digest"),
-        install_path: AbsoluteInstallPath::try_new(install_path).expect("valid path"),
-    };
     MachineJoinBundle {
         material: MachineJoinMaterial {
             dataplane_endpoint_supernet: ployz_core::network::MachineEndpointSupernet::default_v1(),
@@ -352,19 +346,9 @@ fn machine_join_bundle() -> MachineJoinBundle {
             },
             recovery_key_wrapped: ployz_core::install::WrappedCaKey::new(vec![1, 2, 3]),
             core_seeds_wrapped: ployz_core::install::WrappedCoreSeeds::new(vec![4, 5, 6]),
-            ployzd: artifact("https://example.invalid/ployzd", "/usr/local/bin/ployzd"),
-            ebpf_bytecode: artifact(
-                "https://example.invalid/ployz-ebpf-tc",
-                "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
-            ),
-            ebpf_ctl: artifact(
-                "https://example.invalid/ployz-ebpf-ctl",
-                "/usr/local/bin/ployz-ebpf-ctl",
-            ),
-            railpack: artifact(
-                "https://example.invalid/railpack",
-                "/usr/local/lib/ployz/railpack/v0.31.0/railpack",
-            ),
+            substrate_release: MachineJoinSubstrateRelease {
+                version: ExactPloyzVersion::try_new("v0.0.1").expect("exact release version"),
+            },
         },
     }
 }

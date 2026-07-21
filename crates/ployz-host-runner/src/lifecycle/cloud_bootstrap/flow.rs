@@ -5,7 +5,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use super::super::machine_join::execution::execute_host_runner_join_with_redeemed;
+use super::super::machine_join::execution::{
+    HostRunnerJoinExecution, execute_host_runner_join_with_redeemed,
+};
 use super::{
     CloudBootstrapAttemptState, CloudBootstrapCallbackTarget, CloudBootstrapLocalState,
     cloud_joiner_connect_config, cloud_joiner_success_callback,
@@ -43,7 +45,11 @@ use ployz_sdk_types::{
 use super::super::founder_bootstrap::{
     read_cloud_founder_bootstrap_result, run_first_machine_install,
 };
-use super::super::machine_join::client::{CloudJoinTokenConsumer, JoinRedeemer, JoinReporter};
+use super::super::machine_join::client::{
+    CloudJoinTokenConsumer, JoinRedeemer, JoinReporter, JoinTargetResolver,
+};
+use super::super::machine_join::execution::JoinTargetResolutionFailure;
+use crate::lifecycle::installed_substrate::InstalledSubstrateRelease;
 use crate::runtime::{
     CLOUD_BOOTSTRAP_MAX_POLLS, DEFAULT_NATS_CONNECT_TIMEOUT, HOST_RUNNER_STATE_DIR,
     failure_message, failure_summary,
@@ -278,7 +284,7 @@ fn run_cloud_founder_bootstrap(
     envelope: &CloudBootstrapEnvelope,
     client: &CloudClient,
 ) -> ExitCode {
-    let install = match build_cloud_founder_install_spec(&founder, envelope) {
+    let (install, manifest_contents) = match build_cloud_founder_install_spec(&founder, envelope) {
         Ok(install) => install,
         Err(message) => {
             return persist_post_failed_callback(
@@ -304,6 +310,22 @@ fn run_cloud_founder_bootstrap(
             );
         }
     };
+    let installed_release = match InstalledSubstrateRelease::persisted_manifest(
+        target.ployzd_artifact.substrate_release().clone(),
+        manifest_contents,
+    ) {
+        Ok(installed) => installed,
+        Err(message) => {
+            return persist_post_failed_callback(
+                envelope,
+                client,
+                CloudBootstrapFailure::EnvelopeInvalid {
+                    message: failure_message(&message),
+                },
+            );
+        }
+    };
+    target = target.with_installed_substrate_release(installed_release);
     target = target.with_additional_credential(CredentialGrant {
         public_key: founder.cloud_nats_user_public_key,
         name: CredentialName::try_new("Ployz Cloud").expect("Cloud credential name is non-empty"),
@@ -431,8 +453,8 @@ fn activate_cloud_founder_machine(
 fn build_cloud_founder_install_spec(
     founder: &CloudFounderBootstrap,
     envelope: &CloudBootstrapEnvelope,
-) -> Result<FirstMachineInstallSpec, String> {
-    let manifest = load_release_manifest()?;
+) -> Result<(FirstMachineInstallSpec, String), String> {
+    let (manifest, manifest_contents) = load_release_manifest()?;
     let suffix = envelope
         .redemption_id
         .as_str()
@@ -445,7 +467,7 @@ fn build_cloud_founder_install_spec(
             }
         })
         .collect::<String>();
-    Ok(FirstMachineInstallSpec {
+    let install = FirstMachineInstallSpec {
         machine_id: MachineId::try_new(format!("cloud_founder_{suffix}"))
             .map_err(|error| error.to_string())?,
         dataplane_endpoint_supernet: ployz_core::network::MachineEndpointSupernet::default_v1(),
@@ -464,7 +486,8 @@ fn build_cloud_founder_install_spec(
             .map_err(|error| error.to_string())?,
         machine_join_runtime_nats_url: founder.runtime_nats_url.clone(),
         artifacts: manifest.install_artifacts()?,
-    })
+    };
+    Ok((install, manifest_contents))
 }
 
 fn public_ip_from_runtime_nats_url(
@@ -483,10 +506,11 @@ fn public_ip_from_runtime_nats_url(
         .map_err(|_| "Cloud founder runtime NATS URL must use a public IP host for v1".to_owned())
 }
 
-fn load_release_manifest() -> Result<ReleaseManifest, String> {
+fn load_release_manifest() -> Result<(ReleaseManifest, String), String> {
     let url = release_manifest_url();
     let contents = crate::release_manifest::read_release_manifest_text(&url)?;
-    ReleaseManifest::parse(&contents)
+    let manifest = ReleaseManifest::parse(&contents).map_err(|error| error.to_string())?;
+    Ok((manifest, contents))
 }
 
 fn release_manifest_url() -> String {
@@ -539,6 +563,7 @@ fn run_cloud_joiner_bootstrap(
         }
     };
     let mut redeemer = JoinRedeemer::new(Ok(connect.clone()));
+    let mut resolver = JoinTargetResolver;
     let mut reporter = JoinReporter::new(Ok(connect), join_token.clone());
     let mut token_consumer = CloudJoinTokenConsumer;
     let mut effects = HostRunnerLocalEffects::new(
@@ -555,6 +580,7 @@ fn run_cloud_joiner_bootstrap(
     let join_execution = execute_host_runner_join_with_redeemed(
         &join_token,
         &mut redeemer,
+        &mut resolver,
         &mut reporter,
         &mut token_consumer,
         &mut effects,
@@ -562,48 +588,46 @@ fn run_cloud_joiner_bootstrap(
     );
     drop(recorder);
 
-    let terminal = join_execution.execution.terminal;
-    let callback = match (&terminal, &join_execution.redeemed) {
-        (HostRunnerPlanTerminal::Completed, Some(redeemed)) => {
-            let Some(callback_result) = &redeemed.callback_result else {
-                return persist_post_failed_callback(
-                    envelope,
-                    client,
-                    CloudBootstrapFailure::BootstrapFailed {
-                        message: failure_message(
-                            "join completed without redeemed material evidence",
-                        ),
-                    },
-                );
-            };
-            cloud_joiner_success_callback(
-                envelope.attempt_id.clone(),
-                envelope.redemption_id.clone(),
-                callback_result,
-            )
-        }
-        (HostRunnerPlanTerminal::Completed, None) => {
-            return persist_post_failed_callback(
-                envelope,
-                client,
-                CloudBootstrapFailure::BootstrapFailed {
-                    message: failure_message("join completed without redeemed material evidence"),
-                },
-            );
-        }
-        (HostRunnerPlanTerminal::Failed(failure), Some(redeemed)) => {
-            let installed_success_callback =
-                redeemed.callback_result.as_ref().map(|callback_result| {
-                    cloud_joiner_success_callback(
+    let (terminal, callback) = match join_execution {
+        HostRunnerJoinExecution::RedeemedExecution {
+            execution,
+            redeemed,
+        } => {
+            let callback = match &execution.terminal {
+                HostRunnerPlanTerminal::Completed => cloud_joiner_success_callback(
+                    envelope.attempt_id.clone(),
+                    envelope.redemption_id.clone(),
+                    &redeemed,
+                ),
+                HostRunnerPlanTerminal::Failed(failure) => {
+                    let installed_success_callback = Some(cloud_joiner_success_callback(
                         envelope.attempt_id.clone(),
                         envelope.redemption_id.clone(),
-                        callback_result,
+                        &redeemed,
+                    ));
+                    cloud_joiner_failed_terminal_callback(
+                        envelope,
+                        failure,
+                        installed_success_callback,
                     )
-                });
-            cloud_joiner_failed_terminal_callback(envelope, failure, installed_success_callback)
+                }
+            };
+            (execution.terminal, callback)
         }
-        (HostRunnerPlanTerminal::Failed(failure), None) => {
-            cloud_joiner_failed_terminal_callback(envelope, failure, None)
+        HostRunnerJoinExecution::ResolutionFailure {
+            execution, failure, ..
+        } => {
+            let callback = failed_callback(envelope, cloud_platform_failure(&failure));
+            (execution.terminal, callback)
+        }
+        HostRunnerJoinExecution::UnredeemedFailure { execution, failure } => {
+            let callback = failed_callback(
+                envelope,
+                CloudBootstrapFailure::BootstrapFailed {
+                    message: failure_message(failure_summary(&failure)),
+                },
+            );
+            (execution.terminal, callback)
         }
     };
 
@@ -655,6 +679,19 @@ fn cloud_joiner_failed_terminal_callback(
             message: failure_message(failure_summary(failure)),
         },
     )
+}
+
+fn cloud_platform_failure(failure: &JoinTargetResolutionFailure) -> CloudBootstrapFailure {
+    match failure {
+        JoinTargetResolutionFailure::ReleasePlatform { failure } => {
+            CloudBootstrapFailure::ReleasePlatform {
+                cause: failure.clone(),
+            }
+        }
+        JoinTargetResolutionFailure::Other { message } => CloudBootstrapFailure::BootstrapFailed {
+            message: message.clone(),
+        },
+    }
 }
 
 fn persist_post_failed_callback(
@@ -740,9 +777,10 @@ pub(super) fn cloud_machine_facts() -> CloudBootstrapMachineFacts {
 #[cfg(test)]
 mod tests {
     use super::{
-        cloud_joiner_failed_terminal_callback, persisted_release_manifest_url,
-        public_ip_from_runtime_nats_url,
+        cloud_joiner_failed_terminal_callback, cloud_platform_failure, failed_callback,
+        persisted_release_manifest_url, public_ip_from_runtime_nats_url,
     };
+    use crate::lifecycle::machine_join::execution::JoinTargetResolutionFailure;
     use crate::plan::{
         HostRunnerPlanFailure, HostRunnerStepFailure, HostRunnerStepFailureReason,
         HostRunnerStepLabel,
@@ -751,7 +789,7 @@ mod tests {
     use ployz_core::operation::FailureMessage;
     use ployz_sdk_types::{
         CloudBootstrapAttemptId, CloudBootstrapCallbackRequest, CloudBootstrapCallbackToken,
-        CloudBootstrapEnvelope, CloudBootstrapIntent, CloudBootstrapOutcome,
+        CloudBootstrapEnvelope, CloudBootstrapFailure, CloudBootstrapIntent, CloudBootstrapOutcome,
         CloudBootstrapRedemptionId,
     };
 
@@ -857,5 +895,36 @@ mod tests {
             callback.outcome,
             CloudBootstrapOutcome::JoinerSucceeded { .. }
         ));
+    }
+
+    #[test]
+    fn join_resolution_platform_failure_is_typed_in_cloud_terminal_callback() {
+        let envelope = CloudBootstrapEnvelope {
+            attempt_id: CloudBootstrapAttemptId::try_new("pcba_123").expect("valid attempt id"),
+            redemption_id: CloudBootstrapRedemptionId::try_new("pcbr_123")
+                .expect("valid redemption id"),
+            callback_url: "https://cloud.example.com/api/bootstrap/redemptions/pcbr_123/callback"
+                .to_owned(),
+            callback_token: CloudBootstrapCallbackToken::try_new("pcbc_123")
+                .expect("valid callback token"),
+            intent: CloudBootstrapIntent::WaitForFounder {
+                retry_after_seconds: 1,
+            },
+        };
+        let callback = failed_callback(
+            &envelope,
+            cloud_platform_failure(&JoinTargetResolutionFailure::ReleasePlatform {
+                failure: ployz_core::install::ReleasePlatformFailure::Missing,
+            }),
+        );
+
+        assert_eq!(
+            callback.outcome,
+            CloudBootstrapOutcome::Failed {
+                failure: CloudBootstrapFailure::ReleasePlatform {
+                    cause: ployz_core::install::ReleasePlatformFailure::Missing,
+                },
+            }
+        );
     }
 }

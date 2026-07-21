@@ -11,7 +11,9 @@ use crate::plan::{
 };
 use ployz_core::roles::InstallRolePolicy;
 use ployz_test_support::ids::{failure_message, machine_id};
-use support::artifacts::{nats_server_artifact, ployzd_artifact, railpack_artifact};
+use support::artifacts::{
+    nats_server_artifact, ployz_release_artifact, ployzd_artifact, railpack_artifact,
+};
 use support::bootstrap::*;
 
 #[test]
@@ -34,7 +36,7 @@ fn host_runner_step_failure_is_bootstrap_scoped_and_typed() {
 fn host_runner_plan_executor_runs_steps_in_order_and_records_progress() {
     let plan = first_machine_install_plan(FirstMachineInstallTarget::new(
         machine_id("machine_1"),
-        ployzd_artifact(),
+        ployz_release_artifact(),
         dataplane_artifacts(),
         railpack_artifact(),
         nats_server_artifact(),

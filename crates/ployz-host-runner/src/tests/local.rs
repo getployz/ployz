@@ -12,8 +12,8 @@ use crate::execution::{HostRunnerCommandOutput, HostRunnerCommandRunner};
 use crate::execution::{HostRunnerLocalConfig, HostRunnerLocalEffects};
 use crate::execution::{NatsServerUnitTarget, PloyzdRoleEnvironmentFile, SupervisorUnitTarget};
 use crate::lifecycle::machine_join::execution::{
-    HostRunnerJoinRedeemer, HostRunnerJoinReporter, HostRunnerJoinTokenConsumer,
-    RedeemedHostRunnerJoin, execute_host_runner_join,
+    HostRunnerJoinRedeemer, HostRunnerJoinReporter, HostRunnerJoinResolver,
+    HostRunnerJoinTokenConsumer, JoinTargetResolutionFailure, execute_host_runner_join,
 };
 use crate::lifecycle::{
     AssignedSubstrateState, SubstrateAssignment, load_assigned_substrate_state,
@@ -25,8 +25,8 @@ use crate::lifecycle::{
 use crate::plan::{
     ContainerRuntime, FirstMachineInstallTarget, HostPrerequisite, HostRunnerJoinMaterial,
     HostRunnerJoinTarget, HostRunnerStep, HostRunnerStepFailure, HostRunnerStepFailureReason,
-    HostRunnerStepLabel, JoinToken, NonEmptyRoleSet, PloyzdRoleEnvironmentTarget,
-    RoleNatsCredentials, first_machine_install_plan,
+    HostRunnerStepLabel, JoinToken, NonEmptyRoleSet, PloyzReleaseArtifact,
+    PloyzdRoleEnvironmentTarget, RoleNatsCredentials, first_machine_install_plan,
 };
 use crate::plan::{
     HostRunnerPlanFailure, HostRunnerPlanTerminal, HostRunnerStepEffects, HostRunnerStepEvent,
@@ -40,7 +40,7 @@ use ployz_core::operation::FailureMessage;
 use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy};
 use ployz_nats::connect::NatsClientUrl;
 use ployz_sdk_types::MachineJoinReportFailure;
-use ployz_test_support::ids::{failure_message, machine_id, operation_id};
+use ployz_test_support::ids::{failure_message, machine_id};
 use std::sync::OnceLock;
 use support::artifacts::{artifact_version as version, sha256_digest as digest};
 
@@ -164,7 +164,7 @@ fn local_effects_install_first_machine_process_units() {
     let plan = first_machine_install_plan(
         FirstMachineInstallTarget::new(
             machine_id("machine_1"),
-            ployzd_artifact,
+            ployz_release_artifact(ployzd_artifact),
             dataplane_artifacts(&root),
             railpack_artifact(&root),
             nats_server_artifact(&nats_source, &nats_install_path),
@@ -287,7 +287,7 @@ fn first_machine_install_writes_machine_bootstrap_url_when_configured() {
     let runner = RecordingRunner::root_linux();
     let target = FirstMachineInstallTarget::new(
         machine_id("machine_1"),
-        ployzd_artifact(&ployzd_source, &root.join("bin/ployzd")),
+        ployz_release_artifact(ployzd_artifact(&ployzd_source, &root.join("bin/ployzd"))),
         dataplane_artifacts(&root),
         railpack_artifact(&root),
         nats_server_artifact(&nats_source, &root.join("bin/nats-server")),
@@ -338,7 +338,7 @@ fn first_machine_install_writes_machine_join_template_file_when_configured() {
     let template_path = root.join("etc/machine-join-template.json");
     let target = FirstMachineInstallTarget::new(
         machine_id("machine_1"),
-        ployzd_artifact(&ployzd_source, &root.join("bin/ployzd")),
+        ployz_release_artifact(ployzd_artifact(&ployzd_source, &root.join("bin/ployzd"))),
         dataplane_artifacts(&root),
         railpack_artifact(&root),
         nats_server_artifact(&nats_source, &root.join("bin/nats-server")),
@@ -374,14 +374,41 @@ fn first_machine_install_writes_machine_join_template_file_when_configured() {
             ctl = root.join("bin/ployz-ebpf-ctl").display()
         )
     );
+    let rendered = fs::read_to_string(&template_path).expect("join template writes");
     let template: ployz_core::install::MachineJoinTemplate =
-        serde_json::from_str(&fs::read_to_string(&template_path).expect("join template writes"))
-            .expect("join template parses");
+        serde_json::from_str(&rendered).expect("join template parses");
     assert_eq!(template.join_bundle.material.cluster_name.as_str(), "ployz");
     assert_eq!(
         template.join_bundle.material.runtime_nats_url.as_str(),
         "tls://127.0.0.1:4222"
     );
+    assert_eq!(
+        template
+            .join_bundle
+            .material
+            .substrate_release
+            .version
+            .as_str(),
+        "0.1.0"
+    );
+    assert_eq!(
+        template.join_bundle.material.trusted_nats.ca_pem.as_str(),
+        test_identity().ca.as_str()
+    );
+    assert_eq!(
+        template
+            .join_bundle
+            .material
+            .recovery_key_wrapped
+            .as_bytes(),
+        b"wrapped-ca-key"
+    );
+    assert_eq!(
+        template.join_bundle.material.core_seeds_wrapped.as_bytes(),
+        b"wrapped-core-seeds"
+    );
+    assert!(!rendered.contains("https://example.invalid/"));
+    assert!(!rendered.contains("\"ployzd\""));
 }
 
 #[test]
@@ -1372,7 +1399,7 @@ fn local_effects_write_nats_config_before_nats_unit() {
     let plan = first_machine_install_plan(
         FirstMachineInstallTarget::new(
             machine_id("machine_1"),
-            ployzd_artifact,
+            ployz_release_artifact(ployzd_artifact),
             dataplane_artifacts(&root),
             railpack_artifact(&root),
             nats_server_artifact(&nats_source, &nats_install_path),
@@ -1445,7 +1472,7 @@ fn local_effects_render_role_units_from_the_artifact_installed_by_the_plan() {
     let plan = first_machine_install_plan(
         FirstMachineInstallTarget::new(
             machine_id("machine_1"),
-            ployzd_artifact(&source, &install_path),
+            ployz_release_artifact(ployzd_artifact(&source, &install_path)),
             dataplane_artifacts(&root),
             railpack_artifact(&root),
             nats_server_artifact(&nats_source, &nats_install_path),
@@ -1491,7 +1518,7 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
             WrappedCoreSeeds::new(b"wrapped-core-seeds".to_vec()),
         )
         .expect("valid join material"),
-        ployzd_artifact(&source, &root.join("join/bin/ployzd")),
+        ployz_release_artifact(ployzd_artifact(&source, &root.join("join/bin/ployzd"))),
         dataplane_artifacts(&root),
         railpack_artifact(&root),
         NonEmptyRoleSet::try_new(vec![
@@ -1504,8 +1531,8 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
     );
     let mut redeemer = StaticJoinRedeemer {
         expected_token: JoinToken::try_new("join_once").expect("valid join token"),
-        target,
     };
+    let mut resolver = StaticJoinResolver { target };
     let mut reporter = RecordingJoinReporter::default();
     let mut token_consumer = RecordingTokenConsumer::default();
     let mut effects = HostRunnerLocalEffects::new(
@@ -1517,6 +1544,7 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
     let execution = execute_host_runner_join(
         &JoinToken::try_new("join_once").expect("valid join token"),
         &mut redeemer,
+        &mut resolver,
         &mut reporter,
         &mut token_consumer,
         &mut effects,
@@ -1695,23 +1723,31 @@ impl HostRunnerJoinTokenConsumer for RecordingTokenConsumer {
 #[derive(Debug)]
 struct StaticJoinRedeemer {
     expected_token: JoinToken,
-    target: HostRunnerJoinTarget,
 }
 
 impl HostRunnerJoinRedeemer for StaticJoinRedeemer {
     fn redeem_join_token(
         &mut self,
         token: &JoinToken,
-    ) -> Result<RedeemedHostRunnerJoin, FailureMessage> {
+    ) -> Result<ployz_sdk_types::MachineJoinRedeemed, FailureMessage> {
         if *token != self.expected_token {
             return Err(failure_message("unexpected join token"));
         }
 
-        Ok(RedeemedHostRunnerJoin::new(
-            operation_id("op_machine"),
-            machine_id("machine_2"),
-            self.target.clone(),
-        ))
+        Ok(support::bootstrap::recording_join_redeemed())
+    }
+}
+
+struct StaticJoinResolver {
+    target: HostRunnerJoinTarget,
+}
+
+impl HostRunnerJoinResolver for StaticJoinResolver {
+    fn resolve_join_target(
+        &mut self,
+        _redeemed: &ployz_sdk_types::MachineJoinRedeemed,
+    ) -> Result<HostRunnerJoinTarget, JoinTargetResolutionFailure> {
+        Ok(self.target.clone())
     }
 }
 
@@ -2099,7 +2135,7 @@ fn first_machine_plan_with_ployzd(
     first_machine_install_plan(
         FirstMachineInstallTarget::new(
             machine_id("machine_1"),
-            ployzd,
+            ployz_release_artifact(ployzd),
             dataplane_artifacts(root),
             railpack_artifact(root),
             nats_server_artifact(&nats_source, &root.join("bin/nats-server")),
@@ -2113,6 +2149,10 @@ fn first_machine_plan_with_ployzd(
         .with_nats_material_paths(nats_material(root))
         .with_role_environment(role_env(root)),
     )
+}
+
+fn ployz_release_artifact(artifact: ArtifactTarget) -> PloyzReleaseArtifact {
+    PloyzReleaseArtifact::try_new(artifact).expect("exact Ployz release artifact")
 }
 
 fn remote_ployzd_artifact(url: &str, install_path: &Path) -> ArtifactTarget {
