@@ -24,6 +24,12 @@ pub enum BuildExecutorRunMode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BuildExecutorAdmission {
+    AnyOperation,
+    ExactOperation(OperationId),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildEnrollCommand {
     pub enrollment_url: EnrollmentUrl,
     pub token_env: String,
@@ -36,6 +42,7 @@ pub struct BuildExecutorCommand {
     pub pool_id: BuildPoolId,
     pub executor_id: BuildExecutorId,
     pub workspace_root: Option<PathBuf>,
+    pub admission: BuildExecutorAdmission,
     pub mode: BuildExecutorRunMode,
 }
 
@@ -186,6 +193,7 @@ fn build_executor_command(
         executor_id: BuildExecutorId::try_new(executor_id)
             .map_err(|error| invalid_value("--executor-id", error))?,
         workspace_root,
+        admission: BuildExecutorAdmission::AnyOperation,
         mode,
     })
 }

@@ -1,14 +1,39 @@
 use std::time::Duration;
 
 use ployz_core::build::LocalSnapshotDigest;
-use ployz_core::ids::{BuildExecutorId, BuildPoolId};
+use ployz_core::ids::{BuildExecutorId, BuildPoolId, OperationId};
 use ployz_core::image::OciPlatform;
 use ployz_core::install::{MachineJoinRuntimeNatsUrl, MachineJoinTrustedNats};
-use ployz_core::nats_config::NatsUserPublicKey;
+use ployz_core::nats_config::{BuildExecutorCredentialExpiresAt, NatsUserPublicKey};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CloudTransportPolicy {
+    HttpsOnly,
+    AllowLoopbackHttp,
+}
+
+pub(crate) fn validated_cloud_base_url(
+    base_url: &str,
+    transport: CloudTransportPolicy,
+) -> Result<reqwest::Url, CloudCurrentTreeError> {
+    let base_url = base_url.trim_end_matches('/');
+    let url = reqwest::Url::parse(base_url).map_err(|_| CloudCurrentTreeError::InvalidCloudUrl)?;
+    let loopback_http = transport == CloudTransportPolicy::AllowLoopbackHttp
+        && url.scheme() == "http"
+        && url.host_str().is_some_and(|host| {
+            host.trim_matches(['[', ']'])
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|address| address.is_loopback())
+        });
+    if (url.scheme() != "https" && !loopback_http) || url.cannot_be_a_base() {
+        return Err(CloudCurrentTreeError::InvalidCloudUrl);
+    }
+    Ok(url)
+}
 #[derive(Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct BeginSession {
@@ -49,6 +74,7 @@ pub(crate) struct EnvironmentContext {
 pub(crate) struct FrozenBuild {
     pub assignment_id: String,
     pub build_record_id: String,
+    pub operation_id: OperationId,
     pub deployment_id: String,
 }
 
@@ -60,7 +86,8 @@ pub(crate) struct ActivatedExecutor {
     pub pool_id: BuildPoolId,
     pub executor_id: BuildExecutorId,
     pub platform: OciPlatform,
-    pub expires_at: String,
+    #[serde(deserialize_with = "crate::build::deserialize_credential_expiry")]
+    pub expires_at: BuildExecutorCredentialExpiresAt,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -202,24 +229,13 @@ pub(crate) struct CloudCurrentTreeClient {
 
 impl CloudCurrentTreeClient {
     pub(crate) fn new(base_url: &str) -> Result<Self, CloudCurrentTreeError> {
-        let base_url = base_url.trim_end_matches('/');
-        let url =
-            reqwest::Url::parse(base_url).map_err(|_| CloudCurrentTreeError::InvalidCloudUrl)?;
-        let loopback_http = url.scheme() == "http"
-            && url.host_str().is_some_and(|host| {
-                host.trim_matches(['[', ']'])
-                    .parse::<std::net::IpAddr>()
-                    .is_ok_and(|address| address.is_loopback())
-            });
-        if (url.scheme() != "https" && !loopback_http) || url.cannot_be_a_base() {
-            return Err(CloudCurrentTreeError::InvalidCloudUrl);
-        }
+        let url = validated_cloud_base_url(base_url, CloudTransportPolicy::AllowLoopbackHttp)?;
         let http = reqwest::Client::builder()
             .timeout(REQUEST_TIMEOUT)
             .build()
             .map_err(|error| CloudCurrentTreeError::Transport(error.to_string()))?;
         Ok(Self {
-            base_url: base_url.to_owned(),
+            base_url: url.as_str().trim_end_matches('/').to_owned(),
             http,
         })
     }
@@ -573,16 +589,18 @@ mod tests {
         let request = tokio::spawn(receive_one_request(
             listener,
             "200 OK",
-            "{\"result\":{\"assignment_id\":\"assignment-1\",\"build_record_id\":\"build-1\",\"deployment_id\":\"deployment-1\"}}",
+            "{\"result\":{\"assignment_id\":\"assignment-1\",\"build_record_id\":\"build-1\",\"operation_id\":\"operation-distinct\",\"deployment_id\":\"deployment-1\"}}",
         ));
         let digest =
             LocalSnapshotDigest::try_new(format!("sha256:{}", "a".repeat(64))).expect("digest");
         let platform = OciPlatform::try_new("linux", "amd64").expect("platform");
-        CloudCurrentTreeClient::new(&format!("http://{address}"))
+        let frozen = CloudCurrentTreeClient::new(&format!("http://{address}"))
             .expect("client")
             .freeze("pct_secret", &digest, &platform)
             .await
             .expect("freeze");
+        assert_eq!(frozen.build_record_id, "build-1");
+        assert_eq!(frozen.operation_id.as_str(), "operation-distinct");
         let request = request.await.expect("server");
         assert!(request.contains(&format!("\"digest\":\"{}\"", digest.as_str())));
         assert!(request.contains("\"architecture\":\"amd64\""));
@@ -600,6 +618,7 @@ mod tests {
         let frozen = FrozenBuild {
             assignment_id: "assignment-1".to_owned(),
             build_record_id: "build-1".to_owned(),
+            operation_id: OperationId::try_new("operation-distinct").expect("operation"),
             deployment_id: "deployment-1".to_owned(),
         };
         let digest =
@@ -640,6 +659,7 @@ mod tests {
         let frozen = FrozenBuild {
             assignment_id: "assignment-1".to_owned(),
             build_record_id: "build-1".to_owned(),
+            operation_id: OperationId::try_new("operation-distinct").expect("operation"),
             deployment_id: "deployment-1".to_owned(),
         };
         let digest =

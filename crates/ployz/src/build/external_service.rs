@@ -36,11 +36,8 @@ impl CompletionMode {
         Self::Once(Arc::new(Mutex::new(Some(sender))))
     }
 
-    fn notify_terminal(&self, response: &NatsServiceResponse) {
-        if !matches!(
-            response,
-            NatsServiceResponse::Ok { .. } | NatsServiceResponse::DomainError { .. }
-        ) {
+    fn notify_terminal(&self, completes_once: bool) {
+        if !completes_once {
             return;
         }
         let Self::Once(sender) = self else {
@@ -58,6 +55,7 @@ pub(super) async fn start_executor_service(
     identity: BuildExecutorIdentity,
     runtime: ExternalBuildRuntime,
     completion: CompletionMode,
+    authority_deadline: tokio::time::Instant,
 ) -> Result<RunningNatsService, BuildExecutionError> {
     let endpoints = executor_endpoints(&identity);
     let [readiness_endpoint, start_endpoint, cancel_endpoint] = &endpoints;
@@ -81,11 +79,17 @@ pub(super) async fn start_executor_service(
         .map_err(|error| executor_error(error.to_string()))?;
 
     let readiness_identity = identity.clone();
+    let readiness_runtime = runtime.clone();
     service
-        .bind_endpoint(readiness_endpoint, move |request| {
-            let identity = readiness_identity.clone();
-            async move { handle_readiness(identity, request).await }
-        })
+        .bind_endpoint_with_policy(
+            readiness_endpoint,
+            EndpointExecutionPolicy::default().with_authority_deadline(authority_deadline),
+            move |request| {
+                let identity = readiness_identity.clone();
+                let runtime = readiness_runtime.clone();
+                async move { handle_readiness(identity, runtime, request).await }
+            },
+        )
         .await
         .map_err(|error| executor_error(error.to_string()))?;
 
@@ -93,14 +97,15 @@ pub(super) async fn start_executor_service(
     service
         .bind_endpoint_with_policy(
             start_endpoint,
-            EndpointExecutionPolicy::new(NonZeroUsize::MIN, BUILD_START_ENDPOINT_TIMEOUT),
+            EndpointExecutionPolicy::new(NonZeroUsize::MIN, BUILD_START_ENDPOINT_TIMEOUT)
+                .with_authority_deadline(authority_deadline),
             move |request| {
                 let runtime = start_runtime.clone();
                 let completion = completion.clone();
                 async move {
-                    let response = handle_start(runtime, request).await;
-                    completion.notify_terminal(&response);
-                    response
+                    let handled = handle_start(runtime, request).await;
+                    completion.notify_terminal(handled.completes_once);
+                    handled.response
                 }
             },
         )
@@ -108,10 +113,14 @@ pub(super) async fn start_executor_service(
         .map_err(|error| executor_error(error.to_string()))?;
 
     service
-        .bind_endpoint(cancel_endpoint, move |request| {
-            let runtime = runtime.clone();
-            async move { handle_cancel(runtime, request).await }
-        })
+        .bind_endpoint_with_policy(
+            cancel_endpoint,
+            EndpointExecutionPolicy::default().with_authority_deadline(authority_deadline),
+            move |request| {
+                let runtime = runtime.clone();
+                async move { handle_cancel(runtime, request).await }
+            },
+        )
         .await
         .map_err(|error| executor_error(error.to_string()))?;
     Ok(service)
@@ -145,37 +154,108 @@ fn executor_endpoint(
 
 async fn handle_readiness(
     identity: BuildExecutorIdentity,
-    request: NatsServiceRequest,
-) -> NatsServiceResponse {
-    match decode_json_request::<BuildExecutorReadinessRequest>(&request) {
-        Ok(BuildExecutorReadinessRequest {}) => match probe_readiness().await {
-            Ok(readiness) => NatsServiceResponse::json_ok(&BuildExecutorReadinessAnswer {
-                identity,
-                readiness,
-            }),
-            Err(error) => NatsServiceResponse::transport_error(
-                ployz_nats::service_runtime::NatsServiceError::internal(error.to_string()),
-            ),
-        },
-        Err(response) => response,
-    }
-}
-
-async fn handle_start(
     runtime: ExternalBuildRuntime,
     request: NatsServiceRequest,
 ) -> NatsServiceResponse {
+    if !runtime.readiness_authorized_before_expiry().await {
+        return std::future::pending().await;
+    }
+    match decode_json_request::<BuildExecutorReadinessRequest>(&request) {
+        Ok(BuildExecutorReadinessRequest {}) => match probe_readiness().await {
+            Ok(readiness) => {
+                respond_to_readiness_if_authorized(
+                    &runtime,
+                    NatsServiceResponse::json_ok(&BuildExecutorReadinessAnswer {
+                        identity,
+                        readiness,
+                    }),
+                )
+                .await
+            }
+            Err(error) => {
+                respond_to_readiness_if_authorized(
+                    &runtime,
+                    NatsServiceResponse::transport_error(
+                        ployz_nats::service_runtime::NatsServiceError::internal(error.to_string()),
+                    ),
+                )
+                .await
+            }
+        },
+        Err(response) => respond_to_readiness_if_authorized(&runtime, response).await,
+    }
+}
+
+async fn respond_to_readiness_if_authorized(
+    runtime: &ExternalBuildRuntime,
+    response: NatsServiceResponse,
+) -> NatsServiceResponse {
+    if runtime.readiness_authorized_before_expiry().await {
+        response
+    } else {
+        std::future::pending().await
+    }
+}
+
+async fn handle_start(runtime: ExternalBuildRuntime, request: NatsServiceRequest) -> HandledStart {
     let request = match decode_json_request::<BuildExecutorStartRequest>(&request) {
         Ok(request) => request,
-        Err(response) => return response,
+        Err(response) => return HandledStart::waiting(response),
     };
     match runtime.start(request).await {
-        Ok(ok) => NatsServiceResponse::json_ok(&BuildExecutorStartResponse::Ok(Box::new(ok))),
+        Ok(ok) => HandledStart::terminal(NatsServiceResponse::json_ok(
+            &BuildExecutorStartResponse::Ok(Box::new(ok)),
+        )),
         Err(error) => {
-            NatsServiceResponse::json_domain_error(&BuildExecutorStartResponse::DomainError {
-                error,
-            })
+            let completes_once = start_error_completes_once(&error);
+            HandledStart {
+                response: NatsServiceResponse::json_domain_error(
+                    &BuildExecutorStartResponse::DomainError { error },
+                ),
+                completes_once,
+            }
         }
+    }
+}
+
+struct HandledStart {
+    response: NatsServiceResponse,
+    completes_once: bool,
+}
+
+impl HandledStart {
+    fn terminal(response: NatsServiceResponse) -> Self {
+        Self {
+            response,
+            completes_once: true,
+        }
+    }
+
+    fn waiting(response: NatsServiceResponse) -> Self {
+        Self {
+            response,
+            completes_once: false,
+        }
+    }
+}
+
+fn start_error_completes_once(error: &ployz_core::build::BuildExecutorStartDomainError) -> bool {
+    match error {
+        ployz_core::build::BuildExecutorStartDomainError::OperationIdentityMismatch { .. }
+        | ployz_core::build::BuildExecutorStartDomainError::AssignmentMismatch { .. }
+        | ployz_core::build::BuildExecutorStartDomainError::ExecutorIdentityMismatch { .. } => {
+            false
+        }
+        ployz_core::build::BuildExecutorStartDomainError::RuntimeUnavailable
+        | ployz_core::build::BuildExecutorStartDomainError::RuntimeStopped
+        | ployz_core::build::BuildExecutorStartDomainError::PlatformMismatch { .. }
+        | ployz_core::build::BuildExecutorStartDomainError::ToolchainUnavailable { .. }
+        | ployz_core::build::BuildExecutorStartDomainError::ImageSeedUnavailable { .. }
+        | ployz_core::build::BuildExecutorStartDomainError::InvalidTimeout { .. }
+        | ployz_core::build::BuildExecutorStartDomainError::AlreadyRunning
+        | ployz_core::build::BuildExecutorStartDomainError::PlatformFailed { .. }
+        | ployz_core::build::BuildExecutorStartDomainError::Cancelled { .. }
+        | ployz_core::build::BuildExecutorStartDomainError::TimedOut { .. } => true,
     }
 }
 
@@ -202,14 +282,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn watch_completion_is_a_noop_and_once_is_consumed() {
-        let terminal = NatsServiceResponse::ok(Vec::new());
-        CompletionMode::Watch.notify_terminal(&terminal);
+    fn watch_completion_is_a_noop_and_once_waits_through_provenance_rejection() {
+        CompletionMode::Watch.notify_terminal(true);
 
-        let (sender, receiver) = oneshot::channel();
+        let (sender, mut receiver) = oneshot::channel();
         let once = CompletionMode::once(sender);
-        once.notify_terminal(&terminal);
-        once.notify_terminal(&terminal);
+        once.notify_terminal(false);
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        once.notify_terminal(true);
+        once.notify_terminal(true);
         assert_eq!(receiver.blocking_recv(), Ok(()));
+    }
+
+    #[test]
+    fn only_binding_rejections_leave_one_shot_waiting() {
+        let expected = ployz_core::ids::OperationId::try_new("op_expected").expect("operation");
+        let actual = ployz_core::ids::OperationId::try_new("op_actual").expect("operation");
+        assert!(!start_error_completes_once(
+            &ployz_core::build::BuildExecutorStartDomainError::OperationIdentityMismatch {
+                expected,
+                actual,
+            }
+        ));
+        assert!(start_error_completes_once(
+            &ployz_core::build::BuildExecutorStartDomainError::RuntimeUnavailable
+        ));
     }
 }

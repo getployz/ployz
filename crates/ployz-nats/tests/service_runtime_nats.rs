@@ -1,3 +1,4 @@
+use futures_util::StreamExt;
 use ployz_nats::service_runtime::{
     EndpointExecutionPolicy, NATS_SERVICE_ERROR_CODE_HEADER, NATS_SERVICE_ERROR_HEADER,
     NatsJsonServiceRequestError, NatsServiceError, NatsServiceErrorCode,
@@ -288,6 +289,69 @@ async fn service_runtime_times_out_slow_handler_and_records_health() {
         Some("504")
     );
     assert_eq!(runtime.health().request_timeouts, 1);
+}
+
+#[tokio::test]
+async fn deadline_endpoint_drops_pending_request_without_synthesizing_timeout() {
+    let nats = test_nats().await;
+    let subject = OperationApiEndpoint::LogsTail.subject();
+    let spec = test_service_spec(subject);
+    let endpoint = spec.endpoints.first().expect("test endpoint is present");
+    let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
+        .await
+        .expect("service starts");
+    let Some(max_concurrent_requests) = NonZeroUsize::new(1) else {
+        unreachable!("test concurrency is non-zero");
+    };
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    let (started_tx, started_rx) = oneshot::channel();
+    let started_tx = std::sync::Mutex::new(Some(started_tx));
+
+    runtime
+        .bind_endpoint_with_policy(
+            endpoint,
+            EndpointExecutionPolicy::new(max_concurrent_requests, Duration::from_secs(2))
+                .with_authority_deadline(deadline),
+            move |_request| {
+                let started_tx = started_tx.lock().expect("started signal lock").take();
+                async move {
+                    if let Some(started_tx) = started_tx {
+                        let _ = started_tx.send(());
+                    }
+                    pending().await
+                }
+            },
+        )
+        .await
+        .expect("deadline endpoint binds");
+    let inbox = nats.request_client.new_inbox();
+    let mut replies = nats
+        .request_client
+        .subscribe(inbox.clone())
+        .await
+        .expect("reply inbox subscribes");
+    nats.request_client
+        .publish_with_reply(subject, inbox, Vec::new().into())
+        .await
+        .expect("deadline request publishes");
+    nats.request_client
+        .flush()
+        .await
+        .expect("deadline request flushes");
+    timeout(Duration::from_secs(1), started_rx)
+        .await
+        .expect("handler starts before deadline")
+        .expect("handler start signal sends");
+
+    tokio::time::sleep_until(deadline + Duration::from_millis(50)).await;
+    assert!(
+        timeout(Duration::from_millis(100), replies.next())
+            .await
+            .is_err(),
+        "authority deadline must not become a timeout response"
+    );
+    assert_eq!(runtime.health().request_timeouts, 0);
+    assert_eq!(runtime.health().response_failures, 0);
 }
 
 #[tokio::test]

@@ -128,7 +128,32 @@ fn provenance_and_timeout_fail_before_acceptance() {
     let identity = identity();
     let mut request = start_request();
     assert_eq!(
-        validate_start_provenance_and_timeout(&identity, &request),
+        validate_start_provenance_and_timeout(
+            &identity,
+            &BuildExecutorAdmission::AnyOperation,
+            &request,
+        ),
+        Ok(())
+    );
+
+    let expected_operation = OperationId::try_new("op_expected").expect("operation");
+    assert!(matches!(
+        validate_start_provenance_and_timeout(
+            &identity,
+            &BuildExecutorAdmission::ExactOperation(expected_operation.clone()),
+            &request,
+        ),
+        Err(BuildExecutorStartDomainError::OperationIdentityMismatch {
+            expected,
+            actual,
+        }) if expected == expected_operation && actual == request.operation_id
+    ));
+    assert_eq!(
+        validate_start_provenance_and_timeout(
+            &identity,
+            &BuildExecutorAdmission::ExactOperation(request.operation_id.clone()),
+            &request,
+        ),
         Ok(())
     );
 
@@ -138,20 +163,32 @@ fn provenance_and_timeout_fail_before_acceptance() {
         image_seed: MachineId::try_new("machine_seed").expect("machine"),
     };
     assert!(matches!(
-        validate_start_provenance_and_timeout(&identity, &request),
+        validate_start_provenance_and_timeout(
+            &identity,
+            &BuildExecutorAdmission::AnyOperation,
+            &request,
+        ),
         Err(BuildExecutorStartDomainError::ExecutorIdentityMismatch { .. })
     ));
 
     request = start_request();
     request.timeout_millis = 0;
     assert!(matches!(
-        validate_start_provenance_and_timeout(&identity, &request),
+        validate_start_provenance_and_timeout(
+            &identity,
+            &BuildExecutorAdmission::AnyOperation,
+            &request,
+        ),
         Err(BuildExecutorStartDomainError::InvalidTimeout { timeout_millis: 0 })
     ));
     request.timeout_millis =
         u64::try_from(BUILD_MAX_EXECUTION_TIMEOUT.as_millis()).expect("timeout") + 1;
     assert!(matches!(
-        validate_start_provenance_and_timeout(&identity, &request),
+        validate_start_provenance_and_timeout(
+            &identity,
+            &BuildExecutorAdmission::AnyOperation,
+            &request,
+        ),
         Err(BuildExecutorStartDomainError::InvalidTimeout { .. })
     ));
 }
@@ -195,11 +232,14 @@ fn readiness_is_closed_and_adapter_specific() {
 async fn one_active_registration_rechecks_after_the_preflight_race_window() {
     let mut state = accepting_state(None);
     state.ensure_accepting().expect("initial preflight");
+    let expires_at = future_expiry(600);
     let (first, _first_rx, first_task) = active_build("op_build_first");
-    state.register(first).expect("first registration");
+    state
+        .register_before_terminal_margin_at(first, expires_at, std::time::SystemTime::now())
+        .expect("first registration");
     let (second, _second_rx, second_task) = active_build("op_build_second");
     assert!(matches!(
-        state.register(second),
+        state.register_before_terminal_margin_at(second, expires_at, std::time::SystemTime::now()),
         Err(BuildExecutorStartDomainError::AlreadyRunning)
     ));
     first_task.abort();
@@ -283,6 +323,460 @@ async fn once_credential_expiry_wins_when_the_idle_budget_elapses_together() {
         error,
         BuildExecutionError::ExecutorCredential { .. }
     ));
+}
+
+#[test]
+fn every_startup_stage_rejects_authority_at_expiry() {
+    let expires_at =
+        ployz_core::nats_config::BuildExecutorCredentialExpiresAt::try_new(100).expect("expiry");
+    let at_expiry = std::time::UNIX_EPOCH + Duration::from_secs(100);
+
+    for stage in [
+        ExecutorStartupStage::ReadinessProbe,
+        ExecutorStartupStage::OrphanRecovery,
+        ExecutorStartupStage::ServiceBinding,
+        ExecutorStartupStage::AdmissionOpening,
+    ] {
+        let error = ensure_startup_authority_at(expires_at, stage, at_expiry)
+            .expect_err("authority closes at its expiry");
+        assert!(matches!(
+            error,
+            BuildExecutionError::ExecutorCredential { .. }
+        ));
+        assert!(error.to_string().contains(stage.description()));
+    }
+}
+
+#[test]
+fn admission_requires_more_than_the_complete_terminal_response_budget() {
+    let expires_at = BuildExecutorCredentialExpiresAt::try_new(205).expect("expiry");
+    let exact_boundary = std::time::UNIX_EPOCH + Duration::from_secs(100);
+    let just_before_boundary = exact_boundary - Duration::from_nanos(1);
+
+    let error =
+        ensure_terminal_response_budget_at(expires_at, exact_boundary, AUTHORITY_TERMINAL_MARGIN)
+            .expect_err("the exact cleanup boundary fails closed");
+    assert!(matches!(
+        error,
+        BuildExecutionError::ExecutorCredential { .. }
+    ));
+    assert!(error.to_string().contains("insufficient lifetime"));
+    ensure_terminal_response_budget_at(expires_at, just_before_boundary, AUTHORITY_TERMINAL_MARGIN)
+        .expect("any lifetime beyond the required margin may open admission");
+}
+
+#[test]
+fn startup_stage_consumption_is_rechecked_atomically_when_admission_opens() {
+    let expires_at = BuildExecutorCredentialExpiresAt::try_new(205).expect("expiry");
+    let before_final_stage = std::time::UNIX_EPOCH + Duration::from_secs(99);
+    let after_final_stage = std::time::UNIX_EPOCH + Duration::from_secs(100);
+    let mut state = RuntimeState::new_connected();
+    let generation = state.admission_generation().expect("connected generation");
+
+    ensure_terminal_response_budget_at(expires_at, before_final_stage, AUTHORITY_TERMINAL_MARGIN)
+        .expect("startup may begin with more than the margin");
+    let error = state
+        .open_admission_before_terminal_margin_at(generation, expires_at, after_final_stage)
+        .expect_err("stage consumption reaches the exact margin");
+    assert!(matches!(
+        error,
+        BuildExecutionError::ExecutorCredential { .. }
+    ));
+    assert_eq!(state.admission, RuntimeAdmission::Closed);
+}
+
+#[tokio::test]
+async fn start_registration_closes_admission_when_preflight_races_into_the_margin() {
+    let expires_at = BuildExecutorCredentialExpiresAt::try_new(205).expect("expiry");
+    let before_preflight = std::time::UNIX_EPOCH + Duration::from_secs(99);
+    let after_preflight = std::time::UNIX_EPOCH + Duration::from_secs(100);
+    let mut state = RuntimeState::new_connected();
+    let generation = state.admission_generation().expect("connected generation");
+    assert!(
+        state
+            .open_admission_before_terminal_margin_at(generation, expires_at, before_preflight)
+            .expect("admission check")
+    );
+    let (active, _cancelled, task) = active_build("op_margin_race");
+
+    assert_eq!(
+        state.register_before_terminal_margin_at(active, expires_at, after_preflight),
+        Err(BuildExecutorStartDomainError::RuntimeStopped)
+    );
+    assert_eq!(state.admission, RuntimeAdmission::Closed);
+    assert!(state.active.is_none());
+    task.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn controlled_once_cancels_early_and_observes_terminal_before_hard_expiry() {
+    let expires_at = future_expiry(600);
+    let lifetime = AUTHORITY_TERMINAL_MARGIN + Duration::from_secs(5);
+    let (terminal_tx, terminal_rx) = oneshot::channel();
+    let started_at = tokio::time::Instant::now();
+    let mut shutdown = Box::pin(std::future::pending::<Result<(), PloyzctlExecutionError>>());
+    let wait = tokio::spawn(async move {
+        wait_for_controlled_once_with_lifetime(
+            terminal_rx,
+            lifetime + Duration::from_secs(1),
+            lifetime,
+            expires_at,
+            &mut shutdown,
+            async move {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                terminal_tx
+                    .send(())
+                    .expect("cancelled build reports terminal");
+                Ok(())
+            },
+        )
+        .await
+    });
+
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_secs(5)).await;
+    tokio::task::yield_now().await;
+    assert!(
+        !wait.is_finished(),
+        "cleanup must finish before terminal evidence"
+    );
+    tokio::time::advance(Duration::from_secs(2)).await;
+    assert_eq!(wait.await.expect("wait task"), Ok((Ok(()), false)));
+    assert!(tokio::time::Instant::now().duration_since(started_at) < lifetime);
+}
+
+#[tokio::test(start_paused = true)]
+async fn controlled_once_rejects_terminal_evidence_at_the_hard_cutoff() {
+    let expires_at = future_expiry(600);
+    let lifetime = AUTHORITY_TERMINAL_MARGIN + Duration::from_secs(2);
+    let (terminal_tx, terminal_rx) = oneshot::channel();
+    let mut shutdown = Box::pin(std::future::pending::<Result<(), PloyzctlExecutionError>>());
+    let wait = tokio::spawn(async move {
+        wait_for_controlled_once_with_lifetime(
+            terminal_rx,
+            lifetime + Duration::from_secs(1),
+            lifetime,
+            expires_at,
+            &mut shutdown,
+            async move {
+                tokio::time::sleep(AUTHORITY_TERMINAL_MARGIN).await;
+                terminal_tx.send(()).expect("terminal reaches exact cutoff");
+                Ok(())
+            },
+        )
+        .await
+    });
+
+    tokio::task::yield_now().await;
+    tokio::time::advance(lifetime).await;
+    let (result, forced) = wait.await.expect("wait task").expect("wait completes");
+    assert!(forced);
+    assert!(matches!(
+        result,
+        Err(BuildExecutionError::ExecutorCredential { .. })
+    ));
+}
+
+#[tokio::test]
+async fn controlled_shutdown_uses_signal_only_without_an_external_coordinator() {
+    let (signal_tx, signal_rx) = oneshot::channel();
+    let signal = async move {
+        signal_rx.await.expect("signal sends");
+        Ok(())
+    };
+    let shutdown = controlled_shutdown_future_with_signal(None, signal);
+    signal_tx.send(()).expect("signal sends");
+    shutdown.await.expect("signal stops controlled execution");
+
+    let (external_tx, external_rx) = oneshot::channel();
+    let signal = std::future::pending::<std::io::Result<()>>();
+    let shutdown = controlled_shutdown_future_with_signal(Some(external_rx), signal);
+    external_tx.send(()).expect("external coordinator sends");
+    shutdown
+        .await
+        .expect("external coordinator stops controlled execution");
+}
+
+#[tokio::test(start_paused = true)]
+async fn controlled_watch_does_not_bypass_external_shutdown_with_os_signal() {
+    let expires_at = future_expiry(600);
+    let lifetime = AUTHORITY_TERMINAL_MARGIN + Duration::from_secs(5);
+    let (external_tx, external_rx) = oneshot::channel();
+    let mut shutdown = controlled_shutdown_future_with_signal(Some(external_rx), async { Ok(()) });
+    let admission_closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let closed = Arc::clone(&admission_closed);
+    let wait = tokio::spawn(async move {
+        wait_for_controlled_watch_with_lifetime(expires_at, lifetime, &mut shutdown, async move {
+            closed.store(true, std::sync::atomic::Ordering::SeqCst);
+        })
+        .await
+    });
+
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_secs(5)).await;
+    tokio::task::yield_now().await;
+    assert!(admission_closed.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(!wait.is_finished(), "mock OS signal must be ignored");
+    external_tx.send(()).expect("external coordinator sends");
+    assert_eq!(wait.await.expect("wait task"), Ok((Ok(()), true)));
+}
+
+#[tokio::test]
+async fn controlled_watch_without_external_shutdown_is_driven_by_os_signal() {
+    let expires_at = future_expiry(600);
+    let mut shutdown = controlled_shutdown_future_with_signal(None, async { Ok(()) });
+    assert_eq!(
+        wait_for_controlled_watch_with_lifetime(
+            expires_at,
+            AUTHORITY_TERMINAL_MARGIN + Duration::from_secs(5),
+            &mut shutdown,
+            async {},
+        )
+        .await,
+        Ok((Ok(()), true))
+    );
+}
+
+#[tokio::test]
+async fn controlled_watch_rejects_expired_authority_before_waiting_for_shutdown() {
+    let expired = BuildExecutorCredentialExpiresAt::try_new(1).expect("positive expiry");
+    let mut shutdown = Box::pin(std::future::pending::<Result<(), PloyzctlExecutionError>>());
+    let error = wait_for_controlled_watch(expired, &mut shutdown, async {})
+        .await
+        .expect_err("expired authority fails before waiting");
+    assert!(error.to_string().contains("credential"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn pending_client_drain_fails_closed_at_the_response_budget() {
+    let drain = tokio::spawn(async {
+        bounded_client_drain(
+            std::future::pending::<Result<(), std::io::Error>>(),
+            "test cleanup",
+        )
+        .await
+    });
+    tokio::task::yield_now().await;
+    tokio::time::advance(BUILD_ENDPOINT_RESPONSE_MARGIN).await;
+    let error = drain
+        .await
+        .expect("drain task")
+        .expect_err("pending drain times out");
+    assert!(error.to_string().contains("timed out draining NATS client"));
+}
+
+#[tokio::test]
+async fn every_paused_startup_stage_is_interrupted_at_expiry() {
+    let expires_at = future_expiry(60);
+
+    for stage in [
+        ExecutorStartupStage::ReadinessProbe,
+        ExecutorStartupStage::OrphanRecovery,
+        ExecutorStartupStage::ServiceBinding,
+    ] {
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stage_owned = StartupStageDrop(Arc::clone(&dropped));
+        let error = await_startup_stage_with_lifetime::<(), _>(
+            expires_at,
+            stage,
+            Duration::ZERO,
+            async move {
+                let _stage_owned = stage_owned;
+                std::future::pending().await
+            },
+        )
+        .await
+        .expect_err("expiry interrupts a paused startup stage");
+        assert!(matches!(
+            error,
+            BuildExecutionError::ExecutorCredential { .. }
+        ));
+        assert!(error.to_string().contains(stage.description()));
+        assert!(
+            dropped.load(std::sync::atomic::Ordering::SeqCst),
+            "interrupting the stage drops its partial resources"
+        );
+    }
+}
+
+#[test]
+fn expired_authority_cannot_open_admission() {
+    let mut state = RuntimeState::new_connected();
+    let generation = state.admission_generation().expect("connected generation");
+    let expires_at =
+        ployz_core::nats_config::BuildExecutorCredentialExpiresAt::try_new(100).expect("expiry");
+    let at_expiry = std::time::UNIX_EPOCH + Duration::from_secs(100);
+
+    let error = state
+        .open_admission_before_terminal_margin_at(generation, expires_at, at_expiry)
+        .expect_err("authority closes before admission");
+    assert!(matches!(
+        error,
+        BuildExecutionError::ExecutorCredential { .. }
+    ));
+    assert_eq!(
+        state.ensure_accepting(),
+        Err(BuildExecutorStartDomainError::RuntimeStopped)
+    );
+    assert_eq!(state.admission, RuntimeAdmission::Closed);
+}
+
+#[test]
+fn readiness_requires_open_connected_authority_before_terminal_margin() {
+    let expires_at =
+        ployz_core::nats_config::BuildExecutorCredentialExpiresAt::try_new(300).expect("expiry");
+    let before_margin = std::time::UNIX_EPOCH + Duration::from_secs(100);
+    let at_margin = std::time::UNIX_EPOCH + Duration::from_secs(195);
+    let mut state = RuntimeState::new_connected();
+
+    assert!(!state.readiness_authorized_before_terminal_margin_at(expires_at, before_margin));
+    let generation = state.admission_generation().expect("connected generation");
+    assert!(state.open_admission(generation));
+    assert!(state.readiness_authorized_before_terminal_margin_at(expires_at, before_margin));
+    assert!(!state.readiness_authorized_before_terminal_margin_at(expires_at, at_margin));
+    state.record_disconnected();
+    assert!(!state.readiness_authorized_before_terminal_margin_at(expires_at, before_margin));
+}
+
+#[tokio::test]
+async fn start_registration_atomically_closes_at_credential_expiry() {
+    let expires_at =
+        ployz_core::nats_config::BuildExecutorCredentialExpiresAt::try_new(101).expect("expiry");
+    let at_expiry = std::time::UNIX_EPOCH + Duration::from_secs(101);
+    let (active, _cancelled, task) = active_build("op_build_expired");
+    let mut state = RuntimeState::new_connected();
+    let generation = state.admission_generation().expect("connected generation");
+    assert!(state.open_admission(generation));
+
+    assert_eq!(
+        state.register_before_terminal_margin_at(active, expires_at, at_expiry),
+        Err(BuildExecutorStartDomainError::RuntimeStopped)
+    );
+    assert_eq!(state.admission, RuntimeAdmission::Closed);
+    assert!(state.active.is_none());
+    task.abort();
+}
+
+#[tokio::test]
+async fn controlled_shutdown_drops_partial_startup_before_cleanup() {
+    let startup_dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let cleanup_observed_drop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let owned = StartupStageDrop(Arc::clone(&startup_dropped));
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    shutdown_tx.send(()).expect("shutdown sends");
+    let mut shutdown = Box::pin(async move {
+        let _ = shutdown_rx.await;
+        Ok::<(), &'static str>(())
+    });
+
+    let result = await_startup_or_shutdown(
+        async move {
+            let _owned = owned;
+            std::future::pending::<Result<(), &'static str>>().await
+        },
+        &mut shutdown,
+        {
+            let startup_dropped = Arc::clone(&startup_dropped);
+            let cleanup_observed_drop = Arc::clone(&cleanup_observed_drop);
+            async move {
+                cleanup_observed_drop.store(
+                    startup_dropped.load(std::sync::atomic::Ordering::SeqCst),
+                    std::sync::atomic::Ordering::SeqCst,
+                );
+                Ok::<(), &'static str>(())
+            }
+        },
+    )
+    .await
+    .expect("shutdown cleanup succeeds");
+
+    assert_eq!(result, None);
+    assert!(startup_dropped.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(cleanup_observed_drop.load(std::sync::atomic::Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn controlled_startup_cancellation_stops_an_accepted_build_before_returning() {
+    let nats = ployz_test_support::nats::TestNats::start().await;
+    let workspace = tempfile::tempdir().expect("workspace");
+    let expires_at = future_expiry(60);
+    let state = Arc::new(Mutex::new(RuntimeState::new_connected()));
+    let generation = state
+        .lock()
+        .await
+        .admission_generation()
+        .expect("connected generation");
+    assert!(state.lock().await.open_admission(generation));
+    let runtime = ExternalBuildRuntime::new(
+        identity(),
+        nats.controller.clone(),
+        workspace.path().to_owned(),
+        BuildExecutorAdmission::AnyOperation,
+        expires_at,
+        Arc::clone(&state),
+    );
+    let request = start_request();
+    let operation_id = request.operation_id.clone();
+    let (cancel, mut cancel_rx) = watch::channel(false);
+    let (cancelled_tx, cancelled_rx) = oneshot::channel();
+    let task_runtime = runtime.clone();
+    let task_operation_id = operation_id.clone();
+    let supervisor = tokio::spawn(async move {
+        cancel_rx
+            .changed()
+            .await
+            .expect("shutdown sends cancellation");
+        assert!(*cancel_rx.borrow());
+        let _ = cancelled_tx.send(());
+        task_runtime.remove_active(&task_operation_id).await;
+    });
+    state.lock().await.active = Some(ActiveBuild {
+        operation_id,
+        assignment: request.assignment,
+        platform: request.platform,
+        cancel,
+        supervisor: supervisor.abort_handle(),
+    });
+
+    let service_dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let startup_service = StartupStageDrop(Arc::clone(&service_dropped));
+    let (startup_paused_tx, startup_paused_rx) = oneshot::channel();
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    tokio::spawn(async move {
+        startup_paused_rx.await.expect("startup reaches pause");
+        shutdown_tx.send(()).expect("controlled shutdown sends");
+    });
+    let mut shutdown = Box::pin(async move {
+        let _ = shutdown_rx.await;
+        Ok::<(), BuildExecutionError>(())
+    });
+    let cleanup_runtime = runtime.clone();
+    let cleanup_saw_service_drop = Arc::clone(&service_dropped);
+    let result = await_startup_or_shutdown(
+        async move {
+            let _startup_service = startup_service;
+            startup_paused_tx.send(()).expect("startup reports pause");
+            std::future::pending::<Result<(), BuildExecutionError>>().await
+        },
+        &mut shutdown,
+        async move {
+            assert!(
+                cleanup_saw_service_drop.load(std::sync::atomic::Ordering::SeqCst),
+                "partial service drops before runtime cleanup"
+            );
+            cleanup_runtime.shutdown().await
+        },
+    )
+    .await
+    .expect("controlled cleanup succeeds");
+
+    assert_eq!(result, None);
+    timeout(Duration::from_secs(1), cancelled_rx)
+        .await
+        .expect("accepted build cancellation is bounded")
+        .expect("accepted build observes cancellation");
+    supervisor.await.expect("accepted supervisor exits");
+    assert!(state.lock().await.active.is_none());
 }
 
 #[tokio::test]
@@ -556,4 +1050,12 @@ fn future_expiry(seconds: u64) -> ployz_core::nats_config::BuildExecutorCredenti
         .as_secs();
     ployz_core::nats_config::BuildExecutorCredentialExpiresAt::try_new(now + seconds)
         .expect("future expiry")
+}
+
+struct StartupStageDrop(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for StartupStageDrop {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
 }

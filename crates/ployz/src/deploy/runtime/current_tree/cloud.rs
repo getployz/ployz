@@ -6,10 +6,11 @@ use ployz_core::build::{BuildContextPath, BuildSource, LocalSnapshotDigest};
 use ployz_core::image::OciPlatform;
 use ployz_core::nats_config::MintedNatsUser;
 
-use crate::build::command::{BuildExecutorCommand, BuildExecutorRunMode};
+use crate::build::command::{BuildExecutorAdmission, BuildExecutorCommand, BuildExecutorRunMode};
 use crate::build::embedded_executor;
 use crate::cloud_current_tree::{
-    ApprovalState, CloudCurrentTreeClient, CloudDeploymentStatus, ObserveState, select_context,
+    ApprovalState, CloudCurrentTreeClient, CloudDeploymentStatus, FrozenBuild, ObserveState,
+    select_context,
 };
 use crate::deploy::command::CurrentTreeDeployCommand;
 use crate::dispatcher::PloyzctlRuntimeConfig;
@@ -157,12 +158,14 @@ async fn execute_approved(
             pool_id: activated.pool_id,
             executor_id: activated.executor_id,
             workspace_root: Some(workspace_root),
+            admission: controlled_admission(&frozen),
             mode: BuildExecutorRunMode::Once {
                 wait_timeout: OBSERVE_TIMEOUT,
             },
         },
         executor_config,
         crate::build::external_runtime::WorkspaceStartup::Prepared,
+        activated.expires_at,
         Some(ready_tx),
         Some(shutdown_rx),
     );
@@ -197,6 +200,10 @@ async fn execute_approved(
         selected.service.slug,
         deployment_id,
     )))
+}
+
+fn controlled_admission(frozen: &FrozenBuild) -> BuildExecutorAdmission {
+    BuildExecutorAdmission::ExactOperation(frozen.operation_id.clone())
 }
 
 async fn restage_local_snapshot(
@@ -308,7 +315,24 @@ async fn await_terminal(
 mod tests {
     use std::fs;
 
+    use ployz_core::ids::OperationId;
+
     use super::*;
+
+    #[test]
+    fn controlled_admission_uses_the_frozen_operation_not_the_build_record() {
+        let frozen = FrozenBuild {
+            assignment_id: "assignment-distinct".to_owned(),
+            build_record_id: "build-record-distinct".to_owned(),
+            operation_id: OperationId::try_new("operation-distinct").expect("operation"),
+            deployment_id: "deployment-distinct".to_owned(),
+        };
+
+        assert_eq!(
+            controlled_admission(&frozen),
+            BuildExecutorAdmission::ExactOperation(frozen.operation_id)
+        );
+    }
 
     #[tokio::test]
     async fn unchanged_source_is_restaged_for_the_prepared_executor() {

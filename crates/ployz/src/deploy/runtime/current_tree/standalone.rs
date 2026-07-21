@@ -23,7 +23,7 @@ use ployz_sdk_types::{
     RuntimeSnapshotRequest,
 };
 
-use crate::build::command::{BuildExecutorCommand, BuildExecutorRunMode};
+use crate::build::command::{BuildExecutorAdmission, BuildExecutorCommand, BuildExecutorRunMode};
 use crate::build::embedded_executor;
 use crate::deploy::command::CurrentTreeDeployCommand;
 use crate::dispatcher::PloyzctlRuntimeConfig;
@@ -124,12 +124,14 @@ pub(super) async fn execute(
                 pool_id: pool_id.clone(),
                 executor_id,
                 workspace_root: Some(workspace_root),
+                admission: BuildExecutorAdmission::AnyOperation,
                 mode: BuildExecutorRunMode::Once {
                     wait_timeout: OBSERVE_TIMEOUT,
                 },
             },
             executor_config,
             crate::build::external_runtime::WorkspaceStartup::Prepared,
+            expires_at,
             Some(ready_tx),
             Some(shutdown_rx),
         );

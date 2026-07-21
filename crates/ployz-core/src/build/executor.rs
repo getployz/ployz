@@ -704,6 +704,10 @@ impl BuildLogSummary {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BuildExecutorStartDomainError {
+    OperationIdentityMismatch {
+        expected: OperationId,
+        actual: OperationId,
+    },
     AssignmentMismatch {
         expected: Box<BuildExecutorAssignment>,
         actual: Box<BuildExecutorAssignment>,
