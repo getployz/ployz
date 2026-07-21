@@ -1,7 +1,9 @@
 //! Private compatibility for promoting stored machine-join templates.
 
-use std::path::Path;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
 
+use atomic_write_file::AtomicWriteFile;
 use ployz_core::install::{
     ExactPloyzVersion, InstallArtifactSpec, MachineJoinBundle, MachineJoinClusterName,
     MachineJoinMaterial, MachineJoinRuntimeNatsUrl, MachineJoinSubstrateRelease,
@@ -11,20 +13,45 @@ use ployz_core::network::MachineEndpointSupernet;
 use ployz_core::operation::FailureMessage;
 use serde::Deserialize;
 
-use crate::execution::{FileMode, write_durable_file};
-
 const PLOYZD_INSTALL_PATH: &str = "/usr/local/bin/ployzd";
 const EBPF_BYTECODE_INSTALL_PATH: &str = "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc";
 const EBPF_CTL_INSTALL_PATH: &str = "/usr/local/bin/ployz-ebpf-ctl";
 const RAILPACK_INSTALL_PATH: &str = "/usr/local/lib/ployz/railpack/v0.31.0/railpack";
 
-pub(in crate::lifecycle) fn promote_machine_join_template_release(
+#[derive(Debug)]
+pub(in crate::lifecycle) struct PreparedMachineJoinTemplateReleasePromotion {
+    staged: Option<StagedTemplate>,
+}
+
+#[derive(Debug)]
+struct StagedTemplate {
+    path: PathBuf,
+    file: AtomicWriteFile,
+}
+
+impl PreparedMachineJoinTemplateReleasePromotion {
+    pub(in crate::lifecycle) fn commit(self) -> Result<(), FailureMessage> {
+        let Some(staged) = self.staged else {
+            return Ok(());
+        };
+        staged.file.commit().map_err(|error| {
+            failure_message(format!(
+                "failed to commit atomic file {}: {error}",
+                staged.path.display()
+            ))
+        })
+    }
+}
+
+pub(in crate::lifecycle) fn prepare_machine_join_template_release_promotion(
     path: &Path,
     target_version: &ExactPloyzVersion,
-) -> Result<(), FailureMessage> {
+) -> Result<PreparedMachineJoinTemplateReleasePromotion, FailureMessage> {
     let contents = match std::fs::read(path) {
         Ok(contents) => contents,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(PreparedMachineJoinTemplateReleasePromotion { staged: None });
+        }
         Err(error) => {
             return Err(failure_message(format!(
                 "failed to read machine join template {}: {error}",
@@ -47,7 +74,9 @@ pub(in crate::lifecycle) fn promote_machine_join_template_release(
         }
     };
     template.join_bundle.material.substrate_release.version = target_version.clone();
-    write_template(path, &template)
+    stage_template(path, &template).map(|staged| PreparedMachineJoinTemplateReleasePromotion {
+        staged: Some(staged),
+    })
 }
 
 #[derive(Deserialize)]
@@ -132,7 +161,10 @@ impl LegacyMachineJoinTemplate {
     }
 }
 
-fn write_template(path: &Path, template: &MachineJoinTemplate) -> Result<(), FailureMessage> {
+fn stage_template(
+    path: &Path,
+    template: &MachineJoinTemplate,
+) -> Result<StagedTemplate, FailureMessage> {
     let mut rendered = serde_json::to_vec_pretty(template).map_err(|error| {
         failure_message(format!(
             "failed to encode promoted machine join template {}: {error}",
@@ -140,19 +172,34 @@ fn write_template(path: &Path, template: &MachineJoinTemplate) -> Result<(), Fai
         ))
     })?;
     rendered.push(b'\n');
-    let Some(directory) = path.parent() else {
+    if path.parent().is_none() {
         return Err(failure_message(format!(
             "machine join template path {} has no parent directory",
             path.display()
         )));
-    };
-    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+    }
+    if path.file_name().and_then(|name| name.to_str()).is_none() {
         return Err(failure_message(format!(
             "machine join template path {} has no UTF-8 file name",
             path.display()
         )));
-    };
-    write_durable_file(directory, file_name, FileMode::Plain, &rendered)
+    }
+    let mut file = AtomicWriteFile::open(path).map_err(|error| {
+        failure_message(format!(
+            "failed to create atomic file {}: {error}",
+            path.display()
+        ))
+    })?;
+    file.write_all(&rendered).map_err(|error| {
+        failure_message(format!(
+            "failed to write atomic file {}: {error}",
+            path.display()
+        ))
+    })?;
+    Ok(StagedTemplate {
+        path: path.to_path_buf(),
+        file,
+    })
 }
 
 fn failure_message(message: impl Into<String>) -> FailureMessage {
@@ -165,15 +212,20 @@ mod tests {
 
     use ployz_core::install::{ExactPloyzVersion, MachineJoinTemplate};
 
-    use super::promote_machine_join_template_release;
+    use super::prepare_machine_join_template_release_promotion;
 
     #[test]
     fn absent_machine_join_template_is_not_a_core_and_is_ignored() {
         let root = tempfile::tempdir().expect("tempdir");
         let version = ExactPloyzVersion::try_new("v0.0.2-alpha.88").expect("exact version");
 
-        promote_machine_join_template_release(&root.path().join("missing.json"), &version)
-            .expect("missing template is a no-op");
+        prepare_machine_join_template_release_promotion(
+            &root.path().join("missing.json"),
+            &version,
+        )
+        .expect("missing template prepares as a no-op")
+        .commit()
+        .expect("missing template commit is a no-op");
     }
 
     #[test]
@@ -188,7 +240,14 @@ mod tests {
         .expect("write template");
         let version = ExactPloyzVersion::try_new("v0.0.2-alpha.88").expect("exact version");
 
-        promote_machine_join_template_release(&path, &version).expect("template promotes");
+        let original_bytes = fs::read(&path).expect("read original template");
+        let prepared = prepare_machine_join_template_release_promotion(&path, &version)
+            .expect("template promotion prepares");
+        assert_eq!(
+            fs::read(&path).expect("template remains readable before commit"),
+            original_bytes
+        );
+        prepared.commit().expect("template promotion commits");
 
         let promoted: MachineJoinTemplate =
             serde_json::from_slice(&fs::read(&path).expect("read promoted template"))
@@ -196,6 +255,44 @@ mod tests {
         let mut expected = original;
         expected.join_bundle.material.substrate_release.version = version;
         assert_eq!(promoted, expected);
+    }
+
+    #[test]
+    fn atomic_commit_failure_is_returned_after_successful_preparation() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let path = root.path().join("machine-join-template.json");
+        fs::write(
+            &path,
+            serde_json::to_vec_pretty(&ployz_test_support::fixtures::machine_join_template())
+                .expect("template serializes"),
+        )
+        .expect("write template");
+        let version = ExactPloyzVersion::try_new("v0.0.2-alpha.88").expect("exact version");
+        let prepared = prepare_machine_join_template_release_promotion(&path, &version)
+            .expect("template promotion prepares");
+        fs::remove_file(&path).expect("remove target after preparation");
+        fs::create_dir(&path).expect("replace target with a directory");
+
+        let error = prepared.commit().expect_err("atomic replacement fails");
+
+        assert!(error.as_str().contains("failed to commit atomic file"));
+    }
+
+    #[test]
+    fn dropping_prepared_promotion_preserves_the_authoritative_template() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let path = root.path().join("machine-join-template.json");
+        let original =
+            serde_json::to_vec_pretty(&ployz_test_support::fixtures::machine_join_template())
+                .expect("template serializes");
+        fs::write(&path, &original).expect("write template");
+        let version = ExactPloyzVersion::try_new("v0.0.2-alpha.88").expect("exact version");
+
+        let prepared = prepare_machine_join_template_release_promotion(&path, &version)
+            .expect("template promotion prepares");
+        drop(prepared);
+
+        assert_eq!(fs::read(path).expect("read original template"), original);
     }
 
     #[test]
@@ -209,7 +306,10 @@ mod tests {
         .expect("write legacy template");
         let version = ExactPloyzVersion::try_new("v0.0.2-alpha.88").expect("exact version");
 
-        promote_machine_join_template_release(&path, &version).expect("legacy template promotes");
+        prepare_machine_join_template_release_promotion(&path, &version)
+            .expect("legacy template promotion prepares")
+            .commit()
+            .expect("legacy template promotion commits");
 
         let rendered = fs::read_to_string(&path).expect("read promoted template");
         let promoted: MachineJoinTemplate =
@@ -275,8 +375,8 @@ mod tests {
         fs::write(&path, &original).expect("write legacy template");
         let version = ExactPloyzVersion::try_new("v0.0.2-alpha.88").expect("exact version");
 
-        let error = promote_machine_join_template_release(&path, &version)
-            .expect_err("invalid legacy template fails");
+        let error = prepare_machine_join_template_release_promotion(&path, &version)
+            .expect_err("invalid legacy template fails during preparation");
 
         assert!(error.as_str().contains(message));
         assert_eq!(fs::read(path).expect("read unchanged template"), original);

@@ -4,7 +4,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use super::assigned_substrate::load_assigned_substrate_state;
-use super::machine_join::promote_machine_join_template_release;
+use super::machine_join::prepare_machine_join_template_release_promotion;
 use crate::cli::{HostRunnerSubstrateUpdate, HostRunnerSubstrateUpdateSource};
 use crate::execution::supervisor::execute_supervisor_commands;
 use crate::execution::{
@@ -146,6 +146,19 @@ pub(crate) fn run_substrate_update_command(update: HostRunnerSubstrateUpdate) ->
         steps.push(HostRunnerStep::InstallArtifact(nats_server));
     }
     let plan = HostRunnerStepPlan::from_steps(steps);
+    let template_promotion = match prepare_machine_join_template_release_promotion(
+        Path::new(MACHINE_JOIN_TEMPLATE_PATH),
+        &target_version,
+    ) {
+        Ok(promotion) => promotion,
+        Err(message) => {
+            eprintln!(
+                "ployz host substrate-update join-template promotion failed: {}",
+                message.as_str()
+            );
+            return ExitCode::FAILURE;
+        }
+    };
     let stdout = std::io::stdout();
     let mut recorder = HostRunnerTextRecorder::new(stdout.lock());
     let mut effects = HostRunnerLocalEffects::new(
@@ -168,10 +181,7 @@ pub(crate) fn run_substrate_update_command(update: HostRunnerSubstrateUpdate) ->
             return ExitCode::FAILURE;
         }
     }
-    if let Err(message) = promote_machine_join_template_release(
-        Path::new(MACHINE_JOIN_TEMPLATE_PATH),
-        &target_version,
-    ) {
+    if let Err(message) = template_promotion.commit() {
         eprintln!(
             "ployz host substrate-update join-template promotion failed: {}",
             message.as_str()
