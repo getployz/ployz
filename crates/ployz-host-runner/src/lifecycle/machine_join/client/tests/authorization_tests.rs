@@ -232,16 +232,17 @@ fn remove_join_authority(nats: &SecuredTestNats, original: &str) {
 }
 
 async fn wait_for_join_rejection(config: &ployz_nats::connect::NatsConnectConfig) {
-    for _ in 0..20 {
-        if matches!(
-            connect_authenticated(config, Duration::from_millis(100)).await,
-            Err(NatsConnectError::AuthorizationViolation { .. })
-        ) {
-            return;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match connect_authenticated(config, Duration::from_millis(100)).await {
+                Err(NatsConnectError::AuthorizationViolation { .. }) => return,
+                Ok(_) => tokio::task::yield_now().await,
+                Err(error) => panic!("unexpected Join rejection probe failure: {error}"),
+            }
         }
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-    panic!("NATS did not apply removal of Join authority");
+    })
+    .await
+    .expect("NATS applies removed Join authority");
 }
 
 fn signal_reload(pid: u32) {

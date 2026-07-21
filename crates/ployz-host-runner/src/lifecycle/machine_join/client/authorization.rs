@@ -1,9 +1,7 @@
 use std::time::Duration;
 
 use ployz_core::operation::FailureMessage;
-use ployz_nats::connect::{
-    NatsConnectConfig, NatsConnectError, connect_authenticated_observing_authorization,
-};
+use ployz_nats::connect::{NatsConnectConfig, NatsConnectError, connect_authenticated};
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
 use ployz_sdk_types::{
     MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed, MachineJoinToken,
@@ -31,15 +29,10 @@ pub(super) async fn redeem_across_authorization_reload(
     let mut authorization_attempt = 0;
     let mut material_attempt = 0;
 
-    'authorization: loop {
+    loop {
         authorization_attempt += 1;
-        let observed = match connect_authenticated_observing_authorization(
-            connect,
-            DEFAULT_NATS_CONNECT_TIMEOUT,
-        )
-        .await
-        {
-            Ok(observed) => observed,
+        let client = match connect_authenticated(connect, DEFAULT_NATS_CONNECT_TIMEOUT).await {
+            Ok(client) => client,
             Err(error @ NatsConnectError::AuthorizationViolation { .. }) => {
                 retry_authorization_rejection(authorization_attempt, &error, &observe_retry)
                     .await?;
@@ -49,7 +42,7 @@ pub(super) async fn redeem_across_authorization_reload(
                 return Err(failure_message(&error.to_string()));
             }
         };
-        let api = OperationApiClient::new(observed.client());
+        let api = OperationApiClient::new(client);
 
         loop {
             match api
@@ -73,25 +66,8 @@ pub(super) async fn redeem_across_authorization_reload(
                     }
                     tokio::time::sleep(REDEEM_MATERIAL_RETRY_DELAY).await;
                 }
-                Err(error @ OperationApiClientError::Request { .. }) => {
-                    if observed
-                        .authorization_rejected_within(AUTHORIZATION_RETRY_DELAY)
-                        .await
-                    {
-                        let rejection = NatsConnectError::AuthorizationViolation {
-                            url: connect.url.as_str().to_owned(),
-                        };
-                        retry_authorization_rejection(
-                            authorization_attempt,
-                            &rejection,
-                            &observe_retry,
-                        )
-                        .await?;
-                        continue 'authorization;
-                    }
-                    return Err(redeem_failure(error));
-                }
-                Err(error @ OperationApiClientError::EncodeRequest { .. })
+                Err(error @ OperationApiClientError::Request { .. })
+                | Err(error @ OperationApiClientError::EncodeRequest { .. })
                 | Err(error @ OperationApiClientError::Service { .. })
                 | Err(error @ OperationApiClientError::ServiceProtocol { .. })
                 | Err(error @ OperationApiClientError::DecodeResponse { .. })

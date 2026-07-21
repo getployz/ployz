@@ -180,59 +180,6 @@ pub async fn connect_authenticated(
     connect_authenticated_pool(config, &[config.url.as_str().to_owned()], timeout).await
 }
 
-/// An authenticated client paired with typed evidence of a delayed server-side
-/// authorization rejection.
-#[derive(Debug, Clone)]
-pub struct AuthorizationObservedClient {
-    client: async_nats::Client,
-    authorization_rejected: tokio::sync::watch::Receiver<bool>,
-}
-
-impl AuthorizationObservedClient {
-    #[must_use]
-    pub fn client(&self) -> async_nats::Client {
-        self.client.clone()
-    }
-
-    #[must_use]
-    pub async fn authorization_rejected_within(&self, timeout: Duration) -> bool {
-        let mut authorization_rejected = self.authorization_rejected.clone();
-        tokio::time::timeout(
-            timeout,
-            authorization_rejected.wait_for(|rejected| *rejected),
-        )
-        .await
-        .is_ok()
-    }
-}
-
-/// Connects like [`connect_authenticated`] while retaining typed evidence when
-/// NATS reports an authorization violation after the initial handshake.
-pub async fn connect_authenticated_observing_authorization(
-    config: &NatsConnectConfig,
-    timeout: Duration,
-) -> Result<AuthorizationObservedClient, NatsConnectError> {
-    let (observed, authorization_rejected) = tokio::sync::watch::channel(false);
-    let options = authenticated_connect_options(config).event_callback(move |event| {
-        let observed = observed.clone();
-        async move {
-            if matches!(
-                event,
-                async_nats::Event::ServerError(async_nats::ServerError::AuthorizationViolation)
-            ) {
-                observed.send_replace(true);
-            }
-        }
-    });
-    let client =
-        connect_authenticated_with_options(options, &[config.url.as_str().to_owned()], timeout)
-            .await?;
-    Ok(AuthorizationObservedClient {
-        client,
-        authorization_rejected,
-    })
-}
-
 /// Connect authenticated to a whole failover pool (the configured core plus
 /// Reachable Machines from the cached mirror), tried in order. Used at machine
 /// startup so a reboot *during* a core outage still reaches a promoted core
