@@ -38,7 +38,7 @@ pub trait HostRunnerJoinTokenConsumer {
 pub struct RedeemedHostRunnerJoin {
     pub operation_id: OperationId,
     pub machine_id: MachineId,
-    pub target: HostRunnerJoinTarget,
+    pub(crate) target: Result<HostRunnerJoinTarget, FailureMessage>,
     pub callback_result: Option<MachineJoinRedeemed>,
 }
 
@@ -52,7 +52,21 @@ impl RedeemedHostRunnerJoin {
         Self {
             operation_id,
             machine_id,
-            target,
+            target: Ok(target),
+            callback_result: None,
+        }
+    }
+
+    #[must_use]
+    pub fn resolution_failed(
+        operation_id: OperationId,
+        machine_id: MachineId,
+        failure: FailureMessage,
+    ) -> Self {
+        Self {
+            operation_id,
+            machine_id,
+            target: Err(failure),
             callback_result: None,
         }
     }
@@ -110,12 +124,21 @@ pub fn execute_host_runner_join_with_redeemed(
         }
     };
     let redeemed_evidence = redeemed.clone();
+    let target = match resolve_join_target(&redeemed, recorder, &mut events) {
+        Ok(target) => target,
+        Err(execution) => {
+            let terminal = execution.terminal.clone();
+            events = execution.events;
+            report_join_failure(&terminal, reporter, recorder, &mut events);
+            return HostRunnerJoinExecution {
+                execution: HostRunnerPlanExecution { events, terminal },
+                redeemed: Some(redeemed_evidence),
+            };
+        }
+    };
 
-    let mut material_execution = execute_host_runner_plan(
-        &host_runner_join_material_plan(&redeemed.target),
-        effects,
-        recorder,
-    );
+    let mut material_execution =
+        execute_host_runner_plan(&host_runner_join_material_plan(&target), effects, recorder);
     let material_terminal = material_execution.terminal.clone();
     events.append(&mut material_execution.events);
     if material_terminal != HostRunnerPlanTerminal::Completed {
@@ -129,11 +152,8 @@ pub fn execute_host_runner_join_with_redeemed(
         };
     }
 
-    let mut plan_execution = execute_host_runner_plan(
-        &host_runner_join_install_plan(redeemed.target.clone()),
-        effects,
-        recorder,
-    );
+    let mut plan_execution =
+        execute_host_runner_plan(&host_runner_join_install_plan(target), effects, recorder);
     let plan_terminal = plan_execution.terminal.clone();
     events.append(&mut plan_execution.events);
     if plan_terminal != HostRunnerPlanTerminal::Completed {
@@ -183,6 +203,20 @@ pub fn execute_host_runner_join_with_redeemed(
         },
         redeemed: Some(redeemed_evidence),
     }
+}
+
+fn resolve_join_target(
+    redeemed: &RedeemedHostRunnerJoin,
+    recorder: &mut impl HostRunnerStepRecorder,
+    events: &mut Vec<HostRunnerStepEvent>,
+) -> Result<HostRunnerJoinTarget, Box<HostRunnerPlanExecution>> {
+    execute_labeled_action(
+        events,
+        recorder,
+        HostRunnerStepLabel::ResolveJoinTarget,
+        HostRunnerStepFailureReason::JoinTargetResolutionFailed,
+        || redeemed.target.clone(),
+    )
 }
 
 fn redeem_join_token(

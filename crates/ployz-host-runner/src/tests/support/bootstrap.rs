@@ -57,6 +57,7 @@ impl HostRunnerStepEffects for RecordingEffects {
 pub struct RecordingJoinRedeemer {
     pub redeemed_tokens: Vec<JoinToken>,
     pub fail_message: Option<&'static str>,
+    pub resolution_failure: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,6 +97,14 @@ impl HostRunnerJoinRedeemer for RecordingJoinRedeemer {
         self.redeemed_tokens.push(token.clone());
         if let Some(message) = self.fail_message {
             return Err(failure_message(message));
+        }
+
+        if let Some(message) = self.resolution_failure {
+            return Ok(RedeemedHostRunnerJoin::resolution_failed(
+                operation_id("op_machine"),
+                machine_id("machine_7"),
+                failure_message(message),
+            ));
         }
 
         Ok(RedeemedHostRunnerJoin::new(

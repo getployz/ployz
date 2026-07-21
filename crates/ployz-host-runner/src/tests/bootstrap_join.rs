@@ -216,6 +216,47 @@ fn host_runner_join_executor_redacts_join_token_from_progress() {
 }
 
 #[test]
+fn host_runner_join_reports_target_resolution_failure_after_redemption() {
+    let token = JoinToken::try_new("join_secret").expect("valid join token");
+    let mut redeemer = RecordingJoinRedeemer {
+        resolution_failure: Some("joining host release platform is unsupported"),
+        ..RecordingJoinRedeemer::default()
+    };
+    let mut effects = RecordingEffects::default();
+    let mut reporter = RecordingJoinReporter::default();
+    let mut token_consumer = RecordingTokenConsumer::default();
+    let mut recorder = RecordingRecorder::default();
+
+    let execution = execute_host_runner_join(
+        &token,
+        &mut redeemer,
+        &mut reporter,
+        &mut token_consumer,
+        &mut effects,
+        &mut recorder,
+    );
+
+    assert!(matches!(
+        execution.terminal.failure(),
+        Some(HostRunnerPlanFailure::Step(HostRunnerStepFailure {
+            step: HostRunnerStepLabel::ResolveJoinTarget,
+            reason: HostRunnerStepFailureReason::JoinTargetResolutionFailed,
+            message,
+        })) if message.as_str() == "joining host release platform is unsupported"
+    ));
+    assert!(effects.calls.is_empty());
+    assert_eq!(token_consumer.consumed, 0);
+    assert_eq!(
+        reporter.reports,
+        vec![JoinReport::Failed {
+            failure: MachineJoinReportFailure::BootstrapFailed {
+                message: failure_message("joining host release platform is unsupported"),
+            },
+        }]
+    );
+}
+
+#[test]
 fn host_runner_join_keeps_token_when_material_store_fails() {
     let token = JoinToken::try_new("join_secret").expect("valid join token");
     let material = host_runner_join_material();
