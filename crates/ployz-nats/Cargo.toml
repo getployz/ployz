@@ -21,7 +21,7 @@ tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
 ployz-test-support.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util", "time"] }
 
 [lib]
 path = "src/lib.rs"
