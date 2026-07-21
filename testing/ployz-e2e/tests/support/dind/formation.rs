@@ -282,7 +282,8 @@ impl ProductCliHarness {
 /// Writes the release manifest the product `machine init` resolves artifacts
 /// from: the baked artifact mount as absolute-path sources with pinned shas.
 async fn write_release_manifest(docker: &Docker, core: &DindMachine, shas: &ArtifactShas) {
-    let manifest = release_manifest(shas);
+    let target_platform = dind::platform(docker).await.expect("resolve DinD platform");
+    let manifest = release_manifest(shas, target_platform);
     write_file_in_container(
         docker,
         &core.container_id,
@@ -294,10 +295,12 @@ async fn write_release_manifest(docker: &Docker, core: &DindMachine, shas: &Arti
     .expect("write release manifest");
 }
 
-fn release_manifest(shas: &ArtifactShas) -> String {
+fn release_manifest(shas: &ArtifactShas, target_platform: dind::DindPlatform) -> String {
     let railpack_version = railpack_pins().expect("checked-in Railpack pins").version();
+    let release_platform = target_platform.release_slug();
     let manifest = format!(
         "PLOYZ_VERSION=local\n\
+         PLOYZ_RELEASE_PLATFORM={release_platform}\n\
          PLOYZD_URL={ARTIFACTS_MOUNT_PATH}/ployzd\n\
          PLOYZD_SHA256={}\n\
          PLOYZ_EBPF_TC_URL={ARTIFACTS_MOUNT_PATH}/ployz-ebpf-tc\n\
@@ -574,17 +577,21 @@ pub async fn finish(core: CoreContext) {
 mod tests {
     use super::{ARTIFACTS_MOUNT_PATH, ArtifactShas, release_manifest};
     use ployz_core::build::railpack_pins;
+    use ployz_e2e::dind::DindPlatform;
 
     #[test]
     fn release_manifest_includes_pinned_railpack_artifact() {
-        let manifest = release_manifest(&ArtifactShas {
-            ployzd: "ployzd-sha".to_owned(),
-            ebpf_bytecode: "ebpf-bytecode-sha".to_owned(),
-            ebpf_ctl: "ebpf-ctl-sha".to_owned(),
-            railpack: "railpack-sha".to_owned(),
-            nats_server: "nats-sha".to_owned(),
-            nats_server_version: "2.14.2".to_owned(),
-        });
+        let manifest = release_manifest(
+            &ArtifactShas {
+                ployzd: "ployzd-sha".to_owned(),
+                ebpf_bytecode: "ebpf-bytecode-sha".to_owned(),
+                ebpf_ctl: "ebpf-ctl-sha".to_owned(),
+                railpack: "railpack-sha".to_owned(),
+                nats_server: "nats-sha".to_owned(),
+                nats_server_version: "2.14.2".to_owned(),
+            },
+            DindPlatform::LinuxArm64,
+        );
 
         for required in [
             &format!(
@@ -593,6 +600,7 @@ mod tests {
             ),
             &format!("PLOYZ_RAILPACK_URL={ARTIFACTS_MOUNT_PATH}/railpack"),
             "PLOYZ_RAILPACK_SHA256=railpack-sha",
+            "PLOYZ_RELEASE_PLATFORM=linux-arm64",
         ] {
             assert!(
                 manifest.lines().any(|line| line == required),
