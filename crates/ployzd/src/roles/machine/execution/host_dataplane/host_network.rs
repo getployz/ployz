@@ -2,18 +2,14 @@
 use defguard_wireguard_rs::Kernel;
 #[cfg(not(target_os = "linux"))]
 use defguard_wireguard_rs::Userspace;
-use defguard_wireguard_rs::{
-    InterfaceConfiguration, WGApi, WireguardInterfaceApi, key::Key, net::IpAddrMask, peer::Peer,
-};
+use defguard_wireguard_rs::{WGApi, WireguardInterfaceApi, key::Key, net::IpAddrMask, peer::Peer};
 #[cfg(target_os = "linux")]
 use futures_util::TryStreamExt;
 use ipnet::Ipv4Net;
-use ployz_core::network::{
-    MAX_WIREGUARD_MTU, MIN_WIREGUARD_MTU, WireGuardPeer, WireGuardPublicKey,
-};
+use ployz_core::network::{MAX_WIREGUARD_MTU, MIN_WIREGUARD_MTU, WireGuardPublicKey};
 #[cfg(target_os = "linux")]
 use rtnetlink::{
-    LinkUnspec, RouteMessageBuilder,
+    RouteMessageBuilder,
     packet_route::{
         link::LinkAttribute,
         route::{RouteAttribute, RouteMetric},
@@ -344,49 +340,6 @@ pub(super) fn public_key_from_private_key(private_key: &str) -> Result<WireGuard
         .map_err(|source| format!("derive WireGuard public key: {source}"))
 }
 
-pub(super) async fn ensure_wireguard_interface(
-    wg_ifname: &str,
-    private_key: &str,
-    listen_port: u16,
-    mtu: u32,
-    endpoint_routes: &[ployz_core::network::WireGuardEbpfEndpointRoute],
-    peers: &[WireGuardPeer],
-    local_machine_id: &ployz_core::ids::MachineId,
-) -> Result<(), String> {
-    let local_host_cidr = endpoint_routes
-        .iter()
-        .find(|route| route.machine_id == *local_machine_id)
-        .ok_or_else(|| "local endpoint route is missing".to_owned())
-        .and_then(|route| wireguard_host_cidr(&route.endpoint_subnet))?;
-    let mut api = WGApi::<HostWireGuardApi>::new(wg_ifname).map_err(|source| source.to_string())?;
-    if !interface_exists(wg_ifname)? {
-        api.create_interface()
-            .map_err(|source| source.to_string())?;
-    }
-    let wg_peers = peers
-        .iter()
-        .filter(|peer| peer.machine_id != *local_machine_id)
-        .map(to_defguard_peer)
-        .collect::<Result<Vec<_>, _>>()?;
-    api.configure_interface(&InterfaceConfiguration {
-        name: wg_ifname.to_owned(),
-        prvkey: private_key.to_owned(),
-        addresses: vec![local_host_cidr.parse::<IpAddrMask>().map_err(|source| {
-            format!("parse local WireGuard host CIDR {local_host_cidr}: {source}")
-        })?],
-        port: listen_port,
-        peers: wg_peers.clone(),
-        mtu: Some(mtu),
-        fwmark: None,
-    })
-    .map_err(|source| source.to_string())?;
-    api.configure_peer_routing(&wg_peers)
-        .map_err(|source| source.to_string())?;
-    #[cfg(target_os = "linux")]
-    set_link_up(wg_ifname).await?;
-    Ok(())
-}
-
 pub(super) fn read_latest_handshakes(
     wg_ifname: &str,
 ) -> Result<std::collections::BTreeMap<String, u64>, String> {
@@ -428,49 +381,6 @@ pub(super) fn configure_peer_endpoint(
     ];
     api.configure_peer(&peer)
         .map_err(|source| source.to_string())
-}
-
-fn interface_exists(ifname: &str) -> Result<bool, String> {
-    getifs::interfaces()
-        .map(|interfaces| {
-            interfaces
-                .iter()
-                .any(|interface| interface.name().as_str() == ifname)
-        })
-        .map_err(|source| source.to_string())
-}
-
-#[cfg(target_os = "linux")]
-async fn set_link_up(ifname: &str) -> Result<(), String> {
-    let (connection, handle, _) =
-        rtnetlink::new_connection().map_err(|source| source.to_string())?;
-    tokio::spawn(connection);
-    handle
-        .link()
-        .set(LinkUnspec::new_with_name(ifname).up().build())
-        .execute()
-        .await
-        .map_err(|source| source.to_string())
-}
-
-fn to_defguard_peer(peer: &WireGuardPeer) -> Result<Peer, String> {
-    let mut wg_peer = Peer::new(
-        Key::try_from(peer.public_key.as_str())
-            .map_err(|source| format!("parse WireGuard peer public key: {source}"))?,
-    );
-    wg_peer.endpoint = Some(peer.active_endpoint);
-    wg_peer.persistent_keepalive_interval = Some(25);
-    wg_peer.allowed_ips = vec![
-        peer.endpoint_subnet
-            .parse::<IpAddrMask>()
-            .map_err(|source| {
-                format!(
-                    "parse peer endpoint subnet {}: {source}",
-                    peer.endpoint_subnet
-                )
-            })?,
-    ];
-    Ok(wg_peer)
 }
 
 pub(super) fn wireguard_host_ipv4(endpoint_subnet: Ipv4Net) -> Result<Ipv4Addr, String> {
