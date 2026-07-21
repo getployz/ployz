@@ -119,7 +119,7 @@ run_self_test() {
 
 if [ "${1:-}" = --self-test ]; then
   run_self_test
-  exit 0
+  exit $?
 fi
 
 CORE="${1:?usage: cli-smoke-test.sh <core-ip> <edge-ip>}"
