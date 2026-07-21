@@ -9,9 +9,7 @@ use aya_ebpf::{
 };
 use network_types::eth::{EthHdr, EtherType};
 use network_types::ip::Ipv4Hdr;
-use ployz_ebpf_common::{RouteEntry, RouteKey};
-
-const MAX_ROUTES: u32 = 256;
+use ployz_ebpf_common::{MAX_ROUTES, RouteEntry, RouteKey};
 
 #[map]
 static ROUTES: HashMap<RouteKey, RouteEntry> = HashMap::with_max_entries(MAX_ROUTES, 0);

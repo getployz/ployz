@@ -165,25 +165,22 @@ impl HostDataplaneRouteProgramming {
         machine_id: &MachineId,
         endpoint_routes: &[WireGuardEbpfEndpointRoute],
     ) -> Vec<HostCommandPlan> {
-        endpoint_routes
-            .iter()
-            .filter(|route| route.machine_id != *machine_id)
-            .map(|route| {
-                HostCommandPlan::provisioning_command(
-                    PloyzNativeMeshComponent::EbpfForwarding,
-                    self.ebpf_ctl_program.clone(),
-                    ebpf_ctl_args(
-                        &self.ebpf_pin_path,
-                        [
-                            "route".to_owned(),
-                            "add-ifname".to_owned(),
-                            route.endpoint_subnet.clone(),
-                            self.wg_ifname.clone(),
-                        ],
-                    ),
-                )
-            })
-            .collect()
+        let mut args = vec![
+            "route".to_owned(),
+            "replace-all-ifname".to_owned(),
+            self.wg_ifname.clone(),
+        ];
+        args.extend(
+            endpoint_routes
+                .iter()
+                .filter(|route| route.machine_id != *machine_id)
+                .map(|route| route.endpoint_subnet.clone()),
+        );
+        vec![HostCommandPlan::provisioning_command(
+            PloyzNativeMeshComponent::EbpfForwarding,
+            self.ebpf_ctl_program.clone(),
+            ebpf_ctl_args(&self.ebpf_pin_path, args),
+        )]
     }
 }
 
@@ -209,7 +206,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn route_programming_adds_only_peer_endpoint_subnets() {
+    fn route_programming_replaces_whole_map_with_only_peer_endpoint_subnets() {
         let route_programming = HostDataplaneRouteProgramming {
             ebpf_ctl_program: "/usr/local/bin/ployz-ebpf-ctl".to_owned(),
             bridge_ifname: "br-ployz".to_owned(),
@@ -287,7 +284,7 @@ mod tests {
             requirements.contains(&HostCommandPlan::provisioning_command(
                 PloyzNativeMeshComponent::EbpfForwarding,
                 "/usr/local/bin/ployz-ebpf-ctl",
-                ["route", "add-ifname", "10.42.2.0/24", "ployz-wg0"]
+                ["route", "replace-all-ifname", "ployz-wg0", "10.42.2.0/24"]
             ))
         );
         assert!(!requirements.iter().any(|plan| {
@@ -297,9 +294,32 @@ mod tests {
                     component: PloyzNativeMeshComponent::EbpfForwarding,
                     args,
                     ..
-                } if args == &["route", "add-ifname", "10.42.1.0/24", "ployz-wg0"]
+                } if args.iter().any(|arg| arg == "10.42.1.0/24")
             )
         }));
+    }
+
+    #[test]
+    fn route_programming_replaces_whole_map_with_empty_set_without_peers() {
+        let route_programming = HostDataplaneRouteProgramming {
+            ebpf_ctl_program: "/usr/local/bin/ployz-ebpf-ctl".to_owned(),
+            bridge_ifname: "br-ployz".to_owned(),
+            wg_ifname: "ployz-wg0".to_owned(),
+            ebpf_pin_path: None,
+        };
+        let routes = [WireGuardEbpfEndpointRoute {
+            machine_id: machine_id("machine_a"),
+            endpoint_subnet: "10.42.1.0/24".to_owned(),
+        }];
+
+        assert_eq!(
+            route_programming.ebpf_plans_for(&machine_id("machine_a"), &routes),
+            [HostCommandPlan::provisioning_command(
+                PloyzNativeMeshComponent::EbpfForwarding,
+                "/usr/local/bin/ployz-ebpf-ctl",
+                ["route", "replace-all-ifname", "ployz-wg0"]
+            )]
+        );
     }
 
     #[test]

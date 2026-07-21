@@ -75,6 +75,15 @@ fn install_line_ca_b64(line: &str) -> String {
 /// machine; product commands run it via `--installer-script`.
 pub const INSTALLER_WRAPPER_PATH: &str = "/tmp/ployz-install.sh";
 
+/// Where the harness writes the local release manifest inside each machine.
+pub const RELEASE_MANIFEST_PATH: &str = "/tmp/ployz-release.env";
+
+fn installer_wrapper(ployz_sha: &str) -> String {
+    format!(
+        "#!/bin/sh\nexport PLOYZ_RELEASE_MANIFEST_URL=file://{RELEASE_MANIFEST_PATH}\nexport PLOYZ_URL=file://{ARTIFACTS_MOUNT_PATH}/ployz\nexport PLOYZ_SHA256={ployz_sha}\nexec sh /tmp/ployz.sh \"$@\"\n"
+    )
+}
+
 /// Writes the real `scripts/ployz.sh` into the machine plus a wrapper that
 /// pins the Host Runner artifact to the baked `file://` source, so the product
 /// `machine init`/`machine add` commands can run the real installer without
@@ -106,9 +115,7 @@ pub async fn write_installer_wrapper(docker: &ployz_e2e::bollard::Docker, machin
         };
         digest.to_owned()
     };
-    let wrapper = format!(
-        "#!/bin/sh\nexport PLOYZ_URL=file://{ARTIFACTS_MOUNT_PATH}/ployz\nexport PLOYZ_SHA256={ployz_sha}\nexec sh /tmp/ployz.sh \"$@\"\n"
-    );
+    let wrapper = installer_wrapper(&ployz_sha);
     write_file_in_container(
         docker,
         &machine.container_id,
@@ -153,28 +160,73 @@ pub async fn run_edge_join_outcome(
     .expect("write ployz.sh into edge");
 
     let ployz_sha = sha256_of(&core.docker, edge, &format!("{ARTIFACTS_MOUNT_PATH}/ployz")).await;
-    core.exec_sh(
-        edge,
-        &format!(
-            "ca_file=\"$(mktemp)\"; \
+    core.exec_sh(edge, &edge_join_command(install, &ployz_sha))
+        .await
+}
+
+fn edge_join_command(install: &InstallLine, ployz_sha: &str) -> String {
+    format!(
+        "ca_file=\"$(mktemp)\"; \
                  trap 'rm -f \"$ca_file\"' EXIT; \
                  printf '%s' {} | base64 -d > \"$ca_file\"; \
+                 PLOYZ_RELEASE_MANIFEST_URL=file://{RELEASE_MANIFEST_PATH} \
                  PLOYZ_URL=file://{ARTIFACTS_MOUNT_PATH}/ployz \
                  PLOYZ_SHA256={ployz_sha} \
                  sh /tmp/ployz.sh && \
                  PLOYZ_NATS_URL={} PLOYZ_NATS_CA_FILE=\"$ca_file\" PLOYZ_JOIN_NKEY_SEED={} \
                  ployz host bootstrap join --join-token {}",
-            shell_quote(&install.nats_ca_b64),
-            shell_quote(&install.nats_url),
-            shell_quote(&install.join_seed),
-            shell_quote(&install.join_token),
-        ),
+        shell_quote(&install.nats_ca_b64),
+        shell_quote(&install.nats_url),
+        shell_quote(&install.join_seed),
+        shell_quote(&install.join_token),
     )
-    .await
 }
 
 fn repo_path(relative: &str) -> PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .join(relative)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ARTIFACTS_MOUNT_PATH, InstallLine, RELEASE_MANIFEST_PATH, edge_join_command,
+        installer_wrapper,
+    };
+
+    fn assert_local_release_pins(rendered: &str) {
+        for required in [
+            format!("PLOYZ_RELEASE_MANIFEST_URL=file://{RELEASE_MANIFEST_PATH}"),
+            format!("PLOYZ_URL=file://{ARTIFACTS_MOUNT_PATH}/ployz"),
+            "PLOYZ_SHA256=ployz-sha".to_owned(),
+        ] {
+            assert!(
+                rendered.contains(&required),
+                "missing {required}: {rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn installer_wrapper_pins_local_release_manifest() {
+        let wrapper = installer_wrapper("ployz-sha");
+
+        assert_local_release_pins(&wrapper);
+    }
+
+    #[test]
+    fn explicit_edge_join_pins_local_release_manifest() {
+        let command = edge_join_command(
+            &InstallLine {
+                nats_url: "tls://core.test:4222".to_owned(),
+                nats_ca_b64: "ca".to_owned(),
+                join_seed: "seed".to_owned(),
+                join_token: "token".to_owned(),
+            },
+            "ployz-sha",
+        );
+
+        assert_local_release_pins(&command);
+    }
 }
