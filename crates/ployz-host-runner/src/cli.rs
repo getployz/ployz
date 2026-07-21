@@ -10,7 +10,7 @@ use crate::execution::{
 };
 use crate::execution::{NatsServerUnitTarget, SupervisorUnitFileError};
 use crate::lifecycle::machine_join::{JoinTokenFileError, read_join_token_file};
-use crate::plan::{FirstMachineInstallTarget, JoinMaterialError, JoinToken};
+use crate::plan::{FirstMachineInstallTarget, JoinMaterialError, JoinToken, PloyzReleaseArtifact};
 use crate::recovery::environment::resolve_founder_recovery_secret;
 use crate::recovery::{
     CoreSeeds, NatsIdentityError, ServerCertificateSans, generate_cluster_nats_identity,
@@ -22,10 +22,8 @@ use ployz_core::deploy::{DatasetName, VolumeMaxSizeBytes, ZfsPoolName};
 use ployz_core::ids::OperationId;
 use ployz_core::install::{ExactPloyzVersion, ExactPloyzVersionError};
 use ployz_core::install::{
-    ExactPloyzVersion as CoreExactPloyzVersion,
     ExactPloyzVersionError as CoreExactPloyzVersionError, FirstMachineInstallArtifacts,
-    FirstMachineInstallSpec, InstallArtifactSpec, MachineJoinSubstrateRelease,
-    NatsServerInstallSpec, WrappedCaKey,
+    FirstMachineInstallSpec, InstallArtifactSpec, NatsServerInstallSpec, WrappedCaKey,
 };
 use ployz_nats::connect::{NatsClientUrl, NatsClientUrlError};
 use ployz_sdk_types::CloudBootstrapToken;
@@ -525,11 +523,9 @@ pub fn first_machine_install_target_from_spec(
         machine_join_cluster_name,
         machine_join_runtime_nats_url,
     } = install;
-    let substrate_release = MachineJoinSubstrateRelease {
-        version: CoreExactPloyzVersion::try_new(ployzd.version.as_str())
-            .map_err(HostRunnerCliError::FirstMachinePloyzVersion)?,
-    };
     let ployzd_artifact = artifact_target(ArtifactKind::Ployzd, &ployzd)?;
+    let ployzd_artifact = PloyzReleaseArtifact::try_new(ployzd_artifact)
+        .map_err(HostRunnerCliError::FirstMachinePloyzVersion)?;
     let ebpf_bytecode_artifact = artifact_target(ArtifactKind::EbpfBytecode, &ebpf_bytecode)?;
     let ebpf_ctl_artifact = artifact_target(ArtifactKind::EbpfCtl, &ebpf_ctl)?;
     let railpack_artifact = artifact_target(ArtifactKind::Railpack, &railpack)?;
@@ -583,7 +579,6 @@ pub fn first_machine_install_target_from_spec(
     let mut target = FirstMachineInstallTarget::new(
         machine_id,
         ployzd_artifact,
-        substrate_release,
         DataplaneArtifactTargets::new(ebpf_bytecode_artifact, ebpf_ctl_artifact),
         railpack_artifact,
         nats_server_artifact,

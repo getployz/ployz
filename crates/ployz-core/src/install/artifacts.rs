@@ -36,6 +36,7 @@ pub struct ExactPloyzVersion(String);
 impl ExactPloyzVersion {
     pub fn try_new(value: impl Into<String>) -> Result<Self, ExactPloyzVersionError> {
         let value = value.into();
+        let value = value.strip_prefix('v').unwrap_or(&value).to_owned();
         if value.is_empty() {
             return Err(ExactPloyzVersionError::Empty);
         }
@@ -68,11 +69,7 @@ impl ExactPloyzVersion {
 
     #[must_use]
     pub fn tag(&self) -> String {
-        if self.0.starts_with('v') {
-            self.0.clone()
-        } else {
-            format!("v{}", self.0)
-        }
+        format!("v{}", self.0)
     }
 }
 

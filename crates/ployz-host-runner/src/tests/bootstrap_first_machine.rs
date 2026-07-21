@@ -11,9 +11,7 @@ use ployz_core::nats_config::{CredentialGrant, CredentialName, CredentialRole, N
 use ployz_core::network::MachineEndpointSupernet;
 use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy};
 use ployz_test_support::ids::machine_id;
-use support::artifacts::{
-    nats_server_artifact, ployzd_artifact, railpack_artifact, substrate_release,
-};
+use support::artifacts::{nats_server_artifact, ployz_release_artifact, railpack_artifact};
 use support::bootstrap::*;
 
 #[test]
@@ -21,8 +19,7 @@ fn first_machine_install_starts_nats_and_core_roles_without_join_token() {
     let machine_id = machine_id("machine_1");
     let target = FirstMachineInstallTarget::new(
         machine_id.clone(),
-        ployzd_artifact(),
-        substrate_release(),
+        ployz_release_artifact(),
         dataplane_artifacts(),
         railpack_artifact(),
         nats_server_artifact(),
@@ -106,8 +103,7 @@ fn first_machine_names_founder_and_cloud_credentials() {
     let cloud_public_key = user_public_key('C');
     let target = FirstMachineInstallTarget::new(
         machine_id("machine_1"),
-        ployzd_artifact(),
-        substrate_release(),
+        ployz_release_artifact(),
         dataplane_artifacts(),
         railpack_artifact(),
         nats_server_artifact(),
@@ -161,8 +157,7 @@ fn first_machine_names_founder_and_cloud_credentials() {
 fn first_machine_role_envs_carry_tls_url_and_role_scoped_seed_paths() {
     let target = FirstMachineInstallTarget::new(
         machine_id("machine_1"),
-        ployzd_artifact(),
-        substrate_release(),
+        ployz_release_artifact(),
         dataplane_artifacts(),
         railpack_artifact(),
         nats_server_artifact(),
@@ -219,8 +214,7 @@ fn user_public_key(_fill: char) -> NatsUserPublicKey {
 fn first_machine_public_ip_flips_the_listener_external_in_the_secured_config() {
     let target = FirstMachineInstallTarget::new(
         machine_id("machine_1"),
-        ployzd_artifact(),
-        substrate_release(),
+        ployz_release_artifact(),
         dataplane_artifacts(),
         railpack_artifact(),
         nats_server_artifact(),
@@ -269,8 +263,7 @@ fn first_machine_public_ip_flips_the_listener_external_in_the_secured_config() {
 fn first_machine_default_install_includes_gateway_and_dns_roles() {
     let plan = first_machine_install_plan(FirstMachineInstallTarget::new(
         machine_id("machine_1"),
-        ployzd_artifact(),
-        substrate_release(),
+        ployz_release_artifact(),
         dataplane_artifacts(),
         railpack_artifact(),
         nats_server_artifact(),
@@ -297,8 +290,7 @@ fn first_machine_plan_derives_role_supernet_after_environment_overrides() {
     let plan = first_machine_install_plan(
         FirstMachineInstallTarget::new(
             machine_id("machine_1"),
-            ployzd_artifact(),
-            substrate_release(),
+            ployz_release_artifact(),
             dataplane_artifacts(),
             railpack_artifact(),
             nats_server_artifact(),
@@ -348,8 +340,7 @@ fn first_machine_plan_derives_role_supernet_after_environment_overrides() {
 fn first_machine_gateway_opt_out_skips_only_the_gateway_role() {
     let plan = first_machine_install_plan(FirstMachineInstallTarget::new(
         machine_id("machine_1"),
-        ployzd_artifact(),
-        substrate_release(),
+        ployz_release_artifact(),
         dataplane_artifacts(),
         railpack_artifact(),
         nats_server_artifact(),

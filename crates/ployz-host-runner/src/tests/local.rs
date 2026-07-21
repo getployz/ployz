@@ -25,8 +25,8 @@ use crate::lifecycle::{
 use crate::plan::{
     ContainerRuntime, FirstMachineInstallTarget, HostPrerequisite, HostRunnerJoinMaterial,
     HostRunnerJoinTarget, HostRunnerStep, HostRunnerStepFailure, HostRunnerStepFailureReason,
-    HostRunnerStepLabel, JoinToken, NonEmptyRoleSet, PloyzdRoleEnvironmentTarget,
-    RoleNatsCredentials, first_machine_install_plan,
+    HostRunnerStepLabel, JoinToken, NonEmptyRoleSet, PloyzReleaseArtifact,
+    PloyzdRoleEnvironmentTarget, RoleNatsCredentials, first_machine_install_plan,
 };
 use crate::plan::{
     HostRunnerPlanFailure, HostRunnerPlanTerminal, HostRunnerStepEffects, HostRunnerStepEvent,
@@ -42,7 +42,7 @@ use ployz_nats::connect::NatsClientUrl;
 use ployz_sdk_types::MachineJoinReportFailure;
 use ployz_test_support::ids::{failure_message, machine_id};
 use std::sync::OnceLock;
-use support::artifacts::{artifact_version as version, sha256_digest as digest, substrate_release};
+use support::artifacts::{artifact_version as version, sha256_digest as digest};
 
 #[test]
 fn externally_assured_host_ports_skip_firewall_and_store_assignment() {
@@ -164,8 +164,7 @@ fn local_effects_install_first_machine_process_units() {
     let plan = first_machine_install_plan(
         FirstMachineInstallTarget::new(
             machine_id("machine_1"),
-            ployzd_artifact,
-            substrate_release(),
+            ployz_release_artifact(ployzd_artifact),
             dataplane_artifacts(&root),
             railpack_artifact(&root),
             nats_server_artifact(&nats_source, &nats_install_path),
@@ -288,8 +287,7 @@ fn first_machine_install_writes_machine_bootstrap_url_when_configured() {
     let runner = RecordingRunner::root_linux();
     let target = FirstMachineInstallTarget::new(
         machine_id("machine_1"),
-        ployzd_artifact(&ployzd_source, &root.join("bin/ployzd")),
-        substrate_release(),
+        ployz_release_artifact(ployzd_artifact(&ployzd_source, &root.join("bin/ployzd"))),
         dataplane_artifacts(&root),
         railpack_artifact(&root),
         nats_server_artifact(&nats_source, &root.join("bin/nats-server")),
@@ -340,8 +338,7 @@ fn first_machine_install_writes_machine_join_template_file_when_configured() {
     let template_path = root.join("etc/machine-join-template.json");
     let target = FirstMachineInstallTarget::new(
         machine_id("machine_1"),
-        ployzd_artifact(&ployzd_source, &root.join("bin/ployzd")),
-        substrate_release(),
+        ployz_release_artifact(ployzd_artifact(&ployzd_source, &root.join("bin/ployzd"))),
         dataplane_artifacts(&root),
         railpack_artifact(&root),
         nats_server_artifact(&nats_source, &root.join("bin/nats-server")),
@@ -1402,8 +1399,7 @@ fn local_effects_write_nats_config_before_nats_unit() {
     let plan = first_machine_install_plan(
         FirstMachineInstallTarget::new(
             machine_id("machine_1"),
-            ployzd_artifact,
-            substrate_release(),
+            ployz_release_artifact(ployzd_artifact),
             dataplane_artifacts(&root),
             railpack_artifact(&root),
             nats_server_artifact(&nats_source, &nats_install_path),
@@ -1476,8 +1472,7 @@ fn local_effects_render_role_units_from_the_artifact_installed_by_the_plan() {
     let plan = first_machine_install_plan(
         FirstMachineInstallTarget::new(
             machine_id("machine_1"),
-            ployzd_artifact(&source, &install_path),
-            substrate_release(),
+            ployz_release_artifact(ployzd_artifact(&source, &install_path)),
             dataplane_artifacts(&root),
             railpack_artifact(&root),
             nats_server_artifact(&nats_source, &nats_install_path),
@@ -2140,8 +2135,7 @@ fn first_machine_plan_with_ployzd(
     first_machine_install_plan(
         FirstMachineInstallTarget::new(
             machine_id("machine_1"),
-            ployzd,
-            substrate_release(),
+            ployz_release_artifact(ployzd),
             dataplane_artifacts(root),
             railpack_artifact(root),
             nats_server_artifact(&nats_source, &root.join("bin/nats-server")),
@@ -2155,6 +2149,10 @@ fn first_machine_plan_with_ployzd(
         .with_nats_material_paths(nats_material(root))
         .with_role_environment(role_env(root)),
     )
+}
+
+fn ployz_release_artifact(artifact: ArtifactTarget) -> PloyzReleaseArtifact {
+    PloyzReleaseArtifact::try_new(artifact).expect("exact Ployz release artifact")
 }
 
 fn remote_ployzd_artifact(url: &str, install_path: &Path) -> ArtifactTarget {

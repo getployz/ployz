@@ -12,9 +12,7 @@ use ployz_core::install::{
 };
 use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy};
 use ployz_test_support::ids::machine_id;
-use support::artifacts::{
-    nats_server_artifact, ployzd_artifact, railpack_artifact, substrate_release,
-};
+use support::artifacts::{nats_server_artifact, ployz_release_artifact, railpack_artifact};
 use support::bootstrap::*;
 
 const MIRRORED_MACHINE_PUBLIC: &str = "UBCXCMGAZQZN55X5TTTWMB5CZNZIKJHEDZJOJ3TV63NKPJ6FRXSR2ZO4";
@@ -25,8 +23,7 @@ fn promote_target() -> CorePromoteTarget {
     // already-joined machine.
     let first_machine = FirstMachineInstallTarget::new(
         machine_id("core_2"),
-        ployzd_artifact(),
-        substrate_release(),
+        ployz_release_artifact(),
         dataplane_artifacts(),
         railpack_artifact(),
         nats_server_artifact(),
@@ -66,7 +63,6 @@ fn promote_target() -> CorePromoteTarget {
                 AbsoluteInstallPath::try_new("/etc/ployz/machine-join-template.json")
                     .expect("valid template path"),
             ),
-        substrate_release: substrate_release(),
         machine_join_template_file: AbsoluteInstallPath::try_new(
             "/etc/ployz/machine-join-template.json",
         )

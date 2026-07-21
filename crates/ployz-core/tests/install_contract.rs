@@ -222,11 +222,22 @@ fn machine_join_release_requires_an_exact_immutable_version() {
     }
 
     let tagged = ExactPloyzVersion::try_new("v0.0.2-alpha.87").expect("exact tagged version");
-    assert_eq!(tagged.as_str(), "v0.0.2-alpha.87");
+    assert_eq!(tagged.as_str(), "0.0.2-alpha.87");
     assert_eq!(tagged.tag(), "v0.0.2-alpha.87");
 
     let untagged = ExactPloyzVersion::try_new("0.1.0").expect("exact untagged version");
     assert_eq!(untagged.tag(), "v0.1.0");
+}
+
+#[test]
+fn exact_ployz_version_canonicalizes_an_optional_tag_prefix() {
+    let tagged = ExactPloyzVersion::try_new("v0.1.0").expect("tagged version is exact");
+    let untagged = ExactPloyzVersion::try_new("0.1.0").expect("untagged version is exact");
+
+    assert_eq!(tagged, untagged);
+    assert_eq!(tagged.as_str(), "0.1.0");
+    assert_eq!(serde_json::to_string(&tagged).unwrap(), "\"0.1.0\"");
+    assert_eq!(tagged.tag(), "v0.1.0");
 }
 
 #[test]
@@ -264,7 +275,7 @@ fn machine_join_bundle_wire_shape_stays_plain_json() {
                 "recovery_key_wrapped": [1, 2, 3],
                 "core_seeds_wrapped": [4, 5, 6],
                 "substrate_release": {
-                    "version": "v0.1.0"
+                    "version": "0.1.0"
                 }
             }
         })

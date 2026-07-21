@@ -18,7 +18,9 @@ use crate::lifecycle::machine_join::{
     JOIN_TRUSTED_CA_FILE, parse_dataplane_endpoint_supernet_from_join_material,
     parse_machine_id_from_join_material,
 };
-use crate::plan::{CorePromoteTarget, HostRunnerTextRecorder, core_promote_plan};
+use crate::plan::{
+    CorePromoteTarget, HostRunnerTextRecorder, PloyzReleaseArtifact, core_promote_plan,
+};
 use crate::plan::{HostRunnerPlanTerminal, execute_host_runner_plan};
 use crate::release_manifest::release_manifest_url;
 use ployz_core::install::{MachineJoinClusterName, MachineJoinRuntimeNatsUrl};
@@ -220,6 +222,8 @@ fn resolve_core_promote_target(
     dataplane_artifacts: DataplaneArtifactTargets,
     railpack_artifact: ArtifactTarget,
 ) -> Result<(CorePromoteTarget, PromotedCoreAccess), String> {
+    let ployzd_artifact = PloyzReleaseArtifact::try_new(ployzd_artifact)
+        .map_err(|error| format!("core promotion Ployz release is invalid: {error}"))?;
     let assigned_substrate = promoted_assigned_substrate(Path::new(HOST_RUNNER_STATE_DIR))?;
     let join_dir = PathBuf::from(HOST_RUNNER_STATE_DIR).join(JOIN_MATERIAL_DIR);
     let join_material = read_promote_file(&join_dir.join(JOIN_MATERIAL_FILE))?;

@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use super::artifacts::{
-    artifact_source as source, artifact_version as version, nats_server_artifact, ployzd_artifact,
-    railpack_artifact, sha256_digest as digest, substrate_release,
+    artifact_source as source, artifact_version as version, nats_server_artifact,
+    ployz_release_artifact, ployzd_artifact, railpack_artifact, sha256_digest as digest,
 };
 use crate::execution::{ArtifactKind, ArtifactTarget, DataplaneArtifactTargets};
 use crate::execution::{PloyzdRoleEnvironmentFile, SupervisorUnitTarget};
@@ -290,8 +290,7 @@ pub fn edge_role_environment() -> PloyzdRoleEnvironmentTarget {
 pub fn first_machine_plan() -> crate::plan::HostRunnerStepPlan {
     first_machine_install_plan(FirstMachineInstallTarget::new(
         machine_id("machine_1"),
-        ployzd_artifact(),
-        substrate_release(),
+        ployz_release_artifact(),
         dataplane_artifacts(),
         railpack_artifact(),
         nats_server_artifact(),

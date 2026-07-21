@@ -456,10 +456,40 @@ impl HostRunnerJoinTarget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PloyzReleaseArtifact {
+    artifact: ArtifactTarget,
+    substrate_release: MachineJoinSubstrateRelease,
+}
+
+impl PloyzReleaseArtifact {
+    pub fn try_new(
+        artifact: ArtifactTarget,
+    ) -> Result<Self, ployz_core::install::ExactPloyzVersionError> {
+        let substrate_release = MachineJoinSubstrateRelease {
+            version: ExactPloyzVersion::try_new(artifact.version.as_str())?,
+        };
+        Ok(Self {
+            artifact,
+            substrate_release,
+        })
+    }
+
+    #[must_use]
+    pub const fn artifact(&self) -> &ArtifactTarget {
+        &self.artifact
+    }
+
+    #[must_use]
+    const fn substrate_release(&self) -> &MachineJoinSubstrateRelease {
+        &self.substrate_release
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FirstMachineInstallTarget {
     pub machine_id: MachineId,
     pub dataplane_endpoint_supernet: MachineEndpointSupernet,
-    pub ployzd_artifact: ArtifactTarget,
+    pub ployzd_artifact: PloyzReleaseArtifact,
     pub dataplane_artifacts: DataplaneArtifactTargets,
     pub railpack_artifact: ArtifactTarget,
     pub nats_server_artifact: ArtifactTarget,
@@ -478,18 +508,9 @@ pub struct FirstMachineInstallTarget {
     pub machine_public_ip: Option<IpAddr>,
     pub nats_server_unit: NatsServerUnitTarget,
     pub role_environment: PloyzdRoleEnvironmentTarget,
-    substrate_release: MachineJoinSubstrateRelease,
     machine_join_template_file: Option<AbsoluteInstallPath>,
     machine_join_cluster_name: MachineJoinClusterName,
     machine_join_runtime_nats_url: MachineJoinRuntimeNatsUrl,
-}
-
-fn machine_join_substrate_release(
-    ployzd_artifact: &ArtifactTarget,
-) -> Result<MachineJoinSubstrateRelease, ployz_core::install::ExactPloyzVersionError> {
-    Ok(MachineJoinSubstrateRelease {
-        version: ExactPloyzVersion::try_new(ployzd_artifact.version.as_str())?,
-    })
 }
 
 impl FirstMachineInstallTarget {
@@ -499,8 +520,7 @@ impl FirstMachineInstallTarget {
     #[must_use]
     pub fn new(
         machine_id: MachineId,
-        ployzd_artifact: ArtifactTarget,
-        substrate_release: MachineJoinSubstrateRelease,
+        ployzd_artifact: PloyzReleaseArtifact,
         dataplane_artifacts: DataplaneArtifactTargets,
         railpack_artifact: ArtifactTarget,
         nats_server_artifact: ArtifactTarget,
@@ -554,7 +574,6 @@ impl FirstMachineInstallTarget {
             machine_public_ip: None,
             nats_server_unit,
             role_environment,
-            substrate_release,
             machine_join_template_file: None,
             machine_join_cluster_name: MachineJoinClusterName::try_new("ployz")
                 .expect("default cluster name is valid"),
@@ -1070,7 +1089,7 @@ pub struct CorePromoteTarget {
     pub dataplane_endpoint_supernet: MachineEndpointSupernet,
     pub assigned_substrate: AssignedSubstrateState,
     pub nats_server_artifact: ArtifactTarget,
-    pub ployzd_artifact: ArtifactTarget,
+    pub ployzd_artifact: PloyzReleaseArtifact,
     pub dataplane_artifacts: DataplaneArtifactTargets,
     pub railpack_artifact: ArtifactTarget,
     pub nats_identity: ClusterNatsIdentity,
@@ -1080,7 +1099,6 @@ pub struct CorePromoteTarget {
     pub machine_public_ip: Option<IpAddr>,
     pub nats_server_unit: NatsServerUnitTarget,
     pub role_environment: PloyzdRoleEnvironmentTarget,
-    pub substrate_release: MachineJoinSubstrateRelease,
     pub machine_join_template_file: AbsoluteInstallPath,
     pub machine_join_cluster_name: MachineJoinClusterName,
     pub machine_join_runtime_nats_url: MachineJoinRuntimeNatsUrl,
@@ -1097,7 +1115,7 @@ impl CorePromoteTarget {
     pub fn assemble(
         machine_id: MachineId,
         nats_server_artifact: ArtifactTarget,
-        ployzd_artifact: ArtifactTarget,
+        ployzd_artifact: PloyzReleaseArtifact,
         dataplane_artifacts: DataplaneArtifactTargets,
         railpack_artifact: ArtifactTarget,
         nats_identity: ClusterNatsIdentity,
@@ -1111,8 +1129,6 @@ impl CorePromoteTarget {
         machine_join_cluster_name: MachineJoinClusterName,
         machine_join_runtime_nats_url: MachineJoinRuntimeNatsUrl,
     ) -> Self {
-        let substrate_release = machine_join_substrate_release(&ployzd_artifact)
-            .expect("core promotion ployzd artifact version is exact");
         let nats_material = NatsMachineMaterialPaths::in_default_state_dir();
         let nats_server_unit = NatsServerUnitTarget::new(
             nats_server_artifact.install_path().to_path_buf(),
@@ -1144,7 +1160,6 @@ impl CorePromoteTarget {
             machine_public_ip,
             nats_server_unit,
             role_environment,
-            substrate_release,
             machine_join_template_file,
             machine_join_cluster_name,
             machine_join_runtime_nats_url,
@@ -1215,7 +1230,7 @@ pub fn core_promote_plan(target: CorePromoteTarget) -> HostRunnerStepPlan {
                         },
                         recovery_key_wrapped: target.recovery_key_wrapped.clone(),
                         core_seeds_wrapped: target.core_seeds_wrapped.clone(),
-                        substrate_release: target.substrate_release,
+                        substrate_release: target.ployzd_artifact.substrate_release().clone(),
                     },
                 },
             },
@@ -1226,7 +1241,7 @@ pub fn core_promote_plan(target: CorePromoteTarget) -> HostRunnerStepPlan {
         }),
         HostRunnerStep::WriteSupervisorUnit(SupervisorUnitSpec::PloyzdRole {
             role: control.clone(),
-            artifact: target.ployzd_artifact.clone(),
+            artifact: target.ployzd_artifact.artifact().clone(),
             environment_file: target.role_environment.file_for_role(&control),
         }),
         HostRunnerStep::StartSupervisorUnit(SupervisorUnitTarget::PloyzdRole(control)),
@@ -1258,7 +1273,7 @@ pub fn first_machine_install_plan(target: FirstMachineInstallTarget) -> HostRunn
             target.dataplane_endpoint_supernet.clone(),
         ),
         HostRunnerStep::VerifyContainerRuntime(ContainerRuntime::Docker),
-        HostRunnerStep::InstallArtifact(target.ployzd_artifact.clone()),
+        HostRunnerStep::InstallArtifact(target.ployzd_artifact.artifact().clone()),
         HostRunnerStep::InstallArtifact(target.dataplane_artifacts.ebpf_bytecode.clone()),
         HostRunnerStep::InstallArtifact(target.dataplane_artifacts.ebpf_ctl.clone()),
         HostRunnerStep::InstallArtifact(target.nats_server_artifact.clone()),
@@ -1300,7 +1315,7 @@ pub fn first_machine_install_plan(target: FirstMachineInstallTarget) -> HostRunn
                     },
                     recovery_key_wrapped: target.recovery_key_wrapped.clone(),
                     core_seeds_wrapped: target.core_seeds_wrapped.clone(),
-                    substrate_release: target.substrate_release.clone(),
+                    substrate_release: target.ployzd_artifact.substrate_release().clone(),
                 },
             },
         };
@@ -1320,7 +1335,7 @@ pub fn first_machine_install_plan(target: FirstMachineInstallTarget) -> HostRunn
         steps.push(HostRunnerStep::WriteSupervisorUnit(
             SupervisorUnitSpec::PloyzdRole {
                 role: role.clone(),
-                artifact: target.ployzd_artifact.clone(),
+                artifact: target.ployzd_artifact.artifact().clone(),
                 environment_file: role_environment.file_for_role(role),
             },
         ));
