@@ -7,8 +7,7 @@
 
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Once};
+use std::sync::Once;
 use std::time::Duration;
 
 use ployz_core::nats_config::NatsUserSeed;
@@ -186,13 +185,7 @@ pub async fn connect_authenticated(
 #[derive(Debug, Clone)]
 pub struct AuthorizationObservedClient {
     client: async_nats::Client,
-    authorization: Arc<AuthorizationObservation>,
-}
-
-#[derive(Debug, Default)]
-struct AuthorizationObservation {
-    rejected: AtomicBool,
-    changed: tokio::sync::Notify,
+    authorization_rejected: tokio::sync::watch::Receiver<bool>,
 }
 
 impl AuthorizationObservedClient {
@@ -203,15 +196,13 @@ impl AuthorizationObservedClient {
 
     #[must_use]
     pub async fn authorization_rejected_within(&self, timeout: Duration) -> bool {
-        if self.authorization.rejected.load(Ordering::Acquire) {
-            return true;
-        }
-        let changed = self.authorization.changed.notified();
-        if self.authorization.rejected.load(Ordering::Acquire) {
-            return true;
-        }
-        tokio::time::timeout(timeout, changed).await.is_ok()
-            && self.authorization.rejected.load(Ordering::Acquire)
+        let mut authorization_rejected = self.authorization_rejected.clone();
+        tokio::time::timeout(
+            timeout,
+            authorization_rejected.wait_for(|rejected| *rejected),
+        )
+        .await
+        .is_ok()
     }
 }
 
@@ -221,17 +212,15 @@ pub async fn connect_authenticated_observing_authorization(
     config: &NatsConnectConfig,
     timeout: Duration,
 ) -> Result<AuthorizationObservedClient, NatsConnectError> {
-    let authorization = Arc::new(AuthorizationObservation::default());
-    let observed = Arc::clone(&authorization);
+    let (observed, authorization_rejected) = tokio::sync::watch::channel(false);
     let options = authenticated_connect_options(config).event_callback(move |event| {
-        let observed = Arc::clone(&observed);
+        let observed = observed.clone();
         async move {
             if matches!(
                 event,
                 async_nats::Event::ServerError(async_nats::ServerError::AuthorizationViolation)
             ) {
-                observed.rejected.store(true, Ordering::Release);
-                observed.changed.notify_waiters();
+                observed.send_replace(true);
             }
         }
     });
@@ -240,7 +229,7 @@ pub async fn connect_authenticated_observing_authorization(
             .await?;
     Ok(AuthorizationObservedClient {
         client,
-        authorization,
+        authorization_rejected,
     })
 }
 
