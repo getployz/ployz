@@ -270,7 +270,7 @@ async fn wait_for_route(core: &CoreContext, machine: &DindMachine, subnet: &str,
             )
             .await;
         assert!(outcome.success(), "inspect route failed: {outcome:?}");
-        if (!outcome.stdout.trim().is_empty()) == present {
+        if outcome.stdout.trim().is_empty() != present {
             return;
         }
         assert!(
