@@ -282,7 +282,8 @@ impl ProductCliHarness {
 /// Writes the release manifest the product `machine init` resolves artifacts
 /// from: the baked artifact mount as absolute-path sources with pinned shas.
 async fn write_release_manifest(docker: &Docker, core: &DindMachine, shas: &ArtifactShas) {
-    let manifest = release_manifest(shas, dind::platform());
+    let target_platform = dind::platform(docker).await.expect("resolve DinD platform");
+    let manifest = release_manifest(shas, target_platform);
     write_file_in_container(
         docker,
         &core.container_id,

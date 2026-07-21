@@ -82,11 +82,11 @@ impl DindPlatform {
         }
     }
 
-    fn native() -> Self {
-        match env::consts::ARCH {
-            "x86_64" => Self::LinuxAmd64,
-            "aarch64" => Self::LinuxArm64,
-            unsupported => panic!("unsupported native DinD architecture {unsupported}"),
+    fn from_docker_architecture(value: &str) -> Self {
+        match value {
+            "x86_64" | "amd64" => Self::LinuxAmd64,
+            "aarch64" | "arm64" => Self::LinuxArm64,
+            unsupported => panic!("unsupported Docker server architecture {unsupported}"),
         }
     }
 }
@@ -117,13 +117,22 @@ pub fn artifact_dir() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from(DEFAULT_ARTIFACT_DIR))
 }
 
-/// Platform selected by the wrapper, or the native platform for direct
+/// Platform selected by the wrapper, or the Docker server platform for direct
 /// `PLOYZ_DIND_E2E=1 cargo test` invocations.
-#[must_use]
-pub fn platform() -> DindPlatform {
+pub async fn platform(docker: &Docker) -> Result<DindPlatform, DindError> {
     match env::var(PLATFORM_ENV) {
-        Ok(value) => DindPlatform::from_docker_slug(&value),
-        Err(env::VarError::NotPresent) => DindPlatform::native(),
+        Ok(value) => Ok(DindPlatform::from_docker_slug(&value)),
+        Err(env::VarError::NotPresent) => {
+            let info = docker
+                .info()
+                .await
+                .map_err(docker_api_error("inspect Docker server platform"))?;
+            let architecture = info
+                .architecture
+                .as_deref()
+                .expect("Docker server must report its architecture");
+            Ok(DindPlatform::from_docker_architecture(architecture))
+        }
         Err(env::VarError::NotUnicode(_)) => panic!("{PLATFORM_ENV} must be valid UTF-8"),
     }
 }
@@ -206,10 +215,14 @@ mod tests {
             DindPlatform::from_docker_slug("linux/arm64").release_slug(),
             "linux-arm64"
         );
-        assert!(matches!(
-            DindPlatform::native(),
-            DindPlatform::LinuxAmd64 | DindPlatform::LinuxArm64
-        ));
+        assert_eq!(
+            DindPlatform::from_docker_architecture("amd64"),
+            DindPlatform::LinuxAmd64
+        );
+        assert_eq!(
+            DindPlatform::from_docker_architecture("aarch64"),
+            DindPlatform::LinuxArm64
+        );
     }
 
     #[test]
