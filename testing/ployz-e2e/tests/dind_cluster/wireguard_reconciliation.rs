@@ -109,6 +109,30 @@ async fn assert_unchanged_reconciliation_preserves_handshake(
     wait_for_route(core, source, &peer_subnet, true).await;
     assert_frozen_handshake(core, source, public_key, baseline).await;
 
+    let conflicting = core
+        .exec_on(
+            source,
+            &[
+                "ip",
+                "route",
+                "replace",
+                &peer_subnet,
+                "dev",
+                "lo",
+                "proto",
+                "static",
+            ],
+        )
+        .await;
+    assert!(
+        conflicting.success(),
+        "replace route with conflicting shape failed: {conflicting:?}"
+    );
+    publish_intent_invalidation(controller).await;
+    wait_for_route(core, source, &peer_subnet, true).await;
+    wait_for_route_on_device(core, source, &peer_subnet, "lo", false).await;
+    assert_frozen_handshake(core, source, public_key, baseline).await;
+
     let Some(drifted_port) = DEFAULT_WIREGUARD_LISTEN_PORT.checked_add(1) else {
         panic!("default WireGuard port has no successor")
     };
@@ -261,12 +285,22 @@ async fn wait_for_listen_port(core: &CoreContext, machine: &DindMachine, expecte
 }
 
 async fn wait_for_route(core: &CoreContext, machine: &DindMachine, subnet: &str, present: bool) {
+    wait_for_route_on_device(core, machine, subnet, "ployz-wg0", present).await;
+}
+
+async fn wait_for_route_on_device(
+    core: &CoreContext,
+    machine: &DindMachine,
+    subnet: &str,
+    device: &str,
+    present: bool,
+) {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let outcome = core
             .exec_on(
                 machine,
-                &["ip", "route", "show", "exact", subnet, "dev", "ployz-wg0"],
+                &["ip", "route", "show", "exact", subnet, "dev", device],
             )
             .await;
         assert!(outcome.success(), "inspect route failed: {outcome:?}");
@@ -275,7 +309,7 @@ async fn wait_for_route(core: &CoreContext, machine: &DindMachine, subnet: &str,
         }
         assert!(
             Instant::now() < deadline,
-            "route {subnet} did not converge: {outcome:?}"
+            "route {subnet} on {device} did not converge: {outcome:?}"
         );
         tokio::time::sleep(Duration::from_millis(250)).await;
     }

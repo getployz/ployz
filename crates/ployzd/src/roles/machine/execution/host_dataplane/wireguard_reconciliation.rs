@@ -97,9 +97,11 @@ pub(super) async fn ensure_wireguard_interface(
             .map_err(|source| format!("configure new WireGuard interface {wg_ifname}: {source}"))?;
     }
 
+    let desired_routes = desired_route_set(&wg_peers);
+    remove_conflicting_desired_routes(wg_ifname, &desired_routes).await?;
     api.configure_peer_routing(&wg_peers)
         .map_err(|source| format!("add desired WireGuard peer routes: {source}"))?;
-    remove_stale_peer_routes(wg_ifname, &desired_route_set(&wg_peers)).await?;
+    remove_stale_peer_routes(wg_ifname, &desired_routes).await?;
     set_link_up(wg_ifname).await
 }
 
@@ -415,42 +417,88 @@ async fn remove_stale_peer_routes(
     ifname: &str,
     desired_routes: &HashSet<Ipv4Net>,
 ) -> Result<(), String> {
-    let interface = getifs::interfaces()
-        .map_err(|source| source.to_string())?
-        .into_iter()
-        .find(|interface| interface.name().as_str() == ifname)
-        .ok_or_else(|| format!("WireGuard interface {ifname} disappeared during route cleanup"))?;
-    let ifindex = interface.index();
+    let ifindex = wireguard_ifindex(ifname)?;
     let (connection, handle, _) =
         rtnetlink::new_connection().map_err(|source| source.to_string())?;
     tokio::spawn(connection);
-    let mut routes = handle
-        .route()
-        .get(RouteMessageBuilder::<Ipv4Addr>::new().build())
-        .execute();
     let mut stale = Vec::new();
-    while let Some(message) = routes
-        .try_next()
-        .await
-        .map_err(|source| format!("read WireGuard routes for {ifname}: {source}"))?
-    {
+    for message in read_ipv4_routes(&handle, ifname).await? {
         if let Some(subnet) = owned_wireguard_route(&message, ifindex)
             && !desired_routes.contains(&subnet)
         {
             stale.push((subnet, message));
         }
     }
-    for (subnet, message) in stale {
+    remove_observed_routes(&handle, stale, "stale WireGuard").await
+}
+
+async fn remove_conflicting_desired_routes(
+    ifname: &str,
+    desired_routes: &HashSet<Ipv4Net>,
+) -> Result<(), String> {
+    if desired_routes.is_empty() {
+        return Ok(());
+    }
+    let ifindex = wireguard_ifindex(ifname)?;
+    let (connection, handle, _) =
+        rtnetlink::new_connection().map_err(|source| source.to_string())?;
+    tokio::spawn(connection);
+    let conflicts = read_ipv4_routes(&handle, ifname)
+        .await?
+        .into_iter()
+        .filter_map(|message| {
+            conflicting_desired_route(&message, ifindex, desired_routes)
+                .map(|subnet| (subnet, message))
+        })
+        .collect();
+    remove_observed_routes(&handle, conflicts, "conflicting desired WireGuard").await
+}
+
+async fn read_ipv4_routes(
+    handle: &rtnetlink::Handle,
+    ifname: &str,
+) -> Result<Vec<RouteMessage>, String> {
+    handle
+        .route()
+        .get(RouteMessageBuilder::<Ipv4Addr>::new().build())
+        .execute()
+        .try_collect()
+        .await
+        .map_err(|source| format!("read WireGuard routes for {ifname}: {source}"))
+}
+
+async fn remove_observed_routes(
+    handle: &rtnetlink::Handle,
+    routes: Vec<(Ipv4Net, RouteMessage)>,
+    description: &str,
+) -> Result<(), String> {
+    for (subnet, message) in routes {
         match handle.route().del(message).execute().await {
             Ok(()) => {}
             Err(rtnetlink::Error::NetlinkError(error))
                 if error.code.is_some_and(|code| code.get() == -3) => {}
             Err(source) => {
-                return Err(format!("remove stale WireGuard route {subnet}: {source}"));
+                return Err(format!("remove {description} route {subnet}: {source}"));
             }
         }
     }
     Ok(())
+}
+
+fn conflicting_desired_route(
+    message: &RouteMessage,
+    ifindex: u32,
+    desired_routes: &HashSet<Ipv4Net>,
+) -> Option<Ipv4Net> {
+    if effective_route_table(message) != 254 {
+        return None;
+    }
+    let subnet = ipv4_route_subnet(message)?;
+    if !desired_routes.contains(&subnet) || owned_wireguard_route(message, ifindex) == Some(subnet)
+    {
+        return None;
+    }
+    Some(subnet)
 }
 
 fn owned_wireguard_route(message: &RouteMessage, ifindex: u32) -> Option<Ipv4Net> {
@@ -462,9 +510,7 @@ fn owned_wireguard_route(message: &RouteMessage, ifindex: u32) -> Option<Ipv4Net
     {
         return None;
     }
-    let mut destination = None;
     let mut output_interface = None;
-    let mut table = u32::from(header.table);
     for attribute in &message.attributes {
         if matches!(
             attribute,
@@ -472,18 +518,52 @@ fn owned_wireguard_route(message: &RouteMessage, ifindex: u32) -> Option<Ipv4Net
         ) {
             return None;
         }
-        if let RouteAttribute::Destination(RouteAddress::Inet(address)) = attribute {
-            destination = Some(*address);
-        } else if let RouteAttribute::Oif(index) = attribute {
+        if let RouteAttribute::Oif(index) = attribute {
             output_interface = Some(*index);
-        } else if let RouteAttribute::Table(value) = attribute {
-            table = *value;
         }
     }
-    if table != 254 || output_interface != Some(ifindex) {
+    if effective_route_table(message) != 254 || output_interface != Some(ifindex) {
         return None;
     }
-    Ipv4Net::new(destination?, header.destination_prefix_length).ok()
+    ipv4_route_subnet(message)
+}
+
+fn effective_route_table(message: &RouteMessage) -> u32 {
+    let Some(table) = message
+        .attributes
+        .iter()
+        .filter_map(|attribute| {
+            if let RouteAttribute::Table(table) = attribute {
+                Some(*table)
+            } else {
+                None
+            }
+        })
+        .next_back()
+    else {
+        return u32::from(message.header.table);
+    };
+    table
+}
+
+fn ipv4_route_subnet(message: &RouteMessage) -> Option<Ipv4Net> {
+    let destination = message.attributes.iter().find_map(|attribute| {
+        if let RouteAttribute::Destination(RouteAddress::Inet(address)) = attribute {
+            Some(*address)
+        } else {
+            None
+        }
+    })?;
+    Ipv4Net::new(destination, message.header.destination_prefix_length).ok()
+}
+
+fn wireguard_ifindex(ifname: &str) -> Result<u32, String> {
+    getifs::interfaces()
+        .map_err(|source| source.to_string())?
+        .into_iter()
+        .find(|interface| interface.name().as_str() == ifname)
+        .map(|interface| interface.index())
+        .ok_or_else(|| format!("WireGuard interface {ifname} disappeared during route cleanup"))
 }
 
 fn interface_exists(ifname: &str) -> Result<bool, String> {
@@ -606,7 +686,13 @@ mod tests {
 
     #[test]
     fn kernel_normalized_private_key_keeps_the_same_effective_identity() {
-        let desired = Key::generate();
+        let mut desired_bytes = Key::generate().as_array();
+        let [first, middle @ .., last] = &mut desired_bytes;
+        let _ = middle;
+        *first |= 7;
+        *last |= 128;
+        *last &= !64;
+        let desired = Key::new(desired_bytes);
         let mut normalized_bytes = desired.as_array();
         let [first, middle @ .., last] = &mut normalized_bytes;
         let _ = middle;
@@ -657,6 +743,78 @@ mod tests {
 
         assert_eq!(stale(), ["192.0.2.255/32".parse().expect("rogue")]);
         assert_eq!(stale(), ["192.0.2.255/32".parse().expect("retry")]);
+    }
+
+    #[test]
+    fn desired_route_conflicts_are_removed_without_touching_correct_or_isolated_routes() {
+        let desired_subnet = "10.42.2.0/24".parse::<Ipv4Net>().expect("desired");
+        let desired = HashSet::from([desired_subnet]);
+        let correct = owned_route_message(7, desired_subnet);
+        assert_eq!(conflicting_desired_route(&correct, 7, &desired), None);
+
+        let mut wrong_interface = correct.clone();
+        wrong_interface
+            .attributes
+            .retain(|attribute| !matches!(attribute, RouteAttribute::Oif(_)));
+        wrong_interface.attributes.push(RouteAttribute::Oif(8));
+        assert_eq!(
+            conflicting_desired_route(&wrong_interface, 7, &desired),
+            Some(desired_subnet)
+        );
+
+        let mut wrong_protocol = correct.clone();
+        wrong_protocol.header.protocol = RouteProtocol::Static;
+        assert_eq!(
+            conflicting_desired_route(&wrong_protocol, 7, &desired),
+            Some(desired_subnet)
+        );
+
+        let mut gateway = correct.clone();
+        gateway
+            .attributes
+            .push(RouteAttribute::Gateway(RouteAddress::Inet(Ipv4Addr::new(
+                192, 0, 2, 1,
+            ))));
+        assert_eq!(
+            conflicting_desired_route(&gateway, 7, &desired),
+            Some(desired_subnet)
+        );
+
+        let mut non_main_header = wrong_interface.clone();
+        non_main_header.header.table = 253;
+        assert_eq!(
+            conflicting_desired_route(&non_main_header, 7, &desired),
+            None
+        );
+
+        let mut non_main_attribute = wrong_interface;
+        non_main_attribute
+            .attributes
+            .push(RouteAttribute::Table(10_001));
+        assert_eq!(
+            conflicting_desired_route(&non_main_attribute, 7, &desired),
+            None
+        );
+
+        let unrelated = owned_route_message(8, "10.42.9.0/24".parse().expect("unrelated"));
+        assert_eq!(conflicting_desired_route(&unrelated, 7, &desired), None);
+    }
+
+    #[test]
+    fn failed_conflict_deletion_is_rediscovered_from_the_next_route_dump() {
+        let subnet = "10.42.2.0/24".parse::<Ipv4Net>().expect("desired");
+        let desired = HashSet::from([subnet]);
+        let mut conflict = owned_route_message(8, subnet);
+        conflict.header.protocol = RouteProtocol::Static;
+
+        assert_eq!(
+            conflicting_desired_route(&conflict, 7, &desired),
+            Some(subnet)
+        );
+        assert_eq!(
+            conflicting_desired_route(&conflict, 7, &desired),
+            Some(subnet)
+        );
     }
 
     #[test]
