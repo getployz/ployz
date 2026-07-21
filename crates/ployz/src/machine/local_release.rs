@@ -41,11 +41,6 @@ pub struct LocalReleaseBundle {
     version: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct LocalArtifact {
-    sha256: String,
-}
-
 impl LocalReleaseBundle {
     pub fn open(directory: PathBuf) -> Result<Self, String> {
         let manifest_path = directory.join("release.env");
@@ -76,8 +71,8 @@ impl LocalReleaseBundle {
         let nats_sha256 = manifest_value(&manifest, "PLOYZ_NATS_SERVER_SHA256")?;
         let ployz_script_sha256 = sha256_file(&directory.join("ployz.sh"))?;
         let mut identity = Sha256::new();
-        for (descriptor, artifact) in ARTIFACTS.into_iter().zip(&artifacts) {
-            identity.update(format!("{} {}\n", descriptor.name, artifact.sha256));
+        for (descriptor, sha256) in ARTIFACTS.into_iter().zip(&artifacts) {
+            identity.update(format!("{} {sha256}\n", descriptor.name));
         }
         identity.update(format!("ployz.sh {ployz_script_sha256}\n"));
         identity.update(format!("platform {platform}\n"));
@@ -173,7 +168,7 @@ fn validate_artifact(
     manifest: &str,
     remote_directory: &str,
     artifact: Artifact,
-) -> Result<LocalArtifact, String> {
+) -> Result<String, String> {
     let path = directory.join(artifact.name);
     require_regular_file(&path)?;
     let source = manifest_value(manifest, &artifact.url_key())?;
@@ -189,7 +184,7 @@ fn validate_artifact(
             artifact.name
         ));
     }
-    Ok(LocalArtifact { sha256 })
+    Ok(sha256)
 }
 
 fn validate_version(version: &str) -> Result<(), String> {

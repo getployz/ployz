@@ -752,6 +752,7 @@ mod tests {
         cloud_joiner_failed_terminal_callback, persisted_release_manifest_url,
         public_ip_from_runtime_nats_url,
     };
+    use crate::lifecycle::machine_join::execution::JoinTargetResolutionFailure;
     use crate::plan::{
         HostRunnerPlanFailure, HostRunnerStepFailure, HostRunnerStepFailureReason,
         HostRunnerStepLabel,
@@ -760,7 +761,7 @@ mod tests {
     use ployz_core::operation::FailureMessage;
     use ployz_sdk_types::{
         CloudBootstrapAttemptId, CloudBootstrapCallbackRequest, CloudBootstrapCallbackToken,
-        CloudBootstrapEnvelope, CloudBootstrapIntent, CloudBootstrapOutcome,
+        CloudBootstrapEnvelope, CloudBootstrapFailure, CloudBootstrapIntent, CloudBootstrapOutcome,
         CloudBootstrapRedemptionId,
     };
 

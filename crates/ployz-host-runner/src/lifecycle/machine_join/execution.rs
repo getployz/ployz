@@ -132,7 +132,7 @@ pub fn execute_host_runner_join_with_redeemed(
             events = execution.events;
             report_join_failure(
                 &terminal,
-                Some(&resolution_failure),
+                resolution_failure.as_ref(),
                 reporter,
                 recorder,
                 &mut events,
@@ -140,7 +140,7 @@ pub fn execute_host_runner_join_with_redeemed(
             return HostRunnerJoinExecution {
                 execution: HostRunnerPlanExecution { events, terminal },
                 redeemed: Some(redeemed),
-                resolution_failure: Some(resolution_failure),
+                resolution_failure,
             };
         }
     };
@@ -223,7 +223,13 @@ fn resolve_join_target(
     resolver: &mut impl HostRunnerJoinResolver,
     recorder: &mut impl HostRunnerStepRecorder,
     events: &mut Vec<HostRunnerStepEvent>,
-) -> Result<HostRunnerJoinTarget, (Box<HostRunnerPlanExecution>, JoinTargetResolutionFailure)> {
+) -> Result<
+    HostRunnerJoinTarget,
+    (
+        Box<HostRunnerPlanExecution>,
+        Option<JoinTargetResolutionFailure>,
+    ),
+> {
     let mut resolution_failure = None;
     let result = execute_labeled_action(
         events,
@@ -238,12 +244,7 @@ fn resolve_join_target(
             })
         },
     );
-    result.map_err(|execution| {
-        (
-            execution,
-            resolution_failure.expect("failed resolution records its typed failure"),
-        )
-    })
+    result.map_err(|execution| (execution, resolution_failure))
 }
 
 fn redeem_join_token(

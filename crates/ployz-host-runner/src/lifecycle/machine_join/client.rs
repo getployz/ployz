@@ -476,7 +476,7 @@ fn resolve_join_artifacts(
             local_platform.manifest_slug()
         ));
     }
-    if manifest.ployz_version() != expected.version.as_str() {
+    if manifest.version() != &expected.version {
         return Err(format!(
             "installed release {} does not match cluster join release {}",
             manifest.ployz_version(),
