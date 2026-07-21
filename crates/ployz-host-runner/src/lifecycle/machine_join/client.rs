@@ -15,6 +15,7 @@ use crate::execution::{
     HostRunnerLocalConfig, HostRunnerLocalEffects, SupervisorDirectories,
     SystemHostRunnerCommandRunner,
 };
+use crate::lifecycle::installed_substrate::InstalledSubstrateRelease;
 use crate::plan::HostRunnerPlanTerminal;
 use crate::plan::{
     HostRunnerJoinMaterial, HostRunnerJoinTarget, HostRunnerTextRecorder, JoinToken,
@@ -334,8 +335,9 @@ enum HostRunnerNatsConnectError {
 fn resolve_host_runner_join_target(
     redeemed: &MachineJoinRedeemed,
 ) -> Result<HostRunnerJoinTarget, JoinTargetResolutionFailure> {
-    let artifacts = load_local_join_artifacts(&redeemed.join_bundle.material.substrate_release)?;
-    resolve_host_runner_join_target_with_artifacts(redeemed, artifacts)
+    let resolved = load_local_join_artifacts(&redeemed.join_bundle.material.substrate_release)?;
+    resolve_host_runner_join_target_with_artifacts(redeemed, resolved.artifacts)
+        .map(|target| target.with_installed_substrate_release(resolved.installed_release))
         .map_err(|message| JoinTargetResolutionFailure::Other { message })
 }
 
@@ -392,7 +394,7 @@ fn resolve_host_runner_join_target_with_artifacts(
 
 fn load_local_join_artifacts(
     expected: &MachineJoinSubstrateRelease,
-) -> Result<FirstMachineInstallArtifacts, JoinTargetResolutionFailure> {
+) -> Result<ResolvedJoinArtifacts, JoinTargetResolutionFailure> {
     let platform = ReleasePlatform::from_target(std::env::consts::OS, std::env::consts::ARCH)
         .map_err(|_| JoinTargetResolutionFailure::ReleasePlatform {
             failure: ReleasePlatformFailure::Unsupported {
@@ -410,7 +412,7 @@ fn load_join_artifacts_from_release_env(
     release_env: &std::path::Path,
     expected: &MachineJoinSubstrateRelease,
     platform: ReleasePlatform,
-) -> Result<FirstMachineInstallArtifacts, JoinTargetResolutionFailure> {
+) -> Result<ResolvedJoinArtifacts, JoinTargetResolutionFailure> {
     let manifest_url = persisted_release_manifest_url(release_env).map_err(|error| {
         other_resolution_failure(format!(
             "failed to read installed release identity: {error}"
@@ -443,14 +445,29 @@ fn resolve_join_artifacts_from_manifests(
     local_platform: ReleasePlatform,
     installed_contents: &str,
     read_exact_manifest: impl FnOnce(&str) -> Result<String, String>,
-) -> Result<FirstMachineInstallArtifacts, JoinTargetResolutionFailure> {
-    if let Ok(installed) = ReleaseManifest::parse(installed_contents)
-        && installed.platform() == local_platform
-        && installed.version() == &expected.version
-    {
-        return installed
-            .install_artifacts()
-            .map_err(other_resolution_failure);
+) -> Result<ResolvedJoinArtifacts, JoinTargetResolutionFailure> {
+    match ReleaseManifest::parse(installed_contents) {
+        Ok(installed)
+            if installed.platform() == local_platform
+                && installed.version() == &expected.version =>
+        {
+            let artifacts = installed
+                .install_artifacts()
+                .map_err(other_resolution_failure)?;
+            let installed_release = InstalledSubstrateRelease::persisted_manifest(
+                expected.clone(),
+                installed_contents.to_owned(),
+            )
+            .map_err(other_resolution_failure)?;
+            return Ok(ResolvedJoinArtifacts {
+                artifacts,
+                installed_release,
+            });
+        }
+        Err(error @ ReleaseManifestError::Platform { .. }) => {
+            return Err(manifest_resolution_failure(error));
+        }
+        Ok(_) | Err(ReleaseManifestError::Invalid { .. }) => {}
     }
 
     if expected.version.as_str().starts_with("dev-") {
@@ -462,7 +479,17 @@ fn resolve_join_artifacts_from_manifests(
     let url = release_manifest_url_for_platform(&expected.version, local_platform.manifest_slug());
     let contents = read_exact_manifest(&url).map_err(other_resolution_failure)?;
     let manifest = ReleaseManifest::parse(&contents).map_err(manifest_resolution_failure)?;
-    resolve_join_artifacts(expected, &manifest, local_platform).map_err(other_resolution_failure)
+    let artifacts = resolve_join_artifacts(expected, &manifest, local_platform)
+        .map_err(other_resolution_failure)?;
+    Ok(ResolvedJoinArtifacts {
+        artifacts,
+        installed_release: InstalledSubstrateRelease::public_exact(expected.clone()),
+    })
+}
+
+struct ResolvedJoinArtifacts {
+    artifacts: FirstMachineInstallArtifacts,
+    installed_release: InstalledSubstrateRelease,
 }
 
 fn resolve_join_artifacts(
@@ -695,6 +722,55 @@ mod tests {
             |_| Ok(exact),
         )
         .expect_err("unsupported exact-release platform fails closed");
+
+        assert_eq!(
+            failure,
+            JoinTargetResolutionFailure::ReleasePlatform {
+                failure: ReleasePlatformFailure::Unsupported {
+                    platform: "linux-riscv64".to_owned(),
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn development_join_manifest_missing_platform_is_a_typed_failure() {
+        let expected = MachineJoinSubstrateRelease {
+            version: ExactPloyzVersion::try_new("dev-local").expect("exact release"),
+        };
+        let installed = release_manifest_contents("linux-arm64", "linux-arm64", "dev-local")
+            .replacen("PLOYZ_RELEASE_PLATFORM=linux-arm64\n", "", 1);
+
+        let failure = resolve_join_artifacts_from_manifests(
+            &expected,
+            ReleasePlatform::LinuxArm64,
+            &installed,
+            |_| panic!("development joins do not fetch a remote fallback"),
+        )
+        .expect_err("missing installed development platform fails closed");
+
+        assert_eq!(
+            failure,
+            JoinTargetResolutionFailure::ReleasePlatform {
+                failure: ReleasePlatformFailure::Missing,
+            }
+        );
+    }
+
+    #[test]
+    fn development_join_manifest_unsupported_platform_is_a_typed_failure() {
+        let expected = MachineJoinSubstrateRelease {
+            version: ExactPloyzVersion::try_new("dev-local").expect("exact release"),
+        };
+        let installed = release_manifest_contents("linux-riscv64", "linux-riscv64", "dev-local");
+
+        let failure = resolve_join_artifacts_from_manifests(
+            &expected,
+            ReleasePlatform::LinuxArm64,
+            &installed,
+            |_| panic!("development joins do not fetch a remote fallback"),
+        )
+        .expect_err("unsupported installed development platform fails closed");
 
         assert_eq!(
             failure,

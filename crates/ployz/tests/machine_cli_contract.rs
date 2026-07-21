@@ -46,7 +46,7 @@ fn machine_add_prints_bootstrap_command_without_nats_credentials() {
     assert!(output.contains("machine machine_2"));
     assert!(output.contains("join-token join_once_123"));
     assert!(output.contains("curl -fsSL -- 'https://get.ployz.sh'"));
-    assert!(output.contains(" | PLOYZ_VERSION='v0.1.0' sh && ca_file=\"$(mktemp)\""));
+    assert!(output.contains(" | PLOYZ_VERSION='0.1.0' sh && ca_file=\"$(mktemp)\""));
     assert!(output.contains(&format!(
         "PLOYZ_JOIN_NKEY_SEED='{}' ployz host bootstrap join",
         TEST_JOIN_SEED
@@ -107,7 +107,7 @@ fn machine_add_shell_quotes_join_material() {
     .render();
 
     assert!(output.contains("curl -fsSL -- 'https://get.ployz.sh/bootstrap?x='\\''quoted'\\'''"));
-    assert!(output.contains("PLOYZ_VERSION='v0.1.0'"));
+    assert!(output.contains("PLOYZ_VERSION='0.1.0'"));
     assert!(output.contains("PLOYZ_NATS_URL='nats://127.0.0.1:7422'"));
     assert!(output.contains("printf '%s'"));
     assert!(output.contains("ployz host bootstrap join 'join'\\''quoted'\\'''"));
