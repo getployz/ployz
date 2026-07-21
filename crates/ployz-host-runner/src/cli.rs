@@ -221,6 +221,7 @@ pub fn load_command(
         }
         Some(HostRunnerSubcommand::FirstMachineInstall { spec }) => {
             let spec = read_first_machine_install_spec(spec)?;
+            validate_direct_first_machine_install_spec(&spec)?;
             Ok(HostRunnerCommand::FirstMachineInstall(Box::new(
                 first_machine_install_target_from_spec(spec)?,
             )))
@@ -494,6 +495,67 @@ fn read_first_machine_install_spec(
     serde_json::from_str(&bytes).map_err(|error| HostRunnerCliError::ParseSpec { source, error })
 }
 
+fn validate_direct_first_machine_install_spec(
+    spec: &FirstMachineInstallSpec,
+) -> Result<(), HostRunnerCliError> {
+    let release = ExactPloyzVersion::try_new(spec.artifacts.ployzd.version.as_str())
+        .map_err(HostRunnerCliError::FirstMachinePloyzVersion)?;
+    let platform = crate::release_manifest::ReleasePlatform::from_target(
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+    )
+    .map_err(HostRunnerCliError::DirectFirstMachineInstallSpec)?;
+    let platform = platform.manifest_slug();
+    let base = format!(
+        "https://github.com/getployz/ployz/releases/download/{}",
+        release.tag()
+    );
+    let railpack = ployz_core::build::railpack_pins()
+        .map_err(|error| HostRunnerCliError::DirectFirstMachineInstallSpec(error.to_string()))?;
+    for (name, artifact, version, asset, install_path) in [
+        (
+            "ployzd",
+            &spec.artifacts.ployzd,
+            release.as_str(),
+            "ployzd",
+            "/usr/local/bin/ployzd",
+        ),
+        (
+            "eBPF bytecode",
+            &spec.artifacts.ebpf_bytecode,
+            release.as_str(),
+            "ployz-ebpf-tc",
+            "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
+        ),
+        (
+            "eBPF controller",
+            &spec.artifacts.ebpf_ctl,
+            release.as_str(),
+            "ployz-ebpf-ctl",
+            "/usr/local/bin/ployz-ebpf-ctl",
+        ),
+        (
+            "Railpack",
+            &spec.artifacts.railpack,
+            railpack.version(),
+            "railpack",
+            railpack.install_path(),
+        ),
+    ] {
+        let expected_source = format!("{base}/{asset}-{platform}");
+        if artifact.version.as_str() != version
+            || artifact.source.as_str() != expected_source
+            || artifact.install_path.as_str() != install_path
+        {
+            return Err(HostRunnerCliError::DirectFirstMachineInstallSpec(format!(
+                "{name} must be the canonical {platform} asset for release {} at {install_path}; use `ployz machine init --release-manifest` to create the install spec",
+                release.as_str()
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// The machine hostname covered by the server certificate SANs. A host
 /// without a UTF-8 hostname simply gets no hostname SAN.
 fn machine_hostname() -> Option<String> {
@@ -647,6 +709,7 @@ pub enum HostRunnerCliError {
     CloudHost(CloudHostError),
     ExactPloyzVersion(ExactPloyzVersionError),
     FirstMachinePloyzVersion(CoreExactPloyzVersionError),
+    DirectFirstMachineInstallSpec(String),
     MissingNatsServerArtifact,
     ArtifactTarget(ArtifactTargetError),
     SupervisorUnit(SupervisorUnitFileError),
@@ -714,6 +777,12 @@ impl fmt::Display for HostRunnerCliError {
             Self::CloudHost(error) => write!(formatter, "{error}"),
             Self::ExactPloyzVersion(error) => write!(formatter, "{error}"),
             Self::FirstMachinePloyzVersion(error) => write!(formatter, "{error}"),
+            Self::DirectFirstMachineInstallSpec(message) => {
+                write!(
+                    formatter,
+                    "invalid direct first-machine install spec: {message}"
+                )
+            }
             Self::MissingNatsServerArtifact => formatter.write_str(
                 "first-machine install requires a nats-server artifact, \
                  but the release manifest carries none",
@@ -976,6 +1045,65 @@ mod tests {
     }
 
     #[test]
+    fn parser_rejects_noncanonical_direct_first_machine_artifacts() {
+        let canonical = canonical_first_machine_install_spec(FIRST_MACHINE_INSTALL_SPEC);
+        let platform = crate::release_manifest::ReleasePlatform::from_target(
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+        )
+        .expect("test runs on a supported release platform")
+        .manifest_slug();
+        let other_platform = if platform == "linux-amd64" {
+            "linux-arm64"
+        } else {
+            "linux-amd64"
+        };
+        for (label, from, to) in [
+            (
+                "custom-source",
+                format!(
+                    "https://github.com/getployz/ployz/releases/download/v0.1.0/ployzd-{platform}"
+                ),
+                "https://artifacts.example.test/ployzd".to_owned(),
+            ),
+            (
+                "wrong-tag",
+                "releases/download/v0.1.0/ployz-ebpf-tc".to_owned(),
+                "releases/download/v0.2.0/ployz-ebpf-tc".to_owned(),
+            ),
+            (
+                "wrong-version",
+                "\"version\": \"0.1.0\"".to_owned(),
+                "\"version\": \"0.2.0\"".to_owned(),
+            ),
+            (
+                "wrong-platform",
+                format!("ployz-ebpf-ctl-{platform}"),
+                format!("ployz-ebpf-ctl-{other_platform}"),
+            ),
+            (
+                "wrong-path",
+                "/usr/local/lib/ployz/railpack/v0.31.0/railpack".to_owned(),
+                "/opt/railpack".to_owned(),
+            ),
+        ] {
+            let invalid = canonical.replacen(&from, &to, 1);
+            assert_ne!(invalid, canonical, "fixture replacement {label} applies");
+            let path = write_temp_spec_with(&invalid, label);
+
+            let error = load_command(["install".into(), "--spec".into(), path.into()])
+                .expect_err("noncanonical direct artifact is rejected");
+
+            assert!(
+                error
+                    .to_string()
+                    .contains("ployz machine init --release-manifest"),
+                "{label}: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn parser_rejects_mutable_first_machine_ployz_release() {
         let spec = FIRST_MACHINE_INSTALL_SPEC.replacen(
             "\"version\": \"0.1.0\"",
@@ -1130,8 +1258,34 @@ mod tests {
             "ployz-first-machine-install-{label}-{}.json",
             std::process::id()
         ));
-        fs::write(&path, spec).expect("write spec");
+        fs::write(&path, canonical_first_machine_install_spec(spec)).expect("write spec");
         path
+    }
+
+    fn canonical_first_machine_install_spec(spec: &str) -> String {
+        let platform = crate::release_manifest::ReleasePlatform::from_target(
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+        )
+        .expect("test runs on a supported release platform")
+        .manifest_slug();
+        let base = "https://github.com/getployz/ployz/releases/download/v0.1.0";
+        spec.replace(
+            "\"source\": \"/tmp/ployzd\"",
+            &format!("\"source\": \"{base}/ployzd-{platform}\""),
+        )
+        .replace(
+            "\"source\": \"/tmp/ployz-ebpf-tc\"",
+            &format!("\"source\": \"{base}/ployz-ebpf-tc-{platform}\""),
+        )
+        .replace(
+            "\"source\": \"/tmp/ployz-ebpf-ctl\"",
+            &format!("\"source\": \"{base}/ployz-ebpf-ctl-{platform}\""),
+        )
+        .replace(
+            "\"source\": \"/tmp/railpack\"",
+            &format!("\"source\": \"{base}/railpack-{platform}\""),
+        )
     }
 
     const FIRST_MACHINE_INSTALL_SPEC_NO_DNS: &str = r#"{

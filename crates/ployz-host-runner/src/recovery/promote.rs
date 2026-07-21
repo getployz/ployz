@@ -55,14 +55,8 @@ pub(crate) fn run_core_promote_command(promote: HostRunnerCorePromote) -> ExitCo
             return ExitCode::FAILURE;
         }
     };
-    let release = match promotion_release(&installed_release, promote.version.as_ref()) {
-        Ok(release) => release,
-        Err(message) => {
-            eprintln!("ployz host core-promote: {message}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let manifest = match load_promotion_manifest(&installed_release) {
+    let release = promotion_release(&installed_release, promote.version.as_ref());
+    let manifest = match load_promotion_manifest(&installed_release, promote.version.as_ref()) {
         Ok(manifest) => manifest,
         Err(message) => {
             eprintln!("{message}");
@@ -71,7 +65,7 @@ pub(crate) fn run_core_promote_command(promote: HostRunnerCorePromote) -> ExitCo
     };
     if manifest.version() != &release {
         eprintln!(
-            "release manifest version {} does not match installed substrate release {}",
+            "release manifest version {} does not match selected promotion release {}",
             manifest.version().as_str(),
             release.as_str()
         );
@@ -205,25 +199,22 @@ pub(crate) fn run_core_promote_command(promote: HostRunnerCorePromote) -> ExitCo
 fn promotion_release(
     installed: &InstalledSubstrateRelease,
     requested: Option<&ExactPloyzVersion>,
-) -> Result<ExactPloyzVersion, String> {
-    if let Some(requested) = requested
-        && requested != &installed.release.version
-    {
-        return Err(format!(
-            "requested promotion release {} differs from installed substrate release {}",
-            requested.as_str(),
-            installed.release.version.as_str()
-        ));
-    }
-    Ok(installed.release.version.clone())
+) -> ExactPloyzVersion {
+    requested
+        .cloned()
+        .unwrap_or_else(|| installed.release.version.clone())
 }
 
 fn load_promotion_manifest(
     installed: &InstalledSubstrateRelease,
+    requested: Option<&ExactPloyzVersion>,
 ) -> Result<ReleaseManifest, String> {
+    if let Some(url) = public_promotion_manifest_url(installed, requested) {
+        return load_versioned_release_manifest(&url);
+    }
     match &installed.manifest_source {
         InstalledSubstrateManifestSource::PublicExactRelease => {
-            load_versioned_release_manifest(&release_manifest_url(&installed.release.version))
+            unreachable!("public exact releases always produce a manifest URL")
         }
         InstalledSubstrateManifestSource::PersistedManifest { contents } => {
             ReleaseManifest::parse(contents).map_err(|error| {
@@ -231,6 +222,20 @@ fn load_promotion_manifest(
             })
         }
     }
+}
+
+fn public_promotion_manifest_url(
+    installed: &InstalledSubstrateRelease,
+    requested: Option<&ExactPloyzVersion>,
+) -> Option<String> {
+    requested
+        .or(match &installed.manifest_source {
+            InstalledSubstrateManifestSource::PublicExactRelease => {
+                Some(&installed.release.version)
+            }
+            InstalledSubstrateManifestSource::PersistedManifest { .. } => None,
+        })
+        .map(release_manifest_url)
 }
 
 fn check_core_promote_preflight() -> Result<(), String> {
@@ -444,8 +449,12 @@ mod tests {
         InstalledSubstrateRelease, load_installed_substrate_release,
         store_installed_substrate_release,
     };
+    use crate::release_manifest::release_manifest_url;
 
-    use super::{load_promotion_manifest, promoted_assigned_substrate, promotion_release};
+    use super::{
+        load_promotion_manifest, promoted_assigned_substrate, promotion_release,
+        public_promotion_manifest_url,
+    };
 
     #[test]
     fn promotion_adds_nats_without_losing_assignments_or_assurance() {
@@ -501,7 +510,7 @@ mod tests {
     }
 
     #[test]
-    fn advanced_channel_join_identity_governs_later_promotion() {
+    fn promotion_defaults_to_installed_release_and_accepts_an_explicit_override() {
         let state_dir = tempfile::tempdir().expect("state dir");
         let founder_selected = MachineJoinSubstrateRelease {
             version: ExactPloyzVersion::try_new("0.1.0").expect("exact installed release"),
@@ -513,16 +522,12 @@ mod tests {
             .expect("promotion loads installed release");
 
         assert_eq!(
-            promotion_release(&installed, None).expect("installed release is authoritative"),
+            promotion_release(&installed, None),
             founder_selected.version
         );
 
         let requested = ExactPloyzVersion::try_new("0.2.0").expect("exact requested release");
-        assert_eq!(
-            promotion_release(&installed, Some(&requested))
-                .expect_err("different override must be rejected"),
-            "requested promotion release 0.2.0 differs from installed substrate release 0.1.0"
-        );
+        assert_eq!(promotion_release(&installed, Some(&requested)), requested);
     }
 
     #[test]
@@ -552,7 +557,7 @@ mod tests {
         )
         .expect("local update provenance persists");
 
-        let manifest = load_promotion_manifest(&installed).expect("promotion reloads source");
+        let manifest = load_promotion_manifest(&installed, None).expect("promotion reloads source");
 
         assert_eq!(manifest.version().as_str(), "dev-aabbccdd");
         assert!(
@@ -561,6 +566,13 @@ mod tests {
                 .expect("artifacts remain available")
                 .nats_server
                 .is_some()
+        );
+
+        let requested = ExactPloyzVersion::try_new("0.2.0").expect("exact requested release");
+        let expected_url = release_manifest_url(&requested);
+        assert_eq!(
+            public_promotion_manifest_url(&installed, Some(&requested)).as_deref(),
+            Some(expected_url.as_str())
         );
     }
 }
