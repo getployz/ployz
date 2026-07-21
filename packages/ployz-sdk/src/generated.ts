@@ -90,7 +90,7 @@ export type CloudFounderBootstrapResult = { machine_id: MachineId, runtime_nats_
 
 export type CloudJoinerBootstrapResult = { operation_id: OperationId, machine_id: MachineId, name: MachineName, last_event_sequence: EventSequence, result: MachineJoinRedeemResult, };
 
-export type CloudBootstrapFailure = { "failure": "already_bootstrapped" } | { "failure": "envelope_invalid", message: FailureMessage, } | { "failure": "bootstrap_failed", message: FailureMessage, } | { "failure": "release_platform_missing" } | { "failure": "release_platform_unsupported", platform: string, } | { "failure": "cloud_reachability_failed", message: FailureMessage, };
+export type CloudBootstrapFailure = { "failure": "already_bootstrapped" } | { "failure": "envelope_invalid", message: FailureMessage, } | { "failure": "bootstrap_failed", message: FailureMessage, } | { "failure": "release_platform", cause: ReleasePlatformFailure, } | { "failure": "cloud_reachability_failed", message: FailureMessage, };
 
 export type CloudBootstrapCallbackAccepted = { accepted_at_unix_seconds: number, };
 
@@ -416,7 +416,7 @@ export type MachineAddOperationState = { "state": "pending", join_token: IssuedJ
 
 export type MachineAddOperationStateName = "pending" | "joining" | "completed" | "failed" | "cancelled";
 
-export type MachineAddFailure = { "kind": "invalid_join_token" } | { "kind": "join_token_expired", expired_at: JoinTokenExpiresAt, } | { "kind": "bootstrap_failed", message: FailureMessage, } | { "kind": "release_platform_missing" } | { "kind": "release_platform_unsupported", platform: string, } | { "kind": "readiness_failed", evidence: MachineReadinessEvidence, } | { "kind": "dataplane_projection_admission_failed", evidence: DataplaneProjectionAdmissionEvidence, } | { "kind": "authorization_render_failed", message: FailureMessage, } | { "kind": "nats_reload_failed", message: FailureMessage, } | { "kind": "minted_credential_unusable", message: FailureMessage, } | { "kind": "control_task_interrupted", evidence: MachineAddInterruptionEvidence, } | { "kind": "credential_evidence_write_failed", message: FailureMessage, };
+export type MachineAddFailure = { "kind": "invalid_join_token" } | { "kind": "join_token_expired", expired_at: JoinTokenExpiresAt, } | { "kind": "bootstrap_failed", message: FailureMessage, } | { "kind": "release_platform", failure: ReleasePlatformFailure, } | { "kind": "readiness_failed", evidence: MachineReadinessEvidence, } | { "kind": "dataplane_projection_admission_failed", evidence: DataplaneProjectionAdmissionEvidence, } | { "kind": "authorization_render_failed", message: FailureMessage, } | { "kind": "nats_reload_failed", message: FailureMessage, } | { "kind": "minted_credential_unusable", message: FailureMessage, } | { "kind": "control_task_interrupted", evidence: MachineAddInterruptionEvidence, } | { "kind": "credential_evidence_write_failed", message: FailureMessage, };
 
 export type MachineAddInterruptionEvidence = { cause: OperationInterruptionCause, last_durable_stage: MachineAddInterruptionStage, uncertain_work: MachineAddInterruptionUncertainWork, next_action: MachineAddInterruptionNextAction };
 
@@ -1008,6 +1008,8 @@ core_seeds_wrapped: WrappedCoreSeeds, substrate_release: MachineJoinSubstrateRel
 
 export type MachineJoinSubstrateRelease = { version: ExactPloyzVersion, };
 
+export type ReleasePlatformFailure = { "kind": "missing" } | { "kind": "unsupported", platform: string, };
+
 export type MachineJoinSecretDelivery = { nats_credentials: NatsUserSeed, };
 
 export type MachineJoinTemplate = { join_bundle: MachineJoinBundle, };
@@ -1073,11 +1075,11 @@ export type MachineJoinReportRequest = { join_token: MachineJoinToken, outcome: 
 
 export type MachineJoinReportOutcome = { "outcome": "completed" } | { "outcome": "failed", failure: MachineJoinReportFailure, };
 
-export type MachineJoinReportFailure = { "kind": "bootstrap_failed", message: FailureMessage, } | { "kind": "release_platform_missing" } | { "kind": "release_platform_unsupported", platform: string, };
+export type MachineJoinReportFailure = { "kind": "bootstrap_failed", message: FailureMessage, } | { "kind": "release_platform", failure: ReleasePlatformFailure, };
 
 export type MachineJoinReportedOutcome = { "outcome": "completed" } | { "outcome": "failed", failure: MachineJoinReportedFailure, };
 
-export type MachineJoinReportedFailure = { "kind": "bootstrap_failed", message: FailureMessage, } | { "kind": "release_platform_missing" } | { "kind": "release_platform_unsupported", platform: string, } | { "kind": "dataplane_projection_admission_failed", evidence: DataplaneProjectionAdmissionEvidence, };
+export type MachineJoinReportedFailure = { "kind": "bootstrap_failed", message: FailureMessage, } | { "kind": "release_platform", failure: ReleasePlatformFailure, } | { "kind": "dataplane_projection_admission_failed", evidence: DataplaneProjectionAdmissionEvidence, };
 
 export type MachineJoinReported = { operation_id: OperationId, machine_id: MachineId, last_event_sequence: EventSequence, outcome: MachineJoinReportedOutcome, };
 
