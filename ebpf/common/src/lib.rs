@@ -13,6 +13,8 @@ use std::string::ToString;
 pub const REQUIRED_TC_SYMBOLS: [&str; 4] =
     ["ployz_egress", "ployz_ingress", "ROUTES", "WG_IFINDEX"];
 
+pub const MAX_ROUTES: u32 = 256;
+
 /// Default BPF filesystem pin directory for the Ployz TC programs and maps.
 pub const DEFAULT_PIN_PATH: &str = "/sys/fs/bpf/ployz";
 
@@ -21,7 +23,7 @@ pub const EBPF_STATUS_DETACHED_EXIT_CODE: u8 = 2;
 
 /// BPF map key for an IPv4 network prefix.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RouteKey {
     pub network: u32,
     pub prefix_len: u32,

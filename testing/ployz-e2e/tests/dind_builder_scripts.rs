@@ -219,8 +219,8 @@ fn filtered_dind_reuses_matching_substrate_and_unfiltered_is_full() {
     assert!(log.contains("--env CARGO_INCREMENTAL=1"));
     assert!(!log.contains("pull --platform"));
     assert!(
-        log.contains("cargo-env PLOYZ_DIND_PLATFORM=linux/amd64"),
-        "DinD wrapper must pass its normalized platform to the test process: {log}"
+        log.contains("cargo-env PLOYZ_DIND_PLATFORM=linux/amd64 RUST_MIN_STACK=16777216"),
+        "DinD wrapper must pass its platform and test stack to the test process: {log}"
     );
 
     for identity in ["", "linux/arm64 wrong", "linux/amd64 stale"] {
@@ -242,6 +242,11 @@ fn filtered_dind_reuses_matching_substrate_and_unfiltered_is_full() {
     assert!(log.contains("pull --platform linux/amd64"));
     assert!(log.contains("group_ --skip acceptance::group_v1_acceptance"));
     assert!(log.contains("acceptance::group_v1_acceptance --exact"));
+    assert_eq!(
+        log.matches("RUST_MIN_STACK=16777216").count(),
+        3,
+        "every unfiltered test process needs the DinD stack budget: {log}"
+    );
 
     fixture.clear_log();
     let arm64 = fixture.run_dind("linux/arm64", Some("scenario_machine_add"), "", true);
@@ -249,7 +254,7 @@ fn filtered_dind_reuses_matching_substrate_and_unfiltered_is_full() {
     assert!(
         fixture
             .log()
-            .contains("cargo-env PLOYZ_DIND_PLATFORM=linux/arm64")
+            .contains("cargo-env PLOYZ_DIND_PLATFORM=linux/arm64 RUST_MIN_STACK=16777216")
     );
 }
 
@@ -276,7 +281,8 @@ impl FakeDocker {
 set -euo pipefail
 printf '%s\n' "$*" >> "${PLOYZ_FAKE_LOG}"
 if [ "${0##*/}" = cargo ]; then
-  printf 'cargo-env PLOYZ_DIND_PLATFORM=%s\n' "${PLOYZ_DIND_PLATFORM:-}" >> "${PLOYZ_FAKE_LOG}"
+  printf 'cargo-env PLOYZ_DIND_PLATFORM=%s RUST_MIN_STACK=%s\n' \
+    "${PLOYZ_DIND_PLATFORM:-}" "${RUST_MIN_STACK:-}" >> "${PLOYZ_FAKE_LOG}"
   exit 0
 fi
 case "${1:-}" in

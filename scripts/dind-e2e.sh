@@ -22,6 +22,7 @@ TARGET_DIR="${PLOYZ_DIND_TARGET_DIR:-/tmp/ployz-dind-machine-target}"
 ARTIFACT_DIR="${TARGET_DIR}/release"
 MACHINE_IMAGE="${PLOYZ_DIND_MACHINE_IMAGE:-ployz-dind-machine:local}"
 WORKERS="${PLOYZ_DIND_WORKERS:-2}"
+TEST_STACK_BYTES=16777216
 
 case "${WORKERS}" in
   1 | 2 | 3) ;;
@@ -66,6 +67,7 @@ run_dind() {
     PLOYZ_DIND_MACHINE_IMAGE="${MACHINE_IMAGE}" \
     PLOYZ_DIND_ARTIFACT_DIR="${ARTIFACT_DIR}" \
     PLOYZ_DIND_PLATFORM="${platform}" \
+    RUST_MIN_STACK="${TEST_STACK_BYTES}" \
     cargo test -p ployz-e2e --test dind_cluster -- --test-threads="${workers}" --nocapture "$@"
 }
 

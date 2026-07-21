@@ -29,6 +29,8 @@ mod rollback;
 mod support;
 #[path = "dind_cluster/system_deploy.rs"]
 mod system_deploy;
+#[path = "dind_cluster/wireguard_reconciliation.rs"]
+mod wireguard_reconciliation;
 
 use futures_util::StreamExt;
 use ployz::deploy::compose::{ComposeInput, UnsupportedFieldMode, parse_deploy_file};
@@ -112,6 +114,46 @@ const WORKLOAD_ENDPOINT_PORT: u16 = 80;
 /// Budget for the routed two-machine deploy to reach a terminal state
 /// (includes the image pull check and WireGuard/eBPF preparation).
 const DEPLOY_TERMINAL_BUDGET: Duration = Duration::from_secs(300);
+
+#[derive(Clone, Copy)]
+enum WireGuardPairBlock {
+    Install,
+    Remove,
+}
+
+async fn set_wireguard_pair_block(
+    core: &CoreContext,
+    left: &DindMachine,
+    right: &DindMachine,
+    block: WireGuardPairBlock,
+) {
+    let port = DEFAULT_WIREGUARD_LISTEN_PORT.to_string();
+    for (machine, destination) in [(left, right.bridge_ip), (right, left.bridge_ip)] {
+        let destination = destination.to_string();
+        let (action, position) = match block {
+            WireGuardPairBlock::Install => ("-I", Some("1")),
+            WireGuardPairBlock::Remove => ("-D", None),
+        };
+        let mut command = vec!["iptables", action, "OUTPUT"];
+        command.extend(position);
+        command.extend([
+            "-p",
+            "udp",
+            "-d",
+            &destination,
+            "--dport",
+            &port,
+            "-j",
+            "DROP",
+        ]);
+        let outcome = core.exec_on(machine, &command).await;
+        assert!(
+            outcome.success(),
+            "{action} WireGuard pair block from {} to {destination} failed: {outcome:?}",
+            machine.name
+        );
+    }
+}
 
 struct PreparedWorkloadImage {
     reference: ImageReference,
