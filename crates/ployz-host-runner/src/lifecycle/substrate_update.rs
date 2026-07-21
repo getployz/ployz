@@ -390,7 +390,7 @@ fn load_substrate_update_manifest(
                     path.display()
                 )
             })?;
-            ReleaseManifest::parse(&contents)
+            ReleaseManifest::parse(&contents).map_err(|error| error.to_string())
         }
     }
 }

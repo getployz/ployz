@@ -12,8 +12,8 @@ use crate::execution::{HostRunnerCommandOutput, HostRunnerCommandRunner};
 use crate::execution::{HostRunnerLocalConfig, HostRunnerLocalEffects};
 use crate::execution::{NatsServerUnitTarget, PloyzdRoleEnvironmentFile, SupervisorUnitTarget};
 use crate::lifecycle::machine_join::execution::{
-    HostRunnerJoinRedeemer, HostRunnerJoinReporter, HostRunnerJoinTokenConsumer,
-    RedeemedHostRunnerJoin, execute_host_runner_join,
+    HostRunnerJoinRedeemer, HostRunnerJoinReporter, HostRunnerJoinResolver,
+    HostRunnerJoinTokenConsumer, JoinTargetResolutionFailure, execute_host_runner_join,
 };
 use crate::lifecycle::{
     AssignedSubstrateState, SubstrateAssignment, load_assigned_substrate_state,
@@ -40,7 +40,7 @@ use ployz_core::operation::FailureMessage;
 use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy};
 use ployz_nats::connect::NatsClientUrl;
 use ployz_sdk_types::MachineJoinReportFailure;
-use ployz_test_support::ids::{failure_message, machine_id, operation_id};
+use ployz_test_support::ids::{failure_message, machine_id};
 use std::sync::OnceLock;
 use support::artifacts::{artifact_version as version, sha256_digest as digest, substrate_release};
 
@@ -1536,8 +1536,8 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
     );
     let mut redeemer = StaticJoinRedeemer {
         expected_token: JoinToken::try_new("join_once").expect("valid join token"),
-        target,
     };
+    let mut resolver = StaticJoinResolver { target };
     let mut reporter = RecordingJoinReporter::default();
     let mut token_consumer = RecordingTokenConsumer::default();
     let mut effects = HostRunnerLocalEffects::new(
@@ -1549,6 +1549,7 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
     let execution = execute_host_runner_join(
         &JoinToken::try_new("join_once").expect("valid join token"),
         &mut redeemer,
+        &mut resolver,
         &mut reporter,
         &mut token_consumer,
         &mut effects,
@@ -1727,23 +1728,31 @@ impl HostRunnerJoinTokenConsumer for RecordingTokenConsumer {
 #[derive(Debug)]
 struct StaticJoinRedeemer {
     expected_token: JoinToken,
-    target: HostRunnerJoinTarget,
 }
 
 impl HostRunnerJoinRedeemer for StaticJoinRedeemer {
     fn redeem_join_token(
         &mut self,
         token: &JoinToken,
-    ) -> Result<RedeemedHostRunnerJoin, FailureMessage> {
+    ) -> Result<ployz_sdk_types::MachineJoinRedeemed, FailureMessage> {
         if *token != self.expected_token {
             return Err(failure_message("unexpected join token"));
         }
 
-        Ok(RedeemedHostRunnerJoin::new(
-            operation_id("op_machine"),
-            machine_id("machine_2"),
-            self.target.clone(),
-        ))
+        Ok(support::bootstrap::recording_join_redeemed())
+    }
+}
+
+struct StaticJoinResolver {
+    target: HostRunnerJoinTarget,
+}
+
+impl HostRunnerJoinResolver for StaticJoinResolver {
+    fn resolve_join_target(
+        &mut self,
+        _redeemed: &ployz_sdk_types::MachineJoinRedeemed,
+    ) -> Result<HostRunnerJoinTarget, JoinTargetResolutionFailure> {
+        Ok(self.target.clone())
     }
 }
 

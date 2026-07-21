@@ -43,7 +43,10 @@ use ployz_sdk_types::{
 use super::super::founder_bootstrap::{
     read_cloud_founder_bootstrap_result, run_first_machine_install,
 };
-use super::super::machine_join::client::{CloudJoinTokenConsumer, JoinRedeemer, JoinReporter};
+use super::super::machine_join::client::{
+    CloudJoinTokenConsumer, JoinRedeemer, JoinReporter, JoinTargetResolver,
+};
+use super::super::machine_join::execution::JoinTargetResolutionFailure;
 use crate::runtime::{
     CLOUD_BOOTSTRAP_MAX_POLLS, DEFAULT_NATS_CONNECT_TIMEOUT, HOST_RUNNER_STATE_DIR,
     failure_message, failure_summary,
@@ -486,7 +489,7 @@ fn public_ip_from_runtime_nats_url(
 fn load_release_manifest() -> Result<ReleaseManifest, String> {
     let url = release_manifest_url();
     let contents = crate::release_manifest::read_release_manifest_text(&url)?;
-    ReleaseManifest::parse(&contents)
+    ReleaseManifest::parse(&contents).map_err(|error| error.to_string())
 }
 
 fn release_manifest_url() -> String {
@@ -539,6 +542,7 @@ fn run_cloud_joiner_bootstrap(
         }
     };
     let mut redeemer = JoinRedeemer::new(Ok(connect.clone()));
+    let mut resolver = JoinTargetResolver;
     let mut reporter = JoinReporter::new(Ok(connect), join_token.clone());
     let mut token_consumer = CloudJoinTokenConsumer;
     let mut effects = HostRunnerLocalEffects::new(
@@ -555,6 +559,7 @@ fn run_cloud_joiner_bootstrap(
     let join_execution = execute_host_runner_join_with_redeemed(
         &join_token,
         &mut redeemer,
+        &mut resolver,
         &mut reporter,
         &mut token_consumer,
         &mut effects,
@@ -562,26 +567,14 @@ fn run_cloud_joiner_bootstrap(
     );
     drop(recorder);
 
+    let resolution_failure = join_execution.resolution_failure.as_ref();
     let terminal = join_execution.execution.terminal;
     let callback = match (&terminal, &join_execution.redeemed) {
-        (HostRunnerPlanTerminal::Completed, Some(redeemed)) => {
-            let Some(callback_result) = &redeemed.callback_result else {
-                return persist_post_failed_callback(
-                    envelope,
-                    client,
-                    CloudBootstrapFailure::BootstrapFailed {
-                        message: failure_message(
-                            "join completed without redeemed material evidence",
-                        ),
-                    },
-                );
-            };
-            cloud_joiner_success_callback(
-                envelope.attempt_id.clone(),
-                envelope.redemption_id.clone(),
-                callback_result,
-            )
-        }
+        (HostRunnerPlanTerminal::Completed, Some(redeemed)) => cloud_joiner_success_callback(
+            envelope.attempt_id.clone(),
+            envelope.redemption_id.clone(),
+            redeemed,
+        ),
         (HostRunnerPlanTerminal::Completed, None) => {
             return persist_post_failed_callback(
                 envelope,
@@ -592,18 +585,20 @@ fn run_cloud_joiner_bootstrap(
             );
         }
         (HostRunnerPlanTerminal::Failed(failure), Some(redeemed)) => {
-            let installed_success_callback =
-                redeemed.callback_result.as_ref().map(|callback_result| {
-                    cloud_joiner_success_callback(
-                        envelope.attempt_id.clone(),
-                        envelope.redemption_id.clone(),
-                        callback_result,
-                    )
-                });
-            cloud_joiner_failed_terminal_callback(envelope, failure, installed_success_callback)
+            let installed_success_callback = Some(cloud_joiner_success_callback(
+                envelope.attempt_id.clone(),
+                envelope.redemption_id.clone(),
+                redeemed,
+            ));
+            cloud_joiner_failed_terminal_callback(
+                envelope,
+                failure,
+                resolution_failure,
+                installed_success_callback,
+            )
         }
         (HostRunnerPlanTerminal::Failed(failure), None) => {
-            cloud_joiner_failed_terminal_callback(envelope, failure, None)
+            cloud_joiner_failed_terminal_callback(envelope, failure, resolution_failure, None)
         }
     };
 
@@ -642,6 +637,7 @@ fn is_join_report_failure(failure: &HostRunnerPlanFailure) -> bool {
 fn cloud_joiner_failed_terminal_callback(
     envelope: &CloudBootstrapEnvelope,
     failure: &HostRunnerPlanFailure,
+    resolution_failure: Option<&JoinTargetResolutionFailure>,
     installed_success_callback: Option<CloudBootstrapCallbackRequest>,
 ) -> CloudBootstrapCallbackRequest {
     if is_join_report_failure(failure)
@@ -649,12 +645,25 @@ fn cloud_joiner_failed_terminal_callback(
     {
         return callback;
     }
-    failed_callback(
-        envelope,
-        CloudBootstrapFailure::BootstrapFailed {
+    let failure = match resolution_failure {
+        Some(JoinTargetResolutionFailure::ReleasePlatformMissing) => {
+            CloudBootstrapFailure::ReleasePlatformMissing
+        }
+        Some(JoinTargetResolutionFailure::ReleasePlatformUnsupported { platform }) => {
+            CloudBootstrapFailure::ReleasePlatformUnsupported {
+                platform: platform.clone(),
+            }
+        }
+        Some(JoinTargetResolutionFailure::Other { message }) => {
+            CloudBootstrapFailure::BootstrapFailed {
+                message: message.clone(),
+            }
+        }
+        None => CloudBootstrapFailure::BootstrapFailed {
             message: failure_message(failure_summary(failure)),
         },
-    )
+    };
+    failed_callback(envelope, failure)
 }
 
 fn persist_post_failed_callback(
@@ -850,12 +859,52 @@ mod tests {
             },
         };
 
-        let callback =
-            cloud_joiner_failed_terminal_callback(&envelope, &failure, Some(success_callback));
+        let callback = cloud_joiner_failed_terminal_callback(
+            &envelope,
+            &failure,
+            None,
+            Some(success_callback),
+        );
 
         assert!(matches!(
             callback.outcome,
             CloudBootstrapOutcome::JoinerSucceeded { .. }
         ));
+    }
+
+    #[test]
+    fn join_resolution_platform_failure_is_typed_in_cloud_terminal_callback() {
+        let envelope = CloudBootstrapEnvelope {
+            attempt_id: CloudBootstrapAttemptId::try_new("pcba_123").expect("valid attempt id"),
+            redemption_id: CloudBootstrapRedemptionId::try_new("pcbr_123")
+                .expect("valid redemption id"),
+            callback_url: "https://cloud.example.com/api/bootstrap/redemptions/pcbr_123/callback"
+                .to_owned(),
+            callback_token: CloudBootstrapCallbackToken::try_new("pcbc_123")
+                .expect("valid callback token"),
+            intent: CloudBootstrapIntent::WaitForFounder {
+                retry_after_seconds: 1,
+            },
+        };
+        let failure = HostRunnerPlanFailure::Step(HostRunnerStepFailure {
+            step: HostRunnerStepLabel::ResolveJoinTarget,
+            reason: HostRunnerStepFailureReason::JoinTargetResolutionFailed,
+            message: FailureMessage::try_new("release manifest is missing its platform")
+                .expect("valid message"),
+        });
+
+        let callback = cloud_joiner_failed_terminal_callback(
+            &envelope,
+            &failure,
+            Some(&JoinTargetResolutionFailure::ReleasePlatformMissing),
+            None,
+        );
+
+        assert_eq!(
+            callback.outcome,
+            CloudBootstrapOutcome::Failed {
+                failure: CloudBootstrapFailure::ReleasePlatformMissing,
+            }
+        );
     }
 }

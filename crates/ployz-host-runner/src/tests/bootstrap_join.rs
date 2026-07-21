@@ -183,6 +183,7 @@ fn host_runner_join_executor_redacts_join_token_from_progress() {
     let mut effects = RecordingEffects {
         ..RecordingEffects::default()
     };
+    let mut resolver = RecordingJoinResolver::default();
     let mut reporter = RecordingJoinReporter::default();
     let mut token_consumer = RecordingTokenConsumer::default();
     let mut recorder = RecordingRecorder::default();
@@ -190,6 +191,7 @@ fn host_runner_join_executor_redacts_join_token_from_progress() {
     let execution = execute_host_runner_join(
         &token,
         &mut redeemer,
+        &mut resolver,
         &mut reporter,
         &mut token_consumer,
         &mut effects,
@@ -218,9 +220,13 @@ fn host_runner_join_executor_redacts_join_token_from_progress() {
 #[test]
 fn host_runner_join_reports_target_resolution_failure_after_redemption() {
     let token = JoinToken::try_new("join_secret").expect("valid join token");
-    let mut redeemer = RecordingJoinRedeemer {
-        resolution_failure: Some("joining host release platform is unsupported"),
-        ..RecordingJoinRedeemer::default()
+    let mut redeemer = RecordingJoinRedeemer::default();
+    let mut resolver = RecordingJoinResolver {
+        failure: Some(
+            crate::lifecycle::machine_join::execution::JoinTargetResolutionFailure::ReleasePlatformUnsupported {
+                platform: "linux/riscv64".to_owned(),
+            },
+        ),
     };
     let mut effects = RecordingEffects::default();
     let mut reporter = RecordingJoinReporter::default();
@@ -230,6 +236,7 @@ fn host_runner_join_reports_target_resolution_failure_after_redemption() {
     let execution = execute_host_runner_join(
         &token,
         &mut redeemer,
+        &mut resolver,
         &mut reporter,
         &mut token_consumer,
         &mut effects,
@@ -242,16 +249,58 @@ fn host_runner_join_reports_target_resolution_failure_after_redemption() {
             step: HostRunnerStepLabel::ResolveJoinTarget,
             reason: HostRunnerStepFailureReason::JoinTargetResolutionFailed,
             message,
-        })) if message.as_str() == "joining host release platform is unsupported"
+        })) if message.as_str() == "unsupported release platform linux/riscv64"
     ));
     assert!(effects.calls.is_empty());
     assert_eq!(token_consumer.consumed, 0);
     assert_eq!(
         reporter.reports,
         vec![JoinReport::Failed {
-            failure: MachineJoinReportFailure::BootstrapFailed {
-                message: failure_message("joining host release platform is unsupported"),
+            failure: MachineJoinReportFailure::ReleasePlatformUnsupported {
+                platform: "linux/riscv64".to_owned(),
             },
+        }]
+    );
+}
+
+#[test]
+fn host_runner_join_reports_missing_release_platform_without_install_effects() {
+    let token = JoinToken::try_new("join_secret").expect("valid join token");
+    let mut redeemer = RecordingJoinRedeemer::default();
+    let mut resolver = RecordingJoinResolver {
+        failure: Some(
+            crate::lifecycle::machine_join::execution::JoinTargetResolutionFailure::ReleasePlatformMissing,
+        ),
+    };
+    let mut effects = RecordingEffects::default();
+    let mut reporter = RecordingJoinReporter::default();
+    let mut token_consumer = RecordingTokenConsumer::default();
+    let mut recorder = RecordingRecorder::default();
+
+    let execution = execute_host_runner_join(
+        &token,
+        &mut redeemer,
+        &mut resolver,
+        &mut reporter,
+        &mut token_consumer,
+        &mut effects,
+        &mut recorder,
+    );
+
+    assert!(matches!(
+        execution.terminal.failure(),
+        Some(HostRunnerPlanFailure::Step(HostRunnerStepFailure {
+            step: HostRunnerStepLabel::ResolveJoinTarget,
+            reason: HostRunnerStepFailureReason::JoinTargetResolutionFailed,
+            ..
+        }))
+    ));
+    assert!(effects.calls.is_empty());
+    assert_eq!(token_consumer.consumed, 0);
+    assert_eq!(
+        reporter.reports,
+        vec![JoinReport::Failed {
+            failure: MachineJoinReportFailure::ReleasePlatformMissing,
         }]
     );
 }
@@ -262,6 +311,7 @@ fn host_runner_join_keeps_token_when_material_store_fails() {
     let material = host_runner_join_material();
     let redacted = material.redacted();
     let mut redeemer = RecordingJoinRedeemer::default();
+    let mut resolver = RecordingJoinResolver::default();
     let mut effects = RecordingEffects {
         fail_on: Some(HostRunnerStepLabel::StoreJoinMaterial(redacted.clone())),
         ..RecordingEffects::default()
@@ -273,6 +323,7 @@ fn host_runner_join_keeps_token_when_material_store_fails() {
     let execution = execute_host_runner_join(
         &token,
         &mut redeemer,
+        &mut resolver,
         &mut reporter,
         &mut token_consumer,
         &mut effects,
@@ -302,6 +353,7 @@ fn host_runner_join_keeps_token_when_material_store_fails() {
 fn host_runner_join_keeps_token_when_install_fails_after_redemption() {
     let token = JoinToken::try_new("join_secret").expect("valid join token");
     let mut redeemer = RecordingJoinRedeemer::default();
+    let mut resolver = RecordingJoinResolver::default();
     let mut effects = RecordingEffects {
         fail_on: Some(HostRunnerStepLabel::InstallArtifact(ployzd_artifact())),
         ..RecordingEffects::default()
@@ -313,6 +365,7 @@ fn host_runner_join_keeps_token_when_install_fails_after_redemption() {
     let execution = execute_host_runner_join(
         &token,
         &mut redeemer,
+        &mut resolver,
         &mut reporter,
         &mut token_consumer,
         &mut effects,
@@ -345,6 +398,7 @@ fn host_runner_join_keeps_token_when_install_fails_after_redemption() {
 fn host_runner_join_reports_docker_prepare_failure_after_redemption() {
     let token = JoinToken::try_new("join_secret").expect("valid join token");
     let mut redeemer = RecordingJoinRedeemer::default();
+    let mut resolver = RecordingJoinResolver::default();
     let mut effects = RecordingEffects {
         fail_on: Some(HostRunnerStepLabel::PrepareContainerRuntime(
             ContainerRuntime::Docker,
@@ -358,6 +412,7 @@ fn host_runner_join_reports_docker_prepare_failure_after_redemption() {
     let execution = execute_host_runner_join(
         &token,
         &mut redeemer,
+        &mut resolver,
         &mut reporter,
         &mut token_consumer,
         &mut effects,
@@ -387,6 +442,7 @@ fn host_runner_join_reports_docker_prepare_failure_after_redemption() {
 fn host_runner_join_does_not_report_completed_when_token_consume_fails() {
     let token = JoinToken::try_new("join_secret").expect("valid join token");
     let mut redeemer = RecordingJoinRedeemer::default();
+    let mut resolver = RecordingJoinResolver::default();
     let mut reporter = RecordingJoinReporter::default();
     let mut effects = RecordingEffects {
         ..RecordingEffects::default()
@@ -400,6 +456,7 @@ fn host_runner_join_does_not_report_completed_when_token_consume_fails() {
     let execution = execute_host_runner_join(
         &token,
         &mut redeemer,
+        &mut resolver,
         &mut reporter,
         &mut token_consumer,
         &mut effects,

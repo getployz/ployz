@@ -144,23 +144,34 @@ pub async fn machine_join_report(
                 Err(error) => return Err(error),
             }
         }
-        MachineJoinReportOutcome::Failed {
-            failure: MachineJoinReportFailure::BootstrapFailed { message },
-        } => {
-            let result = handlers
-                .controllers
-                .repository()
-                .record_machine_join_failed(
-                    &raw_token,
+        MachineJoinReportOutcome::Failed { failure } => {
+            let (machine_failure, reported_failure) = match failure {
+                MachineJoinReportFailure::BootstrapFailed { message } => (
                     MachineAddFailure::BootstrapFailed {
                         message: message.clone(),
                     },
-                )
+                    MachineJoinReportedFailure::BootstrapFailed { message },
+                ),
+                MachineJoinReportFailure::ReleasePlatformMissing => (
+                    MachineAddFailure::ReleasePlatformMissing,
+                    MachineJoinReportedFailure::ReleasePlatformMissing,
+                ),
+                MachineJoinReportFailure::ReleasePlatformUnsupported { platform } => (
+                    MachineAddFailure::ReleasePlatformUnsupported {
+                        platform: platform.clone(),
+                    },
+                    MachineJoinReportedFailure::ReleasePlatformUnsupported { platform },
+                ),
+            };
+            let result = handlers
+                .controllers
+                .repository()
+                .record_machine_join_failed(&raw_token, machine_failure)
                 .await;
             (
                 result,
                 MachineJoinReportedOutcome::Failed {
-                    failure: MachineJoinReportedFailure::BootstrapFailed { message },
+                    failure: reported_failure,
                 },
             )
         }

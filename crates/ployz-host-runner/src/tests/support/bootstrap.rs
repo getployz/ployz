@@ -11,8 +11,8 @@ use super::artifacts::{
 use crate::execution::{ArtifactKind, ArtifactTarget, DataplaneArtifactTargets};
 use crate::execution::{PloyzdRoleEnvironmentFile, SupervisorUnitTarget};
 use crate::lifecycle::machine_join::execution::{
-    HostRunnerJoinRedeemer, HostRunnerJoinReporter, HostRunnerJoinTokenConsumer,
-    RedeemedHostRunnerJoin,
+    HostRunnerJoinRedeemer, HostRunnerJoinReporter, HostRunnerJoinResolver,
+    HostRunnerJoinTokenConsumer, JoinTargetResolutionFailure,
 };
 use crate::plan::{
     FirstMachineInstallTarget, HostRunnerJoinMaterial, HostRunnerJoinTarget, HostRunnerStep,
@@ -29,6 +29,7 @@ use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy};
 use ployz_nats::connect::NatsClientUrl;
 use ployz_nats::server_config::NatsListener;
 use ployz_sdk_types::MachineJoinReportFailure;
+use ployz_sdk_types::{MachineJoinRedeemResult, MachineJoinRedeemed};
 use ployz_test_support::ids::{failure_message, machine_id, operation_id};
 
 pub struct RecordingEffects {
@@ -57,7 +58,11 @@ impl HostRunnerStepEffects for RecordingEffects {
 pub struct RecordingJoinRedeemer {
     pub redeemed_tokens: Vec<JoinToken>,
     pub fail_message: Option<&'static str>,
-    pub resolution_failure: Option<&'static str>,
+}
+
+#[derive(Default)]
+pub struct RecordingJoinResolver {
+    pub failure: Option<JoinTargetResolutionFailure>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,33 +98,61 @@ impl HostRunnerJoinRedeemer for RecordingJoinRedeemer {
     fn redeem_join_token(
         &mut self,
         token: &JoinToken,
-    ) -> Result<RedeemedHostRunnerJoin, FailureMessage> {
+    ) -> Result<MachineJoinRedeemed, FailureMessage> {
         self.redeemed_tokens.push(token.clone());
         if let Some(message) = self.fail_message {
             return Err(failure_message(message));
         }
 
-        if let Some(message) = self.resolution_failure {
-            return Ok(RedeemedHostRunnerJoin::resolution_failed(
-                operation_id("op_machine"),
-                machine_id("machine_7"),
-                failure_message(message),
-            ));
-        }
+        Ok(recording_join_redeemed())
+    }
+}
 
-        Ok(RedeemedHostRunnerJoin::new(
-            operation_id("op_machine"),
-            machine_id("machine_7"),
-            HostRunnerJoinTarget::new(
-                host_runner_join_material(),
-                ployzd_artifact(),
-                dataplane_artifacts(),
-                railpack_artifact(),
-                NonEmptyRoleSet::try_new(vec![DaemonProcessRole::Machine(machine_id("machine_7"))])
-                    .expect("non-empty role set"),
-                role_environment(),
-                ployz_core::install::HostPortAssurance::Keeper,
+pub fn recording_join_redeemed() -> MachineJoinRedeemed {
+    MachineJoinRedeemed {
+        operation_id: operation_id("op_machine"),
+        machine_id: machine_id("machine_7"),
+        name: ployz_core::machine::MachineName::try_new("edge_7").expect("machine name"),
+        roles: InstallRolePolicy::install_all().without_gateway(),
+        host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
+        endpoint_subnet: ployz_core::network::MachineEndpointSubnet::try_new("10.198.7.0/24")
+            .expect("endpoint subnet"),
+        join_bundle: ployz_core::install::MachineJoinBundle {
+            material: ployz_test_support::fixtures::machine_join_material(
+                "nats://127.0.0.1:7422",
+                ployz_test_support::fixtures::TEST_CA_PEM,
             ),
+        },
+        secret_delivery: ployz_core::install::MachineJoinSecretDelivery {
+            nats_credentials: NatsUserSeed::try_new(
+                "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM",
+            )
+            .expect("join credentials"),
+        },
+        joined_at: ployz_core::machine::JoinTokenRedeemedAt::try_new(60).expect("redeemed at"),
+        last_event_sequence: ployz_core::operation::EventSequence::try_new(8)
+            .expect("event sequence"),
+        result: MachineJoinRedeemResult::Joined,
+    }
+}
+
+impl HostRunnerJoinResolver for RecordingJoinResolver {
+    fn resolve_join_target(
+        &mut self,
+        _redeemed: &MachineJoinRedeemed,
+    ) -> Result<HostRunnerJoinTarget, JoinTargetResolutionFailure> {
+        if let Some(failure) = &self.failure {
+            return Err(failure.clone());
+        }
+        Ok(HostRunnerJoinTarget::new(
+            host_runner_join_material(),
+            ployzd_artifact(),
+            dataplane_artifacts(),
+            railpack_artifact(),
+            NonEmptyRoleSet::try_new(vec![DaemonProcessRole::Machine(machine_id("machine_7"))])
+                .expect("non-empty role set"),
+            role_environment(),
+            ployz_core::install::HostPortAssurance::Keeper,
         ))
     }
 }

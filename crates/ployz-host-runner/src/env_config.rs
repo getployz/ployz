@@ -20,7 +20,7 @@ use crate::runtime::{
 
 pub(crate) fn load_versioned_release_manifest(url: &str) -> Result<ReleaseManifest, String> {
     let contents = read_release_manifest_text(url)?;
-    ReleaseManifest::parse(&contents)
+    ReleaseManifest::parse(&contents).map_err(|error| error.to_string())
 }
 
 pub(crate) fn local_core_target_from_env() -> Result<FirstMachineInstallTarget, String> {
@@ -58,7 +58,7 @@ pub(crate) fn default_machine_join_template_file() -> Result<AbsoluteInstallPath
 fn load_local_release_manifest() -> Result<ReleaseManifest, String> {
     let url = local_release_manifest_url(Path::new("/etc/ployz/release.env"));
     let contents = read_release_manifest_text(&url)?;
-    ReleaseManifest::parse(&contents)
+    ReleaseManifest::parse(&contents).map_err(|error| error.to_string())
 }
 
 pub(crate) fn local_release_manifest_url(release_env_path: &Path) -> String {

@@ -5,8 +5,8 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use super::execution::{
-    HostRunnerJoinRedeemer, HostRunnerJoinReporter, HostRunnerJoinTokenConsumer,
-    RedeemedHostRunnerJoin, execute_host_runner_join,
+    HostRunnerJoinRedeemer, HostRunnerJoinReporter, HostRunnerJoinResolver,
+    HostRunnerJoinTokenConsumer, JoinTargetResolutionFailure, execute_host_runner_join,
 };
 use super::{JOIN_MATERIAL_DIR, remove_join_token_file};
 use crate::cli::HostRunnerStartup;
@@ -36,7 +36,8 @@ use ployz_sdk_types::{
 };
 
 use crate::release_manifest::{
-    ReleaseManifest, ReleasePlatform, persisted_release_manifest_url, read_release_manifest_text,
+    ReleaseManifest, ReleaseManifestError, ReleasePlatform, persisted_release_manifest_url,
+    read_release_manifest_text, release_manifest_url_for_platform,
 };
 use crate::runtime::{
     DEFAULT_NATS_CONNECT_TIMEOUT, HOST_RUNNER_STATE_DIR, PLOYZ_JOIN_NKEY_SEED_ENV,
@@ -83,6 +84,7 @@ pub(crate) fn run_join_with_consumer(
     recorder: &mut impl crate::plan::HostRunnerStepRecorder,
 ) -> crate::plan::HostRunnerPlanExecution {
     let mut redeemer = JoinRedeemer::from_env();
+    let mut resolver = JoinTargetResolver;
     let mut reporter = JoinReporter::from_env(token.clone());
     let mut effects = HostRunnerLocalEffects::new(
         HostRunnerLocalConfig {
@@ -96,6 +98,7 @@ pub(crate) fn run_join_with_consumer(
     execute_host_runner_join(
         token,
         &mut redeemer,
+        &mut resolver,
         &mut reporter,
         &mut token_consumer,
         &mut effects,
@@ -123,7 +126,7 @@ impl HostRunnerJoinRedeemer for JoinRedeemer {
     fn redeem_join_token(
         &mut self,
         token: &JoinToken,
-    ) -> Result<RedeemedHostRunnerJoin, FailureMessage> {
+    ) -> Result<MachineJoinRedeemed, FailureMessage> {
         let connect = self.connect.clone()?;
         let join_token = MachineJoinToken::try_new(token.as_str())
             .map_err(|error| failure_message(&format!("invalid join token: {error:?}")))?;
@@ -139,7 +142,18 @@ impl HostRunnerJoinRedeemer for JoinRedeemer {
             redeem_until_material_ready(&OperationApiClient::new(client), join_token).await
         })?;
 
-        Ok(host_runner_join_target(redeemed))
+        Ok(redeemed)
+    }
+}
+
+pub(crate) struct JoinTargetResolver;
+
+impl HostRunnerJoinResolver for JoinTargetResolver {
+    fn resolve_join_target(
+        &mut self,
+        redeemed: &MachineJoinRedeemed,
+    ) -> Result<HostRunnerJoinTarget, JoinTargetResolutionFailure> {
+        resolve_host_runner_join_target(redeemed)
     }
 }
 
@@ -315,25 +329,12 @@ enum HostRunnerNatsConnectError {
     InvalidJoinSeed,
 }
 
-fn host_runner_join_target(redeemed: MachineJoinRedeemed) -> RedeemedHostRunnerJoin {
-    let callback_result = redeemed.clone();
-    let operation_id = redeemed.operation_id.clone();
-    let machine_id = redeemed.machine_id.clone();
-    match resolve_host_runner_join_target(&redeemed) {
-        Ok(target) => RedeemedHostRunnerJoin::new(operation_id, machine_id, target),
-        Err(failure) => {
-            RedeemedHostRunnerJoin::resolution_failed(operation_id, machine_id, failure)
-        }
-    }
-    .with_callback_result(callback_result)
-}
-
 fn resolve_host_runner_join_target(
     redeemed: &MachineJoinRedeemed,
-) -> Result<HostRunnerJoinTarget, FailureMessage> {
-    let artifacts = load_local_join_artifacts(&redeemed.join_bundle.material.substrate_release)
-        .map_err(|error| failure_message(&format!("invalid local join release: {error}")))?;
+) -> Result<HostRunnerJoinTarget, JoinTargetResolutionFailure> {
+    let artifacts = load_local_join_artifacts(&redeemed.join_bundle.material.substrate_release)?;
     resolve_host_runner_join_target_with_artifacts(redeemed, artifacts)
+        .map_err(|message| JoinTargetResolutionFailure::Other { message })
 }
 
 fn resolve_host_runner_join_target_with_artifacts(
@@ -387,8 +388,13 @@ fn resolve_host_runner_join_target_with_artifacts(
 
 fn load_local_join_artifacts(
     expected: &MachineJoinSubstrateRelease,
-) -> Result<FirstMachineInstallArtifacts, String> {
-    let platform = ReleasePlatform::from_target(std::env::consts::OS, std::env::consts::ARCH)?;
+) -> Result<FirstMachineInstallArtifacts, JoinTargetResolutionFailure> {
+    let platform = ReleasePlatform::from_target(std::env::consts::OS, std::env::consts::ARCH)
+        .map_err(
+            |_| JoinTargetResolutionFailure::ReleasePlatformUnsupported {
+                platform: format!("{}/{}", std::env::consts::OS, std::env::consts::ARCH),
+            },
+        )?;
     load_join_artifacts_from_release_env(
         std::path::Path::new("/etc/ployz/release.env"),
         expected,
@@ -400,12 +406,62 @@ fn load_join_artifacts_from_release_env(
     release_env: &std::path::Path,
     expected: &MachineJoinSubstrateRelease,
     platform: ReleasePlatform,
-) -> Result<FirstMachineInstallArtifacts, String> {
-    let manifest_url = persisted_release_manifest_url(release_env)
-        .map_err(|error| format!("failed to read installed release identity: {error}"))?;
-    let contents = read_release_manifest_text(&manifest_url)?;
-    let manifest = ReleaseManifest::parse(&contents)?;
-    resolve_join_artifacts(expected, &manifest, platform)
+) -> Result<FirstMachineInstallArtifacts, JoinTargetResolutionFailure> {
+    let manifest_url = persisted_release_manifest_url(release_env).map_err(|error| {
+        other_resolution_failure(format!(
+            "failed to read installed release identity: {error}"
+        ))
+    })?;
+    let installed_contents =
+        read_release_manifest_text(&manifest_url).map_err(other_resolution_failure)?;
+    resolve_join_artifacts_from_manifests(expected, platform, &installed_contents, |url| {
+        read_release_manifest_text(url)
+    })
+}
+
+fn other_resolution_failure(message: impl Into<String>) -> JoinTargetResolutionFailure {
+    JoinTargetResolutionFailure::Other {
+        message: failure_message(&message.into()),
+    }
+}
+
+fn manifest_resolution_failure(error: ReleaseManifestError) -> JoinTargetResolutionFailure {
+    match error {
+        ReleaseManifestError::MissingPlatform => {
+            JoinTargetResolutionFailure::ReleasePlatformMissing
+        }
+        ReleaseManifestError::UnsupportedPlatform { platform } => {
+            JoinTargetResolutionFailure::ReleasePlatformUnsupported { platform }
+        }
+        ReleaseManifestError::Invalid { message } => other_resolution_failure(message),
+    }
+}
+
+fn resolve_join_artifacts_from_manifests(
+    expected: &MachineJoinSubstrateRelease,
+    local_platform: ReleasePlatform,
+    installed_contents: &str,
+    read_exact_manifest: impl FnOnce(&str) -> Result<String, String>,
+) -> Result<FirstMachineInstallArtifacts, JoinTargetResolutionFailure> {
+    if let Ok(installed) = ReleaseManifest::parse(installed_contents)
+        && installed.platform() == local_platform
+        && installed.version() == &expected.version
+    {
+        return installed
+            .install_artifacts()
+            .map_err(other_resolution_failure);
+    }
+
+    if expected.version.as_str().starts_with("dev-") {
+        return Err(other_resolution_failure(
+            "installed local development release does not match cluster join release",
+        ));
+    }
+
+    let url = release_manifest_url_for_platform(&expected.version, local_platform.manifest_slug());
+    let contents = read_exact_manifest(&url).map_err(other_resolution_failure)?;
+    let manifest = ReleaseManifest::parse(&contents).map_err(manifest_resolution_failure)?;
+    resolve_join_artifacts(expected, &manifest, local_platform).map_err(other_resolution_failure)
 }
 
 fn resolve_join_artifacts(
@@ -446,8 +502,9 @@ impl HostRunnerJoinTokenConsumer for StartupJoinTokenConsumer {
 mod tests {
     use super::{
         load_join_artifacts_from_release_env, resolve_host_runner_join_target_with_artifacts,
-        resolve_join_artifacts,
+        resolve_join_artifacts, resolve_join_artifacts_from_manifests,
     };
+    use crate::lifecycle::machine_join::execution::JoinTargetResolutionFailure;
     use ployz_core::ids::{MachineId, OperationId};
     use ployz_core::install::{
         ExactPloyzVersion, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
@@ -549,7 +606,84 @@ mod tests {
         )
         .expect_err("missing installed release identity fails closed");
 
-        assert!(error.starts_with("failed to read installed release identity:"));
+        assert!(matches!(
+            error,
+            JoinTargetResolutionFailure::Other { message }
+                if message.as_str().starts_with("failed to read installed release identity:")
+        ));
+    }
+
+    #[test]
+    fn advanced_installer_channel_resolves_the_founder_selected_exact_release() {
+        let expected = MachineJoinSubstrateRelease {
+            version: ExactPloyzVersion::try_new("0.1.0").expect("exact release"),
+        };
+        let installed = release_manifest_contents("linux-arm64", "linux-arm64", "0.2.0");
+        let exact = release_manifest_contents("linux-arm64", "linux-arm64", "0.1.0");
+
+        let artifacts = resolve_join_artifacts_from_manifests(
+            &expected,
+            ReleasePlatform::LinuxArm64,
+            &installed,
+            |url| {
+                assert!(url.contains("/download/v0.1.0/ployz-release-linux-arm64.env"));
+                Ok(exact)
+            },
+        )
+        .expect("founder-selected release resolves independently of installed channel");
+
+        assert_eq!(artifacts.ployzd.version.as_str(), "0.1.0");
+        assert_eq!(
+            artifacts.ployzd.source.as_str(),
+            "https://example.test/ployzd-linux-arm64"
+        );
+    }
+
+    #[test]
+    fn exact_join_manifest_missing_platform_is_a_typed_failure() {
+        let expected = MachineJoinSubstrateRelease {
+            version: ExactPloyzVersion::try_new("0.1.0").expect("exact release"),
+        };
+        let installed = release_manifest_contents("linux-arm64", "linux-arm64", "0.2.0");
+        let exact = release_manifest_contents("linux-arm64", "linux-arm64", "0.1.0").replacen(
+            "PLOYZ_RELEASE_PLATFORM=linux-arm64\n",
+            "",
+            1,
+        );
+
+        let failure = resolve_join_artifacts_from_manifests(
+            &expected,
+            ReleasePlatform::LinuxArm64,
+            &installed,
+            |_| Ok(exact),
+        )
+        .expect_err("missing exact-release platform fails closed");
+
+        assert_eq!(failure, JoinTargetResolutionFailure::ReleasePlatformMissing);
+    }
+
+    #[test]
+    fn exact_join_manifest_unsupported_platform_is_a_typed_failure() {
+        let expected = MachineJoinSubstrateRelease {
+            version: ExactPloyzVersion::try_new("0.1.0").expect("exact release"),
+        };
+        let installed = release_manifest_contents("linux-arm64", "linux-arm64", "0.2.0");
+        let exact = release_manifest_contents("linux-riscv64", "linux-riscv64", "0.1.0");
+
+        let failure = resolve_join_artifacts_from_manifests(
+            &expected,
+            ReleasePlatform::LinuxArm64,
+            &installed,
+            |_| Ok(exact),
+        )
+        .expect_err("unsupported exact-release platform fails closed");
+
+        assert_eq!(
+            failure,
+            JoinTargetResolutionFailure::ReleasePlatformUnsupported {
+                platform: "linux-riscv64".to_owned(),
+            }
+        );
     }
 
     #[test]
@@ -667,9 +801,18 @@ mod tests {
     }
 
     fn release_manifest(platform: &str, artifact_suffix: &str) -> ReleaseManifest {
-        ReleaseManifest::parse(&format!(
+        ReleaseManifest::parse(&release_manifest_contents(
+            platform,
+            artifact_suffix,
+            "0.1.0",
+        ))
+        .expect("release manifest")
+    }
+
+    fn release_manifest_contents(platform: &str, artifact_suffix: &str, version: &str) -> String {
+        format!(
             "PLOYZ_RELEASE_PLATFORM={platform}\n\
-             PLOYZ_VERSION=0.1.0\n\
+             PLOYZ_VERSION={version}\n\
              PLOYZD_URL=https://example.test/ployzd-{artifact_suffix}\n\
              PLOYZD_SHA256={SHA}\n\
              PLOYZ_EBPF_TC_URL=https://example.test/ployz-ebpf-tc-{artifact_suffix}\n\
@@ -679,8 +822,7 @@ mod tests {
              PLOYZ_RAILPACK_VERSION=v0.31.0\n\
              PLOYZ_RAILPACK_URL=https://example.test/railpack-{artifact_suffix}\n\
              PLOYZ_RAILPACK_SHA256={SHA}\n"
-        ))
-        .expect("release manifest")
+        )
     }
 
     fn resolved_target(redeemed: &MachineJoinRedeemed) -> crate::plan::HostRunnerJoinTarget {

@@ -12,6 +12,22 @@ pub enum ReleasePlatform {
     LinuxArm64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ReleaseManifestError {
+    #[error("release manifest is missing PLOYZ_RELEASE_PLATFORM")]
+    MissingPlatform,
+    #[error("release manifest has unsupported PLOYZ_RELEASE_PLATFORM={platform}")]
+    UnsupportedPlatform { platform: String },
+    #[error("{message}")]
+    Invalid { message: String },
+}
+
+impl From<String> for ReleaseManifestError {
+    fn from(message: String) -> Self {
+        Self::Invalid { message }
+    }
+}
+
 impl ReleasePlatform {
     pub fn from_target(os: &str, arch: &str) -> Result<Self, String> {
         match (os, arch) {
@@ -29,13 +45,13 @@ impl ReleasePlatform {
         }
     }
 
-    fn from_manifest_slug(value: &str) -> Result<Self, String> {
+    fn from_manifest_slug(value: &str) -> Result<Self, ReleaseManifestError> {
         match value {
             "linux-amd64" => Ok(Self::LinuxAmd64),
             "linux-arm64" => Ok(Self::LinuxArm64),
-            _ => Err(format!(
-                "release manifest has unsupported PLOYZ_RELEASE_PLATFORM={value}"
-            )),
+            _ => Err(ReleaseManifestError::UnsupportedPlatform {
+                platform: value.to_owned(),
+            }),
         }
     }
 }
@@ -72,22 +88,25 @@ struct RailpackManifestEntry {
 }
 
 impl ReleaseManifest {
-    pub fn parse(contents: &str) -> Result<Self, String> {
+    pub fn parse(contents: &str) -> Result<Self, ReleaseManifestError> {
+        let platform = manifest_value(contents, "PLOYZ_RELEASE_PLATFORM")
+            .map_err(|_| ReleaseManifestError::MissingPlatform)?;
         Ok(Self {
-            platform: ReleasePlatform::from_manifest_slug(&manifest_value(
-                contents,
-                "PLOYZ_RELEASE_PLATFORM",
-            )?)?,
+            platform: ReleasePlatform::from_manifest_slug(&platform)?,
             version: ExactPloyzVersion::try_new(manifest_value(contents, "PLOYZ_VERSION")?)
-                .map_err(|error| format!("release manifest PLOYZ_VERSION is invalid: {error}"))?,
+                .map_err(|error| {
+                    invalid_manifest(format!(
+                        "release manifest PLOYZ_VERSION is invalid: {error}"
+                    ))
+                })?,
             ployzd_url: manifest_value(contents, "PLOYZD_URL")?,
             ployzd_sha256: manifest_value(contents, "PLOYZD_SHA256")?,
             ebpf_tc_url: manifest_value(contents, "PLOYZ_EBPF_TC_URL")?,
             ebpf_tc_sha256: manifest_value(contents, "PLOYZ_EBPF_TC_SHA256")?,
             ebpf_ctl_url: manifest_value(contents, "PLOYZ_EBPF_CTL_URL")?,
             ebpf_ctl_sha256: manifest_value(contents, "PLOYZ_EBPF_CTL_SHA256")?,
-            railpack: railpack_entry(contents)?,
-            nats_server: nats_server_entry(contents)?,
+            railpack: railpack_entry(contents).map_err(invalid_manifest)?,
+            nats_server: nats_server_entry(contents).map_err(invalid_manifest)?,
         })
     }
 
@@ -99,6 +118,11 @@ impl ReleaseManifest {
     #[must_use]
     pub fn ployz_version(&self) -> &str {
         self.version.as_str()
+    }
+
+    #[must_use]
+    pub const fn version(&self) -> &ExactPloyzVersion {
+        &self.version
     }
 
     pub fn install_artifacts(&self) -> Result<FirstMachineInstallArtifacts, String> {
@@ -189,11 +213,27 @@ fn nats_server_entry(contents: &str) -> Result<Option<NatsServerManifestEntry>, 
 
 #[must_use]
 pub fn release_manifest_url(version: &ExactPloyzVersion) -> String {
+    let platform = ReleasePlatform::from_target(std::env::consts::OS, std::env::consts::ARCH)
+        .map_or("unsupported", ReleasePlatform::manifest_slug);
+    release_manifest_url_for_platform(version, platform)
+}
+
+#[must_use]
+pub fn release_manifest_url_for_platform(
+    version: &ExactPloyzVersion,
+    platform: impl AsRef<str>,
+) -> String {
     format!(
         "https://github.com/getployz/ployz/releases/download/{}/ployz-release-{}.env",
         version.tag(),
-        release_platform()
+        platform.as_ref()
     )
+}
+
+fn invalid_manifest(message: impl Into<String>) -> ReleaseManifestError {
+    ReleaseManifestError::Invalid {
+        message: message.into(),
+    }
 }
 
 pub fn persisted_release_manifest_url(path: &std::path::Path) -> Result<String, String> {
@@ -254,8 +294,8 @@ pub(crate) fn read_release_manifest_text(url: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ExactPloyzVersion, ReleaseManifest, ReleasePlatform, persisted_release_manifest_url,
-        read_release_manifest_text, release_manifest_url,
+        ExactPloyzVersion, ReleaseManifest, ReleaseManifestError, ReleasePlatform,
+        persisted_release_manifest_url, read_release_manifest_text, release_manifest_url,
     };
 
     const SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -376,7 +416,7 @@ mod tests {
         let error = ReleaseManifest::parse(&manifest_without_nats(None))
             .expect_err("platform is required release identity");
 
-        assert_eq!(error, "release manifest is missing PLOYZ_RELEASE_PLATFORM");
+        assert_eq!(error, ReleaseManifestError::MissingPlatform);
     }
 
     #[test]
@@ -386,7 +426,9 @@ mod tests {
 
         assert_eq!(
             error,
-            "release manifest has unsupported PLOYZ_RELEASE_PLATFORM=linux-riscv64"
+            ReleaseManifestError::UnsupportedPlatform {
+                platform: "linux-riscv64".to_owned(),
+            }
         );
     }
 
@@ -414,7 +456,7 @@ mod tests {
         let error = ReleaseManifest::parse(&manifest).expect_err("release must be immutable");
 
         assert_eq!(
-            error,
+            error.to_string(),
             "release manifest PLOYZ_VERSION is invalid: release version must be exact, got mutable \"alpha\""
         );
     }
@@ -432,7 +474,7 @@ mod tests {
              PLOYZ_EBPF_CTL_SHA256={SHA}\n"
         ))
         .expect_err("Railpack is required release material");
-        assert!(missing.contains("PLOYZ_RAILPACK_VERSION"));
+        assert!(missing.to_string().contains("PLOYZ_RAILPACK_VERSION"));
 
         let partial = ReleaseManifest::parse(&format!(
             "PLOYZ_RELEASE_PLATFORM=linux-amd64\n\
@@ -446,7 +488,7 @@ mod tests {
              PLOYZ_RAILPACK_VERSION=v0.31.0\n"
         ))
         .expect_err("partial Railpack tuple is rejected");
-        assert!(partial.contains("PLOYZ_RAILPACK_URL"));
+        assert!(partial.to_string().contains("PLOYZ_RAILPACK_URL"));
     }
 
     #[test]
@@ -476,7 +518,7 @@ mod tests {
         ))
         .expect_err("partial entry is rejected");
 
-        assert!(error.contains("partial nats-server entry"));
+        assert!(error.to_string().contains("partial nats-server entry"));
     }
 
     #[test]

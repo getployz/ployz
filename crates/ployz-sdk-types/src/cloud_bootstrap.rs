@@ -315,6 +315,8 @@ pub enum CloudBootstrapFailure {
     AlreadyBootstrapped,
     EnvelopeInvalid { message: FailureMessage },
     BootstrapFailed { message: FailureMessage },
+    ReleasePlatformMissing,
+    ReleasePlatformUnsupported { platform: String },
     CloudReachabilityFailed { message: FailureMessage },
 }
 
