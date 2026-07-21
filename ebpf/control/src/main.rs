@@ -52,11 +52,9 @@ fn run(args: Vec<String>) -> Result<EbpfCtlOutcome, String> {
             return attachment_status(&bridge_ifname, pin_path);
         }
         EbpfCtlCommand::Route { action } => match action {
-            RouteCommand::Add { subnet, ifindex } => route_add(subnet, ifindex, pin_path),
-            RouteCommand::AddIfname { subnet, ifname } => {
-                route_add_ifname(subnet, &ifname, pin_path)
+            RouteCommand::ReplaceAllIfname { ifname, subnets } => {
+                route_replace_all_ifname(&ifname, &subnets, pin_path)
             }
-            RouteCommand::Del { subnet } => route_del(subnet, pin_path),
         },
     }
     .map(|()| EbpfCtlOutcome::Completed)
@@ -100,19 +98,10 @@ enum EbpfCtlCommand {
 
 #[derive(Debug, Subcommand)]
 enum RouteCommand {
-    Add {
-        #[arg(value_parser = parse_ipv4_subnet)]
-        subnet: ipnet::Ipv4Net,
-        ifindex: u32,
-    },
-    AddIfname {
-        #[arg(value_parser = parse_ipv4_subnet)]
-        subnet: ipnet::Ipv4Net,
+    ReplaceAllIfname {
         ifname: String,
-    },
-    Del {
         #[arg(value_parser = parse_ipv4_subnet)]
-        subnet: ipnet::Ipv4Net,
+        subnets: Vec<ipnet::Ipv4Net>,
     },
 }
 
@@ -218,45 +207,21 @@ fn attachment_status(_bridge: &str, _pin_path: Option<&str>) -> Result<EbpfCtlOu
 }
 
 #[cfg(target_os = "linux")]
-fn route_add(subnet: ipnet::Ipv4Net, ifindex: u32, pin_path: Option<&str>) -> Result<(), String> {
-    linux::route_add(subnet, ifindex, pin_path.unwrap_or(DEFAULT_PIN_PATH))
-}
-
-#[cfg(not(target_os = "linux"))]
-fn route_add(
-    _subnet: ipnet::Ipv4Net,
-    _ifindex: u32,
-    _pin_path: Option<&str>,
-) -> Result<(), String> {
-    Err("route add requires Linux".to_owned())
-}
-
-#[cfg(target_os = "linux")]
-fn route_add_ifname(
-    subnet: ipnet::Ipv4Net,
+fn route_replace_all_ifname(
     ifname: &str,
+    subnets: &[ipnet::Ipv4Net],
     pin_path: Option<&str>,
 ) -> Result<(), String> {
-    linux::route_add_ifname(subnet, ifname, pin_path.unwrap_or(DEFAULT_PIN_PATH))
+    linux::route_replace_all_ifname(ifname, subnets, pin_path.unwrap_or(DEFAULT_PIN_PATH))
 }
 
 #[cfg(not(target_os = "linux"))]
-fn route_add_ifname(
-    _subnet: ipnet::Ipv4Net,
+fn route_replace_all_ifname(
     _ifname: &str,
+    _subnets: &[ipnet::Ipv4Net],
     _pin_path: Option<&str>,
 ) -> Result<(), String> {
-    Err("route add-ifname requires Linux".to_owned())
-}
-
-#[cfg(target_os = "linux")]
-fn route_del(subnet: ipnet::Ipv4Net, pin_path: Option<&str>) -> Result<(), String> {
-    linux::route_del(subnet, pin_path.unwrap_or(DEFAULT_PIN_PATH))
-}
-
-#[cfg(not(target_os = "linux"))]
-fn route_del(_subnet: ipnet::Ipv4Net, _pin_path: Option<&str>) -> Result<(), String> {
-    Err("route del requires Linux".to_owned())
+    Err("route replace-all-ifname requires Linux".to_owned())
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -268,9 +233,103 @@ fn subnet_to_key(subnet: ipnet::Ipv4Net) -> ployz_ebpf_common::RouteKey {
     }
 }
 
+#[cfg(any(target_os = "linux", test))]
+#[derive(Debug, PartialEq, Eq)]
+struct RouteReplacementPlan {
+    remove_before_insert: Vec<ployz_ebpf_common::RouteKey>,
+    insert: Vec<ployz_ebpf_common::RouteKey>,
+    remove_after_insert: Vec<ployz_ebpf_common::RouteKey>,
+}
+
+#[cfg(any(target_os = "linux", test))]
+#[derive(Debug, PartialEq, Eq)]
+enum RouteReplacementPlanError {
+    DesiredSetTooLarge { desired: usize, capacity: usize },
+    ObservedSetTooLarge { observed: usize, capacity: usize },
+    StaleSlotsUnavailable { required: usize, available: usize },
+}
+
+#[cfg(any(target_os = "linux", test))]
+impl std::fmt::Display for RouteReplacementPlanError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DesiredSetTooLarge { desired, capacity } => write!(
+                formatter,
+                "desired route count {desired} exceeds map capacity {capacity}"
+            ),
+            Self::ObservedSetTooLarge { observed, capacity } => write!(
+                formatter,
+                "observed route count {observed} exceeds map capacity {capacity}"
+            ),
+            Self::StaleSlotsUnavailable {
+                required,
+                available,
+            } => write!(
+                formatter,
+                "replacement requires {required} stale slots but only {available} are available"
+            ),
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn plan_route_replacement(
+    observed: &[ployz_ebpf_common::RouteKey],
+    desired: &[ployz_ebpf_common::RouteKey],
+    capacity: usize,
+) -> Result<RouteReplacementPlan, RouteReplacementPlanError> {
+    let mut observed = observed.to_vec();
+    observed.sort_unstable();
+    observed.dedup();
+
+    let mut desired = desired.to_vec();
+    desired.sort_unstable();
+    desired.dedup();
+
+    if desired.len() > capacity {
+        return Err(RouteReplacementPlanError::DesiredSetTooLarge {
+            desired: desired.len(),
+            capacity,
+        });
+    }
+    if observed.len() > capacity {
+        return Err(RouteReplacementPlanError::ObservedSetTooLarge {
+            observed: observed.len(),
+            capacity,
+        });
+    }
+
+    let missing_desired = desired
+        .iter()
+        .filter(|key| observed.binary_search(key).is_err())
+        .count();
+    let free_slots = capacity - observed.len();
+    let required_stale_slots = missing_desired.saturating_sub(free_slots);
+    let mut stale = observed
+        .into_iter()
+        .filter(|key| desired.binary_search(key).is_err())
+        .collect::<Vec<_>>();
+    if stale.len() < required_stale_slots {
+        return Err(RouteReplacementPlanError::StaleSlotsUnavailable {
+            required: required_stale_slots,
+            available: stale.len(),
+        });
+    }
+    let remove_after_insert = stale.split_off(required_stale_slots);
+
+    Ok(RouteReplacementPlan {
+        remove_before_insert: stale,
+        insert: desired,
+        remove_after_insert,
+    })
+}
+
 #[cfg(target_os = "linux")]
 mod linux {
-    use super::{EbpfCtlOutcome, subnet_to_key, tc_filter_has_program, validate_bytecode};
+    use super::{
+        EbpfCtlOutcome, RouteReplacementPlan, plan_route_replacement, subnet_to_key,
+        tc_filter_has_program, validate_bytecode,
+    };
     use aya::Ebpf;
     use aya::programs::links::{FdLink, LinkOrder, PinnedLink};
     use aya::programs::tc::{NlOptions, TcAttachOptions};
@@ -530,27 +589,42 @@ mod linux {
         .all(|path| Path::new(path).exists())
     }
 
-    pub fn route_add(subnet: ipnet::Ipv4Net, ifindex: u32, pin_path: &str) -> Result<(), String> {
-        let mut map = open_routes_map(pin_path)?;
-        map.insert(
-            PodRouteKey(subnet_to_key(subnet)),
-            PodRouteEntry(RouteEntry { ifindex }),
-            0,
-        )
-        .map_err(|error| format!("insert route {subnet}: {error}"))
-    }
-
-    pub fn route_add_ifname(
-        subnet: ipnet::Ipv4Net,
+    pub fn route_replace_all_ifname(
         ifname: &str,
+        subnets: &[ipnet::Ipv4Net],
         pin_path: &str,
     ) -> Result<(), String> {
-        route_add(subnet, resolve_ifindex(ifname)?, pin_path)
-    }
-
-    pub fn route_del(subnet: ipnet::Ipv4Net, pin_path: &str) -> Result<(), String> {
+        let ifindex = resolve_ifindex(ifname)?;
+        let desired = subnets
+            .iter()
+            .copied()
+            .map(subnet_to_key)
+            .collect::<Vec<_>>();
         let mut map = open_routes_map(pin_path)?;
-        let _ = map.remove(&PodRouteKey(subnet_to_key(subnet)));
+        let observed = map
+            .keys()
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("list pinned routes: {error}"))?;
+        let observed = observed.iter().map(|key| key.0).collect::<Vec<_>>();
+        let RouteReplacementPlan {
+            remove_before_insert,
+            insert,
+            remove_after_insert,
+        } = plan_route_replacement(&observed, &desired, ployz_ebpf_common::MAX_ROUTES as usize)
+            .map_err(|error| error.to_string())?;
+
+        for key in remove_before_insert {
+            map.remove(&PodRouteKey(key))
+                .map_err(|error| format!("free stale route capacity: {error}"))?;
+        }
+        for key in insert {
+            map.insert(PodRouteKey(key), PodRouteEntry(RouteEntry { ifindex }), 0)
+                .map_err(|error| format!("insert desired route: {error}"))?;
+        }
+        for key in remove_after_insert {
+            map.remove(&PodRouteKey(key))
+                .map_err(|error| format!("remove stale route: {error}"))?;
+        }
         Ok(())
     }
 
@@ -605,6 +679,90 @@ mod tests {
     }
 
     #[test]
+    fn saturated_replacement_frees_only_the_required_stale_slot() {
+        let observed = (0..ployz_ebpf_common::MAX_ROUTES)
+            .map(test_route_key)
+            .collect::<Vec<_>>();
+        let desired = (1..=ployz_ebpf_common::MAX_ROUTES)
+            .map(test_route_key)
+            .collect::<Vec<_>>();
+
+        let plan =
+            plan_route_replacement(&observed, &desired, ployz_ebpf_common::MAX_ROUTES as usize)
+                .expect("one stale slot makes the replacement possible");
+
+        assert_eq!(plan.remove_before_insert, [test_route_key(0)]);
+        assert_eq!(plan.insert, desired);
+        assert!(plan.remove_after_insert.is_empty());
+    }
+
+    #[test]
+    fn replacement_with_free_capacity_keeps_all_stale_deletions_after_inserts() {
+        let retained = test_route_key(1);
+        let stale = test_route_key(2);
+        let new = test_route_key(3);
+
+        let plan = plan_route_replacement(&[retained, stale], &[retained, new], 3)
+            .expect("the missing desired route fits in the free slot");
+
+        assert!(plan.remove_before_insert.is_empty());
+        assert_eq!(plan.insert, [retained, new]);
+        assert_eq!(plan.remove_after_insert, [stale]);
+    }
+
+    #[test]
+    fn saturated_map_without_stale_capacity_rejects_oversized_desired_set() {
+        let observed = (0..ployz_ebpf_common::MAX_ROUTES)
+            .map(test_route_key)
+            .collect::<Vec<_>>();
+        let desired = (0..=ployz_ebpf_common::MAX_ROUTES)
+            .map(test_route_key)
+            .collect::<Vec<_>>();
+
+        let error =
+            plan_route_replacement(&observed, &desired, ployz_ebpf_common::MAX_ROUTES as usize)
+                .expect_err("an oversized authoritative set must fail before mutation");
+
+        assert_eq!(
+            error,
+            RouteReplacementPlanError::DesiredSetTooLarge {
+                desired: ployz_ebpf_common::MAX_ROUTES as usize + 1,
+                capacity: ployz_ebpf_common::MAX_ROUTES as usize,
+            }
+        );
+    }
+
+    #[test]
+    fn replacement_plan_deduplicates_desired_routes() {
+        let first = test_route_key(1);
+        let second = test_route_key(2);
+
+        let plan = plan_route_replacement(&[], &[second, first, second, first], 2)
+            .expect("two distinct desired routes fit");
+
+        assert_eq!(plan.insert, [first, second]);
+    }
+
+    #[test]
+    fn replacement_retry_keeps_desired_routes_and_schedules_no_deletions() {
+        let desired = [test_route_key(1), test_route_key(2)];
+
+        let plan = plan_route_replacement(&desired, &desired, 2)
+            .expect("an already-applied replacement remains valid");
+
+        assert_eq!(plan.insert, desired);
+        assert!(plan.remove_before_insert.is_empty());
+        assert!(plan.remove_after_insert.is_empty());
+    }
+
+    fn test_route_key(network: u32) -> ployz_ebpf_common::RouteKey {
+        ployz_ebpf_common::RouteKey {
+            network,
+            prefix_len: 32,
+        }
+    }
+
+    #[test]
     fn invalid_commands_report_usage() {
         let error = run(Vec::new()).expect_err("empty args fail");
 
@@ -618,14 +776,15 @@ mod tests {
             "--pin-path".to_owned(),
             "/sys/fs/bpf/ployz-core".to_owned(),
             "route".to_owned(),
-            "add".to_owned(),
+            "replace-all-ifname".to_owned(),
+            "missing-wg".to_owned(),
             "10.42.2.0/24".to_owned(),
-            "7".to_owned(),
         ])
-        .expect_err("route add requires Linux on this test platform");
+        .expect_err("route replacement requires a live Linux interface and map");
 
         assert!(
-            error.contains("route add requires Linux")
+            error.contains("route replace-all-ifname requires Linux")
+                || error.contains("interface missing-wg not found")
                 || error.contains("No such file")
                 || error.contains("open pinned ROUTES map")
         );
@@ -635,13 +794,26 @@ mod tests {
     fn invalid_subnet_is_rejected_before_route_execution() {
         let error = run(vec![
             "route".to_owned(),
-            "add".to_owned(),
+            "replace-all-ifname".to_owned(),
+            "ployz-wg0".to_owned(),
             "not-a-subnet".to_owned(),
-            "1".to_owned(),
         ])
         .expect_err("invalid subnet fails");
 
         assert!(error.contains("invalid IPv4 subnet"));
+    }
+
+    #[test]
+    fn legacy_route_mutation_commands_are_not_exposed() {
+        for action in ["add", "add-ifname", "del", "sync-ifname"] {
+            let error = EbpfCtlCli::try_parse_from(["ployz-ebpf-ctl", "route", action])
+                .expect_err("legacy route command must be rejected")
+                .to_string();
+            assert!(
+                error.contains("unrecognized subcommand"),
+                "{action}: {error}"
+            );
+        }
     }
 
     #[test]

@@ -224,9 +224,9 @@ fn assert_edge_route_evidence(
                 if program == &ebpf_ctl.display().to_string()
                     && args.ends_with(&[
                         "route".to_owned(),
-                        "add-ifname".to_owned(),
-                        endpoint_subnet.to_owned(),
+                        "replace-all-ifname".to_owned(),
                         DEFAULT_DATAPLANE_WG_IFNAME.to_owned(),
+                        endpoint_subnet.to_owned(),
                     ])
         )
     }));

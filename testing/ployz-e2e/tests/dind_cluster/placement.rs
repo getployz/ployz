@@ -3,10 +3,11 @@ use std::time::{Duration, Instant};
 
 use super::{
     CONNECT_TIMEOUT, CoreContext, DEPLOY_TERMINAL_BUDGET, DindMachine, NAMESPACE_ID_LABEL,
-    WORKLOAD_IMAGE, add_and_join_edge, assert_unit_active, connect_core_client, finish,
-    init_core_cluster, locally_ready, managed_workload_containers, read_intent,
-    reserved_deploy_request, terminal_operation_events, wait_for_machine_observations,
-    wait_for_ready_dataplane, wait_for_terminal_deploy_status, with_evidence,
+    WORKLOAD_IMAGE, WireGuardPairBlock, add_and_join_edge, assert_unit_active, connect_core_client,
+    finish, init_core_cluster, locally_ready, managed_workload_containers, read_intent,
+    reserved_deploy_request, set_wireguard_pair_block, terminal_operation_events,
+    wait_for_machine_observations, wait_for_ready_dataplane, wait_for_terminal_deploy_status,
+    with_evidence,
 };
 use ployz_core::deploy::{
     ContainerRuntimeSpec, DeployPlan, DeployPlanStepRef, DeployRequest, DeployServiceSpec,
@@ -115,6 +116,29 @@ async fn group_placement_peer_health() {
             [machine_id("core_1"), machine_id("edge_2")],
             "first deploy runtime did not match its plan"
         );
+        for machine in [core.cluster.core(), edge_2] {
+            let restored = core
+                .exec_on(
+                    machine,
+                    &[
+                        "iptables",
+                        "-D",
+                        "OUTPUT",
+                        "-o",
+                        "ployz-wg0",
+                        "-p",
+                        "icmp",
+                        "-j",
+                        "DROP",
+                    ],
+                )
+                .await;
+            assert!(
+                restored.success(),
+                "restore RTT probes on {} failed: {restored:?}",
+                machine.name
+            );
+        }
 
         let restarted = core
             .exec_on(edge_3, &["systemctl", "start", "ployzd-machine-edge_3"])
@@ -125,10 +149,23 @@ async fn group_placement_peer_health() {
         );
         assert_unit_active(&core, edge_3, "ployzd-machine-edge_3").await;
         wait_for_machine_observations(&core, &machine_id("edge_3")).await;
+        prime_wireguard_handshake_graph(&core, &intent.dataplane_projection).await;
         wait_for_ready_dataplane(&core, &intent.dataplane_projection).await;
 
-        block_wireguard_pair(&core, core.cluster.core(), edge_2).await;
-        block_wireguard_pair(&core, core.cluster.core(), edge_3).await;
+        set_wireguard_pair_block(
+            &core,
+            core.cluster.core(),
+            edge_2,
+            WireGuardPairBlock::Install,
+        )
+        .await;
+        set_wireguard_pair_block(
+            &core,
+            core.cluster.core(),
+            edge_3,
+            WireGuardPairBlock::Install,
+        )
+        .await;
         reset_wireguard_peer(
             &core,
             core.cluster.core(),
@@ -294,32 +331,34 @@ fn projection_member<'a>(
         .unwrap_or_else(|| panic!("projection omitted {machine}"))
 }
 
-async fn block_wireguard_pair(core: &CoreContext, left: &DindMachine, right: &DindMachine) {
-    for (machine, destination) in [(left, right.bridge_ip), (right, left.bridge_ip)] {
-        let destination = destination.to_string();
-        let dropped = core
+async fn prime_wireguard_handshake_graph(core: &CoreContext, projection: &DataplaneProjection) {
+    let [edge_2, _] = core.cluster.edges() else {
+        panic!("placement scenario requires exactly two edge machines");
+    };
+    for (source, destination) in [
+        (core.cluster.core(), machine_id("edge_2")),
+        (core.cluster.core(), machine_id("edge_3")),
+        (edge_2, machine_id("edge_3")),
+    ] {
+        let destination_member = projection
+            .declared_members()
+            .iter()
+            .find(|member| member.machine_id == destination)
+            .unwrap_or_else(|| panic!("projection omitted {destination:?}"));
+        let address = destination_member
+            .endpoint_subnet
+            .host_address()
+            .to_string();
+        let primed = core
             .exec_on(
-                machine,
-                &[
-                    "iptables",
-                    "-I",
-                    "OUTPUT",
-                    "1",
-                    "-p",
-                    "udp",
-                    "-d",
-                    &destination,
-                    "--dport",
-                    "51820",
-                    "-j",
-                    "DROP",
-                ],
+                source,
+                &["ping", "-I", "ployz-wg0", "-c", "1", "-W", "2", &address],
             )
             .await;
         assert!(
-            dropped.success(),
-            "block WireGuard from {} to {destination} failed: {dropped:?}",
-            machine.name
+            primed.success(),
+            "prime WireGuard pair from {} to {destination:?} failed: {primed:?}",
+            source.name
         );
     }
 }
