@@ -2,8 +2,8 @@
 
 use ployz_core::build::railpack_pins;
 use ployz_core::install::{
-    AbsoluteInstallPath, FirstMachineInstallArtifacts, InstallArtifactSource, InstallArtifactSpec,
-    InstallArtifactVersion, InstallSha256Digest, NatsServerInstallSpec,
+    AbsoluteInstallPath, ExactPloyzVersion, FirstMachineInstallArtifacts, InstallArtifactSource,
+    InstallArtifactSpec, InstallArtifactVersion, InstallSha256Digest, NatsServerInstallSpec,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,75 +41,9 @@ impl ReleasePlatform {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExactPloyzVersion(String);
-
-impl ExactPloyzVersion {
-    pub fn try_new(value: impl Into<String>) -> Result<Self, ExactPloyzVersionError> {
-        let value = value.into();
-        if value.is_empty() {
-            return Err(ExactPloyzVersionError::Empty);
-        }
-        if value == "latest" || value == "alpha" || value == "beta" || value == "stable" {
-            return Err(ExactPloyzVersionError::Mutable { value });
-        }
-        if value.contains('*')
-            || value.contains('^')
-            || value.contains('~')
-            || value.contains('<')
-            || value.contains('>')
-            || value.contains('=')
-            || value.contains(',')
-        {
-            return Err(ExactPloyzVersionError::Range { value });
-        }
-        if value
-            .chars()
-            .any(|character| !(character.is_ascii_alphanumeric() || ".-_".contains(character)))
-        {
-            return Err(ExactPloyzVersionError::Invalid { value });
-        }
-        Ok(Self(value))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    #[must_use]
-    pub fn tag(&self) -> String {
-        if self.0.starts_with('v') {
-            self.0.clone()
-        } else {
-            format!("v{}", self.0)
-        }
-    }
-}
-
-impl std::str::FromStr for ExactPloyzVersion {
-    type Err = ExactPloyzVersionError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Self::try_new(value)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum ExactPloyzVersionError {
-    #[error("update version is empty")]
-    Empty,
-    #[error("update version must be exact, got mutable {value:?}")]
-    Mutable { value: String },
-    #[error("update version must be exact, got range {value:?}")]
-    Range { value: String },
-    #[error("update version is invalid: {value:?}")]
-    Invalid { value: String },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseManifest {
     platform: ReleasePlatform,
-    version: String,
+    version: ExactPloyzVersion,
     ployzd_url: String,
     ployzd_sha256: String,
     ebpf_tc_url: String,
@@ -144,7 +78,8 @@ impl ReleaseManifest {
                 contents,
                 "PLOYZ_RELEASE_PLATFORM",
             )?)?,
-            version: manifest_value(contents, "PLOYZ_VERSION")?,
+            version: ExactPloyzVersion::try_new(manifest_value(contents, "PLOYZ_VERSION")?)
+                .map_err(|error| format!("release manifest PLOYZ_VERSION is invalid: {error}"))?,
             ployzd_url: manifest_value(contents, "PLOYZD_URL")?,
             ployzd_sha256: manifest_value(contents, "PLOYZD_SHA256")?,
             ebpf_tc_url: manifest_value(contents, "PLOYZ_EBPF_TC_URL")?,
@@ -163,7 +98,7 @@ impl ReleaseManifest {
 
     #[must_use]
     pub fn ployz_version(&self) -> &str {
-        &self.version
+        self.version.as_str()
     }
 
     pub fn install_artifacts(&self) -> Result<FirstMachineInstallArtifacts, String> {
@@ -469,6 +404,19 @@ mod tests {
             .expect("manifest parses");
 
         assert_eq!(manifest.ployz_version(), "0.1.0");
+    }
+
+    #[test]
+    fn release_manifest_rejects_mutable_ployz_release_version() {
+        let manifest = manifest_without_nats(Some("linux-amd64"))
+            .replace("PLOYZ_VERSION=0.1.0", "PLOYZ_VERSION=alpha");
+
+        let error = ReleaseManifest::parse(&manifest).expect_err("release must be immutable");
+
+        assert_eq!(
+            error,
+            "release manifest PLOYZ_VERSION is invalid: release version must be exact, got mutable \"alpha\""
+        );
     }
 
     #[test]

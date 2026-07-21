@@ -17,10 +17,10 @@ use crate::recovery::{
     wrap_core_seeds,
 };
 use crate::recovery::{RecoverySecretError, wrap};
-use crate::release_manifest::{ExactPloyzVersion, ExactPloyzVersionError};
 use clap::{Parser, Subcommand};
 use ployz_core::deploy::{DatasetName, VolumeMaxSizeBytes, ZfsPoolName};
 use ployz_core::ids::OperationId;
+use ployz_core::install::{ExactPloyzVersion, ExactPloyzVersionError};
 use ployz_core::install::{
     FirstMachineInstallArtifacts, FirstMachineInstallSpec, InstallArtifactSpec,
     NatsServerInstallSpec, WrappedCaKey,

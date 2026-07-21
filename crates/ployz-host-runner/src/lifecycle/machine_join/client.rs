@@ -35,11 +35,15 @@ use ployz_sdk_types::{
     MachineJoinToken,
 };
 
+use crate::release_manifest::{
+    ReleaseManifest, ReleasePlatform, persisted_release_manifest_url, read_release_manifest_text,
+};
 use crate::runtime::{
     DEFAULT_NATS_CONNECT_TIMEOUT, HOST_RUNNER_STATE_DIR, PLOYZ_JOIN_NKEY_SEED_ENV,
     PLOYZ_NATS_CA_FILE_ENV, PLOYZ_NATS_URL_ENV, REDEEM_MATERIAL_ATTEMPTS,
     REDEEM_MATERIAL_RETRY_DELAY, failure_message, failure_summary,
 };
+use ployz_core::install::{FirstMachineInstallArtifacts, MachineJoinSubstrateRelease};
 
 const JOIN_REPORT_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -135,7 +139,7 @@ impl HostRunnerJoinRedeemer for JoinRedeemer {
             redeem_until_material_ready(&OperationApiClient::new(client), join_token).await
         })?;
 
-        host_runner_join_target(redeemed)
+        Ok(host_runner_join_target(redeemed))
     }
 }
 
@@ -311,11 +315,31 @@ enum HostRunnerNatsConnectError {
     InvalidJoinSeed,
 }
 
-fn host_runner_join_target(
-    redeemed: MachineJoinRedeemed,
-) -> Result<RedeemedHostRunnerJoin, FailureMessage> {
+fn host_runner_join_target(redeemed: MachineJoinRedeemed) -> RedeemedHostRunnerJoin {
     let callback_result = redeemed.clone();
-    let host_port_assurance = redeemed.host_port_assurance;
+    let operation_id = redeemed.operation_id.clone();
+    let machine_id = redeemed.machine_id.clone();
+    match resolve_host_runner_join_target(&redeemed) {
+        Ok(target) => RedeemedHostRunnerJoin::new(operation_id, machine_id, target),
+        Err(failure) => {
+            RedeemedHostRunnerJoin::resolution_failed(operation_id, machine_id, failure)
+        }
+    }
+    .with_callback_result(callback_result)
+}
+
+fn resolve_host_runner_join_target(
+    redeemed: &MachineJoinRedeemed,
+) -> Result<HostRunnerJoinTarget, FailureMessage> {
+    let artifacts = load_local_join_artifacts(&redeemed.join_bundle.material.substrate_release)
+        .map_err(|error| failure_message(&format!("invalid local join release: {error}")))?;
+    resolve_host_runner_join_target_with_artifacts(redeemed, artifacts)
+}
+
+fn resolve_host_runner_join_target_with_artifacts(
+    redeemed: &MachineJoinRedeemed,
+    artifacts: FirstMachineInstallArtifacts,
+) -> Result<HostRunnerJoinTarget, FailureMessage> {
     let machine_id = redeemed.machine_id.clone();
     let material = HostRunnerJoinMaterial::from_join_payload(
         machine_id.clone(),
@@ -323,24 +347,16 @@ fn host_runner_join_target(
         &redeemed.secret_delivery,
     )
     .map_err(|error| failure_message(&format!("invalid join material: {error:?}")))?;
-    let ployzd_artifact =
-        artifact_target(ArtifactKind::Ployzd, &redeemed.join_bundle.material.ployzd)
-            .map_err(|error| failure_message(&format!("invalid ployzd install target: {error}")))?;
-    let ebpf_bytecode_artifact = artifact_target(
-        ArtifactKind::EbpfBytecode,
-        &redeemed.join_bundle.material.ebpf_bytecode,
-    )
-    .map_err(|error| failure_message(&format!("invalid eBPF bytecode install target: {error}")))?;
-    let ebpf_ctl_artifact = artifact_target(
-        ArtifactKind::EbpfCtl,
-        &redeemed.join_bundle.material.ebpf_ctl,
-    )
-    .map_err(|error| failure_message(&format!("invalid eBPF ctl install target: {error}")))?;
-    let railpack_artifact = artifact_target(
-        ArtifactKind::Railpack,
-        &redeemed.join_bundle.material.railpack,
-    )
-    .map_err(|error| failure_message(&format!("invalid Railpack install target: {error}")))?;
+    let ployzd_artifact = artifact_target(ArtifactKind::Ployzd, &artifacts.ployzd)
+        .map_err(|error| failure_message(&format!("invalid ployzd install target: {error}")))?;
+    let ebpf_bytecode_artifact =
+        artifact_target(ArtifactKind::EbpfBytecode, &artifacts.ebpf_bytecode).map_err(|error| {
+            failure_message(&format!("invalid eBPF bytecode install target: {error}"))
+        })?;
+    let ebpf_ctl_artifact = artifact_target(ArtifactKind::EbpfCtl, &artifacts.ebpf_ctl)
+        .map_err(|error| failure_message(&format!("invalid eBPF ctl install target: {error}")))?;
+    let railpack_artifact = artifact_target(ArtifactKind::Railpack, &artifacts.railpack)
+        .map_err(|error| failure_message(&format!("invalid Railpack install target: {error}")))?;
     let roles = NonEmptyRoleSet::try_new(
         plan_joined_machine_process_set(&machine_id, redeemed.roles)
             .roles()
@@ -358,20 +374,60 @@ fn host_runner_join_target(
     )
     .with_dataplane_endpoint_subnet(redeemed.endpoint_subnet.clone());
 
-    Ok(RedeemedHostRunnerJoin::new(
-        redeemed.operation_id,
-        machine_id.clone(),
-        HostRunnerJoinTarget::new(
-            material,
-            ployzd_artifact,
-            DataplaneArtifactTargets::new(ebpf_bytecode_artifact, ebpf_ctl_artifact),
-            railpack_artifact,
-            roles,
-            role_environment,
-            host_port_assurance,
-        ),
+    Ok(HostRunnerJoinTarget::new(
+        material,
+        ployzd_artifact,
+        DataplaneArtifactTargets::new(ebpf_bytecode_artifact, ebpf_ctl_artifact),
+        railpack_artifact,
+        roles,
+        role_environment,
+        redeemed.host_port_assurance,
+    ))
+}
+
+fn load_local_join_artifacts(
+    expected: &MachineJoinSubstrateRelease,
+) -> Result<FirstMachineInstallArtifacts, String> {
+    let platform = ReleasePlatform::from_target(std::env::consts::OS, std::env::consts::ARCH)?;
+    load_join_artifacts_from_release_env(
+        std::path::Path::new("/etc/ployz/release.env"),
+        expected,
+        platform,
     )
-    .with_callback_result(callback_result))
+}
+
+fn load_join_artifacts_from_release_env(
+    release_env: &std::path::Path,
+    expected: &MachineJoinSubstrateRelease,
+    platform: ReleasePlatform,
+) -> Result<FirstMachineInstallArtifacts, String> {
+    let manifest_url = persisted_release_manifest_url(release_env)
+        .map_err(|error| format!("failed to read installed release identity: {error}"))?;
+    let contents = read_release_manifest_text(&manifest_url)?;
+    let manifest = ReleaseManifest::parse(&contents)?;
+    resolve_join_artifacts(expected, &manifest, platform)
+}
+
+fn resolve_join_artifacts(
+    expected: &MachineJoinSubstrateRelease,
+    manifest: &ReleaseManifest,
+    local_platform: ReleasePlatform,
+) -> Result<FirstMachineInstallArtifacts, String> {
+    if manifest.platform() != local_platform {
+        return Err(format!(
+            "installed release platform {} does not match joining host platform {}",
+            manifest.platform().manifest_slug(),
+            local_platform.manifest_slug()
+        ));
+    }
+    if manifest.ployz_version() != expected.version.as_str() {
+        return Err(format!(
+            "installed release {} does not match cluster join release {}",
+            manifest.ployz_version(),
+            expected.version.as_str()
+        ));
+    }
+    manifest.install_artifacts()
 }
 
 struct StartupJoinTokenConsumer {
@@ -388,17 +444,113 @@ impl HostRunnerJoinTokenConsumer for StartupJoinTokenConsumer {
 
 #[cfg(test)]
 mod tests {
-    use super::host_runner_join_target;
+    use super::{
+        load_join_artifacts_from_release_env, resolve_host_runner_join_target_with_artifacts,
+        resolve_join_artifacts,
+    };
     use ployz_core::ids::{MachineId, OperationId};
     use ployz_core::install::{
-        AbsoluteInstallPath, InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion,
-        InstallSha256Digest, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
-        MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTrustedNats,
+        ExactPloyzVersion, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
+        MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinSubstrateRelease,
+        MachineJoinTrustedNats,
     };
     use ployz_core::machine::{JoinTokenRedeemedAt, MachineName};
     use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
     use ployz_core::roles::InstallRolePolicy;
     use ployz_sdk_types::{MachineJoinRedeemResult, MachineJoinRedeemed};
+
+    use crate::release_manifest::{ReleaseManifest, ReleasePlatform};
+
+    const SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    #[test]
+    fn joining_host_resolves_arm64_artifacts_from_its_local_release_manifest() {
+        let manifest = release_manifest("linux-arm64", "linux-arm64");
+        let expected = MachineJoinSubstrateRelease {
+            version: ExactPloyzVersion::try_new("0.1.0").expect("exact release"),
+        };
+
+        let artifacts = resolve_join_artifacts(&expected, &manifest, ReleasePlatform::LinuxArm64)
+            .expect("matching local ARM release resolves");
+
+        assert_eq!(
+            artifacts.ployzd.source.as_str(),
+            "https://example.test/ployzd-linux-arm64"
+        );
+        assert_eq!(
+            artifacts.ebpf_ctl.source.as_str(),
+            "https://example.test/ployz-ebpf-ctl-linux-arm64"
+        );
+        assert_eq!(
+            artifacts.railpack.source.as_str(),
+            "https://example.test/railpack-linux-arm64"
+        );
+    }
+
+    #[test]
+    fn joining_host_resolves_amd64_artifacts_from_its_local_release_manifest() {
+        let manifest = release_manifest("linux-amd64", "linux-amd64");
+        let expected = MachineJoinSubstrateRelease {
+            version: ExactPloyzVersion::try_new("0.1.0").expect("exact release"),
+        };
+
+        let artifacts = resolve_join_artifacts(&expected, &manifest, ReleasePlatform::LinuxAmd64)
+            .expect("matching local AMD release resolves");
+
+        assert_eq!(
+            artifacts.ployzd.source.as_str(),
+            "https://example.test/ployzd-linux-amd64"
+        );
+    }
+
+    #[test]
+    fn joining_host_rejects_release_for_another_platform() {
+        let manifest = release_manifest("linux-amd64", "linux-amd64");
+        let expected = MachineJoinSubstrateRelease {
+            version: ExactPloyzVersion::try_new("0.1.0").expect("exact release"),
+        };
+
+        let error = resolve_join_artifacts(&expected, &manifest, ReleasePlatform::LinuxArm64)
+            .expect_err("cross-platform local manifest is rejected");
+
+        assert_eq!(
+            error,
+            "installed release platform linux-amd64 does not match joining host platform linux-arm64"
+        );
+    }
+
+    #[test]
+    fn joining_host_rejects_a_release_other_than_the_cluster_join_release() {
+        let manifest = release_manifest("linux-arm64", "linux-arm64");
+        let expected = MachineJoinSubstrateRelease {
+            version: ExactPloyzVersion::try_new("0.2.0").expect("exact release"),
+        };
+
+        let error = resolve_join_artifacts(&expected, &manifest, ReleasePlatform::LinuxArm64)
+            .expect_err("stale local release is rejected");
+
+        assert_eq!(
+            error,
+            "installed release 0.1.0 does not match cluster join release 0.2.0"
+        );
+    }
+
+    #[test]
+    fn joining_host_requires_installer_persisted_release_identity() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let expected = MachineJoinSubstrateRelease {
+            version: ExactPloyzVersion::try_new("0.1.0").expect("exact release"),
+        };
+
+        let error = load_join_artifacts_from_release_env(
+            &root.path().join("missing-release.env"),
+            &expected,
+            ReleasePlatform::LinuxArm64,
+        )
+        .expect_err("missing installed release identity fails closed");
+
+        assert!(error.starts_with("failed to read installed release identity:"));
+    }
 
     #[test]
     fn host_runner_join_target_uses_runtime_nats_url_from_redeemed_bundle() {
@@ -418,10 +570,7 @@ mod tests {
             result: MachineJoinRedeemResult::Joined,
         };
 
-        let target = host_runner_join_target(redeemed)
-            .expect("redeemed bundle converts")
-            .target
-            .expect("valid fixture resolves a join target");
+        let target = resolved_target(&redeemed);
 
         assert_eq!(
             target.host_port_assurance,
@@ -455,10 +604,7 @@ mod tests {
             result: MachineJoinRedeemResult::Joined,
         };
 
-        let target = host_runner_join_target(redeemed)
-            .expect("redeemed bundle converts")
-            .target
-            .expect("valid fixture resolves a join target");
+        let target = resolved_target(&redeemed);
 
         let rendered = target
             .role_environment
@@ -483,10 +629,7 @@ mod tests {
             result: MachineJoinRedeemResult::Joined,
         };
 
-        let target = host_runner_join_target(redeemed)
-            .expect("redeemed bundle converts")
-            .target
-            .expect("valid fixture resolves a join target");
+        let target = resolved_target(&redeemed);
         let rendered = target.role_environment.render_for_role(
             &ployz_core::roles::DaemonProcessRole::Machine(
                 MachineId::try_new("machine_255").expect("valid machine id"),
@@ -512,16 +655,9 @@ mod tests {
                 },
                 recovery_key_wrapped: ployz_core::install::WrappedCaKey::new(vec![1, 2, 3]),
                 core_seeds_wrapped: ployz_core::install::WrappedCoreSeeds::new(vec![4, 5, 6]),
-                ployzd: join_artifact("/tmp/ployzd", "/usr/local/bin/ployzd"),
-                ebpf_bytecode: join_artifact(
-                    "/tmp/ployz-ebpf-tc",
-                    "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
-                ),
-                ebpf_ctl: join_artifact("/tmp/ployz-ebpf-ctl", "/usr/local/bin/ployz-ebpf-ctl"),
-                railpack: join_artifact(
-                    "/tmp/railpack",
-                    "/usr/local/lib/ployz/railpack/v0.31.0/railpack",
-                ),
+                substrate_release: MachineJoinSubstrateRelease {
+                    version: ExactPloyzVersion::try_new("0.1.0").expect("exact release"),
+                },
             },
         }
     }
@@ -530,16 +666,29 @@ mod tests {
         ployz_core::network::MachineEndpointSubnet::try_new(value).expect("valid endpoint subnet")
     }
 
-    fn join_artifact(source: &str, install_path: &str) -> InstallArtifactSpec {
-        InstallArtifactSpec {
-            version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
-            source: InstallArtifactSource::try_new(source).expect("valid source"),
-            sha256: InstallSha256Digest::try_new(
-                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            )
-            .expect("valid digest"),
-            install_path: AbsoluteInstallPath::try_new(install_path).expect("valid install path"),
-        }
+    fn release_manifest(platform: &str, artifact_suffix: &str) -> ReleaseManifest {
+        ReleaseManifest::parse(&format!(
+            "PLOYZ_RELEASE_PLATFORM={platform}\n\
+             PLOYZ_VERSION=0.1.0\n\
+             PLOYZD_URL=https://example.test/ployzd-{artifact_suffix}\n\
+             PLOYZD_SHA256={SHA}\n\
+             PLOYZ_EBPF_TC_URL=https://example.test/ployz-ebpf-tc-{artifact_suffix}\n\
+             PLOYZ_EBPF_TC_SHA256={SHA}\n\
+             PLOYZ_EBPF_CTL_URL=https://example.test/ployz-ebpf-ctl-{artifact_suffix}\n\
+             PLOYZ_EBPF_CTL_SHA256={SHA}\n\
+             PLOYZ_RAILPACK_VERSION=v0.31.0\n\
+             PLOYZ_RAILPACK_URL=https://example.test/railpack-{artifact_suffix}\n\
+             PLOYZ_RAILPACK_SHA256={SHA}\n"
+        ))
+        .expect("release manifest")
+    }
+
+    fn resolved_target(redeemed: &MachineJoinRedeemed) -> crate::plan::HostRunnerJoinTarget {
+        let artifacts = release_manifest("linux-amd64", "linux-amd64")
+            .install_artifacts()
+            .expect("release artifacts");
+        resolve_host_runner_join_target_with_artifacts(redeemed, artifacts)
+            .expect("redeemed bundle converts")
     }
 
     fn machine_join_secret_delivery() -> MachineJoinSecretDelivery {
