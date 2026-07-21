@@ -81,14 +81,6 @@ impl DindPlatform {
             unsupported => panic!("unsupported normalized DinD platform {unsupported}"),
         }
     }
-
-    fn from_docker_architecture(value: &str) -> Self {
-        match value {
-            "x86_64" | "amd64" => Self::LinuxAmd64,
-            "aarch64" | "arm64" => Self::LinuxArm64,
-            unsupported => panic!("unsupported Docker server architecture {unsupported}"),
-        }
-    }
 }
 
 /// True when the gated DinD e2e suite is enabled (`PLOYZ_DIND_E2E=1`).
@@ -117,21 +109,17 @@ pub fn artifact_dir() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from(DEFAULT_ARTIFACT_DIR))
 }
 
-/// Platform selected by the wrapper, or the Docker server platform for direct
-/// `PLOYZ_DIND_E2E=1 cargo test` invocations.
-pub async fn platform(docker: &Docker) -> Result<DindPlatform, DindError> {
-    match env::var(PLATFORM_ENV) {
-        Ok(value) => Ok(DindPlatform::from_docker_slug(&value)),
+/// Platform normalized by `scripts/dind-e2e.sh` for the image and artifacts.
+#[must_use]
+pub fn platform() -> DindPlatform {
+    platform_from_env(env::var(PLATFORM_ENV))
+}
+
+fn platform_from_env(value: Result<String, env::VarError>) -> DindPlatform {
+    match value {
+        Ok(value) => DindPlatform::from_docker_slug(&value),
         Err(env::VarError::NotPresent) => {
-            let info = docker
-                .info()
-                .await
-                .map_err(docker_api_error("inspect Docker server platform"))?;
-            let architecture = info
-                .architecture
-                .as_deref()
-                .expect("Docker server must report its architecture");
-            Ok(DindPlatform::from_docker_architecture(architecture))
+            panic!("{PLATFORM_ENV} is required; run scripts/dind-e2e.sh or set it explicitly")
         }
         Err(env::VarError::NotUnicode(_)) => panic!("{PLATFORM_ENV} must be valid UTF-8"),
     }
@@ -203,7 +191,9 @@ pub(crate) fn docker_api_error(
 
 #[cfg(test)]
 mod tests {
-    use super::DindPlatform;
+    use std::env::VarError;
+
+    use super::{DindPlatform, platform_from_env};
 
     #[test]
     fn dind_platforms_have_release_manifest_slugs() {
@@ -216,12 +206,8 @@ mod tests {
             "linux-arm64"
         );
         assert_eq!(
-            DindPlatform::from_docker_architecture("amd64"),
+            platform_from_env(Ok("linux/amd64".to_owned())),
             DindPlatform::LinuxAmd64
-        );
-        assert_eq!(
-            DindPlatform::from_docker_architecture("aarch64"),
-            DindPlatform::LinuxArm64
         );
     }
 
@@ -229,5 +215,13 @@ mod tests {
     #[should_panic(expected = "unsupported normalized DinD platform linux/riscv64")]
     fn unsupported_dind_platform_fails_loudly() {
         let _ = DindPlatform::from_docker_slug("linux/riscv64");
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "PLOYZ_DIND_PLATFORM is required; run scripts/dind-e2e.sh or set it explicitly"
+    )]
+    fn missing_dind_platform_points_to_wrapper() {
+        let _ = platform_from_env(Err(VarError::NotPresent));
     }
 }

@@ -182,6 +182,12 @@ fn edge_join_command(install: &InstallLine, ployz_sha: &str) -> String {
     )
 }
 
+fn repo_path(relative: &str) -> PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(relative)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -223,10 +229,4 @@ mod tests {
 
         assert_local_release_pins(&command);
     }
-}
-
-fn repo_path(relative: &str) -> PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join(relative)
 }

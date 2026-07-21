@@ -46,12 +46,6 @@ dockerd, `nats-server`, baked workload tarball) and host-arch release
 binaries under `/tmp/ployz-dind-machine-target/release/` that the harness
 volume-mounts read-only at `/opt/ployz/artifacts` inside every machine.
 
-Run one group directly:
-
-```sh
-PLOYZ_DIND_E2E=1 cargo test -p ployz-e2e --test dind_cluster group_core_deploy_semantics -- --nocapture
-```
-
 ## Running A Single Scenario
 
 Pass the test name (or any prefix) as a filter:
