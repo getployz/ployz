@@ -58,6 +58,7 @@ fn render_step_label(step: &HostRunnerStepLabel) -> String {
             format!("store-assigned-substrate {}", render_host_ports(ports))
         }
         HostRunnerStepLabel::PrepareDataplaneHost => "prepare-dataplane-host".to_owned(),
+        HostRunnerStepLabel::PrepareBuildHost => "prepare-build-host".to_owned(),
         HostRunnerStepLabel::PrepareContainerRuntime(ContainerRuntime::Docker) => {
             "prepare-container-runtime docker".to_owned()
         }
@@ -167,6 +168,7 @@ fn render_failure_reason(reason: HostRunnerStepFailureReason) -> &'static str {
             "container-runtime-prepare-failed"
         }
         HostRunnerStepFailureReason::DataplaneHostPrepareFailed => "dataplane-host-prepare-failed",
+        HostRunnerStepFailureReason::BuildHostPrepareFailed => "build-host-prepare-failed",
         HostRunnerStepFailureReason::ContainerRuntimeVerifyFailed => {
             "container-runtime-verify-failed"
         }

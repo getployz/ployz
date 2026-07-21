@@ -63,6 +63,7 @@ fn host_runner_join_installs_ployzd_and_only_assigned_role_units() {
         preflight_install,
         assure_ports,
         prepare_dataplane_host,
+        prepare_build_host,
         prepare_runtime,
         verify_runtime,
         install_ployzd,
@@ -91,8 +92,9 @@ fn host_runner_join_installs_ployzd_and_only_assigned_role_units() {
     assert!(matches!(assure_ports, HostRunnerStep::AssureHostPorts(_)));
     assert_eq!(
         *prepare_dataplane_host,
-        HostRunnerStep::PrepareDataplaneHost { require_git: true }
+        HostRunnerStep::PrepareDataplaneHost
     );
+    assert_eq!(*prepare_build_host, HostRunnerStep::PrepareBuildHost);
     assert_eq!(
         *prepare_runtime,
         HostRunnerStep::PrepareContainerRuntime(
@@ -151,7 +153,7 @@ fn host_runner_join_installs_ployzd_and_only_assigned_role_units() {
 
 #[test]
 fn join_requires_git_only_for_machine_role() {
-    for (roles, require_git) in [
+    for (roles, requires_build_host) in [
         (
             vec![DaemonProcessRole::Machine(machine_id("machine_7"))],
             true,
@@ -171,9 +173,9 @@ fn join_requires_git_only_for_machine_role() {
             ployz_core::install::HostPortAssurance::Keeper,
         ));
 
-        assert!(
-            plan.steps()
-                .contains(&HostRunnerStep::PrepareDataplaneHost { require_git })
+        assert_eq!(
+            plan.steps().contains(&HostRunnerStep::PrepareBuildHost),
+            requires_build_host
         );
     }
 }

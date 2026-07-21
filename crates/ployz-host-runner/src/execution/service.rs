@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 use super::artifacts::ArtifactTarget;
 use ployz_core::roles::DaemonProcessRole;
 
+pub(crate) const PLOYZD_MACHINE_UNIT_PREFIX: &str = "ployzd-machine-";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SupervisorUnitTarget {
     NatsServer,
@@ -345,7 +347,10 @@ pub fn role_unit_name(role: &DaemonProcessRole) -> String {
     match role {
         DaemonProcessRole::Control => "ployzd-control.service".to_owned(),
         DaemonProcessRole::Machine(machine_id) => {
-            format!("ployzd-machine-{}.service", machine_id.as_str())
+            format!(
+                "{PLOYZD_MACHINE_UNIT_PREFIX}{}.service",
+                machine_id.as_str()
+            )
         }
         DaemonProcessRole::Gateway => "ployzd-gateway.service".to_owned(),
         DaemonProcessRole::Dns => "ployzd-dns.service".to_owned(),

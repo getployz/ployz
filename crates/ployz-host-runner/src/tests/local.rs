@@ -538,24 +538,21 @@ fn local_effects_prepare_dataplane_packages_for_each_supported_family() {
     let cases = [
         (
             "ubuntu",
-            "env DEBIAN_FRONTEND=noninteractive apt-get install -y wireguard-tools iproute2 iputils-ping git",
+            "env DEBIAN_FRONTEND=noninteractive apt-get install -y wireguard-tools iproute2 iputils-ping",
         ),
-        (
-            "rocky",
-            "dnf install -y wireguard-tools iproute iputils git",
-        ),
+        ("rocky", "dnf install -y wireguard-tools iproute iputils"),
         (
             "fedora",
-            "dnf install -y wireguard-tools iproute iproute-tc iputils git",
+            "dnf install -y wireguard-tools iproute iproute-tc iputils",
         ),
         (
             "arch",
-            "pacman -S --noconfirm --needed wireguard-tools iproute2 iputils git",
+            "pacman -S --noconfirm --needed wireguard-tools iproute2 iputils",
         ),
-        ("alpine", "apk add wireguard-tools iproute2 iputils git"),
+        ("alpine", "apk add wireguard-tools iproute2 iputils"),
         (
             "opensuse-leap",
-            "zypper --non-interactive install wireguard-tools iproute2 iputils git",
+            "zypper --non-interactive install wireguard-tools iproute2 iputils",
         ),
     ];
 
@@ -572,7 +569,7 @@ fn local_effects_prepare_dataplane_packages_for_each_supported_family() {
         validate_host(&mut effects);
 
         effects
-            .apply_step(&HostRunnerStep::PrepareDataplaneHost { require_git: true })
+            .apply_step(&HostRunnerStep::PrepareDataplaneHost)
             .expect("dataplane packages install");
 
         assert!(
@@ -587,46 +584,44 @@ fn local_effects_prepare_dataplane_packages_for_each_supported_family() {
 }
 
 #[test]
-fn local_effects_do_not_install_git_when_machine_build_execution_is_absent() {
-    let root = temp_dir("ployz-host-runner-dataplane-without-git");
-    let systemd_dir = root.join("systemd");
-    fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
-    let mut effects = HostRunnerLocalEffects::new(
-        local_config(&root, &systemd_dir),
-        RecordingRunner::root_linux(),
-    );
-    validate_host(&mut effects);
+fn local_effects_prepare_build_packages_for_each_supported_family() {
+    let cases = [
+        (
+            "ubuntu",
+            "env DEBIAN_FRONTEND=noninteractive apt-get install -y git",
+        ),
+        ("rocky", "dnf install -y git"),
+        ("fedora", "dnf install -y git"),
+        ("arch", "pacman -S --noconfirm --needed git"),
+        ("alpine", "apk add git"),
+        ("opensuse-leap", "zypper --non-interactive install git"),
+    ];
 
-    effects
-        .apply_step(&HostRunnerStep::PrepareDataplaneHost { require_git: false })
-        .expect("dataplane packages install without Git");
+    for (id, expected_install) in cases {
+        let root = temp_dir(&format!("ployz-host-runner-build-{id}"));
+        let systemd_dir = root.join("systemd");
+        fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
+        fs::create_dir_all(root.join("openrc")).expect("OpenRC dir can be created");
+        let runner = RecordingRunner {
+            os_release: format!("ID={id}\nVERSION_ID=1\n"),
+            ..RecordingRunner::root_linux()
+        };
+        let mut effects = HostRunnerLocalEffects::new(local_config(&root, &systemd_dir), runner);
+        validate_host(&mut effects);
 
-    assert!(effects.runner().command_calls.contains(
-        &"env DEBIAN_FRONTEND=noninteractive apt-get install -y wireguard-tools iproute2 iputils-ping"
-            .to_owned()
-    ));
-    assert!(!effects.runner().git_ready);
-}
+        effects
+            .apply_step(&HostRunnerStep::PrepareBuildHost)
+            .expect("build packages install");
 
-#[test]
-fn machine_build_execution_installs_git_when_dataplane_tools_are_already_ready() {
-    let root = temp_dir("ployz-host-runner-git-missing");
-    let systemd_dir = root.join("systemd");
-    fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
-    let runner = RecordingRunner {
-        dataplane_ready: true,
-        git_ready: false,
-        ..RecordingRunner::root_linux()
-    };
-    let mut effects = HostRunnerLocalEffects::new(local_config(&root, &systemd_dir), runner);
-    validate_host(&mut effects);
-
-    effects
-        .apply_step(&HostRunnerStep::PrepareDataplaneHost { require_git: true })
-        .expect("missing Git triggers package preparation");
-
-    assert_eq!(effects.runner().dataplane_host_prepare_runs, 1);
-    assert!(effects.runner().git_ready);
+        assert!(
+            effects
+                .runner()
+                .command_calls
+                .contains(&expected_install.to_owned()),
+            "{id} did not use {expected_install}: {:?}",
+            effects.runner().command_calls,
+        );
+    }
 }
 
 #[test]
@@ -635,7 +630,6 @@ fn machine_build_execution_fails_when_git_remains_unavailable_after_install() {
     let systemd_dir = root.join("systemd");
     fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
     let runner = RecordingRunner {
-        dataplane_ready: true,
         git_ready: false,
         git_install_makes_ready: false,
         ..RecordingRunner::root_linux()
@@ -644,33 +638,35 @@ fn machine_build_execution_fails_when_git_remains_unavailable_after_install() {
     validate_host(&mut effects);
 
     let error = effects
-        .apply_step(&HostRunnerStep::PrepareDataplaneHost { require_git: true })
+        .apply_step(&HostRunnerStep::PrepareBuildHost)
         .expect_err("Git readiness is required for machine build execution");
 
     assert_eq!(
         error.message().as_str(),
-        "dataplane host packages installed but wg/ip/tc/ping/git are not ready"
+        "build host packages installed but git is not ready"
+    );
+    assert_eq!(
+        error.reason(),
+        Some(HostRunnerStepFailureReason::BuildHostPrepareFailed)
     );
 }
 
 #[test]
-fn non_machine_host_skips_preparation_when_dataplane_tools_are_ready_without_git() {
-    let root = temp_dir("ployz-host-runner-no-machine-ready");
+fn build_host_skips_preparation_when_git_is_ready() {
+    let root = temp_dir("ployz-host-runner-build-ready");
     let systemd_dir = root.join("systemd");
     fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
     let runner = RecordingRunner {
-        dataplane_ready: true,
-        git_ready: false,
+        git_ready: true,
         ..RecordingRunner::root_linux()
     };
     let mut effects = HostRunnerLocalEffects::new(local_config(&root, &systemd_dir), runner);
     validate_host(&mut effects);
 
     effects
-        .apply_step(&HostRunnerStep::PrepareDataplaneHost { require_git: false })
-        .expect("Git is irrelevant without machine build execution");
+        .apply_step(&HostRunnerStep::PrepareBuildHost)
+        .expect("ready build host needs no package preparation");
 
-    assert_eq!(effects.runner().dataplane_host_prepare_runs, 0);
     assert!(effects.runner().command_calls.is_empty());
 }
 
@@ -689,8 +685,11 @@ fn arch_package_installs_use_existing_pacman_sync_databases() {
     validate_host(&mut effects);
 
     effects
-        .apply_step(&HostRunnerStep::PrepareDataplaneHost { require_git: true })
+        .apply_step(&HostRunnerStep::PrepareDataplaneHost)
         .expect("Arch installs dataplane packages from existing pacman sync databases");
+    effects
+        .apply_step(&HostRunnerStep::PrepareBuildHost)
+        .expect("Arch installs Git from existing pacman sync databases");
     effects
         .apply_step(&HostRunnerStep::PrepareContainerRuntime(
             ContainerRuntime::Docker,
@@ -707,7 +706,8 @@ fn arch_package_installs_use_existing_pacman_sync_databases() {
             .map(String::as_str)
             .collect::<Vec<_>>(),
         [
-            "pacman -S --noconfirm --needed wireguard-tools iproute2 iputils git",
+            "pacman -S --noconfirm --needed wireguard-tools iproute2 iputils",
+            "pacman -S --noconfirm --needed git",
             "pacman -S --noconfirm --needed docker docker-compose",
         ]
     );
@@ -729,8 +729,11 @@ fn amazon_linux_2_falls_back_to_yum_for_dataplane_and_docker_packages() {
     validate_host(&mut effects);
 
     effects
-        .apply_step(&HostRunnerStep::PrepareDataplaneHost { require_git: true })
+        .apply_step(&HostRunnerStep::PrepareDataplaneHost)
         .expect("Amazon Linux 2 installs dataplane packages with yum");
+    effects
+        .apply_step(&HostRunnerStep::PrepareBuildHost)
+        .expect("Amazon Linux 2 installs Git with yum");
     effects
         .apply_step(&HostRunnerStep::PrepareContainerRuntime(
             ContainerRuntime::Docker,
@@ -739,7 +742,8 @@ fn amazon_linux_2_falls_back_to_yum_for_dataplane_and_docker_packages() {
         .expect("Amazon Linux 2 installs Docker with yum");
 
     for command in [
-        "yum install -y wireguard-tools iproute iputils git",
+        "yum install -y wireguard-tools iproute iputils",
+        "yum install -y git",
         "yum install -y docker",
     ] {
         assert!(
@@ -1982,6 +1986,12 @@ impl HostRunnerCommandRunner for RecordingRunner {
         if program == "zypper" && args == ["refresh"] {
             return Ok(succeeded_command(""));
         }
+        if args.contains(&"git") && !args.contains(&"wireguard-tools") {
+            if self.git_install_makes_ready {
+                self.git_ready = true;
+            }
+            return Ok(succeeded_command(""));
+        }
         if args.contains(&"wireguard-tools") {
             self.dataplane_host_prepare_runs += 1;
             if self.fail_dataplane_host_prepare {
@@ -1994,9 +2004,6 @@ impl HostRunnerCommandRunner for RecordingRunner {
                 });
             }
             self.dataplane_ready = true;
-            if args.contains(&"git") && self.git_install_makes_ready {
-                self.git_ready = true;
-            }
             return Ok(succeeded_command(""));
         }
         if program == "rc-update" {
@@ -2112,8 +2119,12 @@ impl HostRunnerCommandRunner for RecordingRunner {
         Ok(true)
     }
 
-    fn dataplane_host_ready(&mut self, require_git: bool) -> bool {
-        self.dataplane_ready && (!require_git || self.git_ready)
+    fn dataplane_host_ready(&mut self) -> bool {
+        self.dataplane_ready
+    }
+
+    fn build_host_ready(&mut self) -> bool {
+        self.git_ready
     }
 }
 

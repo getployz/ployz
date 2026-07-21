@@ -72,7 +72,8 @@ pub enum HostRunnerStep {
     PreflightHostPorts(AssignedSubstrateState),
     AssureHostPorts(AssignedSubstrateState),
     StoreAssignedSubstrate(AssignedSubstrateState),
-    PrepareDataplaneHost { require_git: bool },
+    PrepareDataplaneHost,
+    PrepareBuildHost,
     PrepareContainerRuntime(ContainerRuntime, MachineEndpointSupernet),
     VerifyContainerRuntime(ContainerRuntime),
     InstallArtifact(ArtifactTarget),
@@ -95,6 +96,7 @@ pub enum HostRunnerStepLabel {
     AssureHostPorts(Vec<AssignedHostPort>),
     StoreAssignedSubstrate(Vec<AssignedHostPort>),
     PrepareDataplaneHost,
+    PrepareBuildHost,
     PrepareContainerRuntime(ContainerRuntime),
     VerifyContainerRuntime(ContainerRuntime),
     InstallArtifact(ArtifactTarget),
@@ -128,7 +130,8 @@ impl HostRunnerStepLabel {
             HostRunnerStep::StoreAssignedSubstrate(state) => {
                 Self::StoreAssignedSubstrate(state.required_host_ports())
             }
-            HostRunnerStep::PrepareDataplaneHost { .. } => Self::PrepareDataplaneHost,
+            HostRunnerStep::PrepareDataplaneHost => Self::PrepareDataplaneHost,
+            HostRunnerStep::PrepareBuildHost => Self::PrepareBuildHost,
             HostRunnerStep::PrepareContainerRuntime(runtime, _) => {
                 Self::PrepareContainerRuntime(*runtime)
             }
@@ -1036,7 +1039,7 @@ fn host_runner_join_material_steps(target: &HostRunnerJoinTarget) -> Vec<HostRun
 
 fn host_runner_join_install_steps(target: HostRunnerJoinTarget) -> Vec<HostRunnerStep> {
     let assigned = join_assigned_substrate(&target.roles, target.host_port_assurance);
-    let require_git = target
+    let requires_build_host = target
         .roles
         .roles()
         .iter()
@@ -1044,7 +1047,12 @@ fn host_runner_join_install_steps(target: HostRunnerJoinTarget) -> Vec<HostRunne
     let mut steps = vec![
         HostRunnerStep::PreflightHostPorts(assigned.clone()),
         HostRunnerStep::AssureHostPorts(assigned),
-        HostRunnerStep::PrepareDataplaneHost { require_git },
+        HostRunnerStep::PrepareDataplaneHost,
+    ];
+    if requires_build_host {
+        steps.push(HostRunnerStep::PrepareBuildHost);
+    }
+    steps.extend([
         HostRunnerStep::PrepareContainerRuntime(
             ContainerRuntime::Docker,
             target.material.dataplane_endpoint_supernet().clone(),
@@ -1052,7 +1060,7 @@ fn host_runner_join_install_steps(target: HostRunnerJoinTarget) -> Vec<HostRunne
         HostRunnerStep::VerifyContainerRuntime(ContainerRuntime::Docker),
         HostRunnerStep::InstallArtifact(target.ployzd_artifact.artifact().clone()),
         HostRunnerStep::InstallArtifact(target.railpack_artifact.clone()),
-    ];
+    ]);
     steps.push(HostRunnerStep::InstallArtifact(
         target.dataplane_artifacts.ebpf_bytecode.clone(),
     ));
@@ -1307,7 +1315,8 @@ pub fn first_machine_install_plan(target: FirstMachineInstallTarget) -> HostRunn
         HostRunnerStep::PreflightHostPorts(assigned.clone()),
         HostRunnerStep::AssureHostPorts(assigned.clone()),
         HostRunnerStep::StoreAssignedSubstrate(assigned),
-        HostRunnerStep::PrepareDataplaneHost { require_git: true },
+        HostRunnerStep::PrepareDataplaneHost,
+        HostRunnerStep::PrepareBuildHost,
         HostRunnerStep::PrepareContainerRuntime(
             ContainerRuntime::Docker,
             target.dataplane_endpoint_supernet.clone(),
@@ -1477,6 +1486,7 @@ pub enum HostRunnerStepFailureReason {
     JoinMaterialStoreFailed,
     InstalledSubstrateReleaseStoreFailed,
     DataplaneHostPrepareFailed,
+    BuildHostPrepareFailed,
     ContainerRuntimePrepareFailed,
     ContainerRuntimeVerifyFailed,
     ContainerRuntimeClassicStoreUnsupported,
@@ -1490,7 +1500,8 @@ impl HostRunnerStepFailureReason {
             HostRunnerStep::PreflightHostPorts(_) => Self::HostPortsPreflightFailed,
             HostRunnerStep::AssureHostPorts(_) => Self::HostPortsAssuranceFailed,
             HostRunnerStep::StoreAssignedSubstrate(_) => Self::AssignedSubstrateStoreFailed,
-            HostRunnerStep::PrepareDataplaneHost { .. } => Self::DataplaneHostPrepareFailed,
+            HostRunnerStep::PrepareDataplaneHost => Self::DataplaneHostPrepareFailed,
+            HostRunnerStep::PrepareBuildHost => Self::BuildHostPrepareFailed,
             HostRunnerStep::PrepareContainerRuntime(_, _) => Self::ContainerRuntimePrepareFailed,
             HostRunnerStep::VerifyContainerRuntime(_) => Self::ContainerRuntimeVerifyFailed,
             HostRunnerStep::InstallArtifact(_) => Self::ArtifactInstallFailed,
