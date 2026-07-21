@@ -79,7 +79,7 @@ fn assert_join_template(template: MachineJoinTemplate) {
             .substrate_release
             .version
             .as_str(),
-        "v0.0.2-alpha.87"
+        "0.0.2-alpha.87"
     );
 }
 
