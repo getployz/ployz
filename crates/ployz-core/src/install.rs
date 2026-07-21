@@ -8,8 +8,8 @@ pub mod roles;
 pub mod validation;
 
 pub use artifacts::{
-    FirstMachineInstallArtifacts, InstallArtifactSource, InstallArtifactSpec,
-    InstallArtifactVersion, InstallSha256Digest, MachineJoinArtifactBundleSpec,
+    ExactPloyzVersion, ExactPloyzVersionError, FirstMachineInstallArtifacts, InstallArtifactSource,
+    InstallArtifactSpec, InstallArtifactVersion, InstallSha256Digest, MachineJoinSubstrateRelease,
     NatsServerInstallSpec,
 };
 pub use join::{

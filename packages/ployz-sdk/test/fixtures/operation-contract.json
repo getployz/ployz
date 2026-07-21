@@ -276,36 +276,15 @@
             6
           ],
           "dataplane_endpoint_supernet": "10.198.0.0/16",
-          "ebpf_bytecode": {
-            "install_path": "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
-            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "source": "/tmp/ployz-ebpf-tc",
-            "version": "0.1.0"
-          },
-          "ebpf_ctl": {
-            "install_path": "/usr/local/bin/ployz-ebpf-ctl",
-            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "source": "/tmp/ployz-ebpf-ctl",
-            "version": "0.1.0"
-          },
-          "ployzd": {
-            "install_path": "/usr/local/bin/ployzd",
-            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "source": "/tmp/ployzd",
-            "version": "0.1.0"
-          },
-          "railpack": {
-            "install_path": "/usr/local/lib/ployz/railpack/v0.31.0/railpack",
-            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "source": "/tmp/ployz-railpack",
-            "version": "0.1.0"
-          },
           "recovery_key_wrapped": [
             1,
             2,
             3
           ],
           "runtime_nats_url": "nats://127.0.0.1:7422",
+          "substrate_release": {
+            "version": "v0.1.0"
+          },
           "trusted_nats": {
             "ca_pem": "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"
           }
@@ -335,36 +314,15 @@
             6
           ],
           "dataplane_endpoint_supernet": "10.198.0.0/16",
-          "ebpf_bytecode": {
-            "install_path": "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
-            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "source": "/tmp/ployz-ebpf-tc",
-            "version": "0.1.0"
-          },
-          "ebpf_ctl": {
-            "install_path": "/usr/local/bin/ployz-ebpf-ctl",
-            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "source": "/tmp/ployz-ebpf-ctl",
-            "version": "0.1.0"
-          },
-          "ployzd": {
-            "install_path": "/usr/local/bin/ployzd",
-            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "source": "/tmp/ployzd",
-            "version": "0.1.0"
-          },
-          "railpack": {
-            "install_path": "/usr/local/lib/ployz/railpack/v0.31.0/railpack",
-            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "source": "/tmp/ployz-railpack",
-            "version": "0.1.0"
-          },
           "recovery_key_wrapped": [
             1,
             2,
             3
           ],
           "runtime_nats_url": "nats://127.0.0.1:7422",
+          "substrate_release": {
+            "version": "v0.1.0"
+          },
           "trusted_nats": {
             "ca_pem": "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"
           }

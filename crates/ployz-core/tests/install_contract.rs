@@ -1,11 +1,11 @@
 use ployz_core::ids::MachineId;
 use ployz_core::install::HostPortAssurance;
 use ployz_core::install::{
-    AbsoluteInstallPath, FirstMachineInstallArtifacts, FirstMachineInstallSpec,
+    AbsoluteInstallPath, ExactPloyzVersion, FirstMachineInstallArtifacts, FirstMachineInstallSpec,
     InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion, InstallSha256Digest,
     MachineBootstrapUrl, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
-    MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTrustedNats,
-    NatsServerInstallSpec,
+    MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinSubstrateRelease,
+    MachineJoinTrustedNats, NatsServerInstallSpec,
 };
 use ployz_core::machine::{GatewayRole, InstallRolePolicy};
 use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
@@ -213,7 +213,24 @@ fn host_runner_install_contract_validates_artifact_inputs() {
 }
 
 #[test]
-fn machine_join_bundle_rejects_invalid_wire_artifact_before_storage() {
+fn machine_join_release_requires_an_exact_immutable_version() {
+    for mutable in ["", "latest", "alpha", "beta", "stable"] {
+        assert!(ExactPloyzVersion::try_new(mutable).is_err());
+    }
+    for range in ["^0.1.0", "~0.1.0", ">=0.1.0", "0.1.*", "0.1,0.2"] {
+        assert!(ExactPloyzVersion::try_new(range).is_err());
+    }
+
+    let tagged = ExactPloyzVersion::try_new("v0.0.2-alpha.87").expect("exact tagged version");
+    assert_eq!(tagged.as_str(), "v0.0.2-alpha.87");
+    assert_eq!(tagged.tag(), "v0.0.2-alpha.87");
+
+    let untagged = ExactPloyzVersion::try_new("0.1.0").expect("exact untagged version");
+    assert_eq!(untagged.tag(), "v0.1.0");
+}
+
+#[test]
+fn machine_join_bundle_rejects_mutable_release_before_storage() {
     let value = serde_json::json!({
         "material": {
             "cluster_name": "prod",
@@ -221,11 +238,8 @@ fn machine_join_bundle_rejects_invalid_wire_artifact_before_storage() {
             "trusted_nats": {
                 "ca_pem": "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"
             },
-            "ployzd": {
-                "version": "0.1.0",
-                "source": "relative/ployzd",
-                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                "install_path": "/usr/local/bin/ployzd"
+            "substrate_release": {
+                "version": "alpha"
             }
         }
     });
@@ -249,29 +263,8 @@ fn machine_join_bundle_wire_shape_stays_plain_json() {
                 },
                 "recovery_key_wrapped": [1, 2, 3],
                 "core_seeds_wrapped": [4, 5, 6],
-                "ployzd": {
-                    "version": "0.1.0",
-                    "source": "/tmp/ployzd",
-                    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                    "install_path": "/usr/local/bin/ployzd"
-                },
-                "ebpf_bytecode": {
-                    "version": "0.1.0",
-                    "source": "/tmp/ployz-ebpf-tc",
-                    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                    "install_path": "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"
-                },
-                "ebpf_ctl": {
-                    "version": "0.1.0",
-                    "source": "/tmp/ployz-ebpf-ctl",
-                    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                    "install_path": "/usr/local/bin/ployz-ebpf-ctl"
-                },
-                "railpack": {
-                    "version": "0.1.0",
-                    "source": "/tmp/railpack",
-                    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                    "install_path": "/usr/local/lib/ployz/railpack/v0.31.0/railpack"
+                "substrate_release": {
+                    "version": "v0.1.0"
                 }
             }
         })
@@ -355,29 +348,10 @@ fn machine_join_bundle() -> MachineJoinBundle {
             },
             recovery_key_wrapped: ployz_core::install::WrappedCaKey::new(vec![1, 2, 3]),
             core_seeds_wrapped: ployz_core::install::WrappedCoreSeeds::new(vec![4, 5, 6]),
-            ployzd: join_artifact("/tmp/ployzd", "/usr/local/bin/ployzd"),
-            ebpf_bytecode: join_artifact(
-                "/tmp/ployz-ebpf-tc",
-                "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
-            ),
-            ebpf_ctl: join_artifact("/tmp/ployz-ebpf-ctl", "/usr/local/bin/ployz-ebpf-ctl"),
-            railpack: join_artifact(
-                "/tmp/railpack",
-                "/usr/local/lib/ployz/railpack/v0.31.0/railpack",
-            ),
+            substrate_release: MachineJoinSubstrateRelease {
+                version: ExactPloyzVersion::try_new("v0.1.0").expect("exact release version"),
+            },
         },
-    }
-}
-
-fn join_artifact(source: &str, install_path: &str) -> InstallArtifactSpec {
-    InstallArtifactSpec {
-        version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
-        source: InstallArtifactSource::try_new(source).expect("valid source"),
-        sha256: InstallSha256Digest::try_new(
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        )
-        .expect("valid digest"),
-        install_path: AbsoluteInstallPath::try_new(install_path).expect("valid install path"),
     }
 }
 

@@ -1004,7 +1004,9 @@ recovery_key_wrapped: WrappedCaKey,
  * secret (ADR 0031), delivered so a promoted core reuses them verbatim rather
  * than rotating (which would lock out the operator and Cloud).
  */
-core_seeds_wrapped: WrappedCoreSeeds, ployzd: InstallArtifactSpec, ebpf_bytecode: InstallArtifactSpec, ebpf_ctl: InstallArtifactSpec, railpack: InstallArtifactSpec, };
+core_seeds_wrapped: WrappedCoreSeeds, substrate_release: MachineJoinSubstrateRelease, };
+
+export type MachineJoinSubstrateRelease = { version: ExactPloyzVersion, };
 
 export type MachineJoinSecretDelivery = { nats_credentials: NatsUserSeed, };
 
@@ -1046,6 +1048,8 @@ export type WrappedCaKey = Array<number>;
 export type WrappedCoreSeeds = Array<number>;
 
 export type InstallArtifactVersion = string;
+
+export type ExactPloyzVersion = string;
 
 export type InstallArtifactSource = string;
 

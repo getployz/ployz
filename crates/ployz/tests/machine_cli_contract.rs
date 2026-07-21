@@ -14,9 +14,8 @@ use ployz::ssh::{SshClient, SshCommandError, SshPhase, SshTarget, SshTargetParse
 use ployz_core::deploy::VolumeName;
 use ployz_core::ids::{MachineId, NamespaceId};
 use ployz_core::install::{
-    AbsoluteInstallPath, HostPortAssurance, InstallArtifactSource, InstallArtifactSpec,
-    InstallArtifactVersion, InstallSha256Digest, MachineJoinBundle, MachineJoinClusterName,
-    MachineJoinMaterial, MachineJoinTrustedNats,
+    ExactPloyzVersion, HostPortAssurance, MachineJoinBundle, MachineJoinClusterName,
+    MachineJoinMaterial, MachineJoinSubstrateRelease, MachineJoinTrustedNats,
 };
 use ployz_core::intent::ActiveMachineState;
 use ployz_core::machine::GatewayServingStatus;
@@ -47,7 +46,7 @@ fn machine_add_prints_bootstrap_command_without_nats_credentials() {
     assert!(output.contains("machine machine_2"));
     assert!(output.contains("join-token join_once_123"));
     assert!(output.contains("curl -fsSL -- 'https://get.ployz.sh'"));
-    assert!(output.contains(" | PLOYZ_VERSION='0.1.0' sh && ca_file=\"$(mktemp)\""));
+    assert!(output.contains(" | PLOYZ_VERSION='v0.1.0' sh && ca_file=\"$(mktemp)\""));
     assert!(output.contains(&format!(
         "PLOYZ_JOIN_NKEY_SEED='{}' ployz host bootstrap join",
         TEST_JOIN_SEED
@@ -108,7 +107,7 @@ fn machine_add_shell_quotes_join_material() {
     .render();
 
     assert!(output.contains("curl -fsSL -- 'https://get.ployz.sh/bootstrap?x='\\''quoted'\\'''"));
-    assert!(output.contains("PLOYZ_VERSION='0.1.0'"));
+    assert!(output.contains("PLOYZ_VERSION='v0.1.0'"));
     assert!(output.contains("PLOYZ_NATS_URL='nats://127.0.0.1:7422'"));
     assert!(output.contains("printf '%s'"));
     assert!(output.contains("ployz host bootstrap join 'join'\\''quoted'\\'''"));
@@ -321,48 +320,11 @@ fn machine_join_bundle(runtime_nats_url: &str) -> MachineJoinBundle {
             },
             recovery_key_wrapped: ployz_core::install::WrappedCaKey::new(vec![1, 2, 3]),
             core_seeds_wrapped: ployz_core::install::WrappedCoreSeeds::new(vec![4, 5, 6]),
-            ployzd: InstallArtifactSpec {
-                version: version("0.1.0"),
-                source: source("/tmp/ployzd"),
-                sha256: digest("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-                install_path: absolute_path("/usr/local/bin/ployzd"),
-            },
-            ebpf_bytecode: InstallArtifactSpec {
-                version: version("0.1.0"),
-                source: source("/tmp/ployz-ebpf-tc"),
-                sha256: digest("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-                install_path: absolute_path("/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"),
-            },
-            ebpf_ctl: InstallArtifactSpec {
-                version: version("0.1.0"),
-                source: source("/tmp/ployz-ebpf-ctl"),
-                sha256: digest("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-                install_path: absolute_path("/usr/local/bin/ployz-ebpf-ctl"),
-            },
-            railpack: InstallArtifactSpec {
-                version: version("v0.31.0"),
-                source: source("/tmp/railpack"),
-                sha256: digest("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-                install_path: absolute_path("/usr/local/lib/ployz/railpack/v0.31.0/railpack"),
+            substrate_release: MachineJoinSubstrateRelease {
+                version: ExactPloyzVersion::try_new("v0.1.0").expect("exact release version"),
             },
         },
     }
-}
-
-fn version(value: &str) -> InstallArtifactVersion {
-    InstallArtifactVersion::try_new(value).expect("valid artifact version")
-}
-
-fn source(value: &str) -> InstallArtifactSource {
-    InstallArtifactSource::try_new(value).expect("valid artifact source")
-}
-
-fn digest(value: &str) -> InstallSha256Digest {
-    InstallSha256Digest::try_new(value).expect("valid digest")
-}
-
-fn absolute_path(value: &str) -> AbsoluteInstallPath {
-    AbsoluteInstallPath::try_new(value).expect("valid absolute path")
 }
 
 // --- SSH target parsing (U3) ---

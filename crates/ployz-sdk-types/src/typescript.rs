@@ -63,7 +63,7 @@ use crate::{
     DeployVolumeHandoffRollbackContainerOutcome, DeployVolumeHandoffRollbackOutcome,
     DeployVolumeHandoffStopOutcome, DeployVolumeHandoffStopUncertain, DockerfileStageName,
     EbpfAttachmentStatus, EbpfForwardingReady, EbpfForwardingReadyEvidence, EndpointBridgeStatus,
-    EnvName, EnvValue, EventSequence, ExternalBuildExecutorCapability,
+    EnvName, EnvValue, EventSequence, ExactPloyzVersion, ExternalBuildExecutorCapability,
     ExternalBuildPoolCapabilities, FailureMessage, FirstMachineInstallArtifacts,
     FirstMachineInstallSpec, GatewayHttpFailure, GatewayProcessAttempt, GatewayProcessHealth,
     GatewayRole, GatewayServingStatus, GatewayStatusObservation, GatewayStatusPublishFailure,
@@ -96,8 +96,8 @@ use crate::{
     MachineJoinRedeemed, MachineJoinReportError, MachineJoinReportFailure,
     MachineJoinReportOutcome, MachineJoinReportRequest, MachineJoinReported,
     MachineJoinReportedFailure, MachineJoinReportedOutcome, MachineJoinRuntimeNatsUrl,
-    MachineJoinSecretDelivery, MachineJoinTemplate, MachineJoinToken, MachineJoinTrustedNats,
-    MachineLifecycle, MachineLifecycleError, MachineLifecycleFailure,
+    MachineJoinSecretDelivery, MachineJoinSubstrateRelease, MachineJoinTemplate, MachineJoinToken,
+    MachineJoinTrustedNats, MachineLifecycle, MachineLifecycleError, MachineLifecycleFailure,
     MachineLifecycleOperationState, MachineLifecycleRequest, MachineListError, MachineListRequest,
     MachineListResult, MachineName, MachineReadinessCheck, MachineReadinessEvidence,
     MachineSnapshot, MachineStoragePrepareError, MachineStoragePrepareFailure,
@@ -682,6 +682,7 @@ macro_rules! exported_types {
             MachineJoinClusterName,
             MachineJoinRuntimeNatsUrl,
             MachineJoinMaterial,
+            MachineJoinSubstrateRelease,
             MachineJoinSecretDelivery,
             MachineJoinTemplate,
             FirstMachineInstallSpec,
@@ -700,6 +701,7 @@ macro_rules! exported_types {
             WrappedCaKey,
             WrappedCoreSeeds,
             InstallArtifactVersion,
+            ExactPloyzVersion,
             InstallArtifactSource,
             InstallSha256Digest,
             AbsoluteInstallPath,
@@ -1280,30 +1282,10 @@ fn machine_join_bundle() -> MachineJoinBundle {
             trusted_nats: trusted_nats(),
             recovery_key_wrapped: WrappedCaKey::new(vec![1, 2, 3]),
             core_seeds_wrapped: WrappedCoreSeeds::new(vec![4, 5, 6]),
-            ployzd: machine_join_artifact("/tmp/ployzd", "/usr/local/bin/ployzd"),
-            railpack: machine_join_artifact(
-                "/tmp/ployz-railpack",
-                "/usr/local/lib/ployz/railpack/v0.31.0/railpack",
-            ),
-            ebpf_bytecode: machine_join_artifact(
-                "/tmp/ployz-ebpf-tc",
-                "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
-            ),
-            ebpf_ctl: machine_join_artifact("/tmp/ployz-ebpf-ctl", "/usr/local/bin/ployz-ebpf-ctl"),
+            substrate_release: MachineJoinSubstrateRelease {
+                version: ExactPloyzVersion::try_new("v0.1.0").expect("exact release version"),
+            },
         },
-    }
-}
-
-fn machine_join_artifact(source: &str, install_path: &str) -> InstallArtifactSpec {
-    InstallArtifactSpec {
-        version: InstallArtifactVersion::try_new("0.1.0").expect("valid artifact version"),
-        source: InstallArtifactSource::try_new(source).expect("valid artifact source"),
-        sha256: InstallSha256Digest::try_new(
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        )
-        .expect("valid artifact digest"),
-        install_path: AbsoluteInstallPath::try_new(install_path)
-            .expect("valid artifact install path"),
     }
 }
 

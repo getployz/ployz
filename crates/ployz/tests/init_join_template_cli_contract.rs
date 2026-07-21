@@ -5,20 +5,16 @@ use std::process::{Command, Output};
 use ployz::commands::{PloyzctlCommand, parse_command};
 use ployz_core::install::MachineJoinTemplate;
 
-const PLOYZ_NEWLINE_SHA256: &str =
-    "0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e";
 const TRUSTED_NATS_CA_PEM: &str =
     "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n";
 
 #[test]
 fn cli_init_can_render_machine_join_template_json() {
     let temp = temp_dir("ployz-join-template");
-    let artifact_spec = write_artifact_spec_file(&temp);
     let trusted_nats_ca_file = write_trusted_nats_ca_file(&temp);
     let recovery_key_file = write_recovery_key_file(&temp);
     let core_seeds_file = write_core_seeds_file(&temp);
     let command = parse_command(init_join_template_args(
-        &artifact_spec,
         &trusted_nats_ca_file,
         &recovery_key_file,
         &core_seeds_file,
@@ -37,7 +33,6 @@ fn cli_init_can_render_machine_join_template_json() {
 #[test]
 fn binary_init_can_print_machine_join_template_without_nats() {
     let temp = temp_dir("ployz-join-template-binary");
-    let artifact_spec = write_artifact_spec_file(&temp);
     let trusted_nats_ca_file = write_trusted_nats_ca_file(&temp);
     let recovery_key_file = write_recovery_key_file(&temp);
     let core_seeds_file = write_core_seeds_file(&temp);
@@ -45,7 +40,6 @@ fn binary_init_can_print_machine_join_template_without_nats() {
         .env("DO_NOT_TRACK", "1")
         .env_remove("PLOYZ_NATS_URL")
         .args(init_join_template_args(
-            &artifact_spec,
             &trusted_nats_ca_file,
             &recovery_key_file,
             &core_seeds_file,
@@ -79,30 +73,17 @@ fn assert_join_template(template: MachineJoinTemplate) {
         TRUSTED_NATS_CA_PEM
     );
     assert_eq!(
-        template.join_bundle.material.ployzd.install_path.as_str(),
-        "/usr/local/bin/ployzd"
-    );
-    assert_eq!(
         template
             .join_bundle
             .material
-            .ebpf_bytecode
-            .install_path
+            .substrate_release
+            .version
             .as_str(),
-        "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"
-    );
-    assert_eq!(
-        template.join_bundle.material.ebpf_ctl.install_path.as_str(),
-        "/usr/local/bin/ployz-ebpf-ctl"
-    );
-    assert_eq!(
-        template.join_bundle.material.railpack.install_path.as_str(),
-        "/usr/local/bin/railpack"
+        "v0.0.2-alpha.87"
     );
 }
 
 fn init_join_template_args(
-    artifact_spec: &Path,
     trusted_nats_ca_file: &Path,
     recovery_key_file: &Path,
     core_seeds_file: &Path,
@@ -127,10 +108,8 @@ fn init_join_template_args(
         core_seeds_file
             .to_str()
             .expect("core seeds fixture path is utf-8"),
-        "--artifact-spec",
-        artifact_spec
-            .to_str()
-            .expect("artifact spec fixture path is utf-8"),
+        "--release-version",
+        "v0.0.2-alpha.87",
     ]
     .into_iter()
     .map(str::to_owned)
@@ -152,43 +131,6 @@ fn write_core_seeds_file(dir: &Path) -> PathBuf {
 fn write_trusted_nats_ca_file(dir: &Path) -> PathBuf {
     let path = dir.join("trusted-nats-ca.pem");
     fs::write(&path, TRUSTED_NATS_CA_PEM).expect("trusted CA fixture can be written");
-    path
-}
-
-fn write_artifact_spec_file(dir: &Path) -> PathBuf {
-    let path = dir.join("artifact-spec.json");
-    fs::write(
-        &path,
-        format!(
-            r#"{{
-                "ployzd": {{
-                    "version": "acceptance",
-                    "source": "/tmp/ployzd",
-                    "sha256": "{PLOYZ_NEWLINE_SHA256}",
-                    "install_path": "/usr/local/bin/ployzd"
-                }},
-                "ebpf_bytecode": {{
-                    "version": "acceptance",
-                    "source": "/tmp/ployz-ebpf-tc",
-                    "sha256": "{PLOYZ_NEWLINE_SHA256}",
-                    "install_path": "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"
-                }},
-                "ebpf_ctl": {{
-                    "version": "acceptance",
-                    "source": "/tmp/ployz-ebpf-ctl",
-                    "sha256": "{PLOYZ_NEWLINE_SHA256}",
-                    "install_path": "/usr/local/bin/ployz-ebpf-ctl"
-                }},
-                "railpack": {{
-                    "version": "0.31.0",
-                    "source": "/tmp/railpack",
-                    "sha256": "{PLOYZ_NEWLINE_SHA256}",
-                    "install_path": "/usr/local/bin/railpack"
-                }}
-            }}"#
-        ),
-    )
-    .expect("artifact spec fixture can be written");
     path
 }
 
