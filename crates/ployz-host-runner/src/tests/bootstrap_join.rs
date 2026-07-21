@@ -63,6 +63,7 @@ fn host_runner_join_installs_ployzd_and_only_assigned_role_units() {
         preflight_install,
         assure_ports,
         prepare_dataplane_host,
+        prepare_build_host,
         prepare_runtime,
         verify_runtime,
         install_ployzd,
@@ -93,6 +94,7 @@ fn host_runner_join_installs_ployzd_and_only_assigned_role_units() {
         *prepare_dataplane_host,
         HostRunnerStep::PrepareDataplaneHost
     );
+    assert_eq!(*prepare_build_host, HostRunnerStep::PrepareBuildHost);
     assert_eq!(
         *prepare_runtime,
         HostRunnerStep::PrepareContainerRuntime(
@@ -147,6 +149,35 @@ fn host_runner_join_installs_ployzd_and_only_assigned_role_units() {
         &plan,
         &SupervisorUnitTarget::PloyzdRole(DaemonProcessRole::Dns)
     ));
+}
+
+#[test]
+fn join_requires_git_only_for_machine_role() {
+    for (roles, requires_build_host) in [
+        (
+            vec![DaemonProcessRole::Machine(machine_id("machine_7"))],
+            true,
+        ),
+        (
+            vec![DaemonProcessRole::Gateway, DaemonProcessRole::Dns],
+            false,
+        ),
+    ] {
+        let plan = host_runner_join_local_install_plan(HostRunnerJoinTarget::new(
+            host_runner_join_material(),
+            ployz_release_artifact(),
+            dataplane_artifacts(),
+            railpack_artifact(),
+            NonEmptyRoleSet::try_new(roles).expect("non-empty unique roles"),
+            edge_role_environment(),
+            ployz_core::install::HostPortAssurance::Keeper,
+        ));
+
+        assert_eq!(
+            plan.steps().contains(&HostRunnerStep::PrepareBuildHost),
+            requires_build_host
+        );
+    }
 }
 
 #[test]

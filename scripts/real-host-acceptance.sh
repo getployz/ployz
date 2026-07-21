@@ -638,7 +638,7 @@ run_real_host_acceptance_regression_test() {
   local evidence failure_output success_output reboot_output recovery_output rescue_root fake_bin
   local module_contents module_sha module_mode module_uid module_gid child_status=0
   local restored_inode ssh_restore_output restore_function_output
-  local git_install_command fixture_log_command git_install_line fixture_log_line rendered_git_program
+  local git_install_command fixture_log_command rendered_git_program
   local cancel_command cancel_status_capture cancel_status_guard cancel_poll cancel_replay json_assertion
   local cancel_command_line cancel_status_capture_line cancel_status_guard_line cancel_poll_line cancel_replay_line json_assertion_line
   local managed_function managed_deploy_log restart_invisibility_log dispatch_invocation
@@ -654,10 +654,8 @@ run_real_host_acceptance_regression_test() {
 
   git_install_command='core "timeout 5m dnf install -y git"'
   fixture_log_command='log "preparing authenticated exact-commit Git build fixture"'
-  [ "$(grep -Fxc "$git_install_command" "$0")" -eq 1 ]
-  git_install_line=$(grep -Fnx "$git_install_command" "$0" | cut -d: -f1)
-  fixture_log_line=$(grep -Fnx "$fixture_log_command" "$0" | cut -d: -f1)
-  [ "$git_install_line" -eq $((fixture_log_line - 1)) ]
+  [ "$(grep -Fxc "$fixture_log_command" "$0")" -eq 1 ]
+  [ "$(grep -Fxc "$git_install_command" "$0")" -eq 0 ]
 
   cancel_command='cancel_output=$(core '\''ployz build cancel op_real_host_build_cancel --reason "real-host cancellation proof"'\'' 2>&1)'
   cancel_status_capture='cancel_exit=$?'
@@ -1695,7 +1693,6 @@ if [ "$RUN_ZFS_CERTIFICATION" = 1 ]; then
     "$edge_installed_tag" "$edge_installed_manifest" >> "$ZFS_EVIDENCE_DIR/metadata.env"
 fi
 
-core "timeout 5m dnf install -y git"
 log "preparing authenticated exact-commit Git build fixture"
 git_fixture_dir=$(mktemp -d)
 scp "${SSH_OPTS[@]}" \

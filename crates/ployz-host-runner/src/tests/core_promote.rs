@@ -164,6 +164,7 @@ fn core_promote_authorized_users_carries_only_the_reused_core_principals() {
             | HostRunnerStep::AssureHostPorts(_)
             | HostRunnerStep::StoreAssignedSubstrate(_)
             | HostRunnerStep::PrepareDataplaneHost
+            | HostRunnerStep::PrepareBuildHost
             | HostRunnerStep::PrepareContainerRuntime(_, _)
             | HostRunnerStep::VerifyContainerRuntime(_)
             | HostRunnerStep::InstallArtifact(_)

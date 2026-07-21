@@ -207,6 +207,7 @@ fn filtered_dind_reuses_matching_substrate_and_unfiltered_is_full() {
     let fingerprint = fixture.fingerprint();
 
     let matching = fixture.run_dind(
+        "linux/amd64",
         Some("scenario_machine_add"),
         &format!("linux/amd64 {fingerprint}"),
         false,
@@ -217,21 +218,39 @@ fn filtered_dind_reuses_matching_substrate_and_unfiltered_is_full() {
     assert!(log.contains("index .Config.Labels \"dev.ployz.dind.fingerprint\""));
     assert!(log.contains("--env CARGO_INCREMENTAL=1"));
     assert!(!log.contains("pull --platform"));
+    assert!(
+        log.contains("cargo-env PLOYZ_DIND_PLATFORM=linux/amd64"),
+        "DinD wrapper must pass its normalized platform to the test process: {log}"
+    );
 
     for identity in ["", "linux/arm64 wrong", "linux/amd64 stale"] {
         fixture.clear_log();
-        let output = fixture.run_dind(Some("scenario_machine_add"), identity, true);
+        let output = fixture.run_dind("linux/amd64", Some("scenario_machine_add"), identity, true);
         assert_success(&output);
         assert!(fixture.log().contains("pull --platform linux/amd64"));
     }
 
     fixture.clear_log();
-    let full = fixture.run_dind(None, &format!("linux/amd64 {fingerprint}"), true);
+    let full = fixture.run_dind(
+        "linux/amd64",
+        None,
+        &format!("linux/amd64 {fingerprint}"),
+        true,
+    );
     assert_success(&full);
     let log = fixture.log();
     assert!(log.contains("pull --platform linux/amd64"));
     assert!(log.contains("group_ --skip acceptance::group_v1_acceptance"));
     assert!(log.contains("acceptance::group_v1_acceptance --exact"));
+
+    fixture.clear_log();
+    let arm64 = fixture.run_dind("linux/arm64", Some("scenario_machine_add"), "", true);
+    assert_success(&arm64);
+    assert!(
+        fixture
+            .log()
+            .contains("cargo-env PLOYZ_DIND_PLATFORM=linux/arm64")
+    );
 }
 
 struct FakeDocker(PathBuf);
@@ -256,7 +275,10 @@ impl FakeDocker {
             r#"#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "${PLOYZ_FAKE_LOG}"
-if [ "${0##*/}" = cargo ]; then exit 0; fi
+if [ "${0##*/}" = cargo ]; then
+  printf 'cargo-env PLOYZ_DIND_PLATFORM=%s\n' "${PLOYZ_DIND_PLATFORM:-}" >> "${PLOYZ_FAKE_LOG}"
+  exit 0
+fi
 case "${1:-}" in
   info) printf 'amd64\n' ;;
   buildx)
@@ -336,10 +358,11 @@ esac
             .expect("DinD builder can model manifest failure")
     }
 
-    fn run_dind(&self, filter: Option<&str>, identity: &str, skip: bool) -> Output {
+    fn run_dind(&self, platform: &str, filter: Option<&str>, identity: &str, skip: bool) -> Output {
         let mut command = self.command("scripts/dind-e2e.sh");
         command.args(filter);
         command
+            .env("PLOYZ_DIND_PLATFORM", platform)
             .env("PLOYZ_FAKE_MACHINE_IDENTITY", identity)
             .env("PLOYZ_DIND_SKIP_BUILD", if skip { "1" } else { "0" })
             .output()
@@ -387,7 +410,11 @@ done
             r#"#!/bin/sh
 case "$1" in
   */ployz-dind-railpack.*/*)
-    printf '%s  %s\n' f75416cf4c452db2841d864f54dbfd8e4d77f2d4a02b23b87561e7760fa278fd "$1"
+    case "${PLOYZ_DIND_PLATFORM:-linux/amd64}" in
+      linux/amd64) digest=f75416cf4c452db2841d864f54dbfd8e4d77f2d4a02b23b87561e7760fa278fd ;;
+      linux/arm64) digest=de4c197e3a9d0c3de14d1e55fe933611622b399f35f495b4274012609490158a ;;
+    esac
+    printf '%s  %s\n' "${digest}" "$1"
     ;;
   *)
     if [ -x /usr/bin/sha256sum ]; then exec /usr/bin/sha256sum "$@"; fi
