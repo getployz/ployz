@@ -109,6 +109,7 @@ impl ConnectedExecutor {
             client.clone(),
             workspace_root,
             admission,
+            credential_expires_at,
             state,
         );
         if workspace == WorkspaceStartup::Recover
@@ -146,6 +147,19 @@ impl ConnectedExecutor {
             }
         };
         if admission_opened {
+            if !runtime.readiness_authorized_before_expiry().await {
+                runtime.close_admission().await;
+                return Err(finish_failed_startup(
+                    startup_expired_error(
+                        credential_expires_at,
+                        ExecutorStartupStage::AdmissionOpening,
+                    ),
+                    client,
+                    Some(&runtime),
+                    Some(service),
+                )
+                .await);
+            }
             eprintln!("Build Executor {}", health_description(&readiness));
         }
         Ok(Self {
@@ -350,12 +364,21 @@ pub(crate) async fn run_controlled(
     };
     let mut connect = nats_connect_config(&config)?;
     connect.principal = executor_principal(&identity);
-    let client = connect_once(
+    let connect = connect_once(
         &connect,
         credential_expires_at,
         config.nats_connect_timeout(),
-    )
-    .await?;
+    );
+    tokio::pin!(connect);
+    let client = if let Some(shutdown) = &mut shutdown {
+        tokio::select! {
+            biased;
+            _ = shutdown => return Ok(controlled_stopped_output()),
+            result = &mut connect => result?,
+        }
+    } else {
+        connect.await?
+    };
     let workspace_root = resolve_workspace_root(command.workspace_root.as_deref(), &identity)?;
     let (terminal_tx, terminal_rx) = oneshot::channel();
     let state = Arc::new(Mutex::new(RuntimeState::new_connected()));
@@ -364,7 +387,8 @@ pub(crate) async fn run_controlled(
         .await
         .admission_generation()
         .expect("controlled mode initializes a connected generation");
-    let session = ConnectedExecutor::start(
+    let cleanup_client = client.clone();
+    let startup = ConnectedExecutor::start(
         identity,
         client,
         workspace_root,
@@ -376,8 +400,25 @@ pub(crate) async fn run_controlled(
             admission: command.admission,
             credential_expires_at,
         },
-    )
-    .await?;
+    );
+    let session = if let Some(shutdown) = &mut shutdown {
+        let cleanup = async move {
+            cleanup_client.drain().await.map_err(|error| {
+                PloyzctlExecutionError::from(BuildExecutionError::ExecutorRuntime {
+                    message: format!(
+                        "failed to drain NATS client after cancelled startup: {error}"
+                    ),
+                })
+            })
+        };
+        let startup = async move { startup.await.map_err(PloyzctlExecutionError::from) };
+        let Some(session) = await_startup_or_shutdown(startup, shutdown, cleanup).await? else {
+            return Ok(controlled_stopped_output());
+        };
+        session
+    } else {
+        startup.await?
+    };
     if !session.admission_opened {
         session.shutdown().await?;
         return Err(BuildExecutionError::ExecutorConnection {
@@ -408,9 +449,28 @@ pub(crate) async fn run_controlled(
     };
     let shutdown_result = session.shutdown().await;
     finish_executor_session(wait_result, shutdown_result)?;
-    Ok(PloyzctlExecutionOutput::stdout(
-        "Build Executor stopped.\n".to_owned(),
-    ))
+    Ok(controlled_stopped_output())
+}
+
+fn controlled_stopped_output() -> PloyzctlExecutionOutput {
+    PloyzctlExecutionOutput::stdout("Build Executor stopped.\n".to_owned())
+}
+
+async fn await_startup_or_shutdown<T, E>(
+    startup: impl Future<Output = Result<T, E>>,
+    shutdown: &mut oneshot::Receiver<()>,
+    cleanup: impl Future<Output = Result<(), E>>,
+) -> Result<Option<T>, E> {
+    let mut startup = Box::pin(startup);
+    tokio::select! {
+        biased;
+        _ = shutdown => {
+            drop(startup);
+            cleanup.await?;
+            Ok(None)
+        }
+        result = &mut startup => result.map(Some),
+    }
 }
 
 async fn wait_for_controlled_stop(
@@ -669,6 +729,7 @@ fn validate_start_provenance_and_timeout(
 pub(super) struct ExternalBuildRuntime {
     identity: BuildExecutorIdentity,
     admission: BuildExecutorAdmission,
+    credential_expires_at: BuildExecutorCredentialExpiresAt,
     client: async_nats::Client,
     executor: Arc<DockerBuildExecutor>,
     state: Arc<Mutex<RuntimeState>>,
@@ -725,8 +786,25 @@ impl RuntimeState {
         Ok(())
     }
 
-    fn register(&mut self, active: ActiveBuild) -> Result<(), BuildExecutorStartDomainError> {
-        self.ensure_accepting()?;
+    fn ensure_accepting_before_expiry_at(
+        &mut self,
+        credential_expires_at: BuildExecutorCredentialExpiresAt,
+        now: std::time::SystemTime,
+    ) -> Result<(), BuildExecutorStartDomainError> {
+        if credential_lifetime(credential_expires_at, now).is_err() {
+            self.close_admission();
+            return Err(BuildExecutorStartDomainError::RuntimeStopped);
+        }
+        self.ensure_accepting()
+    }
+
+    fn register_before_expiry_at(
+        &mut self,
+        active: ActiveBuild,
+        credential_expires_at: BuildExecutorCredentialExpiresAt,
+        now: std::time::SystemTime,
+    ) -> Result<(), BuildExecutorStartDomainError> {
+        self.ensure_accepting_before_expiry_at(credential_expires_at, now)?;
         self.active = Some(active);
         Ok(())
     }
@@ -801,6 +879,16 @@ impl RuntimeState {
         )?;
         Ok(self.open_admission(generation))
     }
+
+    fn readiness_authorized_before_expiry_at(
+        &self,
+        credential_expires_at: BuildExecutorCredentialExpiresAt,
+        now: std::time::SystemTime,
+    ) -> bool {
+        self.admission == RuntimeAdmission::Open
+            && matches!(self.connection, RuntimeConnection::Connected(_))
+            && credential_lifetime(credential_expires_at, now).is_ok()
+    }
 }
 
 struct ActiveBuild {
@@ -817,11 +905,13 @@ impl ExternalBuildRuntime {
         client: async_nats::Client,
         workspace_root: PathBuf,
         admission: BuildExecutorAdmission,
+        credential_expires_at: BuildExecutorCredentialExpiresAt,
         state: Arc<Mutex<RuntimeState>>,
     ) -> Self {
         Self {
             identity,
             admission,
+            credential_expires_at,
             client,
             executor: Arc::new(DockerBuildExecutor::new(workspace_root)),
             state,
@@ -840,11 +930,7 @@ impl ExternalBuildRuntime {
         self.state.lock().await.close_admission();
     }
 
-    pub(super) async fn open_admission(&self, generation: AdmissionGeneration) -> bool {
-        self.state.lock().await.open_admission(generation)
-    }
-
-    async fn open_admission_before_expiry(
+    pub(super) async fn open_admission_before_expiry(
         &self,
         generation: AdmissionGeneration,
         credential_expires_at: BuildExecutorCredentialExpiresAt,
@@ -857,14 +943,27 @@ impl ExternalBuildRuntime {
         )
     }
 
+    pub(super) async fn readiness_authorized_before_expiry(&self) -> bool {
+        self.state
+            .lock()
+            .await
+            .readiness_authorized_before_expiry_at(
+                self.credential_expires_at,
+                std::time::SystemTime::now(),
+            )
+    }
+
     pub(super) async fn start(
         &self,
         request: BuildExecutorStartRequest,
     ) -> Result<BuildExecutorStartOk, BuildExecutorStartDomainError> {
         validate_start_provenance_and_timeout(&self.identity, &self.admission, &request)?;
         {
-            let state = self.state.lock().await;
-            state.ensure_accepting()?;
+            let mut state = self.state.lock().await;
+            state.ensure_accepting_before_expiry_at(
+                self.credential_expires_at,
+                std::time::SystemTime::now(),
+            )?;
         }
         let readiness = probe_readiness()
             .await
@@ -904,13 +1003,18 @@ impl ExternalBuildRuntime {
         });
         {
             let mut state = self.state.lock().await;
-            if let Err(error) = state.register(ActiveBuild {
+            let active = ActiveBuild {
                 operation_id: operation_id.clone(),
                 assignment,
                 platform,
                 cancel,
                 supervisor: supervisor.abort_handle(),
-            }) {
+            };
+            if let Err(error) = state.register_before_expiry_at(
+                active,
+                self.credential_expires_at,
+                std::time::SystemTime::now(),
+            ) {
                 supervisor.abort();
                 return Err(error);
             }

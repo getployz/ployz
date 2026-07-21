@@ -232,11 +232,14 @@ fn readiness_is_closed_and_adapter_specific() {
 async fn one_active_registration_rechecks_after_the_preflight_race_window() {
     let mut state = accepting_state(None);
     state.ensure_accepting().expect("initial preflight");
+    let expires_at = future_expiry(60);
     let (first, _first_rx, first_task) = active_build("op_build_first");
-    state.register(first).expect("first registration");
+    state
+        .register_before_expiry_at(first, expires_at, std::time::SystemTime::now())
+        .expect("first registration");
     let (second, _second_rx, second_task) = active_build("op_build_second");
     assert!(matches!(
-        state.register(second),
+        state.register_before_expiry_at(second, expires_at, std::time::SystemTime::now()),
         Err(BuildExecutorStartDomainError::AlreadyRunning)
     ));
     first_task.abort();
@@ -408,6 +411,76 @@ fn expired_authority_cannot_open_admission() {
         Err(BuildExecutorStartDomainError::RuntimeStopped)
     );
     assert_eq!(state.admission, RuntimeAdmission::Closed);
+}
+
+#[test]
+fn readiness_requires_open_connected_authority_before_expiry() {
+    let expires_at =
+        ployz_core::nats_config::BuildExecutorCredentialExpiresAt::try_new(101).expect("expiry");
+    let before_expiry = std::time::UNIX_EPOCH + Duration::from_millis(100_500);
+    let at_expiry = std::time::UNIX_EPOCH + Duration::from_secs(101);
+    let mut state = RuntimeState::new_connected();
+
+    assert!(!state.readiness_authorized_before_expiry_at(expires_at, before_expiry));
+    let generation = state.admission_generation().expect("connected generation");
+    assert!(state.open_admission(generation));
+    assert!(state.readiness_authorized_before_expiry_at(expires_at, before_expiry));
+    assert!(!state.readiness_authorized_before_expiry_at(expires_at, at_expiry));
+    state.record_disconnected();
+    assert!(!state.readiness_authorized_before_expiry_at(expires_at, before_expiry));
+}
+
+#[tokio::test]
+async fn start_registration_atomically_closes_at_credential_expiry() {
+    let expires_at =
+        ployz_core::nats_config::BuildExecutorCredentialExpiresAt::try_new(101).expect("expiry");
+    let at_expiry = std::time::UNIX_EPOCH + Duration::from_secs(101);
+    let (active, _cancelled, task) = active_build("op_build_expired");
+    let mut state = RuntimeState::new_connected();
+    let generation = state.admission_generation().expect("connected generation");
+    assert!(state.open_admission(generation));
+
+    assert_eq!(
+        state.register_before_expiry_at(active, expires_at, at_expiry),
+        Err(BuildExecutorStartDomainError::RuntimeStopped)
+    );
+    assert_eq!(state.admission, RuntimeAdmission::Closed);
+    assert!(state.active.is_none());
+    task.abort();
+}
+
+#[tokio::test]
+async fn controlled_shutdown_drops_partial_startup_before_cleanup() {
+    let startup_dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let cleanup_observed_drop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let owned = StartupStageDrop(Arc::clone(&startup_dropped));
+    let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
+    shutdown_tx.send(()).expect("shutdown sends");
+
+    let result = await_startup_or_shutdown(
+        async move {
+            let _owned = owned;
+            std::future::pending::<Result<(), &'static str>>().await
+        },
+        &mut shutdown_rx,
+        {
+            let startup_dropped = Arc::clone(&startup_dropped);
+            let cleanup_observed_drop = Arc::clone(&cleanup_observed_drop);
+            async move {
+                cleanup_observed_drop.store(
+                    startup_dropped.load(std::sync::atomic::Ordering::SeqCst),
+                    std::sync::atomic::Ordering::SeqCst,
+                );
+                Ok::<(), &'static str>(())
+            }
+        },
+    )
+    .await
+    .expect("shutdown cleanup succeeds");
+
+    assert_eq!(result, None);
+    assert!(startup_dropped.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(cleanup_observed_drop.load(std::sync::atomic::Ordering::SeqCst));
 }
 
 #[tokio::test]

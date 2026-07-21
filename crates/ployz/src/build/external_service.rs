@@ -81,10 +81,12 @@ pub(super) async fn start_executor_service(
         .map_err(|error| executor_error(error.to_string()))?;
 
     let readiness_identity = identity.clone();
+    let readiness_runtime = runtime.clone();
     service
         .bind_endpoint(readiness_endpoint, move |request| {
             let identity = readiness_identity.clone();
-            async move { handle_readiness(identity, request).await }
+            let runtime = readiness_runtime.clone();
+            async move { handle_readiness(identity, runtime, request).await }
         })
         .await
         .map_err(|error| executor_error(error.to_string()))?;
@@ -145,19 +147,46 @@ fn executor_endpoint(
 
 async fn handle_readiness(
     identity: BuildExecutorIdentity,
+    runtime: ExternalBuildRuntime,
     request: NatsServiceRequest,
 ) -> NatsServiceResponse {
+    if !runtime.readiness_authorized_before_expiry().await {
+        return std::future::pending().await;
+    }
     match decode_json_request::<BuildExecutorReadinessRequest>(&request) {
         Ok(BuildExecutorReadinessRequest {}) => match probe_readiness().await {
-            Ok(readiness) => NatsServiceResponse::json_ok(&BuildExecutorReadinessAnswer {
-                identity,
-                readiness,
-            }),
-            Err(error) => NatsServiceResponse::transport_error(
-                ployz_nats::service_runtime::NatsServiceError::internal(error.to_string()),
-            ),
+            Ok(readiness) => {
+                respond_to_readiness_if_authorized(
+                    &runtime,
+                    NatsServiceResponse::json_ok(&BuildExecutorReadinessAnswer {
+                        identity,
+                        readiness,
+                    }),
+                )
+                .await
+            }
+            Err(error) => {
+                respond_to_readiness_if_authorized(
+                    &runtime,
+                    NatsServiceResponse::transport_error(
+                        ployz_nats::service_runtime::NatsServiceError::internal(error.to_string()),
+                    ),
+                )
+                .await
+            }
         },
-        Err(response) => response,
+        Err(response) => respond_to_readiness_if_authorized(&runtime, response).await,
+    }
+}
+
+async fn respond_to_readiness_if_authorized(
+    runtime: &ExternalBuildRuntime,
+    response: NatsServiceResponse,
+) -> NatsServiceResponse {
+    if runtime.readiness_authorized_before_expiry().await {
+        response
+    } else {
+        std::future::pending().await
     }
 }
 

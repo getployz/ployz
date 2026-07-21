@@ -347,11 +347,37 @@ impl WatchSession {
                     };
                     match probe_health().await {
                         Ok(health_description) => {
-                            if runtime.open_admission(admission_generation).await {
-                                disconnected = false;
-                                eprintln!("Build Executor {health_description}");
-                            } else {
-                                reconnect_probe.as_mut().reset(tokio::time::Instant::now() + Duration::from_secs(1));
+                            match runtime
+                                .open_admission_before_expiry(
+                                    admission_generation,
+                                    credential_expires_at,
+                                )
+                                .await
+                            {
+                                Ok(true) => {
+                                    if runtime
+                                        .readiness_authorized_before_expiry()
+                                        .await
+                                    {
+                                        disconnected = false;
+                                        eprintln!("Build Executor {health_description}");
+                                    } else {
+                                        runtime.close_admission().await;
+                                        credential_lifetime(
+                                            credential_expires_at,
+                                            SystemTime::now(),
+                                        )
+                                        .map_err(|_| expired_error(credential_expires_at))?;
+                                        reconnect_probe.as_mut().reset(
+                                            tokio::time::Instant::now()
+                                                + Duration::from_secs(1),
+                                        );
+                                    }
+                                }
+                                Ok(false) => {
+                                    reconnect_probe.as_mut().reset(tokio::time::Instant::now() + Duration::from_secs(1));
+                                }
+                                Err(error) => return Err(error),
                             }
                         }
                         Err(error) => {
@@ -484,13 +510,10 @@ pub(super) fn credential_lifetime(
 ) -> Result<Duration, CredentialExpiryError> {
     let now = now
         .duration_since(UNIX_EPOCH)
-        .map_err(|_| CredentialExpiryError::ClockBeforeEpoch)?
-        .as_secs();
-    expires_at
-        .unix_seconds()
+        .map_err(|_| CredentialExpiryError::ClockBeforeEpoch)?;
+    Duration::from_secs(expires_at.unix_seconds())
         .checked_sub(now)
-        .filter(|remaining| *remaining > 0)
-        .map(Duration::from_secs)
+        .filter(|remaining| !remaining.is_zero())
         .ok_or(CredentialExpiryError::Expired {
             expires_at: expires_at.unix_seconds(),
         })
@@ -614,6 +637,21 @@ mod tests {
         assert_eq!(
             credential_lifetime(current, now),
             Err(CredentialExpiryError::Expired { expires_at: 100 })
+        );
+    }
+
+    #[test]
+    fn credential_lifetime_preserves_subsecond_precision() {
+        let expires_at = BuildExecutorCredentialExpiresAt::try_new(101).expect("future expiry");
+        let now = UNIX_EPOCH + Duration::from_millis(100_750);
+
+        assert_eq!(
+            credential_lifetime(expires_at, now),
+            Ok(Duration::from_millis(250))
+        );
+        assert_eq!(
+            credential_lifetime(expires_at, UNIX_EPOCH + Duration::from_secs(101)),
+            Err(CredentialExpiryError::Expired { expires_at: 101 })
         );
     }
 
