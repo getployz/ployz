@@ -43,7 +43,7 @@ pub trait HostRunnerCommandRunner {
     fn docker_is_installed(&mut self) -> bool;
     fn docker_uses_containerd_snapshotter(&mut self) -> Result<bool, FailureMessage>;
     fn docker_has_insecure_registry(&mut self, cidr: &str) -> Result<bool, FailureMessage>;
-    fn dataplane_host_ready(&mut self) -> bool {
+    fn dataplane_host_ready(&mut self, _require_git: bool) -> bool {
         false
     }
 }
@@ -283,8 +283,8 @@ impl HostRunnerCommandRunner for SystemHostRunnerCommandRunner {
         Ok(registries.iter().any(|registry| registry == cidr))
     }
 
-    fn dataplane_host_ready(&mut self) -> bool {
-        dataplane_host_ready(self.timeout)
+    fn dataplane_host_ready(&mut self, require_git: bool) -> bool {
+        dataplane_host_ready(self.timeout, require_git)
     }
 }
 
@@ -361,12 +361,13 @@ fn classify_body_read_error(error: io::Error) -> DownloadAttemptError {
     }
 }
 
-fn dataplane_host_ready(timeout: Duration) -> bool {
+fn dataplane_host_ready(timeout: Duration, require_git: bool) -> bool {
     Path::new("/dev/net/tun").exists()
         && command_success("wg", &["--version"], timeout)
         && command_success("ip", &["-V"], timeout)
         && command_success("tc", &["-V"], timeout)
         && command_success("ping", &["-V"], timeout)
+        && (!require_git || command_success("git", &["--version"], timeout))
 }
 
 fn command_success(program: &str, args: &[&str], timeout: Duration) -> bool {

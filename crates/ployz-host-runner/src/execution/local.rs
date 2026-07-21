@@ -81,7 +81,9 @@ impl<R: HostRunnerCommandRunner> HostRunnerStepEffects for HostRunnerLocalEffect
             HostRunnerStep::PreflightHostPorts(state) => self.preflight_host_ports(state),
             HostRunnerStep::AssureHostPorts(state) => self.assure_host_ports(state),
             HostRunnerStep::StoreAssignedSubstrate(state) => self.store_assigned_substrate(state),
-            HostRunnerStep::PrepareDataplaneHost => self.prepare_dataplane_host(),
+            HostRunnerStep::PrepareDataplaneHost { require_git } => {
+                self.prepare_dataplane_host(*require_git)
+            }
             HostRunnerStep::PrepareContainerRuntime(runtime, endpoint_supernet) => {
                 self.prepare_container_runtime(*runtime, endpoint_supernet)
             }
@@ -243,39 +245,44 @@ impl<R: HostRunnerCommandRunner> HostRunnerLocalEffects<R> {
         }
     }
 
-    fn prepare_dataplane_host(&mut self) -> Result<(), HostRunnerStepEffectError> {
-        self.prepare_dataplane_packages().map_err(|message| {
-            HostRunnerStepEffectError::new(
-                HostRunnerStepFailureReason::DataplaneHostPrepareFailed,
-                message,
-            )
-        })
+    fn prepare_dataplane_host(
+        &mut self,
+        require_git: bool,
+    ) -> Result<(), HostRunnerStepEffectError> {
+        self.prepare_dataplane_packages(require_git)
+            .map_err(|message| {
+                HostRunnerStepEffectError::new(
+                    HostRunnerStepFailureReason::DataplaneHostPrepareFailed,
+                    message,
+                )
+            })
     }
 
-    fn prepare_dataplane_packages(&mut self) -> Result<(), FailureMessage> {
-        if self.runner.dataplane_host_ready() {
+    fn prepare_dataplane_packages(&mut self, require_git: bool) -> Result<(), FailureMessage> {
+        if self.runner.dataplane_host_ready(require_git) {
             return Ok(());
         }
         match self.host_platform()?.package_family() {
             HostPackageFamily::Debian => {
                 self.require_long_command("apt-get", &["update"])?;
-                self.require_long_command(
-                    "env",
-                    &[
-                        "DEBIAN_FRONTEND=noninteractive",
-                        "apt-get",
-                        "install",
-                        "-y",
-                        "wireguard-tools",
-                        "iproute2",
-                        "iputils-ping",
-                    ],
-                )?;
+                let mut packages = vec![
+                    "DEBIAN_FRONTEND=noninteractive",
+                    "apt-get",
+                    "install",
+                    "-y",
+                    "wireguard-tools",
+                    "iproute2",
+                    "iputils-ping",
+                ];
+                if require_git {
+                    packages.push("git");
+                }
+                self.require_long_command("env", &packages)?;
             }
             HostPackageFamily::Rpm => {
                 let _ = self.rpm_command(&["install", "-y", "epel-release"]);
-                let packages: &[&str] = if self.host_platform()?.requires_iproute_tc_package() {
-                    &[
+                let mut packages = if self.host_platform()?.requires_iproute_tc_package() {
+                    vec![
                         "install",
                         "-y",
                         "wireguard-tools",
@@ -284,43 +291,58 @@ impl<R: HostRunnerCommandRunner> HostRunnerLocalEffects<R> {
                         "iputils",
                     ]
                 } else {
-                    &["install", "-y", "wireguard-tools", "iproute", "iputils"]
+                    vec!["install", "-y", "wireguard-tools", "iproute", "iputils"]
                 };
-                self.require_rpm_command(packages)?;
+                if require_git {
+                    packages.push("git");
+                }
+                self.require_rpm_command(&packages)?;
             }
-            HostPackageFamily::Arch => self.require_long_command(
-                "pacman",
-                &[
+            HostPackageFamily::Arch => {
+                let mut packages = vec![
                     "-S",
                     "--noconfirm",
                     "--needed",
                     "wireguard-tools",
                     "iproute2",
                     "iputils",
-                ],
-            )?,
-            HostPackageFamily::Alpine => self
-                .require_long_command("apk", &["add", "wireguard-tools", "iproute2", "iputils"])?,
+                ];
+                if require_git {
+                    packages.push("git");
+                }
+                self.require_long_command("pacman", &packages)?;
+            }
+            HostPackageFamily::Alpine => {
+                let mut packages = vec!["add", "wireguard-tools", "iproute2", "iputils"];
+                if require_git {
+                    packages.push("git");
+                }
+                self.require_long_command("apk", &packages)?;
+            }
             HostPackageFamily::Suse => {
                 self.require_long_command("zypper", &["refresh"])?;
-                self.require_long_command(
-                    "zypper",
-                    &[
-                        "--non-interactive",
-                        "install",
-                        "wireguard-tools",
-                        "iproute2",
-                        "iputils",
-                    ],
-                )?;
+                let mut packages = vec![
+                    "--non-interactive",
+                    "install",
+                    "wireguard-tools",
+                    "iproute2",
+                    "iputils",
+                ];
+                if require_git {
+                    packages.push("git");
+                }
+                self.require_long_command("zypper", &packages)?;
             }
         }
-        if self.runner.dataplane_host_ready() {
+        if self.runner.dataplane_host_ready(require_git) {
             return Ok(());
         }
-        Err(failure_message(
-            "dataplane host packages installed but wg/ip/tc/tun are not ready",
-        ))
+        let message = if require_git {
+            "dataplane host packages installed but wg/ip/tc/ping/git are not ready"
+        } else {
+            "dataplane host packages installed but wg/ip/tc/tun are not ready"
+        };
+        Err(failure_message(message))
     }
 
     fn verify_container_runtime(

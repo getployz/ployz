@@ -149,7 +149,9 @@ pub(crate) fn run_substrate_update_command(update: HostRunnerSubstrateUpdate) ->
         HostRunnerStep::VerifyHost(HostPrerequisite::LinuxRoot),
         HostRunnerStep::PreflightHostPorts(assigned_substrate.clone()),
         HostRunnerStep::AssureHostPorts(assigned_substrate),
-        HostRunnerStep::PrepareDataplaneHost,
+        HostRunnerStep::PrepareDataplaneHost {
+            require_git: units.iter().any(InstalledUpdateUnit::is_machine),
+        },
         HostRunnerStep::InstallArtifact(railpack),
         HostRunnerStep::InstallArtifact(ployzd),
         HostRunnerStep::InstallArtifact(ebpf_bytecode),
@@ -392,6 +394,10 @@ impl InstalledUpdateUnit {
             Self::Ployzd(unit) => unit,
         }
     }
+
+    fn is_machine(&self) -> bool {
+        matches!(self, Self::Ployzd(unit) if unit.starts_with("ployzd-machine-"))
+    }
 }
 
 fn installed_update_units(
@@ -618,5 +624,22 @@ mod tests {
                 InstalledUpdateUnit::Ployzd("ployzd-dns".to_owned()),
             ]
         );
+    }
+
+    #[test]
+    fn installed_update_units_require_git_only_for_machine_role() {
+        for unit in [
+            InstalledUpdateUnit::Ployzd("ployzd-machine-machine_1.service".to_owned()),
+            InstalledUpdateUnit::Ployzd("ployzd-machine-machine_1".to_owned()),
+        ] {
+            assert!(unit.is_machine());
+        }
+        for unit in [
+            InstalledUpdateUnit::Nats,
+            InstalledUpdateUnit::Ployzd("ployzd-gateway.service".to_owned()),
+            InstalledUpdateUnit::Ployzd("ployzd-dns".to_owned()),
+        ] {
+            assert!(!unit.is_machine());
+        }
     }
 }

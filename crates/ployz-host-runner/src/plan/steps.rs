@@ -72,7 +72,7 @@ pub enum HostRunnerStep {
     PreflightHostPorts(AssignedSubstrateState),
     AssureHostPorts(AssignedSubstrateState),
     StoreAssignedSubstrate(AssignedSubstrateState),
-    PrepareDataplaneHost,
+    PrepareDataplaneHost { require_git: bool },
     PrepareContainerRuntime(ContainerRuntime, MachineEndpointSupernet),
     VerifyContainerRuntime(ContainerRuntime),
     InstallArtifact(ArtifactTarget),
@@ -128,7 +128,7 @@ impl HostRunnerStepLabel {
             HostRunnerStep::StoreAssignedSubstrate(state) => {
                 Self::StoreAssignedSubstrate(state.required_host_ports())
             }
-            HostRunnerStep::PrepareDataplaneHost => Self::PrepareDataplaneHost,
+            HostRunnerStep::PrepareDataplaneHost { .. } => Self::PrepareDataplaneHost,
             HostRunnerStep::PrepareContainerRuntime(runtime, _) => {
                 Self::PrepareContainerRuntime(*runtime)
             }
@@ -1036,10 +1036,15 @@ fn host_runner_join_material_steps(target: &HostRunnerJoinTarget) -> Vec<HostRun
 
 fn host_runner_join_install_steps(target: HostRunnerJoinTarget) -> Vec<HostRunnerStep> {
     let assigned = join_assigned_substrate(&target.roles, target.host_port_assurance);
+    let require_git = target
+        .roles
+        .roles()
+        .iter()
+        .any(|role| matches!(role, DaemonProcessRole::Machine(_)));
     let mut steps = vec![
         HostRunnerStep::PreflightHostPorts(assigned.clone()),
         HostRunnerStep::AssureHostPorts(assigned),
-        HostRunnerStep::PrepareDataplaneHost,
+        HostRunnerStep::PrepareDataplaneHost { require_git },
         HostRunnerStep::PrepareContainerRuntime(
             ContainerRuntime::Docker,
             target.material.dataplane_endpoint_supernet().clone(),
@@ -1302,7 +1307,7 @@ pub fn first_machine_install_plan(target: FirstMachineInstallTarget) -> HostRunn
         HostRunnerStep::PreflightHostPorts(assigned.clone()),
         HostRunnerStep::AssureHostPorts(assigned.clone()),
         HostRunnerStep::StoreAssignedSubstrate(assigned),
-        HostRunnerStep::PrepareDataplaneHost,
+        HostRunnerStep::PrepareDataplaneHost { require_git: true },
         HostRunnerStep::PrepareContainerRuntime(
             ContainerRuntime::Docker,
             target.dataplane_endpoint_supernet.clone(),
@@ -1485,7 +1490,7 @@ impl HostRunnerStepFailureReason {
             HostRunnerStep::PreflightHostPorts(_) => Self::HostPortsPreflightFailed,
             HostRunnerStep::AssureHostPorts(_) => Self::HostPortsAssuranceFailed,
             HostRunnerStep::StoreAssignedSubstrate(_) => Self::AssignedSubstrateStoreFailed,
-            HostRunnerStep::PrepareDataplaneHost => Self::DataplaneHostPrepareFailed,
+            HostRunnerStep::PrepareDataplaneHost { .. } => Self::DataplaneHostPrepareFailed,
             HostRunnerStep::PrepareContainerRuntime(_, _) => Self::ContainerRuntimePrepareFailed,
             HostRunnerStep::VerifyContainerRuntime(_) => Self::ContainerRuntimeVerifyFailed,
             HostRunnerStep::InstallArtifact(_) => Self::ArtifactInstallFailed,
