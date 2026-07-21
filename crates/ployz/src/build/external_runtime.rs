@@ -2,6 +2,7 @@
 
 use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -10,8 +11,8 @@ use ployz_build_executor::{
     BuildLogDestination, BuildLogProgress, DockerBuildExecutor,
 };
 use ployz_core::build::{
-    BUILD_FORCE_CLEANUP_TIMEOUT, BUILD_MAX_EXECUTION_TIMEOUT, BUILD_TASK_DRAIN_TIMEOUT,
-    BuildAdapterKind, BuildExecutorAcceptance, BuildExecutorAssignment,
+    BUILD_ENDPOINT_RESPONSE_MARGIN, BUILD_FORCE_CLEANUP_TIMEOUT, BUILD_MAX_EXECUTION_TIMEOUT,
+    BUILD_TASK_DRAIN_TIMEOUT, BuildAdapterKind, BuildExecutorAcceptance, BuildExecutorAssignment,
     BuildExecutorCancelDomainError, BuildExecutorCancelOk, BuildExecutorCancelOutcome,
     BuildExecutorCancelRequest, BuildExecutorCapability, BuildExecutorCleanupOutcome,
     BuildExecutorIdentity, BuildExecutorReadiness, BuildExecutorStartDomainError,
@@ -32,7 +33,7 @@ use super::external_service::{CompletionMode, start_executor_service};
 use super::runtime::BuildExecutionError;
 use super::watch_lifecycle::{
     WatchConnect, connect_once, connect_watch, credential_lifetime, executor_connect_config,
-    executor_principal, resolve_workspace_root,
+    executor_principal, resolve_workspace_root, shutdown_signal,
 };
 use crate::deploy::image_push::{probe_image_seed, push_validated_oci_layout};
 use crate::dispatcher::PloyzctlRuntimeConfig;
@@ -44,6 +45,15 @@ use crate::execution_support::{
 const SHUTDOWN_TIMEOUT: Duration = BUILD_TASK_DRAIN_TIMEOUT
     .saturating_add(BUILD_FORCE_CLEANUP_TIMEOUT)
     .saturating_add(Duration::from_secs(5));
+// Runtime shutdown first gives the supervised build its complete drain and cleanup
+// budget, then may abort it and make one final bounded cleanup attempt. The endpoint
+// keeps the remaining response margin after those sequential phases finish.
+const AUTHORITY_TERMINAL_MARGIN: Duration = SHUTDOWN_TIMEOUT
+    .saturating_add(BUILD_FORCE_CLEANUP_TIMEOUT)
+    .saturating_add(BUILD_ENDPOINT_RESPONSE_MARGIN);
+
+type ControlledShutdownFuture =
+    Pin<Box<dyn Future<Output = Result<(), PloyzctlExecutionError>> + Send>>;
 
 struct ExecutorStartup {
     workspace: WorkspaceStartup,
@@ -95,6 +105,9 @@ impl ConnectedExecutor {
             workspace,
             credential_expires_at,
         } = startup;
+        if let Err(error) = ensure_terminal_response_budget(credential_expires_at) {
+            return Err(finish_failed_startup(error, client, Some(&runtime), None).await);
+        }
         let authority_deadline = match executor_authority_deadline(credential_expires_at) {
             Ok(deadline) => deadline,
             Err(error) => {
@@ -229,6 +242,34 @@ fn executor_authority_deadline(
             message: "Build Executor credential expiry exceeds the monotonic clock range"
                 .to_owned(),
         })
+}
+
+fn ensure_terminal_response_budget(
+    credential_expires_at: BuildExecutorCredentialExpiresAt,
+) -> Result<(), BuildExecutionError> {
+    ensure_terminal_response_budget_at(
+        credential_expires_at,
+        std::time::SystemTime::now(),
+        AUTHORITY_TERMINAL_MARGIN,
+    )
+}
+
+fn ensure_terminal_response_budget_at(
+    credential_expires_at: BuildExecutorCredentialExpiresAt,
+    now: std::time::SystemTime,
+    required: Duration,
+) -> Result<(), BuildExecutionError> {
+    let remaining = credential_lifetime(credential_expires_at, now)
+        .map_err(|error| startup_credential_error(ExecutorStartupStage::AdmissionOpening, error))?;
+    if remaining <= required {
+        return Err(BuildExecutionError::ExecutorCredential {
+            message: format!(
+                "Build Executor credential has insufficient lifetime to open admission: \
+                 {remaining:?} remaining, more than {required:?} required"
+            ),
+        });
+    }
+    Ok(())
 }
 
 fn ensure_startup_authority(
@@ -386,8 +427,9 @@ pub(crate) async fn run_controlled(
     workspace_startup: WorkspaceStartup,
     credential_expires_at: ployz_core::nats_config::BuildExecutorCredentialExpiresAt,
     ready: Option<oneshot::Sender<()>>,
-    mut shutdown: Option<oneshot::Receiver<()>>,
+    shutdown: Option<oneshot::Receiver<()>>,
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
+    let mut shutdown = controlled_shutdown_future(shutdown);
     let config = with_cluster_context_from_disk(config)?;
     let identity = BuildExecutorIdentity {
         pool_id: command.pool_id.clone(),
@@ -401,14 +443,13 @@ pub(crate) async fn run_controlled(
         config.nats_connect_timeout(),
     );
     tokio::pin!(connect);
-    let client = if let Some(shutdown) = &mut shutdown {
-        tokio::select! {
-            biased;
-            _ = shutdown => return Ok(controlled_stopped_output()),
-            result = &mut connect => result?,
+    let client = tokio::select! {
+        biased;
+        result = &mut shutdown => {
+            result?;
+            return Ok(controlled_stopped_output());
         }
-    } else {
-        connect.await?
+        result = &mut connect => result?,
     };
     let workspace_root = resolve_workspace_root(command.workspace_root.as_deref(), &identity)?;
     let (terminal_tx, terminal_rx) = oneshot::channel();
@@ -439,29 +480,22 @@ pub(crate) async fn run_controlled(
             credential_expires_at,
         },
     );
-    let session = if let Some(shutdown) = &mut shutdown {
-        let cleanup = async move {
-            let runtime_result = cleanup_runtime
-                .shutdown()
-                .await
-                .map_err(PloyzctlExecutionError::from);
-            let client_result = cleanup_client.drain().await.map_err(|error| {
-                PloyzctlExecutionError::from(BuildExecutionError::ExecutorRuntime {
-                    message: format!(
-                        "failed to drain NATS client after cancelled startup: {error}"
-                    ),
-                })
-            });
-            runtime_result?;
-            client_result
-        };
-        let startup = async move { startup.await.map_err(PloyzctlExecutionError::from) };
-        let Some(session) = await_startup_or_shutdown(startup, shutdown, cleanup).await? else {
-            return Ok(controlled_stopped_output());
-        };
-        session
-    } else {
-        startup.await?
+    let cleanup = async move {
+        let runtime_result = cleanup_runtime
+            .shutdown()
+            .await
+            .map_err(PloyzctlExecutionError::from);
+        let client_result = cleanup_client.drain().await.map_err(|error| {
+            PloyzctlExecutionError::from(BuildExecutionError::ExecutorRuntime {
+                message: format!("failed to drain NATS client after cancelled startup: {error}"),
+            })
+        });
+        runtime_result?;
+        client_result
+    };
+    let startup = async move { startup.await.map_err(PloyzctlExecutionError::from) };
+    let Some(session) = await_startup_or_shutdown(startup, &mut shutdown, cleanup).await? else {
+        return Ok(controlled_stopped_output());
     };
     if !session.admission_opened {
         session.shutdown(ExecutorShutdownMode::Force).await?;
@@ -474,22 +508,33 @@ pub(crate) async fn run_controlled(
         let _ = ready.send(());
     }
 
-    let wait = async {
-        match command.mode {
-            BuildExecutorRunMode::Once { wait_timeout } => {
-                wait_for_once_terminal(terminal_rx, wait_timeout, credential_expires_at).await
+    let wait_outcome = match command.mode {
+        BuildExecutorRunMode::Once { wait_timeout } => {
+            let cleanup = session.runtime.shutdown();
+            wait_for_controlled_once(
+                terminal_rx,
+                wait_timeout,
+                credential_expires_at,
+                &mut shutdown,
+                cleanup,
+            )
+            .await
+        }
+        BuildExecutorRunMode::Watch => {
+            let wait = wait_for_controlled_stop(credential_expires_at);
+            tokio::pin!(wait);
+            tokio::select! {
+                biased;
+                result = &mut shutdown => {
+                    result.map(|()| (Ok(()), true))
+                },
+                result = &mut wait => Ok((result, false)),
             }
-            BuildExecutorRunMode::Watch => wait_for_controlled_stop(credential_expires_at).await,
         }
     };
-    tokio::pin!(wait);
-    let (wait_result, cancelled) = if let Some(shutdown) = &mut shutdown {
-        tokio::select! {
-            result = &mut wait => (result, false),
-            _ = shutdown => (Ok(()), true),
-        }
-    } else {
-        (wait.await, false)
+    let (wait_result, cancelled, control_error) = match wait_outcome {
+        Ok((wait_result, cancelled)) => (wait_result, cancelled, None),
+        Err(error) => (Ok(()), true, Some(error)),
     };
     let shutdown_mode = if cancelled || credential_expired(&wait_result) {
         ExecutorShutdownMode::Force
@@ -497,7 +542,11 @@ pub(crate) async fn run_controlled(
         ExecutorShutdownMode::Graceful
     };
     let shutdown_result = session.shutdown(shutdown_mode).await;
-    finish_executor_session(wait_result, shutdown_result)?;
+    shutdown_result?;
+    if let Some(error) = control_error {
+        return Err(error);
+    }
+    wait_result?;
     Ok(controlled_stopped_output())
 }
 
@@ -507,18 +556,131 @@ fn controlled_stopped_output() -> PloyzctlExecutionOutput {
 
 async fn await_startup_or_shutdown<T, E>(
     startup: impl Future<Output = Result<T, E>>,
-    shutdown: &mut oneshot::Receiver<()>,
+    shutdown: &mut (impl Future<Output = Result<(), E>> + Unpin),
     cleanup: impl Future<Output = Result<(), E>>,
 ) -> Result<Option<T>, E> {
     let mut startup = Box::pin(startup);
     tokio::select! {
         biased;
-        _ = shutdown => {
+        result = shutdown => {
+            let shutdown_result = result;
             drop(startup);
             cleanup.await?;
+            shutdown_result?;
             Ok(None)
         }
         result = &mut startup => result.map(Some),
+    }
+}
+
+fn controlled_shutdown_future(receiver: Option<oneshot::Receiver<()>>) -> ControlledShutdownFuture {
+    controlled_shutdown_future_with_signal(receiver, shutdown_signal())
+}
+
+fn controlled_shutdown_future_with_signal(
+    receiver: Option<oneshot::Receiver<()>>,
+    signal: impl Future<Output = std::io::Result<()>> + Send + 'static,
+) -> ControlledShutdownFuture {
+    match receiver {
+        Some(receiver) => Box::pin(async move {
+            let _ = receiver.await;
+            Ok(())
+        }),
+        None => Box::pin(async move {
+            signal.await.map_err(|error| {
+                PloyzctlExecutionError::from(BuildExecutionError::ExecutorSignal {
+                    message: error.to_string(),
+                })
+            })
+        }),
+    }
+}
+
+async fn wait_for_controlled_once(
+    terminal: oneshot::Receiver<()>,
+    wait_timeout: Duration,
+    credential_expires_at: BuildExecutorCredentialExpiresAt,
+    shutdown: &mut (impl Future<Output = Result<(), PloyzctlExecutionError>> + Unpin),
+    pre_expiry_cleanup: impl Future<Output = Result<(), BuildExecutionError>>,
+) -> Result<(Result<(), BuildExecutionError>, bool), PloyzctlExecutionError> {
+    let lifetime = credential_lifetime(credential_expires_at, std::time::SystemTime::now())
+        .map_err(|error| BuildExecutionError::ExecutorCredential {
+            message: error.to_string(),
+        })?;
+    wait_for_controlled_once_with_lifetime(
+        terminal,
+        wait_timeout,
+        lifetime,
+        credential_expires_at,
+        shutdown,
+        pre_expiry_cleanup,
+    )
+    .await
+}
+
+async fn wait_for_controlled_once_with_lifetime(
+    terminal: oneshot::Receiver<()>,
+    wait_timeout: Duration,
+    credential_lifetime: Duration,
+    credential_expires_at: BuildExecutorCredentialExpiresAt,
+    shutdown: &mut (impl Future<Output = Result<(), PloyzctlExecutionError>> + Unpin),
+    pre_expiry_cleanup: impl Future<Output = Result<(), BuildExecutionError>>,
+) -> Result<(Result<(), BuildExecutionError>, bool), PloyzctlExecutionError> {
+    let mut terminal = Box::pin(terminal);
+    let hard_expiry = tokio::time::sleep(credential_lifetime);
+    let pre_expiry =
+        tokio::time::sleep(credential_lifetime.saturating_sub(AUTHORITY_TERMINAL_MARGIN));
+    let idle = tokio::time::sleep(wait_timeout);
+    tokio::pin!(hard_expiry, pre_expiry, idle);
+
+    tokio::select! {
+        biased;
+        result = &mut *shutdown => {
+            result?;
+            return Ok((Ok(()), true));
+        }
+        () = &mut hard_expiry => {
+            return Ok((Err(credential_expiry_error(credential_expires_at)), true));
+        }
+        result = &mut terminal => return Ok((terminal_result(result), false)),
+        () = &mut idle => {
+            return Ok((Err(BuildExecutionError::ExecutorIdleTimedOut { wait_timeout }), false));
+        }
+        () = &mut pre_expiry => {}
+    }
+
+    if let Err(error) = pre_expiry_cleanup.await {
+        return Ok((Err(error), true));
+    }
+
+    tokio::select! {
+        biased;
+        () = &mut hard_expiry => Ok((Err(credential_expiry_error(credential_expires_at)), true)),
+        result = &mut *shutdown => {
+            result?;
+            Ok((Ok(()), true))
+        }
+        result = &mut terminal => Ok((terminal_result(result), false)),
+        () = &mut idle => Ok((Err(BuildExecutionError::ExecutorIdleTimedOut { wait_timeout }), false)),
+    }
+}
+
+fn terminal_result(
+    result: Result<(), oneshot::error::RecvError>,
+) -> Result<(), BuildExecutionError> {
+    result.map_err(|_| BuildExecutionError::ExecutorRuntime {
+        message: "Build Executor terminal notification channel closed".to_owned(),
+    })
+}
+
+fn credential_expiry_error(
+    credential_expires_at: BuildExecutorCredentialExpiresAt,
+) -> BuildExecutionError {
+    BuildExecutionError::ExecutorCredential {
+        message: format!(
+            "Build Executor credential expired at Unix timestamp {}",
+            credential_expires_at.unix_seconds()
+        ),
     }
 }
 

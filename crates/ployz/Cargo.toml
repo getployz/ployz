@@ -42,7 +42,7 @@ wait-timeout.workspace = true
 
 [dev-dependencies]
 ployz-test-support.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "test-util"] }
 
 [[bin]]
 name = "ployz"

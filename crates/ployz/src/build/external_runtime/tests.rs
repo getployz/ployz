@@ -357,6 +357,113 @@ fn every_startup_stage_rejects_authority_at_expiry() {
     }
 }
 
+#[test]
+fn admission_requires_more_than_the_complete_terminal_response_budget() {
+    let expires_at = BuildExecutorCredentialExpiresAt::try_new(205).expect("expiry");
+    let exact_boundary = std::time::UNIX_EPOCH + Duration::from_secs(100);
+    let just_before_boundary = exact_boundary - Duration::from_nanos(1);
+
+    let error =
+        ensure_terminal_response_budget_at(expires_at, exact_boundary, AUTHORITY_TERMINAL_MARGIN)
+            .expect_err("the exact cleanup boundary fails closed");
+    assert!(matches!(
+        error,
+        BuildExecutionError::ExecutorCredential { .. }
+    ));
+    assert!(error.to_string().contains("insufficient lifetime"));
+    ensure_terminal_response_budget_at(expires_at, just_before_boundary, AUTHORITY_TERMINAL_MARGIN)
+        .expect("any lifetime beyond the required margin may open admission");
+}
+
+#[tokio::test(start_paused = true)]
+async fn controlled_once_cancels_early_and_observes_terminal_before_hard_expiry() {
+    let expires_at = future_expiry(600);
+    let lifetime = AUTHORITY_TERMINAL_MARGIN + Duration::from_secs(5);
+    let (terminal_tx, terminal_rx) = oneshot::channel();
+    let started_at = tokio::time::Instant::now();
+    let mut shutdown = Box::pin(std::future::pending::<Result<(), PloyzctlExecutionError>>());
+    let wait = tokio::spawn(async move {
+        wait_for_controlled_once_with_lifetime(
+            terminal_rx,
+            lifetime + Duration::from_secs(1),
+            lifetime,
+            expires_at,
+            &mut shutdown,
+            async move {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                terminal_tx
+                    .send(())
+                    .expect("cancelled build reports terminal");
+                Ok(())
+            },
+        )
+        .await
+    });
+
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_secs(5)).await;
+    tokio::task::yield_now().await;
+    assert!(
+        !wait.is_finished(),
+        "cleanup must finish before terminal evidence"
+    );
+    tokio::time::advance(Duration::from_secs(2)).await;
+    assert_eq!(wait.await.expect("wait task"), Ok((Ok(()), false)));
+    assert!(tokio::time::Instant::now().duration_since(started_at) < lifetime);
+}
+
+#[tokio::test(start_paused = true)]
+async fn controlled_once_rejects_terminal_evidence_at_the_hard_cutoff() {
+    let expires_at = future_expiry(600);
+    let lifetime = AUTHORITY_TERMINAL_MARGIN + Duration::from_secs(2);
+    let (terminal_tx, terminal_rx) = oneshot::channel();
+    let mut shutdown = Box::pin(std::future::pending::<Result<(), PloyzctlExecutionError>>());
+    let wait = tokio::spawn(async move {
+        wait_for_controlled_once_with_lifetime(
+            terminal_rx,
+            lifetime + Duration::from_secs(1),
+            lifetime,
+            expires_at,
+            &mut shutdown,
+            async move {
+                tokio::time::sleep(AUTHORITY_TERMINAL_MARGIN).await;
+                terminal_tx.send(()).expect("terminal reaches exact cutoff");
+                Ok(())
+            },
+        )
+        .await
+    });
+
+    tokio::task::yield_now().await;
+    tokio::time::advance(lifetime).await;
+    let (result, forced) = wait.await.expect("wait task").expect("wait completes");
+    assert!(forced);
+    assert!(matches!(
+        result,
+        Err(BuildExecutionError::ExecutorCredential { .. })
+    ));
+}
+
+#[tokio::test]
+async fn controlled_shutdown_uses_signal_only_without_an_external_coordinator() {
+    let (signal_tx, signal_rx) = oneshot::channel();
+    let signal = async move {
+        signal_rx.await.expect("signal sends");
+        Ok(())
+    };
+    let shutdown = controlled_shutdown_future_with_signal(None, signal);
+    signal_tx.send(()).expect("signal sends");
+    shutdown.await.expect("signal stops controlled execution");
+
+    let (external_tx, external_rx) = oneshot::channel();
+    let signal = std::future::pending::<std::io::Result<()>>();
+    let shutdown = controlled_shutdown_future_with_signal(Some(external_rx), signal);
+    external_tx.send(()).expect("external coordinator sends");
+    shutdown
+        .await
+        .expect("external coordinator stops controlled execution");
+}
+
 #[tokio::test]
 async fn every_paused_startup_stage_is_interrupted_at_expiry() {
     let expires_at = future_expiry(60);
@@ -454,15 +561,19 @@ async fn controlled_shutdown_drops_partial_startup_before_cleanup() {
     let startup_dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let cleanup_observed_drop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let owned = StartupStageDrop(Arc::clone(&startup_dropped));
-    let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
     shutdown_tx.send(()).expect("shutdown sends");
+    let mut shutdown = Box::pin(async move {
+        let _ = shutdown_rx.await;
+        Ok::<(), &'static str>(())
+    });
 
     let result = await_startup_or_shutdown(
         async move {
             let _owned = owned;
             std::future::pending::<Result<(), &'static str>>().await
         },
-        &mut shutdown_rx,
+        &mut shutdown,
         {
             let startup_dropped = Arc::clone(&startup_dropped);
             let cleanup_observed_drop = Arc::clone(&cleanup_observed_drop);
@@ -529,10 +640,14 @@ async fn controlled_startup_cancellation_stops_an_accepted_build_before_returnin
     let service_dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let startup_service = StartupStageDrop(Arc::clone(&service_dropped));
     let (startup_paused_tx, startup_paused_rx) = oneshot::channel();
-    let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
     tokio::spawn(async move {
         startup_paused_rx.await.expect("startup reaches pause");
         shutdown_tx.send(()).expect("controlled shutdown sends");
+    });
+    let mut shutdown = Box::pin(async move {
+        let _ = shutdown_rx.await;
+        Ok::<(), BuildExecutionError>(())
     });
     let cleanup_runtime = runtime.clone();
     let cleanup_saw_service_drop = Arc::clone(&service_dropped);
@@ -542,7 +657,7 @@ async fn controlled_startup_cancellation_stops_an_accepted_build_before_returnin
             startup_paused_tx.send(()).expect("startup reports pause");
             std::future::pending::<Result<(), BuildExecutionError>>().await
         },
-        &mut shutdown_rx,
+        &mut shutdown,
         async move {
             assert!(
                 cleanup_saw_service_drop.load(std::sync::atomic::Ordering::SeqCst),
