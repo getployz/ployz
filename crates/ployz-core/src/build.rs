@@ -58,8 +58,6 @@ pub const BUILD_FORCE_CLEANUP_TIMEOUT: Duration = Duration::from_secs(30);
 pub const BUILD_MAX_MACHINE_RESPONSE_LIFETIME: Duration = BUILD_MAX_EXECUTION_TIMEOUT
     .saturating_add(BUILD_TASK_DRAIN_TIMEOUT)
     .saturating_add(BUILD_FORCE_CLEANUP_TIMEOUT);
-/// Longest build-cache prune execution budget after it acquires the machine slot.
-pub const BUILD_CACHE_PRUNE_MAX_EXECUTION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// Controller margin beyond the machine's maximum response lifetime.
 pub const BUILD_CONTROL_RESPONSE_MARGIN: Duration = Duration::from_secs(5);
 /// Time reserved for terminal operation evidence to reach an attached caller.
@@ -1040,10 +1038,6 @@ mod tests {
         assert_eq!(
             BUILD_MAX_MACHINE_RESPONSE_LIFETIME,
             BUILD_MAX_EXECUTION_TIMEOUT + BUILD_TASK_DRAIN_TIMEOUT + BUILD_FORCE_CLEANUP_TIMEOUT
-        );
-        assert_eq!(
-            BUILD_CACHE_PRUNE_MAX_EXECUTION_TIMEOUT,
-            Duration::from_secs(10 * 60)
         );
         assert_eq!(
             BUILD_RESPONSE_PERMISSION_EXPIRY,

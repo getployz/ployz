@@ -1,8 +1,12 @@
 use super::images::AvailableImageService;
 use super::protocol::{
     BuildExecutorAcceptance, BuildExecutorAssignment, BuildLogSummary,
-    MachineBuildCachePruneDomainError, MachineBuildCachePruneRpcOk,
-    MachineBuildCachePruneRpcRequest, MachineBuildCachePruneRpcResponse,
+    MachineBuildCachePruneCancelDomainError, MachineBuildCachePruneCancelRpcOk,
+    MachineBuildCachePruneCancelRpcRequest, MachineBuildCachePruneCancelRpcResponse,
+    MachineBuildCachePruneStartDomainError, MachineBuildCachePruneStartRpcOk,
+    MachineBuildCachePruneStartRpcRequest, MachineBuildCachePruneStartRpcResponse,
+    MachineBuildCachePruneStatusDomainError, MachineBuildCachePruneStatusRpcOk,
+    MachineBuildCachePruneStatusRpcRequest, MachineBuildCachePruneStatusRpcResponse,
     MachineBuildCancelDomainError, MachineBuildCancelOutcome, MachineBuildCancelRpcOk,
     MachineBuildCancelRpcRequest, MachineBuildCancelRpcResponse, MachineBuildCleanupOutcome,
     MachineBuildStartDomainError, MachineBuildStartRpcOk, MachineBuildStartRpcRequest,
@@ -14,8 +18,9 @@ use ployz_build_executor::{
     BuildLogProgress, DockerBuildExecutor,
 };
 use ployz_core::build::{
-    BUILD_CACHE_PRUNE_MAX_EXECUTION_TIMEOUT, BUILD_FORCE_CLEANUP_TIMEOUT,
-    BUILD_MAX_EXECUTION_TIMEOUT, BUILD_TASK_DRAIN_TIMEOUT, BuildExecutorCancelOk,
+    BUILD_FORCE_CLEANUP_TIMEOUT, BUILD_MAX_EXECUTION_TIMEOUT, BUILD_TASK_DRAIN_TIMEOUT,
+    BuildCachePruneAcceptance, BuildCachePruneCancelOk, BuildCachePruneCancelOutcome,
+    BuildCachePruneRunningPhase, BuildCachePruneStatus, BuildExecutorCancelOk,
     BuildExecutorStartOk, BuildExecutorSuccessCleanupEvidence, VerifiedBuildSource,
 };
 use ployz_core::deploy::PlatformImage;
@@ -28,7 +33,7 @@ use ployz_nats::subjects::machine_build_log;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::sync::{Mutex, Notify, Semaphore, oneshot, watch};
+use tokio::sync::{Mutex, Notify, Semaphore, mpsc, oneshot, watch};
 use tokio::task::AbortHandle;
 use tokio::time::Instant;
 
@@ -49,6 +54,18 @@ struct BuildRuntimeLifecycle {
 struct BuildRuntimeState {
     phase: BuildRuntimePhase,
     active: BTreeMap<OperationId, ActiveBuild>,
+    prune: Option<ActivePrune>,
+}
+
+const PRUNE_TERMINAL_RETENTION: std::time::Duration = std::time::Duration::from_secs(60);
+
+struct ActivePrune {
+    operation_id: OperationId,
+    status: BuildCachePruneStatus,
+    cancel: watch::Sender<bool>,
+    supervisor: AbortHandle,
+    completion: Arc<BuildSupervisorCompletion>,
+    terminal_at: Option<Instant>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -147,6 +164,7 @@ impl MachineBuildRuntime {
                 state: Mutex::new(BuildRuntimeState {
                     phase: BuildRuntimePhase::Accepting,
                     active: BTreeMap::new(),
+                    prune: None,
                 }),
                 changed: Notify::new(),
             }),
@@ -164,6 +182,7 @@ impl MachineBuildRuntime {
                 state: Mutex::new(BuildRuntimeState {
                     phase: BuildRuntimePhase::Accepting,
                     active: BTreeMap::new(),
+                    prune: None,
                 }),
                 changed: Notify::new(),
             }),
@@ -185,42 +204,173 @@ impl MachineBuildRuntime {
         }
     }
 
-    pub(crate) async fn prune_cache(
+    async fn start_prune(
         &self,
-    ) -> Result<ployz_core::operation::BuildCachePruneEvidence, BuildExecutionError> {
-        let _slot = self
-            .machine_slot
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|error| BuildExecutionError::Infrastructure {
-                action: "acquire machine build slot",
-                message: error.to_string(),
-                log_summary: BuildLogSummary::none(),
-            })?;
-        if self.lifecycle.state.lock().await.phase != BuildRuntimePhase::Accepting {
-            return Err(BuildExecutionError::Infrastructure {
-                action: "prune build cache",
-                message: "machine build runtime is shutting down".to_owned(),
-                log_summary: BuildLogSummary::none(),
-            });
+        operation_id: OperationId,
+    ) -> Result<BuildCachePruneAcceptance, MachineBuildCachePruneStartDomainError> {
+        let mut state = self.lifecycle.state.lock().await;
+        if state.phase != BuildRuntimePhase::Accepting {
+            return Err(MachineBuildCachePruneStartDomainError::RuntimeStopped);
         }
-        match tokio::time::timeout(
-            BUILD_CACHE_PRUNE_MAX_EXECUTION_TIMEOUT,
-            self.effects.prune_cache(),
-        )
-        .await
+        if let Some(prune) = &state.prune {
+            if prune.operation_id == operation_id {
+                return Ok(BuildCachePruneAcceptance { operation_id });
+            }
+            if prune.terminal_at.is_none() {
+                return Err(MachineBuildCachePruneStartDomainError::AlreadyRunning {
+                    operation_id: prune.operation_id.clone(),
+                });
+            }
+        }
+
+        let (cancel, cancel_rx) = watch::channel(false);
+        let (launch, launch_rx) = oneshot::channel();
+        let completion = Arc::new(BuildSupervisorCompletion::new());
+        let completion_guard = BuildSupervisorCompletionGuard(completion.clone());
+        let runtime = self.clone();
+        let task_operation_id = operation_id.clone();
+        let supervisor = tokio::spawn(async move {
+            let _completion = completion_guard;
+            if launch_rx.await.is_ok() {
+                runtime.run_prune(task_operation_id, cancel_rx).await;
+            }
+        });
+        state.prune = Some(ActivePrune {
+            operation_id: operation_id.clone(),
+            status: BuildCachePruneStatus::Queued {
+                operation_id: operation_id.clone(),
+                progress: 0,
+            },
+            cancel,
+            supervisor: supervisor.abort_handle(),
+            completion,
+            terminal_at: None,
+        });
+        drop(state);
+        let _ = launch.send(());
+        Ok(BuildCachePruneAcceptance { operation_id })
+    }
+
+    async fn run_prune(&self, operation_id: OperationId, mut cancelled: watch::Receiver<bool>) {
+        let slot = self.machine_slot.clone().acquire_owned();
+        let _slot = tokio::select! {
+            biased;
+            changed = cancelled.changed() => {
+                let _ = changed;
+                self.finish_prune(&operation_id, BuildCachePruneStatus::Cancelled {
+                    operation_id: operation_id.clone(),
+                }).await;
+                return;
+            }
+            permit = slot => match permit {
+                Ok(permit) => permit,
+                Err(error) => {
+                    self.finish_prune(&operation_id, BuildCachePruneStatus::Failed {
+                        operation_id: operation_id.clone(),
+                        message: failure_message(error.to_string()),
+                    }).await;
+                    return;
+                }
+            }
+        };
+        let (progress_tx, mut progress_rx) = mpsc::unbounded_channel();
+        let effect = self.effects.prune_cache(cancelled, progress_tx);
+        tokio::pin!(effect);
+        let result = loop {
+            tokio::select! {
+                result = &mut effect => break result,
+                phase = progress_rx.recv() => {
+                    let Some(phase) = phase else { continue };
+                    self.advance_prune(&operation_id, phase).await;
+                }
+            }
+        };
+        while let Ok(phase) = progress_rx.try_recv() {
+            self.advance_prune(&operation_id, phase).await;
+        }
+        let status = match result {
+            Ok(evidence) => BuildCachePruneStatus::Completed {
+                operation_id: operation_id.clone(),
+                evidence,
+            },
+            Err(BuildExecutionError::Cancelled { .. }) => BuildCachePruneStatus::Cancelled {
+                operation_id: operation_id.clone(),
+            },
+            Err(error) => BuildCachePruneStatus::Failed {
+                operation_id: operation_id.clone(),
+                message: failure_message(error.to_string()),
+            },
+        };
+        self.finish_prune(&operation_id, status).await;
+    }
+
+    async fn advance_prune(&self, operation_id: &OperationId, phase: BuildCachePruneRunningPhase) {
+        let mut state = self.lifecycle.state.lock().await;
+        let Some(prune) = state
+            .prune
+            .as_mut()
+            .filter(|prune| &prune.operation_id == operation_id)
+        else {
+            return;
+        };
+        let progress = match &prune.status {
+            BuildCachePruneStatus::Queued { progress, .. }
+            | BuildCachePruneStatus::Running { progress, .. } => progress.saturating_add(1),
+            _ => return,
+        };
+        prune.status = BuildCachePruneStatus::Running {
+            operation_id: operation_id.clone(),
+            phase,
+            progress,
+        };
+        self.lifecycle.changed.notify_waiters();
+    }
+
+    async fn finish_prune(&self, operation_id: &OperationId, status: BuildCachePruneStatus) {
+        let mut state = self.lifecycle.state.lock().await;
+        if let Some(prune) = state
+            .prune
+            .as_mut()
+            .filter(|prune| &prune.operation_id == operation_id)
         {
-            Ok(result) => result,
-            Err(_) => Err(BuildExecutionError::Infrastructure {
-                action: "prune build cache",
-                message: format!(
-                    "build cache prune timed out after {}s",
-                    BUILD_CACHE_PRUNE_MAX_EXECUTION_TIMEOUT.as_secs()
-                ),
-                log_summary: BuildLogSummary::none(),
-            }),
+            prune.status = status;
+            prune.terminal_at = Some(Instant::now());
         }
+        self.lifecycle.changed.notify_waiters();
+    }
+
+    async fn prune_status(&self, operation_id: &OperationId) -> BuildCachePruneStatus {
+        let mut state = self.lifecycle.state.lock().await;
+        if state.prune.as_ref().is_some_and(|prune| {
+            prune
+                .terminal_at
+                .is_some_and(|at| at.elapsed() >= PRUNE_TERMINAL_RETENTION)
+        }) {
+            state.prune = None;
+        }
+        state
+            .prune
+            .as_ref()
+            .filter(|prune| &prune.operation_id == operation_id)
+            .map_or_else(
+                || BuildCachePruneStatus::NotFound {
+                    operation_id: operation_id.clone(),
+                },
+                |prune| prune.status.clone(),
+            )
+    }
+
+    async fn cancel_prune(&self, operation_id: &OperationId) -> BuildCachePruneCancelOutcome {
+        let state = self.lifecycle.state.lock().await;
+        let Some(prune) = state
+            .prune
+            .as_ref()
+            .filter(|prune| &prune.operation_id == operation_id && prune.terminal_at.is_none())
+        else {
+            return BuildCachePruneCancelOutcome::NotRunning;
+        };
+        let _ = prune.cancel.send(true);
+        BuildCachePruneCancelOutcome::Requested
     }
 
     pub(crate) async fn shutdown(&self) {
@@ -231,6 +381,9 @@ impl MachineBuildRuntime {
                     state.phase = BuildRuntimePhase::ShuttingDown;
                     for build in state.active.values() {
                         let _ = build.cancel.send(true);
+                    }
+                    if let Some(prune) = &state.prune {
+                        let _ = prune.cancel.send(true);
                     }
                     true
                 }
@@ -268,9 +421,48 @@ impl MachineBuildRuntime {
         for build in &residual {
             build.supervisor.abort();
         }
+        let residual_prune = if drained {
+            None
+        } else {
+            self.lifecycle
+                .state
+                .lock()
+                .await
+                .prune
+                .as_ref()
+                .and_then(|prune| {
+                    prune.terminal_at.is_none().then(|| {
+                        (
+                            prune.operation_id.clone(),
+                            prune.supervisor.clone(),
+                            prune.completion.clone(),
+                        )
+                    })
+                })
+        };
+        if let Some((_, supervisor, _)) = &residual_prune {
+            supervisor.abort();
+        }
         let completion_wait =
             futures_util::future::join_all(residual.iter().map(|build| build.completion.wait()));
-        let _ = tokio::time::timeout(BUILD_TASK_DRAIN_TIMEOUT, completion_wait).await;
+        let prune_completion = async {
+            if let Some((_, _, completion)) = &residual_prune {
+                completion.wait().await;
+            }
+        };
+        let _ = tokio::time::timeout(BUILD_TASK_DRAIN_TIMEOUT, async {
+            tokio::join!(completion_wait, prune_completion);
+        })
+        .await;
+        if let Some((operation_id, _, _)) = residual_prune {
+            self.finish_prune(
+                &operation_id,
+                BuildCachePruneStatus::Cancelled {
+                    operation_id: operation_id.clone(),
+                },
+            )
+            .await;
+        }
         let _slot = self
             .machine_slot
             .clone()
@@ -297,7 +489,12 @@ impl MachineBuildRuntime {
     async fn wait_for_active_builds_to_finish(&self) {
         loop {
             let changed = self.lifecycle.changed.notified();
-            if self.lifecycle.state.lock().await.active.is_empty() {
+            let state = self.lifecycle.state.lock().await;
+            let prune_finished = state
+                .prune
+                .as_ref()
+                .is_none_or(|prune| prune.terminal_at.is_some());
+            if state.active.is_empty() && prune_finished {
                 return;
             }
             changed.await;
@@ -569,11 +766,13 @@ struct ResidualBuild {
 impl BuildEffects {
     async fn prune_cache(
         &self,
+        cancelled: watch::Receiver<bool>,
+        progress: mpsc::UnboundedSender<BuildCachePruneRunningPhase>,
     ) -> Result<ployz_core::operation::BuildCachePruneEvidence, BuildExecutionError> {
         match self {
-            Self::Docker(effects) => effects.executor.prune_cache().await,
+            Self::Docker(effects) => effects.executor.prune_cache(cancelled, progress).await,
             #[cfg(test)]
-            Self::Test(effects) => effects.prune_cache().await,
+            Self::Test(effects) => effects.prune_cache(cancelled, progress).await,
         }
     }
 
@@ -838,37 +1037,85 @@ pub(crate) async fn handle_build_cancel(
     ))
 }
 
-pub(crate) async fn handle_build_cache_prune(
+pub(crate) async fn handle_build_cache_prune_start(
     machine_id: MachineId,
     runtime: Option<MachineBuildRuntime>,
     request: NatsServiceRequest,
 ) -> NatsServiceResponse {
-    let _request = match decode_json_request::<MachineBuildCachePruneRpcRequest>(&request) {
+    let request = match decode_json_request::<MachineBuildCachePruneStartRpcRequest>(&request) {
         Ok(request) => request,
         Err(response) => return response,
     };
     let Some(runtime) = runtime else {
-        return machine_domain_error(MachineBuildCachePruneRpcResponse::DomainError {
+        return machine_domain_error(MachineBuildCachePruneStartRpcResponse::DomainError {
             machine_id,
-            error: MachineBuildCachePruneDomainError::PruneFailed {
+            error: MachineBuildCachePruneStartDomainError::RuntimeUnavailable,
+        });
+    };
+    match runtime.start_prune(request.operation_id).await {
+        Ok(acceptance) => machine_success(MachineBuildCachePruneStartRpcResponse::Ok(
+            MachineBuildCachePruneStartRpcOk::from((machine_id, acceptance)),
+        )),
+        Err(error) => machine_domain_error(MachineBuildCachePruneStartRpcResponse::DomainError {
+            machine_id,
+            error,
+        }),
+    }
+}
+
+pub(crate) async fn handle_build_cache_prune_status(
+    machine_id: MachineId,
+    runtime: Option<MachineBuildRuntime>,
+    request: NatsServiceRequest,
+) -> NatsServiceResponse {
+    let request = match decode_json_request::<MachineBuildCachePruneStatusRpcRequest>(&request) {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+    let Some(runtime) = runtime else {
+        return machine_domain_error(MachineBuildCachePruneStatusRpcResponse::DomainError {
+            machine_id,
+            error: MachineBuildCachePruneStatusDomainError::ReadFailed {
                 message: failure_message("machine build runtime is unavailable"),
             },
         });
     };
-    match runtime.prune_cache().await {
-        Ok(evidence) => machine_success(MachineBuildCachePruneRpcResponse::Ok(
-            MachineBuildCachePruneRpcOk {
-                machine_id,
-                evidence,
+    machine_success(MachineBuildCachePruneStatusRpcResponse::Ok(
+        MachineBuildCachePruneStatusRpcOk::from((
+            machine_id,
+            runtime.prune_status(&request.operation_id).await,
+        )),
+    ))
+}
+
+pub(crate) async fn handle_build_cache_prune_cancel(
+    machine_id: MachineId,
+    runtime: Option<MachineBuildRuntime>,
+    request: NatsServiceRequest,
+) -> NatsServiceResponse {
+    let request = match decode_json_request::<MachineBuildCachePruneCancelRpcRequest>(&request) {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+    let Some(runtime) = runtime else {
+        return machine_domain_error(MachineBuildCachePruneCancelRpcResponse::DomainError {
+            machine_id,
+            error: MachineBuildCachePruneCancelDomainError::CancelFailed {
+                message: failure_message("machine build runtime is unavailable"),
+            },
+        });
+    };
+    let operation_id = request.operation_id;
+    let outcome = runtime.cancel_prune(&operation_id).await;
+    machine_success(MachineBuildCachePruneCancelRpcResponse::Ok(
+        MachineBuildCachePruneCancelRpcOk::from((
+            machine_id,
+            BuildCachePruneCancelOk {
+                operation_id,
+                outcome,
             },
         )),
-        Err(error) => machine_domain_error(MachineBuildCachePruneRpcResponse::DomainError {
-            machine_id,
-            error: MachineBuildCachePruneDomainError::PruneFailed {
-                message: failure_message(error.to_string()),
-            },
-        }),
-    }
+    ))
 }
 
 #[cfg(test)]

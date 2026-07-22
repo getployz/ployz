@@ -1,6 +1,7 @@
 use super::*;
 use crate::roles::machine::protocol::{
-    MachineBuildCachePruneDomainError, MachineBuildCancelDomainError,
+    MachineBuildCachePruneCancelDomainError, MachineBuildCachePruneStartDomainError,
+    MachineBuildCachePruneStatusDomainError, MachineBuildCancelDomainError,
 };
 use ployz_core::machine::rpc::MachineRpcResponse;
 use ployz_core::operation::{BuildAdapterToolchainEvidence, BuildLogChunk, BuildToolchainEvidence};
@@ -9,11 +10,15 @@ use std::sync::atomic::Ordering;
 pub(super) struct TestBuildEffects {
     pub(super) ingest_started: tokio::sync::Notify,
     pub(super) prune_started: tokio::sync::Notify,
+    prune_phase: std::sync::atomic::AtomicUsize,
+    prune_continue: tokio::sync::Semaphore,
     pub(super) cleanup_calls: std::sync::atomic::AtomicUsize,
     pub(super) task_active: std::sync::atomic::AtomicBool,
     cleanup_completes: bool,
     observes_cancellation: bool,
     prune_completes: bool,
+    pause_prune_phases: bool,
+    prune_fails: bool,
 }
 
 impl TestBuildEffects {
@@ -21,11 +26,15 @@ impl TestBuildEffects {
         Self {
             ingest_started: tokio::sync::Notify::new(),
             prune_started: tokio::sync::Notify::new(),
+            prune_phase: std::sync::atomic::AtomicUsize::new(0),
+            prune_continue: tokio::sync::Semaphore::new(0),
             cleanup_calls: std::sync::atomic::AtomicUsize::new(0),
             task_active: std::sync::atomic::AtomicBool::new(false),
             cleanup_completes,
             observes_cancellation: false,
             prune_completes: true,
+            pause_prune_phases: false,
+            prune_fails: false,
         }
     }
 
@@ -39,6 +48,20 @@ impl TestBuildEffects {
     fn blocking_prune() -> Self {
         Self {
             prune_completes: false,
+            ..Self::new(true)
+        }
+    }
+
+    fn phased_prune() -> Self {
+        Self {
+            pause_prune_phases: true,
+            ..Self::new(true)
+        }
+    }
+
+    fn failing_prune() -> Self {
+        Self {
+            prune_fails: true,
             ..Self::new(true)
         }
     }
@@ -63,10 +86,43 @@ impl TestBuildEffects {
 
     pub(super) async fn prune_cache(
         &self,
+        mut cancelled: watch::Receiver<bool>,
+        progress: mpsc::UnboundedSender<BuildCachePruneRunningPhase>,
     ) -> Result<ployz_core::operation::BuildCachePruneEvidence, BuildExecutionError> {
         self.prune_started.notify_one();
         if !self.prune_completes {
-            std::future::pending().await
+            let _ = cancelled.changed().await;
+            return Err(BuildExecutionError::Cancelled {
+                log_summary: BuildLogSummary::none(),
+            });
+        }
+        for (index, phase) in [
+            BuildCachePruneRunningPhase::MeasuringBefore,
+            BuildCachePruneRunningPhase::InspectingCache,
+            BuildCachePruneRunningPhase::RemovingCache,
+            BuildCachePruneRunningPhase::MeasuringAfter,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let _ = progress.send(phase);
+            self.prune_phase.store(index + 1, Ordering::SeqCst);
+            if self.pause_prune_phases {
+                tokio::select! {
+                    permit = self.prune_continue.acquire() => { permit.expect("test semaphore").forget(); }
+                    changed = cancelled.changed() => {
+                        let _ = changed;
+                        return Err(BuildExecutionError::Cancelled { log_summary: BuildLogSummary::none() });
+                    }
+                }
+            }
+        }
+        if self.prune_fails {
+            return Err(BuildExecutionError::Infrastructure {
+                action: "test prune",
+                message: "failed".to_owned(),
+                log_summary: BuildLogSummary::none(),
+            });
         }
         Ok(ployz_core::operation::BuildCachePruneEvidence {
             before_available_bytes: 0,
@@ -421,11 +477,11 @@ async fn unavailable_build_runtime_is_typed_machine_evidence_for_every_handler()
         } if actual == machine_id && message.as_str() == "machine build runtime is unavailable"
     ));
 
-    let prune_response = handle_build_cache_prune(
+    let prune_response = handle_build_cache_prune_start(
         machine_id.clone(),
         None,
         NatsServiceRequest {
-            payload: serde_json::to_vec(&MachineBuildCachePruneRpcRequest {
+            payload: serde_json::to_vec(&MachineBuildCachePruneStartRpcRequest {
                 operation_id: OperationId::try_new("prune-1").expect("operation"),
             })
             .expect("request"),
@@ -436,15 +492,58 @@ async fn unavailable_build_runtime_is_typed_machine_evidence_for_every_handler()
     let NatsServiceResponse::DomainError { payload } = prune_response else {
         panic!("unavailable runtime should reject cache pruning with a domain error");
     };
-    let prune_response: MachineBuildCachePruneRpcResponse =
+    let prune_response: MachineBuildCachePruneStartRpcResponse =
         serde_json::from_slice(&payload).expect("typed response");
     assert!(matches!(
         prune_response,
         MachineRpcResponse::DomainError {
             machine_id: actual,
-            error: MachineBuildCachePruneDomainError::PruneFailed { message },
-        } if actual == machine_id && message.as_str() == "machine build runtime is unavailable"
+            error: MachineBuildCachePruneStartDomainError::RuntimeUnavailable,
+        } if actual == machine_id
     ));
+
+    let operation_id = OperationId::try_new("prune-1").expect("operation");
+    let status_response = handle_build_cache_prune_status(
+        machine_id.clone(),
+        None,
+        NatsServiceRequest {
+            payload: serde_json::to_vec(&MachineBuildCachePruneStatusRpcRequest {
+                operation_id: operation_id.clone(),
+            })
+            .expect("request"),
+            headers: None,
+        },
+    )
+    .await;
+    let NatsServiceResponse::DomainError { payload } = status_response else {
+        panic!("unavailable runtime should reject prune status");
+    };
+    let status: MachineBuildCachePruneStatusRpcResponse =
+        serde_json::from_slice(&payload).expect("typed status");
+    assert!(matches!(status, MachineRpcResponse::DomainError {
+        machine_id: actual,
+        error: MachineBuildCachePruneStatusDomainError::ReadFailed { .. },
+    } if actual == machine_id));
+
+    let cancel_response = handle_build_cache_prune_cancel(
+        machine_id.clone(),
+        None,
+        NatsServiceRequest {
+            payload: serde_json::to_vec(&MachineBuildCachePruneCancelRpcRequest { operation_id })
+                .expect("request"),
+            headers: None,
+        },
+    )
+    .await;
+    let NatsServiceResponse::DomainError { payload } = cancel_response else {
+        panic!("unavailable runtime should reject prune cancellation");
+    };
+    let cancel: MachineBuildCachePruneCancelRpcResponse =
+        serde_json::from_slice(&payload).expect("typed cancel");
+    assert!(matches!(cancel, MachineRpcResponse::DomainError {
+        machine_id: actual,
+        error: MachineBuildCachePruneCancelDomainError::CancelFailed { .. },
+    } if actual == machine_id));
 }
 
 #[tokio::test]
@@ -505,12 +604,16 @@ async fn cache_prune_waits_for_active_build_cleanup() {
     let start = tokio::spawn(async move { start_runtime.start(request).await });
     effects.ingest_started.notified().await;
 
-    let mut prune = Box::pin(runtime.prune_cache());
-    assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(10), &mut prune)
-            .await
-            .is_err()
-    );
+    let prune_id = OperationId::try_new("queued-prune").expect("operation");
+    let accepted = runtime
+        .start_prune(prune_id.clone())
+        .await
+        .expect("accepted");
+    assert_eq!(accepted.operation_id, prune_id);
+    assert!(matches!(
+        runtime.prune_status(&prune_id).await,
+        BuildCachePruneStatus::Queued { progress: 0, .. }
+    ));
 
     assert_eq!(
         runtime.cancel(&operation_id).await,
@@ -523,39 +626,139 @@ async fn cache_prune_waits_for_active_build_cleanup() {
             ..
         })
     ));
-    tokio::time::timeout(std::time::Duration::from_secs(1), prune)
-        .await
-        .expect("prune proceeds after build cleanup")
-        .expect("prune succeeds");
+    effects.prune_started.notified().await;
+    tokio::task::yield_now().await;
+    assert!(matches!(
+        runtime.prune_status(&prune_id).await,
+        BuildCachePruneStatus::Completed { .. }
+    ));
 }
 
-#[tokio::test(start_paused = true)]
-async fn cache_prune_times_out_the_whole_effect_and_releases_the_machine_slot() {
+#[tokio::test]
+async fn cache_prune_start_is_idempotent_busy_and_cancellable() {
     let effects = Arc::new(TestBuildEffects::blocking_prune());
     let runtime = MachineBuildRuntime::new_for_test(
         MachineId::try_new("machine-a").expect("machine"),
         effects.clone(),
     );
-    let prune_runtime = runtime.clone();
-    let prune = tokio::spawn(async move { prune_runtime.prune_cache().await });
+    let operation_id = OperationId::try_new("prune-one").expect("operation");
+    runtime
+        .start_prune(operation_id.clone())
+        .await
+        .expect("start");
     effects.prune_started.notified().await;
-
-    tokio::time::advance(BUILD_CACHE_PRUNE_MAX_EXECUTION_TIMEOUT).await;
-    tokio::task::yield_now().await;
-
+    runtime
+        .start_prune(operation_id.clone())
+        .await
+        .expect("same id");
+    let other = OperationId::try_new("prune-two").expect("operation");
+    assert!(matches!(runtime.start_prune(other).await,
+        Err(MachineBuildCachePruneStartDomainError::AlreadyRunning { operation_id: running })
+        if running == operation_id));
+    assert_eq!(
+        runtime.cancel_prune(&operation_id).await,
+        BuildCachePruneCancelOutcome::Requested
+    );
     assert!(matches!(
-        prune.await.expect("prune task"),
-        Err(BuildExecutionError::Infrastructure {
-            action: "prune build cache",
-            message,
-            ..
-        }) if message == "build cache prune timed out after 600s"
+        runtime.cancel_prune(&operation_id).await,
+        BuildCachePruneCancelOutcome::Requested | BuildCachePruneCancelOutcome::NotRunning
     ));
-    let _slot = runtime
-        .machine_slot
-        .clone()
-        .try_acquire_owned()
-        .expect("timed-out prune releases the machine slot");
+    while !matches!(
+        runtime.prune_status(&operation_id).await,
+        BuildCachePruneStatus::Cancelled { .. }
+    ) {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(
+        runtime.cancel_prune(&operation_id).await,
+        BuildCachePruneCancelOutcome::NotRunning
+    );
+}
+
+#[tokio::test]
+async fn cache_prune_progress_is_strict_and_reaches_four() {
+    let effects = Arc::new(TestBuildEffects::phased_prune());
+    let runtime = MachineBuildRuntime::new_for_test(
+        MachineId::try_new("machine-a").expect("machine"),
+        effects.clone(),
+    );
+    let operation_id = OperationId::try_new("progress-prune").expect("operation");
+    runtime
+        .start_prune(operation_id.clone())
+        .await
+        .expect("start");
+    effects.prune_started.notified().await;
+    for (index, phase) in [
+        BuildCachePruneRunningPhase::MeasuringBefore,
+        BuildCachePruneRunningPhase::InspectingCache,
+        BuildCachePruneRunningPhase::RemovingCache,
+        BuildCachePruneRunningPhase::MeasuringAfter,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        while effects.prune_phase.load(Ordering::SeqCst) < index + 1 {
+            tokio::task::yield_now().await;
+        }
+        tokio::task::yield_now().await;
+        assert!(matches!(
+            runtime.prune_status(&operation_id).await,
+            BuildCachePruneStatus::Running { phase: actual, progress, .. }
+                if actual == phase && progress == (index + 1) as u64
+        ));
+        effects.prune_continue.add_permits(1);
+    }
+    tokio::task::yield_now().await;
+    assert!(matches!(
+        runtime.prune_status(&operation_id).await,
+        BuildCachePruneStatus::Completed { .. }
+    ));
+}
+
+#[tokio::test(start_paused = true)]
+async fn cache_prune_retains_terminal_status_then_expires() {
+    let runtime = MachineBuildRuntime::new_for_test(
+        MachineId::try_new("machine-a").expect("machine"),
+        Arc::new(TestBuildEffects::new(true)),
+    );
+    let operation_id = OperationId::try_new("retained-prune").expect("operation");
+    runtime
+        .start_prune(operation_id.clone())
+        .await
+        .expect("start");
+    while !matches!(
+        runtime.prune_status(&operation_id).await,
+        BuildCachePruneStatus::Completed { .. }
+    ) {
+        tokio::task::yield_now().await;
+    }
+    tokio::time::advance(PRUNE_TERMINAL_RETENTION).await;
+    assert!(matches!(
+        runtime.prune_status(&operation_id).await,
+        BuildCachePruneStatus::NotFound { .. }
+    ));
+}
+
+#[tokio::test]
+async fn cache_prune_failure_is_retained_as_typed_status() {
+    let runtime = MachineBuildRuntime::new_for_test(
+        MachineId::try_new("machine-a").expect("machine"),
+        Arc::new(TestBuildEffects::failing_prune()),
+    );
+    let operation_id = OperationId::try_new("failed-prune").expect("operation");
+    runtime
+        .start_prune(operation_id.clone())
+        .await
+        .expect("start");
+    loop {
+        if let BuildCachePruneStatus::Failed { message, .. } =
+            runtime.prune_status(&operation_id).await
+        {
+            assert!(message.as_str().contains("test prune"));
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
 }
 
 #[tokio::test]
@@ -589,8 +792,8 @@ async fn shutdown_waits_for_the_machine_slot_before_stopping() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn shutdown_rejects_cache_prune_waiting_behind_a_build() {
-    let effects = Arc::new(TestBuildEffects::new(true));
+async fn shutdown_cancels_cache_prune_waiting_behind_a_build() {
+    let effects = Arc::new(TestBuildEffects::cooperative(true));
     let runtime = MachineBuildRuntime::new_for_test(
         MachineId::try_new("machine-a").expect("machine"),
         effects.clone(),
@@ -598,33 +801,25 @@ async fn shutdown_rejects_cache_prune_waiting_behind_a_build() {
     let start_runtime = runtime.clone();
     let start = tokio::spawn(async move {
         start_runtime
-            .start(build_request("build-during-shutdown", 10_000))
+            .start(build_request("build-during-shutdown", 100_000))
             .await
     });
     effects.ingest_started.notified().await;
-    let mut prune = Box::pin(runtime.prune_cache());
-    assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(1), &mut prune)
-            .await
-            .is_err()
-    );
+    let prune_id = OperationId::try_new("shutdown-prune").expect("operation");
+    runtime
+        .start_prune(prune_id.clone())
+        .await
+        .expect("accepted");
 
     let shutdown_runtime = runtime.clone();
     let shutdown = tokio::spawn(async move { shutdown_runtime.shutdown().await });
-    tokio::task::yield_now().await;
-    tokio::time::advance(BUILD_TASK_DRAIN_TIMEOUT).await;
-    tokio::task::yield_now().await;
-
-    assert!(matches!(
-        prune.await,
-        Err(BuildExecutionError::Infrastructure {
-            action: "prune build cache",
-            ..
-        })
-    ));
     shutdown.await.expect("shutdown task");
     let _ = start.await.expect("start task");
     assert_eq!(effects.cleanup_calls.load(Ordering::SeqCst), 1);
+    assert!(matches!(
+        runtime.prune_status(&prune_id).await,
+        BuildCachePruneStatus::Cancelled { .. }
+    ));
 }
 
 #[tokio::test(start_paused = true)]

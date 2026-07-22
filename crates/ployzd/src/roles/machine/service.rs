@@ -1,6 +1,9 @@
 //! NATS Service API wiring for machine-local commands.
 
-use super::build::{MachineBuildRuntime, handle_build_cancel, handle_build_start};
+use super::build::{
+    MachineBuildRuntime, handle_build_cache_prune_cancel, handle_build_cache_prune_start,
+    handle_build_cache_prune_status, handle_build_cancel, handle_build_start,
+};
 use super::containers::{
     MachineContainerState, handle_container_inspect, handle_container_remove,
     handle_container_resolve_image, handle_container_restart, handle_container_run,
@@ -297,8 +300,32 @@ where
         &mut runtime,
         &machine_id,
         MachineServiceEndpoint::BuildCancel,
-        build_state,
+        build_state.clone(),
         handle_build_cancel,
+    )
+    .await?;
+    bind_machine_endpoint(
+        &mut runtime,
+        &machine_id,
+        MachineServiceEndpoint::BuildCachePruneStart,
+        build_state.clone(),
+        handle_build_cache_prune_start,
+    )
+    .await?;
+    bind_machine_endpoint(
+        &mut runtime,
+        &machine_id,
+        MachineServiceEndpoint::BuildCachePruneStatus,
+        build_state.clone(),
+        handle_build_cache_prune_status,
+    )
+    .await?;
+    bind_machine_endpoint(
+        &mut runtime,
+        &machine_id,
+        MachineServiceEndpoint::BuildCachePruneCancel,
+        build_state,
+        handle_build_cache_prune_cancel,
     )
     .await?;
     bind_machine_endpoint(

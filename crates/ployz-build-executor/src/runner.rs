@@ -1,9 +1,9 @@
 use super::ValidatedOciLayout;
 use super::lifecycle::{
     BUILDER_LABEL, BUILDER_OWNER_LABEL_KEY, BuildLogContext, CACHE_VOLUME, DOCKER_COMMAND_TIMEOUT,
-    PinnedImageKind, await_buildkit, builder_name, create_builder, prune_buildkit_cache,
-    pull_exact_image, remove_builder, require_success, restore_oci_layout_ownership, run_bounded,
-    run_buildctl, run_prepare,
+    PinnedImageKind, await_buildkit, builder_name, create_builder, inspect_buildkit_cache,
+    prune_buildkit_cache, pull_exact_image, remove_builder, remove_buildkit_cache, require_success,
+    restore_oci_layout_ownership, run_bounded, run_buildctl, run_prepare,
 };
 use super::logs::{BuildLogProgress, PublishedLogs};
 use super::oci::{OciLayoutError, OciValidationControl, validate_oci_layout};
@@ -14,7 +14,7 @@ use super::workspace::{
     verify_helper,
 };
 use ployz_core::build::BuildLogSummary;
-use ployz_core::build::{BuildAdapter, BuildContextPath, BuildSource};
+use ployz_core::build::{BuildAdapter, BuildCachePruneRunningPhase, BuildContextPath, BuildSource};
 use ployz_core::ids::OperationId;
 use ployz_core::image::OciPlatform;
 use ployz_core::operation::{
@@ -24,7 +24,7 @@ use rustix::fs::statvfs;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, watch};
 use tokio::time::Instant;
 
 const GIB: u64 = 1024 * 1024 * 1024;
@@ -161,11 +161,24 @@ impl DockerBuildExecutor {
         builder_result.and(workspace_result)
     }
 
-    pub async fn prune_cache(&self) -> Result<BuildCachePruneEvidence, BuildExecutionError> {
+    pub async fn prune_cache(
+        &self,
+        mut cancelled: watch::Receiver<bool>,
+        progress: mpsc::UnboundedSender<BuildCachePruneRunningPhase>,
+    ) -> Result<BuildCachePruneEvidence, BuildExecutionError> {
         let _effect_guard = self.effect_guard.acquire().await?;
+        check_cancelled(&cancelled)?;
+        let _ = progress.send(BuildCachePruneRunningPhase::MeasuringBefore);
         prepare_private_directory(&self.workspace_root).await?;
         let before = build_disk_space(&self.workspace_root)?;
-        prune_buildkit_cache().await?;
+        let _ = progress.send(BuildCachePruneRunningPhase::InspectingCache);
+        let exists = inspect_buildkit_cache(&mut cancelled).await?;
+        let _ = progress.send(BuildCachePruneRunningPhase::RemovingCache);
+        if exists {
+            remove_buildkit_cache(&mut cancelled).await?;
+        }
+        check_cancelled(&cancelled)?;
+        let _ = progress.send(BuildCachePruneRunningPhase::MeasuringAfter);
         let after = build_disk_space(&self.workspace_root)?;
         Ok(BuildCachePruneEvidence {
             before_available_bytes: before.available_bytes,

@@ -5,6 +5,7 @@ use super::plan::{BuildExecutionPlan, PrepareCommand};
 use super::runner::{
     BuildExecutionError, adapter_failure, check_cancelled, infrastructure, platform_failure,
 };
+use ployz_core::build::BUILD_CACHE_PRUNE_COMMAND_TIMEOUT;
 use ployz_core::build::BuildSource;
 use ployz_core::ids::OperationId;
 use ployz_core::image::{OciDigest, OciPlatform};
@@ -414,6 +415,39 @@ pub(super) async fn prune_buildkit_cache() -> Result<(), BuildExecutionError> {
     require_success("remove BuildKit cache volume", &removed)
 }
 
+pub(super) async fn inspect_buildkit_cache(
+    cancelled: &mut watch::Receiver<bool>,
+) -> Result<bool, BuildExecutionError> {
+    let volume = run_bounded_cancelled(
+        "docker",
+        [
+            "volume",
+            "ls",
+            "-q",
+            "--filter",
+            &format!("name=^{CACHE_VOLUME}$"),
+        ],
+        BUILD_CACHE_PRUNE_COMMAND_TIMEOUT,
+        cancelled,
+    )
+    .await?;
+    require_success("inspect BuildKit cache volume", &volume)?;
+    Ok(String::from_utf8_lossy(&volume.stdout).trim() == CACHE_VOLUME)
+}
+
+pub(super) async fn remove_buildkit_cache(
+    cancelled: &mut watch::Receiver<bool>,
+) -> Result<(), BuildExecutionError> {
+    let removed = run_bounded_cancelled(
+        "docker",
+        ["volume", "rm", CACHE_VOLUME],
+        BUILD_CACHE_PRUNE_COMMAND_TIMEOUT,
+        cancelled,
+    )
+    .await?;
+    require_success("remove BuildKit cache volume", &removed)
+}
+
 pub(super) async fn await_buildkit(
     builder: &str,
     cancelled: &mut watch::Receiver<bool>,
@@ -539,6 +573,29 @@ pub(super) async fn run_bounded<const N: usize>(
         ));
     }
     Ok(output)
+}
+
+async fn run_bounded_cancelled<const N: usize>(
+    program: &str,
+    arguments: [&str; N],
+    timeout: Duration,
+    cancelled: &mut watch::Receiver<bool>,
+) -> Result<std::process::Output, BuildExecutionError> {
+    check_cancelled(cancelled)?;
+    tokio::select! {
+        biased;
+        changed = cancelled.changed() => {
+            match changed {
+                Ok(()) if *cancelled.borrow() => Err(BuildExecutionError::cancelled()),
+                Ok(()) => Err(infrastructure(
+                    "run Docker command",
+                    "cancellation signal changed without requesting cancellation",
+                )),
+                Err(_) => Err(infrastructure("run Docker command", "cancellation channel closed")),
+            }
+        }
+        output = run_bounded(program, arguments, timeout) => output,
+    }
 }
 
 pub(super) fn require_success(
@@ -773,6 +830,42 @@ mod tests {
         .await
         .expect_err("timed out prepare fails");
         assert!(error.to_string().contains("prepare timed out"));
+    }
+
+    #[tokio::test]
+    async fn bounded_command_observes_cancellation_while_running() {
+        let (cancel, mut cancelled) = watch::channel(false);
+        let command = run_bounded_cancelled(
+            "/bin/sh",
+            ["-c", "sleep 30"],
+            Duration::from_secs(30),
+            &mut cancelled,
+        );
+        tokio::pin!(command);
+        tokio::select! {
+            () = tokio::time::sleep(Duration::from_millis(20)) => {
+                cancel.send(true).expect("cancellation receiver remains live");
+            }
+            result = &mut command => panic!("command ended before cancellation: {result:?}"),
+        }
+        assert!(matches!(
+            command.await,
+            Err(BuildExecutionError::Cancelled { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn bounded_command_enforces_its_supplied_timeout() {
+        let (_cancel, mut cancelled) = watch::channel(false);
+        let error = run_bounded_cancelled(
+            "/bin/sh",
+            ["-c", "sleep 30"],
+            Duration::from_millis(20),
+            &mut cancelled,
+        )
+        .await
+        .expect_err("command must time out");
+        assert!(error.to_string().contains("command timed out"));
     }
 
     #[tokio::test]
