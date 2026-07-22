@@ -6,7 +6,10 @@ use ployz_core::deploy::{DatasetName, VolumeMaxSizeBytes, VolumeName, ZfsPoolNam
 use ployz_core::ids::{NamespaceId, OperationId};
 use ployz_core::machine::{DatasetQuotaFact, PoolCapacityFacts, VolumeUsageFacts};
 use ployz_core::operation::FailureMessage;
-use ployz_core::storage::{MACHINE_STORAGE_PREPARE_BUDGET, PROVISIONED_VOLUME_MOUNTPOINT};
+use ployz_core::storage::{
+    MACHINE_STORAGE_PREPARE_BUDGET, MachineStoragePreparationEvidence,
+    PROVISIONED_VOLUME_MOUNTPOINT, StorageOperationEvidenceFile,
+};
 
 use super::dataset::{DatasetEnsureLock, dataset_ensure_lock_path};
 use super::state::{imported_pools, persist_prepared_storage_state};
@@ -25,6 +28,7 @@ struct Invocation {
 struct RecordingRunner {
     outputs: VecDeque<HostRunnerCommandOutput>,
     invocations: Vec<Invocation>,
+    running_evidence: Option<(PathBuf, OperationId)>,
 }
 
 impl RecordingRunner {
@@ -32,7 +36,13 @@ impl RecordingRunner {
         Self {
             outputs: outputs.into_iter().collect(),
             invocations: Vec::new(),
+            running_evidence: None,
         }
+    }
+
+    fn expect_running_evidence(mut self, state: &Path, operation_id: OperationId) -> Self {
+        self.running_evidence = Some((state.to_path_buf(), operation_id));
+        self
     }
 }
 
@@ -58,6 +68,17 @@ impl HostRunnerCommandRunner for RecordingRunner {
         args: &[&str],
         timeout: Duration,
     ) -> Result<HostRunnerCommandOutput, FailureMessage> {
+        if let Some((state, operation_id)) = self.running_evidence.take() {
+            let file = StorageOperationEvidenceFile::in_state_directory(&state, operation_id);
+            let evidence: MachineStoragePreparationEvidence = serde_json::from_slice(
+                &std::fs::read(file.path()).expect("running evidence exists before first effect"),
+            )
+            .expect("running evidence decodes");
+            assert!(matches!(
+                evidence,
+                MachineStoragePreparationEvidence::Running { .. }
+            ));
+        }
         self.invocations.push(Invocation {
             program: program.to_owned(),
             args: args.iter().map(|arg| (*arg).to_owned()).collect(),
@@ -440,6 +461,26 @@ fn operation_scoped_terminal_failure_is_final_on_replay() {
 
     assert_eq!(replay_error, first_error);
     assert!(replay.invocations.is_empty());
+}
+
+#[test]
+fn operation_scoped_running_evidence_precedes_the_first_storage_effect() {
+    let state = tempfile::tempdir().unwrap();
+    let operation_id = OperationId::try_new("op_storage_running_first").unwrap();
+    let mut runner = RecordingRunner::new([failed("stop after observing running evidence")])
+        .expect_running_evidence(state.path(), operation_id.clone());
+
+    let _ = prepare_storage_for_operation(
+        &mut runner,
+        &profile("ID=ubuntu\nVERSION_ID=24.04\n"),
+        &operation_id,
+        &PoolSelection::Automatic,
+        state.path(),
+        &state.path().join("docker.service.d"),
+        state.path(),
+    );
+
+    assert!(runner.running_evidence.is_none());
 }
 
 #[test]

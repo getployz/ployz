@@ -7,6 +7,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::deploy::{DatasetName, ZfsPoolName};
 use crate::ids::OperationId;
+use crate::operation::CancellationReason;
 
 pub const PLOYZ_OWNED_ZFS_POOL: &str = "ployz";
 pub const PLOYZ_OWNED_ZFS_BACKING_FILE: &str = "/var/lib/ployz/zfs/ployz.img";
@@ -18,9 +19,7 @@ pub const MACHINE_STORAGE_PREPARE_BUDGET: Duration =
     Duration::from_secs(MACHINE_STORAGE_PREPARE_BUDGET_SECONDS);
 pub const MACHINE_STORAGE_PREPARE_TERMINATION_GRACE: Duration =
     Duration::from_secs(MACHINE_STORAGE_PREPARE_TERMINATION_GRACE_SECONDS);
-pub const MACHINE_STORAGE_PREPARE_RPC_TIMEOUT: Duration = Duration::from_secs(
-    MACHINE_STORAGE_PREPARE_BUDGET_SECONDS + MACHINE_STORAGE_PREPARE_TERMINATION_GRACE_SECONDS,
-);
+pub const MACHINE_STORAGE_PREPARE_RPC_TIMEOUT: Duration = Duration::from_secs(10);
 pub const DATASET_DESTROY_INNER_COMMAND_TIMEOUT: Duration = Duration::from_secs(20);
 pub const DATASET_DESTROY_MAX_INNER_COMMANDS: u32 = 5;
 pub const DATASET_DESTROY_MAX_INNER_BUDGET: Duration = Duration::from_secs(
@@ -231,11 +230,30 @@ pub enum StorageEffectFailure {
     OperationTimedOut,
     #[error("storage preparation process failed: {message}")]
     ProcessFailed { message: String },
+    #[error("storage preparation was interrupted: {message}")]
+    Interrupted { message: String },
+}
+
+/// Linux identity of the privileged process which owns one storage preparation.
+/// All fields are required when deciding whether a persisted `Running` record
+/// still names the same process after a daemon restart.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StoragePreparationProcessIdentity {
+    pub boot_id: String,
+    pub pid: u32,
+    pub start_time_ticks: u64,
+    pub expected_command: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MachineStoragePreparationEvidence {
+    Running {
+        operation_id: OperationId,
+        launched_at_unix_millis: u64,
+        process: StoragePreparationProcessIdentity,
+    },
     Completed {
         operation_id: OperationId,
         prepared: PreparedStorageState,
@@ -244,15 +262,20 @@ pub enum MachineStoragePreparationEvidence {
         operation_id: OperationId,
         failure: StorageEffectFailure,
     },
+    Cancelled {
+        operation_id: OperationId,
+        reason: CancellationReason,
+    },
 }
 
 impl MachineStoragePreparationEvidence {
     #[must_use]
     pub const fn operation_id(&self) -> &OperationId {
         match self {
-            Self::Completed { operation_id, .. } | Self::Failed { operation_id, .. } => {
-                operation_id
-            }
+            Self::Running { operation_id, .. }
+            | Self::Completed { operation_id, .. }
+            | Self::Failed { operation_id, .. }
+            | Self::Cancelled { operation_id, .. } => operation_id,
         }
     }
 }

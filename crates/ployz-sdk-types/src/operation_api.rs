@@ -15,7 +15,8 @@ use crate::{
     MachineInspectRequest, MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed,
     MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported, MachineLifecycleError,
     MachineLifecycleRequest, MachineListError, MachineListRequest, MachineListResult,
-    MachineSnapshot, MachineStoragePrepareError, MachineStoragePrepareRequest, MachineUpdateError,
+    MachineSnapshot, MachineStoragePrepareCancelError, MachineStoragePrepareCancelRequest,
+    MachineStoragePrepareError, MachineStoragePrepareRequest, MachineUpdateError,
     MachineUpdateRequest, NamespaceRemoveError, NamespaceRemoveRequest, NetworkRepairError,
     NetworkRepairRequest, NetworkResolveError, NetworkResolveRequest, NetworkResolveResult,
     NetworkStatusError, NetworkStatusRequest, NetworkStatusResult, OperationStatusSnapshot,
@@ -43,6 +44,7 @@ pub enum OperationApiEndpoint {
     MachineBuildCachePrune,
     MachineUpdate,
     MachineStoragePrepare,
+    MachineStoragePrepareCancel,
     MachineDrain,
     MachineResume,
     MachineList,
@@ -98,6 +100,7 @@ macro_rules! operation_api_contracts {
             $crate::operation_api::MachineBuildCachePruneApi,
             $crate::operation_api::MachineUpdateApi,
             $crate::operation_api::MachineStoragePrepareApi,
+            $crate::operation_api::MachineStoragePrepareCancelApi,
             $crate::operation_api::MachineDrainApi,
             $crate::operation_api::MachineResumeApi,
             $crate::operation_api::ServiceRestartApi,
@@ -259,6 +262,18 @@ impl OperationApiContract for MachineStoragePrepareApi {
 
     const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::MachineStoragePrepare;
     const RESPONSE_ALIAS: &'static str = "MachineStoragePrepareResponse";
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MachineStoragePrepareCancelApi;
+
+impl OperationApiContract for MachineStoragePrepareCancelApi {
+    type Request = MachineStoragePrepareCancelRequest;
+    type Success = AcceptedOperation;
+    type Error = MachineStoragePrepareCancelError;
+
+    const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::MachineStoragePrepareCancel;
+    const RESPONSE_ALIAS: &'static str = "MachineStoragePrepareCancelResponse";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
