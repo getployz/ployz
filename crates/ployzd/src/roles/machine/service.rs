@@ -572,6 +572,10 @@ fn machine_endpoint_policy(endpoint: MachineServiceEndpoint) -> EndpointExecutio
         MachineServiceEndpoint::StoragePrepare => {
             policy.request_timeout = ployz_core::storage::MACHINE_STORAGE_PREPARE_RPC_TIMEOUT;
         }
+        MachineServiceEndpoint::StoragePrepareCancel => {
+            policy.request_timeout =
+                ployz_core::storage::MACHINE_STORAGE_PREPARE_CANCEL_RPC_TIMEOUT;
+        }
         MachineServiceEndpoint::BuildStart => {
             policy.request_timeout = BUILD_START_ENDPOINT_TIMEOUT;
         }
@@ -603,7 +607,6 @@ fn machine_endpoint_policy(endpoint: MachineServiceEndpoint) -> EndpointExecutio
         | MachineServiceEndpoint::SubstrateUpdate
         | MachineServiceEndpoint::SubstrateReport
         | MachineServiceEndpoint::StoragePrepareReport
-        | MachineServiceEndpoint::StoragePrepareCancel
         | MachineServiceEndpoint::LogsTail
         | MachineServiceEndpoint::ImageBlobCheck
         | MachineServiceEndpoint::ImageBlobPush
@@ -681,6 +684,23 @@ mod tests {
         assert_eq!(
             policy.request_timeout,
             ployz_core::storage::MACHINE_STORAGE_PREPARE_RPC_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn storage_prepare_cancel_endpoint_covers_both_termination_phases() {
+        let policy = machine_endpoint_policy(MachineServiceEndpoint::StoragePrepareCancel);
+
+        assert_eq!(
+            policy.request_timeout,
+            ployz_core::storage::MACHINE_STORAGE_PREPARE_CANCEL_RPC_TIMEOUT
+        );
+        assert!(
+            policy.request_timeout > ployz_core::storage::MACHINE_STORAGE_PREPARE_CANCEL_ACK_BUDGET
+        );
+        assert!(
+            ployz_core::storage::MACHINE_STORAGE_PREPARE_CANCEL_ACK_BUDGET
+                > ployz_core::storage::MACHINE_STORAGE_PREPARE_TERMINATION_GRACE * 2
         );
     }
 

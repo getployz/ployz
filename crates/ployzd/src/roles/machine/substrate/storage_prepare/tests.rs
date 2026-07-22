@@ -54,7 +54,7 @@ fn operation_process_command(
     let mut command = tokio::process::Command::new("sh");
     command
         .arg("-c")
-        .arg("sleep 30")
+        .arg("sleep 30; :")
         .arg("storage-prepare")
         .arg(operation_id.as_str())
         .process_group(0)
@@ -328,14 +328,21 @@ async fn cancellation_reaps_exact_child_and_is_idempotent() {
         .await
         .expect("acceptance channel")
         .expect("accepted");
-    runtime
+    let cancelled = runtime
         .cancel(&operation_id, reason("operator cancelled"))
         .await
         .expect("cancel");
-    runtime
+    assert_eq!(
+        cancelled,
+        MachineStoragePrepareReport::Cancelled {
+            reason: reason("operator cancelled"),
+        }
+    );
+    let repeated = runtime
         .cancel(&operation_id, reason("operator cancelled again"))
         .await
         .expect("repeated cancel");
+    assert_eq!(repeated, cancelled);
     tokio::time::timeout(Duration::from_secs(1), async {
         while runtime.state.lock().await.is_some() {
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -390,10 +397,16 @@ async fn runtime_reconstruction_adopts_the_exact_live_process_and_preserves_its_
             .expect("report"),
         MachineStoragePrepareReport::Running
     );
-    reconstructed
+    let cancelled = reconstructed
         .cancel(&operation_id, reason("operator cancelled recovered work"))
         .await
         .expect("cancel");
+    assert_eq!(
+        cancelled,
+        MachineStoragePrepareReport::Cancelled {
+            reason: reason("operator cancelled recovered work"),
+        }
+    );
     tokio::time::timeout(Duration::from_secs(1), async {
         while reconstructed.state.lock().await.is_some() {
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -541,6 +554,189 @@ async fn termination_refusal_does_not_replace_running_evidence() {
         .await
         .expect("test cleanup");
     let _ = child.wait().await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn cancellation_refusal_is_not_acknowledged_and_retains_running_evidence() {
+    let directory = tempfile::tempdir().expect("evidence directory");
+    let runtime = StoragePrepareRuntime::new(directory.path(), Duration::from_secs(30));
+    let actual_operation = operation("op_actual_cancel");
+    let requested_operation = operation("op_refused_cancel");
+    let mut child = spawn_operation_process(&actual_operation);
+    let group_id = child.id().expect("pid");
+    let repository = StorageEvidenceRepository::new(directory.path());
+    repository
+        .persist_evidence(&MachineStoragePreparationEvidence::Running {
+            operation_id: requested_operation.clone(),
+            launched_at_unix_millis: 1,
+            process: read_process_identity(group_id).expect("identity"),
+        })
+        .expect("running evidence");
+
+    assert!(
+        runtime
+            .cancel(&requested_operation, reason("must be refused"))
+            .await
+            .is_err()
+    );
+    assert!(matches!(
+        repository
+            .read_optional(&requested_operation)
+            .expect("evidence"),
+        Some(MachineStoragePreparationEvidence::Running { .. })
+    ));
+
+    terminate_owned_process_group(group_id)
+        .await
+        .expect("test cleanup");
+    let _ = child.wait().await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn paused_supervisor_cannot_produce_an_unbounded_or_false_cancel_acknowledgement() {
+    let directory = tempfile::tempdir().expect("evidence directory");
+    let runtime = StoragePrepareRuntime::new(directory.path(), Duration::from_secs(30))
+        .with_cancel_ack_budget(Duration::from_millis(30));
+    let operation_id = operation("op_paused_cancel");
+    let mut child = spawn_operation_process(&operation_id);
+    let group_id = child.id().expect("pid");
+    let repository = StorageEvidenceRepository::new(directory.path());
+    repository
+        .persist_evidence(&MachineStoragePreparationEvidence::Running {
+            operation_id: operation_id.clone(),
+            launched_at_unix_millis: 1,
+            process: read_process_identity(group_id).expect("identity"),
+        })
+        .expect("running evidence");
+    let (cancel, paused_receiver) = oneshot::channel();
+    *runtime.state.lock().await = Some(ActiveStoragePreparation {
+        operation_id: operation_id.clone(),
+        cancel: Some(cancel),
+    });
+
+    let result = tokio::time::timeout(
+        Duration::from_millis(200),
+        runtime.cancel(&operation_id, reason("operator cancelled")),
+    )
+    .await
+    .expect("bounded acknowledgement");
+    assert!(result.is_err());
+    assert!(matches!(
+        repository.read_optional(&operation_id).expect("evidence"),
+        Some(MachineStoragePreparationEvidence::Running { .. })
+    ));
+
+    drop(paused_receiver);
+    terminate_owned_process_group(group_id)
+        .await
+        .expect("test cleanup");
+    let _ = child.wait().await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn shutdown_bounds_the_entire_cancel_acknowledgement_and_state_clear_wait() {
+    let directory = tempfile::tempdir().expect("evidence directory");
+    let runtime = StoragePrepareRuntime::new(directory.path(), Duration::from_secs(30))
+        .with_cancel_ack_budget(Duration::from_millis(30));
+    let operation_id = operation("op_paused_shutdown");
+    let mut child = spawn_operation_process(&operation_id);
+    let group_id = child.id().expect("pid");
+    let repository = StorageEvidenceRepository::new(directory.path());
+    repository
+        .persist_evidence(&MachineStoragePreparationEvidence::Running {
+            operation_id: operation_id.clone(),
+            launched_at_unix_millis: 1,
+            process: read_process_identity(group_id).expect("identity"),
+        })
+        .expect("running evidence");
+    let (cancel, paused_receiver) = oneshot::channel();
+    *runtime.state.lock().await = Some(ActiveStoragePreparation {
+        operation_id: operation_id.clone(),
+        cancel: Some(cancel),
+    });
+
+    tokio::time::timeout(Duration::from_millis(250), runtime.shutdown())
+        .await
+        .expect("bounded shutdown");
+    assert!(runtime.state.lock().await.is_some());
+    assert!(matches!(
+        repository.read_optional(&operation_id).expect("evidence"),
+        Some(MachineStoragePreparationEvidence::Running { .. })
+    ));
+
+    drop(paused_receiver);
+    terminate_owned_process_group(group_id)
+        .await
+        .expect("test cleanup");
+    let _ = child.wait().await;
+}
+
+#[tokio::test]
+async fn only_matching_active_supervision_suppresses_stale_running_terminalization() {
+    let directory = tempfile::tempdir().expect("evidence directory");
+    let runtime = StoragePrepareRuntime::new(directory.path(), Duration::from_secs(30));
+    let operation_id = operation("op_supervised_report");
+    #[cfg(target_os = "linux")]
+    let mut stale_identity = read_process_identity(std::process::id()).expect("identity");
+    #[cfg(not(target_os = "linux"))]
+    let mut stale_identity = StoragePreparationProcessIdentity {
+        boot_id: "boot".to_owned(),
+        pid: 1,
+        start_time_ticks: 1,
+        expected_command: "ployz".to_owned(),
+    };
+    stale_identity.pid = u32::MAX;
+    StorageEvidenceRepository::new(directory.path())
+        .persist_evidence(&MachineStoragePreparationEvidence::Running {
+            operation_id: operation_id.clone(),
+            launched_at_unix_millis: 1,
+            process: stale_identity,
+        })
+        .expect("running evidence");
+    let (cancel, _cancel_rx) = oneshot::channel();
+    *runtime.state.lock().await = Some(ActiveStoragePreparation {
+        operation_id: operation_id.clone(),
+        cancel: Some(cancel),
+    });
+
+    assert_eq!(
+        runtime.report(&operation_id).await.expect("active report"),
+        MachineStoragePrepareReport::Running
+    );
+    *runtime.state.lock().await = None;
+    assert!(matches!(
+        runtime.report(&operation_id).await.expect("stale report"),
+        MachineStoragePrepareReport::Failed {
+            failure: StorageEffectFailure::Interrupted { .. }
+        }
+    ));
+}
+
+#[test]
+fn terminal_completion_wins_a_cancel_race_without_overwrite() {
+    let directory = tempfile::tempdir().expect("evidence directory");
+    let runtime = StoragePrepareRuntime::new(directory.path(), Duration::from_secs(30));
+    let operation_id = operation("op_completed_before_cancel");
+    StorageEvidenceRepository::new(directory.path())
+        .persist_evidence(&MachineStoragePreparationEvidence::Completed {
+            operation_id: operation_id.clone(),
+            prepared: prepared("tank"),
+        })
+        .expect("completed evidence");
+
+    let report = tokio::runtime::Runtime::new()
+        .expect("runtime")
+        .block_on(runtime.cancel(&operation_id, reason("too late")))
+        .expect("terminal replay");
+    assert_eq!(
+        report,
+        MachineStoragePrepareReport::Completed {
+            pool: ZfsPoolName::try_new("tank").expect("pool"),
+        }
+    );
 }
 
 #[test]

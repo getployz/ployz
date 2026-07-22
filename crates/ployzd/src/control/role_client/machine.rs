@@ -717,16 +717,16 @@ impl NatsMachineSubstrateUpdater {
         &self,
         machine_id: &MachineId,
         request: MachineStoragePrepareCancelRpcRequest,
-    ) -> Result<(), MachineStoragePrepareError> {
+    ) -> Result<MachineStoragePrepareReport, MachineStoragePrepareError> {
         call_machine::<MachineStoragePrepareCancelRpcOk, MachineStoragePrepareDomainError>(
             &self.client,
-            self.request_timeout,
+            ployz_core::storage::MACHINE_STORAGE_PREPARE_CANCEL_RPC_TIMEOUT,
             machine_id,
             MachineServiceEndpoint::StoragePrepareCancel,
             &request,
         )
         .await
-        .map(|_| ())
+        .map(|response| response.report)
         .map_err(|error| storage_prepare_error(machine_id, error))
     }
 }

@@ -79,6 +79,7 @@ pub(crate) struct StoragePrepareRuntime {
     state: Arc<Mutex<Option<ActiveStoragePreparation>>>,
     evidence_directory: Arc<std::path::PathBuf>,
     budget: Duration,
+    cancel_ack_budget: Duration,
 }
 
 struct ActiveStoragePreparation {
@@ -99,7 +100,14 @@ impl StoragePrepareRuntime {
             state: Arc::new(Mutex::new(None)),
             evidence_directory: Arc::new(evidence_directory.to_path_buf()),
             budget,
+            cancel_ack_budget: ployz_core::storage::MACHINE_STORAGE_PREPARE_CANCEL_ACK_BUDGET,
         }
+    }
+
+    #[cfg(test)]
+    fn with_cancel_ack_budget(mut self, budget: Duration) -> Self {
+        self.cancel_ack_budget = budget;
+        self
     }
 
     pub(crate) async fn recover(&self) -> Result<(), StorageEffectFailure> {
@@ -267,20 +275,24 @@ impl StoragePrepareRuntime {
         &self,
         operation_id: &OperationId,
         reason: CancellationReason,
-    ) -> Result<(), StorageEffectFailure> {
+    ) -> Result<MachineStoragePrepareReport, StorageEffectFailure> {
         let repository = StorageEvidenceRepository::new(&self.evidence_directory);
-        match repository.read_optional(operation_id)? {
-            Some(
-                MachineStoragePreparationEvidence::Completed { .. }
-                | MachineStoragePreparationEvidence::Failed { .. }
-                | MachineStoragePreparationEvidence::Cancelled { .. },
-            ) => return Ok(()),
-            None => return Ok(()),
-            Some(MachineStoragePreparationEvidence::Running { .. }) => {}
+        match repository.read_report(operation_id)? {
+            report @ (MachineStoragePrepareReport::Completed { .. }
+            | MachineStoragePrepareReport::Failed { .. }
+            | MachineStoragePrepareReport::Cancelled { .. }) => return Ok(report),
+            MachineStoragePrepareReport::NotFound => {
+                return Err(StorageEffectFailure::ProcessFailed {
+                    message: "storage preparation has no machine evidence".to_owned(),
+                });
+            }
+            MachineStoragePrepareReport::Running => {}
         }
         let mut state = self.state.lock().await;
         let Some(active) = state.as_mut() else {
-            return recover_stale_running(&repository, operation_id, &reason).await;
+            drop(state);
+            recover_stale_running(&repository, operation_id, &reason).await?;
+            return terminal_cancel_report(&repository, operation_id);
         };
         if &active.operation_id != operation_id {
             return Err(StorageEffectFailure::ProcessFailed {
@@ -290,7 +302,47 @@ impl StoragePrepareRuntime {
         if let Some(cancel) = active.cancel.take() {
             let _ = cancel.send(reason);
         }
-        Ok(())
+        drop(state);
+        let deadline = tokio::time::Instant::now() + self.cancel_ack_budget;
+        loop {
+            match repository.read_report(operation_id)? {
+                report @ (MachineStoragePrepareReport::Completed { .. }
+                | MachineStoragePrepareReport::Failed { .. }
+                | MachineStoragePrepareReport::Cancelled { .. }) => return Ok(report),
+                MachineStoragePrepareReport::Running => {
+                    if tokio::time::Instant::now() >= deadline {
+                        return Err(StorageEffectFailure::ProcessFailed {
+                            message: "storage preparation cancellation did not reach durable terminal evidence within the bounded acknowledgement deadline".to_owned(),
+                        });
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                MachineStoragePrepareReport::NotFound => {
+                    return Err(StorageEffectFailure::ProcessFailed {
+                        message: "storage preparation evidence disappeared during cancellation"
+                            .to_owned(),
+                    });
+                }
+            }
+        }
+    }
+
+    async fn report(
+        &self,
+        operation_id: &OperationId,
+    ) -> Result<MachineStoragePrepareReport, StorageEffectFailure> {
+        let repository = StorageEvidenceRepository::new(&self.evidence_directory);
+        if self
+            .state
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|active| &active.operation_id == operation_id)
+        {
+            repository.read_report(operation_id)
+        } else {
+            repository.report(operation_id)
+        }
     }
 
     pub(crate) async fn shutdown(&self) {
@@ -303,20 +355,36 @@ impl StoragePrepareRuntime {
         if let Some(operation_id) = operation_id {
             let reason = CancellationReason::try_new("machine runtime shutdown")
                 .expect("shutdown cancellation reason is non-empty");
-            let _ = self.cancel(&operation_id, reason).await;
-            let _ = tokio::time::timeout(
-                ployz_core::storage::MACHINE_STORAGE_PREPARE_TERMINATION_GRACE,
-                async {
+            let _ =
+                tokio::time::timeout(self.cancel_ack_budget + Duration::from_millis(100), async {
+                    let _ = self.cancel(&operation_id, reason).await;
                     loop {
                         if self.state.lock().await.is_none() {
                             break;
                         }
                         tokio::time::sleep(Duration::from_millis(10)).await;
                     }
-                },
-            )
-            .await;
+                })
+                .await;
         }
+    }
+}
+
+fn terminal_cancel_report(
+    repository: &StorageEvidenceRepository<'_>,
+    operation_id: &OperationId,
+) -> Result<MachineStoragePrepareReport, StorageEffectFailure> {
+    match repository.read_report(operation_id)? {
+        report @ (MachineStoragePrepareReport::Completed { .. }
+        | MachineStoragePrepareReport::Failed { .. }
+        | MachineStoragePrepareReport::Cancelled { .. }) => Ok(report),
+        MachineStoragePrepareReport::Running => Err(StorageEffectFailure::ProcessFailed {
+            message: "storage preparation cancellation did not reach durable terminal evidence"
+                .to_owned(),
+        }),
+        MachineStoragePrepareReport::NotFound => Err(StorageEffectFailure::ProcessFailed {
+            message: "storage preparation has no machine evidence".to_owned(),
+        }),
     }
 }
 
@@ -371,7 +439,7 @@ pub(crate) async fn handle_storage_prepare_report(
         Ok(request) => request,
         Err(response) => return response,
     };
-    match StorageEvidenceRepository::new(&state.evidence_directory).report(&request.operation_id) {
+    match state.report(&request.operation_id).await {
         Ok(report) => machine_success(MachineStoragePrepareReportRpcResponse::Ok(
             MachineStoragePrepareReportRpcOk { machine_id, report },
         )),
@@ -392,8 +460,8 @@ pub(crate) async fn handle_storage_prepare_cancel(
         Err(response) => return response,
     };
     match state.cancel(&request.operation_id, request.reason).await {
-        Ok(()) => machine_success(MachineStoragePrepareCancelRpcResponse::Ok(
-            MachineStoragePrepareCancelRpcOk { machine_id },
+        Ok(report) => machine_success(MachineStoragePrepareCancelRpcResponse::Ok(
+            MachineStoragePrepareCancelRpcOk { machine_id, report },
         )),
         Err(failure) => machine_domain_error(MachineStoragePrepareCancelRpcResponse::DomainError {
             machine_id,
@@ -456,6 +524,13 @@ impl<'a> StorageEvidenceRepository<'a> {
             evidence = self.transition_running_to_failure(operation_id, &failure)?;
         }
         Ok(Self::project_report(evidence))
+    }
+
+    fn read_report(
+        &self,
+        operation_id: &OperationId,
+    ) -> Result<MachineStoragePrepareReport, StorageEffectFailure> {
+        self.read_optional(operation_id).map(Self::project_report)
     }
 
     fn project_report(

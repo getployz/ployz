@@ -603,6 +603,7 @@ pub enum MachineStoragePrepareReport {
 #[serde(deny_unknown_fields)]
 pub struct MachineStoragePrepareCancelRpcOk {
     pub machine_id: MachineId,
+    pub report: MachineStoragePrepareReport,
 }
 
 impl MachineRpcResponder for MachineStoragePrepareCancelRpcOk {

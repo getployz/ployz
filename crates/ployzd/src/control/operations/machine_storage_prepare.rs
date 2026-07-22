@@ -65,7 +65,7 @@ impl MachineStoragePrepareOperation {
         machine_id: &MachineId,
         operation_id: &OperationId,
         reason: ployz_core::operation::CancellationReason,
-    ) -> Result<(), MachineStoragePrepareError> {
+    ) -> Result<MachineStoragePrepareReport, MachineStoragePrepareError> {
         self.updater
             .cancel_storage_prepare(
                 machine_id,

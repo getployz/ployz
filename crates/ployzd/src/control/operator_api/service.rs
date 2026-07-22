@@ -439,6 +439,8 @@ fn operation_endpoint_policy(endpoint: OperationApiEndpoint) -> EndpointExecutio
         policy.request_timeout = NETWORK_RESOLVE_HANDLER_TIMEOUT;
     } else if endpoint == OperationApiEndpoint::NetworkStatus {
         policy.request_timeout = NETWORK_STATUS_HANDLER_TIMEOUT;
+    } else if endpoint == OperationApiEndpoint::MachineStoragePrepareCancel {
+        policy.request_timeout = ployz_core::storage::MACHINE_STORAGE_PREPARE_CANCEL_API_TIMEOUT;
     }
     policy
 }
@@ -532,6 +534,20 @@ mod tests {
         assert!(
             policy.request_timeout
                 < ployz_nats::operation_api_client::DEFAULT_OPERATION_API_REQUEST_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn storage_prepare_cancel_api_covers_the_machine_cancel_round_trip() {
+        let policy = operation_endpoint_policy(OperationApiEndpoint::MachineStoragePrepareCancel);
+
+        assert_eq!(
+            policy.request_timeout,
+            ployz_core::storage::MACHINE_STORAGE_PREPARE_CANCEL_API_TIMEOUT
+        );
+        assert!(
+            policy.request_timeout
+                > ployz_core::storage::MACHINE_STORAGE_PREPARE_CANCEL_RPC_TIMEOUT
         );
     }
 }

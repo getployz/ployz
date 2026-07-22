@@ -203,8 +203,11 @@ impl OperationApiClient {
         &self,
         request: &MachineStoragePrepareCancelRequest,
     ) -> Result<AcceptedOperation, OperationApiClientError<MachineStoragePrepareCancelError>> {
-        self.request_api::<MachineStoragePrepareCancelApi>(request)
-            .await
+        self.request_api_with_timeout::<MachineStoragePrepareCancelApi>(
+            request,
+            ployz_core::storage::MACHINE_STORAGE_PREPARE_CANCEL_API_TIMEOUT,
+        )
+        .await
     }
 
     pub async fn machine_build_cache_prune(
@@ -370,12 +373,26 @@ impl OperationApiClient {
         C::Request: Serialize,
         OperationApiResponse<C::Success, C::Error>: DeserializeOwned,
     {
+        self.request_api_with_timeout::<C>(request, self.request_timeout)
+            .await
+    }
+
+    async fn request_api_with_timeout<C>(
+        &self,
+        request: &C::Request,
+        request_timeout: Duration,
+    ) -> Result<C::Success, OperationApiClientError<C::Error>>
+    where
+        C: OperationApiContract,
+        C::Request: Serialize,
+        OperationApiResponse<C::Success, C::Error>: DeserializeOwned,
+    {
         let endpoint = OperationApiEndpoint::from(C::ENDPOINT);
         let response = request_json::<_, OperationApiResponse<C::Success, C::Error>>(
             &self.client,
             endpoint.subject().to_owned(),
             request,
-            self.request_timeout,
+            request_timeout,
         )
         .await
         .map_err(|error| match error {
