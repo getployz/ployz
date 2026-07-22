@@ -22,6 +22,12 @@ use super::{
     images::ImagePreparationError,
 };
 
+pub(crate) const DEPLOY_PREVIEW_FACT_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
+pub(crate) const DEPLOY_PREVIEW_FACT_PHASE_TIMEOUT: Duration = Duration::from_millis(6_250);
+pub(crate) const DEPLOY_PREVIEW_IMAGE_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+pub(crate) const DEPLOY_PREVIEW_TOTAL_TIMEOUT: Duration = Duration::from_millis(9_500);
+pub(crate) const DEPLOY_PREVIEW_HANDLER_TIMEOUT: Duration = Duration::from_millis(9_750);
+
 pub(crate) struct DeployPreviewStores<'a> {
     pub operation_repository: &'a OperationRepository,
     pub target_store: &'a PloyzDnsTargetStore,
@@ -37,6 +43,8 @@ pub async fn preview_deploy_from_nats(
     stores: DeployPreviewStores<'_>,
     step_timeout: Duration,
 ) -> Result<DeployPreview, DeployPreviewError> {
+    let fact_request_timeout = step_timeout.min(DEPLOY_PREVIEW_FACT_REQUEST_TIMEOUT);
+    let image_request_timeout = step_timeout.min(DEPLOY_PREVIEW_IMAGE_REQUEST_TIMEOUT);
     let DeployPreviewRequest {
         mut target,
         registry_credentials,
@@ -46,16 +54,22 @@ pub async fn preview_deploy_from_nats(
     planning_target
         .validate_registry_credential_service_ids(registry_credentials.keys())
         .map_err(|error| invalid_target(error.to_string()))?;
-    let facts = load_planning_facts_from_nats(
-        &planning_target,
-        intent_reader,
-        facts_reader,
-        stores.target_store,
-        stores.projection_store,
-        step_timeout,
-        PlacementFactsGatherPolicy::OverallDeadline(step_timeout),
+    let facts = tokio::time::timeout(
+        DEPLOY_PREVIEW_FACT_PHASE_TIMEOUT,
+        load_planning_facts_from_nats(
+            &planning_target,
+            intent_reader,
+            facts_reader,
+            stores.target_store,
+            stores.projection_store,
+            fact_request_timeout,
+            PlacementFactsGatherPolicy::OverallDeadline(fact_request_timeout),
+        ),
     )
     .await
+    .map_err(|_| DeployPreviewError::Unavailable {
+        message: "deploy preview fact gathering timed out".to_owned(),
+    })?
     .map_err(preview_fact_load_error)?;
     let reusable_interrupted_operation_ids =
         super::driver::reusable_interrupted_deploy_operation_ids(
@@ -78,7 +92,7 @@ pub async fn preview_deploy_from_nats(
         &provisional_plan,
         &provisional_command,
         &registry_credentials,
-        step_timeout,
+        image_request_timeout,
         machine_runtime,
     )
     .await?;
@@ -198,7 +212,7 @@ async fn resolve_preview_registry_images(
         ployz_core::ids::ServiceId,
         ployz_core::deploy::RegistryCredential,
     >,
-    step_timeout: Duration,
+    image_timeout: Duration,
     machine_runtime: &mut (impl MachineContainerRuntime + Clone),
 ) -> Result<(), DeployPreviewError> {
     let mut unresolved = target
@@ -245,7 +259,7 @@ async fn resolve_preview_registry_images(
                     &requested,
                     &machine_id,
                     credential.as_ref(),
-                    step_timeout,
+                    image_timeout,
                     &mut runtime,
                 )
                 .await
@@ -352,5 +366,21 @@ fn preview_fact_load_error(error: DeployFactLoadError) -> DeployPreviewError {
         | DeployFactLoadError::IngressUnavailable { .. } => DeployPreviewError::Unavailable {
             message: error.to_string(),
         },
+    }
+}
+
+#[cfg(test)]
+mod deadline_tests {
+    use super::*;
+
+    #[test]
+    fn preview_deadlines_cover_sequential_phases() {
+        assert!(DEPLOY_PREVIEW_FACT_REQUEST_TIMEOUT < DEPLOY_PREVIEW_FACT_PHASE_TIMEOUT);
+        assert!(DEPLOY_PREVIEW_IMAGE_REQUEST_TIMEOUT < DEPLOY_PREVIEW_FACT_PHASE_TIMEOUT);
+        assert!(
+            DEPLOY_PREVIEW_FACT_PHASE_TIMEOUT + DEPLOY_PREVIEW_IMAGE_REQUEST_TIMEOUT
+                < DEPLOY_PREVIEW_TOTAL_TIMEOUT
+        );
+        assert!(DEPLOY_PREVIEW_TOTAL_TIMEOUT < DEPLOY_PREVIEW_HANDLER_TIMEOUT);
     }
 }

@@ -1028,6 +1028,50 @@ async fn registry_tag_preview_resolves_services_concurrently() {
 }
 
 #[tokio::test]
+async fn registry_tag_preview_allows_a_slow_registry_response() {
+    let machine = machine_id("machine_a");
+    let nats = TestNats::start_with_machines(std::slice::from_ref(&machine)).await;
+    let config = nats
+        .control_config()
+        .with_deploy_machines(vec![machine.clone()]);
+    let machine_roster = machine_roster(&config).await;
+    let runtime = nats.start_control(&config).await;
+    machine_roster
+        .replace_active_machine(&active_machine(machine.as_str()))
+        .await
+        .expect("active machine stores");
+    let runner = ObservingContainerRunner::new(machine.clone());
+    runner.delay_registry_resolution(Duration::from_millis(2_500));
+    let machine_runtime = start_machine_role_runtime(
+        nats.machine_client(&machine).await,
+        machine.clone(),
+        runner.clone(),
+        ReadyWireGuardEbpf::for_machine(&machine),
+        runner,
+    )
+    .await
+    .expect("machine runtime starts");
+    wait_for_dataplane_projection(&nats, &machine).await;
+
+    nats.api()
+        .deploy_preview(&DeployPreviewRequest {
+            target: concrete_registry_preview_target(deploy_target("svc_api")),
+            registry_credentials: BTreeMap::new(),
+        })
+        .await
+        .expect("registry response within the preview deadline succeeds");
+
+    machine_runtime
+        .shutdown()
+        .await
+        .expect("machine runtime shuts down");
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+}
+
+#[tokio::test]
 async fn deploy_preview_returns_pending_service_platforms_without_runtime_effects() {
     let nats = TestNats::start_with_machines(&[machine_id("machine_a")]).await;
     let config = nats

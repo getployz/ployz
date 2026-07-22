@@ -53,8 +53,11 @@ pub use ports::{
 pub use preparation::{AutomaticHostnameMode, DeployExecutionFacts, DeployExecutionInput};
 #[cfg(test)]
 pub use preparation::{namespace_cleanup_candidates, prepare_deploy_execution_command};
-pub(crate) use preview::DeployPreviewStores;
 pub use preview::preview_deploy_from_nats;
+pub(crate) use preview::{
+    DEPLOY_PREVIEW_FACT_REQUEST_TIMEOUT, DEPLOY_PREVIEW_HANDLER_TIMEOUT,
+    DEPLOY_PREVIEW_IMAGE_REQUEST_TIMEOUT, DEPLOY_PREVIEW_TOTAL_TIMEOUT, DeployPreviewStores,
+};
 pub use step::{DeployExecutionStep, DeployFailureRecordError, DeployOperationRecordError};
 use step::{deploy_step_id, with_step_timeout};
 

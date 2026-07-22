@@ -38,7 +38,6 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 const DEPLOY_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
-pub(crate) const DEPLOY_PREVIEW_NATS_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 const INTENT_CHANGED_PUBLISH_TIMEOUT: Duration = Duration::from_secs(2);
 /// A container without a Docker healthcheck must stay running this long
 /// before deploy completion commits it: a fast-exiting process can be
@@ -550,14 +549,20 @@ impl DeployOperationDriver {
         &self,
         request: ployz_sdk_types::DeployPreviewRequest,
     ) -> Result<ployz_sdk_types::DeployPreview, ployz_sdk_types::DeployPreviewError> {
-        let request_timeout = self.step_timeout.min(DEPLOY_PREVIEW_NATS_REQUEST_TIMEOUT);
+        let fact_request_timeout = self
+            .step_timeout
+            .min(super::DEPLOY_PREVIEW_FACT_REQUEST_TIMEOUT);
+        let image_request_timeout = self
+            .step_timeout
+            .min(super::DEPLOY_PREVIEW_IMAGE_REQUEST_TIMEOUT);
         let client = self.stores.intent_change_client.clone();
         let facts_reader =
-            NatsMachineFactsReader::new(client.clone()).with_request_timeout(request_timeout);
-        let mut machine_runtime =
-            NatsMachineContainerRuntime::new(client.clone()).with_request_timeout(request_timeout);
-        let intent_reader = NatsIntentReader::new(client).with_request_timeout(request_timeout);
-        super::preview_deploy_from_nats(
+            NatsMachineFactsReader::new(client.clone()).with_request_timeout(fact_request_timeout);
+        let mut machine_runtime = NatsMachineContainerRuntime::new(client.clone())
+            .with_request_timeout(image_request_timeout);
+        let intent_reader =
+            NatsIntentReader::new(client).with_request_timeout(fact_request_timeout);
+        let preview = super::preview_deploy_from_nats(
             request,
             &self.stores.environment_revision_key,
             &intent_reader,
@@ -568,9 +573,13 @@ impl DeployOperationDriver {
                 target_store: &self.stores.ployz_dns_target,
                 projection_store: &self.stores.ingress_projection,
             },
-            request_timeout,
-        )
-        .await
+            self.step_timeout,
+        );
+        tokio::time::timeout(super::DEPLOY_PREVIEW_TOTAL_TIMEOUT, preview)
+            .await
+            .map_err(|_| ployz_sdk_types::DeployPreviewError::Unavailable {
+                message: "deploy preview timed out".to_owned(),
+            })?
     }
 
     pub async fn run(
