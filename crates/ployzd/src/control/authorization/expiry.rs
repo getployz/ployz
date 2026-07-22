@@ -13,6 +13,8 @@ pub(super) const RETRY_SCHEDULE: BackoffSchedule = BackoffSchedule {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct NatsAuthorizationHealthReader {
     state: Arc<Mutex<NatsAuthorizationHealthState>>,
+    #[cfg(test)]
+    changes: tokio::sync::watch::Sender<u64>,
 }
 
 impl NatsAuthorizationHealthReader {
@@ -37,6 +39,9 @@ impl NatsAuthorizationHealthReader {
         state.consecutive_failures = 0;
         state.last_failure = None;
         state.next_expiry_at_unix_seconds = next_expiry_at_unix_seconds;
+        #[cfg(test)]
+        self.changes
+            .send_modify(|revision| *revision = revision.saturating_add(1));
     }
 
     pub(super) fn record_failure(&self, failure: impl std::fmt::Display) {
@@ -46,6 +51,14 @@ impl NatsAuthorizationHealthReader {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         state.consecutive_failures = state.consecutive_failures.saturating_add(1);
         state.last_failure = Some(failure.to_string());
+        #[cfg(test)]
+        self.changes
+            .send_modify(|revision| *revision = revision.saturating_add(1));
+    }
+
+    #[cfg(test)]
+    pub(super) fn subscribe_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.changes.subscribe()
     }
 }
 
