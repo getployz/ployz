@@ -4,8 +4,6 @@ use ployz_core::ids::OperationId;
 use ployz_core::image::OciPlatform;
 use ployz_core::operation::{BuildLogChunk, MAX_BUILD_LOG_CHUNK_BYTES};
 use ployz_nats::service_runtime::NatsClient;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
@@ -14,61 +12,45 @@ const BUILD_LOG_LIMIT_BYTES: u64 = 8 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct BuildLogProgress {
-    sequence: Arc<AtomicU64>,
-    omitted_bytes: Arc<AtomicU64>,
-    activity: watch::Sender<u64>,
+    state: watch::Sender<(u64, u64)>,
 }
 
 impl Default for BuildLogProgress {
     fn default() -> Self {
-        let (activity, _) = watch::channel(0);
-        Self {
-            sequence: Arc::new(AtomicU64::new(0)),
-            omitted_bytes: Arc::new(AtomicU64::new(0)),
-            activity,
-        }
+        let (state, _) = watch::channel((0, 0));
+        Self { state }
     }
 }
 
 impl BuildLogProgress {
     #[must_use]
     pub fn summary(&self) -> (u64, u64) {
-        (
-            self.sequence.load(Ordering::Acquire),
-            self.omitted_bytes.load(Ordering::Acquire),
-        )
+        *self.state.borrow()
     }
 
     #[must_use]
-    pub fn subscribe(&self) -> watch::Receiver<u64> {
-        self.activity.subscribe()
-    }
-
-    #[must_use]
-    pub fn generation(&self) -> u64 {
-        *self.activity.borrow()
-    }
-
-    fn advance_activity(&self) {
-        self.activity.send_modify(|generation| {
-            *generation = generation.saturating_add(1);
-        });
+    pub fn subscribe(&self) -> watch::Receiver<(u64, u64)> {
+        self.state.subscribe()
     }
 
     fn published(&self, sequence: u64) {
-        let previous = self.sequence.fetch_max(sequence, Ordering::AcqRel);
-        if sequence > previous {
-            self.advance_activity();
-        }
+        self.state.send_if_modified(|(observed, _)| {
+            if sequence <= *observed {
+                return false;
+            }
+            *observed = sequence;
+            true
+        });
     }
 
     fn omitted(&self, omitted_bytes: u64) {
-        let previous = self
-            .omitted_bytes
-            .fetch_max(omitted_bytes, Ordering::AcqRel);
-        if omitted_bytes > previous {
-            self.advance_activity();
-        }
+        self.state.send_if_modified(|(_, observed)| {
+            if omitted_bytes <= *observed {
+                return false;
+            }
+            *observed = omitted_bytes;
+            true
+        });
     }
 
     #[doc(hidden)]
@@ -355,19 +337,19 @@ mod tests {
     #[test]
     fn activity_only_advances_for_component_wise_strict_progress() {
         let progress = BuildLogProgress::default();
+        let activity = progress.subscribe();
 
         progress.set_for_test(3, 5);
-        let initial_generation = progress.generation();
+        let initial = *activity.borrow();
         progress.set_for_test(3, 5);
         progress.set_for_test(2, 4);
-        assert_eq!(progress.generation(), initial_generation);
+        assert_eq!(*activity.borrow(), initial);
         assert_eq!(progress.summary(), (3, 5));
 
         progress.set_for_test(4, 5);
-        let sequence_generation = progress.generation();
-        assert!(sequence_generation > initial_generation);
+        assert_eq!(*activity.borrow(), (4, 5));
         progress.set_for_test(4, 6);
-        assert!(progress.generation() > sequence_generation);
+        assert_eq!(*activity.borrow(), (4, 6));
         assert_eq!(progress.summary(), (4, 6));
     }
 }

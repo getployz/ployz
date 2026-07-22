@@ -7,6 +7,7 @@ use crate::control::sequencer::{
 };
 use crate::control::store::CoreStore;
 use crate::roles::machine::protocol::{
+    MachineBuildCancelRpcOk, MachineBuildCancelRpcRequest, MachineBuildCancelRpcResponse,
     MachineBuildCleanupOutcome, MachineBuildLogFrame, MachineBuildStartRpcRequest,
     MachineBuildStartRpcResponse, MachineBuildStatusRpcOk, MachineBuildStatusRpcRequest,
     MachineBuildStatusRpcResponse,
@@ -15,9 +16,8 @@ use crate::tasks::TaskRegistry;
 use futures_util::StreamExt;
 use ployz_core::build::{
     BuildAdapter, BuildCacheScope, BuildExecutorCancelOk, BuildExecutorCleanupOutcome,
-    BuildExecutorStartOk, BuildExecutorStatus, BuildExecutorStatusFailure,
-    BuildExecutorSuccessCleanupEvidence, BuildPlatforms, BuildSource, BuildTarget, GitSource,
-    VerifiedBuildSource,
+    BuildExecutorStartOk, BuildExecutorStatus, BuildExecutorSuccessCleanupEvidence, BuildPlatforms,
+    BuildSource, BuildTarget, GitSource, VerifiedBuildSource,
 };
 use ployz_core::deploy::{ImageAvailabilityExpiresAt, PlatformImage};
 use ployz_core::image::{OciDigest, OciPlatform};
@@ -37,18 +37,8 @@ fn cluster_evidence(machine_id: &MachineId) -> BuildExecutorEvidence {
     })
 }
 
-fn executor_acceptance(
-    operation_id: &OperationId,
-    machine_id: &MachineId,
-    platform: &OciPlatform,
-) -> BuildExecutorAcceptance {
-    BuildExecutorAcceptance {
-        operation_id: operation_id.clone(),
-        assignment: BuildExecutorAssignment::Cluster {
-            machine_id: machine_id.clone(),
-        },
-        platform: platform.clone(),
-    }
+fn executor_acceptance(request: &MachineBuildStartRpcRequest) -> BuildExecutorAcceptance {
+    BuildExecutorAcceptance::from_start_request(request)
 }
 
 #[tokio::test]
@@ -126,8 +116,9 @@ async fn platform_rpc_failure_records_real_evidence_and_publishes_no_image_index
         availability_expires_at: ImageAvailabilityExpiresAt::try_new(4_102_444_800)
             .expect("availability expiry"),
     };
-    let platform_failure = BuildPlatformFailure::AdapterFailed {
-        message: FailureMessage::try_new("railpack exited with status 1").expect("failure message"),
+    let platform_failure = BuildPlatformFailure::MachineUnavailable {
+        message: FailureMessage::try_new("build status ledger is unreadable")
+            .expect("failure message"),
     };
     let operation_failure = BuildOperationFailure::PlatformFailed {
         platform: arm64.clone(),
@@ -148,38 +139,51 @@ async fn platform_rpc_failure_records_real_evidence_and_publishes_no_image_index
         },
     };
 
+    let amd64_start = super::super::executor_session::build_start_request(
+        &accepted,
+        BuildExecutorAssignment::Cluster {
+            machine_id: amd64_machine.clone(),
+        },
+        amd64.clone(),
+        Duration::from_secs(2),
+    );
+    let arm64_start = super::super::executor_session::build_start_request(
+        &accepted,
+        BuildExecutorAssignment::Cluster {
+            machine_id: arm64_machine.clone(),
+        },
+        arm64.clone(),
+        Duration::from_secs(2),
+    );
     let amd64_request = start_build_responder(
         nats.machine_client(&amd64_machine).await,
         amd64_machine.clone(),
         MachineBuildStatusRpcResponse::Ok(MachineBuildStatusRpcOk::from((
             amd64_machine.clone(),
-            BuildExecutorStatus::Completed {
-                result: Box::new(BuildExecutorStartOk {
-                    acceptance: executor_acceptance(&operation_id, &amd64_machine, &amd64),
+            BuildExecutorStatus::from_start_ok(BuildExecutorStartOk {
+                acceptance: executor_acceptance(&amd64_start),
+                completion: ployz_core::build::BuildExecutorCompletion {
                     cleanup: BuildExecutorSuccessCleanupEvidence::confirmed(),
                     image: completed_image.clone(),
                     verified_source: verified_source.clone(),
                     toolchain: toolchain.clone(),
-                    log_summary: BuildLogSummary::none(),
-                }),
-            },
+                    log_summary: BuildLogSummary::new(0, 3),
+                },
+            }),
         ))),
     )
     .await;
     let arm64_request = start_build_responder(
         nats.machine_client(&arm64_machine).await,
         arm64_machine.clone(),
-        MachineBuildStatusRpcResponse::Ok(MachineBuildStatusRpcOk::from((
-            arm64_machine.clone(),
-            BuildExecutorStatus::Failed {
-                acceptance: executor_acceptance(&operation_id, &arm64_machine, &arm64),
-                failure: BuildExecutorStatusFailure::PlatformFailed {
-                    failure: platform_failure.clone(),
-                },
-                cleanup: MachineBuildCleanupOutcome::Confirmed,
-                log_summary: BuildLogSummary::none(),
+        MachineBuildStatusRpcResponse::DomainError {
+            machine_id: arm64_machine.clone(),
+            error: ployz_core::build::BuildExecutorStatusDomainError::EvidenceUnavailable {
+                acceptance: executor_acceptance(&arm64_start),
+                message: FailureMessage::try_new("build status ledger is unreadable")
+                    .expect("failure message"),
             },
-        ))),
+        },
     )
     .await;
 
@@ -189,7 +193,7 @@ async fn platform_rpc_failure_records_real_evidence_and_publishes_no_image_index
         NatsMachineFactsReader::new(nats.controller.clone()),
         NatsIntentReader::new(nats.controller.clone()),
         controllers,
-        Duration::from_secs(30),
+        Duration::from_secs(2),
         tasks.spawner(),
     );
     driver
@@ -238,12 +242,12 @@ async fn platform_rpc_failure_records_real_evidence_and_publishes_no_image_index
     assert_eq!(amd64_request.source, source);
     assert_eq!(amd64_request.adapter, accepted.submission.adapter);
     assert_eq!(amd64_request.platform, amd64);
-    assert_eq!(amd64_request.timeout_millis, 30_000);
+    assert_eq!(amd64_request.timeout_millis, 2_000);
     assert_eq!(arm64_request.operation_id, operation_id);
     assert_eq!(arm64_request.source, accepted.source);
     assert_eq!(arm64_request.adapter, accepted.submission.adapter);
     assert_eq!(arm64_request.platform, arm64);
-    assert_eq!(arm64_request.timeout_millis, 30_000);
+    assert_eq!(arm64_request.timeout_millis, 2_000);
 
     let snapshot = repository
         .operation_status_snapshot(&operation_id)
@@ -357,16 +361,51 @@ async fn start_build_responder(
         .await
         .expect("build responder subscription flushes");
     tokio::spawn(async move {
-        let message = start_requests.next().await.expect("build request arrives");
+        let message = start_requests
+            .next()
+            .await
+            .expect("first build request arrives");
         let request: MachineBuildStartRpcRequest =
             serde_json::from_slice(&message.payload).expect("build request decodes");
-        let reply = message.reply.expect("build request carries reply subject");
-        let acceptance = executor_acceptance(&request.operation_id, &machine_id, &request.platform);
+        let acceptance = executor_acceptance(&request);
+
+        let message = status_requests
+            .next()
+            .await
+            .expect("uncertain admission status request arrives");
+        let status_request: MachineBuildStatusRpcRequest =
+            serde_json::from_slice(&message.payload).expect("status request decodes");
+        assert_eq!(status_request.acceptance, acceptance);
+        let reply = message.reply.expect("status request carries reply subject");
+        client
+            .publish(
+                reply,
+                serde_json::to_vec(&MachineBuildStatusRpcResponse::DomainError {
+                    machine_id: machine_id.clone(),
+                    error: ployz_core::build::BuildExecutorStatusDomainError::NotFound {
+                        acceptance: acceptance.clone(),
+                    },
+                })
+                .expect("not-found response encodes")
+                .into(),
+            )
+            .await
+            .expect("not-found response publishes");
+        client.flush().await.expect("status response flushes");
+
+        let message = start_requests
+            .next()
+            .await
+            .expect("retry build request arrives");
+        let retry: MachineBuildStartRpcRequest =
+            serde_json::from_slice(&message.payload).expect("retry request decodes");
+        assert_eq!(retry, request);
+        let reply = message.reply.expect("retry carries reply subject");
         client
             .publish(
                 reply,
                 serde_json::to_vec(&MachineBuildStartRpcResponse::Ok(
-                    MachineBuildStartRpcOk::from((machine_id.clone(), acceptance)),
+                    MachineBuildStartRpcOk::from((machine_id.clone(), acceptance.clone())),
                 ))
                 .expect("build response encodes")
                 .into(),
@@ -374,13 +413,42 @@ async fn start_build_responder(
             .await
             .expect("build response publishes");
         client.flush().await.expect("build response flushes");
+        for sequence in 1..=3 {
+            let message = status_requests
+                .next()
+                .await
+                .expect("progress status request arrives");
+            let status_request: MachineBuildStatusRpcRequest =
+                serde_json::from_slice(&message.payload).expect("status request decodes");
+            assert_eq!(status_request.acceptance, acceptance);
+            client
+                .publish(
+                    message.reply.expect("status request carries reply subject"),
+                    serde_json::to_vec(&MachineBuildStatusRpcResponse::Ok(
+                        MachineBuildStatusRpcOk::from((
+                            machine_id.clone(),
+                            BuildExecutorStatus {
+                                acceptance: acceptance.clone(),
+                                state: ployz_core::build::BuildExecutorState::Running {
+                                    log_summary: BuildLogSummary::new(0, sequence),
+                                },
+                            },
+                        )),
+                    ))
+                    .expect("progress response encodes")
+                    .into(),
+                )
+                .await
+                .expect("progress response publishes");
+            client.flush().await.expect("progress response flushes");
+        }
         let message = status_requests
             .next()
             .await
             .expect("status request arrives");
         let status_request: MachineBuildStatusRpcRequest =
             serde_json::from_slice(&message.payload).expect("status request decodes");
-        assert_eq!(status_request.acceptance.operation_id, request.operation_id);
+        assert_eq!(status_request.acceptance, acceptance);
         let reply = message.reply.expect("status request carries reply subject");
         client
             .publish(
@@ -443,6 +511,174 @@ async fn valid_log_is_observed_while_machine_call_is_pending() {
         MachineCallOrLog::Log(Some(actual)) if actual == frame
     ));
     assert!(!sender.is_closed());
+}
+
+#[tokio::test]
+async fn reconciliation_retries_cancel_after_disconnect_and_not_running() {
+    let machine_id = machine_id("machine-reconcile");
+    let nats =
+        ployz_test_support::nats::TestNats::start_with_machines(std::slice::from_ref(&machine_id))
+            .await;
+    let store = CoreStore::open_in_memory().await.expect("core store opens");
+    let repository = OperationRepository::open(store, nats.controller.clone());
+    let controllers = OperationControllers::new(
+        repository.clone(),
+        MachineAddBootstrapConfig::new(
+            MachineBootstrapUrl::try_new(DEFAULT_MACHINE_BOOTSTRAP_URL)
+                .expect("default bootstrap URL"),
+        ),
+    );
+    let tasks = TaskRegistry::default();
+    let driver = BuildOperationDriver::new(
+        nats.controller.clone(),
+        NatsMachineFactsReader::new(nats.controller.clone()),
+        NatsIntentReader::new(nats.controller.clone()),
+        controllers,
+        Duration::from_secs(1),
+        tasks.spawner(),
+    );
+    let request = MachineBuildStartRpcRequest {
+        operation_id: operation_id("build_reconcile_retry"),
+        assignment: BuildExecutorAssignment::Cluster {
+            machine_id: machine_id.clone(),
+        },
+        source: GitSource::try_new(
+            "https://example.test/repo.git",
+            "0123456789abcdef0123456789abcdef01234567",
+            "git",
+            "secret",
+            None::<String>,
+        )
+        .expect("source")
+        .into(),
+        adapter: BuildAdapter::Dockerfile {
+            dockerfile: ployz_core::build::BuildContextPath::try_new("Dockerfile")
+                .expect("dockerfile"),
+            target: None,
+        },
+        platform: OciPlatform::try_new("linux", "amd64").expect("platform"),
+        timeout_millis: 1_000,
+    };
+    let acceptance = BuildExecutorAcceptance::from_start_request(&request);
+    let executor = request.assignment.clone();
+    let logs = nats
+        .controller
+        .subscribe(ployz_nats::subjects::machine_build_log(
+            &machine_id,
+            &request.operation_id,
+        ))
+        .await
+        .expect("log subscription");
+    let mut log_session = super::super::platform_session::PlatformLogSession::new(
+        &repository,
+        &request.operation_id,
+        &request.platform,
+        executor,
+        logs,
+    );
+    let client = nats.machine_client(&machine_id).await;
+    let mut cancels = client
+        .subscribe(machine_service(
+            &machine_id,
+            MachineServiceEndpoint::BuildCancel,
+        ))
+        .await
+        .expect("cancel subscription");
+    let mut statuses = client
+        .subscribe(machine_service(
+            &machine_id,
+            MachineServiceEndpoint::BuildStatus,
+        ))
+        .await
+        .expect("status subscription");
+    client.flush().await.expect("subscriptions flush");
+    let responder_machine = machine_id.clone();
+    let responder_acceptance = acceptance.clone();
+    let responder = tokio::spawn(async move {
+        for attempt in 0..3 {
+            let cancel = cancels.next().await.expect("cancel request");
+            let _: MachineBuildCancelRpcRequest =
+                serde_json::from_slice(&cancel.payload).expect("cancel decodes");
+            if attempt > 0 {
+                let outcome = if attempt == 1 {
+                    MachineBuildCancelOutcome::NotRunning
+                } else {
+                    MachineBuildCancelOutcome::Requested
+                };
+                client
+                    .publish(
+                        cancel.reply.expect("cancel reply"),
+                        serde_json::to_vec(&MachineBuildCancelRpcResponse::Ok(
+                            MachineBuildCancelRpcOk::from((
+                                responder_machine.clone(),
+                                BuildExecutorCancelOk {
+                                    assignment: BuildExecutorAssignment::Cluster {
+                                        machine_id: responder_machine.clone(),
+                                    },
+                                    outcome,
+                                },
+                            )),
+                        ))
+                        .expect("cancel response")
+                        .into(),
+                    )
+                    .await
+                    .expect("cancel response publishes");
+            }
+            let status = statuses.next().await.expect("status request");
+            let state = if attempt < 2 {
+                ployz_core::build::BuildExecutorState::Running {
+                    log_summary: BuildLogSummary::new(attempt + 1, 0),
+                }
+            } else {
+                ployz_core::build::BuildExecutorState::Cancelled {
+                    cleanup: MachineBuildCleanupOutcome::Confirmed,
+                    log_summary: BuildLogSummary::new(2, 0),
+                }
+            };
+            client
+                .publish(
+                    status.reply.expect("status reply"),
+                    serde_json::to_vec(&MachineBuildStatusRpcResponse::Ok(
+                        MachineBuildStatusRpcOk::from((
+                            responder_machine.clone(),
+                            BuildExecutorStatus {
+                                acceptance: responder_acceptance.clone(),
+                                state,
+                            },
+                        )),
+                    ))
+                    .expect("status response")
+                    .into(),
+                )
+                .await
+                .expect("status response publishes");
+            client.flush().await.expect("responses flush");
+        }
+        3
+    });
+
+    let started = tokio::time::Instant::now();
+    let mut watermark = BuildLogSummary::none();
+    let status = super::super::executor_session::reconcile_terminal(
+        &driver,
+        &machine_id,
+        &acceptance,
+        &mut log_session,
+        &mut watermark,
+        super::super::executor_session::ReconcileReason::Cancelled,
+    )
+    .await
+    .expect("reconciliation");
+    assert!(matches!(
+        status.state,
+        ployz_core::build::BuildExecutorState::Cancelled {
+            cleanup: MachineBuildCleanupOutcome::Confirmed,
+            ..
+        }
+    ));
+    assert_eq!(responder.await.expect("responder"), 3);
+    assert!(started.elapsed() < Duration::from_secs(65));
 }
 
 #[test]
@@ -664,7 +900,29 @@ fn terminal_acceptance_rejects_wrong_executor_provenance() {
     let operation_id = OperationId::try_new("build-1").expect("operation id");
     let machine_id = MachineId::try_new("machine-a").expect("machine id");
     let platform = OciPlatform::try_new("linux", "amd64").expect("platform");
-    let expected = executor_acceptance(&operation_id, &machine_id, &platform);
+    let request = MachineBuildStartRpcRequest {
+        operation_id,
+        assignment: BuildExecutorAssignment::Cluster {
+            machine_id: machine_id.clone(),
+        },
+        source: GitSource::try_new(
+            "https://example.test/repo.git",
+            "0123456789abcdef0123456789abcdef01234567",
+            "git",
+            "secret",
+            None::<String>,
+        )
+        .expect("source")
+        .into(),
+        adapter: BuildAdapter::Dockerfile {
+            dockerfile: ployz_core::build::BuildContextPath::try_new("Dockerfile")
+                .expect("dockerfile"),
+            target: None,
+        },
+        platform,
+        timeout_millis: 30_000,
+    };
+    let expected = executor_acceptance(&request);
     let mut actual = expected.clone();
     actual.assignment = BuildExecutorAssignment::External {
         pool_id: ployz_core::build::BuildPoolId::try_new("pool-a").expect("pool id"),

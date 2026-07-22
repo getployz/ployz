@@ -6,6 +6,8 @@ use ployz_core::machine::rpc::MachineRpcResponse;
 use ployz_core::operation::{BuildAdapterToolchainEvidence, BuildLogChunk, BuildToolchainEvidence};
 use std::sync::atomic::Ordering;
 
+mod status_repository;
+
 pub(super) struct TestBuildEffects {
     pub(super) ingest_started: tokio::sync::Notify,
     pub(super) prune_started: tokio::sync::Notify,
@@ -163,7 +165,7 @@ async fn terminal_status(
 ) -> BuildExecutorStatus {
     loop {
         let status = runtime.status(acceptance).await.expect("build status");
-        if !matches!(status, BuildExecutorStatus::Running { .. }) {
+        if status.is_terminal() {
             return status;
         }
         tokio::task::yield_now().await;
@@ -231,11 +233,13 @@ fn execution_timeout_maps_to_typed_machine_timeout_with_cleanup() {
             acceptance,
             log_summary,
         ),
-        BuildExecutorStatus::Failed {
+        BuildExecutorStatus {
             acceptance: actual_acceptance,
-            failure: BuildExecutorStatusFailure::Stalled { .. },
-            cleanup: MachineBuildCleanupOutcome::Confirmed,
-            log_summary: actual,
+            state: BuildExecutorState::Failed {
+                failure: BuildExecutorStatusFailure::Stalled { .. },
+                cleanup: MachineBuildCleanupOutcome::Confirmed,
+                log_summary: actual,
+            },
         } if actual == log_summary && actual_acceptance == expected_acceptance
     ));
 }
@@ -251,14 +255,18 @@ fn machine_success_requires_and_carries_confirmed_cleanup_proof() {
         acceptance.clone(),
         log_summary,
     );
-    let BuildExecutorStatus::Completed { result: confirmed } = confirmed else {
+    let BuildExecutorStatus {
+        acceptance: confirmed_acceptance,
+        state: BuildExecutorState::Completed { result: confirmed },
+    } = confirmed
+    else {
         panic!("confirmed cleanup permits success");
     };
     assert_eq!(
         confirmed.cleanup,
         BuildExecutorSuccessCleanupEvidence::confirmed()
     );
-    assert_eq!(confirmed.acceptance, acceptance);
+    assert_eq!(confirmed_acceptance, acceptance);
     assert_eq!(confirmed.log_summary, log_summary);
 
     let unconfirmed = finish_machine_build_status(
@@ -269,15 +277,19 @@ fn machine_success_requires_and_carries_confirmed_cleanup_proof() {
     );
     assert_eq!(
         unconfirmed,
-        BuildExecutorStatus::Failed {
+        BuildExecutorStatus {
             acceptance,
-            cleanup: MachineBuildCleanupOutcome::Unconfirmed,
-            failure: BuildExecutorStatusFailure::PlatformFailed {
-                failure: BuildPlatformFailure::MachineUnavailable {
-                    message: failure_message("build workspace cleanup did not finish successfully",),
+            state: BuildExecutorState::Failed {
+                cleanup: MachineBuildCleanupOutcome::Unconfirmed,
+                failure: BuildExecutorStatusFailure::PlatformFailed {
+                    failure: BuildPlatformFailure::MachineUnavailable {
+                        message: failure_message(
+                            "build workspace cleanup did not finish successfully",
+                        ),
+                    },
                 },
+                log_summary,
             },
-            log_summary,
         }
     );
 }
@@ -542,8 +554,11 @@ async fn shutdown_cancels_active_build_and_waits_for_cleanup() {
     let acceptance = start.await.expect("start task").expect("accepted").executor;
     assert!(matches!(
         runtime.status(&acceptance).await.expect("status"),
-        BuildExecutorStatus::Cancelled {
-            cleanup: MachineBuildCleanupOutcome::Confirmed,
+        BuildExecutorStatus {
+            state: BuildExecutorState::Cancelled {
+                cleanup: MachineBuildCleanupOutcome::Confirmed,
+                ..
+            },
             ..
         }
     ));
@@ -580,8 +595,11 @@ async fn cache_prune_waits_for_active_build_cleanup() {
     let acceptance = start.await.expect("start task").expect("accepted").executor;
     assert!(matches!(
         terminal_status(&runtime, &acceptance).await,
-        BuildExecutorStatus::Cancelled {
-            cleanup: MachineBuildCleanupOutcome::Confirmed,
+        BuildExecutorStatus {
+            state: BuildExecutorState::Cancelled {
+                cleanup: MachineBuildCleanupOutcome::Confirmed,
+                ..
+            },
             ..
         }
     ));
@@ -713,13 +731,15 @@ async fn timeout_during_ingestion_aborts_then_cleans_once_without_late_success()
     let result = terminal_status(&runtime, &acceptance).await;
     assert!(matches!(
         result,
-        BuildExecutorStatus::Failed {
+        BuildExecutorStatus {
             acceptance: _,
-            failure: BuildExecutorStatusFailure::Stalled { .. },
-            cleanup: MachineBuildCleanupOutcome::Confirmed,
-            log_summary: BuildLogSummary {
-                final_log_sequence: 7,
-                omitted_log_bytes: 11,
+            state: BuildExecutorState::Failed {
+                failure: BuildExecutorStatusFailure::Stalled { .. },
+                cleanup: MachineBuildCleanupOutcome::Confirmed,
+                log_summary: BuildLogSummary {
+                    final_log_sequence: 7,
+                    omitted_log_bytes: 11,
+                },
             },
         }
     ));
@@ -755,11 +775,13 @@ async fn cancellation_during_ingestion_aborts_then_returns_typed_cleanup() {
     let acceptance = start.await.expect("start task").expect("accepted").executor;
     assert!(matches!(
         terminal_status(&runtime, &acceptance).await,
-        BuildExecutorStatus::Cancelled {
-            cleanup: MachineBuildCleanupOutcome::Confirmed,
-            log_summary: BuildLogSummary {
-                final_log_sequence: 7,
-                omitted_log_bytes: 11,
+        BuildExecutorStatus {
+            state: BuildExecutorState::Cancelled {
+                cleanup: MachineBuildCleanupOutcome::Confirmed,
+                log_summary: BuildLogSummary {
+                    final_log_sequence: 7,
+                    omitted_log_bytes: 11,
+                },
             },
             ..
         }
@@ -793,13 +815,15 @@ async fn bounded_cleanup_reports_unconfirmed_when_it_cannot_finish() {
     let acceptance = start.await.expect("start task").expect("accepted").executor;
     assert!(matches!(
         terminal_status(&runtime, &acceptance).await,
-        BuildExecutorStatus::Failed {
+        BuildExecutorStatus {
             acceptance: _,
-            failure: BuildExecutorStatusFailure::Stalled { .. },
-            cleanup: MachineBuildCleanupOutcome::Unconfirmed,
-            log_summary: BuildLogSummary {
-                final_log_sequence: 7,
-                omitted_log_bytes: 11,
+            state: BuildExecutorState::Failed {
+                failure: BuildExecutorStatusFailure::Stalled { .. },
+                cleanup: MachineBuildCleanupOutcome::Unconfirmed,
+                log_summary: BuildLogSummary {
+                    final_log_sequence: 7,
+                    omitted_log_bytes: 11,
+                },
             },
         }
     ));
@@ -826,7 +850,10 @@ async fn start_persists_acceptance_and_returns_before_the_effect_completes() {
     assert_eq!(accepted.executor, expected);
     assert!(matches!(
         runtime.status(&expected).await.expect("status"),
-        BuildExecutorStatus::Running { .. }
+        BuildExecutorStatus {
+            state: BuildExecutorState::Running { .. },
+            ..
+        }
     ));
     runtime.shutdown().await;
 }
@@ -859,229 +886,6 @@ async fn exact_retry_is_idempotent_and_conflicting_commitment_fails_closed() {
     runtime.shutdown().await;
 }
 
-#[cfg(unix)]
-#[tokio::test]
-async fn durable_acceptance_is_private_and_contains_no_credentials() {
-    use std::os::unix::fs::PermissionsExt;
-
-    let root = tempfile::tempdir().expect("status root");
-    let status_path = root.path().join("status");
-    let runtime = MachineBuildRuntime::new_for_test_with_status_path(
-        MachineId::try_new("machine-a").expect("machine"),
-        Arc::new(TestBuildEffects::new(true)),
-        status_path.clone(),
-    );
-    let request = build_request("private-evidence", 10_000);
-    let operation_id = request.operation_id.clone();
-    runtime.start(request).await.expect("accepted");
-
-    let path = status::raw_path(&status_path, &operation_id);
-    let bytes = std::fs::read(&path).expect("raw evidence");
-    assert!(
-        !bytes
-            .windows(b"secret".len())
-            .any(|bytes| bytes == b"secret")
-    );
-    assert!(
-        !bytes
-            .windows(b"username".len())
-            .any(|bytes| bytes == b"username")
-    );
-    assert_eq!(
-        std::fs::metadata(&status_path)
-            .expect("directory")
-            .permissions()
-            .mode()
-            & 0o777,
-        0o700
-    );
-    assert_eq!(
-        std::fs::metadata(path).expect("file").permissions().mode() & 0o777,
-        0o600
-    );
-    runtime.shutdown().await;
-}
-
-#[tokio::test]
-async fn stale_running_evidence_becomes_failed_only_after_cleanup_succeeds() {
-    let root = tempfile::tempdir().expect("status root");
-    let status_path = root.path().join("status");
-    let request = build_request("stale-running", 10_000);
-    let acceptance = BuildExecutorAcceptance::from_start_request(&request);
-    let commitment = request_commitment(&request).expect("commitment");
-    let repository = BuildStatusRepository::new(status_path.clone());
-    repository
-        .write(&BuildStatusRecord::new(
-            commitment,
-            acceptance.clone(),
-            BuildExecutorStatus::Running {
-                acceptance: acceptance.clone(),
-                log_summary: BuildLogSummary::new(4, 5),
-            },
-        ))
-        .expect("running evidence");
-
-    let failed = MachineBuildRuntime::new_for_test_with_status_path(
-        MachineId::try_new("machine-a").expect("machine"),
-        Arc::new(TestBuildEffects::failing_recovery()),
-        status_path.clone(),
-    );
-    assert!(failed.recover_orphans().await.is_err());
-    assert!(matches!(
-        repository
-            .read(&request.operation_id)
-            .expect("record")
-            .expect("present")
-            .status,
-        BuildExecutorStatus::Running { .. }
-    ));
-
-    let recovered = MachineBuildRuntime::new_for_test_with_status_path(
-        MachineId::try_new("machine-a").expect("machine"),
-        Arc::new(TestBuildEffects::new(true)),
-        status_path,
-    );
-    recovered.recover_orphans().await.expect("recovery");
-    assert!(matches!(
-        recovered.status(&acceptance).await.expect("status"),
-        BuildExecutorStatus::Failed {
-            failure: BuildExecutorStatusFailure::PlatformFailed {
-                failure: BuildPlatformFailure::MachineUnavailable { .. }
-            },
-            cleanup: MachineBuildCleanupOutcome::Confirmed,
-            ..
-        }
-    ));
-}
-
-#[tokio::test]
-async fn restart_preserves_completed_failed_and_cancelled_evidence() {
-    let root = tempfile::tempdir().expect("status root");
-    let repository = BuildStatusRepository::new(root.path().join("status"));
-    let completed_request = build_request("completed-restart", 10_000);
-    let completed_acceptance = BuildExecutorAcceptance::from_start_request(&completed_request);
-    let completed = BuildExecutorStatus::Completed {
-        result: Box::new(
-            successful_machine_output(&completed_request, BuildLogSummary::new(3, 4)).into_result(),
-        ),
-    };
-    let failed_request = build_request("failed-restart", 10_000);
-    let failed_acceptance = BuildExecutorAcceptance::from_start_request(&failed_request);
-    let failed = failed_status(
-        failed_acceptance.clone(),
-        BuildPlatformFailure::MachineUnavailable {
-            message: failure_message("failed before restart"),
-        },
-        MachineBuildCleanupOutcome::Confirmed,
-        BuildLogSummary::new(5, 6),
-    );
-    let cancelled_request = build_request("cancelled-restart", 10_000);
-    let cancelled_acceptance = BuildExecutorAcceptance::from_start_request(&cancelled_request);
-    let cancelled = BuildExecutorStatus::Cancelled {
-        acceptance: cancelled_acceptance.clone(),
-        cleanup: MachineBuildCleanupOutcome::Confirmed,
-        log_summary: BuildLogSummary::new(7, 8),
-    };
-    for (request, acceptance, status) in [
-        (
-            &completed_request,
-            completed_acceptance.clone(),
-            completed.clone(),
-        ),
-        (&failed_request, failed_acceptance.clone(), failed.clone()),
-        (
-            &cancelled_request,
-            cancelled_acceptance.clone(),
-            cancelled.clone(),
-        ),
-    ] {
-        repository
-            .write(&BuildStatusRecord::new(
-                request_commitment(request).expect("commitment"),
-                acceptance,
-                status,
-            ))
-            .expect("terminal evidence");
-    }
-
-    let runtime = MachineBuildRuntime::new_for_test_with_status_path(
-        MachineId::try_new("machine-a").expect("machine"),
-        Arc::new(TestBuildEffects::new(true)),
-        root.path().join("status"),
-    );
-    runtime.recover_orphans().await.expect("recovery");
-    assert_eq!(runtime.status(&completed_acceptance).await, Ok(completed));
-    assert_eq!(runtime.status(&failed_acceptance).await, Ok(failed));
-    assert_eq!(runtime.status(&cancelled_acceptance).await, Ok(cancelled));
-}
-
-#[tokio::test]
-async fn corrupt_evidence_blocks_relaunch_and_reports_unavailability() {
-    let root = tempfile::tempdir().expect("status root");
-    let status_path = root.path().join("status");
-    std::fs::create_dir_all(&status_path).expect("status directory");
-    let request = build_request("corrupt", 10_000);
-    let acceptance = BuildExecutorAcceptance::from_start_request(&request);
-    std::fs::write(
-        status::raw_path(&status_path, &request.operation_id),
-        b"not-json",
-    )
-    .expect("corrupt evidence");
-    let runtime = MachineBuildRuntime::new_for_test_with_status_path(
-        MachineId::try_new("machine-a").expect("machine"),
-        Arc::new(TestBuildEffects::new(true)),
-        status_path,
-    );
-
-    assert_eq!(
-        runtime.start(request).await,
-        Err(MachineBuildStartDomainError::AlreadyRunning)
-    );
-    assert!(matches!(
-        runtime.status(&acceptance).await,
-        Err(MachineBuildStatusDomainError::EvidenceUnavailable { .. })
-    ));
-}
-
-#[tokio::test]
-async fn failed_terminal_write_poison_reserves_the_operation() {
-    let root = tempfile::tempdir().expect("status root");
-    let status_path = root.path().join("status");
-    let effects = Arc::new(TestBuildEffects::cooperative(true));
-    let runtime = MachineBuildRuntime::new_for_test_with_status_path(
-        MachineId::try_new("machine-a").expect("machine"),
-        effects.clone(),
-        status_path.clone(),
-    );
-    let request = build_request("terminal-write-failure", 10_000);
-    let acceptance = runtime
-        .start(request.clone())
-        .await
-        .expect("accepted")
-        .executor;
-    effects.ingest_started.notified().await;
-    std::fs::remove_file(status::raw_path(&status_path, &request.operation_id))
-        .expect("remove running record");
-    std::fs::remove_dir(&status_path).expect("remove status directory");
-    std::fs::write(&status_path, b"blocks-directory-recreation").expect("blocking file");
-    assert_eq!(
-        runtime.cancel(&request.operation_id).await,
-        MachineBuildCancelOutcome::Requested
-    );
-
-    loop {
-        match runtime.status(&acceptance).await {
-            Err(MachineBuildStatusDomainError::EvidenceUnavailable { .. }) => break,
-            Ok(BuildExecutorStatus::Running { .. }) => tokio::task::yield_now().await,
-            other => panic!("unexpected status while terminal write fails: {other:?}"),
-        }
-    }
-    assert_eq!(
-        runtime.start(request).await,
-        Err(MachineBuildStartDomainError::AlreadyRunning)
-    );
-}
-
 #[tokio::test(start_paused = true)]
 async fn strictly_advancing_activity_renews_the_silence_budget_until_success() {
     let effects = Arc::new(TestBuildEffects::progressing_to_success(
@@ -1103,6 +907,9 @@ async fn strictly_advancing_activity_renews_the_silence_budget_until_success() {
 
     assert!(matches!(
         terminal_status(&runtime, &acceptance).await,
-        BuildExecutorStatus::Completed { .. }
+        BuildExecutorStatus {
+            state: BuildExecutorState::Completed { .. },
+            ..
+        }
     ));
 }

@@ -930,10 +930,10 @@ fn successful_push_with_confirmed_cleanup_carries_positive_proof() {
 
     assert_eq!(success.acceptance, acceptance);
     assert_eq!(
-        success.cleanup,
+        success.completion.cleanup,
         BuildExecutorSuccessCleanupEvidence::confirmed()
     );
-    assert_eq!(success.log_summary, log_summary);
+    assert_eq!(success.completion.log_summary, log_summary);
 }
 
 fn successful_output(

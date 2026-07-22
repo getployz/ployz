@@ -2,16 +2,15 @@ use std::time::Duration;
 
 use futures_util::StreamExt;
 use ployz_core::build::{
+    BUILD_CONTROL_RESPONSE_MARGIN, BUILD_FORCE_CLEANUP_TIMEOUT, BUILD_TASK_DRAIN_TIMEOUT,
     BuildExecutorAcceptance, BuildExecutorAssignment, BuildExecutorCancelOk,
-    BuildExecutorCancelOutcome, BuildExecutorEvidence, BuildExecutorStartOk, BuildExecutorStatus,
-    BuildExecutorStatusFailure, BuildExecutorSuccessCleanupEvidence,
+    BuildExecutorCancelOutcome, BuildExecutorCompletion, BuildExecutorEvidence, BuildExecutorState,
+    BuildExecutorStatus, BuildExecutorStatusFailure, BuildExecutorSuccessCleanupEvidence,
     BuildExecutorSuccessCleanupOutcome, BuildLogSummary,
 };
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::image::OciPlatform;
-use ployz_core::operation::{
-    BuildEvidence, BuildOperationFailure, BuildPlatformFailure, FailureMessage,
-};
+use ployz_core::operation::{BuildEvidence, BuildOperationFailure, BuildPlatformFailure};
 use ployz_nats::subjects::{MachineServiceEndpoint, machine_build_log};
 
 use crate::control::role_client::machine::{MachineCallError, call_machine};
@@ -34,7 +33,9 @@ use super::platform_session::PlatformLogSession;
 const BUILD_START_ADMISSION_TIMEOUT: Duration = Duration::from_secs(5);
 const BUILD_STATUS_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const BUILD_STATUS_POLL_INTERVAL: Duration = Duration::from_secs(1);
-const BUILD_FINAL_RECONCILE_TIMEOUT: Duration = Duration::from_secs(5);
+const BUILD_FINAL_RECONCILE_TIMEOUT: Duration = BUILD_TASK_DRAIN_TIMEOUT
+    .saturating_add(BUILD_FORCE_CLEANUP_TIMEOUT)
+    .saturating_add(BUILD_CONTROL_RESPONSE_MARGIN);
 const BUILD_CANCEL_REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
 
 pub(super) async fn run_executor_session(
@@ -75,7 +76,7 @@ pub(super) async fn run_executor_session(
         logs,
     );
     let request = build_start_request(accepted, executor.clone(), platform.clone(), driver.timeout);
-    let expected = expected_acceptance(id, &machine_id, &platform);
+    let expected = BuildExecutorAcceptance::from_start_request(&request);
     if !driver
         .active
         .executor_start_is_authorized(id, &executor)
@@ -91,8 +92,35 @@ pub(super) async fn run_executor_session(
     let admission =
         receive_start_admission(driver, &machine_id, &request, &mut log_session).await?;
     let admission = match admission {
-        Ok(ok) => Some(ok),
-        Err(MachineCallError::Unavailable(_)) => None,
+        Ok(ok) => ok,
+        Err(MachineCallError::Unavailable(_)) => {
+            match recover_uncertain_admission(
+                driver,
+                &machine_id,
+                &request,
+                &expected,
+                &mut log_session,
+            )
+            .await
+            {
+                Ok(ok) => ok,
+                Err(operation_failure) => {
+                    let BuildOperationFailure::PlatformFailed { failure, .. } = &operation_failure
+                    else {
+                        unreachable!("machine admission failure is platform-scoped")
+                    };
+                    record_platform_failure(
+                        driver,
+                        id,
+                        platform,
+                        evidence_executor,
+                        failure.clone(),
+                    )
+                    .await?;
+                    return Ok(PlatformOutcome::Failed(operation_failure));
+                }
+            }
+        }
         Err(error @ MachineCallError::Domain(_)) => {
             let operation_failure = machine_failure(platform.clone(), machine_id.clone(), error);
             let BuildOperationFailure::PlatformFailed { failure, .. } = &operation_failure else {
@@ -103,47 +131,63 @@ pub(super) async fn run_executor_session(
             return Ok(PlatformOutcome::Failed(operation_failure));
         }
     };
-    if let Some(admission) = admission
-        && let Err(failure) = validate_executor_acceptance(&expected, &admission.executor)
-    {
+    if let Err(failure) = validate_executor_acceptance(&expected, &admission.executor) {
         let operation_failure =
             platform_failure(platform.clone(), machine_id.clone(), failure.clone());
         record_platform_failure(driver, id, platform, evidence_executor, failure).await?;
         return Ok(PlatformOutcome::Failed(operation_failure));
     }
 
-    let summary =
-        monitor_build(driver, &machine_id, &executor, &expected, &mut log_session).await?;
-    log_session.drain(summary.log_summary()).await?;
-    let BuildSummary::Completed(ok) = summary else {
-        return match summary {
-            BuildSummary::Failed { failure, .. } => {
+    let status = match monitor_build(driver, &machine_id, &executor, &expected, &mut log_session)
+        .await
+    {
+        Ok(status) => status,
+        Err(operation_failure @ BuildOperationFailure::PlatformFailed { .. }) => {
+            let BuildOperationFailure::PlatformFailed { failure, .. } = &operation_failure else {
+                unreachable!("matched platform failure")
+            };
+            record_platform_failure(driver, id, platform, evidence_executor, failure.clone())
+                .await?;
+            return Ok(PlatformOutcome::Failed(operation_failure));
+        }
+        Err(failure) => return Err(failure),
+    };
+    log_session.drain(status.log_summary()).await?;
+    let BuildExecutorStatus {
+        acceptance: _,
+        state,
+    } = status;
+    let result = match state {
+        BuildExecutorState::Completed { result } => *result,
+        BuildExecutorState::Failed {
+            failure, cleanup, ..
+        } => match failure {
+            BuildExecutorStatusFailure::Stalled { message } => {
+                return Ok(PlatformOutcome::TimedOut {
+                    executor,
+                    message,
+                    cleanup,
+                });
+            }
+            BuildExecutorStatusFailure::PlatformFailed { failure } => {
                 let operation_failure =
                     platform_failure(platform.clone(), machine_id.clone(), failure.clone());
                 record_platform_failure(driver, id, platform, evidence_executor, failure).await?;
-                Ok(PlatformOutcome::Failed(operation_failure))
+                return Ok(PlatformOutcome::Failed(operation_failure));
             }
-            BuildSummary::Cancelled { cleanup, .. } => {
-                Ok(PlatformOutcome::Cancelled { executor, cleanup })
-            }
-            BuildSummary::TimedOut {
-                message, cleanup, ..
-            } => Ok(PlatformOutcome::TimedOut {
-                executor,
-                message,
-                cleanup,
-            }),
-            BuildSummary::Completed(_) => unreachable!(),
-        };
+        },
+        BuildExecutorState::Cancelled { cleanup, .. } => {
+            return Ok(PlatformOutcome::Cancelled { executor, cleanup });
+        }
+        BuildExecutorState::Running { .. } => unreachable!("monitor returns only terminal status"),
     };
-    if let Err(failure) = validate_completed_image_seed(&machine_id, &ok) {
+    if let Err(failure) = validate_completed_image_seed(&machine_id, &result) {
         let operation_failure =
             platform_failure(platform.clone(), machine_id.clone(), failure.clone());
         record_platform_failure(driver, id, platform, evidence_executor, failure).await?;
         return Ok(PlatformOutcome::Failed(operation_failure));
     }
-    let BuildExecutorStartOk {
-        acceptance: _,
+    let BuildExecutorCompletion {
         cleanup:
             BuildExecutorSuccessCleanupEvidence {
                 outcome: BuildExecutorSuccessCleanupOutcome::Confirmed,
@@ -152,7 +196,7 @@ pub(super) async fn run_executor_session(
         verified_source,
         toolchain,
         log_summary: _,
-    } = *ok;
+    } = result;
     driver
         .controllers
         .repository()
@@ -195,6 +239,61 @@ pub(super) async fn run_executor_session(
     Ok(PlatformOutcome::Completed { platform, image })
 }
 
+async fn recover_uncertain_admission(
+    driver: &BuildOperationDriver,
+    machine_id: &MachineId,
+    request: &MachineBuildStartRpcRequest,
+    expected: &BuildExecutorAcceptance,
+    log_session: &mut PlatformLogSession<'_>,
+) -> Result<MachineBuildStartRpcOk, BuildOperationFailure> {
+    let status_request = MachineBuildStatusRpcRequest {
+        acceptance: expected.clone(),
+    };
+    match call_machine::<MachineBuildStatusRpcOk, MachineBuildStatusDomainError>(
+        &driver.client,
+        BUILD_STATUS_REQUEST_TIMEOUT,
+        machine_id,
+        MachineServiceEndpoint::BuildStatus,
+        &status_request,
+    )
+    .await
+    {
+        Ok(ok) => {
+            validate_status(expected, ok.executor)
+                .map_err(|failure| status_operation_failure(expected, failure))?;
+            return Ok(MachineBuildStartRpcOk::from((
+                machine_id.clone(),
+                expected.clone(),
+            )));
+        }
+        Err(MachineCallError::Domain(MachineBuildStatusDomainError::EvidenceUnavailable {
+            acceptance,
+            message,
+        })) => {
+            validate_status_acceptance(expected, &acceptance)
+                .map_err(|failure| status_operation_failure(expected, failure))?;
+            return Err(status_operation_failure(
+                expected,
+                BuildPlatformFailure::MachineUnavailable { message },
+            ));
+        }
+        Err(MachineCallError::Domain(MachineBuildStatusDomainError::NotFound { acceptance })) => {
+            validate_status_acceptance(expected, &acceptance)
+                .map_err(|failure| status_operation_failure(expected, failure))?;
+        }
+        Err(MachineCallError::Unavailable(_)) => {}
+    }
+
+    match receive_start_admission(driver, machine_id, request, log_session).await? {
+        Ok(ok) => Ok(ok),
+        Err(error) => Err(machine_failure(
+            expected.platform.clone(),
+            machine_id.clone(),
+            error,
+        )),
+    }
+}
+
 async fn receive_start_admission(
     driver: &BuildOperationDriver,
     machine_id: &MachineId,
@@ -234,9 +333,8 @@ async fn monitor_build(
     executor: &BuildExecutorAssignment,
     expected: &BuildExecutorAcceptance,
     log_session: &mut PlatformLogSession<'_>,
-) -> Result<BuildSummary, BuildOperationFailure> {
+) -> Result<BuildExecutorStatus, BuildOperationFailure> {
     let mut watermark = BuildLogSummary::none();
-    let mut status_watermark = BuildLogSummary::none();
     let mut silence_deadline = tokio::time::Instant::now() + driver.timeout;
     loop {
         if !driver
@@ -249,6 +347,7 @@ async fn monitor_build(
                 machine_id,
                 expected,
                 log_session,
+                &mut watermark,
                 ReconcileReason::Cancelled,
             )
             .await;
@@ -262,6 +361,7 @@ async fn monitor_build(
                 machine_id,
                 expected,
                 log_session,
+                &mut watermark,
                 ReconcileReason::Stalled,
             )
             .await;
@@ -285,7 +385,7 @@ async fn monitor_build(
                 result = &mut status_call => break Some(result),
                 message = log_session.logs_mut().next(), if log_session.logs_open() => {
                     if log_session.record_message_progress(message).await? {
-                        observe_progress(
+                        merge_progress(
                             &mut watermark,
                             log_session.observed_log_summary(),
                             driver.timeout,
@@ -303,17 +403,20 @@ async fn monitor_build(
                 machine_id,
                 expected,
                 log_session,
+                &mut watermark,
                 ReconcileReason::Stalled,
             )
             .await;
         };
         match status_result {
-            Ok(ok) => match status_summary(expected, ok.executor)
-                .map_err(|failure| status_operation_failure(expected, failure))?
-            {
-                StatusSummary::Running(summary) => {
-                    if accept_status_progress(&mut status_watermark, summary) {
-                        observe_progress(
+            Ok(ok) => {
+                let status = validate_status(expected, ok.executor)
+                    .map_err(|failure| status_operation_failure(expected, failure))?;
+                match status.state {
+                    BuildExecutorState::Running {
+                        log_summary: summary,
+                    } => {
+                        merge_progress(
                             &mut watermark,
                             summary,
                             driver.timeout,
@@ -321,12 +424,37 @@ async fn monitor_build(
                             deadline.as_mut(),
                         );
                     }
+                    BuildExecutorState::Completed { .. }
+                    | BuildExecutorState::Failed { .. }
+                    | BuildExecutorState::Cancelled { .. } => {
+                        validate_terminal_progress(&status, watermark)
+                            .map_err(|failure| status_operation_failure(expected, failure))?;
+                        return Ok(status);
+                    }
                 }
-                StatusSummary::Terminal(summary) => return Ok(*summary),
-            },
-            Err(MachineCallError::Domain(error)) => {
-                validate_status_error_acceptance(expected, &error)
+            }
+            Err(MachineCallError::Domain(MachineBuildStatusDomainError::EvidenceUnavailable {
+                acceptance,
+                message,
+            })) => {
+                validate_status_acceptance(expected, &acceptance)
                     .map_err(|failure| status_operation_failure(expected, failure))?;
+                return Err(status_operation_failure(
+                    expected,
+                    BuildPlatformFailure::MachineUnavailable { message },
+                ));
+            }
+            Err(MachineCallError::Domain(MachineBuildStatusDomainError::NotFound {
+                acceptance,
+            })) => {
+                validate_status_acceptance(expected, &acceptance)
+                    .map_err(|failure| status_operation_failure(expected, failure))?;
+                return Err(status_operation_failure(
+                    expected,
+                    BuildPlatformFailure::MachineUnavailable {
+                        message: failure_message("accepted machine build status was not found"),
+                    },
+                ));
             }
             Err(MachineCallError::Unavailable(_)) => {}
         }
@@ -338,17 +466,6 @@ async fn monitor_build(
         )
         .await?;
     }
-}
-
-fn accept_status_progress(
-    status_watermark: &mut BuildLogSummary,
-    observed: BuildLogSummary,
-) -> bool {
-    if !observed.strictly_advances(status_watermark) {
-        return false;
-    }
-    *status_watermark = observed;
-    true
 }
 
 async fn wait_for_next_poll(
@@ -367,7 +484,7 @@ async fn wait_for_next_poll(
             () = &mut poll => return Ok(()),
             message = log_session.logs_mut().next(), if log_session.logs_open() => {
                 if log_session.record_message_progress(message).await? {
-                    observe_progress(
+                    merge_progress(
                         watermark,
                         log_session.observed_log_summary(),
                         silence_budget,
@@ -380,34 +497,46 @@ async fn wait_for_next_poll(
     }
 }
 
-fn observe_progress(
+fn merge_progress(
     watermark: &mut BuildLogSummary,
     observed: BuildLogSummary,
     silence_budget: Duration,
     silence_deadline: &mut tokio::time::Instant,
     mut deadline: std::pin::Pin<&mut tokio::time::Sleep>,
-) {
-    let combined = BuildLogSummary::new(
-        watermark
-            .final_log_sequence
-            .max(observed.final_log_sequence),
-        watermark.omitted_log_bytes.max(observed.omitted_log_bytes),
-    );
-    if combined.strictly_advances(watermark) {
-        *watermark = combined;
+) -> bool {
+    if merge_progress_without_deadline(watermark, observed) {
         *silence_deadline = tokio::time::Instant::now() + silence_budget;
         deadline.as_mut().reset(*silence_deadline);
+        return true;
+    }
+    false
+}
+
+fn validate_terminal_progress(
+    status: &BuildExecutorStatus,
+    watermark: BuildLogSummary,
+) -> Result<(), BuildPlatformFailure> {
+    let terminal = status.log_summary();
+    if terminal == watermark || terminal.strictly_advances(&watermark) {
+        return Ok(());
+    }
+    Err(progress_regression_failure())
+}
+
+fn progress_regression_failure() -> BuildPlatformFailure {
+    BuildPlatformFailure::MachineUnavailable {
+        message: failure_message("build executor returned regressing log progress"),
     }
 }
 
-async fn reconcile_terminal(
+pub(super) async fn reconcile_terminal(
     driver: &BuildOperationDriver,
     machine_id: &MachineId,
     expected: &BuildExecutorAcceptance,
     log_session: &mut PlatformLogSession<'_>,
+    watermark: &mut BuildLogSummary,
     reason: ReconcileReason,
-) -> Result<BuildSummary, BuildOperationFailure> {
-    request_bounded_cancel(driver, machine_id, expected).await;
+) -> Result<BuildExecutorStatus, BuildOperationFailure> {
     let reconcile_deadline = tokio::time::Instant::now() + BUILD_FINAL_RECONCILE_TIMEOUT;
     while let Some(remaining) =
         reconcile_deadline.checked_duration_since(tokio::time::Instant::now())
@@ -415,6 +544,12 @@ async fn reconcile_terminal(
         if remaining.is_zero() {
             break;
         }
+        request_bounded_cancel(driver, machine_id, expected, reconcile_deadline).await;
+        let Some(remaining) =
+            reconcile_deadline.checked_duration_since(tokio::time::Instant::now())
+        else {
+            break;
+        };
         let request = MachineBuildStatusRpcRequest {
             acceptance: expected.clone(),
         };
@@ -433,7 +568,12 @@ async fn reconcile_terminal(
                 biased;
                 result = &mut call => break Some(result),
                 message = log_session.logs_mut().next(), if log_session.logs_open() => {
-                    log_session.record_message(message).await?;
+                    if log_session.record_message_progress(message).await? {
+                        merge_progress_without_deadline(
+                            watermark,
+                            log_session.observed_log_summary(),
+                        );
+                    }
                 }
                 () = &mut deadline => break None,
             }
@@ -442,37 +582,60 @@ async fn reconcile_terminal(
             break;
         };
         match result {
-            Ok(ok) => match status_summary(expected, ok.executor)
-                .map_err(|failure| status_operation_failure(expected, failure))?
-            {
-                StatusSummary::Terminal(summary) => return Ok(*summary),
-                StatusSummary::Running(_) => {}
-            },
-            Err(MachineCallError::Domain(error)) => {
-                validate_status_error_acceptance(expected, &error)
+            Ok(ok) => {
+                let status = validate_status(expected, ok.executor)
+                    .map_err(|failure| status_operation_failure(expected, failure))?;
+                if status.is_terminal() {
+                    validate_terminal_progress(&status, *watermark)
+                        .map_err(|failure| status_operation_failure(expected, failure))?;
+                    return Ok(status);
+                }
+                merge_progress_without_deadline(watermark, status.log_summary());
+            }
+            Err(MachineCallError::Domain(MachineBuildStatusDomainError::EvidenceUnavailable {
+                acceptance,
+                message,
+            })) => {
+                validate_status_acceptance(expected, &acceptance)
+                    .map_err(|failure| status_operation_failure(expected, failure))?;
+                return Err(status_operation_failure(
+                    expected,
+                    BuildPlatformFailure::MachineUnavailable { message },
+                ));
+            }
+            Err(MachineCallError::Domain(MachineBuildStatusDomainError::NotFound {
+                acceptance,
+            })) => {
+                validate_status_acceptance(expected, &acceptance)
                     .map_err(|failure| status_operation_failure(expected, failure))?;
             }
             Err(MachineCallError::Unavailable(_)) => {}
         }
-        if !wait_for_reconcile_poll(log_session, reconcile_deadline).await? {
+        if !wait_for_reconcile_poll(log_session, watermark, reconcile_deadline).await? {
             break;
         }
     }
-    Ok(match reason {
-        ReconcileReason::Cancelled => BuildSummary::Cancelled {
-            cleanup: MachineBuildCleanupOutcome::Unconfirmed,
-            log_summary: log_session.observed_log_summary(),
-        },
-        ReconcileReason::Stalled => BuildSummary::TimedOut {
-            message: failure_message("machine build stopped making progress"),
-            cleanup: MachineBuildCleanupOutcome::Unconfirmed,
-            log_summary: log_session.observed_log_summary(),
+    Ok(BuildExecutorStatus {
+        acceptance: expected.clone(),
+        state: match reason {
+            ReconcileReason::Cancelled => BuildExecutorState::Cancelled {
+                cleanup: MachineBuildCleanupOutcome::Unconfirmed,
+                log_summary: *watermark,
+            },
+            ReconcileReason::Stalled => BuildExecutorState::Failed {
+                failure: BuildExecutorStatusFailure::Stalled {
+                    message: failure_message("machine build stopped making progress"),
+                },
+                cleanup: MachineBuildCleanupOutcome::Unconfirmed,
+                log_summary: *watermark,
+            },
         },
     })
 }
 
 async fn wait_for_reconcile_poll(
     log_session: &mut PlatformLogSession<'_>,
+    watermark: &mut BuildLogSummary,
     deadline: tokio::time::Instant,
 ) -> Result<bool, BuildOperationFailure> {
     let poll = tokio::time::sleep(BUILD_STATUS_POLL_INTERVAL);
@@ -484,7 +647,12 @@ async fn wait_for_reconcile_poll(
             () = &mut deadline => return Ok(false),
             () = &mut poll => return Ok(true),
             message = log_session.logs_mut().next(), if log_session.logs_open() => {
-                log_session.record_message(message).await?;
+                if log_session.record_message_progress(message).await? {
+                    merge_progress_without_deadline(
+                        watermark,
+                        log_session.observed_log_summary(),
+                    );
+                }
             }
         }
     }
@@ -494,14 +662,21 @@ async fn request_bounded_cancel(
     driver: &BuildOperationDriver,
     machine_id: &MachineId,
     expected: &BuildExecutorAcceptance,
+    deadline: tokio::time::Instant,
 ) {
+    let Some(remaining) = deadline.checked_duration_since(tokio::time::Instant::now()) else {
+        return;
+    };
+    if remaining.is_zero() {
+        return;
+    }
     let request = MachineBuildCancelRpcRequest {
         operation_id: expected.operation_id.clone(),
         assignment: expected.assignment.clone(),
     };
     let result = call_machine::<MachineBuildCancelRpcOk, MachineBuildCancelDomainError>(
         &driver.client,
-        BUILD_CANCEL_REQUEST_TIMEOUT,
+        remaining.min(BUILD_CANCEL_REQUEST_TIMEOUT),
         machine_id,
         MachineServiceEndpoint::BuildCancel,
         &request,
@@ -521,69 +696,27 @@ async fn request_bounded_cancel(
     }
 }
 
-fn status_summary(
-    expected: &BuildExecutorAcceptance,
-    status: BuildExecutorStatus,
-) -> Result<StatusSummary, BuildPlatformFailure> {
-    match status {
-        BuildExecutorStatus::Running {
-            acceptance,
-            log_summary,
-        } => {
-            validate_status_acceptance(expected, &acceptance)?;
-            Ok(StatusSummary::Running(log_summary))
-        }
-        BuildExecutorStatus::Completed { result } => {
-            validate_status_acceptance(expected, &result.acceptance)?;
-            Ok(StatusSummary::Terminal(Box::new(BuildSummary::Completed(
-                result,
-            ))))
-        }
-        BuildExecutorStatus::Failed {
-            acceptance,
-            failure,
-            cleanup,
-            log_summary,
-        } => {
-            validate_status_acceptance(expected, &acceptance)?;
-            Ok(StatusSummary::Terminal(Box::new(match failure {
-                BuildExecutorStatusFailure::PlatformFailed { failure } => BuildSummary::Failed {
-                    failure,
-                    log_summary,
-                },
-                BuildExecutorStatusFailure::Stalled { message } => BuildSummary::TimedOut {
-                    message,
-                    cleanup,
-                    log_summary,
-                },
-            })))
-        }
-        BuildExecutorStatus::Cancelled {
-            acceptance,
-            cleanup,
-            log_summary,
-        } => {
-            validate_status_acceptance(expected, &acceptance)?;
-            Ok(StatusSummary::Terminal(Box::new(BuildSummary::Cancelled {
-                cleanup,
-                log_summary,
-            })))
-        }
-    }
+fn merge_progress_without_deadline(
+    watermark: &mut BuildLogSummary,
+    observed: BuildLogSummary,
+) -> bool {
+    let combined = BuildLogSummary::new(
+        watermark
+            .final_log_sequence
+            .max(observed.final_log_sequence),
+        watermark.omitted_log_bytes.max(observed.omitted_log_bytes),
+    );
+    let advanced = combined != *watermark;
+    *watermark = combined;
+    advanced
 }
 
-fn validate_status_error_acceptance(
+fn validate_status(
     expected: &BuildExecutorAcceptance,
-    error: &MachineBuildStatusDomainError,
-) -> Result<(), BuildPlatformFailure> {
-    let actual = match error {
-        MachineBuildStatusDomainError::NotFound { acceptance }
-        | MachineBuildStatusDomainError::EvidenceUnavailable {
-            acceptance,
-            message: _,
-        } => acceptance,
-    };
-    validate_status_acceptance(expected, actual)
+    status: BuildExecutorStatus,
+) -> Result<BuildExecutorStatus, BuildPlatformFailure> {
+    validate_status_acceptance(expected, &status.acceptance)?;
+    Ok(status)
 }
 
 fn validate_status_acceptance(
@@ -626,7 +759,7 @@ async fn record_platform_failure(
     Ok(())
 }
 
-fn build_start_request(
+pub(super) fn build_start_request(
     accepted: &AcceptedBuildExecution,
     assignment: BuildExecutorAssignment,
     platform: OciPlatform,
@@ -639,20 +772,6 @@ fn build_start_request(
         adapter: accepted.submission.adapter.clone(),
         platform,
         timeout_millis: execution_timeout_millis(timeout),
-    }
-}
-
-fn expected_acceptance(
-    operation_id: &OperationId,
-    machine_id: &MachineId,
-    platform: &OciPlatform,
-) -> BuildExecutorAcceptance {
-    BuildExecutorAcceptance {
-        operation_id: operation_id.clone(),
-        assignment: BuildExecutorAssignment::Cluster {
-            machine_id: machine_id.clone(),
-        },
-        platform: platform.clone(),
     }
 }
 
@@ -670,7 +789,7 @@ fn validate_executor_acceptance(
 
 fn validate_completed_image_seed(
     machine_id: &MachineId,
-    completed: &BuildExecutorStartOk,
+    completed: &BuildExecutorCompletion,
 ) -> Result<(), BuildPlatformFailure> {
     if completed.image.seed != *machine_id {
         return Err(BuildPlatformFailure::MachineUnavailable {
@@ -684,42 +803,9 @@ fn execution_timeout_millis(timeout: Duration) -> u64 {
     timeout.as_millis().try_into().unwrap_or(u64::MAX)
 }
 
-enum StatusSummary {
-    Running(BuildLogSummary),
-    Terminal(Box<BuildSummary>),
-}
-
-enum ReconcileReason {
+pub(super) enum ReconcileReason {
     Cancelled,
     Stalled,
-}
-
-enum BuildSummary {
-    Completed(Box<BuildExecutorStartOk>),
-    Failed {
-        failure: BuildPlatformFailure,
-        log_summary: BuildLogSummary,
-    },
-    Cancelled {
-        cleanup: MachineBuildCleanupOutcome,
-        log_summary: BuildLogSummary,
-    },
-    TimedOut {
-        message: FailureMessage,
-        cleanup: MachineBuildCleanupOutcome,
-        log_summary: BuildLogSummary,
-    },
-}
-
-impl BuildSummary {
-    const fn log_summary(&self) -> BuildLogSummary {
-        match self {
-            Self::Completed(ok) => ok.log_summary,
-            Self::Failed { log_summary, .. }
-            | Self::Cancelled { log_summary, .. }
-            | Self::TimedOut { log_summary, .. } => *log_summary,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -728,29 +814,67 @@ mod tests {
 
     fn acceptance(machine: &str) -> BuildExecutorAcceptance {
         let machine_id = MachineId::try_new(machine).expect("machine id");
-        BuildExecutorAcceptance {
+        BuildExecutorAcceptance::from_start_request(&MachineBuildStartRpcRequest {
             operation_id: OperationId::try_new("build-1").expect("operation id"),
             assignment: BuildExecutorAssignment::Cluster { machine_id },
+            source: ployz_core::build::GitSource::try_new(
+                "https://example.test/repo.git",
+                "0123456789abcdef0123456789abcdef01234567",
+                "git",
+                "secret",
+                None::<String>,
+            )
+            .expect("source")
+            .into(),
+            adapter: ployz_core::build::BuildAdapter::Dockerfile {
+                dockerfile: ployz_core::build::BuildContextPath::try_new("Dockerfile")
+                    .expect("dockerfile"),
+                target: None,
+            },
             platform: OciPlatform::try_new("linux", "amd64").expect("platform"),
-        }
+            timeout_millis: 1_000,
+        })
     }
 
     #[test]
-    fn status_progress_must_advance_without_component_regression() {
+    fn partial_progress_observations_merge_into_one_componentwise_watermark() {
         let mut watermark = BuildLogSummary::new(4, 8);
 
-        assert!(!accept_status_progress(
+        assert!(merge_progress_without_deadline(
             &mut watermark,
-            BuildLogSummary::new(5, 7)
+            BuildLogSummary::new(5, 0)
         ));
-        assert!(!accept_status_progress(
+        assert_eq!(watermark, BuildLogSummary::new(5, 8));
+        assert!(!merge_progress_without_deadline(
             &mut watermark,
-            BuildLogSummary::new(4, 8)
+            BuildLogSummary::new(4, 7)
         ));
-        assert_eq!(watermark, BuildLogSummary::new(4, 8));
-        assert!(accept_status_progress(
+        assert!(!merge_progress_without_deadline(
             &mut watermark,
             BuildLogSummary::new(5, 8)
+        ));
+        assert_eq!(watermark, BuildLogSummary::new(5, 8));
+    }
+
+    #[test]
+    fn final_reconciliation_stays_within_the_operation_budget() {
+        assert_eq!(BUILD_FINAL_RECONCILE_TIMEOUT, Duration::from_secs(65));
+        assert!(BUILD_FINAL_RECONCILE_TIMEOUT < Duration::from_secs(70));
+    }
+
+    #[test]
+    fn terminal_progress_must_cover_the_combined_control_watermark() {
+        let status = BuildExecutorStatus {
+            acceptance: acceptance("machine-a"),
+            state: BuildExecutorState::Cancelled {
+                cleanup: MachineBuildCleanupOutcome::Confirmed,
+                log_summary: BuildLogSummary::new(5, 7),
+            },
+        };
+        assert!(matches!(
+            validate_terminal_progress(&status, BuildLogSummary::new(5, 8)),
+            Err(BuildPlatformFailure::MachineUnavailable { message })
+                if message.as_str() == "build executor returned regressing log progress"
         ));
     }
 
@@ -763,18 +887,41 @@ mod tests {
         tokio::pin!(deadline);
 
         tokio::time::advance(Duration::from_secs(9)).await;
-        observe_progress(
+        assert!(merge_progress(
             &mut watermark,
             BuildLogSummary::new(1, 0),
             budget,
             &mut silence_deadline,
             deadline.as_mut(),
-        );
+        ));
         tokio::time::advance(Duration::from_secs(9)).await;
 
         assert!(!deadline.is_elapsed());
         tokio::time::advance(Duration::from_secs(1)).await;
         deadline.await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stale_partial_progress_does_not_renew_the_silence_deadline() {
+        let budget = Duration::from_secs(10);
+        let mut watermark = BuildLogSummary::new(5, 8);
+        let mut silence_deadline = tokio::time::Instant::now() + budget;
+        let original_deadline = silence_deadline;
+        let deadline = tokio::time::sleep_until(silence_deadline);
+        tokio::pin!(deadline);
+
+        tokio::time::advance(Duration::from_secs(9)).await;
+        assert!(!merge_progress(
+            &mut watermark,
+            BuildLogSummary::new(4, 7),
+            budget,
+            &mut silence_deadline,
+            deadline.as_mut(),
+        ));
+        tokio::time::advance(Duration::from_secs(1)).await;
+
+        assert_eq!(silence_deadline, original_deadline);
+        assert_eq!(watermark, BuildLogSummary::new(5, 8));
     }
 
     #[test]
@@ -783,11 +930,13 @@ mod tests {
         let actual = acceptance("machine-b");
 
         assert!(matches!(
-            status_summary(
+            validate_status(
                 &expected,
-                BuildExecutorStatus::Running {
+                BuildExecutorStatus {
                     acceptance: actual,
-                    log_summary: BuildLogSummary::none(),
+                    state: BuildExecutorState::Running {
+                        log_summary: BuildLogSummary::none(),
+                    },
                 },
             ),
             Err(BuildPlatformFailure::MachineUnavailable { message })
