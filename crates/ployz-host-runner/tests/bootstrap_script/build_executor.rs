@@ -45,15 +45,14 @@ impl BuildExecutorFixture {
     }
 
     fn write_manifest(&self, spec: &ManifestSpec) {
-        let railpack_url = spec
-            .include_railpack_url
-            .then(|| {
-                format!(
-                    "PLOYZ_RAILPACK_URL=file://{}\n",
-                    self.railpack_source.display()
-                )
-            })
-            .unwrap_or_default();
+        let railpack_url = if spec.include_railpack_url {
+            format!(
+                "PLOYZ_RAILPACK_URL=file://{}\n",
+                self.railpack_source.display()
+            )
+        } else {
+            String::new()
+        };
         fs::write(
             &self.manifest,
             format!(
