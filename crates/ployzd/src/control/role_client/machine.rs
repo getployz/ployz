@@ -2,17 +2,20 @@
 
 use crate::roles::machine::MachineRuntimeUnavailableReason;
 use crate::roles::machine::protocol::{
-    MachineBuildCachePruneDomainError, MachineBuildCachePruneRpcOk,
-    MachineBuildCachePruneRpcRequest, MachineBuildCapability, MachineContainerInspectDomainError,
-    MachineContainerInspectRpcOk, MachineContainerInspectRpcRequest,
-    MachineContainerRemoveDomainError, MachineContainerRemoveRpcRequest,
-    MachineContainerResolveImageDomainError, MachineContainerResolveImageRpcOk,
-    MachineContainerResolveImageRpcRequest, MachineContainerRestartDomainError,
-    MachineContainerRestartRpcRequest, MachineContainerRpcOk, MachineContainerRunDomainError,
-    MachineContainerRunHookDomainError, MachineContainerRunHookRpcOk,
-    MachineContainerRunHookRpcRequest, MachineContainerRunRpcOk, MachineContainerRunRpcRequest,
-    MachineContainerStopDomainError, MachineContainerStopRpcOk, MachineContainerStopRpcRequest,
-    MachineDataplaneStatusDomainError, MachineDataplaneStatusRpcOk,
+    MachineBuildCachePruneCancelDomainError, MachineBuildCachePruneCancelRpcOk,
+    MachineBuildCachePruneCancelRpcRequest, MachineBuildCachePruneStartDomainError,
+    MachineBuildCachePruneStartRpcOk, MachineBuildCachePruneStartRpcRequest,
+    MachineBuildCachePruneStatusDomainError, MachineBuildCachePruneStatusRpcOk,
+    MachineBuildCachePruneStatusRpcRequest, MachineBuildCapability,
+    MachineContainerInspectDomainError, MachineContainerInspectRpcOk,
+    MachineContainerInspectRpcRequest, MachineContainerRemoveDomainError,
+    MachineContainerRemoveRpcRequest, MachineContainerResolveImageDomainError,
+    MachineContainerResolveImageRpcOk, MachineContainerResolveImageRpcRequest,
+    MachineContainerRestartDomainError, MachineContainerRestartRpcRequest, MachineContainerRpcOk,
+    MachineContainerRunDomainError, MachineContainerRunHookDomainError,
+    MachineContainerRunHookRpcOk, MachineContainerRunHookRpcRequest, MachineContainerRunRpcOk,
+    MachineContainerRunRpcRequest, MachineContainerStopDomainError, MachineContainerStopRpcOk,
+    MachineContainerStopRpcRequest, MachineDataplaneStatusDomainError, MachineDataplaneStatusRpcOk,
     MachineDataplaneStatusRpcRequest, MachineFactsGetDomainError, MachineFactsGetRpcOk,
     MachineFactsGetRpcRequest, MachineFactsRefreshDomainError, MachineFactsRefreshRpcOk,
     MachineFactsRefreshRpcRequest, MachineLogsTailDomainError, MachineLogsTailResult,
@@ -664,33 +667,128 @@ impl NatsMachineSubstrateUpdater {
         .map_err(|error| storage_prepare_error(machine_id, error))
     }
 
-    pub async fn prune_build_cache(
+    pub async fn start_build_cache_prune(
         &self,
         machine_id: &MachineId,
         operation_id: &OperationId,
-    ) -> Result<ployz_core::operation::BuildCachePruneEvidence, MachineBuildCachePruneError> {
-        call_machine::<MachineBuildCachePruneRpcOk, MachineBuildCachePruneDomainError>(
+    ) -> Result<ployz_core::build::BuildCachePruneAcceptance, MachineBuildCachePruneStartError>
+    {
+        call_machine::<MachineBuildCachePruneStartRpcOk, MachineBuildCachePruneStartDomainError>(
             &self.client,
-            ployz_core::build::BUILD_CACHE_PRUNE_ENDPOINT_TIMEOUT,
+            ployz_core::build::BUILD_CACHE_PRUNE_RPC_TIMEOUT,
             machine_id,
-            MachineServiceEndpoint::BuildCachePrune,
-            &MachineBuildCachePruneRpcRequest {
+            MachineServiceEndpoint::BuildCachePruneStart,
+            &MachineBuildCachePruneStartRpcRequest {
                 operation_id: operation_id.clone(),
             },
         )
         .await
-        .map(|response| response.evidence)
         .map_err(|error| match error {
-            MachineCallError::Unavailable(reason) => MachineBuildCachePruneError::Unavailable {
+            MachineCallError::Unavailable(reason) => {
+                MachineBuildCachePruneStartError::Unavailable {
+                    machine_id: machine_id.clone(),
+                    reason,
+                }
+            }
+            MachineCallError::Domain(error) => MachineBuildCachePruneStartError::Rejected {
                 machine_id: machine_id.clone(),
-                reason,
+                error,
             },
-            MachineCallError::Domain(MachineBuildCachePruneDomainError::PruneFailed {
-                message,
-            }) => MachineBuildCachePruneError::PruneFailed {
+        })
+        .and_then(|response| {
+            let acceptance = response.executor;
+            if acceptance.operation_id == *operation_id {
+                Ok(acceptance)
+            } else {
+                Err(MachineBuildCachePruneStartError::UnexpectedOperation {
+                    machine_id: machine_id.clone(),
+                    expected: operation_id.clone(),
+                    actual: acceptance.operation_id,
+                })
+            }
+        })
+    }
+
+    pub async fn build_cache_prune_status(
+        &self,
+        machine_id: &MachineId,
+        operation_id: &OperationId,
+    ) -> Result<ployz_core::build::BuildCachePruneStatus, MachineBuildCachePruneStatusError> {
+        call_machine::<MachineBuildCachePruneStatusRpcOk, MachineBuildCachePruneStatusDomainError>(
+            &self.client,
+            ployz_core::build::BUILD_CACHE_PRUNE_RPC_TIMEOUT,
+            machine_id,
+            MachineServiceEndpoint::BuildCachePruneStatus,
+            &MachineBuildCachePruneStatusRpcRequest {
+                operation_id: operation_id.clone(),
+            },
+        )
+        .await
+        .map_err(|error| match error {
+            MachineCallError::Unavailable(reason) => {
+                MachineBuildCachePruneStatusError::Unavailable {
+                    machine_id: machine_id.clone(),
+                    reason,
+                }
+            }
+            MachineCallError::Domain(error) => MachineBuildCachePruneStatusError::Rejected {
                 machine_id: machine_id.clone(),
-                message,
+                error,
             },
+        })
+        .and_then(|response| {
+            let status = response.executor;
+            if status.operation_id() == operation_id {
+                Ok(status)
+            } else {
+                Err(MachineBuildCachePruneStatusError::UnexpectedOperation {
+                    machine_id: machine_id.clone(),
+                    expected: operation_id.clone(),
+                    actual: status.operation_id().clone(),
+                })
+            }
+        })
+    }
+
+    pub async fn cancel_build_cache_prune(
+        &self,
+        machine_id: &MachineId,
+        operation_id: &OperationId,
+    ) -> Result<ployz_core::build::BuildCachePruneCancelOutcome, MachineBuildCachePruneCancelError>
+    {
+        call_machine::<MachineBuildCachePruneCancelRpcOk, MachineBuildCachePruneCancelDomainError>(
+            &self.client,
+            ployz_core::build::BUILD_CACHE_PRUNE_RPC_TIMEOUT,
+            machine_id,
+            MachineServiceEndpoint::BuildCachePruneCancel,
+            &MachineBuildCachePruneCancelRpcRequest {
+                operation_id: operation_id.clone(),
+            },
+        )
+        .await
+        .map_err(|error| match error {
+            MachineCallError::Unavailable(reason) => {
+                MachineBuildCachePruneCancelError::Unavailable {
+                    machine_id: machine_id.clone(),
+                    reason,
+                }
+            }
+            MachineCallError::Domain(error) => MachineBuildCachePruneCancelError::Rejected {
+                machine_id: machine_id.clone(),
+                error,
+            },
+        })
+        .and_then(|response| {
+            let cancelled = response.executor;
+            if cancelled.operation_id == *operation_id {
+                Ok(cancelled.outcome)
+            } else {
+                Err(MachineBuildCachePruneCancelError::UnexpectedOperation {
+                    machine_id: machine_id.clone(),
+                    expected: operation_id.clone(),
+                    actual: cancelled.operation_id,
+                })
+            }
         })
     }
 
@@ -756,14 +854,53 @@ fn storage_prepare_error(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MachineBuildCachePruneError {
+pub enum MachineBuildCachePruneStartError {
     Unavailable {
         machine_id: MachineId,
         reason: MachineRuntimeUnavailableReason,
     },
-    PruneFailed {
+    Rejected {
         machine_id: MachineId,
-        message: ployz_core::operation::FailureMessage,
+        error: MachineBuildCachePruneStartDomainError,
+    },
+    UnexpectedOperation {
+        machine_id: MachineId,
+        expected: OperationId,
+        actual: OperationId,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineBuildCachePruneStatusError {
+    Unavailable {
+        machine_id: MachineId,
+        reason: MachineRuntimeUnavailableReason,
+    },
+    Rejected {
+        machine_id: MachineId,
+        error: MachineBuildCachePruneStatusDomainError,
+    },
+    UnexpectedOperation {
+        machine_id: MachineId,
+        expected: OperationId,
+        actual: OperationId,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineBuildCachePruneCancelError {
+    Unavailable {
+        machine_id: MachineId,
+        reason: MachineRuntimeUnavailableReason,
+    },
+    Rejected {
+        machine_id: MachineId,
+        error: MachineBuildCachePruneCancelDomainError,
+    },
+    UnexpectedOperation {
+        machine_id: MachineId,
+        expected: OperationId,
+        actual: OperationId,
     },
 }
 

@@ -61,11 +61,6 @@ pub const BUILD_FORCE_CLEANUP_TIMEOUT: Duration = Duration::from_secs(30);
 pub const BUILD_MAX_MACHINE_RESPONSE_LIFETIME: Duration = BUILD_MAX_EXECUTION_TIMEOUT
     .saturating_add(BUILD_TASK_DRAIN_TIMEOUT)
     .saturating_add(BUILD_FORCE_CLEANUP_TIMEOUT);
-/// Longest build-cache prune execution budget after it acquires the machine slot.
-pub const BUILD_CACHE_PRUNE_MAX_EXECUTION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
-/// Longest time a machine prune request can wait for a build and then execute.
-pub const BUILD_CACHE_PRUNE_MAX_MACHINE_RESPONSE_LIFETIME: Duration =
-    BUILD_MAX_MACHINE_RESPONSE_LIFETIME.saturating_add(BUILD_CACHE_PRUNE_MAX_EXECUTION_TIMEOUT);
 /// Controller margin beyond the machine's maximum response lifetime.
 pub const BUILD_CONTROL_RESPONSE_MARGIN: Duration = Duration::from_secs(5);
 /// Time reserved for terminal operation evidence to reach an attached caller.
@@ -92,12 +87,120 @@ pub const BUILD_MAX_ATTACHED_WATCH_TIMEOUT: Duration = BUILD_MAX_PLACEMENT_TIMEO
 /// Maximum BuildStart handler lifetime.
 pub const BUILD_START_ENDPOINT_TIMEOUT: Duration =
     BUILD_MAX_MACHINE_RESPONSE_LIFETIME.saturating_add(BUILD_ENDPOINT_RESPONSE_MARGIN);
-/// Maximum BuildCachePrune handler lifetime.
-pub const BUILD_CACHE_PRUNE_ENDPOINT_TIMEOUT: Duration =
-    BUILD_CACHE_PRUNE_MAX_MACHINE_RESPONSE_LIFETIME.saturating_add(BUILD_ENDPOINT_RESPONSE_MARGIN);
 /// Lifetime of one request-scoped NATS response grant.
 pub const BUILD_RESPONSE_PERMISSION_EXPIRY: Duration =
-    BUILD_CACHE_PRUNE_ENDPOINT_TIMEOUT.saturating_add(BUILD_RESPONSE_PERMISSION_MARGIN);
+    BUILD_START_ENDPOINT_TIMEOUT.saturating_add(BUILD_RESPONSE_PERMISSION_MARGIN);
+/// Interval between Control reads of accepted machine-local prune work.
+pub const BUILD_CACHE_PRUNE_POLL_INTERVAL: Duration = Duration::from_secs(1);
+/// Budget for each quick machine-local prune admission, status, or cancel RPC.
+pub const BUILD_CACHE_PRUNE_RPC_TIMEOUT: Duration = Duration::from_secs(5);
+/// Short window for terminal testimony after best-effort cancellation.
+pub const BUILD_CACHE_PRUNE_FINAL_RECONCILE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Per-command budget for one build-cache prune Docker effect.
+pub const BUILD_CACHE_PRUNE_COMMAND_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+/// Margin beyond one bounded Docker command before a running prune is stalled.
+pub const BUILD_CACHE_PRUNE_PROGRESS_MARGIN: Duration = Duration::from_secs(5);
+/// Longest silence allowed while an accepted prune waits behind an admitted build.
+pub const BUILD_CACHE_PRUNE_QUEUED_STALL_TIMEOUT: Duration =
+    BUILD_MAX_MACHINE_RESPONSE_LIFETIME.saturating_add(BUILD_CACHE_PRUNE_PROGRESS_MARGIN);
+/// Longest silence allowed within one running prune phase.
+pub const BUILD_CACHE_PRUNE_RUNNING_STALL_TIMEOUT: Duration =
+    BUILD_CACHE_PRUNE_COMMAND_TIMEOUT.saturating_add(BUILD_CACHE_PRUNE_PROGRESS_MARGIN);
+
+/// Quick machine-local admission for one build-cache prune.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuildCachePruneStartRequest {
+    pub operation_id: crate::ids::OperationId,
+}
+
+/// Machine-local acknowledgement of one accepted build-cache prune.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuildCachePruneAcceptance {
+    pub operation_id: crate::ids::OperationId,
+}
+
+/// Quick status read for one machine-local build-cache prune.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuildCachePruneStatusRequest {
+    pub operation_id: crate::ids::OperationId,
+}
+
+/// One bounded effect currently owned by an accepted machine-local prune.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BuildCachePruneRunningPhase {
+    MeasuringBefore,
+    InspectingCache,
+    RemovingCache,
+    MeasuringAfter,
+}
+
+/// Current or retained terminal testimony for one machine-local prune.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BuildCachePruneStatus {
+    NotFound {
+        operation_id: crate::ids::OperationId,
+    },
+    Queued {
+        operation_id: crate::ids::OperationId,
+        progress: u64,
+    },
+    Running {
+        operation_id: crate::ids::OperationId,
+        phase: BuildCachePruneRunningPhase,
+        progress: u64,
+    },
+    Completed {
+        operation_id: crate::ids::OperationId,
+        evidence: crate::operation::BuildCachePruneEvidence,
+    },
+    Failed {
+        operation_id: crate::ids::OperationId,
+        message: crate::operation::FailureMessage,
+    },
+    Cancelled {
+        operation_id: crate::ids::OperationId,
+    },
+}
+
+impl BuildCachePruneStatus {
+    #[must_use]
+    pub const fn operation_id(&self) -> &crate::ids::OperationId {
+        match self {
+            Self::NotFound { operation_id }
+            | Self::Queued { operation_id, .. }
+            | Self::Running { operation_id, .. }
+            | Self::Completed { operation_id, .. }
+            | Self::Failed { operation_id, .. }
+            | Self::Cancelled { operation_id } => operation_id,
+        }
+    }
+}
+
+/// Idempotent cancellation request for one machine-local prune.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuildCachePruneCancelRequest {
+    pub operation_id: crate::ids::OperationId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BuildCachePruneCancelOutcome {
+    Requested,
+    NotRunning,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuildCachePruneCancelOk {
+    pub operation_id: crate::ids::OperationId,
+    pub outcome: BuildCachePruneCancelOutcome,
+}
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -934,39 +1037,60 @@ mod tests {
     }
 
     #[test]
-    fn build_and_prune_response_budgets_cover_each_stage_in_order() {
+    fn build_response_budgets_cover_each_stage_in_order() {
         assert_eq!(
             BUILD_MAX_MACHINE_RESPONSE_LIFETIME,
             BUILD_MAX_EXECUTION_TIMEOUT + BUILD_TASK_DRAIN_TIMEOUT + BUILD_FORCE_CLEANUP_TIMEOUT
         );
         assert_eq!(
-            BUILD_CACHE_PRUNE_MAX_EXECUTION_TIMEOUT,
-            Duration::from_secs(10 * 60)
-        );
-        assert_eq!(
-            BUILD_CACHE_PRUNE_MAX_MACHINE_RESPONSE_LIFETIME,
-            Duration::from_secs(41 * 60)
-        );
-        assert_eq!(
-            BUILD_CACHE_PRUNE_ENDPOINT_TIMEOUT,
-            Duration::from_secs(41 * 60 + 10)
-        );
-        assert_eq!(
             BUILD_RESPONSE_PERMISSION_EXPIRY,
-            Duration::from_secs(41 * 60 + 15)
+            Duration::from_secs(31 * 60 + 15)
         );
         assert!(
             build_control_request_timeout(BUILD_MAX_EXECUTION_TIMEOUT)
                 > BUILD_MAX_MACHINE_RESPONSE_LIFETIME
         );
         assert!(BUILD_START_ENDPOINT_TIMEOUT > BUILD_MAX_MACHINE_RESPONSE_LIFETIME);
-        assert!(
-            BUILD_CACHE_PRUNE_MAX_MACHINE_RESPONSE_LIFETIME > BUILD_MAX_MACHINE_RESPONSE_LIFETIME
+        assert!(BUILD_RESPONSE_PERMISSION_EXPIRY > BUILD_START_ENDPOINT_TIMEOUT);
+    }
+
+    #[test]
+    fn asynchronous_prune_contract_is_strict_and_progress_is_monotonic_input() {
+        let operation_id = crate::ids::OperationId::try_new("prune-1").expect("operation");
+        let status = BuildCachePruneStatus::Running {
+            operation_id: operation_id.clone(),
+            phase: BuildCachePruneRunningPhase::InspectingCache,
+            progress: 2,
+        };
+        let encoded = serde_json::to_value(&status).expect("status");
+        assert_eq!(
+            encoded,
+            serde_json::json!({
+                "status": "running",
+                "operation_id": "prune-1",
+                "phase": "inspecting_cache",
+                "progress": 2,
+            })
         );
-        assert!(
-            BUILD_CACHE_PRUNE_ENDPOINT_TIMEOUT > BUILD_CACHE_PRUNE_MAX_MACHINE_RESPONSE_LIFETIME
+        assert_eq!(
+            serde_json::from_value::<BuildCachePruneStatus>(encoded.clone()).expect("strict"),
+            status
         );
-        assert!(BUILD_RESPONSE_PERMISSION_EXPIRY > BUILD_CACHE_PRUNE_ENDPOINT_TIMEOUT);
+        let mut unknown = encoded;
+        unknown
+            .as_object_mut()
+            .expect("object")
+            .insert("unexpected".to_owned(), serde_json::json!(true));
+        assert!(serde_json::from_value::<BuildCachePruneStatus>(unknown).is_err());
+        assert_eq!(status.operation_id(), &operation_id);
+        assert_eq!(
+            BUILD_CACHE_PRUNE_QUEUED_STALL_TIMEOUT,
+            Duration::from_secs(31 * 60 + 5)
+        );
+        assert_eq!(
+            BUILD_CACHE_PRUNE_RUNNING_STALL_TIMEOUT,
+            Duration::from_secs(5 * 60 + 5)
+        );
     }
 
     #[test]

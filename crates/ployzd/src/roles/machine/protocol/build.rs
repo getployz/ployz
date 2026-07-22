@@ -1,4 +1,6 @@
 use ployz_core::build::{
+    BuildCachePruneAcceptance, BuildCachePruneCancelOk, BuildCachePruneCancelRequest,
+    BuildCachePruneStartRequest, BuildCachePruneStatus, BuildCachePruneStatusRequest,
     BuildExecutorCancelDomainError, BuildExecutorCancelOk, BuildExecutorCancelOutcome,
     BuildExecutorCancelRequest, BuildExecutorCleanupOutcome, BuildExecutorLogFrame,
     BuildExecutorStartDomainError, BuildExecutorStartRequest, BuildExecutorStatus,
@@ -55,38 +57,77 @@ impl<T> ployz_core::machine::rpc::MachineRpcResponder for MachineBuildExecutorRp
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MachineBuildCachePruneRpcRequest {
-    pub operation_id: OperationId,
-}
+pub type MachineBuildCachePruneStartRpcRequest = BuildCachePruneStartRequest;
+pub type MachineBuildCachePruneStartRpcOk = MachineBuildExecutorRpcOk<BuildCachePruneAcceptance>;
+pub type MachineBuildCachePruneStartRpcResponse =
+    MachineRpcResponse<MachineBuildCachePruneStartRpcOk, MachineBuildCachePruneStartDomainError>;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MachineBuildCachePruneRpcOk {
-    pub machine_id: MachineId,
-    pub evidence: ployz_core::operation::BuildCachePruneEvidence,
-}
+pub type MachineBuildCachePruneStatusRpcRequest = BuildCachePruneStatusRequest;
+pub type MachineBuildCachePruneStatusRpcOk = MachineBuildExecutorRpcOk<BuildCachePruneStatus>;
+pub type MachineBuildCachePruneStatusRpcResponse =
+    MachineRpcResponse<MachineBuildCachePruneStatusRpcOk, MachineBuildCachePruneStatusDomainError>;
 
-impl ployz_core::machine::rpc::MachineRpcResponder for MachineBuildCachePruneRpcOk {
-    fn responder_machine_id(&self) -> &MachineId {
-        &self.machine_id
-    }
-}
-
-pub type MachineBuildCachePruneRpcResponse =
-    MachineRpcResponse<MachineBuildCachePruneRpcOk, MachineBuildCachePruneDomainError>;
+pub type MachineBuildCachePruneCancelRpcRequest = BuildCachePruneCancelRequest;
+pub type MachineBuildCachePruneCancelRpcOk = MachineBuildExecutorRpcOk<BuildCachePruneCancelOk>;
+pub type MachineBuildCachePruneCancelRpcResponse =
+    MachineRpcResponse<MachineBuildCachePruneCancelRpcOk, MachineBuildCachePruneCancelDomainError>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
-pub enum MachineBuildCachePruneDomainError {
-    PruneFailed { message: FailureMessage },
+pub enum MachineBuildCachePruneStartDomainError {
+    RuntimeUnavailable,
+    RuntimeStopped,
+    AlreadyRunning { operation_id: OperationId },
+    StartFailed { message: FailureMessage },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineBuildCachePruneStatusDomainError {
+    ReadFailed { message: FailureMessage },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineBuildCachePruneCancelDomainError {
+    CancelFailed { message: FailureMessage },
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ployz_core::build::BuildCachePruneCancelOutcome;
     use ployz_core::image::OciPlatform;
+    use serde::de::DeserializeOwned;
+
+    fn assert_strict<T: Serialize + DeserializeOwned>(value: &T) {
+        let encoded = serde_json::to_value(value).expect("encode");
+        serde_json::from_value::<T>(encoded.clone()).expect("decode");
+        let mut unknown = encoded.clone();
+        unknown
+            .as_object_mut()
+            .expect("object")
+            .insert("unexpected".to_owned(), serde_json::json!(true));
+        assert!(serde_json::from_value::<T>(unknown).is_err());
+        let mut unknown_executor = encoded;
+        unknown_executor
+            .get_mut("executor")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("executor")
+            .insert("unexpected".to_owned(), serde_json::json!(true));
+        assert!(serde_json::from_value::<T>(unknown_executor).is_err());
+    }
+
+    fn assert_closed<T: Serialize + DeserializeOwned>(value: &T) {
+        let encoded = serde_json::to_value(value).expect("encode");
+        serde_json::from_value::<T>(encoded.clone()).expect("decode");
+        let mut unknown = encoded;
+        unknown
+            .as_object_mut()
+            .expect("object")
+            .insert("unexpected".to_owned(), serde_json::json!(true));
+        assert!(serde_json::from_value::<T>(unknown).is_err());
+    }
 
     fn acceptance(machine_id: &MachineId) -> BuildExecutorAcceptance {
         BuildExecutorAcceptance {
@@ -98,6 +139,56 @@ mod tests {
             request_commitment: ployz_core::build::BuildRequestCommitment::try_from("a".repeat(64))
                 .expect("commitment"),
         }
+    }
+
+    #[test]
+    fn cache_prune_start_status_and_cancel_envelopes_are_strict_and_provenanced() {
+        let machine_id = MachineId::try_new("machine-a").expect("machine");
+        let operation_id = OperationId::try_new("prune-1").expect("operation");
+        let start = MachineBuildCachePruneStartRpcOk::from((
+            machine_id.clone(),
+            BuildCachePruneAcceptance {
+                operation_id: operation_id.clone(),
+            },
+        ));
+        let status = MachineBuildCachePruneStatusRpcOk::from((
+            machine_id.clone(),
+            BuildCachePruneStatus::Queued {
+                operation_id: operation_id.clone(),
+                progress: 1,
+            },
+        ));
+        let cancel = MachineBuildCachePruneCancelRpcOk::from((
+            machine_id,
+            BuildCachePruneCancelOk {
+                operation_id: operation_id.clone(),
+                outcome: BuildCachePruneCancelOutcome::Requested,
+            },
+        ));
+
+        assert_strict(&start);
+        assert_strict(&status);
+        assert_strict(&cancel);
+        assert_eq!(start.executor.operation_id, operation_id);
+    }
+
+    #[test]
+    fn cache_prune_endpoint_domain_errors_are_typed_and_strict() {
+        let operation_id = OperationId::try_new("prune-1").expect("operation");
+        let start = MachineBuildCachePruneStartDomainError::AlreadyRunning { operation_id };
+        let status = MachineBuildCachePruneStatusDomainError::ReadFailed {
+            message: FailureMessage::try_new("status unavailable").expect("message"),
+        };
+        let cancel = MachineBuildCachePruneCancelDomainError::CancelFailed {
+            message: FailureMessage::try_new("cancel unavailable").expect("message"),
+        };
+        assert_eq!(
+            serde_json::to_value(&start).expect("start"),
+            serde_json::json!({"error": "already_running", "operation_id": "prune-1"})
+        );
+        assert_closed(&start);
+        assert_closed(&status);
+        assert_closed(&cancel);
     }
 
     #[test]

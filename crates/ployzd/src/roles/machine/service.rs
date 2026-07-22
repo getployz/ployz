@@ -1,8 +1,8 @@
 //! NATS Service API wiring for machine-local commands.
 
 use super::build::{
-    MachineBuildRuntime, handle_build_cache_prune, handle_build_cancel, handle_build_start,
-    handle_build_status,
+    MachineBuildRuntime, handle_build_cache_prune_cancel, handle_build_cache_prune_start,
+    handle_build_cache_prune_status, handle_build_cancel, handle_build_start, handle_build_status,
 };
 use super::containers::{
     MachineContainerState, handle_container_inspect, handle_container_remove,
@@ -39,7 +39,6 @@ use crate::roles::machine::runner::{
     MachineContainerRunner, MachineImageRemovalRunner, MachineLogReader, MachineVolumeUsageReader,
 };
 use crate::service_catalog::{machine_endpoint_spec, machine_role_service_base};
-use ployz_core::build::BUILD_CACHE_PRUNE_ENDPOINT_TIMEOUT;
 use ployz_core::ids::MachineId;
 #[cfg(test)]
 use ployz_core::machine::MachineEndpointObservation;
@@ -321,17 +320,33 @@ where
     bind_machine_endpoint(
         &mut runtime,
         &machine_id,
-        MachineServiceEndpoint::BuildCachePrune,
+        MachineServiceEndpoint::BuildCancel,
         build_state.clone(),
-        handle_build_cache_prune,
+        handle_build_cancel,
     )
     .await?;
     bind_machine_endpoint(
         &mut runtime,
         &machine_id,
-        MachineServiceEndpoint::BuildCancel,
+        MachineServiceEndpoint::BuildCachePruneStart,
+        build_state.clone(),
+        handle_build_cache_prune_start,
+    )
+    .await?;
+    bind_machine_endpoint(
+        &mut runtime,
+        &machine_id,
+        MachineServiceEndpoint::BuildCachePruneStatus,
+        build_state.clone(),
+        handle_build_cache_prune_status,
+    )
+    .await?;
+    bind_machine_endpoint(
+        &mut runtime,
+        &machine_id,
+        MachineServiceEndpoint::BuildCachePruneCancel,
         build_state,
-        handle_build_cancel,
+        handle_build_cache_prune_cancel,
     )
     .await?;
     bind_machine_endpoint(
@@ -596,9 +611,6 @@ fn machine_endpoint_policy(endpoint: MachineServiceEndpoint) -> EndpointExecutio
             policy.request_timeout =
                 ployz_core::storage::MACHINE_STORAGE_PREPARE_CANCEL_RPC_TIMEOUT;
         }
-        MachineServiceEndpoint::BuildCachePrune => {
-            policy.request_timeout = BUILD_CACHE_PRUNE_ENDPOINT_TIMEOUT;
-        }
         MachineServiceEndpoint::VolumeEnsure => {
             policy.request_timeout = VOLUME_ENSURE_ENDPOINT_TIMEOUT;
         }
@@ -633,6 +645,9 @@ fn machine_endpoint_policy(endpoint: MachineServiceEndpoint) -> EndpointExecutio
         | MachineServiceEndpoint::ImageRemove
         | MachineServiceEndpoint::BuildCancel
         | MachineServiceEndpoint::BuildStatus
+        | MachineServiceEndpoint::BuildCachePruneStart
+        | MachineServiceEndpoint::BuildCachePruneStatus
+        | MachineServiceEndpoint::BuildCachePruneCancel
         | MachineServiceEndpoint::CertificateArtifactStatus
         | MachineServiceEndpoint::CertificateArtifactPush
         | MachineServiceEndpoint::CertificateArtifactRemove
@@ -725,20 +740,27 @@ mod tests {
     }
 
     #[test]
-    fn build_endpoints_cover_admission_and_prune_response_budgets() {
+    fn build_endpoints_use_quick_machine_response_budgets() {
         let policy = machine_endpoint_policy(MachineServiceEndpoint::BuildStart);
-        let prune_policy = machine_endpoint_policy(MachineServiceEndpoint::BuildCachePrune);
+        let prune_start = machine_endpoint_policy(MachineServiceEndpoint::BuildCachePruneStart);
+        let prune_status = machine_endpoint_policy(MachineServiceEndpoint::BuildCachePruneStatus);
+        let prune_cancel = machine_endpoint_policy(MachineServiceEndpoint::BuildCachePruneCancel);
 
         assert_eq!(
             policy.request_timeout,
             EndpointExecutionPolicy::default().request_timeout
         );
-        assert_eq!(
-            prune_policy.request_timeout,
-            ployz_core::build::BUILD_CACHE_PRUNE_ENDPOINT_TIMEOUT
-        );
         assert!(policy.request_timeout < ployz_core::build::BUILD_MAX_MACHINE_RESPONSE_LIFETIME);
-        assert!(prune_policy.request_timeout > policy.request_timeout);
+        for prune_policy in [prune_start, prune_status, prune_cancel] {
+            assert_eq!(
+                prune_policy.request_timeout,
+                EndpointExecutionPolicy::default().request_timeout
+            );
+            assert!(
+                prune_policy.request_timeout
+                    < ployz_core::build::BUILD_MAX_MACHINE_RESPONSE_LIFETIME
+            );
+        }
     }
 
     #[test]

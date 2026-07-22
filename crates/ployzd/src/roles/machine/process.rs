@@ -35,7 +35,6 @@ use crate::roles::machine::service::{
 use crate::roles::machine::substrate::StoragePrepareRuntime;
 use futures_util::StreamExt;
 use ployz_build_executor::{BuildExecutionError, DockerBuildExecutor};
-use ployz_core::build::BUILD_CACHE_PRUNE_MAX_EXECUTION_TIMEOUT;
 use ployz_core::ids::MachineId;
 use ployz_core::image::IMAGE_MESH_REGISTRY_PORT;
 use ployz_core::intent::recovery::PendingMachineJoinRecoverySnapshot;
@@ -55,8 +54,10 @@ const MACHINE_OBSERVATION_INTERVAL: Duration =
     ployz_core::machine::runtime::OBSERVATION_PUBLISH_INTERVAL;
 const MACHINE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(5);
 const MACHINE_SHUTDOWN_TAIL_TIMEOUT: Duration = Duration::from_secs(5);
-const MACHINE_SHUTDOWN_TIMEOUT: Duration =
-    BUILD_CACHE_PRUNE_MAX_EXECUTION_TIMEOUT.saturating_add(MACHINE_SHUTDOWN_TAIL_TIMEOUT);
+const MACHINE_SHUTDOWN_TIMEOUT: Duration = ployz_core::build::BUILD_TASK_DRAIN_TIMEOUT
+    .saturating_add(ployz_core::build::BUILD_TASK_DRAIN_TIMEOUT)
+    .saturating_add(ployz_core::build::BUILD_FORCE_CLEANUP_TIMEOUT)
+    .saturating_add(MACHINE_SHUTDOWN_TAIL_TIMEOUT);
 const INTENT_MIRROR_RESUBSCRIBE_DELAY: Duration = Duration::from_secs(5);
 const BUILD_WORKSPACE_ROOT: &str = "/var/lib/ployz/builds";
 const BUILD_STATUS_ROOT: &str = "/var/lib/ployz/build-status";
@@ -659,7 +660,7 @@ mod tests {
     }
 
     #[test]
-    fn machine_shutdown_covers_prune_and_build_runtime_shutdown() {
+    fn machine_shutdown_covers_build_runtime_shutdown() {
         let build_shutdown_timeout = ployz_core::build::BUILD_TASK_DRAIN_TIMEOUT
             + ployz_core::build::BUILD_TASK_DRAIN_TIMEOUT
             + ployz_core::build::BUILD_FORCE_CLEANUP_TIMEOUT;
@@ -667,11 +668,7 @@ mod tests {
         assert_eq!(MACHINE_SHUTDOWN_TAIL_TIMEOUT, Duration::from_secs(5));
         assert_eq!(
             MACHINE_SHUTDOWN_TIMEOUT,
-            ployz_core::build::BUILD_CACHE_PRUNE_MAX_EXECUTION_TIMEOUT
-                + MACHINE_SHUTDOWN_TAIL_TIMEOUT
-        );
-        assert!(
-            MACHINE_SHUTDOWN_TIMEOUT > ployz_core::build::BUILD_CACHE_PRUNE_MAX_EXECUTION_TIMEOUT
+            build_shutdown_timeout + MACHINE_SHUTDOWN_TAIL_TIMEOUT
         );
         assert!(MACHINE_SHUTDOWN_TIMEOUT > build_shutdown_timeout);
     }

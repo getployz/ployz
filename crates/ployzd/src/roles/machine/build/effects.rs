@@ -17,11 +17,13 @@ pub(super) struct DockerBuildEffects {
 impl BuildEffects {
     pub(super) async fn prune_cache(
         &self,
+        cancelled: watch::Receiver<bool>,
+        progress: mpsc::UnboundedSender<BuildCachePruneRunningPhase>,
     ) -> Result<ployz_core::operation::BuildCachePruneEvidence, BuildExecutionError> {
         match self {
-            Self::Docker(effects) => effects.executor.prune_cache().await,
+            Self::Docker(effects) => effects.executor.prune_cache(cancelled, progress).await,
             #[cfg(test)]
-            Self::Test(effects) => effects.prune_cache().await,
+            Self::Test(effects) => effects.prune_cache(cancelled, progress).await,
         }
     }
 
