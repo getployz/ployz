@@ -687,7 +687,9 @@ pub enum MachineServiceEndpoint {
     ImageRemove,
     BuildStart,
     BuildCancel,
-    BuildCachePrune,
+    BuildCachePruneStart,
+    BuildCachePruneStatus,
+    BuildCachePruneCancel,
     CertificateArtifactStatus,
     CertificateArtifactPush,
     CertificateArtifactRemove,
@@ -734,7 +736,9 @@ impl MachineServiceEndpoint {
         Self::ImageRemove,
         Self::BuildStart,
         Self::BuildCancel,
-        Self::BuildCachePrune,
+        Self::BuildCachePruneStart,
+        Self::BuildCachePruneStatus,
+        Self::BuildCachePruneCancel,
         Self::CertificateArtifactStatus,
         Self::CertificateArtifactPush,
         Self::CertificateArtifactRemove,
@@ -782,7 +786,9 @@ impl MachineServiceEndpoint {
             Self::ImageRemove => "container.remove_image",
             Self::BuildStart => "build.start",
             Self::BuildCancel => "build.cancel",
-            Self::BuildCachePrune => "build.cache.prune",
+            Self::BuildCachePruneStart => "build.cache.prune.start",
+            Self::BuildCachePruneStatus => "build.cache.prune.status",
+            Self::BuildCachePruneCancel => "build.cache.prune.cancel",
             Self::CertificateArtifactStatus => "certificate.artifact.status",
             Self::CertificateArtifactPush => "certificate.artifact.push",
             Self::CertificateArtifactRemove => "certificate.artifact.remove",
@@ -809,6 +815,7 @@ impl MachineServiceEndpoint {
             | Self::DataplaneStatus
             | Self::LogsTail
             | Self::ImageBlobCheck
+            | Self::BuildCachePruneStatus
             | Self::CertificateArtifactStatus
             | Self::CertificateChallengeStatus
             | Self::GatewayStatusGet => MachineServiceEndpointExecution::Query,
@@ -828,7 +835,8 @@ impl MachineServiceEndpoint {
             | Self::ImageRemove
             | Self::BuildStart
             | Self::BuildCancel
-            | Self::BuildCachePrune
+            | Self::BuildCachePruneStart
+            | Self::BuildCachePruneCancel
             | Self::CertificateArtifactPush
             | Self::CertificateArtifactRemove
             | Self::CertificateChallengeApply
@@ -932,6 +940,22 @@ mod build_contract_tests {
         assert_eq!(
             machine_service(&machine, MachineServiceEndpoint::BuildStart),
             "plz.v1.rpc.machine.command.machine-a.build.start"
+        );
+        assert_eq!(
+            machine_service(&machine, MachineServiceEndpoint::BuildCachePruneStart),
+            "plz.v1.rpc.machine.command.machine-a.build.cache.prune.start"
+        );
+        assert_eq!(
+            machine_service(&machine, MachineServiceEndpoint::BuildCachePruneStatus),
+            "plz.v1.rpc.machine.query.machine-a.build.cache.prune.status"
+        );
+        assert_eq!(
+            machine_service(&machine, MachineServiceEndpoint::BuildCachePruneCancel),
+            "plz.v1.rpc.machine.command.machine-a.build.cache.prune.cancel"
+        );
+        assert_eq!(
+            MachineServiceEndpoint::BuildCachePruneStatus.execution(),
+            MachineServiceEndpointExecution::Query
         );
         assert_eq!(
             machine_build_log(&machine, &operation),
