@@ -1394,10 +1394,11 @@ async fn assert_direct_push_multi_machine_deploy(core: &CoreContext) {
         assert!(events.iter().any(|event| matches!(
             event,
             OperationEvent::DeployImageAvailabilityVerified {
-                seed,
-                manifest_digest,
+                machine_id,
+                image,
                 ..
-            } if seed == &pushed_image.seed && manifest_digest == &pushed_image.manifest_digest
+            } if machine_id == &pushed_image.seed
+                && image.pinned_digest().as_ref() == Some(&pushed_image.manifest_digest)
         )));
 
         let mut running = 0_usize;

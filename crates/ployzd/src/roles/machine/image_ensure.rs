@@ -199,7 +199,9 @@ impl ImageEnsureRuntime {
         }
         if let Some(existing) = state.tasks.get(&owner) {
             if existing.acquisition != acquisition {
-                return Err(ImageRpcDomainError::ImageEnsureConflict { owner });
+                return Err(ImageRpcDomainError::ImageEnsureConflict {
+                    owner: Box::new(owner),
+                });
             }
             return Ok(existing.status.lock().await.clone());
         }
@@ -232,7 +234,7 @@ impl ImageEnsureRuntime {
             state.tasks.get(owner).cloned()
         }
         .ok_or_else(|| ImageRpcDomainError::ImageEnsureNotFound {
-            owner: owner.clone(),
+            owner: Box::new(owner.clone()),
         })?;
         Ok(task.status.lock().await.clone())
     }
@@ -247,7 +249,7 @@ impl ImageEnsureRuntime {
             state.tasks.get(owner).cloned()
         }
         .ok_or_else(|| ImageRpcDomainError::ImageEnsureNotFound {
-            owner: owner.clone(),
+            owner: Box::new(owner.clone()),
         })?;
         let _ = task.cancel.send(true);
         task.terminalize(ImageEnsureStatus::Cancelled).await;

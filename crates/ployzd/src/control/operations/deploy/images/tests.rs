@@ -439,13 +439,16 @@ async fn ensure_wave_starts_every_independent_job_before_polling_status() {
 
     assert_eq!(completed.len(), 2);
     let image_ensures = runtime.image_ensures();
+    let [first_start, second_start, first_status, second_status] = image_ensures.as_slice() else {
+        panic!("two jobs must each start and report status");
+    };
     assert!(
-        image_ensures[..2]
+        [first_start, second_start]
             .iter()
             .all(|(_, request)| matches!(request, ImageEnsureRequest::Start { .. }))
     );
     assert!(
-        image_ensures[2..]
+        [first_status, second_status]
             .iter()
             .all(|(_, request)| matches!(request, ImageEnsureRequest::Status { .. }))
     );

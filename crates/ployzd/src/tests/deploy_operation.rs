@@ -210,11 +210,16 @@ async fn image_ensure_transport_retries_preserve_one_owner_and_then_run() {
         .iter()
         .filter_map(|(_, request)| match request {
             ployz_core::image::ImageEnsureRequest::Start { owner, .. } => Some(owner),
-            _ => None,
+            ployz_core::image::ImageEnsureRequest::Status { .. }
+            | ployz_core::image::ImageEnsureRequest::Cancel { .. } => None,
         })
         .collect::<Vec<_>>();
     assert_eq!(owners.len(), 3);
-    assert!(owners.windows(2).all(|pair| pair[0] == pair[1]));
+    assert!(
+        owners
+            .windows(2)
+            .all(|pair| matches!(pair, [left, right] if left == right))
+    );
     assert_eq!(runtime.requests.len(), 1);
 }
 
@@ -255,12 +260,19 @@ async fn image_ensure_status_testimony_retries_same_owner_and_then_runs() {
             | ployz_core::image::ImageEnsureRequest::Cancel { owner } => owner,
         })
         .collect::<Vec<_>>();
-    assert!(owners.windows(2).all(|pair| pair[0] == pair[1]));
+    assert!(
+        owners
+            .windows(2)
+            .all(|pair| matches!(pair, [left, right] if left == right))
+    );
+    let [start, statuses @ ..] = image_ensures.as_slice() else {
+        panic!("image ensure testimony records at least one request");
+    };
     assert!(matches!(
-        image_ensures[0].1,
+        start.1,
         ployz_core::image::ImageEnsureRequest::Start { .. }
     ));
-    assert!(image_ensures[1..].iter().all(|(_, request)| matches!(
+    assert!(statuses.iter().all(|(_, request)| matches!(
         request,
         ployz_core::image::ImageEnsureRequest::Status { .. }
     )));
@@ -294,12 +306,18 @@ async fn exhausted_status_testimony_cancels_same_owner_and_never_runs() {
     assert!(runtime.requests.is_empty());
     let image_ensures = runtime.image_ensures();
     assert_eq!(image_ensures.len(), 5);
-    let start_owner = match &image_ensures[0].1 {
+    let [start, _, _, _, cancel] = image_ensures.as_slice() else {
+        panic!("exhausted testimony records start, retries, and cancel");
+    };
+    let start_owner = match &start.1 {
         ployz_core::image::ImageEnsureRequest::Start { owner, .. } => owner,
-        _ => panic!("first request is Start"),
+        ployz_core::image::ImageEnsureRequest::Status { .. }
+        | ployz_core::image::ImageEnsureRequest::Cancel { .. } => {
+            panic!("first request is Start")
+        }
     };
     assert!(
-        matches!(&image_ensures[4].1, ployz_core::image::ImageEnsureRequest::Cancel { owner } if owner == start_owner)
+        matches!(&cancel.1, ployz_core::image::ImageEnsureRequest::Cancel { owner } if owner == start_owner)
     );
 }
 
@@ -1053,17 +1071,20 @@ async fn mixed_platform_pushed_deploy_selects_each_platform_image_and_keeps_one_
     );
     let amd64 = platform("amd64");
     let arm64 = platform("arm64");
+    let [amd64_seed, arm64_seed, amd64_target, arm64_target] = image_ensures.as_slice() else {
+        panic!("mixed-platform fixture records four image ensures");
+    };
     assert!(
-        matches!(&image_ensures[0], (machine, ployz_core::image::ImageEnsureRequest::Start { source: ployz_core::image::ImageEnsureSource::LocalSeed { platform, .. }, .. }) if machine == &machine_id("machine_seed") && platform == &amd64)
+        matches!(amd64_seed, (machine, ployz_core::image::ImageEnsureRequest::Start { source: ployz_core::image::ImageEnsureSource::LocalSeed { platform, .. }, .. }) if machine == &machine_id("machine_seed") && platform == &amd64)
     );
     assert!(
-        matches!(&image_ensures[1], (machine, ployz_core::image::ImageEnsureRequest::Start { source: ployz_core::image::ImageEnsureSource::LocalSeed { platform, .. }, .. }) if machine == &machine_id("machine_arm_seed") && platform == &arm64)
+        matches!(arm64_seed, (machine, ployz_core::image::ImageEnsureRequest::Start { source: ployz_core::image::ImageEnsureSource::LocalSeed { platform, .. }, .. }) if machine == &machine_id("machine_arm_seed") && platform == &arm64)
     );
     assert!(
-        matches!(&image_ensures[2], (machine, ployz_core::image::ImageEnsureRequest::Start { source: ployz_core::image::ImageEnsureSource::MeshSeed { platform, .. }, .. }) if machine == &machine_id("machine_a") && platform == &amd64)
+        matches!(amd64_target, (machine, ployz_core::image::ImageEnsureRequest::Start { source: ployz_core::image::ImageEnsureSource::MeshSeed { platform, .. }, .. }) if machine == &machine_id("machine_a") && platform == &amd64)
     );
     assert!(
-        matches!(&image_ensures[3], (machine, ployz_core::image::ImageEnsureRequest::Start { source: ployz_core::image::ImageEnsureSource::MeshSeed { platform, .. }, .. }) if machine == &machine_id("machine_b") && platform == &arm64)
+        matches!(arm64_target, (machine, ployz_core::image::ImageEnsureRequest::Start { source: ployz_core::image::ImageEnsureSource::MeshSeed { platform, .. }, .. }) if machine == &machine_id("machine_b") && platform == &arm64)
     );
     assert_eq!(amd64_request.0, machine_id("machine_a"));
     assert!(matches!(

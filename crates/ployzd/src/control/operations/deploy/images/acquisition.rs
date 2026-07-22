@@ -109,7 +109,9 @@ where
                             seed_jobs.len() - 1
                         });
                     if machine_id == platform_image.seed {
-                        seed_jobs[seed_index]
+                        seed_jobs
+                            .get_mut(seed_index)
+                            .expect("seed job index was just found or inserted")
                             .evidence_targets
                             .push(machine_id.clone());
                         continue;
@@ -141,7 +143,9 @@ where
     let seed_references = run_image_ensure_wave(machine_runtime, &seed_jobs)
         .await
         .map_err(|(index, error)| {
-            let job = &seed_jobs[index];
+            let job = seed_jobs
+                .get(index)
+                .expect("image ensure failure index belongs to the seed wave");
             ensure_seed_drive_failure(
                 &job.service,
                 &job.target_machine,
@@ -166,7 +170,9 @@ where
     let target_references = run_image_ensure_wave(machine_runtime, &target_jobs)
         .await
         .map_err(|(index, error)| {
-            let job = &target_jobs[index];
+            let job = target_jobs
+                .get(index)
+                .expect("image ensure failure index belongs to the target wave");
             target_ensure_failure(command, &job.service, &job.target_machine, error)
         })?;
     for (job, reference) in target_jobs.iter().zip(target_references) {
@@ -282,7 +288,12 @@ pub(super) async fn run_image_ensure_wave_with_runtime<N: MachineImageEnsureRunt
         }
         let mut polls = FuturesUnordered::new();
         for (index, job) in jobs.iter().enumerate() {
-            if !matches!(statuses[index], ImageEnsureStatus::Completed { .. }) {
+            if !matches!(
+                statuses
+                    .get(index)
+                    .expect("each image ensure job has a status"),
+                ImageEnsureStatus::Completed { .. }
+            ) {
                 let runtime = runtime.clone();
                 let machine_id = job.machine_id.clone();
                 let request = ImageEnsureRequest::Status {
@@ -297,7 +308,10 @@ pub(super) async fn run_image_ensure_wave_with_runtime<N: MachineImageEnsureRunt
             }
         }
         while let Some((index, outcome)) = polls.next().await {
-            statuses[index] = match outcome {
+            let status = statuses
+                .get_mut(index)
+                .expect("poll result index belongs to the image ensure wave");
+            *status = match outcome {
                 Ok(status) => status.status,
                 Err(error) => {
                     drop(polls);
@@ -306,7 +320,7 @@ pub(super) async fn run_image_ensure_wave_with_runtime<N: MachineImageEnsureRunt
                     return Err((index, ImageEnsureDriveError::Call(error)));
                 }
             };
-            if let Some(error) = image_ensure_status_error(&statuses[index]) {
+            if let Some(error) = image_ensure_status_error(status) {
                 drop(polls);
                 let statuses = statuses.into_iter().map(Some).collect::<Vec<_>>();
                 cancel_unfinished_jobs(&runtime, jobs, &statuses).await;
@@ -321,7 +335,12 @@ pub(super) async fn run_image_ensure_wave_with_runtime<N: MachineImageEnsureRunt
                 .into_iter()
                 .map(|status| match status {
                     ImageEnsureStatus::Completed { reference } => reference,
-                    _ => unreachable!("all image ensures completed"),
+                    ImageEnsureStatus::Accepted
+                    | ImageEnsureStatus::Running { .. }
+                    | ImageEnsureStatus::Failed { .. }
+                    | ImageEnsureStatus::Cancelled => {
+                        unreachable!("all image ensures completed")
+                    }
                 })
                 .collect());
         }
@@ -346,22 +365,26 @@ async fn cancel_unfinished_jobs<N: MachineImageEnsureRuntime>(
     jobs: &[ImageEnsureJob],
     statuses: &[Option<ImageEnsureStatus>],
 ) {
-    futures_util::future::join_all(jobs.iter().zip(statuses).filter_map(|(job, status)| {
-        matches!(
-            status,
-            Some(ImageEnsureStatus::Accepted | ImageEnsureStatus::Running { .. })
-        )
-        .then(|| {
-            let runtime = runtime.clone();
-            let machine_id = job.machine_id.clone();
-            let request = ImageEnsureRequest::Cancel {
-                owner: job.owner.clone(),
-            };
-            async move {
-                let _ = runtime.ensure_image(&machine_id, request).await;
-            }
-        })
-    }))
+    futures_util::future::join_all(
+        jobs.iter()
+            .zip(statuses)
+            .filter(|(_, status)| {
+                matches!(
+                    status,
+                    Some(ImageEnsureStatus::Accepted | ImageEnsureStatus::Running { .. })
+                )
+            })
+            .map(|(job, _)| {
+                let runtime = runtime.clone();
+                let machine_id = job.machine_id.clone();
+                let request = ImageEnsureRequest::Cancel {
+                    owner: job.owner.clone(),
+                };
+                async move {
+                    let _ = runtime.ensure_image(&machine_id, request).await;
+                }
+            }),
+    )
     .await;
 }
 

@@ -736,10 +736,10 @@ pub enum ImageRpcDomainError {
         message: FailureMessage,
     },
     ImageEnsureConflict {
-        owner: crate::machine::runtime::ManagedContainerIdentity,
+        owner: Box<crate::machine::runtime::ManagedContainerIdentity>,
     },
     ImageEnsureNotFound {
-        owner: crate::machine::runtime::ManagedContainerIdentity,
+        owner: Box<crate::machine::runtime::ManagedContainerIdentity>,
     },
 }
 
