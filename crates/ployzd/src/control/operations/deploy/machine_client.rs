@@ -22,11 +22,17 @@ use crate::roles::machine::protocol::{
 };
 
 use super::{
-    MachineContainerRuntime, MachineContainerRuntimeError, MachineImageRemovalRuntime,
-    MachineVolumeEnsureError, PreStartHookRuntimeError,
+    MachineContainerRuntime, MachineContainerRuntimeError, MachineImageEnsureRuntime,
+    MachineImageRemovalRuntime, MachineVolumeEnsureError, PreStartHookRuntimeError,
 };
 
 impl MachineContainerRuntime for NatsMachineContainerRuntime {
+    type ImageEnsureRuntime = NatsMachineContainerRuntime;
+
+    fn image_ensure_runtime(&self) -> Self::ImageEnsureRuntime {
+        self.clone()
+    }
+
     async fn ensure_volume(
         &mut self,
         machine_id: &MachineId,
@@ -53,25 +59,6 @@ impl MachineContainerRuntime for NatsMachineContainerRuntime {
                 ) => MachineImageResolveError::Rejected {
                     machine_id: machine_id.clone(),
                     message,
-                },
-            })
-    }
-
-    async fn ensure_image(
-        &mut self,
-        machine_id: &MachineId,
-        request: ImageEnsureRequest,
-    ) -> Result<ImageEnsureOk, MachineImageEnsureError> {
-        self.request_ensure_image(machine_id, &request)
-            .await
-            .map_err(|error| match error {
-                MachineCallError::Unavailable(reason) => MachineImageEnsureError::Unavailable {
-                    machine_id: machine_id.clone(),
-                    reason,
-                },
-                MachineCallError::Domain(error) => MachineImageEnsureError::Domain {
-                    machine_id: machine_id.clone(),
-                    error,
                 },
             })
     }
@@ -193,6 +180,27 @@ impl MachineContainerRuntime for NatsMachineContainerRuntime {
     }
 }
 
+impl MachineImageEnsureRuntime for NatsMachineContainerRuntime {
+    async fn ensure_image(
+        &self,
+        machine_id: &MachineId,
+        request: ImageEnsureRequest,
+    ) -> Result<ImageEnsureOk, MachineImageEnsureError> {
+        self.request_ensure_image(machine_id, &request)
+            .await
+            .map_err(|error| match error {
+                MachineCallError::Unavailable(reason) => MachineImageEnsureError::Unavailable {
+                    machine_id: machine_id.clone(),
+                    reason,
+                },
+                MachineCallError::Domain(error) => MachineImageEnsureError::Domain {
+                    machine_id: machine_id.clone(),
+                    error,
+                },
+            })
+    }
+}
+
 fn map_run_error(
     machine_id: &MachineId,
     error: MachineCallError<MachineContainerRunDomainError>,
@@ -200,16 +208,6 @@ fn map_run_error(
     match error {
         MachineCallError::Unavailable(reason) => unavailable(machine_id, reason),
         MachineCallError::Domain(error) => match error {
-            MachineContainerRunDomainError::ImagePullFailed {
-                service_id,
-                namespace_revision_entry_id,
-                message,
-            } => MachineContainerRuntimeError::ImagePullFailed {
-                machine_id: machine_id.clone(),
-                service_id,
-                namespace_revision_entry_id,
-                message,
-            },
             MachineContainerRunDomainError::OperationStepAmbiguous {
                 operation_id,
                 step_id,

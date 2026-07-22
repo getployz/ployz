@@ -36,8 +36,8 @@ use crate::control::operations::deploy::{
     AutomaticHostnameMode, CertificateProvisioner, DeployExecutionFacts, DeployExecutionInput,
     DeployHealthCheckError, DeployHealthChecker, DeployOperationRecordError,
     DeployOperationRecorder, DeployPhasePromotion, MachineContainerRuntime,
-    MachineContainerRuntimeError, MachineRuntimeUnavailableReason, NamespaceCommitError,
-    NamespaceStateCommitter, PreStartHookRuntimeError,
+    MachineContainerRuntimeError, MachineImageEnsureRuntime, MachineRuntimeUnavailableReason,
+    NamespaceCommitError, NamespaceStateCommitter, PreStartHookRuntimeError,
 };
 use crate::control::role_client::machine::MachineImageResolveError;
 use crate::roles::machine::protocol::{
@@ -303,7 +303,7 @@ pub(crate) struct RecordingRuntime {
     pub(super) restarts: Vec<(MachineId, MachineContainerRestartRpcRequest)>,
     pub(super) removals: Vec<(MachineId, MachineContainerRemoveRpcRequest)>,
     pub(super) image_removals: Vec<(MachineId, ployz_core::image::ImageRemoveRequest)>,
-    pub(super) image_ensures: Vec<(MachineId, ployz_core::image::ImageEnsureRequest)>,
+    image_ensure_runtime: RecordingImageEnsureRuntime,
     pub(super) volume_ensures: Vec<(MachineId, VolumePinState)>,
     volume_ensure_failure: Option<crate::control::operations::deploy::MachineVolumeEnsureError>,
     required_pin_commit: Option<Arc<AtomicBool>>,
@@ -323,6 +323,24 @@ pub(crate) struct RecordingRuntime {
     hang_stop_for: Vec<(ContainerId, Option<Arc<tokio::sync::Notify>>)>,
     fail_restart: bool,
     run_failure: Option<SyntheticRunFailure>,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct RecordingImageEnsureRuntime {
+    state: Arc<std::sync::Mutex<RecordingImageEnsureState>>,
+}
+
+#[derive(Default)]
+struct RecordingImageEnsureState {
+    requests: Vec<(MachineId, ployz_core::image::ImageEnsureRequest)>,
+    unavailable_remaining: usize,
+    status: Option<ployz_core::image::ImageEnsureStatus>,
+    script: std::collections::VecDeque<
+        Result<
+            ployz_core::image::ImageEnsureStatus,
+            crate::roles::machine::MachineRuntimeUnavailableReason,
+        >,
+    >,
 }
 
 #[derive(Clone)]
@@ -706,6 +724,52 @@ impl DeployContainerForAssert {
 }
 
 impl RecordingRuntime {
+    pub(super) fn with_image_ensure_unavailable(self, count: usize) -> Self {
+        self.image_ensure_runtime
+            .state
+            .lock()
+            .expect("image ensure state")
+            .unavailable_remaining = count;
+        self
+    }
+
+    pub(super) fn with_image_ensure_status(
+        self,
+        status: ployz_core::image::ImageEnsureStatus,
+    ) -> Self {
+        self.image_ensure_runtime
+            .state
+            .lock()
+            .expect("image ensure state")
+            .status = Some(status);
+        self
+    }
+
+    pub(crate) fn with_image_ensure_script(
+        self,
+        script: impl IntoIterator<
+            Item = Result<
+                ployz_core::image::ImageEnsureStatus,
+                crate::roles::machine::MachineRuntimeUnavailableReason,
+            >,
+        >,
+    ) -> Self {
+        self.image_ensure_runtime
+            .state
+            .lock()
+            .expect("image ensure state")
+            .script = script.into_iter().collect();
+        self
+    }
+
+    pub(crate) fn image_ensures(&self) -> Vec<(MachineId, ployz_core::image::ImageEnsureRequest)> {
+        self.image_ensure_runtime
+            .state
+            .lock()
+            .expect("image ensure state")
+            .requests
+            .clone()
+    }
     pub(super) fn requiring_pin_commit(mut self, signal: Arc<AtomicBool>) -> Self {
         self.required_pin_commit = Some(signal);
         self
@@ -729,7 +793,7 @@ impl RecordingRuntime {
             restarts: Vec::new(),
             removals: Vec::new(),
             image_removals: Vec::new(),
-            image_ensures: Vec::new(),
+            image_ensure_runtime: RecordingImageEnsureRuntime::default(),
             volume_ensures: Vec::new(),
             volume_ensure_failure: None,
             required_pin_commit: None,
@@ -762,7 +826,7 @@ impl RecordingRuntime {
             restarts: Vec::new(),
             removals: Vec::new(),
             image_removals: Vec::new(),
-            image_ensures: Vec::new(),
+            image_ensure_runtime: RecordingImageEnsureRuntime::default(),
             volume_ensures: Vec::new(),
             volume_ensure_failure: None,
             required_pin_commit: None,
@@ -795,7 +859,7 @@ impl RecordingRuntime {
             restarts: Vec::new(),
             removals: Vec::new(),
             image_removals: Vec::new(),
-            image_ensures: Vec::new(),
+            image_ensure_runtime: RecordingImageEnsureRuntime::default(),
             volume_ensures: Vec::new(),
             volume_ensure_failure: None,
             required_pin_commit: None,
@@ -828,7 +892,7 @@ impl RecordingRuntime {
             restarts: Vec::new(),
             removals: Vec::new(),
             image_removals: Vec::new(),
-            image_ensures: Vec::new(),
+            image_ensure_runtime: RecordingImageEnsureRuntime::default(),
             volume_ensures: Vec::new(),
             volume_ensure_failure: None,
             required_pin_commit: None,
@@ -864,7 +928,7 @@ impl RecordingRuntime {
             restarts: Vec::new(),
             removals: Vec::new(),
             image_removals: Vec::new(),
-            image_ensures: Vec::new(),
+            image_ensure_runtime: RecordingImageEnsureRuntime::default(),
             volume_ensures: Vec::new(),
             volume_ensure_failure: None,
             required_pin_commit: None,
@@ -897,7 +961,7 @@ impl RecordingRuntime {
             restarts: Vec::new(),
             removals: Vec::new(),
             image_removals: Vec::new(),
-            image_ensures: Vec::new(),
+            image_ensure_runtime: RecordingImageEnsureRuntime::default(),
             volume_ensures: Vec::new(),
             volume_ensure_failure: None,
             required_pin_commit: None,
@@ -1033,6 +1097,12 @@ impl crate::control::operations::deploy::MachineImageRemovalRuntime for Recordin
 }
 
 impl MachineContainerRuntime for RecordingRuntime {
+    type ImageEnsureRuntime = RecordingImageEnsureRuntime;
+
+    fn image_ensure_runtime(&self) -> Self::ImageEnsureRuntime {
+        self.image_ensure_runtime.clone()
+    }
+
     async fn ensure_volume(
         &mut self,
         machine_id: &MachineId,
@@ -1063,22 +1133,6 @@ impl MachineContainerRuntime for RecordingRuntime {
         let digest = ployz_core::image::OciDigest::sha256(request.reference.as_str().as_bytes());
         self.resolutions.push((machine_id.clone(), request));
         Ok(digest)
-    }
-
-    async fn ensure_image(
-        &mut self,
-        machine_id: &MachineId,
-        request: ployz_core::image::ImageEnsureRequest,
-    ) -> Result<
-        ployz_core::image::ImageEnsureOk,
-        crate::control::role_client::machine::MachineImageEnsureError,
-    > {
-        self.image_ensures
-            .push((machine_id.clone(), request.clone()));
-        Ok(ployz_core::image::ImageEnsureOk {
-            machine_id: machine_id.clone(),
-            platform: request.platform,
-        })
     }
 
     async fn run_container(
@@ -1294,6 +1348,69 @@ impl MachineContainerRuntime for RecordingRuntime {
             });
         }
         Ok(())
+    }
+}
+
+impl MachineImageEnsureRuntime for RecordingImageEnsureRuntime {
+    async fn ensure_image(
+        &self,
+        machine_id: &MachineId,
+        request: ployz_core::image::ImageEnsureRequest,
+    ) -> Result<
+        ployz_core::image::ImageEnsureOk,
+        crate::control::role_client::machine::MachineImageEnsureError,
+    > {
+        let (scripted, configured_status) = {
+            let mut state = self.state.lock().expect("image ensure state");
+            state.requests.push((machine_id.clone(), request.clone()));
+            if state.unavailable_remaining > 0 {
+                state.unavailable_remaining -= 1;
+                return Err(
+                    crate::control::role_client::machine::MachineImageEnsureError::Unavailable {
+                        machine_id: machine_id.clone(),
+                        reason:
+                            crate::roles::machine::MachineRuntimeUnavailableReason::RequestTimedOut,
+                    },
+                );
+            }
+            (state.script.pop_front(), state.status.clone())
+        };
+        if let Some(scripted) = scripted {
+            return scripted
+                .map(|status| ployz_core::image::ImageEnsureOk {
+                    machine_id: machine_id.clone(),
+                    ensure_status: status,
+                })
+                .map_err(|reason| {
+                    crate::control::role_client::machine::MachineImageEnsureError::Unavailable {
+                        machine_id: machine_id.clone(),
+                        reason,
+                    }
+                });
+        }
+        let status = match request {
+            ployz_core::image::ImageEnsureRequest::Start { source, .. } => {
+                configured_status.unwrap_or_else(|| ployz_core::image::ImageEnsureStatus::Completed {
+                    reference: ployz_core::deploy::ImageReference::try_new(source.reference())
+                        .expect("fixture image ensure reference is valid"),
+                })
+            }
+            ployz_core::image::ImageEnsureRequest::Status { .. } => {
+                configured_status.unwrap_or_else(|| ployz_core::image::ImageEnsureStatus::Completed {
+                    reference: ployz_core::deploy::ImageReference::try_new(
+                        "registry.example/fixture@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    )
+                    .expect("fixture image reference"),
+                })
+            }
+            ployz_core::image::ImageEnsureRequest::Cancel { .. } => {
+                ployz_core::image::ImageEnsureStatus::Cancelled
+            }
+        };
+        Ok(ployz_core::image::ImageEnsureOk {
+            machine_id: machine_id.clone(),
+            ensure_status: status,
+        })
     }
 }
 

@@ -785,12 +785,6 @@ impl NamespaceCommitError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MachineContainerRuntimeError {
-    ImagePullFailed {
-        machine_id: MachineId,
-        service_id: ServiceId,
-        namespace_revision_entry_id: ployz_core::ids::NamespaceRevisionEntryId,
-        message: FailureMessage,
-    },
     Unavailable {
         machine_id: MachineId,
         reason: MachineRuntimeUnavailableReason,
@@ -846,19 +840,6 @@ impl MachineContainerRuntimeError {
         retained_artifacts: Vec<RetainedArtifact>,
     ) -> DeployOperationFailure {
         match self {
-            Self::ImagePullFailed {
-                machine_id,
-                service_id,
-                namespace_revision_entry_id,
-                message,
-            } => DeployOperationFailure::ArtifactUnavailable {
-                service_id: service_id.clone(),
-                namespace_revision_entry_id: namespace_revision_entry_id.clone(),
-                reason: ployz_core::operation::ArtifactUnavailableReason::ImagePullFailed {
-                    machine_id: machine_id.clone(),
-                    message: message.clone(),
-                },
-            },
             Self::Unavailable { machine_id, reason } => {
                 DeployOperationFailure::RuntimeUnavailable {
                     machine_id: machine_id.clone(),

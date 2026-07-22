@@ -42,13 +42,14 @@ use failure::{DeployExecutionFailure, fail_deploy};
 #[cfg(test)]
 pub(crate) use images::execute_cleanup_actions;
 use images::{
-    dataplane_membership, machine_image_pull, resolve_registry_images, validate_pushed_platforms,
+    dataplane_membership, machine_image_reference, resolve_registry_images,
+    validate_pushed_platforms,
 };
 use phase::{CoarsePhaseProgress, DeployRun};
 pub use ports::{
     CertificateProvisioner, DeployHealthChecker, DeployOperationRecorder, DeployPhasePromotion,
-    MachineContainerRuntime, MachineImageRemovalRuntime, NamespaceCommitError,
-    NamespaceStateCommitter,
+    MachineContainerRuntime, MachineImageEnsureRuntime, MachineImageRemovalRuntime,
+    NamespaceCommitError, NamespaceStateCommitter,
 };
 pub use preparation::{AutomaticHostnameMode, DeployExecutionFacts, DeployExecutionInput};
 #[cfg(test)]
@@ -504,7 +505,7 @@ where
         kind: ManagedContainerKind::Predeploy,
     };
     let request = MachineContainerRunHookRpcRequest {
-        pull: machine_image_pull(
+        image: machine_image_reference(
             &command.request.namespace_id,
             service,
             &step.machine_id,
@@ -708,7 +709,6 @@ fn cleanup_evidence(
 
 fn cleanup_failure_message(error: MachineContainerRuntimeError) -> FailureMessage {
     match error {
-        MachineContainerRuntimeError::ImagePullFailed { message, .. } => message,
         MachineContainerRuntimeError::Unavailable { reason, .. } => reason.failure_message(),
         MachineContainerRuntimeError::OperationStepAmbiguous { .. } => {
             FailureMessage::try_new("cleanup found multiple operation-step containers")
@@ -952,7 +952,7 @@ where
     let step_id = deploy_step_id(slot, machine_id).map_err(DeployExecutionError::StepId)?;
     let requires_docker_healthcheck = requires_docker_healthcheck(service);
     let request = MachineContainerRunRpcRequest {
-        pull: machine_image_pull(
+        image: machine_image_reference(
             &command.request.namespace_id,
             service,
             machine_id,

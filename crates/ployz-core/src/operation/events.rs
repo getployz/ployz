@@ -12,7 +12,6 @@ use crate::deploy::{
     DeployCleanupContainer, DeployPlan, DeployReservationId, DeployVolumeHandoffApplied, VolumeName,
 };
 use crate::ids::{CertId, ContainerId, MachineId, NamespaceId, OperationId, ServiceId};
-use crate::image::OciDigest;
 use crate::ingress::{ActiveCertificateMetadata, IngressConfiguration};
 use crate::install::{InstallArtifactVersion, MachineJoinRuntimeNatsUrl};
 use crate::machine::{InstallRolePolicy, MachineLifecycle};
@@ -236,9 +235,9 @@ pub enum OperationEvent {
     DeployImageAvailabilityVerified {
         operation_id: OperationId,
         service_id: ServiceId,
-        seed: MachineId,
+        machine_id: MachineId,
+        image: crate::deploy::ImageReference,
         platform: crate::image::OciPlatform,
-        manifest_digest: OciDigest,
     },
     DeployContainerStarted {
         operation_id: OperationId,
@@ -818,15 +817,15 @@ impl OperationEvent {
             }
             Self::DeployImageAvailabilityVerified {
                 service_id,
-                seed,
+                machine_id,
+                image,
                 platform,
-                manifest_digest,
                 ..
             } => Some(DeployEvidence::ImageAvailabilityVerified {
                 service_id: service_id.clone(),
-                seed: seed.clone(),
+                machine_id: machine_id.clone(),
+                image: image.clone(),
                 platform: platform.clone(),
-                manifest_digest: manifest_digest.clone(),
             }),
             Self::DeployContainerStarted {
                 machine_id,
@@ -1288,16 +1287,16 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
             OperationEvent::DeployImageAvailabilityVerified {
                 operation_id,
                 service_id,
-                seed,
+                machine_id,
+                image,
                 platform,
-                manifest_digest,
             } => Self::Deploy {
                 operation_id,
                 event: DeployEvent::Evidence(DeployEvidence::ImageAvailabilityVerified {
                     service_id,
-                    seed,
+                    machine_id,
+                    image,
                     platform,
-                    manifest_digest,
                 }),
             },
             OperationEvent::DeployContainerStarted {

@@ -1,4 +1,4 @@
-use crate::roles::machine::protocol::{MachineContainerStopOutcome, MachineImagePull};
+use crate::roles::machine::protocol::MachineContainerStopOutcome;
 use crate::roles::machine::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
     MachineContainerCreateError, MachineContainerListError, MachineContainerRemoveError,
@@ -44,7 +44,7 @@ impl ObservingContainerRunner {
                 snapshot,
                 endpoint_subnet: None,
                 resolutions: Vec::new(),
-                pulls: Vec::new(),
+                images: Vec::new(),
                 resolution_failure: None,
                 resolution_barrier: None,
                 resolution_delay: Duration::ZERO,
@@ -71,11 +71,11 @@ impl ObservingContainerRunner {
     }
 
     #[must_use]
-    pub fn pulls(&self) -> Vec<MachineImagePull> {
+    pub fn pulls(&self) -> Vec<ImageReference> {
         self.state
             .lock()
             .expect("observing runner state lock is not poisoned")
-            .pulls
+            .images
             .clone()
     }
 
@@ -217,8 +217,8 @@ impl MachineContainerRunner for ObservingContainerRunner {
             .map_err(|error| MachineContainerCreateError::Create {
                 message: error.to_string(),
             })?
-            .pulls
-            .push(command.pull.clone());
+            .images
+            .push(command.image.clone());
         let container_id = self.next_container_id()?;
         let observation = ManagedContainerObservation {
             machine_id: self.machine_id.clone(),
@@ -458,7 +458,7 @@ struct ObservingContainerRunnerState {
     snapshot: MachineContainerObservationSnapshot,
     endpoint_subnet: Option<MachineEndpointSubnet>,
     resolutions: Vec<(ImageReference, Option<RegistryCredential>)>,
-    pulls: Vec<MachineImagePull>,
+    images: Vec<ImageReference>,
     resolution_failure: Option<String>,
     resolution_barrier: Option<Arc<tokio::sync::Barrier>>,
     resolution_delay: Duration,

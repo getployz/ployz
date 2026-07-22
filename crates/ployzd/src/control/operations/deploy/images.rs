@@ -1,19 +1,27 @@
 //! Pushed-image availability and mesh redistribution for deploy execution.
 
+mod acquisition;
+
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use futures_util::{StreamExt, stream::FuturesUnordered};
+
 use ployz_core::deploy::{
-    DeployCleanupAction, DeployPhasePlan, DeployPlan, DeployRequest, DeployServicePlan,
-    IMAGE_AVAILABILITY_SAFETY_MARGIN, ImageReference, ImageSource, RegistryCredential,
+    DeployCleanupAction, DeployPhasePlan, DeployPlan, DeployPlanStepRef, DeployRequest,
+    DeployServicePlan, IMAGE_AVAILABILITY_SAFETY_MARGIN, ImageReference, ImageSource,
+    RegistryCredential,
 };
 use ployz_core::ids::{MachineId, ServiceId};
 use ployz_core::image::{
-    ImageEnsureRequest, ImageRemoveDomainError, ImageRepository, ImageRpcDomainError,
+    ImageEnsureFailure, ImageEnsureRequest, ImageEnsureSource, ImageEnsureStatus,
+    ImageRemoveDomainError, ImageRepository, ImageRpcDomainError,
 };
+use ployz_core::machine::runtime::{ManagedContainerIdentity, ManagedContainerKind};
 use ployz_core::network::DataplaneMember;
 use ployz_core::operation::{
-    DeployEvidence, DeployImageCleanup, DeployOperationFailure, FailureMessage,
+    ArtifactUnavailableReason, DeployEvidence, DeployImageCleanup, DeployOperationFailure,
+    FailureMessage,
 };
 use ployz_sdk_types::DeployPreviewImageFailure;
 
@@ -22,13 +30,20 @@ use crate::control::role_client::machine::{
     MachineImageResolveError,
 };
 use crate::roles::machine::protocol::MachineContainerRemoveRpcRequest;
-use crate::roles::machine::protocol::{MachineContainerResolveImageRpcRequest, MachineImagePull};
+use crate::roles::machine::protocol::MachineContainerResolveImageRpcRequest;
 
 use super::deploy_plan;
 use super::{
     DeployCleanupResult, DeployExecutionCommand, DeployExecutionError, DeployOperationRecorder,
-    DeployServiceExecutionCommand, MachineContainerRuntime, MachineImageRemovalRuntime,
-    cleanup_failure_message, record_evidence,
+    DeployServiceExecutionCommand, MachineContainerRuntime, MachineImageEnsureRuntime,
+    MachineImageRemovalRuntime, cleanup_failure_message, deploy_step_id, record_evidence,
+};
+
+pub(super) use acquisition::ensure_images;
+#[cfg(test)]
+use acquisition::{
+    ImageEnsureJob, push_unique_target_job, run_image_ensure_wave,
+    run_image_ensure_wave_with_runtime,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -527,99 +542,6 @@ fn image_resolution_failure(
     }
 }
 
-pub(super) async fn ensure_images<R, N>(
-    command: &DeployExecutionCommand,
-    service_plans: &[DeployServicePlan],
-    recorder: &mut R,
-    machine_runtime: &mut N,
-) -> Result<(), DeployExecutionError>
-where
-    R: DeployOperationRecorder,
-    N: MachineContainerRuntime,
-{
-    if command
-        .services()
-        .iter()
-        .any(|service| matches!(&service.service.image_source, ImageSource::PushedToSeed(_)))
-    {
-        validate_pushed_image_availability(command, service_plans, current_unix_seconds()?)?;
-    }
-    for service in command.services() {
-        let Some(service_plan) = service_plans
-            .iter()
-            .find(|plan| plan.service_id == service.service.service_id)
-        else {
-            continue;
-        };
-        let ImageSource::PushedToSeed(receipt) = &service.service.image_source else {
-            continue;
-        };
-        let mut target_platforms = BTreeMap::new();
-        for step in service_plan.work.steps() {
-            let machine_id = step.machine_id();
-            let target_platform = command
-                .target_platform(machine_id)
-                .map_err(|error| error.into_execution_error())?;
-            target_platforms
-                .entry(target_platform.clone())
-                .or_insert_with(|| machine_id.clone());
-        }
-        for (target_platform, machine_id) in target_platforms {
-            let Some(platform_image) = receipt.platform(&target_platform) else {
-                return Err(DeployExecutionError::Image {
-                    failure: Box::new(DeployOperationFailure::PlatformImageUnavailable {
-                        service_id: service.service.service_id.clone(),
-                        machine_id,
-                        target_platform,
-                    }),
-                });
-            };
-            let request = ImageEnsureRequest {
-                repository: ImageRepository::for_service(
-                    &command.request.namespace_id,
-                    &service.service.service_id,
-                ),
-                manifest_digest: platform_image.manifest_digest.clone(),
-                image_id: platform_image.image_id.clone(),
-                platform: target_platform.clone(),
-            };
-            tokio::time::timeout(
-                command.step_timeout(),
-                machine_runtime.ensure_image(&platform_image.seed, request),
-            )
-            .await
-            .map_err(|_| DeployExecutionError::Image {
-                failure: Box::new(DeployOperationFailure::SeedUnavailable {
-                    service_id: service.service.service_id.clone(),
-                    seed: platform_image.seed.clone(),
-                    message: deploy_failure_message("image seed ensure timed out"),
-                }),
-            })?
-            .map_err(|error| {
-                ensure_image_failure(
-                    service,
-                    &machine_id,
-                    &target_platform,
-                    platform_image,
-                    error,
-                )
-            })?;
-            record_evidence(
-                command,
-                recorder,
-                DeployEvidence::ImageAvailabilityVerified {
-                    service_id: service.service.service_id.clone(),
-                    seed: platform_image.seed.clone(),
-                    platform: target_platform,
-                    manifest_digest: platform_image.manifest_digest.clone(),
-                },
-            )
-            .await?;
-        }
-    }
-    Ok(())
-}
-
 pub(super) fn validate_pushed_image_availability(
     command: &DeployExecutionCommand,
     service_plans: &[DeployServicePlan],
@@ -816,18 +738,15 @@ fn ensure_image_failure(
     }
 }
 
-pub(super) fn machine_image_pull(
+pub(super) fn machine_image_reference(
     namespace_id: &ployz_core::ids::NamespaceId,
     service: &DeployServiceExecutionCommand,
     machine_id: &ployz_core::ids::MachineId,
     target_platform: &ployz_core::image::OciPlatform,
     dataplane_members: &[DataplaneMember],
-) -> Result<MachineImagePull, DeployExecutionError> {
+) -> Result<ImageReference, DeployExecutionError> {
     match &service.service.image_source {
-        ImageSource::Registry => Ok(MachineImagePull::Registry {
-            reference: service.service.image.clone(),
-            credential: service.registry_credential().cloned(),
-        }),
+        ImageSource::Registry => Ok(service.service.image.clone()),
         ImageSource::PushedToSeed(receipt) => {
             let Some(platform_image) = receipt.platform(target_platform) else {
                 return Err(DeployExecutionError::Image {
@@ -850,10 +769,21 @@ pub(super) fn machine_image_pull(
                     ),
                 });
             };
-            Ok(MachineImagePull::MeshSeed {
-                seed_host,
-                repository: ImageRepository::for_service(namespace_id, &service.service.service_id),
-                manifest_digest: platform_image.manifest_digest.clone(),
+            ImageReference::try_new(
+                ImageEnsureSource::MeshSeed {
+                    seed_host,
+                    repository: ImageRepository::for_service(
+                        namespace_id,
+                        &service.service.service_id,
+                    ),
+                    manifest_digest: platform_image.manifest_digest.clone(),
+                    image_id: platform_image.image_id.clone(),
+                    platform: target_platform.clone(),
+                }
+                .reference(),
+            )
+            .map_err(|error| DeployExecutionError::InvalidImagePull {
+                message: error.to_string(),
             })
         }
     }

@@ -5,15 +5,14 @@ use bollard::errors::Error as BollardError;
 use bollard::query_parameters::CreateImageOptionsBuilder;
 use futures_util::StreamExt;
 use ployz_core::deploy::{ImageReference, RegistryCredential};
-use ployz_core::image::OciDigest;
+use ployz_core::image::{ImageEnsureSource, OciDigest, OciPlatform};
 
 use super::network::is_docker_object_missing;
 use super::runner::DockerManagedContainerRunner;
-use crate::roles::machine::protocol::MachineImagePull;
+use crate::roles::machine::image_ensure::{ImagePullPhase, ImagePullProgress};
 use crate::roles::machine::runner::MachineRegistryImageResolveError;
 
 const REGISTRY_RETRY_DELAYS: [Duration; 2] = [Duration::from_millis(250), Duration::from_secs(1)];
-const MESH_SEED_PULL_ATTEMPTS: u8 = 10;
 const MESH_SEED_PULL_RETRY_DELAY: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,54 +95,11 @@ impl DockerManagedContainerRunner {
         })
     }
 
-    async fn pull_registry_image(
-        &self,
-        image: &ImageReference,
-        credential: Option<&RegistryCredential>,
-    ) -> Result<(), DockerImagePullError> {
-        if image.pinned_digest().is_some() {
-            let mut retry_delays = REGISTRY_RETRY_DELAYS.into_iter();
-            loop {
-                let docker = match self.docker().await {
-                    Ok(docker) => docker,
-                    Err(error) => {
-                        let message = error.to_string();
-                        let Some(delay) = retry_delays.next() else {
-                            return Err(DockerImagePullError::Retryable { message });
-                        };
-                        tokio::time::sleep(delay).await;
-                        continue;
-                    }
-                };
-                match docker.inspect_image(image.as_str()).await {
-                    Ok(_) => return Ok(()),
-                    Err(error) if is_docker_object_missing(&error) => break,
-                    Err(error) => {
-                        return Err(DockerImagePullError::Terminal {
-                            message: format!(
-                                "inspect local Docker image {}: {error}",
-                                image.as_str()
-                            ),
-                        });
-                    }
-                }
-            }
-        }
-
-        for delay in REGISTRY_RETRY_DELAYS {
-            match self.pull_image(image.as_str(), credential).await {
-                Ok(()) => return Ok(()),
-                Err(DockerImagePullError::Retryable { .. }) => tokio::time::sleep(delay).await,
-                Err(error) => return Err(error),
-            }
-        }
-        self.pull_image(image.as_str(), credential).await
-    }
-
-    async fn pull_image(
+    async fn pull_image_with_progress(
         &self,
         image: &str,
         credential: Option<&RegistryCredential>,
+        progress: &tokio::sync::mpsc::UnboundedSender<ImagePullProgress>,
     ) -> Result<(), DockerImagePullError> {
         let docker = self
             .docker()
@@ -153,50 +109,163 @@ impl DockerManagedContainerRunner {
             })?;
         let options = CreateImageOptionsBuilder::new().from_image(image).build();
         let mut stream = docker.create_image(Some(options), None, docker_credentials(credential));
-
         while let Some(result) = stream.next().await {
-            result.map_err(|error| DockerImagePullError::from_bollard(image, credential, error))?;
+            let frame = result
+                .map_err(|error| DockerImagePullError::from_bollard(image, credential, error))?;
+            let detail = frame.progress_detail.unwrap_or_default();
+            let _ = progress.send(ImagePullProgress {
+                layer: frame.id.unwrap_or_else(|| "manifest".to_owned()),
+                phase: frame.status.as_deref().and_then(docker_pull_phase),
+                current_bytes: detail.current.unwrap_or_default().max(0) as u64,
+            });
         }
-
         Ok(())
     }
 
-    pub(super) async fn pull_machine_image(&self, pull: &MachineImagePull) -> Result<(), String> {
-        match pull {
-            MachineImagePull::Registry {
+    pub(crate) async fn ensure_machine_image(
+        &self,
+        source: &ImageEnsureSource,
+        progress: tokio::sync::mpsc::UnboundedSender<ImagePullProgress>,
+    ) -> Result<(), String> {
+        let exact_reference = source.reference();
+        let expected = ExpectedLocalImage::from_source(source)?;
+        if self.verify_local_image(&exact_reference, &expected).await? {
+            return Ok(());
+        }
+        let (reference, credential) = match source {
+            ImageEnsureSource::Registry {
                 reference,
                 credential,
-            } => self
-                .pull_registry_image(reference, credential.as_ref())
+                platform: _,
+            } => (reference.as_str().to_owned(), credential.as_ref()),
+            ImageEnsureSource::MeshSeed { .. } | ImageEnsureSource::LocalSeed { .. } => {
+                (source.reference(), None)
+            }
+        };
+        loop {
+            match self
+                .pull_image_with_progress(&reference, credential, &progress)
                 .await
-                .map_err(DockerImagePullError::into_message),
-            MachineImagePull::MeshSeed {
-                seed_host: _,
-                repository: _,
-                manifest_digest: _,
-            } => self
-                .pull_image(&pull.reference(), None)
-                .await
-                .map_err(DockerImagePullError::into_message),
+            {
+                Ok(()) => {
+                    if self.verify_local_image(&exact_reference, &expected).await? {
+                        return Ok(());
+                    }
+                    return Err(format!(
+                        "Docker pull completed without installing exact image {exact_reference}"
+                    ));
+                }
+                Err(DockerImagePullError::Retryable { .. }) => {
+                    tokio::time::sleep(MESH_SEED_PULL_RETRY_DELAY).await;
+                }
+                Err(error) => return Err(error.into_message()),
+            }
         }
     }
 
-    pub(crate) async fn pull_mesh_seed_image(&self, reference: &str) -> Result<(), String> {
-        for attempt in 1..=MESH_SEED_PULL_ATTEMPTS {
-            match self.pull_image(reference, None).await {
-                Ok(()) => return Ok(()),
-                Err(error) if attempt == MESH_SEED_PULL_ATTEMPTS => {
-                    return Err(error.into_message());
-                }
-                Err(
-                    DockerImagePullError::Retryable { message: _ }
-                    | DockerImagePullError::Terminal { message: _ },
-                ) => {
-                    tokio::time::sleep(MESH_SEED_PULL_RETRY_DELAY).await;
-                }
+    async fn verify_local_image(
+        &self,
+        exact_reference: &str,
+        expected: &ExpectedLocalImage,
+    ) -> Result<bool, String> {
+        let docker = self.docker().await.map_err(|error| error.to_string())?;
+        let inspected = match docker.inspect_image(exact_reference).await {
+            Ok(inspected) => inspected,
+            Err(error) if is_docker_object_missing(&error) => return Ok(false),
+            Err(error) => {
+                return Err(format!(
+                    "inspect local Docker image {exact_reference}: {error}"
+                ));
+            }
+        };
+        let repo_digests = inspected.repo_digests.unwrap_or_default();
+        if !repo_digests
+            .iter()
+            .any(|reference| reference == exact_reference)
+        {
+            return Err(format!(
+                "local Docker image {exact_reference} does not have expected manifest digest {}",
+                expected.manifest_digest
+            ));
+        }
+        if let Some(expected_image_id) = &expected.image_id {
+            let actual = inspected.id.unwrap_or_default();
+            if actual != expected_image_id.as_str() && actual != expected.manifest_digest.as_str() {
+                return Err(format!(
+                    "local Docker image {exact_reference} has image identity {actual:?}, expected {expected_image_id} or {}",
+                    expected.manifest_digest
+                ));
             }
         }
-        unreachable!("the mesh-seed pull loop has at least one attempt")
+        let actual_platform = OciPlatform::try_new(
+            inspected.os.unwrap_or_default(),
+            inspected.architecture.unwrap_or_default(),
+        )
+        .map_err(|error| {
+            format!("local Docker image {exact_reference} has invalid platform: {error}")
+        })?;
+        if actual_platform != expected.platform {
+            return Err(format!(
+                "local Docker image {exact_reference} has platform {}/{}, expected {}/{}",
+                actual_platform.os(),
+                actual_platform.architecture(),
+                expected.platform.os(),
+                expected.platform.architecture()
+            ));
+        }
+        Ok(true)
+    }
+}
+
+fn docker_pull_phase(status: &str) -> Option<ImagePullPhase> {
+    match status.to_ascii_lowercase().as_str() {
+        "waiting" | "pulling fs layer" => Some(ImagePullPhase::Waiting),
+        "downloading" => Some(ImagePullPhase::Downloading),
+        "verifying checksum" => Some(ImagePullPhase::Verifying),
+        "download complete" => Some(ImagePullPhase::Downloaded),
+        "extracting" => Some(ImagePullPhase::Extracting),
+        "pull complete" | "already exists" => Some(ImagePullPhase::Complete),
+        _ => None,
+    }
+}
+
+struct ExpectedLocalImage {
+    manifest_digest: OciDigest,
+    image_id: Option<OciDigest>,
+    platform: OciPlatform,
+}
+
+impl ExpectedLocalImage {
+    fn from_source(source: &ImageEnsureSource) -> Result<Self, String> {
+        match source {
+            ImageEnsureSource::Registry {
+                reference,
+                platform,
+                credential: _,
+            } => Ok(Self {
+                manifest_digest: reference.pinned_digest().ok_or_else(|| {
+                    "registry image ensure requires a digest-pinned reference".to_owned()
+                })?,
+                image_id: None,
+                platform: platform.clone(),
+            }),
+            ImageEnsureSource::MeshSeed {
+                manifest_digest,
+                image_id,
+                platform,
+                ..
+            }
+            | ImageEnsureSource::LocalSeed {
+                manifest_digest,
+                image_id,
+                platform,
+                ..
+            } => Ok(Self {
+                manifest_digest: manifest_digest.clone(),
+                image_id: Some(image_id.clone()),
+                platform: platform.clone(),
+            }),
+        }
     }
 }
 
@@ -278,11 +347,25 @@ mod tests {
     use std::sync::atomic::Ordering;
 
     use ployz_core::deploy::RegistryCredential;
-    use ployz_core::image::OciDigest;
+    use ployz_core::image::{ImageRepository, OciDigest, OciPlatform};
 
     use super::*;
     use crate::roles::machine::execution::docker::test_support::{image, runner_with_responses};
     use crate::roles::machine::runner::{MachineContainerRunner, MachineRegistryImageResolveError};
+
+    fn registry_source(reference: ImageReference) -> ImageEnsureSource {
+        ImageEnsureSource::Registry {
+            reference,
+            platform: OciPlatform::try_new("linux", "amd64").expect("platform"),
+            credential: None,
+        }
+    }
+
+    fn local_image_json(reference: &str, image_id: &OciDigest, architecture: &str) -> String {
+        format!(
+            r#"{{"Id":"{image_id}","RepoDigests":["{reference}"],"Os":"linux","Architecture":"{architecture}"}}"#
+        )
+    }
 
     #[tokio::test]
     async fn registry_resolution_retries_transient_server_failures() {
@@ -353,6 +436,7 @@ mod tests {
     #[tokio::test]
     async fn registry_pull_retries_transient_failure_then_reuses_local_digest() {
         let reference = image(&format!("nginx@sha256:{}", "d".repeat(64)));
+        let image_id = OciDigest::try_new(format!("sha256:{}", "c".repeat(64))).expect("image id");
         let (runner, attempts, _socket_dir) = runner_with_responses(vec![
             (404, r#"{"message":"not found"}"#.to_owned()),
             (
@@ -362,25 +446,185 @@ mod tests {
                 .to_owned(),
             ),
             (200, "{}\n".to_owned()),
-            (200, "{}".to_owned()),
+            (200, local_image_json(reference.as_str(), &image_id, "amd64")),
+            (200, local_image_json(reference.as_str(), &image_id, "amd64")),
         ])
         .await;
 
+        let source = registry_source(reference);
+        let (progress, _rx) = tokio::sync::mpsc::unbounded_channel();
         runner
-            .pull_registry_image(&reference, None)
+            .ensure_machine_image(&source, progress)
             .await
             .expect("transient pull succeeds on retry");
+        let (progress, _rx) = tokio::sync::mpsc::unbounded_channel();
         runner
-            .pull_registry_image(&reference, None)
+            .ensure_machine_image(&source, progress)
             .await
             .expect("local digest skips another registry pull");
 
-        assert_eq!(attempts.load(Ordering::SeqCst), 4);
+        assert_eq!(attempts.load(Ordering::SeqCst), 5);
+    }
+
+    #[tokio::test]
+    async fn exact_mesh_source_accepts_config_identity_without_create_image() {
+        let digest = OciDigest::try_new(format!("sha256:{}", "f".repeat(64))).expect("digest");
+        let image_id = OciDigest::try_new(format!("sha256:{}", "e".repeat(64))).expect("image id");
+        let source = ImageEnsureSource::MeshSeed {
+            seed_host: "10.42.0.1".parse().expect("host"),
+            repository: ImageRepository::try_new("ployz/default/api".to_owned())
+                .expect("repository"),
+            manifest_digest: digest.clone(),
+            image_id: image_id.clone(),
+            platform: OciPlatform::try_new("linux", "amd64").expect("platform"),
+        };
+        let (runner, attempts, _socket_dir) = runner_with_responses(vec![
+            (
+                200,
+                local_image_json(&source.reference(), &image_id, "amd64"),
+            ),
+            (
+                500,
+                r#"{"message":"create_image must not be called"}"#.to_owned(),
+            ),
+        ])
+        .await;
+        let (progress, _rx) = tokio::sync::mpsc::unbounded_channel();
+        runner
+            .ensure_machine_image(&source, progress)
+            .await
+            .expect("local exact image is reused");
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn exact_mesh_source_accepts_manifest_identity_without_create_image() {
+        let manifest = OciDigest::try_new(format!("sha256:{}", "f".repeat(64))).expect("manifest");
+        let image_id = OciDigest::try_new(format!("sha256:{}", "e".repeat(64))).expect("image id");
+        let source = ImageEnsureSource::MeshSeed {
+            seed_host: "10.42.0.1".parse().expect("host"),
+            repository: ImageRepository::try_new("ployz/default/api".to_owned())
+                .expect("repository"),
+            manifest_digest: manifest.clone(),
+            image_id,
+            platform: OciPlatform::try_new("linux", "amd64").expect("platform"),
+        };
+        let (runner, attempts, _socket_dir) = runner_with_responses(vec![
+            (
+                200,
+                local_image_json(&source.reference(), &manifest, "amd64"),
+            ),
+            (
+                500,
+                r#"{"message":"create_image must not be called"}"#.to_owned(),
+            ),
+        ])
+        .await;
+        let (progress, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        runner
+            .ensure_machine_image(&source, progress)
+            .await
+            .expect("containerd manifest identity is accepted");
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn unpinned_registry_source_is_rejected_before_docker_access() {
+        let (runner, attempts, _socket_dir) = runner_with_responses(Vec::new()).await;
+        let (progress, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let error = runner
+            .ensure_machine_image(&registry_source(image("nginx:latest")), progress)
+            .await
+            .expect_err("mutable registry reference is rejected");
+        assert!(error.contains("digest-pinned"), "{error}");
+        assert_eq!(attempts.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn successful_pull_stream_without_a_local_exact_image_fails() {
+        let reference = image(&format!("nginx@sha256:{}", "1".repeat(64)));
+        let (runner, attempts, _socket_dir) = runner_with_responses(vec![
+            (404, r#"{"message":"not found"}"#.to_owned()),
+            (200, "{}\n".to_owned()),
+            (404, r#"{"message":"still absent"}"#.to_owned()),
+        ])
+        .await;
+        let (progress, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let error = runner
+            .ensure_machine_image(&registry_source(reference), progress)
+            .await
+            .expect_err("empty pull stream cannot manufacture completion");
+        assert!(error.contains("without installing exact image"), "{error}");
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn local_mesh_image_requires_exact_manifest_image_identity_and_platform() {
+        let manifest = OciDigest::try_new(format!("sha256:{}", "2".repeat(64))).expect("manifest");
+        let image_id = OciDigest::try_new(format!("sha256:{}", "3".repeat(64))).expect("image id");
+        let source = ImageEnsureSource::MeshSeed {
+            seed_host: "10.42.0.1".parse().expect("host"),
+            repository: ImageRepository::try_new("ployz/default/api".to_owned())
+                .expect("repository"),
+            manifest_digest: manifest.clone(),
+            image_id: image_id.clone(),
+            platform: OciPlatform::try_new("linux", "amd64").expect("platform"),
+        };
+        let reference = source.reference();
+
+        let wrong_manifest = format!("10.42.0.1:5000/ployz/default/api@sha256:{}", "4".repeat(64));
+        let (runner, _, _socket_dir) = runner_with_responses(vec![(
+            200,
+            local_image_json(&wrong_manifest, &image_id, "amd64"),
+        )])
+        .await;
+        let (progress, _rx) = tokio::sync::mpsc::unbounded_channel();
+        assert!(
+            runner
+                .ensure_machine_image(&source, progress)
+                .await
+                .expect_err("manifest mismatch")
+                .contains("manifest digest")
+        );
+
+        let wrong_image_id =
+            OciDigest::try_new(format!("sha256:{}", "5".repeat(64))).expect("image id");
+        let (runner, _, _socket_dir) = runner_with_responses(vec![(
+            200,
+            local_image_json(&reference, &wrong_image_id, "amd64"),
+        )])
+        .await;
+        let (progress, _rx) = tokio::sync::mpsc::unbounded_channel();
+        assert!(
+            runner
+                .ensure_machine_image(&source, progress)
+                .await
+                .expect_err("unrelated image identity")
+                .contains("image identity")
+        );
+
+        let (runner, _, _socket_dir) = runner_with_responses(vec![(
+            200,
+            local_image_json(&reference, &image_id, "arm64"),
+        )])
+        .await;
+        let (progress, _rx) = tokio::sync::mpsc::unbounded_channel();
+        assert!(
+            runner
+                .ensure_machine_image(&source, progress)
+                .await
+                .expect_err("platform mismatch")
+                .contains("platform")
+        );
     }
 
     #[tokio::test]
     async fn registry_pull_does_not_retry_terminal_stream_failure() {
+        let reference = image(&format!("nginx@sha256:{}", "a".repeat(64)));
         let (runner, attempts, _socket_dir) = runner_with_responses(vec![
+            (404, r#"{"message":"not found"}"#.to_owned()),
             (
                 200,
                 r#"{"errorDetail":{"message":"manifest request failed: 404 Not Found"},"error":"manifest unknown"}
@@ -391,18 +635,22 @@ mod tests {
         ])
         .await;
 
+        let (progress, _rx) = tokio::sync::mpsc::unbounded_channel();
         let error = runner
-            .pull_registry_image(&image("nginx:missing"), None)
+            .ensure_machine_image(&registry_source(reference), progress)
             .await
             .expect_err("terminal registry failure is not retried");
 
-        assert!(error.into_message().contains("404 Not Found"));
-        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert!(error.contains("404 Not Found"));
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
     async fn registry_pull_retries_any_streamed_server_error() {
+        let reference = image(&format!("nginx@sha256:{}", "b".repeat(64)));
+        let image_id = OciDigest::try_new(format!("sha256:{}", "c".repeat(64))).expect("image id");
         let (runner, attempts, _socket_dir) = runner_with_responses(vec![
+            (404, r#"{"message":"not found"}"#.to_owned()),
             (
                 200,
                 r#"{"errorDetail":{"message":"received unexpected HTTP status: 501 Not Implemented"},"error":"registry unavailable"}
@@ -410,15 +658,17 @@ mod tests {
                 .to_owned(),
             ),
             (200, "{}\n".to_owned()),
+            (200, local_image_json(reference.as_str(), &image_id, "amd64")),
         ])
         .await;
 
+        let (progress, _rx) = tokio::sync::mpsc::unbounded_channel();
         runner
-            .pull_registry_image(&image("nginx:1.27-alpine"), None)
+            .ensure_machine_image(&registry_source(reference), progress)
             .await
             .expect("another 5xx status remains retryable");
 
-        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(attempts.load(Ordering::SeqCst), 4);
     }
 
     #[tokio::test]
@@ -433,12 +683,13 @@ mod tests {
         ])
         .await;
 
+        let (progress, _rx) = tokio::sync::mpsc::unbounded_channel();
         let error = runner
-            .pull_registry_image(&reference, None)
+            .ensure_machine_image(&registry_source(reference), progress)
             .await
             .expect_err("local inspection failure does not trigger a registry pull");
 
-        assert!(error.into_message().contains("inspect local Docker image"));
+        assert!(error.contains("inspect local Docker image"));
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
     }
 
@@ -465,6 +716,35 @@ mod tests {
         assert!(!retryable_registry_stream_error(
             "manifest metadata says timeout is disabled"
         ));
+    }
+
+    #[test]
+    fn docker_progress_vocabulary_maps_to_typed_monotonic_phases() {
+        assert_eq!(
+            docker_pull_phase("Pulling fs layer"),
+            Some(ImagePullPhase::Waiting)
+        );
+        assert_eq!(
+            docker_pull_phase("Downloading"),
+            Some(ImagePullPhase::Downloading)
+        );
+        assert_eq!(
+            docker_pull_phase("Verifying Checksum"),
+            Some(ImagePullPhase::Verifying)
+        );
+        assert_eq!(
+            docker_pull_phase("Download complete"),
+            Some(ImagePullPhase::Downloaded)
+        );
+        assert_eq!(
+            docker_pull_phase("Extracting"),
+            Some(ImagePullPhase::Extracting)
+        );
+        assert_eq!(
+            docker_pull_phase("Pull complete"),
+            Some(ImagePullPhase::Complete)
+        );
+        assert_eq!(docker_pull_phase("new daemon phrase"), None);
     }
 
     #[test]

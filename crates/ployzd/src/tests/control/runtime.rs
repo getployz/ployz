@@ -782,17 +782,10 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
         vec![(image("ghcr.io/acme/api:rev-2"), Some(credential.clone()))]
     );
     let pulls = runner.pulls();
-    let [
-        crate::roles::machine::protocol::MachineImagePull::Registry {
-            reference,
-            credential: pull_credential,
-        },
-    ] = pulls.as_slice()
-    else {
+    let [reference] = pulls.as_slice() else {
         panic!("one registry pull was recorded")
     };
     assert_eq!(reference, &entry.image);
-    assert_eq!(pull_credential.as_ref(), Some(&credential));
     assert!(replay.events.iter().any(|event| {
         matches!(
             &event.event,

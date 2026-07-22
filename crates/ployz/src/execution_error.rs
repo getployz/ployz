@@ -28,7 +28,7 @@ pub enum PloyzctlExecutionError {
     #[error(transparent)]
     Machine(MachineExecutionError),
     #[error(transparent)]
-    Deploy(DeployExecutionError),
+    Deploy(Box<DeployExecutionError>),
     #[error(transparent)]
     Namespace(NamespaceExecutionError),
     #[error(transparent)]

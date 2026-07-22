@@ -1,22 +1,21 @@
 //! Machine-local image push and ensure handlers.
 
-use super::protocol::MachineImagePull;
+use super::image_ensure::ImageEnsureRuntime;
 use super::response::{failure_message, machine_domain_error, machine_success};
 use super::runner::MachineImageRemovalRunner;
 use crate::roles::machine::execution::containerd_content::{
     ContainerdContentStore, ContentIngest, ContentWriteOutcome,
 };
-use crate::roles::machine::execution::docker::runner::DockerManagedContainerRunner;
 use ployz_core::ids::MachineId;
 use ployz_core::image::{
     IMAGE_BLOB_CHUNK_MAX_BYTES, IMAGE_BLOB_PUSH_ACTION_CHUNK, IMAGE_BLOB_PUSH_ACTION_HEADER,
     IMAGE_BLOB_PUSH_OFFSET_HEADER, IMAGE_BLOB_PUSH_UPLOAD_ID_HEADER, ImageBlobCheckOk,
     ImageBlobCheckRequest, ImageBlobCheckResponse, ImageBlobPushOk, ImageBlobPushOutcome,
     ImageBlobPushRequest, ImageBlobPushResponse, ImageEnsureOk, ImageEnsureRequest,
-    ImageEnsureResponse, ImageManifestPushOk, ImageManifestPushRequest, ImageManifestPushResponse,
-    ImageRemoveDomainError, ImageRemoveOk, ImageRemoveRequest, ImageRemoveResponse,
-    ImageRpcDomainError, ImageUploadId, OCI_IMAGE_CONFIG_MEDIA_TYPE, OCI_IMAGE_MANIFEST_MEDIA_TYPE,
-    OciDigest, OciPlatform,
+    ImageEnsureResponse, ImageEnsureSource, ImageManifestPushOk, ImageManifestPushRequest,
+    ImageManifestPushResponse, ImageRemoveDomainError, ImageRemoveOk, ImageRemoveRequest,
+    ImageRemoveResponse, ImageRpcDomainError, ImageUploadId, OCI_IMAGE_CONFIG_MEDIA_TYPE,
+    OCI_IMAGE_MANIFEST_MEDIA_TYPE, OciDigest, OciPlatform,
 };
 use ployz_core::machine::rpc::MachineRpcResponse;
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse};
@@ -33,21 +32,21 @@ const MAX_UPLOAD_SESSIONS: usize = 16;
 #[derive(Clone)]
 pub(crate) struct AvailableImageService {
     content: ContainerdContentStore,
-    docker: DockerManagedContainerRunner,
     seed_host: Ipv4Addr,
     uploads: Arc<Mutex<BTreeMap<ImageUploadId, Arc<Mutex<UploadSession>>>>>,
 }
 
+#[derive(Clone)]
+pub(crate) struct MachineImageEnsureService {
+    pub(crate) runtime: ImageEnsureRuntime,
+    pub(crate) available: Option<AvailableImageService>,
+}
+
 impl AvailableImageService {
     #[must_use]
-    pub(crate) fn new(
-        content: ContainerdContentStore,
-        docker: DockerManagedContainerRunner,
-        seed_host: Ipv4Addr,
-    ) -> Self {
+    pub(crate) fn new(content: ContainerdContentStore, seed_host: Ipv4Addr) -> Self {
         Self {
             content,
-            docker,
             seed_host,
             uploads: Arc::new(Mutex::new(BTreeMap::new())),
         }
@@ -551,7 +550,7 @@ fn committed_upload_outcome(
 
 pub(crate) async fn handle_image_ensure(
     machine_id: MachineId,
-    state: Option<AvailableImageService>,
+    state: Option<MachineImageEnsureService>,
     request: NatsServiceRequest,
 ) -> NatsServiceResponse {
     let Some(state) = state else {
@@ -561,31 +560,50 @@ pub(crate) async fn handle_image_ensure(
         Ok(request) => request,
         Err(error) => return invalid_request(machine_id, error),
     };
-    let inspected = match inspect_content(&state, &request.manifest_digest, &request.image_id).await
-    {
-        Ok(inspected) => inspected,
-        Err(error) => return image_error(machine_id, error),
+    let status = match request {
+        ImageEnsureRequest::Start { owner, mut source } => {
+            if let ImageEnsureSource::LocalSeed {
+                repository,
+                manifest_digest,
+                image_id,
+                platform,
+            } = &source
+            {
+                let Some(available) = &state.available else {
+                    return unavailable(machine_id);
+                };
+                let inspected = match inspect_content(available, manifest_digest, image_id).await {
+                    Ok(inspected) => inspected,
+                    Err(error) => return image_error(machine_id, error),
+                };
+                if let Err(error) = ensure_platform(platform, &inspected.platform) {
+                    return image_error(machine_id, error);
+                }
+                source = ImageEnsureSource::MeshSeed {
+                    seed_host: available.seed_host,
+                    repository: repository.clone(),
+                    manifest_digest: manifest_digest.clone(),
+                    image_id: image_id.clone(),
+                    platform: platform.clone(),
+                };
+            }
+            match state.runtime.start(owner, source).await {
+                Ok(status) => status,
+                Err(error) => return image_error(machine_id, error),
+            }
+        }
+        ImageEnsureRequest::Status { owner } => match state.runtime.status(&owner).await {
+            Ok(status) => status,
+            Err(error) => return image_error(machine_id, error),
+        },
+        ImageEnsureRequest::Cancel { owner } => match state.runtime.cancel(&owner).await {
+            Ok(status) => status,
+            Err(error) => return image_error(machine_id, error),
+        },
     };
-    if let Err(error) = ensure_platform(&request.platform, &inspected.platform) {
-        return image_error(machine_id, error);
-    }
-    let reference = MachineImagePull::MeshSeed {
-        seed_host: state.seed_host,
-        repository: request.repository,
-        manifest_digest: request.manifest_digest.clone(),
-    }
-    .reference();
-    if let Err(message) = state.docker.pull_mesh_seed_image(&reference).await {
-        return image_error(
-            machine_id,
-            ImageRpcDomainError::SelfPullFailed {
-                message: failure_message(message),
-            },
-        );
-    }
     machine_success(ImageEnsureResponse::Ok(ImageEnsureOk {
         machine_id,
-        platform: inspected.platform,
+        ensure_status: status,
     }))
 }
 
@@ -662,11 +680,28 @@ async fn inspect_content(
         .await
         .map_err(|error| ImageRpcDomainError::StorageFailed {
             message: failure_message(error.to_string()),
-        })?
-        .ok_or_else(|| ImageRpcDomainError::ImageMissing {
-            digest: manifest_digest.clone(),
         })?;
-    let actual_manifest_digest = OciDigest::sha256(&bytes);
+    let bytes = require_manifest_blob(bytes, manifest_digest)?;
+    inspect_manifest_bytes(&bytes, manifest_digest, image_id)?;
+    let platform = read_platform(state, image_id).await?;
+    Ok(InspectedImage { platform })
+}
+
+fn require_manifest_blob(
+    bytes: Option<Vec<u8>>,
+    digest: &OciDigest,
+) -> Result<Vec<u8>, ImageRpcDomainError> {
+    bytes.ok_or_else(|| ImageRpcDomainError::ImageMissing {
+        digest: digest.clone(),
+    })
+}
+
+fn inspect_manifest_bytes(
+    bytes: &[u8],
+    manifest_digest: &OciDigest,
+    image_id: &OciDigest,
+) -> Result<OciManifest, ImageRpcDomainError> {
+    let actual_manifest_digest = OciDigest::sha256(bytes);
     if actual_manifest_digest != *manifest_digest {
         return Err(ImageRpcDomainError::DigestMismatch {
             expected: manifest_digest.clone(),
@@ -674,7 +709,7 @@ async fn inspect_content(
         });
     }
     let manifest =
-        parse_manifest(&bytes).map_err(|message| ImageRpcDomainError::InvalidRequest {
+        parse_manifest(bytes).map_err(|message| ImageRpcDomainError::InvalidRequest {
             message: failure_message(message),
         })?;
     if manifest.config.digest != *image_id {
@@ -683,8 +718,7 @@ async fn inspect_content(
             actual: manifest.config.digest,
         });
     }
-    let platform = read_platform(state, image_id).await?;
-    Ok(InspectedImage { platform })
+    Ok(manifest)
 }
 
 fn parse_manifest(bytes: &[u8]) -> Result<OciManifest, &'static str> {
@@ -811,7 +845,7 @@ fn image_error(machine_id: MachineId, error: ImageRpcDomainError) -> NatsService
 mod tests {
     use super::{
         UploadChunkAction, UploadProgress, committed_upload_outcome, ensure_platform,
-        parse_manifest, validate_chunk_bounds,
+        inspect_manifest_bytes, parse_manifest, require_manifest_blob, validate_chunk_bounds,
     };
     use crate::roles::machine::execution::containerd_content::ContentWriteOutcome;
     use ployz_core::image::{
@@ -850,6 +884,32 @@ mod tests {
             ensure_platform(&expected, &actual),
             Err(ImageRpcDomainError::PlatformMismatch { expected, actual })
         );
+    }
+
+    #[test]
+    fn image_ensure_reports_typed_manifest_digest_and_config_mismatches() {
+        let config = OciDigest::try_new(format!("sha256:{}", "b".repeat(64))).expect("config");
+        let bytes = format!(r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","size":2,"digest":"{}"}},"layers":[]}}"#, config.as_str()).into_bytes();
+        let actual = OciDigest::sha256(&bytes);
+        let wrong_manifest =
+            OciDigest::try_new(format!("sha256:{}", "a".repeat(64))).expect("digest");
+        assert!(matches!(
+            inspect_manifest_bytes(&bytes, &wrong_manifest, &config),
+            Err(ImageRpcDomainError::DigestMismatch { .. })
+        ));
+        let wrong_config =
+            OciDigest::try_new(format!("sha256:{}", "c".repeat(64))).expect("config");
+        assert!(matches!(
+            inspect_manifest_bytes(&bytes, &actual, &wrong_config),
+            Err(ImageRpcDomainError::ConfigMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn absent_seed_manifest_maps_to_typed_image_missing() {
+        let digest = OciDigest::try_new(format!("sha256:{}", "a".repeat(64))).expect("digest");
+        let result = require_manifest_blob(None, &digest);
+        assert_eq!(result, Err(ImageRpcDomainError::ImageMissing { digest }));
     }
 
     #[test]

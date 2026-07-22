@@ -1,8 +1,7 @@
 use crate::control::operations::deploy::MachineContainerRuntime;
 use crate::control::role_client::machine::NatsMachineContainerRuntime;
 use crate::roles::machine::protocol::{
-    MachineContainerRemoveRpcRequest, MachineContainerRunRpcRequest, MachineImagePull,
-    MachineRunContainerOutcome,
+    MachineContainerRemoveRpcRequest, MachineContainerRunRpcRequest, MachineRunContainerOutcome,
 };
 use crate::roles::machine::service::start_machine_role_service;
 use ployz_core::deploy::ImageReference;
@@ -152,10 +151,7 @@ fn assert_observed_running(
 
 fn run_request(step: &str) -> MachineContainerRunRpcRequest {
     MachineContainerRunRpcRequest {
-        pull: MachineImagePull::Registry {
-            credential: None,
-            reference: image("ghcr.io/acme/api:rev-2"),
-        },
+        image: image("ghcr.io/acme/api:rev-2"),
         runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
         provisioned_volumes: Vec::new(),
         container: managed_identity(step),

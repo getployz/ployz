@@ -299,6 +299,7 @@ fn release_manifest(shas: &ArtifactShas, target_platform: dind::DindPlatform) ->
     let release_platform = target_platform.release_slug();
     let manifest = format!(
         "PLOYZ_VERSION=local\n\
+         PLOYZ_RELEASE_TAG=vlocal\n\
          PLOYZ_RELEASE_PLATFORM={release_platform}\n\
          PLOYZD_URL={ARTIFACTS_MOUNT_PATH}/ployzd\n\
          PLOYZD_SHA256={}\n\
@@ -599,6 +600,7 @@ mod tests {
             ),
             &format!("PLOYZ_RAILPACK_URL={ARTIFACTS_MOUNT_PATH}/railpack"),
             "PLOYZ_RAILPACK_SHA256=railpack-sha",
+            "PLOYZ_RELEASE_TAG=vlocal",
             "PLOYZ_RELEASE_PLATFORM=linux-arm64",
         ] {
             assert!(

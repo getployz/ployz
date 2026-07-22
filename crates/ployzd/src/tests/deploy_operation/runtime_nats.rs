@@ -955,16 +955,18 @@ async fn machine_service_timeout_marks_deploy_failed_without_committing_active_s
                 state:
                     DeployOperationState::Failed {
                         failure:
-                            DeployOperationFailure::RuntimeUnavailable {
+                            DeployOperationFailure::ArtifactUnavailable {
+                                service_id: _,
+                                namespace_revision_entry_id: _,
+                                reason: ployz_core::operation::ArtifactUnavailableReason::ImagePullFailed {
                                 machine_id: ref failed_machine_id,
                                 ref message,
-                                ref retained_artifacts,
+                                },
                             },
                     },
                 ..
             }) if failed_machine_id == &machine_id("machine_slow")
-                && message.as_str() == "machine runtime request timed out"
-                && retained_artifacts.is_empty()
+                && message.as_str() == "machine runtime has no responders"
         ),
         "unexpected operation status: {status:?}"
     );
