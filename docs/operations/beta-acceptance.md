@@ -100,7 +100,7 @@ App-token authentication.
 
 | # | Claim | Proof |
 | --- | --- | --- |
-| 1 | Sign up at ployz.app via GitHub OAuth, land in an org/project | `manual` |
+| 1 | Sign up at ployz.dev via GitHub OAuth, land in an org/project | `manual` |
 | 2 | "Add machine" renders one copy-paste Cloud Bootstrap Token command | `manual` |
 | 3 | amd64 machine joins | `real-host` — green today |
 | 4 | arm64 machine joins | `real-host` — green today |
@@ -289,7 +289,7 @@ guards, and neither `main` nor a standing `scenario/*` ref changed: **yes**.
 
 ### Stable checklist
 
-- [ ] 1. Sign up at ployz.app via GitHub OAuth, land in an org/project — `manual`
+- [ ] 1. Sign up at ployz.dev via GitHub OAuth, land in an org/project — `manual`
 - [ ] 2. "Add machine" renders one copy-paste Cloud Bootstrap Token command — `manual`
 - [ ] 3. amd64 machine joins — `real-host`
 - [ ] 4. arm64 machine joins — `real-host`
