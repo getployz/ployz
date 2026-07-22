@@ -145,12 +145,26 @@ const REQUIRED_ENV: [&str; 8] = [
 ];
 
 fn validate_oidc_request_url(value: &str) -> Result<reqwest::Url, GithubActionsBuildError> {
+    let Some(remainder) = value.strip_prefix("https://") else {
+        return Err(GithubActionsBuildError::InvalidOidcRequestUrl);
+    };
+    let raw_authority = remainder.split(['/', '?', '#']).next().unwrap_or_default();
+    if raw_authority.is_empty() {
+        return Err(GithubActionsBuildError::InvalidOidcRequestUrl);
+    }
     let url =
         reqwest::Url::parse(value).map_err(|_| GithubActionsBuildError::InvalidOidcRequestUrl)?;
-    let github_job_server = matches!(
-        url.host_str(),
-        Some("pipelines.actions.githubusercontent.com" | "token.actions.githubusercontent.com")
-    );
+    let Some(host) = url.host_str() else {
+        return Err(GithubActionsBuildError::InvalidOidcRequestUrl);
+    };
+    let github_job_server = raw_authority == host
+        && (matches!(
+            host,
+            "pipelines.actions.githubusercontent.com" | "token.actions.githubusercontent.com"
+        ) || host
+            .strip_suffix(".actions.githubusercontent.com")
+            .and_then(|label| label.strip_prefix("run-actions-"))
+            .is_some_and(|remainder| !remainder.is_empty() && !remainder.contains('.')));
     if url.scheme() != "https"
         || !github_job_server
         || !url.username().is_empty()
@@ -675,12 +689,30 @@ mod tests {
         assert!(
             validate_oidc_request_url("https://token.actions.githubusercontent.com/token").is_ok()
         );
+        assert!(
+            validate_oidc_request_url(
+                "https://run-actions-3-azure-eastus.actions.githubusercontent.com/token"
+            )
+            .is_ok()
+        );
         for malicious in [
             "https://pipelines.actions.githubusercontent.com.evil.example/token",
             "https://evil-pipelines.actions.githubusercontent.com/token",
             "https://attacker@pipelines.actions.githubusercontent.com/token",
             "https://pipelines.actions.githubusercontent.com:444/token",
             "http://pipelines.actions.githubusercontent.com/token",
+            "https://run-actions-.actions.githubusercontent.com/token",
+            "https://nested.run-actions-3-azure-eastus.actions.githubusercontent.com/token",
+            "https://run-actions-3-azure-eastus.nested.actions.githubusercontent.com/token",
+            "https://run-actions-3-azure-eastus.actions.githubusercontent.com.evil.example/token",
+            "https://attacker@run-actions-3-azure-eastus.actions.githubusercontent.com/token",
+            "https://run-actions-3-azure-eastus.actions.githubusercontent.com:444/token",
+            "https://run-actions-3-azure-eastus.actions.githubusercontent.com:443/token",
+            "https://@run-actions-3-azure-eastus.actions.githubusercontent.com/token",
+            "https:\\\\run-actions-3-azure-eastus.actions.githubusercontent.com:443/token",
+            "https:///run-actions-3-azure-eastus.actions.githubusercontent.com:443/token",
+            "http://run-actions-3-azure-eastus.actions.githubusercontent.com/token",
+            "https://run-actions-3-azure-eastus.actions.githubusercontent.com/token?audience=wrong",
         ] {
             assert_eq!(
                 validate_oidc_request_url(malicious).expect_err("malicious URL rejected"),
