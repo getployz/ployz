@@ -267,11 +267,15 @@ pub(super) async fn run_image_ensure_wave_with_runtime<N: MachineImageEnsureRunt
         .enumerate()
         .find_map(|(index, outcome)| outcome.as_ref().err().map(|error| (index, error.clone())))
     {
-        let statuses = start_outcomes
-            .into_iter()
-            .map(|outcome| outcome.ok().map(|ok| ok.ensure_status))
+        let cancellations = start_outcomes
+            .iter()
+            .map(|outcome| match outcome {
+                Ok(ok) => image_ensure_status_is_unfinished(&ok.ensure_status),
+                Err(MachineImageEnsureError::Unavailable { .. }) => true,
+                Err(MachineImageEnsureError::Domain { .. }) => false,
+            })
             .collect::<Vec<_>>();
-        cancel_unfinished_jobs(&runtime, jobs, &statuses).await;
+        cancel_selected_jobs(&runtime, jobs, &cancellations).await;
         return Err((index, ImageEnsureDriveError::Call(error)));
     }
     let mut statuses = start_outcomes
@@ -281,7 +285,6 @@ pub(super) async fn run_image_ensure_wave_with_runtime<N: MachineImageEnsureRunt
     loop {
         for (index, status) in statuses.iter().enumerate() {
             if let Some(error) = image_ensure_status_error(status) {
-                let statuses = statuses.into_iter().map(Some).collect::<Vec<_>>();
                 cancel_unfinished_jobs(&runtime, jobs, &statuses).await;
                 return Err((index, error));
             }
@@ -315,14 +318,12 @@ pub(super) async fn run_image_ensure_wave_with_runtime<N: MachineImageEnsureRunt
                 Ok(status) => status.ensure_status,
                 Err(error) => {
                     drop(polls);
-                    let statuses = statuses.into_iter().map(Some).collect::<Vec<_>>();
                     cancel_unfinished_jobs(&runtime, jobs, &statuses).await;
                     return Err((index, ImageEnsureDriveError::Call(error)));
                 }
             };
             if let Some(error) = image_ensure_status_error(status) {
                 drop(polls);
-                let statuses = statuses.into_iter().map(Some).collect::<Vec<_>>();
                 cancel_unfinished_jobs(&runtime, jobs, &statuses).await;
                 return Err((index, error));
             }
@@ -363,17 +364,31 @@ fn image_ensure_status_error(status: &ImageEnsureStatus) -> Option<ImageEnsureDr
 async fn cancel_unfinished_jobs<N: MachineImageEnsureRuntime>(
     runtime: &N,
     jobs: &[ImageEnsureJob],
-    statuses: &[Option<ImageEnsureStatus>],
+    statuses: &[ImageEnsureStatus],
+) {
+    let cancellations = statuses
+        .iter()
+        .map(image_ensure_status_is_unfinished)
+        .collect::<Vec<_>>();
+    cancel_selected_jobs(runtime, jobs, &cancellations).await;
+}
+
+fn image_ensure_status_is_unfinished(status: &ImageEnsureStatus) -> bool {
+    matches!(
+        status,
+        ImageEnsureStatus::Accepted | ImageEnsureStatus::Running { .. }
+    )
+}
+
+async fn cancel_selected_jobs<N: MachineImageEnsureRuntime>(
+    runtime: &N,
+    jobs: &[ImageEnsureJob],
+    cancellations: &[bool],
 ) {
     futures_util::future::join_all(
         jobs.iter()
-            .zip(statuses)
-            .filter(|(_, status)| {
-                matches!(
-                    status,
-                    Some(ImageEnsureStatus::Accepted | ImageEnsureStatus::Running { .. })
-                )
-            })
+            .zip(cancellations)
+            .filter(|(_, cancel)| **cancel)
             .map(|(job, _)| {
                 let runtime = runtime.clone();
                 let machine_id = job.machine_id.clone();

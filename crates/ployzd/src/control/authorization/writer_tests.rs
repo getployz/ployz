@@ -601,9 +601,18 @@ async fn wait_for_observation<T>(
 ) -> bool {
     const WALL_CLOCK_TIMEOUT: Duration = Duration::from_secs(5);
 
+    wait_for_observation_with_timeout(changes, predicate, WALL_CLOCK_TIMEOUT).await
+}
+
+async fn wait_for_observation_with_timeout<T>(
+    changes: &mut tokio::sync::watch::Receiver<T>,
+    predicate: impl FnMut(&T) -> bool,
+    wall_clock_timeout: Duration,
+) -> bool {
     let (cancel_timeout, timeout_cancelled) = std::sync::mpsc::channel();
     let mut wall_clock_timeout = tokio::task::spawn_blocking(move || {
-        timeout_cancelled.recv_timeout(WALL_CLOCK_TIMEOUT).is_err()
+        let _ = timeout_cancelled.recv_timeout(wall_clock_timeout);
+        false
     });
     tokio::select! {
         result = changes.wait_for(predicate) => {
@@ -612,6 +621,20 @@ async fn wait_for_observation<T>(
         }
         timed_out = &mut wall_clock_timeout => timed_out.expect("wall-clock timeout task"),
     }
+}
+
+#[tokio::test]
+async fn observation_wait_does_not_treat_wall_clock_timeout_as_success() {
+    let (_changes, mut observations) = tokio::sync::watch::channel(0_u8);
+
+    assert!(
+        !wait_for_observation_with_timeout(
+            &mut observations,
+            |observation| *observation > 0,
+            Duration::from_millis(10),
+        )
+        .await
+    );
 }
 
 fn parse_rendered_credentials(path: &Path) -> Vec<CredentialGrant> {
