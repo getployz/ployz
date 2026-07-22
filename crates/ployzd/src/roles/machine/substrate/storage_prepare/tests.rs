@@ -62,6 +62,26 @@ fn operation_process_command(
     command
 }
 
+#[cfg(target_os = "linux")]
+fn read_operation_process_identity(
+    pid: u32,
+    operation_id: &OperationId,
+) -> StoragePreparationProcessIdentity {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(process) = read_process_identity(pid)
+            && process_identity_is_expected_live(&process, operation_id)
+        {
+            return process;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "operation child did not establish its expected process identity"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
 #[test]
 fn command_uses_the_shared_privileged_substrate_lock() {
     let operation_id = operation("op_storage_prepare");
@@ -114,8 +134,7 @@ fn report_is_a_closed_five_state_projection_and_stale_running_becomes_interrupte
                 .duration_since(UNIX_EPOCH)
                 .expect("clock")
                 .as_millis() as u64,
-            process: read_process_identity(running_child.id().expect("pid"))
-                .expect("test process identity"),
+            process: read_operation_process_identity(running_child.id().expect("pid"), &running),
         })
         .expect("running evidence");
     assert_eq!(
@@ -208,7 +227,7 @@ async fn active_and_terminal_replays_acknowledge_without_spawning_and_other_oper
         .persist_evidence(&MachineStoragePreparationEvidence::Running {
             operation_id: owner.clone(),
             launched_at_unix_millis: 1,
-            process: read_process_identity(owner_child.id().expect("pid")).expect("identity"),
+            process: read_operation_process_identity(owner_child.id().expect("pid"), &owner),
         })
         .expect("running evidence");
     let (cancel, _cancel_rx) = oneshot::channel();
@@ -239,6 +258,7 @@ async fn accepted_running_is_queryable_then_original_deadline_reaps_and_fails() 
         .spawn()
         .expect("operation child");
     let pid = child.id().expect("pid");
+    let process = read_operation_process_identity(pid, &operation_id);
     let repository = StorageEvidenceRepository::new(directory.path());
     repository
         .persist_evidence(&MachineStoragePreparationEvidence::Running {
@@ -247,7 +267,7 @@ async fn accepted_running_is_queryable_then_original_deadline_reaps_and_fails() 
                 .duration_since(UNIX_EPOCH)
                 .expect("clock")
                 .as_millis() as u64,
-            process: read_process_identity(pid).expect("child identity"),
+            process,
         })
         .expect("running evidence");
     let (cancel, cancel_rx) = oneshot::channel();
@@ -306,7 +326,7 @@ async fn cancellation_reaps_exact_child_and_is_idempotent() {
                 .duration_since(UNIX_EPOCH)
                 .expect("clock")
                 .as_millis() as u64,
-            process: read_process_identity(pid).expect("child identity"),
+            process: read_operation_process_identity(pid, &operation_id),
         })
         .expect("running evidence");
     let (cancel, cancel_rx) = oneshot::channel();
@@ -375,7 +395,7 @@ async fn runtime_reconstruction_adopts_the_exact_live_process_and_preserves_its_
                 .duration_since(UNIX_EPOCH)
                 .expect("clock")
                 .as_millis() as u64,
-            process: read_process_identity(pid).expect("identity"),
+            process: read_operation_process_identity(pid, &operation_id),
         })
         .expect("running evidence");
     drop(child);
@@ -479,7 +499,7 @@ async fn leader_exit_reaps_its_remaining_descendant_before_terminal_evidence() {
                 .duration_since(UNIX_EPOCH)
                 .expect("clock")
                 .as_millis() as u64,
-            process: read_process_identity(leader_pid).expect("leader identity"),
+            process: read_operation_process_identity(leader_pid, &operation_id),
         })
         .expect("running evidence");
     let runtime = StoragePrepareRuntime::new(directory.path(), Duration::from_secs(30));
@@ -539,7 +559,7 @@ async fn termination_refusal_does_not_replace_running_evidence() {
         .persist_evidence(&MachineStoragePreparationEvidence::Running {
             operation_id: requested_operation.clone(),
             launched_at_unix_millis: 1,
-            process: read_process_identity(group_id).expect("identity"),
+            process: read_operation_process_identity(group_id, &actual_operation),
         })
         .expect("running evidence");
     assert!(
@@ -573,7 +593,7 @@ async fn cancellation_refusal_is_not_acknowledged_and_retains_running_evidence()
         .persist_evidence(&MachineStoragePreparationEvidence::Running {
             operation_id: requested_operation.clone(),
             launched_at_unix_millis: 1,
-            process: read_process_identity(group_id).expect("identity"),
+            process: read_operation_process_identity(group_id, &actual_operation),
         })
         .expect("running evidence");
 
@@ -610,7 +630,7 @@ async fn paused_supervisor_cannot_produce_an_unbounded_or_false_cancel_acknowled
         .persist_evidence(&MachineStoragePreparationEvidence::Running {
             operation_id: operation_id.clone(),
             launched_at_unix_millis: 1,
-            process: read_process_identity(group_id).expect("identity"),
+            process: read_operation_process_identity(group_id, &operation_id),
         })
         .expect("running evidence");
     let (cancel, paused_receiver) = oneshot::channel();
@@ -652,7 +672,7 @@ async fn shutdown_bounds_the_entire_cancel_acknowledgement_and_state_clear_wait(
         .persist_evidence(&MachineStoragePreparationEvidence::Running {
             operation_id: operation_id.clone(),
             launched_at_unix_millis: 1,
-            process: read_process_identity(group_id).expect("identity"),
+            process: read_operation_process_identity(group_id, &operation_id),
         })
         .expect("running evidence");
     let (cancel, paused_receiver) = oneshot::channel();
