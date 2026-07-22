@@ -21,7 +21,8 @@ use ployz_sdk_types::{
     MachineInspectRequest, MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed,
     MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported, MachineLifecycleError,
     MachineLifecycleRequest, MachineListError, MachineListRequest, MachineListResult,
-    MachineSnapshot, MachineStoragePrepareError, MachineStoragePrepareRequest, MachineUpdateError,
+    MachineSnapshot, MachineStoragePrepareCancelError, MachineStoragePrepareCancelRequest,
+    MachineStoragePrepareError, MachineStoragePrepareRequest, MachineUpdateError,
     MachineUpdateRequest, NamespaceRemoveError, NamespaceRemoveRequest, NetworkRepairError,
     NetworkRepairRequest, NetworkResolveError, NetworkResolveRequest, NetworkResolveResult,
     NetworkStatusError, NetworkStatusRequest, NetworkStatusResult, OperationApiResponse,
@@ -37,11 +38,11 @@ use ployz_sdk_types::{
         DeployPreviewApi, DeployReserveApi, DeploySubmitApi, IngressConfigureApi,
         InitFirstMachineActivateApi, LogsTailApi, MachineAddApi, MachineBuildCachePruneApi,
         MachineDrainApi, MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi,
-        MachineListApi, MachineResumeApi, MachineStoragePrepareApi, MachineUpdateApi,
-        NamespaceRemoveApi, NetworkRepairApi, NetworkResolveApi, NetworkStatusApi,
-        OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi,
-        ServiceInspectApi, ServiceListApi, ServiceRestartApi, SystemDeployApi, VolumeCreateApi,
-        VolumeListApi, VolumeRemoveApi,
+        MachineListApi, MachineResumeApi, MachineStoragePrepareApi, MachineStoragePrepareCancelApi,
+        MachineUpdateApi, NamespaceRemoveApi, NetworkRepairApi, NetworkResolveApi,
+        NetworkStatusApi, OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi,
+        RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi, ServiceRestartApi, SystemDeployApi,
+        VolumeCreateApi, VolumeListApi, VolumeRemoveApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -196,6 +197,14 @@ impl OperationApiClient {
         request: &MachineStoragePrepareRequest,
     ) -> Result<AcceptedOperation, OperationApiClientError<MachineStoragePrepareError>> {
         self.request_api::<MachineStoragePrepareApi>(request).await
+    }
+
+    pub async fn machine_storage_prepare_cancel(
+        &self,
+        request: &MachineStoragePrepareCancelRequest,
+    ) -> Result<AcceptedOperation, OperationApiClientError<MachineStoragePrepareCancelError>> {
+        self.request_api::<MachineStoragePrepareCancelApi>(request)
+            .await
     }
 
     pub async fn machine_build_cache_prune(

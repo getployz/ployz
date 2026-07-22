@@ -62,6 +62,8 @@ impl PrivilegedHostEffect<'_> {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        #[cfg(unix)]
+        command.process_group(0);
         command
     }
 }
@@ -92,7 +94,6 @@ impl StoragePrepareRuntime {
         )
     }
 
-    #[cfg(test)]
     fn new(evidence_directory: &Path, budget: Duration) -> Self {
         Self {
             state: Arc::new(Mutex::new(None)),
@@ -137,6 +138,11 @@ impl StoragePrepareRuntime {
             };
             let repository = StorageEvidenceRepository::new(&self.evidence_directory);
             if !process_identity_is_expected_live(&process, &operation_id) {
+                if process_group_is_live(process.pid) {
+                    return Err(termination_failure(
+                        "refused to terminate an unverified recovered storage preparation group",
+                    ));
+                }
                 repository.persist_failure_if_running(
                     &operation_id,
                     &StorageEffectFailure::Interrupted {
@@ -187,15 +193,6 @@ impl StoragePrepareRuntime {
             });
         }
         Ok(())
-    }
-
-    #[cfg(not(test))]
-    fn new(evidence_directory: &Path, budget: Duration) -> Self {
-        Self {
-            state: Arc::new(Mutex::new(None)),
-            evidence_directory: Arc::new(evidence_directory.to_path_buf()),
-            budget,
-        }
     }
 
     async fn start(
@@ -283,7 +280,7 @@ impl StoragePrepareRuntime {
         }
         let mut state = self.state.lock().await;
         let Some(active) = state.as_mut() else {
-            return recover_stale_running(&repository, operation_id);
+            return recover_stale_running(&repository, operation_id, &reason).await;
         };
         if &active.operation_id != operation_id {
             return Err(StorageEffectFailure::ProcessFailed {
@@ -405,21 +402,6 @@ pub(crate) async fn handle_storage_prepare_cancel(
     }
 }
 
-#[cfg(test)]
-fn read_storage_prepare_evidence_at(
-    directory: &Path,
-    operation_id: &OperationId,
-) -> Result<Option<ployz_core::deploy::ZfsPoolName>, StorageEffectFailure> {
-    match StorageEvidenceRepository::new(directory).report(operation_id)? {
-        MachineStoragePrepareReport::Completed { pool } => Ok(Some(pool)),
-        MachineStoragePrepareReport::NotFound | MachineStoragePrepareReport::Running => Ok(None),
-        MachineStoragePrepareReport::Failed { failure } => Err(failure),
-        MachineStoragePrepareReport::Cancelled { .. } => Err(StorageEffectFailure::Interrupted {
-            message: "storage preparation was cancelled".to_owned(),
-        }),
-    }
-}
-
 struct StorageEvidenceRepository<'a> {
     directory: &'a Path,
 }
@@ -461,17 +443,25 @@ impl<'a> StorageEvidenceRepository<'a> {
         &self,
         operation_id: &OperationId,
     ) -> Result<MachineStoragePrepareReport, StorageEffectFailure> {
-        let evidence = self.read_optional(operation_id)?;
+        let mut evidence = self.read_optional(operation_id)?;
         if let Some(MachineStoragePreparationEvidence::Running { process, .. }) = &evidence
             && !process_identity_is_expected_live(process, operation_id)
         {
+            if process_group_is_live(process.pid) {
+                return Ok(MachineStoragePrepareReport::Running);
+            }
             let failure = StorageEffectFailure::Interrupted {
                 message: "the recorded storage preparation process is no longer live".to_owned(),
             };
-            self.persist_failure_if_running(operation_id, &failure)?;
-            return Ok(MachineStoragePrepareReport::Failed { failure });
+            evidence = self.transition_running_to_failure(operation_id, &failure)?;
         }
-        Ok(match evidence {
+        Ok(Self::project_report(evidence))
+    }
+
+    fn project_report(
+        evidence: Option<MachineStoragePreparationEvidence>,
+    ) -> MachineStoragePrepareReport {
+        match evidence {
             None => MachineStoragePrepareReport::NotFound,
             Some(MachineStoragePreparationEvidence::Running { .. }) => {
                 MachineStoragePrepareReport::Running
@@ -487,7 +477,7 @@ impl<'a> StorageEvidenceRepository<'a> {
             Some(MachineStoragePreparationEvidence::Cancelled { reason, .. }) => {
                 MachineStoragePrepareReport::Cancelled { reason }
             }
-        })
+        }
     }
 
     fn persist_failure(
@@ -533,6 +523,15 @@ impl<'a> StorageEvidenceRepository<'a> {
         operation_id: &OperationId,
         failure: &StorageEffectFailure,
     ) -> Result<(), StorageEffectFailure> {
+        self.transition_running_to_failure(operation_id, failure)
+            .map(|_| ())
+    }
+
+    fn transition_running_to_failure(
+        &self,
+        operation_id: &OperationId,
+        failure: &StorageEffectFailure,
+    ) -> Result<Option<MachineStoragePreparationEvidence>, StorageEffectFailure> {
         if matches!(
             self.read_optional(operation_id)?,
             Some(MachineStoragePreparationEvidence::Running { .. })
@@ -542,7 +541,7 @@ impl<'a> StorageEvidenceRepository<'a> {
                 failure: failure.clone(),
             })?;
         }
-        Ok(())
+        self.read_optional(operation_id)
     }
 
     fn persist_cancelled_if_running(
@@ -613,13 +612,22 @@ fn acknowledge_existing(
         } => {
             if process_identity_is_expected_live(&process, &operation_id) {
                 Ok(())
+            } else if process_group_is_live(process.pid) {
+                Err(StorageEffectFailure::ProcessFailed {
+                    message: "the storage preparation leader stopped while its process group remains live"
+                        .to_owned(),
+                })
             } else {
                 let failure = StorageEffectFailure::Interrupted {
                     message: "the recorded storage preparation process is no longer live"
                         .to_owned(),
                 };
-                repository.persist_failure_if_running(&operation_id, &failure)?;
-                Err(failure)
+                match repository.transition_running_to_failure(&operation_id, &failure)? {
+                    Some(MachineStoragePreparationEvidence::Completed { .. })
+                    | Some(MachineStoragePreparationEvidence::Cancelled { .. }) => Ok(()),
+                    Some(MachineStoragePreparationEvidence::Failed { failure, .. }) => Err(failure),
+                    Some(MachineStoragePreparationEvidence::Running { .. }) | None => Err(failure),
+                }
             }
         }
         MachineStoragePreparationEvidence::Completed { .. }
@@ -637,30 +645,53 @@ async fn supervise_storage_prepare_child(
     accepted: oneshot::Sender<Result<(), MachineStoragePrepareDomainError>>,
 ) {
     let repository = StorageEvidenceRepository::new(&runtime.evidence_directory);
-    let accepted_result = wait_for_accepted_evidence(&repository, &operation_id, &mut child).await;
-    let accepted_ok = accepted_result.is_ok();
-    let _ = accepted.send(accepted_result.map_err(storage_failure));
-    if !accepted_ok {
-        let _ = terminate_storage_prepare_child(&mut child).await;
+    let child_group_id = child.id().expect("spawned child has a process id");
+    if let Err(failure) = wait_for_accepted_evidence(&repository, &operation_id, &mut child).await {
+        if let Err(termination) =
+            terminate_storage_prepare_child(&repository, &operation_id, child_group_id, &mut child)
+                .await
+        {
+            let _ = accepted.send(Err(storage_failure(termination.clone())));
+            retain_running_after_termination_failure(&operation_id, &termination).await;
+        }
+        let accepted_result = settle_acceptance_failure(&repository, &operation_id, failure);
+        let _ = accepted.send(accepted_result.map_err(storage_failure));
         clear_active(&runtime, &operation_id).await;
         return;
     }
+    let _ = accepted.send(Ok(()));
     let remaining =
         remaining_budget(&repository, &operation_id, runtime.budget).unwrap_or(Duration::ZERO);
     tokio::select! {
         wait = child.wait() => {
+            if let Err(termination) = terminate_owned_process_group(child_group_id).await {
+                retain_running_after_termination_failure(&operation_id, &termination).await;
+            }
             finish_after_wait(&repository, &operation_id, wait);
         }
         _ = tokio::time::sleep(remaining) => {
-            let _ = terminate_storage_prepare_child(&mut child).await;
+            if let Err(termination) = terminate_storage_prepare_child(
+                &repository,
+                &operation_id,
+                child_group_id,
+                &mut child,
+            ).await {
+                retain_running_after_termination_failure(&operation_id, &termination).await;
+            }
             let _ = repository.persist_failure_if_running(
                 &operation_id,
                 &StorageEffectFailure::OperationTimedOut,
             );
         }
         reason = &mut cancel => {
-            let _ = terminate_storage_prepare_child(&mut child).await;
-            let _ = child.wait().await;
+            if let Err(termination) = terminate_storage_prepare_child(
+                &repository,
+                &operation_id,
+                child_group_id,
+                &mut child,
+            ).await {
+                retain_running_after_termination_failure(&operation_id, &termination).await;
+            }
             if let Ok(reason) = reason {
                 let _ = repository.persist_cancelled_if_running(&operation_id, &reason);
             }
@@ -686,6 +717,9 @@ async fn supervise_recovered_storage_prepare(
     };
     match outcome {
         RecoveredOutcome::Exited => {
+            if let Err(termination) = terminate_owned_process_group(process.pid).await {
+                retain_running_after_termination_failure(&operation_id, &termination).await;
+            }
             let _ = repository.persist_failure_if_running(
                 &operation_id,
                 &StorageEffectFailure::Interrupted {
@@ -694,14 +728,18 @@ async fn supervise_recovered_storage_prepare(
             );
         }
         RecoveredOutcome::TimedOut => {
-            terminate_exact_process(&process).await;
+            if let Err(termination) = terminate_exact_process(&process).await {
+                retain_running_after_termination_failure(&operation_id, &termination).await;
+            }
             let _ = repository.persist_failure_if_running(
                 &operation_id,
                 &StorageEffectFailure::OperationTimedOut,
             );
         }
         RecoveredOutcome::Cancelled(reason) => {
-            terminate_exact_process(&process).await;
+            if let Err(termination) = terminate_exact_process(&process).await {
+                retain_running_after_termination_failure(&operation_id, &termination).await;
+            }
             if let Some(reason) = reason {
                 let _ = repository.persist_cancelled_if_running(&operation_id, &reason);
             }
@@ -722,31 +760,117 @@ async fn wait_for_process_exit(process: &StoragePreparationProcessIdentity) {
     }
 }
 
-async fn terminate_exact_process(process: &StoragePreparationProcessIdentity) {
+async fn terminate_exact_process(
+    process: &StoragePreparationProcessIdentity,
+) -> Result<(), StorageEffectFailure> {
     if !process_identity_is_live(process) {
-        return;
+        return if process_group_is_live(process.pid) {
+            Err(termination_failure(
+                "storage preparation group leader identity changed before termination",
+            ))
+        } else {
+            Ok(())
+        };
     }
-    let _ = tokio::process::Command::new("kill")
-        .arg("-TERM")
-        .arg(process.pid.to_string())
-        .status()
-        .await;
+    if !process_is_group_leader(process.pid) {
+        return Err(termination_failure(
+            "storage preparation process is not its process-group leader",
+        ));
+    }
+    signal_process_group(process.pid, "-TERM").await?;
     if tokio::time::timeout(
         ployz_core::storage::MACHINE_STORAGE_PREPARE_TERMINATION_GRACE,
-        wait_for_process_exit(process),
+        wait_for_process_group_exit(process.pid),
     )
     .await
     .is_ok()
     {
-        return;
+        return Ok(());
     }
-    if process_identity_is_live(process) {
-        let _ = tokio::process::Command::new("kill")
-            .arg("-KILL")
-            .arg(process.pid.to_string())
-            .status()
-            .await;
-        wait_for_process_exit(process).await;
+    if process_group_is_live(process.pid) {
+        signal_process_group(process.pid, "-KILL").await?;
+        tokio::time::timeout(
+            ployz_core::storage::MACHINE_STORAGE_PREPARE_TERMINATION_GRACE,
+            wait_for_process_group_exit(process.pid),
+        )
+        .await
+        .map_err(|_| {
+            termination_failure("storage preparation process group survived the bounded KILL grace")
+        })?;
+    }
+    Ok(())
+}
+
+async fn terminate_owned_process_group(group_id: u32) -> Result<(), StorageEffectFailure> {
+    if !process_group_is_live(group_id) {
+        return Ok(());
+    }
+    signal_process_group(group_id, "-TERM").await?;
+    if tokio::time::timeout(
+        ployz_core::storage::MACHINE_STORAGE_PREPARE_TERMINATION_GRACE,
+        wait_for_process_group_exit(group_id),
+    )
+    .await
+    .is_ok()
+    {
+        return Ok(());
+    }
+    if process_group_is_live(group_id) {
+        signal_process_group(group_id, "-KILL").await?;
+        tokio::time::timeout(
+            ployz_core::storage::MACHINE_STORAGE_PREPARE_TERMINATION_GRACE,
+            wait_for_process_group_exit(group_id),
+        )
+        .await
+        .map_err(|_| {
+            termination_failure("owned storage preparation descendants survived bounded KILL")
+        })?;
+    }
+    Ok(())
+}
+
+async fn retain_running_after_termination_failure(
+    operation_id: &OperationId,
+    failure: &StorageEffectFailure,
+) -> ! {
+    eprintln!(
+        "ployzd storage preparation termination warning: operation_id={} error={failure}; retaining operation ownership and nonterminal evidence",
+        operation_id.as_str(),
+    );
+    std::future::pending::<()>().await;
+    unreachable!("pending future cannot complete")
+}
+
+async fn signal_process_group(pid: u32, signal: &str) -> Result<(), StorageEffectFailure> {
+    let status = tokio::process::Command::new("kill")
+        .arg(signal)
+        .arg("--")
+        .arg(format!("-{pid}"))
+        .status()
+        .await
+        .map_err(|error| {
+            termination_failure(format!(
+                "failed to invoke {signal} for process group {pid}: {error}"
+            ))
+        })?;
+    if status.success() || !process_group_is_live(pid) {
+        Ok(())
+    } else {
+        Err(termination_failure(format!(
+            "{signal} for process group {pid} exited with {status}"
+        )))
+    }
+}
+
+fn termination_failure(message: impl Into<String>) -> StorageEffectFailure {
+    StorageEffectFailure::ProcessFailed {
+        message: message.into(),
+    }
+}
+
+async fn wait_for_process_group_exit(pid: u32) {
+    while process_group_is_live(pid) {
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
 
@@ -770,17 +894,38 @@ async fn wait_for_accepted_evidence(
             let failure = StorageEffectFailure::ProcessFailed {
                 message: format!("storage preparation exited before acceptance with {status}"),
             };
-            repository.persist_failure(operation_id, &failure)?;
             return Err(failure);
         }
         if tokio::time::Instant::now() >= deadline {
             let failure = StorageEffectFailure::ProcessFailed {
                 message: "storage preparation did not establish running evidence".to_owned(),
             };
-            repository.persist_failure(operation_id, &failure)?;
             return Err(failure);
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+fn settle_acceptance_failure(
+    repository: &StorageEvidenceRepository<'_>,
+    operation_id: &OperationId,
+    failure: StorageEffectFailure,
+) -> Result<(), StorageEffectFailure> {
+    let evidence = match repository.read_optional(operation_id) {
+        Ok(Some(MachineStoragePreparationEvidence::Running { .. })) => {
+            repository.transition_running_to_failure(operation_id, &failure)?
+        }
+        Ok(Some(evidence)) => Some(evidence),
+        Ok(None) | Err(_) => {
+            repository.persist_failure(operation_id, &failure)?;
+            repository.read_optional(operation_id)?
+        }
+    };
+    match evidence {
+        Some(MachineStoragePreparationEvidence::Completed { .. })
+        | Some(MachineStoragePreparationEvidence::Cancelled { .. }) => Ok(()),
+        Some(MachineStoragePreparationEvidence::Failed { failure, .. }) => Err(failure),
+        Some(MachineStoragePreparationEvidence::Running { .. }) | None => Err(failure),
     }
 }
 
@@ -804,9 +949,10 @@ fn remaining_budget(
         .as_millis()
         .try_into()
         .unwrap_or(u64::MAX);
-    Ok(budget.saturating_sub(Duration::from_millis(
-        now.saturating_sub(launched_at_unix_millis),
-    )))
+    if now < launched_at_unix_millis {
+        return Ok(Duration::ZERO);
+    }
+    Ok(budget.saturating_sub(Duration::from_millis(now - launched_at_unix_millis)))
 }
 
 fn finish_after_wait(
@@ -844,9 +990,10 @@ async fn clear_active(runtime: &StoragePrepareRuntime, operation_id: &OperationI
     }
 }
 
-fn recover_stale_running(
+async fn recover_stale_running(
     repository: &StorageEvidenceRepository<'_>,
     operation_id: &OperationId,
+    reason: &CancellationReason,
 ) -> Result<(), StorageEffectFailure> {
     let Some(MachineStoragePreparationEvidence::Running { process, .. }) =
         repository.read_optional(operation_id)?
@@ -858,15 +1005,40 @@ fn recover_stale_running(
             message: "storage preparation is live but is not owned by this daemon".to_owned(),
         });
     }
-    let failure = StorageEffectFailure::Interrupted {
-        message: "the recorded storage preparation process stopped before cancellation".to_owned(),
-    };
-    repository.persist_failure_if_running(operation_id, &failure)
+    if process_group_is_live(process.pid) {
+        return Err(termination_failure(
+            "refused to cancel an unverified stale storage preparation group",
+        ));
+    }
+    repository.persist_cancelled_if_running(operation_id, reason)
 }
 
 #[cfg(target_os = "linux")]
 fn process_identity_is_live(expected: &StoragePreparationProcessIdentity) -> bool {
     read_process_identity(expected.pid).as_ref() == Some(expected)
+}
+
+#[cfg(target_os = "linux")]
+fn process_is_group_leader(pid: u32) -> bool {
+    read_process_group_id(pid) == Some(pid)
+}
+
+#[cfg(target_os = "linux")]
+fn process_group_is_live(group_id: u32) -> bool {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse().ok())
+        else {
+            return false;
+        };
+        read_process_state_and_group(pid)
+            .is_some_and(|(state, process_group)| state != 'Z' && process_group == group_id)
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -893,12 +1065,12 @@ fn read_process_identity(pid: u32) -> Option<StoragePreparationProcessIdentity> 
     let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
         return None;
     };
-    let Some((_, tail)) = stat.rsplit_once(") ") else {
+    let (_, tail) = stat.rsplit_once(") ")?;
+    let fields = tail.split_whitespace().collect::<Vec<_>>();
+    if fields.first() == Some(&"Z") {
         return None;
-    };
-    let Some(start_time) = tail.split_whitespace().nth(19) else {
-        return None;
-    };
+    }
+    let start_time = fields.get(19)?;
     let Ok(command) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
         return None;
     };
@@ -915,6 +1087,22 @@ fn read_process_identity(pid: u32) -> Option<StoragePreparationProcessIdentity> 
     })
 }
 
+#[cfg(target_os = "linux")]
+fn read_process_group_id(pid: u32) -> Option<u32> {
+    read_process_state_and_group(pid).map(|(_, group_id)| group_id)
+}
+
+#[cfg(target_os = "linux")]
+fn read_process_state_and_group(pid: u32) -> Option<(char, u32)> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let (_, tail) = stat.rsplit_once(") ")?;
+    let mut fields = tail.split_whitespace();
+    let state = fields.next()?.chars().next()?;
+    let _parent_pid = fields.next()?;
+    let group_id = fields.next()?.parse().ok()?;
+    Some((state, group_id))
+}
+
 #[cfg(not(target_os = "linux"))]
 fn process_identity_is_live(_expected: &StoragePreparationProcessIdentity) -> bool {
     false
@@ -928,15 +1116,84 @@ fn process_identity_is_expected_live(
     false
 }
 
+#[cfg(not(target_os = "linux"))]
+fn process_is_group_leader(_pid: u32) -> bool {
+    false
+}
+
+#[cfg(not(target_os = "linux"))]
+fn process_group_is_live(_group_id: u32) -> bool {
+    false
+}
+
 async fn terminate_storage_prepare_child(
+    repository: &StorageEvidenceRepository<'_>,
+    operation_id: &OperationId,
+    group_id: u32,
     child: &mut tokio::process::Child,
 ) -> Result<(), StorageEffectFailure> {
-    child
-        .kill()
+    let Some(pid) = child.id() else {
+        terminate_owned_process_group(group_id).await?;
+        return tokio::time::timeout(
+            ployz_core::storage::MACHINE_STORAGE_PREPARE_TERMINATION_GRACE,
+            child.wait(),
+        )
         .await
-        .map_err(|error| StorageEffectFailure::ProcessFailed {
-            message: format!("failed to terminate storage preparation: {error}"),
-        })
+        .map_err(|_| {
+            termination_failure(
+                "exited storage preparation child was not reaped within the bounded grace",
+            )
+        })?
+        .map(|_| ())
+        .map_err(|error| {
+            termination_failure(format!(
+                "failed to reap exited storage preparation: {error}"
+            ))
+        });
+    };
+    let persisted = repository.read_optional(operation_id).ok().flatten();
+    let identity = match persisted {
+        Some(MachineStoragePreparationEvidence::Running { process, .. })
+            if process.pid == pid
+                && process_identity_is_expected_live(&process, operation_id)
+                && process_is_group_leader(pid) =>
+        {
+            process
+        }
+        _ => {
+            let Some(process) = read_process_identity(pid) else {
+                terminate_owned_process_group(group_id).await?;
+                return tokio::time::timeout(
+                    ployz_core::storage::MACHINE_STORAGE_PREPARE_TERMINATION_GRACE,
+                    child.wait(),
+                )
+                .await
+                .map_err(|_| termination_failure("storage preparation child disappeared but was not reaped within the bounded grace"))?
+                .map(|_| ())
+                .map_err(|error| termination_failure(format!("failed to reap disappeared storage preparation: {error}")));
+            };
+            if !process_identity_is_expected_live(&process, operation_id)
+                || !process_is_group_leader(pid)
+            {
+                return Err(StorageEffectFailure::ProcessFailed {
+                    message: "refused to terminate an unverified storage preparation process group"
+                        .to_owned(),
+                });
+            }
+            process
+        }
+    };
+    terminate_exact_process(&identity).await?;
+    tokio::time::timeout(
+        ployz_core::storage::MACHINE_STORAGE_PREPARE_TERMINATION_GRACE,
+        child.wait(),
+    )
+    .await
+    .map_err(|_| {
+        termination_failure("storage preparation child was not reaped within the bounded grace")
+    })?
+    .map(|_| ())
+    .map_err(|error| termination_failure(format!("failed to reap storage preparation: {error}")))
 }
 
 #[cfg(test)]

@@ -1,5 +1,5 @@
 use super::*;
-use ployz_core::storage::{PreparedStorageOrigin, ZfsDatasetRoot};
+use ployz_core::storage::{PreparedStorageOrigin, PreparedStorageState, ZfsDatasetRoot};
 use std::ffi::OsStr;
 
 fn operation(value: &str) -> OperationId {
@@ -57,6 +57,7 @@ fn operation_process_command(
         .arg("sleep 30")
         .arg("storage-prepare")
         .arg(operation_id.as_str())
+        .process_group(0)
         .kill_on_drop(kill_on_drop);
     command
 }
@@ -436,4 +437,164 @@ fn launch_anchored_budget_never_renews() {
         remaining_budget(&repository, &operation_id, Duration::from_secs(1)).expect("budget"),
         Duration::ZERO
     );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn leader_exit_reaps_its_remaining_descendant_before_terminal_evidence() {
+    let directory = tempfile::tempdir().expect("evidence directory");
+    let descendant_file = directory.path().join("descendant.pid");
+    let operation_id = operation("op_descendant");
+    let mut command = tokio::process::Command::new("sh");
+    command
+        .arg("-c")
+        .arg("sleep 30 & echo $! > \"$1\"; sleep 1")
+        .arg("storage-prepare")
+        .arg(&descendant_file)
+        .arg(operation_id.as_str())
+        .process_group(0)
+        .kill_on_drop(false);
+    let child = command.spawn().expect("operation child");
+    let leader_pid = child.id().expect("leader pid");
+    let repository = StorageEvidenceRepository::new(directory.path());
+    repository
+        .persist_evidence(&MachineStoragePreparationEvidence::Running {
+            operation_id: operation_id.clone(),
+            launched_at_unix_millis: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_millis() as u64,
+            process: read_process_identity(leader_pid).expect("leader identity"),
+        })
+        .expect("running evidence");
+    let runtime = StoragePrepareRuntime::new(directory.path(), Duration::from_secs(30));
+    let (cancel, cancel_rx) = oneshot::channel();
+    *runtime.state.lock().await = Some(ActiveStoragePreparation {
+        operation_id: operation_id.clone(),
+        cancel: Some(cancel),
+    });
+    let (accepted, accepted_rx) = oneshot::channel();
+    tokio::spawn(supervise_storage_prepare_child(
+        runtime.clone(),
+        operation_id.clone(),
+        child,
+        substrate_guard(&operation_id),
+        cancel_rx,
+        accepted,
+    ));
+    accepted_rx
+        .await
+        .expect("acceptance channel")
+        .expect("accepted");
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while runtime.state.lock().await.is_some() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("supervisor completion");
+    let descendant_pid: u32 = std::fs::read_to_string(descendant_file)
+        .expect("descendant pid")
+        .trim()
+        .parse()
+        .expect("numeric descendant pid");
+    assert!(!process_group_is_live(leader_pid));
+    assert!(
+        !Path::new(&format!("/proc/{descendant_pid}")).exists() || {
+            read_process_state_and_group(descendant_pid).is_some_and(|(state, _)| state == 'Z')
+        }
+    );
+    assert!(matches!(
+        repository.report(&operation_id).expect("terminal report"),
+        MachineStoragePrepareReport::Failed { .. }
+    ));
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn termination_refusal_does_not_replace_running_evidence() {
+    let directory = tempfile::tempdir().expect("evidence directory");
+    let actual_operation = operation("op_actual");
+    let requested_operation = operation("op_wrong");
+    let mut child = spawn_operation_process(&actual_operation);
+    let group_id = child.id().expect("pid");
+    let repository = StorageEvidenceRepository::new(directory.path());
+    repository
+        .persist_evidence(&MachineStoragePreparationEvidence::Running {
+            operation_id: requested_operation.clone(),
+            launched_at_unix_millis: 1,
+            process: read_process_identity(group_id).expect("identity"),
+        })
+        .expect("running evidence");
+    assert!(
+        terminate_storage_prepare_child(&repository, &requested_operation, group_id, &mut child,)
+            .await
+            .is_err()
+    );
+    assert!(matches!(
+        repository
+            .read_optional(&requested_operation)
+            .expect("evidence"),
+        Some(MachineStoragePreparationEvidence::Running { .. })
+    ));
+    terminate_owned_process_group(group_id)
+        .await
+        .expect("test cleanup");
+    let _ = child.wait().await;
+}
+
+#[test]
+fn a_clock_rollback_fails_the_remaining_budget_closed() {
+    let directory = tempfile::tempdir().expect("evidence directory");
+    let repository = StorageEvidenceRepository::new(directory.path());
+    let operation_id = operation("op_future_launch");
+    #[cfg(target_os = "linux")]
+    let process = read_process_identity(std::process::id()).expect("identity");
+    #[cfg(not(target_os = "linux"))]
+    let process = StoragePreparationProcessIdentity {
+        boot_id: "boot".to_owned(),
+        pid: 1,
+        start_time_ticks: 1,
+        expected_command: "ployz".to_owned(),
+    };
+    let future_launch = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_millis() as u64
+        + 60_000;
+    repository
+        .persist_evidence(&MachineStoragePreparationEvidence::Running {
+            operation_id: operation_id.clone(),
+            launched_at_unix_millis: future_launch,
+            process,
+        })
+        .expect("running evidence");
+    assert_eq!(
+        remaining_budget(&repository, &operation_id, Duration::from_secs(30)).expect("budget"),
+        Duration::ZERO
+    );
+}
+
+#[test]
+fn completion_wins_over_a_stale_running_failure_transition() {
+    let directory = tempfile::tempdir().expect("evidence directory");
+    let repository = StorageEvidenceRepository::new(directory.path());
+    let operation_id = operation("op_completion_race");
+    repository
+        .persist_evidence(&MachineStoragePreparationEvidence::Completed {
+            operation_id: operation_id.clone(),
+            prepared: prepared("tank"),
+        })
+        .expect("completed evidence");
+    assert!(matches!(
+        repository
+            .transition_running_to_failure(
+                &operation_id,
+                &StorageEffectFailure::Interrupted {
+                    message: "stale report".to_owned(),
+                },
+            )
+            .expect("transition result"),
+        Some(MachineStoragePreparationEvidence::Completed { .. })
+    ));
 }

@@ -896,6 +896,14 @@ fn machine_storage_prepare_failure(
         ployz_sdk_types::MachineStoragePrepareFailure::PreparationRejected { failure, .. } => {
             failure.to_string()
         }
+        ployz_sdk_types::MachineStoragePrepareFailure::MachineSubstrateBusy {
+            machine_id,
+            owner_operation_id,
+        } => format!(
+            "machine {} substrate is busy with operation {}",
+            machine_id.as_str(),
+            owner_operation_id.as_str()
+        ),
     }
 }
 

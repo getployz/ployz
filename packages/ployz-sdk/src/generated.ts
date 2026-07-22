@@ -1113,13 +1113,17 @@ export type MachineUpdateRequest = { operation_id: OperationId, machine_id: Mach
 
 export type MachineStoragePrepareOperationState = { "state": "accepted" } | { "state": "preparing" } | { "state": "completed", pool: ZfsPoolName, } | { "state": "failed", failure: MachineStoragePrepareFailure, } | { "state": "cancelled", reason: CancellationReason, } | { "state": "interrupted", evidence: OperationInterruptionEvidence, };
 
-export type StorageEffectFailure = { "kind": "unsupported_platform" } | { "kind": "installation", message: string, } | { "kind": "pool_list", message: string, } | { "kind": "ambiguous_pools", candidates: Array<ZfsPoolName>, } | { "kind": "explicit_pool_absent", pool: ZfsPoolName, } | { "kind": "owned_pool", message: string, } | { "kind": "owned_pool_evidence_present", backing_file: string, } | { "kind": "owned_pool_too_small", total_bytes: number, available_bytes: number, required_headroom_bytes: number, minimum_pool_bytes: number, } | { "kind": "owned_pool_headroom_not_preserved", available_bytes: number, required_headroom_bytes: number, } | { "kind": "dataset", message: string, } | { "kind": "prepared_state_unavailable", message: string, } | { "kind": "prepared_state_mismatch", message: string, } | { "kind": "gather_parse", message: string, } | { "kind": "quota_shrink", dataset: DatasetName, current: number, requested: number, } | { "kind": "quota_capacity_exceeded", total_bytes: number, provisioned_used_bytes: number, free_bytes: number, required_headroom_bytes: number, requested_total_bytes: number, } | { "kind": "destructive_effect", message: string, } | { "kind": "operation_timed_out" } | { "kind": "process_failed", message: string, };
+export type StorageEffectFailure = { "kind": "unsupported_platform" } | { "kind": "installation", message: string, } | { "kind": "pool_list", message: string, } | { "kind": "ambiguous_pools", candidates: Array<ZfsPoolName>, } | { "kind": "explicit_pool_absent", pool: ZfsPoolName, } | { "kind": "owned_pool", message: string, } | { "kind": "owned_pool_evidence_present", backing_file: string, } | { "kind": "owned_pool_too_small", total_bytes: number, available_bytes: number, required_headroom_bytes: number, minimum_pool_bytes: number, } | { "kind": "owned_pool_headroom_not_preserved", available_bytes: number, required_headroom_bytes: number, } | { "kind": "dataset", message: string, } | { "kind": "prepared_state_unavailable", message: string, } | { "kind": "prepared_state_mismatch", message: string, } | { "kind": "gather_parse", message: string, } | { "kind": "quota_shrink", dataset: DatasetName, current: number, requested: number, } | { "kind": "quota_capacity_exceeded", total_bytes: number, provisioned_used_bytes: number, free_bytes: number, required_headroom_bytes: number, requested_total_bytes: number, } | { "kind": "destructive_effect", message: string, } | { "kind": "operation_timed_out" } | { "kind": "process_failed", message: string, } | { "kind": "interrupted", message: string, };
 
-export type MachineStoragePrepareFailure = { "kind": "machine_unavailable", machine_id: MachineId, message: FailureMessage, } | { "kind": "preparation_rejected", machine_id: MachineId, failure: StorageEffectFailure, } | { "kind": "evidence_unavailable", machine_id: MachineId, message: FailureMessage, } | { "kind": "state_commit_failed", machine_id: MachineId, message: FailureMessage, };
+export type MachineStoragePrepareFailure = { "kind": "machine_unavailable", machine_id: MachineId, message: FailureMessage, } | { "kind": "preparation_rejected", machine_id: MachineId, failure: StorageEffectFailure, } | { "kind": "machine_substrate_busy", machine_id: MachineId, owner_operation_id: OperationId, } | { "kind": "evidence_unavailable", machine_id: MachineId, message: FailureMessage, } | { "kind": "state_commit_failed", machine_id: MachineId, message: FailureMessage, };
 
 export type MachineStoragePrepareRequest = { operation_id: OperationId, machine_id: MachineId, pool?: ZfsPoolName | null, };
 
 export type MachineStoragePrepareError = { "error": "no_such_machine", operation_id: OperationId, machine_id: MachineId, } | { "error": "machine_substrate_busy", operation_id: OperationId, machine_id: MachineId, owner_operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
+
+export type MachineStoragePrepareCancelRequest = { operation_id: OperationId, reason: CancellationReason, };
+
+export type MachineStoragePrepareCancelError = { "error": "no_such_operation", operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
 
 export type MachineBuildCachePruneOperationState = { "state": "accepted" } | { "state": "pruning" } | { "state": "completed", evidence: BuildCachePruneEvidence, } | { "state": "failed", failure: MachineBuildCachePruneFailure, } | { "state": "cancelled", reason: CancellationReason, } | { "state": "interrupted", evidence: OperationInterruptionEvidence, };
 
@@ -1195,6 +1199,8 @@ export type MachineUpdateResponse = OperationApiResponse<AcceptedOperation, Mach
 
 export type MachineStoragePrepareResponse = OperationApiResponse<AcceptedOperation, MachineStoragePrepareError>;
 
+export type MachineStoragePrepareCancelResponse = OperationApiResponse<AcceptedOperation, MachineStoragePrepareCancelError>;
+
 export type MachineDrainResponse = OperationApiResponse<AcceptedOperation, MachineLifecycleError>;
 
 export type MachineResumeResponse = OperationApiResponse<AcceptedOperation, MachineLifecycleError>;
@@ -1264,6 +1270,7 @@ export const OPERATION_API_CONTRACTS = [
   { name: "machine.build_cache_prune", subject: "plz.v1.rpc.operator.command.machine.build_cache_prune", execution: "accepts_operation", request: "MachineBuildCachePruneRequest", success: "AcceptedOperation", error: "MachineBuildCachePruneError", response: "MachineBuildCachePruneResponse" },
   { name: "machine.update", subject: "plz.v1.rpc.operator.command.machine.update", execution: "accepts_operation", request: "MachineUpdateRequest", success: "AcceptedOperation", error: "MachineUpdateError", response: "MachineUpdateResponse" },
   { name: "machine.storage_prepare", subject: "plz.v1.rpc.operator.command.machine.storage_prepare", execution: "accepts_operation", request: "MachineStoragePrepareRequest", success: "AcceptedOperation", error: "MachineStoragePrepareError", response: "MachineStoragePrepareResponse" },
+  { name: "machine.storage_prepare.cancel", subject: "plz.v1.rpc.operator.command.machine.storage_prepare.cancel", execution: "mutates_operation", request: "MachineStoragePrepareCancelRequest", success: "AcceptedOperation", error: "MachineStoragePrepareCancelError", response: "MachineStoragePrepareCancelResponse" },
   { name: "machine.drain", subject: "plz.v1.rpc.operator.command.machine.drain", execution: "accepts_operation", request: "MachineLifecycleRequest", success: "AcceptedOperation", error: "MachineLifecycleError", response: "MachineDrainResponse" },
   { name: "machine.resume", subject: "plz.v1.rpc.operator.command.machine.resume", execution: "accepts_operation", request: "MachineLifecycleRequest", success: "AcceptedOperation", error: "MachineLifecycleError", response: "MachineResumeResponse" },
   { name: "service.restart", subject: "plz.v1.rpc.operator.command.service.restart", execution: "accepts_operation", request: "ServiceRestartRequest", success: "AcceptedOperation", error: "ServiceRestartError", response: "ServiceRestartResponse" },
@@ -1308,6 +1315,7 @@ export type OperationApiRequestByEndpoint = {
   "machine.build_cache_prune": MachineBuildCachePruneRequest;
   "machine.update": MachineUpdateRequest;
   "machine.storage_prepare": MachineStoragePrepareRequest;
+  "machine.storage_prepare.cancel": MachineStoragePrepareCancelRequest;
   "machine.drain": MachineLifecycleRequest;
   "machine.resume": MachineLifecycleRequest;
   "service.restart": ServiceRestartRequest;
@@ -1350,6 +1358,7 @@ export type OperationApiResponseByEndpoint = {
   "machine.build_cache_prune": MachineBuildCachePruneResponse;
   "machine.update": MachineUpdateResponse;
   "machine.storage_prepare": MachineStoragePrepareResponse;
+  "machine.storage_prepare.cancel": MachineStoragePrepareCancelResponse;
   "machine.drain": MachineDrainResponse;
   "machine.resume": MachineResumeResponse;
   "service.restart": ServiceRestartResponse;

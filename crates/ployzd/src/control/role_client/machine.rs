@@ -17,12 +17,14 @@ use crate::roles::machine::protocol::{
     MachineFactsGetRpcRequest, MachineFactsRefreshDomainError, MachineFactsRefreshRpcOk,
     MachineFactsRefreshRpcRequest, MachineLogsTailDomainError, MachineLogsTailResult,
     MachineLogsTailRpcOk, MachineLogsTailRpcRequest, MachineRpcResponder, MachineRpcResponse,
-    MachineStoragePrepareDomainError, MachineStoragePrepareReportRpcOk,
-    MachineStoragePrepareReportRpcRequest, MachineStoragePrepareRpcOk,
-    MachineStoragePrepareRpcRequest, MachineSubstrateReportRpcOk, MachineSubstrateReportRpcRequest,
-    MachineSubstrateUpdateDomainError, MachineSubstrateUpdateRpcOk,
-    MachineSubstrateUpdateRpcRequest, MachineVolumeEnsureRpcOk, MachineVolumeEnsureRpcRequest,
-    MachineVolumeRemoveDomainError, MachineVolumeRemoveRpcOk, MachineVolumeRemoveRpcRequest,
+    MachineStoragePrepareCancelRpcOk, MachineStoragePrepareCancelRpcRequest,
+    MachineStoragePrepareDomainError, MachineStoragePrepareReport,
+    MachineStoragePrepareReportRpcOk, MachineStoragePrepareReportRpcRequest,
+    MachineStoragePrepareRpcOk, MachineStoragePrepareRpcRequest, MachineSubstrateReportRpcOk,
+    MachineSubstrateReportRpcRequest, MachineSubstrateUpdateDomainError,
+    MachineSubstrateUpdateRpcOk, MachineSubstrateUpdateRpcRequest, MachineVolumeEnsureRpcOk,
+    MachineVolumeEnsureRpcRequest, MachineVolumeRemoveDomainError, MachineVolumeRemoveRpcOk,
+    MachineVolumeRemoveRpcRequest,
 };
 use futures_util::{StreamExt, stream};
 use ployz_core::deploy::VolumeName;
@@ -136,6 +138,10 @@ pub enum MachineStoragePrepareError {
     PreparationFailed {
         machine_id: MachineId,
         failure: ployz_core::storage::StorageEffectFailure,
+    },
+    Busy {
+        machine_id: MachineId,
+        owner_operation_id: OperationId,
     },
 }
 
@@ -645,7 +651,7 @@ impl NatsMachineSubstrateUpdater {
         &self,
         machine_id: &MachineId,
         request: MachineStoragePrepareRpcRequest,
-    ) -> Result<ployz_core::deploy::ZfsPoolName, MachineStoragePrepareError> {
+    ) -> Result<(), MachineStoragePrepareError> {
         call_machine::<MachineStoragePrepareRpcOk, MachineStoragePrepareDomainError>(
             &self.client,
             ployz_core::storage::MACHINE_STORAGE_PREPARE_RPC_TIMEOUT,
@@ -654,7 +660,7 @@ impl NatsMachineSubstrateUpdater {
             &request,
         )
         .await
-        .map(|response| response.pool)
+        .map(|_| ())
         .map_err(|error| storage_prepare_error(machine_id, error))
     }
 
@@ -692,7 +698,7 @@ impl NatsMachineSubstrateUpdater {
         &self,
         machine_id: &MachineId,
         operation_id: &OperationId,
-    ) -> Result<Option<ployz_core::deploy::ZfsPoolName>, MachineStoragePrepareError> {
+    ) -> Result<MachineStoragePrepareReport, MachineStoragePrepareError> {
         call_machine::<MachineStoragePrepareReportRpcOk, MachineStoragePrepareDomainError>(
             &self.client,
             self.request_timeout,
@@ -703,7 +709,24 @@ impl NatsMachineSubstrateUpdater {
             },
         )
         .await
-        .map(|response| response.pool)
+        .map(|response| response.report)
+        .map_err(|error| storage_prepare_error(machine_id, error))
+    }
+
+    pub async fn cancel_storage_prepare(
+        &self,
+        machine_id: &MachineId,
+        request: MachineStoragePrepareCancelRpcRequest,
+    ) -> Result<(), MachineStoragePrepareError> {
+        call_machine::<MachineStoragePrepareCancelRpcOk, MachineStoragePrepareDomainError>(
+            &self.client,
+            self.request_timeout,
+            machine_id,
+            MachineServiceEndpoint::StoragePrepareCancel,
+            &request,
+        )
+        .await
+        .map(|_| ())
         .map_err(|error| storage_prepare_error(machine_id, error))
     }
 }
@@ -723,6 +746,12 @@ fn storage_prepare_error(
             machine_id: machine_id.clone(),
             failure,
         },
+        MachineCallError::Domain(MachineStoragePrepareDomainError::Busy { owner_operation_id }) => {
+            MachineStoragePrepareError::Busy {
+                machine_id: machine_id.clone(),
+                owner_operation_id,
+            }
+        }
     }
 }
 

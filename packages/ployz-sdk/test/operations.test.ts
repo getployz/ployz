@@ -709,6 +709,15 @@ test("sdk exports the Rust operation API contract registry", () => {
       response: "MachineStoragePrepareResponse",
     },
     {
+      name: "machine.storage_prepare.cancel",
+      subject: "plz.v1.rpc.operator.command.machine.storage_prepare.cancel",
+      execution: "mutates_operation",
+      request: "MachineStoragePrepareCancelRequest",
+      success: "AcceptedOperation",
+      error: "MachineStoragePrepareCancelError",
+      response: "MachineStoragePrepareCancelResponse",
+    },
+    {
       name: "machine.drain",
       subject: "plz.v1.rpc.operator.command.machine.drain",
       execution: "accepts_operation",

@@ -81,6 +81,10 @@ pub enum MachineStoragePrepareFailure {
         machine_id: MachineId,
         failure: StorageEffectFailure,
     },
+    MachineSubstrateBusy {
+        machine_id: MachineId,
+        owner_operation_id: OperationId,
+    },
     EvidenceUnavailable {
         machine_id: MachineId,
         message: FailureMessage,

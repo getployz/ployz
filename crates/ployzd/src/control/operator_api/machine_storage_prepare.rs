@@ -1,7 +1,9 @@
 //! Operator admission for machine-local storage preparation.
 
+use ployz_core::operation::{MachineStoragePrepareTransition, OperationStatus};
 use ployz_sdk_types::{
-    AcceptedOperation, MachineStoragePrepareError, MachineStoragePrepareRequest,
+    AcceptedOperation, MachineStoragePrepareCancelError, MachineStoragePrepareCancelRequest,
+    MachineStoragePrepareError, MachineStoragePrepareRequest,
 };
 
 use super::OperationApiHandlers;
@@ -88,4 +90,103 @@ pub async fn machine_storage_prepare(
     );
     handlers.machine_storage_prepare().start(accepted).await;
     Ok(operation)
+}
+
+pub async fn machine_storage_prepare_cancel(
+    handlers: &OperationApiHandlers,
+    request: MachineStoragePrepareCancelRequest,
+) -> Result<AcceptedOperation, MachineStoragePrepareCancelError> {
+    let operation_id = request.operation_id;
+    let (machine_id, state, sequence) = storage_prepare_status(handlers, &operation_id).await?;
+    if state.is_terminal() {
+        return Ok(owned_machine_operation(operation_id, &machine_id, sequence));
+    }
+
+    if let Err(error) = handlers
+        .machine_storage_prepare()
+        .cancel_machine_effect(&machine_id, &operation_id, request.reason.clone())
+        .await
+    {
+        if let Ok((current_machine, current_state, current_sequence)) =
+            storage_prepare_status(handlers, &operation_id).await
+            && current_state.is_terminal()
+        {
+            return Ok(owned_machine_operation(
+                operation_id,
+                &current_machine,
+                current_sequence,
+            ));
+        }
+        return Err(MachineStoragePrepareCancelError::Unavailable {
+            operation_id,
+            message: format!("{error:?}"),
+        });
+    }
+
+    let transition = MachineStoragePrepareTransition::Cancelled {
+        reason: request.reason,
+    };
+    if let Err(error) = handlers
+        .controllers()
+        .repository()
+        .record_machine_storage_prepare_transition(&operation_id, &machine_id, transition)
+        .await
+    {
+        if let Ok((current_machine, current_state, current_sequence)) =
+            storage_prepare_status(handlers, &operation_id).await
+            && current_state.is_terminal()
+        {
+            return Ok(owned_machine_operation(
+                operation_id,
+                &current_machine,
+                current_sequence,
+            ));
+        }
+        return Err(MachineStoragePrepareCancelError::Unavailable {
+            operation_id,
+            message: error.to_string(),
+        });
+    }
+
+    let (machine_id, _state, sequence) = storage_prepare_status(handlers, &operation_id).await?;
+    Ok(owned_machine_operation(operation_id, &machine_id, sequence))
+}
+
+async fn storage_prepare_status(
+    handlers: &OperationApiHandlers,
+    operation_id: &ployz_core::ids::OperationId,
+) -> Result<
+    (
+        ployz_core::ids::MachineId,
+        ployz_core::operation::MachineStoragePrepareOperationState,
+        ployz_core::operation::EventSequence,
+    ),
+    MachineStoragePrepareCancelError,
+> {
+    let snapshot = handlers
+        .controllers()
+        .repository()
+        .operation_status_snapshot(operation_id)
+        .await
+        .map_err(|error| MachineStoragePrepareCancelError::Unavailable {
+            operation_id: operation_id.clone(),
+            message: error.to_string(),
+        })?;
+    let Some(snapshot) = snapshot else {
+        return Err(MachineStoragePrepareCancelError::NoSuchOperation {
+            operation_id: operation_id.clone(),
+        });
+    };
+    let OperationStatus::MachineStoragePrepare {
+        machine_id,
+        state,
+        last_event_sequence,
+        ..
+    } = snapshot.status
+    else {
+        return Err(MachineStoragePrepareCancelError::NoSuchOperation {
+            operation_id: operation_id.clone(),
+        });
+    };
+    Ok((machine_id, state, last_event_sequence))
 }
