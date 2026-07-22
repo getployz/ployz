@@ -307,6 +307,7 @@ pub const fn machine_endpoint_name(endpoint: MachineServiceEndpoint) -> &'static
         MachineServiceEndpoint::ImageEnsure => "machine.image.ensure",
         MachineServiceEndpoint::ImageRemove => "machine.image.remove",
         MachineServiceEndpoint::BuildStart => "machine.build.start",
+        MachineServiceEndpoint::BuildStatus => "machine.build.status",
         MachineServiceEndpoint::BuildCancel => "machine.build.cancel",
         MachineServiceEndpoint::BuildCachePrune => "machine.build.cache.prune",
         MachineServiceEndpoint::CertificateArtifactStatus => "machine.certificate.artifact.status",

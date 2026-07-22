@@ -177,9 +177,43 @@ impl DockerBuildExecutor {
     pub async fn execute(
         &self,
         request: BuildExecutionRequest<'_>,
-        mut cancelled: watch::Receiver<bool>,
+        cancelled: watch::Receiver<bool>,
         log_progress: BuildLogProgress,
         deadline: Instant,
+    ) -> Result<BuildExecutionResult, BuildExecutionError> {
+        self.execute_with_validation(
+            request,
+            cancelled,
+            log_progress,
+            OciValidationMode::Absolute(deadline),
+        )
+        .await
+    }
+
+    /// Executes for the machine runtime, which owns the progress-sensitive
+    /// silence budget. OCI validation remains cancellation-aware but has no
+    /// independent elapsed-time ceiling.
+    pub async fn execute_for_machine(
+        &self,
+        request: BuildExecutionRequest<'_>,
+        cancelled: watch::Receiver<bool>,
+        log_progress: BuildLogProgress,
+    ) -> Result<BuildExecutionResult, BuildExecutionError> {
+        self.execute_with_validation(
+            request,
+            cancelled,
+            log_progress,
+            OciValidationMode::CancellationOnly,
+        )
+        .await
+    }
+
+    async fn execute_with_validation(
+        &self,
+        request: BuildExecutionRequest<'_>,
+        mut cancelled: watch::Receiver<bool>,
+        log_progress: BuildLogProgress,
+        validation: OciValidationMode,
     ) -> Result<BuildExecutionResult, BuildExecutionError> {
         let effect_guard = self.effect_guard.acquire().await?;
         let workspace = self.workspace(request.operation_id, request.platform);
@@ -197,7 +231,7 @@ impl DockerBuildExecutor {
                 request,
                 &mut cancelled,
                 log_progress,
-                deadline,
+                validation,
                 effect_guard,
             )
             .await;
@@ -209,7 +243,7 @@ impl DockerBuildExecutor {
         request: BuildExecutionRequest<'_>,
         cancelled: &mut watch::Receiver<bool>,
         log_progress: BuildLogProgress,
-        deadline: Instant,
+        validation: OciValidationMode,
         effect_guard: OwnedSemaphorePermit,
     ) -> Result<BuildExecutionResult, BuildExecutionError> {
         let BuildExecutionRequest {
@@ -318,7 +352,14 @@ impl DockerBuildExecutor {
         let logs = finish_builder_run(build, ownership, cleanup)?;
         let layout_path = plan.oci_layout;
         let platform_for_validation = platform.clone();
-        let validation_control = OciValidationControl::new(deadline, cancelled.clone());
+        let validation_control = match validation {
+            OciValidationMode::Absolute(deadline) => {
+                OciValidationControl::new(deadline, cancelled.clone())
+            }
+            OciValidationMode::CancellationOnly => {
+                OciValidationControl::cancellation_only(cancelled.clone())
+            }
+        };
         let log_summary = BuildLogSummary::new(logs.final_sequence, logs.omitted_bytes);
         let layout = tokio::task::spawn_blocking(move || {
             let _effect_guard = effect_guard;
@@ -363,6 +404,12 @@ impl DockerBuildExecutor {
         }
         Ok(config)
     }
+}
+
+#[derive(Clone, Copy)]
+enum OciValidationMode {
+    Absolute(Instant),
+    CancellationOnly,
 }
 
 fn workspace_owner_digest(workspace_root: &Path) -> String {

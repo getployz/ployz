@@ -2,6 +2,7 @@
 
 use super::build::{
     MachineBuildRuntime, handle_build_cache_prune, handle_build_cancel, handle_build_start,
+    handle_build_status,
 };
 use super::containers::{
     MachineContainerState, handle_container_inspect, handle_container_remove,
@@ -36,7 +37,7 @@ use crate::roles::machine::runner::{
     MachineContainerRunner, MachineImageRemovalRunner, MachineLogReader, MachineVolumeUsageReader,
 };
 use crate::service_catalog::{machine_endpoint_spec, machine_role_service_base};
-use ployz_core::build::{BUILD_CACHE_PRUNE_ENDPOINT_TIMEOUT, BUILD_START_ENDPOINT_TIMEOUT};
+use ployz_core::build::BUILD_CACHE_PRUNE_ENDPOINT_TIMEOUT;
 use ployz_core::ids::MachineId;
 #[cfg(test)]
 use ployz_core::machine::MachineEndpointObservation;
@@ -293,6 +294,14 @@ where
         MachineServiceEndpoint::BuildStart,
         build_state.clone(),
         handle_build_start,
+    )
+    .await?;
+    bind_machine_endpoint(
+        &mut runtime,
+        &machine_id,
+        MachineServiceEndpoint::BuildStatus,
+        build_state.clone(),
+        handle_build_status,
     )
     .await?;
     bind_machine_endpoint(
@@ -561,9 +570,7 @@ fn machine_endpoint_policy(endpoint: MachineServiceEndpoint) -> EndpointExecutio
         MachineServiceEndpoint::StoragePrepare => {
             policy.request_timeout = ployz_core::storage::MACHINE_STORAGE_PREPARE_RPC_TIMEOUT;
         }
-        MachineServiceEndpoint::BuildStart => {
-            policy.request_timeout = BUILD_START_ENDPOINT_TIMEOUT;
-        }
+        MachineServiceEndpoint::BuildStart => {}
         MachineServiceEndpoint::BuildCachePrune => {
             policy.request_timeout = BUILD_CACHE_PRUNE_ENDPOINT_TIMEOUT;
         }
@@ -599,6 +606,7 @@ fn machine_endpoint_policy(endpoint: MachineServiceEndpoint) -> EndpointExecutio
         | MachineServiceEndpoint::ImageEnsure
         | MachineServiceEndpoint::ImageRemove
         | MachineServiceEndpoint::BuildCancel
+        | MachineServiceEndpoint::BuildStatus
         | MachineServiceEndpoint::CertificateArtifactStatus
         | MachineServiceEndpoint::CertificateArtifactPush
         | MachineServiceEndpoint::CertificateArtifactRemove

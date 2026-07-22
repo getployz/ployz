@@ -56,6 +56,7 @@ const MACHINE_SHUTDOWN_TIMEOUT: Duration =
     BUILD_CACHE_PRUNE_MAX_EXECUTION_TIMEOUT.saturating_add(MACHINE_SHUTDOWN_TAIL_TIMEOUT);
 const INTENT_MIRROR_RESUBSCRIBE_DELAY: Duration = Duration::from_secs(5);
 const BUILD_WORKSPACE_ROOT: &str = "/var/lib/ployz/builds";
+const BUILD_STATUS_ROOT: &str = "/var/lib/ployz/build-status";
 
 struct MachineBuildProcessInput {
     images: AvailableImageService,
@@ -264,11 +265,12 @@ where
         .map(|build_process| build_process.images.clone());
     let build_state = match build_process {
         Some(MachineBuildProcessInput { images, executor }) => {
-            let runtime = MachineBuildRuntime::new(
+            let runtime = MachineBuildRuntime::new_with_status_path(
                 machine_id.clone(),
                 client.clone(),
                 executor,
                 Some(images),
+                PathBuf::from(BUILD_STATUS_ROOT),
             )
             .map_err(|message| MachineProcessError::InitializeBuildRuntime { message })?;
             let recovery = runtime.recover_orphans().await;
