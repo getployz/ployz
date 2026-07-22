@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use ployz_core::ids::{BuildExecutorId, BuildPoolId};
 use ployz_core::nats_config::{BuildExecutorCredentialExpiresAt, CredentialName, MintedNatsUser};
@@ -11,25 +11,29 @@ use crate::control::store::CoreStore;
 #[derive(Clone)]
 struct ScriptedReload {
     outcomes: Arc<Mutex<VecDeque<NatsReloadOutcome>>>,
-    calls: Arc<AtomicUsize>,
+    calls: tokio::sync::watch::Sender<usize>,
 }
 
 impl ScriptedReload {
     fn new(outcomes: impl IntoIterator<Item = NatsReloadOutcome>) -> Self {
         Self {
             outcomes: Arc::new(Mutex::new(outcomes.into_iter().collect())),
-            calls: Arc::new(AtomicUsize::new(0)),
+            calls: tokio::sync::watch::channel(0).0,
         }
     }
 
     fn calls(&self) -> usize {
-        self.calls.load(Ordering::SeqCst)
+        *self.calls.borrow()
+    }
+
+    fn subscribe_calls(&self) -> tokio::sync::watch::Receiver<usize> {
+        self.calls.subscribe()
     }
 }
 
 impl NatsReloadRunner for ScriptedReload {
     fn reload(&self) -> NatsReloadOutcome {
-        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.calls.send_modify(|calls| *calls += 1);
         self.outcomes
             .lock()
             .expect("reload outcomes")
@@ -533,54 +537,103 @@ async fn failed_expiry_reload_is_visible_and_recovers_on_retry() {
 }
 
 async fn wait_for_reload_calls(reload: &ScriptedReload, expected: usize) {
-    for _ in 0..1_000 {
-        if reload.calls() >= expected {
-            return;
-        }
-        tokio::task::yield_now().await;
+    let mut calls = reload.subscribe_calls();
+    if !wait_for_observation(&mut calls, |calls| *calls >= expected).await {
+        panic!(
+            "reload call count did not reach {expected}; observed {}",
+            reload.calls()
+        );
     }
-    panic!(
-        "reload call count did not reach {expected}; observed {}",
-        reload.calls()
-    );
 }
 
 async fn wait_for_scheduled_expiry(health: &NatsAuthorizationHealthReader, expected: u64) {
-    for _ in 0..1_000 {
-        if health.snapshot().next_expiry_at_unix_seconds == Some(expected) {
-            return;
-        }
-        tokio::task::yield_now().await;
+    if !wait_for_health_observation(health, |state| {
+        state.next_expiry_at_unix_seconds == Some(expected)
+    })
+    .await
+    {
+        panic!(
+            "scheduled expiry did not become {expected}; observed {:?}",
+            health.snapshot().next_expiry_at_unix_seconds
+        );
     }
-    panic!(
-        "scheduled expiry did not become {expected}; observed {:?}",
-        health.snapshot().next_expiry_at_unix_seconds
-    );
 }
 
 async fn wait_for_no_scheduled_expiry(health: &NatsAuthorizationHealthReader) {
-    for _ in 0..1_000 {
-        if health.snapshot().next_expiry_at_unix_seconds.is_none() {
-            return;
-        }
-        tokio::task::yield_now().await;
+    if !wait_for_health_observation(health, |state| state.next_expiry_at_unix_seconds.is_none())
+        .await
+    {
+        panic!(
+            "scheduled expiry did not clear; observed {:?}",
+            health.snapshot().next_expiry_at_unix_seconds
+        );
     }
-    panic!(
-        "scheduled expiry did not clear; observed {:?}",
-        health.snapshot().next_expiry_at_unix_seconds
-    );
 }
 
 async fn wait_for_health_failures(health: &NatsAuthorizationHealthReader, expected: u64) {
-    for _ in 0..1_000 {
-        if health.snapshot().consecutive_failures == expected {
-            return;
-        }
-        tokio::task::yield_now().await;
+    if !wait_for_health_observation(health, |state| state.consecutive_failures == expected).await {
+        panic!(
+            "authorization failure count did not become {expected}; observed {}",
+            health.snapshot().consecutive_failures
+        );
     }
-    panic!(
-        "authorization failure count did not become {expected}; observed {}",
-        health.snapshot().consecutive_failures
+}
+
+async fn wait_for_health_observation(
+    health: &NatsAuthorizationHealthReader,
+    predicate: impl Fn(&ployz_sdk_types::ControlNatsAuthorizationHealth) -> bool,
+) -> bool {
+    let mut changes = health.subscribe_changes();
+    loop {
+        let observed_revision = *changes.borrow();
+        if predicate(&health.snapshot()) {
+            return true;
+        }
+        if !wait_for_observation(&mut changes, |revision| *revision > observed_revision).await {
+            return false;
+        }
+    }
+}
+
+async fn wait_for_observation<T>(
+    changes: &mut tokio::sync::watch::Receiver<T>,
+    predicate: impl FnMut(&T) -> bool,
+) -> bool {
+    const WALL_CLOCK_TIMEOUT: Duration = Duration::from_secs(5);
+
+    wait_for_observation_with_timeout(changes, predicate, WALL_CLOCK_TIMEOUT).await
+}
+
+async fn wait_for_observation_with_timeout<T>(
+    changes: &mut tokio::sync::watch::Receiver<T>,
+    predicate: impl FnMut(&T) -> bool,
+    wall_clock_timeout: Duration,
+) -> bool {
+    let (cancel_timeout, timeout_cancelled) = std::sync::mpsc::channel();
+    let mut wall_clock_timeout = tokio::task::spawn_blocking(move || {
+        let _ = timeout_cancelled.recv_timeout(wall_clock_timeout);
+        false
+    });
+    tokio::select! {
+        result = changes.wait_for(predicate) => {
+            let _ = cancel_timeout.send(());
+            result.is_ok()
+        }
+        timed_out = &mut wall_clock_timeout => timed_out.expect("wall-clock timeout task"),
+    }
+}
+
+#[tokio::test]
+async fn observation_wait_does_not_treat_wall_clock_timeout_as_success() {
+    let (_changes, mut observations) = tokio::sync::watch::channel(0_u8);
+
+    assert!(
+        !wait_for_observation_with_timeout(
+            &mut observations,
+            |observation| *observation > 0,
+            Duration::from_millis(10),
+        )
+        .await
     );
 }
 
