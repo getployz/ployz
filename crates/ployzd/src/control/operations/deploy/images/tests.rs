@@ -644,6 +644,17 @@ async fn slow_failing_start_does_not_block_other_starts() {
     tokio::time::advance(std::time::Duration::from_secs(30)).await;
     let (index, _) = task.await.expect("task joins").expect_err("start fails");
     assert_eq!(index, 0);
+    let requests = observer.request_actions();
+    assert!(
+        requests
+            .iter()
+            .any(|(machine, action)| machine.as_str() == "machine_b" && *action == "cancel")
+    );
+    assert!(
+        !requests
+            .iter()
+            .any(|(machine, action)| machine.as_str() == "machine_a" && *action == "cancel")
+    );
 }
 
 #[tokio::test(start_paused = true)]
