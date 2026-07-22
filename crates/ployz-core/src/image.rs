@@ -566,6 +566,7 @@ pub enum ImageEnsureRequest {
 pub enum ImageEnsureSource {
     Registry {
         reference: crate::deploy::ImageReference,
+        platform: OciPlatform,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         credential: Option<crate::deploy::RegistryCredential>,
     },
@@ -785,6 +786,7 @@ mod tests {
                 owner: identity.clone(),
                 source: ImageEnsureSource::Registry {
                     reference: ImageReference::try_new("registry.example/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").expect("image"),
+                    platform: super::OciPlatform::try_new("linux", "amd64").expect("platform"),
                     credential: None,
                 },
             },

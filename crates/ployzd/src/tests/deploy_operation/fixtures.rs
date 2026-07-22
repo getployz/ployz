@@ -303,7 +303,7 @@ pub(crate) struct RecordingRuntime {
     pub(super) restarts: Vec<(MachineId, MachineContainerRestartRpcRequest)>,
     pub(super) removals: Vec<(MachineId, MachineContainerRemoveRpcRequest)>,
     pub(super) image_removals: Vec<(MachineId, ployz_core::image::ImageRemoveRequest)>,
-    pub(super) image_ensures: Vec<(MachineId, ployz_core::image::ImageEnsureRequest)>,
+    pub(crate) image_ensures: Vec<(MachineId, ployz_core::image::ImageEnsureRequest)>,
     image_ensure_unavailable_remaining: usize,
     image_ensure_status: Option<ployz_core::image::ImageEnsureStatus>,
     image_ensure_script: std::collections::VecDeque<
@@ -727,7 +727,7 @@ impl RecordingRuntime {
         self
     }
 
-    pub(super) fn with_image_ensure_script(
+    pub(crate) fn with_image_ensure_script(
         mut self,
         script: impl IntoIterator<
             Item = Result<

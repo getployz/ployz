@@ -4,8 +4,12 @@ use ployz_core::deploy::{
     DeployPlanningPlacementInput, DeployRequest, DeployServiceSpec, ImageReference, PlatformImage,
     PushedImageReceipt, ReplicaCount, ReplicaSlot,
 };
-use ployz_core::ids::{MachineId, NamespaceId, NamespaceRevisionId, OperationId, ServiceId};
+use ployz_core::ids::{
+    MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId, OperationId, ServiceId,
+    StepId,
+};
 use ployz_core::image::{OciDigest, OciPlatform};
+use ployz_core::machine::runtime::{ManagedContainerIdentity, ManagedContainerKind};
 
 use crate::control::operations::deploy::types::ServingIntentDisposition;
 use crate::control::role_client::machine::MachineClockTestimony;
@@ -375,4 +379,121 @@ fn machine_id(value: &str) -> MachineId {
 
 fn platform(architecture: &str) -> OciPlatform {
     OciPlatform::try_new("linux", architecture).expect("platform")
+}
+
+fn test_digest(value: char) -> OciDigest {
+    OciDigest::try_new(format!("sha256:{}", value.to_string().repeat(64))).expect("digest")
+}
+
+fn coordinator_job(machine: &str, step: &str) -> ImageEnsureJob {
+    let service = pushed_service();
+    let image = ImageReference::try_new(format!("registry.example/api@{}", test_digest('9')))
+        .expect("image");
+    ImageEnsureJob {
+        machine_id: machine_id(machine),
+        owner: ManagedContainerIdentity {
+            namespace_id: NamespaceId::try_new("default").expect("namespace"),
+            service_id: service.service.service_id.clone(),
+            namespace_revision_entry_id: NamespaceRevisionEntryId::try_new("entry-a")
+                .expect("entry"),
+            operation_id: OperationId::try_new("operation_a").expect("operation"),
+            step_id: StepId::try_new(step).expect("step"),
+            kind: ManagedContainerKind::Service,
+        },
+        source: ImageEnsureSource::Registry {
+            reference: image,
+            platform: platform("amd64"),
+            credential: None,
+        },
+        service,
+        target_machine: machine_id(machine),
+        platform: platform("amd64"),
+        seed: None,
+        evidence_targets: vec![machine_id(machine)],
+    }
+}
+
+fn completed_status() -> ImageEnsureStatus {
+    ImageEnsureStatus::Completed {
+        reference: ImageReference::try_new(format!("registry.example/api@{}", test_digest('9')))
+            .expect("image"),
+    }
+}
+
+#[tokio::test]
+async fn ensure_wave_starts_every_independent_job_before_polling_status() {
+    let jobs = vec![
+        coordinator_job("machine_a", "run_a"),
+        coordinator_job("machine_b", "run_b"),
+    ];
+    let mut runtime = RecordingRuntime::with_containers([]).with_image_ensure_script([
+        Ok(ImageEnsureStatus::Accepted),
+        Ok(ImageEnsureStatus::Accepted),
+        Ok(completed_status()),
+        Ok(completed_status()),
+    ]);
+
+    let completed = run_image_ensure_wave(&mut runtime, &jobs)
+        .await
+        .expect("wave completes");
+
+    assert_eq!(completed.len(), 2);
+    assert!(
+        runtime.image_ensures[..2]
+            .iter()
+            .all(|(_, request)| matches!(request, ImageEnsureRequest::Start { .. }))
+    );
+    assert!(
+        runtime.image_ensures[2..]
+            .iter()
+            .all(|(_, request)| matches!(request, ImageEnsureRequest::Status { .. }))
+    );
+}
+
+#[tokio::test]
+async fn ensure_wave_failure_cancels_every_unfinished_peer() {
+    let jobs = vec![
+        coordinator_job("machine_a", "run_a"),
+        coordinator_job("machine_b", "run_b"),
+    ];
+    let mut runtime = RecordingRuntime::with_containers([]).with_image_ensure_script([
+        Ok(ImageEnsureStatus::Accepted),
+        Ok(ImageEnsureStatus::Accepted),
+        Ok(ImageEnsureStatus::Failed {
+            failure: ImageEnsureFailure::PullFailed {
+                message: FailureMessage::try_new("pull failed").expect("message"),
+            },
+        }),
+    ]);
+
+    let (failed_index, _) = run_image_ensure_wave(&mut runtime, &jobs)
+        .await
+        .expect_err("first job fails");
+
+    assert_eq!(failed_index, 0);
+    assert!(runtime.image_ensures.iter().any(|(machine, request)| {
+        machine == &machine_id("machine_b") && matches!(request, ImageEnsureRequest::Cancel { .. })
+    }));
+}
+
+#[tokio::test]
+async fn duplicate_target_jobs_start_once() {
+    let mut jobs = Vec::new();
+    push_unique_target_job(&mut jobs, coordinator_job("machine_a", "run_a"));
+    push_unique_target_job(&mut jobs, coordinator_job("machine_a", "run_a"));
+    let mut runtime = RecordingRuntime::with_containers([]);
+
+    run_image_ensure_wave(&mut runtime, &jobs)
+        .await
+        .expect("deduplicated wave completes");
+
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(
+        runtime
+            .image_ensures
+            .iter()
+            .filter(|(_, request)| matches!(request, ImageEnsureRequest::Start { .. }))
+            .count(),
+        1
+    );
 }

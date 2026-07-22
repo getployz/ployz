@@ -1058,10 +1058,10 @@ async fn mixed_platform_pushed_deploy_selects_each_platform_image_and_keeps_one_
         matches!(&runtime.image_ensures[0], (machine, ployz_core::image::ImageEnsureRequest::Start { source: ployz_core::image::ImageEnsureSource::LocalSeed { platform, .. }, .. }) if machine == &machine_id("machine_seed") && platform == &amd64)
     );
     assert!(
-        matches!(&runtime.image_ensures[1], (machine, ployz_core::image::ImageEnsureRequest::Start { source: ployz_core::image::ImageEnsureSource::MeshSeed { platform, .. }, .. }) if machine == &machine_id("machine_a") && platform == &amd64)
+        matches!(&runtime.image_ensures[1], (machine, ployz_core::image::ImageEnsureRequest::Start { source: ployz_core::image::ImageEnsureSource::LocalSeed { platform, .. }, .. }) if machine == &machine_id("machine_arm_seed") && platform == &arm64)
     );
     assert!(
-        matches!(&runtime.image_ensures[2], (machine, ployz_core::image::ImageEnsureRequest::Start { source: ployz_core::image::ImageEnsureSource::LocalSeed { platform, .. }, .. }) if machine == &machine_id("machine_arm_seed") && platform == &arm64)
+        matches!(&runtime.image_ensures[2], (machine, ployz_core::image::ImageEnsureRequest::Start { source: ployz_core::image::ImageEnsureSource::MeshSeed { platform, .. }, .. }) if machine == &machine_id("machine_a") && platform == &amd64)
     );
     assert!(
         matches!(&runtime.image_ensures[3], (machine, ployz_core::image::ImageEnsureRequest::Start { source: ployz_core::image::ImageEnsureSource::MeshSeed { platform, .. }, .. }) if machine == &machine_id("machine_b") && platform == &arm64)

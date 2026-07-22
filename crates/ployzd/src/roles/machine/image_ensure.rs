@@ -5,7 +5,6 @@ use ployz_core::image::{
 };
 use ployz_core::machine::runtime::ManagedContainerIdentity;
 use ployz_core::operation::FailureMessage;
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,12 +21,117 @@ pub(crate) struct ImagePullProgress {
     pub(crate) current_bytes: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum ImagePullPhase {
+    Waiting,
+    Downloading,
+    Verifying,
+    Downloaded,
+    Extracting,
+    Complete,
+}
+
+impl ImagePullPhase {
+    fn from_docker_status(status: &str) -> Option<Self> {
+        match status.to_ascii_lowercase().as_str() {
+            "waiting" | "pulling fs layer" => Some(Self::Waiting),
+            "downloading" => Some(Self::Downloading),
+            "verifying checksum" => Some(Self::Verifying),
+            "download complete" => Some(Self::Downloaded),
+            "extracting" => Some(Self::Extracting),
+            "pull complete" | "already exists" => Some(Self::Complete),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct ObservedLayerProgress {
+    phase: Option<ImagePullPhase>,
+    current_bytes: u64,
+}
+
+impl ObservedLayerProgress {
+    fn observe(&mut self, progress: &ImagePullProgress) -> bool {
+        let bytes_advanced = progress.current_bytes > self.current_bytes;
+        if bytes_advanced {
+            self.current_bytes = progress.current_bytes;
+        }
+        let phase_advanced = ImagePullPhase::from_docker_status(&progress.state)
+            .is_some_and(|phase| self.phase.is_none_or(|observed| phase > observed));
+        if phase_advanced {
+            self.phase = ImagePullPhase::from_docker_status(&progress.state);
+        }
+        bytes_advanced || phase_advanced
+    }
+}
+
 struct ImageEnsureTask {
-    source_fingerprint: [u8; 32],
+    acquisition: ImageAcquisition,
     status: Mutex<ImageEnsureStatus>,
     cancel: watch::Sender<bool>,
     supervisor: Mutex<Option<JoinHandle<()>>>,
     terminal_at: Mutex<Option<tokio::time::Instant>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ImageAcquisition {
+    Registry {
+        reference: ImageReference,
+        platform: ployz_core::image::OciPlatform,
+    },
+    MeshSeed {
+        seed_host: std::net::Ipv4Addr,
+        repository: ployz_core::image::ImageRepository,
+        manifest_digest: ployz_core::image::OciDigest,
+        image_id: ployz_core::image::OciDigest,
+        platform: ployz_core::image::OciPlatform,
+    },
+    LocalSeed {
+        repository: ployz_core::image::ImageRepository,
+        manifest_digest: ployz_core::image::OciDigest,
+        image_id: ployz_core::image::OciDigest,
+        platform: ployz_core::image::OciPlatform,
+    },
+}
+
+impl From<&ImageEnsureSource> for ImageAcquisition {
+    fn from(source: &ImageEnsureSource) -> Self {
+        match source {
+            ImageEnsureSource::Registry {
+                reference,
+                platform,
+                credential: _,
+            } => Self::Registry {
+                reference: reference.clone(),
+                platform: platform.clone(),
+            },
+            ImageEnsureSource::MeshSeed {
+                seed_host,
+                repository,
+                manifest_digest,
+                image_id,
+                platform,
+            } => Self::MeshSeed {
+                seed_host: *seed_host,
+                repository: repository.clone(),
+                manifest_digest: manifest_digest.clone(),
+                image_id: image_id.clone(),
+                platform: platform.clone(),
+            },
+            ImageEnsureSource::LocalSeed {
+                repository,
+                manifest_digest,
+                image_id,
+                platform,
+            } => Self::LocalSeed {
+                repository: repository.clone(),
+                manifest_digest: manifest_digest.clone(),
+                image_id: image_id.clone(),
+                platform: platform.clone(),
+            },
+        }
+    }
 }
 
 impl ImageEnsureTask {
@@ -89,7 +193,16 @@ impl ImageEnsureRuntime {
         owner: ManagedContainerIdentity,
         source: ImageEnsureSource,
     ) -> Result<ImageEnsureStatus, ImageRpcDomainError> {
-        let fingerprint = source_fingerprint(&source);
+        if let ImageEnsureSource::Registry { reference, .. } = &source
+            && reference.pinned_digest().is_none()
+        {
+            return Err(ImageRpcDomainError::InvalidRequest {
+                message: failure_message(
+                    "registry image ensure requires a digest-pinned reference",
+                ),
+            });
+        }
+        let acquisition = ImageAcquisition::from(&source);
         let mut state = self.state.lock().await;
         sweep_expired(&mut state).await;
         if !state.accepting {
@@ -98,14 +211,14 @@ impl ImageEnsureRuntime {
             });
         }
         if let Some(existing) = state.tasks.get(&owner) {
-            if existing.source_fingerprint != fingerprint {
+            if existing.acquisition != acquisition {
                 return Err(ImageRpcDomainError::ImageEnsureConflict { owner });
             }
             return Ok(existing.status.lock().await.clone());
         }
         let (cancel, cancel_rx) = watch::channel(false);
         let task = Arc::new(ImageEnsureTask {
-            source_fingerprint: fingerprint,
+            acquisition,
             status: Mutex::new(ImageEnsureStatus::Accepted),
             cancel,
             supervisor: Mutex::new(None),
@@ -206,7 +319,7 @@ async fn supervise_pull(
     let stall = tokio::time::sleep(IMAGE_PULL_STALL_TIMEOUT);
     tokio::pin!(stall);
     let mut sequence = 0_u64;
-    let mut observed = HashMap::<String, (String, u64)>::new();
+    let mut observed = HashMap::<String, ObservedLayerProgress>::new();
     loop {
         tokio::select! {
             biased;
@@ -226,9 +339,8 @@ async fn supervise_pull(
             }
             progress = progress_rx.recv() => {
                 let Some(progress) = progress else { continue };
-                let verified = observed.get(&progress.layer).is_none_or(|(state, current)| state != &progress.state || progress.current_bytes > *current);
+                let verified = observed.entry(progress.layer.clone()).or_default().observe(&progress);
                 if verified {
-                    observed.insert(progress.layer, (progress.state, progress.current_bytes));
                     sequence = sequence.saturating_add(1);
                     if task.record_progress(sequence).await {
                         stall.as_mut().reset(tokio::time::Instant::now() + IMAGE_PULL_STALL_TIMEOUT);
@@ -241,10 +353,6 @@ async fn supervise_pull(
             }
         }
     }
-}
-
-fn source_fingerprint(source: &ImageEnsureSource) -> [u8; 32] {
-    Sha256::digest(serde_json::to_vec(source).expect("image ensure source serializes")).into()
 }
 
 async fn sweep_expired(state: &mut ImageEnsureState) {
@@ -283,6 +391,8 @@ enum TestPullBehavior {
     Blocked,
     VerifiedSlow,
     DuplicateFrames,
+    OscillatingFrames,
+    ForwardPhases,
     Complete,
     Fail,
     WaitForRelease(Arc<tokio::sync::Notify>),
@@ -321,6 +431,28 @@ impl TestImageEnsureMachine {
                 let _ = progress.send(frame(1));
                 std::future::pending().await
             }
+            TestPullBehavior::OscillatingFrames => {
+                for state in ["extracting", "downloading", "extracting", "unknown"] {
+                    let _ = progress.send(ImagePullProgress {
+                        layer: "layer-a".to_owned(),
+                        state: state.to_owned(),
+                        current_bytes: 0,
+                    });
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                }
+                std::future::pending().await
+            }
+            TestPullBehavior::ForwardPhases => {
+                for state in ["downloading", "verifying checksum", "download complete"] {
+                    let _ = progress.send(ImagePullProgress {
+                        layer: "layer-a".to_owned(),
+                        state: state.to_owned(),
+                        current_bytes: 0,
+                    });
+                    tokio::time::sleep(Duration::from_secs(20)).await;
+                }
+                Ok(())
+            }
             TestPullBehavior::Complete => Ok(()),
             TestPullBehavior::Fail => Err("registry rejected the image".to_owned()),
             TestPullBehavior::WaitForRelease(release) => {
@@ -337,6 +469,7 @@ impl TestImageEnsureMachine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ployz_core::deploy::RegistryCredential;
     use ployz_core::ids::{NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId, StepId};
     use ployz_core::machine::runtime::ManagedContainerKind;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -354,10 +487,19 @@ mod tests {
     }
 
     fn source(tag: &str) -> ImageEnsureSource {
+        source_with_credential(tag, None)
+    }
+
+    fn source_with_credential(
+        tag: &str,
+        credential: Option<RegistryCredential>,
+    ) -> ImageEnsureSource {
+        let digest = ployz_core::image::OciDigest::sha256(tag.as_bytes());
         ImageEnsureSource::Registry {
-            reference: ImageReference::try_new(format!("registry.example/api:{tag}"))
+            reference: ImageReference::try_new(format!("registry.example/api@{digest}"))
                 .expect("image"),
-            credential: None,
+            platform: ployz_core::image::OciPlatform::try_new("linux", "amd64").expect("platform"),
+            credential,
         }
     }
 
@@ -405,6 +547,55 @@ mod tests {
         runtime.shutdown().await;
     }
 
+    #[tokio::test]
+    async fn credential_changes_are_idempotent_and_not_retained_in_task_identity() {
+        let (runtime, starts) = runtime(TestPullBehavior::Blocked);
+        let first = RegistryCredential::try_basic("robot", "first-secret").expect("credential");
+        let second = RegistryCredential::try_basic("robot", "second-secret").expect("credential");
+        runtime
+            .start(owner(), source_with_credential("one", Some(first)))
+            .await
+            .expect("accepted");
+        runtime
+            .start(owner(), source_with_credential("one", Some(second)))
+            .await
+            .expect("credential rotation remains idempotent");
+        tokio::task::yield_now().await;
+        assert_eq!(starts.load(Ordering::SeqCst), 1);
+        let task = runtime
+            .state
+            .lock()
+            .await
+            .tasks
+            .get(&owner())
+            .cloned()
+            .expect("task");
+        assert!(matches!(
+            task.acquisition,
+            ImageAcquisition::Registry { .. }
+        ));
+        assert!(matches!(
+            runtime.start(owner(), source("two")).await,
+            Err(ImageRpcDomainError::ImageEnsureConflict { .. })
+        ));
+        runtime.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn unpinned_registry_source_is_a_domain_rejection() {
+        let (runtime, starts) = runtime(TestPullBehavior::Blocked);
+        let source = ImageEnsureSource::Registry {
+            reference: ImageReference::try_new("registry.example/api:latest").expect("image"),
+            platform: ployz_core::image::OciPlatform::try_new("linux", "amd64").expect("platform"),
+            credential: None,
+        };
+        assert!(matches!(
+            runtime.start(owner(), source).await,
+            Err(ImageRpcDomainError::InvalidRequest { .. })
+        ));
+        assert_eq!(starts.load(Ordering::SeqCst), 0);
+    }
+
     #[tokio::test(start_paused = true)]
     async fn verified_progress_can_exceed_the_old_total_timeout_and_complete() {
         let (runtime, _) = runtime(TestPullBehavior::VerifiedSlow);
@@ -441,6 +632,43 @@ mod tests {
             ImageEnsureStatus::Failed {
                 failure: ImageEnsureFailure::Stalled { .. }
             }
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn regressive_and_unknown_statuses_do_not_renew_the_stall_deadline() {
+        let (runtime, _) = runtime(TestPullBehavior::OscillatingFrames);
+        runtime
+            .start(owner(), source("one"))
+            .await
+            .expect("accepted");
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(31)).await;
+        tokio::task::yield_now().await;
+        assert!(matches!(
+            runtime.status(&owner()).await.expect("status"),
+            ImageEnsureStatus::Failed {
+                failure: ImageEnsureFailure::Stalled { .. }
+            }
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn recognized_forward_phases_keep_a_pull_alive_without_byte_changes() {
+        let (runtime, _) = runtime(TestPullBehavior::ForwardPhases);
+        runtime
+            .start(owner(), source("one"))
+            .await
+            .expect("accepted");
+        tokio::task::yield_now().await;
+        for _ in 0..3 {
+            tokio::time::advance(Duration::from_secs(20)).await;
+            tokio::task::yield_now().await;
+        }
+        tokio::task::yield_now().await;
+        assert!(matches!(
+            runtime.status(&owner()).await.expect("status"),
+            ImageEnsureStatus::Completed { .. }
         ));
     }
 

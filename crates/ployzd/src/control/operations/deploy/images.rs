@@ -549,6 +549,8 @@ where
     {
         validate_pushed_image_availability(command, service_plans, current_unix_seconds()?)?;
     }
+    let mut seed_jobs = Vec::<ImageEnsureJob>::new();
+    let mut target_jobs = Vec::<ImageEnsureJob>::new();
     for service in command.services() {
         let Some(service_plan) = service_plans
             .iter()
@@ -580,6 +582,7 @@ where
             let source = match &service.service.image_source {
                 ImageSource::Registry => ImageEnsureSource::Registry {
                     reference: service.service.image.clone(),
+                    platform: target_platform.clone(),
                     credential: service.registry_credential().cloned(),
                 },
                 ImageSource::PushedToSeed(receipt) => {
@@ -614,32 +617,30 @@ where
                         image_id: platform_image.image_id.clone(),
                         platform: target_platform.clone(),
                     };
-                    let seed_reference = drive_image_ensure(
-                        machine_runtime,
-                        &platform_image.seed,
-                        owner.clone(),
-                        seed_source,
-                    )
-                    .await
-                    .map_err(|error| {
-                        ensure_seed_drive_failure(
-                            service,
-                            &machine_id,
-                            target_platform,
-                            platform_image,
-                            error,
-                        )
-                    })?;
+                    let seed_index = seed_jobs
+                        .iter()
+                        .position(|job| {
+                            job.machine_id == platform_image.seed
+                                && job.service.service.service_id == service.service.service_id
+                                && job.source == seed_source
+                        })
+                        .unwrap_or_else(|| {
+                            seed_jobs.push(ImageEnsureJob {
+                                machine_id: platform_image.seed.clone(),
+                                owner: owner.clone(),
+                                source: seed_source,
+                                service: service.clone(),
+                                target_machine: machine_id.clone(),
+                                platform: target_platform.clone(),
+                                seed: Some(platform_image.clone()),
+                                evidence_targets: Vec::new(),
+                            });
+                            seed_jobs.len() - 1
+                        });
                     if machine_id == platform_image.seed {
-                        record_target_image_evidence(
-                            command,
-                            recorder,
-                            service,
-                            &machine_id,
-                            target_platform.clone(),
-                            seed_reference,
-                        )
-                        .await?;
+                        seed_jobs[seed_index]
+                            .evidence_targets
+                            .push(machine_id.clone());
                         continue;
                     }
                     ImageEnsureSource::MeshSeed {
@@ -651,21 +652,87 @@ where
                     }
                 }
             };
-            let reference = drive_image_ensure(machine_runtime, &machine_id, owner, source)
-                .await
-                .map_err(|error| target_ensure_failure(command, service, &machine_id, error))?;
+            push_unique_target_job(
+                &mut target_jobs,
+                ImageEnsureJob {
+                    machine_id: machine_id.clone(),
+                    owner,
+                    source,
+                    service: service.clone(),
+                    target_machine: machine_id.clone(),
+                    platform: target_platform.clone(),
+                    seed: None,
+                    evidence_targets: vec![machine_id],
+                },
+            );
+        }
+    }
+    let seed_references = run_image_ensure_wave(machine_runtime, &seed_jobs)
+        .await
+        .map_err(|(index, error)| {
+            let job = &seed_jobs[index];
+            ensure_seed_drive_failure(
+                &job.service,
+                &job.target_machine,
+                &job.platform,
+                job.seed.as_ref().expect("seed job has platform image"),
+                error,
+            )
+        })?;
+    for (job, reference) in seed_jobs.iter().zip(seed_references) {
+        for target in &job.evidence_targets {
             record_target_image_evidence(
                 command,
                 recorder,
-                service,
-                &machine_id,
-                target_platform.clone(),
-                reference,
+                &job.service,
+                target,
+                job.platform.clone(),
+                reference.clone(),
+            )
+            .await?;
+        }
+    }
+    let target_references = run_image_ensure_wave(machine_runtime, &target_jobs)
+        .await
+        .map_err(|(index, error)| {
+            let job = &target_jobs[index];
+            target_ensure_failure(command, &job.service, &job.target_machine, error)
+        })?;
+    for (job, reference) in target_jobs.iter().zip(target_references) {
+        for target in &job.evidence_targets {
+            record_target_image_evidence(
+                command,
+                recorder,
+                &job.service,
+                target,
+                job.platform.clone(),
+                reference.clone(),
             )
             .await?;
         }
     }
     Ok(())
+}
+
+struct ImageEnsureJob {
+    machine_id: MachineId,
+    owner: ManagedContainerIdentity,
+    source: ImageEnsureSource,
+    service: DeployServiceExecutionCommand,
+    target_machine: MachineId,
+    platform: ployz_core::image::OciPlatform,
+    seed: Option<ployz_core::deploy::PlatformImage>,
+    evidence_targets: Vec<MachineId>,
+}
+
+fn push_unique_target_job(jobs: &mut Vec<ImageEnsureJob>, candidate: ImageEnsureJob) {
+    if !jobs.iter().any(|job| {
+        job.machine_id == candidate.machine_id
+            && job.owner == candidate.owner
+            && job.source == candidate.source
+    }) {
+        jobs.push(candidate);
+    }
 }
 
 async fn record_target_image_evidence<R: DeployOperationRecorder>(
@@ -689,61 +756,113 @@ async fn record_target_image_evidence<R: DeployOperationRecorder>(
     .await
 }
 
+#[derive(Debug)]
 enum ImageEnsureDriveError {
     Call(MachineImageEnsureError),
     Failed(ImageEnsureFailure),
     Cancelled,
 }
 
-async fn drive_image_ensure<N: MachineContainerRuntime>(
+async fn run_image_ensure_wave<N: MachineContainerRuntime>(
     machine_runtime: &mut N,
-    machine_id: &MachineId,
-    owner: ManagedContainerIdentity,
-    source: ImageEnsureSource,
-) -> Result<ImageReference, ImageEnsureDriveError> {
-    let mut status = call_image_ensure(
-        machine_runtime,
-        machine_id,
-        ImageEnsureRequest::Start {
-            owner: owner.clone(),
-            source,
-        },
-    )
-    .await
-    .map_err(ImageEnsureDriveError::Call)?;
-    loop {
-        match status.status {
-            ImageEnsureStatus::Completed { reference } => return Ok(reference),
-            ImageEnsureStatus::Failed { failure } => {
-                return Err(ImageEnsureDriveError::Failed(failure));
-            }
-            ImageEnsureStatus::Cancelled => return Err(ImageEnsureDriveError::Cancelled),
-            ImageEnsureStatus::Accepted | ImageEnsureStatus::Running { .. } => {
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await
-            }
-        }
-        status = match call_image_ensure(
+    jobs: &[ImageEnsureJob],
+) -> Result<Vec<ImageReference>, (usize, ImageEnsureDriveError)> {
+    let mut statuses = Vec::with_capacity(jobs.len());
+    for (index, job) in jobs.iter().enumerate() {
+        match call_image_ensure(
             machine_runtime,
-            machine_id,
-            ImageEnsureRequest::Status {
-                owner: owner.clone(),
+            &job.machine_id,
+            ImageEnsureRequest::Start {
+                owner: job.owner.clone(),
+                source: job.source.clone(),
             },
         )
         .await
         {
-            Ok(status) => status,
+            Ok(status) => statuses.push(status.status),
             Err(error) => {
-                let _ = machine_runtime
-                    .ensure_image(
-                        machine_id,
-                        ImageEnsureRequest::Cancel {
-                            owner: owner.clone(),
-                        },
-                    )
-                    .await;
-                return Err(ImageEnsureDriveError::Call(error));
+                cancel_unfinished_jobs(machine_runtime, jobs, &statuses).await;
+                return Err((index, ImageEnsureDriveError::Call(error)));
             }
-        };
+        }
+    }
+    loop {
+        for index in 0..jobs.len() {
+            let error = image_ensure_status_error(&statuses[index]);
+            if let Some(error) = error {
+                cancel_unfinished_jobs(machine_runtime, jobs, &statuses).await;
+                return Err((index, error));
+            }
+            if matches!(statuses[index], ImageEnsureStatus::Completed { .. }) {
+                continue;
+            }
+            statuses[index] = match call_image_ensure(
+                machine_runtime,
+                &jobs[index].machine_id,
+                ImageEnsureRequest::Status {
+                    owner: jobs[index].owner.clone(),
+                },
+            )
+            .await
+            {
+                Ok(status) => status.status,
+                Err(error) => {
+                    cancel_unfinished_jobs(machine_runtime, jobs, &statuses).await;
+                    return Err((index, ImageEnsureDriveError::Call(error)));
+                }
+            };
+            if let Some(error) = image_ensure_status_error(&statuses[index]) {
+                cancel_unfinished_jobs(machine_runtime, jobs, &statuses).await;
+                return Err((index, error));
+            }
+        }
+        if statuses
+            .iter()
+            .all(|status| matches!(status, ImageEnsureStatus::Completed { .. }))
+        {
+            return Ok(statuses
+                .into_iter()
+                .map(|status| match status {
+                    ImageEnsureStatus::Completed { reference } => reference,
+                    _ => unreachable!("all image ensures completed"),
+                })
+                .collect());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
+fn image_ensure_status_error(status: &ImageEnsureStatus) -> Option<ImageEnsureDriveError> {
+    match status {
+        ImageEnsureStatus::Failed { failure } => {
+            Some(ImageEnsureDriveError::Failed(failure.clone()))
+        }
+        ImageEnsureStatus::Cancelled => Some(ImageEnsureDriveError::Cancelled),
+        ImageEnsureStatus::Accepted
+        | ImageEnsureStatus::Running { .. }
+        | ImageEnsureStatus::Completed { .. } => None,
+    }
+}
+
+async fn cancel_unfinished_jobs<N: MachineContainerRuntime>(
+    machine_runtime: &mut N,
+    jobs: &[ImageEnsureJob],
+    statuses: &[ImageEnsureStatus],
+) {
+    for (job, status) in jobs.iter().zip(statuses) {
+        if matches!(
+            status,
+            ImageEnsureStatus::Accepted | ImageEnsureStatus::Running { .. }
+        ) {
+            let _ = machine_runtime
+                .ensure_image(
+                    &job.machine_id,
+                    ImageEnsureRequest::Cancel {
+                        owner: job.owner.clone(),
+                    },
+                )
+                .await;
+        }
     }
 }
 
