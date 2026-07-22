@@ -305,6 +305,9 @@ fn preview_image_preparation_error(
             failure: Box::new(failure.into()),
             unusable_machines,
         },
+        ImagePreparationError::ResolutionTimedOut { .. } => DeployPreviewError::Unavailable {
+            message: "deploy preview registry image resolution timed out".to_owned(),
+        },
         ImagePreparationError::InternalInvariant { message } => planning_failed(
             format!("deploy execution invariant failed: {message}"),
             unusable_machines,

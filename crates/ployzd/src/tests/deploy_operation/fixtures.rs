@@ -294,7 +294,7 @@ impl DeployOperationRecorder for RecordingOperations {
     }
 }
 
-pub(super) struct RecordingRuntime {
+pub(crate) struct RecordingRuntime {
     pub(super) actions: Vec<RuntimeAction>,
     pub(super) resolutions: Vec<(MachineId, MachineContainerResolveImageRpcRequest)>,
     pub(super) requests: Vec<(MachineId, MachineContainerRunRpcRequest)>,
@@ -307,6 +307,7 @@ pub(super) struct RecordingRuntime {
     pub(super) volume_ensures: Vec<(MachineId, VolumePinState)>,
     volume_ensure_failure: Option<crate::control::operations::deploy::MachineVolumeEnsureError>,
     required_pin_commit: Option<Arc<AtomicBool>>,
+    hang_resolution: bool,
     containers: Vec<ContainerId>,
     hook_outcomes: Vec<(ContainerId, i64)>,
     fail_after_first: bool,
@@ -718,7 +719,7 @@ impl RecordingRuntime {
         self
     }
 
-    pub(super) fn with_containers<const N: usize>(containers: [&str; N]) -> Self {
+    pub(crate) fn with_containers<const N: usize>(containers: [&str; N]) -> Self {
         Self {
             actions: Vec::new(),
             resolutions: Vec::new(),
@@ -732,6 +733,7 @@ impl RecordingRuntime {
             volume_ensures: Vec::new(),
             volume_ensure_failure: None,
             required_pin_commit: None,
+            hang_resolution: false,
             containers: containers.into_iter().map(container_id).rev().collect(),
             hook_outcomes: Vec::new(),
             fail_after_first: false,
@@ -764,6 +766,7 @@ impl RecordingRuntime {
             volume_ensures: Vec::new(),
             volume_ensure_failure: None,
             required_pin_commit: None,
+            hang_resolution: false,
             containers: containers.into_iter().map(container_id).rev().collect(),
             hook_outcomes: Vec::new(),
             fail_after_first: false,
@@ -796,6 +799,7 @@ impl RecordingRuntime {
             volume_ensures: Vec::new(),
             volume_ensure_failure: None,
             required_pin_commit: None,
+            hang_resolution: false,
             containers: containers.into_iter().map(container_id).rev().collect(),
             hook_outcomes: Vec::new(),
             fail_after_first: false,
@@ -828,6 +832,7 @@ impl RecordingRuntime {
             volume_ensures: Vec::new(),
             volume_ensure_failure: None,
             required_pin_commit: None,
+            hang_resolution: false,
             containers: vec![container_id("ctr_1")],
             hook_outcomes: Vec::new(),
             fail_after_first: true,
@@ -863,6 +868,7 @@ impl RecordingRuntime {
             volume_ensures: Vec::new(),
             volume_ensure_failure: None,
             required_pin_commit: None,
+            hang_resolution: false,
             containers: vec![self::container_id(container_id)],
             hook_outcomes: Vec::new(),
             fail_after_first: false,
@@ -895,6 +901,7 @@ impl RecordingRuntime {
             volume_ensures: Vec::new(),
             volume_ensure_failure: None,
             required_pin_commit: None,
+            hang_resolution: false,
             containers: vec![self::container_id(container_id)],
             hook_outcomes: Vec::new(),
             fail_after_first: false,
@@ -1001,6 +1008,11 @@ impl RecordingRuntime {
         self.run_failure = Some(SyntheticRunFailure::Hang);
         self
     }
+
+    pub(crate) fn with_hanging_resolution(mut self) -> Self {
+        self.hang_resolution = true;
+        self
+    }
 }
 
 impl crate::control::operations::deploy::MachineImageRemovalRuntime for RecordingRuntime {
@@ -1045,6 +1057,9 @@ impl MachineContainerRuntime for RecordingRuntime {
         machine_id: &MachineId,
         request: MachineContainerResolveImageRpcRequest,
     ) -> Result<ployz_core::image::OciDigest, MachineImageResolveError> {
+        if self.hang_resolution {
+            std::future::pending().await
+        }
         let digest = ployz_core::image::OciDigest::sha256(request.reference.as_str().as_bytes());
         self.resolutions.push((machine_id.clone(), request));
         Ok(digest)

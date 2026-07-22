@@ -1,4 +1,4 @@
-mod fixtures;
+pub(crate) mod fixtures;
 mod preparation;
 mod preparation_nats;
 mod runtime_nats;

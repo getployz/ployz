@@ -60,13 +60,15 @@ pub(super) enum ImagePreparationFailure {
 #[derive(Debug)]
 pub(super) enum ImagePreparationError {
     Failure { failure: ImagePreparationFailure },
+    ResolutionTimedOut { failure: ImagePreparationFailure },
     InternalInvariant { message: String },
 }
 
 impl From<ImagePreparationError> for DeployExecutionError {
     fn from(error: ImagePreparationError) -> Self {
         match error {
-            ImagePreparationError::Failure { failure } => Self::Image {
+            ImagePreparationError::Failure { failure }
+            | ImagePreparationError::ResolutionTimedOut { failure } => Self::Image {
                 failure: Box::new(failure.into()),
             },
             ImagePreparationError::InternalInvariant { message } => {
@@ -474,15 +476,15 @@ where
         ),
     )
     .await
-    .map_err(|_| {
-        image_resolution_failure(
-            service_id,
-            machine_id,
-            requested,
-            deploy_failure_message("image resolution timed out"),
-        )
-    })?
-    .map_err(|error| image_resolution_error(service_id, requested, error))?;
+    .map_err(|_| ImagePreparationError::ResolutionTimedOut {
+        failure: ImagePreparationFailure::ResolutionFailed {
+            service_id: service_id.clone(),
+            machine_id: machine_id.clone(),
+            image: requested.clone(),
+            message: deploy_failure_message("image resolution timed out"),
+        },
+    })?;
+    let digest = digest.map_err(|error| image_resolution_error(service_id, requested, error))?;
     requested.with_digest(&digest).map_err(|error| {
         image_resolution_failure(
             service_id,

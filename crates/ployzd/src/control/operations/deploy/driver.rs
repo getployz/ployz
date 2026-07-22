@@ -39,6 +39,7 @@ use std::time::Duration;
 
 const DEPLOY_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const INTENT_CHANGED_PUBLISH_TIMEOUT: Duration = Duration::from_secs(2);
+const DEPLOY_PREVIEW_IMAGE_TRANSPORT_HEADROOM: Duration = Duration::from_millis(250);
 /// A container without a Docker healthcheck must stay running this long
 /// before deploy completion commits it: a fast-exiting process can be
 /// sampled alive once, and one running observation is not survival.
@@ -559,7 +560,7 @@ impl DeployOperationDriver {
         let facts_reader =
             NatsMachineFactsReader::new(client.clone()).with_request_timeout(fact_request_timeout);
         let mut machine_runtime = NatsMachineContainerRuntime::new(client.clone())
-            .with_request_timeout(image_request_timeout);
+            .with_request_timeout(image_request_timeout + DEPLOY_PREVIEW_IMAGE_TRANSPORT_HEADROOM);
         let intent_reader =
             NatsIntentReader::new(client).with_request_timeout(fact_request_timeout);
         let preview = super::preview_deploy_from_nats(
