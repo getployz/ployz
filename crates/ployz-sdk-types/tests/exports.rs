@@ -23,7 +23,7 @@ use ployz_sdk_types::{
     DeployPreviewError, DeployPreviewRequest, DeployRequest, DeployRequestEvidence,
     DeployReservationId, DeployReserveError, DeployReserveRequest, DeployReserved,
     DeployRunningStage, DeployServiceSpec, DeploySubmitError, DeploySubmitRequest,
-    DeploySubmitResponse, EventSequence, EventSequenceError, GatewayHttpFailure,
+    DeploySubmitResponse, EventSequence, EventSequenceError, ExactPloyzVersion, GatewayHttpFailure,
     GatewayProcessAttempt, GatewayProcessHealth, GatewayStatusPublishFailure, GatewayWatchFailure,
     GitSource, HostPortAssurance, ImageReference, ImageReferenceError, IngressConfiguration,
     IngressConfigureError, IngressConfigureRequest, IngressEndpointProjectionIdentity,
@@ -34,9 +34,10 @@ use ployz_sdk_types::{
     MachineJoinBundle, MachineJoinMaterial, MachineJoinRedeemError, MachineJoinRedeemRequest,
     MachineJoinRedeemResponse, MachineJoinRedeemResult, MachineJoinRedeemed,
     MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported,
-    MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate, MachineJoinToken,
-    MachineJoinTrustedNats, MachineListError, MachineListRequest, MachineListResult, MachineName,
-    MachineSnapshot, MachineStoragePrepareError, MachineStoragePrepareRequest, MachineUpdateError,
+    MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinSubstrateRelease,
+    MachineJoinTemplate, MachineJoinToken, MachineJoinTrustedNats, MachineListError,
+    MachineListRequest, MachineListResult, MachineName, MachineSnapshot,
+    MachineStoragePrepareError, MachineStoragePrepareRequest, MachineUpdateError,
     MachineUpdateRequest, MachineUpdateResponse, ManagedDnsReconcileSubject, ManagedLeaseName,
     NamespaceId, NamespaceRemoveError, NamespaceRemoveRequest, NatsCaCertificatePem, NatsUserSeed,
     NetworkRepairError, NetworkRepairRequest, NetworkResolveError, NetworkResolveRequest,
@@ -381,7 +382,7 @@ fn sdk_exports_operation_api_wire_types() {
     );
     assert_eq!(
         serde_json::to_string(&machine_response).expect("response serializes"),
-        r#"{"status":"ok","value":{"accepted":{"operation_id":"op_machine","watch_subject":"plz.v1.progress.machine.machine_2.operation.op_machine.>","start_sequence":"7"},"machine_id":"machine_2","bootstrap_url":"https://get.ployz.sh","join_bundle":{"material":{"cluster_name":"prod","dataplane_endpoint_supernet":"10.198.0.0/16","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"ca_pem":"-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"},"recovery_key_wrapped":[1,2,3],"core_seeds_wrapped":[4,5,6],"ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"},"ebpf_bytecode":{"version":"0.1.0","source":"/tmp/ployz-ebpf-tc","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"},"ebpf_ctl":{"version":"0.1.0","source":"/tmp/ployz-ebpf-ctl","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployz-ebpf-ctl"},"railpack":{"version":"0.1.0","source":"/tmp/ployz-railpack","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/lib/ployz/railpack/v0.31.0/railpack"}}},"join_token":"join_once_123","join_secret_delivery":{"nats_credentials":"SUAIZ5LKGG2Y4WC7ZPKS46LSLLJQIFTO6KMSWSU2VN3TC7YRRIKH5WRXJQ"}}}"#
+        r#"{"status":"ok","value":{"accepted":{"operation_id":"op_machine","watch_subject":"plz.v1.progress.machine.machine_2.operation.op_machine.>","start_sequence":"7"},"machine_id":"machine_2","bootstrap_url":"https://get.ployz.sh","join_bundle":{"material":{"cluster_name":"prod","dataplane_endpoint_supernet":"10.198.0.0/16","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"ca_pem":"-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"},"recovery_key_wrapped":[1,2,3],"core_seeds_wrapped":[4,5,6],"substrate_release":{"version":"0.1.0"}}},"join_token":"join_once_123","join_secret_delivery":{"nats_credentials":"SUAIZ5LKGG2Y4WC7ZPKS46LSLLJQIFTO6KMSWSU2VN3TC7YRRIKH5WRXJQ"}}}"#
     );
 
     let redeem_request = MachineJoinRedeemRequest {
@@ -421,7 +422,7 @@ fn sdk_exports_operation_api_wire_types() {
     );
     assert_eq!(
         serde_json::to_string(&join_template).expect("join template serializes"),
-        r#"{"join_bundle":{"material":{"cluster_name":"prod","dataplane_endpoint_supernet":"10.198.0.0/16","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"ca_pem":"-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"},"recovery_key_wrapped":[1,2,3],"core_seeds_wrapped":[4,5,6],"ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"},"ebpf_bytecode":{"version":"0.1.0","source":"/tmp/ployz-ebpf-tc","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"},"ebpf_ctl":{"version":"0.1.0","source":"/tmp/ployz-ebpf-ctl","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployz-ebpf-ctl"},"railpack":{"version":"0.1.0","source":"/tmp/ployz-railpack","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/lib/ployz/railpack/v0.31.0/railpack"}}}}"#
+        r#"{"join_bundle":{"material":{"cluster_name":"prod","dataplane_endpoint_supernet":"10.198.0.0/16","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"ca_pem":"-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"},"recovery_key_wrapped":[1,2,3],"core_seeds_wrapped":[4,5,6],"substrate_release":{"version":"0.1.0"}}}}"#
     );
 }
 
@@ -785,35 +786,10 @@ fn machine_join_bundle() -> MachineJoinBundle {
             },
             recovery_key_wrapped: ployz_core::install::WrappedCaKey::new(vec![1, 2, 3]),
             core_seeds_wrapped: ployz_core::install::WrappedCoreSeeds::new(vec![4, 5, 6]),
-            ployzd: machine_join_artifact("/tmp/ployzd", "/usr/local/bin/ployzd"),
-            railpack: machine_join_artifact(
-                "/tmp/ployz-railpack",
-                "/usr/local/lib/ployz/railpack/v0.31.0/railpack",
-            ),
-            ebpf_bytecode: machine_join_artifact(
-                "/tmp/ployz-ebpf-tc",
-                "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
-            ),
-            ebpf_ctl: machine_join_artifact("/tmp/ployz-ebpf-ctl", "/usr/local/bin/ployz-ebpf-ctl"),
+            substrate_release: MachineJoinSubstrateRelease {
+                version: ExactPloyzVersion::try_new("v0.1.0").expect("exact release version"),
+            },
         },
-    }
-}
-
-fn machine_join_artifact(
-    source: &str,
-    install_path: &str,
-) -> ployz_core::install::InstallArtifactSpec {
-    ployz_core::install::InstallArtifactSpec {
-        version: ployz_core::install::InstallArtifactVersion::try_new("0.1.0")
-            .expect("valid artifact version"),
-        source: ployz_core::install::InstallArtifactSource::try_new(source)
-            .expect("valid artifact source"),
-        sha256: ployz_core::install::InstallSha256Digest::try_new(
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        )
-        .expect("valid artifact digest"),
-        install_path: ployz_core::install::AbsoluteInstallPath::try_new(install_path)
-            .expect("valid artifact install path"),
     }
 }
 

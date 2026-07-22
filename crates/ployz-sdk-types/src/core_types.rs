@@ -53,11 +53,13 @@ pub use ployz_core::ingress::{
     IngressEndpointSet, IngressEndpointUnavailableReason, PloyzDnsTargetIntent, RouteBindingOrigin,
 };
 pub use ployz_core::install::{
-    AbsoluteInstallPath, FirstMachineInstallArtifacts, FirstMachineInstallSpec, HostPortAssurance,
-    InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion, InstallContractError,
-    InstallSha256Digest, MachineBootstrapUrl, MachineJoinBundle, MachineJoinClusterName,
-    MachineJoinMaterial, MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate,
-    MachineJoinTrustedNats, NatsServerInstallSpec, WrappedCaKey, WrappedCoreSeeds,
+    AbsoluteInstallPath, ExactPloyzVersion, FirstMachineInstallArtifacts, FirstMachineInstallSpec,
+    HostPortAssurance, InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion,
+    InstallContractError, InstallSha256Digest, MachineBootstrapUrl, MachineJoinBundle,
+    MachineJoinClusterName, MachineJoinMaterial, MachineJoinRuntimeNatsUrl,
+    MachineJoinSecretDelivery, MachineJoinSubstrateRelease, MachineJoinTemplate,
+    MachineJoinTrustedNats, NatsServerInstallSpec, ReleasePlatformFailure, WrappedCaKey,
+    WrappedCoreSeeds,
 };
 pub use ployz_core::intent::recovery::ControlPlaneEpoch;
 pub use ployz_core::intent::{

@@ -1,11 +1,10 @@
 use std::fs;
-use std::io::Read;
 
 use clap::Args;
 use ployz_core::install::{
-    MachineJoinArtifactBundleSpec, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
-    MachineJoinRuntimeNatsUrl, MachineJoinTemplate, MachineJoinTrustedNats, WrappedCaKey,
-    WrappedCoreSeeds,
+    ExactPloyzVersion, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
+    MachineJoinRuntimeNatsUrl, MachineJoinSubstrateRelease, MachineJoinTemplate,
+    MachineJoinTrustedNats, WrappedCaKey, WrappedCoreSeeds,
 };
 use ployz_core::nats_config::NatsCaCertificatePem;
 
@@ -39,7 +38,8 @@ pub(crate) fn machine_join_template_command(
     let trusted_nats_ca = read_trusted_nats_ca(parsed.trusted_nats_ca_file)?;
     let recovery_key_wrapped = read_recovery_key(parsed.recovery_key_file)?;
     let core_seeds_wrapped = read_core_seeds(parsed.core_seeds_file)?;
-    let artifacts = read_artifact_spec(parsed.artifact_spec)?;
+    let release_version = ExactPloyzVersion::try_new(parsed.release_version)
+        .map_err(|error| invalid_value("--release-version", error))?;
 
     Ok(MachineJoinTemplateCommand {
         join_bundle: MachineJoinBundle {
@@ -55,10 +55,9 @@ pub(crate) fn machine_join_template_command(
                 },
                 recovery_key_wrapped,
                 core_seeds_wrapped,
-                ployzd: artifacts.ployzd,
-                ebpf_bytecode: artifacts.ebpf_bytecode,
-                ebpf_ctl: artifacts.ebpf_ctl,
-                railpack: artifacts.railpack,
+                substrate_release: MachineJoinSubstrateRelease {
+                    version: release_version,
+                },
             },
         },
     })
@@ -81,7 +80,7 @@ pub(crate) struct MachineJoinTemplateCli {
     #[arg(long)]
     core_seeds_file: String,
     #[arg(long)]
-    artifact_spec: String,
+    release_version: String,
 }
 
 fn read_recovery_key(path: String) -> Result<WrappedCaKey, PloyzctlCliError> {
@@ -108,26 +107,5 @@ fn read_trusted_nats_ca(path: String) -> Result<NatsCaCertificatePem, PloyzctlCl
     NatsCaCertificatePem::try_new(contents).map_err(|error| PloyzctlCliError::InvalidValue {
         flag: "--trusted-nats-ca-file",
         message: error.to_string(),
-    })
-}
-
-fn read_artifact_spec(path: String) -> Result<MachineJoinArtifactBundleSpec, PloyzctlCliError> {
-    let mut contents = String::new();
-    if path == "-" {
-        std::io::stdin()
-            .read_to_string(&mut contents)
-            .map_err(|error| PloyzctlCliError::InvalidValue {
-                flag: "--artifact-spec",
-                message: format!("cannot read stdin: {error}"),
-            })?;
-    } else {
-        contents = fs::read_to_string(&path).map_err(|error| PloyzctlCliError::InvalidValue {
-            flag: "--artifact-spec",
-            message: format!("cannot read {path}: {error}"),
-        })?;
-    }
-    serde_json::from_str(&contents).map_err(|error| PloyzctlCliError::InvalidValue {
-        flag: "--artifact-spec",
-        message: format!("invalid artifact spec json: {error}"),
     })
 }

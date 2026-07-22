@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use crate::lifecycle::installed_substrate::InstalledSubstrateRelease;
 use crate::plan::FirstMachineInstallTarget;
 use crate::release_manifest::{
     ReleaseManifest, default_release_manifest_url, persisted_release_manifest_url,
@@ -20,11 +21,11 @@ use crate::runtime::{
 
 pub(crate) fn load_versioned_release_manifest(url: &str) -> Result<ReleaseManifest, String> {
     let contents = read_release_manifest_text(url)?;
-    ReleaseManifest::parse(&contents)
+    ReleaseManifest::parse(&contents).map_err(|error| error.to_string())
 }
 
 pub(crate) fn local_core_target_from_env() -> Result<FirstMachineInstallTarget, String> {
-    let manifest = load_local_release_manifest()?;
+    let (manifest, manifest_contents) = load_local_release_manifest()?;
     let machine_id = env_machine_id(PLOYZ_MACHINE_ID_ENV)?;
     let runtime_nats_url = env_runtime_nats_url(PLOYZ_MACHINE_JOIN_NATS_URL_ENV)?;
     let cluster_name = env_cluster_name(PLOYZ_MACHINE_JOIN_CLUSTER_NAME_ENV)?;
@@ -47,7 +48,13 @@ pub(crate) fn local_core_target_from_env() -> Result<FirstMachineInstallTarget, 
         artifacts: manifest.install_artifacts()?,
     };
 
-    crate::cli::first_machine_install_target_from_spec(install).map_err(|error| error.to_string())
+    let target = crate::cli::first_machine_install_target_from_spec(install)
+        .map_err(|error| error.to_string())?;
+    let installed = InstalledSubstrateRelease::persisted_manifest(
+        target.ployzd_artifact.substrate_release().clone(),
+        manifest_contents,
+    )?;
+    Ok(target.with_installed_substrate_release(installed))
 }
 
 pub(crate) fn default_machine_join_template_file() -> Result<AbsoluteInstallPath, String> {
@@ -55,10 +62,11 @@ pub(crate) fn default_machine_join_template_file() -> Result<AbsoluteInstallPath
         .map_err(|error| error.to_string())
 }
 
-fn load_local_release_manifest() -> Result<ReleaseManifest, String> {
+fn load_local_release_manifest() -> Result<(ReleaseManifest, String), String> {
     let url = local_release_manifest_url(Path::new("/etc/ployz/release.env"));
     let contents = read_release_manifest_text(&url)?;
-    ReleaseManifest::parse(&contents)
+    let manifest = ReleaseManifest::parse(&contents).map_err(|error| error.to_string())?;
+    Ok((manifest, contents))
 }
 
 pub(crate) fn local_release_manifest_url(release_env_path: &Path) -> String {

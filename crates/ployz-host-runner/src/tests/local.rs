@@ -12,8 +12,8 @@ use crate::execution::{HostRunnerCommandOutput, HostRunnerCommandRunner};
 use crate::execution::{HostRunnerLocalConfig, HostRunnerLocalEffects};
 use crate::execution::{NatsServerUnitTarget, PloyzdRoleEnvironmentFile, SupervisorUnitTarget};
 use crate::lifecycle::machine_join::execution::{
-    HostRunnerJoinRedeemer, HostRunnerJoinReporter, HostRunnerJoinTokenConsumer,
-    RedeemedHostRunnerJoin, execute_host_runner_join,
+    HostRunnerJoinRedeemer, HostRunnerJoinReporter, HostRunnerJoinResolver,
+    HostRunnerJoinTokenConsumer, JoinTargetResolutionFailure, execute_host_runner_join,
 };
 use crate::lifecycle::{
     AssignedSubstrateState, SubstrateAssignment, load_assigned_substrate_state,
@@ -25,8 +25,8 @@ use crate::lifecycle::{
 use crate::plan::{
     ContainerRuntime, FirstMachineInstallTarget, HostPrerequisite, HostRunnerJoinMaterial,
     HostRunnerJoinTarget, HostRunnerStep, HostRunnerStepFailure, HostRunnerStepFailureReason,
-    HostRunnerStepLabel, JoinToken, NonEmptyRoleSet, PloyzdRoleEnvironmentTarget,
-    RoleNatsCredentials, first_machine_install_plan,
+    HostRunnerStepLabel, JoinToken, NonEmptyRoleSet, PloyzReleaseArtifact,
+    PloyzdRoleEnvironmentTarget, RoleNatsCredentials, first_machine_install_plan,
 };
 use crate::plan::{
     HostRunnerPlanFailure, HostRunnerPlanTerminal, HostRunnerStepEffects, HostRunnerStepEvent,
@@ -40,7 +40,7 @@ use ployz_core::operation::FailureMessage;
 use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy};
 use ployz_nats::connect::NatsClientUrl;
 use ployz_sdk_types::MachineJoinReportFailure;
-use ployz_test_support::ids::{failure_message, machine_id, operation_id};
+use ployz_test_support::ids::{failure_message, machine_id};
 use std::sync::OnceLock;
 use support::artifacts::{artifact_version as version, sha256_digest as digest};
 
@@ -164,7 +164,7 @@ fn local_effects_install_first_machine_process_units() {
     let plan = first_machine_install_plan(
         FirstMachineInstallTarget::new(
             machine_id("machine_1"),
-            ployzd_artifact,
+            ployz_release_artifact(ployzd_artifact),
             dataplane_artifacts(&root),
             railpack_artifact(&root),
             nats_server_artifact(&nats_source, &nats_install_path),
@@ -287,7 +287,7 @@ fn first_machine_install_writes_machine_bootstrap_url_when_configured() {
     let runner = RecordingRunner::root_linux();
     let target = FirstMachineInstallTarget::new(
         machine_id("machine_1"),
-        ployzd_artifact(&ployzd_source, &root.join("bin/ployzd")),
+        ployz_release_artifact(ployzd_artifact(&ployzd_source, &root.join("bin/ployzd"))),
         dataplane_artifacts(&root),
         railpack_artifact(&root),
         nats_server_artifact(&nats_source, &root.join("bin/nats-server")),
@@ -338,7 +338,7 @@ fn first_machine_install_writes_machine_join_template_file_when_configured() {
     let template_path = root.join("etc/machine-join-template.json");
     let target = FirstMachineInstallTarget::new(
         machine_id("machine_1"),
-        ployzd_artifact(&ployzd_source, &root.join("bin/ployzd")),
+        ployz_release_artifact(ployzd_artifact(&ployzd_source, &root.join("bin/ployzd"))),
         dataplane_artifacts(&root),
         railpack_artifact(&root),
         nats_server_artifact(&nats_source, &root.join("bin/nats-server")),
@@ -374,14 +374,41 @@ fn first_machine_install_writes_machine_join_template_file_when_configured() {
             ctl = root.join("bin/ployz-ebpf-ctl").display()
         )
     );
+    let rendered = fs::read_to_string(&template_path).expect("join template writes");
     let template: ployz_core::install::MachineJoinTemplate =
-        serde_json::from_str(&fs::read_to_string(&template_path).expect("join template writes"))
-            .expect("join template parses");
+        serde_json::from_str(&rendered).expect("join template parses");
     assert_eq!(template.join_bundle.material.cluster_name.as_str(), "ployz");
     assert_eq!(
         template.join_bundle.material.runtime_nats_url.as_str(),
         "tls://127.0.0.1:4222"
     );
+    assert_eq!(
+        template
+            .join_bundle
+            .material
+            .substrate_release
+            .version
+            .as_str(),
+        "0.1.0"
+    );
+    assert_eq!(
+        template.join_bundle.material.trusted_nats.ca_pem.as_str(),
+        test_identity().ca.as_str()
+    );
+    assert_eq!(
+        template
+            .join_bundle
+            .material
+            .recovery_key_wrapped
+            .as_bytes(),
+        b"wrapped-ca-key"
+    );
+    assert_eq!(
+        template.join_bundle.material.core_seeds_wrapped.as_bytes(),
+        b"wrapped-core-seeds"
+    );
+    assert!(!rendered.contains("https://example.invalid/"));
+    assert!(!rendered.contains("\"ployzd\""));
 }
 
 #[test]
@@ -557,6 +584,93 @@ fn local_effects_prepare_dataplane_packages_for_each_supported_family() {
 }
 
 #[test]
+fn local_effects_prepare_build_packages_for_each_supported_family() {
+    let cases = [
+        (
+            "ubuntu",
+            "env DEBIAN_FRONTEND=noninteractive apt-get install -y git",
+        ),
+        ("rocky", "dnf install -y git"),
+        ("fedora", "dnf install -y git"),
+        ("arch", "pacman -S --noconfirm --needed git"),
+        ("alpine", "apk add git"),
+        ("opensuse-leap", "zypper --non-interactive install git"),
+    ];
+
+    for (id, expected_install) in cases {
+        let root = temp_dir(&format!("ployz-host-runner-build-{id}"));
+        let systemd_dir = root.join("systemd");
+        fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
+        fs::create_dir_all(root.join("openrc")).expect("OpenRC dir can be created");
+        let runner = RecordingRunner {
+            os_release: format!("ID={id}\nVERSION_ID=1\n"),
+            ..RecordingRunner::root_linux()
+        };
+        let mut effects = HostRunnerLocalEffects::new(local_config(&root, &systemd_dir), runner);
+        validate_host(&mut effects);
+
+        effects
+            .apply_step(&HostRunnerStep::PrepareBuildHost)
+            .expect("build packages install");
+
+        assert!(
+            effects
+                .runner()
+                .command_calls
+                .contains(&expected_install.to_owned()),
+            "{id} did not use {expected_install}: {:?}",
+            effects.runner().command_calls,
+        );
+    }
+}
+
+#[test]
+fn machine_build_execution_fails_when_git_remains_unavailable_after_install() {
+    let root = temp_dir("ployz-host-runner-git-still-missing");
+    let systemd_dir = root.join("systemd");
+    fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
+    let runner = RecordingRunner {
+        git_ready: false,
+        git_install_makes_ready: false,
+        ..RecordingRunner::root_linux()
+    };
+    let mut effects = HostRunnerLocalEffects::new(local_config(&root, &systemd_dir), runner);
+    validate_host(&mut effects);
+
+    let error = effects
+        .apply_step(&HostRunnerStep::PrepareBuildHost)
+        .expect_err("Git readiness is required for machine build execution");
+
+    assert_eq!(
+        error.message().as_str(),
+        "build host packages installed but git is not ready"
+    );
+    assert_eq!(
+        error.reason(),
+        Some(HostRunnerStepFailureReason::BuildHostPrepareFailed)
+    );
+}
+
+#[test]
+fn build_host_skips_preparation_when_git_is_ready() {
+    let root = temp_dir("ployz-host-runner-build-ready");
+    let systemd_dir = root.join("systemd");
+    fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
+    let runner = RecordingRunner {
+        git_ready: true,
+        ..RecordingRunner::root_linux()
+    };
+    let mut effects = HostRunnerLocalEffects::new(local_config(&root, &systemd_dir), runner);
+    validate_host(&mut effects);
+
+    effects
+        .apply_step(&HostRunnerStep::PrepareBuildHost)
+        .expect("ready build host needs no package preparation");
+
+    assert!(effects.runner().command_calls.is_empty());
+}
+
+#[test]
 fn arch_package_installs_use_existing_pacman_sync_databases() {
     let root = temp_dir("ployz-host-runner-arch-docker");
     let systemd_dir = root.join("systemd");
@@ -574,6 +688,9 @@ fn arch_package_installs_use_existing_pacman_sync_databases() {
         .apply_step(&HostRunnerStep::PrepareDataplaneHost)
         .expect("Arch installs dataplane packages from existing pacman sync databases");
     effects
+        .apply_step(&HostRunnerStep::PrepareBuildHost)
+        .expect("Arch installs Git from existing pacman sync databases");
+    effects
         .apply_step(&HostRunnerStep::PrepareContainerRuntime(
             ContainerRuntime::Docker,
             ployz_core::network::MachineEndpointSupernet::default_v1(),
@@ -590,6 +707,7 @@ fn arch_package_installs_use_existing_pacman_sync_databases() {
             .collect::<Vec<_>>(),
         [
             "pacman -S --noconfirm --needed wireguard-tools iproute2 iputils",
+            "pacman -S --noconfirm --needed git",
             "pacman -S --noconfirm --needed docker docker-compose",
         ]
     );
@@ -614,6 +732,9 @@ fn amazon_linux_2_falls_back_to_yum_for_dataplane_and_docker_packages() {
         .apply_step(&HostRunnerStep::PrepareDataplaneHost)
         .expect("Amazon Linux 2 installs dataplane packages with yum");
     effects
+        .apply_step(&HostRunnerStep::PrepareBuildHost)
+        .expect("Amazon Linux 2 installs Git with yum");
+    effects
         .apply_step(&HostRunnerStep::PrepareContainerRuntime(
             ContainerRuntime::Docker,
             ployz_core::network::MachineEndpointSupernet::default_v1(),
@@ -622,6 +743,7 @@ fn amazon_linux_2_falls_back_to_yum_for_dataplane_and_docker_packages() {
 
     for command in [
         "yum install -y wireguard-tools iproute iputils",
+        "yum install -y git",
         "yum install -y docker",
     ] {
         assert!(
@@ -1372,7 +1494,7 @@ fn local_effects_write_nats_config_before_nats_unit() {
     let plan = first_machine_install_plan(
         FirstMachineInstallTarget::new(
             machine_id("machine_1"),
-            ployzd_artifact,
+            ployz_release_artifact(ployzd_artifact),
             dataplane_artifacts(&root),
             railpack_artifact(&root),
             nats_server_artifact(&nats_source, &nats_install_path),
@@ -1445,7 +1567,7 @@ fn local_effects_render_role_units_from_the_artifact_installed_by_the_plan() {
     let plan = first_machine_install_plan(
         FirstMachineInstallTarget::new(
             machine_id("machine_1"),
-            ployzd_artifact(&source, &install_path),
+            ployz_release_artifact(ployzd_artifact(&source, &install_path)),
             dataplane_artifacts(&root),
             railpack_artifact(&root),
             nats_server_artifact(&nats_source, &nats_install_path),
@@ -1491,7 +1613,7 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
             WrappedCoreSeeds::new(b"wrapped-core-seeds".to_vec()),
         )
         .expect("valid join material"),
-        ployzd_artifact(&source, &root.join("join/bin/ployzd")),
+        ployz_release_artifact(ployzd_artifact(&source, &root.join("join/bin/ployzd"))),
         dataplane_artifacts(&root),
         railpack_artifact(&root),
         NonEmptyRoleSet::try_new(vec![
@@ -1504,8 +1626,8 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
     );
     let mut redeemer = StaticJoinRedeemer {
         expected_token: JoinToken::try_new("join_once").expect("valid join token"),
-        target,
     };
+    let mut resolver = StaticJoinResolver { target };
     let mut reporter = RecordingJoinReporter::default();
     let mut token_consumer = RecordingTokenConsumer::default();
     let mut effects = HostRunnerLocalEffects::new(
@@ -1517,6 +1639,7 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
     let execution = execute_host_runner_join(
         &JoinToken::try_new("join_once").expect("valid join token"),
         &mut redeemer,
+        &mut resolver,
         &mut reporter,
         &mut token_consumer,
         &mut effects,
@@ -1695,23 +1818,31 @@ impl HostRunnerJoinTokenConsumer for RecordingTokenConsumer {
 #[derive(Debug)]
 struct StaticJoinRedeemer {
     expected_token: JoinToken,
-    target: HostRunnerJoinTarget,
 }
 
 impl HostRunnerJoinRedeemer for StaticJoinRedeemer {
     fn redeem_join_token(
         &mut self,
         token: &JoinToken,
-    ) -> Result<RedeemedHostRunnerJoin, FailureMessage> {
+    ) -> Result<ployz_sdk_types::MachineJoinRedeemed, FailureMessage> {
         if *token != self.expected_token {
             return Err(failure_message("unexpected join token"));
         }
 
-        Ok(RedeemedHostRunnerJoin::new(
-            operation_id("op_machine"),
-            machine_id("machine_2"),
-            self.target.clone(),
-        ))
+        Ok(support::bootstrap::recording_join_redeemed())
+    }
+}
+
+struct StaticJoinResolver {
+    target: HostRunnerJoinTarget,
+}
+
+impl HostRunnerJoinResolver for StaticJoinResolver {
+    fn resolve_join_target(
+        &mut self,
+        _redeemed: &ployz_sdk_types::MachineJoinRedeemed,
+    ) -> Result<HostRunnerJoinTarget, JoinTargetResolutionFailure> {
+        Ok(self.target.clone())
     }
 }
 
@@ -1755,6 +1886,8 @@ struct RecordingRunner {
     docker_install_scripts: Vec<String>,
     dataplane_host_prepare_runs: usize,
     dataplane_ready: bool,
+    git_ready: bool,
+    git_install_makes_ready: bool,
     fail_docker_install: bool,
     fail_dataplane_host_prepare: bool,
     force_docker_info_failure: bool,
@@ -1781,6 +1914,8 @@ impl RecordingRunner {
             docker_install_scripts: Vec::new(),
             dataplane_host_prepare_runs: 0,
             dataplane_ready: false,
+            git_ready: false,
+            git_install_makes_ready: true,
             fail_docker_install: false,
             fail_dataplane_host_prepare: false,
             force_docker_info_failure: false,
@@ -1849,6 +1984,12 @@ impl HostRunnerCommandRunner for RecordingRunner {
             return Ok(succeeded_command(""));
         }
         if program == "zypper" && args == ["refresh"] {
+            return Ok(succeeded_command(""));
+        }
+        if args.contains(&"git") && !args.contains(&"wireguard-tools") {
+            if self.git_install_makes_ready {
+                self.git_ready = true;
+            }
             return Ok(succeeded_command(""));
         }
         if args.contains(&"wireguard-tools") {
@@ -1981,6 +2122,10 @@ impl HostRunnerCommandRunner for RecordingRunner {
     fn dataplane_host_ready(&mut self) -> bool {
         self.dataplane_ready
     }
+
+    fn build_host_ready(&mut self) -> bool {
+        self.git_ready
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -2099,7 +2244,7 @@ fn first_machine_plan_with_ployzd(
     first_machine_install_plan(
         FirstMachineInstallTarget::new(
             machine_id("machine_1"),
-            ployzd,
+            ployz_release_artifact(ployzd),
             dataplane_artifacts(root),
             railpack_artifact(root),
             nats_server_artifact(&nats_source, &root.join("bin/nats-server")),
@@ -2113,6 +2258,10 @@ fn first_machine_plan_with_ployzd(
         .with_nats_material_paths(nats_material(root))
         .with_role_environment(role_env(root)),
     )
+}
+
+fn ployz_release_artifact(artifact: ArtifactTarget) -> PloyzReleaseArtifact {
+    PloyzReleaseArtifact::try_new(artifact).expect("exact Ployz release artifact")
 }
 
 fn remote_ployzd_artifact(url: &str, install_path: &Path) -> ArtifactTarget {

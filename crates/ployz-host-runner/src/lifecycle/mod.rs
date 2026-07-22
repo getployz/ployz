@@ -4,6 +4,7 @@ pub(crate) mod assigned_substrate;
 pub(crate) mod cloud_bootstrap;
 mod dispatch;
 pub(crate) mod founder_bootstrap;
+pub(crate) mod installed_substrate;
 mod joiner_bootstrap;
 pub(crate) mod machine_join;
 pub(crate) mod substrate_update;

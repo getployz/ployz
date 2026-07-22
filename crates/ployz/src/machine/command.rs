@@ -326,7 +326,13 @@ impl MachineAddOutput {
                     BootstrapInstaller::RemoteScript(path.clone())
                 }
             },
-            version: self.join_bundle.material.ployzd.version.as_str().to_owned(),
+            version: self
+                .join_bundle
+                .material
+                .substrate_release
+                .version
+                .as_str()
+                .to_owned(),
             runtime_nats_url: self.runtime_nats_url().clone(),
             trusted_ca_b64: self.trusted_ca_b64(),
             join_seed: self.join_seed.clone(),

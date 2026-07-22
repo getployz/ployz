@@ -6,10 +6,16 @@ use std::path::PathBuf;
 use crate::execution::{
     ArtifactKind, ArtifactSource, ArtifactTarget, ArtifactVersion, Sha256Digest,
 };
+use crate::plan::PloyzReleaseArtifact;
 
 /// A syntactically valid sha256 hex digest for ployzd artifact fixtures.
 pub const TEST_PLOYZD_DIGEST: &str =
     "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+#[must_use]
+pub fn ployz_release_artifact() -> PloyzReleaseArtifact {
+    PloyzReleaseArtifact::try_new(ployzd_artifact()).expect("exact Ployz release artifact")
+}
 
 #[must_use]
 pub fn artifact_version(value: &str) -> ArtifactVersion {

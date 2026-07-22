@@ -6,9 +6,10 @@ use ployz_core::deploy::{
     DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec, ImageReference, ReplicaCount,
 };
 use ployz_core::install::{
-    AbsoluteInstallPath, InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion,
-    InstallSha256Digest, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
-    MachineJoinRuntimeNatsUrl, MachineJoinTemplate, MachineJoinTrustedNats,
+    AbsoluteInstallPath, ExactPloyzVersion, InstallArtifactSource, InstallArtifactSpec,
+    InstallArtifactVersion, InstallSha256Digest, MachineJoinBundle, MachineJoinClusterName,
+    MachineJoinMaterial, MachineJoinRuntimeNatsUrl, MachineJoinSubstrateRelease,
+    MachineJoinTemplate, MachineJoinTrustedNats,
 };
 use ployz_core::intent::ServingTargetEntry;
 use ployz_core::machine::runtime::MachineDiskSpace;
@@ -76,16 +77,9 @@ pub fn machine_join_material(runtime_nats_url: &str, ca_pem: &str) -> MachineJoi
         },
         recovery_key_wrapped: ployz_core::install::WrappedCaKey::new(vec![1, 2, 3]),
         core_seeds_wrapped: ployz_core::install::WrappedCoreSeeds::new(vec![4, 5, 6]),
-        ployzd: install_artifact("/tmp/ployzd", "/usr/local/bin/ployzd"),
-        ebpf_bytecode: install_artifact(
-            "/tmp/ployz-ebpf-tc",
-            "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
-        ),
-        ebpf_ctl: install_artifact("/tmp/ployz-ebpf-ctl", "/usr/local/bin/ployz-ebpf-ctl"),
-        railpack: install_artifact(
-            "/tmp/railpack",
-            "/usr/local/lib/ployz/railpack/v0.31.0/railpack",
-        ),
+        substrate_release: MachineJoinSubstrateRelease {
+            version: ExactPloyzVersion::try_new("v0.1.0").expect("exact release version"),
+        },
     }
 }
 

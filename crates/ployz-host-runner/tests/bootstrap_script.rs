@@ -17,6 +17,14 @@ use std::{env, fs};
 #[test]
 fn bootstrap_script_file_is_unified_release_delivery() {
     let script = fs::read_to_string(bootstrap_script_path()).expect("script is readable");
+    let railpack_pins = fs::read_to_string(repo_path("config/railpack-pins.env"))
+        .expect("Railpack pins are readable");
+    let pin = |key: &str| {
+        railpack_pins
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{key}=")))
+            .expect("Railpack pin exists")
+    };
 
     assert!(script.contains("PLOYZ_URL"));
     assert!(script.contains("PLOYZ_SHA256"));
@@ -30,6 +38,23 @@ fn bootstrap_script_file_is_unified_release_delivery() {
     assert!(script.contains("sudo ployz host substrate-update --version $release_tag"));
     assert!(script.contains("--version <version>"));
     assert!(script.contains("--channel <channel>"));
+    assert!(script.contains("--build-executor"));
+    assert!(script.contains("PLOYZ_RAILPACK_VERSION"));
+    assert!(script.contains("PLOYZ_RAILPACK_URL"));
+    assert!(script.contains("PLOYZ_RAILPACK_SHA256"));
+    assert!(script.contains(&format!("railpack_version=\"{}\"", pin("RAILPACK_VERSION"))));
+    assert!(script.contains(&format!(
+        "railpack_binary_sha256=\"{}\"",
+        pin("RAILPACK_AMD64_BINARY_SHA256")
+    )));
+    assert!(script.contains(&format!(
+        "railpack_binary_sha256=\"{}\"",
+        pin("RAILPACK_ARM64_BINARY_SHA256")
+    )));
+    assert!(script.contains(&format!(
+        "railpack_bin=\"{}\"",
+        pin("RAILPACK_INSTALL_PATH")
+    )));
     assert!(script.contains("shasum"));
     assert!(script.contains("sudo install"));
     assert!(script.contains("unknown ployz installer argument"));
@@ -93,10 +118,14 @@ fn bootstrap_script_installs_host_runner_by_default_from_alpha_channel() {
     let channel = root.join("alpha.env");
     let manifest = root.join("ployz-release-linux-amd64.env");
     let install_dir = root.join("bin");
+    let existing_railpack = root.join("lib/ployz/railpack/v0.31.0/railpack");
     let script_path = test_bootstrap_script_path(&root, &install_dir);
     let fake_bin = root.join("fake-bin");
     let curl_log = root.join("curl.log");
     fs::create_dir_all(&fake_bin).expect("fake bin can be created");
+    fs::create_dir_all(existing_railpack.parent().expect("Railpack parent"))
+        .expect("Railpack directory can be created");
+    fs::write(&existing_railpack, "existing Railpack\n").expect("existing Railpack can be written");
     write_channel(&channel, "alpha", "v0.0.2-alpha.1", "0.0.2-alpha.1");
     write_host_runner_manifest(
         &manifest,
@@ -122,6 +151,10 @@ fn bootstrap_script_installs_host_runner_by_default_from_alpha_channel() {
     assert_success(&output);
     assert!(install_dir.join("ployz").exists());
     assert_eq!(
+        fs::read_to_string(existing_railpack).expect("existing Railpack remains"),
+        "existing Railpack\n"
+    );
+    assert_eq!(
         fs::read_to_string(root.join("release.env")).expect("release env is written"),
         "PLOYZ_RELEASE_MANIFEST_URL=https://github.com/getployz/ployz/releases/download/v0.0.2-alpha.1/ployz-release-linux-amd64.env\nPLOYZ_VERSION=0.0.2-alpha.1\nPLOYZ_RELEASE_TAG=v0.0.2-alpha.1\nPLOYZ_RELEASE_PLATFORM=linux-amd64\n"
     );
@@ -139,6 +172,9 @@ fn bootstrap_script_installs_host_runner_by_default_from_alpha_channel() {
     ));
 }
 
+#[cfg(unix)]
+#[path = "bootstrap_script/build_executor.rs"]
+mod build_executor;
 #[cfg(unix)]
 #[test]
 fn bootstrap_script_exact_version_bypasses_channel_lookup() {
@@ -271,10 +307,7 @@ fn bootstrap_script_retries_a_transient_manifest_failure() {
         run_bootstrap_with_http_manifest("ployz-bootstrap-script-transient-manifest", &[503, 200]);
 
     assert_success(&output);
-    assert_eq!(
-        requests, 3,
-        "one retry plus the installer's existing second manifest read"
-    );
+    assert_eq!(requests, 2, "one transient failure followed by one retry");
 }
 
 #[cfg(unix)]
@@ -682,6 +715,14 @@ fn test_bootstrap_script_path(root: &std::path::Path, install_dir: &std::path::P
         source,
         "install_dir=\"/usr/local/bin\"",
         &format!("install_dir=\"{}\"", install_dir.display()),
+    );
+    let rewritten = replace_required(
+        rewritten,
+        "railpack_bin=\"/usr/local/lib/ployz/railpack/v0.31.0/railpack\"",
+        &format!(
+            "railpack_bin=\"{}\"",
+            root.join("lib/ployz/railpack/v0.31.0/railpack").display()
+        ),
     );
     let rewritten = replace_required(
         rewritten,

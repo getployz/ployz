@@ -313,9 +313,18 @@ pub struct CloudJoinerBootstrapResult {
 #[serde(tag = "failure", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CloudBootstrapFailure {
     AlreadyBootstrapped,
-    EnvelopeInvalid { message: FailureMessage },
-    BootstrapFailed { message: FailureMessage },
-    CloudReachabilityFailed { message: FailureMessage },
+    EnvelopeInvalid {
+        message: FailureMessage,
+    },
+    BootstrapFailed {
+        message: FailureMessage,
+    },
+    ReleasePlatform {
+        cause: crate::core_types::ReleasePlatformFailure,
+    },
+    CloudReachabilityFailed {
+        message: FailureMessage,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

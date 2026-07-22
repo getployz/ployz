@@ -1373,31 +1373,10 @@ function machineJoinBundle(): MachineJoinBundle {
       },
       recovery_key_wrapped: [1, 2, 3],
       core_seeds_wrapped: [4, 5, 6],
-      ployzd: {
-        version: "0.1.0",
-        source: "/tmp/ployzd",
-        sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        install_path: "/usr/local/bin/ployzd",
+      substrate_release: {
+        version: "v0.1.0",
       },
-      ebpf_bytecode: machineJoinArtifact(
-        "/tmp/ployz-ebpf-tc",
-        "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
-      ),
-      ebpf_ctl: machineJoinArtifact("/tmp/ployz-ebpf-ctl", "/usr/local/bin/ployz-ebpf-ctl"),
-      railpack: machineJoinArtifact(
-        "/tmp/railpack",
-        "/usr/local/lib/ployz/railpack/v0.31.0/railpack",
-      ),
     },
-  };
-}
-
-function machineJoinArtifact(source: string, installPath: string) {
-  return {
-    version: "0.1.0",
-    source,
-    sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    install_path: installPath,
   };
 }
 

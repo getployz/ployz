@@ -10,8 +10,8 @@ use ployz_nats::services::{
 #[cfg(test)]
 use ployz_nats::services::{ServiceDiscoveryQuery, ServicePing, discover_services};
 use ployz_nats::subjects::{
-    CoreQueryEndpoint, MachineServiceEndpoint, OperationApiEndpoint, OperationApiEndpointExecution,
-    RUNTIME_SNAPSHOT_SEED, machine_service,
+    CoreQueryEndpoint, MachineServiceEndpoint, OperationApiEndpoint, RUNTIME_SNAPSHOT_SEED,
+    machine_service,
 };
 
 pub const API_SERVICE_ID: &str = "plz-api.core";
@@ -169,20 +169,7 @@ pub fn runtime_snapshot_seed_endpoint_spec() -> NatsServiceEndpointSpec {
 
 #[must_use]
 pub fn api_endpoint_spec(endpoint: OperationApiEndpoint) -> NatsServiceEndpointSpec {
-    NatsServiceEndpointSpec::new(
-        endpoint.name(),
-        endpoint.subject(),
-        api_endpoint_execution(endpoint.execution()),
-    )
-}
-
-#[must_use]
-pub const fn api_endpoint_execution(execution: OperationApiEndpointExecution) -> EndpointExecution {
-    match execution {
-        OperationApiEndpointExecution::AcceptsOperation => EndpointExecution::AcceptsOperation,
-        OperationApiEndpointExecution::MutatesOperation => EndpointExecution::MutatesOperation,
-        OperationApiEndpointExecution::Query => EndpointExecution::Query,
-    }
+    endpoint.into()
 }
 
 #[must_use]

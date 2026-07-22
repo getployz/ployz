@@ -20,7 +20,7 @@ use ployz_core::nats_config::{
 };
 use ployz_core::security::NatsPrincipal;
 use ployz_nats::connect::{
-    NatsConnectConfig, authenticated_connect_options, connect_authenticated,
+    NatsConnectConfig, NatsConnectError, authenticated_connect_options, connect_authenticated,
 };
 use ployz_nats::permissions::{inbox_prefix, inbox_subscribe_scope};
 use ployz_nats::service_runtime::{NatsServiceResponse, start_nats_service};
@@ -95,10 +95,10 @@ async fn wrong_seed_is_rejected() {
 
     let result = connect_authenticated(&config, CONNECT_TIMEOUT).await;
 
-    assert!(
-        result.is_err(),
-        "a seed outside the authorized user set must not connect"
-    );
+    assert!(matches!(
+        result,
+        Err(NatsConnectError::AuthorizationViolation { .. })
+    ));
 }
 
 #[tokio::test]

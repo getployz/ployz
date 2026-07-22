@@ -198,10 +198,7 @@ pub async fn connect_authenticated_pool(
     let total = timeout.saturating_mul(factor);
     match tokio::time::timeout(total, options.connect(servers.to_vec())).await {
         Ok(Ok(client)) => Ok(client),
-        Ok(Err(error)) => Err(NatsConnectError::Connect {
-            url: servers.join(","),
-            message: error.to_string(),
-        }),
+        Ok(Err(error)) => Err(connect_error(servers.join(","), error)),
         Err(_) => Err(NatsConnectError::Timeout {
             url: servers.join(","),
             timeout,
@@ -220,10 +217,7 @@ pub async fn connect_with_timeout(
     install_rustls_crypto_provider();
     match tokio::time::timeout(timeout, async_nats::connect(nats_url.as_str())).await {
         Ok(Ok(client)) => Ok(client),
-        Ok(Err(error)) => Err(NatsConnectError::Connect {
-            url: nats_url.as_str().to_owned(),
-            message: error.to_string(),
-        }),
+        Ok(Err(error)) => Err(connect_error(nats_url.as_str().to_owned(), error)),
         Err(_) => Err(NatsConnectError::Timeout {
             url: nats_url.as_str().to_owned(),
             timeout,
@@ -238,8 +232,21 @@ fn install_rustls_crypto_provider() {
     });
 }
 
+fn connect_error(url: String, error: async_nats::ConnectError) -> NatsConnectError {
+    if error.kind() == async_nats::ConnectErrorKind::AuthorizationViolation {
+        NatsConnectError::AuthorizationViolation { url }
+    } else {
+        NatsConnectError::Connect {
+            url,
+            message: error.to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum NatsConnectError {
+    #[error("NATS authorization was rejected at {url}")]
+    AuthorizationViolation { url: String },
     #[error("failed to connect to NATS at {url}: {message}")]
     Connect { url: String, message: String },
     #[error("failed to connect to NATS at {url} within {}ms", timeout.as_millis())]

@@ -12,7 +12,7 @@ use ployz_core::install::{
 };
 use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy};
 use ployz_test_support::ids::machine_id;
-use support::artifacts::{nats_server_artifact, ployzd_artifact, railpack_artifact};
+use support::artifacts::{nats_server_artifact, ployz_release_artifact, railpack_artifact};
 use support::bootstrap::*;
 
 const MIRRORED_MACHINE_PUBLIC: &str = "UBCXCMGAZQZN55X5TTTWMB5CZNZIKJHEDZJOJ3TV63NKPJ6FRXSR2ZO4";
@@ -23,7 +23,7 @@ fn promote_target() -> CorePromoteTarget {
     // already-joined machine.
     let first_machine = FirstMachineInstallTarget::new(
         machine_id("core_2"),
-        ployzd_artifact(),
+        ployz_release_artifact(),
         dataplane_artifacts(),
         railpack_artifact(),
         nats_server_artifact(),
@@ -124,6 +124,34 @@ fn core_promote_plan_adds_the_core_without_reinstalling_machine_units() {
 }
 
 #[test]
+fn core_promote_template_keeps_provenance_with_platform_neutral_release() {
+    let target = promote_target();
+    let expected_recovery_key = target.recovery_key_wrapped.clone();
+    let expected_core_seeds = target.core_seeds_wrapped.clone();
+    let plan = core_promote_plan(target);
+    let rendered = plan
+        .steps()
+        .iter()
+        .find_map(|step| {
+            let HostRunnerStep::WriteMachineJoinTemplate(target) = step else {
+                return None;
+            };
+            Some(target.render())
+        })
+        .expect("promotion writes join template");
+    let template: ployz_core::install::MachineJoinTemplate =
+        serde_json::from_str(&rendered).expect("join template parses");
+    let material = template.join_bundle.material;
+
+    assert_eq!(material.substrate_release.version.as_str(), "0.1.0");
+    assert_eq!(material.cluster_name.as_str(), "ployz");
+    assert_eq!(material.recovery_key_wrapped, expected_recovery_key);
+    assert_eq!(material.core_seeds_wrapped, expected_core_seeds);
+    assert!(!rendered.contains("https://example.invalid/"));
+    assert!(!rendered.contains("\"ployzd\""));
+}
+
+#[test]
 fn core_promote_authorized_users_carries_only_the_reused_core_principals() {
     let plan = core_promote_plan(promote_target());
     let rendered = plan
@@ -136,6 +164,7 @@ fn core_promote_authorized_users_carries_only_the_reused_core_principals() {
             | HostRunnerStep::AssureHostPorts(_)
             | HostRunnerStep::StoreAssignedSubstrate(_)
             | HostRunnerStep::PrepareDataplaneHost
+            | HostRunnerStep::PrepareBuildHost
             | HostRunnerStep::PrepareContainerRuntime(_, _)
             | HostRunnerStep::VerifyContainerRuntime(_)
             | HostRunnerStep::InstallArtifact(_)
@@ -146,7 +175,8 @@ fn core_promote_authorized_users_carries_only_the_reused_core_principals() {
             | HostRunnerStep::WriteMachineJoinTemplate(_)
             | HostRunnerStep::WriteSupervisorUnit(_)
             | HostRunnerStep::StartSupervisorUnit(_)
-            | HostRunnerStep::StoreJoinMaterial(_) => None,
+            | HostRunnerStep::StoreJoinMaterial(_)
+            | HostRunnerStep::StoreInstalledSubstrateRelease(_) => None,
         })
         .expect("promote plan writes authorized users");
 

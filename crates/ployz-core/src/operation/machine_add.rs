@@ -258,12 +258,14 @@ fn failure_allowed(current: &MachineAddOperationState, failure: &MachineAddFailu
         | (
             MachineAddOperationState::Joining { .. },
             MachineAddFailure::BootstrapFailed { .. }
+            | MachineAddFailure::ReleasePlatform { .. }
             | MachineAddFailure::ReadinessFailed { .. }
             | MachineAddFailure::DataplaneProjectionAdmissionFailed { .. },
         ) => true,
         (
             MachineAddOperationState::Pending { .. },
             MachineAddFailure::BootstrapFailed { .. }
+            | MachineAddFailure::ReleasePlatform { .. }
             | MachineAddFailure::ReadinessFailed { .. }
             | MachineAddFailure::DataplaneProjectionAdmissionFailed { .. },
         )

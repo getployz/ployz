@@ -144,23 +144,17 @@ pub async fn machine_join_report(
                 Err(error) => return Err(error),
             }
         }
-        MachineJoinReportOutcome::Failed {
-            failure: MachineJoinReportFailure::BootstrapFailed { message },
-        } => {
+        MachineJoinReportOutcome::Failed { failure } => {
+            let (machine_failure, reported_failure) = reported_join_failure(failure);
             let result = handlers
                 .controllers
                 .repository()
-                .record_machine_join_failed(
-                    &raw_token,
-                    MachineAddFailure::BootstrapFailed {
-                        message: message.clone(),
-                    },
-                )
+                .record_machine_join_failed(&raw_token, machine_failure)
                 .await;
             (
                 result,
                 MachineJoinReportedOutcome::Failed {
-                    failure: MachineJoinReportedFailure::BootstrapFailed { message },
+                    failure: reported_failure,
                 },
             )
         }
@@ -214,6 +208,25 @@ pub async fn machine_join_report(
         last_event_sequence,
         outcome,
     })
+}
+
+fn reported_join_failure(
+    failure: MachineJoinReportFailure,
+) -> (MachineAddFailure, MachineJoinReportedFailure) {
+    match failure {
+        MachineJoinReportFailure::BootstrapFailed { message } => (
+            MachineAddFailure::BootstrapFailed {
+                message: message.clone(),
+            },
+            MachineJoinReportedFailure::BootstrapFailed { message },
+        ),
+        MachineJoinReportFailure::ReleasePlatform { failure } => (
+            MachineAddFailure::ReleasePlatform {
+                failure: failure.clone(),
+            },
+            MachineJoinReportedFailure::ReleasePlatform { failure },
+        ),
+    }
 }
 
 async fn admit_completed_join(
@@ -441,5 +454,50 @@ fn machine_join_redeemed(redemption: MachineJoinRedemption) -> MachineJoinRedeem
         joined_at: joined.joined_at,
         last_event_sequence: joined.last_event_sequence,
         result,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ployz_core::install::ReleasePlatformFailure;
+    use ployz_core::machine::MachineAddFailure;
+    use ployz_sdk_types::{MachineJoinReportFailure, MachineJoinReportedFailure};
+
+    use super::reported_join_failure;
+
+    #[test]
+    fn release_platform_failures_remain_typed_when_core_records_the_join() {
+        assert_eq!(
+            reported_join_failure(MachineJoinReportFailure::ReleasePlatform {
+                failure: ReleasePlatformFailure::Missing,
+            }),
+            (
+                MachineAddFailure::ReleasePlatform {
+                    failure: ReleasePlatformFailure::Missing,
+                },
+                MachineJoinReportedFailure::ReleasePlatform {
+                    failure: ReleasePlatformFailure::Missing,
+                },
+            )
+        );
+        assert_eq!(
+            reported_join_failure(MachineJoinReportFailure::ReleasePlatform {
+                failure: ReleasePlatformFailure::Unsupported {
+                    platform: "linux-riscv64".to_owned(),
+                },
+            }),
+            (
+                MachineAddFailure::ReleasePlatform {
+                    failure: ReleasePlatformFailure::Unsupported {
+                        platform: "linux-riscv64".to_owned(),
+                    },
+                },
+                MachineJoinReportedFailure::ReleasePlatform {
+                    failure: ReleasePlatformFailure::Unsupported {
+                        platform: "linux-riscv64".to_owned(),
+                    },
+                },
+            )
+        );
     }
 }

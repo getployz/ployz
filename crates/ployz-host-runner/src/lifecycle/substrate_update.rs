@@ -4,6 +4,8 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use super::assigned_substrate::load_assigned_substrate_state;
+use super::installed_substrate::InstalledSubstrateRelease;
+use super::machine_join::prepare_machine_join_template_release_promotion;
 use crate::cli::{HostRunnerSubstrateUpdate, HostRunnerSubstrateUpdateSource};
 use crate::execution::supervisor::execute_supervisor_commands;
 use crate::execution::{
@@ -13,14 +15,17 @@ use crate::execution::{
 };
 use crate::plan::{HostPrerequisite, HostRunnerStep, HostRunnerStepPlan, HostRunnerTextRecorder};
 use crate::plan::{HostRunnerPlanTerminal, execute_host_runner_plan};
-use crate::release_manifest::{ReleaseManifest, release_manifest_url};
+use crate::release_manifest::{ReleaseManifest, ReleasePlatform, release_manifest_url};
 use ployz_core::ids::OperationId;
-use ployz_core::install::InstallArtifactVersion;
+use ployz_core::install::{InstallArtifactVersion, MachineJoinSubstrateRelease};
 use ployz_core::operation::FailureMessage;
 use serde::Serialize;
 
-use crate::env_config::load_versioned_release_manifest;
+use crate::env_config::{default_machine_join_template_file, load_versioned_release_manifest};
 use crate::runtime::{HOST_RUNNER_STATE_DIR, SUBSTRATE_VERSION_FILE, failure_summary};
+
+const MACHINE_ENV_PATH: &str = "/etc/ployz/ployzd-machine.env";
+const MACHINE_JOIN_TEMPLATE_FILE_ENV: &str = "PLOYZ_MACHINE_JOIN_TEMPLATE_FILE";
 
 pub(crate) fn run_substrate_update_command(update: HostRunnerSubstrateUpdate) -> ExitCode {
     let assigned_substrate = match load_assigned_substrate_state(Path::new(HOST_RUNNER_STATE_DIR)) {
@@ -55,14 +60,36 @@ pub(crate) fn run_substrate_update_command(update: HostRunnerSubstrateUpdate) ->
         }
     };
     let update_label = update.source.label();
-    let manifest = match load_substrate_update_manifest(&update.source) {
+    let template_path = if should_promote_join_template(&update.source) {
+        match inherited_machine_join_template_file().and_then(|inherited| {
+            resolve_machine_join_template_file(inherited, Path::new(MACHINE_ENV_PATH))
+        }) {
+            Ok(path) => Some(path),
+            Err(message) => {
+                eprintln!("ployz host substrate-update join-template path is invalid: {message}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        None
+    };
+    let loaded_manifest = match load_substrate_update_manifest(&update.source) {
         Ok(manifest) => manifest,
         Err(message) => {
             eprintln!("{message}");
             return ExitCode::FAILURE;
         }
     };
-    let artifacts = match manifest.install_artifacts() {
+    let manifest = &loaded_manifest.manifest;
+    let local_platform =
+        match ReleasePlatform::from_target(std::env::consts::OS, std::env::consts::ARCH) {
+            Ok(platform) => platform,
+            Err(message) => {
+                eprintln!("{message}");
+                return ExitCode::FAILURE;
+            }
+        };
+    let artifacts = match manifest.install_artifacts_for(local_platform) {
         Ok(artifacts) => artifacts,
         Err(message) => {
             eprintln!("release manifest is invalid: {message}");
@@ -70,6 +97,7 @@ pub(crate) fn run_substrate_update_command(update: HostRunnerSubstrateUpdate) ->
         }
     };
     let ployzd_version = artifacts.ployzd.version.clone();
+    let target_version = manifest.version().clone();
     let ployzd = match artifact_target(ArtifactKind::Ployzd, &artifacts.ployzd) {
         Ok(target) => target,
         Err(error) => {
@@ -122,11 +150,19 @@ pub(crate) fn run_substrate_update_command(update: HostRunnerSubstrateUpdate) ->
         HostRunnerStep::PreflightHostPorts(assigned_substrate.clone()),
         HostRunnerStep::AssureHostPorts(assigned_substrate),
         HostRunnerStep::PrepareDataplaneHost,
+    ];
+    if units
+        .iter()
+        .any(|unit| matches!(unit, InstalledUpdateUnit::Machine(_)))
+    {
+        steps.push(HostRunnerStep::PrepareBuildHost);
+    }
+    steps.extend([
         HostRunnerStep::InstallArtifact(railpack),
         HostRunnerStep::InstallArtifact(ployzd),
         HostRunnerStep::InstallArtifact(ebpf_bytecode),
         HostRunnerStep::InstallArtifact(ebpf_ctl),
-    ];
+    ]);
     if let Some(nats_server) = nats_server
         && units
             .iter()
@@ -134,7 +170,35 @@ pub(crate) fn run_substrate_update_command(update: HostRunnerSubstrateUpdate) ->
     {
         steps.push(HostRunnerStep::InstallArtifact(nats_server));
     }
+    let installed_release = match loaded_manifest.installed_release() {
+        Ok(installed) => installed,
+        Err(message) => {
+            eprintln!("release manifest provenance is invalid: {message}");
+            return ExitCode::FAILURE;
+        }
+    };
+    steps.push(HostRunnerStep::StoreInstalledSubstrateRelease(
+        installed_release,
+    ));
     let plan = HostRunnerStepPlan::from_steps(steps);
+    let template_promotion = match template_path {
+        Some(path) => {
+            match prepare_machine_join_template_release_promotion(
+                Path::new(path.as_str()),
+                &target_version,
+            ) {
+                Ok(promotion) => Some(promotion),
+                Err(message) => {
+                    eprintln!(
+                        "ployz host substrate-update join-template promotion failed: {}",
+                        message.as_str()
+                    );
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+        None => None,
+    };
     let stdout = std::io::stdout();
     let mut recorder = HostRunnerTextRecorder::new(stdout.lock());
     let mut effects = HostRunnerLocalEffects::new(
@@ -156,6 +220,15 @@ pub(crate) fn run_substrate_update_command(update: HostRunnerSubstrateUpdate) ->
             );
             return ExitCode::FAILURE;
         }
+    }
+    if let Some(template_promotion) = template_promotion
+        && let Err(message) = template_promotion.commit()
+    {
+        eprintln!(
+            "ployz host substrate-update join-template promotion failed: {}",
+            message.as_str()
+        );
+        return ExitCode::FAILURE;
     }
     if let Err(message) = restart_installed_update_units(&units, supervisor, &mut runner) {
         eprintln!(
@@ -219,10 +292,14 @@ fn write_substrate_update_evidence(
 
 fn load_substrate_update_manifest(
     source: &HostRunnerSubstrateUpdateSource,
-) -> Result<ReleaseManifest, String> {
+) -> Result<LoadedSubstrateUpdateManifest, String> {
     match source {
         HostRunnerSubstrateUpdateSource::Version(version) => {
-            load_versioned_release_manifest(&release_manifest_url(version))
+            let manifest = load_versioned_release_manifest(&release_manifest_url(version))?;
+            Ok(LoadedSubstrateUpdateManifest {
+                manifest,
+                persisted_contents: None,
+            })
         }
         HostRunnerSubstrateUpdateSource::ManifestFile(path) => {
             let contents = std::fs::read_to_string(path).map_err(|error| {
@@ -231,14 +308,89 @@ fn load_substrate_update_manifest(
                     path.display()
                 )
             })?;
-            ReleaseManifest::parse(&contents)
+            let manifest = ReleaseManifest::parse(&contents).map_err(|error| error.to_string())?;
+            Ok(LoadedSubstrateUpdateManifest {
+                manifest,
+                persisted_contents: Some(contents),
+            })
         }
     }
+}
+
+struct LoadedSubstrateUpdateManifest {
+    manifest: ReleaseManifest,
+    persisted_contents: Option<String>,
+}
+
+impl LoadedSubstrateUpdateManifest {
+    fn installed_release(&self) -> Result<InstalledSubstrateRelease, String> {
+        let release = MachineJoinSubstrateRelease {
+            version: self.manifest.version().clone(),
+        };
+        match &self.persisted_contents {
+            Some(contents) => {
+                InstalledSubstrateRelease::persisted_manifest(release, contents.clone())
+            }
+            None => Ok(InstalledSubstrateRelease::public_exact(release)),
+        }
+    }
+}
+
+fn should_promote_join_template(source: &HostRunnerSubstrateUpdateSource) -> bool {
+    matches!(source, HostRunnerSubstrateUpdateSource::Version(_))
+}
+
+fn inherited_machine_join_template_file() -> Result<Option<String>, String> {
+    match std::env::var(MACHINE_JOIN_TEMPLATE_FILE_ENV) {
+        Ok(value) if value.is_empty() => Ok(None),
+        Ok(value) => Ok(Some(value)),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => Err(format!(
+            "{MACHINE_JOIN_TEMPLATE_FILE_ENV} is not valid UTF-8"
+        )),
+    }
+}
+
+fn resolve_machine_join_template_file(
+    inherited: Option<String>,
+    machine_env_path: &Path,
+) -> Result<ployz_core::install::AbsoluteInstallPath, String> {
+    if let Some(value) = inherited {
+        return ployz_core::install::AbsoluteInstallPath::try_new(value.clone()).map_err(|error| {
+            format!("{MACHINE_JOIN_TEMPLATE_FILE_ENV}={value:?} is invalid: {error}")
+        });
+    }
+    let contents = match std::fs::read_to_string(machine_env_path) {
+        Ok(contents) => Some(contents),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(format!(
+                "failed to read existing machine environment {}: {error}",
+                machine_env_path.display()
+            ));
+        }
+    };
+    if let Some(value) = contents.as_deref().and_then(|contents| {
+        contents.lines().find_map(|line| {
+            line.strip_prefix(MACHINE_JOIN_TEMPLATE_FILE_ENV)?
+                .strip_prefix('=')
+                .map(str::to_owned)
+        })
+    }) {
+        return ployz_core::install::AbsoluteInstallPath::try_new(value.clone()).map_err(|error| {
+            format!(
+                "{} has invalid {MACHINE_JOIN_TEMPLATE_FILE_ENV}={value:?}: {error}",
+                machine_env_path.display()
+            )
+        });
+    }
+    default_machine_join_template_file()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum InstalledUpdateUnit {
     Nats,
+    Machine(String),
     Ployzd(String),
 }
 
@@ -246,6 +398,7 @@ impl InstalledUpdateUnit {
     fn unit_name(&self) -> &str {
         match self {
             Self::Nats => "nats-server.service",
+            Self::Machine(unit) => unit,
             Self::Ployzd(unit) => unit,
         }
     }
@@ -266,8 +419,9 @@ fn installed_update_units(
         let Some(file_name) = file_name.to_str() else {
             continue;
         };
-        let managed = supervisor.is_managed_ployzd_service_file(file_name);
-        if managed {
+        if supervisor.is_machine_ployzd_service_file(file_name) {
+            units.push(InstalledUpdateUnit::Machine(file_name.to_owned()));
+        } else if supervisor.is_managed_ployzd_service_file(file_name) {
             units.push(InstalledUpdateUnit::Ployzd(file_name.to_owned()));
         }
     }
@@ -285,6 +439,7 @@ fn restart_installed_update_units(
         .iter()
         .map(|unit| match unit {
             InstalledUpdateUnit::Nats => supervisor.service_name(&SupervisorUnitTarget::NatsServer),
+            InstalledUpdateUnit::Machine(service) => service.clone(),
             InstalledUpdateUnit::Ployzd(service) => service.clone(),
         })
         .collect::<Vec<_>>();
@@ -298,9 +453,149 @@ fn failure_message(message: impl Into<String>) -> FailureMessage {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::PathBuf;
 
-    use super::{InstalledUpdateUnit, installed_update_units};
+    use super::{
+        InstalledUpdateUnit, LoadedSubstrateUpdateManifest, installed_update_units,
+        resolve_machine_join_template_file, should_promote_join_template,
+    };
+    use crate::cli::HostRunnerSubstrateUpdateSource;
     use crate::execution::SupervisorBackend;
+    use crate::lifecycle::installed_substrate::InstalledSubstrateManifestSource;
+    use crate::release_manifest::ReleaseManifest;
+
+    const SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    fn dev_manifest() -> String {
+        format!(
+            "PLOYZ_RELEASE_PLATFORM=linux-amd64\n\
+             PLOYZ_VERSION=dev-aabbccdd\n\
+             PLOYZD_URL=/var/lib/ployz/dev-releases/dev-aabbccdd/ployzd\n\
+             PLOYZD_SHA256={SHA}\n\
+             PLOYZ_EBPF_TC_URL=/var/lib/ployz/dev-releases/dev-aabbccdd/ployz-ebpf-tc\n\
+             PLOYZ_EBPF_TC_SHA256={SHA}\n\
+             PLOYZ_EBPF_CTL_URL=/var/lib/ployz/dev-releases/dev-aabbccdd/ployz-ebpf-ctl\n\
+             PLOYZ_EBPF_CTL_SHA256={SHA}\n\
+             PLOYZ_RAILPACK_VERSION=v0.31.0\n\
+             PLOYZ_RAILPACK_URL=https://example.test/railpack\n\
+             PLOYZ_RAILPACK_SHA256={SHA}\n"
+        )
+    }
+
+    #[test]
+    fn manifest_file_update_persists_source_without_promoting_join_template() {
+        let contents = dev_manifest();
+        let loaded = LoadedSubstrateUpdateManifest {
+            manifest: ReleaseManifest::parse(&contents).expect("manifest parses"),
+            persisted_contents: Some(contents.clone()),
+        };
+        let source = HostRunnerSubstrateUpdateSource::ManifestFile(PathBuf::from(
+            "/var/lib/ployz/dev-releases/dev-aabbccdd/release.env",
+        ));
+
+        assert!(!should_promote_join_template(&source));
+        assert_eq!(
+            loaded
+                .installed_release()
+                .expect("source persists")
+                .manifest_source,
+            InstalledSubstrateManifestSource::PersistedManifest { contents }
+        );
+    }
+
+    #[test]
+    fn join_template_path_prefers_inherited_configuration() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let machine_env = root.path().join("ployzd-machine.env");
+        fs::write(
+            &machine_env,
+            "PLOYZ_MACHINE_JOIN_TEMPLATE_FILE=/persisted/template.json\n",
+        )
+        .expect("machine env writes");
+
+        let path = resolve_machine_join_template_file(
+            Some("/inherited/template.json".to_owned()),
+            &machine_env,
+        )
+        .expect("inherited path resolves");
+
+        assert_eq!(path.as_str(), "/inherited/template.json");
+    }
+
+    #[test]
+    fn join_template_path_uses_exact_persisted_assignment() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let machine_env = root.path().join("ployzd-machine.env");
+        fs::write(
+            &machine_env,
+            "PLOYZ_MACHINE_ID=machine_1\nPLOYZ_MACHINE_JOIN_TEMPLATE_FILE=/persisted/template.json\n",
+        )
+        .expect("machine env writes");
+
+        let path = resolve_machine_join_template_file(None, &machine_env)
+            .expect("persisted path resolves");
+
+        assert_eq!(path.as_str(), "/persisted/template.json");
+    }
+
+    #[test]
+    fn join_template_path_defaults_when_file_or_exact_key_is_missing() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let missing = root.path().join("missing.env");
+        assert_eq!(
+            resolve_machine_join_template_file(None, &missing)
+                .expect("missing file defaults")
+                .as_str(),
+            "/etc/ployz/machine-join-template.json"
+        );
+
+        let machine_env = root.path().join("ployzd-machine.env");
+        fs::write(
+            &machine_env,
+            "export PLOYZ_MACHINE_JOIN_TEMPLATE_FILE=/compatibility/path.json\n",
+        )
+        .expect("machine env writes");
+        assert_eq!(
+            resolve_machine_join_template_file(None, &machine_env)
+                .expect("noncanonical key is absent")
+                .as_str(),
+            "/etc/ployz/machine-join-template.json"
+        );
+    }
+
+    #[test]
+    fn join_template_path_rejects_invalid_inherited_or_persisted_values() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let machine_env = root.path().join("ployzd-machine.env");
+        assert!(
+            resolve_machine_join_template_file(Some("relative.json".to_owned()), &machine_env)
+                .expect_err("relative inherited path fails")
+                .contains("PLOYZ_MACHINE_JOIN_TEMPLATE_FILE")
+        );
+
+        fs::write(
+            &machine_env,
+            "PLOYZ_MACHINE_JOIN_TEMPLATE_FILE=relative.json\n",
+        )
+        .expect("machine env writes");
+        assert!(
+            resolve_machine_join_template_file(None, &machine_env)
+                .expect_err("relative persisted path fails")
+                .contains("ployzd-machine.env")
+        );
+    }
+
+    #[test]
+    fn join_template_path_rejects_unreadable_existing_environment() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let machine_env = root.path().join("ployzd-machine.env");
+        fs::create_dir(&machine_env).expect("directory stands in for unreadable file");
+
+        let error = resolve_machine_join_template_file(None, &machine_env)
+            .expect_err("existing unreadable environment fails");
+
+        assert!(error.contains("failed to read existing machine environment"));
+    }
 
     #[test]
     fn installed_update_units_discovers_nats_and_ployzd_units() {
@@ -316,7 +611,7 @@ mod tests {
             vec![
                 InstalledUpdateUnit::Nats,
                 InstalledUpdateUnit::Ployzd("ployzd-gateway.service".to_owned()),
-                InstalledUpdateUnit::Ployzd("ployzd-machine-machine_1.service".to_owned()),
+                InstalledUpdateUnit::Machine("ployzd-machine-machine_1.service".to_owned()),
             ]
         );
     }
@@ -334,6 +629,32 @@ mod tests {
                 InstalledUpdateUnit::Nats,
                 InstalledUpdateUnit::Ployzd("ployzd-dns".to_owned()),
             ]
+        );
+    }
+
+    #[test]
+    fn installed_update_units_classify_machine_roles() {
+        let systemd = tempfile::tempdir().expect("tempdir");
+        fs::write(systemd.path().join("ployzd-machine-machine_1.service"), "")
+            .expect("write machine unit");
+        fs::write(systemd.path().join("ployzd-gateway.service"), "").expect("write gateway unit");
+        assert_eq!(
+            installed_update_units(systemd.path(), SupervisorBackend::Systemd).expect("units load"),
+            vec![
+                InstalledUpdateUnit::Ployzd("ployzd-gateway.service".to_owned()),
+                InstalledUpdateUnit::Machine("ployzd-machine-machine_1.service".to_owned()),
+            ]
+        );
+
+        let openrc = tempfile::tempdir().expect("tempdir");
+        fs::write(openrc.path().join("ployzd-machine-machine_1"), "")
+            .expect("write machine service");
+        assert_eq!(
+            installed_update_units(openrc.path(), SupervisorBackend::OpenRc)
+                .expect("services load"),
+            vec![InstalledUpdateUnit::Machine(
+                "ployzd-machine-machine_1".to_owned()
+            )]
         );
     }
 }

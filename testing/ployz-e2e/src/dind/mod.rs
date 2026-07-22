@@ -48,6 +48,8 @@ pub const KEEP_ENV: &str = "PLOYZ_DIND_KEEP";
 pub const MACHINE_IMAGE_ENV: &str = "PLOYZ_DIND_MACHINE_IMAGE";
 /// Override env for the host directory holding linux ployz artifacts.
 pub const ARTIFACT_DIR_ENV: &str = "PLOYZ_DIND_ARTIFACT_DIR";
+/// Target platform selected by the DinD wrapper.
+pub const PLATFORM_ENV: &str = "PLOYZ_DIND_PLATFORM";
 
 /// Image tag produced by `scripts/build-dind-machine-image.sh`.
 pub const DEFAULT_MACHINE_IMAGE: &str = "ployz-dind-machine:local";
@@ -55,6 +57,31 @@ pub const DEFAULT_MACHINE_IMAGE: &str = "ployz-dind-machine:local";
 pub const DEFAULT_ARTIFACT_DIR: &str = "/tmp/ployz-dind-machine-target/release";
 /// Read-only mount point of the host artifact dir inside every machine.
 pub const ARTIFACTS_MOUNT_PATH: &str = "/opt/ployz/artifacts";
+
+/// Linux platform shared by the DinD image, artifacts, and release manifest.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DindPlatform {
+    LinuxAmd64,
+    LinuxArm64,
+}
+
+impl DindPlatform {
+    #[must_use]
+    pub const fn release_slug(self) -> &'static str {
+        match self {
+            Self::LinuxAmd64 => "linux-amd64",
+            Self::LinuxArm64 => "linux-arm64",
+        }
+    }
+
+    fn from_docker_slug(value: &str) -> Self {
+        match value {
+            "linux/amd64" => Self::LinuxAmd64,
+            "linux/arm64" => Self::LinuxArm64,
+            unsupported => panic!("unsupported normalized DinD platform {unsupported}"),
+        }
+    }
+}
 
 /// True when the gated DinD e2e suite is enabled (`PLOYZ_DIND_E2E=1`).
 #[must_use]
@@ -80,6 +107,22 @@ pub fn artifact_dir() -> PathBuf {
     env::var(ARTIFACT_DIR_ENV)
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(DEFAULT_ARTIFACT_DIR))
+}
+
+/// Platform normalized by `scripts/dind-e2e.sh` for the image and artifacts.
+#[must_use]
+pub fn platform() -> DindPlatform {
+    platform_from_env(env::var(PLATFORM_ENV))
+}
+
+fn platform_from_env(value: Result<String, env::VarError>) -> DindPlatform {
+    match value {
+        Ok(value) => DindPlatform::from_docker_slug(&value),
+        Err(env::VarError::NotPresent) => {
+            panic!("{PLATFORM_ENV} is required; run scripts/dind-e2e.sh or set it explicitly")
+        }
+        Err(env::VarError::NotUnicode(_)) => panic!("{PLATFORM_ENV} must be valid UTF-8"),
+    }
 }
 
 /// Connects the Docker client from the environment (`DOCKER_HOST` when set,
@@ -143,5 +186,42 @@ pub(crate) fn docker_api_error(
     move |source| DindError::DockerApi {
         context,
         message: source.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::env::VarError;
+
+    use super::{DindPlatform, platform_from_env};
+
+    #[test]
+    fn dind_platforms_have_release_manifest_slugs() {
+        assert_eq!(
+            DindPlatform::from_docker_slug("linux/amd64").release_slug(),
+            "linux-amd64"
+        );
+        assert_eq!(
+            DindPlatform::from_docker_slug("linux/arm64").release_slug(),
+            "linux-arm64"
+        );
+        assert_eq!(
+            platform_from_env(Ok("linux/amd64".to_owned())),
+            DindPlatform::LinuxAmd64
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "unsupported normalized DinD platform linux/riscv64")]
+    fn unsupported_dind_platform_fails_loudly() {
+        let _ = DindPlatform::from_docker_slug("linux/riscv64");
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "PLOYZ_DIND_PLATFORM is required; run scripts/dind-e2e.sh or set it explicitly"
+    )]
+    fn missing_dind_platform_points_to_wrapper() {
+        let _ = platform_from_env(Err(VarError::NotPresent));
     }
 }
