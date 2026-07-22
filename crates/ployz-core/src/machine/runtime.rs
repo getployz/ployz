@@ -474,7 +474,7 @@ impl From<MachineFactsSnapshot> for MachineFactsSnapshotWire {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum ManagedContainerKind {
@@ -588,7 +588,7 @@ pub enum ContainerHealth {
 /// This is persisted in Docker labels and reported in machine facts. Changing
 /// this shape intentionally breaks existing clusters unless paired with
 /// container cleanup.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct ManagedContainerIdentity {

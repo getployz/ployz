@@ -62,7 +62,10 @@ impl<'a> DeployFailureView<'a> {
                 push_unique(&mut machines, seed);
             }
             DeployOperationFailure::ArtifactUnavailable {
-                reason: ArtifactUnavailableReason::ImagePullFailed { machine_id, .. },
+                reason:
+                    ArtifactUnavailableReason::ImagePullFailed { machine_id, .. }
+                    | ArtifactUnavailableReason::ImagePullStalled { machine_id, .. }
+                    | ArtifactUnavailableReason::ImagePullCancelled { machine_id },
                 ..
             } => push_unique(&mut machines, machine_id),
             DeployOperationFailure::HealthCheckFailed { health_check, .. } => match health_check {
@@ -525,7 +528,9 @@ pub(super) fn failure_cause(target: &DeployRequest, failure: &DeployOperationFai
             match reason {
                 ArtifactUnavailableReason::BundleMissing
                 | ArtifactUnavailableReason::BundleUnreadable { .. }
-                | ArtifactUnavailableReason::ImagePullFailed { .. } => format!(
+                | ArtifactUnavailableReason::ImagePullFailed { .. }
+                | ArtifactUnavailableReason::ImagePullStalled { .. }
+                | ArtifactUnavailableReason::ImagePullCancelled { .. } => format!(
                     "image {image} could not be resolved: {}",
                     artifact_unavailable_reason(reason)
                 ),
@@ -777,5 +782,16 @@ pub(super) fn artifact_unavailable_reason(reason: &ArtifactUnavailableReason) ->
             machine_id.as_str(),
             message.as_str()
         ),
+        ArtifactUnavailableReason::ImagePullStalled {
+            machine_id,
+            timeout_millis,
+        } => format!(
+            "image pull stalled on {} after {}ms without verified progress",
+            machine_id.as_str(),
+            timeout_millis
+        ),
+        ArtifactUnavailableReason::ImagePullCancelled { machine_id } => {
+            format!("image pull was cancelled on {}", machine_id.as_str())
+        }
     }
 }

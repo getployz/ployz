@@ -1,6 +1,6 @@
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployPhasePlan, DeployPlanStepRef, DeployServiceWork,
-    ExistingReplicaCreationGate, ImageSource,
+    ExistingReplicaCreationGate,
 };
 use ployz_core::ids::{ContainerId, MachineId, ServiceId, StepId};
 use ployz_core::machine::runtime::{ManagedContainerIdentity, ManagedContainerKind};
@@ -429,14 +429,17 @@ where
     N: MachineContainerRuntime,
 {
     if phase.services.iter().any(|planned| {
-        command.services().iter().any(|service| {
-            service.service.service_id == planned.service_id
-                && matches!(service.service.image_source, ImageSource::PushedToSeed(_))
+        planned.work.steps().any(|step| {
+            matches!(
+                step,
+                ployz_core::deploy::DeployPlanStepRef::RunContainer { .. }
+            )
         })
     }) {
         ensure_images(
             command,
             &phase.services,
+            dataplane_members,
             ports.recorder,
             ports.machine_runtime,
         )

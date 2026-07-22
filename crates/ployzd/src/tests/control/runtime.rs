@@ -782,17 +782,10 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
         vec![(image("ghcr.io/acme/api:rev-2"), Some(credential.clone()))]
     );
     let pulls = runner.pulls();
-    let [
-        crate::roles::machine::protocol::MachineImagePull::Registry {
-            reference,
-            credential: pull_credential,
-        },
-    ] = pulls.as_slice()
-    else {
+    let [reference] = pulls.as_slice() else {
         panic!("one registry pull was recorded")
     };
     assert_eq!(reference, &entry.image);
-    assert_eq!(pull_credential.as_ref(), Some(&credential));
     assert!(replay.events.iter().any(|event| {
         matches!(
             &event.event,
@@ -1017,6 +1010,104 @@ async fn registry_tag_preview_resolves_services_concurrently() {
 
     assert_eq!(runner.resolutions().len(), 2);
 
+    machine_runtime
+        .shutdown()
+        .await
+        .expect("machine runtime shuts down");
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+}
+
+#[tokio::test]
+async fn registry_tag_preview_allows_a_slow_registry_response() {
+    let machine = machine_id("machine_a");
+    let nats = TestNats::start_with_machines(std::slice::from_ref(&machine)).await;
+    let config = nats
+        .control_config()
+        .with_deploy_machines(vec![machine.clone()]);
+    let machine_roster = machine_roster(&config).await;
+    let runtime = nats.start_control(&config).await;
+    machine_roster
+        .replace_active_machine(&active_machine(machine.as_str()))
+        .await
+        .expect("active machine stores");
+    let runner = ObservingContainerRunner::new(machine.clone());
+    runner.delay_registry_resolution(Duration::from_millis(2_500));
+    let machine_runtime = start_machine_role_runtime(
+        nats.machine_client(&machine).await,
+        machine.clone(),
+        runner.clone(),
+        ReadyWireGuardEbpf::for_machine(&machine),
+        runner,
+    )
+    .await
+    .expect("machine runtime starts");
+    wait_for_dataplane_projection(&nats, &machine).await;
+
+    nats.api()
+        .deploy_preview(&DeployPreviewRequest {
+            target: concrete_registry_preview_target(deploy_target("svc_api")),
+            registry_credentials: BTreeMap::new(),
+        })
+        .await
+        .expect("registry response within the preview deadline succeeds");
+
+    machine_runtime
+        .shutdown()
+        .await
+        .expect("machine runtime shuts down");
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+}
+
+#[tokio::test]
+async fn registry_tag_preview_times_out_as_unavailable_before_the_transport_deadline() {
+    let machine = machine_id("machine_a");
+    let nats = TestNats::start_with_machines(std::slice::from_ref(&machine)).await;
+    let config = nats
+        .control_config()
+        .with_deploy_machines(vec![machine.clone()]);
+    let machine_roster = machine_roster(&config).await;
+    let runtime = nats.start_control(&config).await;
+    machine_roster
+        .replace_active_machine(&active_machine(machine.as_str()))
+        .await
+        .expect("active machine stores");
+    let runner = ObservingContainerRunner::new(machine.clone());
+    runner.delay_registry_resolution(Duration::from_millis(3_100));
+    let machine_runtime = start_machine_role_runtime(
+        nats.machine_client(&machine).await,
+        machine.clone(),
+        runner.clone(),
+        ReadyWireGuardEbpf::for_machine(&machine),
+        runner,
+    )
+    .await
+    .expect("machine runtime starts");
+    wait_for_dataplane_projection(&nats, &machine).await;
+
+    let started = Instant::now();
+    let error = nats
+        .api()
+        .deploy_preview(&DeployPreviewRequest {
+            target: concrete_registry_preview_target(deploy_target("svc_api")),
+            registry_credentials: BTreeMap::new(),
+        })
+        .await
+        .expect_err("registry response beyond the preview deadline is unavailable");
+
+    assert!(matches!(
+        error,
+        OperationApiClientError::Domain {
+            error: ployz_sdk_types::DeployPreviewError::Unavailable { message },
+            ..
+        } if message == "deploy preview registry image resolution timed out"
+    ));
+    assert!(started.elapsed() < Duration::from_secs(5));
     machine_runtime
         .shutdown()
         .await

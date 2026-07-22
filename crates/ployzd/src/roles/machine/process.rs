@@ -19,7 +19,9 @@ use crate::roles::machine::execution::registry_v2::RunningRegistryV2;
 use crate::roles::machine::facts::{
     MachineEndpointCache, MachineFactsPublishError, publish_machine_facts,
 };
+use crate::roles::machine::image_ensure::ImageEnsureRuntime;
 use crate::roles::machine::images::AvailableImageService;
+use crate::roles::machine::images::MachineImageEnsureService;
 use crate::roles::machine::projection::{
     MachineProjectionState, RunningProjectionTask, start_projection_task,
 };
@@ -57,6 +59,7 @@ const MACHINE_SHUTDOWN_TIMEOUT: Duration =
     BUILD_CACHE_PRUNE_MAX_EXECUTION_TIMEOUT.saturating_add(MACHINE_SHUTDOWN_TAIL_TIMEOUT);
 const INTENT_MIRROR_RESUBSCRIBE_DELAY: Duration = Duration::from_secs(5);
 const BUILD_WORKSPACE_ROOT: &str = "/var/lib/ployz/builds";
+const BUILD_STATUS_ROOT: &str = "/var/lib/ployz/build-status";
 
 struct MachineBuildProcessInput {
     images: AvailableImageService,
@@ -73,6 +76,7 @@ pub struct RunningMachineProcess {
     image_registry: Option<RunningRegistryV2>,
     build_runtime: Option<MachineBuildRuntime>,
     storage_prepare: StoragePrepareRuntime,
+    image_ensure_runtime: Option<ImageEnsureRuntime>,
 }
 
 impl RunningMachineProcess {
@@ -87,6 +91,7 @@ impl RunningMachineProcess {
             image_registry,
             build_runtime,
             storage_prepare,
+            image_ensure_runtime,
         } = self;
         pending_join_mirror.request_shutdown();
         projection.request_shutdown();
@@ -110,6 +115,11 @@ impl RunningMachineProcess {
                     image_registry.shutdown().await;
                 }
             };
+            let image_ensure_shutdown = async {
+                if let Some(runtime) = image_ensure_runtime {
+                    runtime.shutdown().await;
+                }
+            };
             let background_shutdown = async {
                 tokio::join!(
                     pending_join_mirror.wait(),
@@ -120,11 +130,11 @@ impl RunningMachineProcess {
                     observer.wait(),
                 );
             };
-            let (_, _, _, service_result) = tokio::join!(
-                async {
-                    tokio::join!(build_shutdown, storage_shutdown);
-                },
+            let (_, _, _, _, _, service_result) = tokio::join!(
+                build_shutdown,
+                storage_shutdown,
                 registry_shutdown,
+                image_ensure_shutdown,
                 background_shutdown,
                 machine_service.shutdown(),
             );
@@ -170,6 +180,7 @@ pub async fn start_machine_process(
         config.ployz_native_mesh.wg_ifname.clone(),
         mtu_policy,
     );
+    let image_ensure_runtime = ImageEnsureRuntime::new(runner.clone());
     let endpoint_subnet = MachineEndpointSubnet::try_new(&config.ployz_native_mesh.endpoint_subnet)
         .map_err(|error| MachineProcessError::InvalidImageRegistryAddress {
             message: error.to_string(),
@@ -184,7 +195,6 @@ pub async fn start_machine_process(
             (
                 Some(AvailableImageService::new(
                     image_content,
-                    runner.clone(),
                     endpoint_subnet.host_address(),
                 )),
                 Some(registry),
@@ -228,9 +238,11 @@ pub async fn start_machine_process(
         MACHINE_OBSERVATION_INTERVAL,
         config.ployz_native_mesh.wg_ifname.clone(),
         build_process,
+        Some(image_ensure_runtime.clone()),
     )
     .await?;
     process.image_registry = image_registry;
+    process.image_ensure_runtime = Some(image_ensure_runtime);
     Ok(process)
 }
 
@@ -247,6 +259,7 @@ async fn start_machine_process_with_ports<R, P, L>(
     observation_interval: Duration,
     wg_ifname: String,
     build_process: Option<MachineBuildProcessInput>,
+    image_ensure_runtime: Option<ImageEnsureRuntime>,
 ) -> Result<RunningMachineProcess, MachineProcessError>
 where
     R: Clone
@@ -268,13 +281,21 @@ where
     let image_state = build_process
         .as_ref()
         .map(|build_process| build_process.images.clone());
+    let image_ensure_state =
+        image_ensure_runtime
+            .clone()
+            .map(|runtime| MachineImageEnsureService {
+                runtime,
+                available: image_state.clone(),
+            });
     let build_state = match build_process {
         Some(MachineBuildProcessInput { images, executor }) => {
-            let runtime = MachineBuildRuntime::new(
+            let runtime = MachineBuildRuntime::new_with_status_path(
                 machine_id.clone(),
                 client.clone(),
                 executor,
                 Some(images),
+                PathBuf::from(BUILD_STATUS_ROOT),
             )
             .map_err(|message| MachineProcessError::InitializeBuildRuntime { message })?;
             let recovery = runtime.recover_orphans().await;
@@ -298,6 +319,7 @@ where
         MachineRoleProjectionServices {
             build_state: build_state.clone(),
             image_state,
+            image_ensure_state,
             projection_state: projection_state.clone(),
             storage_prepare: storage_prepare.clone(),
         },
@@ -340,6 +362,7 @@ where
         image_registry: None,
         build_runtime,
         storage_prepare,
+        image_ensure_runtime: None,
     })
 }
 
@@ -684,6 +707,7 @@ mod tests {
             NatsClientUrl::try_new("tls://127.0.0.1:4222").expect("seed url"),
             Duration::from_secs(60),
             "ployz-wg0".to_owned(),
+            None,
             None,
         )
         .await

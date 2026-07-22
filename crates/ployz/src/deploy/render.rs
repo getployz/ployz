@@ -192,9 +192,9 @@ impl DeployTree {
             OperationEvent::DeployImageAvailabilityVerified {
                 operation_id,
                 service_id,
-                seed,
+                machine_id,
                 platform,
-                manifest_digest: _,
+                image: _,
             } => {
                 let image = self.requested_image(service_id).map(str::to_owned);
                 if let Some(deploy) = &mut self.deploy {
@@ -207,7 +207,7 @@ impl DeployTree {
                         "deploy {}: images — {} available from {}",
                         operation_id.as_str(),
                         image,
-                        seed.as_str()
+                        machine_id.as_str()
                     ));
                 }
             }

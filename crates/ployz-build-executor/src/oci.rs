@@ -17,21 +17,37 @@ const OCI_IMAGE_LAYER_ZSTD_MEDIA_TYPE: &str = "application/vnd.oci.image.layer.v
 const OCI_READ_CHUNK_BYTES: usize = 64 * 1024;
 
 pub(super) struct OciValidationControl {
-    deadline: Instant,
+    limit: OciValidationLimit,
     cancelled: watch::Receiver<bool>,
+}
+
+enum OciValidationLimit {
+    Absolute(Instant),
+    CancellationOnly,
 }
 
 impl OciValidationControl {
     #[must_use]
     pub(super) fn new(deadline: Instant, cancelled: watch::Receiver<bool>) -> Self {
         Self {
-            deadline,
+            limit: OciValidationLimit::Absolute(deadline),
+            cancelled,
+        }
+    }
+
+    #[must_use]
+    pub(super) fn cancellation_only(cancelled: watch::Receiver<bool>) -> Self {
+        Self {
+            limit: OciValidationLimit::CancellationOnly,
             cancelled,
         }
     }
 
     fn check(&self) -> Result<(), OciLayoutError> {
-        if Instant::now() >= self.deadline {
+        if matches!(
+            self.limit,
+            OciValidationLimit::Absolute(deadline) if Instant::now() >= deadline
+        ) {
             Err(OciLayoutError::TimedOut)
         } else if *self.cancelled.borrow() {
             Err(OciLayoutError::Cancelled)

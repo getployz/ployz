@@ -4,7 +4,6 @@ use super::network::{
     read_endpoint_network_status, require_endpoint_network,
 };
 use crate::roles::machine::execution::host_dataplane::{WireGuardMtuPolicy, resolve_wireguard_mtu};
-use crate::roles::machine::protocol::MachineImagePull;
 use crate::roles::machine::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
     MachineContainerCreateError, MachineContainerListError, MachineContainerRemoveError,
@@ -18,7 +17,6 @@ use crate::roles::machine::volume::{
     destroy_provisioned_dataset, docker_volume_name, ensure_provisioned_dataset,
 };
 use bollard::Docker;
-use bollard::auth::DockerCredentials;
 use bollard::errors::Error as BollardError;
 use bollard::models::{
     ContainerCreateBody, ContainerInspectResponse, ContainerSummary,
@@ -27,9 +25,9 @@ use bollard::models::{
     NetworkingConfig, RestartPolicy, RestartPolicyNameEnum,
 };
 use bollard::query_parameters::{
-    CreateImageOptionsBuilder, InspectContainerOptions, ListContainersOptionsBuilder,
-    LogsOptionsBuilder, RemoveContainerOptionsBuilder, RemoveImageOptionsBuilder,
-    RemoveVolumeOptionsBuilder, RestartContainerOptions, StopContainerOptionsBuilder,
+    InspectContainerOptions, ListContainersOptionsBuilder, LogsOptionsBuilder,
+    RemoveContainerOptionsBuilder, RemoveImageOptionsBuilder, RemoveVolumeOptionsBuilder,
+    RestartContainerOptions, StopContainerOptionsBuilder,
 };
 use futures_util::StreamExt;
 use ployz_core::deploy::{
@@ -49,7 +47,6 @@ use ployz_core::network::{
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::IpAddr;
 use std::sync::Arc;
-use std::time::Duration;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
@@ -60,11 +57,6 @@ use super::provisioned_volume::local_bind_volume_request;
 const DEFAULT_LOG_TAIL_LINES: u16 = 200;
 const MAX_LOG_TAIL_LINES: u16 = 1_000;
 const MAX_LOG_TAIL_BYTES: usize = 64 * 1024;
-const REGISTRY_RESOLVE_RETRY_DELAYS: [Duration; 2] =
-    [Duration::from_millis(250), Duration::from_secs(1)];
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DockerImagePullError(pub(crate) String);
 
 #[derive(Debug, Clone)]
 pub struct DockerManagedContainerRunner {
@@ -121,6 +113,20 @@ impl DockerManagedContainerRunner {
             endpoint_wg_ifname: endpoint_wg_ifname.into(),
             endpoint_mtu_policy,
         })
+    }
+
+    #[cfg(test)]
+    pub(super) fn connected_for_test(
+        docker: Docker,
+        endpoint_network_subnet: impl Into<String>,
+    ) -> Self {
+        Self {
+            docker: DockerHandle::Connected(docker),
+            endpoint_network_subnet: endpoint_network_subnet.into(),
+            endpoint_bridge_ifname: "br-test".to_owned(),
+            endpoint_wg_ifname: "wg-test".to_owned(),
+            endpoint_mtu_policy: WireGuardMtuPolicy::Fixed(1_420),
+        }
     }
 
     #[must_use]
@@ -334,44 +340,7 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
         reference: &ImageReference,
         credential: Option<&RegistryCredential>,
     ) -> Result<OciDigest, MachineRegistryImageResolveError> {
-        let docker =
-            self.docker()
-                .await
-                .map_err(|error| MachineRegistryImageResolveError::ImagePull {
-                    message: error.to_string(),
-                })?;
-        let failure = |error: BollardError| MachineRegistryImageResolveError::ImagePull {
-            message: redact_registry_credential(
-                format!("resolve Docker image {}: {error}", reference.as_str()),
-                credential,
-            ),
-        };
-        let mut retry_delays = REGISTRY_RESOLVE_RETRY_DELAYS.into_iter();
-        let inspected = loop {
-            match docker
-                .inspect_registry_image(reference.as_str(), docker_credentials(credential))
-                .await
-            {
-                Ok(inspected) => break inspected,
-                Err(error) => {
-                    if retryable_registry_resolution(&error)
-                        && let Some(delay) = retry_delays.next()
-                    {
-                        tokio::time::sleep(delay).await;
-                        continue;
-                    }
-                    return Err(failure(error));
-                }
-            }
-        };
-        let Some(digest) = inspected.descriptor.digest else {
-            return Err(MachineRegistryImageResolveError::ImagePull {
-                message: format!("registry returned no digest for {}", reference.as_str()),
-            });
-        };
-        OciDigest::try_new(digest).map_err(|error| MachineRegistryImageResolveError::ImagePull {
-            message: error.to_string(),
-        })
+        self.resolve_registry_reference(reference, credential).await
     }
 
     async fn create_managed_container(
@@ -393,14 +362,6 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
             endpoint_mtu,
         )
         .await?;
-        let pull_reference = command.pull.reference();
-        let credential = match &command.pull {
-            MachineImagePull::Registry { credential, .. } => credential.as_ref(),
-            MachineImagePull::MeshSeed { .. } => None,
-        };
-        self.pull_image(&pull_reference, credential).await.map_err(
-            |DockerImagePullError(message)| MachineContainerCreateError::ImagePull { message },
-        )?;
         // Every service container joins the already-converged endpoint
         // network; route state alone decides whether anything dials it.
         let response = docker
@@ -680,19 +641,6 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
     }
 }
 
-fn retryable_registry_resolution(error: &BollardError) -> bool {
-    if let BollardError::DockerResponseServerError { status_code, .. } = error {
-        return *status_code == 429 || *status_code >= 500;
-    }
-    matches!(
-        error,
-        BollardError::RequestTimeoutError
-            | BollardError::HyperResponseError { .. }
-            | BollardError::HyperLegacyError { .. }
-            | BollardError::IOError { .. }
-    )
-}
-
 impl MachineLogReader for DockerManagedContainerRunner {
     async fn tail_container_logs(
         &self,
@@ -749,53 +697,6 @@ impl MachineLogReader for DockerManagedContainerRunner {
             text: String::from_utf8_lossy(&output).into_owned(),
             truncated,
         })
-    }
-}
-
-impl DockerManagedContainerRunner {
-    pub(crate) async fn pull_image(
-        &self,
-        image: &str,
-        credential: Option<&RegistryCredential>,
-    ) -> Result<(), DockerImagePullError> {
-        let docker = self
-            .docker()
-            .await
-            .map_err(|error| DockerImagePullError(error.to_string()))?;
-        let options = CreateImageOptionsBuilder::new().from_image(image).build();
-        let mut stream = docker.create_image(Some(options), None, docker_credentials(credential));
-
-        while let Some(result) = stream.next().await {
-            result.map_err(|error| {
-                DockerImagePullError(redact_registry_credential(
-                    format!("pull Docker image {image}: {error}"),
-                    credential,
-                ))
-            })?;
-        }
-
-        Ok(())
-    }
-}
-
-fn docker_credentials(credential: Option<&RegistryCredential>) -> Option<DockerCredentials> {
-    credential.map(|credential| match credential {
-        RegistryCredential::Basic { username, password } => DockerCredentials {
-            username: Some(username.as_str().to_owned()),
-            password: Some(password.secret().to_owned()),
-            ..DockerCredentials::default()
-        },
-        RegistryCredential::IdentityToken { token } => DockerCredentials {
-            identitytoken: Some(token.secret().to_owned()),
-            ..DockerCredentials::default()
-        },
-    })
-}
-
-fn redact_registry_credential(message: String, credential: Option<&RegistryCredential>) -> String {
-    match credential {
-        Some(credential) => credential.redact_secret_in(message),
-        None => message,
     }
 }
 
@@ -964,7 +865,7 @@ fn create_body(
     command: CreateManagedContainer,
     endpoint_network_subnet: &str,
 ) -> ContainerCreateBody {
-    let image = command.pull.reference();
+    let image = command.image.as_str().to_owned();
     let runtime = command.runtime;
     let env = if runtime.environment.is_empty() {
         None
@@ -1237,12 +1138,14 @@ fn btree_from_hashmap(map: HashMap<String, String>) -> BTreeMap<String, String> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::roles::machine::protocol::MachineImagePull;
+    use crate::roles::machine::execution::docker::test_support::{
+        TEST_ENDPOINT_SUBNET, image, runner_with_responses,
+    };
     use ployz_core::deploy::{
         ContainerCommand, ContainerEntrypoint, ContainerHealthcheck, ContainerHealthcheckTest,
         ContainerMountPath, ContainerResourceLimits, ContainerRestartPolicy, ContainerRuntimeSpec,
         DatasetName, EnvName, EnvValue, HealthcheckDurationNanos, HealthcheckRetries,
-        HealthcheckShellCommand, ImageReference, LinuxCapability, MemoryBytes, NanoCpus, PidsLimit,
+        HealthcheckShellCommand, LinuxCapability, MemoryBytes, NanoCpus, PidsLimit,
         ServiceEnvironment, ServiceVolumeMount, StopGracePeriod, VolumeMaxSizeBytes, VolumeName,
         ZfsPoolName,
     };
@@ -1250,11 +1153,9 @@ mod tests {
         MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId, StepId,
     };
     use ployz_core::machine::runtime::{ManagedContainerIdentity, ManagedContainerKind};
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::Ordering;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::UnixListener;
-
-    const TEST_ENDPOINT_SUBNET: &str = "10.42.7.0/24";
 
     #[test]
     fn image_reclamation_never_forces_removal_of_an_in_use_image() {
@@ -1349,144 +1250,8 @@ mod tests {
         )
         .expect("connect Docker API stub");
         (
-            DockerManagedContainerRunner {
-                docker: DockerHandle::Connected(docker),
-                endpoint_network_subnet: TEST_ENDPOINT_SUBNET.to_owned(),
-                endpoint_bridge_ifname: "br-test".to_owned(),
-                endpoint_wg_ifname: "wg-test".to_owned(),
-                endpoint_mtu_policy: WireGuardMtuPolicy::Fixed(1_420),
-            },
+            DockerManagedContainerRunner::connected_for_test(docker, TEST_ENDPOINT_SUBNET),
             request_rx,
-            socket_dir,
-        )
-    }
-
-    #[tokio::test]
-    async fn registry_resolution_retries_transient_server_failures() {
-        let digest = format!("sha256:{}", "a".repeat(64));
-        let success = format!(r#"{{"Descriptor":{{"digest":"{digest}"}},"Platforms":[]}}"#);
-        let (runner, attempts, _socket_dir) = registry_runner_with_responses(vec![
-            (429, r#"{"message":"rate limited"}"#.to_owned()),
-            (500, r#"{"message":"registry unavailable"}"#.to_owned()),
-            (200, success),
-        ])
-        .await;
-
-        let resolved = runner
-            .resolve_registry_image(&image("nginx:1.27-alpine"), None)
-            .await
-            .expect("third registry inspection succeeds");
-
-        assert_eq!(resolved, OciDigest::try_new(digest).expect("valid digest"));
-        assert_eq!(attempts.load(Ordering::SeqCst), 3);
-    }
-
-    #[tokio::test]
-    async fn registry_resolution_does_not_retry_terminal_client_failures() {
-        let digest = format!("sha256:{}", "b".repeat(64));
-        let (runner, attempts, _socket_dir) = registry_runner_with_responses(vec![
-            (404, r#"{"message":"manifest unknown"}"#.to_owned()),
-            (
-                200,
-                format!(r#"{{"Descriptor":{{"digest":"{digest}"}},"Platforms":[]}}"#),
-            ),
-        ])
-        .await;
-
-        let error = runner
-            .resolve_registry_image(&image("nginx:missing"), None)
-            .await
-            .expect_err("missing manifest is terminal");
-
-        let MachineRegistryImageResolveError::ImagePull { message } = error;
-        assert!(message.contains("status code 404"), "{message}");
-        assert_eq!(attempts.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn registry_resolution_stops_after_three_transient_server_failures() {
-        let digest = format!("sha256:{}", "c".repeat(64));
-        let (runner, attempts, _socket_dir) = registry_runner_with_responses(vec![
-            (500, r#"{"message":"first failure"}"#.to_owned()),
-            (500, r#"{"message":"second failure"}"#.to_owned()),
-            (500, r#"{"message":"final failure"}"#.to_owned()),
-            (
-                200,
-                format!(r#"{{"Descriptor":{{"digest":"{digest}"}},"Platforms":[]}}"#),
-            ),
-        ])
-        .await;
-
-        let error = runner
-            .resolve_registry_image(&image("nginx:1.27-alpine"), None)
-            .await
-            .expect_err("three transient failures exhaust retries");
-
-        let MachineRegistryImageResolveError::ImagePull { message } = error;
-        assert!(message.contains("final failure"), "{message}");
-        assert_eq!(attempts.load(Ordering::SeqCst), 3);
-    }
-
-    async fn registry_runner_with_responses(
-        responses: Vec<(u16, String)>,
-    ) -> (
-        DockerManagedContainerRunner,
-        Arc<AtomicUsize>,
-        tempfile::TempDir,
-    ) {
-        let socket_dir = tempfile::TempDir::new().expect("Docker API stub directory");
-        let socket_path = socket_dir.path().join("docker.sock");
-        let listener = UnixListener::bind(&socket_path).expect("bind Docker API stub");
-        let attempts = Arc::new(AtomicUsize::new(0));
-        let server_attempts = attempts.clone();
-        tokio::spawn(async move {
-            for (status, body) in responses {
-                let (mut stream, _) = listener.accept().await.expect("accept Docker API request");
-                let mut request = Vec::new();
-                let mut buffer = [0; 512];
-                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
-                    let read = stream
-                        .read(&mut buffer)
-                        .await
-                        .expect("read Docker API request");
-                    assert_ne!(read, 0, "Docker API request ended before its headers");
-                    request.extend_from_slice(
-                        buffer
-                            .get(..read)
-                            .expect("read length is bounded by buffer"),
-                    );
-                }
-                server_attempts.fetch_add(1, Ordering::SeqCst);
-                let reason = if status == 200 {
-                    "OK"
-                } else {
-                    "Internal Server Error"
-                };
-                let response = format!(
-                    "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                );
-                stream
-                    .write_all(response.as_bytes())
-                    .await
-                    .expect("write Docker API response");
-            }
-        });
-        let docker = Docker::connect_with_socket(
-            socket_path.to_str().expect("UTF-8 Docker API socket path"),
-            5,
-            bollard::API_DEFAULT_VERSION,
-        )
-        .expect("connect Docker API stub");
-        (
-            DockerManagedContainerRunner {
-                docker: DockerHandle::Connected(docker),
-                endpoint_network_subnet: TEST_ENDPOINT_SUBNET.to_owned(),
-                endpoint_bridge_ifname: "br-test".to_owned(),
-                endpoint_wg_ifname: "wg-test".to_owned(),
-                endpoint_mtu_policy: WireGuardMtuPolicy::Fixed(1_420),
-            },
-            attempts,
             socket_dir,
         )
     }
@@ -1509,10 +1274,7 @@ mod tests {
     fn create_body_preserves_image_and_labels() {
         let body = create_body(
             CreateManagedContainer {
-                pull: MachineImagePull::Registry {
-                    credential: None,
-                    reference: image("ghcr.io/acme/api:rev-2"),
-                },
+                image: image("ghcr.io/acme/api:rev-2"),
                 runtime: ContainerRuntimeSpec::image_defaults(),
                 provisioned_volumes: Vec::new(),
                 identity: managed_identity(),
@@ -1527,14 +1289,41 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn missing_local_image_fails_create_without_network_acquisition() {
+        let network = r#"{"Driver":"bridge","Options":{"com.docker.network.bridge.name":"br-test","com.docker.network.driver.mtu":"1420"},"IPAM":{"Config":[{"Subnet":"10.42.7.0/24"}]}}"#;
+        let (runner, attempts, _socket_dir) = runner_with_responses(vec![
+            (200, network.to_owned()),
+            (
+                404,
+                r#"{"message":"No such image: registry.example/api:missing"}"#.to_owned(),
+            ),
+            (
+                500,
+                r#"{"message":"/images/create must not be called"}"#.to_owned(),
+            ),
+        ])
+        .await;
+        let error = runner
+            .create_managed_container(CreateManagedContainer {
+                image: image("registry.example/api:missing"),
+                runtime: ContainerRuntimeSpec::image_defaults(),
+                provisioned_volumes: Vec::new(),
+                identity: managed_identity(),
+            })
+            .await
+            .expect_err("missing local image fails Docker create");
+        assert!(
+            matches!(error, MachineContainerCreateError::Create { message } if message.contains("No such image"))
+        );
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
     #[test]
     fn create_body_sets_runtime_fields() {
         let body = create_body(
             CreateManagedContainer {
-                pull: MachineImagePull::Registry {
-                    credential: None,
-                    reference: image("ghcr.io/acme/api:rev-2"),
-                },
+                image: image("ghcr.io/acme/api:rev-2"),
                 runtime: runtime_spec(),
                 provisioned_volumes: Vec::new(),
                 identity: managed_identity(),
@@ -1555,10 +1344,7 @@ mod tests {
     fn create_body_sets_machine_local_dns_and_namespace_search_domain() {
         let body = create_body(
             CreateManagedContainer {
-                pull: MachineImagePull::Registry {
-                    credential: None,
-                    reference: image("ghcr.io/acme/api:rev-2"),
-                },
+                image: image("ghcr.io/acme/api:rev-2"),
                 runtime: ContainerRuntimeSpec::image_defaults(),
                 provisioned_volumes: Vec::new(),
                 identity: managed_identity(),
@@ -1596,10 +1382,7 @@ mod tests {
 
         let body = create_body(
             CreateManagedContainer {
-                pull: MachineImagePull::Registry {
-                    credential: None,
-                    reference: image("ghcr.io/acme/api:rev-2"),
-                },
+                image: image("ghcr.io/acme/api:rev-2"),
                 runtime,
                 provisioned_volumes: Vec::new(),
                 identity: managed_identity(),
@@ -1632,10 +1415,7 @@ mod tests {
         runtime.entrypoint = Some(ContainerEntrypoint::Clear);
         let body = create_body(
             CreateManagedContainer {
-                pull: MachineImagePull::Registry {
-                    credential: None,
-                    reference: image("ghcr.io/acme/api:rev-2"),
-                },
+                image: image("ghcr.io/acme/api:rev-2"),
                 runtime,
                 provisioned_volumes: Vec::new(),
                 identity: managed_identity(),
@@ -1650,10 +1430,7 @@ mod tests {
     fn create_body_sets_default_stop_timeout() {
         let body = create_body(
             CreateManagedContainer {
-                pull: MachineImagePull::Registry {
-                    credential: None,
-                    reference: image("ghcr.io/acme/api:rev-2"),
-                },
+                image: image("ghcr.io/acme/api:rev-2"),
                 runtime: ContainerRuntimeSpec::image_defaults(),
                 provisioned_volumes: Vec::new(),
                 identity: managed_identity(),
@@ -1674,10 +1451,7 @@ mod tests {
         }];
         let body = create_body(
             CreateManagedContainer {
-                pull: MachineImagePull::Registry {
-                    credential: None,
-                    reference: image("ghcr.io/acme/api:rev-2"),
-                },
+                image: image("ghcr.io/acme/api:rev-2"),
                 runtime,
                 provisioned_volumes: Vec::new(),
                 identity: managed_identity(),
@@ -1703,7 +1477,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_dataset_bind_fails_at_container_start_without_creating_the_source_path() {
-        let (runner, attempts, _socket_dir) = registry_runner_with_responses(vec![
+        let (runner, attempts, _socket_dir) = runner_with_responses(vec![
             (
                 201,
                 r#"{"Name":"bound-volume","Driver":"local","Mountpoint":"","Labels":{},"Scope":"local","Options":{}}"#
@@ -1768,10 +1542,7 @@ mod tests {
         // later route attach can reach it without recreation.
         let body = create_body(
             CreateManagedContainer {
-                pull: MachineImagePull::Registry {
-                    credential: None,
-                    reference: image("ghcr.io/acme/api:rev-2"),
-                },
+                image: image("ghcr.io/acme/api:rev-2"),
                 runtime: ContainerRuntimeSpec::image_defaults(),
                 provisioned_volumes: Vec::new(),
                 identity: managed_identity(),
@@ -2096,43 +1867,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn docker_credentials_keep_basic_and_identity_token_modes_distinct() {
-        let basic = RegistryCredential::try_basic("alice", "password").expect("valid basic auth");
-        let token = RegistryCredential::try_identity_token("token").expect("valid token auth");
-
-        let basic = docker_credentials(Some(&basic)).expect("basic credentials");
-        assert_eq!(basic.username.as_deref(), Some("alice"));
-        assert_eq!(basic.password.as_deref(), Some("password"));
-        assert_eq!(basic.identitytoken, None);
-
-        let token = docker_credentials(Some(&token)).expect("token credentials");
-        assert_eq!(token.username, None);
-        assert_eq!(token.password, None);
-        assert_eq!(token.identitytoken.as_deref(), Some("token"));
-    }
-
-    #[test]
-    fn registry_errors_redact_the_deploy_scoped_secret() {
-        let basic = RegistryCredential::try_basic("alice", "password").expect("valid basic auth");
-        let token = RegistryCredential::try_identity_token("token").expect("valid token auth");
-
-        assert_eq!(
-            redact_registry_credential(
-                "registry reflected password in its response".to_owned(),
-                Some(&basic),
-            ),
-            "registry reflected [redacted] in its response"
-        );
-        assert_eq!(
-            redact_registry_credential(
-                "registry reflected token in its response".to_owned(),
-                Some(&token),
-            ),
-            "registry reflected [redacted] in its response"
-        );
-    }
-
     fn managed_identity() -> ManagedContainerIdentity {
         ManagedContainerIdentity {
             namespace_id: namespace_id("default"),
@@ -2166,10 +1900,6 @@ mod tests {
 
     fn container_id(value: &str) -> ContainerId {
         ContainerId::try_new(value).expect("valid container id")
-    }
-
-    fn image(value: &str) -> ImageReference {
-        ImageReference::try_new(value).expect("valid image")
     }
 
     fn runtime_spec() -> ContainerRuntimeSpec {

@@ -37,9 +37,6 @@ pub(crate) enum HookContainerInfrastructureError {
     List {
         message: String,
     },
-    ImagePull {
-        message: String,
-    },
     EnsureEndpointNetwork {
         message: String,
     },
@@ -92,19 +89,8 @@ where
         })?;
     match decide_container_run(&command.identity, existing) {
         MachineContainerRunDecision::Create => {
-            let service_id = command.identity.service_id.clone();
-            let namespace_revision_entry_id = command.identity.namespace_revision_entry_id.clone();
             let container_id = match runner.create_managed_container(command).await {
                 Ok(container_id) => container_id,
-                Err(MachineContainerCreateError::ImagePull { message }) => {
-                    return Err(ServiceContainerRunError::Domain(
-                        MachineContainerRunDomainError::ImagePullFailed {
-                            service_id,
-                            namespace_revision_entry_id,
-                            message: failure_message(message),
-                        },
-                    ));
-                }
                 Err(MachineContainerCreateError::Create { message }) => {
                     return Err(ServiceContainerRunError::Infrastructure(
                         ServiceContainerInfrastructureError::Create { message },
@@ -193,11 +179,6 @@ where
                                 "hook container create failed: {message}"
                             )),
                         },
-                    ));
-                }
-                Err(MachineContainerCreateError::ImagePull { message }) => {
-                    return Err(HookContainerRunError::Infrastructure(
-                        HookContainerInfrastructureError::ImagePull { message },
                     ));
                 }
                 Err(MachineContainerCreateError::EnsureEndpointNetwork { message }) => {

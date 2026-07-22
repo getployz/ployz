@@ -204,6 +204,7 @@ pub fn machine_role_service(machine_id: &MachineId) -> NatsServiceSpec {
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ImageEnsure),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ImageRemove),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::BuildStart),
+            machine_endpoint_spec(machine_id, MachineServiceEndpoint::BuildStatus),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::BuildCancel),
         ],
     )
@@ -311,6 +312,7 @@ pub const fn machine_endpoint_name(endpoint: MachineServiceEndpoint) -> &'static
         MachineServiceEndpoint::ImageEnsure => "machine.image.ensure",
         MachineServiceEndpoint::ImageRemove => "machine.image.remove",
         MachineServiceEndpoint::BuildStart => "machine.build.start",
+        MachineServiceEndpoint::BuildStatus => "machine.build.status",
         MachineServiceEndpoint::BuildCancel => "machine.build.cancel",
         MachineServiceEndpoint::BuildCachePrune => "machine.build.cache.prune",
         MachineServiceEndpoint::CertificateArtifactStatus => "machine.certificate.artifact.status",

@@ -11,7 +11,7 @@ use ployz_core::machine::runtime::ContainerHealth;
 use ployz_core::machine::{VolumeEnsureFailure, VolumeUsageFacts};
 use std::net::IpAddr;
 
-use crate::roles::machine::protocol::{MachineContainerStopOutcome, MachineImagePull};
+use crate::roles::machine::protocol::MachineContainerStopOutcome;
 use ployz_core::machine::runtime::{ManagedContainerHealthStatus, ManagedContainerIdentity};
 use ployz_core::network::{EndpointBridgeStatus, MachineEndpointSubnet};
 
@@ -41,7 +41,7 @@ pub enum ExistingManagedContainerState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreateManagedContainer {
-    pub pull: MachineImagePull,
+    pub image: ImageReference,
     pub runtime: ContainerRuntimeSpec,
     pub provisioned_volumes: Vec<VolumeName>,
     pub identity: ManagedContainerIdentity,
@@ -71,9 +71,6 @@ pub enum MachineRegistryImageResolveError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MachineContainerCreateError {
     Create {
-        message: String,
-    },
-    ImagePull {
         message: String,
     },
     EnsureEndpointNetwork {

@@ -1,4 +1,4 @@
-use crate::roles::machine::protocol::{MachineContainerStopOutcome, MachineImagePull};
+use crate::roles::machine::protocol::MachineContainerStopOutcome;
 use crate::roles::machine::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
     MachineContainerCreateError, MachineContainerListError, MachineContainerRemoveError,
@@ -25,7 +25,7 @@ use ployz_core::network::{
     WireGuardReadyEvidence, WireGuardRttStatus, WireGuardStatus,
 };
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone)]
 pub struct ObservingContainerRunner {
@@ -44,9 +44,10 @@ impl ObservingContainerRunner {
                 snapshot,
                 endpoint_subnet: None,
                 resolutions: Vec::new(),
-                pulls: Vec::new(),
+                images: Vec::new(),
                 resolution_failure: None,
                 resolution_barrier: None,
+                resolution_delay: Duration::ZERO,
             })),
         }
     }
@@ -70,11 +71,11 @@ impl ObservingContainerRunner {
     }
 
     #[must_use]
-    pub fn pulls(&self) -> Vec<MachineImagePull> {
+    pub fn pulls(&self) -> Vec<ImageReference> {
         self.state
             .lock()
             .expect("observing runner state lock is not poisoned")
-            .pulls
+            .images
             .clone()
     }
 
@@ -90,6 +91,13 @@ impl ObservingContainerRunner {
             .lock()
             .expect("observing runner state lock is not poisoned")
             .resolution_barrier = Some(Arc::new(tokio::sync::Barrier::new(count)));
+    }
+
+    pub fn delay_registry_resolution(&self, delay: Duration) {
+        self.state
+            .lock()
+            .expect("observing runner state lock is not poisoned")
+            .resolution_delay = delay;
     }
 
     fn replace_snapshot(&self, snapshot: MachineContainerObservationSnapshot) {
@@ -170,17 +178,19 @@ impl MachineContainerRunner for ObservingContainerRunner {
         reference: &ImageReference,
         credential: Option<&RegistryCredential>,
     ) -> Result<OciDigest, MachineRegistryImageResolveError> {
-        let barrier = self
-            .state
-            .lock()
-            .map_err(|error| MachineRegistryImageResolveError::ImagePull {
-                message: error.to_string(),
-            })?
-            .resolution_barrier
-            .clone();
+        let (barrier, delay) = {
+            let state =
+                self.state
+                    .lock()
+                    .map_err(|error| MachineRegistryImageResolveError::ImagePull {
+                        message: error.to_string(),
+                    })?;
+            (state.resolution_barrier.clone(), state.resolution_delay)
+        };
         if let Some(barrier) = barrier {
             barrier.wait().await;
         }
+        tokio::time::sleep(delay).await;
         let mut state =
             self.state
                 .lock()
@@ -207,8 +217,8 @@ impl MachineContainerRunner for ObservingContainerRunner {
             .map_err(|error| MachineContainerCreateError::Create {
                 message: error.to_string(),
             })?
-            .pulls
-            .push(command.pull.clone());
+            .images
+            .push(command.image.clone());
         let container_id = self.next_container_id()?;
         let observation = ManagedContainerObservation {
             machine_id: self.machine_id.clone(),
@@ -448,9 +458,10 @@ struct ObservingContainerRunnerState {
     snapshot: MachineContainerObservationSnapshot,
     endpoint_subnet: Option<MachineEndpointSubnet>,
     resolutions: Vec<(ImageReference, Option<RegistryCredential>)>,
-    pulls: Vec<MachineImagePull>,
+    images: Vec<ImageReference>,
     resolution_failure: Option<String>,
     resolution_barrier: Option<Arc<tokio::sync::Barrier>>,
+    resolution_delay: Duration,
 }
 
 impl ObservingContainerRunnerState {

@@ -1,4 +1,4 @@
-mod fixtures;
+pub(crate) mod fixtures;
 mod preparation;
 mod preparation_nats;
 mod runtime_nats;
@@ -108,6 +108,8 @@ async fn deploy_worker_runs_containers_then_completes() {
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: DeployRunningStage::StartingContainers,
             }),
+            RecordedOperation::ImageAvailabilityVerified,
+            RecordedOperation::ImageAvailabilityVerified,
             RecordedOperation::ContainerStarted {
                 machine_id: machine_id("machine_a"),
                 container_id: container_id("ctr_1"),
@@ -127,6 +129,19 @@ async fn deploy_worker_runs_containers_then_completes() {
         ]
     );
     assert_eq!(runtime.requests.len(), 2);
+    let image_ensures = runtime.image_ensures();
+    assert_eq!(
+        image_ensures.len(),
+        2,
+        "one target ensure per service/machine"
+    );
+    assert!(image_ensures.iter().all(|(_, request)| matches!(
+        request,
+        ployz_core::image::ImageEnsureRequest::Start {
+            source: ployz_core::image::ImageEnsureSource::Registry { .. },
+            ..
+        }
+    )));
     assert!(!recorder.records.iter().any(|record| {
         record
             == &RecordedOperation::Transition(DeployTransition::Running {
@@ -134,11 +149,8 @@ async fn deploy_worker_runs_containers_then_completes() {
             })
     }));
     assert!(runtime.requests.iter().all(|(_, request)| matches!(
-        &request.pull,
-        crate::roles::machine::protocol::MachineImagePull::Registry {
-            reference,
-            credential: None,
-        } if reference == &resolved_registry_image("registry.example/api:rev_2")
+        &request.image,
+        reference if reference == &resolved_registry_image("registry.example/api:rev_2")
     )));
     assert_eq!(
         namespace_state.serving_requests,
@@ -172,6 +184,239 @@ async fn deploy_worker_runs_containers_then_completes() {
     assert_eq!(first_request.container.step_id.as_str(), "run_1");
     assert_eq!(*second_machine_id, machine_id("machine_b"));
     assert_eq!(second_request.container.step_id.as_str(), "run_2");
+}
+
+#[tokio::test]
+async fn image_ensure_transport_retries_preserve_one_owner_and_then_run() {
+    let mut recorder = RecordingOperations::default();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_1"]).with_image_ensure_unavailable(2);
+    let mut health = RecordingHealth::healthy();
+    let mut namespace_state = RecordingNamespaceState::stored();
+    execute_deploy(
+        deploy_command(1),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect("transient ImageEnsure transport recovers");
+    let image_ensures = runtime.image_ensures();
+    assert_eq!(image_ensures.len(), 3);
+    let owners = image_ensures
+        .iter()
+        .filter_map(|(_, request)| match request {
+            ployz_core::image::ImageEnsureRequest::Start { owner, .. } => Some(owner),
+            ployz_core::image::ImageEnsureRequest::Status { .. }
+            | ployz_core::image::ImageEnsureRequest::Cancel { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(owners.len(), 3);
+    assert!(
+        owners
+            .windows(2)
+            .all(|pair| matches!(pair, [left, right] if left == right))
+    );
+    assert_eq!(runtime.requests.len(), 1);
+}
+
+#[tokio::test]
+async fn image_ensure_status_testimony_retries_same_owner_and_then_runs() {
+    use crate::roles::machine::MachineRuntimeUnavailableReason;
+    let completed = ployz_core::image::ImageEnsureStatus::Completed {
+        reference: resolved_registry_image("registry.example/api:rev_2"),
+    };
+    let mut recorder = RecordingOperations::default();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_1"]).with_image_ensure_script([
+        Ok(ployz_core::image::ImageEnsureStatus::Accepted),
+        Err(MachineRuntimeUnavailableReason::RequestTimedOut),
+        Err(MachineRuntimeUnavailableReason::NoResponders),
+        Ok(completed),
+    ]);
+    let mut health = RecordingHealth::healthy();
+    let mut namespace_state = RecordingNamespaceState::stored();
+    execute_deploy(
+        deploy_command(1),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect("status testimony recovers");
+    let image_ensures = runtime.image_ensures();
+    assert_eq!(image_ensures.len(), 4);
+    let owners = image_ensures
+        .iter()
+        .map(|(_, request)| match request {
+            ployz_core::image::ImageEnsureRequest::Start { owner, .. }
+            | ployz_core::image::ImageEnsureRequest::Status { owner }
+            | ployz_core::image::ImageEnsureRequest::Cancel { owner } => owner,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        owners
+            .windows(2)
+            .all(|pair| matches!(pair, [left, right] if left == right))
+    );
+    let [start, statuses @ ..] = image_ensures.as_slice() else {
+        panic!("image ensure testimony records at least one request");
+    };
+    assert!(matches!(
+        start.1,
+        ployz_core::image::ImageEnsureRequest::Start { .. }
+    ));
+    assert!(statuses.iter().all(|(_, request)| matches!(
+        request,
+        ployz_core::image::ImageEnsureRequest::Status { .. }
+    )));
+    assert_eq!(runtime.requests.len(), 1);
+}
+
+#[tokio::test]
+async fn exhausted_status_testimony_cancels_same_owner_and_never_runs() {
+    use crate::roles::machine::MachineRuntimeUnavailableReason;
+    let mut recorder = RecordingOperations::default();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_1"]).with_image_ensure_script([
+        Ok(ployz_core::image::ImageEnsureStatus::Accepted),
+        Err(MachineRuntimeUnavailableReason::RequestTimedOut),
+        Err(MachineRuntimeUnavailableReason::NoResponders),
+        Err(MachineRuntimeUnavailableReason::RequestTimedOut),
+    ]);
+    let mut health = RecordingHealth::healthy();
+    let mut namespace_state = RecordingNamespaceState::stored();
+    execute_deploy(
+        deploy_command(1),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect_err("status testimony exhaustion fails deploy");
+    assert!(runtime.requests.is_empty());
+    let image_ensures = runtime.image_ensures();
+    assert_eq!(image_ensures.len(), 5);
+    let [start, _, _, _, cancel] = image_ensures.as_slice() else {
+        panic!("exhausted testimony records start, retries, and cancel");
+    };
+    let start_owner = match &start.1 {
+        ployz_core::image::ImageEnsureRequest::Start { owner, .. } => owner,
+        ployz_core::image::ImageEnsureRequest::Status { .. }
+        | ployz_core::image::ImageEnsureRequest::Cancel { .. } => {
+            panic!("first request is Start")
+        }
+    };
+    assert!(
+        matches!(&cancel.1, ployz_core::image::ImageEnsureRequest::Cancel { owner } if owner == start_owner)
+    );
+}
+
+#[tokio::test]
+async fn stalled_image_ensure_is_typed_and_blocks_container_run() {
+    let mut recorder = RecordingOperations::default();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_1"]).with_image_ensure_status(
+        ployz_core::image::ImageEnsureStatus::Failed {
+            failure: ployz_core::image::ImageEnsureFailure::Stalled {
+                timeout_millis: 12_345,
+            },
+        },
+    );
+    let mut health = RecordingHealth::healthy();
+    let mut namespace_state = RecordingNamespaceState::stored();
+    let error = execute_deploy(
+        deploy_command(1),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect_err("stalled ImageEnsure fails deploy");
+    assert!(runtime.requests.is_empty());
+    assert!(matches!(
+        error,
+        DeployExecutionError::Failed { failure, .. } if matches!(*failure, DeployOperationFailure::ArtifactUnavailable {
+            reason: ployz_core::operation::ArtifactUnavailableReason::ImagePullStalled {
+                timeout_millis: 12_345,
+                ..
+            },
+            ..
+        })
+    ));
+}
+
+#[tokio::test]
+async fn cancelled_image_ensure_is_typed_and_blocks_container_run() {
+    let mut recorder = RecordingOperations::default();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_1"])
+        .with_image_ensure_status(ployz_core::image::ImageEnsureStatus::Cancelled);
+    let mut health = RecordingHealth::healthy();
+    let mut namespace_state = RecordingNamespaceState::stored();
+    let error = execute_deploy(
+        deploy_command(1),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect_err("cancelled ImageEnsure fails deploy");
+    assert!(runtime.requests.is_empty());
+    assert!(matches!(
+        error,
+        DeployExecutionError::Failed { failure, .. } if matches!(*failure, DeployOperationFailure::ArtifactUnavailable {
+            reason: ployz_core::operation::ArtifactUnavailableReason::ImagePullCancelled { .. },
+            ..
+        })
+    ));
+}
+
+#[tokio::test]
+async fn failed_image_ensure_preserves_message_and_blocks_container_run() {
+    let mut recorder = RecordingOperations::default();
+    let message = ployz_core::operation::FailureMessage::try_new("registry denied manifest")
+        .expect("message");
+    let mut runtime = RecordingRuntime::with_containers(["ctr_1"]).with_image_ensure_status(
+        ployz_core::image::ImageEnsureStatus::Failed {
+            failure: ployz_core::image::ImageEnsureFailure::PullFailed {
+                message: message.clone(),
+            },
+        },
+    );
+    let mut health = RecordingHealth::healthy();
+    let mut namespace_state = RecordingNamespaceState::stored();
+    let error = execute_deploy(
+        deploy_command(1),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect_err("failed ImageEnsure fails deploy");
+    assert!(runtime.requests.is_empty());
+    assert!(
+        matches!(error, DeployExecutionError::Failed { failure, .. } if matches!(&*failure, DeployOperationFailure::ArtifactUnavailable { reason: ployz_core::operation::ArtifactUnavailableReason::ImagePullFailed { message: actual, .. }, .. } if actual == &message))
+    );
 }
 
 #[tokio::test]
@@ -276,6 +521,10 @@ async fn replicated_to_global_reuse_reports_completed_service_work() {
     .expect("mode switch reuses the selected container");
 
     assert!(runtime.requests.is_empty());
+    assert!(
+        runtime.image_ensures().is_empty(),
+        "existing-only work skips ImageEnsure"
+    );
     assert!(recorder.phase_records.iter().any(|evidence| matches!(
         evidence,
         DeployEvidence::PhaseFinished {
@@ -814,25 +1063,38 @@ async fn mixed_platform_pushed_deploy_selects_each_platform_image_and_keeps_one_
     let [amd64_request, arm64_request] = runtime.requests.as_slice() else {
         panic!("mixed-platform fixture must run two containers");
     };
+    let image_ensures = runtime.image_ensures();
+    assert_eq!(
+        image_ensures.len(),
+        4,
+        "each pushed target validates its seed then ensures the target"
+    );
+    let amd64 = platform("amd64");
+    let arm64 = platform("arm64");
+    let [amd64_seed, arm64_seed, amd64_target, arm64_target] = image_ensures.as_slice() else {
+        panic!("mixed-platform fixture records four image ensures");
+    };
+    assert!(
+        matches!(amd64_seed, (machine, ployz_core::image::ImageEnsureRequest::Start { source: ployz_core::image::ImageEnsureSource::LocalSeed { platform, .. }, .. }) if machine == &machine_id("machine_seed") && platform == &amd64)
+    );
+    assert!(
+        matches!(arm64_seed, (machine, ployz_core::image::ImageEnsureRequest::Start { source: ployz_core::image::ImageEnsureSource::LocalSeed { platform, .. }, .. }) if machine == &machine_id("machine_arm_seed") && platform == &arm64)
+    );
+    assert!(
+        matches!(amd64_target, (machine, ployz_core::image::ImageEnsureRequest::Start { source: ployz_core::image::ImageEnsureSource::MeshSeed { platform, .. }, .. }) if machine == &machine_id("machine_a") && platform == &amd64)
+    );
+    assert!(
+        matches!(arm64_target, (machine, ployz_core::image::ImageEnsureRequest::Start { source: ployz_core::image::ImageEnsureSource::MeshSeed { platform, .. }, .. }) if machine == &machine_id("machine_b") && platform == &arm64)
+    );
     assert_eq!(amd64_request.0, machine_id("machine_a"));
     assert!(matches!(
-        &amd64_request.1.pull,
-        crate::roles::machine::protocol::MachineImagePull::MeshSeed {
-            seed_host,
-            manifest_digest,
-            ..
-        } if *seed_host == "10.198.99.254".parse::<std::net::Ipv4Addr>().expect("valid seed host")
-            && manifest_digest == &ployz_core::image::OciDigest::try_new(format!("sha256:{}", "a".repeat(64))).expect("manifest digest")
+        &amd64_request.1.image,
+        reference if reference.as_str().starts_with("10.198.99.254:5000/") && reference.as_str().ends_with(&format!("@sha256:{}", "a".repeat(64)))
     ));
     assert_eq!(arm64_request.0, machine_id("machine_b"));
     assert!(matches!(
-        &arm64_request.1.pull,
-        crate::roles::machine::protocol::MachineImagePull::MeshSeed {
-            seed_host,
-            manifest_digest,
-            ..
-        } if *seed_host == "10.198.98.254".parse::<std::net::Ipv4Addr>().expect("valid seed host")
-            && manifest_digest == &ployz_core::image::OciDigest::try_new(format!("sha256:{}", "d".repeat(64))).expect("manifest digest")
+        &arm64_request.1.image,
+        reference if reference.as_str().starts_with("10.198.98.254:5000/") && reference.as_str().ends_with(&format!("@sha256:{}", "d".repeat(64)))
     ));
     assert_eq!(
         amd64_request.1.container.namespace_revision_entry_id,
@@ -920,7 +1182,7 @@ async fn pushed_receipt_without_a_compatible_machine_fails_before_effects() {
         }
     );
     assert!(runtime.requests.is_empty());
-    assert!(runtime.image_ensures.is_empty());
+    assert!(runtime.image_ensures().is_empty());
     assert!(runtime.volume_ensures.is_empty());
     assert!(
         !recorder
@@ -965,7 +1227,7 @@ async fn seed_clock_ahead_of_control_fails_before_image_ensure_rpc() {
         DeployOperationFailure::SeedUnavailable { message, .. }
             if message.as_str() == "image seed clock is more than 300 seconds ahead of Control"
     ));
-    assert!(runtime.image_ensures.is_empty());
+    assert!(runtime.image_ensures().is_empty());
 }
 
 #[tokio::test]
@@ -1300,6 +1562,7 @@ async fn deploy_worker_reuses_running_target_containers_from_observed_reality() 
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: DeployRunningStage::StartingContainers,
             }),
+            RecordedOperation::ImageAvailabilityVerified,
             RecordedOperation::ContainerStarted {
                 machine_id: machine_id("machine_a"),
                 container_id: container_id("ctr_new"),
@@ -2340,6 +2603,7 @@ async fn deploy_worker_keeps_success_when_completed_event_fails_after_active_com
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: DeployRunningStage::StartingContainers,
             }),
+            RecordedOperation::ImageAvailabilityVerified,
             RecordedOperation::ContainerStarted {
                 machine_id: machine_id("machine_a"),
                 container_id: container_id("ctr_1"),

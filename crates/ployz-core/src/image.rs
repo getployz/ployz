@@ -547,19 +547,96 @@ impl MachineRpcResponder for ImageManifestPushOk {
 pub type ImageManifestPushResponse = MachineRpcResponse<ImageManifestPushOk, ImageRpcDomainError>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ImageEnsureRequest {
-    pub repository: ImageRepository,
-    pub manifest_digest: OciDigest,
-    pub image_id: OciDigest,
-    pub platform: OciPlatform,
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ImageEnsureRequest {
+    Start {
+        owner: crate::machine::runtime::ManagedContainerIdentity,
+        source: ImageEnsureSource,
+    },
+    Status {
+        owner: crate::machine::runtime::ManagedContainerIdentity,
+    },
+    Cancel {
+        owner: crate::machine::runtime::ManagedContainerIdentity,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ImageEnsureSource {
+    Registry {
+        reference: crate::deploy::ImageReference,
+        platform: OciPlatform,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        credential: Option<crate::deploy::RegistryCredential>,
+    },
+    MeshSeed {
+        seed_host: std::net::Ipv4Addr,
+        repository: ImageRepository,
+        manifest_digest: OciDigest,
+        image_id: OciDigest,
+        platform: OciPlatform,
+    },
+    LocalSeed {
+        repository: ImageRepository,
+        manifest_digest: OciDigest,
+        image_id: OciDigest,
+        platform: OciPlatform,
+    },
+}
+
+impl ImageEnsureSource {
+    #[must_use]
+    pub fn reference(&self) -> String {
+        match self {
+            Self::Registry { reference, .. } => reference.as_str().to_owned(),
+            Self::MeshSeed {
+                seed_host,
+                repository,
+                manifest_digest,
+                ..
+            } => format!("{seed_host}:{IMAGE_MESH_REGISTRY_PORT}/{repository}@{manifest_digest}"),
+            Self::LocalSeed {
+                repository,
+                manifest_digest,
+                ..
+            } => format!("127.0.0.1:{IMAGE_MESH_REGISTRY_PORT}/{repository}@{manifest_digest}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ImageEnsureStatus {
+    Accepted,
+    Running {
+        progress_sequence: u64,
+    },
+    Completed {
+        reference: crate::deploy::ImageReference,
+    },
+    Failed {
+        failure: ImageEnsureFailure,
+    },
+    Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "failure", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ImageEnsureFailure {
+    PullFailed {
+        message: crate::operation::FailureMessage,
+    },
+    Stalled {
+        timeout_millis: u64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ImageEnsureOk {
     pub machine_id: MachineId,
-    pub platform: OciPlatform,
+    pub ensure_status: ImageEnsureStatus,
 }
 
 impl MachineRpcResponder for ImageEnsureOk {
@@ -658,15 +735,24 @@ pub enum ImageRpcDomainError {
     StorageFailed {
         message: FailureMessage,
     },
-    SelfPullFailed {
-        message: FailureMessage,
+    ImageEnsureConflict {
+        owner: Box<crate::machine::runtime::ManagedContainerIdentity>,
+    },
+    ImageEnsureNotFound {
+        owner: Box<crate::machine::runtime::ManagedContainerIdentity>,
     },
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ImageRepository, OciDigest};
-    use crate::ids::{NamespaceId, ServiceId};
+    use super::{
+        ImageEnsureFailure, ImageEnsureRequest, ImageEnsureSource, ImageEnsureStatus,
+        ImageRepository, OciDigest,
+    };
+    use crate::deploy::ImageReference;
+    use crate::ids::{NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId, StepId};
+    use crate::machine::runtime::{ManagedContainerIdentity, ManagedContainerKind};
+    use crate::operation::FailureMessage;
 
     #[test]
     fn oci_digest_accepts_a_canonical_sha256_digest() {
@@ -689,6 +775,65 @@ mod tests {
 
         for value in values {
             assert!(OciDigest::try_new(value).is_err());
+        }
+    }
+
+    #[test]
+    fn image_ensure_actions_round_trip_and_reject_unknown_fields() {
+        let identity = owner();
+        let actions = [
+            ImageEnsureRequest::Start {
+                owner: identity.clone(),
+                source: ImageEnsureSource::Registry {
+                    reference: ImageReference::try_new("registry.example/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").expect("image"),
+                    platform: super::OciPlatform::try_new("linux", "amd64").expect("platform"),
+                    credential: None,
+                },
+            },
+            ImageEnsureRequest::Status { owner: identity.clone() },
+            ImageEnsureRequest::Cancel { owner: identity },
+        ];
+        for action in actions {
+            let json = serde_json::to_value(&action).expect("serialize");
+            assert_eq!(
+                serde_json::from_value::<ImageEnsureRequest>(json).expect("deserialize"),
+                action
+            );
+        }
+        assert!(
+            serde_json::from_value::<ImageEnsureRequest>(
+                serde_json::json!({"action":"status","owner":owner(),"unexpected":true})
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn image_ensure_terminal_statuses_round_trip() {
+        let statuses = [
+            ImageEnsureStatus::Completed { reference: ImageReference::try_new("registry.example/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").expect("image") },
+            ImageEnsureStatus::Failed { failure: ImageEnsureFailure::PullFailed { message: FailureMessage::try_new("pull failed").expect("message") } },
+            ImageEnsureStatus::Failed { failure: ImageEnsureFailure::Stalled { timeout_millis: 30_000 } },
+            ImageEnsureStatus::Cancelled,
+        ];
+        for status in statuses {
+            let json = serde_json::to_value(&status).expect("serialize");
+            assert_eq!(
+                serde_json::from_value::<ImageEnsureStatus>(json).expect("deserialize"),
+                status
+            );
+        }
+    }
+
+    fn owner() -> ManagedContainerIdentity {
+        ManagedContainerIdentity {
+            namespace_id: NamespaceId::try_new("default").expect("namespace"),
+            service_id: ServiceId::try_new("api").expect("service"),
+            namespace_revision_entry_id: NamespaceRevisionEntryId::try_new("entry_a")
+                .expect("entry"),
+            operation_id: OperationId::try_new("operation_a").expect("operation"),
+            step_id: StepId::try_new("run_1").expect("step"),
+            kind: ManagedContainerKind::Service,
         }
     }
 
