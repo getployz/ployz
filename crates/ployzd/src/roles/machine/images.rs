@@ -29,8 +29,6 @@ use tokio::sync::Mutex;
 
 const UPLOAD_SESSION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const MAX_UPLOAD_SESSIONS: usize = 16;
-const SELF_PULL_ATTEMPTS: u8 = 10;
-const SELF_PULL_RETRY_DELAY: Duration = Duration::from_secs(1);
 
 #[derive(Clone)]
 pub(crate) struct AvailableImageService {
@@ -577,19 +575,13 @@ pub(crate) async fn handle_image_ensure(
         manifest_digest: request.manifest_digest.clone(),
     }
     .reference();
-    for attempt in 1..=SELF_PULL_ATTEMPTS {
-        match state.docker.pull_image(&reference, None).await {
-            Ok(()) => break,
-            Err(error) if attempt == SELF_PULL_ATTEMPTS => {
-                return image_error(
-                    machine_id,
-                    ImageRpcDomainError::SelfPullFailed {
-                        message: failure_message(error.0),
-                    },
-                );
-            }
-            Err(_) => tokio::time::sleep(SELF_PULL_RETRY_DELAY).await,
-        }
+    if let Err(message) = state.docker.pull_mesh_seed_image(&reference).await {
+        return image_error(
+            machine_id,
+            ImageRpcDomainError::SelfPullFailed {
+                message: failure_message(message),
+            },
+        );
     }
     machine_success(ImageEnsureResponse::Ok(ImageEnsureOk {
         machine_id,

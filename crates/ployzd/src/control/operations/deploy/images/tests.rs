@@ -9,6 +9,29 @@ use ployz_core::image::{OciDigest, OciPlatform};
 
 use crate::control::operations::deploy::types::ServingIntentDisposition;
 use crate::control::role_client::machine::MachineClockTestimony;
+use crate::tests::deploy_operation::fixtures::RecordingRuntime;
+
+#[tokio::test(start_paused = true)]
+async fn registry_resolution_obeys_the_supplied_step_timeout() {
+    let service_id = ServiceId::try_new("api").expect("service id");
+    let machine_id = MachineId::try_new("machine_a").expect("machine id");
+    let requested = ImageReference::try_new("nginx:1.27-alpine").expect("image reference");
+    let mut runtime = RecordingRuntime::with_containers([]).with_hanging_resolution();
+
+    let result = resolve_registry_image(
+        &service_id,
+        &requested,
+        &machine_id,
+        None,
+        std::time::Duration::from_millis(50),
+        &mut runtime,
+    )
+    .await;
+    assert!(matches!(
+        result,
+        Err(ImagePreparationError::ResolutionTimedOut { .. })
+    ));
+}
 
 #[test]
 fn missing_seed_clock_testimony_is_rejected() {

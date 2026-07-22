@@ -2,7 +2,7 @@ mod support;
 
 mod control;
 mod daemon_lifecycle;
-mod deploy_operation;
+pub(crate) mod deploy_operation;
 mod dns;
 mod gateway;
 mod machine;
