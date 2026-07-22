@@ -699,6 +699,71 @@ impl BuildLogSummary {
     pub const fn none() -> Self {
         Self::new(0, 0)
     }
+
+    /// Returns true only when activity advanced without either monotonic
+    /// component regressing.
+    #[must_use]
+    pub const fn strictly_advances(&self, previous: &Self) -> bool {
+        self.final_log_sequence >= previous.final_log_sequence
+            && self.omitted_log_bytes >= previous.omitted_log_bytes
+            && (self.final_log_sequence > previous.final_log_sequence
+                || self.omitted_log_bytes > previous.omitted_log_bytes)
+    }
+}
+
+/// Exact accepted build identity queried from one machine.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuildExecutorStatusRequest {
+    pub acceptance: BuildExecutorAcceptance,
+}
+
+/// Current or terminal state of one accepted machine build.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BuildExecutorStatus {
+    Running {
+        acceptance: BuildExecutorAcceptance,
+        #[serde(flatten)]
+        log_summary: BuildLogSummary,
+    },
+    Completed {
+        result: Box<BuildExecutorStartOk>,
+    },
+    Failed {
+        acceptance: BuildExecutorAcceptance,
+        failure: BuildExecutorStatusFailure,
+        cleanup: BuildExecutorCleanupOutcome,
+        #[serde(flatten)]
+        log_summary: BuildLogSummary,
+    },
+    Cancelled {
+        acceptance: BuildExecutorAcceptance,
+        cleanup: BuildExecutorCleanupOutcome,
+        #[serde(flatten)]
+        log_summary: BuildLogSummary,
+    },
+}
+
+/// Typed reason an accepted machine build terminated unsuccessfully.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BuildExecutorStatusFailure {
+    PlatformFailed { failure: BuildPlatformFailure },
+    Stalled { message: FailureMessage },
+}
+
+/// Failure to obtain status evidence for one exact accepted build identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BuildExecutorStatusDomainError {
+    NotFound {
+        acceptance: BuildExecutorAcceptance,
+    },
+    EvidenceUnavailable {
+        acceptance: BuildExecutorAcceptance,
+        message: FailureMessage,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1075,6 +1140,31 @@ mod tests {
         }
     }
 
+    fn completed_result() -> BuildExecutorStartOk {
+        let request = start_request();
+        let digest =
+            crate::image::OciDigest::try_new(format!("sha256:{}", "a".repeat(64))).expect("digest");
+        BuildExecutorStartOk {
+            acceptance: BuildExecutorAcceptance::from_start_request(&request),
+            cleanup: BuildExecutorSuccessCleanupEvidence::confirmed(),
+            image: PlatformImage {
+                seed: request.assignment.image_seed().clone(),
+                manifest_digest: digest.clone(),
+                image_id: digest.clone(),
+                availability_expires_at: crate::deploy::ImageAvailabilityExpiresAt::try_new(
+                    4_102_444_800,
+                )
+                .expect("expiry"),
+            },
+            verified_source: VerifiedBuildSource::from_source(&request.source),
+            toolchain: BuildToolchainEvidence {
+                buildkit_image: digest,
+                adapter: crate::operation::BuildAdapterToolchainEvidence::Dockerfile,
+            },
+            log_summary: BuildLogSummary::new(8, 13),
+        }
+    }
+
     #[test]
     fn readiness_answer_is_exact_and_capabilities_are_adapter_specific() {
         let answer = BuildExecutorReadinessAnswer {
@@ -1278,6 +1368,124 @@ mod tests {
                 platform: request.platform,
             }
         );
+    }
+
+    #[test]
+    fn log_summary_advances_only_component_wise_without_regression() {
+        let previous = BuildLogSummary::new(8, 13);
+
+        for newer in [
+            BuildLogSummary::new(9, 13),
+            BuildLogSummary::new(8, 14),
+            BuildLogSummary::new(9, 14),
+        ] {
+            assert!(newer.strictly_advances(&previous));
+        }
+        for not_newer in [
+            BuildLogSummary::new(8, 13),
+            BuildLogSummary::new(7, 14),
+            BuildLogSummary::new(9, 12),
+            BuildLogSummary::new(7, 12),
+        ] {
+            assert!(!not_newer.strictly_advances(&previous));
+        }
+    }
+
+    #[test]
+    fn status_request_and_states_are_strict_roundtrips() {
+        let acceptance = BuildExecutorAcceptance::from_start_request(&start_request());
+        let request = BuildExecutorStatusRequest {
+            acceptance: acceptance.clone(),
+        };
+        assert_strict_roundtrip(request);
+
+        let states = [
+            BuildExecutorStatus::Running {
+                acceptance: acceptance.clone(),
+                log_summary: BuildLogSummary::new(3, 5),
+            },
+            BuildExecutorStatus::Completed {
+                result: Box::new(completed_result()),
+            },
+            BuildExecutorStatus::Failed {
+                acceptance: acceptance.clone(),
+                failure: BuildExecutorStatusFailure::PlatformFailed {
+                    failure: BuildPlatformFailure::MachineUnavailable {
+                        message: FailureMessage::try_new("machine restarted").expect("message"),
+                    },
+                },
+                cleanup: BuildExecutorCleanupOutcome::Confirmed,
+                log_summary: BuildLogSummary::new(4, 7),
+            },
+            BuildExecutorStatus::Failed {
+                acceptance: acceptance.clone(),
+                failure: BuildExecutorStatusFailure::Stalled {
+                    message: FailureMessage::try_new("no verified progress").expect("message"),
+                },
+                cleanup: BuildExecutorCleanupOutcome::Unconfirmed,
+                log_summary: BuildLogSummary::new(5, 11),
+            },
+            BuildExecutorStatus::Cancelled {
+                acceptance,
+                cleanup: BuildExecutorCleanupOutcome::Confirmed,
+                log_summary: BuildLogSummary::new(6, 13),
+            },
+        ];
+
+        for state in states {
+            assert_strict_roundtrip(state);
+        }
+    }
+
+    #[test]
+    fn status_failure_and_evidence_errors_reject_unknown_fields() {
+        let acceptance = BuildExecutorAcceptance::from_start_request(&start_request());
+        for error in [
+            BuildExecutorStatusDomainError::NotFound {
+                acceptance: acceptance.clone(),
+            },
+            BuildExecutorStatusDomainError::EvidenceUnavailable {
+                acceptance,
+                message: FailureMessage::try_new("status record unreadable").expect("message"),
+            },
+        ] {
+            assert_strict_roundtrip(error);
+        }
+
+        let invalid_failure = serde_json::json!({
+            "status": "failed",
+            "acceptance": {
+                "operation_id": "build-1",
+                "assignment": {"executor": "cluster", "machine_id": "machine-a"},
+                "platform": {"os": "linux", "architecture": "amd64"},
+            },
+            "failure": {
+                "kind": "stalled",
+                "message": "no verified progress",
+                "unexpected": true,
+            },
+            "cleanup": "confirmed",
+            "final_log_sequence": 3,
+            "omitted_log_bytes": 5,
+        });
+        assert!(serde_json::from_value::<BuildExecutorStatus>(invalid_failure).is_err());
+    }
+
+    fn assert_strict_roundtrip<T>(value: T)
+    where
+        T: std::fmt::Debug + PartialEq + Serialize + for<'de> Deserialize<'de>,
+    {
+        let encoded = serde_json::to_value(&value).expect("encode strict value");
+        assert_eq!(
+            serde_json::from_value::<T>(encoded.clone()).expect("decode strict value"),
+            value
+        );
+        let mut unknown = encoded;
+        unknown
+            .as_object_mut()
+            .expect("strict value object")
+            .insert("unexpected".to_owned(), serde_json::json!(true));
+        assert!(serde_json::from_value::<T>(unknown).is_err());
     }
 
     #[test]

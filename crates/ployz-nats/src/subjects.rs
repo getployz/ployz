@@ -686,6 +686,7 @@ pub enum MachineServiceEndpoint {
     ImageEnsure,
     ImageRemove,
     BuildStart,
+    BuildStatus,
     BuildCancel,
     BuildCachePrune,
     CertificateArtifactStatus,
@@ -733,6 +734,7 @@ impl MachineServiceEndpoint {
         Self::ImageEnsure,
         Self::ImageRemove,
         Self::BuildStart,
+        Self::BuildStatus,
         Self::BuildCancel,
         Self::BuildCachePrune,
         Self::CertificateArtifactStatus,
@@ -781,6 +783,7 @@ impl MachineServiceEndpoint {
             Self::ImageEnsure => "container.ensure_image",
             Self::ImageRemove => "container.remove_image",
             Self::BuildStart => "build.start",
+            Self::BuildStatus => "build.status",
             Self::BuildCancel => "build.cancel",
             Self::BuildCachePrune => "build.cache.prune",
             Self::CertificateArtifactStatus => "certificate.artifact.status",
@@ -809,6 +812,7 @@ impl MachineServiceEndpoint {
             | Self::DataplaneStatus
             | Self::LogsTail
             | Self::ImageBlobCheck
+            | Self::BuildStatus
             | Self::CertificateArtifactStatus
             | Self::CertificateChallengeStatus
             | Self::GatewayStatusGet => MachineServiceEndpointExecution::Query,
@@ -932,6 +936,14 @@ mod build_contract_tests {
         assert_eq!(
             machine_service(&machine, MachineServiceEndpoint::BuildStart),
             "plz.v1.rpc.machine.command.machine-a.build.start"
+        );
+        assert_eq!(
+            machine_service(&machine, MachineServiceEndpoint::BuildStatus),
+            "plz.v1.rpc.machine.query.machine-a.build.status"
+        );
+        assert_eq!(
+            MachineServiceEndpoint::BuildStatus.execution(),
+            MachineServiceEndpointExecution::Query
         );
         assert_eq!(
             machine_build_log(&machine, &operation),
