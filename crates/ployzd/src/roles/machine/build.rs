@@ -359,7 +359,10 @@ impl MachineBuildRuntime {
         let progress = match &prune.status {
             BuildCachePruneStatus::Queued { progress, .. }
             | BuildCachePruneStatus::Running { progress, .. } => progress.saturating_add(1),
-            _ => return,
+            BuildCachePruneStatus::NotFound { .. }
+            | BuildCachePruneStatus::Completed { .. }
+            | BuildCachePruneStatus::Failed { .. }
+            | BuildCachePruneStatus::Cancelled { .. } => return,
         };
         prune.status = BuildCachePruneStatus::Running {
             operation_id: operation_id.clone(),
