@@ -201,6 +201,7 @@ pub fn machine_role_service(machine_id: &MachineId) -> NatsServiceSpec {
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ImageEnsure),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ImageRemove),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::BuildStart),
+            machine_endpoint_spec(machine_id, MachineServiceEndpoint::BuildStatus),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::BuildCancel),
         ],
     )
