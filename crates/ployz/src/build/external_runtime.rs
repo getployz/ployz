@@ -8,16 +8,16 @@ use std::time::Duration;
 
 use ployz_build_executor::{
     BuildExecutionError as EngineError, BuildExecutionRequest, BuildExecutionResult,
-    BuildLogDestination, BuildLogProgress, DockerBuildExecutor,
+    BuildExecutionSupervision, BuildLogDestination, BuildLogProgress, DockerBuildExecutor,
 };
 use ployz_core::build::{
     BUILD_ENDPOINT_RESPONSE_MARGIN, BUILD_FORCE_CLEANUP_TIMEOUT, BUILD_MAX_EXECUTION_TIMEOUT,
     BUILD_TASK_DRAIN_TIMEOUT, BuildAdapterKind, BuildExecutorAcceptance, BuildExecutorAssignment,
     BuildExecutorCancelDomainError, BuildExecutorCancelOk, BuildExecutorCancelOutcome,
     BuildExecutorCancelRequest, BuildExecutorCapability, BuildExecutorCleanupOutcome,
-    BuildExecutorIdentity, BuildExecutorReadiness, BuildExecutorStartDomainError,
-    BuildExecutorStartOk, BuildExecutorStartRequest, BuildExecutorSuccessCleanupEvidence,
-    BuildLogSummary,
+    BuildExecutorCompletion, BuildExecutorIdentity, BuildExecutorReadiness,
+    BuildExecutorStartDomainError, BuildExecutorStartOk, BuildExecutorStartRequest,
+    BuildExecutorSuccessCleanupEvidence, BuildLogSummary,
 };
 use ployz_core::deploy::PlatformImage;
 use ployz_core::nats_config::BuildExecutorCredentialExpiresAt;
@@ -1339,7 +1339,7 @@ impl ExternalBuildRuntime {
                 ),
                 cancel_rx.clone(),
                 log_progress.clone(),
-                deadline,
+                BuildExecutionSupervision::AbsoluteDeadline(deadline),
             );
             tokio::pin!(execution);
             let completion = tokio::select! {
@@ -1526,11 +1526,13 @@ impl ExternalBuildOutput {
     fn into_start_ok(self) -> BuildExecutorStartOk {
         BuildExecutorStartOk {
             acceptance: self.acceptance,
-            cleanup: BuildExecutorSuccessCleanupEvidence::confirmed(),
-            image: self.image,
-            verified_source: self.verified_source,
-            toolchain: self.toolchain,
-            log_summary: self.log_summary,
+            completion: BuildExecutorCompletion {
+                cleanup: BuildExecutorSuccessCleanupEvidence::confirmed(),
+                image: self.image,
+                verified_source: self.verified_source,
+                toolchain: self.toolchain,
+                log_summary: self.log_summary,
+            },
         }
     }
 }

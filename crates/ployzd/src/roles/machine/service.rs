@@ -2,6 +2,7 @@
 
 use super::build::{
     MachineBuildRuntime, handle_build_cache_prune, handle_build_cancel, handle_build_start,
+    handle_build_status,
 };
 use super::containers::{
     MachineContainerState, handle_container_inspect, handle_container_remove,
@@ -38,7 +39,7 @@ use crate::roles::machine::runner::{
     MachineContainerRunner, MachineImageRemovalRunner, MachineLogReader, MachineVolumeUsageReader,
 };
 use crate::service_catalog::{machine_endpoint_spec, machine_role_service_base};
-use ployz_core::build::{BUILD_CACHE_PRUNE_ENDPOINT_TIMEOUT, BUILD_START_ENDPOINT_TIMEOUT};
+use ployz_core::build::BUILD_CACHE_PRUNE_ENDPOINT_TIMEOUT;
 use ployz_core::ids::MachineId;
 #[cfg(test)]
 use ployz_core::machine::MachineEndpointObservation;
@@ -309,6 +310,14 @@ where
     bind_machine_endpoint(
         &mut runtime,
         &machine_id,
+        MachineServiceEndpoint::BuildStatus,
+        build_state.clone(),
+        handle_build_status,
+    )
+    .await?;
+    bind_machine_endpoint(
+        &mut runtime,
+        &machine_id,
         MachineServiceEndpoint::BuildCachePrune,
         build_state.clone(),
         handle_build_cache_prune,
@@ -572,9 +581,6 @@ fn machine_endpoint_policy(endpoint: MachineServiceEndpoint) -> EndpointExecutio
         MachineServiceEndpoint::StoragePrepare => {
             policy.request_timeout = ployz_core::storage::MACHINE_STORAGE_PREPARE_RPC_TIMEOUT;
         }
-        MachineServiceEndpoint::BuildStart => {
-            policy.request_timeout = BUILD_START_ENDPOINT_TIMEOUT;
-        }
         MachineServiceEndpoint::BuildCachePrune => {
             policy.request_timeout = BUILD_CACHE_PRUNE_ENDPOINT_TIMEOUT;
         }
@@ -600,6 +606,7 @@ fn machine_endpoint_policy(endpoint: MachineServiceEndpoint) -> EndpointExecutio
         | MachineServiceEndpoint::ContainerStop
         | MachineServiceEndpoint::ContainerRemove
         | MachineServiceEndpoint::DataplanePublicKey
+        | MachineServiceEndpoint::BuildStart
         | MachineServiceEndpoint::SubstrateUpdate
         | MachineServiceEndpoint::SubstrateReport
         | MachineServiceEndpoint::StoragePrepareReport
@@ -610,6 +617,7 @@ fn machine_endpoint_policy(endpoint: MachineServiceEndpoint) -> EndpointExecutio
         | MachineServiceEndpoint::ImageEnsure
         | MachineServiceEndpoint::ImageRemove
         | MachineServiceEndpoint::BuildCancel
+        | MachineServiceEndpoint::BuildStatus
         | MachineServiceEndpoint::CertificateArtifactStatus
         | MachineServiceEndpoint::CertificateArtifactPush
         | MachineServiceEndpoint::CertificateArtifactRemove
@@ -684,16 +692,19 @@ mod tests {
     }
 
     #[test]
-    fn build_endpoints_cover_their_distinct_machine_response_budgets() {
+    fn build_endpoints_cover_admission_and_prune_response_budgets() {
         let policy = machine_endpoint_policy(MachineServiceEndpoint::BuildStart);
         let prune_policy = machine_endpoint_policy(MachineServiceEndpoint::BuildCachePrune);
 
-        assert_eq!(policy.request_timeout, BUILD_START_ENDPOINT_TIMEOUT);
+        assert_eq!(
+            policy.request_timeout,
+            EndpointExecutionPolicy::default().request_timeout
+        );
         assert_eq!(
             prune_policy.request_timeout,
             ployz_core::build::BUILD_CACHE_PRUNE_ENDPOINT_TIMEOUT
         );
-        assert!(policy.request_timeout > ployz_core::build::BUILD_MAX_MACHINE_RESPONSE_LIFETIME);
+        assert!(policy.request_timeout < ployz_core::build::BUILD_MAX_MACHINE_RESPONSE_LIFETIME);
         assert!(prune_policy.request_timeout > policy.request_timeout);
     }
 

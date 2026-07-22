@@ -6,6 +6,8 @@ use ployz_core::machine::rpc::MachineRpcResponse;
 use ployz_core::operation::{BuildAdapterToolchainEvidence, BuildLogChunk, BuildToolchainEvidence};
 use std::sync::atomic::Ordering;
 
+mod status_repository;
+
 pub(super) struct TestBuildEffects {
     pub(super) ingest_started: tokio::sync::Notify,
     pub(super) prune_started: tokio::sync::Notify,
@@ -14,9 +16,23 @@ pub(super) struct TestBuildEffects {
     cleanup_completes: bool,
     observes_cancellation: bool,
     prune_completes: bool,
+    recovery_completes: bool,
+    progress_to_success: Option<(usize, std::time::Duration)>,
 }
 
 impl TestBuildEffects {
+    pub(super) async fn recover_orphans(&self) -> Result<(), BuildExecutionError> {
+        if self.recovery_completes {
+            Ok(())
+        } else {
+            Err(BuildExecutionError::Infrastructure {
+                action: "recover test build orphans",
+                message: "injected cleanup failure".to_owned(),
+                log_summary: BuildLogSummary::none(),
+            })
+        }
+    }
+
     pub(super) fn new(cleanup_completes: bool) -> Self {
         Self {
             ingest_started: tokio::sync::Notify::new(),
@@ -26,6 +42,8 @@ impl TestBuildEffects {
             cleanup_completes,
             observes_cancellation: false,
             prune_completes: true,
+            recovery_completes: true,
+            progress_to_success: None,
         }
     }
 
@@ -43,8 +61,23 @@ impl TestBuildEffects {
         }
     }
 
+    fn failing_recovery() -> Self {
+        Self {
+            recovery_completes: false,
+            ..Self::new(true)
+        }
+    }
+
+    fn progressing_to_success(pulses: usize, interval: std::time::Duration) -> Self {
+        Self {
+            progress_to_success: Some((pulses, interval)),
+            ..Self::new(true)
+        }
+    }
+
     pub(super) async fn execute_and_ingest(
         &self,
+        request: &MachineBuildStartRpcRequest,
         log_progress: BuildLogProgress,
         mut cancelled: watch::Receiver<bool>,
     ) -> Result<MachineBuildOutput, BuildExecutionError> {
@@ -52,6 +85,17 @@ impl TestBuildEffects {
         let _active = TestTaskActive(&self.task_active);
         log_progress.set_for_test(7, 11);
         self.ingest_started.notify_one();
+        if let Some((pulses, interval)) = self.progress_to_success {
+            for sequence in 8..8 + u64::try_from(pulses).expect("test pulse count") {
+                tokio::time::sleep(interval).await;
+                log_progress.set_for_test(sequence, 11);
+            }
+            let (final_log_sequence, omitted_log_bytes) = log_progress.summary();
+            return Ok(successful_machine_output(
+                request,
+                BuildLogSummary::new(final_log_sequence, omitted_log_bytes),
+            ));
+        }
         if self.observes_cancellation {
             let _ = cancelled.changed().await;
             return Err(BuildExecutionError::Cancelled {
@@ -115,6 +159,19 @@ fn build_request(operation_id: &str, timeout_millis: u64) -> MachineBuildStartRp
     }
 }
 
+async fn terminal_status(
+    runtime: &MachineBuildRuntime,
+    acceptance: &BuildExecutorAcceptance,
+) -> BuildExecutorStatus {
+    loop {
+        let status = runtime.status(acceptance).await.expect("build status");
+        if status.is_terminal() {
+            return status;
+        }
+        tokio::task::yield_now().await;
+    }
+}
+
 #[test]
 fn local_platform_uses_oci_architecture_names() {
     let platform = local_platform().expect("supported test host");
@@ -170,17 +227,20 @@ fn execution_timeout_maps_to_typed_machine_timeout_with_cleanup() {
     let acceptance = BuildExecutorAcceptance::from_start_request(&build_request("build-1", 1_000));
     let expected_acceptance = acceptance.clone();
     assert!(matches!(
-        machine_build_error(
-            BuildExecutionError::TimedOut { log_summary },
+        finish_machine_build_status(
+            Err(BuildExecutionError::TimedOut { log_summary }),
             MachineBuildCleanupOutcome::Confirmed,
             acceptance,
+            log_summary,
         ),
-        MachineBuildStartDomainError::TimedOut {
+        BuildExecutorStatus {
             acceptance: actual_acceptance,
-            cleanup: MachineBuildCleanupOutcome::Confirmed,
-            log_summary: actual,
-            ..
-        } if actual == log_summary && *actual_acceptance == expected_acceptance
+            state: BuildExecutorState::Failed {
+                failure: BuildExecutorStatusFailure::Stalled { .. },
+                cleanup: MachineBuildCleanupOutcome::Confirmed,
+                log_summary: actual,
+            },
+        } if actual == log_summary && actual_acceptance == expected_acceptance
     ));
 }
 
@@ -189,21 +249,27 @@ fn machine_success_requires_and_carries_confirmed_cleanup_proof() {
     let request = build_request("build-success", 1_000);
     let acceptance = BuildExecutorAcceptance::from_start_request(&request);
     let log_summary = BuildLogSummary::new(7, 11);
-    let confirmed = finish_machine_build(
+    let confirmed = finish_machine_build_status(
         Ok(successful_machine_output(&request, log_summary)),
         MachineBuildCleanupOutcome::Confirmed,
         acceptance.clone(),
         log_summary,
-    )
-    .expect("confirmed cleanup permits success");
+    );
+    let BuildExecutorStatus {
+        acceptance: confirmed_acceptance,
+        state: BuildExecutorState::Completed { result: confirmed },
+    } = confirmed
+    else {
+        panic!("confirmed cleanup permits success");
+    };
     assert_eq!(
-        confirmed.executor.cleanup,
+        confirmed.cleanup,
         BuildExecutorSuccessCleanupEvidence::confirmed()
     );
-    assert_eq!(confirmed.executor.acceptance, acceptance);
-    assert_eq!(confirmed.executor.log_summary, log_summary);
+    assert_eq!(confirmed_acceptance, acceptance);
+    assert_eq!(confirmed.log_summary, log_summary);
 
-    let unconfirmed = finish_machine_build(
+    let unconfirmed = finish_machine_build_status(
         Ok(successful_machine_output(&request, log_summary)),
         MachineBuildCleanupOutcome::Unconfirmed,
         acceptance.clone(),
@@ -211,13 +277,20 @@ fn machine_success_requires_and_carries_confirmed_cleanup_proof() {
     );
     assert_eq!(
         unconfirmed,
-        Err(MachineBuildStartDomainError::PlatformFailed {
-            acceptance: Box::new(acceptance),
-            failure: BuildPlatformFailure::MachineUnavailable {
-                message: failure_message("build workspace cleanup did not finish successfully"),
+        BuildExecutorStatus {
+            acceptance,
+            state: BuildExecutorState::Failed {
+                cleanup: MachineBuildCleanupOutcome::Unconfirmed,
+                failure: BuildExecutorStatusFailure::PlatformFailed {
+                    failure: BuildPlatformFailure::MachineUnavailable {
+                        message: failure_message(
+                            "build workspace cleanup did not finish successfully",
+                        ),
+                    },
+                },
+                log_summary,
             },
-            log_summary,
-        })
+        }
     );
 }
 
@@ -229,7 +302,6 @@ fn successful_machine_output(
     let digest = ployz_core::image::OciDigest::try_new(format!("sha256:{}", "a".repeat(64)))
         .expect("digest");
     MachineBuildOutput {
-        machine_id: machine_id.clone(),
         acceptance: BuildExecutorAcceptance::from_start_request(request),
         image: PlatformImage {
             seed: machine_id,
@@ -479,12 +551,16 @@ async fn shutdown_cancels_active_build_and_waits_for_cleanup() {
 
     runtime.shutdown().await;
 
+    let acceptance = start.await.expect("start task").expect("accepted").executor;
     assert!(matches!(
-        start.await.expect("start task"),
-        Err(MachineBuildStartDomainError::Cancelled {
-            cleanup: MachineBuildCleanupOutcome::Confirmed,
+        runtime.status(&acceptance).await.expect("status"),
+        BuildExecutorStatus {
+            state: BuildExecutorState::Cancelled {
+                cleanup: MachineBuildCleanupOutcome::Confirmed,
+                ..
+            },
             ..
-        })
+        }
     ));
     assert_eq!(effects.cleanup_calls.load(Ordering::SeqCst), 1);
     assert!(!effects.task_active.load(Ordering::SeqCst));
@@ -516,12 +592,16 @@ async fn cache_prune_waits_for_active_build_cleanup() {
         runtime.cancel(&operation_id).await,
         MachineBuildCancelOutcome::Requested
     );
+    let acceptance = start.await.expect("start task").expect("accepted").executor;
     assert!(matches!(
-        start.await.expect("start task"),
-        Err(MachineBuildStartDomainError::Cancelled {
-            cleanup: MachineBuildCleanupOutcome::Confirmed,
+        terminal_status(&runtime, &acceptance).await,
+        BuildExecutorStatus {
+            state: BuildExecutorState::Cancelled {
+                cleanup: MachineBuildCleanupOutcome::Confirmed,
+                ..
+            },
             ..
-        })
+        }
     ));
     tokio::time::timeout(std::time::Duration::from_secs(1), prune)
         .await
@@ -647,17 +727,21 @@ async fn timeout_during_ingestion_aborts_then_cleans_once_without_late_success()
     tokio::time::advance(BUILD_TASK_DRAIN_TIMEOUT).await;
     tokio::task::yield_now().await;
 
-    let result = start.await.expect("start task");
+    let acceptance = start.await.expect("start task").expect("accepted").executor;
+    let result = terminal_status(&runtime, &acceptance).await;
     assert!(matches!(
         result,
-        Err(MachineBuildStartDomainError::TimedOut {
-            cleanup: MachineBuildCleanupOutcome::Confirmed,
-            log_summary: BuildLogSummary {
-                final_log_sequence: 7,
-                omitted_log_bytes: 11,
+        BuildExecutorStatus {
+            acceptance: _,
+            state: BuildExecutorState::Failed {
+                failure: BuildExecutorStatusFailure::Stalled { .. },
+                cleanup: MachineBuildCleanupOutcome::Confirmed,
+                log_summary: BuildLogSummary {
+                    final_log_sequence: 7,
+                    omitted_log_bytes: 11,
+                },
             },
-            ..
-        })
+        }
     ));
     assert_eq!(effects.cleanup_calls.load(Ordering::SeqCst), 1);
     assert!(!effects.task_active.load(Ordering::SeqCst));
@@ -688,16 +772,19 @@ async fn cancellation_during_ingestion_aborts_then_returns_typed_cleanup() {
     tokio::time::advance(BUILD_TASK_DRAIN_TIMEOUT).await;
     tokio::task::yield_now().await;
 
+    let acceptance = start.await.expect("start task").expect("accepted").executor;
     assert!(matches!(
-        start.await.expect("start task"),
-        Err(MachineBuildStartDomainError::Cancelled {
-            cleanup: MachineBuildCleanupOutcome::Confirmed,
-            log_summary: BuildLogSummary {
-                final_log_sequence: 7,
-                omitted_log_bytes: 11,
+        terminal_status(&runtime, &acceptance).await,
+        BuildExecutorStatus {
+            state: BuildExecutorState::Cancelled {
+                cleanup: MachineBuildCleanupOutcome::Confirmed,
+                log_summary: BuildLogSummary {
+                    final_log_sequence: 7,
+                    omitted_log_bytes: 11,
+                },
             },
             ..
-        })
+        }
     ));
     assert_eq!(effects.cleanup_calls.load(Ordering::SeqCst), 1);
     assert!(!effects.task_active.load(Ordering::SeqCst));
@@ -725,17 +812,104 @@ async fn bounded_cleanup_reports_unconfirmed_when_it_cannot_finish() {
     tokio::time::advance(BUILD_FORCE_CLEANUP_TIMEOUT).await;
     tokio::task::yield_now().await;
 
+    let acceptance = start.await.expect("start task").expect("accepted").executor;
     assert!(matches!(
-        start.await.expect("start task"),
-        Err(MachineBuildStartDomainError::TimedOut {
-            cleanup: MachineBuildCleanupOutcome::Unconfirmed,
-            log_summary: BuildLogSummary {
-                final_log_sequence: 7,
-                omitted_log_bytes: 11,
+        terminal_status(&runtime, &acceptance).await,
+        BuildExecutorStatus {
+            acceptance: _,
+            state: BuildExecutorState::Failed {
+                failure: BuildExecutorStatusFailure::Stalled { .. },
+                cleanup: MachineBuildCleanupOutcome::Unconfirmed,
+                log_summary: BuildLogSummary {
+                    final_log_sequence: 7,
+                    omitted_log_bytes: 11,
+                },
             },
-            ..
-        })
+        }
     ));
     assert_eq!(effects.cleanup_calls.load(Ordering::SeqCst), 1);
     assert!(!effects.task_active.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn start_persists_acceptance_and_returns_before_the_effect_completes() {
+    let effects = Arc::new(TestBuildEffects::new(true));
+    let runtime = MachineBuildRuntime::new_for_test(
+        MachineId::try_new("machine-a").expect("machine"),
+        effects,
+    );
+    let request = build_request("prompt-acceptance", 10_000);
+    let expected = BuildExecutorAcceptance::from_start_request(&request);
+
+    let accepted =
+        tokio::time::timeout(std::time::Duration::from_millis(50), runtime.start(request))
+            .await
+            .expect("start returns promptly")
+            .expect("accepted");
+
+    assert_eq!(accepted.executor, expected);
+    assert!(matches!(
+        runtime.status(&expected).await.expect("status"),
+        BuildExecutorStatus {
+            state: BuildExecutorState::Running { .. },
+            ..
+        }
+    ));
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn exact_retry_is_idempotent_and_conflicting_commitment_fails_closed() {
+    let effects = Arc::new(TestBuildEffects::new(true));
+    let runtime = MachineBuildRuntime::new_for_test(
+        MachineId::try_new("machine-a").expect("machine"),
+        effects,
+    );
+    let request = build_request("retry", 10_000);
+    let first = runtime
+        .start(request.clone())
+        .await
+        .expect("first acceptance");
+    let retry = runtime
+        .start(request.clone())
+        .await
+        .expect("retry acceptance");
+    assert_eq!(retry, first);
+
+    let mut conflicting = request;
+    conflicting.timeout_millis = 9_999;
+    assert_eq!(
+        runtime.start(conflicting).await,
+        Err(MachineBuildStartDomainError::AlreadyRunning)
+    );
+    assert_eq!(runtime.lifecycle.state.lock().await.active.len(), 1);
+    runtime.shutdown().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn strictly_advancing_activity_renews_the_silence_budget_until_success() {
+    let effects = Arc::new(TestBuildEffects::progressing_to_success(
+        4,
+        std::time::Duration::from_millis(80),
+    ));
+    let runtime = MachineBuildRuntime::new_for_test(
+        MachineId::try_new("machine-a").expect("machine"),
+        effects.clone(),
+    );
+    let request = build_request("progressing", 100);
+    let acceptance = runtime.start(request).await.expect("accepted").executor;
+    effects.ingest_started.notified().await;
+
+    for _ in 0..4 {
+        tokio::time::advance(std::time::Duration::from_millis(80)).await;
+        tokio::task::yield_now().await;
+    }
+
+    assert!(matches!(
+        terminal_status(&runtime, &acceptance).await,
+        BuildExecutorStatus {
+            state: BuildExecutorState::Completed { .. },
+            ..
+        }
+    ));
 }

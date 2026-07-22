@@ -6,17 +6,19 @@ use super::protocol::{
     MachineBuildCancelDomainError, MachineBuildCancelOutcome, MachineBuildCancelRpcOk,
     MachineBuildCancelRpcRequest, MachineBuildCancelRpcResponse, MachineBuildCleanupOutcome,
     MachineBuildStartDomainError, MachineBuildStartRpcOk, MachineBuildStartRpcRequest,
-    MachineBuildStartRpcResponse,
+    MachineBuildStartRpcResponse, MachineBuildStatusDomainError, MachineBuildStatusRpcOk,
+    MachineBuildStatusRpcRequest, MachineBuildStatusRpcResponse,
 };
 use super::response::{failure_message, machine_domain_error, machine_success};
 use ployz_build_executor::{
-    BuildExecutionError, BuildExecutionRequest, BuildExecutionResult, BuildLogDestination,
-    BuildLogProgress, DockerBuildExecutor,
+    BuildExecutionError, BuildExecutionRequest, BuildExecutionResult, BuildExecutionSupervision,
+    BuildLogDestination, BuildLogProgress, DockerBuildExecutor,
 };
 use ployz_core::build::{
     BUILD_CACHE_PRUNE_MAX_EXECUTION_TIMEOUT, BUILD_FORCE_CLEANUP_TIMEOUT,
     BUILD_MAX_EXECUTION_TIMEOUT, BUILD_TASK_DRAIN_TIMEOUT, BuildExecutorCancelOk,
-    BuildExecutorStartOk, BuildExecutorSuccessCleanupEvidence, VerifiedBuildSource,
+    BuildExecutorCompletion, BuildExecutorStartOk, BuildExecutorState, BuildExecutorStatus,
+    BuildExecutorStatusFailure, BuildExecutorSuccessCleanupEvidence, VerifiedBuildSource,
 };
 use ployz_core::deploy::PlatformImage;
 use ployz_core::ids::{MachineId, OperationId};
@@ -32,6 +34,11 @@ use tokio::sync::{Mutex, Notify, Semaphore, oneshot, watch};
 use tokio::task::AbortHandle;
 use tokio::time::Instant;
 
+mod effects;
+mod status;
+use effects::{BuildEffects, DockerBuildEffects};
+use status::{BuildStatusRecord, BuildStatusRepository};
+
 #[derive(Clone)]
 pub(crate) struct MachineBuildRuntime {
     machine_id: MachineId,
@@ -39,6 +46,7 @@ pub(crate) struct MachineBuildRuntime {
     lifecycle: Arc<BuildRuntimeLifecycle>,
     machine_slot: Arc<Semaphore>,
     local_platform: OciPlatform,
+    status: BuildStatusRepository,
 }
 
 struct BuildRuntimeLifecycle {
@@ -63,6 +71,9 @@ struct ActiveBuild {
     cancel: watch::Sender<bool>,
     supervisor: AbortHandle,
     completion: Arc<BuildSupervisorCompletion>,
+    acceptance: BuildExecutorAcceptance,
+    progress: BuildLogProgress,
+    evidence_error: Option<String>,
 }
 
 struct BuildSupervisorCompletion {
@@ -98,20 +109,6 @@ impl Drop for BuildSupervisorCompletionGuard {
     }
 }
 
-#[derive(Clone)]
-enum BuildEffects {
-    Docker(Box<DockerBuildEffects>),
-    #[cfg(test)]
-    Test(Arc<tests::TestBuildEffects>),
-}
-
-#[derive(Clone)]
-struct DockerBuildEffects {
-    executor: DockerBuildExecutor,
-    log_client: NatsClient,
-    image_state: Option<AvailableImageService>,
-}
-
 struct MachineBuildLogRoute {
     subject: String,
     assignment: BuildExecutorAssignment,
@@ -130,11 +127,12 @@ fn machine_build_log_route(
 }
 
 impl MachineBuildRuntime {
-    pub(crate) fn new(
+    pub(crate) fn new_with_status_path(
         machine_id: MachineId,
         log_client: NatsClient,
         executor: DockerBuildExecutor,
         image_state: Option<AvailableImageService>,
+        status_path: std::path::PathBuf,
     ) -> Result<Self, String> {
         Ok(Self {
             machine_id,
@@ -152,11 +150,25 @@ impl MachineBuildRuntime {
             }),
             machine_slot: Arc::new(Semaphore::new(1)),
             local_platform: local_platform()?,
+            status: BuildStatusRepository::new(status_path),
         })
     }
 
     #[cfg(test)]
     fn new_for_test(machine_id: MachineId, effects: Arc<tests::TestBuildEffects>) -> Self {
+        let status_path = tempfile::tempdir()
+            .expect("build status directory")
+            .keep()
+            .join("status");
+        Self::new_for_test_with_status_path(machine_id, effects, status_path)
+    }
+
+    #[cfg(test)]
+    fn new_for_test_with_status_path(
+        machine_id: MachineId,
+        effects: Arc<tests::TestBuildEffects>,
+        status_path: std::path::PathBuf,
+    ) -> Self {
         Self {
             machine_id,
             effects: BuildEffects::Test(effects),
@@ -169,6 +181,7 @@ impl MachineBuildRuntime {
             }),
             machine_slot: Arc::new(Semaphore::new(1)),
             local_platform: local_platform().expect("supported test platform"),
+            status: BuildStatusRepository::new(status_path),
         }
     }
 
@@ -181,8 +194,38 @@ impl MachineBuildRuntime {
         match &self.effects {
             BuildEffects::Docker(effects) => effects.executor.recover_orphans().await,
             #[cfg(test)]
-            BuildEffects::Test(_) => Ok(()),
+            BuildEffects::Test(effects) => effects.recover_orphans().await,
+        }?;
+        self.recover_status_records()
+            .map_err(|message| BuildExecutionError::Infrastructure {
+                action: "recover machine build status",
+                message,
+                log_summary: BuildLogSummary::none(),
+            })
+    }
+
+    fn recover_status_records(&self) -> Result<(), String> {
+        for record in self.status.records()? {
+            if matches!(record.status.state, BuildExecutorState::Running { .. }) {
+                let log_summary = record.status.log_summary();
+                let failed = BuildExecutorStatus {
+                    acceptance: record.status.acceptance.clone(),
+                    state: BuildExecutorState::Failed {
+                        failure: BuildExecutorStatusFailure::PlatformFailed {
+                            failure: BuildPlatformFailure::MachineUnavailable {
+                                message: failure_message(
+                                    "machine restarted before the accepted build completed",
+                                ),
+                            },
+                        },
+                        cleanup: MachineBuildCleanupOutcome::Confirmed,
+                        log_summary,
+                    },
+                };
+                self.status.write(&BuildStatusRecord::new(failed))?;
+            }
         }
+        Ok(())
     }
 
     pub(crate) async fn prune_cache(
@@ -262,6 +305,8 @@ impl MachineBuildRuntime {
                     platform: build.platform.clone(),
                     supervisor: build.supervisor.clone(),
                     completion: build.completion.clone(),
+                    acceptance: build.acceptance.clone(),
+                    progress: build.progress.clone(),
                 })
                 .collect::<Vec<_>>()
         };
@@ -277,16 +322,28 @@ impl MachineBuildRuntime {
             .acquire_owned()
             .await
             .expect("machine build slot remains open for the runtime lifetime");
+        let cleanup = futures_util::future::join_all(residual.iter().map(|build| {
+            self.effects
+                .force_cleanup(&build.operation_id, &build.platform)
+        }))
+        .await;
+        for (build, cleanup) in residual.iter().zip(cleanup) {
+            let (final_log_sequence, omitted_log_bytes) = build.progress.summary();
+            let _ = self
+                .status
+                .write(&BuildStatusRecord::new(BuildExecutorStatus {
+                    acceptance: build.acceptance.clone(),
+                    state: BuildExecutorState::Cancelled {
+                        cleanup,
+                        log_summary: BuildLogSummary::new(final_log_sequence, omitted_log_bytes),
+                    },
+                }));
+        }
         {
             let mut state = self.lifecycle.state.lock().await;
             state.active.clear();
         }
         self.lifecycle.changed.notify_waiters();
-        futures_util::future::join_all(residual.iter().map(|build| {
-            self.effects
-                .force_cleanup(&build.operation_id, &build.platform)
-        }))
-        .await;
         {
             let mut state = self.lifecycle.state.lock().await;
             state.phase = BuildRuntimePhase::Stopped;
@@ -330,29 +387,68 @@ impl MachineBuildRuntime {
         }
         let timeout = requested_build_timeout(request.timeout_millis)?;
         let acceptance = BuildExecutorAcceptance::from_start_request(&request);
+        match self.status.read(&request.operation_id) {
+            Ok(Some(record)) if record.status.acceptance == acceptance => {
+                return Ok(MachineBuildStartRpcOk::from((
+                    self.machine_id.clone(),
+                    acceptance,
+                )));
+            }
+            Ok(Some(_)) | Err(_) => return Err(MachineBuildStartDomainError::AlreadyRunning),
+            Ok(None) => {}
+        }
         let (cancel, cancel_rx) = watch::channel(false);
         let runtime = self.clone();
         let operation_id = request.operation_id.clone();
-        let registered_operation_id = operation_id.clone();
         let platform = request.platform.clone();
         let task_cancel = cancel.clone();
-        let deadline = Instant::now() + timeout;
-        let (result_tx, result_rx) = oneshot::channel();
         let (launch, launch_rx) = oneshot::channel();
         let completion = Arc::new(BuildSupervisorCompletion::new());
         let completion_guard = BuildSupervisorCompletionGuard(completion.clone());
         let task_operation_id = operation_id.clone();
         let task_acceptance = acceptance.clone();
+        let progress = BuildLogProgress::default();
+        let task_progress = progress.clone();
         let supervisor = tokio::spawn(async move {
             let _completion = completion_guard;
             if launch_rx.await.is_err() {
                 return;
             }
-            let result = runtime
-                .run_build(request, task_acceptance, task_cancel, cancel_rx, deadline)
+            let status = runtime
+                .run_build(
+                    request,
+                    task_acceptance.clone(),
+                    task_cancel,
+                    cancel_rx,
+                    timeout,
+                    task_progress,
+                )
                 .await;
+            if let Err(message) = runtime.status.write(&BuildStatusRecord::new(status)) {
+                if matches!(
+                    runtime.status.read(&task_operation_id),
+                    Ok(Some(BuildStatusRecord { status, .. }))
+                        if status.acceptance == task_acceptance
+                            && status.is_terminal()
+                ) {
+                    runtime.remove_active(&task_operation_id).await;
+                    return;
+                }
+                // The in-memory reservation remains poisoned until restart; the
+                // existing running evidence prevents a relaunch after restart.
+                if let Some(active) = runtime
+                    .lifecycle
+                    .state
+                    .lock()
+                    .await
+                    .active
+                    .get_mut(&task_operation_id)
+                {
+                    active.evidence_error = Some(message);
+                }
+                return;
+            }
             runtime.remove_active(&task_operation_id).await;
-            let _ = result_tx.send(result);
         });
         {
             let mut state = self.lifecycle.state.lock().await;
@@ -362,8 +458,27 @@ impl MachineBuildRuntime {
             }
             if state.active.contains_key(&operation_id) {
                 supervisor.abort();
+                let active = state
+                    .active
+                    .get(&operation_id)
+                    .expect("checked active build");
+                if active.acceptance == acceptance {
+                    return Ok(MachineBuildStartRpcOk::from((
+                        self.machine_id.clone(),
+                        acceptance,
+                    )));
+                }
                 return Err(MachineBuildStartDomainError::AlreadyRunning);
             }
+            let running = BuildExecutorStatus {
+                acceptance: acceptance.clone(),
+                state: BuildExecutorState::Running {
+                    log_summary: BuildLogSummary::none(),
+                },
+            };
+            self.status
+                .write(&BuildStatusRecord::new(running))
+                .map_err(|_| MachineBuildStartDomainError::RuntimeUnavailable)?;
             state.active.insert(
                 operation_id,
                 ActiveBuild {
@@ -371,24 +486,20 @@ impl MachineBuildRuntime {
                     cancel: cancel.clone(),
                     supervisor: supervisor.abort_handle(),
                     completion,
+                    acceptance: acceptance.clone(),
+                    progress,
+                    evidence_error: None,
                 },
             );
         }
         if launch.send(()).is_err() {
             supervisor.abort();
-            self.remove_active(&registered_operation_id).await;
+            return Err(MachineBuildStartDomainError::RuntimeUnavailable);
         }
-        result_rx.await.unwrap_or_else(|_| {
-            Err(MachineBuildStartDomainError::PlatformFailed {
-                acceptance: Box::new(acceptance),
-                failure: BuildPlatformFailure::MachineUnavailable {
-                    message: failure_message(
-                        "machine build task stopped before returning a result",
-                    ),
-                },
-                log_summary: BuildLogSummary::none(),
-            })
-        })
+        Ok(MachineBuildStartRpcOk::from((
+            self.machine_id.clone(),
+            acceptance,
+        )))
     }
 
     async fn run_build(
@@ -397,38 +508,50 @@ impl MachineBuildRuntime {
         acceptance: BuildExecutorAcceptance,
         cancel: watch::Sender<bool>,
         mut cancel_rx: watch::Receiver<bool>,
-        deadline: Instant,
-    ) -> Result<MachineBuildStartRpcOk, MachineBuildStartDomainError> {
+        timeout: std::time::Duration,
+        progress: BuildLogProgress,
+    ) -> BuildExecutorStatus {
+        let mut deadline = Instant::now() + timeout;
+        let mut activity = progress.subscribe();
         let slot = self.machine_slot.clone().acquire_owned();
         let _slot = tokio::select! {
             biased;
+            permit = slot => match permit {
+                Ok(permit) => permit,
+                Err(_) => return failed_status(
+                    acceptance,
+                    BuildPlatformFailure::MachineUnavailable {
+                        message: failure_message("machine build slot closed"),
+                    },
+                    MachineBuildCleanupOutcome::Confirmed,
+                    BuildLogSummary::none(),
+                ),
+            },
             () = tokio::time::sleep_until(deadline) => {
-                return Err(MachineBuildStartDomainError::TimedOut {
-                    acceptance: Box::new(acceptance),
-                    message: failure_message("build timed out waiting for the machine build slot"),
-                    cleanup: MachineBuildCleanupOutcome::Confirmed,
-                    log_summary: BuildLogSummary::none(),
-                });
+                return BuildExecutorStatus {
+                    acceptance,
+                    state: BuildExecutorState::Failed {
+                        failure: BuildExecutorStatusFailure::Stalled {
+                            message: failure_message("build stalled waiting for the machine build slot"),
+                        },
+                        cleanup: MachineBuildCleanupOutcome::Confirmed,
+                        log_summary: BuildLogSummary::none(),
+                    },
+                };
             }
             changed = cancel_rx.changed() => {
                 let _ = changed;
-                return Err(MachineBuildStartDomainError::Cancelled {
-                    acceptance: Box::new(acceptance),
-                    cleanup: MachineBuildCleanupOutcome::Confirmed,
-                    log_summary: BuildLogSummary::none(),
-                });
-            }
-            permit = slot => permit.map_err(|_| MachineBuildStartDomainError::PlatformFailed {
-                acceptance: Box::new(acceptance.clone()),
-                failure: BuildPlatformFailure::MachineUnavailable {
-                    message: failure_message("machine build slot closed"),
-                },
-                log_summary: BuildLogSummary::none(),
-            })?,
+                return BuildExecutorStatus {
+                    acceptance,
+                    state: BuildExecutorState::Cancelled {
+                        cleanup: MachineBuildCleanupOutcome::Confirmed,
+                        log_summary: BuildLogSummary::none(),
+                    },
+                };
+            },
         };
         let operation_id = request.operation_id.clone();
         let platform = request.platform.clone();
-        let progress = BuildLogProgress::default();
         let task_effects = self.effects.clone();
         let machine_id = self.machine_id.clone();
         let task_progress = progress.clone();
@@ -440,19 +563,26 @@ impl MachineBuildRuntime {
                 acceptance.clone(),
                 task_cancel_rx,
                 task_progress,
-                deadline,
             );
             tokio::pin!(task);
-            let completion = tokio::select! {
-                biased;
-                () = tokio::time::sleep_until(deadline) => {
-                    BuildTaskCompletion::TimedOut
+            let completion = loop {
+                tokio::select! {
+                    biased;
+                    result = &mut task => break BuildTaskCompletion::Finished(Box::new(result)),
+                    changed = cancel_rx.changed() => {
+                        let _ = changed;
+                        break BuildTaskCompletion::Cancelled;
+                    }
+                    changed = activity.changed() => {
+                        if changed.is_ok() {
+                            deadline = Instant::now() + timeout;
+                            continue;
+                        }
+                    }
+                    () = tokio::time::sleep_until(deadline) => {
+                        break BuildTaskCompletion::TimedOut;
+                    }
                 }
-                changed = cancel_rx.changed() => {
-                    let _ = changed;
-                    BuildTaskCompletion::Cancelled
-                }
-                result = &mut task => BuildTaskCompletion::Finished(Box::new(result)),
             };
             if !matches!(completion, BuildTaskCompletion::Finished(_)) {
                 let _ = cancel.send(true);
@@ -464,26 +594,32 @@ impl MachineBuildRuntime {
         let (final_log_sequence, omitted_log_bytes) = progress.summary();
         let log_summary = BuildLogSummary::new(final_log_sequence, omitted_log_bytes);
         match completion {
-            BuildTaskCompletion::Cancelled => Err(MachineBuildStartDomainError::Cancelled {
-                acceptance: Box::new(acceptance),
-                cleanup,
-                log_summary,
-            }),
-            BuildTaskCompletion::TimedOut => Err(MachineBuildStartDomainError::TimedOut {
-                acceptance: Box::new(acceptance),
-                message: failure_message(match cleanup {
-                    MachineBuildCleanupOutcome::Confirmed => {
-                        "build exceeded its operation deadline"
-                    }
-                    MachineBuildCleanupOutcome::Unconfirmed => {
-                        "build exceeded its deadline and cleanup did not finish"
-                    }
-                }),
-                cleanup,
-                log_summary,
-            }),
+            BuildTaskCompletion::Cancelled => BuildExecutorStatus {
+                acceptance,
+                state: BuildExecutorState::Cancelled {
+                    cleanup,
+                    log_summary,
+                },
+            },
+            BuildTaskCompletion::TimedOut => BuildExecutorStatus {
+                acceptance,
+                state: BuildExecutorState::Failed {
+                    failure: BuildExecutorStatusFailure::Stalled {
+                        message: failure_message(match cleanup {
+                            MachineBuildCleanupOutcome::Confirmed => {
+                                "build made no verified progress before its stall budget elapsed"
+                            }
+                            MachineBuildCleanupOutcome::Unconfirmed => {
+                                "build stalled and cleanup did not finish"
+                            }
+                        }),
+                    },
+                    cleanup,
+                    log_summary,
+                },
+            },
             BuildTaskCompletion::Finished(result) => {
-                finish_machine_build(*result, cleanup, acceptance, log_summary)
+                finish_machine_build_status(*result, cleanup, acceptance, log_summary)
             }
         }
     }
@@ -495,6 +631,44 @@ impl MachineBuildRuntime {
         };
         let _ = build.cancel.send(true);
         MachineBuildCancelOutcome::Requested
+    }
+
+    async fn status(
+        &self,
+        acceptance: &BuildExecutorAcceptance,
+    ) -> Result<BuildExecutorStatus, MachineBuildStatusDomainError> {
+        let state = self.lifecycle.state.lock().await;
+        if let Some(active) = state.active.get(&acceptance.operation_id) {
+            if active.acceptance != *acceptance {
+                return Err(MachineBuildStatusDomainError::NotFound {
+                    acceptance: acceptance.clone(),
+                });
+            }
+            if let Some(message) = &active.evidence_error {
+                return Err(MachineBuildStatusDomainError::EvidenceUnavailable {
+                    acceptance: acceptance.clone(),
+                    message: failure_message(message.clone()),
+                });
+            }
+            let (final_log_sequence, omitted_log_bytes) = active.progress.summary();
+            return Ok(BuildExecutorStatus {
+                acceptance: active.acceptance.clone(),
+                state: BuildExecutorState::Running {
+                    log_summary: BuildLogSummary::new(final_log_sequence, omitted_log_bytes),
+                },
+            });
+        }
+        drop(state);
+        match self.status.read(&acceptance.operation_id) {
+            Ok(Some(record)) if record.status.acceptance == *acceptance => Ok(record.status),
+            Ok(Some(_)) | Ok(None) => Err(MachineBuildStatusDomainError::NotFound {
+                acceptance: acceptance.clone(),
+            }),
+            Err(message) => Err(MachineBuildStatusDomainError::EvidenceUnavailable {
+                acceptance: acceptance.clone(),
+                message: failure_message(message),
+            }),
+        }
     }
 
     async fn remove_active(&self, operation_id: &OperationId) {
@@ -515,7 +689,6 @@ enum BuildTaskCompletion {
 }
 
 struct MachineBuildOutput {
-    machine_id: MachineId,
     acceptance: BuildExecutorAcceptance,
     image: PlatformImage,
     verified_source: VerifiedBuildSource,
@@ -524,39 +697,85 @@ struct MachineBuildOutput {
 }
 
 impl MachineBuildOutput {
-    fn into_rpc_ok(self) -> MachineBuildStartRpcOk {
-        MachineBuildStartRpcOk::from((
-            self.machine_id,
-            BuildExecutorStartOk {
-                acceptance: self.acceptance,
+    fn into_result(self) -> BuildExecutorStartOk {
+        BuildExecutorStartOk {
+            acceptance: self.acceptance,
+            completion: BuildExecutorCompletion {
                 cleanup: BuildExecutorSuccessCleanupEvidence::confirmed(),
                 image: self.image,
                 verified_source: self.verified_source,
                 toolchain: self.toolchain,
                 log_summary: self.log_summary,
             },
-        ))
+        }
     }
 }
 
-fn finish_machine_build(
+fn finish_machine_build_status(
     result: Result<MachineBuildOutput, BuildExecutionError>,
     cleanup: MachineBuildCleanupOutcome,
     acceptance: BuildExecutorAcceptance,
     log_summary: BuildLogSummary,
-) -> Result<MachineBuildStartRpcOk, MachineBuildStartDomainError> {
+) -> BuildExecutorStatus {
     if cleanup == MachineBuildCleanupOutcome::Unconfirmed {
-        return Err(MachineBuildStartDomainError::PlatformFailed {
-            acceptance: Box::new(acceptance),
-            failure: BuildPlatformFailure::MachineUnavailable {
+        return failed_status(
+            acceptance,
+            BuildPlatformFailure::MachineUnavailable {
                 message: failure_message("build workspace cleanup did not finish successfully"),
             },
+            cleanup,
             log_summary,
-        });
+        );
     }
-    result
-        .map(MachineBuildOutput::into_rpc_ok)
-        .map_err(|error| machine_build_error(error, cleanup, acceptance))
+    match result {
+        Ok(output) => BuildExecutorStatus::from_start_ok(output.into_result()),
+        Err(BuildExecutionError::Cancelled { .. }) => BuildExecutorStatus {
+            acceptance,
+            state: BuildExecutorState::Cancelled {
+                cleanup,
+                log_summary,
+            },
+        },
+        Err(BuildExecutionError::TimedOut { .. }) => BuildExecutorStatus {
+            acceptance,
+            state: BuildExecutorState::Failed {
+                failure: BuildExecutorStatusFailure::Stalled {
+                    message: failure_message("build made no verified progress"),
+                },
+                cleanup,
+                log_summary,
+            },
+        },
+        Err(BuildExecutionError::Platform { failure, .. }) => {
+            failed_status(acceptance, failure, cleanup, log_summary)
+        }
+        Err(BuildExecutionError::Infrastructure {
+            action, message, ..
+        }) => failed_status(
+            acceptance,
+            BuildPlatformFailure::MachineUnavailable {
+                message: failure_message(format!("{action}: {message}")),
+            },
+            cleanup,
+            log_summary,
+        ),
+    }
+}
+
+fn failed_status(
+    acceptance: BuildExecutorAcceptance,
+    failure: BuildPlatformFailure,
+    cleanup: MachineBuildCleanupOutcome,
+    log_summary: BuildLogSummary,
+) -> BuildExecutorStatus {
+    BuildExecutorStatus {
+        acceptance,
+        state: BuildExecutorState::Failed {
+            failure: BuildExecutorStatusFailure::PlatformFailed { failure },
+            cleanup,
+            log_summary,
+        },
+    }
 }
 
 struct ResidualBuild {
@@ -564,125 +783,8 @@ struct ResidualBuild {
     platform: OciPlatform,
     supervisor: AbortHandle,
     completion: Arc<BuildSupervisorCompletion>,
-}
-
-impl BuildEffects {
-    async fn prune_cache(
-        &self,
-    ) -> Result<ployz_core::operation::BuildCachePruneEvidence, BuildExecutionError> {
-        match self {
-            Self::Docker(effects) => effects.executor.prune_cache().await,
-            #[cfg(test)]
-            Self::Test(effects) => effects.prune_cache().await,
-        }
-    }
-
-    async fn execute_and_ingest(
-        &self,
-        machine_id: MachineId,
-        request: MachineBuildStartRpcRequest,
-        acceptance: BuildExecutorAcceptance,
-        cancel_rx: watch::Receiver<bool>,
-        log_progress: BuildLogProgress,
-        deadline: Instant,
-    ) -> Result<MachineBuildOutput, BuildExecutionError> {
-        match self {
-            Self::Docker(effects) => {
-                let operation_id = request.operation_id;
-                let platform = request.platform;
-                let route = machine_build_log_route(&machine_id, &operation_id);
-                let log_destination = BuildLogDestination::new(
-                    effects.log_client.clone(),
-                    route.subject,
-                    route.assignment,
-                );
-                let result: BuildExecutionResult = effects
-                    .executor
-                    .execute(
-                        BuildExecutionRequest::new(
-                            &operation_id,
-                            &request.source,
-                            &request.adapter,
-                            &platform,
-                            &log_destination,
-                        ),
-                        cancel_rx,
-                        log_progress,
-                        deadline,
-                    )
-                    .await?;
-                let log_summary = result.log_summary;
-                let Some(images) = &effects.image_state else {
-                    return Err(BuildExecutionError::Platform {
-                        failure: BuildPlatformFailure::MachineUnavailable {
-                            message: failure_message(
-                                "machine image content service is unavailable",
-                            ),
-                        },
-                        log_summary,
-                    });
-                };
-                let lease_expires_at =
-                    images
-                        .ingest_build_layout(&result.layout)
-                        .await
-                        .map_err(|message| BuildExecutionError::Platform {
-                            failure: BuildPlatformFailure::ImagePushFailed {
-                                message: failure_message(message),
-                            },
-                            log_summary,
-                        })?;
-                let availability_expires_at =
-                    ployz_core::deploy::ImageAvailabilityExpiresAt::from_content_lease_expiry(
-                        lease_expires_at,
-                    )
-                    .map_err(|error| BuildExecutionError::Platform {
-                        failure: BuildPlatformFailure::ImagePushFailed {
-                            message: failure_message(error.to_string()),
-                        },
-                        log_summary,
-                    })?;
-                Ok(MachineBuildOutput {
-                    machine_id: machine_id.clone(),
-                    acceptance,
-                    image: PlatformImage {
-                        seed: machine_id,
-                        manifest_digest: result.layout.manifest_digest().clone(),
-                        image_id: result.layout.image_id().clone(),
-                        availability_expires_at,
-                    },
-                    verified_source: result.verified_source,
-                    toolchain: result.toolchain,
-                    log_summary,
-                })
-            }
-            #[cfg(test)]
-            Self::Test(effects) => {
-                let _ = deadline;
-                effects.execute_and_ingest(log_progress, cancel_rx).await
-            }
-        }
-    }
-
-    async fn force_cleanup(
-        &self,
-        operation_id: &OperationId,
-        platform: &OciPlatform,
-    ) -> MachineBuildCleanupOutcome {
-        let cleanup = async {
-            match self {
-                Self::Docker(effects) => {
-                    effects.executor.force_cleanup(operation_id, platform).await
-                }
-                #[cfg(test)]
-                Self::Test(effects) => effects.force_cleanup().await,
-            }
-        };
-        match tokio::time::timeout(BUILD_FORCE_CLEANUP_TIMEOUT, cleanup).await {
-            Ok(Ok(())) => MachineBuildCleanupOutcome::Confirmed,
-            Ok(Err(_)) | Err(_) => MachineBuildCleanupOutcome::Unconfirmed,
-        }
-    }
+    acceptance: BuildExecutorAcceptance,
+    progress: BuildLogProgress,
 }
 
 fn requested_build_timeout(
@@ -725,43 +827,6 @@ fn validate_cancel_provenance(
         });
     }
     Ok(())
-}
-
-fn machine_build_error(
-    error: BuildExecutionError,
-    cleanup: MachineBuildCleanupOutcome,
-    acceptance: BuildExecutorAcceptance,
-) -> MachineBuildStartDomainError {
-    let log_summary = error.log_summary();
-    match error {
-        BuildExecutionError::Cancelled { .. } => MachineBuildStartDomainError::Cancelled {
-            acceptance: Box::new(acceptance),
-            cleanup,
-            log_summary,
-        },
-        BuildExecutionError::TimedOut { .. } => MachineBuildStartDomainError::TimedOut {
-            acceptance: Box::new(acceptance),
-            message: failure_message("build exceeded its operation deadline"),
-            cleanup,
-            log_summary,
-        },
-        BuildExecutionError::Platform { failure, .. } => {
-            MachineBuildStartDomainError::PlatformFailed {
-                acceptance: Box::new(acceptance),
-                failure,
-                log_summary,
-            }
-        }
-        BuildExecutionError::Infrastructure {
-            action, message, ..
-        } => MachineBuildStartDomainError::PlatformFailed {
-            acceptance: Box::new(acceptance),
-            failure: BuildPlatformFailure::MachineUnavailable {
-                message: failure_message(format!("{action}: {message}")),
-            },
-            log_summary,
-        },
-    }
 }
 
 fn build_runtime_stopped() -> MachineBuildStartDomainError {
@@ -836,6 +901,45 @@ pub(crate) async fn handle_build_cancel(
             },
         )),
     ))
+}
+
+pub(crate) async fn handle_build_status(
+    machine_id: MachineId,
+    runtime: Option<MachineBuildRuntime>,
+    request: NatsServiceRequest,
+) -> NatsServiceResponse {
+    let request = match decode_json_request::<MachineBuildStatusRpcRequest>(&request) {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+    let expected = BuildExecutorAssignment::Cluster {
+        machine_id: machine_id.clone(),
+    };
+    if request.acceptance.assignment != expected {
+        return machine_domain_error(MachineBuildStatusRpcResponse::DomainError {
+            machine_id,
+            error: MachineBuildStatusDomainError::NotFound {
+                acceptance: request.acceptance,
+            },
+        });
+    }
+    let Some(runtime) = runtime else {
+        return machine_domain_error(MachineBuildStatusRpcResponse::DomainError {
+            machine_id,
+            error: MachineBuildStatusDomainError::EvidenceUnavailable {
+                acceptance: request.acceptance,
+                message: failure_message("machine build runtime is unavailable"),
+            },
+        });
+    };
+    match runtime.status(&request.acceptance).await {
+        Ok(status) => machine_success(MachineBuildStatusRpcResponse::Ok(
+            MachineBuildStatusRpcOk::from((machine_id, status)),
+        )),
+        Err(error) => {
+            machine_domain_error(MachineBuildStatusRpcResponse::DomainError { machine_id, error })
+        }
+    }
 }
 
 pub(crate) async fn handle_build_cache_prune(

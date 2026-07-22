@@ -493,6 +493,31 @@ fn inventory_scopes_and_fixed_scopes_match_their_intended_families() {
     );
 }
 
+#[test]
+fn machine_build_status_is_a_narrow_query_permission() {
+    let machine = machine_id("machine-a");
+    let subject = machine_service(&machine, MachineServiceEndpoint::BuildStatus);
+
+    assert_eq!(subject, "plz.v1.rpc.machine.query.machine-a.build.status");
+    assert!(permits(
+        NatsPrincipal::Controller,
+        Direction::Publish,
+        &subject
+    ));
+    assert!(permits(
+        NatsPrincipal::Machine {
+            machine_id: machine
+        },
+        Direction::Subscribe,
+        &subject
+    ));
+    assert!(!permits(
+        NatsPrincipal::Operator,
+        Direction::Publish,
+        &subject
+    ));
+}
+
 fn nats_subject_matches(pattern: &str, subject: &str) -> bool {
     let mut pattern = pattern.split('.');
     let mut subject = subject.split('.');

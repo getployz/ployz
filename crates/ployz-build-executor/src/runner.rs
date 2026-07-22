@@ -41,6 +41,12 @@ pub struct DockerBuildExecutor {
     docker_hub_registry_mirror: Option<DockerHubRegistryMirror>,
 }
 
+#[derive(Clone, Copy)]
+pub enum BuildExecutionSupervision {
+    AbsoluteDeadline(Instant),
+    ProgressSupervised,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DockerHubRegistryMirror(String);
 
@@ -179,7 +185,7 @@ impl DockerBuildExecutor {
         request: BuildExecutionRequest<'_>,
         mut cancelled: watch::Receiver<bool>,
         log_progress: BuildLogProgress,
-        deadline: Instant,
+        supervision: BuildExecutionSupervision,
     ) -> Result<BuildExecutionResult, BuildExecutionError> {
         let effect_guard = self.effect_guard.acquire().await?;
         let workspace = self.workspace(request.operation_id, request.platform);
@@ -197,7 +203,7 @@ impl DockerBuildExecutor {
                 request,
                 &mut cancelled,
                 log_progress,
-                deadline,
+                supervision,
                 effect_guard,
             )
             .await;
@@ -209,7 +215,7 @@ impl DockerBuildExecutor {
         request: BuildExecutionRequest<'_>,
         cancelled: &mut watch::Receiver<bool>,
         log_progress: BuildLogProgress,
-        deadline: Instant,
+        supervision: BuildExecutionSupervision,
         effect_guard: OwnedSemaphorePermit,
     ) -> Result<BuildExecutionResult, BuildExecutionError> {
         let BuildExecutionRequest {
@@ -318,7 +324,14 @@ impl DockerBuildExecutor {
         let logs = finish_builder_run(build, ownership, cleanup)?;
         let layout_path = plan.oci_layout;
         let platform_for_validation = platform.clone();
-        let validation_control = OciValidationControl::new(deadline, cancelled.clone());
+        let validation_control = match supervision {
+            BuildExecutionSupervision::AbsoluteDeadline(deadline) => {
+                OciValidationControl::new(deadline, cancelled.clone())
+            }
+            BuildExecutionSupervision::ProgressSupervised => {
+                OciValidationControl::cancellation_only(cancelled.clone())
+            }
+        };
         let log_summary = BuildLogSummary::new(logs.final_sequence, logs.omitted_bytes);
         let layout = tokio::task::spawn_blocking(move || {
             let _effect_guard = effect_guard;
