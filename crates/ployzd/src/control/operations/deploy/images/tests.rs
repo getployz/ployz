@@ -597,7 +597,7 @@ impl MachineImageEnsureRuntime for ConcurrentEnsureRuntime {
         };
         Ok(ployz_core::image::ImageEnsureOk {
             machine_id: machine_id.clone(),
-            status,
+            ensure_status: status,
         })
     }
 }

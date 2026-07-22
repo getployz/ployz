@@ -702,10 +702,7 @@ mod tests {
             timeout_millis: 1_000,
         };
         let request_json = json!({
-            "pull": {
-                "source": "registry",
-                "reference": "registry.example/api:rev_2",
-            },
+            "image": "registry.example/api:rev_2",
             "runtime": {
                 "command": null,
                 "entrypoint": null,

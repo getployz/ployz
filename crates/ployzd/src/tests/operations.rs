@@ -514,7 +514,7 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
                 service_id: service_id("svc_api"),
                 machine_id: machine_id("machine_a"),
                 requested: requested_image,
-                resolved: resolved_image,
+                resolved: resolved_image.clone(),
                 credential_supplied: false,
             },
             OperationEvent::DeployPlanCreated {
@@ -548,6 +548,14 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
                 operation_id: deploy_operation.clone(),
                 phase: DeployPhaseNumber::try_new(1).expect("positive phase number"),
                 service_ids: vec![service_id("svc_api")],
+            },
+            OperationEvent::DeployImageAvailabilityVerified {
+                operation_id: deploy_operation.clone(),
+                service_id: service_id("svc_api"),
+                machine_id: machine_id("machine_a"),
+                image: resolved_image,
+                platform: ployz_core::image::OciPlatform::try_new("linux", "amd64")
+                    .expect("valid platform"),
             },
             OperationEvent::DeployContainerStarted {
                 operation_id: deploy_operation.clone(),

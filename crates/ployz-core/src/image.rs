@@ -636,7 +636,7 @@ pub enum ImageEnsureFailure {
 #[serde(deny_unknown_fields)]
 pub struct ImageEnsureOk {
     pub machine_id: MachineId,
-    pub status: ImageEnsureStatus,
+    pub ensure_status: ImageEnsureStatus,
 }
 
 impl MachineRpcResponder for ImageEnsureOk {

@@ -1379,7 +1379,7 @@ impl MachineImageEnsureRuntime for RecordingImageEnsureRuntime {
             return scripted
                 .map(|status| ployz_core::image::ImageEnsureOk {
                     machine_id: machine_id.clone(),
-                    status,
+                    ensure_status: status,
                 })
                 .map_err(|reason| {
                     crate::control::role_client::machine::MachineImageEnsureError::Unavailable {
@@ -1409,7 +1409,7 @@ impl MachineImageEnsureRuntime for RecordingImageEnsureRuntime {
         };
         Ok(ployz_core::image::ImageEnsureOk {
             machine_id: machine_id.clone(),
-            status,
+            ensure_status: status,
         })
     }
 }

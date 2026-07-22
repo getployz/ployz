@@ -722,18 +722,15 @@ fn image(value: &str) -> ImageReference {
 
 #[test]
 fn container_run_request_wire_shape_survived_run_spec_dissolution() {
-    // The run RPC keeps the managed container identity flat and carries an
-    // explicit image pull instruction.
+    // The run RPC keeps the managed container identity flat and carries the
+    // exact image that must already be available locally.
     let request = run_request();
     let json = serde_json::to_value(&request).expect("run request serializes");
 
     assert_eq!(
         json,
         serde_json::json!({
-            "pull": {
-                "source": "registry",
-                "reference": "registry.example/api:rev_2",
-            },
+            "image": "registry.example/api:rev_2",
             "runtime": {
                 "command": null,
                 "entrypoint": null,

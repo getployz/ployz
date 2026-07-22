@@ -15,6 +15,8 @@ use super::facts::{
     MachineEndpointCache, MachineFactsGetState, MachineFactsState, handle_facts_get,
     handle_facts_refresh,
 };
+#[cfg(test)]
+use super::image_ensure::ImageEnsureRuntime;
 use super::images::{
     AvailableImageService, MachineImageEnsureService, handle_image_blob_check,
     handle_image_blob_push, handle_image_ensure, handle_image_manifest_push, handle_image_remove,
@@ -175,7 +177,10 @@ where
         MachineRoleProjectionServices {
             build_state: None,
             image_state: None,
-            image_ensure_state: None,
+            image_ensure_state: Some(MachineImageEnsureService {
+                runtime: ImageEnsureRuntime::completing_for_test(),
+                available: None,
+            }),
             projection_state: projection_state.clone(),
         },
     )
@@ -247,7 +252,10 @@ where
         MachineRoleProjectionServices {
             build_state: None,
             image_state: None,
-            image_ensure_state: None,
+            image_ensure_state: Some(MachineImageEnsureService {
+                runtime: ImageEnsureRuntime::completing_for_test(),
+                available: None,
+            }),
             projection_state: MachineProjectionState::new(),
         },
     )

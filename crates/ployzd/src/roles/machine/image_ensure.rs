@@ -175,6 +175,21 @@ impl ImageEnsureRuntime {
         }
     }
 
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn completing_for_test() -> Self {
+        Self {
+            machine: ImageEnsureMachine::Test(TestImageEnsureMachine {
+                behavior: TestPullBehavior::Complete,
+                starts: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            }),
+            state: Arc::new(Mutex::new(ImageEnsureState {
+                accepting: true,
+                tasks: HashMap::new(),
+            })),
+        }
+    }
+
     pub(crate) async fn start(
         &self,
         owner: ManagedContainerIdentity,

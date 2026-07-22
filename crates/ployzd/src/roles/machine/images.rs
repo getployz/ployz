@@ -603,7 +603,7 @@ pub(crate) async fn handle_image_ensure(
     };
     machine_success(ImageEnsureResponse::Ok(ImageEnsureOk {
         machine_id,
-        status,
+        ensure_status: status,
     }))
 }
 

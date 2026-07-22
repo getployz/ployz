@@ -269,14 +269,14 @@ pub(super) async fn run_image_ensure_wave_with_runtime<N: MachineImageEnsureRunt
     {
         let statuses = start_outcomes
             .into_iter()
-            .map(|outcome| outcome.ok().map(|ok| ok.status))
+            .map(|outcome| outcome.ok().map(|ok| ok.ensure_status))
             .collect::<Vec<_>>();
         cancel_unfinished_jobs(&runtime, jobs, &statuses).await;
         return Err((index, ImageEnsureDriveError::Call(error)));
     }
     let mut statuses = start_outcomes
         .into_iter()
-        .map(|outcome| outcome.expect("all starts succeeded").status)
+        .map(|outcome| outcome.expect("all starts succeeded").ensure_status)
         .collect::<Vec<_>>();
     loop {
         for (index, status) in statuses.iter().enumerate() {
@@ -312,7 +312,7 @@ pub(super) async fn run_image_ensure_wave_with_runtime<N: MachineImageEnsureRunt
                 .get_mut(index)
                 .expect("poll result index belongs to the image ensure wave");
             *status = match outcome {
-                Ok(status) => status.status,
+                Ok(status) => status.ensure_status,
                 Err(error) => {
                     drop(polls);
                     let statuses = statuses.into_iter().map(Some).collect::<Vec<_>>();
