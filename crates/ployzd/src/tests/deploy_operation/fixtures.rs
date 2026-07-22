@@ -304,6 +304,14 @@ pub(crate) struct RecordingRuntime {
     pub(super) removals: Vec<(MachineId, MachineContainerRemoveRpcRequest)>,
     pub(super) image_removals: Vec<(MachineId, ployz_core::image::ImageRemoveRequest)>,
     pub(super) image_ensures: Vec<(MachineId, ployz_core::image::ImageEnsureRequest)>,
+    image_ensure_unavailable_remaining: usize,
+    image_ensure_status: Option<ployz_core::image::ImageEnsureStatus>,
+    image_ensure_script: std::collections::VecDeque<
+        Result<
+            ployz_core::image::ImageEnsureStatus,
+            crate::roles::machine::MachineRuntimeUnavailableReason,
+        >,
+    >,
     pub(super) volume_ensures: Vec<(MachineId, VolumePinState)>,
     volume_ensure_failure: Option<crate::control::operations::deploy::MachineVolumeEnsureError>,
     required_pin_commit: Option<Arc<AtomicBool>>,
@@ -706,6 +714,31 @@ impl DeployContainerForAssert {
 }
 
 impl RecordingRuntime {
+    pub(super) fn with_image_ensure_unavailable(mut self, count: usize) -> Self {
+        self.image_ensure_unavailable_remaining = count;
+        self
+    }
+
+    pub(super) fn with_image_ensure_status(
+        mut self,
+        status: ployz_core::image::ImageEnsureStatus,
+    ) -> Self {
+        self.image_ensure_status = Some(status);
+        self
+    }
+
+    pub(super) fn with_image_ensure_script(
+        mut self,
+        script: impl IntoIterator<
+            Item = Result<
+                ployz_core::image::ImageEnsureStatus,
+                crate::roles::machine::MachineRuntimeUnavailableReason,
+            >,
+        >,
+    ) -> Self {
+        self.image_ensure_script = script.into_iter().collect();
+        self
+    }
     pub(super) fn requiring_pin_commit(mut self, signal: Arc<AtomicBool>) -> Self {
         self.required_pin_commit = Some(signal);
         self
@@ -730,6 +763,9 @@ impl RecordingRuntime {
             removals: Vec::new(),
             image_removals: Vec::new(),
             image_ensures: Vec::new(),
+            image_ensure_unavailable_remaining: 0,
+            image_ensure_status: None,
+            image_ensure_script: std::collections::VecDeque::new(),
             volume_ensures: Vec::new(),
             volume_ensure_failure: None,
             required_pin_commit: None,
@@ -763,6 +799,9 @@ impl RecordingRuntime {
             removals: Vec::new(),
             image_removals: Vec::new(),
             image_ensures: Vec::new(),
+            image_ensure_unavailable_remaining: 0,
+            image_ensure_status: None,
+            image_ensure_script: std::collections::VecDeque::new(),
             volume_ensures: Vec::new(),
             volume_ensure_failure: None,
             required_pin_commit: None,
@@ -796,6 +835,9 @@ impl RecordingRuntime {
             removals: Vec::new(),
             image_removals: Vec::new(),
             image_ensures: Vec::new(),
+            image_ensure_unavailable_remaining: 0,
+            image_ensure_status: None,
+            image_ensure_script: std::collections::VecDeque::new(),
             volume_ensures: Vec::new(),
             volume_ensure_failure: None,
             required_pin_commit: None,
@@ -829,6 +871,9 @@ impl RecordingRuntime {
             removals: Vec::new(),
             image_removals: Vec::new(),
             image_ensures: Vec::new(),
+            image_ensure_unavailable_remaining: 0,
+            image_ensure_status: None,
+            image_ensure_script: std::collections::VecDeque::new(),
             volume_ensures: Vec::new(),
             volume_ensure_failure: None,
             required_pin_commit: None,
@@ -865,6 +910,9 @@ impl RecordingRuntime {
             removals: Vec::new(),
             image_removals: Vec::new(),
             image_ensures: Vec::new(),
+            image_ensure_unavailable_remaining: 0,
+            image_ensure_status: None,
+            image_ensure_script: std::collections::VecDeque::new(),
             volume_ensures: Vec::new(),
             volume_ensure_failure: None,
             required_pin_commit: None,
@@ -898,6 +946,9 @@ impl RecordingRuntime {
             removals: Vec::new(),
             image_removals: Vec::new(),
             image_ensures: Vec::new(),
+            image_ensure_unavailable_remaining: 0,
+            image_ensure_status: None,
+            image_ensure_script: std::collections::VecDeque::new(),
             volume_ensures: Vec::new(),
             volume_ensure_failure: None,
             required_pin_commit: None,
@@ -1075,9 +1126,50 @@ impl MachineContainerRuntime for RecordingRuntime {
     > {
         self.image_ensures
             .push((machine_id.clone(), request.clone()));
+        if self.image_ensure_unavailable_remaining > 0 {
+            self.image_ensure_unavailable_remaining -= 1;
+            return Err(
+                crate::control::role_client::machine::MachineImageEnsureError::Unavailable {
+                    machine_id: machine_id.clone(),
+                    reason: crate::roles::machine::MachineRuntimeUnavailableReason::RequestTimedOut,
+                },
+            );
+        }
+        if let Some(scripted) = self.image_ensure_script.pop_front() {
+            return scripted
+                .map(|status| ployz_core::image::ImageEnsureOk {
+                    machine_id: machine_id.clone(),
+                    status,
+                })
+                .map_err(|reason| {
+                    crate::control::role_client::machine::MachineImageEnsureError::Unavailable {
+                        machine_id: machine_id.clone(),
+                        reason,
+                    }
+                });
+        }
+        let status = match request {
+            ployz_core::image::ImageEnsureRequest::Start { source, .. } => self.image_ensure_status.clone().unwrap_or_else(|| {
+                ployz_core::image::ImageEnsureStatus::Completed {
+                    reference: ployz_core::deploy::ImageReference::try_new(source.reference())
+                        .expect("fixture image ensure reference is valid"),
+                }
+            }),
+            ployz_core::image::ImageEnsureRequest::Status { .. } => self.image_ensure_status.clone().unwrap_or_else(|| {
+                ployz_core::image::ImageEnsureStatus::Completed {
+                    reference: ployz_core::deploy::ImageReference::try_new(
+                        "registry.example/fixture@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    )
+                    .expect("fixture image reference"),
+                }
+            }),
+            ployz_core::image::ImageEnsureRequest::Cancel { .. } => {
+                ployz_core::image::ImageEnsureStatus::Cancelled
+            }
+        };
         Ok(ployz_core::image::ImageEnsureOk {
             machine_id: machine_id.clone(),
-            platform: request.platform,
+            status,
         })
     }
 

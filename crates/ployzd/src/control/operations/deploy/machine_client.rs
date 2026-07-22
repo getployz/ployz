@@ -200,16 +200,6 @@ fn map_run_error(
     match error {
         MachineCallError::Unavailable(reason) => unavailable(machine_id, reason),
         MachineCallError::Domain(error) => match error {
-            MachineContainerRunDomainError::ImagePullFailed {
-                service_id,
-                namespace_revision_entry_id,
-                message,
-            } => MachineContainerRuntimeError::ImagePullFailed {
-                machine_id: machine_id.clone(),
-                service_id,
-                namespace_revision_entry_id,
-                message,
-            },
             MachineContainerRunDomainError::OperationStepAmbiguous {
                 operation_id,
                 step_id,

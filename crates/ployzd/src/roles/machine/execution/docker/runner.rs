@@ -362,9 +362,6 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
             endpoint_mtu,
         )
         .await?;
-        self.pull_machine_image(&command.pull)
-            .await
-            .map_err(|message| MachineContainerCreateError::ImagePull { message })?;
         // Every service container joins the already-converged endpoint
         // network; route state alone decides whether anything dials it.
         let response = docker
@@ -868,7 +865,7 @@ fn create_body(
     command: CreateManagedContainer,
     endpoint_network_subnet: &str,
 ) -> ContainerCreateBody {
-    let image = command.pull.reference();
+    let image = command.image.as_str().to_owned();
     let runtime = command.runtime;
     let env = if runtime.environment.is_empty() {
         None
@@ -1144,7 +1141,6 @@ mod tests {
     use crate::roles::machine::execution::docker::test_support::{
         TEST_ENDPOINT_SUBNET, image, runner_with_responses,
     };
-    use crate::roles::machine::protocol::MachineImagePull;
     use ployz_core::deploy::{
         ContainerCommand, ContainerEntrypoint, ContainerHealthcheck, ContainerHealthcheckTest,
         ContainerMountPath, ContainerResourceLimits, ContainerRestartPolicy, ContainerRuntimeSpec,
@@ -1278,10 +1274,7 @@ mod tests {
     fn create_body_preserves_image_and_labels() {
         let body = create_body(
             CreateManagedContainer {
-                pull: MachineImagePull::Registry {
-                    credential: None,
-                    reference: image("ghcr.io/acme/api:rev-2"),
-                },
+                image: image("ghcr.io/acme/api:rev-2"),
                 runtime: ContainerRuntimeSpec::image_defaults(),
                 provisioned_volumes: Vec::new(),
                 identity: managed_identity(),
@@ -1296,14 +1289,41 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn missing_local_image_fails_create_without_network_acquisition() {
+        let network = r#"{"Driver":"bridge","Options":{"com.docker.network.bridge.name":"br-test","com.docker.network.driver.mtu":"1420"},"IPAM":{"Config":[{"Subnet":"10.42.7.0/24"}]}}"#;
+        let (runner, attempts, _socket_dir) = runner_with_responses(vec![
+            (200, network.to_owned()),
+            (
+                404,
+                r#"{"message":"No such image: registry.example/api:missing"}"#.to_owned(),
+            ),
+            (
+                500,
+                r#"{"message":"/images/create must not be called"}"#.to_owned(),
+            ),
+        ])
+        .await;
+        let error = runner
+            .create_managed_container(CreateManagedContainer {
+                image: image("registry.example/api:missing"),
+                runtime: ContainerRuntimeSpec::image_defaults(),
+                provisioned_volumes: Vec::new(),
+                identity: managed_identity(),
+            })
+            .await
+            .expect_err("missing local image fails Docker create");
+        assert!(
+            matches!(error, MachineContainerCreateError::Create { message } if message.contains("No such image"))
+        );
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
     #[test]
     fn create_body_sets_runtime_fields() {
         let body = create_body(
             CreateManagedContainer {
-                pull: MachineImagePull::Registry {
-                    credential: None,
-                    reference: image("ghcr.io/acme/api:rev-2"),
-                },
+                image: image("ghcr.io/acme/api:rev-2"),
                 runtime: runtime_spec(),
                 provisioned_volumes: Vec::new(),
                 identity: managed_identity(),
@@ -1324,10 +1344,7 @@ mod tests {
     fn create_body_sets_machine_local_dns_and_namespace_search_domain() {
         let body = create_body(
             CreateManagedContainer {
-                pull: MachineImagePull::Registry {
-                    credential: None,
-                    reference: image("ghcr.io/acme/api:rev-2"),
-                },
+                image: image("ghcr.io/acme/api:rev-2"),
                 runtime: ContainerRuntimeSpec::image_defaults(),
                 provisioned_volumes: Vec::new(),
                 identity: managed_identity(),
@@ -1365,10 +1382,7 @@ mod tests {
 
         let body = create_body(
             CreateManagedContainer {
-                pull: MachineImagePull::Registry {
-                    credential: None,
-                    reference: image("ghcr.io/acme/api:rev-2"),
-                },
+                image: image("ghcr.io/acme/api:rev-2"),
                 runtime,
                 provisioned_volumes: Vec::new(),
                 identity: managed_identity(),
@@ -1401,10 +1415,7 @@ mod tests {
         runtime.entrypoint = Some(ContainerEntrypoint::Clear);
         let body = create_body(
             CreateManagedContainer {
-                pull: MachineImagePull::Registry {
-                    credential: None,
-                    reference: image("ghcr.io/acme/api:rev-2"),
-                },
+                image: image("ghcr.io/acme/api:rev-2"),
                 runtime,
                 provisioned_volumes: Vec::new(),
                 identity: managed_identity(),
@@ -1419,10 +1430,7 @@ mod tests {
     fn create_body_sets_default_stop_timeout() {
         let body = create_body(
             CreateManagedContainer {
-                pull: MachineImagePull::Registry {
-                    credential: None,
-                    reference: image("ghcr.io/acme/api:rev-2"),
-                },
+                image: image("ghcr.io/acme/api:rev-2"),
                 runtime: ContainerRuntimeSpec::image_defaults(),
                 provisioned_volumes: Vec::new(),
                 identity: managed_identity(),
@@ -1443,10 +1451,7 @@ mod tests {
         }];
         let body = create_body(
             CreateManagedContainer {
-                pull: MachineImagePull::Registry {
-                    credential: None,
-                    reference: image("ghcr.io/acme/api:rev-2"),
-                },
+                image: image("ghcr.io/acme/api:rev-2"),
                 runtime,
                 provisioned_volumes: Vec::new(),
                 identity: managed_identity(),
@@ -1537,10 +1542,7 @@ mod tests {
         // later route attach can reach it without recreation.
         let body = create_body(
             CreateManagedContainer {
-                pull: MachineImagePull::Registry {
-                    credential: None,
-                    reference: image("ghcr.io/acme/api:rev-2"),
-                },
+                image: image("ghcr.io/acme/api:rev-2"),
                 runtime: ContainerRuntimeSpec::image_defaults(),
                 provisioned_volumes: Vec::new(),
                 identity: managed_identity(),

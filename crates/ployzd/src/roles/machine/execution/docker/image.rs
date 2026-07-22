@@ -5,15 +5,14 @@ use bollard::errors::Error as BollardError;
 use bollard::query_parameters::CreateImageOptionsBuilder;
 use futures_util::StreamExt;
 use ployz_core::deploy::{ImageReference, RegistryCredential};
-use ployz_core::image::OciDigest;
+use ployz_core::image::{ImageEnsureSource, OciDigest};
 
 use super::network::is_docker_object_missing;
 use super::runner::DockerManagedContainerRunner;
-use crate::roles::machine::protocol::MachineImagePull;
+use crate::roles::machine::image_ensure::ImagePullProgress;
 use crate::roles::machine::runner::MachineRegistryImageResolveError;
 
 const REGISTRY_RETRY_DELAYS: [Duration; 2] = [Duration::from_millis(250), Duration::from_secs(1)];
-const MESH_SEED_PULL_ATTEMPTS: u8 = 10;
 const MESH_SEED_PULL_RETRY_DELAY: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,54 +95,11 @@ impl DockerManagedContainerRunner {
         })
     }
 
-    async fn pull_registry_image(
-        &self,
-        image: &ImageReference,
-        credential: Option<&RegistryCredential>,
-    ) -> Result<(), DockerImagePullError> {
-        if image.pinned_digest().is_some() {
-            let mut retry_delays = REGISTRY_RETRY_DELAYS.into_iter();
-            loop {
-                let docker = match self.docker().await {
-                    Ok(docker) => docker,
-                    Err(error) => {
-                        let message = error.to_string();
-                        let Some(delay) = retry_delays.next() else {
-                            return Err(DockerImagePullError::Retryable { message });
-                        };
-                        tokio::time::sleep(delay).await;
-                        continue;
-                    }
-                };
-                match docker.inspect_image(image.as_str()).await {
-                    Ok(_) => return Ok(()),
-                    Err(error) if is_docker_object_missing(&error) => break,
-                    Err(error) => {
-                        return Err(DockerImagePullError::Terminal {
-                            message: format!(
-                                "inspect local Docker image {}: {error}",
-                                image.as_str()
-                            ),
-                        });
-                    }
-                }
-            }
-        }
-
-        for delay in REGISTRY_RETRY_DELAYS {
-            match self.pull_image(image.as_str(), credential).await {
-                Ok(()) => return Ok(()),
-                Err(DockerImagePullError::Retryable { .. }) => tokio::time::sleep(delay).await,
-                Err(error) => return Err(error),
-            }
-        }
-        self.pull_image(image.as_str(), credential).await
-    }
-
-    async fn pull_image(
+    async fn pull_image_with_progress(
         &self,
         image: &str,
         credential: Option<&RegistryCredential>,
+        progress: &tokio::sync::mpsc::UnboundedSender<ImagePullProgress>,
     ) -> Result<(), DockerImagePullError> {
         let docker = self
             .docker()
@@ -153,50 +109,58 @@ impl DockerManagedContainerRunner {
             })?;
         let options = CreateImageOptionsBuilder::new().from_image(image).build();
         let mut stream = docker.create_image(Some(options), None, docker_credentials(credential));
-
         while let Some(result) = stream.next().await {
-            result.map_err(|error| DockerImagePullError::from_bollard(image, credential, error))?;
+            let frame = result
+                .map_err(|error| DockerImagePullError::from_bollard(image, credential, error))?;
+            let detail = frame.progress_detail.unwrap_or_default();
+            let _ = progress.send(ImagePullProgress {
+                layer: frame.id.unwrap_or_else(|| "manifest".to_owned()),
+                state: frame.status.unwrap_or_else(|| "progress".to_owned()),
+                current_bytes: detail.current.unwrap_or_default().max(0) as u64,
+            });
         }
-
         Ok(())
     }
 
-    pub(super) async fn pull_machine_image(&self, pull: &MachineImagePull) -> Result<(), String> {
-        match pull {
-            MachineImagePull::Registry {
-                reference,
-                credential,
-            } => self
-                .pull_registry_image(reference, credential.as_ref())
-                .await
-                .map_err(DockerImagePullError::into_message),
-            MachineImagePull::MeshSeed {
-                seed_host: _,
-                repository: _,
-                manifest_digest: _,
-            } => self
-                .pull_image(&pull.reference(), None)
-                .await
-                .map_err(DockerImagePullError::into_message),
-        }
-    }
-
-    pub(crate) async fn pull_mesh_seed_image(&self, reference: &str) -> Result<(), String> {
-        for attempt in 1..=MESH_SEED_PULL_ATTEMPTS {
-            match self.pull_image(reference, None).await {
-                Ok(()) => return Ok(()),
-                Err(error) if attempt == MESH_SEED_PULL_ATTEMPTS => {
-                    return Err(error.into_message());
-                }
-                Err(
-                    DockerImagePullError::Retryable { message: _ }
-                    | DockerImagePullError::Terminal { message: _ },
-                ) => {
-                    tokio::time::sleep(MESH_SEED_PULL_RETRY_DELAY).await;
+    pub(crate) async fn ensure_machine_image(
+        &self,
+        source: &ImageEnsureSource,
+        progress: tokio::sync::mpsc::UnboundedSender<ImagePullProgress>,
+    ) -> Result<(), String> {
+        let exact_reference = source.reference();
+        if exact_reference.contains("@sha256:") {
+            let docker = self.docker().await.map_err(|error| error.to_string())?;
+            match docker.inspect_image(&exact_reference).await {
+                Ok(_) => return Ok(()),
+                Err(error) if is_docker_object_missing(&error) => {}
+                Err(error) => {
+                    return Err(format!(
+                        "inspect local Docker image {exact_reference}: {error}"
+                    ));
                 }
             }
         }
-        unreachable!("the mesh-seed pull loop has at least one attempt")
+        let (reference, credential) = match source {
+            ImageEnsureSource::Registry {
+                reference,
+                credential,
+            } => (reference.as_str().to_owned(), credential.as_ref()),
+            ImageEnsureSource::MeshSeed { .. } | ImageEnsureSource::LocalSeed { .. } => {
+                (source.reference(), None)
+            }
+        };
+        loop {
+            match self
+                .pull_image_with_progress(&reference, credential, &progress)
+                .await
+            {
+                Ok(()) => return Ok(()),
+                Err(DockerImagePullError::Retryable { .. }) => {
+                    tokio::time::sleep(MESH_SEED_PULL_RETRY_DELAY).await;
+                }
+                Err(error) => return Err(error.into_message()),
+            }
+        }
     }
 }
 
@@ -278,11 +242,18 @@ mod tests {
     use std::sync::atomic::Ordering;
 
     use ployz_core::deploy::RegistryCredential;
-    use ployz_core::image::OciDigest;
+    use ployz_core::image::{ImageRepository, OciDigest, OciPlatform};
 
     use super::*;
     use crate::roles::machine::execution::docker::test_support::{image, runner_with_responses};
     use crate::roles::machine::runner::{MachineContainerRunner, MachineRegistryImageResolveError};
+
+    fn registry_source(reference: ImageReference) -> ImageEnsureSource {
+        ImageEnsureSource::Registry {
+            reference,
+            credential: None,
+        }
+    }
 
     #[tokio::test]
     async fn registry_resolution_retries_transient_server_failures() {
@@ -366,16 +337,46 @@ mod tests {
         ])
         .await;
 
+        let source = registry_source(reference);
+        let (progress, _rx) = tokio::sync::mpsc::unbounded_channel();
         runner
-            .pull_registry_image(&reference, None)
+            .ensure_machine_image(&source, progress)
             .await
             .expect("transient pull succeeds on retry");
+        let (progress, _rx) = tokio::sync::mpsc::unbounded_channel();
         runner
-            .pull_registry_image(&reference, None)
+            .ensure_machine_image(&source, progress)
             .await
             .expect("local digest skips another registry pull");
 
         assert_eq!(attempts.load(Ordering::SeqCst), 4);
+    }
+
+    #[tokio::test]
+    async fn exact_mesh_source_reuses_local_digest_without_create_image() {
+        let digest = OciDigest::try_new(format!("sha256:{}", "f".repeat(64))).expect("digest");
+        let source = ImageEnsureSource::MeshSeed {
+            seed_host: "10.42.0.1".parse().expect("host"),
+            repository: ImageRepository::try_new("ployz/default/api".to_owned())
+                .expect("repository"),
+            manifest_digest: digest.clone(),
+            image_id: OciDigest::try_new(format!("sha256:{}", "e".repeat(64))).expect("image id"),
+            platform: OciPlatform::try_new("linux", "amd64").expect("platform"),
+        };
+        let (runner, attempts, _socket_dir) = runner_with_responses(vec![
+            (200, "{}".to_owned()),
+            (
+                500,
+                r#"{"message":"create_image must not be called"}"#.to_owned(),
+            ),
+        ])
+        .await;
+        let (progress, _rx) = tokio::sync::mpsc::unbounded_channel();
+        runner
+            .ensure_machine_image(&source, progress)
+            .await
+            .expect("local exact image is reused");
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -391,12 +392,13 @@ mod tests {
         ])
         .await;
 
+        let (progress, _rx) = tokio::sync::mpsc::unbounded_channel();
         let error = runner
-            .pull_registry_image(&image("nginx:missing"), None)
+            .ensure_machine_image(&registry_source(image("nginx:missing")), progress)
             .await
             .expect_err("terminal registry failure is not retried");
 
-        assert!(error.into_message().contains("404 Not Found"));
+        assert!(error.contains("404 Not Found"));
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
     }
 
@@ -413,8 +415,9 @@ mod tests {
         ])
         .await;
 
+        let (progress, _rx) = tokio::sync::mpsc::unbounded_channel();
         runner
-            .pull_registry_image(&image("nginx:1.27-alpine"), None)
+            .ensure_machine_image(&registry_source(image("nginx:1.27-alpine")), progress)
             .await
             .expect("another 5xx status remains retryable");
 
@@ -433,12 +436,13 @@ mod tests {
         ])
         .await;
 
+        let (progress, _rx) = tokio::sync::mpsc::unbounded_channel();
         let error = runner
-            .pull_registry_image(&reference, None)
+            .ensure_machine_image(&registry_source(reference), progress)
             .await
             .expect_err("local inspection failure does not trigger a registry pull");
 
-        assert!(error.into_message().contains("inspect local Docker image"));
+        assert!(error.contains("inspect local Docker image"));
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
     }
 

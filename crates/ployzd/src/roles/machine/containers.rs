@@ -59,7 +59,7 @@ where
     match run_service_container(
         &state.runner,
         CreateManagedContainer {
-            pull: request.pull,
+            image: request.image,
             runtime: request.runtime,
             provisioned_volumes: request.provisioned_volumes,
             identity: request.container,
@@ -94,7 +94,7 @@ where
     match run_hook_container(
         &state.runner,
         CreateManagedContainer {
-            pull: request.pull,
+            image: request.image,
             runtime: request.runtime,
             provisioned_volumes: request.provisioned_volumes,
             identity: request.container,
@@ -491,9 +491,6 @@ fn hook_container_infrastructure_error(
     let message = match error {
         HookContainerInfrastructureError::List { message } => {
             format!("container list failed: {message}")
-        }
-        HookContainerInfrastructureError::ImagePull { message } => {
-            format!("image pull failed: {message}")
         }
         HookContainerInfrastructureError::EnsureEndpointNetwork { message } => {
             format!("endpoint network ensure failed: {message}")

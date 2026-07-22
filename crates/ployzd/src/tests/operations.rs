@@ -1127,10 +1127,7 @@ fn deploy_target_with_route(service_id: &str, hostname: &str, endpoint_port: u16
 
 fn machine_rpc_probe_request() -> MachineContainerRunRpcRequest {
     MachineContainerRunRpcRequest {
-        pull: crate::roles::machine::protocol::MachineImagePull::Registry {
-            credential: None,
-            reference: image("ghcr.io/acme/api:probe"),
-        },
+        image: image("ghcr.io/acme/api:probe"),
         runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
         provisioned_volumes: Vec::new(),
         container: containers::identity("svc_probe")

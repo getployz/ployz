@@ -16,8 +16,8 @@ use super::facts::{
     handle_facts_refresh,
 };
 use super::images::{
-    AvailableImageService, handle_image_blob_check, handle_image_blob_push, handle_image_ensure,
-    handle_image_manifest_push, handle_image_remove,
+    AvailableImageService, MachineImageEnsureService, handle_image_blob_check,
+    handle_image_blob_push, handle_image_ensure, handle_image_manifest_push, handle_image_remove,
 };
 use super::logs::handle_logs_tail;
 use super::substrate::{
@@ -175,6 +175,7 @@ where
         MachineRoleProjectionServices {
             build_state: None,
             image_state: None,
+            image_ensure_state: None,
             projection_state: projection_state.clone(),
         },
     )
@@ -246,6 +247,7 @@ where
         MachineRoleProjectionServices {
             build_state: None,
             image_state: None,
+            image_ensure_state: None,
             projection_state: MachineProjectionState::new(),
         },
     )
@@ -275,6 +277,7 @@ where
     let MachineRoleProjectionServices {
         build_state,
         image_state,
+        image_ensure_state,
         projection_state,
     } = projection_services;
     let build_runtime_available = build_state.is_some();
@@ -519,7 +522,7 @@ where
         &mut runtime,
         &machine_id,
         MachineServiceEndpoint::ImageEnsure,
-        image_state,
+        image_ensure_state,
         handle_image_ensure,
     )
     .await?;
@@ -642,6 +645,7 @@ pub enum MachineServiceError {
 pub(crate) struct MachineRoleProjectionServices {
     pub build_state: Option<MachineBuildRuntime>,
     pub image_state: Option<AvailableImageService>,
+    pub image_ensure_state: Option<MachineImageEnsureService>,
     pub projection_state: MachineProjectionState,
 }
 

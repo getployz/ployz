@@ -2,7 +2,7 @@
 
 use ployz_core::deploy::{ContainerRuntimeSpec, DatasetName, ImageReference, RegistryCredential};
 use ployz_core::ids::{ContainerId, MachineId, OperationId, StepId};
-use ployz_core::image::{IMAGE_MESH_REGISTRY_PORT, ImageRepository, OciDigest};
+use ployz_core::image::OciDigest;
 use ployz_core::install::InstallArtifactVersion;
 use ployz_core::intent::{ProvisionedVolumePinState, VolumePinState};
 use ployz_core::machine::VolumeEnsureFailure;
@@ -114,45 +114,13 @@ pub enum MachineContainerInspectDomainError {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MachineContainerRunRpcRequest {
-    pub pull: MachineImagePull,
+    pub image: ImageReference,
     pub runtime: ContainerRuntimeSpec,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provisioned_volumes: Vec<ployz_core::deploy::VolumeName>,
     /// The identity the machine stamps onto the created container; the
     /// wire shape is identical to the dissolved per-RPC run spec.
     pub container: ManagedContainerIdentity,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
-pub enum MachineImagePull {
-    Registry {
-        reference: ImageReference,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        credential: Option<RegistryCredential>,
-    },
-    MeshSeed {
-        seed_host: std::net::Ipv4Addr,
-        repository: ImageRepository,
-        manifest_digest: OciDigest,
-    },
-}
-
-impl MachineImagePull {
-    #[must_use]
-    pub fn reference(&self) -> String {
-        match self {
-            Self::Registry {
-                reference,
-                credential: _,
-            } => reference.as_str().to_owned(),
-            Self::MeshSeed {
-                seed_host,
-                repository,
-                manifest_digest,
-            } => format!("{seed_host}:{IMAGE_MESH_REGISTRY_PORT}/{repository}@{manifest_digest}"),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -175,7 +143,7 @@ pub type MachineContainerRunRpcResponse =
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MachineContainerRunHookRpcRequest {
-    pub pull: MachineImagePull,
+    pub image: ImageReference,
     pub runtime: ContainerRuntimeSpec,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provisioned_volumes: Vec<ployz_core::deploy::VolumeName>,
@@ -233,11 +201,6 @@ pub enum MachineContainerRunHookDomainError {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MachineContainerRunDomainError {
-    ImagePullFailed {
-        service_id: ployz_core::ids::ServiceId,
-        namespace_revision_entry_id: ployz_core::ids::NamespaceRevisionEntryId,
-        message: FailureMessage,
-    },
     OperationStepAmbiguous {
         operation_id: OperationId,
         step_id: StepId,
@@ -720,11 +683,7 @@ mod tests {
     #[test]
     fn container_run_hook_wire_shape_is_pinned() {
         let request = MachineContainerRunHookRpcRequest {
-            pull: MachineImagePull::Registry {
-                credential: None,
-                reference: ImageReference::try_new("registry.example/api:rev_2")
-                    .expect("valid image"),
-            },
+            image: ImageReference::try_new("registry.example/api:rev_2").expect("valid image"),
             runtime: ContainerRuntimeSpec::image_defaults(),
             provisioned_volumes: Vec::new(),
             container: ManagedContainerIdentity {

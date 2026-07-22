@@ -113,7 +113,7 @@ fn pushed_receipt_without_target_platform_is_a_typed_failure() {
     let target_machine = machine_id("machine_arm");
     let arm64 = platform("arm64");
 
-    let error = machine_image_pull(
+    let error = machine_image_reference(
         &NamespaceId::try_new("default").expect("namespace id"),
         &service,
         &target_machine,

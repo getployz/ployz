@@ -546,6 +546,13 @@ pub enum ArtifactUnavailableReason {
         machine_id: MachineId,
         message: FailureMessage,
     },
+    ImagePullStalled {
+        machine_id: MachineId,
+        timeout_millis: u64,
+    },
+    ImagePullCancelled {
+        machine_id: MachineId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -825,9 +832,9 @@ pub enum DeployEvidence {
     },
     ImageAvailabilityVerified {
         service_id: ServiceId,
-        seed: MachineId,
+        machine_id: MachineId,
+        image: ImageReference,
         platform: crate::image::OciPlatform,
-        manifest_digest: OciDigest,
     },
     ContainerStarted {
         machine_id: MachineId,
@@ -883,15 +890,15 @@ impl DeployEvidence {
             },
             Self::ImageAvailabilityVerified {
                 service_id,
-                seed,
+                machine_id,
+                image,
                 platform,
-                manifest_digest,
             } => OperationEvent::DeployImageAvailabilityVerified {
                 operation_id: operation_id.clone(),
                 service_id: service_id.clone(),
-                seed: seed.clone(),
+                machine_id: machine_id.clone(),
+                image: image.clone(),
                 platform: platform.clone(),
-                manifest_digest: manifest_digest.clone(),
             },
             Self::ContainerStarted {
                 machine_id,

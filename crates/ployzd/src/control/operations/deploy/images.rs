@@ -4,16 +4,20 @@ use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ployz_core::deploy::{
-    DeployCleanupAction, DeployPhasePlan, DeployPlan, DeployRequest, DeployServicePlan,
-    IMAGE_AVAILABILITY_SAFETY_MARGIN, ImageReference, ImageSource, RegistryCredential,
+    DeployCleanupAction, DeployPhasePlan, DeployPlan, DeployPlanStepRef, DeployRequest,
+    DeployServicePlan, IMAGE_AVAILABILITY_SAFETY_MARGIN, ImageReference, ImageSource,
+    RegistryCredential,
 };
 use ployz_core::ids::{MachineId, ServiceId};
 use ployz_core::image::{
-    ImageEnsureRequest, ImageRemoveDomainError, ImageRepository, ImageRpcDomainError,
+    ImageEnsureFailure, ImageEnsureRequest, ImageEnsureSource, ImageEnsureStatus,
+    ImageRemoveDomainError, ImageRepository, ImageRpcDomainError,
 };
+use ployz_core::machine::runtime::{ManagedContainerIdentity, ManagedContainerKind};
 use ployz_core::network::DataplaneMember;
 use ployz_core::operation::{
-    DeployEvidence, DeployImageCleanup, DeployOperationFailure, FailureMessage,
+    ArtifactUnavailableReason, DeployEvidence, DeployImageCleanup, DeployOperationFailure,
+    FailureMessage,
 };
 use ployz_sdk_types::DeployPreviewImageFailure;
 
@@ -22,13 +26,13 @@ use crate::control::role_client::machine::{
     MachineImageResolveError,
 };
 use crate::roles::machine::protocol::MachineContainerRemoveRpcRequest;
-use crate::roles::machine::protocol::{MachineContainerResolveImageRpcRequest, MachineImagePull};
+use crate::roles::machine::protocol::MachineContainerResolveImageRpcRequest;
 
 use super::deploy_plan;
 use super::{
     DeployCleanupResult, DeployExecutionCommand, DeployExecutionError, DeployOperationRecorder,
     DeployServiceExecutionCommand, MachineContainerRuntime, MachineImageRemovalRuntime,
-    cleanup_failure_message, record_evidence,
+    cleanup_failure_message, deploy_step_id, record_evidence,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -530,6 +534,7 @@ fn image_resolution_failure(
 pub(super) async fn ensure_images<R, N>(
     command: &DeployExecutionCommand,
     service_plans: &[DeployServicePlan],
+    dataplane_members: &[DataplaneMember],
     recorder: &mut R,
     machine_runtime: &mut N,
 ) -> Result<(), DeployExecutionError>
@@ -551,73 +556,305 @@ where
         else {
             continue;
         };
-        let ImageSource::PushedToSeed(receipt) = &service.service.image_source else {
-            continue;
-        };
-        let mut target_platforms = BTreeMap::new();
+        let mut targets = BTreeMap::new();
         for step in service_plan.work.steps() {
-            let machine_id = step.machine_id();
-            let target_platform = command
-                .target_platform(machine_id)
-                .map_err(|error| error.into_execution_error())?;
-            target_platforms
-                .entry(target_platform.clone())
-                .or_insert_with(|| machine_id.clone());
+            if let DeployPlanStepRef::RunContainer { machine_id, slot } = step {
+                targets.entry(machine_id.clone()).or_insert(*slot);
+            }
         }
-        for (target_platform, machine_id) in target_platforms {
-            let Some(platform_image) = receipt.platform(&target_platform) else {
-                return Err(DeployExecutionError::Image {
-                    failure: Box::new(DeployOperationFailure::PlatformImageUnavailable {
-                        service_id: service.service.service_id.clone(),
-                        machine_id,
-                        target_platform,
-                    }),
-                });
-            };
-            let request = ImageEnsureRequest {
-                repository: ImageRepository::for_service(
+        for (machine_id, slot) in targets {
+            let target_platform = command
+                .target_platform(&machine_id)
+                .map_err(|error| error.into_execution_error())?;
+            let owner = ManagedContainerIdentity {
+                namespace_id: command.request.namespace_id.clone(),
+                service_id: service.service.service_id.clone(),
+                namespace_revision_entry_id: service.namespace_revision_entry_id(
                     &command.request.namespace_id,
-                    &service.service.service_id,
+                    &command.environment_revision_key,
                 ),
-                manifest_digest: platform_image.manifest_digest.clone(),
-                image_id: platform_image.image_id.clone(),
-                platform: target_platform.clone(),
+                operation_id: command.operation_id.clone(),
+                step_id: deploy_step_id(slot, &machine_id).map_err(DeployExecutionError::StepId)?,
+                kind: ManagedContainerKind::Service,
             };
-            tokio::time::timeout(
-                command.step_timeout(),
-                machine_runtime.ensure_image(&platform_image.seed, request),
-            )
-            .await
-            .map_err(|_| DeployExecutionError::Image {
-                failure: Box::new(DeployOperationFailure::SeedUnavailable {
-                    service_id: service.service.service_id.clone(),
-                    seed: platform_image.seed.clone(),
-                    message: deploy_failure_message("image seed ensure timed out"),
-                }),
-            })?
-            .map_err(|error| {
-                ensure_image_failure(
-                    service,
-                    &machine_id,
-                    &target_platform,
-                    platform_image,
-                    error,
-                )
-            })?;
-            record_evidence(
+            let source = match &service.service.image_source {
+                ImageSource::Registry => ImageEnsureSource::Registry {
+                    reference: service.service.image.clone(),
+                    credential: service.registry_credential().cloned(),
+                },
+                ImageSource::PushedToSeed(receipt) => {
+                    let Some(platform_image) = receipt.platform(target_platform) else {
+                        return Err(DeployExecutionError::Image {
+                            failure: Box::new(DeployOperationFailure::PlatformImageUnavailable {
+                                service_id: service.service.service_id.clone(),
+                                machine_id: machine_id.clone(),
+                                target_platform: target_platform.clone(),
+                            }),
+                        });
+                    };
+                    let Some(seed_host) = dataplane_members
+                        .iter()
+                        .find(|member| member.machine_id == platform_image.seed)
+                        .map(|member| member.endpoint_subnet.host_address())
+                    else {
+                        return Err(DeployExecutionError::InvalidImagePull {
+                            message: format!(
+                                "image seed {} has no dataplane membership",
+                                platform_image.seed.as_str()
+                            ),
+                        });
+                    };
+                    let repository = ImageRepository::for_service(
+                        &command.request.namespace_id,
+                        &service.service.service_id,
+                    );
+                    let seed_source = ImageEnsureSource::LocalSeed {
+                        repository: repository.clone(),
+                        manifest_digest: platform_image.manifest_digest.clone(),
+                        image_id: platform_image.image_id.clone(),
+                        platform: target_platform.clone(),
+                    };
+                    let seed_reference = drive_image_ensure(
+                        machine_runtime,
+                        &platform_image.seed,
+                        owner.clone(),
+                        seed_source,
+                    )
+                    .await
+                    .map_err(|error| {
+                        ensure_seed_drive_failure(
+                            service,
+                            &machine_id,
+                            target_platform,
+                            platform_image,
+                            error,
+                        )
+                    })?;
+                    if machine_id == platform_image.seed {
+                        record_target_image_evidence(
+                            command,
+                            recorder,
+                            service,
+                            &machine_id,
+                            target_platform.clone(),
+                            seed_reference,
+                        )
+                        .await?;
+                        continue;
+                    }
+                    ImageEnsureSource::MeshSeed {
+                        seed_host,
+                        repository,
+                        manifest_digest: platform_image.manifest_digest.clone(),
+                        image_id: platform_image.image_id.clone(),
+                        platform: target_platform.clone(),
+                    }
+                }
+            };
+            let reference = drive_image_ensure(machine_runtime, &machine_id, owner, source)
+                .await
+                .map_err(|error| target_ensure_failure(command, service, &machine_id, error))?;
+            record_target_image_evidence(
                 command,
                 recorder,
-                DeployEvidence::ImageAvailabilityVerified {
-                    service_id: service.service.service_id.clone(),
-                    seed: platform_image.seed.clone(),
-                    platform: target_platform,
-                    manifest_digest: platform_image.manifest_digest.clone(),
-                },
+                service,
+                &machine_id,
+                target_platform.clone(),
+                reference,
             )
             .await?;
         }
     }
     Ok(())
+}
+
+async fn record_target_image_evidence<R: DeployOperationRecorder>(
+    command: &DeployExecutionCommand,
+    recorder: &mut R,
+    service: &DeployServiceExecutionCommand,
+    machine_id: &MachineId,
+    platform: ployz_core::image::OciPlatform,
+    image: ImageReference,
+) -> Result<(), DeployExecutionError> {
+    record_evidence(
+        command,
+        recorder,
+        DeployEvidence::ImageAvailabilityVerified {
+            service_id: service.service.service_id.clone(),
+            machine_id: machine_id.clone(),
+            image,
+            platform,
+        },
+    )
+    .await
+}
+
+enum ImageEnsureDriveError {
+    Call(MachineImageEnsureError),
+    Failed(ImageEnsureFailure),
+    Cancelled,
+}
+
+async fn drive_image_ensure<N: MachineContainerRuntime>(
+    machine_runtime: &mut N,
+    machine_id: &MachineId,
+    owner: ManagedContainerIdentity,
+    source: ImageEnsureSource,
+) -> Result<ImageReference, ImageEnsureDriveError> {
+    let mut status = call_image_ensure(
+        machine_runtime,
+        machine_id,
+        ImageEnsureRequest::Start {
+            owner: owner.clone(),
+            source,
+        },
+    )
+    .await
+    .map_err(ImageEnsureDriveError::Call)?;
+    loop {
+        match status.status {
+            ImageEnsureStatus::Completed { reference } => return Ok(reference),
+            ImageEnsureStatus::Failed { failure } => {
+                return Err(ImageEnsureDriveError::Failed(failure));
+            }
+            ImageEnsureStatus::Cancelled => return Err(ImageEnsureDriveError::Cancelled),
+            ImageEnsureStatus::Accepted | ImageEnsureStatus::Running { .. } => {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await
+            }
+        }
+        status = match call_image_ensure(
+            machine_runtime,
+            machine_id,
+            ImageEnsureRequest::Status {
+                owner: owner.clone(),
+            },
+        )
+        .await
+        {
+            Ok(status) => status,
+            Err(error) => {
+                let _ = machine_runtime
+                    .ensure_image(
+                        machine_id,
+                        ImageEnsureRequest::Cancel {
+                            owner: owner.clone(),
+                        },
+                    )
+                    .await;
+                return Err(ImageEnsureDriveError::Call(error));
+            }
+        };
+    }
+}
+
+async fn call_image_ensure<N: MachineContainerRuntime>(
+    machine_runtime: &mut N,
+    machine_id: &MachineId,
+    request: ImageEnsureRequest,
+) -> Result<ployz_core::image::ImageEnsureOk, MachineImageEnsureError> {
+    let mut last = None;
+    for _ in 0..3 {
+        match machine_runtime
+            .ensure_image(machine_id, request.clone())
+            .await
+        {
+            Ok(ok) => return Ok(ok),
+            Err(error @ MachineImageEnsureError::Domain { .. }) => return Err(error),
+            Err(error @ MachineImageEnsureError::Unavailable { .. }) => {
+                last = Some(error);
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }
+    }
+    Err(last.expect("image ensure retry loop records an error"))
+}
+
+fn ensure_seed_drive_failure(
+    service: &DeployServiceExecutionCommand,
+    machine_id: &MachineId,
+    target_platform: &ployz_core::image::OciPlatform,
+    platform_image: &ployz_core::deploy::PlatformImage,
+    error: ImageEnsureDriveError,
+) -> DeployExecutionError {
+    match error {
+        ImageEnsureDriveError::Call(error) => {
+            ensure_image_failure(service, machine_id, target_platform, platform_image, error)
+        }
+        ImageEnsureDriveError::Failed(ImageEnsureFailure::PullFailed { message }) => {
+            DeployExecutionError::Image {
+                failure: Box::new(DeployOperationFailure::SeedUnavailable {
+                    service_id: service.service.service_id.clone(),
+                    seed: platform_image.seed.clone(),
+                    message,
+                }),
+            }
+        }
+        ImageEnsureDriveError::Failed(ImageEnsureFailure::Stalled { timeout_millis }) => {
+            DeployExecutionError::Image {
+                failure: Box::new(DeployOperationFailure::SeedUnavailable {
+                    service_id: service.service.service_id.clone(),
+                    seed: platform_image.seed.clone(),
+                    message: deploy_failure_message(format!(
+                        "image seed pull stalled after {timeout_millis}ms without verified progress"
+                    )),
+                }),
+            }
+        }
+        ImageEnsureDriveError::Cancelled => DeployExecutionError::Image {
+            failure: Box::new(DeployOperationFailure::SeedUnavailable {
+                service_id: service.service.service_id.clone(),
+                seed: platform_image.seed.clone(),
+                message: deploy_failure_message("image seed ensure was cancelled"),
+            }),
+        },
+    }
+}
+
+fn target_ensure_failure(
+    command: &DeployExecutionCommand,
+    service: &DeployServiceExecutionCommand,
+    machine_id: &MachineId,
+    error: ImageEnsureDriveError,
+) -> DeployExecutionError {
+    let reason = match error {
+        ImageEnsureDriveError::Failed(ImageEnsureFailure::Stalled { timeout_millis }) => {
+            ArtifactUnavailableReason::ImagePullStalled {
+                machine_id: machine_id.clone(),
+                timeout_millis,
+            }
+        }
+        ImageEnsureDriveError::Failed(ImageEnsureFailure::PullFailed { message }) => {
+            ArtifactUnavailableReason::ImagePullFailed {
+                machine_id: machine_id.clone(),
+                message,
+            }
+        }
+        ImageEnsureDriveError::Cancelled => ArtifactUnavailableReason::ImagePullCancelled {
+            machine_id: machine_id.clone(),
+        },
+        ImageEnsureDriveError::Call(MachineImageEnsureError::Unavailable { reason, .. }) => {
+            ArtifactUnavailableReason::ImagePullFailed {
+                machine_id: machine_id.clone(),
+                message: reason.failure_message(),
+            }
+        }
+        ImageEnsureDriveError::Call(MachineImageEnsureError::Domain { error, .. }) => {
+            ArtifactUnavailableReason::ImagePullFailed {
+                machine_id: machine_id.clone(),
+                message: deploy_failure_message(format!("image ensure rejected: {error:?}")),
+            }
+        }
+    };
+    DeployExecutionError::Image {
+        failure: Box::new(DeployOperationFailure::ArtifactUnavailable {
+            service_id: service.service.service_id.clone(),
+            namespace_revision_entry_id: service.namespace_revision_entry_id(
+                &command.request.namespace_id,
+                &command.environment_revision_key,
+            ),
+            reason,
+        }),
+    }
 }
 
 pub(super) fn validate_pushed_image_availability(
@@ -816,18 +1053,15 @@ fn ensure_image_failure(
     }
 }
 
-pub(super) fn machine_image_pull(
+pub(super) fn machine_image_reference(
     namespace_id: &ployz_core::ids::NamespaceId,
     service: &DeployServiceExecutionCommand,
     machine_id: &ployz_core::ids::MachineId,
     target_platform: &ployz_core::image::OciPlatform,
     dataplane_members: &[DataplaneMember],
-) -> Result<MachineImagePull, DeployExecutionError> {
+) -> Result<ImageReference, DeployExecutionError> {
     match &service.service.image_source {
-        ImageSource::Registry => Ok(MachineImagePull::Registry {
-            reference: service.service.image.clone(),
-            credential: service.registry_credential().cloned(),
-        }),
+        ImageSource::Registry => Ok(service.service.image.clone()),
         ImageSource::PushedToSeed(receipt) => {
             let Some(platform_image) = receipt.platform(target_platform) else {
                 return Err(DeployExecutionError::Image {
@@ -850,10 +1084,21 @@ pub(super) fn machine_image_pull(
                     ),
                 });
             };
-            Ok(MachineImagePull::MeshSeed {
-                seed_host,
-                repository: ImageRepository::for_service(namespace_id, &service.service.service_id),
-                manifest_digest: platform_image.manifest_digest.clone(),
+            ImageReference::try_new(
+                ImageEnsureSource::MeshSeed {
+                    seed_host,
+                    repository: ImageRepository::for_service(
+                        namespace_id,
+                        &service.service.service_id,
+                    ),
+                    manifest_digest: platform_image.manifest_digest.clone(),
+                    image_id: platform_image.image_id.clone(),
+                    platform: target_platform.clone(),
+                }
+                .reference(),
+            )
+            .map_err(|error| DeployExecutionError::InvalidImagePull {
+                message: error.to_string(),
             })
         }
     }
