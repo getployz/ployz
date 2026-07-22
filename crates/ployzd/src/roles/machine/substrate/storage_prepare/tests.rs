@@ -54,7 +54,7 @@ fn operation_process_command(
     let mut command = tokio::process::Command::new("sh");
     command
         .arg("-c")
-        .arg("sleep 30; :")
+        .arg("while :; do sleep 1; done")
         .arg("storage-prepare")
         .arg(operation_id.as_str())
         .process_group(0)
