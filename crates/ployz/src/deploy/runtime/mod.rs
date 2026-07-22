@@ -36,6 +36,6 @@ pub enum DeployExecutionError {
 
 impl From<DeployExecutionError> for PloyzctlExecutionError {
     fn from(error: DeployExecutionError) -> Self {
-        Self::Deploy(error)
+        Self::Deploy(Box::new(error))
     }
 }

@@ -957,7 +957,7 @@ where
             error,
         } if actual == *machine_id => Err(ImagePushError::Domain {
             machine_id: actual,
-            error,
+            error: Box::new(error),
         }),
         MachineRpcResponse::DomainError {
             machine_id: actual, ..
@@ -1059,7 +1059,7 @@ pub enum ImagePushError {
     #[error("image RPC from {} failed: {error:?}", machine_id.as_str())]
     Domain {
         machine_id: MachineId,
-        error: ImageRpcDomainError,
+        error: Box<ImageRpcDomainError>,
     },
     #[error(
         "image RPC expected {}, but {} answered",
