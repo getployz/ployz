@@ -516,9 +516,15 @@ pub struct MachineStoragePrepareReportRpcRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct MachineStoragePrepareCancelRpcRequest {
+    pub operation_id: OperationId,
+    pub reason: ployz_core::operation::CancellationReason,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MachineStoragePrepareRpcOk {
     pub machine_id: MachineId,
-    pub pool: ployz_core::deploy::ZfsPoolName,
 }
 
 impl MachineRpcResponder for MachineStoragePrepareRpcOk {
@@ -531,7 +537,7 @@ impl MachineRpcResponder for MachineStoragePrepareRpcOk {
 #[serde(deny_unknown_fields)]
 pub struct MachineStoragePrepareReportRpcOk {
     pub machine_id: MachineId,
-    pub pool: Option<ployz_core::deploy::ZfsPoolName>,
+    pub report: MachineStoragePrepareReport,
 }
 
 impl MachineRpcResponder for MachineStoragePrepareReportRpcOk {
@@ -541,8 +547,40 @@ impl MachineRpcResponder for MachineStoragePrepareReportRpcOk {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineStoragePrepareReport {
+    NotFound,
+    Running,
+    Completed {
+        pool: ployz_core::deploy::ZfsPoolName,
+    },
+    Failed {
+        failure: ployz_core::storage::StorageEffectFailure,
+    },
+    Cancelled {
+        reason: ployz_core::operation::CancellationReason,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachineStoragePrepareCancelRpcOk {
+    pub machine_id: MachineId,
+    pub report: MachineStoragePrepareReport,
+}
+
+impl MachineRpcResponder for MachineStoragePrepareCancelRpcOk {
+    fn responder_machine_id(&self) -> &MachineId {
+        &self.machine_id
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MachineStoragePrepareDomainError {
+    Busy {
+        owner_operation_id: OperationId,
+    },
     PreparationFailed {
         failure: ployz_core::storage::StorageEffectFailure,
     },
@@ -552,6 +590,8 @@ pub type MachineStoragePrepareRpcResponse =
     MachineRpcResponse<MachineStoragePrepareRpcOk, MachineStoragePrepareDomainError>;
 pub type MachineStoragePrepareReportRpcResponse =
     MachineRpcResponse<MachineStoragePrepareReportRpcOk, MachineStoragePrepareDomainError>;
+pub type MachineStoragePrepareCancelRpcResponse =
+    MachineRpcResponse<MachineStoragePrepareCancelRpcOk, MachineStoragePrepareDomainError>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

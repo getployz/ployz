@@ -46,6 +46,8 @@ pub type MachineInspectResponse = OperationApiResponse<MachineSnapshot, MachineI
 pub type MachineUpdateResponse = OperationApiResponse<AcceptedOperation, MachineUpdateError>;
 pub type MachineStoragePrepareResponse =
     OperationApiResponse<AcceptedOperation, MachineStoragePrepareError>;
+pub type MachineStoragePrepareCancelResponse =
+    OperationApiResponse<AcceptedOperation, MachineStoragePrepareCancelError>;
 pub type MachineBuildCachePruneResponse =
     OperationApiResponse<AcceptedOperation, MachineBuildCachePruneError>;
 pub type MachineJoinRedeemResponse =
@@ -88,6 +90,13 @@ pub struct MachineStoragePrepareRequest {
     pub machine_id: MachineId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pool: Option<ZfsPoolName>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct MachineStoragePrepareCancelRequest {
+    pub operation_id: OperationId,
+    pub reason: CancellationReason,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -437,6 +446,27 @@ pub enum MachineStoragePrepareError {
         owner_operation_id: OperationId,
     },
     #[error("machine storage prepare {} unavailable: {message}", .operation_id.as_str())]
+    Unavailable {
+        operation_id: OperationId,
+        message: String,
+    },
+    #[error(
+        "operation {} already recorded a different event at sequence {}",
+        .operation_id.as_str(),
+        .sequence.get()
+    )]
+    DuplicateSequenceMismatch {
+        operation_id: OperationId,
+        sequence: EventSequence,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, thiserror::Error)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineStoragePrepareCancelError {
+    #[error("no such storage prepare operation {}", .operation_id.as_str())]
+    NoSuchOperation { operation_id: OperationId },
+    #[error("machine storage prepare cancellation {} unavailable: {message}", .operation_id.as_str())]
     Unavailable {
         operation_id: OperationId,
         message: String,

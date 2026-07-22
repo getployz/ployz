@@ -24,8 +24,8 @@ use super::images::{
 };
 use super::logs::handle_logs_tail;
 use super::substrate::{
-    handle_storage_prepare, handle_storage_prepare_report, handle_substrate_report,
-    handle_substrate_update,
+    StoragePrepareRuntime, handle_storage_prepare, handle_storage_prepare_cancel,
+    handle_storage_prepare_report, handle_substrate_report, handle_substrate_update,
 };
 use super::volume::{
     DATASET_DESTROY_HOST_COMMAND_TIMEOUT, DATASET_ENSURE_HOST_COMMAND_TIMEOUT,
@@ -183,6 +183,7 @@ where
                 available: None,
             }),
             projection_state: projection_state.clone(),
+            storage_prepare: StoragePrepareRuntime::host_default(),
         },
     )
     .await?;
@@ -258,6 +259,7 @@ where
                 available: None,
             }),
             projection_state: MachineProjectionState::new(),
+            storage_prepare: StoragePrepareRuntime::host_default(),
         },
     )
     .await
@@ -288,6 +290,7 @@ where
         image_state,
         image_ensure_state,
         projection_state,
+        storage_prepare,
     } = projection_services;
     let build_runtime_available = build_state.is_some();
     let spec = machine_role_service_base(&machine_id);
@@ -483,15 +486,23 @@ where
         &mut runtime,
         &machine_id,
         MachineServiceEndpoint::StoragePrepare,
-        (),
+        storage_prepare.clone(),
         handle_storage_prepare,
     )
     .await?;
     bind_machine_endpoint(
         &mut runtime,
         &machine_id,
+        MachineServiceEndpoint::StoragePrepareCancel,
+        storage_prepare.clone(),
+        handle_storage_prepare_cancel,
+    )
+    .await?;
+    bind_machine_endpoint(
+        &mut runtime,
+        &machine_id,
         MachineServiceEndpoint::StoragePrepareReport,
-        (),
+        storage_prepare,
         handle_storage_prepare_report,
     )
     .await?;
@@ -581,6 +592,10 @@ fn machine_endpoint_policy(endpoint: MachineServiceEndpoint) -> EndpointExecutio
         MachineServiceEndpoint::StoragePrepare => {
             policy.request_timeout = ployz_core::storage::MACHINE_STORAGE_PREPARE_RPC_TIMEOUT;
         }
+        MachineServiceEndpoint::StoragePrepareCancel => {
+            policy.request_timeout =
+                ployz_core::storage::MACHINE_STORAGE_PREPARE_CANCEL_RPC_TIMEOUT;
+        }
         MachineServiceEndpoint::BuildCachePrune => {
             policy.request_timeout = BUILD_CACHE_PRUNE_ENDPOINT_TIMEOUT;
         }
@@ -663,6 +678,7 @@ pub(crate) struct MachineRoleProjectionServices {
     pub image_state: Option<AvailableImageService>,
     pub image_ensure_state: Option<MachineImageEnsureService>,
     pub projection_state: MachineProjectionState,
+    pub storage_prepare: StoragePrepareRuntime,
 }
 
 #[cfg(test)]
@@ -688,6 +704,23 @@ mod tests {
         assert_eq!(
             policy.request_timeout,
             ployz_core::storage::MACHINE_STORAGE_PREPARE_RPC_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn storage_prepare_cancel_endpoint_covers_both_termination_phases() {
+        let policy = machine_endpoint_policy(MachineServiceEndpoint::StoragePrepareCancel);
+
+        assert_eq!(
+            policy.request_timeout,
+            ployz_core::storage::MACHINE_STORAGE_PREPARE_CANCEL_RPC_TIMEOUT
+        );
+        assert!(
+            policy.request_timeout > ployz_core::storage::MACHINE_STORAGE_PREPARE_CANCEL_ACK_BUDGET
+        );
+        assert!(
+            ployz_core::storage::MACHINE_STORAGE_PREPARE_CANCEL_ACK_BUDGET
+                > ployz_core::storage::MACHINE_STORAGE_PREPARE_TERMINATION_GRACE * 2
         );
     }
 

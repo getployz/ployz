@@ -32,6 +32,7 @@ use crate::roles::machine::service::{
     MachineFactsReadError, MachineRoleProjectionServices, MachineServiceError,
     start_machine_role_service_with_endpoint_cache_and_image,
 };
+use crate::roles::machine::substrate::StoragePrepareRuntime;
 use futures_util::StreamExt;
 use ployz_build_executor::{BuildExecutionError, DockerBuildExecutor};
 use ployz_core::build::BUILD_CACHE_PRUNE_MAX_EXECUTION_TIMEOUT;
@@ -74,6 +75,7 @@ pub struct RunningMachineProcess {
     projection: RunningProjectionTask,
     image_registry: Option<RunningRegistryV2>,
     build_runtime: Option<MachineBuildRuntime>,
+    storage_prepare: StoragePrepareRuntime,
     image_ensure_runtime: Option<ImageEnsureRuntime>,
 }
 
@@ -88,6 +90,7 @@ impl RunningMachineProcess {
             mut projection,
             image_registry,
             build_runtime,
+            storage_prepare,
             image_ensure_runtime,
         } = self;
         pending_join_mirror.request_shutdown();
@@ -106,6 +109,7 @@ impl RunningMachineProcess {
                     build_runtime.shutdown().await;
                 }
             };
+            let storage_shutdown = storage_prepare.shutdown();
             let registry_shutdown = async {
                 if let Some(image_registry) = image_registry {
                     image_registry.shutdown().await;
@@ -126,8 +130,9 @@ impl RunningMachineProcess {
                     observer.wait(),
                 );
             };
-            let (_, _, _, _, service_result) = tokio::join!(
+            let (_, _, _, _, _, service_result) = tokio::join!(
                 build_shutdown,
+                storage_shutdown,
                 registry_shutdown,
                 image_ensure_shutdown,
                 background_shutdown,
@@ -298,6 +303,12 @@ where
         }
         None => None,
     };
+    let storage_prepare = StoragePrepareRuntime::host_default();
+    storage_prepare.recover().await.map_err(|error| {
+        MachineProcessError::RecoverStoragePreparation {
+            message: error.to_string(),
+        }
+    })?;
     let machine_service = start_machine_role_service_with_endpoint_cache_and_image(
         client.clone(),
         machine_id.clone(),
@@ -310,6 +321,7 @@ where
             image_state,
             image_ensure_state,
             projection_state: projection_state.clone(),
+            storage_prepare: storage_prepare.clone(),
         },
     )
     .await
@@ -349,6 +361,7 @@ where
         projection,
         image_registry: None,
         build_runtime,
+        storage_prepare,
         image_ensure_runtime: None,
     })
 }
@@ -589,6 +602,8 @@ pub enum MachineProcessError {
     InvalidImageRegistryAddress { message: String },
     #[error("failed to initialize machine build runtime: {message}")]
     InitializeBuildRuntime { message: String },
+    #[error("failed to recover machine storage preparation: {message}")]
+    RecoverStoragePreparation { message: String },
     #[error("failed to start machine service: {0:?}")]
     StartMachineService(MachineServiceError),
     #[error("failed to wait for shutdown: {0}")]
