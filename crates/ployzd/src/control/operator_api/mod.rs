@@ -17,7 +17,7 @@ pub use deploy::{deploy_reserve, deploy_submit, system_deploy};
 pub use first_machine::init_first_machine_activate;
 pub use machine_build_cache_prune::machine_build_cache_prune;
 pub use machine_join::{machine_join_redeem, machine_join_report};
-pub use machine_storage_prepare::machine_storage_prepare;
+pub use machine_storage_prepare::{machine_storage_prepare, machine_storage_prepare_cancel};
 pub use network_query::NetworkQueryService;
 pub(crate) use queries::ControlHealthReaders;
 #[cfg(test)]

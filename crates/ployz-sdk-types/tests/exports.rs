@@ -60,10 +60,10 @@ use ployz_sdk_types::{
         DeployPreviewApi, DeployReserveApi, DeploySubmitApi, IngressConfigureApi,
         InitFirstMachineActivateApi, LogsTailApi, MachineAddApi, MachineInspectApi,
         MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi, MachineStoragePrepareApi,
-        MachineUpdateApi, NamespaceRemoveApi, NetworkRepairApi, NetworkResolveApi,
-        NetworkStatusApi, OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi,
-        RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi, ServiceRestartApi, VolumeCreateApi,
-        VolumeListApi, VolumeRemoveApi,
+        MachineStoragePrepareCancelApi, MachineUpdateApi, NamespaceRemoveApi, NetworkRepairApi,
+        NetworkResolveApi, NetworkStatusApi, OperationApiContract, OpsListApi, OpsStatusApi,
+        OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi, ServiceRestartApi,
+        VolumeCreateApi, VolumeListApi, VolumeRemoveApi,
     },
 };
 use ts_rs::{Config, TS};
@@ -591,6 +591,12 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
         MachineStoragePrepareError,
     >();
     assert_contract::<
+        MachineStoragePrepareCancelApi,
+        ployz_sdk_types::MachineStoragePrepareCancelRequest,
+        AcceptedOperation,
+        ployz_sdk_types::MachineStoragePrepareCancelError,
+    >();
+    assert_contract::<
         ServiceRestartApi,
         ServiceRestartRequest,
         AcceptedOperation,
@@ -706,6 +712,7 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
             OperationApiEndpoint::MachineBuildCachePrune,
             OperationApiEndpoint::MachineUpdate,
             OperationApiEndpoint::MachineStoragePrepare,
+            OperationApiEndpoint::MachineStoragePrepareCancel,
             OperationApiEndpoint::MachineDrain,
             OperationApiEndpoint::MachineResume,
             OperationApiEndpoint::ServiceRestart,

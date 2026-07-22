@@ -8,10 +8,9 @@ use crate::roles::machine::protocol::{
     MachineContainerRemoveDomainError, MachineContainerRemoveRpcRequest,
     MachineContainerRemoveRpcResponse, MachineContainerRpcOk, MachineContainerRunDomainError,
     MachineContainerRunRpcOk, MachineContainerRunRpcRequest, MachineContainerRunRpcResponse,
-    MachineImagePull, MachineRunContainerOutcome, MachineSubstrateReportRpcOk,
-    MachineSubstrateReportRpcResponse, MachineVolumeEnsureRpcOk, MachineVolumeEnsureRpcRequest,
-    MachineVolumeEnsureRpcResponse, MachineVolumeRemoveRpcOk, MachineVolumeRemoveRpcRequest,
-    MachineVolumeRemoveRpcResponse,
+    MachineRunContainerOutcome, MachineSubstrateReportRpcOk, MachineSubstrateReportRpcResponse,
+    MachineVolumeEnsureRpcOk, MachineVolumeEnsureRpcRequest, MachineVolumeEnsureRpcResponse,
+    MachineVolumeRemoveRpcOk, MachineVolumeRemoveRpcRequest, MachineVolumeRemoveRpcResponse,
 };
 use crate::service_catalog::machine_role_service;
 use ployz_core::deploy::{ImageReference, VolumeName};
@@ -64,10 +63,7 @@ async fn nats_machine_runtime_calls_container_run_service() {
             .expect("received request lock is not poisoned")
             .as_slice(),
         [MachineContainerRunRpcRequest {
-            pull: MachineImagePull::Registry {
-                credential: None,
-                reference: image("registry.example/api:rev_2"),
-            },
+            image: image("registry.example/api:rev_2"),
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             provisioned_volumes: Vec::new(),
             container: managed_identity()
@@ -705,10 +701,7 @@ async fn test_nats() -> TestNats {
 
 fn run_request() -> MachineContainerRunRpcRequest {
     MachineContainerRunRpcRequest {
-        pull: MachineImagePull::Registry {
-            credential: None,
-            reference: image("registry.example/api:rev_2"),
-        },
+        image: image("registry.example/api:rev_2"),
         runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
         provisioned_volumes: Vec::new(),
         container: managed_identity(),
@@ -729,18 +722,15 @@ fn image(value: &str) -> ImageReference {
 
 #[test]
 fn container_run_request_wire_shape_survived_run_spec_dissolution() {
-    // The run RPC keeps the managed container identity flat and carries an
-    // explicit image pull instruction.
+    // The run RPC keeps the managed container identity flat and carries the
+    // exact image that must already be available locally.
     let request = run_request();
     let json = serde_json::to_value(&request).expect("run request serializes");
 
     assert_eq!(
         json,
         serde_json::json!({
-            "pull": {
-                "source": "registry",
-                "reference": "registry.example/api:rev_2",
-            },
+            "image": "registry.example/api:rev_2",
             "runtime": {
                 "command": null,
                 "entrypoint": null,

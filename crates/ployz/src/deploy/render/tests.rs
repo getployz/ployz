@@ -608,9 +608,12 @@ fn pushed_image_stays_pending_until_availability_is_verified() {
         OperationEvent::DeployImageAvailabilityVerified {
             operation_id: operation_id.clone(),
             service_id: service_id("web"),
-            seed: machine_id("hetzner-1"),
+            machine_id: machine_id("hetzner-1"),
+            image: ImageReference::try_new(
+                "ghcr.io/acme/web@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            )
+            .expect("exact image"),
             platform: platform(),
-            manifest_digest: OciDigest::sha256(b"manifest"),
         },
     )]);
 
@@ -621,9 +624,12 @@ fn pushed_image_stays_pending_until_availability_is_verified() {
         OperationEvent::DeployImageAvailabilityVerified {
             operation_id,
             service_id: service_id("web"),
-            seed: machine_id("hetzner-2"),
+            machine_id: machine_id("hetzner-2"),
+            image: ImageReference::try_new(
+                "ghcr.io/acme/web@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            )
+            .expect("exact image"),
             platform: OciPlatform::try_new("linux", "arm64").expect("platform"),
-            manifest_digest: OciDigest::sha256(b"arm-manifest"),
         },
     )]);
 

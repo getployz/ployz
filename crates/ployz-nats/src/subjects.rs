@@ -81,6 +81,8 @@ pub const OPERATOR_MACHINE_DRAIN: &str = "plz.v1.rpc.operator.command.machine.dr
 pub const OPERATOR_MACHINE_RESUME: &str = "plz.v1.rpc.operator.command.machine.resume";
 pub const OPERATOR_MACHINE_STORAGE_PREPARE: &str =
     "plz.v1.rpc.operator.command.machine.storage_prepare";
+pub const OPERATOR_MACHINE_STORAGE_PREPARE_CANCEL: &str =
+    "plz.v1.rpc.operator.command.machine.storage_prepare.cancel";
 pub const OPERATOR_CORE_REPLACE: &str = "plz.v1.rpc.operator.command.core.replace";
 pub const OPERATOR_CORE_REPLACE_REPORT: &str = "plz.v1.rpc.operator.command.core.replace.report";
 pub const OPERATOR_CREDENTIAL_ADD: &str = "plz.v1.rpc.operator.command.credential.add";
@@ -102,6 +104,7 @@ pub enum OperationApiEndpoint {
     MachineBuildCachePrune,
     MachineUpdate,
     MachineStoragePrepare,
+    MachineStoragePrepareCancel,
     MachineDrain,
     MachineResume,
     MachineList,
@@ -158,6 +161,7 @@ impl OperationApiEndpoint {
         Self::MachineBuildCachePrune,
         Self::MachineUpdate,
         Self::MachineStoragePrepare,
+        Self::MachineStoragePrepareCancel,
         Self::MachineDrain,
         Self::MachineResume,
         Self::MachineList,
@@ -203,6 +207,7 @@ impl OperationApiEndpoint {
             | Self::MachineBuildCachePrune
             | Self::MachineUpdate
             | Self::MachineStoragePrepare
+            | Self::MachineStoragePrepareCancel
             | Self::MachineDrain
             | Self::MachineResume
             | Self::MachineList
@@ -245,6 +250,7 @@ impl OperationApiEndpoint {
             Self::MachineBuildCachePrune => "machine.build_cache_prune",
             Self::MachineUpdate => "machine.update",
             Self::MachineStoragePrepare => "machine.storage_prepare",
+            Self::MachineStoragePrepareCancel => "machine.storage_prepare.cancel",
             Self::MachineDrain => "machine.drain",
             Self::MachineResume => "machine.resume",
             Self::MachineList => "machine.list",
@@ -290,6 +296,7 @@ impl OperationApiEndpoint {
             Self::MachineBuildCachePrune => OPERATOR_MACHINE_BUILD_CACHE_PRUNE,
             Self::MachineUpdate => OPERATOR_MACHINE_UPDATE,
             Self::MachineStoragePrepare => OPERATOR_MACHINE_STORAGE_PREPARE,
+            Self::MachineStoragePrepareCancel => OPERATOR_MACHINE_STORAGE_PREPARE_CANCEL,
             Self::MachineDrain => OPERATOR_MACHINE_DRAIN,
             Self::MachineResume => OPERATOR_MACHINE_RESUME,
             Self::MachineList => OPERATOR_MACHINE_LIST,
@@ -342,6 +349,7 @@ impl OperationApiEndpoint {
             | Self::CredentialRemove
             | Self::IngressConfigure => OperationApiEndpointExecution::AcceptsOperation,
             Self::BuildCancel
+            | Self::MachineStoragePrepareCancel
             | Self::DeployReserve
             | Self::InitFirstMachineActivate
             | Self::MachineJoinRedeem
@@ -383,6 +391,7 @@ impl From<ployz_sdk_types::operation_api::OperationApiEndpoint> for OperationApi
             Core::MachineBuildCachePrune => Self::MachineBuildCachePrune,
             Core::MachineUpdate => Self::MachineUpdate,
             Core::MachineStoragePrepare => Self::MachineStoragePrepare,
+            Core::MachineStoragePrepareCancel => Self::MachineStoragePrepareCancel,
             Core::MachineDrain => Self::MachineDrain,
             Core::MachineResume => Self::MachineResume,
             Core::MachineList => Self::MachineList,
@@ -678,6 +687,7 @@ pub enum MachineServiceEndpoint {
     SubstrateUpdate,
     SubstrateReport,
     StoragePrepare,
+    StoragePrepareCancel,
     StoragePrepareReport,
     LogsTail,
     ImageBlobCheck,
@@ -686,6 +696,7 @@ pub enum MachineServiceEndpoint {
     ImageEnsure,
     ImageRemove,
     BuildStart,
+    BuildStatus,
     BuildCancel,
     BuildCachePruneStart,
     BuildCachePruneStatus,
@@ -727,6 +738,7 @@ impl MachineServiceEndpoint {
         Self::SubstrateUpdate,
         Self::SubstrateReport,
         Self::StoragePrepare,
+        Self::StoragePrepareCancel,
         Self::StoragePrepareReport,
         Self::LogsTail,
         Self::ImageBlobCheck,
@@ -735,6 +747,7 @@ impl MachineServiceEndpoint {
         Self::ImageEnsure,
         Self::ImageRemove,
         Self::BuildStart,
+        Self::BuildStatus,
         Self::BuildCancel,
         Self::BuildCachePruneStart,
         Self::BuildCachePruneStatus,
@@ -777,6 +790,7 @@ impl MachineServiceEndpoint {
             Self::SubstrateUpdate => "substrate.update",
             Self::SubstrateReport => "substrate.report",
             Self::StoragePrepare => "storage.prepare",
+            Self::StoragePrepareCancel => "storage.prepare.cancel",
             Self::StoragePrepareReport => "storage.prepare.report",
             Self::LogsTail => "logs.tail",
             Self::ImageBlobCheck => "image.blob.check",
@@ -785,6 +799,7 @@ impl MachineServiceEndpoint {
             Self::ImageEnsure => "container.ensure_image",
             Self::ImageRemove => "container.remove_image",
             Self::BuildStart => "build.start",
+            Self::BuildStatus => "build.status",
             Self::BuildCancel => "build.cancel",
             Self::BuildCachePruneStart => "build.cache.prune.start",
             Self::BuildCachePruneStatus => "build.cache.prune.status",
@@ -815,6 +830,7 @@ impl MachineServiceEndpoint {
             | Self::DataplaneStatus
             | Self::LogsTail
             | Self::ImageBlobCheck
+            | Self::BuildStatus
             | Self::BuildCachePruneStatus
             | Self::CertificateArtifactStatus
             | Self::CertificateChallengeStatus
@@ -829,6 +845,7 @@ impl MachineServiceEndpoint {
             | Self::VolumeRemove
             | Self::SubstrateUpdate
             | Self::StoragePrepare
+            | Self::StoragePrepareCancel
             | Self::ImageBlobPush
             | Self::ImageManifestPush
             | Self::ImageEnsure
@@ -915,6 +932,32 @@ mod build_contract_tests {
     }
 
     #[test]
+    fn storage_prepare_cancel_contracts_are_commands_with_exact_subjects() {
+        assert_eq!(
+            OperationApiEndpoint::MachineStoragePrepareCancel.subject(),
+            "plz.v1.rpc.operator.command.machine.storage_prepare.cancel"
+        );
+        assert_eq!(
+            OperationApiEndpoint::MachineStoragePrepareCancel.execution(),
+            OperationApiEndpointExecution::MutatesOperation
+        );
+        assert_eq!(
+            OperationApiEndpoint::from(
+                ployz_sdk_types::operation_api::OperationApiEndpoint::MachineStoragePrepareCancel,
+            ),
+            OperationApiEndpoint::MachineStoragePrepareCancel
+        );
+        assert_eq!(
+            MachineServiceEndpoint::StoragePrepareCancel.as_subject(),
+            "storage.prepare.cancel"
+        );
+        assert_eq!(
+            MachineServiceEndpoint::StoragePrepareCancel.execution(),
+            MachineServiceEndpointExecution::Command
+        );
+    }
+
+    #[test]
     fn system_deploy_endpoint_metadata_is_stable() {
         assert_eq!(OperationApiEndpoint::SystemDeploy.name(), "system.deploy");
         assert_eq!(
@@ -940,6 +983,14 @@ mod build_contract_tests {
         assert_eq!(
             machine_service(&machine, MachineServiceEndpoint::BuildStart),
             "plz.v1.rpc.machine.command.machine-a.build.start"
+        );
+        assert_eq!(
+            machine_service(&machine, MachineServiceEndpoint::BuildStatus),
+            "plz.v1.rpc.machine.query.machine-a.build.status"
+        );
+        assert_eq!(
+            MachineServiceEndpoint::BuildStatus.execution(),
+            MachineServiceEndpointExecution::Query
         );
         assert_eq!(
             machine_service(&machine, MachineServiceEndpoint::BuildCachePruneStart),

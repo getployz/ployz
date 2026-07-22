@@ -3,13 +3,14 @@
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use ployz_core::deploy::ZfsPoolName;
 use ployz_core::ids::OperationId;
 use ployz_core::storage::{
     MachineStoragePreparationEvidence as StoragePreparationEvidence, PROVISIONED_VOLUME_MOUNTPOINT,
     PreparedStorageOrigin, PreparedStorageState, StorageEffectFailure as ZfsEffectError,
-    StorageOperationEvidenceFile, ZfsDatasetRoot,
+    StorageOperationEvidenceFile, StoragePreparationProcessIdentity, ZfsDatasetRoot,
 };
 
 use super::command::{COMMAND_TIMEOUT, EffectClass, INSTALL_TIMEOUT, checked};
@@ -39,10 +40,22 @@ pub fn prepare_storage_for_operation(
 ) -> Result<PreparedStorageState, ZfsEffectError> {
     let evidence_file =
         StorageOperationEvidenceFile::in_state_directory(state_directory, operation_id.clone());
-    if evidence_file.path().exists() {
-        let bytes = std::fs::read(evidence_file.path()).map_err(|error| {
+    let context = StoragePreparationContext {
+        profile,
+        operation_id,
+        selection,
+        state_directory,
+        docker_drop_in_directory,
+        supervisor_directory,
+        evidence_file,
+    };
+    if context.evidence_file.path().exists() {
+        let bytes = std::fs::read(context.evidence_file.path()).map_err(|error| {
             ZfsEffectError::PreparedStateUnavailable {
-                message: format!("failed to read {}: {error}", evidence_file.path().display()),
+                message: format!(
+                    "failed to read {}: {error}",
+                    context.evidence_file.path().display()
+                ),
             }
         })?;
         let evidence: StoragePreparationEvidence =
@@ -50,17 +63,57 @@ pub fn prepare_storage_for_operation(
                 ZfsEffectError::PreparedStateUnavailable {
                     message: format!(
                         "failed to parse {}: {error}",
-                        evidence_file.path().display()
+                        context.evidence_file.path().display()
                     ),
                 }
             })?;
-        evidence_file.validate(&evidence)?;
-        return match evidence {
+        context.evidence_file.validate(&evidence)?;
+        match evidence {
             StoragePreparationEvidence::Completed { prepared, .. } => Ok(prepared),
             StoragePreparationEvidence::Failed { failure, .. } => Err(failure),
-        };
+            StoragePreparationEvidence::Cancelled { .. } => Err(ZfsEffectError::Interrupted {
+                message: "storage preparation was cancelled".to_owned(),
+            }),
+            StoragePreparationEvidence::Running { process, .. } => {
+                let current = current_process_identity()?;
+                if process != current {
+                    return Err(ZfsEffectError::ProcessFailed {
+                        message: "storage preparation is already owned by another process"
+                            .to_owned(),
+                    });
+                }
+                prepare_and_commit(runner, &context)
+            }
+        }
+    } else {
+        establish_running_evidence(&context.evidence_file, operation_id)?;
+        prepare_and_commit(runner, &context)
     }
+}
 
+struct StoragePreparationContext<'a> {
+    profile: &'a HostPlatformProfile,
+    operation_id: &'a OperationId,
+    selection: &'a PoolSelection,
+    state_directory: &'a Path,
+    docker_drop_in_directory: &'a Path,
+    supervisor_directory: &'a Path,
+    evidence_file: StorageOperationEvidenceFile,
+}
+
+fn prepare_and_commit(
+    runner: &mut impl HostRunnerCommandRunner,
+    context: &StoragePreparationContext<'_>,
+) -> Result<PreparedStorageState, ZfsEffectError> {
+    let StoragePreparationContext {
+        profile,
+        operation_id,
+        selection,
+        state_directory,
+        docker_drop_in_directory,
+        supervisor_directory,
+        evidence_file,
+    } = context;
     std::fs::create_dir_all(evidence_file.directory()).map_err(|error| {
         ZfsEffectError::PreparedStateUnavailable {
             message: format!(
@@ -90,11 +143,11 @@ pub fn prepare_storage_for_operation(
     );
     let evidence = match &result {
         Ok(prepared) => StoragePreparationEvidence::Completed {
-            operation_id: operation_id.clone(),
+            operation_id: (*operation_id).clone(),
             prepared: prepared.clone(),
         },
         Err(failure) => StoragePreparationEvidence::Failed {
-            operation_id: operation_id.clone(),
+            operation_id: (*operation_id).clone(),
             failure: failure.clone(),
         },
     };
@@ -117,6 +170,114 @@ pub fn prepare_storage_for_operation(
         message: error.to_string(),
     })?;
     result
+}
+
+fn establish_running_evidence(
+    evidence_file: &StorageOperationEvidenceFile,
+    operation_id: &OperationId,
+) -> Result<(), ZfsEffectError> {
+    std::fs::create_dir_all(evidence_file.directory()).map_err(|error| {
+        ZfsEffectError::PreparedStateUnavailable {
+            message: format!(
+                "failed to create operation evidence directory {}: {error}",
+                evidence_file.directory().display()
+            ),
+        }
+    })?;
+    #[cfg(unix)]
+    std::fs::set_permissions(
+        evidence_file.directory(),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .map_err(|error| ZfsEffectError::PreparedStateUnavailable {
+        message: format!(
+            "failed to protect operation evidence directory {}: {error}",
+            evidence_file.directory().display()
+        ),
+    })?;
+    let launched_at_unix_millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| ZfsEffectError::ProcessFailed {
+            message: format!("system clock precedes Unix epoch: {error}"),
+        })?
+        .as_millis()
+        .try_into()
+        .map_err(|_| ZfsEffectError::ProcessFailed {
+            message: "storage preparation launch time exceeds u64".to_owned(),
+        })?;
+    let evidence = StoragePreparationEvidence::Running {
+        operation_id: operation_id.clone(),
+        launched_at_unix_millis,
+        process: current_process_identity()?,
+    };
+    let bytes = serde_json::to_vec_pretty(&evidence).map_err(|error| {
+        ZfsEffectError::PreparedStateUnavailable {
+            message: format!("failed to serialize running preparation evidence: {error}"),
+        }
+    })?;
+    write_durable_file(
+        evidence_file.directory(),
+        evidence_file
+            .path()
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("evidence filename is UTF-8"),
+        FileMode::Secret0600,
+        &bytes,
+    )
+    .map_err(|error| ZfsEffectError::PreparedStateUnavailable {
+        message: error.to_string(),
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn current_process_identity() -> Result<StoragePreparationProcessIdentity, ZfsEffectError> {
+    let pid = std::process::id();
+    let boot_id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+        .map_err(process_identity_error)?
+        .trim()
+        .to_owned();
+    let stat =
+        std::fs::read_to_string(format!("/proc/{pid}/stat")).map_err(process_identity_error)?;
+    let (_, tail) = stat
+        .rsplit_once(") ")
+        .ok_or_else(|| ZfsEffectError::ProcessFailed {
+            message: "current process stat has no command terminator".to_owned(),
+        })?;
+    let start_time_ticks = tail
+        .split_whitespace()
+        .nth(19)
+        .ok_or_else(|| ZfsEffectError::ProcessFailed {
+            message: "current process stat has no start time".to_owned(),
+        })?
+        .parse()
+        .map_err(|error| ZfsEffectError::ProcessFailed {
+            message: format!("current process start time is invalid: {error}"),
+        })?;
+    let command = std::fs::read(format!("/proc/{pid}/cmdline")).map_err(process_identity_error)?;
+    let expected_command = command
+        .split(|byte| *byte == 0)
+        .filter(|argument| !argument.is_empty())
+        .map(|argument| String::from_utf8_lossy(argument))
+        .collect::<Vec<_>>()
+        .join("\u{0}");
+    Ok(StoragePreparationProcessIdentity {
+        boot_id,
+        pid,
+        start_time_ticks,
+        expected_command,
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn current_process_identity() -> Result<StoragePreparationProcessIdentity, ZfsEffectError> {
+    Err(ZfsEffectError::UnsupportedPlatform)
+}
+
+fn process_identity_error(error: std::io::Error) -> ZfsEffectError {
+    ZfsEffectError::ProcessFailed {
+        message: format!("failed to read storage preparation process identity: {error}"),
+    }
 }
 
 pub fn prepare_storage(

@@ -1,12 +1,15 @@
 //! Operator admission for machine-local storage preparation.
 
+use ployz_core::operation::{MachineStoragePrepareTransition, OperationStatus};
 use ployz_sdk_types::{
-    AcceptedOperation, MachineStoragePrepareError, MachineStoragePrepareRequest,
+    AcceptedOperation, MachineStoragePrepareCancelError, MachineStoragePrepareCancelRequest,
+    MachineStoragePrepareError, MachineStoragePrepareRequest,
 };
 
 use super::OperationApiHandlers;
 use super::submit::owned_machine_operation;
 use crate::control::sequencer::MachineStoragePrepareSubmitCommand;
+use crate::roles::machine::protocol::MachineStoragePrepareReport;
 
 impl From<MachineStoragePrepareRequest> for MachineStoragePrepareSubmitCommand {
     fn from(value: MachineStoragePrepareRequest) -> Self {
@@ -88,4 +91,167 @@ pub async fn machine_storage_prepare(
     );
     handlers.machine_storage_prepare().start(accepted).await;
     Ok(operation)
+}
+
+pub async fn machine_storage_prepare_cancel(
+    handlers: &OperationApiHandlers,
+    request: MachineStoragePrepareCancelRequest,
+) -> Result<AcceptedOperation, MachineStoragePrepareCancelError> {
+    let operation_id = request.operation_id;
+    let (machine_id, state, sequence) = storage_prepare_status(handlers, &operation_id).await?;
+    if state.is_terminal() {
+        return Ok(owned_machine_operation(operation_id, &machine_id, sequence));
+    }
+
+    let report = match handlers
+        .machine_storage_prepare()
+        .cancel_machine_effect(&machine_id, &operation_id, request.reason.clone())
+        .await
+    {
+        Ok(report) => report,
+        Err(error) => {
+            if let Ok((current_machine, current_state, current_sequence)) =
+                storage_prepare_status(handlers, &operation_id).await
+                && current_state.is_terminal()
+            {
+                return Ok(owned_machine_operation(
+                    operation_id,
+                    &current_machine,
+                    current_sequence,
+                ));
+            }
+            return Err(MachineStoragePrepareCancelError::Unavailable {
+                operation_id,
+                message: format!("{error:?}"),
+            });
+        }
+    };
+
+    let transition = cancel_transition(&machine_id, report).map_err(|message| {
+        MachineStoragePrepareCancelError::Unavailable {
+            operation_id: operation_id.clone(),
+            message: message.to_owned(),
+        }
+    })?;
+    if let Err(error) = handlers
+        .controllers()
+        .repository()
+        .record_machine_storage_prepare_transition(&operation_id, &machine_id, transition)
+        .await
+    {
+        if let Ok((current_machine, current_state, current_sequence)) =
+            storage_prepare_status(handlers, &operation_id).await
+            && current_state.is_terminal()
+        {
+            return Ok(owned_machine_operation(
+                operation_id,
+                &current_machine,
+                current_sequence,
+            ));
+        }
+        return Err(MachineStoragePrepareCancelError::Unavailable {
+            operation_id,
+            message: error.to_string(),
+        });
+    }
+
+    let (machine_id, _state, sequence) = storage_prepare_status(handlers, &operation_id).await?;
+    Ok(owned_machine_operation(operation_id, &machine_id, sequence))
+}
+
+fn cancel_transition(
+    machine_id: &ployz_core::ids::MachineId,
+    report: MachineStoragePrepareReport,
+) -> Result<MachineStoragePrepareTransition, &'static str> {
+    match report {
+        MachineStoragePrepareReport::Completed { pool } => {
+            Ok(MachineStoragePrepareTransition::Completed { pool })
+        }
+        MachineStoragePrepareReport::Failed { failure } => {
+            Ok(MachineStoragePrepareTransition::Failed {
+                failure: ployz_core::operation::MachineStoragePrepareFailure::PreparationRejected {
+                    machine_id: machine_id.clone(),
+                    failure,
+                },
+            })
+        }
+        MachineStoragePrepareReport::Cancelled { reason } => {
+            Ok(MachineStoragePrepareTransition::Cancelled { reason })
+        }
+        MachineStoragePrepareReport::Running | MachineStoragePrepareReport::NotFound => {
+            Err("machine cancellation did not return terminal evidence")
+        }
+    }
+}
+
+async fn storage_prepare_status(
+    handlers: &OperationApiHandlers,
+    operation_id: &ployz_core::ids::OperationId,
+) -> Result<
+    (
+        ployz_core::ids::MachineId,
+        ployz_core::operation::MachineStoragePrepareOperationState,
+        ployz_core::operation::EventSequence,
+    ),
+    MachineStoragePrepareCancelError,
+> {
+    let snapshot = handlers
+        .controllers()
+        .repository()
+        .operation_status_snapshot(operation_id)
+        .await
+        .map_err(|error| MachineStoragePrepareCancelError::Unavailable {
+            operation_id: operation_id.clone(),
+            message: error.to_string(),
+        })?;
+    let Some(snapshot) = snapshot else {
+        return Err(MachineStoragePrepareCancelError::NoSuchOperation {
+            operation_id: operation_id.clone(),
+        });
+    };
+    let OperationStatus::MachineStoragePrepare {
+        machine_id,
+        state,
+        last_event_sequence,
+        ..
+    } = snapshot.status
+    else {
+        return Err(MachineStoragePrepareCancelError::NoSuchOperation {
+            operation_id: operation_id.clone(),
+        });
+    };
+    Ok((machine_id, state, last_event_sequence))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ployz_core::operation::{CancellationReason, MachineStoragePrepareOperationState};
+
+    fn machine() -> ployz_core::ids::MachineId {
+        ployz_core::ids::MachineId::try_new("machine_cancel_transition").expect("machine id")
+    }
+
+    #[test]
+    fn cancel_transition_preserves_the_machine_winning_reason() {
+        let reason = CancellationReason::try_new("first durable cancellation").expect("reason");
+        let transition = cancel_transition(
+            &machine(),
+            MachineStoragePrepareReport::Cancelled {
+                reason: reason.clone(),
+            },
+        )
+        .expect("terminal transition");
+
+        assert_eq!(
+            transition.state(),
+            MachineStoragePrepareOperationState::Cancelled { reason }
+        );
+    }
+
+    #[test]
+    fn cancel_transition_rejects_nonterminal_machine_reports() {
+        assert!(cancel_transition(&machine(), MachineStoragePrepareReport::Running).is_err());
+        assert!(cancel_transition(&machine(), MachineStoragePrepareReport::NotFound).is_err());
+    }
 }

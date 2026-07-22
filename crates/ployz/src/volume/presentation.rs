@@ -289,6 +289,9 @@ pub(crate) fn storage_effect_failure(
         StorageEffectFailure::ProcessFailed { message } => {
             format!("storage preparation process failed: {message}")
         }
+        StorageEffectFailure::Interrupted { message } => {
+            format!("storage preparation was interrupted: {message}")
+        }
     }
 }
 

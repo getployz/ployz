@@ -3,7 +3,8 @@ use ployz_core::build::{
     BuildCachePruneStartRequest, BuildCachePruneStatus, BuildCachePruneStatusRequest,
     BuildExecutorCancelDomainError, BuildExecutorCancelOk, BuildExecutorCancelOutcome,
     BuildExecutorCancelRequest, BuildExecutorCleanupOutcome, BuildExecutorLogFrame,
-    BuildExecutorStartDomainError, BuildExecutorStartOk, BuildExecutorStartRequest,
+    BuildExecutorStartDomainError, BuildExecutorStartRequest, BuildExecutorStatus,
+    BuildExecutorStatusDomainError, BuildExecutorStatusRequest,
 };
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::machine::rpc::MachineRpcResponse;
@@ -13,9 +14,15 @@ use serde::{Deserialize, Serialize};
 pub type MachineBuildStartRpcRequest = BuildExecutorStartRequest;
 pub type MachineBuildStartDomainError = BuildExecutorStartDomainError;
 pub type MachineBuildCleanupOutcome = BuildExecutorCleanupOutcome;
-pub type MachineBuildStartRpcOk = MachineBuildExecutorRpcOk<BuildExecutorStartOk>;
+pub type MachineBuildStartRpcOk = MachineBuildExecutorRpcOk<BuildExecutorAcceptance>;
 pub type MachineBuildStartRpcResponse =
     MachineRpcResponse<MachineBuildStartRpcOk, MachineBuildStartDomainError>;
+
+pub type MachineBuildStatusRpcRequest = BuildExecutorStatusRequest;
+pub type MachineBuildStatusDomainError = BuildExecutorStatusDomainError;
+pub type MachineBuildStatusRpcOk = MachineBuildExecutorRpcOk<BuildExecutorStatus>;
+pub type MachineBuildStatusRpcResponse =
+    MachineRpcResponse<MachineBuildStatusRpcOk, MachineBuildStatusDomainError>;
 
 pub type MachineBuildCancelRpcRequest = BuildExecutorCancelRequest;
 pub type MachineBuildCancelOutcome = BuildExecutorCancelOutcome;
@@ -33,13 +40,6 @@ pub use ployz_core::build::{BuildExecutorAcceptance, BuildExecutorAssignment, Bu
 pub struct MachineBuildExecutorRpcOk<T> {
     pub machine_id: MachineId,
     pub executor: T,
-}
-
-impl<T> MachineBuildExecutorRpcOk<T> {
-    #[must_use]
-    pub fn into_executor(self) -> T {
-        self.executor
-    }
 }
 
 impl<T> From<(MachineId, T)> for MachineBuildExecutorRpcOk<T> {
@@ -96,13 +96,8 @@ pub enum MachineBuildCachePruneCancelDomainError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::build::{
-        BuildCachePruneCancelOutcome, BuildExecutorSuccessCleanupEvidence, GitSource,
-        VerifiedBuildSource,
-    };
-    use ployz_core::deploy::{ImageAvailabilityExpiresAt, PlatformImage};
-    use ployz_core::image::{OciDigest, OciPlatform};
-    use ployz_core::operation::{BuildAdapterToolchainEvidence, BuildToolchainEvidence};
+    use ployz_core::build::BuildCachePruneCancelOutcome;
+    use ployz_core::image::OciPlatform;
     use serde::de::DeserializeOwned;
 
     fn assert_strict<T: Serialize + DeserializeOwned>(value: &T) {
@@ -141,6 +136,8 @@ mod tests {
                 machine_id: machine_id.clone(),
             },
             platform: OciPlatform::try_new("linux", "amd64").expect("platform"),
+            request_commitment: ployz_core::build::BuildRequestCommitment::try_from("a".repeat(64))
+                .expect("commitment"),
         }
     }
 
@@ -196,37 +193,8 @@ mod tests {
 
     #[test]
     fn successful_start_response_has_a_strict_nested_executor_envelope() {
-        let digest = OciDigest::try_new(format!("sha256:{}", "a".repeat(64))).expect("digest");
-        let source = GitSource::try_new(
-            "https://example.test/repo.git",
-            "0123456789abcdef0123456789abcdef01234567",
-            "git",
-            "redacted-test-value",
-            None::<String>,
-        )
-        .expect("source")
-        .into();
         let machine_id = MachineId::try_new("machine-a").expect("machine");
-        let response = MachineBuildStartRpcOk::from((
-            machine_id.clone(),
-            BuildExecutorStartOk {
-                acceptance: acceptance(&machine_id),
-                cleanup: BuildExecutorSuccessCleanupEvidence::confirmed(),
-                image: PlatformImage {
-                    seed: machine_id,
-                    manifest_digest: digest.clone(),
-                    image_id: digest.clone(),
-                    availability_expires_at: ImageAvailabilityExpiresAt::try_new(4_102_444_800)
-                        .expect("expiry"),
-                },
-                verified_source: VerifiedBuildSource::from_source(&source),
-                toolchain: BuildToolchainEvidence {
-                    buildkit_image: digest,
-                    adapter: BuildAdapterToolchainEvidence::Dockerfile,
-                },
-                log_summary: BuildLogSummary::new(8, 13),
-            },
-        ));
+        let response = MachineBuildStartRpcOk::from((machine_id.clone(), acceptance(&machine_id)));
 
         let encoded = serde_json::to_value(&response).expect("encode success");
         assert_eq!(
@@ -234,29 +202,10 @@ mod tests {
             serde_json::json!({
                 "machine_id": "machine-a",
                 "executor": {
-                    "acceptance": {
-                        "operation_id": "build-1",
-                        "assignment": {"executor": "cluster", "machine_id": "machine-a"},
-                        "platform": {"os": "linux", "architecture": "amd64"},
-                    },
-                    "cleanup": {"outcome": "confirmed"},
-                    "image": {
-                        "seed": "machine-a",
-                        "manifest_digest": format!("sha256:{}", "a".repeat(64)),
-                        "image_id": format!("sha256:{}", "a".repeat(64)),
-                        "availability_expires_at": "4102444800",
-                    },
-                    "verified_source": {
-                        "source": "git",
-                        "url": "https://example.test/repo.git",
-                        "commit": "0123456789abcdef0123456789abcdef01234567",
-                    },
-                    "toolchain": {
-                        "buildkit_image": format!("sha256:{}", "a".repeat(64)),
-                        "adapter": {"adapter": "dockerfile"},
-                    },
-                    "final_log_sequence": 8,
-                    "omitted_log_bytes": 13,
+                    "operation_id": "build-1",
+                    "assignment": {"executor": "cluster", "machine_id": "machine-a"},
+                    "platform": {"os": "linux", "architecture": "amd64"},
+                    "request_commitment": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 },
             })
         );
@@ -279,24 +228,52 @@ mod tests {
             .expect("executor object")
             .insert("unexpected".to_owned(), serde_json::json!(true));
         assert!(serde_json::from_value::<MachineBuildStartRpcOk>(unknown_executor).is_err());
+    }
 
-        let mut unconfirmed_cleanup = serde_json::to_value(&response).expect("encode success");
-        unconfirmed_cleanup
+    #[test]
+    fn running_status_response_has_strict_provenance_and_activity() {
+        let machine_id = MachineId::try_new("machine-a").expect("machine");
+        let response = MachineBuildStatusRpcOk::from((
+            machine_id.clone(),
+            BuildExecutorStatus {
+                acceptance: acceptance(&machine_id),
+                state: ployz_core::build::BuildExecutorState::Running {
+                    log_summary: BuildLogSummary::new(8, 13),
+                },
+            },
+        ));
+        let encoded = serde_json::to_value(&response).expect("encode status");
+        assert_eq!(
+            encoded,
+            serde_json::json!({
+                "machine_id": "machine-a",
+                "executor": {
+                    "acceptance": {
+                        "operation_id": "build-1",
+                        "assignment": {"executor": "cluster", "machine_id": "machine-a"},
+                        "platform": {"os": "linux", "architecture": "amd64"},
+                        "request_commitment": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    },
+                    "state": {
+                        "status": "running",
+                        "final_log_sequence": 8,
+                        "omitted_log_bytes": 13,
+                    },
+                },
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<MachineBuildStatusRpcOk>(encoded.clone())
+                .expect("decode status"),
+            response
+        );
+        let mut unknown = encoded;
+        unknown
             .get_mut("executor")
-            .and_then(|executor| executor.get_mut("cleanup"))
             .and_then(serde_json::Value::as_object_mut)
-            .expect("cleanup object")
-            .insert("outcome".to_owned(), serde_json::json!("unconfirmed"));
-        assert!(serde_json::from_value::<MachineBuildStartRpcOk>(unconfirmed_cleanup).is_err());
-
-        let mut unknown_cleanup = serde_json::to_value(&response).expect("encode success");
-        unknown_cleanup
-            .get_mut("executor")
-            .and_then(|executor| executor.get_mut("cleanup"))
-            .and_then(serde_json::Value::as_object_mut)
-            .expect("cleanup object")
+            .expect("executor object")
             .insert("unexpected".to_owned(), serde_json::json!(true));
-        assert!(serde_json::from_value::<MachineBuildStartRpcOk>(unknown_cleanup).is_err());
+        assert!(serde_json::from_value::<MachineBuildStatusRpcOk>(unknown).is_err());
     }
 
     #[test]
@@ -351,6 +328,7 @@ mod tests {
                     "operation_id": "build-1",
                     "assignment": {"executor": "cluster", "machine_id": "machine-a"},
                     "platform": {"os": "linux", "architecture": "amd64"},
+                    "request_commitment": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 },
                 "message": "deadline exceeded",
                 "cleanup": "unconfirmed",

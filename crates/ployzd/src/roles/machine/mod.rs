@@ -17,6 +17,7 @@ mod deploy_container_run;
 mod endpoints;
 pub mod execution;
 mod facts;
+mod image_ensure;
 mod images;
 mod logs;
 pub mod process;

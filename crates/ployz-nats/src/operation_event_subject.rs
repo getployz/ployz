@@ -41,11 +41,13 @@ pub fn operation_event_subject_suffix(event: &OperationEvent) -> String {
             format!("deploy.running.{}", deploy_running_stage(stage))
         }
         OperationEvent::DeployImageAvailabilityVerified {
-            service_id, seed, ..
+            service_id,
+            machine_id,
+            ..
         } => format!(
             "deploy.image.availability_verified.{}.{}",
             service_id.as_str(),
-            seed.as_str()
+            machine_id.as_str()
         ),
         OperationEvent::DeployContainerStarted {
             machine_id,

@@ -179,11 +179,7 @@ pub(super) async fn run_external_executor_session(
             )));
         }
     };
-    let expected = BuildExecutorAcceptance {
-        operation_id: id.clone(),
-        assignment: executor.clone(),
-        platform: platform.clone(),
-    };
+    let expected = BuildExecutorAcceptance::from_start_request(&request);
     if summary.acceptance() != &expected {
         let failure = BuildPlatformFailure::ExecutorUnavailable {
             message: failure_message(
@@ -231,7 +227,7 @@ pub(super) async fn run_external_executor_session(
             ExternalBuildSummary::Completed(_) => unreachable!(),
         };
     };
-    if ok.image.seed != *image_seed {
+    if ok.completion.image.seed != *image_seed {
         let failure = BuildPlatformFailure::ExecutorUnavailable {
             message: failure_message(
                 "external Build Executor returned an image from a different seed",
@@ -251,14 +247,17 @@ pub(super) async fn run_external_executor_session(
     }
     let BuildExecutorStartOk {
         acceptance: _,
-        cleanup:
-            BuildExecutorSuccessCleanupEvidence {
-                outcome: BuildExecutorSuccessCleanupOutcome::Confirmed,
+        completion:
+            ployz_core::build::BuildExecutorCompletion {
+                cleanup:
+                    BuildExecutorSuccessCleanupEvidence {
+                        outcome: BuildExecutorSuccessCleanupOutcome::Confirmed,
+                    },
+                image,
+                verified_source,
+                toolchain,
+                log_summary: _,
             },
-        image,
-        verified_source,
-        toolchain,
-        log_summary: _,
     } = ok;
     driver
         .controllers
@@ -482,7 +481,7 @@ impl ExternalBuildSummary {
 
     fn log_summary(&self) -> BuildLogSummary {
         match self {
-            Self::Completed(ok) => ok.log_summary,
+            Self::Completed(ok) => ok.completion.log_summary,
             Self::Failed { log_summary, .. }
             | Self::Cancelled { log_summary, .. }
             | Self::TimedOut { log_summary, .. } => *log_summary,
@@ -548,7 +547,7 @@ mod tests {
             executor_id: executor_id.clone(),
             image_seed: image_seed.clone(),
         };
-        let source = GitSource::try_new(
+        let source: ployz_core::build::BuildSource = GitSource::try_new(
             "https://example.test/repo.git",
             "0123456789abcdef0123456789abcdef01234567",
             "git",
@@ -558,26 +557,36 @@ mod tests {
         .expect("source")
         .into();
         let digest = OciDigest::try_new(format!("sha256:{}", "a".repeat(64))).expect("digest");
+        let request = BuildExecutorStartRequest {
+            operation_id: operation_id.clone(),
+            assignment: assignment.clone(),
+            source: source.clone(),
+            adapter: ployz_core::build::BuildAdapter::Dockerfile {
+                dockerfile: ployz_core::build::BuildContextPath::try_new("Dockerfile")
+                    .expect("dockerfile"),
+                target: None,
+            },
+            platform: platform.clone(),
+            timeout_millis: 1_000,
+        };
         let response = BuildExecutorStartResponse::Ok(Box::new(BuildExecutorStartOk {
-            acceptance: BuildExecutorAcceptance {
-                operation_id: operation_id.clone(),
-                assignment: assignment.clone(),
-                platform: platform.clone(),
+            acceptance: BuildExecutorAcceptance::from_start_request(&request),
+            completion: ployz_core::build::BuildExecutorCompletion {
+                cleanup: BuildExecutorSuccessCleanupEvidence::confirmed(),
+                image: PlatformImage {
+                    seed: image_seed,
+                    manifest_digest: digest.clone(),
+                    image_id: digest.clone(),
+                    availability_expires_at: ImageAvailabilityExpiresAt::try_new(4_102_444_800)
+                        .expect("expiry"),
+                },
+                verified_source: VerifiedBuildSource::from_source(&source),
+                toolchain: BuildToolchainEvidence {
+                    buildkit_image: digest,
+                    adapter: BuildAdapterToolchainEvidence::Dockerfile,
+                },
+                log_summary: BuildLogSummary::new(3, 0),
             },
-            cleanup: BuildExecutorSuccessCleanupEvidence::confirmed(),
-            image: PlatformImage {
-                seed: image_seed,
-                manifest_digest: digest.clone(),
-                image_id: digest.clone(),
-                availability_expires_at: ImageAvailabilityExpiresAt::try_new(4_102_444_800)
-                    .expect("expiry"),
-            },
-            verified_source: VerifiedBuildSource::from_source(&source),
-            toolchain: BuildToolchainEvidence {
-                buildkit_image: digest,
-                adapter: BuildAdapterToolchainEvidence::Dockerfile,
-            },
-            log_summary: BuildLogSummary::new(3, 0),
         }));
         let encoded = serde_json::to_vec(&response).expect("encode response");
         let decoded: BuildExecutorStartResponse =
@@ -586,7 +595,10 @@ mod tests {
             panic!("success response")
         };
         assert_eq!(ok.acceptance.assignment, assignment);
-        assert_eq!(ok.cleanup, BuildExecutorSuccessCleanupEvidence::confirmed());
+        assert_eq!(
+            ok.completion.cleanup,
+            BuildExecutorSuccessCleanupEvidence::confirmed()
+        );
         assert_eq!(
             build_executor_service(
                 &pool_id,

@@ -2,7 +2,7 @@
 
 use super::build::{
     MachineBuildRuntime, handle_build_cache_prune_cancel, handle_build_cache_prune_start,
-    handle_build_cache_prune_status, handle_build_cancel, handle_build_start,
+    handle_build_cache_prune_status, handle_build_cancel, handle_build_start, handle_build_status,
 };
 use super::containers::{
     MachineContainerState, handle_container_inspect, handle_container_remove,
@@ -16,14 +16,16 @@ use super::facts::{
     MachineEndpointCache, MachineFactsGetState, MachineFactsState, handle_facts_get,
     handle_facts_refresh,
 };
+#[cfg(test)]
+use super::image_ensure::ImageEnsureRuntime;
 use super::images::{
-    AvailableImageService, handle_image_blob_check, handle_image_blob_push, handle_image_ensure,
-    handle_image_manifest_push, handle_image_remove,
+    AvailableImageService, MachineImageEnsureService, handle_image_blob_check,
+    handle_image_blob_push, handle_image_ensure, handle_image_manifest_push, handle_image_remove,
 };
 use super::logs::handle_logs_tail;
 use super::substrate::{
-    handle_storage_prepare, handle_storage_prepare_report, handle_substrate_report,
-    handle_substrate_update,
+    StoragePrepareRuntime, handle_storage_prepare, handle_storage_prepare_cancel,
+    handle_storage_prepare_report, handle_substrate_report, handle_substrate_update,
 };
 use super::volume::{
     DATASET_DESTROY_HOST_COMMAND_TIMEOUT, DATASET_ENSURE_HOST_COMMAND_TIMEOUT,
@@ -37,7 +39,6 @@ use crate::roles::machine::runner::{
     MachineContainerRunner, MachineImageRemovalRunner, MachineLogReader, MachineVolumeUsageReader,
 };
 use crate::service_catalog::{machine_endpoint_spec, machine_role_service_base};
-use ployz_core::build::BUILD_START_ENDPOINT_TIMEOUT;
 use ployz_core::ids::MachineId;
 #[cfg(test)]
 use ployz_core::machine::MachineEndpointObservation;
@@ -176,7 +177,12 @@ where
         MachineRoleProjectionServices {
             build_state: None,
             image_state: None,
+            image_ensure_state: Some(MachineImageEnsureService {
+                runtime: ImageEnsureRuntime::completing_for_test(),
+                available: None,
+            }),
             projection_state: projection_state.clone(),
+            storage_prepare: StoragePrepareRuntime::host_default(),
         },
     )
     .await?;
@@ -247,7 +253,12 @@ where
         MachineRoleProjectionServices {
             build_state: None,
             image_state: None,
+            image_ensure_state: Some(MachineImageEnsureService {
+                runtime: ImageEnsureRuntime::completing_for_test(),
+                available: None,
+            }),
             projection_state: MachineProjectionState::new(),
+            storage_prepare: StoragePrepareRuntime::host_default(),
         },
     )
     .await
@@ -276,7 +287,9 @@ where
     let MachineRoleProjectionServices {
         build_state,
         image_state,
+        image_ensure_state,
         projection_state,
+        storage_prepare,
     } = projection_services;
     let build_runtime_available = build_state.is_some();
     let spec = machine_role_service_base(&machine_id);
@@ -294,6 +307,14 @@ where
         MachineServiceEndpoint::BuildStart,
         build_state.clone(),
         handle_build_start,
+    )
+    .await?;
+    bind_machine_endpoint(
+        &mut runtime,
+        &machine_id,
+        MachineServiceEndpoint::BuildStatus,
+        build_state.clone(),
+        handle_build_status,
     )
     .await?;
     bind_machine_endpoint(
@@ -480,15 +501,23 @@ where
         &mut runtime,
         &machine_id,
         MachineServiceEndpoint::StoragePrepare,
-        (),
+        storage_prepare.clone(),
         handle_storage_prepare,
     )
     .await?;
     bind_machine_endpoint(
         &mut runtime,
         &machine_id,
+        MachineServiceEndpoint::StoragePrepareCancel,
+        storage_prepare.clone(),
+        handle_storage_prepare_cancel,
+    )
+    .await?;
+    bind_machine_endpoint(
+        &mut runtime,
+        &machine_id,
         MachineServiceEndpoint::StoragePrepareReport,
-        (),
+        storage_prepare,
         handle_storage_prepare_report,
     )
     .await?;
@@ -536,7 +565,7 @@ where
         &mut runtime,
         &machine_id,
         MachineServiceEndpoint::ImageEnsure,
-        image_state,
+        image_ensure_state,
         handle_image_ensure,
     )
     .await?;
@@ -578,8 +607,9 @@ fn machine_endpoint_policy(endpoint: MachineServiceEndpoint) -> EndpointExecutio
         MachineServiceEndpoint::StoragePrepare => {
             policy.request_timeout = ployz_core::storage::MACHINE_STORAGE_PREPARE_RPC_TIMEOUT;
         }
-        MachineServiceEndpoint::BuildStart => {
-            policy.request_timeout = BUILD_START_ENDPOINT_TIMEOUT;
+        MachineServiceEndpoint::StoragePrepareCancel => {
+            policy.request_timeout =
+                ployz_core::storage::MACHINE_STORAGE_PREPARE_CANCEL_RPC_TIMEOUT;
         }
         MachineServiceEndpoint::VolumeEnsure => {
             policy.request_timeout = VOLUME_ENSURE_ENDPOINT_TIMEOUT;
@@ -603,6 +633,7 @@ fn machine_endpoint_policy(endpoint: MachineServiceEndpoint) -> EndpointExecutio
         | MachineServiceEndpoint::ContainerStop
         | MachineServiceEndpoint::ContainerRemove
         | MachineServiceEndpoint::DataplanePublicKey
+        | MachineServiceEndpoint::BuildStart
         | MachineServiceEndpoint::SubstrateUpdate
         | MachineServiceEndpoint::SubstrateReport
         | MachineServiceEndpoint::StoragePrepareReport
@@ -613,6 +644,7 @@ fn machine_endpoint_policy(endpoint: MachineServiceEndpoint) -> EndpointExecutio
         | MachineServiceEndpoint::ImageEnsure
         | MachineServiceEndpoint::ImageRemove
         | MachineServiceEndpoint::BuildCancel
+        | MachineServiceEndpoint::BuildStatus
         | MachineServiceEndpoint::BuildCachePruneStart
         | MachineServiceEndpoint::BuildCachePruneStatus
         | MachineServiceEndpoint::BuildCachePruneCancel
@@ -659,7 +691,9 @@ pub enum MachineServiceError {
 pub(crate) struct MachineRoleProjectionServices {
     pub build_state: Option<MachineBuildRuntime>,
     pub image_state: Option<AvailableImageService>,
+    pub image_ensure_state: Option<MachineImageEnsureService>,
     pub projection_state: MachineProjectionState,
+    pub storage_prepare: StoragePrepareRuntime,
 }
 
 #[cfg(test)]
@@ -689,19 +723,43 @@ mod tests {
     }
 
     #[test]
+    fn storage_prepare_cancel_endpoint_covers_both_termination_phases() {
+        let policy = machine_endpoint_policy(MachineServiceEndpoint::StoragePrepareCancel);
+
+        assert_eq!(
+            policy.request_timeout,
+            ployz_core::storage::MACHINE_STORAGE_PREPARE_CANCEL_RPC_TIMEOUT
+        );
+        assert!(
+            policy.request_timeout > ployz_core::storage::MACHINE_STORAGE_PREPARE_CANCEL_ACK_BUDGET
+        );
+        assert!(
+            ployz_core::storage::MACHINE_STORAGE_PREPARE_CANCEL_ACK_BUDGET
+                > ployz_core::storage::MACHINE_STORAGE_PREPARE_TERMINATION_GRACE * 2
+        );
+    }
+
+    #[test]
     fn build_endpoints_use_quick_machine_response_budgets() {
         let policy = machine_endpoint_policy(MachineServiceEndpoint::BuildStart);
         let prune_start = machine_endpoint_policy(MachineServiceEndpoint::BuildCachePruneStart);
         let prune_status = machine_endpoint_policy(MachineServiceEndpoint::BuildCachePruneStatus);
         let prune_cancel = machine_endpoint_policy(MachineServiceEndpoint::BuildCachePruneCancel);
 
-        assert_eq!(policy.request_timeout, BUILD_START_ENDPOINT_TIMEOUT);
+        assert_eq!(
+            policy.request_timeout,
+            EndpointExecutionPolicy::default().request_timeout
+        );
+        assert!(policy.request_timeout < ployz_core::build::BUILD_MAX_MACHINE_RESPONSE_LIFETIME);
         for prune_policy in [prune_start, prune_status, prune_cancel] {
             assert_eq!(
                 prune_policy.request_timeout,
                 EndpointExecutionPolicy::default().request_timeout
             );
-            assert!(prune_policy.request_timeout < policy.request_timeout);
+            assert!(
+                prune_policy.request_timeout
+                    < ployz_core::build::BUILD_MAX_MACHINE_RESPONSE_LIFETIME
+            );
         }
     }
 
