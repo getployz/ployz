@@ -457,13 +457,15 @@ fn launch_anchored_budget_never_renews() {
 async fn leader_exit_reaps_its_remaining_descendant_before_terminal_evidence() {
     let directory = tempfile::tempdir().expect("evidence directory");
     let descendant_file = directory.path().join("descendant.pid");
+    let release_file = directory.path().join("release");
     let operation_id = operation("op_descendant");
     let mut command = tokio::process::Command::new("sh");
     command
         .arg("-c")
-        .arg("sleep 30 & echo $! > \"$1\"; sleep 1")
+        .arg("sleep 30 & echo $! > \"$1\"; while [ ! -e \"$2\" ]; do sleep 0.01; done")
         .arg("storage-prepare")
         .arg(&descendant_file)
+        .arg(&release_file)
         .arg(operation_id.as_str())
         .process_group(0)
         .kill_on_drop(false);
@@ -499,6 +501,7 @@ async fn leader_exit_reaps_its_remaining_descendant_before_terminal_evidence() {
         .await
         .expect("acceptance channel")
         .expect("accepted");
+    std::fs::write(release_file, []).expect("release leader");
     tokio::time::timeout(Duration::from_secs(2), async {
         while runtime.state.lock().await.is_some() {
             tokio::time::sleep(Duration::from_millis(10)).await;
