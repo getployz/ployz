@@ -349,6 +349,7 @@ async fn external_build_executor_serves_its_endpoints_logs_and_image_requests() 
         )
         .await
         .expect("executor publishes own log");
+    executor.flush().await.expect("executor log flushes");
     let log = tokio::time::timeout(EVENT_TIMEOUT, logs.next())
         .await
         .expect("log arrives before timeout")
