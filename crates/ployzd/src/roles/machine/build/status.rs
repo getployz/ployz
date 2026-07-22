@@ -66,6 +66,7 @@ impl BuildStatusRepository {
             .writes
             .lock()
             .map_err(|_| "build status write lock is poisoned".to_owned())?;
+        ensure_private_directory(&self.root)?;
         let operation_id = &record.status.acceptance.operation_id;
         record.validate(operation_id)?;
         if let Some(existing) = self.read(operation_id)? {
@@ -135,6 +136,18 @@ impl BuildStatusRepository {
             .join(TERMINAL_DIRECTORY)
             .join(format!("{}.json", operation_id.as_str()))
     }
+}
+
+fn ensure_private_directory(path: &std::path::Path) -> Result<(), String> {
+    std::fs::create_dir_all(path).map_err(|error| format!("create {}: {error}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+            .map_err(|error| format!("restrict {}: {error}", path.display()))?;
+    }
+    Ok(())
 }
 
 fn read_record(
