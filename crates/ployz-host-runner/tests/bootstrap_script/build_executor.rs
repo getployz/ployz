@@ -28,6 +28,16 @@ impl BuildExecutorFixture {
         let railpack_bin = root.join("lib/ployz/railpack/v0.31.0/railpack");
         let release_env = root.join("release.env");
         let script_path = test_bootstrap_script_path(&root, &install_dir);
+        let script = fs::read_to_string(&script_path).expect("test installer is readable");
+        let script = replace_required(
+            script,
+            "railpack_binary_sha256=\"15d3921fc4f955f60b0d4b635036153c6255928ef0a6af7353e3047a2ceb6121\"",
+            &format!(
+                "railpack_binary_sha256=\"{}\"",
+                sha256_file(&railpack_source)
+            ),
+        );
+        fs::write(&script_path, script).expect("test installer pin can be rewritten");
         let fake_bin = root.join("fake-bin");
         fs::create_dir_all(&fake_bin).expect("fake bin can be created");
         write_fake_tools(&fake_bin);
@@ -143,6 +153,10 @@ fn installs_verified_artifacts_at_exact_paths_and_is_idempotent() {
 
     let output = fixture.command().output().expect("installer can run");
     assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("ready for Build Executor enrollment"));
+    assert!(!stdout.contains("ployz host bootstrap"));
+    assert!(!stdout.contains("ployz host substrate-update"));
     assert_eq!(
         fs::read_to_string(fixture.install_dir.join("ployz")).expect("Ployz is installed"),
         "#!/bin/sh\nexit 0\n"

@@ -44,6 +44,14 @@ fn bootstrap_script_file_is_unified_release_delivery() {
     assert!(script.contains("PLOYZ_RAILPACK_SHA256"));
     assert!(script.contains(&format!("railpack_version=\"{}\"", pin("RAILPACK_VERSION"))));
     assert!(script.contains(&format!(
+        "railpack_binary_sha256=\"{}\"",
+        pin("RAILPACK_AMD64_BINARY_SHA256")
+    )));
+    assert!(script.contains(&format!(
+        "railpack_binary_sha256=\"{}\"",
+        pin("RAILPACK_ARM64_BINARY_SHA256")
+    )));
+    assert!(script.contains(&format!(
         "railpack_bin=\"{}\"",
         pin("RAILPACK_INSTALL_PATH")
     )));

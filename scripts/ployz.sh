@@ -9,7 +9,7 @@ usage() {
   echo "" >&2
   echo "installs the verified ployz binary to /usr/local/bin/ployz" >&2
   echo "--build-executor also installs the verified Railpack helper" >&2
-  echo "then run: sudo ployz host bootstrap" >&2
+  echo "default install next step: sudo ployz host bootstrap" >&2
 }
 
 version_input="${PLOYZ_VERSION:-}"
@@ -71,9 +71,11 @@ machine_arch="$(uname -m)"
 case "$machine_arch" in
   x86_64 | amd64)
     arch_slug="amd64"
+    railpack_binary_sha256="15d3921fc4f955f60b0d4b635036153c6255928ef0a6af7353e3047a2ceb6121"
     ;;
   aarch64 | arm64)
     arch_slug="arm64"
+    railpack_binary_sha256="61723cee03fedaad6879c59729b1dabba329a4912573d77c37427149a070f8f9"
     ;;
   *)
     echo "unsupported architecture: $machine_arch (ployz supports amd64 and arm64)" >&2
@@ -355,6 +357,10 @@ if [ "$install_build_executor" -eq 1 ]; then
   fi
   PLOYZ_RAILPACK_URL="$(manifest_required_value PLOYZ_RAILPACK_URL)"
   PLOYZ_RAILPACK_SHA256="$(manifest_required_value PLOYZ_RAILPACK_SHA256)"
+  if [ "$PLOYZ_RAILPACK_SHA256" != "$railpack_binary_sha256" ]; then
+    echo "release manifest $manifest_url has unsupported PLOYZ_RAILPACK_SHA256=$PLOYZ_RAILPACK_SHA256, expected $railpack_binary_sha256 for $release_platform" >&2
+    exit 1
+  fi
 else
   if [ "$caller_manifest_selected" -eq 1 ] || [ -z "${PLOYZ_URL:-}" ] || [ -z "${PLOYZ_SHA256:-}" ]; then
     load_manifest
@@ -387,10 +393,12 @@ promote_release
 echo "installed $ployz_bin"
 if [ "$install_build_executor" -eq 1 ]; then
   echo "installed $railpack_bin"
-fi
-echo "run: sudo ployz host bootstrap"
-if [ -n "${release_tag:-}" ]; then
-  echo "update existing substrate: sudo ployz host substrate-update --version $release_tag"
+  echo "ready for Build Executor enrollment"
 else
-  echo "update existing substrate: sudo ployz host substrate-update --version <release-tag>"
+  echo "run: sudo ployz host bootstrap"
+  if [ -n "${release_tag:-}" ]; then
+    echo "update existing substrate: sudo ployz host substrate-update --version $release_tag"
+  else
+    echo "update existing substrate: sudo ployz host substrate-update --version <release-tag>"
+  fi
 fi
