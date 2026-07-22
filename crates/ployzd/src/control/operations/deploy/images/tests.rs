@@ -438,13 +438,14 @@ async fn ensure_wave_starts_every_independent_job_before_polling_status() {
         .expect("wave completes");
 
     assert_eq!(completed.len(), 2);
+    let image_ensures = runtime.image_ensures();
     assert!(
-        runtime.image_ensures[..2]
+        image_ensures[..2]
             .iter()
             .all(|(_, request)| matches!(request, ImageEnsureRequest::Start { .. }))
     );
     assert!(
-        runtime.image_ensures[2..]
+        image_ensures[2..]
             .iter()
             .all(|(_, request)| matches!(request, ImageEnsureRequest::Status { .. }))
     );
@@ -471,7 +472,7 @@ async fn ensure_wave_failure_cancels_every_unfinished_peer() {
         .expect_err("first job fails");
 
     assert_eq!(failed_index, 0);
-    assert!(runtime.image_ensures.iter().any(|(machine, request)| {
+    assert!(runtime.image_ensures().iter().any(|(machine, request)| {
         machine == &machine_id("machine_b") && matches!(request, ImageEnsureRequest::Cancel { .. })
     }));
 }
@@ -490,10 +491,163 @@ async fn duplicate_target_jobs_start_once() {
     assert_eq!(jobs.len(), 1);
     assert_eq!(
         runtime
-            .image_ensures
+            .image_ensures()
             .iter()
             .filter(|(_, request)| matches!(request, ImageEnsureRequest::Start { .. }))
             .count(),
         1
     );
+}
+
+#[derive(Clone, Copy)]
+enum ConcurrentEnsureMode {
+    SlowFailingStart,
+    SlowCancels,
+}
+
+#[derive(Clone)]
+struct ConcurrentEnsureRuntime {
+    mode: ConcurrentEnsureMode,
+    requests: std::sync::Arc<std::sync::Mutex<Vec<(MachineId, &'static str)>>>,
+    active_cancels: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    maximum_cancels: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl ConcurrentEnsureRuntime {
+    fn new(mode: ConcurrentEnsureMode) -> Self {
+        Self {
+            mode,
+            requests: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            active_cancels: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            maximum_cancels: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        }
+    }
+
+    fn request_actions(&self) -> Vec<(MachineId, &'static str)> {
+        self.requests.lock().expect("requests").clone()
+    }
+}
+
+impl MachineImageEnsureRuntime for ConcurrentEnsureRuntime {
+    async fn ensure_image(
+        &self,
+        machine_id: &MachineId,
+        request: ImageEnsureRequest,
+    ) -> Result<ployz_core::image::ImageEnsureOk, MachineImageEnsureError> {
+        let action = match &request {
+            ImageEnsureRequest::Start { .. } => "start",
+            ImageEnsureRequest::Status { .. } => "status",
+            ImageEnsureRequest::Cancel { .. } => "cancel",
+        };
+        self.requests
+            .lock()
+            .expect("requests")
+            .push((machine_id.clone(), action));
+        let status = match (self.mode, request) {
+            (ConcurrentEnsureMode::SlowFailingStart, ImageEnsureRequest::Start { .. })
+                if machine_id.as_str() == "machine_a" =>
+            {
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                return Err(MachineImageEnsureError::Domain {
+                    machine_id: machine_id.clone(),
+                    error: ImageRpcDomainError::InvalidRequest {
+                        message: FailureMessage::try_new("synthetic rejected start")
+                            .expect("message"),
+                    },
+                });
+            }
+            (ConcurrentEnsureMode::SlowFailingStart, ImageEnsureRequest::Start { .. })
+            | (ConcurrentEnsureMode::SlowCancels, ImageEnsureRequest::Start { .. }) => {
+                ImageEnsureStatus::Accepted
+            }
+            (ConcurrentEnsureMode::SlowCancels, ImageEnsureRequest::Status { .. })
+                if machine_id.as_str() == "machine_a" =>
+            {
+                ImageEnsureStatus::Failed {
+                    failure: ImageEnsureFailure::PullFailed {
+                        message: FailureMessage::try_new("synthetic pull failure")
+                            .expect("message"),
+                    },
+                }
+            }
+            (ConcurrentEnsureMode::SlowCancels, ImageEnsureRequest::Status { .. }) => {
+                std::future::pending().await
+            }
+            (ConcurrentEnsureMode::SlowCancels, ImageEnsureRequest::Cancel { .. }) => {
+                let active = self
+                    .active_cancels
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                    + 1;
+                self.maximum_cancels
+                    .fetch_max(active, std::sync::atomic::Ordering::SeqCst);
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                self.active_cancels
+                    .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                ImageEnsureStatus::Cancelled
+            }
+            (ConcurrentEnsureMode::SlowFailingStart, ImageEnsureRequest::Cancel { .. }) => {
+                ImageEnsureStatus::Cancelled
+            }
+            (ConcurrentEnsureMode::SlowFailingStart, ImageEnsureRequest::Status { .. }) => {
+                completed_status()
+            }
+        };
+        Ok(ployz_core::image::ImageEnsureOk {
+            machine_id: machine_id.clone(),
+            status,
+        })
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn slow_failing_start_does_not_block_other_starts() {
+    let runtime = ConcurrentEnsureRuntime::new(ConcurrentEnsureMode::SlowFailingStart);
+    let observer = runtime.clone();
+    let task = tokio::spawn(async move {
+        let jobs = vec![
+            coordinator_job("machine_a", "run_a"),
+            coordinator_job("machine_b", "run_b"),
+        ];
+        run_image_ensure_wave_with_runtime(runtime, &jobs).await
+    });
+    tokio::task::yield_now().await;
+    let starts = observer
+        .request_actions()
+        .into_iter()
+        .filter(|(_, action)| *action == "start")
+        .count();
+    assert_eq!(
+        starts, 2,
+        "both Starts are dispatched before the slow failure"
+    );
+    tokio::time::advance(std::time::Duration::from_secs(30)).await;
+    let (index, _) = task.await.expect("task joins").expect_err("start fails");
+    assert_eq!(index, 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn peer_cancels_overlap_instead_of_serializing() {
+    let runtime = ConcurrentEnsureRuntime::new(ConcurrentEnsureMode::SlowCancels);
+    let observer = runtime.clone();
+    let task = tokio::spawn(async move {
+        let jobs = vec![
+            coordinator_job("machine_a", "run_a"),
+            coordinator_job("machine_b", "run_b"),
+            coordinator_job("machine_c", "run_c"),
+        ];
+        run_image_ensure_wave_with_runtime(runtime, &jobs).await
+    });
+    tokio::task::yield_now().await;
+    assert_eq!(
+        observer
+            .maximum_cancels
+            .load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "both unfinished peers enter Cancel concurrently"
+    );
+    tokio::time::advance(std::time::Duration::from_secs(29)).await;
+    assert!(!task.is_finished());
+    tokio::time::advance(std::time::Duration::from_secs(1)).await;
+    let (index, _) = task.await.expect("task joins").expect_err("status fails");
+    assert_eq!(index, 0);
 }

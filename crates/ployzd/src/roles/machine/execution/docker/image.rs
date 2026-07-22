@@ -9,7 +9,7 @@ use ployz_core::image::{ImageEnsureSource, OciDigest, OciPlatform};
 
 use super::network::is_docker_object_missing;
 use super::runner::DockerManagedContainerRunner;
-use crate::roles::machine::image_ensure::ImagePullProgress;
+use crate::roles::machine::image_ensure::{ImagePullPhase, ImagePullProgress};
 use crate::roles::machine::runner::MachineRegistryImageResolveError;
 
 const REGISTRY_RETRY_DELAYS: [Duration; 2] = [Duration::from_millis(250), Duration::from_secs(1)];
@@ -115,7 +115,7 @@ impl DockerManagedContainerRunner {
             let detail = frame.progress_detail.unwrap_or_default();
             let _ = progress.send(ImagePullProgress {
                 layer: frame.id.unwrap_or_else(|| "manifest".to_owned()),
-                state: frame.status.unwrap_or_else(|| "progress".to_owned()),
+                phase: frame.status.as_deref().and_then(docker_pull_phase),
                 current_bytes: detail.current.unwrap_or_default().max(0) as u64,
             });
         }
@@ -213,6 +213,18 @@ impl DockerManagedContainerRunner {
             ));
         }
         Ok(true)
+    }
+}
+
+fn docker_pull_phase(status: &str) -> Option<ImagePullPhase> {
+    match status.to_ascii_lowercase().as_str() {
+        "waiting" | "pulling fs layer" => Some(ImagePullPhase::Waiting),
+        "downloading" => Some(ImagePullPhase::Downloading),
+        "verifying checksum" => Some(ImagePullPhase::Verifying),
+        "download complete" => Some(ImagePullPhase::Downloaded),
+        "extracting" => Some(ImagePullPhase::Extracting),
+        "pull complete" | "already exists" => Some(ImagePullPhase::Complete),
+        _ => None,
     }
 }
 
@@ -670,6 +682,35 @@ mod tests {
         assert!(!retryable_registry_stream_error(
             "manifest metadata says timeout is disabled"
         ));
+    }
+
+    #[test]
+    fn docker_progress_vocabulary_maps_to_typed_monotonic_phases() {
+        assert_eq!(
+            docker_pull_phase("Pulling fs layer"),
+            Some(ImagePullPhase::Waiting)
+        );
+        assert_eq!(
+            docker_pull_phase("Downloading"),
+            Some(ImagePullPhase::Downloading)
+        );
+        assert_eq!(
+            docker_pull_phase("Verifying Checksum"),
+            Some(ImagePullPhase::Verifying)
+        );
+        assert_eq!(
+            docker_pull_phase("Download complete"),
+            Some(ImagePullPhase::Downloaded)
+        );
+        assert_eq!(
+            docker_pull_phase("Extracting"),
+            Some(ImagePullPhase::Extracting)
+        );
+        assert_eq!(
+            docker_pull_phase("Pull complete"),
+            Some(ImagePullPhase::Complete)
+        );
+        assert_eq!(docker_pull_phase("new daemon phrase"), None);
     }
 
     #[test]

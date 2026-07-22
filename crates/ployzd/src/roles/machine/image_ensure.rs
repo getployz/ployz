@@ -17,32 +17,18 @@ const IMAGE_ENSURE_TERMINAL_RETENTION: Duration = Duration::from_secs(10 * 60);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ImagePullProgress {
     pub(crate) layer: String,
-    pub(crate) state: String,
+    pub(crate) phase: Option<ImagePullPhase>,
     pub(crate) current_bytes: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum ImagePullPhase {
+pub(crate) enum ImagePullPhase {
     Waiting,
     Downloading,
     Verifying,
     Downloaded,
     Extracting,
     Complete,
-}
-
-impl ImagePullPhase {
-    fn from_docker_status(status: &str) -> Option<Self> {
-        match status.to_ascii_lowercase().as_str() {
-            "waiting" | "pulling fs layer" => Some(Self::Waiting),
-            "downloading" => Some(Self::Downloading),
-            "verifying checksum" => Some(Self::Verifying),
-            "download complete" => Some(Self::Downloaded),
-            "extracting" => Some(Self::Extracting),
-            "pull complete" | "already exists" => Some(Self::Complete),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -57,10 +43,11 @@ impl ObservedLayerProgress {
         if bytes_advanced {
             self.current_bytes = progress.current_bytes;
         }
-        let phase_advanced = ImagePullPhase::from_docker_status(&progress.state)
+        let phase_advanced = progress
+            .phase
             .is_some_and(|phase| self.phase.is_none_or(|observed| phase > observed));
         if phase_advanced {
-            self.phase = ImagePullPhase::from_docker_status(&progress.state);
+            self.phase = progress.phase;
         }
         bytes_advanced || phase_advanced
     }
@@ -409,7 +396,7 @@ impl TestImageEnsureMachine {
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let frame = |current_bytes| ImagePullProgress {
             layer: "layer-a".to_owned(),
-            state: "downloading".to_owned(),
+            phase: Some(ImagePullPhase::Downloading),
             current_bytes,
         };
         match &self.behavior {
@@ -432,10 +419,15 @@ impl TestImageEnsureMachine {
                 std::future::pending().await
             }
             TestPullBehavior::OscillatingFrames => {
-                for state in ["extracting", "downloading", "extracting", "unknown"] {
+                for phase in [
+                    Some(ImagePullPhase::Extracting),
+                    Some(ImagePullPhase::Downloading),
+                    Some(ImagePullPhase::Extracting),
+                    None,
+                ] {
                     let _ = progress.send(ImagePullProgress {
                         layer: "layer-a".to_owned(),
-                        state: state.to_owned(),
+                        phase,
                         current_bytes: 0,
                     });
                     tokio::time::sleep(Duration::from_secs(10)).await;
@@ -443,10 +435,14 @@ impl TestImageEnsureMachine {
                 std::future::pending().await
             }
             TestPullBehavior::ForwardPhases => {
-                for state in ["downloading", "verifying checksum", "download complete"] {
+                for phase in [
+                    ImagePullPhase::Downloading,
+                    ImagePullPhase::Verifying,
+                    ImagePullPhase::Downloaded,
+                ] {
                     let _ = progress.send(ImagePullProgress {
                         layer: "layer-a".to_owned(),
-                        state: state.to_owned(),
+                        phase: Some(phase),
                         current_bytes: 0,
                     });
                     tokio::time::sleep(Duration::from_secs(20)).await;

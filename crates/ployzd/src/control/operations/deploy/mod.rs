@@ -48,8 +48,8 @@ use images::{
 use phase::{CoarsePhaseProgress, DeployRun};
 pub use ports::{
     CertificateProvisioner, DeployHealthChecker, DeployOperationRecorder, DeployPhasePromotion,
-    MachineContainerRuntime, MachineImageRemovalRuntime, NamespaceCommitError,
-    NamespaceStateCommitter,
+    MachineContainerRuntime, MachineImageEnsureRuntime, MachineImageRemovalRuntime,
+    NamespaceCommitError, NamespaceStateCommitter,
 };
 pub use preparation::{AutomaticHostnameMode, DeployExecutionFacts, DeployExecutionInput};
 #[cfg(test)]

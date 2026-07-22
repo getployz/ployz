@@ -129,12 +129,13 @@ async fn deploy_worker_runs_containers_then_completes() {
         ]
     );
     assert_eq!(runtime.requests.len(), 2);
+    let image_ensures = runtime.image_ensures();
     assert_eq!(
-        runtime.image_ensures.len(),
+        image_ensures.len(),
         2,
         "one target ensure per service/machine"
     );
-    assert!(runtime.image_ensures.iter().all(|(_, request)| matches!(
+    assert!(image_ensures.iter().all(|(_, request)| matches!(
         request,
         ployz_core::image::ImageEnsureRequest::Start {
             source: ployz_core::image::ImageEnsureSource::Registry { .. },
@@ -203,9 +204,9 @@ async fn image_ensure_transport_retries_preserve_one_owner_and_then_run() {
     )
     .await
     .expect("transient ImageEnsure transport recovers");
-    assert_eq!(runtime.image_ensures.len(), 3);
-    let owners = runtime
-        .image_ensures
+    let image_ensures = runtime.image_ensures();
+    assert_eq!(image_ensures.len(), 3);
+    let owners = image_ensures
         .iter()
         .filter_map(|(_, request)| match request {
             ployz_core::image::ImageEnsureRequest::Start { owner, .. } => Some(owner),
@@ -244,9 +245,9 @@ async fn image_ensure_status_testimony_retries_same_owner_and_then_runs() {
     )
     .await
     .expect("status testimony recovers");
-    assert_eq!(runtime.image_ensures.len(), 4);
-    let owners = runtime
-        .image_ensures
+    let image_ensures = runtime.image_ensures();
+    assert_eq!(image_ensures.len(), 4);
+    let owners = image_ensures
         .iter()
         .map(|(_, request)| match request {
             ployz_core::image::ImageEnsureRequest::Start { owner, .. }
@@ -256,17 +257,13 @@ async fn image_ensure_status_testimony_retries_same_owner_and_then_runs() {
         .collect::<Vec<_>>();
     assert!(owners.windows(2).all(|pair| pair[0] == pair[1]));
     assert!(matches!(
-        runtime.image_ensures[0].1,
+        image_ensures[0].1,
         ployz_core::image::ImageEnsureRequest::Start { .. }
     ));
-    assert!(
-        runtime.image_ensures[1..]
-            .iter()
-            .all(|(_, request)| matches!(
-                request,
-                ployz_core::image::ImageEnsureRequest::Status { .. }
-            ))
-    );
+    assert!(image_ensures[1..].iter().all(|(_, request)| matches!(
+        request,
+        ployz_core::image::ImageEnsureRequest::Status { .. }
+    )));
     assert_eq!(runtime.requests.len(), 1);
 }
 
@@ -295,13 +292,14 @@ async fn exhausted_status_testimony_cancels_same_owner_and_never_runs() {
     .await
     .expect_err("status testimony exhaustion fails deploy");
     assert!(runtime.requests.is_empty());
-    assert_eq!(runtime.image_ensures.len(), 5);
-    let start_owner = match &runtime.image_ensures[0].1 {
+    let image_ensures = runtime.image_ensures();
+    assert_eq!(image_ensures.len(), 5);
+    let start_owner = match &image_ensures[0].1 {
         ployz_core::image::ImageEnsureRequest::Start { owner, .. } => owner,
         _ => panic!("first request is Start"),
     };
     assert!(
-        matches!(&runtime.image_ensures[4].1, ployz_core::image::ImageEnsureRequest::Cancel { owner } if owner == start_owner)
+        matches!(&image_ensures[4].1, ployz_core::image::ImageEnsureRequest::Cancel { owner } if owner == start_owner)
     );
 }
 
@@ -506,7 +504,7 @@ async fn replicated_to_global_reuse_reports_completed_service_work() {
 
     assert!(runtime.requests.is_empty());
     assert!(
-        runtime.image_ensures.is_empty(),
+        runtime.image_ensures().is_empty(),
         "existing-only work skips ImageEnsure"
     );
     assert!(recorder.phase_records.iter().any(|evidence| matches!(
@@ -1047,24 +1045,25 @@ async fn mixed_platform_pushed_deploy_selects_each_platform_image_and_keeps_one_
     let [amd64_request, arm64_request] = runtime.requests.as_slice() else {
         panic!("mixed-platform fixture must run two containers");
     };
+    let image_ensures = runtime.image_ensures();
     assert_eq!(
-        runtime.image_ensures.len(),
+        image_ensures.len(),
         4,
         "each pushed target validates its seed then ensures the target"
     );
     let amd64 = platform("amd64");
     let arm64 = platform("arm64");
     assert!(
-        matches!(&runtime.image_ensures[0], (machine, ployz_core::image::ImageEnsureRequest::Start { source: ployz_core::image::ImageEnsureSource::LocalSeed { platform, .. }, .. }) if machine == &machine_id("machine_seed") && platform == &amd64)
+        matches!(&image_ensures[0], (machine, ployz_core::image::ImageEnsureRequest::Start { source: ployz_core::image::ImageEnsureSource::LocalSeed { platform, .. }, .. }) if machine == &machine_id("machine_seed") && platform == &amd64)
     );
     assert!(
-        matches!(&runtime.image_ensures[1], (machine, ployz_core::image::ImageEnsureRequest::Start { source: ployz_core::image::ImageEnsureSource::LocalSeed { platform, .. }, .. }) if machine == &machine_id("machine_arm_seed") && platform == &arm64)
+        matches!(&image_ensures[1], (machine, ployz_core::image::ImageEnsureRequest::Start { source: ployz_core::image::ImageEnsureSource::LocalSeed { platform, .. }, .. }) if machine == &machine_id("machine_arm_seed") && platform == &arm64)
     );
     assert!(
-        matches!(&runtime.image_ensures[2], (machine, ployz_core::image::ImageEnsureRequest::Start { source: ployz_core::image::ImageEnsureSource::MeshSeed { platform, .. }, .. }) if machine == &machine_id("machine_a") && platform == &amd64)
+        matches!(&image_ensures[2], (machine, ployz_core::image::ImageEnsureRequest::Start { source: ployz_core::image::ImageEnsureSource::MeshSeed { platform, .. }, .. }) if machine == &machine_id("machine_a") && platform == &amd64)
     );
     assert!(
-        matches!(&runtime.image_ensures[3], (machine, ployz_core::image::ImageEnsureRequest::Start { source: ployz_core::image::ImageEnsureSource::MeshSeed { platform, .. }, .. }) if machine == &machine_id("machine_b") && platform == &arm64)
+        matches!(&image_ensures[3], (machine, ployz_core::image::ImageEnsureRequest::Start { source: ployz_core::image::ImageEnsureSource::MeshSeed { platform, .. }, .. }) if machine == &machine_id("machine_b") && platform == &arm64)
     );
     assert_eq!(amd64_request.0, machine_id("machine_a"));
     assert!(matches!(
@@ -1162,7 +1161,7 @@ async fn pushed_receipt_without_a_compatible_machine_fails_before_effects() {
         }
     );
     assert!(runtime.requests.is_empty());
-    assert!(runtime.image_ensures.is_empty());
+    assert!(runtime.image_ensures().is_empty());
     assert!(runtime.volume_ensures.is_empty());
     assert!(
         !recorder
@@ -1207,7 +1206,7 @@ async fn seed_clock_ahead_of_control_fails_before_image_ensure_rpc() {
         DeployOperationFailure::SeedUnavailable { message, .. }
             if message.as_str() == "image seed clock is more than 300 seconds ahead of Control"
     ));
-    assert!(runtime.image_ensures.is_empty());
+    assert!(runtime.image_ensures().is_empty());
 }
 
 #[tokio::test]

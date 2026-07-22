@@ -45,6 +45,10 @@ pub trait DeployOperationRecorder {
 }
 
 pub trait MachineContainerRuntime {
+    type ImageEnsureRuntime: MachineImageEnsureRuntime;
+
+    fn image_ensure_runtime(&self) -> Self::ImageEnsureRuntime;
+
     fn ensure_volume(
         &mut self,
         machine_id: &MachineId,
@@ -56,12 +60,6 @@ pub trait MachineContainerRuntime {
         machine_id: &MachineId,
         request: MachineContainerResolveImageRpcRequest,
     ) -> impl Future<Output = Result<ployz_core::image::OciDigest, MachineImageResolveError>> + Send;
-
-    fn ensure_image(
-        &mut self,
-        machine_id: &MachineId,
-        request: ImageEnsureRequest,
-    ) -> impl Future<Output = Result<ImageEnsureOk, MachineImageEnsureError>> + Send;
 
     fn run_container(
         &mut self,
@@ -98,6 +96,14 @@ pub trait MachineContainerRuntime {
         machine_id: &MachineId,
         request: MachineContainerStopRpcRequest,
     ) -> impl Future<Output = Result<MachineContainerStopOutcome, MachineContainerRuntimeError>> + Send;
+}
+
+pub trait MachineImageEnsureRuntime: Clone {
+    fn ensure_image(
+        &self,
+        machine_id: &MachineId,
+        request: ImageEnsureRequest,
+    ) -> impl Future<Output = Result<ImageEnsureOk, MachineImageEnsureError>> + Send;
 }
 
 pub trait MachineImageRemovalRuntime {
