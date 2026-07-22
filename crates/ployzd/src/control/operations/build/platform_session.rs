@@ -59,12 +59,19 @@ impl<'a> PlatformLogSession<'a> {
         &mut self,
         message: Option<async_nats::Message>,
     ) -> Result<(), BuildOperationFailure> {
+        self.record_message_progress(message).await.map(drop)
+    }
+
+    pub(super) async fn record_message_progress(
+        &mut self,
+        message: Option<async_nats::Message>,
+    ) -> Result<bool, BuildOperationFailure> {
         let Some(message) = message else {
             self.logs_open = false;
-            return Ok(());
+            return Ok(false);
         };
         let Ok(frame) = serde_json::from_slice::<MachineBuildLogFrame>(&message.payload) else {
-            return Ok(());
+            return Ok(false);
         };
         if !is_next_frame(
             self.operation_id,
@@ -73,7 +80,7 @@ impl<'a> PlatformLogSession<'a> {
             self.next_sequence,
             &frame,
         ) {
-            return Ok(());
+            return Ok(false);
         }
         self.repository
             .record_build_evidence(
@@ -87,7 +94,11 @@ impl<'a> PlatformLogSession<'a> {
             .await
             .map_err(evidence_failure)?;
         self.next_sequence += 1;
-        Ok(())
+        Ok(true)
+    }
+
+    pub(super) const fn observed_log_summary(&self) -> BuildLogSummary {
+        BuildLogSummary::new(self.next_sequence.saturating_sub(1), 0)
     }
 
     pub(super) async fn drain(

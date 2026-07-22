@@ -680,16 +680,19 @@ mod tests {
     }
 
     #[test]
-    fn build_endpoints_cover_their_distinct_machine_response_budgets() {
+    fn build_endpoints_cover_admission_and_prune_response_budgets() {
         let policy = machine_endpoint_policy(MachineServiceEndpoint::BuildStart);
         let prune_policy = machine_endpoint_policy(MachineServiceEndpoint::BuildCachePrune);
 
-        assert_eq!(policy.request_timeout, BUILD_START_ENDPOINT_TIMEOUT);
+        assert_eq!(
+            policy.request_timeout,
+            EndpointExecutionPolicy::default().request_timeout
+        );
         assert_eq!(
             prune_policy.request_timeout,
             ployz_core::build::BUILD_CACHE_PRUNE_ENDPOINT_TIMEOUT
         );
-        assert!(policy.request_timeout > ployz_core::build::BUILD_MAX_MACHINE_RESPONSE_LIFETIME);
+        assert!(policy.request_timeout < ployz_core::build::BUILD_MAX_MACHINE_RESPONSE_LIFETIME);
         assert!(prune_policy.request_timeout > policy.request_timeout);
     }
 

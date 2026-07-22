@@ -7,14 +7,17 @@ use crate::control::sequencer::{
 };
 use crate::control::store::CoreStore;
 use crate::roles::machine::protocol::{
-    MachineBuildLogFrame, MachineBuildStartRpcRequest, MachineBuildStartRpcResponse,
+    MachineBuildCleanupOutcome, MachineBuildLogFrame, MachineBuildStartRpcRequest,
+    MachineBuildStartRpcResponse, MachineBuildStatusRpcOk, MachineBuildStatusRpcRequest,
+    MachineBuildStatusRpcResponse,
 };
 use crate::tasks::TaskRegistry;
 use futures_util::StreamExt;
 use ployz_core::build::{
     BuildAdapter, BuildCacheScope, BuildExecutorCancelOk, BuildExecutorCleanupOutcome,
-    BuildExecutorStartOk, BuildExecutorSuccessCleanupEvidence, BuildPlatforms, BuildSource,
-    BuildTarget, GitSource, VerifiedBuildSource,
+    BuildExecutorStartOk, BuildExecutorStatus, BuildExecutorStatusFailure,
+    BuildExecutorSuccessCleanupEvidence, BuildPlatforms, BuildSource, BuildTarget, GitSource,
+    VerifiedBuildSource,
 };
 use ployz_core::deploy::{ImageAvailabilityExpiresAt, PlatformImage};
 use ployz_core::image::{OciDigest, OciPlatform};
@@ -148,15 +151,17 @@ async fn platform_rpc_failure_records_real_evidence_and_publishes_no_image_index
     let amd64_request = start_build_responder(
         nats.machine_client(&amd64_machine).await,
         amd64_machine.clone(),
-        MachineBuildStartRpcResponse::Ok(MachineBuildStartRpcOk::from((
+        MachineBuildStatusRpcResponse::Ok(MachineBuildStatusRpcOk::from((
             amd64_machine.clone(),
-            BuildExecutorStartOk {
-                acceptance: executor_acceptance(&operation_id, &amd64_machine, &amd64),
-                cleanup: BuildExecutorSuccessCleanupEvidence::confirmed(),
-                image: completed_image.clone(),
-                verified_source: verified_source.clone(),
-                toolchain: toolchain.clone(),
-                log_summary: BuildLogSummary::none(),
+            BuildExecutorStatus::Completed {
+                result: Box::new(BuildExecutorStartOk {
+                    acceptance: executor_acceptance(&operation_id, &amd64_machine, &amd64),
+                    cleanup: BuildExecutorSuccessCleanupEvidence::confirmed(),
+                    image: completed_image.clone(),
+                    verified_source: verified_source.clone(),
+                    toolchain: toolchain.clone(),
+                    log_summary: BuildLogSummary::none(),
+                }),
             },
         ))),
     )
@@ -164,14 +169,17 @@ async fn platform_rpc_failure_records_real_evidence_and_publishes_no_image_index
     let arm64_request = start_build_responder(
         nats.machine_client(&arm64_machine).await,
         arm64_machine.clone(),
-        MachineBuildStartRpcResponse::DomainError {
-            machine_id: arm64_machine.clone(),
-            error: MachineBuildStartDomainError::PlatformFailed {
-                acceptance: Box::new(executor_acceptance(&operation_id, &arm64_machine, &arm64)),
-                failure: platform_failure.clone(),
+        MachineBuildStatusRpcResponse::Ok(MachineBuildStatusRpcOk::from((
+            arm64_machine.clone(),
+            BuildExecutorStatus::Failed {
+                acceptance: executor_acceptance(&operation_id, &arm64_machine, &arm64),
+                failure: BuildExecutorStatusFailure::PlatformFailed {
+                    failure: platform_failure.clone(),
+                },
+                cleanup: MachineBuildCleanupOutcome::Confirmed,
                 log_summary: BuildLogSummary::none(),
             },
-        },
+        ))),
     )
     .await;
 
@@ -328,33 +336,62 @@ async fn platform_rpc_failure_records_real_evidence_and_publishes_no_image_index
 async fn start_build_responder(
     client: async_nats::Client,
     machine_id: MachineId,
-    response: MachineBuildStartRpcResponse,
+    status_response: MachineBuildStatusRpcResponse,
 ) -> tokio::task::JoinHandle<MachineBuildStartRpcRequest> {
-    let mut requests = client
+    let mut start_requests = client
         .subscribe(machine_service(
             &machine_id,
             MachineServiceEndpoint::BuildStart,
         ))
         .await
         .expect("machine subscribes to build start");
+    let mut status_requests = client
+        .subscribe(machine_service(
+            &machine_id,
+            MachineServiceEndpoint::BuildStatus,
+        ))
+        .await
+        .expect("machine subscribes to build status");
     client
         .flush()
         .await
         .expect("build responder subscription flushes");
     tokio::spawn(async move {
-        let message = requests.next().await.expect("build request arrives");
-        let request = serde_json::from_slice(&message.payload).expect("build request decodes");
+        let message = start_requests.next().await.expect("build request arrives");
+        let request: MachineBuildStartRpcRequest =
+            serde_json::from_slice(&message.payload).expect("build request decodes");
         let reply = message.reply.expect("build request carries reply subject");
+        let acceptance = executor_acceptance(&request.operation_id, &machine_id, &request.platform);
         client
             .publish(
                 reply,
-                serde_json::to_vec(&response)
-                    .expect("build response encodes")
-                    .into(),
+                serde_json::to_vec(&MachineBuildStartRpcResponse::Ok(
+                    MachineBuildStartRpcOk::from((machine_id.clone(), acceptance)),
+                ))
+                .expect("build response encodes")
+                .into(),
             )
             .await
             .expect("build response publishes");
         client.flush().await.expect("build response flushes");
+        let message = status_requests
+            .next()
+            .await
+            .expect("status request arrives");
+        let status_request: MachineBuildStatusRpcRequest =
+            serde_json::from_slice(&message.payload).expect("status request decodes");
+        assert_eq!(status_request.acceptance.operation_id, request.operation_id);
+        let reply = message.reply.expect("status request carries reply subject");
+        client
+            .publish(
+                reply,
+                serde_json::to_vec(&status_response)
+                    .expect("status response encodes")
+                    .into(),
+            )
+            .await
+            .expect("status response publishes");
+        client.flush().await.expect("status response flushes");
         request
     })
 }

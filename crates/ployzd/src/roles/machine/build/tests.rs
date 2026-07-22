@@ -225,17 +225,18 @@ fn execution_timeout_maps_to_typed_machine_timeout_with_cleanup() {
     let acceptance = BuildExecutorAcceptance::from_start_request(&build_request("build-1", 1_000));
     let expected_acceptance = acceptance.clone();
     assert!(matches!(
-        machine_build_error(
-            BuildExecutionError::TimedOut { log_summary },
+        finish_machine_build_status(
+            Err(BuildExecutionError::TimedOut { log_summary }),
             MachineBuildCleanupOutcome::Confirmed,
             acceptance,
+            log_summary,
         ),
-        MachineBuildStartDomainError::TimedOut {
+        BuildExecutorStatus::Failed {
             acceptance: actual_acceptance,
+            failure: BuildExecutorStatusFailure::Stalled { .. },
             cleanup: MachineBuildCleanupOutcome::Confirmed,
             log_summary: actual,
-            ..
-        } if actual == log_summary && *actual_acceptance == expected_acceptance
+        } if actual == log_summary && actual_acceptance == expected_acceptance
     ));
 }
 
@@ -244,13 +245,15 @@ fn machine_success_requires_and_carries_confirmed_cleanup_proof() {
     let request = build_request("build-success", 1_000);
     let acceptance = BuildExecutorAcceptance::from_start_request(&request);
     let log_summary = BuildLogSummary::new(7, 11);
-    let confirmed = finish_machine_build(
+    let confirmed = finish_machine_build_status(
         Ok(successful_machine_output(&request, log_summary)),
         MachineBuildCleanupOutcome::Confirmed,
         acceptance.clone(),
         log_summary,
-    )
-    .expect("confirmed cleanup permits success");
+    );
+    let BuildExecutorStatus::Completed { result: confirmed } = confirmed else {
+        panic!("confirmed cleanup permits success");
+    };
     assert_eq!(
         confirmed.cleanup,
         BuildExecutorSuccessCleanupEvidence::confirmed()
@@ -258,7 +261,7 @@ fn machine_success_requires_and_carries_confirmed_cleanup_proof() {
     assert_eq!(confirmed.acceptance, acceptance);
     assert_eq!(confirmed.log_summary, log_summary);
 
-    let unconfirmed = finish_machine_build(
+    let unconfirmed = finish_machine_build_status(
         Ok(successful_machine_output(&request, log_summary)),
         MachineBuildCleanupOutcome::Unconfirmed,
         acceptance.clone(),
@@ -266,13 +269,16 @@ fn machine_success_requires_and_carries_confirmed_cleanup_proof() {
     );
     assert_eq!(
         unconfirmed,
-        Err(MachineBuildStartDomainError::PlatformFailed {
-            acceptance: Box::new(acceptance),
-            failure: BuildPlatformFailure::MachineUnavailable {
-                message: failure_message("build workspace cleanup did not finish successfully"),
+        BuildExecutorStatus::Failed {
+            acceptance,
+            cleanup: MachineBuildCleanupOutcome::Unconfirmed,
+            failure: BuildExecutorStatusFailure::PlatformFailed {
+                failure: BuildPlatformFailure::MachineUnavailable {
+                    message: failure_message("build workspace cleanup did not finish successfully",),
+                },
             },
             log_summary,
-        })
+        }
     );
 }
 
@@ -284,7 +290,6 @@ fn successful_machine_output(
     let digest = ployz_core::image::OciDigest::try_new(format!("sha256:{}", "a".repeat(64)))
         .expect("digest");
     MachineBuildOutput {
-        machine_id: machine_id.clone(),
         acceptance: BuildExecutorAcceptance::from_start_request(request),
         image: PlatformImage {
             seed: machine_id,
@@ -709,6 +714,7 @@ async fn timeout_during_ingestion_aborts_then_cleans_once_without_late_success()
     assert!(matches!(
         result,
         BuildExecutorStatus::Failed {
+            acceptance: _,
             failure: BuildExecutorStatusFailure::Stalled { .. },
             cleanup: MachineBuildCleanupOutcome::Confirmed,
             log_summary: BuildLogSummary {
@@ -788,6 +794,7 @@ async fn bounded_cleanup_reports_unconfirmed_when_it_cannot_finish() {
     assert!(matches!(
         terminal_status(&runtime, &acceptance).await,
         BuildExecutorStatus::Failed {
+            acceptance: _,
             failure: BuildExecutorStatusFailure::Stalled { .. },
             cleanup: MachineBuildCleanupOutcome::Unconfirmed,
             log_summary: BuildLogSummary {

@@ -140,21 +140,6 @@ fn machine_build_log_route(
 }
 
 impl MachineBuildRuntime {
-    pub(crate) fn new(
-        machine_id: MachineId,
-        log_client: NatsClient,
-        executor: DockerBuildExecutor,
-        image_state: Option<AvailableImageService>,
-    ) -> Result<Self, String> {
-        Self::new_with_status_path(
-            machine_id,
-            log_client,
-            executor,
-            image_state,
-            std::path::PathBuf::from("/var/lib/ployz/build-status"),
-        )
-    }
-
     pub(crate) fn new_with_status_path(
         machine_id: MachineId,
         log_client: NatsClient,
@@ -714,7 +699,6 @@ enum BuildTaskCompletion {
 }
 
 struct MachineBuildOutput {
-    machine_id: MachineId,
     acceptance: BuildExecutorAcceptance,
     image: PlatformImage,
     verified_source: VerifiedBuildSource,
@@ -733,26 +717,6 @@ impl MachineBuildOutput {
             log_summary: self.log_summary,
         }
     }
-}
-
-fn finish_machine_build(
-    result: Result<MachineBuildOutput, BuildExecutionError>,
-    cleanup: MachineBuildCleanupOutcome,
-    acceptance: BuildExecutorAcceptance,
-    log_summary: BuildLogSummary,
-) -> Result<BuildExecutorStartOk, MachineBuildStartDomainError> {
-    if cleanup == MachineBuildCleanupOutcome::Unconfirmed {
-        return Err(MachineBuildStartDomainError::PlatformFailed {
-            acceptance: Box::new(acceptance),
-            failure: BuildPlatformFailure::MachineUnavailable {
-                message: failure_message("build workspace cleanup did not finish successfully"),
-            },
-            log_summary,
-        });
-    }
-    result
-        .map(MachineBuildOutput::into_result)
-        .map_err(|error| machine_build_error(error, cleanup, acceptance))
 }
 
 fn finish_machine_build_status(
@@ -903,7 +867,6 @@ impl BuildEffects {
                         log_summary,
                     })?;
                 Ok(MachineBuildOutput {
-                    machine_id: machine_id.clone(),
                     acceptance,
                     image: PlatformImage {
                         seed: machine_id,
@@ -986,43 +949,6 @@ fn validate_cancel_provenance(
         });
     }
     Ok(())
-}
-
-fn machine_build_error(
-    error: BuildExecutionError,
-    cleanup: MachineBuildCleanupOutcome,
-    acceptance: BuildExecutorAcceptance,
-) -> MachineBuildStartDomainError {
-    let log_summary = error.log_summary();
-    match error {
-        BuildExecutionError::Cancelled { .. } => MachineBuildStartDomainError::Cancelled {
-            acceptance: Box::new(acceptance),
-            cleanup,
-            log_summary,
-        },
-        BuildExecutionError::TimedOut { .. } => MachineBuildStartDomainError::TimedOut {
-            acceptance: Box::new(acceptance),
-            message: failure_message("build exceeded its operation deadline"),
-            cleanup,
-            log_summary,
-        },
-        BuildExecutionError::Platform { failure, .. } => {
-            MachineBuildStartDomainError::PlatformFailed {
-                acceptance: Box::new(acceptance),
-                failure,
-                log_summary,
-            }
-        }
-        BuildExecutionError::Infrastructure {
-            action, message, ..
-        } => MachineBuildStartDomainError::PlatformFailed {
-            acceptance: Box::new(acceptance),
-            failure: BuildPlatformFailure::MachineUnavailable {
-                message: failure_message(format!("{action}: {message}")),
-            },
-            log_summary,
-        },
-    }
 }
 
 fn build_runtime_stopped() -> MachineBuildStartDomainError {

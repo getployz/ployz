@@ -40,13 +40,6 @@ pub struct MachineBuildExecutorRpcOk<T> {
     pub executor: T,
 }
 
-impl<T> MachineBuildExecutorRpcOk<T> {
-    #[must_use]
-    pub fn into_executor(self) -> T {
-        self.executor
-    }
-}
-
 impl<T> From<(MachineId, T)> for MachineBuildExecutorRpcOk<T> {
     fn from((machine_id, executor): (MachineId, T)) -> Self {
         Self {
