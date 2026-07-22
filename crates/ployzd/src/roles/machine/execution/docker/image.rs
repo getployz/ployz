@@ -190,9 +190,10 @@ impl DockerManagedContainerRunner {
         }
         if let Some(expected_image_id) = &expected.image_id {
             let actual = inspected.id.unwrap_or_default();
-            if actual != expected_image_id.as_str() {
+            if actual != expected_image_id.as_str() && actual != expected.manifest_digest.as_str() {
                 return Err(format!(
-                    "local Docker image {exact_reference} has config identity {actual:?}, expected {expected_image_id}"
+                    "local Docker image {exact_reference} has image identity {actual:?}, expected {expected_image_id} or {}",
+                    expected.manifest_digest
                 ));
             }
         }
@@ -466,7 +467,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn exact_mesh_source_reuses_local_digest_without_create_image() {
+    async fn exact_mesh_source_accepts_config_identity_without_create_image() {
         let digest = OciDigest::try_new(format!("sha256:{}", "f".repeat(64))).expect("digest");
         let image_id = OciDigest::try_new(format!("sha256:{}", "e".repeat(64))).expect("image id");
         let source = ImageEnsureSource::MeshSeed {
@@ -493,6 +494,39 @@ mod tests {
             .ensure_machine_image(&source, progress)
             .await
             .expect("local exact image is reused");
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn exact_mesh_source_accepts_manifest_identity_without_create_image() {
+        let manifest = OciDigest::try_new(format!("sha256:{}", "f".repeat(64))).expect("manifest");
+        let image_id = OciDigest::try_new(format!("sha256:{}", "e".repeat(64))).expect("image id");
+        let source = ImageEnsureSource::MeshSeed {
+            seed_host: "10.42.0.1".parse().expect("host"),
+            repository: ImageRepository::try_new("ployz/default/api".to_owned())
+                .expect("repository"),
+            manifest_digest: manifest.clone(),
+            image_id,
+            platform: OciPlatform::try_new("linux", "amd64").expect("platform"),
+        };
+        let (runner, attempts, _socket_dir) = runner_with_responses(vec![
+            (
+                200,
+                local_image_json(&source.reference(), &manifest, "amd64"),
+            ),
+            (
+                500,
+                r#"{"message":"create_image must not be called"}"#.to_owned(),
+            ),
+        ])
+        .await;
+        let (progress, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        runner
+            .ensure_machine_image(&source, progress)
+            .await
+            .expect("containerd manifest identity is accepted");
+
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
     }
 
@@ -527,7 +561,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_mesh_image_requires_exact_manifest_config_and_platform() {
+    async fn local_mesh_image_requires_exact_manifest_image_identity_and_platform() {
         let manifest = OciDigest::try_new(format!("sha256:{}", "2".repeat(64))).expect("manifest");
         let image_id = OciDigest::try_new(format!("sha256:{}", "3".repeat(64))).expect("image id");
         let source = ImageEnsureSource::MeshSeed {
@@ -567,8 +601,8 @@ mod tests {
             runner
                 .ensure_machine_image(&source, progress)
                 .await
-                .expect_err("config mismatch")
-                .contains("config identity")
+                .expect_err("unrelated image identity")
+                .contains("image identity")
         );
 
         let (runner, _, _socket_dir) = runner_with_responses(vec![(
