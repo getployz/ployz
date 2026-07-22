@@ -39,17 +39,21 @@ struct ObservedLayerProgress {
 
 impl ObservedLayerProgress {
     fn observe(&mut self, progress: &ImagePullProgress) -> bool {
-        let bytes_advanced = progress.current_bytes > self.current_bytes;
-        if bytes_advanced {
-            self.current_bytes = progress.current_bytes;
-        }
         let phase_advanced = progress
             .phase
             .is_some_and(|phase| self.phase.is_none_or(|observed| phase > observed));
         if phase_advanced {
             self.phase = progress.phase;
+            self.current_bytes = progress.current_bytes;
+            return true;
         }
-        bytes_advanced || phase_advanced
+
+        if progress.phase == self.phase && progress.current_bytes > self.current_bytes {
+            self.current_bytes = progress.current_bytes;
+            return true;
+        }
+
+        false
     }
 }
 
@@ -626,6 +630,26 @@ mod tests {
             runtime.status(&owner()).await.expect("status"),
             ImageEnsureStatus::Completed { .. }
         ));
+    }
+
+    #[test]
+    fn byte_progress_is_scoped_to_each_pull_phase() {
+        let mut observed = ObservedLayerProgress::default();
+        assert!(observed.observe(&ImagePullProgress {
+            layer: "layer-a".to_owned(),
+            phase: Some(ImagePullPhase::Downloading),
+            current_bytes: 100,
+        }));
+        assert!(observed.observe(&ImagePullProgress {
+            layer: "layer-a".to_owned(),
+            phase: Some(ImagePullPhase::Extracting),
+            current_bytes: 1,
+        }));
+        assert!(observed.observe(&ImagePullProgress {
+            layer: "layer-a".to_owned(),
+            phase: Some(ImagePullPhase::Extracting),
+            current_bytes: 2,
+        }));
     }
 
     #[tokio::test(start_paused = true)]
