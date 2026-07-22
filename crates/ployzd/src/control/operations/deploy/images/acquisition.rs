@@ -369,9 +369,13 @@ async fn cancel_unfinished_jobs<N: MachineImageEnsureRuntime>(
         jobs.iter()
             .zip(statuses)
             .filter(|(_, status)| {
-                matches!(
+                !matches!(
                     status,
-                    Some(ImageEnsureStatus::Accepted | ImageEnsureStatus::Running { .. })
+                    Some(
+                        ImageEnsureStatus::Completed { .. }
+                            | ImageEnsureStatus::Failed { .. }
+                            | ImageEnsureStatus::Cancelled
+                    )
                 )
             })
             .map(|(job, _)| {

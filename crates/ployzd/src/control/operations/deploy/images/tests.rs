@@ -481,6 +481,24 @@ async fn ensure_wave_failure_cancels_every_unfinished_peer() {
 }
 
 #[tokio::test]
+async fn uncertain_start_acknowledgement_is_cancelled_before_the_wave_fails() {
+    let jobs = vec![coordinator_job("machine_a", "run_a")];
+    let mut runtime =
+        RecordingRuntime::with_containers([]).with_image_ensure_script(std::iter::repeat_n(
+            Err(crate::roles::machine::MachineRuntimeUnavailableReason::RequestTimedOut),
+            3,
+        ));
+
+    run_image_ensure_wave(&mut runtime, &jobs)
+        .await
+        .expect_err("lost start acknowledgement fails the wave");
+
+    assert!(runtime.image_ensures().iter().any(|(machine, request)| {
+        machine == &machine_id("machine_a") && matches!(request, ImageEnsureRequest::Cancel { .. })
+    }));
+}
+
+#[tokio::test]
 async fn duplicate_target_jobs_start_once() {
     let mut jobs = Vec::new();
     push_unique_target_job(&mut jobs, coordinator_job("machine_a", "run_a"));
