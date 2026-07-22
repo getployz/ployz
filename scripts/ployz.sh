@@ -103,8 +103,9 @@ else
 fi
 
 install_dir="/usr/local/bin"
-railpack_root="/usr/local/lib/ployz/railpack"
 ployz_bin="${install_dir}/ployz"
+railpack_version="v0.31.0"
+railpack_bin="/usr/local/lib/ployz/railpack/v0.31.0/railpack"
 release_env_file="${PLOYZ_RELEASE_ENV_FILE:-/etc/ployz/release.env}"
 staging_dir="$(mktemp -d)"
 manifest_file="${staging_dir}/release.env.remote"
@@ -112,8 +113,6 @@ channel_file="${staging_dir}/channel.env"
 ployz_stage="${staging_dir}/ployz"
 railpack_stage="${staging_dir}/railpack"
 release_env_stage="${staging_dir}/release.env"
-manifest_loaded=0
-release_manifest_identity_required=0
 
 cleanup() {
   rm -rf "$staging_dir"
@@ -225,11 +224,12 @@ resolve_channel() {
     exit 1
   fi
   manifest_url="${expected_release_base_url}/ployz-release-${release_platform}.env"
-  release_manifest_identity_required=1
   echo "resolved ployz channel ${selected_channel} -> ${release_tag}"
 }
 
+caller_manifest_selected=0
 if [ -n "${PLOYZ_RELEASE_MANIFEST_URL:-}" ]; then
+  caller_manifest_selected=1
   manifest_url="$PLOYZ_RELEASE_MANIFEST_URL"
   if [ -n "$version_input" ]; then
     normalize_release_version "$version_input"
@@ -237,64 +237,30 @@ if [ -n "${PLOYZ_RELEASE_MANIFEST_URL:-}" ]; then
 elif [ -n "$version_input" ]; then
   normalize_release_version "$version_input"
   manifest_url="$(github_release_base_url "$release_tag")/ployz-release-${release_platform}.env"
-  release_manifest_identity_required=1
 else
   resolve_channel
 fi
 
 load_manifest() {
-  if [ "$manifest_loaded" -eq 0 ]; then
-    if ! fetch_file "$manifest_url" "$manifest_file"; then
-      echo "failed to download release manifest $manifest_url" >&2
-      exit 1
-    fi
-    verify_release_manifest_identity
-    manifest_loaded=1
+  if ! fetch_file "$manifest_url" "$manifest_file"; then
+    echo "failed to download release manifest $manifest_url" >&2
+    exit 1
   fi
+  verify_release_manifest_identity
 }
 
 manifest_value() {
   env_value "$manifest_file" "$1"
 }
 
-# A caller-supplied manifest URL is the release authority: when no version
-# was given, the manifest's own identity names the installed release so the
-# persisted release evidence and the update hint stay truthful.
-adopt_manifest_identity() {
-  adopted_tag="$(manifest_value PLOYZ_RELEASE_TAG)"
-  if [ -n "$adopted_tag" ] && [ -z "${release_tag:-}" ]; then
-    case "$adopted_tag" in
-      *[!A-Za-z0-9._-]*)
-        echo "ployz release tag contains unsupported characters: $adopted_tag" >&2
-        exit 1
-        ;;
-    esac
-    release_tag="$adopted_tag"
-  fi
-  adopted_version="$(manifest_value PLOYZ_VERSION)"
-  if [ -n "$adopted_version" ] && [ -z "${PLOYZ_VERSION:-}" ]; then
-    case "$adopted_version" in
-      *[!A-Za-z0-9._-]*)
-        echo "ployz version contains unsupported characters: $adopted_version" >&2
-        exit 1
-        ;;
-    esac
-    PLOYZ_VERSION="$adopted_version"
-  fi
-}
-
 verify_release_manifest_identity() {
-  if [ "$release_manifest_identity_required" -eq 0 ]; then
-    adopt_manifest_identity
-    return 0
-  fi
-
   manifest_tag="$(manifest_value PLOYZ_RELEASE_TAG)"
   if [ -z "$manifest_tag" ]; then
     echo "release manifest $manifest_url is missing PLOYZ_RELEASE_TAG" >&2
     exit 1
   fi
-  if [ "$manifest_tag" != "$release_tag" ]; then
+  validate_token "ployz release tag" "$manifest_tag"
+  if [ -n "${release_tag:-}" ] && [ "$manifest_tag" != "$release_tag" ]; then
     echo "release manifest $manifest_url has PLOYZ_RELEASE_TAG=$manifest_tag, expected $release_tag" >&2
     exit 1
   fi
@@ -304,7 +270,12 @@ verify_release_manifest_identity() {
     echo "release manifest $manifest_url is missing PLOYZ_VERSION" >&2
     exit 1
   fi
-  if [ "$manifest_version" != "$PLOYZ_VERSION" ]; then
+  validate_token "ployz version" "$manifest_version"
+  if [ "$manifest_tag" != "v$manifest_version" ]; then
+    echo "release manifest $manifest_url has incoherent identity: PLOYZ_RELEASE_TAG=$manifest_tag and PLOYZ_VERSION=$manifest_version" >&2
+    exit 1
+  fi
+  if [ -n "${PLOYZ_VERSION:-}" ] && [ "$manifest_version" != "$PLOYZ_VERSION" ]; then
     echo "release manifest $manifest_url has PLOYZ_VERSION=$manifest_version, expected $PLOYZ_VERSION" >&2
     exit 1
   fi
@@ -318,17 +289,13 @@ verify_release_manifest_identity() {
     echo "release manifest $manifest_url has PLOYZ_RELEASE_PLATFORM=$manifest_platform, expected $release_platform" >&2
     exit 1
   fi
+
+  release_tag="$manifest_tag"
+  PLOYZ_VERSION="$manifest_version"
 }
 
-resolve_release_value() {
+manifest_required_value() {
   name="$1"
-  current="$2"
-  if [ -n "$current" ]; then
-    printf '%s\n' "$current"
-    return 0
-  fi
-
-  load_manifest
   value="$(manifest_value "$name")"
   if [ -z "$value" ]; then
     echo "release manifest $manifest_url is missing $name" >&2
@@ -370,18 +337,30 @@ stage_release_env() {
   } > "$release_env_stage"
 }
 
-# Load once in the parent shell so a caller-supplied manifest's release
-# identity applies to every staged artifact and to the persisted evidence.
-load_manifest
-PLOYZ_URL="$(resolve_release_value PLOYZ_URL "${PLOYZ_URL:-}")"
-PLOYZ_SHA256="$(resolve_release_value PLOYZ_SHA256 "${PLOYZ_SHA256:-}")"
 if [ "$install_build_executor" -eq 1 ]; then
-  PLOYZ_RAILPACK_VERSION="$(resolve_release_value PLOYZ_RAILPACK_VERSION "${PLOYZ_RAILPACK_VERSION:-}")"
+  if [ "${PLOYZ_URL+x}" = x ] || [ "${PLOYZ_SHA256+x}" = x ] || \
+     [ "${PLOYZ_RAILPACK_VERSION+x}" = x ] || [ "${PLOYZ_RAILPACK_URL+x}" = x ] || \
+     [ "${PLOYZ_RAILPACK_SHA256+x}" = x ]; then
+    echo "--build-executor requires both artifacts to come from the resolved release manifest; direct artifact overrides are not supported" >&2
+    exit 1
+  fi
+  load_manifest
+  PLOYZ_URL="$(manifest_required_value PLOYZ_URL)"
+  PLOYZ_SHA256="$(manifest_required_value PLOYZ_SHA256)"
+  PLOYZ_RAILPACK_VERSION="$(manifest_required_value PLOYZ_RAILPACK_VERSION)"
   validate_railpack_version "$PLOYZ_RAILPACK_VERSION"
-  PLOYZ_RAILPACK_URL="$(resolve_release_value PLOYZ_RAILPACK_URL "${PLOYZ_RAILPACK_URL:-}")"
-  PLOYZ_RAILPACK_SHA256="$(resolve_release_value PLOYZ_RAILPACK_SHA256 "${PLOYZ_RAILPACK_SHA256:-}")"
-  railpack_dir="${railpack_root}/${PLOYZ_RAILPACK_VERSION}"
-  railpack_bin="${railpack_dir}/railpack"
+  if [ "$PLOYZ_RAILPACK_VERSION" != "$railpack_version" ]; then
+    echo "release manifest $manifest_url has unsupported PLOYZ_RAILPACK_VERSION=$PLOYZ_RAILPACK_VERSION, expected $railpack_version" >&2
+    exit 1
+  fi
+  PLOYZ_RAILPACK_URL="$(manifest_required_value PLOYZ_RAILPACK_URL)"
+  PLOYZ_RAILPACK_SHA256="$(manifest_required_value PLOYZ_RAILPACK_SHA256)"
+else
+  if [ "$caller_manifest_selected" -eq 1 ] || [ -z "${PLOYZ_URL:-}" ] || [ -z "${PLOYZ_SHA256:-}" ]; then
+    load_manifest
+  fi
+  PLOYZ_URL="${PLOYZ_URL:-$(manifest_required_value PLOYZ_URL)}"
+  PLOYZ_SHA256="${PLOYZ_SHA256:-$(manifest_required_value PLOYZ_SHA256)}"
 fi
 
 download_verified "$PLOYZ_URL" "$PLOYZ_SHA256" "$ployz_stage"
@@ -390,17 +369,20 @@ if [ "$install_build_executor" -eq 1 ]; then
 fi
 stage_release_env
 
-install_checked -d -m 0755 "$install_dir"
-if [ "$install_build_executor" -eq 1 ]; then
-  install_checked -d -m 0755 "$railpack_dir"
-fi
-install_checked -m 0755 "$ployz_stage" "$ployz_bin"
-if [ "$install_build_executor" -eq 1 ]; then
-  install_checked -m 0755 "$railpack_stage" "$railpack_bin"
-fi
-release_env_dir="${release_env_file%/*}"
-install_checked -d -m 0755 "$release_env_dir"
-install_checked -m 0644 "$release_env_stage" "$release_env_file"
+promote_release() {
+  install_checked -d -m 0755 "$install_dir"
+  if [ "$install_build_executor" -eq 1 ]; then
+    railpack_dir="${railpack_bin%/*}"
+    install_checked -d -m 0755 "$railpack_dir"
+    install_checked -m 0755 "$railpack_stage" "$railpack_bin"
+  fi
+  install_checked -m 0755 "$ployz_stage" "$ployz_bin"
+  release_env_dir="${release_env_file%/*}"
+  install_checked -d -m 0755 "$release_env_dir"
+  install_checked -m 0644 "$release_env_stage" "$release_env_file"
+}
+
+promote_release
 
 echo "installed $ployz_bin"
 if [ "$install_build_executor" -eq 1 ]; then

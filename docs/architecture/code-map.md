@@ -193,7 +193,7 @@ scenarios. None is a production abstraction.
 | Shared Dockerfile or Railpack build execution mechanic | `crates/ployz-build-executor/src/` | CLI or daemon admission, NATS service ownership, image distribution, operation evidence |
 | CLI command or presentation | Matching feature under `crates/ployz/src/` | Core and transport presentation logic |
 | Public SDK request, response, or operation contract | `crates/ployz-sdk-types/src/`, then generated output in `packages/ployz-sdk/` | Daemon-only implementation types |
-| Privileged install, bootstrap, update, recovery, or supervisor effect | `crates/ployz-host-runner/src/` | Cluster policy decisions |
+| Privileged install, bootstrap, update, recovery, or supervisor effect | `crates/ployz-host-runner/src/`; `scripts/ployz.sh` only for explicit public release delivery | Cluster policy decisions |
 | Machine-local Docker, network, WireGuard, eBPF, filesystem, or process effect | Machine execution adapters under `crates/ployzd/src/roles/machine/execution/`, or Host Runner when it is substrate lifecycle | Core intent and shared truth |
 | Cross-process or cross-machine behavior | A real service seam plus integration coverage; use `testing/ployz-e2e/` when binaries or machines must be black-box | In-process mocks that claim to prove transport/process behavior |
 

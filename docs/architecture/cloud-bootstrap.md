@@ -11,9 +11,11 @@ The human command is:
 curl -fsSL https://ployz.sh | sh && sudo ployz host bootstrap cloud
 ```
 
-`ployz.sh` installs only the verified `ployz host` binary. It does not carry
-Cloud tokens, install `ployz`, choose a Cloud org, decide founder vs joiner,
-or inspect machine bootstrap state. Host Runner owns the explicit Cloud
+The default `ployz.sh` mode installs only the verified `ployz host` binary.
+Its explicit Build Executor mode is separate release delivery for an ephemeral
+executor and additionally installs the verified Railpack helper. Neither mode carries
+Cloud tokens, installs cluster substrate, chooses a Cloud org, decides founder vs joiner,
+or inspects machine bootstrap state. Host Runner owns the explicit Cloud
 session, typed bootstrap envelope validation, local machine mutation, and
 terminal callback when bootstrap uses Cloud.
 
