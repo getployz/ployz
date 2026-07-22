@@ -5,14 +5,16 @@ default_channel="alpha"
 channel_base_url="https://ployz.sh/channels"
 
 usage() {
-  echo "usage: [PLOYZ_CHANNEL=alpha] sh ployz.sh [--channel <channel>] [--version <version>]" >&2
+  echo "usage: [PLOYZ_CHANNEL=alpha] sh ployz.sh [--channel <channel>] [--version <version>] [--build-executor]" >&2
   echo "" >&2
   echo "installs the verified ployz binary to /usr/local/bin/ployz" >&2
-  echo "then run: sudo ployz host bootstrap" >&2
+  echo "--build-executor also installs the verified Railpack helper" >&2
+  echo "default install next step: sudo ployz host bootstrap" >&2
 }
 
 version_input="${PLOYZ_VERSION:-}"
 channel_input="${PLOYZ_CHANNEL:-}"
+install_build_executor=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -33,6 +35,10 @@ while [ "$#" -gt 0 ]; do
       PLOYZ_CHANNEL="$2"
       channel_input="$2"
       shift 2
+      ;;
+    --build-executor)
+      install_build_executor=1
+      shift
       ;;
     -*)
       echo "unknown ployz installer argument: $1" >&2
@@ -65,9 +71,11 @@ machine_arch="$(uname -m)"
 case "$machine_arch" in
   x86_64 | amd64)
     arch_slug="amd64"
+    railpack_binary_sha256="15d3921fc4f955f60b0d4b635036153c6255928ef0a6af7353e3047a2ceb6121"
     ;;
   aarch64 | arm64)
     arch_slug="arm64"
+    railpack_binary_sha256="61723cee03fedaad6879c59729b1dabba329a4912573d77c37427149a070f8f9"
     ;;
   *)
     echo "unsupported architecture: $machine_arch (ployz supports amd64 and arm64)" >&2
@@ -98,15 +106,18 @@ fi
 
 install_dir="/usr/local/bin"
 ployz_bin="${install_dir}/ployz"
+railpack_version="v0.31.0"
+railpack_bin="/usr/local/lib/ployz/railpack/v0.31.0/railpack"
 release_env_file="${PLOYZ_RELEASE_ENV_FILE:-/etc/ployz/release.env}"
-manifest_file="$(mktemp)"
-channel_file="$(mktemp)"
-tmp_file="$(mktemp)"
-manifest_loaded=0
-release_manifest_identity_required=0
+staging_dir="$(mktemp -d)"
+manifest_file="${staging_dir}/release.env.remote"
+channel_file="${staging_dir}/channel.env"
+ployz_stage="${staging_dir}/ployz"
+railpack_stage="${staging_dir}/railpack"
+release_env_stage="${staging_dir}/release.env"
 
 cleanup() {
-  rm -f "$manifest_file" "$channel_file" "$tmp_file"
+  rm -rf "$staging_dir"
 }
 trap cleanup EXIT
 
@@ -145,6 +156,15 @@ validate_token() {
       exit 1
       ;;
   esac
+}
+
+validate_railpack_version() {
+  value="$1"
+  validate_token "Railpack version" "$value"
+  if ! awk -v value="$value" 'BEGIN { exit(value ~ /^v[0-9]+\.[0-9]+\.[0-9]+$/ ? 0 : 1) }'; then
+    echo "Railpack version must be an exact vMAJOR.MINOR.PATCH token: $value" >&2
+    exit 1
+  fi
 }
 
 github_release_base_url() {
@@ -206,11 +226,12 @@ resolve_channel() {
     exit 1
   fi
   manifest_url="${expected_release_base_url}/ployz-release-${release_platform}.env"
-  release_manifest_identity_required=1
   echo "resolved ployz channel ${selected_channel} -> ${release_tag}"
 }
 
+caller_manifest_selected=0
 if [ -n "${PLOYZ_RELEASE_MANIFEST_URL:-}" ]; then
+  caller_manifest_selected=1
   manifest_url="$PLOYZ_RELEASE_MANIFEST_URL"
   if [ -n "$version_input" ]; then
     normalize_release_version "$version_input"
@@ -218,64 +239,30 @@ if [ -n "${PLOYZ_RELEASE_MANIFEST_URL:-}" ]; then
 elif [ -n "$version_input" ]; then
   normalize_release_version "$version_input"
   manifest_url="$(github_release_base_url "$release_tag")/ployz-release-${release_platform}.env"
-  release_manifest_identity_required=1
 else
   resolve_channel
 fi
 
 load_manifest() {
-  if [ "$manifest_loaded" -eq 0 ]; then
-    if ! fetch_file "$manifest_url" "$manifest_file"; then
-      echo "failed to download release manifest $manifest_url" >&2
-      exit 1
-    fi
-    verify_release_manifest_identity
-    manifest_loaded=1
+  if ! fetch_file "$manifest_url" "$manifest_file"; then
+    echo "failed to download release manifest $manifest_url" >&2
+    exit 1
   fi
+  verify_release_manifest_identity
 }
 
 manifest_value() {
   env_value "$manifest_file" "$1"
 }
 
-# A caller-supplied manifest URL is the release authority: when no version
-# was given, the manifest's own identity names the installed release so the
-# persisted release evidence and the update hint stay truthful.
-adopt_manifest_identity() {
-  adopted_tag="$(manifest_value PLOYZ_RELEASE_TAG)"
-  if [ -n "$adopted_tag" ] && [ -z "${release_tag:-}" ]; then
-    case "$adopted_tag" in
-      *[!A-Za-z0-9._-]*)
-        echo "ployz release tag contains unsupported characters: $adopted_tag" >&2
-        exit 1
-        ;;
-    esac
-    release_tag="$adopted_tag"
-  fi
-  adopted_version="$(manifest_value PLOYZ_VERSION)"
-  if [ -n "$adopted_version" ] && [ -z "${PLOYZ_VERSION:-}" ]; then
-    case "$adopted_version" in
-      *[!A-Za-z0-9._-]*)
-        echo "ployz version contains unsupported characters: $adopted_version" >&2
-        exit 1
-        ;;
-    esac
-    PLOYZ_VERSION="$adopted_version"
-  fi
-}
-
 verify_release_manifest_identity() {
-  if [ "$release_manifest_identity_required" -eq 0 ]; then
-    adopt_manifest_identity
-    return 0
-  fi
-
   manifest_tag="$(manifest_value PLOYZ_RELEASE_TAG)"
   if [ -z "$manifest_tag" ]; then
     echo "release manifest $manifest_url is missing PLOYZ_RELEASE_TAG" >&2
     exit 1
   fi
-  if [ "$manifest_tag" != "$release_tag" ]; then
+  validate_token "ployz release tag" "$manifest_tag"
+  if [ -n "${release_tag:-}" ] && [ "$manifest_tag" != "$release_tag" ]; then
     echo "release manifest $manifest_url has PLOYZ_RELEASE_TAG=$manifest_tag, expected $release_tag" >&2
     exit 1
   fi
@@ -285,7 +272,12 @@ verify_release_manifest_identity() {
     echo "release manifest $manifest_url is missing PLOYZ_VERSION" >&2
     exit 1
   fi
-  if [ "$manifest_version" != "$PLOYZ_VERSION" ]; then
+  validate_token "ployz version" "$manifest_version"
+  if [ "$manifest_tag" != "v$manifest_version" ]; then
+    echo "release manifest $manifest_url has incoherent identity: PLOYZ_RELEASE_TAG=$manifest_tag and PLOYZ_VERSION=$manifest_version" >&2
+    exit 1
+  fi
+  if [ -n "${PLOYZ_VERSION:-}" ] && [ "$manifest_version" != "$PLOYZ_VERSION" ]; then
     echo "release manifest $manifest_url has PLOYZ_VERSION=$manifest_version, expected $PLOYZ_VERSION" >&2
     exit 1
   fi
@@ -299,17 +291,13 @@ verify_release_manifest_identity() {
     echo "release manifest $manifest_url has PLOYZ_RELEASE_PLATFORM=$manifest_platform, expected $release_platform" >&2
     exit 1
   fi
+
+  release_tag="$manifest_tag"
+  PLOYZ_VERSION="$manifest_version"
 }
 
-resolve_release_value() {
+manifest_required_value() {
   name="$1"
-  current="$2"
-  if [ -n "$current" ]; then
-    printf '%s\n' "$current"
-    return 0
-  fi
-
-  load_manifest
   value="$(manifest_value "$name")"
   if [ -z "$value" ]; then
     echo "release manifest $manifest_url is missing $name" >&2
@@ -342,30 +330,75 @@ install_checked() {
   fi
 }
 
-persist_release_env() {
-  release_env_dir="${release_env_file%/*}"
+stage_release_env() {
   {
     printf 'PLOYZ_RELEASE_MANIFEST_URL=%s\n' "$manifest_url"
     printf 'PLOYZ_VERSION=%s\n' "${PLOYZ_VERSION:-}"
     printf 'PLOYZ_RELEASE_TAG=%s\n' "${release_tag:-}"
     printf 'PLOYZ_RELEASE_PLATFORM=%s\n' "$release_platform"
-  } > "$tmp_file"
-  install_checked -d -m 0755 "$release_env_dir"
-  install_checked -m 0644 "$tmp_file" "$release_env_file"
+  } > "$release_env_stage"
 }
 
-PLOYZ_URL="$(resolve_release_value PLOYZ_URL "${PLOYZ_URL:-}")"
-PLOYZ_SHA256="$(resolve_release_value PLOYZ_SHA256 "${PLOYZ_SHA256:-}")"
+if [ "$install_build_executor" -eq 1 ]; then
+  if [ "${PLOYZ_URL+x}" = x ] || [ "${PLOYZ_SHA256+x}" = x ] || \
+     [ "${PLOYZ_RAILPACK_VERSION+x}" = x ] || [ "${PLOYZ_RAILPACK_URL+x}" = x ] || \
+     [ "${PLOYZ_RAILPACK_SHA256+x}" = x ]; then
+    echo "--build-executor requires both artifacts to come from the resolved release manifest; direct artifact overrides are not supported" >&2
+    exit 1
+  fi
+  load_manifest
+  PLOYZ_URL="$(manifest_required_value PLOYZ_URL)"
+  PLOYZ_SHA256="$(manifest_required_value PLOYZ_SHA256)"
+  PLOYZ_RAILPACK_VERSION="$(manifest_required_value PLOYZ_RAILPACK_VERSION)"
+  validate_railpack_version "$PLOYZ_RAILPACK_VERSION"
+  if [ "$PLOYZ_RAILPACK_VERSION" != "$railpack_version" ]; then
+    echo "release manifest $manifest_url has unsupported PLOYZ_RAILPACK_VERSION=$PLOYZ_RAILPACK_VERSION, expected $railpack_version" >&2
+    exit 1
+  fi
+  PLOYZ_RAILPACK_URL="$(manifest_required_value PLOYZ_RAILPACK_URL)"
+  PLOYZ_RAILPACK_SHA256="$(manifest_required_value PLOYZ_RAILPACK_SHA256)"
+  if [ "$PLOYZ_RAILPACK_SHA256" != "$railpack_binary_sha256" ]; then
+    echo "release manifest $manifest_url has unsupported PLOYZ_RAILPACK_SHA256=$PLOYZ_RAILPACK_SHA256, expected $railpack_binary_sha256 for $release_platform" >&2
+    exit 1
+  fi
+else
+  if [ "$caller_manifest_selected" -eq 1 ] || [ -z "${PLOYZ_URL:-}" ] || [ -z "${PLOYZ_SHA256:-}" ]; then
+    load_manifest
+  fi
+  PLOYZ_URL="${PLOYZ_URL:-$(manifest_required_value PLOYZ_URL)}"
+  PLOYZ_SHA256="${PLOYZ_SHA256:-$(manifest_required_value PLOYZ_SHA256)}"
+fi
 
-download_verified "$PLOYZ_URL" "$PLOYZ_SHA256" "$tmp_file"
-install_checked -d -m 0755 "$install_dir"
-install_checked -m 0755 "$tmp_file" "$ployz_bin"
-persist_release_env
+download_verified "$PLOYZ_URL" "$PLOYZ_SHA256" "$ployz_stage"
+if [ "$install_build_executor" -eq 1 ]; then
+  download_verified "$PLOYZ_RAILPACK_URL" "$PLOYZ_RAILPACK_SHA256" "$railpack_stage"
+fi
+stage_release_env
+
+promote_release() {
+  install_checked -d -m 0755 "$install_dir"
+  if [ "$install_build_executor" -eq 1 ]; then
+    railpack_dir="${railpack_bin%/*}"
+    install_checked -d -m 0755 "$railpack_dir"
+    install_checked -m 0755 "$railpack_stage" "$railpack_bin"
+  fi
+  install_checked -m 0755 "$ployz_stage" "$ployz_bin"
+  release_env_dir="${release_env_file%/*}"
+  install_checked -d -m 0755 "$release_env_dir"
+  install_checked -m 0644 "$release_env_stage" "$release_env_file"
+}
+
+promote_release
 
 echo "installed $ployz_bin"
-echo "run: sudo ployz host bootstrap"
-if [ -n "${release_tag:-}" ]; then
-  echo "update existing substrate: sudo ployz host substrate-update --version $release_tag"
+if [ "$install_build_executor" -eq 1 ]; then
+  echo "installed $railpack_bin"
+  echo "ready for Build Executor enrollment"
 else
-  echo "update existing substrate: sudo ployz host substrate-update --version <release-tag>"
+  echo "run: sudo ployz host bootstrap"
+  if [ -n "${release_tag:-}" ]; then
+    echo "update existing substrate: sudo ployz host substrate-update --version $release_tag"
+  else
+    echo "update existing substrate: sudo ployz host substrate-update --version <release-tag>"
+  fi
 fi
