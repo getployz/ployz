@@ -581,7 +581,6 @@ fn machine_endpoint_policy(endpoint: MachineServiceEndpoint) -> EndpointExecutio
         MachineServiceEndpoint::StoragePrepare => {
             policy.request_timeout = ployz_core::storage::MACHINE_STORAGE_PREPARE_RPC_TIMEOUT;
         }
-        MachineServiceEndpoint::BuildStart => {}
         MachineServiceEndpoint::BuildCachePrune => {
             policy.request_timeout = BUILD_CACHE_PRUNE_ENDPOINT_TIMEOUT;
         }
@@ -607,6 +606,7 @@ fn machine_endpoint_policy(endpoint: MachineServiceEndpoint) -> EndpointExecutio
         | MachineServiceEndpoint::ContainerStop
         | MachineServiceEndpoint::ContainerRemove
         | MachineServiceEndpoint::DataplanePublicKey
+        | MachineServiceEndpoint::BuildStart
         | MachineServiceEndpoint::SubstrateUpdate
         | MachineServiceEndpoint::SubstrateReport
         | MachineServiceEndpoint::StoragePrepareReport

@@ -95,6 +95,8 @@ mod tests {
                 machine_id: machine_id.clone(),
             },
             platform: OciPlatform::try_new("linux", "amd64").expect("platform"),
+            request_commitment: ployz_core::build::BuildRequestCommitment::try_from("a".repeat(64))
+                .expect("commitment"),
         }
     }
 
@@ -112,6 +114,7 @@ mod tests {
                     "operation_id": "build-1",
                     "assignment": {"executor": "cluster", "machine_id": "machine-a"},
                     "platform": {"os": "linux", "architecture": "amd64"},
+                    "request_commitment": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 },
             })
         );
@@ -141,9 +144,11 @@ mod tests {
         let machine_id = MachineId::try_new("machine-a").expect("machine");
         let response = MachineBuildStatusRpcOk::from((
             machine_id.clone(),
-            BuildExecutorStatus::Running {
+            BuildExecutorStatus {
                 acceptance: acceptance(&machine_id),
-                log_summary: BuildLogSummary::new(8, 13),
+                state: ployz_core::build::BuildExecutorState::Running {
+                    log_summary: BuildLogSummary::new(8, 13),
+                },
             },
         ));
         let encoded = serde_json::to_value(&response).expect("encode status");
@@ -152,14 +157,17 @@ mod tests {
             serde_json::json!({
                 "machine_id": "machine-a",
                 "executor": {
-                    "status": "running",
                     "acceptance": {
                         "operation_id": "build-1",
                         "assignment": {"executor": "cluster", "machine_id": "machine-a"},
                         "platform": {"os": "linux", "architecture": "amd64"},
+                        "request_commitment": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                     },
-                    "final_log_sequence": 8,
-                    "omitted_log_bytes": 13,
+                    "state": {
+                        "status": "running",
+                        "final_log_sequence": 8,
+                        "omitted_log_bytes": 13,
+                    },
                 },
             })
         );
@@ -229,6 +237,7 @@ mod tests {
                     "operation_id": "build-1",
                     "assignment": {"executor": "cluster", "machine_id": "machine-a"},
                     "platform": {"os": "linux", "architecture": "amd64"},
+                    "request_commitment": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 },
                 "message": "deadline exceeded",
                 "cleanup": "unconfirmed",
