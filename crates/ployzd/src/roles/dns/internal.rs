@@ -5,6 +5,9 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use hickory_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
+use hickory_proto::rr::rdata::A;
+use hickory_proto::rr::{DNSClass, Name, RData, Record, RecordType};
 use ployz_core::network::INTERNAL_DNS_SUFFIX;
 use tokio::net::UdpSocket;
 use tokio::sync::{broadcast, watch};
@@ -14,10 +17,7 @@ use crate::role_testimony::RoleTestimonyCache;
 use ployz_core::intent::IntentSnapshot;
 use ployz_core::network::internal_dns::{InternalServiceName, internal_dns_records};
 
-const DNS_HEADER_LEN: usize = 12;
 const DNS_PORT: u16 = 53;
-const DNS_TYPE_A: u16 = 1;
-const DNS_CLASS_IN: u16 = 1;
 const DNS_TTL_SECONDS: u32 = 5;
 const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(2);
 const BIND_RETRY_INITIAL: Duration = Duration::from_millis(250);
@@ -26,67 +26,34 @@ const BIND_DIAGNOSTIC_REPEAT: Duration = Duration::from_secs(30);
 const LOCAL_QUERY_TIMEOUT: Duration = Duration::from_millis(500);
 const LOCAL_QUERY_ID: u16 = 0x504c;
 
-/// A bounds-checked first DNS question parsed from a UDP datagram.
+/// The first question of a decoded request, with the header fields the
+/// response must echo.
 #[derive(Debug)]
-struct DnsQuery {
+struct DnsRequest {
     id: u16,
-    name: String,
-    qtype: u16,
-    qclass: u16,
     recursion_desired: bool,
-    question: Vec<u8>,
+    query: Query,
 }
 
-/// Parses the first uncompressed DNS question from a packet.
+/// Decodes a request datagram and takes its first question; datagrams that are
+/// not well-formed DNS queries with at least one question get no response.
 #[must_use]
-fn parse_query(packet: &[u8]) -> Option<DnsQuery> {
-    if packet.len() < DNS_HEADER_LEN {
-        return None;
-    }
-    let id = read_u16(packet, 0)?;
-    let flags = read_u16(packet, 2)?;
-    if read_u16(packet, 4)? == 0 {
-        return None;
-    }
-
-    let mut offset = DNS_HEADER_LEN;
-    let mut labels = Vec::new();
-    loop {
-        let length = usize::from(*packet.get(offset)?);
-        offset = offset.checked_add(1)?;
-        if length == 0 {
-            break;
-        }
-        if length & 0xc0 != 0 {
-            return None;
-        }
-        let label_end = offset.checked_add(length)?;
-        let label = std::str::from_utf8(packet.get(offset..label_end)?).ok()?;
-        labels.push(label.to_ascii_lowercase());
-        offset = label_end;
-    }
-
-    let qtype = read_u16(packet, offset)?;
-    offset = offset.checked_add(2)?;
-    let qclass = read_u16(packet, offset)?;
-    offset = offset.checked_add(2)?;
-
-    Some(DnsQuery {
-        id,
-        name: labels.join("."),
-        qtype,
-        qclass,
-        recursion_desired: flags & 0x0100 != 0,
-        question: packet.get(DNS_HEADER_LEN..offset)?.to_vec(),
+fn parse_request(packet: &[u8]) -> Option<DnsRequest> {
+    let message = Message::from_vec(packet).ok()?;
+    let query = message.queries.first()?.clone();
+    Some(DnsRequest {
+        id: message.metadata.id,
+        recursion_desired: message.metadata.recursion_desired,
+        query,
     })
 }
 
-fn read_u16(packet: &[u8], offset: usize) -> Option<u16> {
-    let bytes = packet.get(offset..offset.checked_add(2)?)?;
-    let [high, low] = bytes else {
-        return None;
-    };
-    Some(u16::from_be_bytes([*high, *low]))
+/// The question name in the dotted lowercase form used for record lookup,
+/// without the FQDN trailing dot.
+#[must_use]
+fn lookup_name(query: &Query) -> String {
+    let name = query.name.to_ascii().to_ascii_lowercase();
+    name.trim_end_matches('.').to_owned()
 }
 
 pub(super) async fn query_bound_resolver(
@@ -116,147 +83,73 @@ pub(super) async fn query_bound_resolver(
 }
 
 fn a_query_packet(name: &InternalServiceName) -> io::Result<Vec<u8>> {
-    let mut packet = Vec::from([
-        0x50, 0x4c, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    ]);
-    for label in name.as_str().split('.') {
-        let length = u8::try_from(label.len()).map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidInput, "DNS label exceeds 255 bytes")
-        })?;
-        packet.push(length);
-        packet.extend_from_slice(label.as_bytes());
-    }
-    packet.push(0);
-    packet.extend_from_slice(&DNS_TYPE_A.to_be_bytes());
-    packet.extend_from_slice(&DNS_CLASS_IN.to_be_bytes());
-    Ok(packet)
+    let name = Name::from_ascii(format!("{}.", name.as_str()))
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
+    let mut query = Message::new(LOCAL_QUERY_ID, MessageType::Query, OpCode::Query);
+    query.metadata.recursion_desired = true;
+    query.add_query(Query::query(name, RecordType::A));
+    query
+        .to_vec()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))
 }
 
 fn parse_a_response(response: &[u8]) -> io::Result<Vec<Ipv4Addr>> {
-    if read_u16(response, 0) != Some(LOCAL_QUERY_ID) {
+    let message = Message::from_vec(response)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+    if message.metadata.id != LOCAL_QUERY_ID {
         return Err(invalid_dns_response(
             "DNS response transaction id did not match",
         ));
     }
-    let flags = response_u16(response, 2)?;
-    if flags & 0x8000 == 0 || flags & 0x000f != 0 {
+    if message.metadata.message_type != MessageType::Response
+        || message.metadata.response_code != ResponseCode::NoError
+    {
         return Err(invalid_dns_response(
             "DNS resolver returned an unsuccessful response",
         ));
     }
-    let question_count = response_u16(response, 4)?;
-    let answer_count = response_u16(response, 6)?;
-    let mut offset = DNS_HEADER_LEN;
-    for _ in 0..question_count {
-        offset = skip_dns_name(response, offset)?;
-        offset = response
-            .get(offset..offset.saturating_add(4))
-            .map(|_| offset + 4)
-            .ok_or_else(|| invalid_dns_response("DNS question was truncated"))?;
-    }
-
-    let mut addresses = Vec::new();
-    for _ in 0..answer_count {
-        offset = skip_dns_name(response, offset)?;
-        let record_type = response_u16(response, offset)?;
-        let class = response_u16(response, offset + 2)?;
-        let data_length = usize::from(response_u16(response, offset + 8)?);
-        offset = offset
-            .checked_add(10)
-            .ok_or_else(|| invalid_dns_response("DNS answer offset overflowed"))?;
-        let data = response
-            .get(offset..offset.saturating_add(data_length))
-            .ok_or_else(|| invalid_dns_response("DNS answer was truncated"))?;
-        if record_type == DNS_TYPE_A && class == DNS_CLASS_IN {
-            let [a, b, c, d] = data else {
-                return Err(invalid_dns_response(
-                    "DNS A record length was not four bytes",
-                ));
+    let mut addresses = message
+        .answers
+        .iter()
+        .filter_map(|record| {
+            if record.dns_class != DNSClass::IN {
+                return None;
+            }
+            let RData::A(address) = &record.data else {
+                return None;
             };
-            addresses.push(Ipv4Addr::new(*a, *b, *c, *d));
-        }
-        offset = offset
-            .checked_add(data_length)
-            .ok_or_else(|| invalid_dns_response("DNS answer offset overflowed"))?;
-    }
+            Some(Ipv4Addr::from(*address))
+        })
+        .collect::<Vec<_>>();
     addresses.sort_unstable();
     addresses.dedup();
     Ok(addresses)
-}
-
-fn skip_dns_name(packet: &[u8], mut offset: usize) -> io::Result<usize> {
-    loop {
-        let length = *packet
-            .get(offset)
-            .ok_or_else(|| invalid_dns_response("DNS name was truncated"))?;
-        if length & 0xc0 == 0xc0 {
-            return packet
-                .get(offset..offset.saturating_add(2))
-                .map(|_| offset + 2)
-                .ok_or_else(|| invalid_dns_response("DNS name pointer was truncated"));
-        }
-        if length & 0xc0 != 0 {
-            return Err(invalid_dns_response("DNS name label was invalid"));
-        }
-        offset = offset
-            .checked_add(1)
-            .ok_or_else(|| invalid_dns_response("DNS name offset overflowed"))?;
-        if length == 0 {
-            return Ok(offset);
-        }
-        offset = offset
-            .checked_add(usize::from(length))
-            .filter(|end| *end <= packet.len())
-            .ok_or_else(|| invalid_dns_response("DNS name label was truncated"))?;
-    }
-}
-
-fn response_u16(packet: &[u8], offset: usize) -> io::Result<u16> {
-    read_u16(packet, offset).ok_or_else(|| invalid_dns_response("DNS response was truncated"))
 }
 
 fn invalid_dns_response(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
-/// DNS response codes emitted by the internal resolver.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DnsRcode {
-    NoError,
-    ServFail,
-}
-
-impl DnsRcode {
-    const fn code(self) -> u16 {
-        match self {
-            Self::NoError => 0,
-            Self::ServFail => 2,
-        }
-    }
-}
-
 /// Builds an authoritative A-only DNS response that echoes the first question.
 #[must_use]
-fn build_response(query: &DnsQuery, rcode: DnsRcode, answers: &[Ipv4Addr]) -> Vec<u8> {
-    let answer_count = u16::try_from(answers.len()).unwrap_or(u16::MAX);
-    let flags = 0x8000 | 0x0400 | if query.recursion_desired { 0x0100 } else { 0 } | rcode.code();
-    let mut response = Vec::new();
-    response.extend_from_slice(&query.id.to_be_bytes());
-    response.extend_from_slice(&flags.to_be_bytes());
-    response.extend_from_slice(&1_u16.to_be_bytes());
-    response.extend_from_slice(&answer_count.to_be_bytes());
-    response.extend_from_slice(&0_u16.to_be_bytes());
-    response.extend_from_slice(&0_u16.to_be_bytes());
-    response.extend_from_slice(&query.question);
-    for address in answers.iter().take(usize::from(answer_count)) {
-        response.extend_from_slice(&[0xc0, 0x0c]);
-        response.extend_from_slice(&DNS_TYPE_A.to_be_bytes());
-        response.extend_from_slice(&DNS_CLASS_IN.to_be_bytes());
-        response.extend_from_slice(&DNS_TTL_SECONDS.to_be_bytes());
-        response.extend_from_slice(&4_u16.to_be_bytes());
-        response.extend_from_slice(&address.octets());
-    }
-    response
+fn build_response(
+    request: &DnsRequest,
+    response_code: ResponseCode,
+    answers: &[Ipv4Addr],
+) -> Option<Vec<u8>> {
+    let mut response = Message::response(request.id, OpCode::Query);
+    response.metadata.authoritative = true;
+    response.metadata.recursion_desired = request.recursion_desired;
+    response.metadata.response_code = response_code;
+    response.add_query(request.query.clone());
+    response.add_answers(answers.iter().map(|address| {
+        Record::from_rdata(
+            request.query.name.clone(),
+            DNS_TTL_SECONDS,
+            RData::A(A::from(*address)),
+        )
+    }));
+    response.to_vec().ok()
 }
 
 /// Bind and serving state for the machine-local internal resolver.
@@ -459,16 +352,18 @@ async fn response_for_request(
     upstream: IpAddr,
     packet: Vec<u8>,
 ) -> Option<Vec<u8>> {
-    let query = parse_query(&packet)?;
-    if query
-        .name
+    let request = parse_request(&packet)?;
+    let name = lookup_name(&request.query);
+    if name
         .strip_suffix(INTERNAL_DNS_SUFFIX)
         .is_some_and(|prefix| prefix.ends_with('.'))
     {
         // ponytail: full projection rebuild per query; cache on fact change if a machine's query rate ever matters.
         let records = intent.records(&facts.machine_facts_all());
-        let answers = if query.qtype == DNS_TYPE_A && query.qclass == DNS_CLASS_IN {
-            InternalServiceName::try_new(&query.name)
+        let answers = if request.query.query_type == RecordType::A
+            && request.query.query_class == DNSClass::IN
+        {
+            InternalServiceName::try_new(&name)
                 .ok()
                 .and_then(|name| records.get(&name))
                 .map(Vec::as_slice)
@@ -476,7 +371,7 @@ async fn response_for_request(
         } else {
             &[]
         };
-        return Some(build_response(&query, DnsRcode::NoError, answers));
+        return build_response(&request, ResponseCode::NoError, answers);
     }
 
     match forward_to_upstream(upstream, &packet).await {
@@ -485,7 +380,7 @@ async fn response_for_request(
             eprintln!(
                 "ployzd internal DNS warning: phase=forward upstream={upstream} error={error}"
             );
-            Some(build_response(&query, DnsRcode::ServFail, &[]))
+            build_response(&request, ResponseCode::ServFail, &[])
         }
     }
 }
@@ -560,39 +455,49 @@ mod tests {
     use ployz_test_support::fixtures::serving_target_entry;
     use ployz_test_support::ids::{machine_id, machine_name, operation_id};
 
+    const TEST_QTYPE_A: u16 = 1;
+    const TEST_QTYPE_AAAA: u16 = 28;
+    const TEST_QCLASS_IN: u16 = 1;
+    const TEST_HEADER_LEN: usize = 12;
+
     #[test]
-    fn parser_reads_first_question_and_lowercases_name() {
-        let packet = query_packet("DB.Default.Internal", DNS_TYPE_A);
-        let query = parse_query(&packet).expect("valid query");
+    fn parser_reads_first_question_and_lowercases_lookup_name() {
+        let packet = query_packet("DB.Default.Internal", TEST_QTYPE_A);
+        let request = parse_request(&packet).expect("valid query");
 
         assert_eq!(
-            (query.id, query.name.as_str(), query.qtype, query.qclass),
-            (0x1234, "db.default.internal", DNS_TYPE_A, DNS_CLASS_IN)
+            (
+                request.id,
+                lookup_name(&request.query).as_str(),
+                request.query.query_type,
+                request.query.query_class,
+            ),
+            (0x1234, "db.default.internal", RecordType::A, DNSClass::IN)
         );
     }
 
     #[test]
     fn parser_rejects_compressed_question_name() {
-        let mut compressed = query_packet("db.default.internal", DNS_TYPE_A);
-        let Some(length) = compressed.get_mut(DNS_HEADER_LEN) else {
+        let mut compressed = query_packet("db.default.internal", TEST_QTYPE_A);
+        let Some(length) = compressed.get_mut(TEST_HEADER_LEN) else {
             panic!("test query has a first label");
         };
         *length = 0xc0;
 
-        assert!(parse_query(&compressed).is_none());
+        assert!(parse_request(&compressed).is_none());
     }
 
     #[test]
     fn parser_rejects_truncated_question() {
-        let mut truncated = query_packet("db.default.internal", DNS_TYPE_A);
+        let mut truncated = query_packet("db.default.internal", TEST_QTYPE_A);
         truncated.pop();
 
-        assert!(parse_query(&truncated).is_none());
+        assert!(parse_request(&truncated).is_none());
     }
 
     #[tokio::test]
     async fn a_query_for_unknown_internal_name_returns_noerror_without_answers() {
-        let packet = query_packet("missing.default.internal", DNS_TYPE_A);
+        let packet = query_packet("missing.default.internal", TEST_QTYPE_A);
         let response = response_for_request(
             &RoleTestimonyCache::default(),
             &InternalDnsIntentCache::default(),
@@ -616,7 +521,7 @@ mod tests {
                 running("10.42.2.8"),
             )],
         ));
-        let packet = query_packet("db.default.internal", 28);
+        let packet = query_packet("db.default.internal", TEST_QTYPE_AAAA);
         let response = response_for_request(
             &cache,
             &internal_dns_intent("machine_a", "entry_db"),
@@ -658,7 +563,7 @@ mod tests {
         let client = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
             .await
             .expect("bind test client");
-        let request = query_packet("db.default.internal", DNS_TYPE_A);
+        let request = query_packet("db.default.internal", TEST_QTYPE_A);
 
         let mut received_response = None;
         for _ in 0..20 {
@@ -826,15 +731,22 @@ mod tests {
         }
         packet.push(0);
         packet.extend_from_slice(&qtype.to_be_bytes());
-        packet.extend_from_slice(&DNS_CLASS_IN.to_be_bytes());
+        packet.extend_from_slice(&TEST_QCLASS_IN.to_be_bytes());
         packet
     }
 
     fn response_header(response: &[u8]) -> (u16, u16) {
         (
-            read_u16(response, 2).expect("response flags"),
-            read_u16(response, 6).expect("answer count"),
+            test_read_u16(response, 2).expect("response flags"),
+            test_read_u16(response, 6).expect("answer count"),
         )
+    }
+
+    fn test_read_u16(packet: &[u8], offset: usize) -> Option<u16> {
+        let [high, low] = packet.get(offset..offset.checked_add(2)?)? else {
+            return None;
+        };
+        Some(u16::from_be_bytes([*high, *low]))
     }
 
     fn facts(
