@@ -30,7 +30,7 @@ carries its own provenance — generation, actor, and time — and Cloud owns
 richer history. The rule that keeps this from eroding: bounded, local, and
 atomic work is a write; work spanning hosts, processes, or time remains an
 operation. Machine add, deploy, removal, and recovery stay operations.
-`AGENTS.md` mirrors this carve-out when the model lands.
+`AGENTS.md` carries this carve-out.
 
 Assignment generations are monotonic and fenced, so a machine that was offline
 when its assignment changed converges on reconnect rather than blocking the

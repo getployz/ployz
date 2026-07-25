@@ -34,8 +34,19 @@ Every mutating action should:
 - finish with one terminal result,
 - leave useful evidence on failure.
 
+Work that is bounded, local, and atomic is a write, not an operation. A
+validated intent write returns its result synchronously and carries its own
+provenance; an operation record would only describe work that already
+succeeded or already failed. Work that spans hosts, processes, or time stays
+an operation: machine add, deploy, removal, and recovery. ADR 0037 applies
+this to machine assignment changes.
+
 The product is primitives, not hidden policy. Do not add background behavior
-that changes cluster truth without an operation owner.
+that changes cluster truth without an operation owner. Machine substrate is
+the single scoped exception, fixed by ADR 0037: Keeper continuously converges
+one host toward its current machine assignment. That is enforcement of a
+decision already recorded by an operator, never new cluster truth, and its
+authority is exactly the assignment.
 
 ## Architecture
 
@@ -103,7 +114,8 @@ Transport adapters must not import product orchestration convenience types.
 
 - User-facing commands are NATS services.
 - Machine-local commands are machine-scoped NATS services.
-- Mutating services return operation ids quickly.
+- Mutating services return operation ids quickly; bounded, local, atomic
+  writes return their result directly instead of creating an operation.
 - The core sequencer owns mutating operation admission and operation evidence.
 - Resource fences live in the core sequencer unless a named atomic authority
   file is explicitly introduced.
