@@ -113,16 +113,16 @@ A bounded operation step that asks target machines to make dataplane projection 
 _Avoid_: Dataplane Projection Readiness, Dataplane Host Preparation, mesh bootstrap
 
 **Dataplane Provider**:
-The cluster-level data-plane mesh implementation used for dataplane projection. Deploys declare Dataplane Membership; they do not choose providers, and machines do not bring their own provider.
-_Avoid_: Per-deploy mesh, per-machine provider, route backend
+The cluster-level data-plane mesh implementation used for dataplane projection. Deploys declare Dataplane Membership; they do not choose providers, and machines do not bring their own provider. Ployz Native Mesh is the only implemented provider; no alternative provider is wired, and provider selection is not a machine capability or a machine assignment entry.
+_Avoid_: Per-deploy mesh, per-machine provider, route backend, dataplane as a machine capability
 
 **Dataplane Provider Transition**:
 An explicit cluster operation that changes the cluster's Dataplane Provider. It is separate from deploy and must leave evidence about provider preparation, cutover, rollback, and cleanup.
 _Avoid_: Deploy side effect, silent mesh switch, mixed provider rollout
 
 **Tailnet Integration**:
-A family of optional future integrations that use a Tailscale tailnet for selected access, control-plane reachability, subnet routing, or egress without making Tailscale the cluster Dataplane Provider by default.
-_Avoid_: Dataplane Provider, hidden provider migration, MagicDNS route backend
+A family of optional future integrations that use a Tailscale tailnet for selected access, control-plane reachability, subnet routing, or egress without making Tailscale the cluster Dataplane Provider by default. None of them are implemented; the product contains no Tailscale code today.
+_Avoid_: Dataplane Provider, hidden provider migration, MagicDNS route backend, assuming any of these ship
 
 **Tailnet Access Bridge**:
 An optional Tailnet Integration that lets a Tailscale tailnet reach selected Ployz gateway, admin, or machine-access surfaces while the cluster keeps its Dataplane Provider. It is access exposure, not dataplane provider choice, route binding authority, machine membership, or control-plane connectivity.
@@ -133,8 +133,12 @@ An optional Tailnet Integration that, after explicit cluster-level enablement, a
 _Avoid_: Route Binding, Tunnel Ingress, gateway route, implicit all-subnet exposure, control-plane authority
 
 **Ployz Native Mesh**:
-The built-in dataplane provider that implements dataplane projection through Ployz-owned WireGuard, eBPF, routes, and local machine dataplane material. It is one implementation behind Dataplane Prepare; WireGuard and eBPF details are provider internals and evidence.
+The built-in dataplane provider that implements dataplane projection through Ployz-owned WireGuard, eBPF, routes, and local machine dataplane material. It is one implementation behind Dataplane Prepare; WireGuard and eBPF details are provider internals and evidence. It is the only provider that exists today.
 _Avoid_: ManagedWireGuardEbpf, WireGuard data plane, generic mesh
+
+**Tailscale Dataplane Provider**:
+A candidate future Dataplane Provider that would carry dataplane projection over a Tailscale tailnet, with each machine advertising its Machine Endpoint Subnet as a subnet route. It is unimplemented and unwired: no Tailscale code exists in the product, and adopting it would be a cluster-wide Dataplane Provider Transition, never a per-machine choice. Two consequences must be resolved before it can be accepted rather than assumed: placement admission is written against kernel WireGuard peer keys and handshake ages, which a userspace tailnet tunnel cannot answer, and subnet-route approval would move Machine Endpoint Subnet authority outside Ployz.
+_Avoid_: Per-machine dataplane, machine capability, mixed provider rollout, Tailnet Subnet Access, assuming it exists
 
 **Dataplane Membership**:
 A machine's operation-derived participation in the cluster data-plane mesh for service endpoint reachability. It is distinct from durable machine control-plane authority, machine lifecycle, and workload placement eligibility.
