@@ -1,4 +1,4 @@
-# ADR 0034: Host Compatibility Lives In Profiles And Supervisor Adapters
+# ADR 0039: Host Compatibility Lives In Profiles And Supervisor Adapters
 
 ## Status
 
