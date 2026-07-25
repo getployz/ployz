@@ -421,12 +421,16 @@ An operator-visible host that can run Ployz-managed processes and service contai
 _Avoid_: host, node, server as a domain term
 
 **Keeper**:
-The machine-local agent that converges one machine toward its current machine assignment. Keeper is mandatory machine substrate rather than a selectable cluster role, is the only part of Ployz that converges continuously, and its authority is exactly the assignment. It may create and may stop; it may never destroy data. It is one `ployzd` mode among five.
+The machine-local agent that converges one machine toward its current machine assignment. Keeper is mandatory machine substrate rather than a selectable cluster role, is the only part of Ployz that converges continuously, and its authority is exactly the assignment. Keeper owns the host: processes, versions, pools, and reserved capacity. It may create and may stop; it may never destroy data. It is one `ployzd` mode among five.
 _Avoid_: Host runner, updater, reconciler for anything but the assignment, agent as a second domain entity
 
 **Worker**:
-The role process that executes workload effects on one machine: builds, images, service containers, volumes, endpoints, local dataplane projection, and logs. Worker does the work an operation ordered; it never decides what belongs on the machine. It is one `ployzd` mode among five.
+The role process that executes workload effects on one machine: builds, images, service containers, volumes, endpoints, local dataplane projection, and logs. Worker owns the dataplane, where Keeper owns the host. Worker does the work an operation ordered; it never decides what belongs on the machine. It is one `ployzd` mode among five.
 _Avoid_: Machine role, machine daemon, executor as cluster authority
+
+**Machine Capability**:
+An operator-selected outcome for one machine, from which Control derives the role processes that deliver it. The current capabilities are running applications, building images, and egress. Capabilities are the operator-facing primitive; there are no named capability profiles, because a profile set that needs a custom escape hatch is presentation over these same choices. Control is derived from cluster structure rather than selected, and removing a capability from a machine that is still using it is rejected until the machine is drained.
+_Avoid_: Profile, preset, general purpose, edge, role as a user-facing choice
 
 **Machine Identity**:
 The stable, non-reused identity of an accepted machine. Machine identity owns credentials, endpoint subnet assignment, observations, and operation history.
@@ -619,6 +623,10 @@ _Avoid_: Update channel, latest feed, package repository
 **Machine Assignment**:
 Control's recorded decision about what belongs on one machine: which roles it runs, the Ployz version, foreign component versions, and typed host features such as pooled storage or reserved capacity. It is one record under one monotonic generation, written as a validated intent write rather than an operation, and it carries its own provenance. Keeper's authority is exactly this record.
 _Avoid_: Desired state, machine spec, separate role and feature records, computed target
+
+**Pooled Storage**:
+A machine-local ZFS pool that Ployz carves persistent volumes from as datasets. Pooled storage is a typed host feature in the machine assignment, so Keeper converges it as host substrate while Worker keeps ownership of the datasets themselves. Keeper imports an existing Ployz-owned pool and creates one only on a disk it can prove is empty; anything else is a typed failure for the operator to resolve. Wiping a reused disk is a separate explicit destructive action and is never an entry in an assignment, because an assignment is re-applied on every convergence.
+_Avoid_: Wipe flag, automatic disk adoption, storage prepare as its own operation, pool as workload data
 
 **Assigned Substrate State**:
 Keeper's durable machine-local copy of the machine assignment it last received, together with the terminal evidence of applying it. It guides local substrate steps and is Local Authority for what happened on that host; it is never cluster truth and never a second assignment authority.
