@@ -212,6 +212,10 @@ _Avoid_: Route certificate, custom wildcard, cluster certificate
 The exact-hostname certificate owned by one custom generated Route Binding. Failed provisional material is cleaned and detachment ends its lifecycle; gateway copies keep serving through core loss but never restore authority, so a replacement core reissues it.
 _Avoid_: Custom wildcard, namespace certificate, reusable hostname certificate
 
+**Operator-Supplied Certificate**:
+Certificate material an operator provides directly rather than material Ployz obtained. It is a distinct certificate owner because renewal ownership sits outside the cluster: Ployz validates, stores, distributes, and serves it, and never renews it or treats its approaching expiry as a fault it can repair. Ployz must report the expiry it read from the material rather than assuming a renewal loop covers it. Certificate authority choice is a configuration value and is not this concept.
+_Avoid_: Certificate provider, custom certificate, BYO issuer, ACME account swap, renewable certificate
+
 **Operation**:
 A user-visible record of a bounded command attempt. It explains what was attempted and what the attempt reported, but future planning uses live runtime state rather than the operation record.
 _Avoid_: Workflow, source of truth
@@ -399,6 +403,14 @@ _Avoid_: Disk, mount as storage identity
 **Provisioned Volume**:
 A Volume whose deploy declaration includes a maximum size and asks Ployz to provision its durable backing before the Volume is mounted. A Volume's plain or provisioned kind is fixed when that Volume is first created; changing the declaration does not convert existing data between kinds.
 _Avoid_: Managed Volume, ZFS Volume, declared Volume, bounded Volume
+
+**Volume Snapshot**:
+An explicit bounded operation that captures one provisioned volume's contents at a point in time, and the evidence it records. A snapshot is taken by the machine that owns the volume, is named and inspectable, and never expires or is pruned by a background loop. Copying a snapshot off its machine is a separate step with its own destination; that destination is a typed target such as another machine or an object-storage location, never a provider abstraction.
+_Avoid_: Backup provider, automatic snapshot schedule, convergence step, replication, silent retention policy
+
+**Volume Restore**:
+An explicit operation that creates or replaces a provisioned volume's contents from a snapshot. Restore is the one path that turns material from outside the cluster into serving state, so it is always operator-initiated, always records what it replaced, and is never something a reconciler performs. Keeper has no part in it: converging a machine assignment must not read, write, or select volume contents.
+_Avoid_: Workload restore, automatic recovery, rollback, convergence step, Keeper responsibility
 
 **Config**:
 Non-secret material injected into a service container as part of a namespace revision. Changing a config changes the desired service definition that deploy planning compares against runtime state.
