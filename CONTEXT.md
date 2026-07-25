@@ -260,9 +260,9 @@ _Avoid_: Core deploy model
 An external product workflow owner that submits typed commands to core Ployz and stores richer product history. Cloud is not runtime truth and does not orchestrate machine-local steps.
 _Avoid_: Runtime authority
 
-**Control-Plane Core**:
-The current machine role that hosts the cluster's NATS authority surface and core-owned intent/evidence files. The core is disposable and may be replaced by promoting another existing joined machine.
-_Avoid_: Main machine, primary server, Cloud core
+**Control**:
+The role process that decides. It hosts the cluster's NATS authority surface and the control-owned intent and evidence files, admits and sequences operations, and is the sole authority for machine assignments. Control is disposable and may be replaced by promoting another existing joined machine. It is one `ployzd` mode among five.
+_Avoid_: Core, Control-Plane Core, main machine, primary server, Cloud core
 
 **Access Provider**:
 An external authority trusted to identify requesters and decide whether they may access protected routes. Access providers are cluster-scoped gateway infrastructure; Ployz core treats their decisions as access evidence, not runtime truth.
@@ -276,24 +276,24 @@ _Avoid_: Org role, project permission, Cloud permission
 Short-lived, single-use access-provider evidence that a gateway can consume to create or refresh a route access session. It is bound to the current route protection and access provider, and is not the requester's long-lived session.
 _Avoid_: Magic link, dashboard token, login token, route session
 
-**Core Assurance**:
-A bounded recovery or startup action that adopts preserved or operator-restored core intent evidence, gathers fresh machine facts, and reports missing or ambiguous evidence without inferring lost intent. It replaces the old JetStream reindex model.
-_Avoid_: Reindex, automatic recovery, inferred intent
+**Control Assurance**:
+A bounded recovery or startup action that adopts preserved or operator-restored control intent evidence, gathers fresh machine facts, and reports missing or ambiguous evidence without inferring lost intent. It replaces the old JetStream reindex model.
+_Avoid_: Core assurance, reindex, automatic recovery, inferred intent
 
 **State Migration**:
 An explicit operation that moves persisted control-plane state from one schema to another so current runtime code can read it. It does not rewrite operation history or machine Local Authority unless that is part of a separate machine-local migration.
 _Avoid_: Legacy compatibility, runtime fallback, silent upgrade
 
 **Control-Plane Epoch**:
-A monotonically increasing cluster-local generation for the current Control-Plane Core endpoint. Machines use it to reject stale endpoint updates after recovery.
+A monotonically increasing cluster-local generation for the current Control endpoint. Machines use it to reject stale endpoint updates after recovery.
 _Avoid_: Recovery version, failover counter
 
-**Core Recovery Promotion**:
-A local operator action on an existing joined machine that makes that machine the Control-Plane Core after core loss. It preserves the cluster identity, increments the Control-Plane Epoch, and is authorized by local root access plus existing machine-held cluster material rather than Cloud.
-_Avoid_: Cloud failover, founder failover, provisioned replacement core
+**Control Promotion**:
+A local operator action on an existing joined machine that makes that machine Control after control loss. It preserves the cluster identity, increments the Control-Plane Epoch, and is authorized by local root access plus existing machine-held cluster material rather than Cloud.
+_Avoid_: Core recovery promotion, Cloud failover, founder failover, provisioned replacement core
 
 **Reachable Machine**:
-A machine observed to accept inbound control-plane connections at a public address, so peers can dial into it. Reachability is observed from connection source addresses, never declared at install. It is the eligibility basis for core promotion candidacy and peer dial-in; it is not machine lifecycle, placement eligibility, or a configured attribute.
+A machine observed to accept inbound control-plane connections at a public address, so peers can dial into it. Reachability is observed from connection source addresses, never declared at install. It is the eligibility basis for control promotion candidacy and peer dial-in; it is not machine lifecycle, placement eligibility, or a configured attribute.
 _Avoid_: Stable machine, public machine, gateway node, declared reachability
 
 **Local Authority**:
@@ -365,7 +365,7 @@ A durable claim for one resource identity created through the control-plane stor
 _Avoid_: Global lock, scan-and-hope allocation, advisory claim
 
 **Machine Substrate Lock**:
-A short-lived exclusive claim required before creating a machine-local substrate mutation operation. It prevents concurrent keeper update, substrate update, bootstrap finalization, and role assignment changes for one machine.
+A short-lived exclusive claim required before creating a machine-local substrate mutation operation. It prevents concurrent substrate update, bootstrap finalization, and convergence for one machine.
 _Avoid_: Machine lock, updater lock, host lock
 
 **Resource Busy**:
@@ -412,9 +412,21 @@ _Avoid_: Liveness as stored truth, gateway check, recurring deploy gate
 A declared network entry point for a service container. Ports may describe host-bound exposure or routeable service traffic, but they are not themselves route bindings.
 _Avoid_: Route, endpoint
 
+**Cluster**:
+The set of machines under one Control, sharing one cluster identity, one NATS authority surface, and one control-owned intent and evidence store. A machine belongs to exactly one cluster for as long as it is current; reaching another cluster is operator context, not membership.
+_Avoid_: Fleet, mesh, multi-cluster machine membership, Cloud organization
+
 **Machine**:
-An operator-visible host that can run Ployz-managed processes and service containers. Machine is the product and control-plane identity for that host; do not introduce a separate domain entity for a machine-local agent.
-_Avoid_: host
+An operator-visible host that can run Ployz-managed processes and service containers. Machine is the product and control-plane identity for that host; do not introduce a separate domain entity for a machine-local agent. One machine belongs to exactly one cluster and has exactly one machine assignment.
+_Avoid_: host, node, server as a domain term
+
+**Keeper**:
+The machine-local agent that converges one machine toward its current machine assignment. Keeper is mandatory machine substrate rather than a selectable cluster role, is the only part of Ployz that converges continuously, and its authority is exactly the assignment. It may create and may stop; it may never destroy data. It is one `ployzd` mode among five.
+_Avoid_: Host runner, updater, reconciler for anything but the assignment, agent as a second domain entity
+
+**Worker**:
+The role process that executes workload effects on one machine: builds, images, service containers, volumes, endpoints, local dataplane projection, and logs. Worker does the work an operation ordered; it never decides what belongs on the machine. It is one `ployzd` mode among five.
+_Avoid_: Machine role, machine daemon, executor as cluster authority
 
 **Machine Identity**:
 The stable, non-reused identity of an accepted machine. Machine identity owns credentials, endpoint subnet assignment, observations, and operation history.
@@ -580,13 +592,9 @@ _Avoid_: Update, upgrade, rollout, in-place update
 An explicit local action that removes Ployz substrate and machine-local Ployz material from one machine. It may be forced despite Accepted Machine Evidence, but it does not remove cluster truth, delete user workloads, Docker images, Docker volumes, service containers, arbitrary networks, or runtime data by default. If no Accepted Machine Evidence and no removable Ployz substrate or material remain, it is an idempotent no-op success.
 _Avoid_: Runtime wipe, machine removal, Cloud cleanup, destructive reset, force removed machine
 
-**Keeper Update**:
-An explicit operation that changes keeper on one machine to one requested Ployz version. It is separate from substrate update because keeper is the local executor for substrate steps.
-_Avoid_: Self-update, keeper rollout, updater update
-
 **Substrate Component**:
-A Ployz-managed machine component that keeper can install or update. Recognized substrate components include ployzd, NATS server, gateway, DNS, and eBPF.
-_Avoid_: Package, role, binary
+A Ployz-managed machine component that keeper can install or update. Recognized substrate components are the `ployzd` binary, which supplies every role including keeper itself, plus the foreign components NATS server and the eBPF program. Gateway and DNS are `ployzd` roles, not separately versioned components. Keeper's own version is one entry in the machine assignment it converges, so there is no separate keeper update operation.
+_Avoid_: Package, role, binary, per-role versioning, keeper update as its own operation
 
 **Activation Strategy**:
 The component-specific way keeper moves a staged substrate component version into use. Activation strategies include bounded restart, graceful gateway upgrade, graceful DNS upgrade, NATS server lame-duck restart, keeper self-update handoff, and eBPF link replacement.
@@ -601,16 +609,20 @@ The non-activating checks keeper runs for all relevant substrate components befo
 _Avoid_: Dry run, validation step, readiness check
 
 **Keeper Handoff**:
-The keeper update stage where an old keeper stages a requested keeper version, restarts keeper, and the new keeper resumes the same operation from durable local state.
-_Avoid_: Self-restart, keeper rollout, bootstrap restart
+The convergence stage where an old keeper stages the Ployz version its machine assignment names, restarts keeper first, and the new keeper resumes from durable local state before applying the remaining components. A staged keeper that fails to come up reverts to the previous binary.
+_Avoid_: Self-restart, keeper rollout, bootstrap restart, keeper update as its own operation
 
 **Release Source**:
 A machine-local configuration that lets keeper resolve an explicitly requested Ployz substrate version into artifact metadata. It is not authority to choose the latest version.
 _Avoid_: Update channel, latest feed, package repository
 
+**Machine Assignment**:
+Control's recorded decision about what belongs on one machine: which roles it runs, the Ployz version, foreign component versions, and typed host features such as pooled storage or reserved capacity. It is one record under one monotonic generation, written as a validated intent write rather than an operation, and it carries its own provenance. Keeper's authority is exactly this record.
+_Avoid_: Desired state, machine spec, separate role and feature records, computed target
+
 **Assigned Substrate State**:
-Durable machine-local state that tells keeper which substrate components and roles belong on that machine. It guides local substrate steps but is not cluster truth.
-_Avoid_: Desired state, role cache, local cluster state
+Keeper's durable machine-local copy of the machine assignment it last received, together with the terminal evidence of applying it. It guides local substrate steps and is Local Authority for what happened on that host; it is never cluster truth and never a second assignment authority.
+_Avoid_: Desired state, role cache, local cluster state, second source of assignment truth
 
 **Control-Plane Connection**:
 The machine's NATS connection to the Ployz control plane. In v1 this is a direct TLS-authenticated NATS connection rather than an overlay tunnel.
