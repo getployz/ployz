@@ -437,11 +437,11 @@ An operator-visible host that can run Ployz-managed processes and service contai
 _Avoid_: host, node, server as a domain term
 
 **Keeper**:
-The machine-local agent that converges one machine toward its current machine assignment. Keeper is mandatory machine substrate rather than a selectable cluster role, is the only part of Ployz that converges continuously, and its authority is exactly the assignment. Keeper owns the host: processes, versions, pools, and reserved capacity. It may create and may stop; it may never destroy data. It is one `ployzd` mode among five.
+The machine-local agent that converges one machine toward its current machine assignment. Keeper is mandatory machine substrate rather than a selectable cluster role, is the only part of Ployz that converges continuously, and its authority is exactly the assignment. Keeper owns the host and its network: processes, versions, pools, reserved capacity, and the machine's dataplane interfaces, peers, and routes. It may create and may stop; it may never destroy data. It is one `ployzd` mode among five.
 _Avoid_: Host runner, updater, reconciler for anything but the assignment, agent as a second domain entity
 
 **Worker**:
-The role process that executes workload effects on one machine: builds, images, service containers, volumes, endpoints, local dataplane projection, and logs. Worker owns the dataplane, where Keeper owns the host. Worker does the work an operation ordered; it never decides what belongs on the machine. It is one `ployzd` mode among five.
+The role process that executes workload effects on one machine: builds, images, service containers, volumes, endpoints, and logs. Worker owns the containers, where Keeper owns the host and its network; the split follows privilege, so anything needing the host network namespace or a host capability is Keeper's. Worker does the work an operation ordered; it never decides what belongs on the machine. It is one `ployzd` mode among five.
 _Avoid_: Machine role, machine daemon, executor as cluster authority
 
 **Machine Capability**:
