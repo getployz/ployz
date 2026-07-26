@@ -193,8 +193,9 @@ for success carries operation id, machine id, machine name, last event sequence,
 and redeem result; it omits the join token and Join credential.
 Joiner Bootstrap does not receive artifact URLs, checksums, or a Cloud-chosen
 install version. A joining machine follows the existing cluster's runtime
-authority after redeeming join material; Host Runner asks the cluster/runtime for the
-version and release source it should use.
+authority after redeeming join material. Its first machine assignment is compiled
+with the Control machine's current Ployz version, because no cluster-level version
+record exists to inherit from.
 After `machine.add` produces join material for one Cloud Bootstrap Redemption,
 Cloud binds that redemption to the resulting Joiner Bootstrap envelope. If the
 Host Runner response is lost, later polls return the same envelope rather than
