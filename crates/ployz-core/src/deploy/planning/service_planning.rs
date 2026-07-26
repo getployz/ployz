@@ -4,45 +4,61 @@ pub(super) fn plan_deploy_service(
     target: &DeployPlanningTarget,
     input: DeployPlanningInput,
     volume_plan: &VolumePlan,
+    placement_load: &mut MachinePlacementLoad,
 ) -> Result<DeploySingleServicePlan, DeployPlanError> {
     let service = planning_service(target, &input.service_id)?;
-    match (service.mode(), input.placement) {
+    let DeployPlanningInput {
+        service_id,
+        placement,
+        existing_replicas,
+        cleanup_candidates,
+        volume_pins: _,
+    } = input;
+    let planning = ServicePlanning {
+        service,
+        service_id,
+        existing_replicas,
+        cleanup_candidates,
+        placement_load,
+    };
+    match (service.mode(), placement) {
         (
             ServiceMode::Replicated { replicas },
             DeployPlanningPlacementInput::Replicated { eligible_machines },
-        ) => plan_replicated_service(
-            service,
-            input.service_id,
-            eligible_machines,
-            input.existing_replicas,
-            input.cleanup_candidates,
-            volume_plan,
-            replicas,
-        ),
+        ) => plan_replicated_service(planning, eligible_machines, volume_plan, replicas),
         (ServiceMode::Global, DeployPlanningPlacementInput::Global(placement)) => {
-            plan_global_service(
-                service,
-                input.service_id,
-                placement,
-                input.existing_replicas,
-                input.cleanup_candidates,
-            )
+            plan_global_service(planning, placement)
         }
         _ => Err(DeployPlanError::PlacementModeMismatch {
-            service_id: input.service_id,
+            service_id: planning.service_id,
         }),
     }
 }
 
-fn plan_replicated_service(
-    service: &DeployPlanningService,
+/// The service-scoped inputs both placement modes consume: what the service is,
+/// what is already observed of it, and the running placement count a new
+/// container advances.
+struct ServicePlanning<'a> {
+    service: &'a DeployPlanningService,
     service_id: ServiceId,
-    eligible_machines: Vec<MachineId>,
-    mut existing_replicas: Vec<ExistingServiceReplica>,
+    existing_replicas: Vec<ExistingServiceReplica>,
     cleanup_candidates: Vec<ObservedCleanupCandidate>,
+    placement_load: &'a mut MachinePlacementLoad,
+}
+
+fn plan_replicated_service(
+    planning: ServicePlanning<'_>,
+    eligible_machines: Vec<MachineId>,
     volume_plan: &VolumePlan,
     replicas: ReplicaCount,
 ) -> Result<DeploySingleServicePlan, DeployPlanError> {
+    let ServicePlanning {
+        service,
+        service_id,
+        mut existing_replicas,
+        cleanup_candidates,
+        placement_load,
+    } = planning;
     let volume_placement = volume_plan.placement(&service_id)?;
     let target_replicas = usize::from(replicas.get());
     if let Some(machine_id) = &volume_placement.machine_id {
@@ -65,19 +81,27 @@ fn plan_replicated_service(
     }
 
     let existing_replica_count = steps.len();
-    let run_machines = volume_placement
-        .machine_id
-        .as_ref()
-        .map(|machine_id| vec![machine_id.clone()])
-        .unwrap_or(eligible_machines);
+    let run_machines = match &volume_placement.machine_id {
+        Some(machine_id) => {
+            let pinned = vec![machine_id.clone(); missing_replicas];
+            for machine_id in &pinned {
+                placement_load.record(machine_id);
+            }
+            pinned
+        }
+        None => balanced_placements(
+            &eligible_machines,
+            &cleanup_candidates,
+            missing_replicas,
+            placement_load,
+        ),
+    };
     steps.extend(
         run_machines
-            .iter()
-            .cycle()
-            .take(missing_replicas)
+            .into_iter()
             .enumerate()
             .map(|(index, machine_id)| DeployPlanStep::RunContainer {
-                machine_id: machine_id.clone(),
+                machine_id,
                 slot: replicated_slot((existing_replica_count + index + 1) as u16),
             }),
     );
@@ -92,12 +116,16 @@ fn plan_replicated_service(
 }
 
 fn plan_global_service(
-    service: &DeployPlanningService,
-    service_id: ServiceId,
+    planning: ServicePlanning<'_>,
     placement: GlobalPlanningInput,
-    mut existing_replicas: Vec<ExistingServiceReplica>,
-    mut cleanup_candidates: Vec<ObservedCleanupCandidate>,
 ) -> Result<DeploySingleServicePlan, DeployPlanError> {
+    let ServicePlanning {
+        service,
+        service_id,
+        mut existing_replicas,
+        mut cleanup_candidates,
+        placement_load,
+    } = planning;
     let selected = placement
         .candidates()
         .iter()
@@ -151,6 +179,12 @@ fn plan_global_service(
                 )
         })
         .collect::<Vec<_>>();
+    for step in &steps {
+        match step {
+            DeployPlanStep::RunContainer { machine_id, .. } => placement_load.record(machine_id),
+            DeployPlanStep::UseExistingContainer { .. } => {}
+        }
+    }
 
     cleanup_candidates.retain(|candidate| {
         !deferred_set.contains(&candidate.target.machine_id)
@@ -337,8 +371,219 @@ fn normalize_existing_replicas(replicas: &mut Vec<ExistingServiceReplica>) {
     });
 }
 
+/// Machines for replicas the plan must create. A replica follows the container
+/// it supersedes, so an ordinary redeploy leaves a service on the machine it
+/// already runs on and only Rebalance relocates a running service. A replica
+/// with no predecessor lands on the eligible machine carrying the fewest
+/// placed containers, so a namespace spreads instead of every service landing
+/// on whichever machine sorts first.
+fn balanced_placements(
+    eligible_machines: &[MachineId],
+    cleanup_candidates: &[ObservedCleanupCandidate],
+    missing_replicas: usize,
+    placement_load: &mut MachinePlacementLoad,
+) -> Vec<MachineId> {
+    let mut predecessors = cleanup_candidates
+        .iter()
+        .filter(|candidate| {
+            candidate.state.is_running() && eligible_machines.contains(&candidate.target.machine_id)
+        })
+        .map(|candidate| candidate.target.machine_id.clone())
+        .collect::<Vec<_>>();
+    predecessors.sort();
+    let mut predecessors = predecessors.into_iter();
+    let mut placements = Vec::with_capacity(missing_replicas);
+    for _ in 0..missing_replicas {
+        let Some(machine_id) = predecessors
+            .next()
+            .or_else(|| placement_load.least_loaded(eligible_machines))
+        else {
+            break;
+        };
+        placement_load.record(&machine_id);
+        placements.push(machine_id);
+    }
+    placements
+}
+
 pub(super) fn replicated_slot(number: u16) -> ReplicaSlot {
     ReplicaSlot::Replicated {
         number: ReplicatedReplicaSlot::try_new(number).expect("planner emits positive slots"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ids::{NamespaceRevisionEntryId, OperationId, StepId};
+    use crate::machine::runtime::{
+        ContainerHealth, ContainerRuntimeState, MachineContainerObservationSnapshot,
+        ManagedContainerIdentity, ManagedContainerKind, ManagedContainerObservation,
+    };
+    use std::collections::{BTreeMap, BTreeSet};
+
+    fn machine(name: &str) -> MachineId {
+        MachineId::try_new(name).expect("machine id")
+    }
+
+    fn identity(service: &str) -> ManagedContainerIdentity {
+        ManagedContainerIdentity {
+            namespace_id: NamespaceId::try_new("default").expect("namespace id"),
+            service_id: ServiceId::try_new(service).expect("service id"),
+            namespace_revision_entry_id: NamespaceRevisionEntryId::try_new("entry_1")
+                .expect("entry id"),
+            operation_id: OperationId::try_new("op_1").expect("operation id"),
+            step_id: StepId::try_new("step_1").expect("step id"),
+            kind: ManagedContainerKind::Service,
+        }
+    }
+
+    fn running() -> ContainerRuntimeState {
+        ContainerRuntimeState::Running {
+            ip: None,
+            health: ContainerHealth::default(),
+            started_at_unix_ms: None,
+        }
+    }
+
+    fn predecessor(machine_name: &str, service: &str) -> ObservedCleanupCandidate {
+        ObservedCleanupCandidate {
+            target: DeployCleanupContainer {
+                machine_id: machine(machine_name),
+                container_id: ContainerId::try_new(format!("ctr_{machine_name}_{service}"))
+                    .expect("container id"),
+                identity: identity(service),
+            },
+            state: running(),
+            named_volume_names: BTreeSet::new(),
+            created_at_unix_seconds: None,
+            observed_image_identity: None,
+        }
+    }
+
+    fn observation(machine_name: &str, service: &str) -> ManagedContainerObservation {
+        ManagedContainerObservation {
+            machine_id: machine(machine_name),
+            container_id: ContainerId::try_new(format!("ctr_{machine_name}_{service}"))
+                .expect("container id"),
+            identity: identity(service),
+            state: running(),
+            health_status: None,
+            resolved_image_identity: None,
+            created_at_unix_seconds: None,
+            named_volume_names: BTreeSet::new(),
+        }
+    }
+
+    #[test]
+    fn single_replica_services_spread_instead_of_stacking_on_the_first_machine() {
+        let eligible = vec![
+            machine("machine_a"),
+            machine("machine_b"),
+            machine("machine_c"),
+        ];
+        let mut load = MachinePlacementLoad::new(BTreeMap::new());
+
+        let placed = (0..6)
+            .map(|_| {
+                let placements = balanced_placements(&eligible, &[], 1, &mut load);
+                let [machine_id] = placements.as_slice() else {
+                    panic!("one replica yields one placement");
+                };
+                machine_id.clone()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            placed,
+            vec![
+                machine("machine_a"),
+                machine("machine_b"),
+                machine("machine_c"),
+                machine("machine_a"),
+                machine("machine_b"),
+                machine("machine_c"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_replica_follows_the_container_it_supersedes() {
+        let eligible = vec![
+            machine("machine_a"),
+            machine("machine_b"),
+            machine("machine_c"),
+        ];
+        // machine_a is the busiest, so balance alone would place elsewhere.
+        let mut load = MachinePlacementLoad::new(BTreeMap::from([(machine("machine_a"), 9)]));
+
+        let placements =
+            balanced_placements(&eligible, &[predecessor("machine_a", "api")], 1, &mut load);
+
+        assert_eq!(placements, vec![machine("machine_a")]);
+    }
+
+    #[test]
+    fn replicas_beyond_their_predecessors_fall_back_to_the_least_loaded_machine() {
+        let eligible = vec![
+            machine("machine_a"),
+            machine("machine_b"),
+            machine("machine_c"),
+        ];
+        let mut load = MachinePlacementLoad::new(BTreeMap::from([
+            (machine("machine_a"), 4),
+            (machine("machine_b"), 1),
+        ]));
+
+        let placements =
+            balanced_placements(&eligible, &[predecessor("machine_a", "api")], 3, &mut load);
+
+        assert_eq!(
+            placements,
+            vec![
+                machine("machine_a"),
+                machine("machine_c"),
+                machine("machine_b")
+            ]
+        );
+    }
+
+    #[test]
+    fn a_predecessor_on_an_ineligible_machine_does_not_hold_a_replica_there() {
+        let eligible = vec![machine("machine_b")];
+        let mut load = MachinePlacementLoad::new(BTreeMap::new());
+
+        let placements = balanced_placements(
+            &eligible,
+            &[predecessor("machine_draining", "api")],
+            1,
+            &mut load,
+        );
+
+        assert_eq!(placements, vec![machine("machine_b")]);
+    }
+
+    #[test]
+    fn placement_load_counts_running_service_containers_across_namespaces() {
+        let snapshots = vec![
+            MachineContainerObservationSnapshot::try_new(
+                machine("machine_a"),
+                [
+                    observation("machine_a", "api"),
+                    observation("machine_a", "web"),
+                ],
+            )
+            .expect("snapshot"),
+            MachineContainerObservationSnapshot::try_new(
+                machine("machine_b"),
+                [observation("machine_b", "api")],
+            )
+            .expect("snapshot"),
+        ];
+
+        let load = observed_placement_load(&snapshots);
+        let eligible = vec![machine("machine_a"), machine("machine_b")];
+
+        assert_eq!(load.least_loaded(&eligible), Some(machine("machine_b")));
     }
 }

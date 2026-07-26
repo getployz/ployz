@@ -533,6 +533,9 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
                     Vec::new(),
                     ployz_core::deploy::DeployPlanningContext {
                         storage_testimony: &std::collections::BTreeMap::new(),
+                        placement_load: &ployz_core::deploy::MachinePlacementLoad::new(
+                            std::collections::BTreeMap::new(),
+                        ),
                     },
                 )
                 .expect("single-machine deploy plan is valid")

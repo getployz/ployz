@@ -94,6 +94,60 @@ impl DeployPlanningInput {
 pub struct DeployPlanningContext<'a> {
     pub storage_testimony:
         &'a std::collections::BTreeMap<MachineId, Option<crate::machine::StorageCapability>>,
+    pub placement_load: &'a MachinePlacementLoad,
+}
+
+/// Service containers placed per machine: seeded from observed reality and
+/// advanced as a plan assigns new containers, so a machine's share is read
+/// from what already runs there rather than from its position in a candidate
+/// list. Placement counts containers alone and never load or capacity, so the
+/// same cluster state always yields the same plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachinePlacementLoad {
+    counts: std::collections::BTreeMap<MachineId, usize>,
+}
+
+impl MachinePlacementLoad {
+    #[must_use]
+    pub const fn new(counts: std::collections::BTreeMap<MachineId, usize>) -> Self {
+        Self { counts }
+    }
+
+    fn record(&mut self, machine_id: &MachineId) {
+        *self.counts.entry(machine_id.clone()).or_insert(0) += 1;
+    }
+
+    /// The candidate carrying the fewest placed containers, breaking ties on
+    /// machine id so a plan does not depend on candidate order.
+    fn least_loaded(&self, candidates: &[MachineId]) -> Option<MachineId> {
+        candidates
+            .iter()
+            .min_by_key(|machine_id| {
+                (
+                    self.counts.get(*machine_id).copied().unwrap_or(0),
+                    *machine_id,
+                )
+            })
+            .cloned()
+    }
+}
+
+/// The placement load a namespace deploy starts from. Running service
+/// containers across every namespace count, because a machine's share of the
+/// cluster is what it is running, not what one namespace put there.
+#[must_use]
+pub fn observed_placement_load(
+    observed_machines: &[crate::machine::runtime::MachineContainerObservationSnapshot],
+) -> MachinePlacementLoad {
+    let mut counts = std::collections::BTreeMap::new();
+    for container in observed_machines
+        .iter()
+        .flat_map(crate::machine::runtime::MachineContainerObservationSnapshot::containers)
+        .filter(|container| container.is_service() && container.state.is_running())
+    {
+        *counts.entry(container.machine_id.clone()).or_insert(0) += 1;
+    }
+    MachinePlacementLoad::new(counts)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -863,10 +917,11 @@ pub fn plan_namespace_deploy(
     let volume_pin_commits = volume_plan.commits().to_vec();
     let volume_ensures = volume_plan.ensures().to_vec();
     let mut cleanup_actions = Vec::new();
+    let mut placement_load = context.placement_load.clone();
     for phase in phases {
         let mut services = Vec::new();
         for input in phase {
-            let plan = plan_deploy_service(target, input, &volume_plan)?;
+            let plan = plan_deploy_service(target, input, &volume_plan, &mut placement_load)?;
             cleanup_actions.extend(plan.cleanup_actions);
             services.push(DeployServicePlan {
                 service_id: plan.service_id,

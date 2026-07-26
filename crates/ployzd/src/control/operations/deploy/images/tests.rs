@@ -247,6 +247,7 @@ fn pushed_platforms_are_validated_across_all_phases_before_execution() {
         services: vec![service.service.clone()],
     };
     let command = DeployExecutionCommand {
+        placement_load: ployz_core::deploy::MachinePlacementLoad::new(BTreeMap::new()),
         operation_id: OperationId::try_new("op_platform_validation").expect("operation id"),
         request,
         environment_revision_key: {

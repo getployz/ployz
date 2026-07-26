@@ -461,6 +461,7 @@ pub(crate) fn deploy_plan(
         command.namespace_cleanup_candidates().to_vec(),
         DeployPlanningContext {
             storage_testimony: &command.storage_testimony,
+            placement_load: &command.placement_load,
         },
     )
     .map(|plan| {

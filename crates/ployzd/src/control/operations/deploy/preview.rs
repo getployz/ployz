@@ -199,6 +199,7 @@ fn preview_plan(
         command.namespace_cleanup_candidates.clone(),
         DeployPlanningContext {
             storage_testimony: &command.storage_testimony,
+            placement_load: &command.placement_load,
         },
     )
     .map_err(|error| preview_plan_error(error, command))

@@ -37,6 +37,7 @@ pub(super) struct DeployPreviewPlanningCommand {
     pub(super) namespace_cleanup_candidates: Vec<DeployCleanupContainer>,
     pub(super) storage_testimony:
         BTreeMap<MachineId, Option<ployz_core::machine::StorageCapability>>,
+    pub(super) placement_load: ployz_core::deploy::MachinePlacementLoad,
     pub(super) machine_platforms: BTreeMap<MachineId, OciPlatform>,
     pub(super) seed_clock_testimony: BTreeMap<MachineId, MachineClockTestimony>,
     pub(super) unusable_machines: Vec<ployz_core::operation::UnusableMachine>,
@@ -55,6 +56,7 @@ pub struct DeployExecutionCommand {
     pub(super) namespace_cleanup_candidates: Vec<DeployCleanupContainer>,
     pub(super) storage_testimony:
         BTreeMap<MachineId, Option<ployz_core::machine::StorageCapability>>,
+    pub(super) placement_load: ployz_core::deploy::MachinePlacementLoad,
     pub(super) machine_platforms: BTreeMap<MachineId, OciPlatform>,
     pub(super) seed_clock_testimony: BTreeMap<MachineId, MachineClockTestimony>,
     pub(super) dataplane_members: Vec<DataplaneMember>,

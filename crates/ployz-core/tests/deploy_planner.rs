@@ -809,6 +809,7 @@ fn namespace_planner_rejects_a_service_id_outside_the_validated_request() {
             Vec::new(),
             ployz_core::deploy::DeployPlanningContext {
                 storage_testimony: &BTreeMap::new(),
+                placement_load: &ployz_core::deploy::MachinePlacementLoad::new(BTreeMap::new()),
             },
         ),
         Err(DeployPlanError::UnknownService {
@@ -841,6 +842,7 @@ fn namespace_planner_rejects_a_mode_and_placement_mismatch() {
             Vec::new(),
             ployz_core::deploy::DeployPlanningContext {
                 storage_testimony: &BTreeMap::new(),
+                placement_load: &ployz_core::deploy::MachinePlacementLoad::new(BTreeMap::new()),
             },
         ),
         Err(DeployPlanError::PlacementModeMismatch {
@@ -2071,6 +2073,7 @@ fn plan_inputs(
         cleanup,
         ployz_core::deploy::DeployPlanningContext {
             storage_testimony: &storage_testimony,
+            placement_load: &ployz_core::deploy::MachinePlacementLoad::new(BTreeMap::new()),
         },
     )?;
     Ok(placement.with_revision(namespace_revision_id))
