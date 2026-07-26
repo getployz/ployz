@@ -77,7 +77,7 @@ impl MachineStoragePrepareOperation {
             .await
     }
 
-    #[tracing::instrument(name = "operation", skip_all, fields(kind = "machine_storage_prepare", operation_id = accepted.operation_id.as_str()))]
+    #[tracing::instrument(name = "operation", level = "error", skip_all, fields(kind = "machine_storage_prepare", operation_id = accepted.operation_id.as_str()))]
     async fn run(self, accepted: AcceptedMachineStoragePrepareSubmission) {
         self.clone().run_inner(accepted).await;
     }

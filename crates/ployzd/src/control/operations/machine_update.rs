@@ -53,7 +53,7 @@ impl MachineUpdateOperation {
         super::finish_rejected_task_admission(&self.controllers, &operation_id, admission).await;
     }
 
-    #[tracing::instrument(name = "operation", skip_all, fields(kind = "machine_update", operation_id = accepted.operation_id.as_str()))]
+    #[tracing::instrument(name = "operation", level = "error", skip_all, fields(kind = "machine_update", operation_id = accepted.operation_id.as_str()))]
     pub async fn run(self, accepted: AcceptedMachineUpdateSubmission) {
         self.clone().run_inner(accepted).await;
     }

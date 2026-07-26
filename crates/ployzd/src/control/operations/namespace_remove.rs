@@ -68,7 +68,7 @@ impl NamespaceRemoveOperation {
         .await;
     }
 
-    #[tracing::instrument(name = "operation", skip_all, fields(kind = "namespace_remove", operation_id = accepted.operation_id.as_str()))]
+    #[tracing::instrument(name = "operation", level = "error", skip_all, fields(kind = "namespace_remove", operation_id = accepted.operation_id.as_str()))]
     pub async fn run(self, accepted: AcceptedNamespaceRemoveSubmission) {
         let operation_id = accepted.operation_id.clone();
         let namespace_id = accepted.namespace_id.clone();

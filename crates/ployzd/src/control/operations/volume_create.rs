@@ -113,7 +113,7 @@ impl VolumeCreateOperation {
         .await;
     }
 
-    #[tracing::instrument(name = "operation", skip_all, fields(kind = "volume_create", operation_id = accepted.request.operation_id.as_str()))]
+    #[tracing::instrument(name = "operation", level = "error", skip_all, fields(kind = "volume_create", operation_id = accepted.request.operation_id.as_str()))]
     async fn run(self, accepted: AcceptedVolumeCreateSubmission) {
         let namespace_id = accepted.request.namespace_id.clone();
         let operation_id = accepted.request.operation_id.clone();

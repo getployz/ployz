@@ -17,6 +17,7 @@ use ployz_core::machine::runtime::{
 use ployz_core::network::internal_dns::{
     InternalDnsFactGeneration, InternalDnsFactWatermark, InternalDnsResolverCacheIncarnation,
 };
+use tracing::Instrument;
 
 use ployz_nats::subjects::{gateway_status_scope, machine_facts_scope};
 use std::collections::BTreeMap;
@@ -277,9 +278,10 @@ pub async fn start_role_testimony_cache(
         })?;
     let cache = RoleTestimonyCache::default();
     let task_cache = cache.clone();
-    let task = tokio::spawn(async move {
-        consume_role_testimony(task_cache, machine_facts, gateway_statuses).await;
-    });
+    let task = tokio::spawn(
+        consume_role_testimony(task_cache, machine_facts, gateway_statuses)
+            .instrument(tracing::Span::current()),
+    );
 
     Ok(RunningRoleTestimonyCache { cache, task })
 }

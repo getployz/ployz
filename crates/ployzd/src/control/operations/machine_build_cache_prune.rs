@@ -57,7 +57,7 @@ impl MachineBuildCachePruneOperation {
         super::finish_rejected_task_admission(&self.controllers, &operation_id, admission).await;
     }
 
-    #[tracing::instrument(name = "operation", skip_all, fields(kind = "machine_build_cache_prune", operation_id = accepted.operation_id.as_str()))]
+    #[tracing::instrument(name = "operation", level = "error", skip_all, fields(kind = "machine_build_cache_prune", operation_id = accepted.operation_id.as_str()))]
     async fn run(self, accepted: AcceptedMachineBuildCachePruneSubmission) {
         let operation_id = accepted.operation_id;
         let machine_id = accepted.machine_id;

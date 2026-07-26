@@ -50,7 +50,7 @@ impl CredentialGrantOperation {
         .await;
     }
 
-    #[tracing::instrument(name = "operation", skip_all, fields(kind = "credential_grant", operation_id = accepted.operation_id.as_str()))]
+    #[tracing::instrument(name = "operation", level = "error", skip_all, fields(kind = "credential_grant", operation_id = accepted.operation_id.as_str()))]
     async fn run(self, accepted: AcceptedCredentialGrantSubmission) {
         let operation_id = accepted.operation_id;
         let result = match accepted.action {
