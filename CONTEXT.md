@@ -613,8 +613,8 @@ An explicit operation that authorizes Cloud as an operator client for an existin
 _Avoid_: Machine bootstrap, Cloud migration, tunnel setup
 
 **Substrate Update**:
-An explicit operation that changes already-installed non-keeper Ployz substrate on one machine to one requested Ployz version. It covers Ployz-managed role processes, supervisor units, local role configuration, and substrate artifacts, not workload service containers or keeper.
-_Avoid_: Update, upgrade, rollout, in-place update
+The change of one machine's substrate component versions, carried as a new Machine Assignment generation rather than as an operation. It covers Ployz-managed role processes, supervisor units, local role configuration, and substrate artifacts, including keeper itself, and never workload service containers. There is no cluster-level version record: a joining machine inherits the Control machine's Ployz version, and "the cluster is on this version" is a report computed from assignments rather than a stored decision anyone made.
+_Avoid_: Update, upgrade, rollout, in-place update, update operation, cluster version setting, update channel
 
 **Substrate Uninstall**:
 An explicit local action that removes Ployz substrate and machine-local Ployz material from one machine. It may be forced despite Accepted Machine Evidence, but it does not remove cluster truth, delete user workloads, Docker images, Docker volumes, service containers, arbitrary networks, or runtime data by default. If no Accepted Machine Evidence and no removable Ployz substrate or material remain, it is an idempotent no-op success. Its force flag is local only and is not a removal variant: a Machine Removal that reached the machine clears the Accepted Machine Evidence that would otherwise require it, so forcing means the cluster moved on without the machine hearing.
@@ -625,8 +625,8 @@ A Ployz-managed machine component that keeper can install or update. Recognized 
 _Avoid_: Package, role, binary, per-role versioning, keeper update as its own operation
 
 **Activation Strategy**:
-The component-specific way keeper moves a staged substrate component version into use. Activation strategies include bounded restart, graceful gateway upgrade, graceful DNS upgrade, NATS server lame-duck restart, keeper self-update handoff, and eBPF link replacement.
-_Avoid_: Restart policy, rollout mode, deploy strategy
+The component-specific way keeper moves a staged substrate component version into use. Activation strategies include bounded restart, graceful gateway upgrade, graceful DNS upgrade, NATS server lame-duck restart, keeper self-update handoff, and eBPF link replacement. Activation is a switch mechanic, not a health gate: success is the strategy's own completion, and a machine that is mid-activation is already excluded from placement by ordinary testimony, so no probe, threshold, or readiness contract belongs here. Failed activation stops that component, records typed per-component status against the assignment generation, and leaves the staged version staged; only Keeper Handoff reverts, because losing remote management of a host is the one failure no primitive can recover from.
+_Avoid_: Restart policy, rollout mode, deploy strategy, readiness probe, health threshold, activation rollback
 
 **Substrate Step**:
 An idempotent machine-local check and apply action for machine bootstrap or substrate update. A substrate step reports whether local substrate is already in sync before it mutates the machine.
@@ -643,6 +643,10 @@ _Avoid_: Self-restart, keeper rollout, bootstrap restart, keeper update as its o
 **Release Source**:
 A machine-local configuration that lets keeper resolve an explicitly requested Ployz substrate version into artifact metadata. It is not authority to choose the latest version.
 _Avoid_: Update channel, latest feed, package repository
+
+**Unsupported Endpoint Answer**:
+A control-plane responder's typed reply that it does not implement the endpoint it was asked for. Control-plane contracts are additive-only within a major version, so a cluster running mixed versions is legal for as long as an operator leaves it that way and a responder declines instead of staying quiet. It exists to protect what silence already means: the machines an intent-driven gather expected and did not hear from. A version gate in assignment compilation or a keeper self-check at activation are the rejected alternatives.
+_Avoid_: Version negotiation, capability handshake, protocol version check, version skew window
 
 **Machine Assignment**:
 Control's recorded decision about what belongs on one machine: which roles it runs, the Ployz version, foreign component versions, and typed host features such as pooled storage or reserved capacity. It is one record under one monotonic generation, written as a validated intent write rather than an operation, and it carries its own provenance. Keeper's authority is exactly this record.
