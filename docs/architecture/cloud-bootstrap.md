@@ -139,7 +139,7 @@ substrate uninstall has otherwise completed. `sudo ployz host uninstall`
 requires interactive confirmation by default; `--yes` is the scripted bypass.
 By default, uninstall refuses when local evidence says the machine is still an
 accepted cluster member. `--force` overrides that local refusal and removes
-local substrate anyway, but it does not perform Force Removed Machine or mutate
+local substrate anyway, but it does not perform Machine Removal or mutate
 cluster truth. `--force` and `--yes` are independent: automation that wants
 forced local cleanup must pass both. `--yes` only skips waiting for input; it
 does not suppress removal plans, accepted-machine evidence, or warnings.
@@ -150,8 +150,10 @@ local-only escape hatch when cluster removal is impossible.
 When `--force` is used with accepted-machine evidence present, Host Runner prints a
 second warning before confirmation: local substrate removal does not remove the
 machine from cluster truth, and cluster cleanup remains explicit operator work.
-The warning shows `ployz machine remove --force <machine>` as the follow-up
-cluster cleanup command when the user still has an operator context.
+The warning shows `ployz machine remove <machine>` as the follow-up cluster
+cleanup command when the user still has an operator context. Machine Removal
+has no forced variant; it removes an unreachable machine as completely as a
+reachable one.
 With `--force --yes`, Host Runner still prints the evidence and cluster-cleanup
 warning before removing local substrate without prompting.
 The refusal check uses Accepted Machine Evidence: accepted machine id state,

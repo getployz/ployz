@@ -412,6 +412,10 @@ _Avoid_: Backup provider, automatic snapshot schedule, convergence step, replica
 An explicit operation that creates or replaces a provisioned volume's contents from a snapshot. Restore is the one path that turns material from outside the cluster into serving state, so it is always operator-initiated, always records what it replaced, and is never something a reconciler performs. Keeper has no part in it: converging a machine assignment must not read, write, or select volume contents.
 _Avoid_: Workload restore, automatic recovery, rollback, convergence step, Keeper responsibility
 
+**Volume Removal**:
+An explicit operation that destroys a volume and its data. It is the only step of the machine removal journey that acknowledges data loss rather than preventing it, which is why it carries the typed confirmation naming the volume: Rebalance moves a volume to another machine, Machine Removal destroys nothing, and Volume Removal is what the operator reaches for when the data is genuinely being discarded.
+_Avoid_: Detach, unpin, cleanup, machine-removal side effect
+
 **Config**:
 Non-secret material injected into a service container as part of a namespace revision. Changing a config changes the desired service definition that deploy planning compares against runtime state.
 _Avoid_: Runtime setting, secret
@@ -489,8 +493,8 @@ Warning evidence on a machine-add operation when bounded post-bootstrap observat
 _Avoid_: Bootstrap failure, identity rollback, deploy eligibility
 
 **Machine Lifecycle**:
-The durable operator-intent state of a current accepted machine identity. The minimal current lifecycle set is active and draining. Machine lifecycle controls authority and placement policy, while runtime readiness, removal kind, bootstrap failures, and unresolved cleanup come from observations and operation evidence.
-_Avoid_: Runtime health, bootstrap result, every failure mode as lifecycle
+The durable operator-intent state of a current accepted machine identity. The minimal current lifecycle set is active and draining. There is no removed or retired state: Machine Removal deletes the machine's row, and its absence is the signal, since peers and routes derive from the roster. Machine lifecycle controls authority and placement policy, while runtime readiness, bootstrap failures, and unresolved cleanup come from observations and operation evidence.
+_Avoid_: Runtime health, bootstrap result, removed or retired state, every failure mode as lifecycle
 
 **Machine Endpoint Subnet Mismatch**:
 A condition where a machine's local endpoint network uses a CIDR different from the cluster-assigned Machine Endpoint Subnet, or has a local endpoint network before the cluster has assigned one. Ployz must report this as a failure that needs explicit repair; it must not adopt the local subnet automatically. A mismatched machine may report diagnostic observations, but it is not eligible for placement, passive serving, or normal deploy cleanup.
@@ -504,21 +508,25 @@ _Avoid_: Startup repair, implicit network cleanup, automatic adoption
 A diagnostic condition where durable machine records assign the same machine endpoint subnet to more than one machine identity, or otherwise violate endpoint subnet ownership rules. Ployz should report this through diagnostics or core assurance rather than making normal startup scan the whole cluster for impossible allocation states.
 _Avoid_: Startup-wide subnet audit, automatic repair
 
-**Force Removed Machine**:
-A machine identity removed without requiring the machine to participate. Force removal revokes control-plane authority, removes the machine from live dataplane membership, releases current machine state and endpoint subnet, and records any unresolved cleanup as operation evidence; workload recovery remains a separate explicit operation.
-_Avoid_: Separate lifecycle state, machine tombstone, automatic reschedule, implicit recovery
+**Machine Removal**:
+The one explicit operation that ends a machine's cluster membership. It deletes the current machine state, revokes control-plane authority, removes the machine from live dataplane membership, and releases the endpoint subnet. Membership is a durable operator decision held by the core, so removal never requires the machine to participate: a reachable machine is told to release its local material as best-effort cleanup recorded in evidence, and an unreachable one is removed just as completely. There is no forced variant, because a forced and an unforced path would commit identical cluster truth.
+_Avoid_: Force remove, graceful remove, removal kind, separate lifecycle state, machine tombstone, automatic reschedule, implicit recovery
 
-**Graceful Machine Removal**:
-An explicit workload-aware operation that removes a machine from service through planned unplacement, serving exclusion, and local cleanup while the machine can still participate. It is the normal removal path when the machine is reachable and deletes the current machine state after successful removal evidence is recorded.
-_Avoid_: Force remove, silent drain, background reschedule
+**Machine Removal Precondition**:
+A condition Machine Removal refuses on, each naming the command that resolves it. Pinned volumes and running services are resolved by Rebalance, or by Volume Removal when the data is being discarded; an undrained machine is resolved by drain; the Control machine is resolved by promoting another machine first. Removal itself destroys nothing, so it carries no confirmation prompt — every destructive decision has already been made by the command a precondition named. A machine that answers nothing cannot be refused on testimony grounds; its unknown workloads are recorded as typed evidence instead.
+_Avoid_: Force flag, override, generic retry, confirmation on removal
 
 **Machine Removal Evidence**:
-Operation evidence recorded when a machine is removed, including the machine identity, machine name, endpoint subnet, removal kind, affected workloads, cleanup result, credential revocation, and subnet release. Removed machine inspection comes from operation history, not current machine state.
-_Avoid_: Removed machine KV tombstone, hidden audit state
+Operation evidence recorded when a machine is removed, including the machine identity, machine name, endpoint subnet, affected workloads, cleanup result, credential revocation, and subnet release. Removed machine inspection comes from operation history, not current machine state.
+_Avoid_: Removed machine KV tombstone, hidden audit state, removal kind
 
 **Draining Machine**:
-A machine that has been explicitly excluded from new workload placement while existing workloads are moved or removed through separate operations. Draining does not by itself remove existing containers from serving; deploy or recovery operations move serving away deliberately. Draining is durable machine lifecycle state and remains in effect until it is cancelled or the machine is removed.
-_Avoid_: Temporary scheduler hint, daemon-local maintenance flag, serving disable
+A machine that has been explicitly excluded from new workload placement while existing workloads are moved or removed through separate operations. Draining does not by itself remove existing containers from serving; Rebalance and deploy move serving away deliberately. Draining is durable machine lifecycle state and remains in effect until it is cancelled or the machine is removed.
+_Avoid_: Temporary scheduler hint, daemon-local maintenance flag, serving disable, evacuation
+
+**Rebalance**:
+An explicit operation that recomputes placement for all namespaces, or for selected namespaces, from current machine capacity. It is scoped by namespace and never by machine, because placement is decided per deploy from machine bids and no durable record says what runs where. Rebalance is the evacuation half of drain: a draining machine is already excluded from placement candidates, so recomputing moves its services and its volumes elsewhere. Drain does not trigger it — drain means place nothing new here, Rebalance means recompute placement — and it is never a background loop.
+_Avoid_: Autoscaling, scheduler policy, machine evacuation command, drain side effect, background reconciliation
 
 **Drain Cancellation**:
 An explicit operation that returns a draining machine to normal placement eligibility; the canonical operation and command name is resume (`machine resume`). Drain cancellation does not reverse deploys, recreate removed containers, or move workloads back to the machine.
@@ -609,8 +617,8 @@ An explicit operation that changes already-installed non-keeper Ployz substrate 
 _Avoid_: Update, upgrade, rollout, in-place update
 
 **Substrate Uninstall**:
-An explicit local action that removes Ployz substrate and machine-local Ployz material from one machine. It may be forced despite Accepted Machine Evidence, but it does not remove cluster truth, delete user workloads, Docker images, Docker volumes, service containers, arbitrary networks, or runtime data by default. If no Accepted Machine Evidence and no removable Ployz substrate or material remain, it is an idempotent no-op success.
-_Avoid_: Runtime wipe, machine removal, Cloud cleanup, destructive reset, force removed machine
+An explicit local action that removes Ployz substrate and machine-local Ployz material from one machine. It may be forced despite Accepted Machine Evidence, but it does not remove cluster truth, delete user workloads, Docker images, Docker volumes, service containers, arbitrary networks, or runtime data by default. If no Accepted Machine Evidence and no removable Ployz substrate or material remain, it is an idempotent no-op success. Its force flag is local only and is not a removal variant: a Machine Removal that reached the machine clears the Accepted Machine Evidence that would otherwise require it, so forcing means the cluster moved on without the machine hearing.
+_Avoid_: Runtime wipe, machine removal, Cloud cleanup, destructive reset
 
 **Substrate Component**:
 A Ployz-managed machine component that keeper can install or update. Recognized substrate components are the `ployzd` binary, which supplies every role including keeper itself, plus the foreign components NATS server and the eBPF program. Gateway and DNS are `ployzd` roles, not separately versioned components. Keeper's own version is one entry in the machine assignment it converges, so there is no separate keeper update operation.
