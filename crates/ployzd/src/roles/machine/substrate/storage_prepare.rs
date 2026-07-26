@@ -908,9 +908,10 @@ async fn retain_running_after_termination_failure(
     operation_id: &OperationId,
     failure: &StorageEffectFailure,
 ) -> ! {
-    eprintln!(
-        "ployzd storage preparation termination warning: operation_id={} error={failure}; retaining operation ownership and nonterminal evidence",
-        operation_id.as_str(),
+    tracing::error!(
+        operation_id = operation_id.as_str(),
+        error = %failure,
+        "storage preparation terminating; retaining operation ownership and nonterminal evidence"
     );
     std::future::pending::<()>().await;
     unreachable!("pending future cannot complete")

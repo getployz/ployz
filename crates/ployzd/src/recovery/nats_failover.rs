@@ -199,10 +199,11 @@ impl IntentFailoverRun {
             );
             return;
         };
-        eprintln!(
-            "ployzd nats failover warning: phase=reject-stale-intent local_mirror_epoch={} rejected_epoch={}",
-            best.epoch.get(),
-            rejected.epoch.get()
+        tracing::warn!(
+            phase = "reject-stale-intent",
+            local_mirror_epoch = best.epoch.get(),
+            rejected_epoch = rejected.epoch.get(),
+            "rejected stale intent during NATS failover"
         );
         let pool = snapshot_server_pool(&best, &self.seed);
         if pool != self.applied_pool {
@@ -233,9 +234,11 @@ impl IntentFailoverRun {
 
     fn warn(&mut self, phase: &str, error: impl std::fmt::Display) {
         self.consecutive_failures += 1;
-        eprintln!(
-            "ployzd nats failover warning: phase={phase} consecutive_failures={} error={error}",
-            self.consecutive_failures
+        tracing::warn!(
+            phase,
+            consecutive_failures = self.consecutive_failures,
+            error = %error,
+            "NATS failover step failed"
         );
     }
 }

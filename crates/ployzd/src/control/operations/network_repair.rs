@@ -90,6 +90,7 @@ impl NetworkRepairOperation {
         .await;
     }
 
+    #[tracing::instrument(name = "operation", skip_all, fields(kind = "network_repair", operation_id = accepted.operation_id.as_str()))]
     pub async fn run(self, accepted: AcceptedNetworkRepairSubmission) {
         let operation_id = accepted.operation_id;
         if let Err(error) = self
@@ -766,9 +767,11 @@ fn failure_message(message: String) -> FailureMessage {
 }
 
 fn record_warning(operation_id: &OperationId, phase: &str, error: &RecordOperationEventError) {
-    eprintln!(
-        "ployzd network repair warning: phase={phase} operation_id={} error={error}",
-        operation_id.as_str()
+    tracing::warn!(
+        phase,
+        operation_id = operation_id.as_str(),
+        error = %error,
+        "network repair evidence record failed"
     );
 }
 

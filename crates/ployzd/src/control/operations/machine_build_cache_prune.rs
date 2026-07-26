@@ -57,6 +57,7 @@ impl MachineBuildCachePruneOperation {
         super::finish_rejected_task_admission(&self.controllers, &operation_id, admission).await;
     }
 
+    #[tracing::instrument(name = "operation", skip_all, fields(kind = "machine_build_cache_prune", operation_id = accepted.operation_id.as_str()))]
     async fn run(self, accepted: AcceptedMachineBuildCachePruneSubmission) {
         let operation_id = accepted.operation_id;
         let machine_id = accepted.machine_id;
@@ -190,10 +191,18 @@ impl MachineBuildCachePruneOperation {
         operation_id: &OperationId,
         fallback: MachineBuildCachePruneFailure,
     ) -> PruneCompletion {
-        let _ = self
+        if let Err(error) = self
             .updater
             .cancel_build_cache_prune(machine_id, operation_id)
-            .await;
+            .await
+        {
+            tracing::warn!(
+                operation_id = operation_id.as_str(),
+                machine_id = machine_id.as_str(),
+                error = ?error,
+                "build cache prune cancel request failed; reconciling from status"
+            );
+        }
         let deadline = Instant::now() + BUILD_CACHE_PRUNE_FINAL_RECONCILE_TIMEOUT;
         loop {
             let disposition = match tokio::time::timeout_at(
@@ -224,7 +233,7 @@ impl MachineBuildCachePruneOperation {
         machine_id: &MachineId,
         failure: MachineBuildCachePruneFailure,
     ) {
-        let _ = self
+        if let Err(error) = self
             .controllers
             .repository()
             .record_machine_build_cache_prune_transition(
@@ -232,7 +241,15 @@ impl MachineBuildCachePruneOperation {
                 machine_id,
                 MachineBuildCachePruneTransition::Failed { failure },
             )
-            .await;
+            .await
+        {
+            tracing::error!(
+                operation_id = operation_id.as_str(),
+                machine_id = machine_id.as_str(),
+                error = %error,
+                "build cache prune failed and its terminal transition could not be recorded"
+            );
+        }
     }
 }
 

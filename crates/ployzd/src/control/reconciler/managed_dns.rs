@@ -72,7 +72,7 @@ async fn run_loop(
     certificate_wake: tokio::sync::mpsc::Sender<()>,
 ) {
     if let Err(error) = recover_accepted_operations(&repository).await {
-        eprintln!("ployzd managed DNS recovery warning: {error}");
+        tracing::warn!(error = %error, "managed DNS interruption recovery failed");
     }
     let mut consecutive_failures = 0;
     loop {
@@ -80,7 +80,7 @@ async fn run_loop(
             Ok(changed) => changed,
             Err(error) => {
                 consecutive_failures += 1;
-                eprintln!("ployzd managed DNS subscribe warning: {error}");
+                tracing::warn!(error = %error, "managed DNS ingress-endpoint subscription failed");
                 tokio::time::sleep(failure_delay(consecutive_failures)).await;
                 continue;
             }
@@ -90,7 +90,7 @@ async fn run_loop(
             let projection = match projection(&client).await {
                 Ok(projection) => Some(projection),
                 Err(error) => {
-                    eprintln!("ployzd managed DNS projection warning: {error}");
+                    tracing::warn!(error = %error, "managed DNS ingress endpoint projection read failed");
                     None
                 }
             };
@@ -103,7 +103,7 @@ async fn run_loop(
                 match now_seconds() {
                     Ok(now) => now,
                     Err(error) => {
-                        eprintln!("ployzd managed DNS clock warning: {error}");
+                        tracing::warn!(error = %error, "managed DNS clock read failed");
                         tokio::time::sleep(failure_delay(consecutive_failures + 1)).await;
                         continue;
                     }
@@ -114,17 +114,17 @@ async fn run_loop(
             let delay = match outcome {
                 Ok(ManagedDnsTaskOutcome::Failed { operation_id }) => {
                     consecutive_failures += 1;
-                    eprintln!(
-                        "ployzd managed DNS warning: operation {} failed",
-                        operation_id.as_str()
+                    tracing::warn!(
+                        operation_id = operation_id.as_str(),
+                        "managed DNS reconcile operation failed"
                     );
                     failure_delay(consecutive_failures)
                 }
                 Err(error) => {
                     consecutive_failures += 1;
-                    eprintln!("ployzd managed DNS warning: {error}");
+                    tracing::warn!(error = %error, "managed DNS reconcile pass failed");
                     if let Err(recovery_error) = recover_accepted_operations(&repository).await {
-                        eprintln!("ployzd managed DNS recovery warning: {recovery_error}");
+                        tracing::warn!(error = %recovery_error, "managed DNS interruption recovery failed");
                     }
                     failure_delay(consecutive_failures)
                 }

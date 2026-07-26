@@ -1128,9 +1128,12 @@ fn current_unix_seconds() -> u64 {
 
 fn warn_failure(phase: &str, health: &RuntimeProjectionHealth, error: &impl std::fmt::Display) {
     let snapshot = health.snapshot();
-    eprintln!(
-        "ployzd runtime projection warning: phase={phase} projection_failures={} publisher_failures={} error={error}",
-        snapshot.projection.consecutive_failures, snapshot.publisher.consecutive_failures,
+    tracing::warn!(
+        phase,
+        projection_failures = snapshot.projection.consecutive_failures,
+        publisher_failures = snapshot.publisher.consecutive_failures,
+        error = %error,
+        "runtime projection failure"
     );
 }
 

@@ -78,7 +78,7 @@ impl CertificateRenewalTask {
         )
         .await
         {
-            eprintln!("ployzd certificate recovery warning: {error}");
+            tracing::warn!(error = %error, "certificate interruption recovery failed");
             record_renewal_attempt(&health, &Err(error));
         }
         let mut intent_changes = match tokio::time::timeout(
@@ -89,11 +89,11 @@ impl CertificateRenewalTask {
         {
             Ok(Ok(changes)) => Some(changes),
             Ok(Err(error)) => {
-                eprintln!("ployzd certificate intent subscription warning: {error}");
+                tracing::warn!(error = %error, "certificate intent subscription failed");
                 None
             }
             Err(_) => {
-                eprintln!("ployzd certificate intent subscription warning: subscribe timed out");
+                tracing::warn!("certificate intent subscription timed out");
                 None
             }
         };
@@ -109,7 +109,7 @@ impl CertificateRenewalTask {
             )
             .await;
             if let Err(error) = &outcome {
-                eprintln!("ployzd certificate renewal warning: {error}");
+                tracing::warn!(error = %error, "certificate renewal pass failed");
             }
             let delay = record_renewal_attempt(&health, &outcome);
             tokio::select! {
@@ -150,7 +150,7 @@ async fn wait_for_intent_change(
             Ok(Err(error)) => error.to_string(),
             Err(_) => "subscribe timed out".to_owned(),
         };
-        eprintln!("ployzd certificate intent subscription warning: {message}");
+        tracing::warn!(error = %message, "certificate intent resubscription failed");
         tokio::time::sleep(failure_delay(consecutive_failures)).await;
         consecutive_failures = consecutive_failures.saturating_add(1);
     }
@@ -250,11 +250,8 @@ async fn run_certificate_work(
             });
             if !already_active {
                 attempted += 1;
-                if manager
-                    .install_ployz_wildcard(bundle, targets)
-                    .await
-                    .is_err()
-                {
+                if let Err(error) = manager.install_ployz_wildcard(bundle, targets).await {
+                    tracing::warn!(error = ?error, "ployz wildcard certificate install failed");
                     failed += 1;
                 }
             }
@@ -267,7 +264,8 @@ async fn run_certificate_work(
             && matches!(certificate.owner, CertificateOwner::RouteBinding { .. })
         {
             attempted += 1;
-            if manager.renew(certificate, targets).await.is_err() {
+            if let Err(error) = manager.renew(certificate, targets).await {
+                tracing::warn!(error = ?error, "certificate renewal failed");
                 failed += 1;
             }
         }
@@ -309,11 +307,8 @@ async fn run_certificate_work(
             continue;
         };
         attempted += 1;
-        if manager
-            .synchronize(certificate, &deficient_targets)
-            .await
-            .is_err()
-        {
+        if let Err(error) = manager.synchronize(certificate, &deficient_targets).await {
+            tracing::warn!(error = ?error, "gateway certificate artifact synchronization failed");
             failed += 1;
         }
     }

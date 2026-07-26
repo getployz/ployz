@@ -135,9 +135,10 @@ impl BuildOperationDriver {
                     )
                     .await
                 {
-                    eprintln!(
-                        "build {} cancellation after rejected task admission could not be recorded: {record_error}",
-                        operation_id.as_str()
+                    tracing::error!(
+                        operation_id = operation_id.as_str(),
+                        error = %record_error,
+                        "build cancellation after rejected task admission could not be recorded"
                     );
                 }
             }
@@ -235,6 +236,7 @@ impl BuildOperationDriver {
         })
     }
 
+    #[tracing::instrument(name = "operation", skip_all, fields(kind = "build", operation_id = accepted.submission.operation_id.as_str()))]
     async fn run(self, accepted: AcceptedBuildExecution) {
         let id = accepted.submission.operation_id.clone();
         let result = self.run_inner(&accepted).await;

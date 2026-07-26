@@ -211,7 +211,7 @@ async fn run_projection_loop(
         match runtime.refresh().await {
             Ok(_) => runtime.health.record_success(),
             Err(error) => {
-                eprintln!("ployzd ingress endpoint projection warning: {error}");
+                tracing::warn!(error = %error, "ingress endpoint projection refresh failed");
                 runtime.health.record_failure(&error);
             }
         }

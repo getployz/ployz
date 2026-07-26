@@ -300,9 +300,11 @@ fn warn_publisher_failure(
     error: impl std::fmt::Display,
 ) {
     *consecutive_failures += 1;
-    eprintln!(
-        "ployzd intent publisher warning: phase={phase} consecutive_failures={} error={error}",
-        *consecutive_failures
+    tracing::warn!(
+        phase,
+        consecutive_failures = *consecutive_failures,
+        error = %error,
+        "intent publisher failure"
     );
 }
 

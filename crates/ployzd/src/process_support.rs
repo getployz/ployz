@@ -22,9 +22,10 @@ pub async fn bounded_role_shutdown(
             for handle in abort_handles {
                 handle.abort();
             }
-            eprintln!(
-                "ployzd {role} shutdown warning: cleanup exceeded {}s; forcing remaining tasks",
-                deadline.as_secs()
+            tracing::warn!(
+                role,
+                deadline_seconds = deadline.as_secs(),
+                "shutdown cleanup exceeded its deadline; forcing remaining tasks"
             );
             Ok(())
         }

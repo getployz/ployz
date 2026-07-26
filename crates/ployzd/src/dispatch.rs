@@ -1,5 +1,7 @@
 //! Dispatch for configured daemon role processes.
 
+use tracing::Instrument;
+
 use crate::config::{DaemonProcessConfig, DaemonProcessConfigInner};
 use crate::control::process::{ControlProcessError, run_control_until_shutdown};
 use crate::roles::dns::process::{DnsProcessError, run_dns_until_shutdown};
@@ -11,15 +13,19 @@ pub async fn run_daemon_process_until_shutdown(
 ) -> Result<(), DaemonError> {
     match config.inner() {
         DaemonProcessConfigInner::Control(config) => run_control_until_shutdown(config)
+            .instrument(tracing::info_span!("role", process = "control"))
             .await
             .map_err(|error| DaemonError(DaemonErrorKind::Control(error))),
         DaemonProcessConfigInner::Machine(config) => run_machine_until_shutdown(config)
+            .instrument(tracing::info_span!("role", process = "machine"))
             .await
             .map_err(|error| DaemonError(DaemonErrorKind::Machine(error))),
         DaemonProcessConfigInner::Gateway(config) => run_gateway_until_shutdown(config)
+            .instrument(tracing::info_span!("role", process = "gateway"))
             .await
             .map_err(|error| DaemonError(DaemonErrorKind::Gateway(error))),
         DaemonProcessConfigInner::Dns(config) => run_dns_until_shutdown(config)
+            .instrument(tracing::info_span!("role", process = "dns"))
             .await
             .map_err(|error| DaemonError(DaemonErrorKind::Dns(error))),
     }

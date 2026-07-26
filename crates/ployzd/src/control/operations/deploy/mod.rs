@@ -385,13 +385,19 @@ where
     unpublish_omitted_serving_target_entries(command, &mut *ports.namespace_state)
         .await
         .map_err(|source| run.fail(source))?;
-    if !plan.cleanup_actions.is_empty() {
-        let _ = record_running_stage(
+    if !plan.cleanup_actions.is_empty()
+        && let Err(error) = record_running_stage(
             command,
             &mut *ports.recorder,
             DeployRunningStage::RemovingSupersededContainers,
         )
-        .await;
+        .await
+    {
+        tracing::warn!(
+            operation_id = command.operation_id().as_str(),
+            error = %error,
+            "cleanup running-stage evidence could not be recorded"
+        );
     }
     let (cleanup, image_cleanup) = images::execute_cleanup_actions(
         &command.operation_id,

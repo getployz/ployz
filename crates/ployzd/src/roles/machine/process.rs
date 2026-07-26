@@ -202,8 +202,9 @@ pub async fn start_machine_process(
             )
         }
         Err(error) => {
-            eprintln!(
-                "ployzd machine image service unavailable; facts and container RPCs remain active: {error}"
+            tracing::warn!(
+                error = %error,
+                "machine image service unavailable; facts and container RPCs remain active"
             );
             (None, None)
         }
@@ -374,8 +375,9 @@ fn build_runtime_after_recovery(
     match recovery {
         Ok(()) => Some(runtime),
         Err(error) => {
-            eprintln!(
-                "ployzd machine build runtime unavailable; build RPCs fail closed while other machine testimony remains active: {error}"
+            tracing::warn!(
+                error = %error,
+                "machine build runtime unavailable; build RPCs fail closed while other machine testimony remains active"
             );
             None
         }

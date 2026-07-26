@@ -399,8 +399,11 @@ pub(super) fn spawn_internal_resolver(
                 Err(error) => {
                     health.record_bind_failure();
                     if diagnostics.should_report(&error, tokio::time::Instant::now()) {
-                        eprintln!(
-                            "ployzd internal DNS warning: phase=bind address={bind} error={error}"
+                        tracing::warn!(
+                            phase = "bind",
+                            address = %bind,
+                            error = %error,
+                            "internal DNS bind failed"
                         );
                     }
                     tokio::select! {
@@ -421,13 +424,15 @@ pub(super) fn spawn_internal_resolver(
                     let (length, peer) = match received {
                         Ok(received) => received,
                         Err(error) => {
-                            eprintln!("ployzd internal DNS warning: phase=receive error={error}");
+                            tracing::warn!(phase = "receive", error = %error, "internal DNS receive failed");
                             continue;
                         }
                     };
                     let Some(request) = packet.get(..length) else {
-                        eprintln!(
-                            "ployzd internal DNS warning: phase=receive invalid_length={length}"
+                        tracing::warn!(
+                            phase = "receive",
+                            invalid_length = length,
+                            "internal DNS received a packet with an invalid length"
                         );
                         continue;
                     };
@@ -441,8 +446,11 @@ pub(super) fn spawn_internal_resolver(
                             return;
                         };
                         if let Err(error) = response_socket.send_to(&response, peer).await {
-                            eprintln!(
-                                "ployzd internal DNS warning: phase=respond peer={peer} error={error}"
+                            tracing::warn!(
+                                phase = "respond",
+                                peer = %peer,
+                                error = %error,
+                                "internal DNS response send failed"
                             );
                         }
                     });
@@ -482,8 +490,11 @@ async fn response_for_request(
     match forward_to_upstream(upstream, &packet).await {
         Ok(response) => Some(response),
         Err(error) => {
-            eprintln!(
-                "ployzd internal DNS warning: phase=forward upstream={upstream} error={error}"
+            tracing::warn!(
+                phase = "forward",
+                upstream = %upstream,
+                error = %error,
+                "internal DNS upstream forward failed"
             );
             Some(build_response(&query, DnsRcode::ServFail, &[]))
         }
@@ -531,8 +542,10 @@ fn load_upstream_nameserver(own_bind: IpAddr) -> IpAddr {
         .and_then(|contents| upstream_from_resolv_conf(&contents, own_bind))
         .unwrap_or_else(|| {
             let fallback = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
-            eprintln!(
-                "ployzd internal DNS warning: phase=upstream reason=no-usable-resolv-conf-nameserver upstream={fallback}"
+            tracing::warn!(
+                phase = "upstream",
+                upstream = %fallback,
+                "no usable resolv.conf nameserver; using fallback upstream"
             );
             fallback
         })

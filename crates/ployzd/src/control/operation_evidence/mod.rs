@@ -699,8 +699,16 @@ async fn publish_progress(
     event: OperationEvent,
     status: &OperationStatus,
 ) {
-    let Ok(payload) = serde_json::to_vec(&event) else {
-        return;
+    let payload = match serde_json::to_vec(&event) {
+        Ok(payload) => payload,
+        Err(error) => {
+            tracing::error!(
+                operation_id = event.operation_id().as_str(),
+                error = %error,
+                "operation progress event could not be serialized for publish"
+            );
+            return;
+        }
     };
     let scope = OperationProgressScope::from(status.progress_scope());
     let subject = operation_progress_subject(
@@ -708,7 +716,13 @@ async fn publish_progress(
         event.operation_id(),
         &operation_event_subject_suffix(&event),
     );
-    let _ = client.publish(subject, payload.into()).await;
+    if let Err(error) = client.publish(subject, payload.into()).await {
+        tracing::warn!(
+            operation_id = event.operation_id().as_str(),
+            error = %error,
+            "operation progress publish failed"
+        );
+    }
 }
 
 #[cfg(test)]

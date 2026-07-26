@@ -68,6 +68,7 @@ impl NamespaceRemoveOperation {
         .await;
     }
 
+    #[tracing::instrument(name = "operation", skip_all, fields(kind = "namespace_remove", operation_id = accepted.operation_id.as_str()))]
     pub async fn run(self, accepted: AcceptedNamespaceRemoveSubmission) {
         let operation_id = accepted.operation_id.clone();
         let namespace_id = accepted.namespace_id.clone();
@@ -240,7 +241,7 @@ impl NamespaceRemoveOperation {
                 .await;
                 return;
             }
-            let _ = self
+            if let Err(error) = self
                 .controllers
                 .repository()
                 .record_namespace_remove_container(
@@ -248,7 +249,14 @@ impl NamespaceRemoveOperation {
                     target.machine_id,
                     target.container_id,
                 )
-                .await;
+                .await
+            {
+                tracing::warn!(
+                    operation_id = accepted.operation_id.as_str(),
+                    error = %error,
+                    "namespace remove container evidence could not be recorded"
+                );
+            }
         }
 
         self.record_terminal(&accepted.operation_id, NamespaceRemoveTransition::Completed)
@@ -268,11 +276,18 @@ impl NamespaceRemoveOperation {
                 .await
                 .map_err(|error| error.to_string())?;
             self.publish_intent_changed().await;
-            let _ = self
+            if let Err(error) = self
                 .controllers
                 .repository()
                 .record_namespace_remove_route_binding(operation_id, target)
-                .await;
+                .await
+            {
+                tracing::warn!(
+                    operation_id = operation_id.as_str(),
+                    error = %error,
+                    "namespace remove route-binding evidence could not be recorded"
+                );
+            }
         }
         let _ = namespace_id;
         Ok(())
@@ -294,7 +309,9 @@ impl NamespaceRemoveOperation {
     }
 
     async fn publish_intent_changed(&self) {
-        let _ = self.client.publish(INTENT_CHANGED, Vec::new().into()).await;
+        if let Err(error) = self.client.publish(INTENT_CHANGED, Vec::new().into()).await {
+            tracing::warn!(error = %error, "intent-changed publish failed during namespace remove");
+        }
     }
 
     async fn record_running(
@@ -322,11 +339,18 @@ impl NamespaceRemoveOperation {
         operation_id: &OperationId,
         transition: NamespaceRemoveTransition,
     ) {
-        let _ = self
+        if let Err(error) = self
             .controllers
             .repository()
             .record_namespace_remove_transition(operation_id, transition)
-            .await;
+            .await
+        {
+            tracing::error!(
+                operation_id = operation_id.as_str(),
+                error = %error,
+                "namespace remove terminal transition could not be recorded"
+            );
+        }
     }
 }
 
