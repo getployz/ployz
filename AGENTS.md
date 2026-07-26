@@ -48,6 +48,17 @@ one host toward its current machine assignment. That is enforcement of a
 decision already recorded by an operator, never new cluster truth, and its
 authority is exactly the assignment.
 
+A multi-step journey is a composition of primitives, never a command that
+fuses them. Each primitive keeps one meaning, and each refusal names the
+command that resolves it, so the refusal is the seam where one primitive hands
+off to the next. Machine removal is the worked example: drain excludes,
+rebalance moves, volume removal destroys, and machine remove deletes the row.
+Two consequences bind everywhere. A refusal never performs work; it names the
+command that does. And no operation gets a `--force` variant whose forced and
+unforced paths commit identical truth, because that flag records only that the
+operator was willing to type it twice — the generic misleading verb this rule
+exists to prevent.
+
 ## Architecture
 
 Use NATS as the control-plane backplane:
