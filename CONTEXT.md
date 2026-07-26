@@ -405,16 +405,28 @@ A Volume whose deploy declaration includes a maximum size and asks Ployz to prov
 _Avoid_: Managed Volume, ZFS Volume, declared Volume, bounded Volume
 
 **Volume Snapshot**:
-An explicit bounded operation that captures one provisioned volume's contents at a point in time, and the evidence it records. A snapshot is taken by the machine that owns the volume, is named and inspectable, and never expires or is pruned by a background loop. Copying a snapshot off its machine is a separate step with its own destination; that destination is a typed target such as another machine or an object-storage location, never a provider abstraction.
-_Avoid_: Backup provider, automatic snapshot schedule, convergence step, replication, silent retention policy
+A point-in-time capture of one provisioned volume's contents, taken by the machine that owns the volume. Taking one is bounded, local, and atomic, so it is a validated write that returns its result synchronously rather than an operation. A snapshot is a machine-owned fact and never cluster truth: it is listed by testimony at the point of use, is never recorded in intent, is never pruned by a background loop, and dies with the dataset it describes and with the machine that holds it. Because it is not intent, it cannot constrain placement.
+_Avoid_: Backup provider, automatic snapshot schedule, convergence step, replication, silent retention policy, snapshot registry
+
+**Snapshot Destination**:
+A configured location a snapshot is copied to so the data outlives its machine. The destination is a durable operator decision and lives in intent; the snapshots sitting at it are not, and are enumerated by asking the destination at the point of use, so there is no second copy of the destination's contents to drift. The typed target is object storage, which R2, B2, MinIO, and S3 all speak, so an enum over vendors would be indirection rather than an adapter. Another machine in the same cluster is deliberately excluded until capacity accounting knows about reserved pool space, because a machine holding copies keeps bidding on room already spoken for.
+_Avoid_: Provider abstraction, backup catalog in the core, peer replica, retention policy
 
 **Volume Restore**:
-An explicit operation that creates or replaces a provisioned volume's contents from a snapshot. Restore is the one path that turns material from outside the cluster into serving state, so it is always operator-initiated, always records what it replaced, and is never something a reconciler performs. Keeper has no part in it: converging a machine assignment must not read, write, or select volume contents.
-_Avoid_: Workload restore, automatic recovery, rollback, convergence step, Keeper responsibility
+An explicit operation that creates or replaces a provisioned volume's contents from a snapshot. Restore is the one path that turns material from outside the cluster into serving state, so it is always operator-initiated, always records what it replaced, and is never something a reconciler performs. It refuses while any service references the volume and names the command that stops them, because replacing a dataset under a running workload is corruption rather than recovery. Keeper has no part in it: converging a machine assignment must not read, write, or select volume contents.
+_Avoid_: Workload restore, automatic recovery, rollback, convergence step, Keeper responsibility, stop-and-restart side effect
+
+**Volume Move**:
+An explicit operation that relocates one provisioned volume and every service container that mounts it from one machine to another. Volume and containers move together because a container mounting a local dataset cannot be anywhere but the machine holding it. The copy is incremental: a full send while the service is still serving, then deltas, then a cutover proportional to the last delta rather than to the size of the volume. Everything up to and including confirmation of the final delta is free to abandon, because both copies are still identical and the source is still authoritative; the first write on the destination is what makes it irreversible. Reclaiming the source sits below that line, so a source that goes silent after cutover cannot fail the move.
+_Avoid_: Live migration, rebalance side effect, drain side effect, snapshot plus restore, two authoritative copies
 
 **Volume Removal**:
-An explicit operation that destroys a volume and its data. It is the only step of the machine removal journey that acknowledges data loss rather than preventing it, which is why it carries the typed confirmation naming the volume: Rebalance moves a volume to another machine, Machine Removal destroys nothing, and Volume Removal is what the operator reaches for when the data is genuinely being discarded.
-_Avoid_: Detach, unpin, cleanup, machine-removal side effect
+An explicit operation that destroys a volume and its data. It is the only step of the machine removal journey that acknowledges data loss rather than preventing it, which is why it carries the typed confirmation naming the volume: Volume Move relocates a volume, Machine Removal destroys nothing, and Volume Removal is what the operator reaches for when the data is genuinely being discarded. Against a Lost Machine it completes without reaching the host, removing the pin and recording typed evidence that names the assertion it acted on, because the operator has already stated the fact the cluster cannot observe.
+_Avoid_: Detach, unpin, cleanup, machine-removal side effect, per-volume force flag
+
+**Orphan Dataset**:
+A provisioned dataset present on a machine that no volume pin names. Machines report their own datasets as facts and the core diffs them against intent, so an orphan is derived exactly as a stranded volume is and in the opposite direction. It arises when a Lost Machine's pin is removed without reaching the host, when a Volume Move fails to reclaim its source, and when a rehomed host carries datasets from a previous cluster. Naming one is reporting; removing one stays an explicit operator action.
+_Avoid_: Automatic reclamation, garbage collection, convergence cleanup, untracked-volume adoption
 
 **Config**:
 Non-secret material injected into a service container as part of a namespace revision. Changing a config changes the desired service definition that deploy planning compares against runtime state.
@@ -493,8 +505,12 @@ Warning evidence on a machine-add operation when bounded post-bootstrap observat
 _Avoid_: Bootstrap failure, identity rollback, deploy eligibility
 
 **Machine Lifecycle**:
-The durable operator-intent state of a current accepted machine identity. The minimal current lifecycle set is active and draining. There is no removed or retired state: Machine Removal deletes the machine's row, and its absence is the signal, since peers and routes derive from the roster. Machine lifecycle controls authority and placement policy, while runtime readiness, bootstrap failures, and unresolved cleanup come from observations and operation evidence.
+The durable operator-intent state of a current accepted machine identity. The minimal current lifecycle set is active, draining, and lost. There is no removed or retired state: Machine Removal deletes the machine's row, and its absence is the signal, since peers and routes derive from the roster. Lost is not an exception to that rule, because it is an operator assertion made before removal rather than a record kept after it. Machine lifecycle controls authority and placement policy, while runtime readiness, bootstrap failures, and unresolved cleanup come from observations and operation evidence.
 _Avoid_: Runtime health, bootstrap result, removed or retired state, every failure mode as lifecycle
+
+**Lost Machine**:
+A machine an operator has explicitly declared will not return. It is an assertion about reality the cluster cannot make for itself, because a rebooting host and a destroyed one produce the same silence. It is made once against the machine rather than restated against each thing pinned to it, and it is recorded, so a machine that answers after being declared lost is a visible contradiction rather than a quiet one. It is a precondition for removal, never a result of it, and it authorizes no destruction by itself.
+_Avoid_: Removed or retired state, tombstone, inferred from silence, heartbeat timeout, per-volume force flag
 
 **Machine Endpoint Subnet Mismatch**:
 A condition where a machine's local endpoint network uses a CIDR different from the cluster-assigned Machine Endpoint Subnet, or has a local endpoint network before the cluster has assigned one. Ployz must report this as a failure that needs explicit repair; it must not adopt the local subnet automatically. A mismatched machine may report diagnostic observations, but it is not eligible for placement, passive serving, or normal deploy cleanup.
@@ -513,7 +529,7 @@ The one explicit operation that ends a machine's cluster membership. It deletes 
 _Avoid_: Force remove, graceful remove, removal kind, separate lifecycle state, machine tombstone, automatic reschedule, implicit recovery
 
 **Machine Removal Precondition**:
-A condition Machine Removal refuses on, each naming the command that resolves it. Pinned volumes and running services are resolved by Rebalance, or by Volume Removal when the data is being discarded; an undrained machine is resolved by drain; the Control machine is resolved by promoting another machine first. Removal itself destroys nothing, so it carries no confirmation prompt — every destructive decision has already been made by the command a precondition named. A machine that answers nothing cannot be refused on testimony grounds; its unknown workloads are recorded as typed evidence instead.
+A condition Machine Removal refuses on, each naming the command that resolves it. Running services are resolved by Rebalance; pinned volumes are resolved by Volume Move, or by Volume Removal when the data is being discarded; an undrained machine is resolved by drain; the Control machine is resolved by promoting another machine first. Removal itself destroys nothing, so it carries no confirmation prompt — every destructive decision has already been made by the command a precondition named. A machine that answers nothing cannot be refused on testimony grounds; its unknown workloads are recorded as typed evidence instead.
 _Avoid_: Force flag, override, generic retry, confirmation on removal
 
 **Machine Removal Evidence**:
@@ -525,8 +541,8 @@ A machine that has been explicitly excluded from new workload placement while ex
 _Avoid_: Temporary scheduler hint, daemon-local maintenance flag, serving disable, evacuation
 
 **Rebalance**:
-An explicit operation that recomputes placement for all namespaces, or for selected namespaces, from current machine capacity. It is scoped by namespace and never by machine, because placement is decided per deploy from machine bids and no durable record says what runs where. Rebalance is the evacuation half of drain: a draining machine is already excluded from placement candidates, so recomputing moves its services and its volumes elsewhere. Drain does not trigger it — drain means place nothing new here, Rebalance means recompute placement — and it is never a background loop.
-_Avoid_: Autoscaling, scheduler policy, machine evacuation command, drain side effect, background reconciliation
+An explicit operation that recomputes placement for all namespaces, or for selected namespaces, from current machine capacity. It is scoped by namespace and never by machine, because placement is decided per deploy from machine bids and no durable record says what runs where. Rebalance is the evacuation half of drain: a draining machine is already excluded from placement candidates, so recomputing moves its services elsewhere. It does not move volumes. A service whose volume is pinned to the draining machine is refused and named to Volume Move, because relocating a local dataset costs a downtime window that is the operator's to spend. Drain does not trigger it — drain means place nothing new here, Rebalance means recompute placement — and it is never a background loop.
+_Avoid_: Autoscaling, scheduler policy, machine evacuation command, drain side effect, background reconciliation, volume movement
 
 **Drain Cancellation**:
 An explicit operation that returns a draining machine to normal placement eligibility; the canonical operation and command name is resume (`machine resume`). Drain cancellation does not reverse deploys, recreate removed containers, or move workloads back to the machine.
