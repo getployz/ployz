@@ -34,9 +34,11 @@ pub(super) async fn finish_rejected_task_admission(
             )
             .await
     {
-        eprintln!(
-            "operation {} task admission failed ({error}) and interruption evidence could not be recorded: {record_error}",
-            operation_id.as_str()
+        tracing::error!(
+            operation_id = operation_id.as_str(),
+            admission_error = %error,
+            error = %record_error,
+            "task admission failed and interruption evidence could not be recorded"
         );
     }
 }

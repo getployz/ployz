@@ -10,6 +10,7 @@ use ployz_core::ids::MachineId;
 use ployz_core::intent::IntentSnapshot;
 use ployz_core::intent::recovery::PendingMachineJoinRecoverySnapshot;
 use ployz_core::network::{DataplaneProjection, DataplaneProjectionMember};
+use tracing::Instrument;
 
 use ployz_nats::service_protocol::NatsServiceError;
 use ployz_nats::service_runtime::{
@@ -139,46 +140,54 @@ pub async fn start_intent_service(
             }
         })
         .await?;
-    let publisher = tokio::spawn(async move {
-        let sources = IntentSnapshotSources {
-            namespace_intent: &namespace_intent,
-            ingress_intent: &ingress_intent,
-            certificate_metadata: &certificate_metadata,
-            core_store: &core_store,
-            nats_authorizations: &nats_authorizations,
-            operation_repository: &operation_repository,
-        };
-        let mut interval = tokio::time::interval(publish_interval);
-        let mut consecutive_failures: u64 = 0;
-        loop {
-            interval.tick().await;
-            let intent = match load_intent(&publisher_core_machine_id, &sources).await {
-                Ok(intent) => intent,
-                Err(error) => {
-                    warn_publisher_failure(&mut consecutive_failures, "load-intent", error);
+    let publisher_span = tracing::Span::current();
+    let publisher = tokio::spawn(
+        async move {
+            let sources = IntentSnapshotSources {
+                namespace_intent: &namespace_intent,
+                ingress_intent: &ingress_intent,
+                certificate_metadata: &certificate_metadata,
+                core_store: &core_store,
+                nats_authorizations: &nats_authorizations,
+                operation_repository: &operation_repository,
+            };
+            let mut interval = tokio::time::interval(publish_interval);
+            let mut consecutive_failures: u64 = 0;
+            loop {
+                interval.tick().await;
+                let intent = match load_intent(&publisher_core_machine_id, &sources).await {
+                    Ok(intent) => intent,
+                    Err(error) => {
+                        warn_publisher_failure(&mut consecutive_failures, "load-intent", error);
+                        continue;
+                    }
+                };
+                let payload = match serde_json::to_vec(&intent) {
+                    Ok(payload) => payload,
+                    Err(error) => {
+                        warn_publisher_failure(&mut consecutive_failures, "encode-intent", error);
+                        continue;
+                    }
+                };
+                if let Err(error) = client.publish(INTENT_CHANGED, payload.into()).await {
+                    warn_publisher_failure(&mut consecutive_failures, "publish-intent", error);
                     continue;
                 }
-            };
-            let payload = match serde_json::to_vec(&intent) {
-                Ok(payload) => payload,
-                Err(error) => {
-                    warn_publisher_failure(&mut consecutive_failures, "encode-intent", error);
+                if let Err(error) =
+                    publish_pending_machine_joins(&client, &operation_repository, &core_store).await
+                {
+                    warn_publisher_failure(
+                        &mut consecutive_failures,
+                        "publish-pending-joins",
+                        error,
+                    );
                     continue;
                 }
-            };
-            if let Err(error) = client.publish(INTENT_CHANGED, payload.into()).await {
-                warn_publisher_failure(&mut consecutive_failures, "publish-intent", error);
-                continue;
+                consecutive_failures = 0;
             }
-            if let Err(error) =
-                publish_pending_machine_joins(&client, &operation_repository, &core_store).await
-            {
-                warn_publisher_failure(&mut consecutive_failures, "publish-pending-joins", error);
-                continue;
-            }
-            consecutive_failures = 0;
         }
-    });
+        .instrument(publisher_span),
+    );
 
     Ok(RunningIntentService { service, publisher })
 }
@@ -300,9 +309,11 @@ fn warn_publisher_failure(
     error: impl std::fmt::Display,
 ) {
     *consecutive_failures += 1;
-    eprintln!(
-        "ployzd intent publisher warning: phase={phase} consecutive_failures={} error={error}",
-        *consecutive_failures
+    tracing::warn!(
+        phase,
+        consecutive_failures = *consecutive_failures,
+        error = %error,
+        "intent publisher failure"
     );
 }
 

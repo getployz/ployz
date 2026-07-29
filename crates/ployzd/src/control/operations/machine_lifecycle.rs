@@ -53,6 +53,7 @@ impl MachineLifecycleOperation {
         .await;
     }
 
+    #[tracing::instrument(name = "operation", level = "error", skip_all, fields(kind = "machine_lifecycle", operation_id = accepted.operation_id.as_str()))]
     pub async fn run(self, accepted: AcceptedMachineLifecycleSubmission) {
         let operation_id = accepted.operation_id;
         let machine_id = accepted.machine_id;
@@ -135,10 +136,11 @@ impl MachineLifecycleOperation {
             .record_machine_lifecycle_transition(operation_id, machine_id, transition)
             .await
         {
-            eprintln!(
-                "ployzd machine lifecycle warning: phase=record-terminal operation_id={} machine_id={} error={error}",
-                operation_id.as_str(),
-                machine_id.as_str()
+            tracing::error!(
+                operation_id = operation_id.as_str(),
+                machine_id = machine_id.as_str(),
+                error = %error,
+                "machine lifecycle terminal transition could not be recorded"
             );
         }
     }

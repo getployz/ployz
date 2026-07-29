@@ -64,6 +64,7 @@ impl VolumeRemoveOperation {
         .await;
     }
 
+    #[tracing::instrument(name = "operation", level = "error", skip_all, fields(kind = "volume_remove", operation_id = accepted.operation_id.as_str()))]
     pub async fn run(self, accepted: AcceptedVolumeRemoveSubmission) {
         let operation_id = accepted.operation_id.clone();
         let namespace_id = accepted.namespace_id.clone();
@@ -317,9 +318,16 @@ async fn run_volume_remove<R: VolumeRemoveRuntime>(
         return;
     }
     runtime.publish_intent_changed().await;
-    let _ = runtime
+    if let Err(error) = runtime
         .record_transition(operation_id, VolumeRemoveTransition::Completed)
-        .await;
+        .await
+    {
+        tracing::error!(
+            operation_id = operation_id.as_str(),
+            error = %error,
+            "volume remove completed but its terminal transition could not be recorded"
+        );
+    }
 }
 
 async fn record_running<R: VolumeRemoveRuntime>(
@@ -337,9 +345,16 @@ async fn record_failed<R: VolumeRemoveRuntime>(
     operation_id: &OperationId,
     failure: VolumeRemoveFailure,
 ) {
-    let _ = runtime
+    if let Err(error) = runtime
         .record_transition(operation_id, VolumeRemoveTransition::Failed { failure })
-        .await;
+        .await
+    {
+        tracing::error!(
+            operation_id = operation_id.as_str(),
+            error = %error,
+            "volume remove failed and its terminal transition could not be recorded"
+        );
+    }
 }
 
 fn provisioned_dataset_remove_failure(

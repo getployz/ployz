@@ -14,6 +14,7 @@ use ployz_nats::connect::{NatsConnectConfig, connect_authenticated};
 use ployz_nats::permissions::render_authorized_users;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
+use tracing::Instrument;
 
 use super::expiry::{
     AuthorizationWake, NatsAuthorizationHealthReader, RETRY_SCHEDULE, retry_after_failure,
@@ -259,18 +260,22 @@ impl NatsAuthorizationWriter {
         let (sender, mut receiver) = mpsc::channel(RENDER_QUEUE_DEPTH);
         let health = NatsAuthorizationHealthReader::default();
         let task_health = health.clone();
-        let task = tokio::spawn(async move {
-            let reload = Arc::new(reload);
-            run_authorization_loop(
-                &authorized_users_file,
-                &store,
-                reload,
-                &mut receiver,
-                &task_health,
-                now,
-            )
-            .await;
-        });
+        let writer_span = tracing::Span::current();
+        let task = tokio::spawn(
+            async move {
+                let reload = Arc::new(reload);
+                run_authorization_loop(
+                    &authorized_users_file,
+                    &store,
+                    reload,
+                    &mut receiver,
+                    &task_health,
+                    now,
+                )
+                .await;
+            }
+            .instrument(writer_span),
+        );
 
         Self {
             handle: NatsAuthorizationHandle { sender },

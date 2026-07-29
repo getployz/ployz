@@ -37,6 +37,7 @@ mod roles {
 }
 pub mod dispatch;
 mod lease;
+pub mod logging;
 mod process_support;
 pub mod role_cli;
 mod seed;

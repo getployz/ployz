@@ -23,6 +23,7 @@ use ployz_nats::subjects::{INGRESS_ENDPOINT_CHANGED, INTENT_CHANGED};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
+use tracing::Instrument;
 
 use crate::control::intent::ingress_intent::{IngressProjectionStore, IngressProjectionWrite};
 use crate::control::intent::service::NatsIntentReader;
@@ -108,20 +109,23 @@ pub async fn start_ingress_endpoint_projection(
     let (shutdown, _) = broadcast::channel(1);
     let health = IngressEndpointProjectionHealth::default();
     let task_shutdown = shutdown.subscribe();
-    let task = tokio::spawn(run_projection_loop(
-        ProjectionRuntime {
-            client: client.clone(),
-            store,
-            intent: NatsIntentReader::new(client.clone()).with_request_timeout(GATHER_DEADLINE),
-            gateway: NatsGatewayStatusReader::new(client.clone())
-                .with_request_timeout(GATHER_DEADLINE),
-            facts: NatsMachineFactsReader::new(client).with_request_timeout(GATHER_DEADLINE),
-            pending_invalidation: None,
-            health: health.clone(),
-        },
-        changed,
-        task_shutdown,
-    ));
+    let task = tokio::spawn(
+        run_projection_loop(
+            ProjectionRuntime {
+                client: client.clone(),
+                store,
+                intent: NatsIntentReader::new(client.clone()).with_request_timeout(GATHER_DEADLINE),
+                gateway: NatsGatewayStatusReader::new(client.clone())
+                    .with_request_timeout(GATHER_DEADLINE),
+                facts: NatsMachineFactsReader::new(client).with_request_timeout(GATHER_DEADLINE),
+                pending_invalidation: None,
+                health: health.clone(),
+            },
+            changed,
+            task_shutdown,
+        )
+        .instrument(tracing::Span::current()),
+    );
     Ok(RunningIngressEndpointProjection {
         service,
         shutdown,
@@ -211,7 +215,7 @@ async fn run_projection_loop(
         match runtime.refresh().await {
             Ok(_) => runtime.health.record_success(),
             Err(error) => {
-                eprintln!("ployzd ingress endpoint projection warning: {error}");
+                tracing::warn!(error = %error, "ingress endpoint projection refresh failed");
                 runtime.health.record_failure(&error);
             }
         }

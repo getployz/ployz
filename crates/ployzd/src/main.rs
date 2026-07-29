@@ -4,6 +4,10 @@ use ployzd::dispatch::run_daemon_process_until_shutdown;
 use ployzd::role_cli::parse_role_args;
 
 fn main() {
+    // The subscriber is installed before telemetry bootstrap so everything
+    // the daemon writes after this line is structured; only telemetry's own
+    // pre-subscriber diagnostics remain plain stderr text.
+    ployzd::logging::init_daemon_logging();
     let telemetry = Telemetry::bootstrap(Surface::Daemon, env!("CARGO_PKG_VERSION"));
     let runtime = tokio::runtime::Runtime::new().expect("could not start Tokio runtime");
     let result = runtime.block_on(run(&telemetry));
@@ -27,6 +31,10 @@ async fn run(telemetry: &Telemetry) -> Result<(), MainError> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let role = parse_role_args(args).map_err(MainError::Role)?;
     let config = load_daemon_process_config(role, env_var).map_err(MainError::Config)?;
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        "daemon process starting"
+    );
     telemetry.capture_daemon_started();
     run_daemon_process_until_shutdown(&config)
         .await

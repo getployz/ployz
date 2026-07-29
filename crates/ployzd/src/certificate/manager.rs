@@ -11,6 +11,7 @@ use ployz_core::operation::{
     RouteHostname,
 };
 use ployz_nats::subjects::INTENT_CHANGED;
+use tracing::Instrument;
 
 use super::GatewayCertificateTarget;
 use super::gateway::GatewayCertificateClient;
@@ -45,7 +46,7 @@ impl CertificateTaskOwner {
     {
         match self {
             Self::Runtime => {
-                tokio::spawn(build());
+                tokio::spawn(build().instrument(tracing::Span::current()));
                 Ok(())
             }
             Self::Control(tasks) => tasks.spawn(build),

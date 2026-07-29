@@ -47,6 +47,7 @@ impl IngressConfigureOperation {
         .await;
     }
 
+    #[tracing::instrument(name = "operation", level = "error", skip_all, fields(kind = "ingress_configure", operation_id = accepted.operation_id.as_str()))]
     async fn run(self, accepted: AcceptedIngressConfigureSubmission) {
         let operation_id = accepted.operation_id;
         let transition = match self.intent.replace(accepted.configuration).await {
@@ -66,9 +67,10 @@ impl IngressConfigureOperation {
             .record_ingress_configure_transition(&operation_id, transition)
             .await
         {
-            eprintln!(
-                "ingress configuration operation {} could not record terminal evidence: {error}",
-                operation_id.as_str()
+            tracing::error!(
+                operation_id = operation_id.as_str(),
+                error = %error,
+                "ingress configuration terminal transition could not be recorded"
             );
         }
         self.controllers.release_ingress(&operation_id).await;

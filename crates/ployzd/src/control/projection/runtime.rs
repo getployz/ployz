@@ -31,6 +31,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
+use tracing::Instrument;
 
 const NATS_IO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 const STORAGE_ALARM_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
@@ -304,20 +305,25 @@ pub(crate) async fn start_runtime_projection(
         return Err(RuntimeProjectionStartError::StartSeedService(error));
     }
     let health = RuntimeProjectionHealth::default();
-    let projection_task = tokio::spawn(run_projection(
-        projection,
-        RuntimeProjectionSources {
-            client: client.clone(),
-            intent_reader,
-            intent_changes,
-            ingress_changes,
-            fact_changes,
-            facts_reader: NatsMachineFactsReader::new(client.clone()),
-            core_store,
-        },
-        health.clone(),
-    ));
-    let publisher_task = tokio::spawn(publish_snapshots(client, snapshots, health.clone()));
+    let projection_task = tokio::spawn(
+        run_projection(
+            projection,
+            RuntimeProjectionSources {
+                client: client.clone(),
+                intent_reader,
+                intent_changes,
+                ingress_changes,
+                fact_changes,
+                facts_reader: NatsMachineFactsReader::new(client.clone()),
+                core_store,
+            },
+            health.clone(),
+        )
+        .instrument(tracing::Span::current()),
+    );
+    let publisher_task = tokio::spawn(
+        publish_snapshots(client, snapshots, health.clone()).instrument(tracing::Span::current()),
+    );
 
     Ok(RunningRuntimeProjection {
         projection_task,
@@ -374,7 +380,9 @@ impl StorageAlarmGather {
 
     fn start(&mut self, gather: impl Future<Output = StorageAlarmGatherOutput> + Send + 'static) {
         let generation = self.intent_generation;
-        self.task = Some(tokio::spawn(async move { (generation, gather.await) }));
+        self.task = Some(tokio::spawn(
+            async move { (generation, gather.await) }.instrument(tracing::Span::current()),
+        ));
     }
 
     fn is_running(&self) -> bool {
@@ -1128,9 +1136,12 @@ fn current_unix_seconds() -> u64 {
 
 fn warn_failure(phase: &str, health: &RuntimeProjectionHealth, error: &impl std::fmt::Display) {
     let snapshot = health.snapshot();
-    eprintln!(
-        "ployzd runtime projection warning: phase={phase} projection_failures={} publisher_failures={} error={error}",
-        snapshot.projection.consecutive_failures, snapshot.publisher.consecutive_failures,
+    tracing::warn!(
+        phase,
+        projection_failures = snapshot.projection.consecutive_failures,
+        publisher_failures = snapshot.publisher.consecutive_failures,
+        error = %error,
+        "runtime projection failure"
     );
 }
 

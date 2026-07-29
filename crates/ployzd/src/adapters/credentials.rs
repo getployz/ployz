@@ -82,10 +82,13 @@ pub async fn await_role_credentials(
                 attempts,
                 last_error: error,
             } => {
-                eprintln!(
-                    "ployzd {process_name}: awaiting-credentials seed file {} (attempt {attempts}/{}): {error}",
-                    path.display(),
-                    policy.max_attempts
+                tracing::warn!(
+                    process = process_name,
+                    path = %path.display(),
+                    attempt = attempts,
+                    max_attempts = policy.max_attempts,
+                    error = %error,
+                    "awaiting credentials seed file"
                 );
                 last_error = Some(error);
             }

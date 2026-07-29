@@ -53,6 +53,7 @@ impl MachineUpdateOperation {
         super::finish_rejected_task_admission(&self.controllers, &operation_id, admission).await;
     }
 
+    #[tracing::instrument(name = "operation", level = "error", skip_all, fields(kind = "machine_update", operation_id = accepted.operation_id.as_str()))]
     pub async fn run(self, accepted: AcceptedMachineUpdateSubmission) {
         self.clone().run_inner(accepted).await;
     }
@@ -154,10 +155,11 @@ impl MachineUpdateOperation {
             )
             .await
         {
-            eprintln!(
-                "ployzd machine update warning: phase=record-failed operation_id={} machine_id={} error={error}",
-                operation_id.as_str(),
-                machine_id.as_str()
+            tracing::error!(
+                operation_id = operation_id.as_str(),
+                machine_id = machine_id.as_str(),
+                error = %error,
+                "machine update failed and its terminal transition could not be recorded"
             );
         }
     }

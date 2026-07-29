@@ -196,13 +196,21 @@ async fn reconcile_reachability_loop(facts: RoleTestimonyCache, roster: MachineR
     loop {
         interval.tick().await;
         for observation in facts.machine_endpoint_observations() {
-            let _ = roster
+            if let Err(error) = roster
                 .set_endpoints(
                     &observation.machine_id,
                     observation.control_endpoints,
                     observation.mesh_endpoints,
                 )
-                .await;
+                .await
+            {
+                tracing::warn!(
+                    phase = "reachability-reconcile",
+                    machine_id = observation.machine_id.as_str(),
+                    error = %error,
+                    "failed to record machine endpoint reachability"
+                );
+            }
         }
     }
 }
@@ -643,10 +651,11 @@ fn load_pending_join_recovery(mirror_path: &Path) -> Vec<PendingMachineJoinRecov
         return Vec::new();
     };
     if snapshot.epoch != intent.epoch {
-        eprintln!(
-            "ployzd control warning: phase=pending-join-recovery ignoring pending-join mirror whose epoch does not match the seeded intent pending_epoch={} intent_epoch={}",
-            snapshot.epoch.get(),
-            intent.epoch.get()
+        tracing::warn!(
+            phase = "pending-join-recovery",
+            pending_epoch = snapshot.epoch.get(),
+            intent_epoch = intent.epoch.get(),
+            "ignoring pending-join mirror whose epoch does not match the seeded intent"
         );
         return Vec::new();
     }
@@ -659,9 +668,10 @@ fn load_pending_join_recovery(mirror_path: &Path) -> Vec<PendingMachineJoinRecov
                 .iter()
                 .any(|machine| machine.machine_id == recovery.machine_id);
             if already_active {
-                eprintln!(
-                    "ployzd control warning: phase=pending-join-recovery skipping pending join for machine already active in the seeded roster machine_id={}",
-                    recovery.machine_id.as_str()
+                tracing::warn!(
+                    phase = "pending-join-recovery",
+                    machine_id = recovery.machine_id.as_str(),
+                    "skipping pending join for machine already active in the seeded roster"
                 );
             }
             !already_active

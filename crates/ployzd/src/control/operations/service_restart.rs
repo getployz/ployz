@@ -68,6 +68,7 @@ impl ServiceRestartOperation {
         .await;
     }
 
+    #[tracing::instrument(name = "operation", level = "error", skip_all, fields(kind = "service_restart", operation_id = accepted.operation_id.as_str()))]
     pub async fn run(self, accepted: AcceptedServiceRestartSubmission) {
         let namespace_id = accepted.namespace_id.clone();
         let operation_id = accepted.operation_id.clone();
@@ -292,11 +293,18 @@ impl ServiceRestartOperation {
         operation_id: &OperationId,
         transition: ServiceRestartTransition,
     ) {
-        let _ = self
+        if let Err(error) = self
             .controllers
             .repository()
             .record_service_restart_transition(operation_id, transition)
-            .await;
+            .await
+        {
+            tracing::error!(
+                operation_id = operation_id.as_str(),
+                error = %error,
+                "service restart terminal transition could not be recorded"
+            );
+        }
     }
 }
 

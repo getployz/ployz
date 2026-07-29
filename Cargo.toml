@@ -50,6 +50,8 @@ sysctl = "0.7"
 nuid = "0.5"
 thiserror = "2"
 tokio = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["ansi", "env-filter", "fmt", "json"] }
 ts-rs = { version = "12", features = ["no-serde-warnings"] }
 wait-timeout = "0.2"
 uuid = { version = "1", features = ["serde", "v4"] }

@@ -288,7 +288,15 @@ impl NamespaceIntentCommitter {
         let publish = self
             .intent_change_client
             .publish(INTENT_CHANGED, Vec::new().into());
-        let _ = tokio::time::timeout(INTENT_CHANGED_PUBLISH_TIMEOUT, publish).await;
+        match tokio::time::timeout(INTENT_CHANGED_PUBLISH_TIMEOUT, publish).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                tracing::warn!(error = %error, "intent-changed publish failed after deploy commit");
+            }
+            Err(_) => {
+                tracing::warn!("intent-changed publish timed out after deploy commit");
+            }
+        }
     }
 }
 
@@ -583,6 +591,7 @@ impl DeployOperationDriver {
             })?
     }
 
+    #[tracing::instrument(name = "operation", level = "error", skip_all, fields(kind = "deploy", operation_id = accepted.submission.operation_id.as_str()))]
     pub async fn run(
         self,
         accepted: AcceptedDeployExecution,

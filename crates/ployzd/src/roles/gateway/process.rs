@@ -51,6 +51,7 @@ use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
+use tracing::Instrument;
 
 const GATEWAY_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const GATEWAY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
@@ -301,51 +302,65 @@ async fn start_gateway_process_inner(
     let mut refresh_shutdown = shutdown.subscribe();
     let refresh_client = client.clone();
     let refresh_facts = facts.clone();
-    let refresh_task = tokio::spawn(async move {
-        let mut backoff = refresh_interval;
-        let mut source =
-            GatewayProcessSource::new(refresh_client, refresh_facts, certificate_store);
-        let mut refresh_wake_rx = refresh_wake_rx;
+    let refresh_task = tokio::spawn(
+        async move {
+            let mut backoff = refresh_interval;
+            let mut source =
+                GatewayProcessSource::new(refresh_client, refresh_facts, certificate_store);
+            let mut refresh_wake_rx = refresh_wake_rx;
 
-        loop {
-            drain_refresh_wakes(&mut refresh_wake_rx);
-            let attempt = tokio::select! {
-                attempt = source.refresh_with_timeout(&task_runtime, &task_registry) => attempt,
-                _ = refresh_shutdown.recv() => break,
-            };
-            backoff = record_gateway_attempt(&task_health, &attempt, refresh_interval, backoff);
-            let observed =
-                gateway_observation_from_attempt(&machine_id, listen_addr, &attempt, &task_health);
-            let status_publish = tokio::select! {
-                result = source.replace_gateway_status(&observed) => result,
-                _ = refresh_shutdown.recv() => break,
-            };
-            record_gateway_status_publish_result(&task_health, status_publish);
+            loop {
+                drain_refresh_wakes(&mut refresh_wake_rx);
+                let attempt = tokio::select! {
+                    attempt = source.refresh_with_timeout(&task_runtime, &task_registry) => attempt,
+                    _ = refresh_shutdown.recv() => break,
+                };
+                backoff = record_gateway_attempt(&task_health, &attempt, refresh_interval, backoff);
+                let observed = gateway_observation_from_attempt(
+                    &machine_id,
+                    listen_addr,
+                    &attempt,
+                    &task_health,
+                );
+                let status_publish = tokio::select! {
+                    result = source.replace_gateway_status(&observed) => result,
+                    _ = refresh_shutdown.recv() => break,
+                };
+                record_gateway_status_publish_result(&task_health, status_publish);
 
-            match wait_for_refresh_delay(backoff, &mut refresh_wake_rx, &mut refresh_shutdown).await
-            {
-                RefreshDelay::Elapsed | RefreshDelay::Woken => {}
-                RefreshDelay::WakeClosed | RefreshDelay::Shutdown => break,
+                match wait_for_refresh_delay(backoff, &mut refresh_wake_rx, &mut refresh_shutdown)
+                    .await
+                {
+                    RefreshDelay::Elapsed | RefreshDelay::Woken => {}
+                    RefreshDelay::WakeClosed | RefreshDelay::Shutdown => break,
+                }
             }
         }
-    });
+        .instrument(tracing::Span::current()),
+    );
     let watch_client = client.clone();
     let watch_health = Arc::clone(&health);
     let mut watch_shutdown = shutdown.subscribe();
-    let watch_task = tokio::spawn(async move {
-        wake_gateway_refresh_on_nats_changes(
-            watch_client,
-            refresh_wake,
-            watch_health,
-            &mut watch_shutdown,
-        )
-        .await;
-    });
+    let watch_task = tokio::spawn(
+        async move {
+            wake_gateway_refresh_on_nats_changes(
+                watch_client,
+                refresh_wake,
+                watch_health,
+                &mut watch_shutdown,
+            )
+            .await;
+        }
+        .instrument(tracing::Span::current()),
+    );
     let health_registry = registry.clone();
     let mut health_shutdown = shutdown.subscribe();
-    let health_task = tokio::spawn(async move {
-        run_gateway_health_checks(health_registry, &mut health_shutdown).await;
-    });
+    let health_task = tokio::spawn(
+        async move {
+            run_gateway_health_checks(health_registry, &mut health_shutdown).await;
+        }
+        .instrument(tracing::Span::current()),
+    );
 
     tasks.push(refresh_task);
     tasks.push(watch_task);

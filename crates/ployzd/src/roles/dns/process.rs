@@ -180,7 +180,7 @@ pub async fn start_dns_process_with_client(
                     backoff = refresh_interval;
                 }
                 Ok(Err(error)) => {
-                    eprintln!("ployzd internal DNS warning: phase=intent-refresh error={error}");
+                    tracing::warn!(phase = "intent-refresh", error = %error, "internal DNS intent refresh failed");
                     record_dns_intent_refresh_health(
                         &refresh_health,
                         InternalDnsIntentRefreshHealth::RequestFailed {
@@ -190,9 +190,10 @@ pub async fn start_dns_process_with_client(
                     backoff = backoff.saturating_mul(2).min(Duration::from_secs(30));
                 }
                 Err(_) => {
-                    eprintln!(
-                        "ployzd internal DNS warning: phase=intent-refresh error=timed-out timeout_seconds={}",
-                        DNS_REFRESH_TIMEOUT.as_secs()
+                    tracing::warn!(
+                        phase = "intent-refresh",
+                        timeout_seconds = DNS_REFRESH_TIMEOUT.as_secs(),
+                        "internal DNS intent refresh timed out"
                     );
                     record_dns_intent_refresh_health(
                         &refresh_health,
@@ -243,7 +244,7 @@ async fn wake_dns_refresh_on_intent_changed(
         let mut changed = match opened {
             Ok(changed) => changed,
             Err(error) => {
-                eprintln!("ployzd internal DNS warning: phase=intent-watch error={error}");
+                tracing::warn!(phase = "intent-watch", error = %error, "internal DNS intent watch open failed");
                 record_dns_intent_watch_health(
                     &health,
                     InternalDnsIntentWatchHealth::OpenFailed {
@@ -263,8 +264,9 @@ async fn wake_dns_refresh_on_intent_changed(
             tokio::select! {
                 change = changed.next() => {
                     if change.is_none() {
-                        eprintln!(
-                            "ployzd internal DNS warning: phase=intent-watch error=subscription-closed"
+                        tracing::warn!(
+                            phase = "intent-watch",
+                            "internal DNS intent subscription closed"
                         );
                         record_dns_intent_watch_health(
                             &health,

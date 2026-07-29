@@ -17,6 +17,7 @@ use ployz_core::machine::runtime::{
 use ployz_core::network::internal_dns::{
     InternalDnsFactGeneration, InternalDnsFactWatermark, InternalDnsResolverCacheIncarnation,
 };
+use tracing::Instrument;
 
 use ployz_nats::subjects::{gateway_status_scope, machine_facts_scope};
 use std::collections::BTreeMap;
@@ -277,9 +278,10 @@ pub async fn start_role_testimony_cache(
         })?;
     let cache = RoleTestimonyCache::default();
     let task_cache = cache.clone();
-    let task = tokio::spawn(async move {
-        consume_role_testimony(task_cache, machine_facts, gateway_statuses).await;
-    });
+    let task = tokio::spawn(
+        consume_role_testimony(task_cache, machine_facts, gateway_statuses)
+            .instrument(tracing::Span::current()),
+    );
 
     Ok(RunningRoleTestimonyCache { cache, task })
 }
@@ -331,6 +333,16 @@ fn ingest_machine_fact(cache: &RoleTestimonyCache, subject: &str, payload: &[u8]
         } else {
             warn_machine_id_mismatch(subject, delta_machine_id(&delta));
         }
+    } else {
+        // An undecodable payload usually means schema drift between a
+        // machine and this core; dropping it silently would freeze the
+        // cached facts while health still looks green.
+        tracing::warn!(
+            phase = "ingest",
+            subject,
+            payload_bytes = payload.len(),
+            "dropped machine testimony that decodes as neither a facts snapshot nor a container fact delta"
+        );
     }
 }
 
@@ -345,6 +357,13 @@ fn ingest_gateway_status(cache: &RoleTestimonyCache, subject: &str, payload: &[u
         } else {
             warn_machine_id_mismatch(subject, &status.machine_id);
         }
+    } else {
+        tracing::warn!(
+            phase = "ingest",
+            subject,
+            payload_bytes = payload.len(),
+            "dropped gateway testimony that does not decode as a gateway status observation"
+        );
     }
 }
 
@@ -356,15 +375,19 @@ fn delta_machine_id(delta: &MachineContainerFactDelta) -> &MachineId {
 }
 
 fn warn_machine_id_mismatch(subject: &str, claimed: &MachineId) {
-    eprintln!(
-        "ployzd role testimony cache warning: phase=ingest rejected testimony whose payload machine id does not match its subject subject={subject} payload_machine_id={}",
-        claimed.as_str()
+    tracing::warn!(
+        phase = "ingest",
+        subject,
+        payload_machine_id = claimed.as_str(),
+        "rejected testimony whose payload machine id does not match its subject"
     );
 }
 
 fn warn_unowned_subject(subject: &str) {
-    eprintln!(
-        "ployzd role testimony cache warning: phase=ingest rejected testimony on a subject with no valid owning machine id subject={subject}"
+    tracing::warn!(
+        phase = "ingest",
+        subject,
+        "rejected testimony on a subject with no valid owning machine id"
     );
 }
 

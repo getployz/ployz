@@ -41,12 +41,14 @@ impl RunningRegistryV2 {
             let listener = loop {
                 match TcpListener::bind(listen_addr).await {
                     Ok(listener) => {
-                        eprintln!("ployzd image registry listening at {listen_addr}");
+                        tracing::info!(address = %listen_addr, "image registry listening");
                         break listener;
                     }
                     Err(error) => {
-                        eprintln!(
-                            "ployzd image registry bind failed at {listen_addr}: {error}; retrying"
+                        tracing::warn!(
+                            address = %listen_addr,
+                            error = %error,
+                            "image registry bind failed; retrying"
                         );
                         tokio::select! {
                             () = tokio::time::sleep(Duration::from_secs(1)) => {}
@@ -87,23 +89,22 @@ async fn run_listener(
                             .serve_connection(TokioIo::new(stream), service);
                         match tokio::time::timeout(CONNECTION_TIMEOUT, connection).await {
                             Ok(Ok(())) => {}
-                            Ok(Err(error)) => eprintln!(
-                                "ployzd image registry connection failed: {error}"
+                            Ok(Err(error)) => tracing::warn!(
+                                error = %error,
+                                "image registry connection failed"
                             ),
-                            Err(_) => eprintln!(
-                                "ployzd image registry connection timed out"
-                            ),
+                            Err(_) => tracing::warn!("image registry connection timed out"),
                         }
                     });
                 }
                 Err(error) => {
-                    eprintln!("ployzd image registry accept failed: {error}");
+                    tracing::warn!(error = %error, "image registry accept failed");
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 }
             },
             Some(result) = connections.join_next(), if !connections.is_empty() => {
                 if let Err(error) = result {
-                    eprintln!("ployzd image registry connection task failed: {error}");
+                    tracing::warn!(error = %error, "image registry connection task failed");
                 }
             }
             _ = &mut *shutdown_rx => break,

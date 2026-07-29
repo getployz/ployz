@@ -146,9 +146,10 @@ impl MachineCredentialMint {
                 )
                 .await;
             if let MintOutcome::RecordingFailed { message } = outcome {
-                eprintln!(
-                    "machine-add operation {} task admission failed and terminal evidence could not be recorded: {message}",
-                    request.operation_id.as_str()
+                tracing::error!(
+                    operation_id = request.operation_id.as_str(),
+                    error = %message,
+                    "machine-add task admission failed and terminal evidence could not be recorded"
                 );
             }
         }

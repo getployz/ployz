@@ -77,6 +77,7 @@ impl MachineStoragePrepareOperation {
             .await
     }
 
+    #[tracing::instrument(name = "operation", level = "error", skip_all, fields(kind = "machine_storage_prepare", operation_id = accepted.operation_id.as_str()))]
     async fn run(self, accepted: AcceptedMachineStoragePrepareSubmission) {
         self.clone().run_inner(accepted).await;
     }
@@ -216,7 +217,7 @@ impl MachineStoragePrepareOperation {
         machine_id: &MachineId,
         failure: MachineStoragePrepareFailure,
     ) {
-        let _ = self
+        if let Err(error) = self
             .controllers
             .repository()
             .record_machine_storage_prepare_transition(
@@ -224,7 +225,15 @@ impl MachineStoragePrepareOperation {
                 machine_id,
                 MachineStoragePrepareTransition::Failed { failure },
             )
-            .await;
+            .await
+        {
+            tracing::error!(
+                operation_id = operation_id.as_str(),
+                machine_id = machine_id.as_str(),
+                error = %error,
+                "machine storage prepare failed and its terminal transition could not be recorded"
+            );
+        }
     }
 }
 
