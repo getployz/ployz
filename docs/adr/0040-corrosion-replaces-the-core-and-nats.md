@@ -71,8 +71,9 @@ drafted land with the consolidated spec.
   — the epoch, the drumbeat mirror, and the candidate list are dead.
 - **0035 (fresh dataplane testimony gates new placement)** — the
   NATS-gathered testimony contract is gone; candidates answer live bids at
-  the point of use, and the 275-second handshake bound survives only as the
-  staleness threshold.
+  the point of use, and the 275-second bound survives only as the staleness
+  threshold on the mesh provider's reported last-verified age (WireGuard's
+  last handshake for builtin).
 - **0036 (deploy previews determine builds and receipts constrain
   placement)** — build is its own caller-composed operation against a
   bid-chosen builder serving an OCI facade; no preview, no receipts.
@@ -87,7 +88,7 @@ drafted land with the consolidated spec.
 ## Surviving, reread in v2 terms
 
 The product-behavior ADRs carry over with their nouns translated: 0002,
-0006, 0007, 0008, 0010, 0011, 0012, 0023, 0024, 0025, 0032, and 0033 as
+0006, 0007, 0008, 0010, 0011, 0012, 0023, 0024, 0025, and 0032 as
 written; 0003 (operations are informational records) with operations as
 summary rows plus driver-local detail; 0004 (deploys are namespace
 reconciliation attempts) with the namespace lock replaced by the deploy
@@ -99,8 +100,12 @@ environment contribution as the row model's sha256 fingerprint —
 dictionary exposure of low-entropy values priced in under the membership
 trust ceiling — and the image frame as the digest-pinned reference; the
 Controller-seed HMAC and the receipt-index frame die with Control and
-receipts; 0027 (liveness surfaces at the point of use) with WireGuard
-last-handshake age as the displayed evidence; 0034 (public ingress DNS is
+receipts; 0027 (liveness surfaces at the point of use) with the mesh
+provider's reported last-verified age (WireGuard's last handshake for
+builtin) as the displayed evidence; 0033 (deploy phases promote
+atomically) with the intent transaction replaced by the revision-gated
+`active_deploy` flip — routing serves only the promoted revision, so
+readers cannot serve a half-converged phase; 0034 (public ingress DNS is
 external) with internal resolution fed by Corrosion rows instead of the
 drumbeat, mirror, machine RPC, and NATS failover; 0039 (host
 compatibility lives in profiles and supervisor adapters) with the typed

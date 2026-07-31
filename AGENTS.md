@@ -21,6 +21,14 @@ and `Blocked by: #...` body lines. Claim by assigning yourself first. Refer by
 linked title, not bare number. Resolve one ticket per session: comment, close,
 then add a linked one-line gist to the map.
 
+**[ADR 0040](docs/adr/0040-corrosion-replaces-the-core-and-nats.md)
+supersedes the core-and-NATS direction in this file.** v2 is coreless:
+Corrosion rows over HTTP/JSON/SSE on a WireGuard mesh. Guidance below that
+names the core, the sequencer, NATS, or machine assignments — including
+Product Direction's ADR 0037 exception and the Architecture through
+control-plane sections — describes the frozen incumbent line only; it is
+rewritten when the consolidated v2 spec lands.
+
 ## Product Direction
 
 Ployz is a small-cluster orchestration core built around explicit operations.
@@ -60,12 +68,6 @@ operator was willing to type it twice — the generic misleading verb this rule
 exists to prevent.
 
 ## Architecture
-
-**[ADR 0040](docs/adr/0040-corrosion-replaces-the-core-and-nats.md)
-supersedes the core-and-NATS direction below.** v2 is coreless: Corrosion
-rows over HTTP/JSON/SSE on a WireGuard mesh. The NATS/core guidance from
-here through the state and control-plane sections describes the frozen
-incumbent line only; it is rewritten when the consolidated v2 spec lands.
 
 Use NATS as the control-plane backplane:
 
