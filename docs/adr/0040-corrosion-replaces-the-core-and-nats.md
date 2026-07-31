@@ -87,9 +87,13 @@ drafted land with the consolidated spec.
 ## Surviving, reread in v2 terms
 
 The product-behavior ADRs carry over with their nouns translated: 0002,
-0004, 0007, 0008, 0010, 0011, 0012, 0022, 0023, 0024, 0025, 0032, 0033,
+0004, 0006, 0007, 0008, 0010, 0011, 0012, 0023, 0024, 0025, 0032, 0033,
 0034, and 0039 as written; 0003 (operations are informational records) with
 operations as summary rows plus driver-local detail; 0005 (rebuild full
 views from invalidation) with Corrosion subscriptions as the wake signal
-and re-query as the correctness path; 0027 (liveness surfaces at the point
-of use) with WireGuard last-handshake age as the displayed evidence.
+and re-query as the correctness path; 0022 (revision entry identity is a
+versioned per-service digest) with the environment contribution as the row
+model's sha256 fingerprint and the image frame as the digest-pinned
+reference — the Controller-seed HMAC and the receipt-index frame die with
+Control and receipts; 0027 (liveness surfaces at the point of use) with
+WireGuard last-handshake age as the displayed evidence.

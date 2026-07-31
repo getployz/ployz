@@ -61,6 +61,12 @@ exists to prevent.
 
 ## Architecture
 
+**[ADR 0040](docs/adr/0040-corrosion-replaces-the-core-and-nats.md)
+supersedes the core-and-NATS direction below.** v2 is coreless: Corrosion
+rows over HTTP/JSON/SSE on a WireGuard mesh. The NATS/core guidance from
+here through the state and control-plane sections describes the frozen
+incumbent line only; it is rewritten when the consolidated v2 spec lands.
+
 Use NATS as the control-plane backplane:
 
 - NATS Service API for commands, machine RPC, and live testimony
