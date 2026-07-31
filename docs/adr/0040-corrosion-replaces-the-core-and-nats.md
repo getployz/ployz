@@ -12,7 +12,15 @@ carried inside the join blob; membership is write authority, so admission
 is the security decision. Revocation is row deletion and converges like
 any row: a partitioned door can honor a not-yet-converged revocation
 until the token's TTL — the same priced stale-truth class the thesis
-accepts, repaired by `machine rm`. Each machine's Keeper converges that
+accepts, repaired by `machine rm`. Removal deletes the roster row, every
+Keeper drops the peer, and the removed machine's writes stop propagating
+with its mesh access; that fence assumes members run trusted software.
+Under the single-operator trust ceiling a hostile member is the deferred
+signing tier's threat model, not v1's. The door allocates each joiner's
+container /24 from the operator's supernet by random-free pick with a
+courtesy re-read; a collision that survives convergence is self-healed by
+the lowest-ULID machine re-picking — the row law's one named exception,
+on the transport subnet field only. Each machine's Keeper converges that
 machine's mesh substrate toward rows it does not own and reports into status
 rows nobody else may write. Every row has exactly one authority — the
 operator command stream or exactly one machine — so LWW only ever

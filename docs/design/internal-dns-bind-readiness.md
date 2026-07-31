@@ -1,5 +1,8 @@
 # Internal DNS Bind Readiness
 
+**Frozen incumbent design — superseded by
+[ADR 0040](../adr/0040-corrosion-replaces-the-core-and-nats.md).**
+
 ## Finding
 
 The transient failure in
