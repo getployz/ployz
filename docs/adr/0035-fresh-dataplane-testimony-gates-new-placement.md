@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted.
+Superseded by [ADR 0040](0040-corrosion-replaces-the-core-and-nats.md).
 
 ## Context
 

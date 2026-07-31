@@ -1,5 +1,7 @@
 # Machines Broadcast Facts; The Core Owns Intent
 
+**Superseded by [ADR 0040](0040-corrosion-replaces-the-core-and-nats.md).**
+
 Cluster state splits into exactly two kinds, each with one writer and its
 own durable home. Neither lives in a shared store.
 

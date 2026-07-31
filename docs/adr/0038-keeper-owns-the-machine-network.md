@@ -1,5 +1,7 @@
 # Keeper Owns The Machine Network And Admission Reads Neutral Testimony
 
+**Superseded by [ADR 0040](0040-corrosion-replaces-the-core-and-nats.md).**
+
 Keeper owns the network on one machine: the WireGuard interface and its peers,
 the eBPF attachment and its route map, the host sysctls and forwarding rules,
 and the endpoint bridge. Worker owns the containers: Docker, builds, volumes,

@@ -1,5 +1,7 @@
 # Machine Lifecycle Intent Is Control-Side Durable Authority
 
+**Superseded by [ADR 0040](0040-corrosion-replaces-the-core-and-nats.md).**
+
 Machine lifecycle (active/draining) is operator intent about a machine, not a
 machine-owned fact: the machines most worth draining are the ones that may be
 unreachable, so the target machine's disk cannot be the commit point. The

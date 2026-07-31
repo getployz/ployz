@@ -1,5 +1,7 @@
 # Keeper Reconciles One Machine Assignment
 
+**Superseded by [ADR 0040](0040-corrosion-replaces-the-core-and-nats.md).**
+
 Keeper is a connected machine-local daemon, and the machine assignment is the
 only thing it reconciles. Workloads, routes, serving state, and every other
 piece of cluster truth keep their operation owners; machine substrate is the

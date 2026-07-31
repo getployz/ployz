@@ -1,3 +1,5 @@
 # Rollout Orchestration Lives Above The Core
 
+**Superseded by [ADR 0040](0040-corrosion-replaces-the-core-and-nats.md).**
+
 The core exposes single-machine, single-exact-version update operations only (machine-updates.md); multi-machine rollout order, pacing, batching, approval gates, and scheduling windows are policy and live in drivers above the core — cloud workflow engines, operators at the CLI, or agents — which sequence the same primitives every consumer uses. Safety is not delegated upward: version skew checks, the machine substrate lock, submit idempotency, and exact-version resolution are core preconditions that reject unsafe submits, so a durable workflow that retries forever still cannot push a machine into an unsafe state. The core gains no rollout state, no channels, no `latest`, and no callbacks to specific drivers; drivers poll or watch operation events like any other consumer.

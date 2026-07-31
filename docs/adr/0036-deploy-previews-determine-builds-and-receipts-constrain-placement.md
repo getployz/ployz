@@ -1,5 +1,7 @@
 # Deploy Previews Determine Builds And Receipts Constrain Placement
 
+**Superseded by [ADR 0040](0040-corrosion-replaces-the-core-and-nats.md).**
+
 Ployz Cloud owns one Cloud Deployment Attempt from queueing through planning, building, authoritative deploy, and terminal outcome. Before building, Cloud asks Core for a read-only Deploy Preview that uses the same validation, testimony gathering, preparation, and placement policy as a Deploy but creates no operation, reservation, intent, or effects. A Pending Build Image lets this preview produce tentative machines and per-service Build Platform Requirements without making an unbuilt image valid authoritative deploy input.
 
 Cloud builds or reuses an image receipt covering each service's required platforms; a receipt with additional platforms remains reusable. It then submits concrete receipts in the authoritative Deploy. Core gathers fresh runtime testimony and creates a new Deploy Plan, excluding machines whose native platform is absent from the relevant receipt. The authoritative plan may differ from the preview, and inability to satisfy current constraints with the built receipts fails the attempt instead of returning to planning or building.

@@ -1,5 +1,7 @@
 # Hub-Loss Recovery: Machines Re-Point Themselves To An Operator-Promoted Core
 
+**Superseded by [ADR 0040](0040-corrosion-replaces-the-core-and-nats.md).**
+
 At the v1 target size every machine is a plain client of one `nats-server` on
 the Control-Plane Core, so losing the core loses the bus for everyone — a hard
 Hetzner-console delete of the core machine, with no graceful drain, is the

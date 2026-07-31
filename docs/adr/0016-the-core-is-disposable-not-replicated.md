@@ -1,3 +1,5 @@
 # The Core Is Disposable, Not Replicated
 
+**Superseded by [ADR 0040](0040-corrosion-replaces-the-core-and-nats.md).**
+
 Ployz v1 runs one Control-Plane Core, and nothing in the cluster runs consensus. Availability comes from disposability, not replication: machines own their runtime truth, Core Assurance rebuilds live views from preserved intent and fresh machine facts, and replacing a lost core is a bounded operation rather than quorum repair. When the core is unreachable, operations fail fast with typed errors and the data plane keeps serving last-known-good state. Replicating control-plane storage would reimport the quorum sizing, backup, and repair burden this product exists to avoid, so adding replication requires a design that answers quorum operations end-to-end.

@@ -1,5 +1,7 @@
 # Recovery Seams: A Hand-Rolled Control-Plane Epoch And A Mirrored Intent Snapshot
 
+**Superseded by [ADR 0040](0040-corrosion-replaces-the-core-and-nats.md).**
+
 ADR 0030 decided *how the fleet finds a new core* — operator-promoted, epoch-gated,
 pull-reconnecting, with intent mirrored off the drumbeat. It did not pin the
 mechanisms, and the obvious question when building them is: **we run hard on
