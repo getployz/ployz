@@ -1,34 +1,28 @@
 # Vision
 
-Ployz is a small-cluster orchestration core built around explicit operations.
+Ployz is a dead-simple, mesh-native control plane for small clusters: one
+binary per machine, one shared converged store, one WireGuard mesh.
 
-It should make infrastructure work feel direct: initialize a cluster, add a
-machine, deploy a service, inspect an operation, stream logs, drain capacity,
-roll back, clean up. Each action should have visible inputs, durable progress,
-a clear terminal result, and enough evidence to debug what happened.
+It is for the 1–200 machine range: homelabs, small teams, customer-owned
+servers, bare metal, and modest VPS fleets. Past ~200 machines the answer is
+cells — many clusters — never a bigger cluster.
 
-The system is for the 1-200 machine range: homelabs, small teams, customer
-owned servers, bare metal, and modest VPS fleets. At that scale, reliability
-comes from simple mechanics and readable behavior, not from a large hidden
-policy engine.
+The only metric is operability: install steps, day-2 surface, failure drills,
+recovery command count, concepts in one head. Simplest wins. Future-proofing
+is thin seams, never building ahead.
 
 ## Product Bet
 
-Small infrastructure should be operated through primitives, not through a
-cluster that constantly rewrites itself toward a standing desired state.
+Operating small infrastructure should not require operating a distributed
+system first. Ployz has no core, no quorum, and no coordination point:
 
-Ployz should give humans, agents, CLIs, SDKs, and cloud workflows the same
-bounded operations:
+- Cluster config is rows in a shared store, converged to every machine.
+- Each machine's Keeper converges that machine toward the rows it does not
+  own, and reports into status rows nobody else may write.
+- Commands are row writes plus watching status rows, accepted by any machine.
 
-- submit a command,
-- get an operation id,
-- watch durable progress,
-- inspect current state,
-- see the exact failure,
-- retry or clean up deliberately.
-
-The cluster should not surprise the operator. If something changes, an
-operation caused it.
+The cluster should not surprise the operator. If something changed, a row
+changed, and the row names its writer.
 
 ## Experience Goals
 
@@ -42,158 +36,66 @@ Ployz should feel:
 - easy to automate,
 - small enough to hold in your head.
 
-Failures are part of the product. A failed deploy should leave useful evidence,
-not erase the scene. A stale machine should be visible as stale, not silently
-converted into truth. Logs are evidence; operation status is the audience.
+Failures are part of the product. A failed deploy should leave useful
+evidence, not erase the scene. A stale machine should be visible as stale,
+not silently converted into truth.
 
 ## Architecture Shape
 
-Ployz is one daemon, one NATS control domain, and local runtime execution.
+One `ployzd` binary per machine, plus a stock, version-pinned Corrosion
+sidecar as a plain systemd unit. Machines connect over a pluggable WireGuard
+mesh — builtin WireGuard or Tailscale — with cryptokey routing as identity.
+The API is HTTP/JSON with SSE watches, served by every machine over the mesh.
+No RPC framework, no message broker.
 
-```text
-CLI / SDK / Cloud
-  -> NATS services
-  -> operation workers
-  -> machine services
-  -> Docker / gateway / DNS / local machine reality
-```
-
-The control plane uses NATS primitives directly:
-
-- Service API for commands.
-- Plain subjects for fact broadcasts, intent broadcasts, service calls, and
-  live operation progress.
-- Core-local intent and evidence files for durable control-plane storage.
-- Machine-local fact ledgers for machine-owned truth.
-- RPC artifact push for deploy bundles, diagnostics, rendered specs, and cert
-  material that machines need.
-- Core-local timers that create explicit operations for delayed or recurring
-  work.
-- Subject permissions for authority.
-
-Machines reach the control plane through direct TLS-authenticated NATS by
-default. NATS is the command and state surface.
-
-```text
-machine async-nats
-  -> TLS NATS
-  -> nats-server
-```
-
-Product behavior is expressed in NATS subjects, messages, local evidence files,
-and service handlers. Private overlay transport may be revisited later, but it
-is not part of the v1 control-plane connection.
-
-## State Model
-
-Docker is execution reality.
-
-Machines broadcast facts from Docker and their local fact ledgers.
-
-The core owns operator intent in local evidence files and broadcasts it.
-
-Operation evidence is local to the core and mortal with it unless an external
-subscriber, such as Cloud, stores durable history.
-
-RPC artifact push moves larger control-plane artifacts to the machines that use
-them.
-
-Each machine keeps a local fact ledger of durable machine-owned facts: route
-attachments applied there, served certificate material, assigned substrate
-state, last-known-good projections. The ledger is machine truth, never
-cluster truth; the cluster view is assembled from machine facts and Docker
-reality, which is what makes the core rebuildable.
-
-Machine-local storage outside the fact ledger is a cache and evidence surface,
-not truth of any kind.
-
-Operation state is first-class:
-
-```text
-accepted
-planning
-running
-waiting_for_health
-completed
-failed
-cancelled
-```
-
-Terminal failures should carry typed details: what failed, where it failed,
-what was retained, and what the operator can do next.
+Membership is a roster row plus the mesh peer set. Machines are admitted by
+SSH provisioning or a revocable multi-use join token; Ployz Cloud mints
+tokens as an ordinary mesh peer. Namespace isolation is policy on the flat
+mesh, never topology. Ingress and caller identity sit behind thin seams:
+ingress provider (direct, Cloudflare Tunnel, Tailscale Funnel) and Principal.
 
 ## Consistency Thesis
 
-Machines own their runtime truth. The control plane is one disposable core.
-Nothing in the cluster runs consensus.
+Converged beats coordinated.
 
-When the core is unreachable, operations fail loudly with typed errors and
-the data plane keeps serving last-known-good state with visible freshness.
-Recovering a lost core is bounded core promotion plus fresh machine fact
-broadcasts; preserved or restored intent evidence is adopted, while lost
-intent must be re-entered rather than inferred.
+Every machine holds the whole cluster's config. A write accepted anywhere
+converges everywhere; no machine's loss blocks commanding the rest. The worst
+failure class this product recognizes is a control plane the operator must
+size, back up, or repair before they can command their own machines.
 
-Loud unavailability always beats silently divergent truth. Ployz does not
-adopt a consensus database, and it does not adopt a partition-tolerant store
-whose writes merge silently. `docs/architecture/backbone.md` carries the full
-thesis and its guardrails.
+The price, stated plainly: writes merge last-writer-wins. Under concurrent or
+partitioned writes, an earlier config command can silently lose to a later
+one. For a single operator that conflict means racing yourself inside a
+sub-second convergence window — rare, and priced in. Rows carry writer and
+timestamp so a fold can be surfaced after the fact; Ployz does not build
+coordination machinery to prevent one.
 
-## Code Standard
+The trust ceiling: membership is write authority. Admitting a machine trusts
+it with the cluster's config, so admission is the security decision.
+Operator-signed rows are deferred until hostile-edge or multi-tenant demand
+is real; the additive schema and per-row writer identity keep that retrofit
+open.
 
-Business logic should be extremely easy to read.
+`docs/architecture/backbone.md` turns this thesis into review checks.
 
-The deploy path should look like product policy:
+## State Model
 
-```text
-validate request
-create operation
-load current service state
-acquire resource lock
-plan changed containers
-run predeploy
-start replacements
-wait for health
-switch route
-remove old containers
-commit active revision
-complete operation
-```
+Rows, each with one writer:
 
-The hard infrastructure behavior should come from NATS subjects, service calls,
-and permissions. Ployz should not build custom versions of service discovery,
-job engines, progress fanout, current state fanout, or permission routing.
+- Config rows are operator decisions, written through any machine's API and
+  converged everywhere. Keeper enforces them; it never authors them.
+- Status rows are machine testimony. Each machine writes only its own.
+- Docker is execution reality. Status rows report it, never replace it.
 
-Prefer:
-
-- plain structs,
-- explicit enums,
-- narrow modules,
-- small async functions,
-- typed ids,
-- typed failures,
-- obvious ownership boundaries.
-
-Avoid:
-
-- broad frameworks,
-- generic operation engines,
-- actor systems,
-- hidden reconcilers,
-- stringly state,
-- sparse option bags,
-- clever subject type algebra,
-- background mutation without an operation owner.
+Freshness is visible — mesh last-handshake age and row timestamps — and
+never inferred. A command against an unreachable machine fails instantly
+with a typed refusal; the rest of the cluster stays commandable, and the
+data plane keeps serving.
 
 ## Cloud Relationship
 
-Ployz Cloud is a consumer of the core.
-
-Cloud owns product workflow state: organizations, projects, GitHub integration,
-build records, billing, notifications, UI history, and long-running product
-workflow orchestration.
-
-The core owns runtime truth: machines, services, routes, certs, observations,
-operation events, operation status, retained artifacts, and cleanup primitives.
-
-Cloud should call small core operations and watch operation events. It should
-not orchestrate low-level machine work.
+Ployz Cloud is a consumer and an ordinary mesh peer. It owns product
+workflow state: organizations, projects, GitHub integration, build records,
+billing, notifications, and durable history it chooses to keep. The cluster
+owns runtime truth. Cloud writes the same rows and watches the same status
+the CLI does; it does not orchestrate machine-local work.
