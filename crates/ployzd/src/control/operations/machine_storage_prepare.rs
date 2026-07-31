@@ -17,7 +17,7 @@ use crate::roles::machine::protocol::{
 use crate::tasks::TaskSpawner;
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::operation::{
-    FailureMessage, MachineStoragePrepareFailure, MachineStoragePrepareTransition,
+    FailureMessage, MachineStoragePrepareFailure, MachineStoragePrepareTransition, OperationKind,
 };
 
 const REPORT_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -77,7 +77,7 @@ impl MachineStoragePrepareOperation {
             .await
     }
 
-    #[tracing::instrument(name = "operation", level = "error", skip_all, fields(kind = "machine_storage_prepare", operation_id = accepted.operation_id.as_str()))]
+    #[tracing::instrument(name = "operation", skip_all, fields(kind = OperationKind::MachineStoragePrepare.as_str(), operation_id = accepted.operation_id.as_str()))]
     async fn run(self, accepted: AcceptedMachineStoragePrepareSubmission) {
         self.clone().run_inner(accepted).await;
     }

@@ -12,7 +12,7 @@ use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::operation::{
     BuildCleanupEvidence, BuildEvidence, BuildOperationFailure, BuildPlatformFailure,
     BuildTimeoutFailure, BuildTransition, CancellationReason, EventSequence, FailureMessage,
-    OperationStatus,
+    OperationKind, OperationStatus,
 };
 use ployz_nats::service_runtime::request_json;
 use ployz_nats::subjects::{
@@ -236,7 +236,7 @@ impl BuildOperationDriver {
         })
     }
 
-    #[tracing::instrument(name = "operation", level = "error", skip_all, fields(kind = "build", operation_id = accepted.submission.operation_id.as_str()))]
+    #[tracing::instrument(name = "operation", skip_all, fields(kind = OperationKind::Build.as_str(), operation_id = accepted.submission.operation_id.as_str()))]
     async fn run(self, accepted: AcceptedBuildExecution) {
         let id = accepted.submission.operation_id.clone();
         let result = self.run_inner(&accepted).await;

@@ -163,6 +163,33 @@ pub enum OperationKind {
     VolumeRemove,
 }
 
+impl OperationKind {
+    /// The wire-level snake_case name, identical to the serde encoding, for
+    /// non-serde surfaces such as log fields.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Build => "build",
+            Self::Deploy => "deploy",
+            Self::Cert => "cert",
+            Self::MachineAdd => "machine_add",
+            Self::MachineBuildCachePrune => "machine_build_cache_prune",
+            Self::MachineUpdate => "machine_update",
+            Self::MachineStoragePrepare => "machine_storage_prepare",
+            Self::MachineLifecycle => "machine_lifecycle",
+            Self::CoreReplace => "core_replace",
+            Self::CredentialGrant => "credential_grant",
+            Self::NetworkRepair => "network_repair",
+            Self::ServiceRestart => "service_restart",
+            Self::ManagedDnsReconcile => "managed_dns_reconcile",
+            Self::IngressConfigure => "ingress_configure",
+            Self::NamespaceRemove => "namespace_remove",
+            Self::VolumeCreate => "volume_create",
+            Self::VolumeRemove => "volume_remove",
+        }
+    }
+}
+
 /// Operation status projection rebuilt from local operation evidence.
 ///
 /// Changing this shape intentionally breaks operation status recovery unless
@@ -737,4 +764,36 @@ positive_u64_wire_newtype! {
 positive_u64_wire_error! {
     pub enum EventSequenceError;
     noun: "event sequence";
+}
+
+#[cfg(test)]
+mod operation_kind_tests {
+    use super::OperationKind;
+
+    #[test]
+    fn as_str_matches_the_serde_encoding_for_every_kind() {
+        let kinds = [
+            OperationKind::Build,
+            OperationKind::Deploy,
+            OperationKind::Cert,
+            OperationKind::MachineAdd,
+            OperationKind::MachineBuildCachePrune,
+            OperationKind::MachineUpdate,
+            OperationKind::MachineStoragePrepare,
+            OperationKind::MachineLifecycle,
+            OperationKind::CoreReplace,
+            OperationKind::CredentialGrant,
+            OperationKind::NetworkRepair,
+            OperationKind::ServiceRestart,
+            OperationKind::ManagedDnsReconcile,
+            OperationKind::IngressConfigure,
+            OperationKind::NamespaceRemove,
+            OperationKind::VolumeCreate,
+            OperationKind::VolumeRemove,
+        ];
+        for kind in kinds {
+            let encoded = serde_json::to_value(kind).expect("kind serializes");
+            assert_eq!(encoded, serde_json::Value::from(kind.as_str()));
+        }
+    }
 }

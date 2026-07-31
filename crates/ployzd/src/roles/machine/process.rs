@@ -151,13 +151,9 @@ pub async fn start_machine_process(
     // The machine credential may not exist yet (first machine before
     // activate-first-machine): awaiting it is a typed bounded-retry state,
     // not a crash loop.
-    let connect = await_role_credentials(
-        "machine",
-        &config.nats,
-        &SeedFileRetryPolicy::default_policy(),
-    )
-    .await
-    .map_err(MachineProcessError::AwaitCredentials)?;
+    let connect = await_role_credentials(&config.nats, &SeedFileRetryPolicy::default_policy())
+        .await
+        .map_err(MachineProcessError::AwaitCredentials)?;
     // Build the failover pool from the persisted mirror *before* connecting, so a
     // machine rebooting during a core outage dials a promoted core from its cached
     // roster rather than timing out on the possibly-dead configured seed.

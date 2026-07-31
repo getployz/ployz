@@ -7,7 +7,6 @@ use std::time::Duration;
 
 use futures_util::FutureExt;
 use tokio::task::AbortHandle;
-use tracing::Instrument;
 
 type TaskId = u64;
 
@@ -190,27 +189,21 @@ where
     let weak_state = Arc::downgrade(state);
     let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
     let future = build();
-    // Spawned tasks inherit the caller's span (the role span during process
-    // startup) so their log lines keep `process` attribution; tokio::spawn
-    // alone would detach them from the current span.
-    let task = tokio::spawn(
-        async move {
-            let outcome = AssertUnwindSafe(future).catch_unwind().await;
-            if let Some(state) = weak_state.upgrade() {
-                let mut state = state.lock().expect("task registry lock is not poisoned");
-                state.active.remove(&task_id);
-                if let Err(payload) = outcome {
-                    state.panicked_tasks = state.panicked_tasks.saturating_add(1);
-                    state.last_failure = Some(TaskSupervisorFailure {
-                        task_id,
-                        message: panic_message(payload),
-                    });
-                }
+    let task = tokio::spawn(async move {
+        let outcome = AssertUnwindSafe(future).catch_unwind().await;
+        if let Some(state) = weak_state.upgrade() {
+            let mut state = state.lock().expect("task registry lock is not poisoned");
+            state.active.remove(&task_id);
+            if let Err(payload) = outcome {
+                state.panicked_tasks = state.panicked_tasks.saturating_add(1);
+                state.last_failure = Some(TaskSupervisorFailure {
+                    task_id,
+                    message: panic_message(payload),
+                });
             }
-            let _ = completion_tx.send(());
         }
-        .instrument(tracing::Span::current()),
-    );
+        let _ = completion_tx.send(());
+    });
     registry.active.insert(
         task_id,
         ActiveTask {

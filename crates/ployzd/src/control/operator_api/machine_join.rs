@@ -10,7 +10,6 @@ use ployz_core::machine::{
     active_machine_from_completed_add,
 };
 use ployz_core::operation::{MachineAddOperationState, OperationStatus};
-use ployz_nats::subjects::INTENT_CHANGED;
 use ployz_sdk_types::{
     MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemResult, MachineJoinRedeemed,
     MachineJoinReportError, MachineJoinReportFailure, MachineJoinReportOutcome,
@@ -427,10 +426,11 @@ async fn activate_reported_machine(
         .map_err(|error| MachineJoinReportError::Unavailable {
             message: error.to_string(),
         })?;
-    let _ = handlers
-        .intent_change_client
-        .publish(INTENT_CHANGED, Vec::new().into())
-        .await;
+    crate::control::operations::publish_intent_changed(
+        &handlers.intent_change_client,
+        "machine-join-commit",
+    )
+    .await;
     Ok(())
 }
 

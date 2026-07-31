@@ -4,8 +4,9 @@ use crate::control::intent::ingress_intent::{
 use crate::control::operation_evidence::AcceptedIngressConfigureSubmission;
 use crate::control::sequencer::OperationControllers;
 use crate::tasks::TaskSpawner;
-use ployz_core::operation::{FailureMessage, IngressConfigureFailure, IngressConfigureTransition};
-use ployz_nats::subjects::INTENT_CHANGED;
+use ployz_core::operation::{
+    FailureMessage, IngressConfigureFailure, IngressConfigureTransition, OperationKind,
+};
 
 #[derive(Debug, Clone)]
 pub struct IngressConfigureOperation {
@@ -47,13 +48,13 @@ impl IngressConfigureOperation {
         .await;
     }
 
-    #[tracing::instrument(name = "operation", level = "error", skip_all, fields(kind = "ingress_configure", operation_id = accepted.operation_id.as_str()))]
+    #[tracing::instrument(name = "operation", skip_all, fields(kind = OperationKind::IngressConfigure.as_str(), operation_id = accepted.operation_id.as_str()))]
     async fn run(self, accepted: AcceptedIngressConfigureSubmission) {
         let operation_id = accepted.operation_id;
         let transition = match self.intent.replace(accepted.configuration).await {
             Ok(write) => {
                 if matches!(write, IngressConfigurationWrite::Stored) {
-                    let _ = self.client.publish(INTENT_CHANGED, Vec::new().into()).await;
+                    super::publish_intent_changed(&self.client, "ingress-configure-commit").await;
                 }
                 IngressConfigureTransition::Completed
             }

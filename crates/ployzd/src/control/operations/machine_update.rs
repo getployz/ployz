@@ -9,7 +9,9 @@ use crate::roles::machine::protocol::MachineSubstrateUpdateRpcRequest;
 use crate::tasks::TaskSpawner;
 use ployz_core::ids::MachineId;
 use ployz_core::install::InstallArtifactVersion;
-use ployz_core::operation::{FailureMessage, MachineUpdateFailure, MachineUpdateTransition};
+use ployz_core::operation::{
+    FailureMessage, MachineUpdateFailure, MachineUpdateTransition, OperationKind,
+};
 use ployz_core::operation::{MACHINE_UPDATE_REPORT_TIMEOUT, MachineSubstrateVersions};
 use std::time::{Duration, Instant};
 
@@ -53,7 +55,7 @@ impl MachineUpdateOperation {
         super::finish_rejected_task_admission(&self.controllers, &operation_id, admission).await;
     }
 
-    #[tracing::instrument(name = "operation", level = "error", skip_all, fields(kind = "machine_update", operation_id = accepted.operation_id.as_str()))]
+    #[tracing::instrument(name = "operation", skip_all, fields(kind = OperationKind::MachineUpdate.as_str(), operation_id = accepted.operation_id.as_str()))]
     pub async fn run(self, accepted: AcceptedMachineUpdateSubmission) {
         self.clone().run_inner(accepted).await;
     }

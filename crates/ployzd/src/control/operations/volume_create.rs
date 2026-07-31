@@ -16,8 +16,8 @@ use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::intent::VolumePinState;
 use ployz_core::machine::{StorageCapability, StorageTestimony, VolumeEnsureFailure};
 use ployz_core::operation::{
-    FailureMessage, VolumeCreateFailure, VolumeCreateRequest, VolumeCreateRunningStage,
-    VolumeCreateTransition,
+    FailureMessage, OperationKind, VolumeCreateFailure, VolumeCreateRequest,
+    VolumeCreateRunningStage, VolumeCreateTransition,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,7 +113,7 @@ impl VolumeCreateOperation {
         .await;
     }
 
-    #[tracing::instrument(name = "operation", level = "error", skip_all, fields(kind = "volume_create", operation_id = accepted.request.operation_id.as_str()))]
+    #[tracing::instrument(name = "operation", skip_all, fields(kind = OperationKind::VolumeCreate.as_str(), operation_id = accepted.request.operation_id.as_str()))]
     async fn run(self, accepted: AcceptedVolumeCreateSubmission) {
         let namespace_id = accepted.request.namespace_id.clone();
         let operation_id = accepted.request.operation_id.clone();
@@ -227,13 +227,7 @@ impl VolumePinCommitter for IntentVolumePinCommitter {
             .replace_volume_pin(pin)
             .await
             .map_err(|error| error.to_string())?;
-        if let Err(error) = self
-            .intent_change_client
-            .publish(ployz_nats::subjects::INTENT_CHANGED, Vec::new().into())
-            .await
-        {
-            tracing::warn!(error = %error, "intent-changed publish failed after volume pin commit");
-        }
+        super::publish_intent_changed(&self.intent_change_client, "volume-pin-commit").await;
         Ok(())
     }
 }

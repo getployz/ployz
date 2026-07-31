@@ -13,11 +13,11 @@ use ployz_core::deploy::{DatasetName, VolumeName};
 use ployz_core::ids::{MachineId, NamespaceId, OperationId};
 use ployz_core::intent::{IntentSnapshot, ProvisionedVolumePinState, VolumePinState};
 use ployz_core::operation::{
-    FailureMessage, VolumeRemoveFailure, VolumeRemoveRunningStage, VolumeRemoveTransition,
+    FailureMessage, OperationKind, VolumeRemoveFailure, VolumeRemoveRunningStage,
+    VolumeRemoveTransition,
 };
 
 use crate::roles::machine::protocol::MachineVolumeRemoveDomainError;
-use ployz_nats::subjects::INTENT_CHANGED;
 use std::future::Future;
 use std::time::Duration;
 
@@ -64,7 +64,7 @@ impl VolumeRemoveOperation {
         .await;
     }
 
-    #[tracing::instrument(name = "operation", level = "error", skip_all, fields(kind = "volume_remove", operation_id = accepted.operation_id.as_str()))]
+    #[tracing::instrument(name = "operation", skip_all, fields(kind = OperationKind::VolumeRemove.as_str(), operation_id = accepted.operation_id.as_str()))]
     pub async fn run(self, accepted: AcceptedVolumeRemoveSubmission) {
         let operation_id = accepted.operation_id.clone();
         let namespace_id = accepted.namespace_id.clone();
@@ -194,11 +194,7 @@ impl VolumeRemoveRuntime for NatsVolumeRemoveRuntime<'_> {
     }
 
     async fn publish_intent_changed(&self) {
-        let _ = self
-            .operation
-            .client
-            .publish(INTENT_CHANGED, Vec::new().into())
-            .await;
+        super::publish_intent_changed(&self.operation.client, "volume-remove-commit").await;
     }
 }
 

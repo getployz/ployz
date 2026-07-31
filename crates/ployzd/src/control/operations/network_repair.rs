@@ -25,7 +25,7 @@ use ployz_core::network::internal_dns::{
 use ployz_core::operation::{
     FailureMessage, NetworkRepairDnsRefreshProblem, NetworkRepairEvidence, NetworkRepairFailure,
     NetworkRepairMachineFactsRefreshOutcome, NetworkRepairProgressPhase,
-    NetworkRepairRequestFailure, NetworkRepairRunningStage, NetworkRepairTransition,
+    NetworkRepairRequestFailure, NetworkRepairRunningStage, NetworkRepairTransition, OperationKind,
 };
 use ployz_nats::service_runtime::NatsJsonServiceRequestError;
 use std::time::Duration;
@@ -90,7 +90,7 @@ impl NetworkRepairOperation {
         .await;
     }
 
-    #[tracing::instrument(name = "operation", level = "error", skip_all, fields(kind = "network_repair", operation_id = accepted.operation_id.as_str()))]
+    #[tracing::instrument(name = "operation", skip_all, fields(kind = OperationKind::NetworkRepair.as_str(), operation_id = accepted.operation_id.as_str()))]
     pub async fn run(self, accepted: AcceptedNetworkRepairSubmission) {
         let operation_id = accepted.operation_id;
         if let Err(error) = self

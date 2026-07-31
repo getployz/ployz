@@ -64,11 +64,10 @@ pub fn observe_role_credentials(
 }
 
 /// Re-reads the seed file with bounded backoff until it becomes readable
-/// or the retry budget is exhausted. Each awaiting tick is reported on
-/// stderr (`awaiting-credentials`) so the process health is visible rather
-/// than a silent hang or a crash loop.
+/// or the retry budget is exhausted. Each awaiting tick emits a warning
+/// event so the process health is visible rather than a silent hang or a
+/// crash loop; a filter that drops warnings also drops this heartbeat.
 pub async fn await_role_credentials(
-    process_name: &str,
     connect: &RoleNatsConnect,
     policy: &SeedFileRetryPolicy,
 ) -> Result<NatsConnectConfig, AwaitSeedFileError> {
@@ -83,7 +82,6 @@ pub async fn await_role_credentials(
                 last_error: error,
             } => {
                 tracing::warn!(
-                    process = process_name,
                     path = %path.display(),
                     attempt = attempts,
                     max_attempts = policy.max_attempts,

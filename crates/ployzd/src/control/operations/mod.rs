@@ -1,8 +1,31 @@
 //! Control-owned mutating operation execution.
 
+use std::time::Duration;
+
 use ployz_core::ids::OperationId;
+use ployz_nats::subjects::INTENT_CHANGED;
 
 use crate::tasks::TaskAdmissionError;
+
+const INTENT_CHANGED_PUBLISH_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Best-effort intent-changed poke after a committed intent write. Fanout
+/// only — a missed poke is repaired by the drumbeat rebroadcast, so a
+/// failure never fails the operation — but it is still evidence worth a
+/// warning, and the publish is bounded so no commit path can hang on a
+/// slow client. `after` names the commit the poke follows.
+pub(crate) async fn publish_intent_changed(client: &async_nats::Client, after: &'static str) {
+    let publish = client.publish(INTENT_CHANGED, Vec::new().into());
+    match tokio::time::timeout(INTENT_CHANGED_PUBLISH_TIMEOUT, publish).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            tracing::warn!(after, error = %error, "intent-changed publish failed");
+        }
+        Err(_) => {
+            tracing::warn!(after, "intent-changed publish timed out");
+        }
+    }
+}
 
 pub mod build;
 pub mod credential_grant;

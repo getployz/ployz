@@ -80,10 +80,9 @@ pub async fn start_dns_process(
 ) -> Result<RunningDnsProcess, DnsProcessError> {
     // DNS authenticates as the machine's Machine user (no DNS principal in
     // v1) and awaits the seed file like the machine and gateway roles do.
-    let connect =
-        await_role_credentials("dns", &config.nats, &SeedFileRetryPolicy::default_policy())
-            .await
-            .map_err(DnsProcessError::AwaitCredentials)?;
+    let connect = await_role_credentials(&config.nats, &SeedFileRetryPolicy::default_policy())
+        .await
+        .map_err(DnsProcessError::AwaitCredentials)?;
     let mirror = IntentMirror::beside_seed_file(&config.nats.seed_file);
     let pool = mirrored_server_pool(&mirror, &connect.url);
     let client = connect_authenticated_pool(&connect, &pool, DNS_NATS_CONNECT_TIMEOUT)

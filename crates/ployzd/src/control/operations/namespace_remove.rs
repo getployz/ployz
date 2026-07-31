@@ -18,10 +18,9 @@ use ployz_core::intent::ServingTargetEntry;
 use ployz_core::machine::runtime::{ManagedContainerIdentity, ManagedContainerKind};
 use ployz_core::operation::{
     FailureMessage, NamespaceRemoveFailure, NamespaceRemoveRunningStage, NamespaceRemoveTransition,
-    OperatorHint,
+    OperationKind, OperatorHint,
 };
 
-use ployz_nats::subjects::INTENT_CHANGED;
 use std::time::Duration;
 
 #[derive(Debug, Clone)]
@@ -68,7 +67,7 @@ impl NamespaceRemoveOperation {
         .await;
     }
 
-    #[tracing::instrument(name = "operation", level = "error", skip_all, fields(kind = "namespace_remove", operation_id = accepted.operation_id.as_str()))]
+    #[tracing::instrument(name = "operation", skip_all, fields(kind = OperationKind::NamespaceRemove.as_str(), operation_id = accepted.operation_id.as_str()))]
     pub async fn run(self, accepted: AcceptedNamespaceRemoveSubmission) {
         let operation_id = accepted.operation_id.clone();
         let namespace_id = accepted.namespace_id.clone();
@@ -309,9 +308,7 @@ impl NamespaceRemoveOperation {
     }
 
     async fn publish_intent_changed(&self) {
-        if let Err(error) = self.client.publish(INTENT_CHANGED, Vec::new().into()).await {
-            tracing::warn!(error = %error, "intent-changed publish failed during namespace remove");
-        }
+        super::publish_intent_changed(&self.client, "namespace-remove-commit").await;
     }
 
     async fn record_running(

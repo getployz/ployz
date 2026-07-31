@@ -17,11 +17,11 @@ use ployz_core::machine::runtime::{
 use ployz_core::network::internal_dns::{
     InternalDnsFactGeneration, InternalDnsFactWatermark, InternalDnsResolverCacheIncarnation,
 };
-use tracing::Instrument;
 
 use ployz_nats::subjects::{gateway_status_scope, machine_facts_scope};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
@@ -278,10 +278,11 @@ pub async fn start_role_testimony_cache(
         })?;
     let cache = RoleTestimonyCache::default();
     let task_cache = cache.clone();
-    let task = tokio::spawn(
-        consume_role_testimony(task_cache, machine_facts, gateway_statuses)
-            .instrument(tracing::Span::current()),
-    );
+    let task = tokio::spawn(consume_role_testimony(
+        task_cache,
+        machine_facts,
+        gateway_statuses,
+    ));
 
     Ok(RunningRoleTestimonyCache { cache, task })
 }
@@ -291,15 +292,82 @@ async fn consume_role_testimony(
     mut machine_facts: async_nats::Subscriber,
     mut gateway_statuses: async_nats::Subscriber,
 ) {
+    let mut throttle = DecodeFailureThrottle::default();
     loop {
         tokio::select! {
             Some(message) = machine_facts.next() => {
-                ingest_machine_fact(&cache, message.subject.as_str(), &message.payload);
+                ingest_machine_fact(&cache, &mut throttle, message.subject.as_str(), &message.payload);
             }
             Some(message) = gateway_statuses.next() => {
-                ingest_gateway_status(&cache, message.subject.as_str(), &message.payload);
+                ingest_gateway_status(&cache, &mut throttle, message.subject.as_str(), &message.payload);
             }
             else => break,
+        }
+    }
+}
+
+/// Per-subject throttle for undecodable-testimony warnings. Schema drift
+/// between a machine and this core persists for a whole version-skew
+/// window, and machines publish periodically, so an unthrottled warn per
+/// message would flood the journal from the one loop that ingests every
+/// machine's testimony. The first failure per subject reports immediately;
+/// afterwards at most one report per interval, carrying the count of
+/// messages dropped silently since the last report.
+struct DecodeFailureThrottle {
+    interval: Duration,
+    subjects: HashMap<String, DecodeFailureWindow>,
+}
+
+struct DecodeFailureWindow {
+    last_report: Instant,
+    suppressed: u64,
+}
+
+const DECODE_FAILURE_REPORT_INTERVAL: Duration = Duration::from_secs(60);
+
+impl Default for DecodeFailureThrottle {
+    fn default() -> Self {
+        Self {
+            interval: DECODE_FAILURE_REPORT_INTERVAL,
+            subjects: HashMap::new(),
+        }
+    }
+}
+
+/// Whether one more decode failure on a subject should be reported now.
+enum DecodeFailureReport {
+    /// Report, including how many failures were suppressed since the last
+    /// report on this subject.
+    Report {
+        suppressed: u64,
+    },
+    Suppress,
+}
+
+impl DecodeFailureThrottle {
+    fn observe(&mut self, subject: &str, now: Instant) -> DecodeFailureReport {
+        match self.subjects.get_mut(subject) {
+            None => {
+                self.subjects.insert(
+                    subject.to_owned(),
+                    DecodeFailureWindow {
+                        last_report: now,
+                        suppressed: 0,
+                    },
+                );
+                DecodeFailureReport::Report { suppressed: 0 }
+            }
+            Some(window) => {
+                if now.duration_since(window.last_report) >= self.interval {
+                    let suppressed = window.suppressed;
+                    window.last_report = now;
+                    window.suppressed = 0;
+                    DecodeFailureReport::Report { suppressed }
+                } else {
+                    window.suppressed = window.suppressed.saturating_add(1);
+                    DecodeFailureReport::Suppress
+                }
+            }
         }
     }
 }
@@ -316,7 +384,12 @@ fn subject_machine_id(subject: &str) -> Option<MachineId> {
     MachineId::try_new(*machine_id).ok()
 }
 
-fn ingest_machine_fact(cache: &RoleTestimonyCache, subject: &str, payload: &[u8]) {
+fn ingest_machine_fact(
+    cache: &RoleTestimonyCache,
+    throttle: &mut DecodeFailureThrottle,
+    subject: &str,
+    payload: &[u8],
+) {
     let Some(owner) = subject_machine_id(subject) else {
         warn_unowned_subject(subject);
         return;
@@ -337,16 +410,26 @@ fn ingest_machine_fact(cache: &RoleTestimonyCache, subject: &str, payload: &[u8]
         // An undecodable payload usually means schema drift between a
         // machine and this core; dropping it silently would freeze the
         // cached facts while health still looks green.
-        tracing::warn!(
-            phase = "ingest",
-            subject,
-            payload_bytes = payload.len(),
-            "dropped machine testimony that decodes as neither a facts snapshot nor a container fact delta"
-        );
+        if let DecodeFailureReport::Report { suppressed } =
+            throttle.observe(subject, Instant::now())
+        {
+            tracing::warn!(
+                phase = "ingest",
+                subject,
+                payload_bytes = payload.len(),
+                suppressed,
+                "dropped machine testimony that decodes as neither a facts snapshot nor a container fact delta"
+            );
+        }
     }
 }
 
-fn ingest_gateway_status(cache: &RoleTestimonyCache, subject: &str, payload: &[u8]) {
+fn ingest_gateway_status(
+    cache: &RoleTestimonyCache,
+    throttle: &mut DecodeFailureThrottle,
+    subject: &str,
+    payload: &[u8],
+) {
     let Some(owner) = subject_machine_id(subject) else {
         warn_unowned_subject(subject);
         return;
@@ -357,11 +440,14 @@ fn ingest_gateway_status(cache: &RoleTestimonyCache, subject: &str, payload: &[u
         } else {
             warn_machine_id_mismatch(subject, &status.machine_id);
         }
-    } else {
+    } else if let DecodeFailureReport::Report { suppressed } =
+        throttle.observe(subject, Instant::now())
+    {
         tracing::warn!(
             phase = "ingest",
             subject,
             payload_bytes = payload.len(),
+            suppressed,
             "dropped gateway testimony that does not decode as a gateway status observation"
         );
     }
@@ -612,6 +698,7 @@ mod tests {
 
         ingest_machine_fact(
             &cache,
+            &mut DecodeFailureThrottle::default(),
             "plz.v1.testimony.machine.machine_a.snapshot",
             &serde_json::to_vec(&facts).expect("facts serialize"),
         );
@@ -626,6 +713,7 @@ mod tests {
 
         ingest_machine_fact(
             &cache,
+            &mut DecodeFailureThrottle::default(),
             "plz.v1.testimony.machine.machine_b.snapshot",
             &serde_json::to_vec(&facts).expect("facts serialize"),
         );
@@ -644,6 +732,7 @@ mod tests {
 
         ingest_machine_fact(
             &cache,
+            &mut DecodeFailureThrottle::default(),
             "plz.v1.testimony.machine.machine_b.containers",
             &serde_json::to_vec(&delta).expect("delta serializes"),
         );
@@ -665,6 +754,7 @@ mod tests {
 
         ingest_gateway_status(
             &cache,
+            &mut DecodeFailureThrottle::default(),
             "plz.v1.testimony.gateway.machine_b.status",
             &serde_json::to_vec(&status).expect("status serializes"),
         );
@@ -719,5 +809,37 @@ mod tests {
 
     fn container_id(value: &str) -> ContainerId {
         ContainerId::try_new(value).expect("valid container id")
+    }
+
+    #[test]
+    fn decode_failure_throttle_reports_first_then_once_per_interval_with_suppressed_count() {
+        let mut throttle = DecodeFailureThrottle::default();
+        let start = Instant::now();
+        let subject = "plz.v1.testimony.machine.machine_a.snapshot";
+
+        assert!(matches!(
+            throttle.observe(subject, start),
+            DecodeFailureReport::Report { suppressed: 0 }
+        ));
+        assert!(matches!(
+            throttle.observe(subject, start + Duration::from_secs(1)),
+            DecodeFailureReport::Suppress
+        ));
+        assert!(matches!(
+            throttle.observe(subject, start + Duration::from_secs(2)),
+            DecodeFailureReport::Suppress
+        ));
+        assert!(matches!(
+            throttle.observe(
+                subject,
+                start + DECODE_FAILURE_REPORT_INTERVAL + Duration::from_secs(2)
+            ),
+            DecodeFailureReport::Report { suppressed: 2 }
+        ));
+        // A different subject reports independently.
+        assert!(matches!(
+            throttle.observe("plz.v1.testimony.machine.machine_b.snapshot", start),
+            DecodeFailureReport::Report { suppressed: 0 }
+        ));
     }
 }

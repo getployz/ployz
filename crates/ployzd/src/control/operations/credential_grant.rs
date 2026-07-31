@@ -7,8 +7,8 @@ use crate::control::sequencer::OperationControllers;
 use crate::tasks::TaskSpawner;
 use ployz_core::operation::{
     CredentialGrantAction, CredentialGrantFailure, CredentialGrantTransition, FailureMessage,
+    OperationKind,
 };
-use ployz_nats::subjects::INTENT_CHANGED;
 
 #[derive(Debug, Clone)]
 pub struct CredentialGrantOperation {
@@ -50,7 +50,7 @@ impl CredentialGrantOperation {
         .await;
     }
 
-    #[tracing::instrument(name = "operation", level = "error", skip_all, fields(kind = "credential_grant", operation_id = accepted.operation_id.as_str()))]
+    #[tracing::instrument(name = "operation", skip_all, fields(kind = OperationKind::CredentialGrant.as_str(), operation_id = accepted.operation_id.as_str()))]
     async fn run(self, accepted: AcceptedCredentialGrantSubmission) {
         let operation_id = accepted.operation_id;
         let result = match accepted.action {
@@ -62,7 +62,7 @@ impl CredentialGrantOperation {
         let transition = match result {
             Ok(result) => {
                 if !matches!(result.change, CredentialMutationChange::Unchanged) {
-                    let _ = self.client.publish(INTENT_CHANGED, Vec::new().into()).await;
+                    super::publish_intent_changed(&self.client, "credential-grant-commit").await;
                 }
                 CredentialGrantTransition::Completed
             }

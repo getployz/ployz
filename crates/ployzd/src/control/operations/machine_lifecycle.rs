@@ -9,8 +9,9 @@ use crate::control::operation_evidence::AcceptedMachineLifecycleSubmission;
 use crate::control::sequencer::OperationControllers;
 use crate::tasks::TaskSpawner;
 use ployz_core::ids::{MachineId, OperationId};
-use ployz_core::operation::{FailureMessage, MachineLifecycleFailure, MachineLifecycleTransition};
-use ployz_nats::subjects::INTENT_CHANGED;
+use ployz_core::operation::{
+    FailureMessage, MachineLifecycleFailure, MachineLifecycleTransition, OperationKind,
+};
 
 #[derive(Debug, Clone)]
 pub struct MachineLifecycleOperation {
@@ -53,7 +54,7 @@ impl MachineLifecycleOperation {
         .await;
     }
 
-    #[tracing::instrument(name = "operation", level = "error", skip_all, fields(kind = "machine_lifecycle", operation_id = accepted.operation_id.as_str()))]
+    #[tracing::instrument(name = "operation", skip_all, fields(kind = OperationKind::MachineLifecycle.as_str(), operation_id = accepted.operation_id.as_str()))]
     pub async fn run(self, accepted: AcceptedMachineLifecycleSubmission) {
         let operation_id = accepted.operation_id;
         let machine_id = accepted.machine_id;
@@ -73,12 +74,11 @@ impl MachineLifecycleOperation {
                 .await;
             }
             Ok(MachineLifecycleUpdate::Changed) => {
-                // Fanout only: readers re-issue intent.get; a missed poke is
-                // repaired by the drumbeat rebroadcast.
-                let _ = self
-                    .intent_change_client
-                    .publish(INTENT_CHANGED, Vec::new().into())
-                    .await;
+                super::publish_intent_changed(
+                    &self.intent_change_client,
+                    "machine-lifecycle-commit",
+                )
+                .await;
                 self.record_terminal(
                     &operation_id,
                     &machine_id,

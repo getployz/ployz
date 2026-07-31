@@ -10,8 +10,6 @@ use ployz_core::operation::{
     CertOperationFailure, CertificateProvisionFailure, CertificateProvisionWarning, FailureMessage,
     RouteHostname,
 };
-use ployz_nats::subjects::INTENT_CHANGED;
-use tracing::Instrument;
 
 use super::GatewayCertificateTarget;
 use super::gateway::GatewayCertificateClient;
@@ -46,7 +44,7 @@ impl CertificateTaskOwner {
     {
         match self {
             Self::Runtime => {
-                tokio::spawn(build().instrument(tracing::Span::current()));
+                tokio::spawn(build());
                 Ok(())
             }
             Self::Control(tasks) => tasks.spawn(build),
@@ -522,7 +520,11 @@ impl CertificateManager {
             .await
             .map_err(|error| active_commit_failure(active.clone(), error))?;
         if matches!(activation, CertificateActivation::InstallNew { .. }) {
-            let _ = self.client.publish(INTENT_CHANGED, Vec::new().into()).await;
+            crate::control::operations::publish_intent_changed(
+                &self.client,
+                "certificate-activation",
+            )
+            .await;
         }
         Ok(active)
     }

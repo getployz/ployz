@@ -31,14 +31,13 @@ use ployz_core::ingress::CertificateOwner;
 use ployz_core::machine::runtime::{ContainerHealth, ContainerRuntimeState};
 use ployz_core::operation::{
     CertificateProvisionFailure, DeployOperationFailure, DeployOperationState, DeployTransition,
-    FailureMessage, OperationStatus, OperatorHint, RouteHostname, StatusProjectionError,
+    FailureMessage, OperationKind, OperationStatus, OperatorHint, RouteHostname,
+    StatusProjectionError,
 };
-use ployz_nats::subjects::INTENT_CHANGED;
 use std::collections::BTreeSet;
 use std::time::Duration;
 
 const DEPLOY_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
-const INTENT_CHANGED_PUBLISH_TIMEOUT: Duration = Duration::from_secs(2);
 const DEPLOY_PREVIEW_IMAGE_TRANSPORT_HEADROOM: Duration = Duration::from_millis(250);
 /// A container without a Docker healthcheck must stay running this long
 /// before deploy completion commits it: a fast-exiting process can be
@@ -285,18 +284,7 @@ impl NamespaceIntentCommitter {
     }
 
     async fn publish_intent_changed(&self) {
-        let publish = self
-            .intent_change_client
-            .publish(INTENT_CHANGED, Vec::new().into());
-        match tokio::time::timeout(INTENT_CHANGED_PUBLISH_TIMEOUT, publish).await {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => {
-                tracing::warn!(error = %error, "intent-changed publish failed after deploy commit");
-            }
-            Err(_) => {
-                tracing::warn!("intent-changed publish timed out after deploy commit");
-            }
-        }
+        super::super::publish_intent_changed(&self.intent_change_client, "deploy-commit").await;
     }
 }
 
@@ -591,7 +579,7 @@ impl DeployOperationDriver {
             })?
     }
 
-    #[tracing::instrument(name = "operation", level = "error", skip_all, fields(kind = "deploy", operation_id = accepted.submission.operation_id.as_str()))]
+    #[tracing::instrument(name = "operation", skip_all, fields(kind = OperationKind::Deploy.as_str(), operation_id = accepted.submission.operation_id.as_str()))]
     pub async fn run(
         self,
         accepted: AcceptedDeployExecution,
