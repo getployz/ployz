@@ -137,7 +137,7 @@ The built-in dataplane provider that implements dataplane projection through Plo
 _Avoid_: ManagedWireGuardEbpf, WireGuard data plane, generic mesh
 
 **Tailscale Dataplane Provider**:
-A candidate future Dataplane Provider that would carry dataplane projection over a Tailscale tailnet, with each machine advertising its Machine Endpoint Subnet as a subnet route. It is unimplemented and unwired: no Tailscale code exists in the product, and adopting it would be a cluster-wide Dataplane Provider Transition, never a per-machine choice. It is also the neutrality test for dataplane testimony under ADR 0038: a contract that cannot carry a tailnet's answer without branching on the implementation is not yet neutral. One consequence remains unresolved: subnet-route approval would move Machine Endpoint Subnet authority outside Ployz.
+A candidate future Dataplane Provider that would carry dataplane projection over a Tailscale tailnet, with each machine advertising its Machine Endpoint Subnet as a subnet route. It is unimplemented and unwired: no Tailscale code exists in the product, and adopting it would be a cluster-wide Dataplane Provider Transition, never a per-machine choice. It is also the neutrality test for the mesh-provider seam (ADR 0040): a contract that cannot carry a tailnet's answer without branching on the implementation is not yet neutral. One consequence remains unresolved: subnet-route approval would move Machine Endpoint Subnet authority outside Ployz.
 _Avoid_: Per-machine dataplane, machine capability, mixed provider rollout, Tailnet Subnet Access, assuming it exists
 
 **Dataplane Membership**:

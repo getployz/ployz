@@ -1,5 +1,5 @@
 # Machines Keep A Local Fact Ledger
 
-**Superseded by [ADR 0040](0040-corrosion-replaces-the-core-and-nats.md).**
-
-Each machine keeps a local SQLite ledger of durable machine-owned facts — route attachments applied there, served certificate material, assigned substrate state, and last-known-good gateway/DNS projections — merged with Docker reality at publish time into one machine fact snapshot. The ledger exists because container labels are immutable after create, so post-deploy mutations like route attach need a durable machine-local home, and because Core Assurance rebuilds live views from machine facts. The ledger has one writer (the local daemon, applying typed operation commands or local observations), holds facts only (never workflow state, queues, or cluster policy), and is the commit point for operations that mutate the machine, with the resulting fact snapshot published afterward as live testimony. Reassembly across machines is union plus deterministic, loud ambiguity — never last-write-wins. The ledger is machine truth, not cluster truth; it must not grow into a peer-readable store or a second control plane.
+**Superseded by [ADR 0040](0040-corrosion-replaces-the-core-and-nats.md)** —
+its Superseded list holds the one-line disposition; full text in git
+history.

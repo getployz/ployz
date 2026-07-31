@@ -6,8 +6,13 @@ multi-writer last-writer-wins, run as a plain systemd unit beside one
 `ployzd` binary per machine. Transport is HTTP/JSON with SSE watches over a
 pluggable WireGuard mesh, with cryptokey routing as caller identity.
 Membership is a roster row plus the mesh peer set, admitted by SSH
-provisioning or a revocable join token; membership is write authority, so
-admission is the security decision. Each machine's Keeper converges that
+provisioning or a revocable join token presented at the public join-only
+HTTPS door every machine serves, TLS pinned by the door-cert fingerprint
+carried inside the join blob; membership is write authority, so admission
+is the security decision. Revocation is row deletion and converges like
+any row: a partitioned door can honor a not-yet-converged revocation
+until the token's TTL — the same priced stale-truth class the thesis
+accepts, repaired by `machine rm`. Each machine's Keeper converges that
 machine's mesh substrate toward rows it does not own and reports into status
 rows nobody else may write. Every row has exactly one authority — the
 operator command stream or exactly one machine — so LWW only ever
@@ -69,6 +74,10 @@ drafted land with the consolidated spec.
   hub, no re-pointing, no epoch.
 - **0031 (recovery seams: hand-rolled epoch and mirrored intent snapshot)**
   — the epoch, the drumbeat mirror, and the candidate list are dead.
+- **0033 (deploy phases promote atomically)** — phase-atomic intent
+  transactions are replaced by one revision-gated `active_deploy` flip per
+  service: pre-flip failure never serves the new revision, and the old
+  revision runs through drain.
 - **0035 (fresh dataplane testimony gates new placement)** — the
   NATS-gathered testimony contract is gone; candidates answer live bids at
   the point of use, and the 275-second bound survives only as the staleness
@@ -92,8 +101,10 @@ The product-behavior ADRs carry over with their nouns translated: 0002,
 written; 0003 (operations are informational records) with operations as
 summary rows plus driver-local detail; 0004 (deploys are namespace
 reconciliation attempts) with the namespace lock replaced by the deploy
-op row as an optimistic claim — lowest live ULID wins, the loser aborts
-typed; 0005 (rebuild full views from invalidation) with Corrosion
+op row as an optimistic claim that narrows races without excluding them —
+partitioned drivers double-driving is the operator racing themselves,
+caught by the phase-boundary superseded check and swept by the next
+deploy; 0005 (rebuild full views from invalidation) with Corrosion
 subscriptions as the wake signal and re-query as the correctness path;
 0022 (revision entry identity is a versioned per-service digest) with the
 environment contribution as the row model's sha256 fingerprint —
@@ -102,10 +113,7 @@ trust ceiling — and the image frame as the digest-pinned reference; the
 Controller-seed HMAC and the receipt-index frame die with Control and
 receipts; 0027 (liveness surfaces at the point of use) with the mesh
 provider's reported last-verified age (WireGuard's last handshake for
-builtin) as the displayed evidence; 0033 (deploy phases promote
-atomically) with the intent transaction replaced by the revision-gated
-`active_deploy` flip — routing serves only the promoted revision, so
-readers cannot serve a half-converged phase; 0034 (public ingress DNS is
+builtin) as the displayed evidence; 0034 (public ingress DNS is
 external) with internal resolution fed by Corrosion rows instead of the
 drumbeat, mirror, machine RPC, and NATS failover; 0039 (host
 compatibility lives in profiles and supervisor adapters) with the typed
