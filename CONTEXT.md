@@ -453,7 +453,7 @@ A pre-activation claim created while a machine add is waiting for join. A reserv
 _Avoid_: Active machine, subnet allocation, accepted machine identity
 
 **Machine Endpoint Subnet**:
-A cluster-assigned IPv4 or IPv6 CIDR reserved for service container endpoints on one current machine. It is assigned when the machine identity is accepted into the cluster, remains stable while that machine is current, is released when the machine is removed, may be reused immediately after release, and must not be independently chosen by the machine.
+A cluster-assigned IPv4 or IPv6 CIDR reserved for service container endpoints on one current machine. It is assigned when the machine identity is accepted into the cluster, remains stable while that machine is current, is released when the machine is removed, may be reused immediately after release, and must not be independently chosen by the machine — with the row law's one named exception (ADR 0040): after a door-allocation collision survives convergence, the lowest-ULID machine re-picks its own transport subnet.
 _Avoid_: Runtime-derived subnet, local subnet choice, Docker network subnet as authority, first-boot local allocation, subnet cooldown
 
 **Pending Machine Endpoint Claim**:
@@ -497,7 +497,7 @@ An explicit operation that resolves a machine endpoint subnet mismatch. Endpoint
 _Avoid_: Startup repair, implicit network cleanup, automatic adoption
 
 **Machine Endpoint Allocation Corruption**:
-A diagnostic condition where durable machine records assign the same machine endpoint subnet to more than one machine identity, or otherwise violate endpoint subnet ownership rules. Ployz should report this through diagnostics rather than making normal startup scan the whole cluster for impossible allocation states.
+A diagnostic condition where durable machine records assign the same machine endpoint subnet to more than one machine identity, or otherwise violate endpoint subnet ownership rules. Ployz should report this through diagnostics rather than making normal startup scan the whole cluster for impossible allocation states. The v2 door-allocation collision on the transport subnet is the one excepted case (ADR 0040); other ownership violations remain diagnostic findings for explicit repair.
 _Avoid_: Startup-wide subnet audit, automatic repair
 
 **Machine Removal**:
