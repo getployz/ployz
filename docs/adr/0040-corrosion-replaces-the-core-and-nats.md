@@ -87,13 +87,22 @@ drafted land with the consolidated spec.
 ## Surviving, reread in v2 terms
 
 The product-behavior ADRs carry over with their nouns translated: 0002,
-0004, 0006, 0007, 0008, 0010, 0011, 0012, 0023, 0024, 0025, 0032, 0033,
-0034, and 0039 as written; 0003 (operations are informational records) with
-operations as summary rows plus driver-local detail; 0005 (rebuild full
-views from invalidation) with Corrosion subscriptions as the wake signal
-and re-query as the correctness path; 0022 (revision entry identity is a
-versioned per-service digest) with the environment contribution as the row
-model's sha256 fingerprint and the image frame as the digest-pinned
-reference — the Controller-seed HMAC and the receipt-index frame die with
-Control and receipts; 0027 (liveness surfaces at the point of use) with
-WireGuard last-handshake age as the displayed evidence.
+0006, 0007, 0008, 0010, 0011, 0012, 0023, 0024, 0025, 0032, and 0033 as
+written; 0003 (operations are informational records) with operations as
+summary rows plus driver-local detail; 0004 (deploys are namespace
+reconciliation attempts) with the namespace lock replaced by the deploy
+op row as an optimistic claim — lowest live ULID wins, the loser aborts
+typed; 0005 (rebuild full views from invalidation) with Corrosion
+subscriptions as the wake signal and re-query as the correctness path;
+0022 (revision entry identity is a versioned per-service digest) with the
+environment contribution as the row model's sha256 fingerprint —
+dictionary exposure of low-entropy values priced in under the membership
+trust ceiling — and the image frame as the digest-pinned reference; the
+Controller-seed HMAC and the receipt-index frame die with Control and
+receipts; 0027 (liveness surfaces at the point of use) with WireGuard
+last-handshake age as the displayed evidence; 0034 (public ingress DNS is
+external) with internal resolution fed by Corrosion rows instead of the
+drumbeat, mirror, machine RPC, and NATS failover; 0039 (host
+compatibility lives in profiles and supervisor adapters) with the typed
+NATS service units becoming the v2 per-role units plus the pinned
+Corrosion sidecar.
