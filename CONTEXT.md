@@ -33,7 +33,7 @@ The current serveable service set for a namespace. It tells gateways which servi
 _Avoid_: Active service, active revision, completed phase pointer
 
 **Phase**:
-A topological layer of services whose dependencies are satisfied at the same point in a deploy. A phase becomes serveable through one atomic promotion only after every service in the phase passes its required creation gate.
+A topological layer of services whose dependencies are satisfied at the same point in a deploy. Services in a phase start only after every dependency phase's services pass their required creation gates; serveability advances per service.
 _Avoid_: Manual phase, route promotion phase
 
 **Service Dependency**:
@@ -93,7 +93,7 @@ A gateway's local application of one route binding against the current serving t
 _Avoid_: Route binding, gateway config, active route
 
 **Ingress Endpoint Projection**:
-The canonical complete view of public IPv4 and IPv6 endpoints that DNS consumers may publish for cluster ingress. Its gather candidates are current accepted machines assigned the gateway role, including draining machines because draining does not stop existing serving; a candidate is publishable only when its gateway process gives fresh serving testimony and fresh machine facts supply an address. Explicit intent with no candidates makes the projection unavailable and authorizes withdrawal, while silence from declared gateways does not imply an empty endpoint set.
+The canonical complete view of public IPv4 and IPv6 endpoints that DNS consumers may publish for cluster ingress. Its gather candidates are current accepted machines serving the gateway role, including draining machines because draining does not stop existing serving; a candidate is publishable only when its gateway process gives fresh serving testimony and fresh machine facts supply an address. Explicit intent with no candidates makes the projection unavailable and authorizes withdrawal, while silence from declared gateways does not imply an empty endpoint set.
 _Avoid_: Route DNS projection, gateway membership, DNS provider state, inferred liveness
 
 **Ingress Endpoint Projection State**:
@@ -101,68 +101,56 @@ The tagged availability of the Ingress Endpoint Projection: pending before any d
 _Avoid_: Optional address list, DNS provider status, inferred liveness
 
 **Ingress Endpoint Projection Revision**:
-The monotonic version of one Control-Plane Epoch's Ingress Endpoint Projection. It persists across restarts of that core and advances only when the projection state, unavailable reason, or normalized publishable endpoint set changes; a new epoch starts pending with a reset revision, while repeated gather attempts remain operation evidence without revision churn.
-_Avoid_: Gather attempt number, DNS provider revision, ordered mutation sequence
+Superseded by ADR 0040; see git history.
 
 **Dataplane Projection**:
-A machine-local application of current machine and dataplane state into WireGuard, eBPF, routes, or related network configuration. Dataplane projection is eventually consistent and may be driven by NATS watches or bounded operation-owned NATS machine queries/commands; it is not authority to mutate cluster truth.
-_Avoid_: Hidden workload reconciler, subnet allocator, machine recovery, synchronous cluster truth
+Superseded by ADR 0040; see git history.
 
 **Dataplane Prepare**:
-A bounded operation step that asks target machines to make dataplane projection usable for one operation attempt and report evidence. It may use NATS machine calls, but it does not make dataplane state cluster truth.
-_Avoid_: Dataplane Projection Readiness, Dataplane Host Preparation, mesh bootstrap
+Superseded by ADR 0040; see git history.
 
 **Dataplane Provider**:
-The cluster-level data-plane mesh implementation used for dataplane projection. Deploys declare Dataplane Membership; they do not choose providers, and machines do not bring their own provider. Ployz Native Mesh is the only implemented provider; no alternative provider is wired, and provider selection is not a machine capability or a machine assignment entry.
-_Avoid_: Per-deploy mesh, per-machine provider, route backend, dataplane as a machine capability
+Superseded by ADR 0040 (the mesh-provider seam); see git history.
 
 **Dataplane Provider Transition**:
-An explicit cluster operation that changes the cluster's Dataplane Provider. It is separate from deploy and must leave evidence about provider preparation, cutover, rollback, and cleanup.
-_Avoid_: Deploy side effect, silent mesh switch, mixed provider rollout
+Superseded by ADR 0040; see git history.
 
 **Tailnet Integration**:
-A family of optional future integrations that use a Tailscale tailnet for selected access, control-plane reachability, subnet routing, or egress without making Tailscale the cluster Dataplane Provider by default. None of them are implemented; the product contains no Tailscale code today.
-_Avoid_: Dataplane Provider, hidden provider migration, MagicDNS route backend, assuming any of these ship
+A family of optional future integrations that use a Tailscale tailnet for selected access, control-plane reachability, subnet routing, or egress without making Tailscale the cluster mesh provider by default. None of them are implemented; the product contains no Tailscale code today.
+_Avoid_: Mesh provider, hidden provider migration, MagicDNS route backend, assuming any of these ship
 
 **Tailnet Access Bridge**:
-An optional Tailnet Integration that lets a Tailscale tailnet reach selected Ployz gateway, admin, or machine-access surfaces while the cluster keeps its Dataplane Provider. It is access exposure, not dataplane provider choice, route binding authority, machine membership, or control-plane connectivity.
-_Avoid_: Dataplane Provider, Private Control-Plane Path, Tailscale dataplane adapter, all subnets exposed, MagicDNS route backend
+An optional Tailnet Integration that lets a Tailscale tailnet reach selected Ployz gateway, admin, or machine-access surfaces while the cluster keeps its mesh provider. It is access exposure, not mesh provider choice, route binding authority, machine membership, or control-plane connectivity.
+_Avoid_: Mesh provider, Tailscale dataplane adapter, all subnets exposed, MagicDNS route backend
 
 **Tailnet Subnet Access**:
 An optional Tailnet Integration that, after explicit cluster-level enablement, advertises active Machine Endpoint Subnets to a Tailscale tailnet for operator or debugging access to machine-local endpoint networks and containers. It is raw subnet reachability and must not be treated as app ingress, route protection, control-plane authority, or silent exposure before enablement.
 _Avoid_: Route Binding, Tunnel Ingress, gateway route, implicit all-subnet exposure, control-plane authority
 
 **Ployz Native Mesh**:
-The built-in dataplane provider that implements dataplane projection through Ployz-owned WireGuard, eBPF, routes, and local machine dataplane material. It is one implementation behind Dataplane Prepare; WireGuard and eBPF details are provider internals and evidence. It is the only provider that exists today.
-_Avoid_: ManagedWireGuardEbpf, WireGuard data plane, generic mesh
+Superseded by ADR 0040 (builtin WireGuard mesh provider); see git history.
 
 **Tailscale Dataplane Provider**:
-A candidate future Dataplane Provider that would carry dataplane projection over a Tailscale tailnet, with each machine advertising its Machine Endpoint Subnet as a subnet route. It is unimplemented and unwired: no Tailscale code exists in the product, and adopting it would be a cluster-wide Dataplane Provider Transition, never a per-machine choice. It is also the neutrality test for the mesh-provider seam (ADR 0040): a contract that cannot carry a tailnet's answer without branching on the implementation is not yet neutral. One consequence remains unresolved: subnet-route approval would move Machine Endpoint Subnet authority outside Ployz.
-_Avoid_: Per-machine dataplane, machine capability, mixed provider rollout, Tailnet Subnet Access, assuming it exists
+Superseded by ADR 0040 (Tailscale as a mesh provider behind the mesh-provider seam); see git history.
 
 **Dataplane Membership**:
-A machine's operation-derived participation in the cluster data-plane mesh for service endpoint reachability. It is distinct from durable machine control-plane authority, machine lifecycle, and workload placement eligibility.
-_Avoid_: Machine membership, runtime membership, control-plane authority, placement eligibility, durable membership registry
+Superseded by ADR 0040; see git history.
 
 **Dataplane Route Advertisement**:
-An operation-derived claim or provider evidence that one or more machine endpoint subnets should be reachable through a dataplane member. In the minimum declared dataplane prepare shape, route advertisements are derived from Dataplane Membership and provider facts, not submitted as separate generic request data. They do not own endpoint subnet assignment or route bindings.
-_Avoid_: Route Binding, subnet ownership, gateway route, WireGuard peer, durable route registry
+Superseded by ADR 0040; see git history.
 
 **Dataplane Traffic Observation**:
 A passive view of data-plane traffic movement for diagnostics, analytics, and capacity insight. It does not decide routing, access, placement, deploy success, or cluster truth.
 _Avoid_: Dataplane Prepare, route authority, access authority, billing truth
 
 **Dataplane Host Preparation**:
-A bounded machine-local preparation step that makes a machine eligible for dataplane projection by preparing required host capabilities and local machine-owned dataplane material. It can run during bootstrap or an explicit substrate update; it does not create live WireGuard interfaces, routes, peers, or eBPF attachments.
-_Avoid_: Dataplane projection, host prep, substrate update, runtime preparation
+Superseded by ADR 0040; see git history.
 
 **Local Dataplane Material**:
-Machine-owned material required for dataplane projection that remains local to the machine and can be used as recovery evidence. It is not cluster truth, operation evidence, release material, or data that should be copied into core intent.
-_Avoid_: Cluster state, operation evidence, release artifact, NATS state
+Superseded by ADR 0040; see git history.
 
 **Dataplane-Capable Machine**:
-A machine whose fresh machine-local facts and recent observations show dataplane projection is healthy enough for normal service workload placement and serving. It is derived capability, not a stored cluster truth flag; cleanup and repair may proceed without it when machine RPC is reachable.
-_Avoid_: Local-only service placement, cleanup reachability, generic health, stored capability flag
+Superseded by ADR 0040; see git history.
 
 **Serving Unpublish**:
 Removing a service from a namespace's gateway route eligibility before cleanup. Gateway convergence is observed as warning evidence; Docker cleanup decides whether the service is actually removed.
@@ -173,7 +161,7 @@ An explicit gateway-ingress access rule attached to a route binding that control
 _Avoid_: Protected service, private service, cloud route, auth route
 
 **Route Protection Preset**:
-A product-facing shortcut for a common route protection outcome before route protection is submitted to core. It lets callers choose public, password, or product-managed private access without configuring access-provider mechanics directly.
+A product-facing shortcut for a common route protection outcome before route protection is submitted. It lets callers choose public, password, or product-managed private access without configuring access-provider mechanics directly.
 _Avoid_: Auth config, gateway policy, provider rule
 
 **Route Access Session**:
@@ -189,8 +177,7 @@ A machine network posture where no public inbound service ports are required for
 _Avoid_: Air gap, no network, firewall disabled, no egress
 
 **Private Control-Plane Path**:
-A future topology where machine control-plane connectivity reaches NATS through an approved private network path such as a tailnet or private mesh, instead of requiring public internet reachability to the NATS endpoint. It changes control-plane reachability, not cluster truth or data-plane provider semantics.
-_Avoid_: Dataplane Provider, Tailnet Access Bridge, public NATS, hidden control channel
+Superseded by ADR 0040; see git history.
 
 **Tunnel Ingress**:
 An optional ingress transport where an outbound tunnel connector carries external route traffic to Ployz gateway surfaces, without opening public 80/443 on a machine. The gateway still applies route bindings and route protection; the tunnel must not bypass the gateway to target service containers directly.
@@ -205,11 +192,11 @@ A valid certificate that Ployz has obtained and every currently publishable gate
 _Avoid_: Pending certificate
 
 **Ployz Wildcard Certificate**:
-The wildcard certificate owned by the Ployz Automatic Hostname Namespace and shared by its generated Route Bindings. Switching away retires it without disabling the Ployz DNS Target; a replacement core recovers it from its issuing service.
+The wildcard certificate owned by the Ployz Automatic Hostname Namespace and shared by its generated Route Bindings. Switching away retires it without disabling the Ployz DNS Target; after control-plane loss it is recovered from its issuing service.
 _Avoid_: Route certificate, custom wildcard, cluster certificate
 
 **Exact Route Certificate**:
-The exact-hostname certificate owned by one custom generated Route Binding. Failed provisional material is cleaned and detachment ends its lifecycle; gateway copies keep serving through core loss but never restore authority, so a replacement core reissues it.
+The exact-hostname certificate owned by one custom generated Route Binding. Failed provisional material is cleaned and detachment ends its lifecycle; gateway copies keep serving through control-plane loss but never restore authority, so it is reissued rather than recovered.
 _Avoid_: Custom wildcard, namespace certificate, reusable hostname certificate
 
 **Operator-Supplied Certificate**:
@@ -241,23 +228,20 @@ The exact image identity selected during deploy planning for a service container
 _Avoid_: Latest tag, requested image, background refresh
 
 **Cloud Deploy Payload**:
-The typed deploy input submitted by Ployz Cloud or another SDK client. It is the first deploy input source for core Ployz.
+The typed deploy input submitted by Ployz Cloud or another SDK client. It is the first deploy input source for Ployz.
 _Avoid_: Compose project
 
 **Deploy Preview**:
-A read-only, non-authoritative projection of how current runtime testimony could satisfy deploy input. It includes tentative target machines and per-service Build Platform Requirements but creates no operation or runtime intent.
-_Avoid_: Deploy Plan, dry run, deploy reservation
+Superseded by ADR 0040 (no preview, no receipts); see git history.
 
 **Pending Build Image**:
-A preview-only service image state saying that Cloud must produce the image before authoritative deploy submission. It can participate in a Deploy Preview but is never valid deploy input for an operation.
-_Avoid_: Missing image, placeholder receipt, unresolved registry image
+Superseded by ADR 0040; see git history.
 
 **Build Platform Requirement**:
-The set of target platforms one service image must cover, derived from that service's tentative targets in a Deploy Preview. A reusable image receipt may cover additional platforms.
-_Avoid_: Cluster architecture, builder architecture, global platform policy
+Superseded by ADR 0040; see git history.
 
 **Deploy Plan**:
-The authoritative, phase-ordered plan created by a Deploy from fresh runtime testimony and concrete image identities. It may differ from an earlier Deploy Preview while remaining limited to platforms covered by each service image.
+The authoritative, phase-ordered plan created by a Deploy from fresh runtime testimony and concrete image identities. It is limited to platforms covered by each service image.
 _Avoid_: Deploy Preview, Cloud workflow plan, stored desired state
 
 **Compose Adapter**:
@@ -265,19 +249,18 @@ A future adapter that translates Docker Compose input into deploy input for one 
 _Avoid_: Core deploy model
 
 **Cloud**:
-An external product workflow owner that submits typed commands to core Ployz and stores richer product history. Cloud is not runtime truth and does not orchestrate machine-local steps.
+An external product workflow owner that submits typed commands to Ployz and stores richer product history. Cloud is not runtime truth and does not orchestrate machine-local steps.
 _Avoid_: Runtime authority
 
 **Control**:
-The role process that decides. It hosts the cluster's NATS authority surface and the control-owned intent and evidence files, admits and sequences operations, and is the sole authority for machine assignments. Control is disposable and may be replaced by promoting another existing joined machine. It is one `ployzd` mode among five.
-_Avoid_: Core, Control-Plane Core, main machine, primary server, Cloud core
+Superseded by ADR 0040 (v2 is coreless); see git history.
 
 **Access Provider**:
-An external authority trusted to identify requesters and decide whether they may access protected routes. Access providers are cluster-scoped gateway infrastructure; Ployz core treats their decisions as access evidence, not runtime truth.
+An external authority trusted to identify requesters and decide whether they may access protected routes. Access providers are cluster-scoped gateway infrastructure; Ployz treats their decisions as access evidence, not runtime truth.
 _Avoid_: Cloud auth, dashboard auth, BetterAuth provider, identity provider
 
 **Access Requirement**:
-A route-protection value passed to an access provider to decide whether a requester may enter a protected route. Ployz core records and forwards it without interpreting product concepts such as organizations, projects, teams, or SSO groups.
+A route-protection value passed to an access provider to decide whether a requester may enter a protected route. Ployz records and forwards it without interpreting product concepts such as organizations, projects, teams, or SSO groups.
 _Avoid_: Org role, project permission, Cloud permission
 
 **Access Grant**:
@@ -285,27 +268,23 @@ Short-lived, single-use access-provider evidence that a gateway can consume to c
 _Avoid_: Magic link, dashboard token, login token, route session
 
 **Control Assurance**:
-A bounded recovery or startup action that adopts preserved or operator-restored control intent evidence, gathers fresh machine facts, and reports missing or ambiguous evidence without inferring lost intent. It replaces the old JetStream reindex model.
-_Avoid_: Core assurance, reindex, automatic recovery, inferred intent
+Superseded by ADR 0040; see git history.
 
 **State Migration**:
 An explicit operation that moves persisted control-plane state from one schema to another so current runtime code can read it. It does not rewrite operation history or machine Local Authority unless that is part of a separate machine-local migration.
 _Avoid_: Legacy compatibility, runtime fallback, silent upgrade
 
 **Control-Plane Epoch**:
-A monotonically increasing cluster-local generation for the current Control endpoint. Machines use it to reject stale endpoint updates after recovery.
-_Avoid_: Recovery version, failover counter
+Superseded by ADR 0040; see git history.
 
 **Control Promotion**:
-A local operator action on an existing joined machine that makes that machine Control after control loss. It preserves the cluster identity, increments the Control-Plane Epoch, and is authorized by local root access plus existing machine-held cluster material rather than Cloud.
-_Avoid_: Core recovery promotion, Cloud failover, founder failover, provisioned replacement core
+Superseded by ADR 0040 (repair is reseed or fresh join, never promotion); see git history.
 
 **Reachable Machine**:
-A machine observed to accept inbound control-plane connections at a public address, so peers can dial into it. Reachability is observed from connection source addresses, never declared at install. It is the eligibility basis for control promotion candidacy and peer dial-in; it is not machine lifecycle, placement eligibility, or a configured attribute.
-_Avoid_: Stable machine, public machine, gateway node, declared reachability
+Superseded by ADR 0040; see git history.
 
 **Local Authority**:
-Durable state outside core intent, owned by a machine or role process, that can be trusted during recovery for the specific fact that component owns.
+Durable state outside cluster intent, owned by a machine or role process, that can be trusted during recovery for the specific fact that component owns.
 _Avoid_: Cache
 
 **Runtime State**:
@@ -313,11 +292,11 @@ The observed condition of a namespace at planning time, including service contai
 _Avoid_: Live state, stored truth
 
 **Operation Runtime Snapshot**:
-The bounded runtime view collected for one explicit mutating operation. It uses live machine RPC for current machine-local facts; NATS observations may provide cached evidence or context, but they must not create placement, reuse, or cleanup candidates for that operation. Operation runtime snapshots are not durable cluster truth.
+The bounded runtime view collected for one explicit mutating operation. It uses live machine queries for current machine-local facts; cached observations may provide evidence or context, but they must not create placement, reuse, or cleanup candidates for that operation. Operation runtime snapshots are not durable cluster truth.
 _Avoid_: Background reconciliation, stored desired state, unbounded live scan, stale-observation cleanup
 
 **Passive Runtime Projection**:
-A read-side or data-plane view built from durable control-plane state and fresh NATS observations, without live machine RPC. Gateways, internal DNS, Cloud subscriptions, and CLI watch surfaces use passive runtime projections to stay current without owning mutations.
+A read-side or data-plane view built from durable control-plane state and fresh observations, without live machine queries. Gateways, internal DNS, Cloud subscriptions, and CLI watch surfaces use passive runtime projections to stay current without owning mutations.
 _Avoid_: Mutating operation snapshot, live RPC requirement, hidden reconciliation
 
 **Managed Container Identity**:
@@ -365,19 +344,16 @@ A bounded warning-only period during coordination steps such as routed service p
 _Avoid_: Gateway gate, role quorum, membership wait, reconciliation wait
 
 **Namespace Lock**:
-A short-lived exclusive claim required before creating a deploy operation for a namespace. It prevents concurrent deploy mutation for the namespace and expires if the deploy worker dies.
-_Avoid_: Operation owner lease, deploy queue
+Superseded by ADR 0040 (the deploy op row is an optimistic claim); see git history.
 
 **Atomic Resource Claim**:
-A durable claim for one resource identity created through the control-plane store's atomic create or compare-and-set behavior. Use an atomic resource claim when the contested resource has a natural key, so Ployz can avoid a broader lock.
-_Avoid_: Global lock, scan-and-hope allocation, advisory claim
+Superseded by ADR 0040 (LWW rows admit no compare-and-set; claims are optimistic); see git history.
 
 **Machine Substrate Lock**:
-A short-lived exclusive claim required before creating a machine-local substrate mutation operation. It prevents concurrent substrate update, bootstrap finalization, and convergence for one machine.
-_Avoid_: Machine lock, updater lock, host lock
+Superseded by ADR 0040; see git history.
 
 **Resource Busy**:
-An API rejection meaning a command cannot start because a required exclusive resource is currently locked. A resource busy rejection does not create an operation record.
+An API rejection meaning a command cannot start because a required resource is held by a live optimistic claim. A resource busy rejection does not create an operation record.
 _Avoid_: Failed operation
 
 **Failed Deploy Evidence**:
@@ -410,10 +386,10 @@ _Avoid_: Backup provider, automatic snapshot schedule, convergence step, replica
 
 **Snapshot Destination**:
 A configured location a snapshot is copied to so the data outlives its machine. The destination is a durable operator decision and lives in intent; the snapshots sitting at it are not, and are enumerated by asking the destination at the point of use, so there is no second copy of the destination's contents to drift. The typed target is object storage, which R2, B2, MinIO, and S3 all speak, so an enum over vendors would be indirection rather than an adapter. Another machine in the same cluster is deliberately excluded until capacity accounting knows about reserved pool space, because a machine holding copies keeps bidding on room already spoken for.
-_Avoid_: Provider abstraction, backup catalog in the core, peer replica, retention policy
+_Avoid_: Provider abstraction, central backup catalog, peer replica, retention policy
 
 **Volume Restore**:
-An explicit operation that creates or replaces a provisioned volume's contents from a snapshot. Restore is the one path that turns material from outside the cluster into serving state, so it is always operator-initiated, always records what it replaced, and is never something a reconciler performs. It refuses while any service references the volume and names the command that stops them, because replacing a dataset under a running workload is corruption rather than recovery. Keeper has no part in it: converging a machine assignment must not read, write, or select volume contents.
+An explicit operation that creates or replaces a provisioned volume's contents from a snapshot. Restore is the one path that turns material from outside the cluster into serving state, so it is always operator-initiated, always records what it replaced, and is never something a reconciler performs. It refuses while any service references the volume and names the command that stops them, because replacing a dataset under a running workload is corruption rather than recovery. Keeper has no part in it: convergence must not read, write, or select volume contents.
 _Avoid_: Workload restore, automatic recovery, rollback, convergence step, Keeper responsibility, stop-and-restart side effect
 
 **Volume Move**:
@@ -425,7 +401,7 @@ An explicit operation that destroys a volume and its data. It is the only step o
 _Avoid_: Detach, unpin, cleanup, machine-removal side effect, per-volume force flag
 
 **Orphan Dataset**:
-A provisioned dataset present on a machine that no volume pin names. Machines report their own datasets as facts and the core diffs them against intent, so an orphan is derived exactly as a stranded volume is and in the opposite direction. It arises when a Lost Machine's pin is removed without reaching the host, when a Volume Move fails to reclaim its source, and when a rehomed host carries datasets from a previous cluster. Naming one is reporting; removing one stays an explicit operator action.
+A provisioned dataset present on a machine that no volume pin names. Machines report their own datasets as facts, diffed against intent, so an orphan is derived exactly as a stranded volume is and in the opposite direction. It arises when a Lost Machine's pin is removed without reaching the host, when a Volume Move fails to reclaim its source, and when a rehomed host carries datasets from a previous cluster. Naming one is reporting; removing one stays an explicit operator action.
 _Avoid_: Automatic reclamation, garbage collection, convergence cleanup, untracked-volume adoption
 
 **Config**:
@@ -445,23 +421,23 @@ A declared network entry point for a service container. Ports may describe host-
 _Avoid_: Route, endpoint
 
 **Cluster**:
-The set of machines under one Control, sharing one cluster identity, one NATS authority surface, and one control-owned intent and evidence store. A machine belongs to exactly one cluster for as long as it is current; reaching another cluster is operator context, not membership.
+The set of machines sharing one cluster identity and one shared cluster config store. A machine belongs to exactly one cluster for as long as it is current; reaching another cluster is operator context, not membership.
 _Avoid_: Fleet, mesh, multi-cluster machine membership, Cloud organization
 
 **Machine**:
-An operator-visible host that can run Ployz-managed processes and service containers. Machine is the product and control-plane identity for that host; do not introduce a separate domain entity for a machine-local agent. One machine belongs to exactly one cluster and has exactly one machine assignment.
+An operator-visible host that can run Ployz-managed processes and service containers. Machine is the product and control-plane identity for that host; do not introduce a separate domain entity for a machine-local agent. One machine belongs to exactly one cluster.
 _Avoid_: host, node, server as a domain term
 
 **Keeper**:
-The machine-local agent that converges one machine toward its current machine assignment. Keeper is mandatory machine substrate rather than a selectable cluster role, is the only part of Ployz that converges continuously, and its authority is exactly the assignment. Keeper owns the host and its network: processes, versions, pools, reserved capacity, and the machine's dataplane interfaces, peers, and routes. It may create and may stop; it may never destroy data. It is one `ployzd` mode among five.
-_Avoid_: Host runner, updater, reconciler for anything but the assignment, agent as a second domain entity
+The machine-local agent that converges one machine's substrate toward the rows it does not own and reports into status rows nobody else may write (ADR 0040). Keeper is mandatory machine substrate rather than a selectable cluster role, is the only part of Ployz that converges continuously, and is the sole root role. Keeper owns the host and its network: processes, versions, pools, reserved capacity, and the machine's mesh interfaces, peers, and routes. It may create and may stop; it may never destroy data.
+_Avoid_: Host runner, updater, reconciler for anything but its own machine, agent as a second domain entity
 
 **Worker**:
-The role process that executes workload effects on one machine: builds, images, service containers, volumes, endpoints, and logs. Worker owns the containers, where Keeper owns the host and its network; the split follows privilege, so anything needing the host network namespace or a host capability is Keeper's. Worker does the work an operation ordered; it never decides what belongs on the machine. It is one `ployzd` mode among five.
+The role process that executes workload effects on one machine: builds, images, service containers, volumes, endpoints, and logs. Worker owns the containers, where Keeper owns the host and its network; the split follows privilege, so anything needing the host network namespace or a host capability is Keeper's. Worker does the work an operation ordered; it never decides what belongs on the machine.
 _Avoid_: Machine role, machine daemon, executor as cluster authority
 
 **Machine Capability**:
-An operator-selected outcome for one machine, from which Control derives the role processes that deliver it. The current capabilities are running applications, building images, and egress. Capabilities are the operator-facing primitive; there are no named capability profiles, because a profile set that needs a custom escape hatch is presentation over these same choices. Control is derived from cluster structure rather than selected, and removing a capability from a machine that is still using it is rejected until the machine is drained.
+An operator-selected outcome for one machine. The current capabilities are running applications, building images, and egress. Capabilities are the operator-facing primitive; there are no named capability profiles, because a profile set that needs a custom escape hatch is presentation over these same choices. Removing a capability from a machine that is still using it is rejected until the machine is drained.
 _Avoid_: Profile, preset, general purpose, edge, role as a user-facing choice
 
 **Machine Identity**:
@@ -489,7 +465,7 @@ A machine identity committed by the control plane with credentials and an assign
 _Avoid_: Reservation, pending join, bootstrap attempt
 
 **Accepted Machine Evidence**:
-Durable machine-local material proving this host has held an Accepted Machine Identity or Machine Control-Plane Authority, such as accepted machine id state, NATS machine credentials, role authority material, or assigned substrate state. It does not include the keeper binary, generic install residue, failed bootstrap attempt state, abandoned Cloud Bootstrap Session material, or unaccepted bootstrap delivery files.
+Durable machine-local material proving this host has held an Accepted Machine Identity or Machine Control-Plane Authority, such as accepted machine id state, machine credentials, or role authority material. It does not include the keeper binary, generic install residue, failed bootstrap attempt state, or unaccepted bootstrap delivery files.
 _Avoid_: Installed file presence, failed attempt evidence, abandoned session evidence, generic substrate residue
 
 **Machine Join Redemption**:
@@ -501,7 +477,7 @@ Bootstrap outcome evidence reported after machine join redemption. A join report
 _Avoid_: Activation boundary, identity creation, subnet assignment
 
 **Machine Add Readiness Warning**:
-Warning evidence on a machine-add operation when bounded post-bootstrap observation finds degraded readiness such as dataplane projection, gateway, DNS, public IP, or first observations not yet healthy. A readiness warning does not undo the accepted machine identity; later workload eligibility is decided by the machine usability view.
+Warning evidence on a machine-add operation when bounded post-bootstrap observation finds degraded readiness such as mesh, gateway, DNS, public IP, or first observations not yet healthy. A readiness warning does not undo the accepted machine identity; later workload eligibility is decided by the machine usability view.
 _Avoid_: Bootstrap failure, identity rollback, deploy eligibility
 
 **Machine Lifecycle**:
@@ -521,15 +497,15 @@ An explicit operation that resolves a machine endpoint subnet mismatch. Endpoint
 _Avoid_: Startup repair, implicit network cleanup, automatic adoption
 
 **Machine Endpoint Allocation Corruption**:
-A diagnostic condition where durable machine records assign the same machine endpoint subnet to more than one machine identity, or otherwise violate endpoint subnet ownership rules. Ployz should report this through diagnostics or core assurance rather than making normal startup scan the whole cluster for impossible allocation states.
+A diagnostic condition where durable machine records assign the same machine endpoint subnet to more than one machine identity, or otherwise violate endpoint subnet ownership rules. Ployz should report this through diagnostics rather than making normal startup scan the whole cluster for impossible allocation states.
 _Avoid_: Startup-wide subnet audit, automatic repair
 
 **Machine Removal**:
-The one explicit operation that ends a machine's cluster membership. It deletes the current machine state, revokes control-plane authority, removes the machine from live dataplane membership, and releases the endpoint subnet. Membership is a durable operator decision held by the core, so removal never requires the machine to participate: a reachable machine is told to release its local material as best-effort cleanup recorded in evidence, and an unreachable one is removed just as completely. There is no forced variant, because a forced and an unforced path would commit identical cluster truth.
+The one explicit operation that ends a machine's cluster membership. It deletes the current machine state, revokes control-plane authority, removes the machine from the mesh, and releases the endpoint subnet. Membership is a durable operator decision held by the cluster, so removal never requires the machine to participate: a reachable machine is told to release its local material as best-effort cleanup recorded in evidence, and an unreachable one is removed just as completely. There is no forced variant, because a forced and an unforced path would commit identical cluster truth.
 _Avoid_: Force remove, graceful remove, removal kind, separate lifecycle state, machine tombstone, automatic reschedule, implicit recovery
 
 **Machine Removal Precondition**:
-A condition Machine Removal refuses on, each naming the command that resolves it. Running services are resolved by Rebalance; pinned volumes are resolved by Volume Move, or by Volume Removal when the data is being discarded; an undrained machine is resolved by drain; the Control machine is resolved by promoting another machine first. Removal itself destroys nothing, so it carries no confirmation prompt — every destructive decision has already been made by the command a precondition named. A machine that answers nothing cannot be refused on testimony grounds; its unknown workloads are recorded as typed evidence instead.
+A condition Machine Removal refuses on, each naming the command that resolves it. Running services are resolved by Rebalance; pinned volumes are resolved by Volume Move, or by Volume Removal when the data is being discarded; an undrained machine is resolved by drain. Removal itself destroys nothing, so it carries no confirmation prompt — every destructive decision has already been made by the command a precondition named. A machine that answers nothing cannot be refused on testimony grounds; its unknown workloads are recorded as typed evidence instead.
 _Avoid_: Force flag, override, generic retry, confirmation on removal
 
 **Machine Removal Evidence**:
@@ -549,7 +525,7 @@ An explicit operation that recomputes placement across every namespace, or acros
 _Avoid_: Autoscaling, scheduler policy, machine evacuation command, drain side effect, background reconciliation, volume movement, load-driven placement, capacity bid, per-namespace quota
 
 **Confirmed Plan**:
-The set of moves an operator sees and accepts before a mutating placement operation is submitted, shared by Deploy and Rebalance. Planning is bounded, local, and atomic, so it is a synchronous read that returns the plan and creates no operation: a plan costs nothing and commits nothing. The operation is submitted carrying the plan it was confirmed against and is refused if cluster state moved since, which is what makes the acceptance an agreement about specific moves rather than a decoration. An operation never pauses awaiting an answer, because control-plane work that waits on a human waits forever. Where no operator is present the plan is still computed and emitted as evidence and there is no prompt to answer, since confirmation is a courtesy to someone standing there and never an authority boundary — authority is the credential and its subject permissions.
+The set of moves an operator sees and accepts before a mutating placement operation is submitted, shared by Deploy and Rebalance. Planning is bounded, local, and atomic, so it is a synchronous read that returns the plan and creates no operation: a plan costs nothing and commits nothing. The operation is submitted carrying the plan it was confirmed against and is refused if cluster state moved since, which is what makes the acceptance an agreement about specific moves rather than a decoration. An operation never pauses awaiting an answer, because control-plane work that waits on a human waits forever. Where no operator is present the plan is still computed and emitted as evidence and there is no prompt to answer, since confirmation is a courtesy to someone standing there and never an authority boundary — authority is the credential and its permissions.
 _Avoid_: Blocking operation awaiting input, plan stored as intent, confirmation as authorization, skip-confirmation flag, plan replay after drift
 
 **Rebalance Scope**:
@@ -569,27 +545,26 @@ The ability to send machine-local cleanup commands to a machine for runtime mate
 _Avoid_: Placement eligibility, serving eligibility, liveness as authority
 
 **Unresolved Machine Cleanup**:
-Runtime material that may still exist on a machine because graceful cleanup has not completed or the machine stopped participating before cleanup could be verified. A machine with unresolved cleanup requires force removal rather than graceful removal.
+Runtime material that may still exist on a machine because cleanup has not completed or the machine stopped participating before cleanup could be verified.
 _Avoid_: Successful removal, assumed cleanup, silent orphan adoption
 
 **Affected Workload Acknowledgement**:
-An explicit confirmation required before force removing a machine when fresh observations show Ployz-managed service containers on that machine. The acknowledgement records that the operator chose force removal instead of graceful machine removal.
-_Avoid_: Implicit drain, automatic recovery confirmation
+Superseded by ADR 0040 (Machine Removal has no forced variant); see git history.
 
 **Machine Control-Plane Authority**:
-The ability of a machine identity to authenticate to the control plane, publish its own observations, respond to its own machine-scoped RPC subjects, and receive assigned work. Machine control-plane authority should become usable only with an accepted machine identity, and revocation belongs to the NATS/auth authority store rather than removed-machine state. Stale observations may remain as evidence but cannot be refreshed by a removed machine.
+The ability of a machine identity to authenticate to the control plane, publish its own observations, answer its own machine-scoped requests, and receive assigned work. Machine control-plane authority should become usable only with an accepted machine identity, and revocation belongs to the membership and auth authority rather than removed-machine state. Stale observations may remain as evidence but cannot be refreshed by a removed machine.
 _Avoid_: Machine liveness, observation freshness, substrate presence, tombstone-based auth
 
 **Operator Credential**:
-A client credential minted for a human operator or automation client to call cluster control-plane services. Operator credentials are not machine identities and should be minted per operator client, preferably by the client that will hold the private seed, then authorized by the cluster using the credential's public key. Founder bootstrap should not make a shared server-minted operator seed the normal client setup path.
+A client credential minted for a human operator or automation client to call cluster control-plane services. Operator credentials are not machine identities and should be minted per operator client, preferably by the client that will hold the private seed, then authorized by the cluster using the credential's public key. Bootstrap should not make a shared server-minted operator seed the normal client setup path.
 _Avoid_: Shared operator seed, machine join, remote operator join
 
 **Operator Context**:
-A client-local record that lets `ployz` connect to one cluster using NATS endpoint, trust material, and an operator credential. Operator context is client access material, not cluster truth, machine state, or proof that a machine joined the cluster.
+A client-local record that lets `ployz` connect to one cluster using a cluster endpoint, trust material, and an operator credential. Operator context is client access material, not cluster truth, machine state, or proof that a machine joined the cluster.
 _Avoid_: Cluster membership, machine join, shared context
 
 **Machine Bootstrap**:
-The first installation and join of Ployz substrate on a machine. It makes a machine capable of running its assigned Ployz role processes and reporting bootstrap progress.
+The first installation and join of Ployz substrate on a machine. It makes a machine capable of running its Ployz role processes and reporting bootstrap progress.
 _Avoid_: Install, provisioning, runtime bootstrap
 
 **Bootstrapped Machine**:
@@ -597,55 +572,46 @@ A machine that already contains durable Ployz machine-local material showing it 
 _Avoid_: Fresh machine, rerunnable bootstrap target, duplicate machine
 
 **Founder Bootstrap**:
-The first-machine bootstrap that forms a new cluster control plane and then activates that same machine as the first accepted machine. Founder bootstrap exists only before there is an existing control-plane operation surface for the cluster.
-_Avoid_: Machine add, joiner bootstrap, remote init
+Superseded by ADR 0040 (the founder/joiner/cloud bootstrap split is dead); see git history.
 
 **Joiner Bootstrap**:
-A machine bootstrap that uses an existing cluster's machine-add operation and join material to add another machine to that cluster.
-_Avoid_: Founder bootstrap, cluster init, provisioning
+Superseded by ADR 0040; see git history.
 
 **Bootstrap Delivery**:
-The act of running a founder or joiner bootstrap command on a target machine, either locally on that machine or by carrying it there through SSH, copy/paste, cloud-init, or another envelope. Bootstrap delivery does not decide machine identity, acceptance, placement, or cluster truth.
+The act of running a bootstrap command on a target machine, either locally on that machine or by carrying it there through SSH, copy/paste, cloud-init, or another envelope. Bootstrap delivery does not decide machine identity, acceptance, placement, or cluster truth.
 _Avoid_: SSH control plane, daemon transport, provisioning authority
 
 **Cloud Bootstrap Invite**:
-A time-limited Cloud permission represented by one reusable Cloud Bootstrap Token for pre-rendered Bootstrap Delivery. The invite carries Cloud-side org, cluster, actor, and bootstrap intent; each valid token redeem request is the approval boundary for one machine use.
-_Avoid_: One-time bootstrap token, machine join token, org flag
+Superseded by ADR 0040 (Cloud mints join tokens as an ordinary mesh peer); see git history.
 
 **Cloud Bootstrap Session**:
-A short-lived Cloud session created by `ployz-keeper bootstrap` for interactive Bootstrap Delivery. The target machine polls the session while the user opens a browser link on their workstation to choose a Cloud organization; Cloud derives founder, joiner, or wait behavior from that organization's Organization Cluster state. A session that expires before approval creates no Cloud Bootstrap Redemption. The session is not an org, cluster, machine identity, join token, or operator credential.
-_Avoid_: Localhost callback, pasted cloud token, browser-owned machine session
+Superseded by ADR 0040; see git history.
 
 **Cloud Bootstrap Token**:
-The bearer secret string embedded in noninteractive Bootstrap Delivery material for a Cloud Bootstrap Invite. Cloud accepts any number of machine redemptions with the token during its 24-hour lifetime. The token is not the org, cluster, machine identity, join token, or callback credential.
-_Avoid_: Org id, cluster id, join token, callback token
+Superseded by ADR 0040; see git history.
 
 **Cloud Bootstrap Redemption**:
-One machine's approved use of a Cloud Bootstrap Session or Cloud Bootstrap Token. For interactive bootstrap, browser approval creates the redemption by binding the session to an organization. An unapproved session and an unredeemed invite are not redemptions; the redemption is machine-local evidence that Cloud can turn into founder or joiner bootstrap material without making the session, invite, or token itself cluster truth.
-_Avoid_: Bootstrap invite, bootstrap session, token, machine acceptance, operation completion
+Superseded by ADR 0040; see git history.
 
 **Cloud Founder Claim**:
-The Cloud-side assignment of one new-cluster redemption to Founder Bootstrap for one Organization Cluster. Competing new-cluster redemptions serialize through this claim: the first approved redemption that wins the claim becomes founder, and later redemptions wait for founder outcome. Once Cloud returns founder bootstrap material for that claim, the claim is sticky; another redemption does not automatically become founder after failure. Callback failure after local founder success keeps the same claim; rerunning keeper on the same machine resumes the same attempt rather than selecting a new founder.
-_Avoid_: Leader election, automatic founder failover, first healthy server
+Superseded by ADR 0040; see git history.
 
 **Waiting Cloud Bootstrap Redemption**:
-A Cloud Bootstrap Redemption approved while an Organization Cluster has an active Cloud Founder Claim but no Cloud Connection. It has its own post-approval expiry separate from Cloud Bootstrap Session expiry, waits for the founder to establish a Cloud Connection, be abandoned, or for the waiting redemption to expire, and does not preissue runtime join authority, perform local machine mutation, or become founder automatically. Once expired, it is terminal and cannot later receive join material.
-_Avoid_: Founder candidate, standby founder, pending machine join
+Superseded by ADR 0040; see git history.
 
 **Abandon Founder Attempt**:
-A Cloud-side operator action that marks a formed-but-unreachable Cloud Founder Claim terminal so the organization can start a new Founder Bootstrap through a new Cloud Bootstrap Session. It does not clean up, revoke, or mutate the already-formed local machine.
-_Avoid_: Founder failover, automatic promotion, Cloud cleanup, machine removal
+Superseded by ADR 0040; see git history.
 
 **Cloud Connection**:
-Cloud's durable product-side relationship to an Organization Cluster after Cloud has accepted bootstrap evidence and can authenticate as an authorized NATS client. A Cloud Connection exists only after reachability succeeds; a Cloud Bootstrap Redemption may establish one, but they are separate concepts and a connection is not cluster truth, machine membership, or recovery authority.
+Cloud's durable product-side relationship to an Organization Cluster after Cloud has accepted bootstrap evidence and can authenticate as an authorized client. A Cloud Connection exists only after reachability succeeds; a connection is not cluster truth, machine membership, or recovery authority.
 _Avoid_: Runtime authority, machine membership, Cloud control plane, recovery authority
 
 **Cloud Link**:
-An explicit operation that authorizes Cloud as an operator client for an existing local cluster and gives Cloud the endpoint and trust material it needs to connect over direct TLS NATS. Cloud link does not bootstrap a machine and does not make Cloud runtime truth.
+An explicit operation that authorizes Cloud as an operator client for an existing local cluster and gives Cloud the endpoint and trust material it needs to connect. Cloud link does not bootstrap a machine and does not make Cloud runtime truth.
 _Avoid_: Machine bootstrap, Cloud migration, tunnel setup
 
 **Substrate Update**:
-The change of one machine's substrate component versions, carried as a new Machine Assignment generation rather than as an operation. It covers Ployz-managed role processes, supervisor units, local role configuration, and substrate artifacts, including keeper itself, and never workload service containers. There is no cluster-level version record: a joining machine inherits the Control machine's Ployz version, and "the cluster is on this version" is a report computed from assignments rather than a stored decision anyone made.
+The change of one machine's substrate component versions, driven by a caller-paced upgrade command with keeper-first swap (ADR 0040). It covers Ployz-managed role processes, supervisor units, local role configuration, and substrate artifacts, including keeper itself, and never workload service containers. There is no cluster-level version record: "the cluster is on this version" is a report computed from machines rather than a stored decision anyone made.
 _Avoid_: Update, upgrade, rollout, in-place update, update operation, cluster version setting, update channel
 
 **Substrate Uninstall**:
@@ -653,11 +619,11 @@ An explicit local action that removes Ployz substrate and machine-local Ployz ma
 _Avoid_: Runtime wipe, machine removal, Cloud cleanup, destructive reset
 
 **Substrate Component**:
-A Ployz-managed machine component that keeper can install or update. Recognized substrate components are the `ployzd` binary, which supplies every role including keeper itself, plus the foreign components NATS server and the eBPF program. Gateway and DNS are `ployzd` roles, not separately versioned components. Keeper's own version is one entry in the machine assignment it converges, so there is no separate keeper update operation.
+A Ployz-managed machine component that keeper can install or update. Recognized substrate components are the `ployzd` binary, which supplies every role including keeper itself, plus foreign components such as the pinned Corrosion sidecar and the eBPF program. Gateway and DNS are `ployzd` roles, not separately versioned components. Keeper's own version is part of what an upgrade names, so there is no separate keeper update operation.
 _Avoid_: Package, role, binary, per-role versioning, keeper update as its own operation
 
 **Activation Strategy**:
-The component-specific way keeper moves a staged substrate component version into use. Activation strategies include bounded restart, graceful gateway upgrade, graceful DNS upgrade, NATS server lame-duck restart, keeper self-update handoff, and eBPF link replacement. Activation is a switch mechanic, not a health gate: success is the strategy's own completion, and a machine that is mid-activation is already excluded from placement by ordinary testimony, so no probe, threshold, or readiness contract belongs here. Failed activation stops that component, records typed per-component status against the assignment generation, and leaves the staged version staged; only Keeper Handoff reverts, because losing remote management of a host is the one failure no primitive can recover from.
+The component-specific way keeper moves a staged substrate component version into use, such as bounded restart, graceful gateway or DNS upgrade, keeper self-update handoff, or eBPF link replacement. Activation is a switch mechanic, not a health gate: success is the strategy's own completion, and a machine that is mid-activation is already excluded from placement by ordinary testimony, so no probe, threshold, or readiness contract belongs here. Failed activation stops that component, records typed per-component status, and leaves the staged version staged; only Keeper Handoff reverts, because losing remote management of a host is the one failure no primitive can recover from.
 _Avoid_: Restart policy, rollout mode, deploy strategy, readiness probe, health threshold, activation rollback
 
 **Substrate Step**:
@@ -669,32 +635,28 @@ The non-activating checks keeper runs for all relevant substrate components befo
 _Avoid_: Dry run, validation step, readiness check
 
 **Keeper Handoff**:
-The convergence stage where an old keeper stages the Ployz version its machine assignment names, restarts keeper first, and the new keeper resumes from durable local state before applying the remaining components. A staged keeper that fails to come up reverts to the previous binary.
+The convergence stage where an old keeper stages the Ployz version the upgrade names, restarts keeper first, and the new keeper resumes from durable local state before applying the remaining components. A staged keeper that fails to come up reverts to the previous binary.
 _Avoid_: Self-restart, keeper rollout, bootstrap restart, keeper update as its own operation
 
 **Release Source**:
-A machine-local configuration that lets keeper resolve an explicitly requested Ployz substrate version into artifact metadata. It is not authority to choose the latest version.
-_Avoid_: Update channel, latest feed, package repository
+Superseded by ADR 0040 (the upgrade command carries `{version, sha256, url}`); see git history.
 
 **Unsupported Endpoint Answer**:
-A control-plane responder's typed reply that it does not implement the endpoint it was asked for. Control-plane contracts are additive-only within a major version, so a cluster running mixed versions is legal for as long as an operator leaves it that way and a responder declines instead of staying quiet. It exists to protect what silence already means: the machines an intent-driven gather expected and did not hear from. A version gate in assignment compilation or a keeper self-check at activation are the rejected alternatives.
+A control-plane responder's typed reply that it does not implement the endpoint it was asked for. Control-plane contracts are additive-only within a major version, so a cluster running mixed versions is legal for as long as an operator leaves it that way and a responder declines instead of staying quiet. It exists to protect what silence already means: the machines an intent-driven gather expected and did not hear from.
 _Avoid_: Version negotiation, capability handshake, protocol version check, version skew window
 
 **Machine Assignment**:
-Control's recorded decision about what belongs on one machine: which roles it runs, the Ployz version, foreign component versions, and typed host features such as pooled storage or reserved capacity. It is one record under one monotonic generation, written as a validated intent write rather than an operation, and it carries its own provenance. Keeper's authority is exactly this record.
-_Avoid_: Desired state, machine spec, separate role and feature records, computed target
+Superseded by ADR 0040 (no assignments, components, or profiles compiled by Control); see git history.
 
 **Pooled Storage**:
-A machine-local ZFS pool that Ployz carves persistent volumes from as datasets. Pooled storage is a typed host feature in the machine assignment, so Keeper converges it as host substrate while Worker keeps ownership of the datasets themselves. Keeper imports an existing Ployz-owned pool and creates one only on a disk it can prove is empty; anything else is a typed failure for the operator to resolve. Wiping a reused disk is a separate explicit destructive action and is never an entry in an assignment, because an assignment is re-applied on every convergence.
+A machine-local ZFS pool that Ployz carves persistent volumes from as datasets. Pooled storage is a typed host feature: Keeper converges it as host substrate while Worker keeps ownership of the datasets themselves. Keeper imports an existing Ployz-owned pool and creates one only on a disk it can prove is empty; anything else is a typed failure for the operator to resolve. Wiping a reused disk is a separate explicit destructive action and is never part of declared intent, because intent is re-applied on every convergence.
 _Avoid_: Wipe flag, automatic disk adoption, storage prepare as its own operation, pool as workload data
 
 **Assigned Substrate State**:
-Keeper's durable machine-local copy of the machine assignment it last received, together with the terminal evidence of applying it. It guides local substrate steps and is Local Authority for what happened on that host; it is never cluster truth and never a second assignment authority.
-_Avoid_: Desired state, role cache, local cluster state, second source of assignment truth
+Superseded by ADR 0040; see git history.
 
 **Control-Plane Connection**:
-The machine's NATS connection to the Ployz control plane. In v1 this is a direct TLS-authenticated NATS connection rather than an overlay tunnel.
-_Avoid_: Tunnel, peer connection, transport session
+Superseded by ADR 0040 (HTTP/JSON/SSE over the mesh); see git history.
 
 **Machine Observation**:
 Runtime state reported by a machine about its host and local runtime. It can describe service containers, Docker health, resources, public IP, and local process health, but it does not own gateway or DNS status.
@@ -709,11 +671,11 @@ Best-effort cleanup or expiry of stale observations for removed or inactive mach
 _Avoid_: Observation deletion as removal success, stale observation as authority
 
 **Machine Usability View**:
-The one rule set for whether a machine may take new workload placement. It combines durable operator intent such as Machine Lifecycle with fresh, point-of-use testimony required by that placement attempt. Placement first forms a preliminary set of lifecycle-active machines that answered facts and dataplane status, match the declared Dataplane Projection revision, and report their local bridge, WireGuard interface, and eBPF attachment ready. A preliminary candidate must contain and show a handshake no more than 275 seconds old with every other preliminary candidate. The set is validated once: excluded candidates do not trigger recursive shrinking or revalidation. Silent and locally unusable declared machines remain in intent and the configured projection but are not expected peers for that attempt. The view is never stored as cluster truth and never changes existing workloads or serving state.
+The one rule set for whether a machine may take new workload placement. It combines durable operator intent such as Machine Lifecycle with fresh, point-of-use testimony required by that placement attempt; staleness is bounded by the mesh provider's reported last-verified age (ADR 0040). The set is validated once: excluded candidates do not trigger recursive shrinking or revalidation. Silent and locally unusable declared machines remain in intent but are not expected peers for that attempt. The view is never stored as cluster truth and never changes existing workloads or serving state.
 _Avoid_: Scattered eligibility checks, lifecycle as readiness, stored liveness, observation-age eligibility, eligibility booleans
 
 **Machine Usability Reason**:
-A typed explanation for why a machine is excluded from one new-placement attempt. Reasons include durable policy such as draining and fresh Dataplane Unavailable evidence such as no answer, the wrong projection revision, unusable local dataplane components, a peer-set mismatch, or a missing or stale peer handshake. These reasons are attempt evidence, not durable machine state; exclusion does not evict workloads or rewrite serving truth.
+A typed explanation for why a machine is excluded from one new-placement attempt. Reasons include durable policy such as draining and fresh evidence such as no answer, unusable local mesh substrate, or a missing or stale mesh handshake. These reasons are attempt evidence, not durable machine state; exclusion does not evict workloads or rewrite serving truth.
 _Avoid_: Generic unhealthy, free-text eligibility, hidden scheduler decision, stored health flag
 
 **Fresh Role Observation**:
