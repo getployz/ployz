@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use futures_util::FutureExt;
 use tokio::task::AbortHandle;
+use tracing::Instrument;
 
 type TaskId = u64;
 
@@ -189,21 +190,28 @@ where
     let weak_state = Arc::downgrade(state);
     let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
     let future = build();
-    let task = tokio::spawn(async move {
-        let outcome = AssertUnwindSafe(future).catch_unwind().await;
-        if let Some(state) = weak_state.upgrade() {
-            let mut state = state.lock().expect("task registry lock is not poisoned");
-            state.active.remove(&task_id);
-            if let Err(payload) = outcome {
-                state.panicked_tasks = state.panicked_tasks.saturating_add(1);
-                state.last_failure = Some(TaskSupervisorFailure {
-                    task_id,
-                    message: panic_message(payload),
-                });
+    // Spawned tasks inherit the caller's span so operation attribution
+    // (`kind`, `operation_id`) survives the spawn: the constant `process`
+    // field is stamped by the subscriber, but span fields do not cross
+    // `tokio::spawn` on their own.
+    let task = tokio::spawn(
+        async move {
+            let outcome = AssertUnwindSafe(future).catch_unwind().await;
+            if let Some(state) = weak_state.upgrade() {
+                let mut state = state.lock().expect("task registry lock is not poisoned");
+                state.active.remove(&task_id);
+                if let Err(payload) = outcome {
+                    state.panicked_tasks = state.panicked_tasks.saturating_add(1);
+                    state.last_failure = Some(TaskSupervisorFailure {
+                        task_id,
+                        message: panic_message(payload),
+                    });
+                }
             }
+            let _ = completion_tx.send(());
         }
-        let _ = completion_tx.send(());
-    });
+        .instrument(tracing::Span::current()),
+    );
     registry.active.insert(
         task_id,
         ActiveTask {

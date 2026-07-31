@@ -10,10 +10,11 @@
 //!
 //! Attribution invariants:
 //!
-//! - Every JSON line carries a `process` field naming the role. One OS
-//!   process runs exactly one role, so the field is stamped once at the
-//!   subscriber layer and no code path — including `tokio::spawn`ed tasks,
-//!   which do not inherit spans — can lose it.
+//! - Every log line names its role: a `process` field on JSON lines, a
+//!   `[process]` prefix on terminal lines. One OS process runs exactly one
+//!   role, so the name is stamped once at the subscriber layer and no code
+//!   path — including `tokio::spawn`ed tasks, which do not inherit spans —
+//!   can lose it.
 //! - Span fields (an operation's `kind` and `operation_id`) reach every
 //!   event inside the span even under a restrictive `PLOYZ_LOG` filter:
 //!   the filter gates events only, spans are always enabled.
@@ -90,6 +91,10 @@ pub fn init_daemon_logging(process: &'static str) {
         tracing_subscriber::registry()
             .with(
                 tracing_subscriber::fmt::layer()
+                    .event_format(ProcessPrefixFormat {
+                        process,
+                        inner: tracing_subscriber::fmt::format(),
+                    })
                     .with_writer(std::io::stderr)
                     .with_filter(filter),
             )
@@ -113,6 +118,31 @@ pub fn init_daemon_logging(process: &'static str) {
             default = DEFAULT_FILTER,
             "PLOYZ_LOG was rejected; the default filter is in effect"
         );
+    }
+}
+
+/// Prefixes every human-readable event with `[process]` — the terminal
+/// counterpart of the JSON layer's constant `process` field, so role
+/// attribution does not depend on the output format.
+struct ProcessPrefixFormat<F> {
+    process: &'static str,
+    inner: F,
+}
+
+impl<S, N, F> tracing_subscriber::fmt::FormatEvent<S, N> for ProcessPrefixFormat<F>
+where
+    S: tracing::Subscriber + for<'lookup> LookupSpan<'lookup>,
+    N: for<'writer> tracing_subscriber::fmt::FormatFields<'writer> + 'static,
+    F: tracing_subscriber::fmt::FormatEvent<S, N>,
+{
+    fn format_event(
+        &self,
+        ctx: &tracing_subscriber::fmt::FmtContext<'_, S, N>,
+        mut writer: tracing_subscriber::fmt::format::Writer<'_>,
+        event: &tracing::Event<'_>,
+    ) -> std::fmt::Result {
+        write!(writer, "[{}] ", self.process)?;
+        self.inner.format_event(ctx, writer, event)
     }
 }
 
@@ -341,6 +371,35 @@ mod tests {
         assert_eq!(error_line["process"], "control");
         assert_eq!(spawned_line["process"], "control");
         assert_eq!(spawned_line["message"], "spawned diagnostic");
+    }
+
+    #[test]
+    fn terminal_lines_carry_the_process_prefix() {
+        let buffer = SharedBuffer::default();
+        let subscriber = tracing_subscriber::registry().with(
+            tracing_subscriber::fmt::layer()
+                .event_format(ProcessPrefixFormat {
+                    process: "gateway",
+                    inner: tracing_subscriber::fmt::format(),
+                })
+                .with_ansi(false)
+                .with_writer(buffer.clone()),
+        );
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!("terminal event");
+        });
+        let text = {
+            let bytes = buffer.0.lock().expect("buffer lock is not poisoned");
+            String::from_utf8(bytes.clone()).expect("log output is UTF-8")
+        };
+        let [line] = &text.lines().collect::<Vec<_>>()[..] else {
+            panic!("expected exactly one log line");
+        };
+        assert!(
+            line.starts_with("[gateway] "),
+            "missing process prefix: {line}"
+        );
+        assert!(line.contains("terminal event"));
     }
 
     #[test]

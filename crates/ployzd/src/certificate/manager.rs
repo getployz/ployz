@@ -11,6 +11,8 @@ use ployz_core::operation::{
     RouteHostname,
 };
 
+use tracing::Instrument;
+
 use super::GatewayCertificateTarget;
 use super::gateway::GatewayCertificateClient;
 use super::issuer::{AcmeIssueContext, AcmeIssuer, AcmeIssuerError, InstantAcmeIssuer};
@@ -44,7 +46,9 @@ impl CertificateTaskOwner {
     {
         match self {
             Self::Runtime => {
-                tokio::spawn(build());
+                // Inherit the caller's span so certificate work spawned
+                // inside an operation keeps its `kind`/`operation_id`.
+                tokio::spawn(build().instrument(tracing::Span::current()));
                 Ok(())
             }
             Self::Control(tasks) => tasks.spawn(build),
