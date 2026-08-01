@@ -14,10 +14,6 @@ resolution, exposes machine-scoped resolve and status RPC, and preserves upstrea
 forwarding and NATS failover behavior.
 
 For DNS, this supersedes the public route-answer and DNS-projection clauses in
-ADRs 0001, 0005, 0008, 0009, 0018, 0027, 0028, 0030, and 0031. Their gateway,
-internal DNS, recovery, invalidation, and operation-evidence decisions remain in
-force.
-
-This removes a second, incomplete owner for public ingress DNS. Route Bindings
-remain gateway intent, and changing external DNS remains an explicit action in
-the system that owns the public zone rather than hidden behavior in `ployzd dns`.
+ADRs 0005, 0008, and 0027; their other decisions remain in force. Route
+Bindings remain gateway intent; changing external DNS is an explicit action in
+the system that owns the public zone, never hidden behavior in `ployzd dns`.

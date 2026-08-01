@@ -7,6 +7,10 @@ to the repository's current paths. Product language remains canonical in
 [`VISION.md`](../../VISION.md), and architecture decisions in
 [`docs/adr/`](../adr/).
 
+**v2 is coreless —
+[ADR 0040](../adr/0040-corrosion-replaces-the-core-and-nats.md).** This map
+describes the frozen incumbent code in-tree, which converges to that shape.
+
 ## Runtime shape
 
 Ployz ships one `ployzd` artifact, but it does not run every responsibility in
@@ -210,13 +214,6 @@ standard final gates.
 | Black-box CLI and cluster E2E | [`crates/ployz/tests/`](../../crates/ployz/tests/) and [`testing/ployz-e2e/`](../../testing/ployz-e2e/) | Command contracts, shipped binaries, or multi-component behavior must be observed only through public surfaces. |
 | Docker-in-Docker | [`scripts/dind-e2e.sh`](../../scripts/dind-e2e.sh) and [`docs/operations/dind-e2e.md`](../operations/dind-e2e.md) | Real cross-process or cross-machine Docker execution, supervision, bootstrap/install, network namespaces, gateway/TLS/DNS traffic, or credential enforcement cannot be covered deterministically below this level. Run the full suite once on the sealed candidate when applicable. |
 | Real-host certification | [`scripts/real-host-acceptance.sh`](../../scripts/real-host-acceptance.sh), [`scripts/cli-smoke-test.sh`](../../scripts/cli-smoke-test.sh), and [`docs/operations/real-host-acceptance.md`](../operations/real-host-acceptance.md) | The public install path, real tcx eBPF, real WireGuard, host firewalls, public DNS/TLS, or mixed architectures are the behavior under test. |
-
-Every final candidate runs Rust formatting, workspace Clippy, workspace tests,
-and `pnpm check:generated` from `packages/ployz-sdk`. Run SDK typecheck/tests
-when SDK source or generated output changes. DinD is not a default tax: record
-the deterministic covering tests when it is not applicable, or name the real
-seam that requires it. Documentation-only changes record SDK typecheck/tests
-and DinD as not applicable.
 
 For the complete gate commands and scheduling rules, follow
 [`AGENTS.md`](../../AGENTS.md). For the quick local release loop, see

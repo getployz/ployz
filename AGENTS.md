@@ -21,6 +21,13 @@ and `Blocked by: #...` body lines. Claim by assigning yourself first. Refer by
 linked title, not bare number. Resolve one ticket per session: comment, close,
 then add a linked one-line gist to the map.
 
+**v2 is coreless —
+[ADR 0040](docs/adr/0040-corrosion-replaces-the-core-and-nats.md).**
+Corrosion rows over HTTP/JSON/SSE on a WireGuard mesh; no core, no
+sequencer, no NATS. Control-plane architecture guidance lives in ADR 0040
+and the v2 design specs, not in this file; the incumbent code in-tree is
+frozen and converges to that shape.
+
 ## Product Direction
 
 Ployz is a small-cluster orchestration core built around explicit operations.
@@ -38,64 +45,21 @@ Work that is bounded, local, and atomic is a write, not an operation. A
 validated intent write returns its result synchronously and carries its own
 provenance; an operation record would only describe work that already
 succeeded or already failed. Work that spans hosts, processes, or time stays
-an operation: machine add, deploy, removal, and recovery. ADR 0037 applies
-this to machine assignment changes.
+an operation: machine add, deploy, removal, and recovery.
 
 The product is primitives, not hidden policy. Do not add background behavior
-that changes cluster truth without an operation owner. Machine substrate is
-the single scoped exception, fixed by ADR 0037: Keeper continuously converges
-one host toward its current machine assignment. That is enforcement of a
-decision already recorded by an operator, never new cluster truth, and its
-authority is exactly the assignment.
+that changes cluster truth without an operation owner. Keeper is the scoped
+exception: it converges machine substrate toward decisions an operator
+already recorded, never new cluster truth.
 
 A multi-step journey is a composition of primitives, never a command that
 fuses them. Each primitive keeps one meaning, and each refusal names the
 command that resolves it, so the refusal is the seam where one primitive hands
-off to the next. Machine removal is the worked example: drain excludes,
-rebalance moves, volume removal destroys, and machine remove deletes the row.
-Two consequences bind everywhere. A refusal never performs work; it names the
+off to the next. Two consequences bind everywhere. A refusal never performs work; it names the
 command that does. And no operation gets a `--force` variant whose forced and
 unforced paths commit identical truth, because that flag records only that the
 operator was willing to type it twice — the generic misleading verb this rule
 exists to prevent.
-
-## Architecture
-
-Use NATS as the control-plane backplane:
-
-- NATS Service API for commands, machine RPC, and live testimony
-  (facts, bids, status).
-- Plain NATS subjects for fanout only: intent-changed and operation progress.
-- Core-local intent and evidence files for durable control-plane storage.
-- Machine-local fact ledgers for machine-owned truth.
-- RPC artifact push for larger control-plane artifacts.
-- Subject permissions for authority.
-
-The `Where Control-Plane State And Behavior Live` section below is the rule
-that decides which of these any new piece of state or behavior uses.
-
-Use direct TLS-authenticated NATS for machine control-plane connectivity:
-
-```text
-async-nats
-  -> TLS NATS
-  -> nats-server
-```
-
-Private overlay transport may be revisited later. Product commands go through
-NATS.
-
-## Control Plane And Data Plane
-
-- `ployzd` is control plane: bootstrap, health, services, controllers, machine RPC.
-- `ployzd` is not the data plane.
-- `nats-server`, gateway, DNS, and workloads are independently supervised.
-- Core `ployzd` down must not mean NATS/gateway/DNS down.
-- Edge `ployzd` down stops that machine's RPC/observations, not its running
-  workloads.
-- Gateway and DNS watch NATS directly and keep last-known-good state.
-- If `ployzd` starts data-plane/substrate processes, it is a supervisor and
-  needs explicit readiness, restart, shutdown, health, and recovery tests.
 
 ## Module Ownership
 
@@ -120,68 +84,6 @@ crate level:
 
 Keep dependencies flowing inward. Business logic must not import process wiring.
 Transport adapters must not import product orchestration convenience types.
-
-## Control Plane Rules
-
-- User-facing commands are NATS services.
-- Machine-local commands are machine-scoped NATS services.
-- Mutating services return operation ids quickly; bounded, local, atomic
-  writes return their result directly instead of creating an operation.
-- The core sequencer owns mutating operation admission and operation evidence.
-- Resource fences live in the core sequencer unless a named atomic authority
-  file is explicitly introduced.
-- NATS credentials and subject permissions are the authority boundary.
-- No external control-plane I/O may wait forever.
-- Every long-running task needs shutdown, timeout, retry/backoff, and visible
-  health.
-
-## Where Control-Plane State And Behavior Live
-
-Every new piece of state or behavior is exactly one of four kinds. Classify it
-before adding it; the kind fixes where it lives and how it is read. Lean on
-NATS Services for the request/reply kinds — the product already runs on the
-NATS Service API, so this is discipline, not new dependency.
-
-- **Durable operator decision** — roster, lifecycle, route bindings, serving
-  promotions, authorized users. Lives in core-local intent evidence files,
-  served by one `intent.get` service endpoint, invalidated by an
-  `intent.changed` broadcast. Readers call the endpoint and never import the
-  storage behind it: one projection owner, many storage-blind callers, so
-  moving a store is invisible to every reader.
-- **Live machine or role testimony** — facts, placement bids, gateway/DNS
-  status, logs. Answered by a NATS service request at the point of use, never
-  cached into shared truth. A stale answer is one fresh gather away, and a
-  dead responder surfaces as silence, not as inferred state.
-- **Fanout invalidation** — `intent.changed`, operation progress. A plain
-  subject carrying "something changed / here is the latest," never authority.
-  A missed message is repaired by the periodic rebroadcast or a re-list on
-  reconnect, never by trusting the delta.
-- **Durable operation evidence** — operation records and events. The
-  sequencer's local append-only log, mortal with the core; an external
-  subscriber such as Cloud keeps durable history if it wants it.
-
-Two disciplines keep the split honest:
-
-- **A gather is driven by a known set, never by who answers.** Request-reply
-  reports only responders, so take the candidate set from intent; silence is
-  `intent − responders`, recorded as typed evidence, never read as "none." A
-  service's own PING/INFO/STATS discovery is observability, never membership
-  or truth.
-- **No NATS Service is authoritative by existing.** A responder answering does
-  not make it a member, and a service call never stores state or orders work
-  durably — those are intent files, the sequencer, and the evidence log.
-
-## State Rules
-
-Where each kind of state lives is the `Where Control-Plane State And Behavior
-Live` section above. These rules are about truth semantics, not storage:
-
-- Docker is execution reality.
-- Docker labels are recovery evidence.
-- Local machine storage is cache/evidence, not cluster truth.
-- Active service state is committed only after successful deploy completion.
-- Pending and failed targets live in operation state/events.
-- Do not infer liveness into stored truth.
 
 ## Operation Rules
 
@@ -211,6 +113,9 @@ Live` section above. These rules are about truth semantics, not storage:
   orchestration, storage, and presentation at once.
 - Centralize subject construction without building a complex type-level subject
   language.
+- No external control-plane I/O may wait forever.
+- Every long-running task needs shutdown, timeout, retry/backoff, and visible
+  health.
 
 ## Rust Rules
 

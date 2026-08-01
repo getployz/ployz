@@ -1,4 +1,5 @@
 # Host Runner Update Is Separate From Substrate Update
 
-Ployz v1 separates Host Runner update from substrate update because Host Runner is the machine-local executor for substrate steps. A full machine update may be exposed as CLI convenience, but core records Host Runner update and substrate update as separate explicit operations; substrate update requires Host Runner to already be at the requested Ployz version. This keeps update semantics small while still allowing Host Runner self-update through a dedicated handoff protocol.
-
+**Superseded by [ADR 0040](0040-corrosion-replaces-the-core-and-nats.md)** —
+its Superseded list holds the one-line disposition; full text in git
+history.

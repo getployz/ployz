@@ -1,7 +1,5 @@
 # Machine Bootstrap Entrypoints
 
-Ployz machine bootstrap has three product entrypoints with distinct ownership. The human target-machine path is `curl -fsSL https://ployz.sh | sh && sudo ployz host bootstrap`: the default `ployz.sh` mode installs only the verified Host Runner binary, and Host Runner runs an interactive prompt for Ployz Cloud, custom/self-hosted Cloud, or no Cloud. The explicit `ployz.sh --build-executor` release-delivery mode also installs the manifest-selected, checksum-verified Railpack helper for an ephemeral Build Executor; it does not bootstrap a machine or assign cluster authority. Interactive Cloud bootstrap uses a device-code/browser-link session that Host Runner polls; it does not rely on a localhost browser callback because the browser normally runs on the user's workstation while Host Runner runs on the SSH target.
-
-The noninteractive path is `sudo ployz host bootstrap cloud --cloud-token ...` after Host Runner install. It is for cloud-init, fleet automation, and pre-rendered Cloud Bootstrap Invites. Tokens are short-lived, scoped, never passed to `ployz.sh`, and sent to Cloud only over HTTPS by Host Runner. `ployz host bootstrap` refuses on a Bootstrapped Machine before creating a Cloud session or redemption, and that refusal is local-only. `ployz.sh` remains release delivery and may still replace Host Runner on a Bootstrapped Machine.
-
-The workstation CLI path is `ployz machine init USER@HOST`. It stays deterministic and noninteractive: `ployz` generates and keeps the local operator private seed, delivers typed first-machine material over SSH, activates the first machine over direct TLS NATS, and writes local Operator Context. Cloud linking is explicit follow-up work: `ployz machine init USER@HOST --link-cloud` and `ployz cloud link` should wait until the NATS authority model supports authorizing Cloud and local operators as distinct direct NATS clients. Cloud never SSHes into machines, and direct TLS NATS remains the v1 control-plane transport.
+**Superseded by [ADR 0040](0040-corrosion-replaces-the-core-and-nats.md)** —
+its Superseded list holds the one-line disposition; full text in git
+history.

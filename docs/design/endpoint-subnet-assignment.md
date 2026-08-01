@@ -1,5 +1,11 @@
 # Endpoint Subnet Assignment
 
+**Frozen incumbent design — superseded by
+[ADR 0040](../adr/0040-corrosion-replaces-the-core-and-nats.md).** In v2 the
+join door allocates each machine's /24 by random-free pick with a courtesy
+re-read, and the lowest-ULID machine self-heals a surviving collision; no
+sequencer lock exists.
+
 Machine endpoint subnets are core-owned intent allocated when a machine-add
 operation is admitted. The allocation and persisted submission share the mesh
 sequencer lock, and both active machines and pending machine-add submissions

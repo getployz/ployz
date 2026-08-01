@@ -1,3 +1,5 @@
 # Core Recovery Is Local Machine Promotion
 
-When the Control-Plane Core is lost, Ployz should recover by running the explicit local `ployz core promote` command on an existing joined machine, not by provisioning a fresh Cloud-controlled replacement. Root access on that joined machine plus its existing cluster-local material is enough authority for the recovery command in the v1 model; promotion preserves the cluster identity, increments the Control-Plane Epoch, adopts mirrored intent, and gathers fresh authenticated machine facts. Cloud may display last-known machines and reconnect afterward as a lens, but it is not the recovery authority.
+**Superseded by [ADR 0040](0040-corrosion-replaces-the-core-and-nats.md)** —
+its Superseded list holds the one-line disposition; full text in git
+history.

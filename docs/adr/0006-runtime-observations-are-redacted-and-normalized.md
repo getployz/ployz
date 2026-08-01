@@ -4,4 +4,4 @@ Ployz should expose product-shaped runtime observations, not raw Docker inspect 
 
 Container observations must not include environment variables, auth tokens, certificate private material, secret values, or other fields that turn shared control-plane state into a secret sink. Docker-derived list fields with unstable ordering should be sorted or represented as sets so no-op observation cycles do not churn state.
 
-This adopts Uncloud's container observation hygiene as a hard Ployz boundary. The trade-off is losing some low-level debugging detail in shared state; detailed artifacts can still exist as explicit retained evidence with redaction rules and scoped access.
+Detailed low-level artifacts may still exist as explicit retained evidence with redaction rules and scoped access.
