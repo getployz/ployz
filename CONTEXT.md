@@ -278,7 +278,7 @@ _Avoid_: Legacy compatibility, runtime fallback, silent upgrade
 Superseded by ADR 0040; see git history.
 
 **Control Promotion**:
-Superseded by ADR 0040 (repair is reseed or fresh join, never promotion); see git history.
+Superseded by ADR 0040 (repair is refound or fresh join, never promotion); see git history.
 
 **Reachable Machine**:
 Superseded by ADR 0040; see git history.
