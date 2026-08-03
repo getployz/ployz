@@ -65,7 +65,8 @@ drafted land with the consolidated spec.
   the machine exclusively writes; machine-local detail is per-operation
   JSONL evidence, not a SQLite commit point.
 - **0019 (core recovery is local machine promotion)** — `core promote` is
-  dead; repair is reseed or fresh join, never promotion.
+  dead; repair is refound (teardown + fresh install + re-declared
+  intent, #798) or fresh join, never promotion.
 - **0020 (machine bootstrap entrypoints)** — the founder/joiner/cloud
   bootstrap split is dead; joining is one token door or SSH provisioning,
   and Cloud mints tokens as an ordinary mesh peer.
