@@ -1,0 +1,46 @@
+[Unit]
+Description=Corrosion distributed SQLite agent
+Wants=network-online.target
+Requires=wg-quick@wg0.service
+After=network-online.target wg-quick@wg0.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=corrosion
+Group=corrosion
+UMask=0077
+RuntimeDirectory=corrosion
+RuntimeDirectoryMode=0750
+StateDirectory=corrosion
+StateDirectoryMode=0750
+ExecStart=/usr/local/bin/corrosion --config /etc/corrosion/config.toml agent
+Restart=on-failure
+RestartSec=5
+WatchdogSec=10
+TimeoutStartSec=60
+TimeoutStopSec=30
+KillSignal=SIGTERM
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/corrosion /run/corrosion
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
