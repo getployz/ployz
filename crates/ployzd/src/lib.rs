@@ -19,6 +19,7 @@ pub mod certificate {
     };
     pub use material::{CertificateMaterialError, prepare_custom_certificate};
 }
+pub mod corrosion;
 pub mod roles {
     pub mod dns {
         pub mod internal;

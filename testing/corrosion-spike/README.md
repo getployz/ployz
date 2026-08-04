@@ -60,6 +60,10 @@ the exact created-resource ids remain beside it.
 
 ## Fixed inputs and limits
 
+The runner reads its operational release pin from
+[`corrosion-release.json`](../../corrosion-release.json). The values below
+record the completed certification evidence.
+
 - Stock release: GitHub `v1.0.0`, x86_64 Linux asset SHA-256
   `3504d7d1b4b53737457fc40f2353a400cf4df0c1217ec318924d7ee310876194`.
 - The verified release asset currently reports its embedded version as

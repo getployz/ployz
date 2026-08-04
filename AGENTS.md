@@ -226,7 +226,10 @@ workflow is added here in the same change:
 - `cargo clippy --workspace --all-targets` reports zero warnings.
 - `cargo test --workspace` passes. Grep the output for `test result: FAILED`
   and `error[`; an exit code that passed through a pipe lies (zsh:
-  `${pipestatus[1]}`).
+  `${pipestatus[1]}`). The real Corrosion integration test downloads the exact
+  pinned archive when its verified target cache is cold. Offline runs set
+  `PLOYZ_CORROSION_ARCHIVE` to a pre-fetched archive; the test verifies that
+  file against the release-manifest SHA before execution.
 - From `packages/ployz-sdk`: always run `pnpm check:generated` (regenerates and
   diffs `generated.ts` + the operation-contract fixture — commit real drift).
   When SDK source or generated output changed, also run `pnpm typecheck` and
