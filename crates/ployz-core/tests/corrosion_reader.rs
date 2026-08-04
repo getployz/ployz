@@ -60,6 +60,19 @@ fn machine_document(transport: serde_json::Value) -> String {
     .to_string()
 }
 
+fn certificate_document(machine_id: &str, hostname: &str, expires_at: &str) -> String {
+    json!({
+        "v": 1,
+        "cluster_id": CLUSTER_ID,
+        "machine_id": machine_id,
+        "hostname": hostname,
+        "fingerprint": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "issued_at": "2026-08-04T10:08:00Z",
+        "expires_at": expires_at
+    })
+    .to_string()
+}
+
 #[test]
 fn roster_reader_accepts_a_transport_matching_the_cluster_provider() {
     let cluster = cluster_document(MeshProvider::BuiltinWireguard);
@@ -362,23 +375,37 @@ fn ordinary_reader_accepts_a_natural_container_row_key() {
 }
 
 #[test]
-fn certificate_times_are_validated_compared_as_instants_and_canonicalized() {
-    let certificate = |expires_at: &str| {
-        json!({
-            "v": 1,
-            "cluster_id": CLUSTER_ID,
-            "machine_id": LOWER_ROW_ID,
-            "hostname": "api.example.com",
-            "fingerprint": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-            "issued_at": "2026-08-04T10:08:00Z",
-            "expires_at": expires_at
-        })
-        .to_string()
-    };
+fn certificate_holding_reader_rejects_keys_that_disagree_with_the_document() {
+    let document = certificate_document(LOWER_ROW_ID, "api.example.com", "2026-11-02T10:08:00Z");
+    let report = read_rows::<CertHoldingDocument>(
+        &cluster_id(),
+        [
+            StoredRow::new(LOWER_ROW_ID, document.clone()),
+            StoredRow::new(format!("{HIGHER_ROW_ID}:api.example.com"), document),
+            StoredRow::new(
+                format!("{LOWER_ROW_ID}:API.EXAMPLE.COM"),
+                certificate_document(LOWER_ROW_ID, "API.EXAMPLE.COM", "2026-11-02T10:08:00Z"),
+            ),
+        ],
+    );
 
+    assert!(report.accepted.is_empty());
+    assert_eq!(report.skipped.len(), 3);
+    assert!(report.skipped.iter().all(|skipped| matches!(
+        &skipped.reason,
+        RowSkipReason::InvalidRowKey { expected }
+            if expected == &format!("{LOWER_ROW_ID}:api.example.com")
+    )));
+}
+
+#[test]
+fn certificate_times_are_validated_compared_as_instants_and_canonicalized() {
     let malformed = read_rows::<CertHoldingDocument>(
         &cluster_id(),
-        [StoredRow::new(LOWER_ROW_ID, certificate("not-a-time"))],
+        [StoredRow::new(
+            format!("{LOWER_ROW_ID}:api.example.com"),
+            certificate_document(LOWER_ROW_ID, "api.example.com", "not-a-time"),
+        )],
     );
     assert!(malformed.accepted.is_empty());
     assert!(matches!(
@@ -393,8 +420,18 @@ fn certificate_times_are_validated_compared_as_instants_and_canonicalized() {
     let accepted = read_rows::<CertHoldingDocument>(
         &cluster_id(),
         [
-            StoredRow::new(LOWER_ROW_ID, certificate("2026-11-02T11:08:00+01:00")),
-            StoredRow::new(HIGHER_ROW_ID, certificate("2026-11-02T10:08:00.000000001Z")),
+            StoredRow::new(
+                format!("{LOWER_ROW_ID}:api.example.com"),
+                certificate_document(LOWER_ROW_ID, "api.example.com", "2026-11-02T11:08:00+01:00"),
+            ),
+            StoredRow::new(
+                format!("{HIGHER_ROW_ID}:api.example.com"),
+                certificate_document(
+                    HIGHER_ROW_ID,
+                    "api.example.com",
+                    "2026-11-02T10:08:00.000000001Z",
+                ),
+            ),
         ],
     );
     assert!(accepted.skipped.is_empty());

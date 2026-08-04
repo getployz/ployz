@@ -586,7 +586,7 @@ fn fixtures() -> Result<Vec<Fixture>, String> {
         fixture::<CertHoldingDocument>(
             CorrosionTable::CertHoldings,
             "id",
-            "cert-holding-id",
+            "01ARZ3NDEKTSV4RRFFQ69G5FAV:api.example.com",
             json!({
                 "v": 1,
                 "cluster_id": CLUSTER_ID,
