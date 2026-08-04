@@ -143,6 +143,11 @@ macro_rules! corrosion_ulid_id {
 corrosion_ulid_id! { pub struct ClusterId; ts_brand: "Brand<string, \"ClusterId\">"; }
 corrosion_ulid_id! { pub struct TokenId; ts_brand: "Brand<string, \"TokenId\">"; }
 corrosion_ulid_id! { pub struct PeerId; ts_brand: "Brand<string, \"PeerId\">"; }
+corrosion_ulid_id! { pub struct MachineRowId; ts_brand: "Brand<string, \"MachineRowId\">"; }
+corrosion_ulid_id! { pub struct NamespaceRowId; ts_brand: "Brand<string, \"NamespaceRowId\">"; }
+corrosion_ulid_id! { pub struct ServiceRowId; ts_brand: "Brand<string, \"ServiceRowId\">"; }
+corrosion_ulid_id! { pub struct OperationRowId; ts_brand: "Brand<string, \"OperationRowId\">"; }
+corrosion_ulid_id! { pub struct RouteBindingRowId; ts_brand: "Brand<string, \"RouteBindingRowId\">"; }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SubjectTokenError {

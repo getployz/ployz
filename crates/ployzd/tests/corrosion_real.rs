@@ -150,7 +150,9 @@ async fn exercise_contract(client: &CorrosionClient) -> Result<(), String> {
     let second_document = encode::<NamespaceDocument>(json!({
         "v": 1,
         "cluster_id": CLUSTER_ID,
-        "name": "staging"
+        "name": "staging",
+        "written_by": {"kind": "peer", "peer_id": ROW_ID},
+        "written_at": "2026-08-04T10:00:00Z"
     }))?;
     client
         .execute(&[Statement::with_params(
@@ -191,7 +193,9 @@ async fn exercise_contract(client: &CorrosionClient) -> Result<(), String> {
     let resume_document = encode::<NamespaceDocument>(json!({
         "v": 1,
         "cluster_id": CLUSTER_ID,
-        "name": "resumed"
+        "name": "resumed",
+        "written_by": {"kind": "peer", "peer_id": ROW_ID},
+        "written_at": "2026-08-04T10:00:00Z"
     }))?;
     client
         .execute(&[Statement::with_params(
@@ -214,7 +218,9 @@ async fn exercise_contract(client: &CorrosionClient) -> Result<(), String> {
     let race_document = serde_json::from_value::<NamespaceDocument>(json!({
         "v": 1,
         "cluster_id": CLUSTER_ID,
-        "name": "race"
+        "name": "race",
+        "written_by": {"kind": "peer", "peer_id": ROW_ID},
+        "written_at": "2026-08-04T10:00:00Z"
     }))
     .map_err(|error| error.to_string())?;
     let lower_id = CorrosionUlid::try_new(RACE_LOWER_ID).map_err(|error| error.to_string())?;
@@ -374,10 +380,18 @@ where
 
 fn fixtures() -> Result<Vec<Fixture>, String> {
     let machine_id = ROW_ID;
-    let namespace_id = "namespace_production";
-    let service_id = "service_api";
-    let operation_id = "operation_deploy";
-    let base = |name: &str| json!({"v": 1, "cluster_id": CLUSTER_ID, "name": name});
+    let namespace_id = SECOND_ROW_ID;
+    let service_id = RESUME_ROW_ID;
+    let operation_id = RACE_LOWER_ID;
+    let base = |name: &str| {
+        json!({
+            "v": 1,
+            "cluster_id": CLUSTER_ID,
+            "name": name,
+            "written_by": {"kind": "peer", "peer_id": ROW_ID},
+            "written_at": "2026-08-04T10:00:00Z"
+        })
+    };
 
     Ok(vec![
         fixture::<ClusterDocument>(
@@ -393,7 +407,9 @@ fn fixtures() -> Result<Vec<Fixture>, String> {
                 "prefix": "10.210.0.0/16",
                 "provider": "builtin_wireguard",
                 "acme_directory_url": "https://acme.example/directory",
-                "acme_contact": null
+                "acme_contact": null,
+                "written_by": {"kind": "peer", "peer_id": ROW_ID},
+                "written_at": "2026-08-04T10:00:00Z"
             }),
             vec![],
         )?,
@@ -406,8 +422,16 @@ fn fixtures() -> Result<Vec<Fixture>, String> {
                 "cluster_id": CLUSTER_ID,
                 "name": "edge-a",
                 "lifecycle": "active",
-                "transport": {"kind": "tailscale", "ip": "100.64.0.10", "subnet_v4": "10.210.20.0/24"},
-                "storage": {"mode": "plain", "reason": {"kind": "default"}}
+                "transport": {
+                    "kind": "wireguard",
+                    "pubkey": "wireguard-public-key",
+                    "addr_v6": "fd00::20",
+                    "endpoint": null,
+                    "subnet_v4": "10.210.20.0/24"
+                },
+                "storage": {"mode": "plain", "reason": {"kind": "default"}},
+                "written_by": {"kind": "peer", "peer_id": ROW_ID},
+                "written_at": "2026-08-04T10:00:00Z"
             }),
             vec![column("name", "edge-a"), column("lifecycle", "active")],
         )?,
@@ -419,7 +443,9 @@ fn fixtures() -> Result<Vec<Fixture>, String> {
                 "v": 1,
                 "cluster_id": CLUSTER_ID,
                 "name": "operator-laptop",
-                "transport": {"kind": "tailscale", "ip": "100.64.0.11", "subnet_v4": null}
+                "transport": {"kind": "tailscale", "ip": "100.64.0.11"},
+                "written_by": {"kind": "peer", "peer_id": ROW_ID},
+                "written_at": "2026-08-04T10:00:00Z"
             }),
             vec![column("name", "operator-laptop")],
         )?,
@@ -432,7 +458,9 @@ fn fixtures() -> Result<Vec<Fixture>, String> {
                 "cluster_id": CLUSTER_ID,
                 "secret_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "created_at": "2026-08-04T10:00:00Z",
-                "expires_at": "2026-08-05T10:00:00Z"
+                "expires_at": "2026-08-05T10:00:00Z",
+                "written_by": {"kind": "peer", "peer_id": ROW_ID},
+                "written_at": "2026-08-04T10:00:00Z"
             }),
             vec![GeneratedColumn {
                 name: "kind",
@@ -463,7 +491,9 @@ fn fixtures() -> Result<Vec<Fixture>, String> {
                 "active_deploy": operation_id,
                 "previous_image": null,
                 "deployed_at": "2026-08-04T10:05:00Z",
-                "operation_id": operation_id
+                "operation_id": operation_id,
+                "written_by": {"kind": "peer", "peer_id": ROW_ID},
+                "written_at": "2026-08-04T10:00:00Z"
             }),
             vec![column("namespace_id", namespace_id), column("name", "api")],
         )?,
@@ -479,7 +509,9 @@ fn fixtures() -> Result<Vec<Fixture>, String> {
                 "namespace_id": namespace_id,
                 "endpoint_port": 8080,
                 "origin": "declared",
-                "ingress_mode": "direct"
+                "ingress_mode": "direct",
+                "written_by": {"kind": "peer", "peer_id": ROW_ID},
+                "written_at": "2026-08-04T10:00:00Z"
             }),
             vec![
                 column("hostname", "api.example.com"),
@@ -567,7 +599,7 @@ fn fixtures() -> Result<Vec<Fixture>, String> {
             vec![
                 column("hostname", "api.example.com"),
                 column("machine_id", machine_id),
-                column("expires_at", "2026-11-02T10:08:00Z"),
+                column("expires_at", "2026-11-02T10:08:00.000000000Z"),
             ],
         )?,
         fixture::<AcmeHttp01Document>(

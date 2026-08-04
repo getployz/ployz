@@ -3,13 +3,18 @@
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::num::NonZeroU16;
 
 use ipnet::Ipv4Net;
+use time::format_description::well_known::Rfc3339;
+use time::{OffsetDateTime, UtcOffset};
 
 use crate::deploy::ImageReference;
-use crate::ids::{ClusterId, MachineId, NamespaceId, OperationId, PeerId, ServiceId, TokenId};
+use crate::ids::{
+    ClusterId, MachineRowId, NamespaceRowId, OperationRowId, PeerId, ServiceRowId, TokenId,
+};
 use crate::ingress::RouteBindingOrigin;
 use crate::machine::{MachineLifecycle, MachineName};
 use crate::network::WireGuardPublicKey;
@@ -71,6 +76,67 @@ impl CorrosionDocumentVersion {
     }
 }
 
+/// A validated instant serialized in one lexically sortable UTC spelling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "Brand<string, \"CorrosionTimestamp\">"))]
+#[serde(try_from = "String", into = "String")]
+pub struct CorrosionTimestamp(OffsetDateTime);
+
+impl CorrosionTimestamp {
+    /// Parses any RFC 3339 offset spelling and stores the corresponding UTC instant.
+    pub fn try_new(value: impl Into<String>) -> Result<Self, CorrosionTimestampError> {
+        let value = value.into();
+        let parsed =
+            OffsetDateTime::parse(&value, &Rfc3339).map_err(|error| CorrosionTimestampError {
+                value,
+                message: error.to_string(),
+            })?;
+        Ok(Self(parsed.to_offset(UtcOffset::UTC)))
+    }
+
+    fn canonical_string(self) -> String {
+        let timestamp = self.0;
+        format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:09}Z",
+            timestamp.year(),
+            u8::from(timestamp.month()),
+            timestamp.day(),
+            timestamp.hour(),
+            timestamp.minute(),
+            timestamp.second(),
+            timestamp.nanosecond(),
+        )
+    }
+}
+
+impl fmt::Display for CorrosionTimestamp {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.canonical_string())
+    }
+}
+
+impl TryFrom<String> for CorrosionTimestamp {
+    type Error = CorrosionTimestampError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<CorrosionTimestamp> for String {
+    fn from(value: CorrosionTimestamp) -> Self {
+        value.canonical_string()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("invalid Corrosion timestamp {value}: {message}")]
+pub struct CorrosionTimestampError {
+    pub value: String,
+    pub message: String,
+}
+
 /// A sealed typed document from one fixed Corrosion table.
 pub trait CorrosionDocument: private::Sealed + Serialize + DeserializeOwned {
     const TABLE: CorrosionTable;
@@ -78,6 +144,19 @@ pub trait CorrosionDocument: private::Sealed + Serialize + DeserializeOwned {
 
     fn version(&self) -> CorrosionDocumentVersion;
     fn cluster_id(&self) -> &ClusterId;
+}
+
+/// A non-roster document accepted through the ordinary cluster/version fence.
+pub trait OrdinaryCorrosionDocument:
+    CorrosionDocument + private::OrdinaryCorrosionDocumentSealed
+{
+}
+
+/// A machine or peer document whose transport must match the cluster provider.
+pub trait RosterCorrosionDocument:
+    CorrosionDocument + private::RosterCorrosionDocumentSealed
+{
+    fn mesh_provider(&self) -> MeshProvider;
 }
 
 /// The collision domain of one named operator-authority document.
@@ -95,7 +174,7 @@ pub enum NameClaim {
         name: String,
     },
     Service {
-        namespace_id: NamespaceId,
+        namespace_id: NamespaceRowId,
         name: String,
     },
     RouteBinding {
@@ -110,6 +189,8 @@ pub trait NamedCorrosionDocument: CorrosionDocument {
 
 mod private {
     pub trait Sealed {}
+    pub trait OrdinaryCorrosionDocumentSealed {}
+    pub trait RosterCorrosionDocumentSealed {}
 }
 
 /// A lowercase hexadecimal SHA-256 digest that cannot carry source secrets.
@@ -195,26 +276,117 @@ pub enum MeshProvider {
     Tailscale,
 }
 
-/// The transport identity and addresses carried by machine and peer rows.
+/// A machine's mesh identity plus its required container subnet.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum Transport {
+pub enum MachineTransport {
     Wireguard {
         pubkey: WireGuardPublicKey,
         #[cfg_attr(feature = "ts", ts(type = "string"))]
         addr_v6: Ipv6Addr,
         #[cfg_attr(feature = "ts", ts(type = "string | null"))]
         endpoint: Option<SocketAddr>,
-        #[cfg_attr(feature = "ts", ts(type = "string | null"))]
-        subnet_v4: Option<Ipv4Net>,
+        #[cfg_attr(feature = "ts", ts(type = "string"))]
+        subnet_v4: Ipv4Net,
     },
     Tailscale {
         #[cfg_attr(feature = "ts", ts(type = "string"))]
         ip: Ipv4Addr,
-        #[cfg_attr(feature = "ts", ts(type = "string | null"))]
-        subnet_v4: Option<Ipv4Net>,
+        #[cfg_attr(feature = "ts", ts(type = "string"))]
+        subnet_v4: Ipv4Net,
     },
+}
+
+impl MachineTransport {
+    const fn mesh_provider(&self) -> MeshProvider {
+        match self {
+            Self::Wireguard { .. } => MeshProvider::BuiltinWireguard,
+            Self::Tailscale { .. } => MeshProvider::Tailscale,
+        }
+    }
+}
+
+/// A peer's mesh identity; peers never own container address space.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PeerTransport {
+    Wireguard {
+        pubkey: WireGuardPublicKey,
+        #[cfg_attr(feature = "ts", ts(type = "string"))]
+        addr_v6: Ipv6Addr,
+        #[cfg_attr(feature = "ts", ts(type = "string | null"))]
+        endpoint: Option<SocketAddr>,
+    },
+    Tailscale {
+        #[cfg_attr(feature = "ts", ts(type = "string"))]
+        ip: Ipv4Addr,
+    },
+}
+
+impl PeerTransport {
+    const fn mesh_provider(&self) -> MeshProvider {
+        match self {
+            Self::Wireguard { .. } => MeshProvider::BuiltinWireguard,
+            Self::Tailscale { .. } => MeshProvider::Tailscale,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum PeerTransportRepresentation {
+    Wireguard {
+        pubkey: WireGuardPublicKey,
+        addr_v6: Ipv6Addr,
+        endpoint: Option<SocketAddr>,
+        #[serde(flatten)]
+        extra: BTreeMap<String, serde_json::Value>,
+    },
+    Tailscale {
+        ip: Ipv4Addr,
+        #[serde(flatten)]
+        extra: BTreeMap<String, serde_json::Value>,
+    },
+}
+
+impl<'de> Deserialize<'de> for PeerTransport {
+    fn deserialize<Deserializer>(deserializer: Deserializer) -> Result<Self, Deserializer::Error>
+    where
+        Deserializer: serde::Deserializer<'de>,
+    {
+        let representation = PeerTransportRepresentation::deserialize(deserializer)?;
+        match representation {
+            PeerTransportRepresentation::Wireguard {
+                pubkey,
+                addr_v6,
+                endpoint,
+                extra,
+            } => {
+                reject_peer_subnet::<Deserializer::Error>(&extra)?;
+                Ok(Self::Wireguard {
+                    pubkey,
+                    addr_v6,
+                    endpoint,
+                })
+            }
+            PeerTransportRepresentation::Tailscale { ip, extra } => {
+                reject_peer_subnet::<Deserializer::Error>(&extra)?;
+                Ok(Self::Tailscale { ip })
+            }
+        }
+    }
+}
+
+fn reject_peer_subnet<Error>(extra: &BTreeMap<String, serde_json::Value>) -> Result<(), Error>
+where
+    Error: serde::de::Error,
+{
+    if extra.contains_key("subnet_v4") {
+        return Err(Error::custom("peer transport cannot carry subnet_v4"));
+    }
+    Ok(())
 }
 
 /// Why admission chose a machine's storage mode.
@@ -319,20 +491,20 @@ pub enum MachineLoadBand {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CorrosionOperation {
     Build {
-        service_id: ServiceId,
+        service_id: ServiceRowId,
     },
     Deploy {
-        namespace_id: NamespaceId,
-        service_id: ServiceId,
+        namespace_id: NamespaceRowId,
+        service_id: ServiceRowId,
     },
     MachineAdd {
-        target_machine_id: MachineId,
+        target_machine_id: MachineRowId,
     },
     MachineRemove {
-        target_machine_id: MachineId,
+        target_machine_id: MachineRowId,
     },
     Recovery {
-        target_machine_id: MachineId,
+        target_machine_id: MachineRowId,
     },
 }
 
@@ -341,9 +513,17 @@ pub enum CorrosionOperation {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum OperationInitiator {
-    Machine { machine_id: MachineId },
+    Machine { machine_id: MachineRowId },
     Peer { peer_id: PeerId },
     ApiToken { token_id: TokenId },
+}
+
+/// The operator principal and instant responsible for one authority-row write.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct OperatorWriteProvenance {
+    pub written_by: OperationInitiator,
+    pub written_at: CorrosionTimestamp,
 }
 
 /// A terminal operation failure class with useful public evidence.
@@ -355,7 +535,7 @@ pub enum CorrosionOperationFailure {
         message: String,
     },
     MachineUnavailable {
-        machine_id: MachineId,
+        machine_id: MachineRowId,
         message: String,
     },
     Timeout {
@@ -370,7 +550,7 @@ pub enum CorrosionOperationFailure {
         message: String,
     },
     Superseded {
-        winner: OperationId,
+        winner: OperationRowId,
     },
 }
 
@@ -393,19 +573,19 @@ pub enum CorrosionExecutionFailureClass {
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum CorrosionOperationState {
     Created {
-        created_at: String,
+        created_at: CorrosionTimestamp,
     },
     Running {
-        started_at: String,
-        heartbeat_at: String,
+        started_at: CorrosionTimestamp,
+        heartbeat_at: CorrosionTimestamp,
     },
     Succeeded {
-        started_at: String,
-        completed_at: String,
+        started_at: CorrosionTimestamp,
+        completed_at: CorrosionTimestamp,
     },
     Failed {
-        started_at: String,
-        completed_at: String,
+        started_at: CorrosionTimestamp,
+        completed_at: CorrosionTimestamp,
         failure: CorrosionOperationFailure,
     },
 }
@@ -415,6 +595,9 @@ pub enum CorrosionOperationState {
 pub struct ClusterDocument {
     pub v: CorrosionDocumentVersion,
     pub cluster_id: ClusterId,
+    #[serde(flatten)]
+    #[cfg_attr(feature = "ts", ts(flatten))]
+    pub provenance: OperatorWriteProvenance,
     pub name: String,
     pub storage_default: StorageMode,
     pub hostname_mode: AutomaticHostnameMode,
@@ -430,9 +613,12 @@ pub struct ClusterDocument {
 pub struct MachineDocument {
     pub v: CorrosionDocumentVersion,
     pub cluster_id: ClusterId,
+    #[serde(flatten)]
+    #[cfg_attr(feature = "ts", ts(flatten))]
+    pub provenance: OperatorWriteProvenance,
     pub name: MachineName,
     pub lifecycle: MachineLifecycle,
-    pub transport: Transport,
+    pub transport: MachineTransport,
     pub storage: MachineStorageSelection,
 }
 
@@ -441,8 +627,11 @@ pub struct MachineDocument {
 pub struct PeerDocument {
     pub v: CorrosionDocumentVersion,
     pub cluster_id: ClusterId,
+    #[serde(flatten)]
+    #[cfg_attr(feature = "ts", ts(flatten))]
+    pub provenance: OperatorWriteProvenance,
     pub name: String,
-    pub transport: Transport,
+    pub transport: PeerTransport,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -450,9 +639,12 @@ pub struct PeerDocument {
 pub struct TokenDocument {
     pub v: CorrosionDocumentVersion,
     pub cluster_id: ClusterId,
+    #[serde(flatten)]
+    #[cfg_attr(feature = "ts", ts(flatten))]
+    pub provenance: OperatorWriteProvenance,
     pub secret_sha256: Sha256Hex,
-    pub created_at: String,
-    pub expires_at: String,
+    pub created_at: CorrosionTimestamp,
+    pub expires_at: CorrosionTimestamp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -460,6 +652,9 @@ pub struct TokenDocument {
 pub struct NamespaceDocument {
     pub v: CorrosionDocumentVersion,
     pub cluster_id: ClusterId,
+    #[serde(flatten)]
+    #[cfg_attr(feature = "ts", ts(flatten))]
+    pub provenance: OperatorWriteProvenance,
     pub name: String,
 }
 
@@ -468,18 +663,21 @@ pub struct NamespaceDocument {
 pub struct ServiceDocument {
     pub v: CorrosionDocumentVersion,
     pub cluster_id: ClusterId,
-    pub namespace_id: NamespaceId,
+    #[serde(flatten)]
+    #[cfg_attr(feature = "ts", ts(flatten))]
+    pub provenance: OperatorWriteProvenance,
+    pub namespace_id: NamespaceRowId,
     pub name: String,
     pub image: ImageReference,
     pub env_fingerprints: BTreeMap<String, Sha256Hex>,
     #[serde(flatten)]
     #[cfg_attr(feature = "ts", ts(flatten))]
     pub placement: ServicePlacement,
-    pub pinned_machines: BTreeSet<MachineId>,
-    pub active_deploy: OperationId,
+    pub pinned_machines: BTreeSet<MachineRowId>,
+    pub active_deploy: OperationRowId,
     pub previous_image: Option<ImageReference>,
-    pub deployed_at: String,
-    pub operation_id: OperationId,
+    pub deployed_at: CorrosionTimestamp,
+    pub operation_id: OperationRowId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -487,9 +685,12 @@ pub struct ServiceDocument {
 pub struct RouteBindingDocument {
     pub v: CorrosionDocumentVersion,
     pub cluster_id: ClusterId,
+    #[serde(flatten)]
+    #[cfg_attr(feature = "ts", ts(flatten))]
+    pub provenance: OperatorWriteProvenance,
     pub hostname: RouteHostname,
-    pub service_id: ServiceId,
-    pub namespace_id: NamespaceId,
+    pub service_id: ServiceRowId,
+    pub namespace_id: NamespaceRowId,
     pub endpoint_port: RoutePort,
     pub origin: RouteBindingOrigin,
     pub ingress_mode: IngressMode,
@@ -500,12 +701,12 @@ pub struct RouteBindingDocument {
 pub struct ContainerDocument {
     pub v: CorrosionDocumentVersion,
     pub cluster_id: ClusterId,
-    pub machine_id: MachineId,
-    pub service_id: ServiceId,
-    pub namespace_id: NamespaceId,
+    pub machine_id: MachineRowId,
+    pub service_id: ServiceRowId,
+    pub namespace_id: NamespaceRowId,
     #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub ip: Ipv4Addr,
-    pub deploy: OperationId,
+    pub deploy: OperationRowId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -513,14 +714,14 @@ pub struct ContainerDocument {
 pub struct MachineStatusDocument {
     pub v: CorrosionDocumentVersion,
     pub cluster_id: ClusterId,
-    pub machine_id: MachineId,
+    pub machine_id: MachineRowId,
     pub ployz_version: String,
     pub corrosion_version: String,
     pub architecture: String,
     pub free_disk_bytes: u64,
     pub free_memory_bytes: u64,
     pub load: MachineLoadBand,
-    pub observed_at: String,
+    pub observed_at: CorrosionTimestamp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -528,7 +729,7 @@ pub struct MachineStatusDocument {
 pub struct OperationDocument {
     pub v: CorrosionDocumentVersion,
     pub cluster_id: ClusterId,
-    pub machine_id: MachineId,
+    pub machine_id: MachineRowId,
     #[serde(flatten)]
     #[cfg_attr(feature = "ts", ts(flatten))]
     pub operation: CorrosionOperation,
@@ -543,11 +744,11 @@ pub struct OperationDocument {
 pub struct CertHoldingDocument {
     pub v: CorrosionDocumentVersion,
     pub cluster_id: ClusterId,
-    pub machine_id: MachineId,
+    pub machine_id: MachineRowId,
     pub hostname: RouteHostname,
     pub fingerprint: Sha256Hex,
-    pub issued_at: String,
-    pub expires_at: String,
+    pub issued_at: CorrosionTimestamp,
+    pub expires_at: CorrosionTimestamp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -555,10 +756,10 @@ pub struct CertHoldingDocument {
 pub struct AcmeHttp01Document {
     pub v: CorrosionDocumentVersion,
     pub cluster_id: ClusterId,
-    pub machine_id: MachineId,
+    pub machine_id: MachineRowId,
     pub hostname: RouteHostname,
     pub key_authorization: String,
-    pub created_at: String,
+    pub created_at: CorrosionTimestamp,
 }
 
 macro_rules! corrosion_document {
@@ -579,6 +780,15 @@ macro_rules! corrosion_document {
     };
 }
 
+macro_rules! ordinary_corrosion_document {
+    ($($document:ty),+ $(,)?) => {
+        $(
+            impl private::OrdinaryCorrosionDocumentSealed for $document {}
+            impl OrdinaryCorrosionDocument for $document {}
+        )+
+    };
+}
+
 corrosion_document!(ClusterDocument, CorrosionTable::Cluster);
 corrosion_document!(MachineDocument, CorrosionTable::Machines);
 corrosion_document!(PeerDocument, CorrosionTable::Peers);
@@ -591,6 +801,35 @@ corrosion_document!(MachineStatusDocument, CorrosionTable::MachineStatus);
 corrosion_document!(OperationDocument, CorrosionTable::Operations);
 corrosion_document!(CertHoldingDocument, CorrosionTable::CertHoldings);
 corrosion_document!(AcmeHttp01Document, CorrosionTable::AcmeHttp01);
+
+ordinary_corrosion_document!(
+    ClusterDocument,
+    TokenDocument,
+    NamespaceDocument,
+    ServiceDocument,
+    RouteBindingDocument,
+    ContainerDocument,
+    MachineStatusDocument,
+    OperationDocument,
+    CertHoldingDocument,
+    AcmeHttp01Document,
+);
+
+impl private::RosterCorrosionDocumentSealed for MachineDocument {}
+
+impl RosterCorrosionDocument for MachineDocument {
+    fn mesh_provider(&self) -> MeshProvider {
+        self.transport.mesh_provider()
+    }
+}
+
+impl private::RosterCorrosionDocumentSealed for PeerDocument {}
+
+impl RosterCorrosionDocument for PeerDocument {
+    fn mesh_provider(&self) -> MeshProvider {
+        self.transport.mesh_provider()
+    }
+}
 
 impl NamedCorrosionDocument for MachineDocument {
     fn name_claim(&self) -> NameClaim {

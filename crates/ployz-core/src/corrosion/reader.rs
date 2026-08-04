@@ -4,7 +4,10 @@ use std::collections::BTreeMap;
 
 use serde_json::Value;
 
-use super::{CorrosionDocument, NameClaim, NamedCorrosionDocument};
+use super::{
+    ClusterDocument, CorrosionDocument, MeshProvider, NameClaim, NamedCorrosionDocument,
+    OrdinaryCorrosionDocument, RosterCorrosionDocument,
+};
 use crate::ids::{ClusterId, CorrosionUlid, CorrosionUlidError};
 
 /// A row as returned by a Corrosion query.
@@ -42,10 +45,22 @@ pub struct SkippedRow {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RowSkipReason {
     Empty,
-    ForeignCluster { expected: String, found: String },
-    NewerVersion { found: u64, supported: u32 },
+    ForeignCluster {
+        expected: String,
+        found: String,
+    },
+    NewerVersion {
+        found: u64,
+        supported: u32,
+    },
+    MeshProviderMismatch {
+        expected: MeshProvider,
+        found: MeshProvider,
+    },
     Malformed(MalformedDocument),
-    InvalidRowId { error: CorrosionUlidError },
+    InvalidRowId {
+        error: CorrosionUlidError,
+    },
 }
 
 /// The precise malformed-document class observed during staged parsing.
@@ -75,6 +90,16 @@ pub fn read_rows<Document>(
     rows: impl IntoIterator<Item = StoredRow>,
 ) -> ReadReport<Document>
 where
+    Document: OrdinaryCorrosionDocument,
+{
+    read_document_rows(expected_cluster, rows)
+}
+
+fn read_document_rows<Document>(
+    expected_cluster: &ClusterId,
+    rows: impl IntoIterator<Item = StoredRow>,
+) -> ReadReport<Document>
+where
     Document: CorrosionDocument,
 {
     let mut accepted = Vec::new();
@@ -88,6 +113,43 @@ where
     }
 
     ReadReport { accepted, skipped }
+}
+
+/// Reads roster rows after the caller has accepted the cluster document that
+/// fixes the cluster-wide mesh provider.
+#[must_use]
+pub fn read_roster_rows<Document>(
+    cluster: &ClusterDocument,
+    rows: impl IntoIterator<Item = StoredRow>,
+) -> ReadReport<Document>
+where
+    Document: RosterCorrosionDocument,
+{
+    let ReadReport {
+        accepted: candidates,
+        skipped: mut skipped_rows,
+    } = read_document_rows::<Document>(&cluster.cluster_id, rows);
+    let mut accepted = Vec::new();
+
+    for row in candidates {
+        let found = row.value.mesh_provider();
+        if found == cluster.provider {
+            accepted.push(row);
+        } else {
+            skipped_rows.push(skipped(
+                row.source,
+                RowSkipReason::MeshProviderMismatch {
+                    expected: cluster.provider,
+                    found,
+                },
+            ));
+        }
+    }
+
+    ReadReport {
+        accepted,
+        skipped: skipped_rows,
+    }
 }
 
 fn read_one<Document>(
@@ -238,12 +300,33 @@ pub fn read_named_rows<Document>(
     rows: impl IntoIterator<Item = StoredRow>,
 ) -> NamedReadReport<Document>
 where
+    Document: NamedCorrosionDocument + OrdinaryCorrosionDocument,
+{
+    let ReadReport { accepted, skipped } = read_rows::<Document>(expected_cluster, rows);
+    adjudicate_named(accepted, skipped)
+}
+
+/// Reads a sealed named roster table and resolves each provider-valid claim by
+/// lowest ULID.
+#[must_use]
+pub fn read_named_roster_rows<Document>(
+    cluster: &ClusterDocument,
+    rows: impl IntoIterator<Item = StoredRow>,
+) -> NamedReadReport<Document>
+where
+    Document: NamedCorrosionDocument + RosterCorrosionDocument,
+{
+    let ReadReport { accepted, skipped } = read_roster_rows::<Document>(cluster, rows);
+    adjudicate_named(accepted, skipped)
+}
+
+fn adjudicate_named<Document>(
+    accepted: Vec<AcceptedRow<Document>>,
+    mut skipped: Vec<SkippedRow>,
+) -> NamedReadReport<Document>
+where
     Document: NamedCorrosionDocument,
 {
-    let ReadReport {
-        accepted,
-        mut skipped,
-    } = read_rows::<Document>(expected_cluster, rows);
     let mut by_claim = BTreeMap::<NameClaim, Vec<NamedAcceptedRow<Document>>>::new();
 
     for AcceptedRow { source, value } in accepted {

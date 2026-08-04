@@ -34,7 +34,7 @@ impl MeshProvider {
     /// 2. Mint this machine's transport identity at join.
     ///    builtin: WG keypair + derived IPv6 + door-allocated IPv4 /24
     ///    tailscale: read the local tailnet IP
-    fn provision_join(&self, ...) -> Result<Transport>;
+    fn provision_join(&self, ...) -> Result<MachineTransport>;
 
     /// 3. Make roster addresses reachable.
     ///    builtin: converge the WG peer set from machines ∪ peers rows
@@ -122,7 +122,7 @@ addresses or keys themselves:
 ```rust
 enum Principal {
     /// cryptokey-routed source → machines row
-    Machine(MachineId),
+    Machine(MachineRowId),
     /// cryptokey-routed source → peers row (operator laptop, Cloud)
     Peer(PeerId),
     /// join-token secret presented at the public join door;
@@ -137,9 +137,9 @@ machines write testimony, peers issue commands. Laptop and Cloud share
 `Peer` — single-operator trust makes them the same authority.
 
 **The rejection rule.** Any transport that cannot arrive as a Principal
-variant plus a `Transport` union variant on a roster row is rejected as a
-second system. There is no side door, no ambient identity, no
-"trusted network" mode.
+variant plus the matching `MachineTransport` or `PeerTransport` variant on a
+roster row is rejected as a second system. There is no side door, no ambient
+identity, no "trusted network" mode.
 
 ## The peers table
 
@@ -151,8 +151,8 @@ every row-model table:
 
 ```sql
 -- Non-machine mesh peers: operator laptops and Cloud. Operator authority;
--- swept by peer rm. Document carries the same transport union as machines,
--- with no IPv4 subnet (peers run no containers).
+-- swept by peer rm. Document carries PeerTransport, whose variants have no
+-- IPv4 subnet (peers run no containers).
 CREATE TABLE peers (
     id TEXT NOT NULL PRIMARY KEY,
     document TEXT NOT NULL DEFAULT '{}',
@@ -163,15 +163,16 @@ CREATE INDEX peers_name ON peers (name);
 
 Peers get a derived IPv6 /112 like machines and no `subnet_v4`.
 
-## The transport union on roster rows
+## The transport unions on roster rows
 
-`machines` and `peers` documents carry one internally tagged union —
-serde's native enum form, matched exhaustively in code:
+Machine and peer documents carry separate internally tagged unions, matched
+exhaustively in code. A machine always owns one container subnet. A peer never
+does:
 
 ```rust
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-enum Transport {
+enum MachineTransport {
     Wireguard {
         /// write-once identity
         pubkey: WgPublicKey,
@@ -180,19 +181,40 @@ enum Transport {
         addr_v6: Ipv6Addr,
         /// None = NAT'd/roaming (WG learns it from the handshake)
         endpoint: Option<SocketAddr>,
-        /// machines only; the one allocated, self-healing field
-        subnet_v4: Option<Ipv4Net>,
+        /// allocated at admission; the one self-healing field
+        subnet_v4: Ipv4Net,
     },
     Tailscale {
         ip: Ipv4Addr,
-        subnet_v4: Option<Ipv4Net>,
+        subnet_v4: Ipv4Net,
+    },
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum PeerTransport {
+    Wireguard {
+        pubkey: WgPublicKey,
+        addr_v6: Ipv6Addr,
+        endpoint: Option<SocketAddr>,
+    },
+    Tailscale {
+        ip: Ipv4Addr,
     },
 }
 ```
 
-`kind` must match the cluster's provider; a mismatch is a doctor-surfaced
-skip. An unknown `kind` fails to parse and lands in the row model's
-existing skip-unparseable guard.
+`MachineDocument.transport` cannot omit or null its `subnet_v4`.
+`PeerDocument.transport` has no such field, and a peer transport containing
+`subnet_v4` is malformed rather than an additive extension. This makes a peer
+structurally unable to claim container address space.
+
+Roster acceptance requires the accepted `ClusterDocument` as context. The
+roster reader parses the row, compares the transport `kind` to
+`ClusterDocument.provider`, and only then admits the row to a name or subnet
+claim fold. A mismatch is skipped and surfaced to `doctor`; it cannot shadow a
+valid row by carrying a lower ULID. An unknown `kind` fails to parse and lands
+in the row model's existing skip-unparseable guard.
 
 ## Join: one public door, token in hand
 

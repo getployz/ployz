@@ -7,15 +7,17 @@ use ployz_core::corrosion::{
     AcmeHttp01Document, AutomaticHostnameMode, CertHoldingDocument, ClusterDocument,
     ContainerDocument, CorrosionDocument, CorrosionDocumentVersion, CorrosionExecutionFailureClass,
     CorrosionOperation, CorrosionOperationFailure, CorrosionOperationState, CorrosionTable,
-    IngressMode, MachineDocument, MachineLoadBand, MachineStatusDocument,
+    CorrosionTimestamp, IngressMode, MachineDocument, MachineLoadBand, MachineStatusDocument,
     MachineStorageIneligibleReason, MachineStorageSelection, MachineStorageSelectionReason,
-    MeshProvider, NameClaim, NamedCorrosionDocument, NamespaceDocument, OperationDocument,
-    OperationInitiator, PeerDocument, RouteBindingDocument, ServiceDocument, ServicePlacement,
-    ServiceReplicaCount, Sha256Hex, StorageMode, TokenDocument, Transport,
+    MachineTransport, MeshProvider, NameClaim, NamedCorrosionDocument, NamespaceDocument,
+    OperationDocument, OperationInitiator, OperatorWriteProvenance, PeerDocument, PeerTransport,
+    RouteBindingDocument, ServiceDocument, ServicePlacement, ServiceReplicaCount, Sha256Hex,
+    StorageMode, TokenDocument,
 };
 use ployz_core::deploy::ImageReference;
 use ployz_core::ids::{
-    ClusterId, CorrosionUlid, MachineId, NamespaceId, OperationId, PeerId, ServiceId, TokenId,
+    ClusterId, CorrosionUlid, MachineId, MachineRowId, NamespaceId, NamespaceRowId, OperationId,
+    OperationRowId, PeerId, RouteBindingRowId, ServiceId, ServiceRowId, TokenId,
 };
 use ployz_core::ingress::RouteBindingOrigin;
 use ployz_core::machine::{MachineLifecycle, MachineName};
@@ -58,6 +60,102 @@ fn corrosion_ulid_ids_are_transparent_strings() {
 }
 
 #[test]
+fn v2_row_ids_are_canonical_ulids_without_changing_incumbent_ids() {
+    let row_ids = [
+        MachineRowId::try_new(ULID_A)
+            .expect("machine row id")
+            .as_str()
+            .to_owned(),
+        NamespaceRowId::try_new(ULID_A)
+            .expect("namespace row id")
+            .as_str()
+            .to_owned(),
+        ServiceRowId::try_new(ULID_A)
+            .expect("service row id")
+            .as_str()
+            .to_owned(),
+        OperationRowId::try_new(ULID_A)
+            .expect("operation row id")
+            .as_str()
+            .to_owned(),
+        RouteBindingRowId::try_new(ULID_A)
+            .expect("route binding row id")
+            .as_str()
+            .to_owned(),
+    ];
+
+    assert!(row_ids.iter().all(|id| id == ULID_A));
+    assert!(MachineRowId::try_new("machine_edge_a").is_err());
+    assert!(MachineId::try_new("machine_edge_a").is_ok());
+    assert!(NamespaceId::try_new("namespace_production").is_ok());
+    assert!(ServiceId::try_new("service_api").is_ok());
+    assert!(OperationId::try_new("operation_deploy").is_ok());
+}
+
+#[test]
+fn corrosion_timestamps_parse_rfc3339_order_chronologically_and_serialize_as_utc() {
+    let offset =
+        CorrosionTimestamp::try_new("2026-08-04T12:08:00+02:00").expect("valid offset timestamp");
+    let one_nanosecond_later =
+        CorrosionTimestamp::try_new("2026-08-04T10:08:00.000000001Z").expect("valid UTC timestamp");
+
+    assert!(offset < one_nanosecond_later);
+    assert_eq!(
+        serde_json::to_value(offset).expect("timestamp JSON"),
+        "2026-08-04T10:08:00.000000000Z"
+    );
+    assert!(CorrosionTimestamp::try_new("next Tuesday").is_err());
+}
+
+#[test]
+fn corrosion_document_references_reject_incumbent_subject_tokens() {
+    let mut document = serde_json::to_value(service_document()).expect("service JSON");
+    *document
+        .get_mut("namespace_id")
+        .expect("service namespace reference") = json!("namespace_production");
+
+    assert!(serde_json::from_value::<ServiceDocument>(document).is_err());
+}
+
+#[test]
+fn peer_transport_rejects_container_subnets_but_tolerates_additive_fields() {
+    let peer = serde_json::to_value(peer_document()).expect("peer JSON");
+    assert!(
+        peer.get("transport")
+            .and_then(|transport| transport.get("subnet_v4"))
+            .is_none()
+    );
+
+    let mut additive = peer.clone();
+    additive
+        .get_mut("transport")
+        .and_then(Value::as_object_mut)
+        .expect("peer transport object")
+        .insert("future_transport_field".to_owned(), json!("tolerated"));
+    serde_json::from_value::<PeerDocument>(additive).expect("additive peer transport field");
+
+    let mut with_subnet = peer;
+    with_subnet
+        .get_mut("transport")
+        .and_then(Value::as_object_mut)
+        .expect("peer transport object")
+        .insert("subnet_v4".to_owned(), json!("10.210.20.0/24"));
+    assert!(serde_json::from_value::<PeerDocument>(with_subnet).is_err());
+}
+
+#[test]
+fn machine_transport_requires_a_container_subnet() {
+    let mut machine = serde_json::to_value(machine_document()).expect("machine JSON");
+    machine
+        .get_mut("transport")
+        .and_then(Value::as_object_mut)
+        .expect("machine transport object")
+        .insert("subnet_v4".to_owned(), Value::Null);
+
+    assert!(serde_json::from_value::<MachineDocument>(machine).is_err());
+}
+
+#[test]
 fn every_v1_document_serializes_all_public_contract_fields() {
     for fixture in document_fixtures() {
         assert_eq!(
@@ -73,6 +171,75 @@ fn every_v1_document_serializes_all_public_contract_fields() {
             fixture.table.as_str()
         );
         assert_eq!(fixture.document_version, CorrosionDocumentVersion::V1);
+    }
+}
+
+#[test]
+fn exactly_operator_authority_documents_flatten_required_write_provenance() {
+    let operator_tables = BTreeSet::from([
+        CorrosionTable::Cluster,
+        CorrosionTable::Machines,
+        CorrosionTable::Peers,
+        CorrosionTable::Tokens,
+        CorrosionTable::Namespaces,
+        CorrosionTable::Services,
+        CorrosionTable::RouteBindings,
+    ]);
+
+    for fixture in document_fixtures() {
+        let written_by = fixture.value.get("written_by");
+        let written_at = fixture.value.get("written_at");
+        if operator_tables.contains(&fixture.table) {
+            assert_eq!(
+                written_by,
+                Some(&json!({"kind": "peer", "peer_id": ULID_B})),
+                "{} writer",
+                fixture.table.as_str()
+            );
+            assert_eq!(
+                written_at.and_then(Value::as_str),
+                Some("2026-08-04T10:00:00.000000000Z"),
+                "{} write time",
+                fixture.table.as_str()
+            );
+        } else {
+            assert!(written_by.is_none(), "{} writer", fixture.table.as_str());
+            assert!(
+                written_at.is_none(),
+                "{} write time",
+                fixture.table.as_str()
+            );
+        }
+    }
+}
+
+#[test]
+fn every_corrosion_document_timestamp_serializes_in_canonical_utc() {
+    let fixtures = document_fixtures()
+        .into_iter()
+        .map(|fixture| (fixture.table, fixture.value))
+        .collect::<BTreeMap<_, _>>();
+
+    for (table, paths) in [
+        (CorrosionTable::Tokens, &["created_at", "expires_at"][..]),
+        (CorrosionTable::Services, &["deployed_at"]),
+        (CorrosionTable::MachineStatus, &["observed_at"]),
+        (CorrosionTable::Operations, &["started_at", "completed_at"]),
+        (CorrosionTable::CertHoldings, &["issued_at", "expires_at"]),
+        (CorrosionTable::AcmeHttp01, &["created_at"]),
+    ] {
+        let document = fixtures.get(&table).expect("table fixture");
+        for path in paths {
+            assert!(
+                document
+                    .get(path)
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| value.ends_with(".000000000Z")),
+                "{}.{} canonical timestamp",
+                table.as_str(),
+                path
+            );
+        }
     }
 }
 
@@ -263,30 +430,44 @@ fn version() -> CorrosionDocumentVersion {
     CorrosionDocumentVersion::V1
 }
 
+fn timestamp(value: &str) -> CorrosionTimestamp {
+    CorrosionTimestamp::try_new(value).expect("timestamp")
+}
+
+fn operator_provenance() -> OperatorWriteProvenance {
+    OperatorWriteProvenance {
+        written_by: OperationInitiator::Peer {
+            peer_id: PeerId::try_new(ULID_B).expect("peer id"),
+        },
+        written_at: timestamp("2026-08-04T10:00:00Z"),
+    }
+}
+
 fn cluster_id() -> ClusterId {
     ClusterId::try_new(ULID_A).expect("cluster id")
 }
 
-fn machine_id() -> MachineId {
-    MachineId::try_new(ULID_B).expect("machine id")
+fn machine_id() -> MachineRowId {
+    MachineRowId::try_new(ULID_B).expect("machine row id")
 }
 
-fn namespace_id() -> NamespaceId {
-    NamespaceId::try_new("namespace_production").expect("namespace id")
+fn namespace_id() -> NamespaceRowId {
+    NamespaceRowId::try_new(ULID_B).expect("namespace row id")
 }
 
-fn service_id() -> ServiceId {
-    ServiceId::try_new("service_api").expect("service id")
+fn service_id() -> ServiceRowId {
+    ServiceRowId::try_new(ULID_B).expect("service row id")
 }
 
-fn operation_id() -> OperationId {
-    OperationId::try_new("operation_deploy").expect("operation id")
+fn operation_id() -> OperationRowId {
+    OperationRowId::try_new(ULID_B).expect("operation row id")
 }
 
 fn cluster_document() -> ClusterDocument {
     ClusterDocument {
         v: version(),
         cluster_id: cluster_id(),
+        provenance: operator_provenance(),
         name: "acme-prod".to_owned(),
         storage_default: StorageMode::Plain,
         hostname_mode: AutomaticHostnameMode::Custom {
@@ -303,13 +484,14 @@ fn machine_document() -> MachineDocument {
     MachineDocument {
         v: version(),
         cluster_id: cluster_id(),
+        provenance: operator_provenance(),
         name: MachineName::try_new("edge-a").expect("machine name"),
         lifecycle: MachineLifecycle::Active,
-        transport: Transport::Wireguard {
+        transport: MachineTransport::Wireguard {
             pubkey: WireGuardPublicKey::try_new("wireguard-public-key").expect("public key"),
             addr_v6: Ipv6Addr::from_str("fd00::20").expect("IPv6"),
             endpoint: Some(SocketAddr::from_str("192.0.2.10:51820").expect("endpoint")),
-            subnet_v4: Some(Ipv4Net::from_str("10.210.20.0/24").expect("subnet")),
+            subnet_v4: Ipv4Net::from_str("10.210.20.0/24").expect("subnet"),
         },
         storage: MachineStorageSelection {
             mode: StorageMode::Plain,
@@ -324,10 +506,10 @@ fn peer_document() -> PeerDocument {
     PeerDocument {
         v: version(),
         cluster_id: cluster_id(),
+        provenance: operator_provenance(),
         name: "operator-laptop".to_owned(),
-        transport: Transport::Tailscale {
+        transport: PeerTransport::Tailscale {
             ip: Ipv4Addr::new(100, 64, 0, 10),
-            subnet_v4: None,
         },
     }
 }
@@ -336,9 +518,10 @@ fn token_document() -> TokenDocument {
     TokenDocument {
         v: version(),
         cluster_id: cluster_id(),
+        provenance: operator_provenance(),
         secret_sha256: Sha256Hex::try_new("a".repeat(64)).expect("digest"),
-        created_at: "2026-08-04T10:00:00Z".to_owned(),
-        expires_at: "2026-08-05T10:00:00Z".to_owned(),
+        created_at: timestamp("2026-08-04T10:00:00Z"),
+        expires_at: timestamp("2026-08-05T10:00:00Z"),
     }
 }
 
@@ -346,6 +529,7 @@ fn namespace_document() -> NamespaceDocument {
     NamespaceDocument {
         v: version(),
         cluster_id: cluster_id(),
+        provenance: operator_provenance(),
         name: "production".to_owned(),
     }
 }
@@ -354,6 +538,7 @@ fn service_document() -> ServiceDocument {
     ServiceDocument {
         v: version(),
         cluster_id: cluster_id(),
+        provenance: operator_provenance(),
         namespace_id: namespace_id(),
         name: "api".to_owned(),
         image: ImageReference::try_new("ghcr.io/acme/api:2026-08-04").expect("image"),
@@ -369,7 +554,7 @@ fn service_document() -> ServiceDocument {
         previous_image: Some(
             ImageReference::try_new("ghcr.io/acme/api:previous").expect("previous image"),
         ),
-        deployed_at: "2026-08-04T10:05:00Z".to_owned(),
+        deployed_at: timestamp("2026-08-04T10:05:00Z"),
         operation_id: operation_id(),
     }
 }
@@ -378,6 +563,7 @@ fn route_binding_document() -> RouteBindingDocument {
     RouteBindingDocument {
         v: version(),
         cluster_id: cluster_id(),
+        provenance: operator_provenance(),
         hostname: RouteHostname::try_new("api.example.com").expect("hostname"),
         service_id: service_id(),
         namespace_id: namespace_id(),
@@ -410,7 +596,7 @@ fn machine_status_document() -> MachineStatusDocument {
         free_disk_bytes: 80_000_000_000,
         free_memory_bytes: 4_000_000_000,
         load: MachineLoadBand::Idle,
-        observed_at: "2026-08-04T10:06:00Z".to_owned(),
+        observed_at: timestamp("2026-08-04T10:06:00Z"),
     }
 }
 
@@ -427,8 +613,8 @@ fn operation_document() -> OperationDocument {
             peer_id: PeerId::try_new(ULID_B).expect("peer id"),
         },
         status: CorrosionOperationState::Failed {
-            started_at: "2026-08-04T10:00:00Z".to_owned(),
-            completed_at: "2026-08-04T10:07:00Z".to_owned(),
+            started_at: timestamp("2026-08-04T10:00:00Z"),
+            completed_at: timestamp("2026-08-04T10:07:00Z"),
             failure: CorrosionOperationFailure::Execution {
                 class: CorrosionExecutionFailureClass::HealthGateFailed,
                 message: "container did not become healthy".to_owned(),
@@ -444,8 +630,8 @@ fn cert_holding_document() -> CertHoldingDocument {
         machine_id: machine_id(),
         hostname: RouteHostname::try_new("api.example.com").expect("hostname"),
         fingerprint: Sha256Hex::try_new("c".repeat(64)).expect("fingerprint"),
-        issued_at: "2026-08-04T10:08:00Z".to_owned(),
-        expires_at: "2026-11-02T10:08:00Z".to_owned(),
+        issued_at: timestamp("2026-08-04T10:08:00Z"),
+        expires_at: timestamp("2026-11-02T10:08:00Z"),
     }
 }
 
@@ -456,6 +642,6 @@ fn acme_http01_document() -> AcmeHttp01Document {
         machine_id: machine_id(),
         hostname: RouteHostname::try_new("api.example.com").expect("hostname"),
         key_authorization: "public-acme-key-authorization".to_owned(),
-        created_at: "2026-08-04T10:09:00Z".to_owned(),
+        created_at: timestamp("2026-08-04T10:09:00Z"),
     }
 }
