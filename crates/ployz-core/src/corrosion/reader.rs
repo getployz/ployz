@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 use super::{
-    ClusterDocument, CorrosionDocument, MeshProvider, NameClaim, NamedCorrosionDocument,
-    OrdinaryCorrosionDocument, RosterCorrosionDocument,
+    ClusterDocument, CorrosionDocument, CorrosionTable, MeshProvider, NameClaim,
+    NamedCorrosionDocument, OrdinaryCorrosionDocument, RosterCorrosionDocument,
 };
 use crate::ids::{ClusterId, CorrosionUlid, CorrosionUlidError};
 
@@ -81,6 +81,29 @@ pub enum MalformedDocument {
 pub struct ReadReport<Document> {
     pub accepted: Vec<AcceptedRow<Document>>,
     pub skipped: Vec<SkippedRow>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RowKeyKind {
+    CanonicalUlid,
+    Natural,
+}
+
+const fn row_key_kind(table: CorrosionTable) -> RowKeyKind {
+    match table {
+        CorrosionTable::Cluster
+        | CorrosionTable::Machines
+        | CorrosionTable::Peers
+        | CorrosionTable::Tokens
+        | CorrosionTable::Namespaces
+        | CorrosionTable::Services
+        | CorrosionTable::RouteBindings
+        | CorrosionTable::MachineStatus
+        | CorrosionTable::Operations => RowKeyKind::CanonicalUlid,
+        CorrosionTable::Containers | CorrosionTable::CertHoldings | CorrosionTable::AcmeHttp01 => {
+            RowKeyKind::Natural
+        }
+    }
 }
 
 /// Reads stored rows using the cross-cutting cluster and version fences.
@@ -246,6 +269,16 @@ where
             ));
         }
     };
+
+    match row_key_kind(Document::TABLE) {
+        RowKeyKind::CanonicalUlid => {
+            if let Err(error) = CorrosionUlid::try_new(source.key.clone()) {
+                return Err(skipped(source, RowSkipReason::InvalidRowId { error }));
+            }
+        }
+        RowKeyKind::Natural => {}
+    }
+
     Ok(AcceptedRow { source, value })
 }
 

@@ -1,7 +1,7 @@
 use ployz_core::corrosion::{
-    CertHoldingDocument, ClusterDocument, ContainerDocument, MachineDocument, MalformedDocument,
-    MeshProvider, NamespaceDocument, RowSkipReason, StoredRow, read_named_roster_rows,
-    read_named_rows, read_roster_rows, read_rows,
+    CertHoldingDocument, ClusterDocument, ContainerDocument, MachineDocument,
+    MachineStatusDocument, MalformedDocument, MeshProvider, NamespaceDocument, RowSkipReason,
+    StoredRow, read_named_roster_rows, read_named_rows, read_roster_rows, read_rows,
 };
 use ployz_core::ids::ClusterId;
 use serde_json::json;
@@ -307,6 +307,57 @@ fn noncanonical_corrosion_reference_is_skipped_and_surfaced() {
                 skipped.reason,
                 RowSkipReason::Malformed(MalformedDocument::InvalidPayload { .. })
             )
+    ));
+}
+
+#[test]
+fn ordinary_reader_rejects_a_noncanonical_ulid_row_key() {
+    let document = json!({
+        "v": 1,
+        "cluster_id": CLUSTER_ID,
+        "machine_id": LOWER_ROW_ID,
+        "ployz_version": "0.1.0-alpha.7",
+        "corrosion_version": "0.2.0-beta.0",
+        "architecture": "x86_64",
+        "free_disk_bytes": 80_000_000_000_u64,
+        "free_memory_bytes": 4_000_000_000_u64,
+        "load": "idle",
+        "observed_at": "2026-08-04T10:06:00Z"
+    });
+    let report = read_rows::<MachineStatusDocument>(
+        &cluster_id(),
+        [StoredRow::new("machine_edge_a", document.to_string())],
+    );
+
+    assert!(report.accepted.is_empty());
+    assert!(matches!(
+        report.skipped.as_slice(),
+        [skipped]
+            if skipped.source.key == "machine_edge_a"
+                && matches!(skipped.reason, RowSkipReason::InvalidRowId { .. })
+    ));
+}
+
+#[test]
+fn ordinary_reader_accepts_a_natural_container_row_key() {
+    let document = json!({
+        "v": 1,
+        "cluster_id": CLUSTER_ID,
+        "machine_id": LOWER_ROW_ID,
+        "service_id": HIGHER_ROW_ID,
+        "namespace_id": HIGHER_ROW_ID,
+        "ip": "10.210.20.2",
+        "deploy": HIGHER_ROW_ID
+    });
+    let report = read_rows::<ContainerDocument>(
+        &cluster_id(),
+        [StoredRow::new("docker-container-id", document.to_string())],
+    );
+
+    assert!(report.skipped.is_empty());
+    assert!(matches!(
+        report.accepted.as_slice(),
+        [accepted] if accepted.source.key == "docker-container-id"
     ));
 }
 
