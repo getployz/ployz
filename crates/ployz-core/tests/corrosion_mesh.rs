@@ -307,6 +307,48 @@ fn malformed_low_id_remote_cannot_shadow_a_valid_higher_id_identity() {
 }
 
 #[test]
+fn duplicate_identity_loser_cannot_shadow_valid_higher_id_subnet_claim() {
+    let outcome = project_builtin_wireguard_mesh(
+        &cluster(),
+        MachineRowId::try_new(MACHINE_ID).expect("machine id"),
+        &WireGuardPublicKey::try_new(ZERO_KEY).expect("public key"),
+        report(vec![
+            machine_row(MACHINE_ID, "local", ZERO_KEY, "10.210.1.0/24"),
+            machine_row(MACHINE_B, "identity-loser", ZERO_KEY, "10.210.2.0/24"),
+            machine_row(MACHINE_C, "subnet-owner", TWO_KEY, "10.210.2.0/24"),
+        ]),
+        report(Vec::new()),
+    )
+    .expect("projection");
+
+    let BuiltinWireguardMeshOutcome::Desired(desired) = outcome else {
+        panic!("the accepted identities have deterministic desired state");
+    };
+    assert!(matches!(
+        desired.machine_peers.as_slice(),
+        [peer]
+            if peer.machine_id.as_str() == MACHINE_C
+                && matches!(
+                    &peer.container_route,
+                    DesiredMachineContainerRoute::Claimed { subnet }
+                        if subnet.as_string() == "10.210.2.0/24"
+                )
+    ));
+    assert!(
+        desired
+            .ebpf_routes
+            .iter()
+            .any(|subnet| subnet.as_string() == "10.210.2.0/24")
+    );
+    assert!(desired.evidence.identity_conflicts.iter().all(|conflict| {
+        conflict.loser
+            != RosterMemberId::Machine {
+                machine_id: MachineRowId::try_new(MACHINE_C).expect("machine C id"),
+            }
+    }));
+}
+
+#[test]
 fn duplicate_subnet_loser_keeps_ipv6_but_loses_v4_routes() {
     let outcome = project_builtin_wireguard_mesh(
         &cluster(),

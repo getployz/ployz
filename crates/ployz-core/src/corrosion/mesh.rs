@@ -518,6 +518,9 @@ pub fn project_builtin_wireguard_mesh(
             &mut excluded_identities,
             &mut evidence.identity_conflicts,
         );
+        if excluded_identities.contains(&candidate.id) {
+            continue;
+        }
         if let Some(subnet) = &candidate.subnet_v4 {
             if let Some(winner) = subnet_winners.get(subnet) {
                 evidence.identity_conflicts.push(MeshIdentityConflict {

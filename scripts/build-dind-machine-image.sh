@@ -312,12 +312,14 @@ stage_corrosion() {
     echo "the pinned Corrosion DinD asset supports linux/amd64, got ${platform}" >&2
     exit 1
   fi
+  ensure_builder_image
+  docker pull --platform "${platform}" "${MACHINE_BASE_IMAGE_SOURCE}"
 
   command -v python3 >/dev/null 2>&1 || {
     echo "python3 is required to read corrosion-release.json" >&2
     exit 1
   }
-  manifest_file="${ROOT_DIR}/corrosion-release.json"
+  manifest_file="${PLOYZ_CORROSION_RELEASE_MANIFEST:-${ROOT_DIR}/corrosion-release.json}"
   pin_file="$(mktemp "${TMPDIR:-/tmp}/ployz-corrosion-pin.XXXXXX")"
   if ! python3 - "${manifest_file}" > "${pin_file}" <<'PY'
 import json
@@ -378,7 +380,11 @@ PY
 
   work_dir="$(mktemp -d "${TMPDIR:-/tmp}/ployz-dind-corrosion.XXXXXX")"
   tar -xzf "${archive}" -C "${work_dir}" corrosion
-  actual_version="$("${work_dir}/corrosion" --version)"
+  actual_version="$(docker run --rm \
+    --platform "${platform}" \
+    --volume "${work_dir}:/corrosion-input:ro" \
+    "${MACHINE_BASE_IMAGE_SOURCE}" \
+    /corrosion-input/corrosion --version)"
   if [ "${actual_version}" != "${embedded_version}" ]; then
     rm -rf "${work_dir}"
     echo "Corrosion archive reports ${actual_version}, expected ${embedded_version}" >&2

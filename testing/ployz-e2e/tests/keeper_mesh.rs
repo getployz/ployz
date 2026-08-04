@@ -175,7 +175,52 @@ async fn exercise_keeper_mesh(docker: &Docker, cluster: &DindCluster) -> Result<
     wait_for_route_absent(docker, machine_b, "10.210.10.0/24").await?;
     wait_for_route_absent(docker, machine_b, &subnet_a).await?;
     wait_for_empty_route_map(docker, machine_b).await?;
+
+    let mismatched_address = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
+    corrosion_transaction(
+        docker,
+        machine_a,
+        &mismatched_machine_a_transaction(machine_a, &public_key_a, mismatched_address)?,
+    )
+    .await?;
+    wait_for_mesh_status(
+        docker,
+        machine_a,
+        MACHINE_A_ID,
+        MeshStatusExpectation::KeyMismatch,
+    )
+    .await?;
     Ok(())
+}
+
+fn mismatched_machine_a_transaction(
+    machine_a: &DindMachine,
+    public_key_a: &WireGuardPublicKey,
+    mismatched_address: Ipv6Addr,
+) -> Result<Value, String> {
+    let document = json!({
+        "v": 1,
+        "cluster_id": CLUSTER_ID,
+        "name": "edge-a",
+        "lifecycle": "active",
+        "transport": {
+            "kind": "wireguard",
+            "pubkey": public_key_a.as_str(),
+            "addr_v6": mismatched_address,
+            "endpoint": endpoint(machine_a)?,
+            "subnet_v4": "10.210.10.0/24"
+        },
+        "storage": {"mode": "plain", "reason": {"kind": "default"}},
+        "written_by": {"kind": "machine", "machine_id": MACHINE_A_ID},
+        "written_at": "2026-08-04T10:02:00.000000000Z"
+    });
+    Ok(json!([[
+        "UPDATE machines SET document = ? WHERE id = ?",
+        [
+            serde_json::to_string(&document).map_err(|error| error.to_string())?,
+            MACHINE_A_ID
+        ]
+    ]]))
 }
 
 fn roster_transaction(
@@ -356,6 +401,7 @@ async fn wait_for_ula_version(
 #[derive(Clone, Copy)]
 enum MeshStatusExpectation {
     BridgeMissing,
+    KeyMismatch,
     Ready,
 }
 
@@ -421,6 +467,14 @@ fn mesh_status_matches(document: &Value, expectation: MeshStatusExpectation) -> 
                     .pointer("/degradation/ebpf/reason/ifname")
                     .and_then(Value::as_str)
                     == Some(TEST_BRIDGE_INTERFACE)
+        }
+        MeshStatusExpectation::KeyMismatch => {
+            mesh.get("state").and_then(Value::as_str) == Some("key_mismatch")
+                && mesh.get("attempted_at").and_then(Value::as_str).is_some()
+                && mesh
+                    .get("mismatches")
+                    .and_then(Value::as_array)
+                    .is_some_and(|mismatches| !mismatches.is_empty())
         }
         MeshStatusExpectation::Ready => {
             mesh.get("state").and_then(Value::as_str) == Some("converged")
@@ -760,6 +814,23 @@ fn mesh_status_matching_is_structural() {
     assert!(!mesh_status_matches(
         &degraded,
         MeshStatusExpectation::Ready
+    ));
+
+    let key_mismatch = json!({
+        "mesh": {
+            "state": "key_mismatch",
+            "attempted_at": "2026-08-04T10:00:30Z",
+            "mismatches": [{
+                "kind": "stored_ipv6_address",
+                "member_id": {"kind": "machine", "machine_id": MACHINE_A_ID},
+                "stored": "fd00::1",
+                "derived": "fd00::2"
+            }]
+        }
+    });
+    assert!(mesh_status_matches(
+        &key_mismatch,
+        MeshStatusExpectation::KeyMismatch
     ));
 
     let converged = json!({

@@ -19,7 +19,7 @@ pub enum FileMode {
 }
 
 impl FileMode {
-    fn open_staged(self, path: &Path) -> std::io::Result<File> {
+    pub(crate) fn open_staged(self, path: &Path) -> std::io::Result<File> {
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
         match self {
