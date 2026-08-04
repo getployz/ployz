@@ -23,7 +23,7 @@ source "${ROOT_DIR}/config/railpack-pins.env"
 MACHINE_IMAGE="${PLOYZ_DIND_MACHINE_IMAGE:-ployz-dind-machine:local}"
 BUILD_IMAGE="${PLOYZ_DIND_BUILD_IMAGE:-rust:1.91-bookworm}"
 MACHINE_BASE_IMAGE="debian:trixie"
-BUILDER_IMAGE="${PLOYZ_DIND_BUILDER_IMAGE:-ployz-dind-builder:rust-1.91-bookworm-v3}"
+BUILDER_IMAGE="${PLOYZ_DIND_BUILDER_IMAGE:-ployz-dind-builder:rust-1.91-bookworm-v2}"
 DOCKER_HUB_MIRROR="${PLOYZ_DIND_DOCKER_HUB_MIRROR:-mirror.gcr.io}"
 WORKLOAD_IMAGE="${PLOYZ_DIND_WORKLOAD_IMAGE:-nginx:1.27-alpine}"
 REGISTRY_IMAGE="${PLOYZ_DIND_REGISTRY_IMAGE:-registry:2.8.3}"
@@ -192,24 +192,12 @@ ensure_builder_image() {
 FROM ${BUILD_IMAGE_SOURCE}
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \\
-  && apt-get install -y --no-install-recommends bpftool clang cmake lld llvm pkg-config protobuf-compiler \\
+  && apt-get install -y --no-install-recommends clang cmake lld llvm pkg-config protobuf-compiler \\
   && rm -rf /var/lib/apt/lists/*
 RUN rustup install nightly \\
   && rustup component add rust-src --toolchain nightly \\
   && cargo +nightly install --locked bpf-linker
 DOCKERFILE
-}
-
-stage_bpftool() {
-  ensure_builder_image
-  mkdir -p "${TARGET_DIR}/release"
-  docker run --rm \
-    --platform "$(docker_platform "${PLOYZ_DIND_PLATFORM:-}")" \
-    --volume "${TARGET_DIR}:/target" \
-    "${BUILDER_IMAGE}" \
-    bash -c 'set -euo pipefail
-install -m 0755 "$(command -v bpftool)" /target/release/bpftool.tmp
-mv /target/release/bpftool.tmp /target/release/bpftool'
 }
 
 build_linux_artifacts() {
@@ -465,12 +453,11 @@ verify_machine_tools() {
     --entrypoint /bin/sh \
     --volume "${TARGET_DIR}/release:/opt/ployz/artifacts:ro" \
     "${MACHINE_IMAGE}" \
-    -c '/opt/ployz/artifacts/bpftool version >/dev/null'
+    -c 'bpftool version >/dev/null && ufw version >/dev/null'
 }
 
 build_linux_artifacts
 build_ebpf_bytecode
-stage_bpftool
 stage_railpack
 stage_corrosion
 
@@ -489,7 +476,6 @@ cat <<EOF
   ployz:          ${TARGET_DIR}/release/ployz
   ployz-ebpf-ctl: ${TARGET_DIR}/release/ployz-ebpf-ctl
   ployz-ebpf-tc:  ${TARGET_DIR}/release/ployz-ebpf-tc
-  bpftool:         ${TARGET_DIR}/release/bpftool
   corrosion:      ${TARGET_DIR}/release/corrosion
   railpack:       ${TARGET_DIR}/release/railpack
 EOF

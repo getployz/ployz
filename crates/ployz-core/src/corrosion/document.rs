@@ -17,9 +17,7 @@ use crate::machine::{MachineLifecycle, MachineName};
 use crate::network::{MachineEndpointSubnet, MachineEndpointSupernet, WireGuardPublicKey};
 use crate::operation::{RouteHostname, RoutePort};
 
-use super::mesh::{
-    BuiltinWireguardFenceReason, BuiltinWireguardKeyMismatch, BuiltinWireguardMemberAddress,
-};
+use super::mesh::{BuiltinWireguardKeyMismatch, BuiltinWireguardMemberAddress};
 use super::principal::OperationInitiator;
 
 /// A table in the additive Corrosion schema.
@@ -782,10 +780,6 @@ pub enum MeshDegradation {
 pub enum MeshConvergenceTestimony {
     NoRoster {
         attempted_at: CorrosionTimestamp,
-    },
-    Fenced {
-        attempted_at: CorrosionTimestamp,
-        reason: BuiltinWireguardFenceReason,
     },
     KeyMismatch {
         attempted_at: CorrosionTimestamp,

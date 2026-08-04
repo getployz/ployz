@@ -6,5 +6,5 @@ mod runtime;
 mod status;
 mod store;
 
-pub use config::{KeeperHostConfig, KeeperRoleConfig, KeeperRoleConfigError, KeeperTimingConfig};
+pub use config::{KeeperRoleConfig, KeeperRoleConfigError, KeeperTimingConfig};
 pub use runtime::{KeeperRoleRuntimeError, run_from_environment};

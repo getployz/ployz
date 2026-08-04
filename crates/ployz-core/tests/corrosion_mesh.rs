@@ -2,11 +2,12 @@ use std::net::Ipv6Addr;
 
 use base64::Engine as _;
 use ployz_core::corrosion::{
-    BuiltinWireguardKeyMismatch, BuiltinWireguardMeshOutcome, ClusterDocument,
-    DesiredMachineContainerRoute, EbpfMeshDegradationReason, EbpfMeshDegraded, MachineDocument,
-    MeshComponentReady, MeshConvergenceTestimony, MeshDegradation, NamedAcceptedRow,
-    NamedReadReport, PeerDocument, StoredRow, derive_builtin_wireguard_cluster_prefix,
-    derive_builtin_wireguard_member, project_builtin_wireguard_mesh,
+    BuiltinWireguardFenceReason, BuiltinWireguardKeyMismatch, BuiltinWireguardMeshOutcome,
+    ClusterDocument, DesiredMachineContainerRoute, EbpfMeshDegradationReason, EbpfMeshDegraded,
+    MachineDocument, MachineTransport, MeshComponentReady, MeshConvergenceTestimony,
+    MeshDegradation, NamedAcceptedRow, NamedReadReport, PeerDocument, RosterMemberId, StoredRow,
+    derive_builtin_wireguard_cluster_prefix, derive_builtin_wireguard_member,
+    project_builtin_wireguard_mesh,
 };
 use ployz_core::ids::{ClusterId, CorrosionUlid, MachineRowId};
 use ployz_core::network::WireGuardPublicKey;
@@ -122,7 +123,7 @@ fn builtin_wireguard_ula_derivation_matches_fixed_vectors() {
 }
 
 #[test]
-fn empty_machine_roster_is_an_explicit_no_roster_outcome() {
+fn empty_accepted_roster_is_an_explicit_no_roster_outcome() {
     let local_machine_id = MachineRowId::try_new(MACHINE_ID).expect("machine id");
     let local_public_key = WireGuardPublicKey::try_new(ZERO_KEY).expect("public key");
     let machines = NamedReadReport::<MachineDocument> {
@@ -193,6 +194,26 @@ fn nonempty_roster_missing_self_is_fenced() {
     assert!(matches!(
         outcome,
         BuiltinWireguardMeshOutcome::Fenced { .. }
+    ));
+}
+
+#[test]
+fn peers_without_any_machine_row_fence_instead_of_looking_like_an_empty_roster() {
+    let outcome = project_builtin_wireguard_mesh(
+        &cluster(),
+        MachineRowId::try_new(MACHINE_ID).expect("machine id"),
+        &WireGuardPublicKey::try_new(ZERO_KEY).expect("public key"),
+        report(Vec::new()),
+        report(vec![peer_row(MACHINE_B, "operator", ONE_KEY)]),
+    )
+    .expect("projection");
+
+    assert!(matches!(
+        outcome,
+        BuiltinWireguardMeshOutcome::Fenced {
+            reason: BuiltinWireguardFenceReason::MissingLocalMachine,
+            ..
+        }
     ));
 }
 
@@ -311,6 +332,90 @@ fn duplicate_subnet_loser_keeps_ipv6_but_loses_v4_routes() {
             if matches!(loser.container_route, DesiredMachineContainerRoute::Withheld { .. })
     ));
     assert_eq!(desired.evidence.identity_conflicts.len(), 1);
+}
+
+#[test]
+fn local_duplicate_subnet_loser_gets_a_typed_reallocation_input() {
+    let winning_machine = machine_row(CLUSTER_ID, "winner", ONE_KEY, "10.210.1.0/24");
+    let local_machine = machine_row(MACHINE_ID, "local", ZERO_KEY, "10.210.1.0/24");
+    let expected_local_document = local_machine.value.clone();
+
+    let outcome = project_builtin_wireguard_mesh(
+        &cluster(),
+        MachineRowId::try_new(MACHINE_ID).expect("machine id"),
+        &WireGuardPublicKey::try_new(ZERO_KEY).expect("public key"),
+        report(vec![
+            local_machine,
+            machine_row(MACHINE_B, "remote", TWO_KEY, "10.210.2.0/24"),
+            winning_machine,
+        ]),
+        report(Vec::new()),
+    )
+    .expect("projection");
+
+    let BuiltinWireguardMeshOutcome::ReallocateLocalContainerSubnet { repair, evidence } = outcome
+    else {
+        panic!("the higher-ULID local duplicate must reallocate");
+    };
+    assert_eq!(repair.machine_id().as_str(), MACHINE_ID);
+    assert_eq!(repair.accepted_machine(), &expected_local_document);
+    assert_eq!(
+        repair
+            .occupied_subnets()
+            .iter()
+            .map(|subnet| subnet.as_string())
+            .collect::<Vec<_>>(),
+        vec!["10.210.1.0/24", "10.210.2.0/24"]
+    );
+    assert!(matches!(
+        evidence.identity_conflicts.as_slice(),
+        [conflict]
+            if conflict.winner == RosterMemberId::Machine {
+                machine_id: MachineRowId::try_new(CLUSTER_ID).expect("winner id"),
+            }
+            && conflict.loser == RosterMemberId::Machine {
+                machine_id: MachineRowId::try_new(MACHINE_ID).expect("local id"),
+            }
+    ));
+
+    let (_, accepted_machine, _) = repair.into_parts();
+    assert!(matches!(
+        accepted_machine.transport,
+        MachineTransport::Wireguard { subnet_v4, .. }
+            if subnet_v4.as_string() == "10.210.1.0/24"
+    ));
+}
+
+#[test]
+fn lowest_ulid_local_subnet_winner_withholds_only_the_remote_ipv4_route() {
+    let outcome = project_builtin_wireguard_mesh(
+        &cluster(),
+        MachineRowId::try_new(MACHINE_ID).expect("machine id"),
+        &WireGuardPublicKey::try_new(ZERO_KEY).expect("public key"),
+        report(vec![
+            machine_row(MACHINE_ID, "local", ZERO_KEY, "10.210.1.0/24"),
+            machine_row(MACHINE_B, "remote-loser", ONE_KEY, "10.210.1.0/24"),
+        ]),
+        report(Vec::new()),
+    )
+    .expect("projection");
+
+    let BuiltinWireguardMeshOutcome::Desired(desired) = outcome else {
+        panic!("the lowest-ULID local claim remains desired state");
+    };
+    assert!(desired.ebpf_routes.is_empty());
+    assert!(matches!(
+        desired.machine_peers.as_slice(),
+        [peer]
+            if matches!(
+                &peer.container_route,
+                DesiredMachineContainerRoute::Withheld { subnet, winner }
+                    if subnet.as_string() == "10.210.1.0/24"
+                        && winner == &RosterMemberId::Machine {
+                            machine_id: MachineRowId::try_new(MACHINE_ID).expect("local id"),
+                        }
+            )
+    ));
 }
 
 #[test]

@@ -6,135 +6,41 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::Write as _;
-use std::net::SocketAddr;
-use std::num::NonZeroU16;
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::path::PathBuf;
+#[cfg(test)]
 use std::time::Duration;
 
 use defguard_wireguard_rs::key::Key;
 use ipnet::{IpNet, Ipv6Net};
-use ployz_core::corrosion::{
-    DesiredBuiltinWireguardLocal, DesiredBuiltinWireguardMesh, DesiredMachineContainerRoute,
-};
+use ployz_core::corrosion::{DesiredBuiltinWireguardLocal, DesiredBuiltinWireguardMesh};
 pub use ployz_core::network::DEFAULT_WIREGUARD_LISTEN_PORT;
-use ployz_core::network::WireGuardPublicKey;
+use ployz_core::network::{MachineEndpointSubnet, WireGuardPublicKey};
 use thiserror::Error;
 
+#[cfg(test)]
+use crate::SupervisorBackend;
 use crate::{
-    AssignedHostPort, FileMode, FirewallBackend, HostRunnerCommandOutput, HostRunnerCommandRunner,
-    StagedFile, SupervisorBackend, SystemHostRunnerCommandRunner, detect_firewall_backend,
+    AssignedHostPort, FirewallBackend, HostRunnerCommandOutput, HostRunnerCommandRunner,
+    SystemHostRunnerCommandRunner, detect_firewall_backend,
 };
+
+mod config;
+#[cfg(test)]
+mod firewall_tests;
+mod mesh_state;
+mod private_key;
+
+pub use config::{
+    BuiltinWireguardConfigError, BuiltinWireguardEbpfConfig, BuiltinWireguardHostConfig,
+    BuiltinWireguardPorts,
+};
+use mesh_state::*;
+use private_key::provision_private_key;
 
 pub const DEFAULT_PRIVATE_KEY_PATH: &str = "/etc/ployz/wireguard.key";
 pub const DEFAULT_WIREGUARD_IFNAME: &str = "ployz0";
 pub const DEFAULT_WIREGUARD_MTU: u16 = 1_420;
-
-const PERSISTENT_KEEPALIVE_SECONDS: u16 = 25;
-const MAX_HOST_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// Validated local-effect configuration. The bridge is supplied by the
-/// separate bridge owner; this module reports its absence without inventing it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BuiltinWireguardHostConfig {
-    private_key_path: PathBuf,
-    wg_ifname: String,
-    listen_port: NonZeroU16,
-    mtu: u16,
-    ebpf: BuiltinWireguardEbpfConfig,
-    supervisor: SupervisorBackend,
-    command_timeout: Duration,
-}
-
-impl BuiltinWireguardHostConfig {
-    pub fn try_new(
-        private_key_path: PathBuf,
-        wg_ifname: String,
-        listen_port: u16,
-        mtu: u16,
-        ebpf: BuiltinWireguardEbpfConfig,
-        supervisor: SupervisorBackend,
-        command_timeout: Duration,
-    ) -> Result<Self, BuiltinWireguardConfigError> {
-        validate_path("private key", &private_key_path)?;
-        validate_ifname("WireGuard", &wg_ifname)?;
-        let Some(listen_port) = NonZeroU16::new(listen_port) else {
-            return Err(BuiltinWireguardConfigError::ZeroListenPort);
-        };
-        if !(1_280..=9_000).contains(&mtu) {
-            return Err(BuiltinWireguardConfigError::InvalidMtu { mtu });
-        }
-        if command_timeout.is_zero() {
-            return Err(BuiltinWireguardConfigError::ZeroCommandTimeout);
-        }
-        if command_timeout > MAX_HOST_COMMAND_TIMEOUT {
-            return Err(BuiltinWireguardConfigError::CommandTimeoutTooLong {
-                milliseconds: command_timeout.as_millis(),
-            });
-        }
-        Ok(Self {
-            private_key_path,
-            wg_ifname,
-            listen_port,
-            mtu,
-            ebpf,
-            supervisor,
-            command_timeout,
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BuiltinWireguardEbpfConfig {
-    bridge_ifname: String,
-    ctl_path: PathBuf,
-    bytecode_path: PathBuf,
-    pinning: EbpfPinning,
-}
-
-impl BuiltinWireguardEbpfConfig {
-    pub fn try_new(
-        bridge_ifname: String,
-        ctl_path: PathBuf,
-        bytecode_path: PathBuf,
-        pinning: EbpfPinning,
-    ) -> Result<Self, BuiltinWireguardConfigError> {
-        validate_ifname("bridge", &bridge_ifname)?;
-        validate_path("eBPF control program", &ctl_path)?;
-        validate_path("eBPF bytecode", &bytecode_path)?;
-        if let EbpfPinning::Explicit(path) = &pinning {
-            validate_path("eBPF pin", path)?;
-        }
-        Ok(Self {
-            bridge_ifname,
-            ctl_path,
-            bytecode_path,
-            pinning,
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum EbpfPinning {
-    Default,
-    Explicit(PathBuf),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
-pub enum BuiltinWireguardConfigError {
-    #[error("{field} path must not be empty")]
-    EmptyPath { field: &'static str },
-    #[error("{field} interface name is invalid: {value:?}")]
-    InvalidInterfaceName { field: &'static str, value: String },
-    #[error("WireGuard listen port must not be zero")]
-    ZeroListenPort,
-    #[error("WireGuard MTU must be between 1280 and 9000, got {mtu}")]
-    InvalidMtu { mtu: u16 },
-    #[error("host command timeout must not be zero")]
-    ZeroCommandTimeout,
-    #[error("host command timeout must not exceed 60 seconds, got {milliseconds}ms")]
-    CommandTimeoutTooLong { milliseconds: u128 },
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum BuiltinWireguardHostError {
@@ -146,16 +52,7 @@ pub enum BuiltinWireguardHostError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuiltinWireguardHostOutcome {
-    pub wireguard: WireguardHostReady,
     pub ebpf: EbpfHostOutcome,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WireguardHostReady {
-    pub public_key: WireGuardPublicKey,
-    pub bind_address: Ipv6Net,
-    pub peer_count: usize,
-    pub route_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -182,6 +79,13 @@ pub enum EbpfDegradedReason {
 pub struct BuiltinWireguardHost<R = SystemHostRunnerCommandRunner> {
     config: BuiltinWireguardHostConfig,
     runner: R,
+}
+
+#[derive(Clone, Copy)]
+enum CorrosionGossipPhase<'a> {
+    Bootstrap,
+    Desired(&'a BTreeSet<Ipv6Net>),
+    Fenced,
 }
 
 impl BuiltinWireguardHost<SystemHostRunnerCommandRunner> {
@@ -220,6 +124,14 @@ impl<R: HostRunnerCommandRunner> BuiltinWireguardHost<R> {
         &mut self,
         local: &DesiredBuiltinWireguardLocal,
     ) -> Result<WireguardLocalBinding, BuiltinWireguardHostError> {
+        self.bind_local_effects(local, CorrosionGossipPhase::Bootstrap)
+    }
+
+    fn bind_local_effects(
+        &mut self,
+        local: &DesiredBuiltinWireguardLocal,
+        gossip: CorrosionGossipPhase<'_>,
+    ) -> Result<WireguardLocalBinding, BuiltinWireguardHostError> {
         let public_key = self.provision_and_read_public_key()?;
         if public_key != local.public_key {
             return Err(host_error(format!(
@@ -243,7 +155,7 @@ impl<R: HostRunnerCommandRunner> BuiltinWireguardHost<R> {
 
         let ifname = self.config.wg_ifname.clone();
         let private_key_path = self.config.private_key_path.display().to_string();
-        let listen_port = self.config.listen_port.get().to_string();
+        let listen_port = self.config.ports.listen.get().to_string();
         self.require(
             "wg",
             &[
@@ -269,15 +181,7 @@ impl<R: HostRunnerCommandRunner> BuiltinWireguardHost<R> {
         let mtu = self.config.mtu.to_string();
         self.require("ip", &["link", "set", "dev", &ifname, "mtu", &mtu])
             .map_err(host_error)?;
-        self.require("ip", &["link", "set", "dev", &ifname, "up"])
-            .map_err(host_error)?;
-        self.ensure_wireguard_firewall()
-            .map_err(|error| match error {
-                FirewallEffectError::Host(message) => host_error(message),
-                FirewallEffectError::Unmanaged(backend) => {
-                    BuiltinWireguardHostError::UnmanagedFirewall { backend }
-                }
-            })?;
+        self.activate_mesh_interface(gossip)?;
         self.verify_local_binding(&public_key, bind_address)
             .map_err(host_error)?;
         Ok(WireguardLocalBinding {
@@ -286,26 +190,49 @@ impl<R: HostRunnerCommandRunner> BuiltinWireguardHost<R> {
         })
     }
 
+    fn activate_mesh_interface(
+        &mut self,
+        gossip: CorrosionGossipPhase<'_>,
+    ) -> Result<(), BuiltinWireguardHostError> {
+        let ifname = self.config.wg_ifname.clone();
+        match gossip {
+            CorrosionGossipPhase::Bootstrap => {}
+            CorrosionGossipPhase::Desired(sources) => self
+                .ensure_corrosion_firewall(sources)
+                .map_err(firewall_host_error)?,
+            CorrosionGossipPhase::Fenced => self
+                .ensure_corrosion_firewall(&BTreeSet::new())
+                .map_err(firewall_host_error)?,
+        }
+        self.require("ip", &["link", "set", "dev", &ifname, "up"])
+            .map_err(host_error)?;
+        self.ensure_wireguard_firewall(!matches!(gossip, CorrosionGossipPhase::Bootstrap))
+            .map_err(|error| match error {
+                FirewallEffectError::Host(message) => host_error(message),
+                FirewallEffectError::Unmanaged(backend) => {
+                    BuiltinWireguardHostError::UnmanagedFirewall { backend }
+                }
+            })
+    }
+
     /// Converges one nonempty, locally-authorized Core projection.
     pub fn converge(
         &mut self,
         desired: &DesiredBuiltinWireguardMesh,
     ) -> Result<BuiltinWireguardHostOutcome, BuiltinWireguardHostError> {
-        let binding = self.bind_local(&desired.local)?;
+        let machine_sources = machine_gossip_sources(desired);
+        self.bind_local_effects(
+            &desired.local,
+            CorrosionGossipPhase::Desired(&machine_sources),
+        )?;
         let peers = render_desired_peers(desired);
         let observed_peers = self.read_observed_peers().map_err(host_error)?;
         let observed_routes = self.read_observed_routes().map_err(host_error)?;
         let actions = convergence_plan(&observed_peers, &observed_routes, &peers);
         self.apply_convergence_actions(&actions)
             .map_err(host_error)?;
-        let wireguard = WireguardHostReady {
-            public_key: binding.public_key,
-            bind_address: binding.bind_address,
-            peer_count: peers.len(),
-            route_count: peers.iter().flat_map(|peer| &peer.allowed_ips).count(),
-        };
         let ebpf = self.converge_ebpf(&desired.ebpf_routes);
-        Ok(BuiltinWireguardHostOutcome { wireguard, ebpf })
+        Ok(BuiltinWireguardHostOutcome { ebpf })
     }
 
     /// Explicitly removes every peer and owned route while retaining the local
@@ -315,20 +242,14 @@ impl<R: HostRunnerCommandRunner> BuiltinWireguardHost<R> {
         &mut self,
         local: &DesiredBuiltinWireguardLocal,
     ) -> Result<BuiltinWireguardHostOutcome, BuiltinWireguardHostError> {
-        let binding = self.bind_local(local)?;
+        self.bind_local_effects(local, CorrosionGossipPhase::Fenced)?;
         let observed_peers = self.read_observed_peers().map_err(host_error)?;
         let observed_routes = self.read_observed_routes().map_err(host_error)?;
         let actions = convergence_plan(&observed_peers, &observed_routes, &[]);
         self.apply_convergence_actions(&actions)
             .map_err(host_error)?;
-        let wireguard = WireguardHostReady {
-            public_key: binding.public_key,
-            bind_address: binding.bind_address,
-            peer_count: 0,
-            route_count: 0,
-        };
         let ebpf = self.converge_ebpf(&[]);
-        Ok(BuiltinWireguardHostOutcome { wireguard, ebpf })
+        Ok(BuiltinWireguardHostOutcome { ebpf })
     }
 
     fn ensure_ipv6_sysctls_before_interface(&mut self) -> Result<(), String> {
@@ -353,7 +274,10 @@ impl<R: HostRunnerCommandRunner> BuiltinWireguardHost<R> {
         self.set_and_verify_sysctl(&rp_filter, "0")
     }
 
-    fn ensure_wireguard_firewall(&mut self) -> Result<(), FirewallEffectError> {
+    fn ensure_wireguard_firewall(
+        &mut self,
+        admit_control_plane: bool,
+    ) -> Result<(), FirewallEffectError> {
         let backend = detect_firewall_backend(self.config.supervisor, &mut self.runner)
             .map_err(|error| FirewallEffectError::Host(error.as_str().to_owned()))?;
         if let FirewallBackend::Unmanaged(name) = backend {
@@ -361,7 +285,37 @@ impl<R: HostRunnerCommandRunner> BuiltinWireguardHost<R> {
         }
         backend
             .open_with(
-                AssignedHostPort::udp(self.config.listen_port.get()),
+                AssignedHostPort::udp(self.config.ports.listen.get()),
+                &mut self.runner,
+            )
+            .and_then(|()| {
+                if admit_control_plane {
+                    backend.allow_control_plane_http_with(
+                        &self.config.wg_ifname,
+                        self.config.ports.api_http.get(),
+                        &mut self.runner,
+                    )
+                } else {
+                    Ok(())
+                }
+            })
+            .map_err(|error| FirewallEffectError::Host(error.as_str().to_owned()))
+    }
+
+    fn ensure_corrosion_firewall(
+        &mut self,
+        machine_sources: &BTreeSet<Ipv6Net>,
+    ) -> Result<(), FirewallEffectError> {
+        let backend = detect_firewall_backend(self.config.supervisor, &mut self.runner)
+            .map_err(|error| FirewallEffectError::Host(error.as_str().to_owned()))?;
+        if let FirewallBackend::Unmanaged(name) = backend {
+            return Err(FirewallEffectError::Unmanaged(name));
+        }
+        backend
+            .restrict_udp_to_ipv6_sources_with(
+                &self.config.wg_ifname,
+                self.config.ports.corrosion_gossip.get(),
+                machine_sources,
                 &mut self.runner,
             )
             .map_err(|error| FirewallEffectError::Host(error.as_str().to_owned()))
@@ -530,17 +484,14 @@ impl<R: HostRunnerCommandRunner> BuiltinWireguardHost<R> {
         }
     }
 
-    fn converge_ebpf(
-        &mut self,
-        routes: &[ployz_core::corrosion::DesiredBuiltinWireguardEbpfRoute],
-    ) -> EbpfHostOutcome {
+    fn converge_ebpf(&mut self, routes: &[MachineEndpointSubnet]) -> EbpfHostOutcome {
         let result = self.try_converge_ebpf(routes);
         ebpf_outcome(routes.len(), &self.config.ebpf.bridge_ifname, result)
     }
 
     fn try_converge_ebpf(
         &mut self,
-        routes: &[ployz_core::corrosion::DesiredBuiltinWireguardEbpfRoute],
+        routes: &[MachineEndpointSubnet],
     ) -> Result<(), EbpfEffectError> {
         let bridge = self.config.ebpf.bridge_ifname.clone();
         let bridge_output = self
@@ -587,7 +538,7 @@ impl<R: HostRunnerCommandRunner> BuiltinWireguardHost<R> {
         self.ensure_forwarding_firewall(&bridge, &ifname)
             .map_err(EbpfEffectError::HostEffect)?;
         let mut route_args = vec!["route".to_owned(), "replace-all-ifname".to_owned(), ifname];
-        route_args.extend(routes.iter().map(|route| route.subnet_v4.as_string()));
+        route_args.extend(routes.iter().map(MachineEndpointSubnet::as_string));
         let route_args = self.ebpf_args(route_args);
         let route_refs = route_args.iter().map(String::as_str).collect::<Vec<_>>();
         self.require(&ctl, &route_refs)
@@ -596,27 +547,25 @@ impl<R: HostRunnerCommandRunner> BuiltinWireguardHost<R> {
     }
 
     fn ebpf_args(&self, args: impl IntoIterator<Item = String>) -> Vec<String> {
-        let mut rendered = Vec::new();
-        if let EbpfPinning::Explicit(pin_path) = &self.config.ebpf.pinning {
-            rendered.extend(["--pin-path".to_owned(), pin_path.display().to_string()]);
-        }
+        let mut rendered = vec![
+            "--pin-path".to_owned(),
+            self.config.ebpf.pin_path.display().to_string(),
+        ];
         rendered.extend(args);
         rendered
     }
 
     fn ensure_forwarding_firewall(&mut self, bridge: &str, wg: &str) -> Result<(), String> {
-        for (input, output) in [(wg, bridge), (bridge, wg)] {
-            let check = ["-C", "FORWARD", "-i", input, "-o", output, "-j", "ACCEPT"];
-            if !self.run("iptables", &check)?.success {
-                self.require(
-                    "iptables",
-                    &[
-                        "-I", "FORWARD", "1", "-i", input, "-o", output, "-j", "ACCEPT",
-                    ],
-                )?;
-            }
+        let backend = detect_firewall_backend(self.config.supervisor, &mut self.runner)
+            .map_err(|error| error.as_str().to_owned())?;
+        if let FirewallBackend::Unmanaged(name) = &backend {
+            return Err(format!(
+                "active host firewall {name} is not managed by Ployz"
+            ));
         }
-        Ok(())
+        backend
+            .allow_forwarding_between_with(wg, bridge, &mut self.runner)
+            .map_err(|error| error.as_str().to_owned())
     }
 
     fn run(&mut self, program: &str, args: &[&str]) -> Result<HostRunnerCommandOutput, String> {
@@ -665,377 +614,18 @@ fn ebpf_outcome(
     }
 }
 
-fn render_desired_peers(desired: &DesiredBuiltinWireguardMesh) -> Vec<DesiredPeer> {
-    let machines = desired.machine_peers.iter().map(|peer| {
-        let mut allowed_ips = BTreeSet::from([IpNet::V6(peer.subnet_v6.network())]);
-        if let DesiredMachineContainerRoute::Claimed { subnet } = &peer.container_route {
-            allowed_ips.insert(subnet.ipnet());
-        }
-        DesiredPeer {
-            public_key: peer.public_key.clone(),
-            endpoint: peer.endpoint,
-            allowed_ips,
-        }
-    });
-    let roaming = desired.roaming_peers.iter().map(|peer| DesiredPeer {
-        public_key: peer.public_key.clone(),
-        endpoint: peer.endpoint,
-        allowed_ips: BTreeSet::from([IpNet::V6(peer.subnet_v6.network())]),
-    });
-    machines.chain(roaming).collect()
-}
-
-fn render_allowed_ips(allowed_ips: &BTreeSet<IpNet>) -> String {
-    allowed_ips
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
-fn wireguard_peer_args(ifname: &str, peer: &DesiredPeer) -> Vec<String> {
-    let mut args = vec![
-        "set".to_owned(),
-        ifname.to_owned(),
-        "peer".to_owned(),
-        peer.public_key.as_str().to_owned(),
-        "allowed-ips".to_owned(),
-        render_allowed_ips(&peer.allowed_ips),
-    ];
-    if let Some(endpoint) = peer.endpoint {
-        args.extend([
-            "endpoint".to_owned(),
-            endpoint.to_string(),
-            "persistent-keepalive".to_owned(),
-            PERSISTENT_KEEPALIVE_SECONDS.to_string(),
-        ]);
-    }
-    args
-}
-
-fn route_family(route: IpNet) -> &'static str {
-    match route {
-        IpNet::V4(_) => "-4",
-        IpNet::V6(_) => "-6",
-    }
-}
-
-fn owned_route_observation_args<'a>(family: &'a str, ifname: &'a str) -> [&'a str; 8] {
-    [
-        "-o", family, "route", "show", "dev", ifname, "proto", "boot",
-    ]
-}
-
-fn parse_wireguard_dump(dump: &str) -> Result<BTreeMap<WireGuardPublicKey, ObservedPeer>, String> {
-    let mut lines = dump.lines();
-    let Some(_interface) = lines.next() else {
-        return Err("WireGuard dump had no interface row".to_owned());
-    };
-    lines
-        .enumerate()
-        .map(|(index, line)| {
-            let fields = line.split('\t').collect::<Vec<_>>();
-            let [
-                public_key,
-                _preshared_key,
-                endpoint,
-                allowed_ips,
-                _handshake,
-                _rx,
-                _tx,
-                keepalive,
-            ] = fields.as_slice()
-            else {
-                return Err(format!(
-                    "WireGuard dump peer row {} had {} fields, expected 8",
-                    index + 2,
-                    fields.len()
-                ));
-            };
-            let public_key = WireGuardPublicKey::try_new(*public_key)
-                .map_err(|error| format!("parse observed WireGuard public key: {error}"))?;
-            let endpoint = match *endpoint {
-                "(none)" => None,
-                value => Some(value.parse::<SocketAddr>().map_err(|error| {
-                    format!("parse observed WireGuard endpoint {value:?}: {error}")
-                })?),
-            };
-            let allowed_ips = match *allowed_ips {
-                "(none)" => BTreeSet::new(),
-                value => value
-                    .split(',')
-                    .map(|route| {
-                        route.parse::<IpNet>().map_err(|error| {
-                            format!("parse observed WireGuard allowed IP {route:?}: {error}")
-                        })
-                    })
-                    .collect::<Result<_, _>>()?,
-            };
-            let persistent_keepalive = match *keepalive {
-                "off" | "0" => None,
-                value => Some(value.parse::<u16>().map_err(|error| {
-                    format!("parse observed WireGuard keepalive {value:?}: {error}")
-                })?),
-            };
-            Ok((
-                public_key,
-                ObservedPeer {
-                    endpoint,
-                    allowed_ips,
-                    persistent_keepalive,
-                },
-            ))
-        })
-        .collect()
-}
-
-fn parse_owned_routes(output: &str) -> Result<BTreeSet<IpNet>, String> {
-    output
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| {
-            let route = line
-                .split_ascii_whitespace()
-                .next()
-                .expect("nonempty route row has a first field");
-            route
-                .parse::<IpNet>()
-                .map_err(|error| format!("parse owned WireGuard route {route:?}: {error}"))
-        })
-        .collect()
-}
-
-fn parse_interface_ipv6_addresses(output: &str) -> Result<BTreeSet<Ipv6Net>, String> {
-    output
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| {
-            let fields = line.split_ascii_whitespace().collect::<Vec<_>>();
-            let Some(address) = fields.windows(2).find_map(|pair| match pair {
-                ["inet6", address] => Some(*address),
-                [_, _] | [] | [_] | [_, _, ..] => None,
-            }) else {
-                return Err(format!(
-                    "WireGuard IPv6 address row had no inet6 field: {line:?}"
-                ));
-            };
-            address.parse::<Ipv6Net>().map_err(|error| {
-                format!("parse WireGuard IPv6 interface address {address:?}: {error}")
-            })
-        })
-        .collect()
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct DesiredPeer {
-    public_key: WireGuardPublicKey,
-    endpoint: Option<SocketAddr>,
-    allowed_ips: BTreeSet<IpNet>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ObservedPeer {
-    endpoint: Option<SocketAddr>,
-    allowed_ips: BTreeSet<IpNet>,
-    persistent_keepalive: Option<u16>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ConvergenceAction {
-    UpsertPeer(DesiredPeer),
-    ReplaceRoute(IpNet),
-    RemovePeer(WireGuardPublicKey),
-    RemoveRoute(IpNet),
-}
-
-fn convergence_plan(
-    observed_peers: &BTreeMap<WireGuardPublicKey, ObservedPeer>,
-    observed_routes: &BTreeSet<IpNet>,
-    desired_peers: &[DesiredPeer],
-) -> Vec<ConvergenceAction> {
-    let desired_by_key = desired_peers
-        .iter()
-        .map(|peer| (peer.public_key.clone(), peer))
-        .collect::<BTreeMap<_, _>>();
-    let desired_routes = desired_peers
-        .iter()
-        .flat_map(|peer| peer.allowed_ips.iter().copied())
-        .collect::<BTreeSet<_>>();
-    let mut actions = Vec::new();
-    actions.extend(desired_peers.iter().filter_map(|desired| {
-        let matches = observed_peers
-            .get(&desired.public_key)
-            .is_some_and(|observed| peer_matches(observed, desired));
-        (!matches).then(|| ConvergenceAction::UpsertPeer(desired.clone()))
-    }));
-    actions.extend(
-        desired_routes
-            .difference(observed_routes)
-            .copied()
-            .map(ConvergenceAction::ReplaceRoute),
-    );
-    actions.extend(
-        observed_peers
-            .keys()
-            .filter(|key| !desired_by_key.contains_key(*key))
-            .cloned()
-            .map(ConvergenceAction::RemovePeer),
-    );
-    actions.extend(
-        observed_routes
-            .difference(&desired_routes)
-            .copied()
-            .map(ConvergenceAction::RemoveRoute),
-    );
-    actions
-}
-
-fn peer_matches(observed: &ObservedPeer, desired: &DesiredPeer) -> bool {
-    let endpoint_matches = match desired.endpoint {
-        Some(endpoint) => {
-            observed.endpoint == Some(endpoint)
-                && observed.persistent_keepalive == Some(PERSISTENT_KEEPALIVE_SECONDS)
-        }
-        None => true,
-    };
-    endpoint_matches && observed.allowed_ips == desired.allowed_ips
-}
-
-fn provision_private_key(path: &Path) -> Result<String, BuiltinWireguardHostError> {
-    match fs::read_to_string(path) {
-        Ok(value) => return validate_private_key(path, value),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => {
-            return Err(host_error(format!(
-                "read WireGuard private key {}: {error}",
-                path.display()
-            )));
-        }
-    }
-    let Some(directory) = path.parent() else {
-        return Err(host_error(format!(
-            "WireGuard private key path has no parent: {}",
-            path.display()
-        )));
-    };
-    let mut builder = fs::DirBuilder::new();
-    builder.recursive(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt as _;
-        builder.mode(0o700);
-    }
-    builder.create(directory).map_err(|error| {
-        host_error(format!(
-            "create WireGuard key directory {}: {error}",
-            directory.display()
-        ))
-    })?;
-    let private_key = Key::generate().to_string();
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| host_error(format!("invalid private key file name: {}", path.display())))?;
-    let mut staged = StagedFile::create(directory, file_name, "key", FileMode::Secret0600)
-        .map_err(|error| host_error(format!("stage WireGuard private key: {error:?}")))?;
-    staged
-        .file()
-        .write_all(format!("{private_key}\n").as_bytes())
-        .and_then(|()| staged.file().sync_all())
-        .map_err(|error| host_error(format!("write WireGuard private key: {error}")))?;
-    match commit_new_key(&mut staged, path) {
-        Ok(()) => Ok(private_key),
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => fs::read_to_string(path)
-            .map_err(|read_error| {
-                host_error(format!(
-                    "read concurrently-created WireGuard private key {}: {read_error}",
-                    path.display()
-                ))
-            })
-            .and_then(|value| validate_private_key(path, value)),
-        Err(error) => Err(host_error(format!(
-            "commit WireGuard private key {}: {error}",
-            path.display()
-        ))),
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn commit_new_key(staged: &mut StagedFile, path: &Path) -> std::io::Result<()> {
-    use rustix::fs::{CWD, RenameFlags, renameat_with};
-
-    renameat_with(CWD, staged.path(), CWD, path, RenameFlags::NOREPLACE)
-        .map_err(std::io::Error::from)?;
-    let Some(parent) = path.parent() else {
-        return Ok(());
-    };
-    fs::File::open(parent)?.sync_all()
-}
-
-#[cfg(not(target_os = "linux"))]
-fn commit_new_key(staged: &mut StagedFile, path: &Path) -> std::io::Result<()> {
-    if path.exists() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            "WireGuard private key already exists",
-        ));
-    }
-    staged.commit_to(path)
-}
-
-fn validate_private_key(path: &Path, value: String) -> Result<String, BuiltinWireguardHostError> {
-    ensure_private_key_permissions(path)?;
-    let value = value.trim().to_owned();
-    Key::try_from(value.as_str()).map_err(|error| {
-        host_error(format!(
-            "parse WireGuard private key {}: {error}",
-            path.display()
-        ))
-    })?;
-    Ok(value)
-}
-
-fn ensure_private_key_permissions(path: &Path) -> Result<(), BuiltinWireguardHostError> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(|error| {
-            host_error(format!(
-                "make WireGuard private key private {}: {error}",
-                path.display()
-            ))
-        })?;
-    }
-    Ok(())
-}
-
-fn validate_path(field: &'static str, path: &Path) -> Result<(), BuiltinWireguardConfigError> {
-    if path.as_os_str().is_empty() {
-        Err(BuiltinWireguardConfigError::EmptyPath { field })
-    } else {
-        Ok(())
-    }
-}
-
-fn validate_ifname(field: &'static str, value: &str) -> Result<(), BuiltinWireguardConfigError> {
-    let valid = !value.is_empty()
-        && value.len() <= 15
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'));
-    if valid {
-        Ok(())
-    } else {
-        Err(BuiltinWireguardConfigError::InvalidInterfaceName {
-            field,
-            value: value.to_owned(),
-        })
-    }
-}
-
 fn host_error(message: impl Into<String>) -> BuiltinWireguardHostError {
     BuiltinWireguardHostError::HostEffect {
         message: message.into(),
+    }
+}
+
+fn firewall_host_error(error: FirewallEffectError) -> BuiltinWireguardHostError {
+    match error {
+        FirewallEffectError::Host(message) => host_error(message),
+        FirewallEffectError::Unmanaged(backend) => {
+            BuiltinWireguardHostError::UnmanagedFirewall { backend }
+        }
     }
 }
 
@@ -1220,17 +810,10 @@ mod tests {
     }
 
     #[test]
-    fn missing_bridge_degrades_ebpf_without_changing_wireguard_readiness() {
+    fn missing_bridge_degrades_ebpf() {
         let outcome = BuiltinWireguardHostOutcome {
-            wireguard: WireguardHostReady {
-                public_key: key(1),
-                bind_address: "fd42::1/112".parse().expect("bind address"),
-                peer_count: 1,
-                route_count: 2,
-            },
             ebpf: ebpf_outcome(1, "br-ployz", Err(EbpfEffectError::MissingBridge)),
         };
-        assert_eq!(outcome.wireguard.peer_count, 1);
         assert_eq!(
             outcome.ebpf,
             EbpfHostOutcome::Degraded {
@@ -1274,19 +857,58 @@ mod tests {
 
     #[test]
     fn config_rejects_unbounded_or_kernel_invalid_values() {
+        assert_eq!(
+            BuiltinWireguardPorts::try_new(0, 8_787, 2_020),
+            Err(BuiltinWireguardConfigError::ZeroListenPort)
+        );
+        assert_eq!(
+            BuiltinWireguardPorts::try_new(51_820, 0, 2_020),
+            Err(BuiltinWireguardConfigError::ZeroCorrosionGossipPort)
+        );
+        assert_eq!(
+            BuiltinWireguardPorts::try_new(51_820, 8_787, 0),
+            Err(BuiltinWireguardConfigError::ZeroApiHttpPort)
+        );
         let ebpf = || {
             BuiltinWireguardEbpfConfig::try_new(
                 "ployz0".to_owned(),
                 PathBuf::from("/ctl"),
                 PathBuf::from("/bytecode"),
-                EbpfPinning::Default,
+                PathBuf::from("/pin"),
             )
             .expect("eBPF config")
         };
+        assert!(matches!(
+            BuiltinWireguardEbpfConfig::try_new(
+                "ployz0".to_owned(),
+                PathBuf::from("relative-ctl"),
+                PathBuf::from("/bytecode"),
+                PathBuf::from("/pin"),
+            ),
+            Err(BuiltinWireguardConfigError::RelativePath {
+                field: "eBPF control program",
+                ..
+            })
+        ));
+        assert!(matches!(
+            BuiltinWireguardHostConfig::try_new(
+                PathBuf::from("relative-key"),
+                "ployz0".to_owned(),
+                BuiltinWireguardPorts::try_new(51_820, 8_787, 2_020).expect("ports"),
+                1_420,
+                ebpf(),
+                SupervisorBackend::Systemd,
+                Duration::from_secs(5),
+            ),
+            Err(BuiltinWireguardConfigError::RelativePath {
+                field: "private key",
+                ..
+            })
+        ));
         let invalid_ifname = BuiltinWireguardHostConfig::try_new(
             PathBuf::from("/key"),
             "interface-name-is-too-long".to_owned(),
-            51_820,
+            BuiltinWireguardPorts::try_new(51_820, 8_787, 2_020).expect("ports"),
             1_420,
             ebpf(),
             SupervisorBackend::Systemd,
@@ -1301,7 +923,7 @@ mod tests {
             BuiltinWireguardHostConfig::try_new(
                 PathBuf::from("/key"),
                 "ployz0".to_owned(),
-                51_820,
+                BuiltinWireguardPorts::try_new(51_820, 8_787, 2_020).expect("ports"),
                 1_420,
                 ebpf(),
                 SupervisorBackend::Systemd,
@@ -1313,7 +935,7 @@ mod tests {
             BuiltinWireguardHostConfig::try_new(
                 PathBuf::from("/key"),
                 "ployz0".to_owned(),
-                51_820,
+                BuiltinWireguardPorts::try_new(51_820, 8_787, 2_020).expect("ports"),
                 1_420,
                 ebpf(),
                 SupervisorBackend::Systemd,

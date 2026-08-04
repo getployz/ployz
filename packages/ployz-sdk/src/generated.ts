@@ -139,13 +139,9 @@ export type BuildTimeoutFailure = { "kind": "deadline_exceeded", message: Failur
 
 export type BuildToolchainEvidence = { buildkit_image: OciDigest, adapter: BuildAdapterToolchainEvidence, };
 
-export type BuiltinWireguardFenceReason = { "kind": "missing_local_machine" } | { "kind": "local_identity_conflict", claim: MeshIdentityClaim, winner: RosterMemberId, };
-
 export type BuiltinWireguardKeyMismatch = { "kind": "local_public_key", machine_id: MachineRowId, stored: WireGuardPublicKey, local: WireGuardPublicKey, } | { "kind": "stored_ipv6_address", member_id: RosterMemberId, stored: string, derived: BuiltinWireguardMemberAddress, };
 
 export type BuiltinWireguardMemberAddress = string;
-
-export type BuiltinWireguardMemberSubnet = string;
 
 export type CancellationReason = Brand<string, "CancellationReason">;
 
@@ -668,11 +664,9 @@ export type MeshComponentNotAttempted = { reason: MeshNotAttemptedReason, };
 
 export type MeshComponentReady = { converged_at: CorrosionTimestamp, };
 
-export type MeshConvergenceTestimony = { "state": "no_roster", attempted_at: CorrosionTimestamp, } | { "state": "fenced", attempted_at: CorrosionTimestamp, reason: BuiltinWireguardFenceReason, } | { "state": "key_mismatch", attempted_at: CorrosionTimestamp, mismatches: Array<BuiltinWireguardKeyMismatch>, } | { "state": "converged", bind_address: BuiltinWireguardMemberAddress, attempted_at: CorrosionTimestamp, last_successful_converge: CorrosionTimestamp, wireguard: MeshComponentReady, ebpf: MeshComponentReady, } | { "state": "degraded", bind_address: BuiltinWireguardMemberAddress, attempted_at: CorrosionTimestamp, last_successful_converge: CorrosionTimestamp | null, degradation: MeshDegradation, };
+export type MeshConvergenceTestimony = { "state": "no_roster", attempted_at: CorrosionTimestamp, } | { "state": "key_mismatch", attempted_at: CorrosionTimestamp, mismatches: Array<BuiltinWireguardKeyMismatch>, } | { "state": "converged", bind_address: BuiltinWireguardMemberAddress, attempted_at: CorrosionTimestamp, last_successful_converge: CorrosionTimestamp, wireguard: MeshComponentReady, ebpf: MeshComponentReady, } | { "state": "degraded", bind_address: BuiltinWireguardMemberAddress, attempted_at: CorrosionTimestamp, last_successful_converge: CorrosionTimestamp | null, degradation: MeshDegradation, };
 
 export type MeshDegradation = { "components": "wireguard", wireguard: MeshComponentDegraded, ebpf: MeshComponentNotAttempted, } | { "components": "ebpf", wireguard: MeshComponentReady, ebpf: EbpfMeshDegraded, };
-
-export type MeshIdentityClaim = { "kind": "container_subnet", subnet: MachineEndpointSubnet, } | { "kind": "wireguard_public_key", public_key: WireGuardPublicKey, } | { "kind": "derived_ipv6", subnet: BuiltinWireguardMemberSubnet, };
 
 export type MeshNotAttemptedReason = "dependency_degraded";
 

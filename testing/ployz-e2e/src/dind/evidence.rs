@@ -26,7 +26,7 @@ pub async fn capture_machine_evidence(
         message: source.to_string(),
     })?;
 
-    let captures: [(&str, &[&str]); 17] = [
+    let captures: [(&str, &[&str]); 20] = [
         (
             "journal.txt",
             &["journalctl", "--no-pager", "--lines", "2000"],
@@ -54,6 +54,9 @@ pub async fn capture_machine_evidence(
                 "sysctl net.ipv6.conf.all.disable_ipv6 net.ipv6.conf.default.disable_ipv6 net.ipv6.conf.all.forwarding net.ipv6.conf.default.forwarding",
             ],
         ),
+        ("firewall.txt", &["ufw", "status", "verbose"]),
+        ("iptables.txt", &["iptables-save"]),
+        ("ip6tables.txt", &["ip6tables-save"]),
         ("sockets.txt", &["ss", "-lntup"]),
         (
             "ployz-journals.txt",
@@ -124,7 +127,7 @@ pub async fn capture_machine_evidence(
             &[
                 "sh",
                 "-c",
-                "/opt/ployz/artifacts/bpftool -j map dump pinned /sys/fs/bpf/ployz/routes 2>&1",
+                "bpftool -j map dump pinned /sys/fs/bpf/ployz/routes 2>&1",
             ],
         ),
     ];

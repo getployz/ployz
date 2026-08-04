@@ -1,39 +1,21 @@
 //! Host firewall detection and port operations.
 
+#[cfg(test)]
+use std::collections::BTreeSet;
+
 use ployz_core::operation::FailureMessage;
 
 use super::command::HostRunnerCommandRunner;
+#[cfg(test)]
 use super::supervisor::SupervisorBackend;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AssignedHostPort {
-    pub port: u16,
-    pub protocol: HostPortProtocol,
-}
+mod detection;
+mod mesh;
+mod nft;
+mod port;
 
-impl AssignedHostPort {
-    #[must_use]
-    pub const fn tcp(port: u16) -> Self {
-        Self {
-            port,
-            protocol: HostPortProtocol::Tcp,
-        }
-    }
-
-    #[must_use]
-    pub const fn udp(port: u16) -> Self {
-        Self {
-            port,
-            protocol: HostPortProtocol::Udp,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HostPortProtocol {
-    Tcp,
-    Udp,
-}
+pub use detection::detect_firewall_backend;
+pub use port::{AssignedHostPort, HostPortProtocol};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FirewallBackend {
@@ -41,109 +23,6 @@ pub enum FirewallBackend {
     Ufw,
     Unmanaged(String),
     None,
-}
-
-pub fn detect_firewall_backend(
-    supervisor: SupervisorBackend,
-    runner: &mut impl HostRunnerCommandRunner,
-) -> Result<FirewallBackend, FailureMessage> {
-    if service_active(supervisor, runner, "firewalld")? {
-        return Ok(FirewallBackend::Firewalld);
-    }
-    if service_active(supervisor, runner, "ufw")? {
-        let output = runner.command("ufw", &["status"])?;
-        if !output.success {
-            return Err(failure_message(output.failure));
-        }
-        if output
-            .stdout
-            .lines()
-            .any(|line| line.trim().eq_ignore_ascii_case("status: active"))
-        {
-            return Ok(FirewallBackend::Ufw);
-        }
-    }
-    let nft_service_active = service_active(supervisor, runner, "nftables")?;
-    let nft_installed = command_probe(
-        runner,
-        "sh",
-        &["-c", "command -v nft >/dev/null 2>&1"],
-        &[1, 127],
-    )?;
-    if nft_service_active || nft_installed {
-        let output = runner.command("nft", &["list", "ruleset"])?;
-        if !output.success {
-            return Err(failure_message(output.failure));
-        }
-        if nft_manages_input(&output.stdout) {
-            return Ok(FirewallBackend::Unmanaged("nftables".to_owned()));
-        }
-    }
-    let mut iptables_service = None;
-    for service in ["iptables", "netfilter-persistent"] {
-        if service_active(supervisor, runner, service)? {
-            iptables_service = Some(service);
-        }
-    }
-    let iptables_installed = command_probe(
-        runner,
-        "sh",
-        &["-c", "command -v iptables >/dev/null 2>&1"],
-        &[1, 127],
-    )?;
-    if iptables_service.is_some() || iptables_installed {
-        let output = runner.command("iptables", &["-S", "INPUT"])?;
-        if !output.success {
-            return Err(failure_message(output.failure));
-        }
-        if iptables_manages_input(&output.stdout) {
-            return Ok(FirewallBackend::Unmanaged(
-                iptables_service.unwrap_or("iptables").to_owned(),
-            ));
-        }
-    }
-
-    let output = match supervisor {
-        SupervisorBackend::Systemd => runner.command(
-            "systemctl",
-            &[
-                "list-units",
-                "--type=service",
-                "--state=active",
-                "--no-legend",
-                "--plain",
-            ],
-        )?,
-        SupervisorBackend::OpenRc => runner.command("rc-status", &["--servicelist"])?,
-    };
-    if !output.success {
-        return Err(failure_message(output.failure));
-    }
-    if let Some(service) = unknown_firewall_service(&output.stdout) {
-        return Ok(FirewallBackend::Unmanaged(service.to_owned()));
-    }
-    Ok(FirewallBackend::None)
-}
-
-fn service_active(
-    supervisor: SupervisorBackend,
-    runner: &mut impl HostRunnerCommandRunner,
-    service: &str,
-) -> Result<bool, FailureMessage> {
-    match supervisor {
-        SupervisorBackend::Systemd => {
-            let unit = format!("{service}.service");
-            command_probe(
-                runner,
-                "systemctl",
-                &["is-active", "--quiet", &unit],
-                &[3, 4],
-            )
-        }
-        SupervisorBackend::OpenRc => {
-            command_probe(runner, "rc-service", &[service, "status"], &[1, 3])
-        }
-    }
 }
 
 impl FirewallBackend {
@@ -175,6 +54,8 @@ impl FirewallBackend {
         }
     }
 }
+
+const CORROSION_CHAIN: &str = "PLOYZ-CORROSION";
 
 fn open_ufw(
     port: AssignedHostPort,
@@ -297,38 +178,6 @@ fn require_success(
     }
 }
 
-fn nft_manages_input(ruleset: &str) -> bool {
-    ruleset.lines().any(|line| line.contains("hook input"))
-}
-
-fn iptables_manages_input(rules: &str) -> bool {
-    rules.lines().any(|line| {
-        line.starts_with("-A INPUT ")
-            || line
-                .strip_prefix("-P INPUT ")
-                .is_some_and(|policy| !policy.eq_ignore_ascii_case("ACCEPT"))
-    })
-}
-
-fn unknown_firewall_service(active_units: &str) -> Option<&str> {
-    active_units.lines().find_map(|line| {
-        let service = line.split_whitespace().next()?;
-        let normalized = service.to_ascii_lowercase();
-        let known = [
-            "firewalld.service",
-            "ufw.service",
-            "nftables.service",
-            "iptables.service",
-            "netfilter-persistent.service",
-        ];
-        (!known.contains(&normalized.as_str())
-            && ["firewall", "shorewall", "firehol", "ferm", "netfilter"]
-                .iter()
-                .any(|marker| normalized.contains(marker)))
-        .then_some(service)
-    })
-}
-
 fn render_port(port: AssignedHostPort) -> String {
     let protocol = match port.protocol {
         HostPortProtocol::Tcp => "tcp",
@@ -348,7 +197,7 @@ fn failure_message(message: impl Into<String>) -> FailureMessage {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::collections::VecDeque;
     use std::path::Path;
 
@@ -359,13 +208,13 @@ mod tests {
     const TCP_443: AssignedHostPort = AssignedHostPort::tcp(443);
 
     #[derive(Default)]
-    struct RecordingRunner {
-        calls: Vec<String>,
+    pub(crate) struct RecordingRunner {
+        pub(crate) calls: Vec<String>,
         outputs: VecDeque<Result<HostRunnerCommandOutput, FailureMessage>>,
     }
 
     impl RecordingRunner {
-        fn with_outputs(
+        pub(crate) fn with_outputs(
             outputs: impl IntoIterator<Item = Result<HostRunnerCommandOutput, FailureMessage>>,
         ) -> Self {
             Self {
@@ -407,7 +256,7 @@ mod tests {
         }
     }
 
-    fn active(stdout: &str) -> Result<HostRunnerCommandOutput, FailureMessage> {
+    pub(crate) fn active(stdout: &str) -> Result<HostRunnerCommandOutput, FailureMessage> {
         Ok(HostRunnerCommandOutput {
             success: true,
             exit_code: Some(0),
@@ -417,7 +266,7 @@ mod tests {
         })
     }
 
-    fn inactive() -> HostRunnerCommandOutput {
+    pub(crate) fn inactive() -> HostRunnerCommandOutput {
         HostRunnerCommandOutput {
             success: false,
             exit_code: Some(3),
@@ -447,7 +296,9 @@ mod tests {
         }
     }
 
-    fn command_failure(message: &str) -> Result<HostRunnerCommandOutput, FailureMessage> {
+    pub(super) fn command_failure(
+        message: &str,
+    ) -> Result<HostRunnerCommandOutput, FailureMessage> {
         Ok(HostRunnerCommandOutput {
             success: false,
             exit_code: Some(2),
@@ -507,6 +358,119 @@ mod tests {
             detect_firewall_backend(SupervisorBackend::Systemd, &mut runner).expect("detection"),
             FirewallBackend::Unmanaged("nftables".to_owned())
         );
+    }
+
+    #[test]
+    fn translated_ployz_corrosion_input_hook_is_not_unmanaged() {
+        let ruleset = r#"
+table ip6 filter {
+    chain INPUT {
+        type filter hook input priority filter; policy accept;
+        iifname "ployz0" udp dport 8787 counter packets 4 bytes 320 jump PLOYZ-CORROSION
+    }
+
+    chain PLOYZ-CORROSION {
+        ip6 saddr fd12:3456:789a:1::/112 counter packets 2 bytes 160 accept
+        counter packets 2 bytes 160 reject with icmpv6 type port-unreachable
+    }
+}
+"#;
+
+        assert!(!nft::manages_input(ruleset));
+    }
+
+    #[test]
+    fn detection_ignores_its_own_translated_corrosion_hook_after_restart() {
+        let ruleset = r#"
+table ip6 filter {
+    chain INPUT {
+        type filter hook input priority filter; policy accept;
+        iifname "ployz0" udp dport 8787 jump PLOYZ-CORROSION
+    }
+    chain PLOYZ-CORROSION {
+        ip6 saddr fd12:3456:789a:1::/112 accept
+        reject with icmpv6 type port-unreachable
+    }
+}
+"#;
+        let mut runner = RecordingRunner::with_outputs([
+            Ok(inactive()),
+            Ok(inactive()),
+            Ok(inactive()),
+            active(""),
+            active(ruleset),
+            Ok(inactive()),
+            Ok(inactive()),
+            active(""),
+            active("-P INPUT ACCEPT\n"),
+            active(""),
+        ]);
+
+        assert_eq!(
+            detect_firewall_backend(SupervisorBackend::Systemd, &mut runner).expect("detection"),
+            FirewallBackend::None
+        );
+    }
+
+    #[test]
+    fn partial_owned_corrosion_chain_remains_recoverable_after_restart() {
+        let ruleset = r#"
+table ip6 filter {
+    chain INPUT {
+        type filter hook input priority filter; policy accept;
+        iifname "ployz0" udp dport 8787 jump "PLOYZ-CORROSION"
+    }
+    chain "PLOYZ-CORROSION" {
+    }
+}
+"#;
+
+        assert!(!nft::manages_input(ruleset));
+    }
+
+    #[test]
+    fn any_foreign_input_policy_rule_or_hook_stays_unmanaged() {
+        for ruleset in [
+            r#"
+table ip6 filter {
+    chain INPUT {
+        type filter hook input priority filter; policy drop;
+        iifname "ployz0" udp dport 8787 jump PLOYZ-CORROSION
+    }
+    chain PLOYZ-CORROSION { }
+}
+"#,
+            r#"
+table ip6 filter {
+    chain INPUT {
+        type filter hook input priority filter; policy accept;
+        iifname "ployz0" udp dport 8787 jump PLOYZ-CORROSION
+        tcp dport 22 accept
+    }
+    chain PLOYZ-CORROSION { }
+}
+"#,
+            r#"
+table inet foreign {
+    chain input {
+        type filter hook input priority filter; policy accept;
+    }
+}
+"#,
+            r#"
+table ip6 filter {
+    chain INPUT {
+        type filter hook input priority filter; policy accept;
+        iifname "ployz0" udp dport 8787 jump PLOYZ-CORROSION
+    }
+    chain PLOYZ-CORROSION {
+        tcp dport 22 accept
+    }
+}
+"#,
+        ] {
+            assert!(nft::manages_input(ruleset), "must refuse {ruleset}");
+        }
     }
 
     #[test]
@@ -638,6 +602,141 @@ mod tests {
             runner.calls,
             vec!["firewall-cmd --quiet --query-port=443/tcp"]
         );
+    }
+
+    #[test]
+    fn firewalld_api_ingress_uses_only_the_owned_interface_zone() {
+        let mut runner = RecordingRunner::with_outputs([
+            active("public ployz trusted\n"),
+            active("Managed by Ployz built-in WireGuard\n"),
+            active(""),
+            active(""),
+            active(""),
+            active(""),
+        ]);
+
+        FirewallBackend::Firewalld
+            .allow_control_plane_http_with("ployz0", 2_020, &mut runner)
+            .expect("API ingress");
+
+        assert_eq!(
+            runner.calls,
+            vec![
+                "firewall-cmd --permanent --get-zones",
+                "firewall-cmd --permanent --zone=ployz --get-description",
+                "firewall-cmd --permanent --zone=ployz --change-interface=ployz0",
+                "firewall-cmd --permanent --zone=ployz --list-rich-rules",
+                "firewall-cmd --permanent --zone=ployz --add-rich-rule=rule family=\"ipv6\" port port=\"2020\" protocol=\"tcp\" accept",
+                "firewall-cmd --reload",
+            ]
+        );
+    }
+
+    #[test]
+    fn ufw_interface_and_forwarding_use_the_managed_backend() {
+        let mut runner =
+            RecordingRunner::with_outputs([active(""), active(""), active(""), active("")]);
+
+        FirewallBackend::Ufw
+            .allow_control_plane_http_with("ployz0", 2_020, &mut runner)
+            .expect("API ingress");
+        FirewallBackend::Ufw
+            .allow_forwarding_between_with("ployz0", "br-ployz", &mut runner)
+            .expect("forwarding");
+
+        assert_eq!(
+            runner.calls,
+            vec![
+                "ufw status numbered",
+                "ufw allow in on ployz0 from ::/0 to any port 2020 proto tcp comment ployz-api-http",
+                "ufw route allow in on ployz0 out on br-ployz",
+                "ufw route allow in on br-ployz out on ployz0",
+            ]
+        );
+    }
+
+    #[test]
+    fn machine_only_udp_chain_accepts_machines_and_rejects_roaming_peers() {
+        let mut runner = RecordingRunner::with_outputs([
+            active(""),
+            active(""),
+            active("-P INPUT ACCEPT\n"),
+            active(""),
+        ]);
+        let sources = BTreeSet::from([
+            "fd12:3456:789a:1::/112".parse().expect("source"),
+            "fd12:3456:789a:2::/112".parse().expect("source"),
+        ]);
+
+        FirewallBackend::Ufw
+            .restrict_udp_to_ipv6_sources_with("ployz0", 8_787, &sources, &mut runner)
+            .expect("machine-only gossip");
+
+        let [status, ufw, observe, restore] = runner.calls.as_slice() else {
+            panic!(
+                "expected UFW backstop, save, and restore: {:?}",
+                runner.calls
+            );
+        };
+        assert_eq!(status, "ufw status numbered");
+        assert_eq!(
+            ufw,
+            "ufw insert 1 deny in on ployz0 from ::/0 to any port 8787 proto udp comment ployz-corrosion-gossip"
+        );
+        assert_eq!(observe, "ip6tables -S INPUT");
+        assert!(restore.starts_with("ip6tables-restore --noflush --wait 5 "));
+    }
+
+    #[test]
+    fn repeated_convergence_prunes_stale_duplicate_jumps_and_keeps_foreign_rules() {
+        let mut runner = RecordingRunner::with_outputs([
+            active("[ 1] 8787/udp (v6) on ployz0 DENY IN Anywhere (v6) # ployz-corrosion-gossip\n"),
+            active(concat!(
+                "-P INPUT ACCEPT\n",
+                "-A INPUT -p tcp --dport 22 -j ACCEPT\n",
+                "-A INPUT -i old0 -p udp -m udp --dport 7777 -j PLOYZ-CORROSION\n",
+                "-A INPUT -i ployz0 -p udp -m udp --dport 8787 -j PLOYZ-CORROSION\n",
+            )),
+            active(""),
+        ]);
+        let sources = BTreeSet::from(["fd12:3456:789a:3::/112".parse().expect("source")]);
+
+        FirewallBackend::Ufw
+            .restrict_udp_to_ipv6_sources_with("ployz0", 8_787, &sources, &mut runner)
+            .expect("repeat convergence");
+
+        let [status, observe, restore] = runner.calls.as_slice() else {
+            panic!(
+                "expected UFW backstop, save, and restore: {:?}",
+                runner.calls
+            );
+        };
+        assert_eq!(status, "ufw status numbered");
+        assert_eq!(observe, "ip6tables -S INPUT");
+        assert!(restore.starts_with("ip6tables-restore --noflush --wait 5 "));
+    }
+
+    #[test]
+    fn unmanaged_firewall_refuses_mesh_capabilities_without_mutation() {
+        let mut runner = RecordingRunner::default();
+        let backend = FirewallBackend::Unmanaged("shorewall".to_owned());
+
+        assert!(
+            backend
+                .allow_control_plane_http_with("ployz0", 2_020, &mut runner)
+                .is_err()
+        );
+        assert!(
+            backend
+                .restrict_udp_to_ipv6_sources_with("ployz0", 8_787, &BTreeSet::new(), &mut runner,)
+                .is_err()
+        );
+        assert!(
+            backend
+                .allow_forwarding_between_with("ployz0", "br-ployz", &mut runner)
+                .is_err()
+        );
+        assert!(runner.calls.is_empty());
     }
 
     #[test]

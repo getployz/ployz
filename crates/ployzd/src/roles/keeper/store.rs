@@ -2,7 +2,7 @@
 
 use ployz_core::corrosion::{
     ClusterDocument, MachineDocument, MachineStatusDocument, NamedReadReport, PeerDocument,
-    SqliteParameter, Statement, StoredRow, read_named_roster_rows, read_rows,
+    Principal, SqliteParameter, Statement, StoredRow, read_named_roster_rows, read_rows,
 };
 use ployz_core::ids::{ClusterId, MachineRowId};
 
@@ -82,6 +82,36 @@ impl KeeperCorrosion {
     pub(super) async fn execute(&self, statement: Statement) -> Result<(), KeeperStoreError> {
         self.client.execute(&[statement]).await?;
         Ok(())
+    }
+
+    /// Rewrites only this Keeper's accepted machine row during subnet self-heal.
+    pub(super) async fn rewrite_local_machine(
+        &self,
+        machine_id: &MachineRowId,
+        document: &MachineDocument,
+    ) -> Result<(), KeeperStoreError> {
+        if machine_id != &self.local_machine_id
+            || document.cluster_id != self.cluster_id
+            || !matches!(
+                &document.provenance.written_by,
+                Principal::Machine { machine_id } if machine_id == &self.local_machine_id
+            )
+        {
+            return Err(KeeperStoreError::InvalidLocalMachineRepairOwnership);
+        }
+        let encoded = serde_json::to_string(document).map_err(|source| {
+            KeeperStoreError::EncodeLocalMachineRepair {
+                detail: source.to_string(),
+            }
+        })?;
+        self.execute(Statement::with_params(
+            "UPDATE machines SET document = ? WHERE id = ?",
+            vec![
+                SqliteParameter::Text(encoded),
+                SqliteParameter::Text(self.local_machine_id.as_str().to_owned()),
+            ],
+        ))
+        .await
     }
 }
 
@@ -169,40 +199,18 @@ fn invalidation_statement(table: &'static str) -> Statement {
 pub(super) enum KeeperStoreError {
     #[error("local Corrosion request failed: {0}")]
     Client(#[from] CorrosionClientError),
+    #[error(transparent)]
+    Collection(#[from] StoredRowCollectionError),
     #[error("the configured cluster row is not accepted")]
     ClusterNotAccepted,
     #[error("the configured cluster identity resolved ambiguously")]
     AmbiguousCluster,
     #[error("the local machine_status row key and document ownership disagree")]
     InvalidLocalStatusOwnership,
-    #[error("local Corrosion query omitted its columns frame")]
-    MissingColumns,
-    #[error("local Corrosion query repeated its columns frame")]
-    DuplicateColumns,
-    #[error("local Corrosion query returned a row before columns")]
-    RowBeforeColumns,
-    #[error("local Corrosion query returned unexpected columns: {columns:?}")]
-    UnexpectedColumns { columns: Vec<String> },
-    #[error("local Corrosion query returned an unexpected stored row")]
-    UnexpectedRow,
-    #[error("local Corrosion query exceeded its {limit}-row bound")]
-    RowLimit { limit: usize },
-}
-
-impl From<StoredRowCollectionError> for KeeperStoreError {
-    fn from(error: StoredRowCollectionError) -> Self {
-        match error {
-            StoredRowCollectionError::Client(source) => Self::Client(source),
-            StoredRowCollectionError::MissingColumns => Self::MissingColumns,
-            StoredRowCollectionError::DuplicateColumns => Self::DuplicateColumns,
-            StoredRowCollectionError::RowBeforeColumns => Self::RowBeforeColumns,
-            StoredRowCollectionError::UnexpectedColumns { columns } => {
-                Self::UnexpectedColumns { columns }
-            }
-            StoredRowCollectionError::UnexpectedRow { .. } => Self::UnexpectedRow,
-            StoredRowCollectionError::RowLimit { limit } => Self::RowLimit { limit },
-        }
-    }
+    #[error("Keeper subnet repair did not target its own machine row and cluster")]
+    InvalidLocalMachineRepairOwnership,
+    #[error("Keeper could not encode its repaired local machine row: {detail}")]
+    EncodeLocalMachineRepair { detail: String },
 }
 
 #[cfg(test)]

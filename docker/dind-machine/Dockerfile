@@ -2,7 +2,7 @@
 #
 # One container from this image is one ployz "machine": systemd as PID 1,
 # an inner Docker daemon, and the runtime dependencies the Host Runner expects
-# (WireGuard tools, iproute2, iptables). Debian trixie supplies the minimum
+# (WireGuard tools, iproute2, UFW/iptables, and eBPF inspection). Debian trixie supplies the minimum
 # glibc required by the pinned Corrosion release while remaining compatible
 # with binaries built by the older rust:1.91-bookworm builder.
 #
@@ -19,6 +19,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     ca-certificates \
+    bpftool \
     curl \
     dbus \
     docker-cli=26.1.5+dfsg1-9+b13 \
@@ -32,6 +33,7 @@ RUN apt-get update \
     python3 \
     systemd \
     systemd-sysv \
+    ufw \
     wireguard-tools \
   && rm -rf /var/lib/apt/lists/*
 

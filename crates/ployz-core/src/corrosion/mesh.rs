@@ -260,7 +260,6 @@ pub enum BuiltinWireguardKeyMismatch {
 /// Local identity and address required before Corrosion can bind to the mesh.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesiredBuiltinWireguardLocal {
-    pub machine_id: MachineRowId,
     pub public_key: WireGuardPublicKey,
     pub subnet_v6: BuiltinWireguardMemberSubnet,
     pub bind_address: BuiltinWireguardMemberAddress,
@@ -297,21 +296,58 @@ pub struct DesiredBuiltinWireguardRoamingPeer {
     pub endpoint: Option<SocketAddr>,
 }
 
-/// One remote machine `/24` eligible for the eBPF route map.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DesiredBuiltinWireguardEbpfRoute {
-    pub machine_id: MachineRowId,
-    pub subnet_v4: MachineEndpointSubnet,
-}
-
 /// The complete pure desired state consumed by the privileged host adapter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesiredBuiltinWireguardMesh {
     pub local: DesiredBuiltinWireguardLocal,
     pub machine_peers: Vec<DesiredBuiltinWireguardMachinePeer>,
     pub roaming_peers: Vec<DesiredBuiltinWireguardRoamingPeer>,
-    pub ebpf_routes: Vec<DesiredBuiltinWireguardEbpfRoute>,
+    pub ebpf_routes: Vec<MachineEndpointSubnet>,
     pub evidence: BuiltinWireguardRosterEvidence,
+}
+
+/// The accepted local row and occupied address space required to repair a lost `/24` claim.
+///
+/// This value is constructed only when the local machine lost the deterministic lowest-ULID
+/// subnet fold, so consumers cannot mistake an ordinary remote conflict for authority to rewrite
+/// the local row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuiltinWireguardLocalSubnetReallocation {
+    machine_id: MachineRowId,
+    accepted_machine: MachineDocument,
+    occupied_subnets: BTreeSet<MachineEndpointSubnet>,
+}
+
+impl BuiltinWireguardLocalSubnetReallocation {
+    #[must_use]
+    pub fn machine_id(&self) -> &MachineRowId {
+        &self.machine_id
+    }
+
+    #[must_use]
+    pub fn accepted_machine(&self) -> &MachineDocument {
+        &self.accepted_machine
+    }
+
+    #[must_use]
+    pub fn occupied_subnets(&self) -> &BTreeSet<MachineEndpointSubnet> {
+        &self.occupied_subnets
+    }
+
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        MachineRowId,
+        MachineDocument,
+        BTreeSet<MachineEndpointSubnet>,
+    ) {
+        (
+            self.machine_id,
+            self.accepted_machine,
+            self.occupied_subnets,
+        )
+    }
 }
 
 /// A roster fold outcome with destructive convergence guarded explicitly.
@@ -327,6 +363,10 @@ pub enum BuiltinWireguardMeshOutcome {
     },
     KeyMismatch {
         mismatches: Vec<BuiltinWireguardKeyMismatch>,
+        evidence: BuiltinWireguardRosterEvidence,
+    },
+    ReallocateLocalContainerSubnet {
+        repair: BuiltinWireguardLocalSubnetReallocation,
         evidence: BuiltinWireguardRosterEvidence,
     },
     Desired(DesiredBuiltinWireguardMesh),
@@ -384,19 +424,20 @@ pub fn project_builtin_wireguard_mesh(
         identity_conflicts: Vec::new(),
     };
 
-    if accepted_machines.is_empty() {
+    if accepted_machines.is_empty() && accepted_peers.is_empty() {
         return Ok(BuiltinWireguardMeshOutcome::NoRoster { evidence });
     }
-    if !accepted_machines
+    let Some(accepted_local_machine) = accepted_machines
         .iter()
-        .any(|row| row.id.as_str() == local_machine_id.as_str())
-    {
+        .find(|row| row.id.as_str() == local_machine_id.as_str())
+        .map(|row| row.value.clone())
+    else {
         return Ok(BuiltinWireguardMeshOutcome::Fenced {
             local_machine_id,
             reason: BuiltinWireguardFenceReason::MissingLocalMachine,
             evidence,
         });
-    }
+    };
     let accepted_members = accepted_machines.len().saturating_add(accepted_peers.len());
     if accepted_members > MAX_BUILTIN_WIREGUARD_MEMBERS {
         return Err(BuiltinWireguardMeshError::AcceptedRosterTooLarge {
@@ -512,9 +553,27 @@ pub fn project_builtin_wireguard_mesh(
         .iter()
         .find(|candidate| candidate.id == local_member_id)
         .expect("the accepted local machine was checked above");
+    let local_subnet = local_candidate
+        .subnet_v4
+        .as_ref()
+        .expect("the local machine candidate always carries a container subnet");
+    let local_subnet_winner = subnet_winners
+        .get(local_subnet)
+        .expect("every machine subnet was adjudicated");
+    if *local_subnet_winner != local_member_id {
+        return Ok(
+            BuiltinWireguardMeshOutcome::ReallocateLocalContainerSubnet {
+                repair: BuiltinWireguardLocalSubnetReallocation {
+                    machine_id: local_machine_id,
+                    accepted_machine: accepted_local_machine,
+                    occupied_subnets: subnet_winners.into_keys().collect(),
+                },
+                evidence,
+            },
+        );
+    }
     let local_identity = derive_builtin_wireguard_member(&cluster.cluster_id, local_public_key);
     let local = DesiredBuiltinWireguardLocal {
-        machine_id: local_machine_id.clone(),
         public_key: local_public_key.clone(),
         subnet_v6: local_identity.subnet,
         bind_address: local_identity.bind_address,
@@ -538,10 +597,7 @@ pub fn project_builtin_wireguard_mesh(
                     .get(&subnet)
                     .expect("every machine subnet was adjudicated");
                 let container_route = if *winner == candidate.id {
-                    ebpf_routes.push(DesiredBuiltinWireguardEbpfRoute {
-                        machine_id: machine_id.clone(),
-                        subnet_v4: subnet.clone(),
-                    });
+                    ebpf_routes.push(subnet.clone());
                     DesiredMachineContainerRoute::Claimed { subnet }
                 } else {
                     DesiredMachineContainerRoute::Withheld {

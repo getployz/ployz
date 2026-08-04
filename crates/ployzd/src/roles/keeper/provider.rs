@@ -1,15 +1,14 @@
 //! Keeper's closed provider seam over privileged Host Runner effects.
 
 use ployz_core::corrosion::{
-    BuiltinWireguardMeshOutcome, DesiredBuiltinWireguardLocal, derive_builtin_wireguard_member,
+    DesiredBuiltinWireguardLocal, DesiredBuiltinWireguardMesh, derive_builtin_wireguard_member,
 };
-use ployz_core::ids::{ClusterId, MachineRowId};
+use ployz_core::ids::ClusterId;
 use ployz_core::network::WireGuardPublicKey;
 use ployz_core::operation::FailureMessage;
 use ployz_host_runner::builtin_wireguard::{
-    BuiltinWireguardConfigError, BuiltinWireguardEbpfConfig, BuiltinWireguardHost,
-    BuiltinWireguardHostConfig, BuiltinWireguardHostError, BuiltinWireguardHostOutcome,
-    EbpfPinning, WireguardLocalBinding,
+    BuiltinWireguardHost, BuiltinWireguardHostError, BuiltinWireguardHostOutcome,
+    WireguardLocalBinding,
 };
 use ployz_host_runner::{
     HostRunnerCommandOutput, HostRunnerCommandRunner, SystemHostRunnerCommandRunner,
@@ -21,56 +20,36 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// The exhaustive set of shipped Keeper mesh providers.
-enum KeeperMeshProviderState {
-    BuiltinWireguard(BuiltinWireguardHost<CancellableHostRunner>),
-}
-
 /// An async-safe owner for bounded, blocking host effects.
 #[derive(Clone)]
 pub(super) struct KeeperMeshProvider {
-    state: Arc<Mutex<KeeperMeshProviderState>>,
+    host: Arc<Mutex<BuiltinWireguardHost<CancellableHostRunner>>>,
     fold_timeout: Duration,
     cancelled: Arc<AtomicBool>,
 }
 
 impl KeeperMeshProvider {
-    pub(super) fn from_config(config: &KeeperRoleConfig) -> Result<Self, KeeperProviderError> {
-        let ebpf = BuiltinWireguardEbpfConfig::try_new(
-            config.bridge_interface().to_owned(),
-            config.ebpf_ctl_path().to_path_buf(),
-            config.ebpf_bytecode_path().to_path_buf(),
-            EbpfPinning::Explicit(config.ebpf_pin_path().to_path_buf()),
-        )?;
-        let host_config = BuiltinWireguardHostConfig::try_new(
-            config.private_key_path().to_path_buf(),
-            config.wireguard_interface().to_owned(),
-            config.wireguard_listen_port().get(),
-            config.wireguard_mtu(),
-            ebpf,
-            config.supervisor_backend(),
-            config.host_command_timeout(),
-        )?;
+    pub(super) fn from_config(config: &KeeperRoleConfig) -> Self {
         let cancelled = Arc::new(AtomicBool::new(false));
         let runner = CancellableHostRunner {
-            inner: SystemHostRunnerCommandRunner::new(config.host_command_timeout()),
+            inner: SystemHostRunnerCommandRunner::new(config.host().command_timeout()),
             cancelled: Arc::clone(&cancelled),
         };
-        Ok(Self {
-            state: Arc::new(Mutex::new(KeeperMeshProviderState::BuiltinWireguard(
-                BuiltinWireguardHost::with_runner(host_config, runner),
+        Self {
+            host: Arc::new(Mutex::new(BuiltinWireguardHost::with_runner(
+                config.host().clone(),
+                runner,
             ))),
             fold_timeout: config.host_fold_timeout(),
             cancelled,
-        })
+        }
     }
 
     /// Supplies local identity material for future admission workflows.
     pub(super) async fn provision_join(&self) -> Result<WireGuardPublicKey, KeeperProviderError> {
-        self.run_blocking("provision local WireGuard identity", |state| match state {
-            KeeperMeshProviderState::BuiltinWireguard(host) => host
-                .provision_and_read_public_key()
-                .map_err(KeeperProviderError::Host),
+        self.run_blocking("provision local WireGuard identity", |host| {
+            host.provision_and_read_public_key()
+                .map_err(KeeperProviderError::Host)
         })
         .await
     }
@@ -79,14 +58,11 @@ impl KeeperMeshProvider {
     pub(super) async fn bind_ip(
         &self,
         cluster_id: &ClusterId,
-        machine_id: &MachineRowId,
     ) -> Result<BoundKeeperIdentity, KeeperProviderError> {
         let public_key = self.provision_join().await?;
         let cluster_id = cluster_id.clone();
-        let machine_id = machine_id.clone();
-        self.run_blocking("bind local WireGuard identity", move |state| {
-            let KeeperMeshProviderState::BuiltinWireguard(host) = state;
-            let local = desired_local(&cluster_id, &machine_id, public_key.clone());
+        self.run_blocking("bind local WireGuard identity", move |host| {
+            let local = desired_local(&cluster_id, public_key.clone());
             let evidence = host.bind_local(&local)?;
             Ok(BoundKeeperIdentity {
                 public_key,
@@ -97,36 +73,26 @@ impl KeeperMeshProvider {
         .await
     }
 
-    /// Applies only an already-fenced Core roster outcome.
+    /// Removes every peer after Core fenced the local machine.
+    pub(super) async fn fence(
+        &self,
+        bound: &BoundKeeperIdentity,
+    ) -> Result<BuiltinWireguardHostOutcome, KeeperProviderError> {
+        let local = bound.local.clone();
+        self.run_blocking("fence WireGuard peers", move |host| {
+            host.fence(&local).map_err(KeeperProviderError::Host)
+        })
+        .await
+    }
+
+    /// Applies a complete desired mesh already fenced and validated by Core.
     pub(super) async fn converge_peers(
         &self,
-        outcome: &BuiltinWireguardMeshOutcome,
-        bound: &BoundKeeperIdentity,
-    ) -> Result<KeeperHostFold, KeeperProviderError> {
-        let outcome = outcome.clone();
-        let local = bound.local.clone();
-        self.run_blocking("converge WireGuard peers", move |state| {
-            match (state, outcome) {
-                (
-                    KeeperMeshProviderState::BuiltinWireguard(_),
-                    BuiltinWireguardMeshOutcome::NoRoster { .. }
-                    | BuiltinWireguardMeshOutcome::KeyMismatch { .. },
-                ) => Ok(KeeperHostFold::Skipped),
-                (
-                    KeeperMeshProviderState::BuiltinWireguard(host),
-                    BuiltinWireguardMeshOutcome::Fenced { .. },
-                ) => host
-                    .fence(&local)
-                    .map(KeeperHostFold::Applied)
-                    .map_err(KeeperProviderError::Host),
-                (
-                    KeeperMeshProviderState::BuiltinWireguard(host),
-                    BuiltinWireguardMeshOutcome::Desired(desired),
-                ) => host
-                    .converge(&desired)
-                    .map(KeeperHostFold::Applied)
-                    .map_err(KeeperProviderError::Host),
-            }
+        desired: &DesiredBuiltinWireguardMesh,
+    ) -> Result<BuiltinWireguardHostOutcome, KeeperProviderError> {
+        let desired = desired.clone();
+        self.run_blocking("converge WireGuard peers", move |host| {
+            host.converge(&desired).map_err(KeeperProviderError::Host)
         })
         .await
     }
@@ -138,30 +104,34 @@ impl KeeperMeshProvider {
     ) -> Result<Output, KeeperProviderError>
     where
         Output: Send + 'static,
-        Run: FnOnce(&mut KeeperMeshProviderState) -> Result<Output, KeeperProviderError>
+        Run: FnOnce(
+                &mut BuiltinWireguardHost<CancellableHostRunner>,
+            ) -> Result<Output, KeeperProviderError>
             + Send
             + 'static,
     {
-        let state = Arc::clone(&self.state);
-        self.cancelled.store(false, Ordering::Release);
-        let mut task = tokio::task::spawn_blocking(move || {
-            let mut state = state.lock().map_err(|_| KeeperProviderError::Poisoned)?;
-            run(&mut state)
-        });
+        let host = Arc::clone(&self.host);
+        let (send, mut receive) = tokio::sync::oneshot::channel();
+        std::thread::Builder::new()
+            .name("ployz-keeper-host-fold".to_owned())
+            .spawn(move || {
+                let result = match host.lock() {
+                    Ok(mut host) => run(&mut host),
+                    Err(_) => Err(KeeperProviderError::Poisoned),
+                };
+                let _ = send.send(result);
+            })
+            .map_err(|source| KeeperProviderError::Task {
+                operation,
+                detail: source.to_string(),
+            })?;
         tokio::select! {
-            result = &mut task => result.map_err(|source| KeeperProviderError::Task {
+            result = &mut receive => result.map_err(|source| KeeperProviderError::Task {
                 operation,
                 detail: source.to_string(),
             })?,
             () = tokio::time::sleep(self.fold_timeout) => {
                 self.cancelled.store(true, Ordering::Release);
-                let result = task.await.map_err(|source| KeeperProviderError::Task {
-                    operation,
-                    detail: source.to_string(),
-                })?;
-                if matches!(result, Err(KeeperProviderError::Poisoned)) {
-                    return result;
-                }
                 Err(KeeperProviderError::TimedOut {
                     operation,
                     timeout: self.fold_timeout,
@@ -256,12 +226,10 @@ impl HostRunnerCommandRunner for CancellableHostRunner {
 
 fn desired_local(
     cluster_id: &ClusterId,
-    machine_id: &MachineRowId,
     public_key: WireGuardPublicKey,
 ) -> DesiredBuiltinWireguardLocal {
     let identity = derive_builtin_wireguard_member(cluster_id, &public_key);
     DesiredBuiltinWireguardLocal {
-        machine_id: machine_id.clone(),
         public_key,
         subnet_v6: identity.subnet(),
         bind_address: identity.bind_address(),
@@ -276,15 +244,8 @@ pub(super) struct BoundKeeperIdentity {
     pub(super) evidence: WireguardLocalBinding,
 }
 
-pub(super) enum KeeperHostFold {
-    Skipped,
-    Applied(BuiltinWireguardHostOutcome),
-}
-
 #[derive(Debug, thiserror::Error)]
 pub(super) enum KeeperProviderError {
-    #[error("invalid builtin WireGuard host configuration: {0}")]
-    Configuration(#[from] BuiltinWireguardConfigError),
     #[error(transparent)]
     Host(#[from] BuiltinWireguardHostError),
     #[error("Keeper mesh provider state was poisoned")]
@@ -305,19 +266,22 @@ pub(super) enum KeeperProviderError {
 mod tests {
     use super::*;
     use ployz_host_runner::SupervisorBackend;
+    use ployz_host_runner::builtin_wireguard::{
+        BuiltinWireguardEbpfConfig, BuiltinWireguardHostConfig, BuiltinWireguardPorts,
+    };
 
     fn provider_for_timeout_test(timeout: Duration) -> KeeperMeshProvider {
         let ebpf = BuiltinWireguardEbpfConfig::try_new(
             "br-ployz".to_owned(),
             "/usr/local/bin/ployz-ebpf-ctl".into(),
             "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".into(),
-            EbpfPinning::Explicit("/sys/fs/bpf/ployz".into()),
+            "/sys/fs/bpf/ployz".into(),
         )
         .expect("eBPF config");
         let host_config = BuiltinWireguardHostConfig::try_new(
             "/etc/ployz/wireguard.key".into(),
             "ployz0".to_owned(),
-            51_820,
+            BuiltinWireguardPorts::try_new(51_820, 8_787, 2_020).expect("ports"),
             1_420,
             ebpf,
             SupervisorBackend::Systemd,
@@ -330,8 +294,9 @@ mod tests {
             cancelled: Arc::clone(&cancelled),
         };
         KeeperMeshProvider {
-            state: Arc::new(Mutex::new(KeeperMeshProviderState::BuiltinWireguard(
-                BuiltinWireguardHost::with_runner(host_config, runner),
+            host: Arc::new(Mutex::new(BuiltinWireguardHost::with_runner(
+                host_config,
+                runner,
             ))),
             fold_timeout: timeout,
             cancelled,
@@ -339,25 +304,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn overall_timeout_cancels_and_joins_the_blocking_fold() {
+    async fn overall_timeout_returns_without_waiting_for_the_blocking_fold() {
         let provider = provider_for_timeout_test(Duration::from_millis(5));
-        let cancelled = Arc::clone(&provider.cancelled);
-        let stopped = Arc::new(AtomicBool::new(false));
-        let stopped_in_task = Arc::clone(&stopped);
+        let started = std::time::Instant::now();
         let result = provider
             .run_blocking("test fold", move |_| {
-                while !cancelled.load(Ordering::Acquire) {
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-                stopped_in_task.store(true, Ordering::Release);
+                std::thread::sleep(Duration::from_millis(250));
                 Ok(())
             })
             .await;
 
         assert!(matches!(result, Err(KeeperProviderError::TimedOut { .. })));
         assert!(
-            stopped.load(Ordering::Acquire),
-            "timeout must join the cooperatively stopped blocking task"
+            started.elapsed() < Duration::from_millis(100),
+            "the outer timeout must not wait for a blocking fold that ignores cancellation"
         );
     }
 }

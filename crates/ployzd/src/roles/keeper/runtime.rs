@@ -4,27 +4,27 @@ use std::future::Future;
 use std::time::Duration;
 
 use ployz_core::corrosion::{
-    BuiltinWireguardMeshOutcome, EbpfMeshDegradationReason, EbpfMeshDegraded,
-    MeshComponentDegraded, MeshComponentNotAttempted, MeshComponentReady, MeshConvergenceTestimony,
-    MeshDegradation, MeshNotAttemptedReason, project_builtin_wireguard_mesh,
+    BuiltinWireguardLocalSubnetReallocation, BuiltinWireguardMeshOutcome,
+    EbpfMeshDegradationReason, EbpfMeshDegraded, MachineTransport, MeshComponentDegraded,
+    MeshComponentNotAttempted, MeshComponentReady, MeshConvergenceTestimony, MeshDegradation,
+    MeshNotAttemptedReason, OperatorWriteProvenance, Principal, project_builtin_wireguard_mesh,
 };
 use ployz_host_runner::builtin_wireguard::{EbpfDegradedReason, EbpfHostOutcome};
 
 use crate::corrosion::CorrosionClient;
 
-use super::provider::{
-    BoundKeeperIdentity, KeeperHostFold, KeeperMeshProvider, KeeperProviderError,
-};
+use super::provider::{BoundKeeperIdentity, KeeperMeshProvider, KeeperProviderError};
 use super::status::{LocalMachineStatusWriter, MachineStatusWriteError, now};
 use super::store::{KeeperCorrosion, KeeperStoreError};
 use super::{KeeperRoleConfig, KeeperRoleConfigError};
+
+const SUBNET_REPAIR_COURTESY_DELAY: Duration = Duration::from_secs(1);
 
 /// Runs Keeper from the supervisor-owned environment until process shutdown.
 pub async fn run_from_environment() -> Result<(), KeeperRoleRuntimeError> {
     let config =
         KeeperRoleConfig::from_environment().map_err(KeeperRoleRuntimeError::Configuration)?;
-    let provider =
-        KeeperMeshProvider::from_config(&config).map_err(KeeperRoleRuntimeError::provider)?;
+    let provider = KeeperMeshProvider::from_config(&config);
     let corrosion = CorrosionClient::new(config.corrosion().clone())
         .map_err(KeeperRoleRuntimeError::CorrosionConfiguration)?;
     let store = KeeperCorrosion::new(
@@ -47,7 +47,7 @@ where
     // This happens before the first Corrosion request so the local sidecar can
     // bind its gossip socket to deterministic mesh identity.
     let bound = provider
-        .bind_ip(config.cluster_id(), config.local_machine_id())
+        .bind_ip(config.cluster_id())
         .await
         .map_err(KeeperRoleRuntimeError::provider)?;
     tracing::info!(
@@ -65,7 +65,7 @@ where
     let mut periodic = tokio::time::interval(config.reconcile_interval());
     periodic.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     // Consume the immediate first tick; the explicit initial reconcile below
-    // owns startup testimony.
+    // owns the startup fold.
     periodic.tick().await;
     let mut retry = RetryDelay::new(config.retry_initial(), config.retry_max());
     let mut subscription_retry = RetryDelay::new(config.retry_initial(), config.retry_max());
@@ -81,7 +81,11 @@ where
         )
         .await
         {
-            Ok(()) => retry.reset(),
+            Ok(ReconcileProgress::Settled) => retry.reset(),
+            Ok(ReconcileProgress::Requery) => {
+                retry.reset();
+                continue;
+            }
             Err(ReconcileError::Retry { detail }) => {
                 let delay = retry.next();
                 tracing::warn!(error = %detail, ?delay, "Keeper convergence will retry");
@@ -126,7 +130,7 @@ async fn reconcile_once(
     writer: &LocalMachineStatusWriter,
     bound: &BoundKeeperIdentity,
     last_successful_converge: &mut Option<ployz_core::corrosion::CorrosionTimestamp>,
-) -> Result<(), ReconcileError> {
+) -> Result<ReconcileProgress, ReconcileError> {
     let snapshot = store.read_roster().await.map_err(retry_store)?;
     if last_successful_converge.is_none() {
         *last_successful_converge = snapshot
@@ -134,6 +138,7 @@ async fn reconcile_once(
             .as_ref()
             .and_then(last_success_from_status);
     }
+    let cluster_prefix = snapshot.cluster.prefix.clone();
     let outcome = project_builtin_wireguard_mesh(
         &snapshot.cluster,
         config.local_machine_id().clone(),
@@ -142,62 +147,137 @@ async fn reconcile_once(
         snapshot.peers,
     )
     .map_err(|source| ReconcileError::Fatal(KeeperRoleRuntimeError::Projection(source)))?;
-    let attempted_at = now().map_err(retry_status)?;
-
-    match keeper_decision(&outcome) {
-        KeeperDecision::NoRoster => {
-            write_testimony(
-                store,
-                writer,
-                MeshConvergenceTestimony::NoRoster { attempted_at },
-            )
-            .await?;
-            Ok(())
+    match outcome {
+        BuiltinWireguardMeshOutcome::NoRoster { evidence } => {
+            tracing::info!(?evidence, "Keeper observed an empty builtin mesh roster");
+            Ok(ReconcileProgress::Settled)
         }
-        KeeperDecision::Fence { reason } => {
-            tracing::warn!(?reason, "local machine is fenced from the accepted roster");
-            provider
-                .converge_peers(&outcome, bound)
-                .await
-                .map_err(provider_failure)?;
+        BuiltinWireguardMeshOutcome::Fenced {
+            local_machine_id,
+            reason,
+            evidence,
+        } => {
+            tracing::warn!(%local_machine_id, ?reason, ?evidence, "local machine is fenced from the accepted roster");
+            provider.fence(bound).await.map_err(provider_failure)?;
             // The machine row sweep owns stale status removal. A fenced Keeper
             // must not recreate testimony for an identity no longer accepted.
-            Ok(())
+            Ok(ReconcileProgress::Settled)
         }
-        KeeperDecision::KeyMismatch { mismatches } => {
-            write_testimony(
-                store,
-                writer,
-                MeshConvergenceTestimony::KeyMismatch {
-                    attempted_at,
-                    mismatches: mismatches.to_vec(),
-                },
+        BuiltinWireguardMeshOutcome::KeyMismatch {
+            mismatches,
+            evidence,
+        } => {
+            tracing::warn!(
+                ?mismatches,
+                ?evidence,
+                "Keeper refused a roster with mismatched WireGuard identities"
+            );
+            Ok(ReconcileProgress::Settled)
+        }
+        BuiltinWireguardMeshOutcome::ReallocateLocalContainerSubnet { repair, evidence } => {
+            tracing::warn!(machine_id = %repair.machine_id(), occupied_subnets = repair.occupied_subnets().len(), ?evidence, "Keeper must repair its lost local container subnet claim");
+            repair_local_subnet(store, cluster_prefix, repair).await?;
+            tokio::time::sleep(SUBNET_REPAIR_COURTESY_DELAY).await;
+            let courtesy = store.read_roster().await.map_err(retry_store)?;
+            let courtesy_outcome = project_builtin_wireguard_mesh(
+                &courtesy.cluster,
+                config.local_machine_id().clone(),
+                &bound.public_key,
+                courtesy.machines,
+                courtesy.peers,
             )
-            .await?;
-            Ok(())
+            .map_err(|source| ReconcileError::Fatal(KeeperRoleRuntimeError::Projection(source)))?;
+            match courtesy_outcome {
+                BuiltinWireguardMeshOutcome::ReallocateLocalContainerSubnet {
+                    repair,
+                    evidence,
+                } => {
+                    tracing::warn!(machine_id = %repair.machine_id(), occupied_subnets = repair.occupied_subnets().len(), ?evidence, "courtesy roster re-read found another lost local subnet claim");
+                }
+                BuiltinWireguardMeshOutcome::NoRoster { evidence } => {
+                    tracing::info!(?evidence, "courtesy roster re-read found an empty roster");
+                }
+                BuiltinWireguardMeshOutcome::Fenced {
+                    local_machine_id,
+                    reason,
+                    evidence,
+                } => {
+                    tracing::warn!(%local_machine_id, ?reason, ?evidence, "courtesy roster re-read found the local machine fenced");
+                }
+                BuiltinWireguardMeshOutcome::KeyMismatch {
+                    mismatches,
+                    evidence,
+                } => {
+                    tracing::warn!(
+                        ?mismatches,
+                        ?evidence,
+                        "courtesy roster re-read found mismatched WireGuard identities"
+                    );
+                }
+                BuiltinWireguardMeshOutcome::Desired(desired) => {
+                    tracing::info!(evidence = ?desired.evidence, "courtesy roster re-read accepted the repaired local subnet claim");
+                }
+            }
+            Ok(ReconcileProgress::Requery)
         }
-        KeeperDecision::Converge => match provider.converge_peers(&outcome, bound).await {
-            Ok(KeeperHostFold::Applied(host)) => {
-                let testimony = match host.ebpf {
-                    EbpfHostOutcome::Ready { .. } => {
-                        *last_successful_converge = Some(attempted_at);
-                        MeshConvergenceTestimony::Converged {
-                            bind_address: ployz_core::corrosion::derive_builtin_wireguard_member(
-                                config.cluster_id(),
-                                &bound.public_key,
-                            )
-                            .bind_address(),
-                            attempted_at,
-                            last_successful_converge: attempted_at,
-                            wireguard: MeshComponentReady {
-                                converged_at: attempted_at,
-                            },
-                            ebpf: MeshComponentReady {
-                                converged_at: attempted_at,
-                            },
+        BuiltinWireguardMeshOutcome::Desired(desired) => {
+            tracing::info!(
+                machine_peers = desired.machine_peers.len(),
+                roaming_peers = desired.roaming_peers.len(),
+                ebpf_routes = desired.ebpf_routes.len(),
+                evidence = ?desired.evidence,
+                "Keeper is applying the accepted builtin mesh roster"
+            );
+            let attempted_at = now().map_err(retry_status)?;
+            match provider.converge_peers(&desired).await {
+                Ok(host) => {
+                    let testimony = match host.ebpf {
+                        EbpfHostOutcome::Ready { .. } => {
+                            *last_successful_converge = Some(attempted_at);
+                            MeshConvergenceTestimony::Converged {
+                                bind_address:
+                                    ployz_core::corrosion::derive_builtin_wireguard_member(
+                                        config.cluster_id(),
+                                        &bound.public_key,
+                                    )
+                                    .bind_address(),
+                                attempted_at,
+                                last_successful_converge: attempted_at,
+                                wireguard: MeshComponentReady {
+                                    converged_at: attempted_at,
+                                },
+                                ebpf: MeshComponentReady {
+                                    converged_at: attempted_at,
+                                },
+                            }
                         }
-                    }
-                    EbpfHostOutcome::Degraded { reason } => MeshConvergenceTestimony::Degraded {
+                        EbpfHostOutcome::Degraded { reason } => {
+                            MeshConvergenceTestimony::Degraded {
+                                bind_address:
+                                    ployz_core::corrosion::derive_builtin_wireguard_member(
+                                        config.cluster_id(),
+                                        &bound.public_key,
+                                    )
+                                    .bind_address(),
+                                attempted_at,
+                                last_successful_converge: *last_successful_converge,
+                                degradation: MeshDegradation::Ebpf {
+                                    wireguard: MeshComponentReady {
+                                        converged_at: attempted_at,
+                                    },
+                                    ebpf: EbpfMeshDegraded {
+                                        reason: map_ebpf_degradation(reason),
+                                    },
+                                },
+                            }
+                        }
+                    };
+                    write_testimony(store, writer, testimony).await?;
+                    Ok(ReconcileProgress::Settled)
+                }
+                Err(error) => {
+                    let detail = error.to_string();
+                    let testimony = MeshConvergenceTestimony::Degraded {
                         bind_address: ployz_core::corrosion::derive_builtin_wireguard_member(
                             config.cluster_id(),
                             &bound.public_key,
@@ -205,70 +285,63 @@ async fn reconcile_once(
                         .bind_address(),
                         attempted_at,
                         last_successful_converge: *last_successful_converge,
-                        degradation: MeshDegradation::Ebpf {
-                            wireguard: MeshComponentReady {
-                                converged_at: attempted_at,
+                        degradation: MeshDegradation::Wireguard {
+                            wireguard: MeshComponentDegraded {
+                                message: detail.clone(),
                             },
-                            ebpf: EbpfMeshDegraded {
-                                reason: map_ebpf_degradation(reason),
+                            ebpf: MeshComponentNotAttempted {
+                                reason: MeshNotAttemptedReason::DependencyDegraded,
                             },
                         },
-                    },
-                };
-                write_testimony(store, writer, testimony).await
+                    };
+                    write_testimony(store, writer, testimony).await?;
+                    Err(provider_failure(error))
+                }
             }
-            Ok(KeeperHostFold::Skipped) => {
-                Err(ReconcileError::Fatal(KeeperRoleRuntimeError::Invariant(
-                    "Core desired mesh unexpectedly skipped its host fold",
-                )))
-            }
-            Err(error) => {
-                let detail = error.to_string();
-                let testimony = MeshConvergenceTestimony::Degraded {
-                    bind_address: ployz_core::corrosion::derive_builtin_wireguard_member(
-                        config.cluster_id(),
-                        &bound.public_key,
-                    )
-                    .bind_address(),
-                    attempted_at,
-                    last_successful_converge: *last_successful_converge,
-                    degradation: MeshDegradation::Wireguard {
-                        wireguard: MeshComponentDegraded {
-                            message: detail.clone(),
-                        },
-                        ebpf: MeshComponentNotAttempted {
-                            reason: MeshNotAttemptedReason::DependencyDegraded,
-                        },
-                    },
-                };
-                write_testimony(store, writer, testimony).await?;
-                Err(provider_failure(error))
-            }
-        },
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum KeeperDecision<'a> {
-    NoRoster,
-    Fence {
-        reason: &'a ployz_core::corrosion::BuiltinWireguardFenceReason,
-    },
-    KeyMismatch {
-        mismatches: &'a [ployz_core::corrosion::BuiltinWireguardKeyMismatch],
-    },
-    Converge,
-}
-
-fn keeper_decision(outcome: &BuiltinWireguardMeshOutcome) -> KeeperDecision<'_> {
-    match outcome {
-        BuiltinWireguardMeshOutcome::NoRoster { .. } => KeeperDecision::NoRoster,
-        BuiltinWireguardMeshOutcome::Fenced { reason, .. } => KeeperDecision::Fence { reason },
-        BuiltinWireguardMeshOutcome::KeyMismatch { mismatches, .. } => {
-            KeeperDecision::KeyMismatch { mismatches }
         }
-        BuiltinWireguardMeshOutcome::Desired(_) => KeeperDecision::Converge,
     }
+}
+
+async fn repair_local_subnet(
+    store: &KeeperCorrosion,
+    cluster_prefix: ployz_core::network::MachineEndpointSupernet,
+    repair: BuiltinWireguardLocalSubnetReallocation,
+) -> Result<(), ReconcileError> {
+    let (machine_id, mut machine, occupied_subnets) = repair.into_parts();
+    let subnet = cluster_prefix
+        .allocate_random_free(occupied_subnets)
+        .map_err(|source| {
+            ReconcileError::Fatal(KeeperRoleRuntimeError::SubnetAllocation(source))
+        })?;
+    let previous = match &mut machine.transport {
+        MachineTransport::Wireguard { subnet_v4, .. } => {
+            std::mem::replace(subnet_v4, subnet.clone())
+        }
+        MachineTransport::Tailscale { .. } => {
+            return Err(ReconcileError::Fatal(KeeperRoleRuntimeError::Invariant(
+                "builtin WireGuard subnet repair carried a Tailscale machine",
+            )));
+        }
+    };
+    let written_at = now().map_err(retry_status)?;
+    machine.provenance = OperatorWriteProvenance {
+        written_by: Principal::Machine {
+            machine_id: machine_id.clone(),
+        },
+        written_at,
+    };
+    store
+        .rewrite_local_machine(&machine_id, &machine)
+        .await
+        .map_err(retry_store)?;
+    tracing::warn!(%machine_id, previous_subnet = ?previous, replacement_subnet = ?subnet, "Keeper rewrote its local machine row to repair the container subnet collision");
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReconcileProgress {
+    Settled,
+    Requery,
 }
 
 fn last_success_from_status(
@@ -284,7 +357,6 @@ fn last_success_from_status(
             ..
         } => *last_successful_converge,
         MeshConvergenceTestimony::NoRoster { .. }
-        | MeshConvergenceTestimony::Fenced { .. }
         | MeshConvergenceTestimony::KeyMismatch { .. } => None,
     }
 }
@@ -316,11 +388,9 @@ fn provider_failure(error: KeeperProviderError) -> ReconcileError {
         | KeeperProviderError::Poisoned => {
             ReconcileError::Fatal(KeeperRoleRuntimeError::provider(error))
         }
-        KeeperProviderError::Configuration(_) | KeeperProviderError::Host(_) => {
-            ReconcileError::Retry {
-                detail: error.to_string(),
-            }
-        }
+        KeeperProviderError::Host(_) => ReconcileError::Retry {
+            detail: error.to_string(),
+        },
     }
 }
 
@@ -406,6 +476,8 @@ pub enum KeeperRoleRuntimeError {
     Provider { detail: String },
     #[error("Keeper could not project the accepted builtin mesh: {0}")]
     Projection(ployz_core::corrosion::BuiltinWireguardMeshError),
+    #[error("Keeper could not allocate a replacement local container subnet: {0}")]
+    SubnetAllocation(ployz_core::network::MachineEndpointSubnetAllocationError),
     #[error("Keeper runtime invariant failed: {0}")]
     Invariant(&'static str),
 }
@@ -421,10 +493,7 @@ impl KeeperRoleRuntimeError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::corrosion::{
-        BuiltinWireguardFenceReason, BuiltinWireguardRosterEvidence, DesiredBuiltinWireguardLocal,
-        DesiredBuiltinWireguardMesh, MachineStatusDocument,
-    };
+    use ployz_core::corrosion::{DesiredBuiltinWireguardLocal, MachineStatusDocument};
     use ployz_core::ids::{ClusterId, MachineRowId};
     use ployz_core::network::WireGuardPublicKey;
 
@@ -437,28 +506,15 @@ mod tests {
 
     fn local() -> DesiredBuiltinWireguardLocal {
         let cluster_id = ClusterId::try_new(CLUSTER).expect("cluster");
-        let machine_id = MachineRowId::try_new(MACHINE).expect("machine");
         let public_key =
             WireGuardPublicKey::try_new("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
                 .expect("key");
         let identity =
             ployz_core::corrosion::derive_builtin_wireguard_member(&cluster_id, &public_key);
         DesiredBuiltinWireguardLocal {
-            machine_id,
             public_key,
             subnet_v6: identity.subnet(),
             bind_address: identity.bind_address(),
-        }
-    }
-
-    fn evidence() -> BuiltinWireguardRosterEvidence {
-        BuiltinWireguardRosterEvidence {
-            machine_skipped: Vec::new(),
-            machine_shadows: Vec::new(),
-            peer_skipped: Vec::new(),
-            peer_shadows: Vec::new(),
-            address_mismatches: Vec::new(),
-            identity_conflicts: Vec::new(),
         }
     }
 
@@ -483,44 +539,6 @@ mod tests {
                 ifname: "br-ployz".to_owned(),
             }
         );
-    }
-
-    #[test]
-    fn pure_decision_keeps_host_and_status_actions_distinct() {
-        let no_roster = BuiltinWireguardMeshOutcome::NoRoster {
-            evidence: evidence(),
-        };
-        assert_eq!(keeper_decision(&no_roster), KeeperDecision::NoRoster);
-
-        let fenced = BuiltinWireguardMeshOutcome::Fenced {
-            local_machine_id: MachineRowId::try_new(MACHINE).expect("machine"),
-            reason: BuiltinWireguardFenceReason::MissingLocalMachine,
-            evidence: evidence(),
-        };
-        assert!(matches!(
-            keeper_decision(&fenced),
-            KeeperDecision::Fence {
-                reason: BuiltinWireguardFenceReason::MissingLocalMachine
-            }
-        ));
-
-        let key_mismatch = BuiltinWireguardMeshOutcome::KeyMismatch {
-            mismatches: Vec::new(),
-            evidence: evidence(),
-        };
-        assert!(matches!(
-            keeper_decision(&key_mismatch),
-            KeeperDecision::KeyMismatch { mismatches } if mismatches.is_empty()
-        ));
-
-        let desired = BuiltinWireguardMeshOutcome::Desired(DesiredBuiltinWireguardMesh {
-            local: local(),
-            machine_peers: Vec::new(),
-            roaming_peers: Vec::new(),
-            ebpf_routes: Vec::new(),
-            evidence: evidence(),
-        });
-        assert_eq!(keeper_decision(&desired), KeeperDecision::Converge);
     }
 
     #[test]
