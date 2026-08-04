@@ -11,7 +11,7 @@ use ployz_core::corrosion::{ChangeId, QueryIdentity, SqliteParameter, Statement,
 use ployz_core::ids::ClusterId;
 use ployz_core::{ApiRefusal, LensCollection, LensSnapshot};
 use serde_json::json;
-use tokio::sync::{Mutex, Notify, watch};
+use tokio::sync::{Mutex, Notify, mpsc, watch};
 
 use super::actor::start_lens_with_store;
 use super::adapter::{
@@ -110,6 +110,15 @@ impl FakeStore {
             .count()
     }
 
+    async fn resume_count(&self, input: LensInput) -> usize {
+        self.calls
+            .lock()
+            .await
+            .iter()
+            .filter(|call| matches!(call, FakeCall::Resume { input: found, .. } if *found == input))
+            .count()
+    }
+
     async fn subscription_count(&self) -> usize {
         self.calls
             .lock()
@@ -143,6 +152,19 @@ impl FakeStore {
         })
         .await
         .expect("lens opened the expected number of subscriptions");
+    }
+
+    async fn wait_for_resumes(&self, input: LensInput, count: usize) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if self.resume_count(input).await >= count {
+                    return;
+                }
+                self.activity.notified().await;
+            }
+        })
+        .await
+        .expect("lens attempted the expected number of resumptions");
     }
 
     async fn pop_subscription(
@@ -352,6 +374,11 @@ fn bounded_config(
     ))
 }
 
+fn discarded_lifecycle_sender() -> mpsc::UnboundedSender<LensCollection> {
+    let (sender, _failures) = mpsc::unbounded_channel();
+    sender
+}
+
 fn stored(key: &str, document: serde_json::Value) -> StoredRow {
     StoredRow::new(
         key,
@@ -486,7 +513,12 @@ async fn first_state_is_ok_and_unchanged_invalidations_are_silent() {
             .await;
     }
 
-    let watch = start_lens_with_store(Arc::clone(&store), LensCollection::Services, config(2));
+    let watch = start_lens_with_store(
+        Arc::clone(&store),
+        LensCollection::Services,
+        config(2),
+        discarded_lifecycle_sender(),
+    );
     let mut receiver = watch.subscribe();
     let initial = next_cell(&mut receiver)
         .await
@@ -528,7 +560,12 @@ async fn unchanged_resume_is_silent_and_validated_recovery_resets_its_budget() {
             .await;
     }
 
-    let watch = start_lens_with_store(Arc::clone(&store), LensCollection::Services, config(1));
+    let watch = start_lens_with_store(
+        Arc::clone(&store),
+        LensCollection::Services,
+        config(1),
+        discarded_lifecycle_sender(),
+    );
     let mut receiver = watch.subscribe();
     let _ = next_cell(&mut receiver).await.expect("initial state");
 
@@ -568,7 +605,7 @@ async fn unchanged_resume_is_silent_and_validated_recovery_resets_its_budget() {
 }
 
 #[tokio::test]
-async fn successful_resumes_with_failed_requeries_exhaust_the_recovery_budget() {
+async fn exhausted_recovery_publishes_a_terminal_state_then_reports_lifecycle_failure() {
     let store = Arc::new(FakeStore::new());
     let feed = FakeFeed::snapshot(ChangeId::new(0));
     store
@@ -587,10 +624,12 @@ async fn successful_resumes_with_failed_requeries_exhaust_the_recovery_budget() 
         store.queue_query_pending(LensInput::Services).await;
     }
 
+    let (lifecycle_sender, mut lifecycle_failures) = mpsc::unbounded_channel();
     let watch = start_lens_with_store(
         Arc::clone(&store),
         LensCollection::Services,
         bounded_config(2, Duration::from_millis(1), Duration::from_millis(20), 17),
+        lifecycle_sender,
     );
     let mut receiver = watch.subscribe();
     let _ = next_cell(&mut receiver).await.expect("initial state");
@@ -602,6 +641,11 @@ async fn successful_resumes_with_failed_requeries_exhaust_the_recovery_budget() 
         terminal,
         Err(ApiRefusal::CorrosionUnavailable { .. })
     ));
+    let lifecycle_failure = tokio::time::timeout(Duration::from_secs(1), lifecycle_failures.recv())
+        .await
+        .expect("exhausted lens reports its lifecycle failure")
+        .expect("API server still receives lens lifecycle failures");
+    assert_eq!(lifecycle_failure, LensCollection::Services);
     let calls = store.calls().await;
     assert_eq!(
         calls
@@ -650,7 +694,13 @@ async fn machine_inputs_open_together_and_accept_either_snapshot_order() {
         .queue_query_rows(LensInput::Machines, vec![machine_row(MACHINE, "wireguard")])
         .await;
 
-    let watch = start_lens_with_store(Arc::clone(&store), LensCollection::Machines, config(2));
+    let (lifecycle_sender, mut lifecycle_failures) = mpsc::unbounded_channel();
+    let watch = start_lens_with_store(
+        Arc::clone(&store),
+        LensCollection::Machines,
+        config(2),
+        lifecycle_sender.clone(),
+    );
     let mut receiver = watch.subscribe();
     store.wait_for_subscriptions(2).await;
     let calls = store.calls().await;
@@ -681,20 +731,28 @@ async fn machine_inputs_open_together_and_accept_either_snapshot_order() {
         .await;
     let terminal = next_cell(&mut receiver).await;
     assert!(matches!(terminal, Err(ApiRefusal::InvalidCluster)));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), lifecycle_failures.recv())
+            .await
+            .is_err(),
+        "a typed invalid-cluster refusal must not restart the API role"
+    );
     watch.shutdown().await;
 }
 
 #[tokio::test]
-async fn initial_snapshot_deadline_becomes_the_first_terminal_cell_value() {
+async fn initial_snapshot_exhaustion_publishes_terminal_then_reports_lifecycle_failure() {
     let store = Arc::new(FakeStore::new());
     store
         .queue_subscription(LensInput::Services, FakeFeed::empty())
         .await;
 
+    let (lifecycle_sender, mut lifecycle_failures) = mpsc::unbounded_channel();
     let watch = start_lens_with_store(
         Arc::clone(&store),
         LensCollection::Services,
         bounded_config(1, Duration::from_millis(20), Duration::from_millis(1), 10),
+        lifecycle_sender,
     );
     let mut receiver = watch.subscribe();
     let first = next_cell(&mut receiver).await;
@@ -702,7 +760,51 @@ async fn initial_snapshot_deadline_becomes_the_first_terminal_cell_value() {
         first,
         Err(ApiRefusal::CorrosionUnavailable { .. })
     ));
+    let lifecycle_failure = tokio::time::timeout(Duration::from_secs(1), lifecycle_failures.recv())
+        .await
+        .expect("initial exhaustion reports its lifecycle failure")
+        .expect("API server still receives lens lifecycle failures");
+    assert_eq!(lifecycle_failure, LensCollection::Services);
     watch.shutdown().await;
+}
+
+#[tokio::test]
+async fn controlled_shutdown_during_recovery_backoff_does_not_report_lifecycle_failure() {
+    let store = Arc::new(FakeStore::new());
+    let feed = FakeFeed::snapshot(ChangeId::new(0));
+    store
+        .queue_subscription(LensInput::Services, Arc::clone(&feed))
+        .await;
+    store
+        .queue_query_rows(LensInput::Services, vec![service_row("initial")])
+        .await;
+    let recovery = LensRecoveryPolicy::try_new(
+        NonZeroU32::new(1).expect("one recovery attempt"),
+        Duration::from_secs(1),
+        Duration::from_secs(1),
+    )
+    .expect("one-second recovery backoff is valid");
+    let (lifecycle_sender, mut lifecycle_failures) = mpsc::unbounded_channel();
+    let watch = start_lens_with_store(
+        Arc::clone(&store),
+        LensCollection::Services,
+        LensEngineConfig::new(cluster_id(), recovery),
+        lifecycle_sender.clone(),
+    );
+    let mut receiver = watch.subscribe();
+    let _ = next_cell(&mut receiver).await.expect("initial state");
+
+    feed.fail(CorrosionClientError::SubscriptionEnded).await;
+    store.wait_for_resumes(LensInput::Services, 1).await;
+    tokio::time::timeout(Duration::from_millis(100), watch.shutdown())
+        .await
+        .expect("controlled shutdown interrupts recovery backoff");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), lifecycle_failures.recv())
+            .await
+            .is_err(),
+        "controlled shutdown must not restart the API role"
+    );
 }
 
 #[tokio::test]
@@ -719,6 +821,7 @@ async fn row_cap_is_passed_through_the_lens_query_seam() {
         Arc::clone(&store),
         LensCollection::Services,
         bounded_config(1, Duration::from_millis(20), Duration::from_millis(20), 1),
+        discarded_lifecycle_sender(),
     );
     let mut receiver = watch.subscribe();
     let _ = next_cell(&mut receiver).await.expect("initial state");
@@ -745,7 +848,12 @@ async fn latest_complete_state_coalesces_for_a_slow_downstream_receiver() {
             .await;
     }
 
-    let watch = start_lens_with_store(Arc::clone(&store), LensCollection::Services, config(2));
+    let watch = start_lens_with_store(
+        Arc::clone(&store),
+        LensCollection::Services,
+        config(2),
+        discarded_lifecycle_sender(),
+    );
     let mut receiver = watch.subscribe();
     let _ = next_cell(&mut receiver).await.expect("initial state");
     feed.push(FakeStreamEvent::Invalidation(ChangeId::new(1)))
@@ -771,7 +879,12 @@ async fn shutdown_cancels_an_idle_subscription_wait() {
         .queue_query_rows(LensInput::Services, vec![service_row("initial")])
         .await;
 
-    let watch = start_lens_with_store(Arc::clone(&store), LensCollection::Services, config(2));
+    let watch = start_lens_with_store(
+        Arc::clone(&store),
+        LensCollection::Services,
+        config(2),
+        discarded_lifecycle_sender(),
+    );
     let mut receiver = watch.subscribe();
     let _ = next_cell(&mut receiver).await.expect("initial state");
 

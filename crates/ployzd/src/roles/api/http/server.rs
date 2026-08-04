@@ -22,7 +22,7 @@ use ployz_core::{
     LensWatchEvent, V2Route,
 };
 use tokio::net::TcpListener;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 use tokio::time::{Instant, MissedTickBehavior};
 
@@ -32,7 +32,9 @@ use super::roster::{
     validate_listener_identity,
 };
 use crate::corrosion::CorrosionClient;
-use crate::roles::api::lenses::{LensEngineConfig, LensRecoveryPolicy, LensWatch, start_lens};
+use crate::roles::api::lenses::{
+    LensEngineConfig, LensRecoveryPolicy, LensWatch, start_lens_with_lifecycle,
+};
 
 const LENS_INITIAL_WAIT: Duration = Duration::from_secs(15);
 const SSE_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
@@ -191,22 +193,43 @@ struct ApiLenses {
 }
 
 impl ApiLenses {
-    fn start(corrosion: CorrosionClient, cluster_id: ClusterId) -> Self {
+    fn start(
+        corrosion: CorrosionClient,
+        cluster_id: ClusterId,
+        lifecycle_sender: mpsc::UnboundedSender<LensCollection>,
+    ) -> Self {
         let config = lens_engine_config(cluster_id);
         Self {
-            machines: start_lens(corrosion.clone(), LensCollection::Machines, config.clone()),
-            services: start_lens(corrosion.clone(), LensCollection::Services, config.clone()),
-            containers: start_lens(
+            machines: start_lens_with_lifecycle(
+                corrosion.clone(),
+                LensCollection::Machines,
+                config.clone(),
+                lifecycle_sender.clone(),
+            ),
+            services: start_lens_with_lifecycle(
+                corrosion.clone(),
+                LensCollection::Services,
+                config.clone(),
+                lifecycle_sender.clone(),
+            ),
+            containers: start_lens_with_lifecycle(
                 corrosion.clone(),
                 LensCollection::Containers,
                 config.clone(),
+                lifecycle_sender.clone(),
             ),
-            machine_status: start_lens(
+            machine_status: start_lens_with_lifecycle(
                 corrosion.clone(),
                 LensCollection::MachineStatus,
                 config.clone(),
+                lifecycle_sender.clone(),
             ),
-            operations: start_lens(corrosion, LensCollection::Operations, config),
+            operations: start_lens_with_lifecycle(
+                corrosion,
+                LensCollection::Operations,
+                config,
+                lifecycle_sender,
+            ),
         }
     }
 
@@ -395,6 +418,7 @@ pub(super) fn sse_watch_body(
             }
 
             tokio::select! {
+                biased;
                 changed = state.updates.changed() => {
                     if changed.is_err() {
                         return None;
@@ -448,6 +472,7 @@ pub struct ApiServer {
     listener: TcpListener,
     service: Arc<ApiService>,
     lenses: Arc<ApiLenses>,
+    lifecycle_failures: mpsc::UnboundedReceiver<LensCollection>,
 }
 
 impl ApiServer {
@@ -494,7 +519,12 @@ impl ApiServer {
         cluster_id: ClusterId,
         build: String,
     ) -> Self {
-        let lenses = Arc::new(ApiLenses::start(corrosion.clone(), cluster_id.clone()));
+        let (lifecycle_sender, lifecycle_failures) = mpsc::unbounded_channel();
+        let lenses = Arc::new(ApiLenses::start(
+            corrosion.clone(),
+            cluster_id.clone(),
+            lifecycle_sender,
+        ));
         let service = Arc::new(ApiService {
             corrosion,
             cluster_id,
@@ -505,11 +535,12 @@ impl ApiServer {
             listener,
             service,
             lenses,
+            lifecycle_failures,
         }
     }
 
     /// Serves accepted TCP peers until the caller requests controlled shutdown.
-    pub async fn serve<Shutdown>(self, shutdown: Shutdown)
+    pub async fn serve<Shutdown>(self, shutdown: Shutdown) -> Result<(), ApiServerServeError>
     where
         Shutdown: Future<Output = ()> + Send,
     {
@@ -517,16 +548,25 @@ impl ApiServer {
             listener,
             service,
             lenses,
+            mut lifecycle_failures,
         } = self;
         let (shutdown_tx, _) = watch::channel(false);
         let mut connections = JoinSet::new();
-        tokio::pin!(shutdown);
+        let stop = await_server_stop(shutdown, &mut lifecycle_failures);
+        tokio::pin!(stop);
 
-        loop {
+        let serve_result = loop {
             tokio::select! {
-                () = &mut shutdown => {
+                biased;
+                result = &mut stop => {
+                    if let Err(error) = result {
+                        tracing::error!(
+                            collection = error.collection().as_str(),
+                            "API lens recovery budget exhausted; stopping API role for supervisor restart"
+                        );
+                    }
                     let _ = shutdown_tx.send(true);
-                    break;
+                    break result;
                 }
                 accepted = listener.accept() => match accepted {
                     Ok((stream, peer)) => {
@@ -547,7 +587,7 @@ impl ApiServer {
                     }
                 }
             }
-        }
+        };
 
         if tokio::time::timeout(SERVER_SHUTDOWN_GRACE, drain_connections(&mut connections))
             .await
@@ -561,6 +601,31 @@ impl ApiServer {
             Ok(lenses) => lenses.shutdown().await,
             Err(_) => tracing::warn!("API lenses retained a connection reference during shutdown"),
         }
+        serve_result
+    }
+}
+
+pub(super) async fn await_lens_lifecycle_failure(
+    lifecycle_failures: &mut mpsc::UnboundedReceiver<LensCollection>,
+) -> Option<ApiServerServeError> {
+    lifecycle_failures
+        .recv()
+        .await
+        .map(|collection| ApiServerServeError::LensRecoveryExhausted { collection })
+}
+
+pub(super) async fn await_server_stop<Shutdown>(
+    shutdown: Shutdown,
+    lifecycle_failures: &mut mpsc::UnboundedReceiver<LensCollection>,
+) -> Result<(), ApiServerServeError>
+where
+    Shutdown: Future<Output = ()>,
+{
+    tokio::pin!(shutdown);
+    tokio::select! {
+        biased;
+        () = &mut shutdown => Ok(()),
+        Some(error) = await_lens_lifecycle_failure(lifecycle_failures) => Err(error),
     }
 }
 
@@ -616,8 +681,10 @@ pub async fn run_from_environment() -> Result<(), ApiRoleRuntimeError> {
     let server = ApiServer::bind(config)
         .await
         .map_err(ApiRoleRuntimeError::Server)?;
-    server.serve(wait_for_process_shutdown()).await;
-    Ok(())
+    server
+        .serve(wait_for_process_shutdown())
+        .await
+        .map_err(ApiRoleRuntimeError::Serve)
 }
 
 async fn wait_for_process_shutdown() {
@@ -663,11 +730,28 @@ pub enum ApiServerError {
     },
 }
 
-/// A bounded API role process startup failure.
+/// A bounded API role serving failure that requires supervisor restart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ApiServerServeError {
+    #[error("API lens {collection:?} exhausted its Corrosion recovery budget")]
+    LensRecoveryExhausted { collection: LensCollection },
+}
+
+impl ApiServerServeError {
+    const fn collection(self) -> LensCollection {
+        match self {
+            Self::LensRecoveryExhausted { collection } => collection,
+        }
+    }
+}
+
+/// A bounded API role process failure.
 #[derive(Debug, thiserror::Error)]
 pub enum ApiRoleRuntimeError {
     #[error(transparent)]
     Configuration(ApiRoleConfigError),
     #[error(transparent)]
     Server(ApiServerError),
+    #[error(transparent)]
+    Serve(ApiServerServeError),
 }

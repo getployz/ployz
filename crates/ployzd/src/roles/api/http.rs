@@ -10,7 +10,9 @@ mod server;
 
 pub use config::{ApiRoleConfig, ApiRoleConfigError};
 pub use roster::ApiListenerValidationError;
-pub use server::{ApiRoleRuntimeError, ApiServer, ApiServerError, run_from_environment};
+pub use server::{
+    ApiRoleRuntimeError, ApiServer, ApiServerError, ApiServerServeError, run_from_environment,
+};
 
 #[cfg(test)]
 #[path = "http/tests.rs"]
