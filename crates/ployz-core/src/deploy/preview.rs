@@ -3,7 +3,7 @@
 use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct DeployPreviewTarget {
     pub namespace_id: NamespaceId,
@@ -15,7 +15,7 @@ pub struct DeployPreviewTarget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct DeployPreviewService {
     pub service_id: ServiceId,
@@ -33,7 +33,7 @@ pub struct DeployPreviewService {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DeployPreviewImage {
     Concrete {
@@ -46,7 +46,7 @@ pub enum DeployPreviewImage {
 /// A read-only placement projection. It deliberately omits revision identity
 /// and commit semantics because pending builds change the authoritative target.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct DeployPreviewProjection {
     pub namespace_id: NamespaceId,
@@ -104,11 +104,7 @@ mod tests {
     use crate::operation::{RouteHostname, RoutePort, RouteTarget};
 
     fn environment_revision_key() -> EnvironmentRevisionKey {
-        let seed = crate::nats_config::NatsUserSeed::try_new(
-            "SUAIZ5LKGG2Y4WC7ZPKS46LSLLJQIFTO6KMSWSU2VN3TC7YRRIKH5WRXJQ",
-        )
-        .expect("valid deterministic controller seed");
-        EnvironmentRevisionKey::derive_from_controller_seed(&seed)
+        EnvironmentRevisionKey::derive_from_key_material(b"preview-environment-key")
     }
 
     #[test]

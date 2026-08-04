@@ -7,7 +7,7 @@ use crate::operation::FailureMessage;
 use super::dataplane::{DataplaneProjectionRevision, MachineEndpointSubnet, WireGuardPublicKey};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum EndpointBridgeStatus {
     Ready {
@@ -27,7 +27,7 @@ pub enum EndpointBridgeStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct DataplaneProjectionRevisions {
     pub declared_revision: DataplaneProjectionRevision,
@@ -35,7 +35,7 @@ pub struct DataplaneProjectionRevisions {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DataplaneProjectionTestimony {
     Applied {
@@ -49,7 +49,7 @@ pub enum DataplaneProjectionTestimony {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DataplaneProjectionFailure {
     FetchFailed {
@@ -74,7 +74,7 @@ pub enum DataplaneProjectionFailure {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum DataplaneProjectionComponent {
     EndpointBridge,
@@ -83,7 +83,7 @@ pub enum DataplaneProjectionComponent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct NativeDataplaneProjectionStatus {
     pub endpoint_bridge: EndpointBridgeStatus,
@@ -107,7 +107,7 @@ impl NativeDataplaneProjectionStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum NetworkStatusMode {
     Snapshot,
@@ -123,7 +123,7 @@ impl NetworkStatusMode {
 
 /// Live, machine-owned testimony about the configured Ployz native mesh.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct MachineDataplaneStatus {
     pub projection: NativeDataplaneProjectionStatus,
@@ -132,7 +132,7 @@ pub struct MachineDataplaneStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct WireGuardStatus {
     pub interface: String,
@@ -143,7 +143,7 @@ pub struct WireGuardStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 pub enum WireGuardConfiguredMtu {
     Auto,
@@ -151,7 +151,7 @@ pub enum WireGuardConfiguredMtu {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum WireGuardDetectedMtu {
     Detected { mtu: u32 },
@@ -159,7 +159,7 @@ pub enum WireGuardDetectedMtu {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum WireGuardInterfaceMtu {
     Detected { mtu: u32 },
@@ -167,7 +167,7 @@ pub enum WireGuardInterfaceMtu {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct WireGuardPeerStatus {
     pub public_key: WireGuardPublicKey,
@@ -181,7 +181,7 @@ pub struct WireGuardPeerStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum WireGuardPeerEndpointSubnet {
     Missing,
@@ -190,7 +190,7 @@ pub enum WireGuardPeerEndpointSubnet {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum WireGuardHandshakeStatus {
     Never,
@@ -198,7 +198,7 @@ pub enum WireGuardHandshakeStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum WireGuardRttStatus {
     Measured { micros: u64 },
@@ -206,7 +206,7 @@ pub enum WireGuardRttStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum WireGuardMtuProbe {
     NotRequested,
@@ -215,7 +215,7 @@ pub enum WireGuardMtuProbe {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum EbpfAttachmentStatus {
     Attached,

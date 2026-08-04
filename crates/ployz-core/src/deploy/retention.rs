@@ -4,7 +4,7 @@ use super::{
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct DeployCleanupContainer {
     pub machine_id: MachineId,
@@ -22,7 +22,7 @@ pub struct ObservedCleanupCandidate {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DeployCleanupAction {
     RemoveContainer {

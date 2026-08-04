@@ -25,8 +25,6 @@ pub enum OperationProgressScope {
 mod accessors;
 mod build;
 mod cert;
-mod core_replace;
-mod credential_grant;
 mod deploy;
 mod events;
 mod ingress_configure;
@@ -58,11 +56,6 @@ pub use cert::{
     CertInterruptionStage, CertOperationFailure, CertOperationFailureError, CertOperationState,
     CertRunningStage, CertTransition, CertificateInterruptionNextAction,
     CertificateProvisionFailure, CertificateProvisionWarning,
-};
-pub use core_replace::{CoreReplaceFailure, CoreReplaceOperationState, CoreReplaceTransition};
-pub use credential_grant::{
-    CredentialGrantAction, CredentialGrantFailure, CredentialGrantOperationState,
-    CredentialGrantTransition,
 };
 pub use deploy::{
     ArtifactUnavailableReason, ControlPlaneCommitScope, DeployCleanupFailure,
@@ -141,7 +134,7 @@ pub use volume_remove::{
 pub const MAX_OPERATION_EVENT_REPLAY_LIMIT: u16 = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum OperationKind {
     Build,
@@ -152,8 +145,6 @@ pub enum OperationKind {
     MachineUpdate,
     MachineStoragePrepare,
     MachineLifecycle,
-    CoreReplace,
-    CredentialGrant,
     NetworkRepair,
     ServiceRestart,
     ManagedDnsReconcile,
@@ -168,12 +159,12 @@ pub enum OperationKind {
 /// Changing this shape intentionally breaks operation status recovery unless
 /// paired with evidence cleanup or migration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OperationStatus {
     Build {
         #[serde(flatten)]
-        #[cfg_attr(feature = "typescript", ts(flatten))]
+        #[cfg_attr(feature = "ts", ts(flatten))]
         status: BuildOperationStatus,
     },
     Deploy {
@@ -229,19 +220,6 @@ pub enum OperationStatus {
         state: MachineLifecycleOperationState,
         last_event_sequence: EventSequence,
     },
-    CoreReplace {
-        id: OperationId,
-        machine_id: MachineId,
-        successor_nats_url: crate::install::MachineJoinRuntimeNatsUrl,
-        state: CoreReplaceOperationState,
-        last_event_sequence: EventSequence,
-    },
-    CredentialGrant {
-        id: OperationId,
-        action: CredentialGrantAction,
-        state: CredentialGrantOperationState,
-        last_event_sequence: EventSequence,
-    },
     NetworkRepair {
         id: OperationId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -289,7 +267,7 @@ pub enum OperationStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct OperationStatusSnapshot {
     pub status: OperationStatus,
@@ -438,36 +416,6 @@ impl OperationStatus {
     }
 
     #[must_use]
-    pub fn core_replace_accepted(
-        id: OperationId,
-        machine_id: MachineId,
-        successor_nats_url: crate::install::MachineJoinRuntimeNatsUrl,
-        event_sequence: EventSequence,
-    ) -> Self {
-        Self::CoreReplace {
-            id,
-            machine_id,
-            successor_nats_url,
-            state: CoreReplaceOperationState::Accepted,
-            last_event_sequence: event_sequence,
-        }
-    }
-
-    #[must_use]
-    pub fn credential_grant_accepted(
-        id: OperationId,
-        action: CredentialGrantAction,
-        event_sequence: EventSequence,
-    ) -> Self {
-        Self::CredentialGrant {
-            id,
-            action,
-            state: CredentialGrantOperationState::Accepted,
-            last_event_sequence: event_sequence,
-        }
-    }
-
-    #[must_use]
     pub fn service_restart_accepted(
         id: OperationId,
         namespace_id: NamespaceId,
@@ -578,8 +526,6 @@ impl OperationStatus {
             Self::MachineStoragePrepare { state, .. } => state.is_terminal(),
             Self::MachineBuildCachePrune { state, .. } => state.is_terminal(),
             Self::MachineLifecycle { state, .. } => state.is_terminal(),
-            Self::CoreReplace { state, .. } => state.is_terminal(),
-            Self::CredentialGrant { state, .. } => state.is_terminal(),
             Self::NetworkRepair { state, .. } => state.is_terminal(),
             Self::ServiceRestart { state, .. } => state.is_terminal(),
             Self::ManagedDnsReconcile { state, .. } => state.is_terminal(),
@@ -640,14 +586,6 @@ impl OperationStatus {
                 matches!(state, MachineLifecycleOperationState::Completed),
                 matches!(state, MachineLifecycleOperationState::Cancelled { .. }),
             ),
-            Self::CoreReplace { state, .. } => OperationOutcome::from_terminal(
-                matches!(state, CoreReplaceOperationState::Completed),
-                matches!(state, CoreReplaceOperationState::Cancelled { .. }),
-            ),
-            Self::CredentialGrant { state, .. } => OperationOutcome::from_terminal(
-                matches!(state, CredentialGrantOperationState::Completed),
-                matches!(state, CredentialGrantOperationState::Cancelled { .. }),
-            ),
             Self::NetworkRepair { state, .. } => OperationOutcome::from_terminal(
                 matches!(state, NetworkRepairOperationState::Completed),
                 matches!(state, NetworkRepairOperationState::Cancelled { .. }),
@@ -684,7 +622,7 @@ impl OperationStatus {
 /// The three ways an operation can end. Only [`Self::Succeeded`] is a success;
 /// failure and cancellation both mean the operation did not complete its work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum OperationOutcome {
     Succeeded,
@@ -708,9 +646,9 @@ impl OperationOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(
-    feature = "typescript",
+    feature = "ts",
     ts(type = "Brand<string, \"OperationIdempotencyKey\">")
 )]
 #[serde(transparent)]

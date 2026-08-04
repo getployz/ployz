@@ -1,9 +1,0 @@
-name: fixture_ports_host_mode
-services:
-  web:
-    image: nginx
-    ports:
-      - target: 80
-        published: 8080
-      - target: 443
-        mode: host

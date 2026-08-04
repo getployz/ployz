@@ -3,8 +3,8 @@
 use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "Brand<string, \"VolumeName\">"))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "Brand<string, \"VolumeName\">"))]
 #[serde(try_from = "String", into = "String")]
 pub struct VolumeName(String);
 
@@ -98,8 +98,8 @@ const ZFS_DATASET_NAME_MAX_BYTES: usize = 255;
 
 /// One physical ZFS pool component; it cannot name an arbitrary dataset root.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "Brand<string, \"ZfsPoolName\">"))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "Brand<string, \"ZfsPoolName\">"))]
 #[serde(try_from = "String", into = "String")]
 pub struct ZfsPoolName(String);
 
@@ -152,8 +152,8 @@ pub enum ZfsPoolNameError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "Brand<string, \"DatasetName\">"))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "Brand<string, \"DatasetName\">"))]
 #[serde(try_from = "String", into = "String")]
 pub struct DatasetName(String);
 
@@ -235,7 +235,7 @@ impl From<DatasetName> for String {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DatasetNameError {
     #[error("dataset name is empty")]
@@ -301,11 +301,8 @@ fn take_decimal_prefix(value: &str) -> Option<(usize, &str)> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "typescript",
-    ts(type = "SafeInteger<\"VolumeMaxSizeBytes\">")
-)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "SafeInteger<\"VolumeMaxSizeBytes\">"))]
 #[serde(try_from = "u64", into = "u64")]
 pub struct VolumeMaxSizeBytes(NonZeroU64);
 
@@ -344,7 +341,7 @@ pub enum VolumeMaxSizeError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum VolumeSpec {
     Plain,

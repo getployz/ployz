@@ -1,59 +1,28 @@
 use super::support;
 
 use crate::execution::{
-    NatsServerUnitTarget, PloyzdRoleEnvironmentFile, SupervisorUnitSpec, SupervisorUnitTarget,
+    PloyzdRole, PloyzdRoleEnvironmentFile, SupervisorUnitSpec, SupervisorUnitTarget,
 };
 use crate::execution::{SupervisorBackend, SupervisorChange};
-use ployz_core::roles::DaemonProcessRole;
-use ployz_test_support::ids::machine_id;
 use support::artifacts::ployzd_artifact;
 
 #[test]
-fn both_supervisors_render_the_same_nats_service_contract() {
-    let spec = SupervisorUnitSpec::NatsServer(NatsServerUnitTarget::default_paths());
-
-    let systemd = SupervisorBackend::Systemd
-        .render(&spec)
-        .expect("systemd service renders");
-    let openrc = SupervisorBackend::OpenRc
-        .render(&spec)
-        .expect("OpenRC service renders");
-
-    assert_eq!(systemd.file_name(), "nats-server.service");
-    assert!(systemd.contents().contains("Restart=always"));
-    assert!(systemd.contents().contains("kill -s HUP $MAINPID"));
-    assert_eq!(openrc.file_name(), "nats-server");
-    assert!(
-        openrc
-            .contents()
-            .contains("supervisor=\"supervise-daemon\"")
-    );
-    assert!(openrc.contents().contains("respawn_delay=5"));
-    assert!(openrc.contents().contains("reload()"));
-    assert!(openrc.contents().contains("--signal HUP"));
-}
-
-#[test]
-fn openrc_machine_service_keeps_environment_and_docker_dependencies() {
-    let role = DaemonProcessRole::Machine(machine_id("machine_7"));
+fn openrc_api_service_keeps_environment_and_docker_dependencies() {
+    let role = PloyzdRole::Api;
     let spec = SupervisorUnitSpec::PloyzdRole {
-        role: role.clone(),
+        role,
         artifact: ployzd_artifact(),
         environment_file: PloyzdRoleEnvironmentFile::default_path(),
     };
 
     let rendered = SupervisorBackend::OpenRc
         .render(&spec)
-        .expect("OpenRC machine service renders");
+        .expect("OpenRC API service renders");
 
-    assert_eq!(rendered.file_name(), "ployzd-machine-machine_7");
+    assert_eq!(rendered.file_name(), "ployzd-api");
     assert!(rendered.contents().contains(". \"/etc/ployz/ployzd.env\""));
     assert!(rendered.contents().contains("need net docker"));
-    assert!(
-        rendered
-            .contents()
-            .contains("command_args=\"machine --id machine_7\"")
-    );
+    assert!(rendered.contents().contains("command_args=\"api\""));
     assert_eq!(
         SupervisorBackend::OpenRc.commands(
             SupervisorChange::InstallAndStart,
@@ -64,13 +33,13 @@ fn openrc_machine_service_keeps_environment_and_docker_dependencies() {
                 "rc-update",
                 vec![
                     "add".to_owned(),
-                    "ployzd-machine-machine_7".to_owned(),
+                    "ployzd-api".to_owned(),
                     "default".to_owned(),
                 ]
             ),
             (
                 "rc-service",
-                vec!["ployzd-machine-machine_7".to_owned(), "restart".to_owned()]
+                vec!["ployzd-api".to_owned(), "restart".to_owned()]
             ),
         ]
     );
@@ -78,7 +47,7 @@ fn openrc_machine_service_keeps_environment_and_docker_dependencies() {
 
 #[test]
 fn openrc_kill_sets_the_service_context_for_supervise_daemon() {
-    let role = DaemonProcessRole::Machine(machine_id("machine_7"));
+    let role = PloyzdRole::Api;
 
     assert_eq!(
         SupervisorBackend::OpenRc.commands(
@@ -88,63 +57,11 @@ fn openrc_kill_sets_the_service_context_for_supervise_daemon() {
         [(
             "env",
             vec![
-                "RC_SVCNAME=ployzd-machine-machine_7".to_owned(),
+                "RC_SVCNAME=ployzd-api".to_owned(),
                 "supervise-daemon".to_owned(),
-                "ployzd-machine-machine_7".to_owned(),
+                "ployzd-api".to_owned(),
                 "--signal".to_owned(),
                 "KILL".to_owned(),
-            ]
-        )]
-    );
-}
-
-#[test]
-fn owned_zfs_import_is_an_exact_systemd_only_service_contract() {
-    let spec = SupervisorUnitSpec::OwnedZfsImport;
-    let rendered = SupervisorBackend::Systemd
-        .render(&spec)
-        .expect("owned ZFS import service renders");
-
-    assert_eq!(rendered.file_name(), "ployz-owned-zfs-import.service");
-    assert_eq!(
-        rendered.contents(),
-        "[Unit]\nRequires=zfs-import.target\nAfter=zfs-import.target\nBefore=docker.service\n\n[Service]\nType=oneshot\nExecStart=/usr/local/bin/ployz host internal-storage-recover\nRemainAfterExit=yes\n\n[Install]\nWantedBy=multi-user.target\n"
-    );
-    assert!(matches!(
-        SupervisorBackend::OpenRc.render(&spec),
-        Err(
-            crate::execution::SupervisorUnitFileError::UnsupportedSupervisor {
-                supervisor: "OpenRC",
-                ..
-            }
-        )
-    ));
-}
-
-#[test]
-fn enable_translates_without_starting_or_restarting_the_service() {
-    let target = SupervisorUnitTarget::OwnedZfsImport;
-    assert_eq!(
-        SupervisorBackend::Systemd.commands(SupervisorChange::Enable, &target),
-        [
-            ("systemctl", vec!["daemon-reload".to_owned()]),
-            (
-                "systemctl",
-                vec![
-                    "enable".to_owned(),
-                    "ployz-owned-zfs-import.service".to_owned()
-                ]
-            ),
-        ]
-    );
-    assert_eq!(
-        SupervisorBackend::OpenRc.commands(SupervisorChange::Enable, &target),
-        [(
-            "rc-update",
-            vec![
-                "add".to_owned(),
-                "ployz-owned-zfs-import".to_owned(),
-                "default".to_owned(),
             ]
         )]
     );

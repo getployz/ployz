@@ -8,10 +8,14 @@ use bollard::exec::{CreateExecOptions, StartExecResults};
 use futures_util::StreamExt;
 use std::time::Duration;
 
-pub use ployz_test_support::shell::shell_quote;
-
 /// Bound on a single exec; the harness must never wait forever on a machine.
 const EXEC_BUDGET: Duration = Duration::from_secs(120);
+
+/// Smallest shell-safe quoting for values interpolated into `sh -c` lines.
+#[must_use]
+pub fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
 
 /// Result of one command run inside a machine container.
 #[derive(Debug, Clone)]

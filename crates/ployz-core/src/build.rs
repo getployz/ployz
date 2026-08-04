@@ -21,7 +21,7 @@ pub use executor::{
     BuildRequestCommitment, BuildRequestCommitmentError, BuildTarget, BuildTargetCapabilities,
     ClusterBuildMachineCapability, ClusterBuildTargetCapabilities, ExternalBuildExecutorCandidate,
     ExternalBuildExecutorCapability, ExternalBuildPlacementError, ExternalBuildPoolCapabilities,
-    place_external_build_platforms, reconcile_build_executor_readiness_at,
+    place_external_build_platforms, reconcile_build_executor_readiness,
 };
 pub use railpack::{
     RailpackDigestKind, RailpackPinError, RailpackPins, RailpackPlatformPins, railpack_pins,
@@ -67,8 +67,6 @@ pub const BUILD_CONTROL_RESPONSE_MARGIN: Duration = Duration::from_secs(5);
 pub const BUILD_ATTACHED_WATCH_TERMINAL_MARGIN: Duration = Duration::from_secs(55);
 /// Outer machine endpoint margin beyond the machine's maximum response lifetime.
 pub const BUILD_ENDPOINT_RESPONSE_MARGIN: Duration = Duration::from_secs(10);
-/// Dynamic NATS response-authority margin beyond the machine endpoint lifetime.
-pub const BUILD_RESPONSE_PERMISSION_MARGIN: Duration = Duration::from_secs(5);
 
 /// Controller request budget for a build with the supplied execution budget.
 #[must_use]
@@ -87,9 +85,6 @@ pub const BUILD_MAX_ATTACHED_WATCH_TIMEOUT: Duration = BUILD_MAX_PLACEMENT_TIMEO
 /// Maximum BuildStart handler lifetime.
 pub const BUILD_START_ENDPOINT_TIMEOUT: Duration =
     BUILD_MAX_MACHINE_RESPONSE_LIFETIME.saturating_add(BUILD_ENDPOINT_RESPONSE_MARGIN);
-/// Lifetime of one request-scoped NATS response grant.
-pub const BUILD_RESPONSE_PERMISSION_EXPIRY: Duration =
-    BUILD_START_ENDPOINT_TIMEOUT.saturating_add(BUILD_RESPONSE_PERMISSION_MARGIN);
 /// Interval between Control reads of accepted machine-local prune work.
 pub const BUILD_CACHE_PRUNE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// Budget for each quick machine-local prune admission, status, or cancel RPC.
@@ -203,14 +198,14 @@ pub struct BuildCachePruneCancelOk {
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct GitSource {
     url: GitRepositoryUrl,
     commit: GitCommit,
     credential: GitBasicCredential,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "typescript", ts(optional))]
+    #[cfg_attr(feature = "ts", ts(optional))]
     subdir: Option<BuildContextPath>,
 }
 
@@ -275,18 +270,18 @@ impl fmt::Debug for GitSource {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BuildSource {
     Git {
         #[serde(flatten)]
-        #[cfg_attr(feature = "typescript", ts(flatten))]
+        #[cfg_attr(feature = "ts", ts(flatten))]
         git: GitSource,
     },
     LocalSnapshot {
         digest: LocalSnapshotDigest,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[cfg_attr(feature = "typescript", ts(optional))]
+        #[cfg_attr(feature = "ts", ts(optional))]
         subdir: Option<BuildContextPath>,
     },
 }
@@ -362,8 +357,8 @@ impl From<GitSource> for BuildSource {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "string"))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "string"))]
 #[serde(try_from = "String", into = "String")]
 pub struct LocalSnapshotDigest(String);
 
@@ -412,8 +407,8 @@ pub enum LocalSnapshotDigestError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "string"))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "string"))]
 #[serde(try_from = "String", into = "String")]
 pub struct GitRepositoryUrl(String);
 
@@ -458,8 +453,8 @@ impl From<GitRepositoryUrl> for String {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "string"))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "string"))]
 #[serde(try_from = "String", into = "String")]
 pub struct GitCommit(String);
 
@@ -489,8 +484,8 @@ impl From<GitCommit> for String {
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "string"))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "string"))]
 #[serde(try_from = "String", into = "String")]
 pub struct GitCredentialSecret(String);
 
@@ -528,7 +523,7 @@ impl From<GitCredentialSecret> for String {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct GitBasicCredential {
     username: GitCredentialUsername,
@@ -561,8 +556,8 @@ impl GitBasicCredential {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "string"))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "string"))]
 #[serde(try_from = "String", into = "String")]
 pub struct GitCredentialUsername(String);
 impl GitCredentialUsername {
@@ -594,8 +589,8 @@ impl From<GitCredentialUsername> for String {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "string"))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "string"))]
 #[serde(try_from = "String", into = "String")]
 pub struct BuildContextPath(String);
 
@@ -633,7 +628,7 @@ impl From<BuildContextPath> for String {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "adapter", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BuildAdapter {
     Dockerfile {
@@ -647,8 +642,8 @@ pub enum BuildAdapter {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "string"))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "string"))]
 #[serde(try_from = "String", into = "String")]
 pub struct DockerfileStageName(String);
 impl DockerfileStageName {
@@ -684,8 +679,8 @@ impl From<DockerfileStageName> for String {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "string"))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "string"))]
 #[serde(try_from = "String", into = "String")]
 pub struct BuildCacheScope(String);
 impl BuildCacheScope {
@@ -717,7 +712,7 @@ impl From<BuildCacheScope> for String {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(try_from = "Vec<OciPlatform>", into = "Vec<OciPlatform>")]
 pub struct BuildPlatforms(BTreeSet<OciPlatform>);
 impl BuildPlatforms {
@@ -761,8 +756,8 @@ impl From<BuildPlatforms> for Vec<OciPlatform> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "string"))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "string"))]
 #[serde(transparent)]
 pub struct RailpackCacheKey(String);
 impl RailpackCacheKey {
@@ -1042,16 +1037,11 @@ mod tests {
             BUILD_MAX_MACHINE_RESPONSE_LIFETIME,
             BUILD_MAX_EXECUTION_TIMEOUT + BUILD_TASK_DRAIN_TIMEOUT + BUILD_FORCE_CLEANUP_TIMEOUT
         );
-        assert_eq!(
-            BUILD_RESPONSE_PERMISSION_EXPIRY,
-            Duration::from_secs(31 * 60 + 15)
-        );
         assert!(
             build_control_request_timeout(BUILD_MAX_EXECUTION_TIMEOUT)
                 > BUILD_MAX_MACHINE_RESPONSE_LIFETIME
         );
         assert!(BUILD_START_ENDPOINT_TIMEOUT > BUILD_MAX_MACHINE_RESPONSE_LIFETIME);
-        assert!(BUILD_RESPONSE_PERMISSION_EXPIRY > BUILD_START_ENDPOINT_TIMEOUT);
     }
 
     #[test]

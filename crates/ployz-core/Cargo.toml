@@ -10,12 +10,11 @@ workspace = true
 
 [features]
 default = []
-typescript = ["dep:ts-rs"]
+ts = ["dep:ts-rs"]
 
 [dependencies]
 hmac.workspace = true
 ipnet = { version = "2", features = ["serde"] }
-nkeys = "0.4"
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -29,3 +28,13 @@ ployz-test-support.workspace = true
 [lib]
 path = "src/lib.rs"
 doctest = false
+
+[[bin]]
+name = "export-typescript"
+path = "src/bin/export-typescript.rs"
+required-features = ["ts"]
+
+[[bin]]
+name = "export-operation-contract"
+path = "src/bin/export-operation-contract.rs"
+required-features = ["ts"]

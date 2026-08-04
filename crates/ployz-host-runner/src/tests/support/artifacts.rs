@@ -6,16 +6,10 @@ use std::path::PathBuf;
 use crate::execution::{
     ArtifactKind, ArtifactSource, ArtifactTarget, ArtifactVersion, Sha256Digest,
 };
-use crate::plan::PloyzReleaseArtifact;
 
 /// A syntactically valid sha256 hex digest for ployzd artifact fixtures.
 pub const TEST_PLOYZD_DIGEST: &str =
     "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-
-#[must_use]
-pub fn ployz_release_artifact() -> PloyzReleaseArtifact {
-    PloyzReleaseArtifact::try_new(ployzd_artifact()).expect("exact Ployz release artifact")
-}
 
 #[must_use]
 pub fn artifact_version(value: &str) -> ArtifactVersion {
@@ -43,30 +37,4 @@ pub fn ployzd_artifact() -> ArtifactTarget {
         PathBuf::from("/usr/local/bin/ployzd"),
     )
     .expect("valid ployzd artifact")
-}
-
-/// The canonical remote nats-server artifact target installed by plan
-/// fixtures.
-#[must_use]
-pub fn nats_server_artifact() -> ArtifactTarget {
-    ArtifactTarget::new(
-        ArtifactKind::NatsServer,
-        artifact_version("2.12.0"),
-        artifact_source("https://example.invalid/nats-server"),
-        sha256_digest(TEST_PLOYZD_DIGEST),
-        PathBuf::from("/usr/local/bin/nats-server"),
-    )
-    .expect("valid nats-server artifact")
-}
-
-#[must_use]
-pub fn railpack_artifact() -> ArtifactTarget {
-    ArtifactTarget::new(
-        ArtifactKind::Railpack,
-        artifact_version("v0.31.0"),
-        artifact_source("https://example.invalid/railpack"),
-        sha256_digest(TEST_PLOYZD_DIGEST),
-        PathBuf::from("/usr/local/lib/ployz/railpack/v0.31.0/railpack"),
-    )
-    .expect("valid Railpack artifact")
 }

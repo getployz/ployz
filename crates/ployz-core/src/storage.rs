@@ -174,7 +174,7 @@ pub enum PreparedStorageStateError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum StorageEffectFailure {
     #[error("ZFS preparation is unsupported on this host profile")]

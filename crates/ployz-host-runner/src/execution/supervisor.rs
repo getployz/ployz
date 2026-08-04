@@ -2,13 +2,10 @@
 
 use std::path::{Path, PathBuf};
 
-use super::command::HostRunnerCommandRunner;
 use super::host_platform::SupervisorKind;
 use super::service::{
-    PLOYZD_MACHINE_UNIT_PREFIX, SupervisorUnitFileError, SupervisorUnitSpec, SupervisorUnitTarget,
+    PloyzdRole, SupervisorUnitFileError, SupervisorUnitSpec, SupervisorUnitTarget,
 };
-use ployz_core::operation::FailureMessage;
-use ployz_core::roles::DaemonProcessRole;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SupervisorBackend {
@@ -81,21 +78,6 @@ impl RenderedSupervisorUnit {
 }
 
 impl SupervisorBackend {
-    #[must_use]
-    pub(crate) fn is_managed_ployzd_service_file(self, file_name: &str) -> bool {
-        file_name.starts_with("ployzd-")
-            && match self {
-                Self::Systemd => file_name.ends_with(".service"),
-                Self::OpenRc => !file_name.contains('.'),
-            }
-    }
-
-    #[must_use]
-    pub(crate) fn is_machine_ployzd_service_file(self, file_name: &str) -> bool {
-        self.is_managed_ployzd_service_file(file_name)
-            && file_name.starts_with(PLOYZD_MACHINE_UNIT_PREFIX)
-    }
-
     #[must_use]
     pub fn service_name(self, target: &SupervisorUnitTarget) -> String {
         match self {
@@ -256,43 +238,6 @@ impl SupervisorBackend {
             }
         }
     }
-
-    pub(crate) fn restart_installed_commands(
-        self,
-        services: &[String],
-    ) -> Vec<(&'static str, Vec<String>)> {
-        let mut commands = Vec::new();
-        if self == Self::Systemd {
-            commands.push(command("systemctl", ["daemon-reload"]));
-        }
-        commands.extend(services.iter().map(|service| match self {
-            Self::Systemd => command("systemctl", ["restart", service.as_str()]),
-            Self::OpenRc => command("rc-service", [service.as_str(), "restart"]),
-        }));
-        commands
-    }
-}
-
-pub(crate) fn execute_supervisor_commands(
-    runner: &mut impl HostRunnerCommandRunner,
-    commands: Vec<(&'static str, Vec<String>)>,
-) -> Result<(), FailureMessage> {
-    for (program, args) in commands {
-        let args = args.iter().map(String::as_str).collect::<Vec<_>>();
-        let output = runner.command(program, &args)?;
-        if !output.success {
-            return Err(failure_message(if output.failure.is_empty() {
-                format!("{} {} failed", program, args.join(" "))
-            } else {
-                output.failure
-            }));
-        }
-    }
-    Ok(())
-}
-
-fn failure_message(message: impl Into<String>) -> FailureMessage {
-    FailureMessage::try_new(message).expect("supervisor failure message is non-empty")
 }
 
 fn command<const N: usize>(program: &'static str, args: [&str; N]) -> (&'static str, Vec<String>) {
@@ -304,41 +249,21 @@ fn render_openrc(
 ) -> Result<RenderedSupervisorUnit, SupervisorUnitFileError> {
     let target = spec.target();
     let file_name = openrc_service_name(&target);
-    let (description, command, args, environment_file, dependencies, reload) = match spec {
-        SupervisorUnitSpec::NatsServer(target) => (
-            "Ployz NATS Server".to_owned(),
-            target.binary_path(),
-            vec![
-                "--config".to_owned(),
-                target.config_path().display().to_string(),
-            ],
-            None,
-            "need net",
-            true,
-        ),
+    let (description, command, args, environment_file, dependencies) = match spec {
         SupervisorUnitSpec::PloyzdRole {
             role,
             artifact,
             environment_file,
         } => (
-            format!("Ployz {}", role.process_name()),
+            format!("Ployz {}", role.as_str()),
             artifact.install_path(),
-            role.argv(),
+            (*role).argv(),
             Some(environment_file.path()),
             match role {
-                DaemonProcessRole::Machine(_) => "need net docker",
-                DaemonProcessRole::Control
-                | DaemonProcessRole::Gateway
-                | DaemonProcessRole::Dns => "need net",
+                PloyzdRole::Api => "need net docker",
+                PloyzdRole::Keeper | PloyzdRole::Gateway | PloyzdRole::Dns => "need net",
             },
-            false,
         ),
-        SupervisorUnitSpec::OwnedZfsImport => {
-            return Err(SupervisorUnitFileError::UnsupportedSupervisor {
-                unit: spec.unit_name(),
-                supervisor: "OpenRC",
-            });
-        }
     };
     let command = shell_double_quote(&command.display().to_string())?;
     let command_args = shell_double_quote(&args.join(" "))?;
@@ -355,11 +280,6 @@ fn render_openrc(
             "\nstart_pre() {{\n    set -a\n    . {}\n    set +a\n}}\n",
             environment_file
         ));
-    }
-    if reload {
-        contents.push_str(
-            "\nreload() {\n    ebegin \"Reloading ${RC_SVCNAME}\"\n    supervise-daemon \"${RC_SVCNAME}\" --signal HUP\n    eend $?\n}\n",
-        );
     }
     Ok(RenderedSupervisorUnit {
         file_name,

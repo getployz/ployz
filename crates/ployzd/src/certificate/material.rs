@@ -2,73 +2,15 @@ use std::path::{Path, PathBuf};
 
 use pingora::tls::pkey::PKey;
 use pingora::tls::x509::{X509, X509Ref};
-use ployz_core::certificate::{
-    ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow, CustomCertBundle,
-    ManagedCertBundle, custom_bundle_digest,
-};
+use ployz_core::certificate::{ActiveCertState, CertValidAt, CertValidityWindow, CustomCertBundle};
 use ployz_core::ids::CertId;
-use ployz_core::ingress::{ActiveCertificateMetadata, CertificateOwner};
-use ployz_core::install::{AbsoluteInstallPath, InstallSha256Digest};
+use ployz_core::install::InstallSha256Digest;
 use ployz_core::operation::RouteHostname;
 use time::PrimitiveDateTime;
 
 use crate::adapters::atomic_file::{
     restrict_secret_file_permissions, write_secret_file_atomically,
 };
-
-pub(crate) fn prepare_custom_certificate(
-    state_dir: &Path,
-    cert_id: CertId,
-    hostname: RouteHostname,
-    certificate_chain_pem: String,
-    private_key_pem: String,
-) -> Result<CustomCertBundle, CertificateMaterialError> {
-    let validity = validate_and_read_validity(&certificate_chain_pem, &private_key_pem, &hostname)?;
-    let digest =
-        custom_bundle_digest(&certificate_chain_pem, &private_key_pem).map_err(invalid_material)?;
-    let path = certificate_material_path_for_digest(state_dir, &cert_id, &digest);
-    let Some(path_text) = path.to_str() else {
-        return Err(CertificateMaterialError::NonUtf8Path { path });
-    };
-    let path = AbsoluteInstallPath::try_new(path_text).map_err(invalid_material)?;
-    let bundle_ref = CertBundleRef::for_bundle(&digest, &path).map_err(invalid_material)?;
-    CustomCertBundle::try_new(
-        ActiveCertState {
-            cert_id,
-            hostname,
-            bundle_ref,
-            validity,
-        },
-        certificate_chain_pem,
-        private_key_pem,
-    )
-    .map_err(invalid_material)
-}
-
-/// Adapts Worker-issued wildcard material into the same validated artifact
-/// path used by exact-route certificates.
-pub(crate) fn prepare_ployz_wildcard_certificate(
-    state_dir: &Path,
-    bundle: ManagedCertBundle,
-) -> Result<(ActiveCertificateMetadata, CustomCertBundle), CertificateMaterialError> {
-    let hostname = RouteHostname::try_new(bundle.dns_names[1].clone()).map_err(invalid_material)?;
-    let cert_id = CertId::try_new(format!("cert_ployz_{}", bundle.lease.as_str()))
-        .map_err(invalid_material)?;
-    let material = prepare_custom_certificate(
-        state_dir,
-        cert_id,
-        hostname,
-        bundle.certificate_chain_pem,
-        bundle.private_key_pem,
-    )?;
-    Ok((
-        ActiveCertificateMetadata {
-            owner: CertificateOwner::PloyzAutomaticNamespace,
-            active: material.active_cert().clone(),
-        },
-        material,
-    ))
-}
 
 pub(crate) fn write_custom_certificate(
     state_dir: &Path,
@@ -269,8 +211,6 @@ fn asn1_unix_seconds(
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum CertificateMaterialError {
-    #[error("certificate material path is not UTF-8: {}", path.display())]
-    NonUtf8Path { path: PathBuf },
     #[error("invalid certificate material: {message}")]
     InvalidMaterial { message: String },
     #[error("certificate material file {}: {message}", path.display())]
@@ -317,15 +257,12 @@ fn invalid_material(error: impl std::fmt::Display) -> CertificateMaterialError {
 mod tests {
     use std::path::Path;
 
+    use super::*;
     use ployz_core::certificate::{
-        ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow, LeaseBearerToken,
-        ManagedLeaseAcquireRequest, ManagedLeaseAcquisitionId,
+        ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow,
     };
     use ployz_core::ids::CertId;
     use ployz_core::operation::RouteHostname;
-    use ployz_test_lease_worker::{LeaseWorkerRequest, LeaseWorkerResponse, StubLeaseWorker};
-
-    use super::*;
 
     #[test]
     fn local_path_uses_typed_identity_and_digest_not_referenced_path() {
@@ -349,48 +286,5 @@ mod tests {
                 .join("bundles")
                 .join(format!("cert_example-{digest}.bundle"))
         );
-    }
-
-    #[test]
-    fn worker_wildcard_adapts_to_namespace_owned_gateway_material() {
-        let mut worker = StubLeaseWorker::new();
-        let LeaseWorkerResponse::LeaseAcquired(acquired) = worker
-            .handle(LeaseWorkerRequest::Acquire(ManagedLeaseAcquireRequest {
-                acquisition_id: ManagedLeaseAcquisitionId::try_new("a1").expect("acquisition id"),
-                token: LeaseBearerToken::try_new("token").expect("token"),
-                ipv4: Vec::new(),
-                ipv6: Vec::new(),
-            }))
-            .expect("acquire")
-        else {
-            panic!("acquire response");
-        };
-        let _ = worker
-            .handle(LeaseWorkerRequest::DownloadBundle {
-                lease: acquired.lease.name.clone(),
-                token: acquired.lease.token.clone(),
-            })
-            .expect("pending download");
-        let LeaseWorkerResponse::Bundle(bundle) = worker
-            .handle(LeaseWorkerRequest::DownloadBundle {
-                lease: acquired.lease.name.clone(),
-                token: acquired.lease.token,
-            })
-            .expect("bundle download")
-        else {
-            panic!("ready bundle");
-        };
-        let state = tempfile::tempdir().expect("state directory");
-
-        let (metadata, material) =
-            prepare_ployz_wildcard_certificate(state.path(), bundle).expect("valid wildcard");
-
-        assert_eq!(metadata.owner, CertificateOwner::PloyzAutomaticNamespace);
-        assert_eq!(metadata.active, *material.active_cert());
-        assert_eq!(
-            metadata.active.hostname.as_str(),
-            acquired.lease.name.hostname_suffix()
-        );
-        validate_custom_certificate(&material).expect("gateway material validates");
     }
 }

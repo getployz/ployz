@@ -1,11 +1,10 @@
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
 
 use crate::execution::{
     ArtifactInstallDurability, ArtifactInstallError, ArtifactKind, ArtifactSource, ArtifactTarget,
     ArtifactVerificationError, ArtifactVersion, Sha256Digest, install_verified_artifact,
-    install_verified_nats_server_archive, verify_artifact_file,
+    verify_artifact_file,
 };
 
 #[test]
@@ -97,39 +96,6 @@ fn installed_artifact_is_executable_on_unix() {
 }
 
 #[test]
-fn nats_server_archive_install_extracts_binary() {
-    let root = temp_artifact("ployz-nats-archive");
-    let package = root.join("nats-server-v2.14.2-linux-amd64");
-    fs::create_dir_all(&package).expect("package dir can be created");
-    fs::write(package.join("nats-server"), "nats-server-binary\n")
-        .expect("nats-server binary can be written");
-    let archive = root.join("nats-server.tar.gz");
-    let status = Command::new("tar")
-        .arg("-czf")
-        .arg(&archive)
-        .arg("-C")
-        .arg(&root)
-        .arg("nats-server-v2.14.2-linux-amd64")
-        .status()
-        .expect("tar can run");
-    assert!(status.success());
-    let install_path = root.join("bin/nats-server");
-    let archive_digest = sha256(&archive);
-    let target = nats_server_target(&install_path, archive_digest.as_str());
-    let verified = verify_artifact_file(&archive, &target.digest).expect("archive verifies");
-
-    let installed =
-        install_verified_nats_server_archive(&verified, &target).expect("nats archive installs");
-
-    assert_eq!(installed.source_path, archive);
-    assert_eq!(installed.install_path, install_path);
-    assert_eq!(
-        fs::read_to_string(&installed.install_path).expect("installed binary is readable"),
-        "nats-server-binary\n"
-    );
-}
-
-#[test]
 fn install_rejects_verified_digest_for_another_target() {
     let staged = temp_artifact("ployz-artifact-wrong-target");
     let install_path = temp_artifact("ployz-artifact-wrong-target-install").join("bin/ployzd");
@@ -199,26 +165,6 @@ fn ployzd_target(install_path: &std::path::Path, digest: &str) -> ArtifactTarget
         install_path.to_path_buf(),
     )
     .expect("valid ployzd target")
-}
-
-fn nats_server_target(install_path: &std::path::Path, digest: &str) -> ArtifactTarget {
-    ArtifactTarget::new(
-        ArtifactKind::NatsServer,
-        ArtifactVersion::try_new("2.14.2").expect("valid version"),
-        ArtifactSource::try_new("https://example.invalid/nats-server.tar.gz")
-            .expect("valid source"),
-        Sha256Digest::try_new(digest).expect("valid digest"),
-        install_path.to_path_buf(),
-    )
-    .expect("valid nats-server target")
-}
-
-fn sha256(path: &std::path::Path) -> Sha256Digest {
-    use sha2::{Digest, Sha256};
-
-    let bytes = fs::read(path).expect("file can be read");
-    let digest = Sha256::digest(bytes);
-    Sha256Digest::try_new(format!("{digest:x}")).expect("valid digest")
 }
 
 fn temp_artifact(prefix: &str) -> PathBuf {

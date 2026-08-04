@@ -1,4 +1,0 @@
-name: fixture_minimal
-services:
-  web:
-    image: nginx:latest

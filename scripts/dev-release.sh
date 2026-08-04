@@ -33,13 +33,11 @@ platform="$(docker_platform "${PLOYZ_DIND_PLATFORM:-}")"
 case "${platform}" in
   linux/amd64)
     platform_slug="linux-amd64"
-    nats_sha256="b3e7b14eb10c895fd90c2dacdb6b65bd3208adcc9524dd7689ba2c1024e6b97a"
     railpack_archive_name="${RAILPACK_AMD64_ARCHIVE}"
     railpack_archive_sha256="${RAILPACK_AMD64_ARCHIVE_SHA256}"
     ;;
   linux/arm64)
     platform_slug="linux-arm64"
-    nats_sha256="15fd0c3438e7178e5316e63be68373ad581c8d78db26e649113aa303b74e5e58"
     railpack_archive_name="${RAILPACK_ARM64_ARCHIVE}"
     railpack_archive_sha256="${RAILPACK_ARM64_ARCHIVE_SHA256}"
     ;;
@@ -48,8 +46,6 @@ case "${platform}" in
     exit 1
     ;;
 esac
-nats_version="2.14.2"
-nats_url="https://github.com/nats-io/nats-server/releases/download/v${nats_version}/nats-server-v${nats_version}-${platform_slug}.tar.gz"
 railpack_version="${RAILPACK_VERSION}"
 railpack_url="https://github.com/railwayapp/railpack/releases/download/${railpack_version}/${railpack_archive_name}"
 
@@ -87,9 +83,6 @@ content_hash="$({
   done
   printf 'ployz.sh %s\n' "$(sha256_of "${ROOT_DIR}/scripts/ployz.sh")"
   printf 'platform %s\n' "${platform_slug}"
-  printf 'nats-version %s\n' "${nats_version}"
-  printf 'nats-url %s\n' "${nats_url}"
-  printf 'nats-sha256 %s\n' "${nats_sha256}"
   printf 'railpack-version %s\n' "${railpack_version}"
   printf 'railpack-sha256 %s\n' "$(sha256_of "${railpack_source}")"
 } | sha256_stdin)"
@@ -123,9 +116,6 @@ install -m 0755 "${railpack_source}" "${staging_dir}/railpack"
   printf 'PLOYZ_RAILPACK_VERSION=%s\n' "${railpack_version}"
   printf 'PLOYZ_RAILPACK_URL=%s/%s\n' "${remote_dir}" railpack
   printf 'PLOYZ_RAILPACK_SHA256=%s\n' "$(sha256_of "${staging_dir}/railpack")"
-  printf 'PLOYZ_NATS_SERVER_VERSION=%s\n' "${nats_version}"
-  printf 'PLOYZ_NATS_SERVER_URL=%s\n' "${nats_url}"
-  printf 'PLOYZ_NATS_SERVER_SHA256=%s\n' "${nats_sha256}"
 } > "${staging_dir}/release.env"
 
 cat > "${staging_dir}/install.sh" <<EOF

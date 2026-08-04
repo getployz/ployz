@@ -1,52 +1,43 @@
-//! Dispatch for configured daemon role processes.
+//! Dispatch for the v2 daemon role shell.
 
 use tracing::Instrument;
 
-use crate::config::{DaemonProcessConfig, DaemonProcessConfigInner};
-use crate::control::process::{ControlProcessError, run_control_until_shutdown};
-use crate::roles::dns::process::{DnsProcessError, run_dns_until_shutdown};
-use crate::roles::gateway::process::{GatewayProcessError, run_gateway_until_shutdown};
-use crate::roles::machine::process::{MachineProcessError, run_machine_until_shutdown};
+use crate::role_cli::DaemonProcessRole;
 
-// Role and operation attribution spans are declared at ERROR level so a
-// restrictive `PLOYZ_LOG` filter (warn/error) still records them: a span
-// below the filter's level is disabled entirely, which would strip
-// `process`/`operation_id` fields from exactly the events that survive.
-pub async fn run_daemon_process_until_shutdown(
-    config: &DaemonProcessConfig,
-) -> Result<(), DaemonError> {
-    match config.inner() {
-        DaemonProcessConfigInner::Control(config) => run_control_until_shutdown(config)
-            .instrument(tracing::error_span!("role", process = "control"))
-            .await
-            .map_err(|error| DaemonError(DaemonErrorKind::Control(error))),
-        DaemonProcessConfigInner::Machine(config) => run_machine_until_shutdown(config)
-            .instrument(tracing::error_span!("role", process = "machine"))
-            .await
-            .map_err(|error| DaemonError(DaemonErrorKind::Machine(error))),
-        DaemonProcessConfigInner::Gateway(config) => run_gateway_until_shutdown(config)
-            .instrument(tracing::error_span!("role", process = "gateway"))
-            .await
-            .map_err(|error| DaemonError(DaemonErrorKind::Gateway(error))),
-        DaemonProcessConfigInner::Dns(config) => run_dns_until_shutdown(config)
-            .instrument(tracing::error_span!("role", process = "dns"))
-            .await
-            .map_err(|error| DaemonError(DaemonErrorKind::Dns(error))),
-    }
+// The attribution span is declared at ERROR level so a restrictive log filter
+// still records the role on the placeholder failure.
+pub async fn run_daemon_process(role: DaemonProcessRole) -> Result<(), DaemonError> {
+    run_role_placeholder(role)
+        .instrument(tracing::error_span!("role", process = role.as_str()))
+        .await
 }
 
-#[derive(Debug, thiserror::Error)]
-#[error(transparent)]
-pub struct DaemonError(DaemonErrorKind);
+async fn run_role_placeholder(role: DaemonProcessRole) -> Result<(), DaemonError> {
+    Err(DaemonError::RoleNotImplemented { role })
+}
 
-#[derive(Debug, thiserror::Error)]
-enum DaemonErrorKind {
-    #[error(transparent)]
-    Control(ControlProcessError),
-    #[error(transparent)]
-    Machine(MachineProcessError),
-    #[error(transparent)]
-    Gateway(GatewayProcessError),
-    #[error(transparent)]
-    Dns(DnsProcessError),
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum DaemonError {
+    #[error("ployzd {role} is not implemented in the v2 runtime yet", role = role.as_str())]
+    RoleNotImplemented { role: DaemonProcessRole },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn every_role_exits_with_an_explicit_bounded_placeholder() {
+        for role in [
+            DaemonProcessRole::Keeper,
+            DaemonProcessRole::Api,
+            DaemonProcessRole::Gateway,
+            DaemonProcessRole::Dns,
+        ] {
+            assert_eq!(
+                run_daemon_process(role).await,
+                Err(DaemonError::RoleNotImplemented { role })
+            );
+        }
+    }
 }

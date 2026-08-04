@@ -3,7 +3,6 @@ use std::net::{IpAddr, Ipv4Addr};
 
 use ployz_core::ids::{MachineId, NamespaceId, ServiceId};
 use ployz_core::ingress::{AutomaticHostnameConfiguration, PloyzDnsTargetIntent};
-use ployz_core::intent::recovery::ControlPlaneEpoch;
 use ployz_core::intent::{ActiveMachineState, IntentSnapshot};
 use ployz_core::machine::MachineName;
 use ployz_core::machine::runtime::{
@@ -151,15 +150,12 @@ fn internal_service_name_query_parsing_canonicalizes_ascii_case() {
 
 fn intent<const N: usize>(machines: [&str; N], entry: &str) -> IntentSnapshot {
     IntentSnapshot {
-        epoch: ControlPlaneEpoch::initial(),
-        core_machine_id: machine_id("machine_a"),
         active_machines: machines.into_iter().map(active_machine).collect(),
         dataplane_projection: ployz_core::network::DataplaneProjection::try_new(Vec::new(), None)
             .expect("empty projection"),
         route_bindings: Vec::new(),
         serving_target_entries: vec![serving_target_entry("db", entry)],
         volume_pins: Vec::new(),
-        nats_authorizations: Vec::new(),
         automatic_hostname_configuration: AutomaticHostnameConfiguration::Ployz,
         ployz_dns_target: PloyzDnsTargetIntent::Enabled,
         active_certificates: Vec::new(),

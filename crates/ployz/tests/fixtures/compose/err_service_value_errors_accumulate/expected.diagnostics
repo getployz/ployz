@@ -1,2 +1,0 @@
-services.alpha.command[1]  invalid value  exec-form items must be scalar values
-services.beta.stop_grace_period  invalid value  duration must be a number of seconds or a Compose duration string

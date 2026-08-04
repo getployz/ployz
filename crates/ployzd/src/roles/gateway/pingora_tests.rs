@@ -1,6 +1,6 @@
 use super::{
-    HttpRouteTargetError, PingoraRouteRegistry, PingoraRouteRegistryError,
-    PingoraRouteSelectionError, route_target_from_authority,
+    HttpRouteTargetError, PingoraRouteRegistry, PingoraRouteSelectionError,
+    route_target_from_authority,
 };
 use crate::roles::gateway::projection::{
     GatewayCertificateBundle, GatewayProjectedRoute, GatewayProjection, GatewayUpstream,
@@ -9,15 +9,13 @@ use pingora::protocols::l4::socket::SocketAddr as PingoraSocketAddr;
 use ployz_core::certificate::{
     AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue, AcmeHttp01Challenge,
     ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow,
-    CertificateChallengeApplicationStatus, CustomCertBundle, LeaseBearerToken,
-    ManagedLeaseAcquireRequest, ManagedLeaseAcquisitionId, custom_bundle_digest,
+    CertificateChallengeApplicationStatus, CustomCertBundle, custom_bundle_digest,
 };
-use ployz_core::certificate::{LeaseExpiresAt, LeaseIssuedAt, ManagedCertBundle, ManagedLeaseName};
 use ployz_core::ids::RouteBindingId;
 use ployz_core::ingress::{CertificateOwner, RouteBindingOrigin};
 use ployz_core::operation::{RouteHostnameError, RouteTarget};
-use ployz_test_lease_worker::{LeaseWorkerRequest, LeaseWorkerResponse, StubLeaseWorker};
 use ployz_test_support::ids::{cert_id, container_id, machine_id, route_hostname, route_port};
+use rcgen::generate_simple_self_signed;
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
@@ -65,27 +63,6 @@ fn registry_serves_only_the_projected_http01_challenge() {
 }
 
 #[test]
-fn registry_prepares_tls_for_routed_managed_hostnames_only() {
-    let bundle = valid_bundle();
-    let hostname = format!("api.{}", bundle.lease.hostname_suffix());
-    let registry = PingoraRouteRegistry::new();
-    registry
-        .replace_projection(&GatewayProjection {
-            certificate_bundles: vec![ployz_certificate_bundle(bundle.clone())],
-            challenges: Vec::new(),
-            routes: vec![automatic_projected_route_to_endpoint(
-                &hostname,
-                443,
-                "127.0.0.1",
-                8080,
-            )],
-        })
-        .expect("valid TLS projection");
-
-    assert!(registry.is_https_hostname(&hostname));
-}
-
-#[test]
 fn registry_prepares_custom_tls_only_for_exact_projected_https_hostname() {
     let hostname = "app.example.com";
     let registry = PingoraRouteRegistry::new();
@@ -122,12 +99,9 @@ fn invalid_routed_custom_tls_retains_the_previous_snapshot() {
             )],
         })
         .expect("valid custom TLS projection");
-    let valid = valid_bundle();
-    let invalid = custom_bundle_with_material(
-        hostname,
-        "not a certificate".to_owned(),
-        valid.private_key_pem,
-    );
+    let (_, valid_private_key) = certificate_material(hostname);
+    let invalid =
+        custom_bundle_with_material(hostname, "not a certificate".to_owned(), valid_private_key);
 
     assert!(
         registry
@@ -169,11 +143,11 @@ fn invalid_unrouted_custom_tls_rejects_replacement_and_retains_last_good() {
             )],
         })
         .expect("valid custom TLS projection");
-    let valid = valid_bundle();
+    let (_, valid_private_key) = certificate_material("unrouted.example.com");
     let invalid = custom_bundle_with_material(
         "unrouted.example.com",
         "not a certificate".to_owned(),
-        valid.private_key_pem,
+        valid_private_key,
     );
 
     assert!(
@@ -195,126 +169,15 @@ fn invalid_unrouted_custom_tls_rejects_replacement_and_retains_last_good() {
     );
 }
 
-#[test]
-fn invalid_tls_projection_retains_previous_routes_and_tls() {
-    let bundle = valid_bundle();
-    let hostname = format!("api.{}", bundle.lease.hostname_suffix());
-    let registry = PingoraRouteRegistry::new();
-    registry
-        .replace_projection(&GatewayProjection {
-            certificate_bundles: vec![ployz_certificate_bundle(bundle)],
-            challenges: Vec::new(),
-            routes: vec![automatic_projected_route_to_endpoint(
-                &hostname,
-                443,
-                "127.0.0.1",
-                8080,
-            )],
-        })
-        .expect("valid initial TLS projection");
-
-    let invalid = ManagedCertBundle::try_new(
-        ManagedLeaseName::try_new("invalid").expect("valid lease"),
-        ManagedLeaseName::try_new("invalid")
-            .expect("valid lease")
-            .wildcard_and_apex(),
-        "not a certificate".to_owned(),
-        "not a private key".to_owned(),
-        LeaseIssuedAt::try_new(1).expect("valid issue time"),
-        LeaseExpiresAt::try_new(2).expect("valid expiry time"),
-    )
-    .expect("bundle shape is valid");
-    assert!(
-        registry
-            .replace_projection(&GatewayProjection {
-                certificate_bundles: vec![ployz_certificate_bundle(invalid)],
-                challenges: Vec::new(),
-                routes: Vec::new(),
-            })
-            .is_err()
-    );
-    assert!(registry.is_https_hostname(&hostname));
-    assert_eq!(registry.backend_count(&route_target(&hostname, 443)), 1);
-}
-
-#[test]
-fn mismatched_tls_key_rejects_projection_and_retains_last_good() {
-    let first = valid_bundle();
-    let second = valid_bundle();
-    let hostname = format!("api.{}", first.lease.hostname_suffix());
-    let registry = PingoraRouteRegistry::new();
-    registry
-        .replace_projection(&GatewayProjection {
-            certificate_bundles: vec![ployz_certificate_bundle(first.clone())],
-            challenges: Vec::new(),
-            routes: vec![automatic_projected_route_to_endpoint(
-                &hostname,
-                443,
-                "127.0.0.1",
-                8080,
-            )],
-        })
-        .expect("valid initial TLS projection");
-    let mismatched = ManagedCertBundle::try_new(
-        first.lease.clone(),
-        first.lease.wildcard_and_apex(),
-        first.certificate_chain_pem,
-        second.private_key_pem,
-        first.issued_at,
-        first.expires_at,
-    )
-    .expect("bundle wire shape");
-
-    assert!(matches!(
-        registry.replace_projection(&GatewayProjection {
-            certificate_bundles: vec![ployz_certificate_bundle(mismatched)],
-            challenges: Vec::new(),
-            routes: Vec::new(),
-        }),
-        Err(PingoraRouteRegistryError::CertificateKeyMismatch)
-    ));
-    assert!(registry.is_https_hostname(&hostname));
-}
-
-fn valid_bundle() -> ManagedCertBundle {
-    let mut worker = StubLeaseWorker::new();
-    let LeaseWorkerResponse::LeaseAcquired(acquired) = worker
-        .handle(LeaseWorkerRequest::Acquire(ManagedLeaseAcquireRequest {
-            acquisition_id: ManagedLeaseAcquisitionId::try_new("a1").expect("acquisition id"),
-            token: LeaseBearerToken::try_new("client-token").expect("token"),
-            ipv4: Vec::new(),
-            ipv6: Vec::new(),
-        }))
-        .expect("acquire fixture lease")
-    else {
-        panic!("acquire returns lease");
-    };
-    let pending = worker
-        .handle(LeaseWorkerRequest::DownloadBundle {
-            lease: acquired.lease.name.clone(),
-            token: acquired.lease.token.clone(),
-        })
-        .expect("bundle pending");
-    assert!(matches!(pending, LeaseWorkerResponse::BundlePending));
-    let LeaseWorkerResponse::Bundle(bundle) = worker
-        .handle(LeaseWorkerRequest::DownloadBundle {
-            lease: acquired.lease.name,
-            token: acquired.lease.token,
-        })
-        .expect("bundle ready")
-    else {
-        panic!("bundle ready");
-    };
-    bundle
-}
-
 fn custom_bundle(hostname: &str) -> CustomCertBundle {
-    let managed = valid_bundle();
-    custom_bundle_with_material(
-        hostname,
-        managed.certificate_chain_pem,
-        managed.private_key_pem,
-    )
+    let (certificate_chain_pem, private_key_pem) = certificate_material(hostname);
+    custom_bundle_with_material(hostname, certificate_chain_pem, private_key_pem)
+}
+
+fn certificate_material(hostname: &str) -> (String, String) {
+    let rcgen::CertifiedKey { cert, signing_key } =
+        generate_simple_self_signed([hostname.to_owned()]).expect("fixture certificate");
+    (cert.pem(), signing_key.serialize_pem())
 }
 
 fn custom_bundle_with_material(
@@ -553,18 +416,6 @@ fn projected_route_to_endpoint(
     }
 }
 
-fn automatic_projected_route_to_endpoint(
-    hostname: &str,
-    port: u16,
-    endpoint_ip: &str,
-    endpoint_port: u16,
-) -> GatewayProjectedRoute {
-    GatewayProjectedRoute {
-        origin: RouteBindingOrigin::Automatic,
-        ..projected_route_to_endpoint(hostname, port, endpoint_ip, endpoint_port)
-    }
-}
-
 fn upstream_to_endpoint(ip: &str, port: u16) -> GatewayUpstream {
     GatewayUpstream {
         machine_id: machine_id("machine_1"),
@@ -587,18 +438,6 @@ fn route_certificate_bundle(bundle: CustomCertBundle) -> GatewayCertificateBundl
             route_binding_id: route_binding_id(),
         },
         bundle,
-    }
-}
-
-fn ployz_certificate_bundle(bundle: ManagedCertBundle) -> GatewayCertificateBundle {
-    let hostname = bundle.lease.hostname_suffix();
-    GatewayCertificateBundle {
-        owner: CertificateOwner::PloyzAutomaticNamespace,
-        bundle: custom_bundle_with_material(
-            &hostname,
-            bundle.certificate_chain_pem,
-            bundle.private_key_pem,
-        ),
     }
 }
 

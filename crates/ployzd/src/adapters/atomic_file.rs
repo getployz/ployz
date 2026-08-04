@@ -1,8 +1,4 @@
-//! Atomic file write for a rendered config artifact owned by one local process.
-//!
-//! The one remaining caller is the NATS authorization renderer, which writes
-//! the `authorized-users.conf` include the `nats-server` reloads. Durable
-//! control-plane state lives in the core database (`core_store`), not here.
+//! Atomic local artifact writes with strict permissions for secret material.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};

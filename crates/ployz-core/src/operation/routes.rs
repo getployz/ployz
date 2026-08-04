@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::num::NonZeroU16;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct RouteTarget {
     pub hostname: RouteHostname,
@@ -16,8 +16,8 @@ impl RouteTarget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "Brand<string, \"RouteHostname\">"))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "Brand<string, \"RouteHostname\">"))]
 #[serde(try_from = "String", into = "String")]
 pub struct RouteHostname(String);
 
@@ -74,8 +74,8 @@ pub enum RouteHostnameError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "SafeInteger<\"RoutePort\">"))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "SafeInteger<\"RoutePort\">"))]
 #[serde(try_from = "u16", into = "u16")]
 pub struct RoutePort(NonZeroU16);
 

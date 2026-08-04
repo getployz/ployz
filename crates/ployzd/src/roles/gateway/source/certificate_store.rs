@@ -158,12 +158,6 @@ fn store_error(error: CertificateMaterialError) -> GatewayCertificateStoreError 
         CertificateMaterialError::ArtifactFile { path, message } => {
             GatewayCertificateStoreError::ArtifactFile { path, message }
         }
-        CertificateMaterialError::NonUtf8Path { path } => {
-            GatewayCertificateStoreError::ArtifactFile {
-                path,
-                message: "certificate material path is not UTF-8".to_owned(),
-            }
-        }
         CertificateMaterialError::NotActivationEligible {
             now_seconds,
             not_before,

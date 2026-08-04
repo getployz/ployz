@@ -4,48 +4,28 @@
   <p><strong>Run a small cluster through explicit operations — every change owned, watchable, and safe to retry.</strong></p>
 </div>
 
-Ployz is a small-cluster orchestration core for deploying containerised services across cloud VMs and bare metal. Every
-mutating action — add a machine, deploy a service, drain capacity — is an explicit **operation**: it returns an id,
-streams durable progress, ends in one terminal result, and leaves readable evidence when it fails.
+Ployz is a dead-simple, mesh-native control plane for deploying containerised
+services across small clusters of cloud VMs and bare metal. Every mutating
+action is an explicit, bounded operation with durable summary evidence and one
+terminal result.
 
-Nothing reconciles behind your back. No hidden control loop converging on a desired state, no eventually-consistent
-store merging truth silently — if the cluster changed, an operation caused it. The control plane is a single
-**disposable core** speaking NATS; machines own their runtime truth, so losing the core is a bounded recovery, not a
-lost cluster.
+There is no core, quorum, sequencer, or message broker. Cluster configuration is
+rows in a shared Corrosion store converged to every machine. One `ployzd` binary
+runs separately supervised Keeper, API, Gateway, and DNS roles over a pluggable
+WireGuard mesh; callers use HTTP/JSON and SSE.
 
-The core stands alone, but it is built to be driven. Typed, bounded, watchable operations make an ideal API for SDKs,
-AI agents, and **Ployz Cloud** — the cloud product this core is designed to power. What a person types at the CLI, an
-agent can call with the same guarantees.
+Keeper is the narrow exception to the no-hidden-policy rule: it converges each
+machine's substrate toward decisions an operator already recorded, and never
+authors new cluster truth. Docker remains execution reality. Ployz Cloud is an
+ordinary mesh peer and API consumer, not runtime authority.
 
-## Quick start
+## Development status
 
-1. Bootstrap your first machine:
-
-   ```bash
-   ployz init root@your-server-ip
-   ```
-
-2. Add more machines:
-
-   ```bash
-   ployz machine add root@another-server-ip
-   ```
-
-3. Deploy from a Compose file (routes are declared in the file via Uncloud-compatible `x-ports`):
-
-   ```bash
-   ployz deploy -f compose.yaml -n myapp
-   ```
-
-4. Inspect what's running:
-
-   ```bash
-   ployz ls
-   ployz ops list
-   ```
-
-Once external DNS points a routed hostname at a gateway machine, the gateway serves it. Lifecycle is operations too: `machine drain`,
-`machine resume`, `ops watch <id>`, `inspect`.
+The coreless v2 line is being built from the accepted design in
+[ADR 0040](docs/adr/0040-corrosion-replaces-the-core-and-nats.md). The workspace
+currently exposes the six-crate topology and transport-free mechanics that the
+Corrosion, HTTP, mesh, Keeper, and command slices build upon. There is no
+supported quick-start path until those slices land.
 
 ## Features
 
@@ -56,10 +36,11 @@ Once external DNS points a routed hostname at a gateway machine, the gateway ser
   ones stop.
 - **Failures leave the scene intact** — a failed deploy retains its containers, logs, and typed reasons; retrying never
   erases prior failure.
-- **NATS-native control plane** — commands, machine RPC, and live testimony on the NATS Service API; no custom job
-  engine or progress bus.
-- **Disposable core** — machines own runtime truth via local fact ledgers, so a lost core is promoted from an existing
-  machine, not restored from a consensus database.
+- **Coreless control plane** — every machine holds the shared Corrosion rows;
+  commands use HTTP/JSON and watches use SSE over the mesh.
+- **Converged beats coordinated** — losing any one machine never blocks
+  commanding the survivors; row writers and timestamps expose the accepted LWW
+  trade-off.
 - **Built-in gateway** — routes externally managed hostnames to your service containers; Ployz DNS resolves internal service names.
 
 ## Why Ployz?
@@ -72,20 +53,20 @@ Ployz takes the pragmatic middle for those of us not running at Google scale:
   change?" is always answerable.
 - **Debug the failure, not the tool** — failed containers, logs, and typed reasons are retained on purpose.
 - **Simple as you grow** — start with one machine, add more with a single operation. No HA control plane to babysit.
-- **Recover without heroics** — a lost core is bounded promotion plus fresh machine facts.
+- **Recover without heroics** — every surviving machine still holds cluster
+  configuration; there is no control-plane promotion drill.
 
 ## How it works
 
-One `ployzd` artifact runs as separately supervised Control, Machine, Gateway,
-and DNS role processes around one NATS control domain and local runtime
-execution:
+One `ployzd` artifact runs as separately supervised roles beside stock Docker
+and a version-pinned Corrosion sidecar:
 
 ```text
-CLI / SDK / Cloud
-  -> NATS services      (commands, machine RPC, live testimony)
-  -> operation workers  (validate, plan, run bounded work)
-  -> machine services
-  -> Docker / gateway / DNS
+CLI / SDK / Cloud mesh peers
+  -> HTTP/JSON + SSE over WireGuard
+  -> Corrosion rows on every machine
+  -> API fold + Keeper + Gateway + DNS
+  -> Docker and machine-local substrate
 ```
 
 Every mutating command runs the same lifecycle — no generic engine, no actor framework, no hidden reconciler:
@@ -96,15 +77,16 @@ accepted -> planning -> running -> waiting_for_health -> completed
                                                      \-> cancelled
 ```
 
-Docker is execution reality. Machines broadcast facts from Docker and local ledgers; the core owns operator intent in
-local evidence files. The cluster view is assembled from machine facts and Docker reality, which is what makes the core
-rebuildable. Ployz Cloud is a consumer of the core, not its owner: it drives operations and watches their events,
-while the core stays the runtime authority.
+Docker is execution reality. Config rows are operator decisions; status rows are
+machine testimony; operation detail is driver-local evidence. Corrosion
+subscriptions wake readers, which re-query the authoritative rows rather than
+applying deltas as truth.
 
 ## Project status
 
-Pre-1.0 and under active development; expect breaking changes. Bootstrap resolves the `alpha` channel to an exact,
-SHA-256-verified GitHub release and installs only `ployz host`. Ployz never tracks GitHub `latest`.
+Pre-1.0 and under active development; expect breaking changes. The incumbent
+`v0.0.2` line is frozen; coreless v2 ships as `v0.1.0-alpha.N` once its release
+acceptance ticket is complete.
 
 ## Contributing
 

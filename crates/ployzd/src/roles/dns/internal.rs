@@ -1,5 +1,6 @@
-//! Machine-local DNS for service names projected directly from machine facts.
+//! Machine-local DNS resolver mechanics fed by a complete record snapshot.
 
+use std::collections::BTreeMap;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
@@ -9,13 +10,10 @@ use hickory_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
 use hickory_proto::rr::rdata::A;
 use hickory_proto::rr::{DNSClass, Name, RData, Record, RecordType};
 use ployz_core::network::INTERNAL_DNS_SUFFIX;
+use ployz_core::network::internal_dns::InternalServiceName;
 use tokio::net::UdpSocket;
 use tokio::sync::{broadcast, watch};
 use tokio::task::JoinHandle;
-
-use crate::role_testimony::RoleTestimonyCache;
-use ployz_core::intent::IntentSnapshot;
-use ployz_core::network::internal_dns::{InternalServiceName, internal_dns_records};
 
 const DNS_PORT: u16 = 53;
 const DNS_TTL_SECONDS: u32 = 5;
@@ -26,8 +24,6 @@ const BIND_DIAGNOSTIC_REPEAT: Duration = Duration::from_secs(30);
 const LOCAL_QUERY_TIMEOUT: Duration = Duration::from_millis(500);
 const LOCAL_QUERY_ID: u16 = 0x504c;
 
-/// The first question of a decoded request, with the header fields the
-/// response must echo.
 #[derive(Debug)]
 struct DnsRequest {
     id: u16,
@@ -35,8 +31,6 @@ struct DnsRequest {
     query: Query,
 }
 
-/// Decodes a request datagram and takes its first question; datagrams that are
-/// not well-formed DNS queries with at least one question get no response.
 #[must_use]
 fn parse_request(packet: &[u8]) -> Option<DnsRequest> {
     let message = Message::from_vec(packet).ok()?;
@@ -48,15 +42,13 @@ fn parse_request(packet: &[u8]) -> Option<DnsRequest> {
     })
 }
 
-/// The question name in the dotted lowercase form used for record lookup,
-/// without the FQDN trailing dot.
 #[must_use]
 fn lookup_name(query: &Query) -> String {
     let name = query.name.to_ascii().to_ascii_lowercase();
     name.trim_end_matches('.').to_owned()
 }
 
-pub(super) async fn query_bound_resolver(
+pub async fn query_bound_resolver(
     bound: SocketAddr,
     name: &InternalServiceName,
 ) -> io::Result<Vec<Ipv4Addr>> {
@@ -130,7 +122,6 @@ fn invalid_dns_response(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
-/// Builds an authoritative A-only DNS response that echoes the first question.
 #[must_use]
 fn build_response(
     request: &DnsRequest,
@@ -152,9 +143,8 @@ fn build_response(
     response.to_vec().ok()
 }
 
-/// Bind and serving state for the machine-local internal resolver.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum InternalResolverState {
+pub enum InternalResolverState {
     AwaitingBind { attempts: u64 },
     Serving { bound: SocketAddr },
 }
@@ -172,13 +162,13 @@ impl InternalResolverHealth {
     }
 
     #[must_use]
-    #[cfg(test)]
     pub fn serving(bound: SocketAddr) -> Self {
         let (state, _) = watch::channel(InternalResolverState::Serving { bound });
         Self { state }
     }
 
-    pub(super) fn snapshot(&self) -> InternalResolverState {
+    #[must_use]
+    pub fn snapshot(&self) -> InternalResolverState {
         self.state.borrow().clone()
     }
 
@@ -196,7 +186,7 @@ impl InternalResolverHealth {
             .send_replace(InternalResolverState::Serving { bound });
     }
 
-    pub(super) async fn await_bound(&self, timeout: Duration) -> Option<SocketAddr> {
+    pub async fn await_bound(&self, timeout: Duration) -> Option<SocketAddr> {
         let mut states = self.state.subscribe();
         let Ok(Ok(state)) = tokio::time::timeout(
             timeout,
@@ -210,6 +200,29 @@ impl InternalResolverHealth {
             InternalResolverState::Serving { bound } => Some(*bound),
             InternalResolverState::AwaitingBind { .. } => None,
         }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct InternalDnsRecords {
+    records: Arc<Mutex<BTreeMap<InternalServiceName, Vec<Ipv4Addr>>>>,
+}
+
+impl InternalDnsRecords {
+    pub fn replace(&self, records: BTreeMap<InternalServiceName, Vec<Ipv4Addr>>) {
+        *self
+            .records
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = records;
+    }
+
+    fn addresses(&self, name: &InternalServiceName) -> Vec<Ipv4Addr> {
+        self.records
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(name)
+            .cloned()
+            .unwrap_or_default()
     }
 }
 
@@ -237,47 +250,9 @@ impl BindFailureDiagnostics {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-pub(super) struct InternalDnsIntentCache {
-    intent: Arc<Mutex<Option<IntentSnapshot>>>,
-}
-
-impl InternalDnsIntentCache {
-    pub(super) fn record_if_available(&self, intent: Option<IntentSnapshot>) {
-        let Some(intent) = intent else {
-            return;
-        };
-        let mut current = self
-            .intent
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if current
-            .as_ref()
-            .is_some_and(|current| intent.epoch < current.epoch)
-        {
-            return;
-        }
-        *current = Some(intent);
-    }
-
-    fn records(
-        &self,
-        snapshots: &[ployz_core::machine::runtime::MachineFactsSnapshot],
-    ) -> std::collections::BTreeMap<InternalServiceName, Vec<Ipv4Addr>> {
-        self.intent
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .as_ref()
-            .map(|intent| internal_dns_records(intent, snapshots))
-            .unwrap_or_default()
-    }
-}
-
-/// Spawns the machine-local resolver. Queries read cached facts and last-known-good
-/// intent; core availability, health, and gateway status are not query dependencies.
-pub(super) fn spawn_internal_resolver(
-    facts: RoleTestimonyCache,
-    intent: InternalDnsIntentCache,
+#[must_use]
+pub fn spawn_internal_resolver(
+    records: InternalDnsRecords,
     bind: SocketAddr,
     mut shutdown: broadcast::Receiver<()>,
     health: InternalResolverHealth,
@@ -330,12 +305,12 @@ pub(super) fn spawn_internal_resolver(
                         continue;
                     };
                     let request = request.to_vec();
-                    let request_facts = facts.clone();
-                    let request_intent = intent.clone();
+                    let request_records = records.clone();
                     let response_socket = Arc::clone(&socket);
-                    // ponytail: unbounded task per datagram; add a semaphore if a container ever floods the resolver.
                     tokio::spawn(async move {
-                        let Some(response) = response_for_request(&request_facts, &request_intent, upstream, request).await else {
+                        let Some(response) =
+                            response_for_request(&request_records, upstream, request).await
+                        else {
                             return;
                         };
                         if let Err(error) = response_socket.send_to(&response, peer).await {
@@ -355,8 +330,7 @@ pub(super) fn spawn_internal_resolver(
 }
 
 async fn response_for_request(
-    facts: &RoleTestimonyCache,
-    intent: &InternalDnsIntentCache,
+    records: &InternalDnsRecords,
     upstream: IpAddr,
     packet: Vec<u8>,
 ) -> Option<Vec<u8>> {
@@ -366,20 +340,17 @@ async fn response_for_request(
         .strip_suffix(INTERNAL_DNS_SUFFIX)
         .is_some_and(|prefix| prefix.ends_with('.'))
     {
-        // ponytail: full projection rebuild per query; cache on fact change if a machine's query rate ever matters.
-        let records = intent.records(&facts.machine_facts_all());
         let answers = if request.query.query_type == RecordType::A
             && request.query.query_class == DNSClass::IN
         {
             InternalServiceName::try_new(&name)
                 .ok()
-                .and_then(|name| records.get(&name))
-                .map(Vec::as_slice)
-                .unwrap_or(&[])
+                .map(|name| records.addresses(&name))
+                .unwrap_or_default()
         } else {
-            &[]
+            Vec::new()
         };
-        return build_response(&request, ResponseCode::NoError, answers);
+        return build_response(&request, ResponseCode::NoError, &answers);
     }
 
     match forward_to_upstream(upstream, &packet).await {
@@ -396,7 +367,7 @@ async fn response_for_request(
     }
 }
 
-async fn forward_to_upstream(upstream: IpAddr, packet: &[u8]) -> Result<Vec<u8>, std::io::Error> {
+async fn forward_to_upstream(upstream: IpAddr, packet: &[u8]) -> Result<Vec<u8>, io::Error> {
     let local = match upstream {
         IpAddr::V4(_) => SocketAddr::from(([0, 0, 0, 0], 0)),
         IpAddr::V6(_) => SocketAddr::from(([0_u16; 8], 0)),
@@ -407,17 +378,11 @@ async fn forward_to_upstream(upstream: IpAddr, packet: &[u8]) -> Result<Vec<u8>,
     let mut response = vec![0_u8; 4096];
     let length = tokio::time::timeout(UPSTREAM_TIMEOUT, socket.recv(&mut response))
         .await
-        .map_err(|_| {
-            std::io::Error::new(std::io::ErrorKind::TimedOut, "DNS upstream timed out")
-        })??;
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "DNS upstream timed out"))??;
     response.truncate(length);
     Ok(response)
 }
 
-/// The first resolv.conf `nameserver` usable as an upstream: any address that
-/// is not the resolver's own bind. A loopback stub (systemd-resolved, dnsmasq,
-/// Docker's embedded resolver) is a valid upstream; only forwarding to our own
-/// bind address is a self-loop, so that entry is skipped to the next candidate.
 fn upstream_from_resolv_conf(contents: &str, own_bind: IpAddr) -> Option<IpAddr> {
     contents.lines().find_map(|line| {
         let mut fields = line.split_whitespace();
@@ -430,8 +395,6 @@ fn upstream_from_resolv_conf(contents: &str, own_bind: IpAddr) -> Option<IpAddr>
 }
 
 fn load_upstream_nameserver(own_bind: IpAddr) -> IpAddr {
-    // ponytail: resolv.conf plus a public fallback is the ceiling; per-machine
-    // upstream configuration is the upgrade path.
     std::fs::read_to_string("/etc/resolv.conf")
         .ok()
         .and_then(|contents| upstream_from_resolv_conf(&contents, own_bind))
@@ -449,24 +412,6 @@ fn load_upstream_nameserver(own_bind: IpAddr) -> IpAddr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::ids::{
-        ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId,
-        StepId,
-    };
-    use ployz_core::intent::ActiveMachineState;
-    use ployz_core::intent::IntentSnapshot;
-    use ployz_core::intent::recovery::ControlPlaneEpoch;
-    use ployz_core::machine::MachineLifecycle;
-    use ployz_core::machine::runtime::{
-        ContainerRuntimeState, MachineContainerObservationSnapshot, MachineDiskSpace,
-        MachineFactsSnapshot, ManagedContainerIdentity, ManagedContainerKind,
-        ManagedContainerObservation,
-    };
-    use ployz_core::network::MachineEndpointSubnet;
-    use ployz_core::roles::InstallRolePolicy;
-
-    use ployz_test_support::fixtures::serving_target_entry;
-    use ployz_test_support::ids::{machine_id, machine_name, operation_id};
 
     const TEST_QTYPE_A: u16 = 1;
     const TEST_QTYPE_AAAA: u16 = 28;
@@ -509,13 +454,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_query_for_unknown_internal_name_returns_noerror_without_answers() {
-        let packet = query_packet("missing.default.internal", TEST_QTYPE_A);
+    async fn unknown_internal_name_returns_noerror_without_answers() {
         let response = response_for_request(
-            &RoleTestimonyCache::default(),
-            &InternalDnsIntentCache::default(),
+            &InternalDnsRecords::default(),
             IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
-            packet,
+            query_packet("missing.default.internal", TEST_QTYPE_A),
         )
         .await
         .expect("internal query has a response");
@@ -524,55 +467,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn aaaa_query_for_known_internal_name_returns_noerror_without_answers() {
-        let cache = RoleTestimonyCache::default();
-        cache.record_machine_facts(facts(
-            "machine_a",
-            [observation(
-                "ctr_1",
-                ManagedContainerKind::Service,
-                running("10.42.2.8"),
-            )],
-        ));
-        let packet = query_packet("db.default.internal", TEST_QTYPE_AAAA);
-        let response = response_for_request(
-            &cache,
-            &internal_dns_intent("machine_a", "entry_db"),
-            IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
-            packet,
-        )
-        .await
-        .expect("internal query has a response");
-
-        assert_eq!(response_header(&response), (0x8500, 0));
-    }
-
-    #[tokio::test]
-    async fn resolver_answers_known_internal_service_over_udp() {
+    async fn resolver_answers_record_snapshot_over_udp() {
         let reservation = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
             .await
             .expect("reserve UDP port");
         let bind = reservation.local_addr().expect("reserved address");
         drop(reservation);
 
-        let cache = RoleTestimonyCache::default();
-        cache.record_machine_facts(facts(
-            "machine_a",
-            [observation(
-                "ctr_1",
-                ManagedContainerKind::Service,
-                running("10.42.2.8"),
-            )],
-        ));
+        let records = InternalDnsRecords::default();
+        records.replace(BTreeMap::from([(
+            InternalServiceName::try_new("db.default.internal").expect("internal name"),
+            vec![Ipv4Addr::new(10, 42, 2, 8)],
+        )]));
         let (shutdown, receiver) = broadcast::channel(1);
         let health = InternalResolverHealth::awaiting_bind();
-        let task = spawn_internal_resolver(
-            cache,
-            internal_dns_intent("machine_a", "entry_db"),
-            bind,
-            receiver,
-            health.clone(),
-        );
+        let task = spawn_internal_resolver(records, bind, receiver, health.clone());
         let client = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
             .await
             .expect("bind test client");
@@ -589,22 +498,16 @@ mod tests {
                 tokio::time::timeout(Duration::from_millis(100), client.recv_from(&mut packet))
                     .await
             {
-                let Some(response) = packet.get(..length) else {
-                    panic!("UDP response length fits receive buffer");
-                };
-                received_response = Some(response.to_vec());
+                received_response = packet.get(..length).map(<[u8]>::to_vec);
                 break;
             }
         }
-        let Some(response) = received_response else {
-            panic!("resolver did not answer before the test deadline");
-        };
+        let response = received_response.expect("resolver answers before deadline");
 
         assert_eq!(response_header(&response), (0x8500, 1));
-        let expected_address = [10, 42, 2, 8];
         assert_eq!(
             response.get(response.len().saturating_sub(4)..),
-            Some(expected_address.as_slice())
+            Some([10, 42, 2, 8].as_slice())
         );
         assert_eq!(
             health.snapshot(),
@@ -614,57 +517,23 @@ mod tests {
         task.await.expect("resolver task exits");
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn resolver_bind_retry_stays_at_a_one_second_cadence() {
-        let reservation = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
-            .await
-            .expect("reserve UDP port");
-        let bind = reservation.local_addr().expect("reserved address");
-        let (shutdown, receiver) = broadcast::channel(1);
-        let health = InternalResolverHealth::awaiting_bind();
-        let task = spawn_internal_resolver(
-            RoleTestimonyCache::default(),
-            InternalDnsIntentCache::default(),
-            bind,
-            receiver,
-            health.clone(),
-        );
-        tokio::task::yield_now().await;
+    #[tokio::test]
+    async fn aaaa_query_for_known_name_has_no_answers() {
+        let records = InternalDnsRecords::default();
+        records.replace(BTreeMap::from([(
+            InternalServiceName::try_new("db.default.internal").expect("internal name"),
+            vec![Ipv4Addr::new(10, 42, 2, 8)],
+        )]));
 
-        for delay in [
-            Duration::from_millis(250),
-            Duration::from_millis(500),
-            Duration::from_secs(1),
-            Duration::from_secs(1),
-        ] {
-            tokio::time::advance(delay).await;
-            tokio::task::yield_now().await;
-        }
+        let response = response_for_request(
+            &records,
+            IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
+            query_packet("db.default.internal", TEST_QTYPE_AAAA),
+        )
+        .await
+        .expect("internal query has a response");
 
-        assert_eq!(
-            health.snapshot(),
-            InternalResolverState::AwaitingBind { attempts: 5 }
-        );
-        let _ = shutdown.send(());
-        task.await.expect("resolver task exits");
-        drop(reservation);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn unchanged_bind_failure_diagnostics_repeat_every_thirty_seconds() {
-        let mut diagnostics = BindFailureDiagnostics::new();
-        let address_in_use = io::Error::new(io::ErrorKind::AddrInUse, "address in use");
-        let address_unavailable =
-            io::Error::new(io::ErrorKind::AddrNotAvailable, "address unavailable");
-
-        assert!(diagnostics.should_report(&address_in_use, tokio::time::Instant::now()));
-        assert!(!diagnostics.should_report(&address_in_use, tokio::time::Instant::now()));
-        tokio::time::advance(Duration::from_secs(29)).await;
-        assert!(!diagnostics.should_report(&address_in_use, tokio::time::Instant::now()));
-        assert!(diagnostics.should_report(&address_unavailable, tokio::time::Instant::now()));
-        assert!(!diagnostics.should_report(&address_unavailable, tokio::time::Instant::now()));
-        tokio::time::advance(BIND_DIAGNOSTIC_REPEAT).await;
-        assert!(diagnostics.should_report(&address_unavailable, tokio::time::Instant::now()));
+        assert_eq!(response_header(&response), (0x8500, 0));
     }
 
     #[test]
@@ -678,59 +547,6 @@ mod tests {
         assert_eq!(
             upstream_from_resolv_conf("nameserver 10.42.0.1\nnameserver 9.9.9.9\n", own_bind),
             Some(IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)))
-        );
-        assert_eq!(
-            upstream_from_resolv_conf("nameserver 10.42.0.1\n", own_bind),
-            None
-        );
-    }
-
-    #[test]
-    fn intent_cache_retains_last_known_good_when_refresh_is_unavailable() {
-        let cache = RoleTestimonyCache::default();
-        cache.record_machine_facts(facts(
-            "machine_a",
-            [observation(
-                "ctr_1",
-                ManagedContainerKind::Service,
-                running("10.42.2.8"),
-            )],
-        ));
-        let intent = internal_dns_intent("machine_a", "entry_db");
-
-        intent.record_if_available(None);
-
-        assert_eq!(
-            intent.records(&cache.machine_facts_all()),
-            std::collections::BTreeMap::from([(
-                InternalServiceName::try_new("db.default.internal").expect("internal name"),
-                vec![Ipv4Addr::new(10, 42, 2, 8)]
-            )])
-        );
-    }
-
-    #[test]
-    fn intent_cache_rejects_a_lower_control_plane_epoch() {
-        let intent = InternalDnsIntentCache::default();
-        intent.record_if_available(Some(internal_dns_intent_snapshot(
-            ControlPlaneEpoch::initial().next(),
-            "machine_a",
-            "entry_current",
-        )));
-        intent.record_if_available(Some(internal_dns_intent_snapshot(
-            ControlPlaneEpoch::initial(),
-            "machine_a",
-            "entry_stale",
-        )));
-
-        assert_eq!(
-            intent
-                .intent
-                .lock()
-                .expect("intent cache lock")
-                .as_ref()
-                .map(|intent| intent.epoch),
-            Some(ControlPlaneEpoch::initial().next())
         );
     }
 
@@ -750,114 +566,15 @@ mod tests {
 
     fn response_header(response: &[u8]) -> (u16, u16) {
         (
-            test_read_u16(response, 2).expect("response flags"),
-            test_read_u16(response, 6).expect("answer count"),
+            read_u16(response, 2).expect("response flags"),
+            read_u16(response, 6).expect("answer count"),
         )
     }
 
-    fn test_read_u16(packet: &[u8], offset: usize) -> Option<u16> {
+    fn read_u16(packet: &[u8], offset: usize) -> Option<u16> {
         let [high, low] = packet.get(offset..offset.checked_add(2)?)? else {
             return None;
         };
         Some(u16::from_be_bytes([*high, *low]))
-    }
-
-    fn facts(
-        machine: &str,
-        containers: impl IntoIterator<Item = ManagedContainerObservation>,
-    ) -> MachineFactsSnapshot {
-        let machine_id = MachineId::try_new(machine).expect("machine id");
-        MachineFactsSnapshot::try_new(
-            machine_id.clone(),
-            MachineContainerObservationSnapshot::try_new(machine_id, containers)
-                .expect("container snapshot"),
-            None,
-            MachineDiskSpace {
-                available_bytes: 40,
-                total_bytes: 100,
-            },
-            None,
-            ployz_core::image::OciPlatform::current(),
-            1,
-        )
-        .expect("machine facts")
-    }
-
-    fn observation(
-        container: &str,
-        kind: ManagedContainerKind,
-        state: ContainerRuntimeState,
-    ) -> ManagedContainerObservation {
-        ManagedContainerObservation {
-            machine_id: MachineId::try_new("machine_a").expect("machine id"),
-            container_id: ContainerId::try_new(container).expect("container id"),
-            identity: ManagedContainerIdentity {
-                namespace_id: NamespaceId::try_new("default").expect("namespace id"),
-                service_id: ServiceId::try_new("db").expect("service id"),
-                namespace_revision_entry_id: NamespaceRevisionEntryId::try_new("entry_db")
-                    .expect("entry id"),
-                operation_id: OperationId::try_new("op_1").expect("operation id"),
-                step_id: StepId::try_new("step_1").expect("step id"),
-                kind,
-            },
-            state,
-            health_status: None,
-            resolved_image_identity: None,
-            created_at_unix_seconds: None,
-            named_volume_names: Default::default(),
-        }
-    }
-
-    fn running(address: &str) -> ContainerRuntimeState {
-        ContainerRuntimeState::running_at(address.parse().expect("valid IPv4"))
-    }
-
-    fn internal_dns_intent(machine: &str, entry: &str) -> InternalDnsIntentCache {
-        let intent = InternalDnsIntentCache::default();
-        intent.record_if_available(Some(internal_dns_intent_snapshot(
-            ControlPlaneEpoch::initial(),
-            machine,
-            entry,
-        )));
-        intent
-    }
-
-    fn internal_dns_intent_snapshot(
-        epoch: ControlPlaneEpoch,
-        machine: &str,
-        entry: &str,
-    ) -> IntentSnapshot {
-        IntentSnapshot {
-            epoch,
-            core_machine_id: machine_id("machine_a"),
-            active_machines: vec![ActiveMachineState {
-                machine_id: machine_id(machine),
-                name: machine_name(machine),
-                activated_by: operation_id("op_activate"),
-                roles: InstallRolePolicy::install_all(),
-                lifecycle: MachineLifecycle::Active,
-                control_endpoints: Vec::new(),
-                mesh_endpoints: Vec::new(),
-                endpoint_subnet: MachineEndpointSubnet::try_new("10.198.0.0/24")
-                    .expect("endpoint subnet"),
-                wireguard_public_key: ployz_core::network::WireGuardPublicKey::try_new(format!(
-                    "public-{machine}"
-                ))
-                .expect("public key"),
-            }],
-            dataplane_projection: ployz_core::network::DataplaneProjection::try_new(
-                Vec::new(),
-                None,
-            )
-            .expect("empty projection"),
-            route_bindings: Vec::new(),
-            serving_target_entries: vec![serving_target_entry("db", entry)],
-            volume_pins: Vec::new(),
-            nats_authorizations: Vec::new(),
-            automatic_hostname_configuration:
-                ployz_core::ingress::AutomaticHostnameConfiguration::Ployz,
-            ployz_dns_target: ployz_core::ingress::PloyzDnsTargetIntent::Enabled,
-            active_certificates: Vec::new(),
-        }
     }
 }

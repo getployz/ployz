@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 /// placement policy; runtime readiness comes from observations, never from
 /// lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum MachineLifecycle {
     #[default]
@@ -18,7 +18,7 @@ pub enum MachineLifecycle {
 /// Operator intent excludes durably; unavailable machine facts exclude only
 /// the current operation runtime snapshot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MachineUsabilityReason {
     PlatformMismatch {
@@ -43,7 +43,7 @@ pub enum MachineUsabilityReason {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DataplaneUnavailableReason {
     NotDeclared,

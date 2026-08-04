@@ -2,7 +2,7 @@ use super::super::*;
 
 /// Durable evidence for a volume handoff whose owner stops were confirmed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct DeployVolumeHandoffApplied {
     pub machine_id: MachineId,
@@ -11,7 +11,7 @@ pub struct DeployVolumeHandoffApplied {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct DeployVolumeHandoffAppliedParticipant {
     pub target: DeployCleanupContainer,
@@ -20,7 +20,7 @@ pub struct DeployVolumeHandoffAppliedParticipant {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum DeployVolumeHandoffStopOutcome {
     StoppedRunning,
@@ -29,7 +29,7 @@ pub enum DeployVolumeHandoffStopOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(
     try_from = "Vec<DeployVolumeHandoffAppliedParticipant>",
     into = "Vec<DeployVolumeHandoffAppliedParticipant>"
@@ -70,7 +70,7 @@ impl From<NonEmptyAppliedVolumeHandoffParticipants> for Vec<DeployVolumeHandoffA
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct DeployVolumeHandoffParticipant {
     pub target: DeployCleanupContainer,
@@ -79,7 +79,7 @@ pub struct DeployVolumeHandoffParticipant {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(
     try_from = "Vec<DeployVolumeHandoffParticipant>",
     into = "Vec<DeployVolumeHandoffParticipant>"
@@ -122,7 +122,7 @@ impl From<NonEmptyVolumeHandoffParticipants> for Vec<DeployVolumeHandoffParticip
 pub struct EmptyVolumeHandoffParticipantsError;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(try_from = "Vec<VolumeName>", into = "Vec<VolumeName>")]
 pub struct NonEmptyVolumeNames(Vec<VolumeName>);
 
@@ -164,7 +164,7 @@ impl From<NonEmptyVolumeNames> for Vec<VolumeName> {
 pub struct EmptyVolumeNamesError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum DeployVolumeHandoffPriorState {
     Running,

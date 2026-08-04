@@ -5,7 +5,7 @@ use super::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct GitSourceEvidence {
     pub url: GitRepositoryUrl,
@@ -15,7 +15,7 @@ pub struct GitSourceEvidence {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct VerifiedGitCommit {
     pub url: GitRepositoryUrl,
@@ -36,35 +36,35 @@ impl VerifiedGitCommit {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BuildSourceEvidence {
     Git {
         #[serde(flatten)]
-        #[cfg_attr(feature = "typescript", ts(flatten))]
+        #[cfg_attr(feature = "ts", ts(flatten))]
         git: GitSourceEvidence,
     },
     LocalSnapshot {
         digest: LocalSnapshotDigest,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[cfg_attr(feature = "typescript", ts(optional))]
+        #[cfg_attr(feature = "ts", ts(optional))]
         subdir: Option<BuildContextPath>,
     },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
 pub enum VerifiedBuildSource {
     Git {
         #[serde(flatten)]
-        #[cfg_attr(feature = "typescript", ts(flatten))]
+        #[cfg_attr(feature = "ts", ts(flatten))]
         git: VerifiedGitCommit,
     },
     LocalSnapshot {
         digest: LocalSnapshotDigest,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[cfg_attr(feature = "typescript", ts(optional))]
+        #[cfg_attr(feature = "ts", ts(optional))]
         subdir: Option<BuildContextPath>,
     },
 }

@@ -1,7 +1,7 @@
 //! Shared JSON wire helpers for core value objects.
 //!
 //! The greenfield public control-plane JSON contract encodes wide `u64`
-//! values as decimal strings. NATS sequence numbers and Unix timestamps can
+//! values as decimal strings. Durable sequence numbers and Unix timestamps can
 //! exceed JavaScript's precise integer range, and JSON has no portable integer
 //! width. Rust keeps `u64` internally; the JSON wire stays lossless.
 
@@ -48,8 +48,8 @@ macro_rules! positive_u64_wire_newtype {
             ::serde::Serialize,
             ::serde::Deserialize,
         )]
-        #[cfg_attr(feature = "typescript", derive(::ts_rs::TS))]
-        #[cfg_attr(feature = "typescript", ts(type = $brand))]
+        #[cfg_attr(feature = "ts", derive(::ts_rs::TS))]
+        #[cfg_attr(feature = "ts", ts(type = $brand))]
         #[serde(try_from = "String", into = "String")]
         pub struct $name(::std::num::NonZeroU64);
 
@@ -138,8 +138,8 @@ macro_rules! nonempty_text_newtype {
     ) => {
         $(#[$meta])*
         #[derive(Debug, Clone, PartialEq, Eq, ::serde::Serialize, ::serde::Deserialize)]
-        #[cfg_attr(feature = "typescript", derive(::ts_rs::TS))]
-        #[cfg_attr(feature = "typescript", ts(type = $brand))]
+        #[cfg_attr(feature = "ts", derive(::ts_rs::TS))]
+        #[cfg_attr(feature = "ts", ts(type = $brand))]
         #[serde(try_from = "String", into = "String")]
         pub struct $name(String);
 

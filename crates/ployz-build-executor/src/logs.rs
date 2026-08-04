@@ -3,7 +3,6 @@ use ployz_core::build::{BuildExecutorAssignment, BuildExecutorLogFrame};
 use ployz_core::ids::OperationId;
 use ployz_core::image::OciPlatform;
 use ployz_core::operation::{BuildLogChunk, MAX_BUILD_LOG_CHUNK_BYTES};
-use ployz_nats::service_runtime::NatsClient;
 use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
@@ -124,19 +123,17 @@ fn take_utf8_output(pending: &mut Vec<u8>, boundary: Utf8Boundary) -> String {
 
 #[derive(Clone)]
 pub struct BuildLogDestination {
-    client: NatsClient,
-    subject: String,
+    frames: mpsc::Sender<BuildExecutorLogFrame>,
     assignment: BuildExecutorAssignment,
 }
 
 impl BuildLogDestination {
     #[must_use]
-    pub fn new(client: NatsClient, subject: String, assignment: BuildExecutorAssignment) -> Self {
-        Self {
-            client,
-            subject,
-            assignment,
-        }
+    pub fn new(
+        frames: mpsc::Sender<BuildExecutorLogFrame>,
+        assignment: BuildExecutorAssignment,
+    ) -> Self {
+        Self { frames, assignment }
     }
 }
 
@@ -183,11 +180,6 @@ impl BuildLogPublisher {
         let remaining =
             take_redacted_output(&mut self.pending, &self.secret, RedactionBoundary::End);
         self.publish_text(remaining).await?;
-        self.destination
-            .client
-            .flush()
-            .await
-            .map_err(|error| infrastructure("flush build logs", error.to_string()))?;
         Ok(PublishedLogs {
             final_sequence: self.sequence,
             omitted_bytes: self.omitted_bytes,
@@ -221,13 +213,11 @@ impl BuildLogPublisher {
                 chunk: BuildLogChunk::try_new(chunk)
                     .map_err(|error| infrastructure("frame build log", error.to_string()))?,
             };
-            let payload = serde_json::to_vec(&frame)
-                .map_err(|error| infrastructure("encode build log", error.to_string()))?;
             self.destination
-                .client
-                .publish(self.destination.subject.clone(), payload.into())
+                .frames
+                .send(frame)
                 .await
-                .map_err(|error| infrastructure("publish build log", error.to_string()))?;
+                .map_err(|error| infrastructure("deliver build log", error.to_string()))?;
             self.published_bytes = self.published_bytes.saturating_add(bytes);
             self.progress.published(self.sequence);
         }
@@ -277,7 +267,32 @@ fn char_boundary_at_or_before(value: &str, mut index: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ployz_core::ids::MachineId;
     use tokio::io::{AsyncWriteExt, duplex};
+
+    fn destination(
+        capacity: usize,
+    ) -> (BuildLogDestination, mpsc::Receiver<BuildExecutorLogFrame>) {
+        let (frames, receiver) = mpsc::channel(capacity);
+        let assignment = BuildExecutorAssignment::Cluster {
+            machine_id: MachineId::try_new("machine-a").expect("machine id"),
+        };
+        (BuildLogDestination::new(frames, assignment), receiver)
+    }
+
+    fn publisher(
+        destination: BuildLogDestination,
+        secret: &str,
+        progress: BuildLogProgress,
+    ) -> BuildLogPublisher {
+        BuildLogPublisher::new(
+            destination,
+            OperationId::try_new("operation-a").expect("operation id"),
+            OciPlatform::try_new("linux", "amd64").expect("platform"),
+            secret,
+            progress,
+        )
+    }
 
     #[tokio::test]
     async fn read_output_preserves_utf8_split_across_reads() {
@@ -317,6 +332,79 @@ mod tests {
 
         assert_eq!(first + &second, "prefix [redacted] suffix");
         assert!(pending.is_empty());
+    }
+
+    #[tokio::test]
+    async fn publisher_delivers_redacted_sequenced_frames() {
+        let (destination, mut receiver) = destination(4);
+        let progress = BuildLogProgress::default();
+        let mut publisher = publisher(destination, "token-123", progress.clone());
+
+        publisher.push("first token-").await.expect("first output");
+        publisher.push("123 second").await.expect("second output");
+        let published = publisher.finish().await.expect("finish logs");
+
+        let mut frames = Vec::new();
+        while let Some(frame) = receiver.recv().await {
+            frames.push(frame);
+        }
+        assert_eq!(
+            frames
+                .iter()
+                .map(|frame| frame.sequence)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        assert_eq!(
+            frames
+                .iter()
+                .map(|frame| frame.chunk.as_str())
+                .collect::<String>(),
+            "first [redacted] second"
+        );
+        let last = frames.last().expect("last frame");
+        assert_eq!(last.operation_id.as_str(), "operation-a");
+        assert_eq!(last.platform.os(), "linux");
+        assert_eq!(last.platform.architecture(), "amd64");
+        assert!(matches!(
+            &last.assignment,
+            BuildExecutorAssignment::Cluster { machine_id }
+                if machine_id.as_str() == "machine-a"
+        ));
+        assert_eq!(published.final_sequence, 3);
+        assert_eq!(published.omitted_bytes, 0);
+        assert_eq!(progress.summary(), (3, 0));
+    }
+
+    #[tokio::test]
+    async fn publisher_records_output_omitted_after_limit() {
+        let (destination, mut frames) = destination(1);
+        let progress = BuildLogProgress::default();
+        let mut publisher = publisher(destination, "", progress.clone());
+        publisher.published_bytes = BUILD_LOG_LIMIT_BYTES;
+
+        publisher.push("omitted").await.expect("omit output");
+        let published = publisher.finish().await.expect("finish logs");
+
+        assert!(frames.try_recv().is_err());
+        assert_eq!(published.final_sequence, 0);
+        assert_eq!(published.omitted_bytes, 7);
+        assert_eq!(progress.summary(), (0, 7));
+    }
+
+    #[tokio::test]
+    async fn publisher_reports_a_closed_destination() {
+        let (destination, frames) = destination(1);
+        drop(frames);
+        let mut publisher = publisher(destination, "", BuildLogProgress::default());
+
+        let error = publisher.push("output").await.expect_err("closed output");
+
+        assert!(matches!(
+            error,
+            BuildExecutionError::Infrastructure { action, .. }
+                if action == "deliver build log"
+        ));
     }
 
     #[tokio::test]

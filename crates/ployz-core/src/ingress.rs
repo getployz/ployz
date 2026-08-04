@@ -7,13 +7,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::certificate::ActiveCertState;
 use crate::ids::RouteBindingId;
-use crate::intent::recovery::ControlPlaneEpoch;
 use crate::network::is_public;
 use crate::operation::{RouteHostname, RouteHostnameError};
 
 /// Durable operator choice for automatic hostname creation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AutomaticHostnameConfiguration {
     Disabled,
@@ -31,9 +30,9 @@ impl AutomaticHostnameConfiguration {
 
 /// Validated multi-label DNS suffix used for custom automatic hostnames.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(
-    feature = "typescript",
+    feature = "ts",
     ts(type = "Brand<string, \"AutomaticHostnameSuffix\">")
 )]
 #[serde(try_from = "String", into = "String")]
@@ -87,11 +86,8 @@ pub enum AutomaticHostnameConfigurationError {
 
 /// Caller-selected label immediately beneath an automatic hostname suffix.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "typescript",
-    ts(type = "Brand<string, \"AutomaticHostnameLabel\">")
-)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "Brand<string, \"AutomaticHostnameLabel\">"))]
 #[serde(try_from = "String", into = "String")]
 pub struct AutomaticHostnameLabel(String);
 
@@ -150,7 +146,7 @@ pub enum AutomaticHostnameLabelError {
 
 /// Durable operator choice for the Ployz-managed DNS target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum PloyzDnsTargetIntent {
     Enabled,
@@ -159,7 +155,7 @@ pub enum PloyzDnsTargetIntent {
 
 /// Cluster-wide ingress configuration committed as one operator decision.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(
     try_from = "IngressConfigurationWire",
     into = "IngressConfigurationWire"
@@ -206,7 +202,7 @@ impl IngressConfiguration {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 struct IngressConfigurationWire {
     automatic_hostnames: AutomaticHostnameConfiguration,
@@ -239,7 +235,7 @@ pub enum IngressConfigurationError {
 
 /// Stable provenance of one attached Route Binding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum RouteBindingOrigin {
     Declared,
@@ -248,7 +244,7 @@ pub enum RouteBindingOrigin {
 
 /// Owner whose lifecycle controls active certificate metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "owner", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CertificateOwner {
     PloyzAutomaticNamespace,
@@ -257,7 +253,7 @@ pub enum CertificateOwner {
 
 /// Public, non-secret metadata for the active certificate owned by one ingress resource.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct ActiveCertificateMetadata {
     pub owner: CertificateOwner,
@@ -266,7 +262,7 @@ pub struct ActiveCertificateMetadata {
 
 /// Non-empty normalized public endpoint set for cluster ingress.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(try_from = "IngressEndpointSetWire", into = "IngressEndpointSetWire")]
 pub struct IngressEndpointSet {
     ipv4: BTreeSet<Ipv4Addr>,
@@ -274,7 +270,7 @@ pub struct IngressEndpointSet {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 struct IngressEndpointSetWire {
     ipv4: Vec<Ipv4Addr>,
@@ -341,7 +337,7 @@ pub enum IngressEndpointSetError {
 
 /// High-level reason that ingress endpoint publication must be withdrawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum IngressEndpointUnavailableReason {
     NoDeclaredGateways,
@@ -350,7 +346,7 @@ pub enum IngressEndpointUnavailableReason {
 
 /// Availability of the complete ingress endpoint projection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum IngressEndpointProjectionState {
     Pending,
@@ -367,19 +363,17 @@ pub enum IngressEndpointProjectionState {
 
 /// Identity carried by ingress projection invalidations and checkpoints.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct IngressEndpointProjectionIdentity {
-    pub control_plane_epoch: ControlPlaneEpoch,
     pub revision: u64,
 }
 
 /// Core-owned complete public ingress endpoint projection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct IngressEndpointProjection {
-    pub control_plane_epoch: ControlPlaneEpoch,
     pub revision: u64,
     pub state: IngressEndpointProjectionState,
 }
@@ -388,7 +382,6 @@ impl IngressEndpointProjection {
     #[must_use]
     pub const fn identity(&self) -> IngressEndpointProjectionIdentity {
         IngressEndpointProjectionIdentity {
-            control_plane_epoch: self.control_plane_epoch,
             revision: self.revision,
         }
     }

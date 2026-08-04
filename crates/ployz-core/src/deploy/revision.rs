@@ -11,8 +11,8 @@ pub struct EnvironmentRevisionKey([u8; 32]);
 
 impl EnvironmentRevisionKey {
     #[must_use]
-    pub fn derive_from_controller_seed(seed: &crate::nats_config::NatsUserSeed) -> Self {
-        Self::derive(seed.secret().as_bytes())
+    pub fn derive_from_key_material(key_material: &[u8]) -> Self {
+        Self::derive(key_material)
     }
 
     fn derive(controller_seed: &[u8]) -> Self {
@@ -139,7 +139,7 @@ pub fn namespace_revision_id_for(
     }
     let digest = hasher.finalize();
     NamespaceRevisionId::try_new(format!("{digest:x}"))
-        .expect("sha256 hex digest is a subject token")
+        .expect("sha256 hex digest is a stable identifier token")
 }
 
 #[must_use]
@@ -178,7 +178,7 @@ pub fn namespace_revision_entry_id_for(
     hash_environment_identity(&mut hasher, environment_key, &runtime.environment);
     let digest = hasher.finalize();
     NamespaceRevisionEntryId::try_new(format!("{digest:x}"))
-        .expect("sha256 hex digest is a subject token")
+        .expect("sha256 hex digest is a stable identifier token")
 }
 
 #[must_use]

@@ -1,31 +1,28 @@
-//! Cluster lifecycle: per-run identity, the labeled bridge network, machine
-//! provisioning order, sweeps, and explicit teardown.
+//! Per-run Docker network, machine provisioning, and label-scoped cleanup.
 
 use super::evidence::{capture_machine_evidence, evidence_dir};
-use super::machine::{DindMachine, DindMachineRole, MachineSpec, provision_machine};
+use super::machine::{DindMachine, MachineSpec, provision_machine};
 use super::{DindError, MANAGED_LABEL, MANAGED_LABEL_VALUE, RUN_LABEL, docker_api_error};
 use bollard::Docker;
 use bollard::errors::Error as BollardError;
-use bollard::models::{Ipam, IpamConfig, NetworkCreateRequest};
+use bollard::models::NetworkCreateRequest;
 use bollard::query_parameters::{
     ListContainersOptionsBuilder, ListNetworksOptionsBuilder, ListVolumesOptionsBuilder,
     RemoveContainerOptionsBuilder, RemoveVolumeOptionsBuilder,
 };
 use std::collections::HashMap;
 use std::fmt;
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// Unique identifier of one harness run; part of every resource name and the
-/// value of the [`RUN_LABEL`] on every resource the run creates.
+/// Unique identifier of one harness run and the cleanup label on its resources.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DindRunId(String);
 
 impl DindRunId {
     #[must_use]
     pub fn generate() -> Self {
-        Self(nuid::next().to_string())
+        Self(uuid::Uuid::new_v4().simple().to_string())
     }
 
     #[must_use]
@@ -40,43 +37,33 @@ impl fmt::Display for DindRunId {
     }
 }
 
-/// Requested cluster shape: exactly one core machine plus any number of
-/// edges, all mounting the same host artifact directory.
+/// Requested role-neutral machine set on one isolated Docker network.
 #[derive(Debug, Clone)]
 pub struct DindClusterSpec {
-    /// Host directory mounted read-only at
-    /// [`super::ARTIFACTS_MOUNT_PATH`] in every machine.
+    /// Host directory mounted read-only in every machine.
     pub artifact_dir: PathBuf,
     pub machines: Vec<MachineSpec>,
 }
 
-/// One provisioned cluster: a labeled bridge network plus ready machines.
+/// One provisioned run: a labeled bridge network plus ready machines.
 ///
-/// Cleanup is the explicit [`DindCluster::teardown`] call (plus
-/// `scripts/dind-clean.sh` for crashed runs) — there is deliberately no
-/// `Drop` impl, because panics must leave evidence behind.
+/// Cleanup is explicit so a failed test can capture evidence before removing
+/// its resources.
 #[derive(Debug)]
 pub struct DindCluster {
     docker: Docker,
     run_id: DindRunId,
     network_name: String,
-    core: DindMachine,
-    edges: Vec<DindMachine>,
+    machines: Vec<DindMachine>,
 }
 
 impl DindCluster {
-    /// Creates the per-run network and boots every machine to readiness (core
-    /// first). Runs use unique resources and clean up by run label, so one
-    /// cluster never sweeps another cluster's resources.
-    ///
-    /// On failure the run's resources are swept again — unless
-    /// [`super::keep_requested`] — so retries start clean.
+    /// Creates a per-run network and starts each requested machine in order.
     pub async fn provision(docker: &Docker, spec: DindClusterSpec) -> Result<Self, DindError> {
         let DindClusterSpec {
             artifact_dir,
-            machines,
+            machines: machine_specs,
         } = spec;
-        let (core_spec, edge_specs) = split_roles(machines)?;
         let run_id = DindRunId::generate();
         let network_name = format!("ployz-dind-{run_id}");
         let provisioned = provision_network_and_machines(
@@ -84,22 +71,18 @@ impl DindCluster {
             &run_id,
             &network_name,
             &artifact_dir,
-            &core_spec,
-            &edge_specs,
+            &machine_specs,
         )
         .await;
         match provisioned {
-            Ok((core, edges)) => Ok(Self {
+            Ok(machines) => Ok(Self {
                 docker: docker.clone(),
                 run_id,
                 network_name,
-                core,
-                edges,
+                machines,
             }),
             Err(error) => {
                 if !super::keep_requested() {
-                    // Best-effort failure-path sweep; the original error is
-                    // the one worth reporting.
                     let _ = sweep_run_resources(docker, &run_id).await;
                 }
                 Err(error)
@@ -118,35 +101,25 @@ impl DindCluster {
     }
 
     #[must_use]
-    pub fn core(&self) -> &DindMachine {
-        &self.core
+    pub fn machines(&self) -> &[DindMachine] {
+        &self.machines
     }
 
-    #[must_use]
-    pub fn edges(&self) -> &[DindMachine] {
-        &self.edges
-    }
-
-    /// Dumps journal, failed units, inner `docker ps -a`, and the NATS
-    /// authorization file of every machine into
-    /// `target/dind-evidence/<run_id>/`. Call this before failing a test.
+    /// Captures generic host and inner-Docker evidence for every machine.
     pub async fn capture_evidence(&self) -> Result<PathBuf, DindError> {
-        capture_machine_evidence(&self.docker, &self.run_id, &self.core).await?;
-        for edge in &self.edges {
-            capture_machine_evidence(&self.docker, &self.run_id, edge).await?;
+        for machine in &self.machines {
+            capture_machine_evidence(&self.docker, &self.run_id, machine).await?;
         }
         Ok(evidence_dir(&self.run_id))
     }
 
-    /// Removes the run's containers (with their anonymous volumes) and the
-    /// run network.
+    /// Removes every container, anonymous volume, and network from this run.
     pub async fn teardown(self) -> Result<(), DindError> {
         let Self {
             docker,
             run_id,
             network_name: _,
-            core: _,
-            edges: _,
+            machines: _,
         } = self;
         sweep_run_resources(&docker, &run_id).await
     }
@@ -157,62 +130,20 @@ async fn provision_network_and_machines(
     run_id: &DindRunId,
     network_name: &str,
     artifact_dir: &std::path::Path,
-    core_spec: &MachineSpec,
-    edge_specs: &[MachineSpec],
-) -> Result<(DindMachine, Vec<DindMachine>), DindError> {
-    create_cluster_network(docker, run_id, network_name).await?;
-    let core_name = format!("ployz-dind-{run_id}-core");
-    let core = provision_machine(
-        docker,
-        run_id,
-        network_name,
-        artifact_dir,
-        core_spec,
-        core_name,
-    )
-    .await?;
-    let mut edges = Vec::with_capacity(edge_specs.len());
-    for (index, edge_spec) in edge_specs.iter().enumerate() {
-        let edge_name = format!("ployz-dind-{run_id}-edge-{}", index + 1);
-        let edge = provision_machine(
-            docker,
-            run_id,
-            network_name,
-            artifact_dir,
-            edge_spec,
-            edge_name,
-        )
-        .await?;
-        edges.push(edge);
+    machine_specs: &[MachineSpec],
+) -> Result<Vec<DindMachine>, DindError> {
+    create_network(docker, run_id, network_name).await?;
+    let mut machines = Vec::with_capacity(machine_specs.len());
+    for (index, spec) in machine_specs.iter().enumerate() {
+        let name = format!("ployz-dind-{run_id}-machine-{}", index + 1);
+        let machine =
+            provision_machine(docker, run_id, network_name, artifact_dir, spec, name).await?;
+        machines.push(machine);
     }
-    Ok((core, edges))
+    Ok(machines)
 }
 
-fn split_roles(machines: Vec<MachineSpec>) -> Result<(MachineSpec, Vec<MachineSpec>), DindError> {
-    let mut core = None;
-    let mut edges = Vec::new();
-    for spec in machines {
-        match spec.role {
-            DindMachineRole::Core => {
-                if core.is_some() {
-                    return Err(DindError::ClusterShape {
-                        detail: String::from("more than one core machine requested"),
-                    });
-                }
-                core = Some(spec);
-            }
-            DindMachineRole::Edge => edges.push(spec),
-        }
-    }
-    let Some(core) = core else {
-        return Err(DindError::ClusterShape {
-            detail: String::from("no core machine requested"),
-        });
-    };
-    Ok((core, edges))
-}
-
-async fn create_cluster_network(
+async fn create_network(
     docker: &Docker,
     run_id: &DindRunId,
     network_name: &str,
@@ -220,16 +151,6 @@ async fn create_cluster_network(
     let request = NetworkCreateRequest {
         name: network_name.to_owned(),
         driver: Some("bridge".to_owned()),
-        // The managed-DNS path publishes only globally routable gateway
-        // testimony. An isolated routable-looking subnet lets the harness
-        // exercise that classification while Docker keeps all traffic local.
-        ipam: Some(Ipam {
-            config: Some(vec![IpamConfig {
-                subnet: Some(cluster_subnet(run_id)),
-                ..Default::default()
-            }]),
-            ..Default::default()
-        }),
         labels: Some(HashMap::from([
             (MANAGED_LABEL.to_owned(), MANAGED_LABEL_VALUE.to_owned()),
             (RUN_LABEL.to_owned(), run_id.as_str().to_owned()),
@@ -239,22 +160,11 @@ async fn create_cluster_network(
     docker
         .create_network(request)
         .await
-        .map_err(docker_api_error("create cluster network"))?;
+        .map_err(docker_api_error("create run network"))?;
     Ok(())
 }
 
-fn cluster_subnet(run_id: &DindRunId) -> String {
-    let mut hasher = DefaultHasher::new();
-    run_id.hash(&mut hasher);
-    let value = hasher.finish();
-    let second = (value >> 12) & 0xff;
-    let third = (value >> 4) & 0xff;
-    let fourth = (value & 0x0f) << 4;
-    format!("11.{second}.{third}.{fourth}/28")
-}
-
-/// Removes every container, network, and volume carrying the
-/// [`MANAGED_LABEL`] — stale leftovers from crashed runs included.
+/// Removes every container, network, and volume carrying the managed label.
 pub async fn sweep_managed_resources(docker: &Docker) -> Result<(), DindError> {
     sweep_by_label(docker, format!("{MANAGED_LABEL}={MANAGED_LABEL_VALUE}")).await
 }
@@ -345,8 +255,6 @@ async fn remove_container(docker: &Docker, id: &str) -> Result<(), DindError> {
     unreachable!("bounded container removal loop returns on every final attempt")
 }
 
-/// Sweeps race against auto-removal and against each other; a resource that
-/// is already gone is a success for cleanup purposes.
 fn ignore_not_found(result: Result<(), BollardError>) -> Result<(), BollardError> {
     match result {
         Ok(()) => Ok(()),
@@ -355,5 +263,18 @@ fn ignore_not_found(result: Result<(), BollardError>) -> Result<(), BollardError
             message: _,
         }) => Ok(()),
         Err(other) => Err(other),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DindRunId;
+
+    #[test]
+    fn generated_run_ids_are_uuid_simple_strings() {
+        let run_id = DindRunId::generate();
+
+        assert_eq!(run_id.as_str().len(), 32);
+        assert!(run_id.as_str().bytes().all(|byte| byte.is_ascii_hexdigit()));
     }
 }

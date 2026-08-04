@@ -14,7 +14,7 @@ const MAX_DNS_LABEL_LEN: usize = 63;
 pub const INTERNAL_DNS_SUFFIX: &str = "internal";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct InternalDnsStatus {
     pub resolver: InternalDnsResolverStatus,
@@ -24,7 +24,7 @@ pub struct InternalDnsStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct InternalDnsIntentHealth {
     pub refresh: InternalDnsIntentRefreshHealth,
@@ -56,7 +56,7 @@ impl Default for InternalDnsIntentHealth {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum InternalDnsIntentRefreshHealth {
     Unknown,
@@ -67,7 +67,7 @@ pub enum InternalDnsIntentRefreshHealth {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum InternalDnsIntentWatchHealth {
     Unknown,
@@ -78,7 +78,7 @@ pub enum InternalDnsIntentWatchHealth {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum InternalDnsResolverStatus {
     AwaitingBind { attempts: u64 },
@@ -87,7 +87,7 @@ pub enum InternalDnsResolverStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct InternalDnsFactWatermark {
     pub machine_id: MachineId,
@@ -98,9 +98,9 @@ pub struct InternalDnsFactWatermark {
 
 /// An opaque identity minted for one resolver fact-cache lifetime.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(
-    feature = "typescript",
+    feature = "ts",
     ts(type = "Brand<string, \"InternalDnsResolverCacheIncarnation\">")
 )]
 #[serde(transparent)]
@@ -139,11 +139,8 @@ impl InternalDnsFactGeneration {
 
 /// A validated, lower-case `<service>.<namespace>.internal` wire name.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "typescript",
-    ts(type = "Brand<string, \"InternalServiceName\">")
-)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "Brand<string, \"InternalServiceName\">"))]
 #[serde(try_from = "String", into = "String")]
 pub struct InternalServiceName(String);
 

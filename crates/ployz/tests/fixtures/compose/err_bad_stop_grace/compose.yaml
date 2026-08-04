@@ -1,5 +1,0 @@
-name: fixture_bad_stop_grace
-services:
-  web:
-    image: nginx:latest
-    stop_grace_period: 1fortnight

@@ -27,7 +27,7 @@ pub const MACHINE_UPDATE_REPORT_TIMEOUT: Duration = Duration::from_secs(
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MachineUpdateOperationState {
     Accepted,
@@ -82,7 +82,7 @@ impl MachineUpdateOperationState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MachineUpdateFailure {
     MachineUnavailable {
@@ -105,7 +105,7 @@ pub enum MachineUpdateFailure {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct MachineSubstrateVersions {
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -19,9 +19,9 @@ pub const MAX_HEALTHY_WIREGUARD_HANDSHAKE_AGE_SECONDS: u64 = 275;
 pub const DEFAULT_ENDPOINT_SUPERNET: &str = "10.198.0.0/16";
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(
-    feature = "typescript",
+    feature = "ts",
     ts(type = "Brand<string, \"DataplaneProjectionRevision\">")
 )]
 #[serde(transparent)]
@@ -56,7 +56,7 @@ fn hash_field(digest: &mut Sha256, value: &[u8]) {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct DataplaneProjectionMember {
     pub machine_id: MachineId,
@@ -66,7 +66,7 @@ pub struct DataplaneProjectionMember {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 struct DataplaneProjectionWire {
     declared_members: Vec<DataplaneProjectionMember>,
@@ -74,8 +74,8 @@ struct DataplaneProjectionWire {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(as = "DataplaneProjectionWire"))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(as = "DataplaneProjectionWire"))]
 #[serde(try_from = "DataplaneProjectionWire", into = "DataplaneProjectionWire")]
 pub struct DataplaneProjection {
     declared_revision: DataplaneProjectionRevision,
@@ -195,7 +195,7 @@ pub enum DataplaneProjectionError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct DataplaneMember {
     pub machine_id: MachineId,
@@ -215,8 +215,8 @@ impl DataplaneMember {
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "string"))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "string"))]
 #[serde(try_from = "String", into = "String")]
 pub struct MachineEndpointSupernet(Ipv4Net);
 
@@ -304,8 +304,8 @@ pub enum MachineEndpointSubnetAllocationError {
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "string"))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "string"))]
 #[serde(try_from = "String", into = "String")]
 pub struct MachineEndpointSubnet(IpNet);
 
@@ -390,7 +390,7 @@ pub enum MachineEndpointSubnetError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct WireGuardEbpfEndpointRoute {
     pub machine_id: MachineId,
@@ -408,7 +408,7 @@ impl WireGuardEbpfEndpointRoute {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct WireGuardPeer {
     pub machine_id: MachineId,
@@ -419,8 +419,8 @@ pub struct WireGuardPeer {
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "string"))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "string"))]
 #[serde(try_from = "String", into = "String")]
 pub struct WireGuardPublicKey(String);
 
@@ -542,7 +542,7 @@ fn stable_machine_octet(value: &str) -> u8 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum PloyzNativeMeshComponent {
     #[serde(rename = "wireguard")]
@@ -551,7 +551,7 @@ pub enum PloyzNativeMeshComponent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct PloyzNativeMeshReady {
     pub wireguard: WireGuardReady,
@@ -559,7 +559,7 @@ pub struct PloyzNativeMeshReady {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct WireGuardReady {
     pub public_key: WireGuardPublicKey,
@@ -567,14 +567,14 @@ pub struct WireGuardReady {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct EbpfForwardingReady {
     pub evidence: Vec<EbpfForwardingReadyEvidence>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum WireGuardReadyEvidence {
     HostPath { path: String },
@@ -582,7 +582,7 @@ pub enum WireGuardReadyEvidence {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum EbpfForwardingReadyEvidence {
     HostPath { path: String },

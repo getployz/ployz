@@ -7,7 +7,7 @@ use crate::machine::runtime::MachineFactsRefreshConfirmation;
 use crate::operation::FailureMessage;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "failure", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NetworkRepairRequestFailure {
     NoAnswer,
@@ -19,7 +19,7 @@ pub enum NetworkRepairRequestFailure {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NetworkRepairMachineFactsRefreshOutcome {
     Refreshed {
@@ -36,7 +36,7 @@ pub enum NetworkRepairMachineFactsRefreshOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "problem", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NetworkRepairDnsRefreshProblem {
     Unavailable {

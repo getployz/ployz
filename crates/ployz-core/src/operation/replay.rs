@@ -22,9 +22,9 @@ positive_u64_wire_error! {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(
-    feature = "typescript",
+    feature = "ts",
     ts(type = "SafeInteger<\"OperationEventReplayLimit\">")
 )]
 #[serde(try_from = "u16", into = "u16")]
@@ -79,7 +79,7 @@ pub enum OperationEventReplayLimitError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct OperationEventReplayRequest {
     pub operation_id: OperationId,
@@ -88,7 +88,7 @@ pub struct OperationEventReplayRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct OperationEventReplayPage {
     pub events: Vec<ReplayedOperationEvent>,
@@ -124,7 +124,7 @@ impl OperationEventReplayPage {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OperationEventReplayCursor {
     CaughtUp,
@@ -133,7 +133,7 @@ pub enum OperationEventReplayCursor {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct ReplayedOperationEvent {
     pub sequence: EventSequence,

@@ -1,9 +1,4 @@
-//! Evidence capture for failed assertions: per-machine dumps under
-//! `target/dind-evidence/<run_id>/<machine>/`.
-//!
-//! Operation rules: logs are evidence, not the audience — tests assert on
-//! operations and state, and these dumps exist so a failed gated run leaves
-//! something inspectable behind.
+//! Generic per-machine diagnostics under `target/dind-evidence/<run>/<machine>`.
 
 use super::DindError;
 use super::cluster::DindRunId;
@@ -12,17 +7,14 @@ use super::machine::DindMachine;
 use bollard::Docker;
 use std::path::{Path, PathBuf};
 
-/// Directory under the cargo target dir collecting all run evidence.
 const EVIDENCE_DIR_NAME: &str = "dind-evidence";
 
-/// Evidence directory for one run: `target/dind-evidence/<run_id>/`.
 #[must_use]
 pub fn evidence_dir(run_id: &DindRunId) -> PathBuf {
     target_dir().join(EVIDENCE_DIR_NAME).join(run_id.as_str())
 }
 
-/// Dumps the standard evidence set for one machine and returns the directory
-/// the files were written to.
+/// Captures bounded system, failed-unit, and inner-Docker diagnostics.
 pub async fn capture_machine_evidence(
     docker: &Docker,
     run_id: &DindRunId,
@@ -34,27 +26,16 @@ pub async fn capture_machine_evidence(
         message: source.to_string(),
     })?;
 
-    let captures: [(&str, &[&str]); 4] = [
+    let captures: [(&str, &[&str]); 3] = [
         (
             "journal.txt",
-            &[
-                "journalctl",
-                "--no-pager",
-                "-u",
-                "nats-server",
-                "-u",
-                "ployzd-*",
-            ],
+            &["journalctl", "--no-pager", "--lines", "2000"],
         ),
         (
             "systemctl-failed.txt",
             &["systemctl", "--failed", "--no-pager"],
         ),
         ("docker-ps.txt", &["docker", "ps", "-a"]),
-        (
-            "authorized-users.conf",
-            &["cat", "/etc/nats/authorized-users.conf"],
-        ),
     ];
     for (file_name, command) in captures {
         let content = match exec_in_container(docker, &machine.container_id, command).await {
@@ -86,6 +67,5 @@ fn target_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("CARGO_TARGET_DIR") {
         return PathBuf::from(dir);
     }
-    // testing/ployz-e2e -> workspace root -> target
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target")
 }

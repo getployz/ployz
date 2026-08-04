@@ -9,7 +9,7 @@ use crate::ids::{MachineId, NamespaceId};
 use crate::intent::{VolumeKind, VolumePinState};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum StorageCapability {
     Unprepared,
@@ -23,7 +23,7 @@ pub enum StorageCapability {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct DatasetQuotaFact {
     pub dataset: DatasetName,
@@ -31,7 +31,7 @@ pub struct DatasetQuotaFact {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct PoolCapacityFacts {
     pub total_bytes: u64,
@@ -44,7 +44,7 @@ pub struct PoolCapacityFacts {
 
 /// Fresh machine-owned usage testimony for one mounted volume.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct VolumeUsageFacts {
     pub used_bytes: u64,
@@ -204,7 +204,7 @@ mod capacity_tests {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
 pub enum StorageUnavailableReason {
     ZfsModuleMissing,
@@ -221,7 +221,7 @@ pub enum StorageTestimony<'a> {
 
 /// Typed machine-local failure from ensuring one durable volume shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum VolumeEnsureFailure {
     MachineMismatch {
@@ -316,7 +316,7 @@ impl MachineStorageTestimony {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct StrandedVolumeAlarm {
     pub namespace_id: NamespaceId,
@@ -343,7 +343,7 @@ impl StrandedVolumeAlarm {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum StrandedVolumeReason {
     MachineSilent,

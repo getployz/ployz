@@ -27,7 +27,7 @@ pub use evidence::BuildEvidence;
 pub const MAX_BUILD_LOG_CHUNK_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BuildOperationState {
     Accepted,
@@ -55,7 +55,7 @@ pub enum BuildOperationState {
 /// A build status whose executor provenance has been checked against the
 /// admitted target, platforms, and current phase.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(try_from = "BuildOperationStatusWire", deny_unknown_fields)]
 pub struct BuildOperationStatus {
     id: OperationId,
@@ -157,7 +157,6 @@ impl BuildOperationStatus {
                     stage: super::BuildInterruptionStage::Building,
                 } => self.executor_assignments.is_complete(&self.platforms),
                 super::OperationInterruptionStage::Deploy { .. }
-                | super::OperationInterruptionStage::CredentialGrantAccepted
                 | super::OperationInterruptionStage::IngressConfigureAccepted
                 | super::OperationInterruptionStage::MachineUpdateAccepted
                 | super::OperationInterruptionStage::MachineUpdateRunning
@@ -274,7 +273,7 @@ impl BuildOperationState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BuildOperationFailure {
     NoEligibleMachine {
@@ -303,7 +302,7 @@ pub enum BuildOperationFailure {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BuildPlatformFailure {
     MachineUnavailable {
@@ -347,7 +346,7 @@ pub enum BuildPlatformFailure {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct BuildToolchainEvidence {
     pub buildkit_image: crate::image::OciDigest,
@@ -355,7 +354,7 @@ pub struct BuildToolchainEvidence {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "adapter", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BuildAdapterToolchainEvidence {
     Dockerfile,
@@ -367,7 +366,7 @@ pub enum BuildAdapterToolchainEvidence {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BuildCleanupEvidence {
     NotRequired,
@@ -386,14 +385,14 @@ pub enum BuildCleanupEvidence {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BuildTimeoutFailure {
     DeadlineExceeded { message: FailureMessage },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(try_from = "String", into = "String")]
 pub struct BuildLogChunk(String);
 impl BuildLogChunk {

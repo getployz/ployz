@@ -15,11 +15,7 @@ pub use dataplane_admission::{
 pub use lifecycle::{
     DataplaneUnavailableReason, MachineLifecycle, MachineUsabilityReason, placement_rejection,
 };
-pub use roles::{
-    DaemonProcessRole, FirstMachineNatsServer, FirstMachineProcessSet, GatewayRole,
-    InstallRolePolicy, JoinedMachineProcessSet, plan_first_machine_process_set,
-    plan_joined_machine_process_set,
-};
+pub use roles::{GatewayRole, InstallRolePolicy};
 pub use rpc::{MachineRpcResponder, MachineRpcResponse};
 pub use runtime::*;
 pub use storage::*;
@@ -36,14 +32,13 @@ use std::fmt;
 use crate::ids::{MachineId, OperationId, SubjectToken, SubjectTokenError};
 use crate::intent::{ActiveMachineState, StagedMachineDataplaneState};
 use crate::operation::{
-    FailureMessage, MachineAddOperationState, MachineAddOperationStateName,
-    OperationIdempotencyKey, OperationInterruptionCause,
+    FailureMessage, MachineAddOperationState, MachineAddOperationStateName, OperationIdempotencyKey,
 };
 use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "Brand<string, \"MachineName\">"))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "Brand<string, \"MachineName\">"))]
 #[serde(transparent)]
 pub struct MachineName(SubjectToken);
 
@@ -59,11 +54,8 @@ impl MachineName {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "typescript",
-    ts(type = "Brand<string, \"JoinTokenFingerprint\">")
-)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "Brand<string, \"JoinTokenFingerprint\">"))]
 #[serde(transparent)]
 pub struct JoinTokenFingerprint(SubjectToken);
 
@@ -127,7 +119,7 @@ impl fmt::Debug for RawJoinToken {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct IssuedJoinToken {
     pub fingerprint: JoinTokenFingerprint,
@@ -170,7 +162,7 @@ pub fn plan_first_machine_activation(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[derive(thiserror::Error)]
 pub enum MachineAddFailure {
@@ -190,25 +182,10 @@ pub enum MachineAddFailure {
     DataplaneProjectionAdmissionFailed {
         evidence: DataplaneProjectionAdmissionEvidence,
     },
-    #[error("authorization render failed: {message}")]
-    AuthorizationRenderFailed { message: FailureMessage },
-    #[error("NATS reload failed: {message}")]
-    NatsReloadFailed { message: FailureMessage },
-    #[error("minted credential is unusable: {message}")]
-    MintedCredentialUnusable { message: FailureMessage },
-    #[error("credential mint task was interrupted: {evidence:?}")]
-    ControlTaskInterrupted {
-        evidence: MachineAddInterruptionEvidence,
-    },
-    /// Credential provisioning progressed but its operation evidence could
-    /// not be recorded; the mint fails terminally instead of stranding the
-    /// operation non-terminal.
-    #[error("credential evidence write failed: {message}")]
-    CredentialEvidenceWriteFailed { message: FailureMessage },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct DataplaneProjectionAdmissionEvidence {
     pub machine_id: MachineId,
@@ -216,7 +193,7 @@ pub struct DataplaneProjectionAdmissionEvidence {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct DataplaneAdmissionPeer {
     pub public_key: crate::network::WireGuardPublicKey,
@@ -224,7 +201,7 @@ pub struct DataplaneAdmissionPeer {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum WireGuardReadinessFailure {
     InterfaceMissing,
@@ -234,7 +211,7 @@ pub enum WireGuardReadinessFailure {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DataplaneProjectionAdmissionFailure {
     NoAnswer {
@@ -314,133 +291,6 @@ impl fmt::Display for DataplaneProjectionAdmissionFailure {
     }
 }
 
-/// One step of the per-machine credential minting work that runs after a
-/// machine-add submission is accepted. Each step is recorded as an
-/// operation event so the audience can follow mint → render → reload →
-/// verify → material-ready without reading logs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(rename_all = "snake_case")]
-pub enum MachineCredentialProvisioningStep {
-    Minted,
-    Rendered,
-    Reloaded,
-    Verified,
-    MaterialReady,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(tag = "stage", rename_all = "snake_case", deny_unknown_fields)]
-pub enum MachineAddInterruptionStage {
-    Accepted,
-    CredentialProvisioning {
-        step: MachineCredentialProvisioningStep,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(rename_all = "snake_case")]
-pub enum MachineAddInterruptionUncertainWork {
-    CredentialAuthorityAndDelivery,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(rename_all = "snake_case")]
-pub enum MachineAddInterruptionNextAction {
-    InspectThenResubmit,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "typescript",
-    ts(
-        type = "{ cause: OperationInterruptionCause, last_durable_stage: MachineAddInterruptionStage, uncertain_work: MachineAddInterruptionUncertainWork, next_action: MachineAddInterruptionNextAction }"
-    )
-)]
-pub struct MachineAddInterruptionEvidence {
-    cause: OperationInterruptionCause,
-    last_durable_stage: MachineAddInterruptionStage,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct MachineAddInterruptionEvidenceWire {
-    cause: OperationInterruptionCause,
-    last_durable_stage: MachineAddInterruptionStage,
-    #[serde(default, rename = "uncertain_work")]
-    _uncertain_work: Option<serde::de::IgnoredAny>,
-    #[serde(default, rename = "next_action")]
-    _next_action: Option<serde::de::IgnoredAny>,
-}
-
-impl MachineAddInterruptionEvidence {
-    #[must_use]
-    pub const fn new(
-        cause: OperationInterruptionCause,
-        last_durable_stage: MachineAddInterruptionStage,
-    ) -> Self {
-        Self {
-            cause,
-            last_durable_stage,
-        }
-    }
-
-    #[must_use]
-    pub const fn cause(&self) -> OperationInterruptionCause {
-        self.cause
-    }
-
-    #[must_use]
-    pub const fn last_durable_stage(&self) -> MachineAddInterruptionStage {
-        self.last_durable_stage
-    }
-
-    #[must_use]
-    pub const fn uncertain_work(&self) -> MachineAddInterruptionUncertainWork {
-        MachineAddInterruptionUncertainWork::CredentialAuthorityAndDelivery
-    }
-
-    #[must_use]
-    pub const fn next_action(&self) -> MachineAddInterruptionNextAction {
-        MachineAddInterruptionNextAction::InspectThenResubmit
-    }
-}
-
-impl Serialize for MachineAddInterruptionEvidence {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        use serde::ser::SerializeStruct;
-
-        let mut state = serializer.serialize_struct("MachineAddInterruptionEvidence", 4)?;
-        state.serialize_field("cause", &self.cause())?;
-        state.serialize_field("last_durable_stage", &self.last_durable_stage())?;
-        state.serialize_field("uncertain_work", &self.uncertain_work())?;
-        state.serialize_field("next_action", &self.next_action())?;
-        state.end()
-    }
-}
-
-impl<'de> Deserialize<'de> for MachineAddInterruptionEvidence {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let MachineAddInterruptionEvidenceWire {
-            cause,
-            last_durable_stage,
-            _uncertain_work: _,
-            _next_action: _,
-        } = MachineAddInterruptionEvidenceWire::deserialize(deserializer)?;
-        Ok(Self::new(cause, last_durable_stage))
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MachineTransitionRejected {
     pub current: MachineAddOperationStateName,
@@ -497,10 +347,9 @@ pub fn active_machine_from_completed_add(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct MachineReadinessEvidence {
-    pub nats_connection: MachineReadinessCheck,
     pub heartbeat: MachineReadinessCheck,
     pub machine_inspect: MachineReadinessCheck,
 }
@@ -508,13 +357,12 @@ pub struct MachineReadinessEvidence {
 impl fmt::Display for MachineReadinessEvidence {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let Self {
-            nats_connection,
             heartbeat,
             machine_inspect,
         } = self;
         write!(
             formatter,
-            "nats connection {nats_connection}; heartbeat {heartbeat}; machine inspect {machine_inspect}"
+            "heartbeat {heartbeat}; machine inspect {machine_inspect}"
         )
     }
 }
@@ -523,7 +371,6 @@ impl MachineReadinessEvidence {
     #[must_use]
     pub fn confirmed() -> Self {
         Self {
-            nats_connection: MachineReadinessCheck::Confirmed,
             heartbeat: MachineReadinessCheck::Confirmed,
             machine_inspect: MachineReadinessCheck::Confirmed,
         }
@@ -531,14 +378,13 @@ impl MachineReadinessEvidence {
 
     #[must_use]
     pub const fn is_confirmed(&self) -> bool {
-        matches!(self.nats_connection, MachineReadinessCheck::Confirmed)
-            && matches!(self.heartbeat, MachineReadinessCheck::Confirmed)
+        matches!(self.heartbeat, MachineReadinessCheck::Confirmed)
             && matches!(self.machine_inspect, MachineReadinessCheck::Confirmed)
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MachineReadinessCheck {
     Confirmed,
@@ -550,65 +396,6 @@ impl fmt::Display for MachineReadinessCheck {
         match self {
             Self::Confirmed => formatter.write_str("confirmed"),
             Self::Missing { reason } => write!(formatter, "missing ({reason})"),
-        }
-    }
-}
-
-#[cfg(test)]
-mod interruption_tests {
-    use super::*;
-
-    #[test]
-    fn machine_add_interruption_json_projects_current_advice() {
-        let evidence = MachineAddInterruptionEvidence::new(
-            OperationInterruptionCause::CoreShutdown,
-            MachineAddInterruptionStage::CredentialProvisioning {
-                step: MachineCredentialProvisioningStep::Rendered,
-            },
-        );
-
-        assert_eq!(
-            serde_json::to_value(evidence).expect("interruption evidence serializes"),
-            serde_json::json!({
-                "cause": "core_shutdown",
-                "last_durable_stage": {
-                    "stage": "credential_provisioning",
-                    "step": "rendered",
-                },
-                "uncertain_work": "credential_authority_and_delivery",
-                "next_action": "inspect_then_resubmit",
-            })
-        );
-    }
-
-    #[test]
-    fn machine_add_interruption_json_accepts_missing_or_stale_historical_advice() {
-        for historical in [
-            serde_json::json!({
-                "cause": "prior_core_process_loss",
-                "last_durable_stage": { "stage": "accepted" },
-            }),
-            serde_json::json!({
-                "cause": "prior_core_process_loss",
-                "last_durable_stage": { "stage": "accepted" },
-                "uncertain_work": "obsolete_policy_value",
-                "next_action": { "obsolete": true },
-            }),
-        ] {
-            let evidence: MachineAddInterruptionEvidence = serde_json::from_value(historical)
-                .expect("historical derived advice does not invalidate durable facts");
-            assert_eq!(
-                evidence.cause(),
-                OperationInterruptionCause::PriorCoreProcessLoss
-            );
-            assert_eq!(
-                evidence.last_durable_stage(),
-                MachineAddInterruptionStage::Accepted
-            );
-            assert_eq!(
-                evidence.next_action(),
-                MachineAddInterruptionNextAction::InspectThenResubmit
-            );
         }
     }
 }

@@ -3,8 +3,8 @@
 use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "Brand<string, \"EnvName\">"))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "Brand<string, \"EnvName\">"))]
 #[serde(try_from = "String", into = "String")]
 pub struct EnvName(String);
 
@@ -54,8 +54,8 @@ pub enum EnvNameError {
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "Brand<string, \"EnvValue\">"))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "Brand<string, \"EnvValue\">"))]
 #[serde(try_from = "String", into = "String")]
 pub struct EnvValue(String);
 
@@ -101,11 +101,8 @@ pub enum EnvValueError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "typescript",
-    ts(type = "Brand<string, \"ContainerMountPath\">")
-)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "Brand<string, \"ContainerMountPath\">"))]
 #[serde(try_from = "String", into = "String")]
 pub struct ContainerMountPath(String);
 
@@ -150,7 +147,7 @@ pub enum ContainerMountPathError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct ServiceVolumeMount {
     pub volume_name: VolumeName,
@@ -158,8 +155,8 @@ pub struct ServiceVolumeMount {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "Record<EnvName, EnvValue>"))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "Record<EnvName, EnvValue>"))]
 #[serde(transparent)]
 pub struct ServiceEnvironment(BTreeMap<EnvName, EnvValue>);
 
@@ -190,8 +187,8 @@ impl From<BTreeMap<EnvName, EnvValue>> for ServiceEnvironment {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "Array<string>"))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "Array<string>"))]
 #[serde(try_from = "Vec<String>", into = "Vec<String>")]
 pub struct ContainerCommand(Vec<String>);
 
@@ -230,9 +227,9 @@ pub enum ContainerCommandError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(
-    feature = "typescript",
+    feature = "ts",
     ts(type = "Brand<string, \"HealthcheckShellCommand\">")
 )]
 #[serde(try_from = "String", into = "String")]
@@ -279,7 +276,7 @@ pub enum HealthcheckShellCommandError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum ContainerEntrypoint {
     Clear,
@@ -287,11 +284,8 @@ pub enum ContainerEntrypoint {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "typescript",
-    ts(type = "SafeInteger<\"HealthcheckDurationNanos\">")
-)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "SafeInteger<\"HealthcheckDurationNanos\">"))]
 #[serde(try_from = "u64", into = "u64")]
 pub struct HealthcheckDurationNanos(NonZeroU64);
 
@@ -330,11 +324,8 @@ pub enum HealthcheckDurationNanosError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "typescript",
-    ts(type = "SafeInteger<\"HealthcheckRetries\">")
-)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "SafeInteger<\"HealthcheckRetries\">"))]
 #[serde(try_from = "u16", into = "u16")]
 pub struct HealthcheckRetries(NonZeroU16);
 
@@ -373,7 +364,7 @@ pub enum HealthcheckRetriesError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum ContainerHealthcheckTest {
     Inherit,
@@ -383,7 +374,7 @@ pub enum ContainerHealthcheckTest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct ContainerHealthcheck {
     pub test: ContainerHealthcheckTest,
@@ -413,7 +404,7 @@ impl ContainerHealthcheck {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "kebab-case")]
 pub enum ContainerRestartPolicy {
     DockerDefault,
@@ -445,11 +436,8 @@ fn is_default_restart_policy(value: &ContainerRestartPolicy) -> bool {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "typescript",
-    ts(type = "Brand<string, \"LinuxCapability\">")
-)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "Brand<string, \"LinuxCapability\">"))]
 #[serde(try_from = "String", into = "String")]
 pub struct LinuxCapability(String);
 
@@ -494,8 +482,8 @@ pub enum LinuxCapabilityError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "SafeInteger<\"NanoCpus\">"))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "SafeInteger<\"NanoCpus\">"))]
 #[serde(try_from = "u64", into = "u64")]
 pub struct NanoCpus(NonZeroU64);
 
@@ -528,8 +516,8 @@ impl From<NanoCpus> for u64 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "SafeInteger<\"MemoryBytes\">"))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "SafeInteger<\"MemoryBytes\">"))]
 #[serde(try_from = "u64", into = "u64")]
 pub struct MemoryBytes(NonZeroU64);
 
@@ -562,8 +550,8 @@ impl From<MemoryBytes> for u64 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "SafeInteger<\"PidsLimit\">"))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "SafeInteger<\"PidsLimit\">"))]
 #[serde(try_from = "i64", into = "i64")]
 pub struct PidsLimit(NonZeroI64);
 
@@ -607,7 +595,7 @@ pub enum ResourceLimitError {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct ContainerResourceLimits {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -626,8 +614,8 @@ impl ContainerResourceLimits {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "SafeInteger<\"StopGracePeriod\">"))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "SafeInteger<\"StopGracePeriod\">"))]
 #[serde(from = "u32", into = "u32")]
 pub struct StopGracePeriod(u32);
 
@@ -658,7 +646,7 @@ impl From<StopGracePeriod> for u32 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct ContainerRuntimeSpec {
     pub command: Option<ContainerCommand>,

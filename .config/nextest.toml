@@ -4,11 +4,3 @@ default-filter = "not package(ployz-e2e)"
 [profile.e2e]
 default-filter = "package(ployz-e2e)"
 retries = 0
-
-[test-groups]
-nats = { max-threads = 1 }
-
-[[profile.e2e.overrides]]
-filter = "test(e2e_nats)"
-test-group = "nats"
-slow-timeout = { period = "60s", terminate-after = 2 }
