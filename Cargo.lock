@@ -3090,6 +3090,7 @@ dependencies = [
 name = "ployz-core"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "hmac",
  "ipnet",
  "ployz-test-support",
@@ -3111,6 +3112,8 @@ dependencies = [
  "base64",
  "bollard",
  "futures-util",
+ "ployz-core",
+ "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "uuid",
@@ -3140,7 +3143,11 @@ name = "ployz-host-runner"
 version = "0.1.0"
 dependencies = [
  "atomic-write-file",
+ "base64",
+ "defguard_wireguard_rs",
+ "ipnet",
  "ployz-core",
+ "rustix",
  "serde_json",
  "sha2",
  "tempfile",
@@ -3193,6 +3200,7 @@ dependencies = [
  "pingora",
  "ployz-core",
  "ployz-ebpf-common",
+ "ployz-host-runner",
  "ployz-telemetry",
  "ployz-test-support",
  "rcgen",

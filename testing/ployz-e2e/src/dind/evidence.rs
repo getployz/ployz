@@ -14,7 +14,7 @@ pub fn evidence_dir(run_id: &DindRunId) -> PathBuf {
     target_dir().join(EVIDENCE_DIR_NAME).join(run_id.as_str())
 }
 
-/// Captures bounded system, failed-unit, and inner-Docker diagnostics.
+/// Captures bounded system, network, role-process, Corrosion, and eBPF diagnostics.
 pub async fn capture_machine_evidence(
     docker: &Docker,
     run_id: &DindRunId,
@@ -26,7 +26,7 @@ pub async fn capture_machine_evidence(
         message: source.to_string(),
     })?;
 
-    let captures: [(&str, &[&str]); 3] = [
+    let captures: [(&str, &[&str]); 17] = [
         (
             "journal.txt",
             &["journalctl", "--no-pager", "--lines", "2000"],
@@ -36,6 +36,97 @@ pub async fn capture_machine_evidence(
             &["systemctl", "--failed", "--no-pager"],
         ),
         ("docker-ps.txt", &["docker", "ps", "-a"]),
+        ("wireguard.txt", &["wg", "show", "all", "dump"]),
+        ("addresses.txt", &["ip", "-details", "address", "show"]),
+        (
+            "routes-v4.txt",
+            &["ip", "-4", "route", "show", "table", "all"],
+        ),
+        (
+            "routes-v6.txt",
+            &["ip", "-6", "route", "show", "table", "all"],
+        ),
+        (
+            "ipv6-sysctls.txt",
+            &[
+                "sh",
+                "-c",
+                "sysctl net.ipv6.conf.all.disable_ipv6 net.ipv6.conf.default.disable_ipv6 net.ipv6.conf.all.forwarding net.ipv6.conf.default.forwarding",
+            ],
+        ),
+        ("sockets.txt", &["ss", "-lntup"]),
+        (
+            "ployz-journals.txt",
+            &[
+                "journalctl",
+                "--no-pager",
+                "--lines",
+                "2000",
+                "-u",
+                "ployz-keeper.service",
+                "-u",
+                "ployz-api.service",
+            ],
+        ),
+        (
+            "corrosion-journal.txt",
+            &[
+                "journalctl",
+                "--no-pager",
+                "--lines",
+                "2000",
+                "-u",
+                "corrosion.service",
+            ],
+        ),
+        (
+            "corrosion-config.txt",
+            &[
+                "sh",
+                "-c",
+                "sed -E 's/(bearer-token[[:space:]]*=[[:space:]]*).*/\\1\"[REDACTED]\"/' /etc/ployz/corrosion.toml",
+            ],
+        ),
+        (
+            "corrosion-health.txt",
+            &[
+                "sh",
+                "-c",
+                "curl --fail --silent --show-error -H 'Authorization: Bearer ployz-dind-corrosion' http://127.0.0.1:8080/v1/health",
+            ],
+        ),
+        (
+            "machine-status.txt",
+            &[
+                "sh",
+                "-c",
+                "curl --fail --silent --show-error -H 'Authorization: Bearer ployz-dind-corrosion' -H 'Accept: application/json' -H 'Content-Type: application/json' --data '\"SELECT machine_id AS id, document FROM machine_status ORDER BY machine_id\"' http://127.0.0.1:8080/v1/queries",
+            ],
+        ),
+        (
+            "ebpf-pins.txt",
+            &[
+                "sh",
+                "-c",
+                "find /sys/fs/bpf/ployz -maxdepth 2 -printf '%y %p\\n' 2>&1",
+            ],
+        ),
+        (
+            "ebpf-status.txt",
+            &[
+                "sh",
+                "-c",
+                "/opt/ployz/artifacts/ployz-ebpf-ctl status ployz-test0 2>&1",
+            ],
+        ),
+        (
+            "ebpf-routes.txt",
+            &[
+                "sh",
+                "-c",
+                "/opt/ployz/artifacts/bpftool -j map dump pinned /sys/fs/bpf/ployz/routes 2>&1",
+            ],
+        ),
     ];
     for (file_name, command) in captures {
         let content = match exec_in_container(docker, &machine.container_id, command).await {

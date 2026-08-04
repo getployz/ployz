@@ -409,7 +409,7 @@ fn machine_row(id: &str, provider: &str) -> StoredRow {
     let transport = match provider {
         "wireguard" => json!({
             "kind": "wireguard",
-            "pubkey": format!("key-{id}"),
+            "pubkey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
             "addr_v6": "fd00::20",
             "endpoint": null,
             "subnet_v4": "10.210.20.0/24"

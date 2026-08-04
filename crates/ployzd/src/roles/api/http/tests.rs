@@ -558,7 +558,8 @@ fn accepted_sources_resolve_only_by_the_exact_mesh_identity() {
         machine_id(),
         MachineTransport::Tailscale {
             ip: "100.64.0.20".parse().expect("mesh IP"),
-            subnet_v4: "10.210.20.0/24".parse().expect("container subnet"),
+            subnet_v4: ployz_core::network::MachineEndpointSubnet::try_new("10.210.20.0/24")
+                .expect("container subnet"),
         },
     );
     let peer = AcceptedRosterPrincipal::peer(

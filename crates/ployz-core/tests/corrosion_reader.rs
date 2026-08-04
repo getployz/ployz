@@ -82,7 +82,7 @@ fn roster_reader_accepts_a_transport_matching_the_cluster_provider() {
             LOWER_ROW_ID,
             machine_document(json!({
                 "kind": "wireguard",
-                "pubkey": "wireguard-public-key",
+                "pubkey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
                 "addr_v6": "fd00::20",
                 "endpoint": "192.0.2.10:51820",
                 "subnet_v4": "10.210.20.0/24"
@@ -145,7 +145,7 @@ fn wrong_provider_lower_ulid_cannot_win_or_shadow_a_valid_named_roster_row() {
                 HIGHER_ROW_ID,
                 machine_document(json!({
                     "kind": "wireguard",
-                    "pubkey": "wireguard-public-key",
+                    "pubkey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
                     "addr_v6": "fd00::20",
                     "endpoint": "192.0.2.10:51820",
                     "subnet_v4": "10.210.20.0/24"

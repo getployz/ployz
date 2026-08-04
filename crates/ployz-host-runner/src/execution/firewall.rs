@@ -68,7 +68,7 @@ pub fn detect_firewall_backend(
         runner,
         "sh",
         &["-c", "command -v nft >/dev/null 2>&1"],
-        &[1],
+        &[1, 127],
     )?;
     if nft_service_active || nft_installed {
         let output = runner.command("nft", &["list", "ruleset"])?;
@@ -89,7 +89,7 @@ pub fn detect_firewall_backend(
         runner,
         "sh",
         &["-c", "command -v iptables >/dev/null 2>&1"],
-        &[1],
+        &[1, 127],
     )?;
     if iptables_service.is_some() || iptables_installed {
         let output = runner.command("iptables", &["-S", "INPUT"])?;
@@ -437,6 +437,16 @@ mod tests {
         }
     }
 
+    fn dash_command_absent() -> HostRunnerCommandOutput {
+        HostRunnerCommandOutput {
+            success: false,
+            exit_code: Some(127),
+            stdout: String::new(),
+            stdout_truncated: false,
+            failure: "absent".to_owned(),
+        }
+    }
+
     fn command_failure(message: &str) -> Result<HostRunnerCommandOutput, FailureMessage> {
         Ok(HostRunnerCommandOutput {
             success: false,
@@ -552,6 +562,25 @@ mod tests {
             Ok(inactive()),
             Ok(inactive()),
             Ok(absent()),
+            active(""),
+        ]);
+
+        assert_eq!(
+            detect_firewall_backend(SupervisorBackend::Systemd, &mut runner).expect("detection"),
+            FirewallBackend::None
+        );
+    }
+
+    #[test]
+    fn dash_command_v_absence_is_not_a_host_failure() {
+        let mut runner = RecordingRunner::with_outputs([
+            Ok(inactive()),
+            Ok(inactive()),
+            Ok(inactive()),
+            Ok(dash_command_absent()),
+            Ok(inactive()),
+            Ok(inactive()),
+            Ok(dash_command_absent()),
             active(""),
         ]);
 

@@ -374,7 +374,7 @@ mod tests {
         let transport = match provider {
             MeshProvider::BuiltinWireguard => json!({
                 "kind": "wireguard",
-                "pubkey": "wireguard-public-key",
+                "pubkey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
                 "addr_v6": "fd00::20",
                 "endpoint": null,
                 "subnet_v4": "10.210.20.0/24"

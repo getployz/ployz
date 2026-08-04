@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr};
 
+use base64::Engine as _;
 use ployz_core::ids::{MachineId, NamespaceId, ServiceId};
 use ployz_core::ingress::{AutomaticHostnameConfiguration, PloyzDnsTargetIntent};
 use ployz_core::intent::{ActiveMachineState, IntentSnapshot};
@@ -15,6 +16,7 @@ use ployz_core::network::internal_dns::{InternalServiceName, internal_dns_record
 use ployz_test_support::fixtures::serving_target_entry;
 use ployz_test_support::ids::{machine_id, operation_id};
 use ployz_test_support::{containers, fixtures};
+use sha2::{Digest, Sha256};
 
 #[test]
 fn internal_dns_projection_returns_sorted_unique_running_service_ipv4_addresses() {
@@ -173,9 +175,9 @@ fn active_machine(id: &str) -> ActiveMachineState {
         mesh_endpoints: Vec::new(),
         endpoint_subnet: MachineEndpointSubnet::try_new("10.198.0.0/24")
             .expect("valid endpoint subnet"),
-        wireguard_public_key: ployz_core::network::WireGuardPublicKey::try_new(format!(
-            "public-{id}"
-        ))
+        wireguard_public_key: ployz_core::network::WireGuardPublicKey::try_new(
+            base64::engine::general_purpose::STANDARD.encode(Sha256::digest(id)),
+        )
         .expect("public key"),
     }
 }

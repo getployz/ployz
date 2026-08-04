@@ -13,6 +13,7 @@ default = []
 ts = ["dep:ts-rs"]
 
 [dependencies]
+base64 = "0.22"
 hmac.workspace = true
 ipnet = { version = "2", features = ["serde"] }
 serde.workspace = true
