@@ -8,6 +8,16 @@ export const MAX_OPERATION_EVENT_REPLAY_LIMIT = 512 as const;
 
 export const MAX_LOGS_TAIL_LINES = 1000 as const;
 
+export const API_MAJOR = 1 as const;
+
+export const KNOWN_API_FEATURES = [
+  "v2.lenses",
+] as const;
+
+export type ApiFeature = KnownApiFeature | (string & {});
+
+export type OperationInitiator = Principal;
+
 export type AbsoluteInstallPath = string;
 
 export type AcceptedOperation = { operation_id: OperationId, start_sequence: EventSequence, };
@@ -46,6 +56,10 @@ mesh_endpoints: Array<string>,
  * Core-owned overlay endpoint subnet allocated from cluster intent.
  */
 endpoint_subnet: MachineEndpointSubnet, wireguard_public_key: WireGuardPublicKey, };
+
+export type ApiRefusal = { "kind": "unknown_source", source: string, } | { "kind": "ambiguous_source", source: string, candidate_count: number, } | { "kind": "unsupported_route" } | { "kind": "unsupported_method", method: string, } | { "kind": "missing_cluster" } | { "kind": "invalid_cluster" } | { "kind": "corrosion_unavailable", retry_after_seconds: CorrosionRetryAfterSeconds, };
+
+export type ApiVersion = { major: number, build: string, features: Array<ApiFeature>, };
 
 export type ArtifactUnavailableReason = { "reason": "bundle_missing" } | { "reason": "bundle_unreadable", message: FailureMessage, } | { "reason": "image_pull_failed", machine_id: MachineId, message: FailureMessage, } | { "reason": "image_pull_stalled", machine_id: MachineId, timeout_millis: number, } | { "reason": "image_pull_cancelled", machine_id: MachineId, };
 
@@ -157,7 +171,7 @@ export type ClusterBuildMachineCapability = { "observation": "answered", machine
 
 export type ClusterBuildTargetCapabilities = { machines: Array<ClusterBuildMachineCapability>, };
 
-export type ClusterDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, name: string, storage_default: StorageMode, hostname_mode: AutomaticHostnameMode, prefix: string, provider: MeshProvider, acme_directory_url: string, acme_contact: string | null, written_by: OperationInitiator, written_at: CorrosionTimestamp, };
+export type ClusterDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, name: string, storage_default: StorageMode, hostname_mode: AutomaticHostnameMode, prefix: string, provider: MeshProvider, acme_directory_url: string, acme_contact: string | null, written_by: Principal, written_at: CorrosionTimestamp, };
 
 export type ClusterId = Brand<string, "ClusterId">;
 
@@ -174,6 +188,12 @@ export type ContainerHealthcheck = { test: ContainerHealthcheckTest, interval?: 
 export type ContainerHealthcheckTest = "inherit" | "disable" | { "exec": ContainerCommand } | { "shell": HealthcheckShellCommand };
 
 export type ContainerId = Brand<string, "ContainerId">;
+
+export type ContainerLensRow = {
+/**
+ * The Docker-owned container row key.
+ */
+id: ContainerId, document: ContainerDocument, };
 
 export type ContainerMountPath = Brand<string, "ContainerMountPath">;
 
@@ -200,6 +220,8 @@ export type CorrosionDocumentVersion = SafeInteger<"CorrosionDocumentVersion">;
 export type CorrosionExecutionFailureClass = "build_failed" | "image_pull_failed" | "container_start_failed" | "health_gate_failed" | "storage_failed" | "network_failed" | "internal";
 
 export type CorrosionOperationFailure = { "kind": "precondition", message: string, } | { "kind": "machine_unavailable", machine_id: MachineRowId, message: string, } | { "kind": "timeout", stage: string, message: string, } | { "kind": "execution", class: CorrosionExecutionFailureClass, message: string, } | { "kind": "interrupted", message: string, } | { "kind": "superseded", winner: OperationRowId, };
+
+export type CorrosionRetryAfterSeconds = SafeInteger<"CorrosionRetryAfterSeconds">;
 
 export type CorrosionTable = "cluster" | "machines" | "peers" | "tokens" | "namespaces" | "services" | "route_bindings" | "containers" | "machine_status" | "operations" | "cert_holdings" | "acme_http01";
 
@@ -467,6 +489,14 @@ export type JoinTokenFingerprint = Brand<string, "JoinTokenFingerprint">;
 
 export type JoinTokenRedeemedAt = Brand<string, "JoinTokenRedeemedAt">;
 
+export type KnownApiFeature = "v2.lenses";
+
+export type LensCollection = "machines" | "services" | "containers" | "machine_status" | "operations";
+
+export type LensSnapshot = { "collection": "machines", cluster: ClusterDocument, rows: Array<MachineLensRow>, } | { "collection": "services", rows: Array<ServiceLensRow>, } | { "collection": "containers", rows: Array<ContainerLensRow>, } | { "collection": "machine_status", rows: Array<MachineStatusLensRow>, } | { "collection": "operations", rows: Array<OperationLensRow>, };
+
+export type LensWatchEvent = { "kind": "snapshot", snapshot: LensSnapshot, } | { "kind": "state", snapshot: LensSnapshot, } | { "kind": "terminal", refusal: ApiRefusal, };
+
 export type LinuxCapability = Brand<string, "LinuxCapability">;
 
 export type LocalSnapshotDigest = string;
@@ -503,7 +533,7 @@ export type MachineDataplaneStatus = { projection: NativeDataplaneProjectionStat
 
 export type MachineDiskSpace = { available_bytes: number, total_bytes: number, };
 
-export type MachineDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, name: MachineName, lifecycle: MachineLifecycle, transport: MachineTransport, storage: MachineStorageSelection, written_by: OperationInitiator, written_at: CorrosionTimestamp, };
+export type MachineDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, name: MachineName, lifecycle: MachineLifecycle, transport: MachineTransport, storage: MachineStorageSelection, written_by: Principal, written_at: CorrosionTimestamp, };
 
 export type MachineEndpointObservation = { machine_id: MachineId, control_endpoints: Array<string>, mesh_endpoints: Array<string>, };
 
@@ -516,6 +546,8 @@ export type MachineId = Brand<string, "MachineId">;
 export type MachineInspectError = { "error": "no_such_machine", machine_id: MachineId, } | { "error": "unavailable", message: string, };
 
 export type MachineInspectRequest = { machine_id: MachineId, };
+
+export type MachineLensRow = { id: MachineRowId, document: MachineDocument, };
 
 export type MachineLifecycle = "active" | "draining";
 
@@ -546,6 +578,8 @@ export type MachineRowId = Brand<string, "MachineRowId">;
 export type MachineSnapshot = { active: ActiveMachineState, testimony: MachineTestimony, storage_alarms?: Array<StrandedVolumeAlarm>, };
 
 export type MachineStatusDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, machine_id: MachineRowId, ployz_version: string, corrosion_version: string, architecture: string, free_disk_bytes: number, free_memory_bytes: number, load: MachineLoadBand, observed_at: CorrosionTimestamp, };
+
+export type MachineStatusLensRow = { id: MachineRowId, document: MachineStatusDocument, };
 
 export type MachineStorageIneligibleReason = "low_ram";
 
@@ -613,7 +647,7 @@ export type MeshProvider = "builtin_wireguard" | "tailscale";
 
 export type NameClaim = { "table": "machine", name: string, } | { "table": "peer", name: string, } | { "table": "namespace", name: string, } | { "table": "service", namespace_id: NamespaceRowId, name: string, } | { "table": "route_binding", hostname: RouteHostname, };
 
-export type NamespaceDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, name: string, written_by: OperationInitiator, written_at: CorrosionTimestamp, };
+export type NamespaceDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, name: string, written_by: Principal, written_at: CorrosionTimestamp, };
 
 export type NamespaceId = Brand<string, "NamespaceId">;
 
@@ -691,7 +725,7 @@ export type OciPlatform = { os: string, architecture: string, };
 
 export type OperationApiResponse<T, E> = { "status": "ok", value: T, } | { "status": "domain_error", error: E, };
 
-export type OperationDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, machine_id: MachineRowId, initiator: OperationInitiator, } & ({ "kind": "build", service_id: ServiceRowId, } | { "kind": "deploy", namespace_id: NamespaceRowId, service_id: ServiceRowId, } | { "kind": "machine_add", target_machine_id: MachineRowId, } | { "kind": "machine_remove", target_machine_id: MachineRowId, } | { "kind": "recovery", target_machine_id: MachineRowId, }) & ({ "state": "created", created_at: CorrosionTimestamp, } | { "state": "running", started_at: CorrosionTimestamp, heartbeat_at: CorrosionTimestamp, } | { "state": "succeeded", started_at: CorrosionTimestamp, completed_at: CorrosionTimestamp, } | { "state": "failed", started_at: CorrosionTimestamp, completed_at: CorrosionTimestamp, failure: CorrosionOperationFailure, });
+export type OperationDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, machine_id: MachineRowId, initiator: Principal, } & ({ "kind": "build", service_id: ServiceRowId, } | { "kind": "deploy", namespace_id: NamespaceRowId, service_id: ServiceRowId, } | { "kind": "machine_add", target_machine_id: MachineRowId, } | { "kind": "machine_remove", target_machine_id: MachineRowId, } | { "kind": "recovery", target_machine_id: MachineRowId, }) & ({ "state": "created", created_at: CorrosionTimestamp, } | { "state": "running", started_at: CorrosionTimestamp, heartbeat_at: CorrosionTimestamp, } | { "state": "succeeded", started_at: CorrosionTimestamp, completed_at: CorrosionTimestamp, } | { "state": "failed", started_at: CorrosionTimestamp, completed_at: CorrosionTimestamp, failure: CorrosionOperationFailure, });
 
 export type OperationEvent = { "event": "build_submitted", operation_id: OperationId, target: BuildTarget, source: BuildSourceEvidence, adapter: BuildAdapter, platforms: BuildPlatforms, } | { "event": "build_placement_started", operation_id: OperationId, } | { "event": "build_platform_placed", operation_id: OperationId, platform: OciPlatform, machine_id: MachineId, executor_origin: BuildExecutorOrigin, } | { "event": "build_source_verified", operation_id: OperationId, platform: OciPlatform, source: VerifiedBuildSource, machine_id: MachineId, executor_origin: BuildExecutorOrigin, } | { "event": "build_platform_toolchain_verified", operation_id: OperationId, platform: OciPlatform, toolchain: BuildToolchainEvidence, machine_id: MachineId, executor_origin: BuildExecutorOrigin, } | { "event": "build_running", operation_id: OperationId, } | { "event": "build_platform_log", operation_id: OperationId, platform: OciPlatform, chunk: BuildLogChunk, machine_id: MachineId, executor_origin: BuildExecutorOrigin, } | { "event": "build_platform_log_truncated", operation_id: OperationId, platform: OciPlatform, omitted_bytes: number, machine_id: MachineId, executor_origin: BuildExecutorOrigin, } | { "event": "build_platform_log_gap", operation_id: OperationId, platform: OciPlatform, expected_sequence: number, final_sequence: number, machine_id: MachineId, executor_origin: BuildExecutorOrigin, } | { "event": "build_platform_completed", operation_id: OperationId, platform: OciPlatform, image: PlatformImage, machine_id: MachineId, executor_origin: BuildExecutorOrigin, } | { "event": "build_platform_failed", operation_id: OperationId, platform: OciPlatform, failure: BuildPlatformFailure, machine_id: MachineId, executor_origin: BuildExecutorOrigin, } | { "event": "build_completed", operation_id: OperationId, receipt: PushedImageReceipt, } | { "event": "build_failed", operation_id: OperationId, failure: BuildOperationFailure, } | { "event": "build_cancelled", operation_id: OperationId, reason: CancellationReason, cleanup: BuildCleanupEvidence, } | { "event": "build_timed_out", operation_id: OperationId, failure: BuildTimeoutFailure, cleanup: BuildCleanupEvidence, } | { "event": "deploy_submitted", operation_id: OperationId, reservation_id?: DeployReservationId | null, target: DeployRequestEvidence, } | { "event": "deploy_planning_started", operation_id: OperationId, } | { "event": "deploy_image_resolved", operation_id: OperationId, service_id: ServiceId, machine_id: MachineId, requested: ImageReference, resolved: ImageReference, credential_supplied: boolean, } | { "event": "deploy_plan_created", operation_id: OperationId, plan: DeployPlan, } | { "event": "deploy_running", operation_id: OperationId, stage: DeployRunningStage, } | { "event": "deploy_image_availability_verified", operation_id: OperationId, service_id: ServiceId, machine_id: MachineId, image: ImageReference, platform: OciPlatform, } | { "event": "deploy_container_started", operation_id: OperationId, machine_id: MachineId, container_id: ContainerId, } | { "event": "deploy_volume_handoff_applied", operation_id: OperationId, service_id: ServiceId, handoff: DeployVolumeHandoffApplied, } | { "event": "deploy_volume_handoff_rollback_finished", operation_id: OperationId, service_id: ServiceId, machine_id: MachineId, outcomes: Array<DeployVolumeHandoffRollbackContainerOutcome>, } | { "event": "deploy_health_check_started", operation_id: OperationId, } | { "event": "deploy_phase_started", operation_id: OperationId, phase: DeployPhaseNumber, service_ids: Array<ServiceId>, } | { "event": "deploy_phase_finished", operation_id: OperationId, phase: DeployPhaseNumber, outcome: DeployPhaseOutcome, services: Array<DeployServiceResult>, } | { "event": "deploy_cleanup_finished", operation_id: OperationId, removed: Array<DeployCleanupContainer>, failed: Array<DeployCleanupFailure>, images?: Array<DeployImageCleanup>, } | { "event": "deploy_completed", operation_id: OperationId, outcome: DeployCompletionOutcome, } | { "event": "deploy_failed", operation_id: OperationId, failure: DeployOperationFailure, } | { "event": "cert_provision_submitted", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_challenge_published", operation_id: OperationId, cert_id: CertId, challenge: AcmeHttp01Challenge, } | { "event": "cert_validation_started", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_warning", operation_id: OperationId, cert_id: CertId, warning: CertificateProvisionWarning, } | { "event": "cert_completed", operation_id: OperationId, certificate: ActiveCertificateMetadata, } | { "event": "cert_failed", operation_id: OperationId, failure: CertOperationFailure, } | { "event": "machine_add_submitted", operation_id: OperationId, machine_id: MachineId, name: MachineName, roles: InstallRolePolicy, host_port_assurance: HostPortAssurance, join_token: IssuedJoinToken, } | { "event": "machine_add_joined", operation_id: OperationId, machine_id: MachineId, joined_at: JoinTokenRedeemedAt, } | { "event": "machine_add_completed", operation_id: OperationId, machine_id: MachineId, } | { "event": "machine_add_failed", operation_id: OperationId, machine_id: MachineId, failure: MachineAddFailure, } | { "event": "machine_update_submitted", operation_id: OperationId, machine_id: MachineId, target_version: InstallArtifactVersion, } | { "event": "machine_update_running", operation_id: OperationId, machine_id: MachineId, } | { "event": "machine_update_completed", operation_id: OperationId, machine_id: MachineId, reported: MachineSubstrateVersions, } | { "event": "machine_update_failed", operation_id: OperationId, machine_id: MachineId, failure: MachineUpdateFailure, } | { "event": "machine_storage_prepare_submitted", operation_id: OperationId, machine_id: MachineId, requested_pool?: ZfsPoolName | null, } | { "event": "machine_storage_prepare_preparing", operation_id: OperationId, machine_id: MachineId, } | { "event": "machine_storage_prepare_completed", operation_id: OperationId, machine_id: MachineId, pool: ZfsPoolName, } | { "event": "machine_storage_prepare_failed", operation_id: OperationId, machine_id: MachineId, failure: MachineStoragePrepareFailure, } | { "event": "machine_build_cache_prune_submitted", operation_id: OperationId, machine_id: MachineId, } | { "event": "machine_build_cache_prune_pruning", operation_id: OperationId, machine_id: MachineId, } | { "event": "machine_build_cache_prune_completed", operation_id: OperationId, machine_id: MachineId, evidence: BuildCachePruneEvidence, } | { "event": "machine_build_cache_prune_failed", operation_id: OperationId, machine_id: MachineId, failure: MachineBuildCachePruneFailure, } | { "event": "machine_lifecycle_submitted", operation_id: OperationId, machine_id: MachineId, target: MachineLifecycle, } | { "event": "machine_lifecycle_completed", operation_id: OperationId, machine_id: MachineId, } | { "event": "machine_lifecycle_failed", operation_id: OperationId, machine_id: MachineId, failure: MachineLifecycleFailure, } | { "event": "network_repair_submitted", operation_id: OperationId, target_machine_id?: MachineId | null, } | { "event": "network_repair_running", operation_id: OperationId, stage: NetworkRepairRunningStage, } | { "event": "network_repair_dataplane_converged", operation_id: OperationId, revision: DataplaneProjectionRevision, machine_ids: Array<MachineId>, } | { "event": "network_repair_machine_facts_refreshed", operation_id: OperationId, refreshes: Array<MachineFactsRefreshConfirmation>, } | { "event": "network_repair_dns_refresh_confirmed", operation_id: OperationId, machine_ids: Array<MachineId>, } | { "event": "network_repair_completed", operation_id: OperationId, } | { "event": "network_repair_failed", operation_id: OperationId, failure: NetworkRepairFailure, } | { "event": "service_restart_submitted", operation_id: OperationId, namespace_id: NamespaceId, service_id: ServiceId, } | { "event": "service_restart_running", operation_id: OperationId, stage: ServiceRestartRunningStage, } | { "event": "service_restart_container_restarted", operation_id: OperationId, machine_id: MachineId, container_id: ContainerId, } | { "event": "service_restart_completed", operation_id: OperationId, } | { "event": "service_restart_failed", operation_id: OperationId, failure: ServiceRestartFailure, } | { "event": "managed_dns_reconcile_submitted", operation_id: OperationId, subject: ManagedDnsReconcileSubject, } | { "event": "managed_dns_reconcile_completed", operation_id: OperationId, subject: ManagedDnsReconcileSubject, } | { "event": "managed_dns_reconcile_failed", operation_id: OperationId, subject: ManagedDnsReconcileSubject, failure: ManagedDnsReconcileFailure, } | { "event": "ingress_configure_submitted", operation_id: OperationId, configuration: IngressConfiguration, } | { "event": "ingress_configure_completed", operation_id: OperationId, } | { "event": "ingress_configure_failed", operation_id: OperationId, failure: IngressConfigureFailure, } | { "event": "namespace_remove_submitted", operation_id: OperationId, namespace_id: NamespaceId, } | { "event": "namespace_remove_running", operation_id: OperationId, stage: NamespaceRemoveRunningStage, } | { "event": "namespace_remove_route_binding_removed", operation_id: OperationId, target: RouteTarget, } | { "event": "namespace_remove_container_removed", operation_id: OperationId, machine_id: MachineId, container_id: ContainerId, } | { "event": "namespace_remove_completed", operation_id: OperationId, } | { "event": "namespace_remove_failed", operation_id: OperationId, failure: NamespaceRemoveFailure, } | { "event": "volume_create_submitted", request: VolumeCreateRequest, } | { "event": "volume_create_planning_started", operation_id: OperationId, } | { "event": "volume_create_running", operation_id: OperationId, stage: VolumeCreateRunningStage, } | { "event": "volume_create_completed", operation_id: OperationId, } | { "event": "volume_create_failed", operation_id: OperationId, failure: VolumeCreateFailure, } | { "event": "volume_remove_submitted", operation_id: OperationId, namespace_id: NamespaceId, volume_name: VolumeName, } | { "event": "volume_remove_running", operation_id: OperationId, stage: VolumeRemoveRunningStage, } | { "event": "volume_remove_completed", operation_id: OperationId, } | { "event": "volume_remove_failed", operation_id: OperationId, failure: VolumeRemoveFailure, } | { "event": "operation_interrupted", operation_id: OperationId, evidence: OperationInterruptionEvidence, } | { "event": "cancelled", operation_id: OperationId, kind: OperationKind, reason: CancellationReason, };
 
@@ -709,8 +743,6 @@ export type OperationId = Brand<string, "OperationId">;
 
 export type OperationIdempotencyKey = Brand<string, "OperationIdempotencyKey">;
 
-export type OperationInitiator = { "kind": "machine", machine_id: MachineRowId, } | { "kind": "peer", peer_id: PeerId, } | { "kind": "api_token", token_id: TokenId, };
-
 export type OperationInterruptionCause = "core_shutdown" | "prior_core_process_loss";
 
 export type OperationInterruptionEvidence = { cause: OperationInterruptionCause, last_durable_stage: OperationInterruptionStage, kind: OperationKind, uncertain_work: OperationInterruptionUncertainWork, next_action: OperationInterruptionNextAction };
@@ -722,6 +754,8 @@ export type OperationInterruptionStage = { "kind": "build", stage: BuildInterrup
 export type OperationInterruptionUncertainWork = "intent" | "runtime" | "intent_and_runtime";
 
 export type OperationKind = "build" | "deploy" | "cert" | "machine_add" | "machine_build_cache_prune" | "machine_update" | "machine_storage_prepare" | "machine_lifecycle" | "network_repair" | "service_restart" | "managed_dns_reconcile" | "ingress_configure" | "namespace_remove" | "volume_create" | "volume_remove";
+
+export type OperationLensRow = { id: OperationRowId, document: OperationDocument, };
 
 export type OperationOutcome = "succeeded" | "failed" | "cancelled";
 
@@ -745,7 +779,7 @@ export type OpsStatusRequest = { operation_id: OperationId, };
 
 export type OpsWatchError = { "error": "no_such_operation", operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, };
 
-export type PeerDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, name: string, transport: PeerTransport, written_by: OperationInitiator, written_at: CorrosionTimestamp, };
+export type PeerDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, name: string, transport: PeerTransport, written_by: Principal, written_at: CorrosionTimestamp, };
 
 export type PeerId = Brand<string, "PeerId">;
 
@@ -770,6 +804,8 @@ export type PreStartHookFailure = { "reason": "runtime_unavailable", message: Fa
 
 export type PreStartHookStep = { machine_id: MachineId, };
 
+export type Principal = { "kind": "machine", machine_id: MachineRowId, } | { "kind": "peer", peer_id: PeerId, } | { "kind": "api_token", token_id: TokenId, };
+
 export type PushedImageReceipt = { index_digest: OciDigest, platforms: [OciPlatform, PlatformImage][], };
 
 export type RegistryCredential = { "kind": "basic", username: RegistryCredentialUsername, password: RegistryCredentialSecret, } | { "kind": "identity_token", token: RegistryCredentialSecret, };
@@ -790,7 +826,7 @@ export type ReplicatedReplicaSlot = SafeInteger<"ReplicatedReplicaSlot">;
 
 export type RetainedArtifact = { "type": "created_container", machine_id: MachineId, container_id: ContainerId, inspect_hint: OperatorHint, } | { "type": "started_container", machine_id: MachineId, container_id: ContainerId, log_hint: OperatorHint, } | { "type": "container_stop_failed", machine_id: MachineId, container_id: ContainerId, message: FailureMessage, inspect_hint: OperatorHint, } | { "type": "volume_owner_stop_uncertain", target: DeployCleanupContainer, prior_state: DeployVolumeHandoffPriorState, uncertainty: DeployVolumeHandoffStopUncertain, } | { "type": "volume_consumer_quiescence_uncertain", target: DeployCleanupContainer, uncertainty: DeployVolumeHandoffStopUncertain, } | { "type": "volume_consumer_start_uncertain", machine_id: MachineId, expected_identity: ManagedContainerIdentity, message: FailureMessage, inspect_hint: OperatorHint, } | { "type": "volume_owner_restoration_unconfirmed", target: DeployCleanupContainer, reason: DeployVolumeHandoffRestorationUnconfirmed, };
 
-export type RouteBindingDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, hostname: RouteHostname, service_id: ServiceRowId, namespace_id: NamespaceRowId, endpoint_port: RoutePort, origin: RouteBindingOrigin, ingress_mode: IngressMode, written_by: OperationInitiator, written_at: CorrosionTimestamp, };
+export type RouteBindingDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, hostname: RouteHostname, service_id: ServiceRowId, namespace_id: NamespaceRowId, endpoint_port: RoutePort, origin: RouteBindingOrigin, ingress_mode: IngressMode, written_by: Principal, written_at: CorrosionTimestamp, };
 
 export type RouteBindingId = Brand<string, "RouteBindingId">;
 
@@ -846,7 +882,7 @@ export type ServiceContainerTestimony = { observation: ManagedContainerObservati
 
 export type ServiceDependency = { service_id: ServiceId, condition: DependencyCondition, };
 
-export type ServiceDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, namespace_id: NamespaceRowId, name: string, image: ImageReference, env_fingerprints: { [key in string]: Sha256Hex }, pinned_machines: Array<MachineRowId>, active_deploy: OperationRowId, previous_image: ImageReference | null, deployed_at: CorrosionTimestamp, operation_id: OperationRowId, written_by: OperationInitiator, written_at: CorrosionTimestamp, } & ({ "mode": "replicated", replicas: ServiceReplicaCount, } | { "mode": "global" });
+export type ServiceDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, namespace_id: NamespaceRowId, name: string, image: ImageReference, env_fingerprints: { [key in string]: Sha256Hex }, pinned_machines: Array<MachineRowId>, active_deploy: OperationRowId, previous_image: ImageReference | null, deployed_at: CorrosionTimestamp, operation_id: OperationRowId, written_by: Principal, written_at: CorrosionTimestamp, } & ({ "mode": "replicated", replicas: ServiceReplicaCount, } | { "mode": "global" });
 
 export type ServiceEnvironment = Record<EnvName, EnvValue>;
 
@@ -857,6 +893,8 @@ export type ServiceId = Brand<string, "ServiceId">;
 export type ServiceInspectError = { "error": "no_such_service", service_id: ServiceId, } | { "error": "unavailable", message: string, };
 
 export type ServiceInspectRequest = { namespace_id: NamespaceId, service_id: ServiceId, };
+
+export type ServiceLensRow = { id: ServiceRowId, document: ServiceDocument, };
 
 export type ServiceListError = { "error": "unavailable", message: string, };
 
@@ -912,7 +950,7 @@ export type SystemDeployRequest = { idempotency_key: OperationIdempotencyKey, re
 
 export type SystemDeployTarget = { origin?: DeployOrigin | null, services: Array<DeployServiceSpec>, };
 
-export type TokenDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, secret_sha256: Sha256Hex, created_at: CorrosionTimestamp, expires_at: CorrosionTimestamp, written_by: OperationInitiator, written_at: CorrosionTimestamp, };
+export type TokenDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, secret_sha256: Sha256Hex, created_at: CorrosionTimestamp, expires_at: CorrosionTimestamp, written_by: Principal, written_at: CorrosionTimestamp, };
 
 export type TokenId = Brand<string, "TokenId">;
 

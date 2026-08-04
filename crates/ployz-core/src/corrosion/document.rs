@@ -12,13 +12,13 @@ use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, UtcOffset};
 
 use crate::deploy::ImageReference;
-use crate::ids::{
-    ClusterId, MachineRowId, NamespaceRowId, OperationRowId, PeerId, ServiceRowId, TokenId,
-};
+use crate::ids::{ClusterId, MachineRowId, NamespaceRowId, OperationRowId, ServiceRowId};
 use crate::ingress::RouteBindingOrigin;
 use crate::machine::{MachineLifecycle, MachineName};
 use crate::network::WireGuardPublicKey;
 use crate::operation::{RouteHostname, RoutePort};
+
+use super::principal::OperationInitiator;
 
 /// A table in the additive Corrosion schema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -506,16 +506,6 @@ pub enum CorrosionOperation {
     Recovery {
         target_machine_id: MachineRowId,
     },
-}
-
-/// Principal that initiated an operation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum OperationInitiator {
-    Machine { machine_id: MachineRowId },
-    Peer { peer_id: PeerId },
-    ApiToken { token_id: TokenId },
 }
 
 /// The operator principal and instant responsible for one authority-row write.
