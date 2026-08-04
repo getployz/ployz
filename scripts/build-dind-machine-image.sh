@@ -22,7 +22,7 @@ source "${ROOT_DIR}/config/railpack-pins.env"
 
 MACHINE_IMAGE="${PLOYZ_DIND_MACHINE_IMAGE:-ployz-dind-machine:local}"
 BUILD_IMAGE="${PLOYZ_DIND_BUILD_IMAGE:-rust:1.91-bookworm}"
-MACHINE_BASE_IMAGE="debian:bookworm"
+MACHINE_BASE_IMAGE="debian:trixie"
 BUILDER_IMAGE="${PLOYZ_DIND_BUILDER_IMAGE:-ployz-dind-builder:rust-1.91-bookworm-v2}"
 DOCKER_HUB_MIRROR="${PLOYZ_DIND_DOCKER_HUB_MIRROR:-mirror.gcr.io}"
 WORKLOAD_IMAGE="${PLOYZ_DIND_WORKLOAD_IMAGE:-nginx:1.27-alpine}"
@@ -304,6 +304,103 @@ mv /target/release/railpack.source.tmp /target/release/railpack.source'
   )
 }
 
+stage_corrosion() {
+  local platform manifest_file pin_file release_tag archive_name archive_url archive_sha256
+  local embedded_version archive cache_dir actual_sha256 work_dir actual_version host_uid host_gid
+  platform="$(docker_platform "${PLOYZ_DIND_PLATFORM:-}")"
+  if [ "${platform}" != "linux/amd64" ]; then
+    echo "the pinned Corrosion DinD asset supports linux/amd64, got ${platform}" >&2
+    exit 1
+  fi
+
+  command -v python3 >/dev/null 2>&1 || {
+    echo "python3 is required to read corrosion-release.json" >&2
+    exit 1
+  }
+  manifest_file="${ROOT_DIR}/corrosion-release.json"
+  pin_file="$(mktemp "${TMPDIR:-/tmp}/ployz-corrosion-pin.XXXXXX")"
+  if ! python3 - "${manifest_file}" > "${pin_file}" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    pin = json.load(source)
+archive = pin["archive"]
+for value in (
+    pin["release_tag"],
+    archive["name"],
+    archive["url"],
+    archive["sha256"],
+    pin["embedded_version"],
+):
+    if not isinstance(value, str) or not value:
+        raise SystemExit("corrosion release manifest contains an empty non-string pin")
+    print(value)
+PY
+  then
+    rm -f "${pin_file}"
+    return 1
+  fi
+  mapfile -t corrosion_pin < "${pin_file}"
+  rm -f "${pin_file}"
+  if [ "${#corrosion_pin[@]}" -ne 5 ]; then
+    echo "corrosion release manifest did not yield exactly five pinned fields" >&2
+    exit 1
+  fi
+  release_tag="${corrosion_pin[0]}"
+  archive_name="${corrosion_pin[1]}"
+  archive_url="${corrosion_pin[2]}"
+  archive_sha256="${corrosion_pin[3]}"
+  embedded_version="${corrosion_pin[4]}"
+
+  if [ -n "${PLOYZ_CORROSION_ARCHIVE:-}" ]; then
+    archive="${PLOYZ_CORROSION_ARCHIVE}"
+    if [ ! -f "${archive}" ]; then
+      echo "PLOYZ_CORROSION_ARCHIVE does not name a file: ${archive}" >&2
+      exit 1
+    fi
+  else
+    cache_dir="${ROOT_DIR}/target/corrosion-cache/${release_tag}"
+    archive="${cache_dir}/${archive_name}"
+    mkdir -p "${cache_dir}"
+    if [ ! -f "${archive}" ]; then
+      curl --fail --location --retry 3 --silent --show-error \
+        "${archive_url}" --output "${archive}.partial"
+      mv "${archive}.partial" "${archive}"
+    fi
+  fi
+
+  actual_sha256="$(sha256_of "${archive}")"
+  if [ "${actual_sha256}" != "${archive_sha256}" ]; then
+    echo "Corrosion release archive has SHA-256 ${actual_sha256}, expected ${archive_sha256}" >&2
+    exit 1
+  fi
+
+  work_dir="$(mktemp -d "${TMPDIR:-/tmp}/ployz-dind-corrosion.XXXXXX")"
+  tar -xzf "${archive}" -C "${work_dir}" corrosion
+  actual_version="$("${work_dir}/corrosion" --version)"
+  if [ "${actual_version}" != "${embedded_version}" ]; then
+    rm -rf "${work_dir}"
+    echo "Corrosion archive reports ${actual_version}, expected ${embedded_version}" >&2
+    exit 1
+  fi
+  mkdir -p "${TARGET_DIR}/release"
+  host_uid="$(id -u)"
+  host_gid="$(id -g)"
+  docker run --rm \
+    --platform "${platform}" \
+    --volume "${TARGET_DIR}:/target" \
+    "${BUILDER_IMAGE}" \
+    chown "${host_uid}:${host_gid}" /target/release
+  install -m 0755 "${work_dir}/corrosion" "${TARGET_DIR}/release/corrosion.tmp"
+  mv "${TARGET_DIR}/release/corrosion.tmp" "${TARGET_DIR}/release/corrosion"
+  install -m 0644 "${manifest_file}" "${TARGET_DIR}/release/corrosion-release.json"
+  install -m 0644 \
+    "${ROOT_DIR}/docs/design/corrosion-schema-v1.sql" \
+    "${TARGET_DIR}/release/corrosion-schema-v1.sql"
+  rm -rf "${work_dir}"
+}
+
 bake_workload_tarball() {
   local platform name image source_image save_image tar stamp image_id stamp_value temp_tar temp_stamp index
   platform="$(docker_platform "${PLOYZ_DIND_PLATFORM:-}")"
@@ -350,13 +447,24 @@ build_machine_image() {
     "${CONTEXT_DIR}"
 }
 
+verify_machine_tools() {
+  docker run --rm \
+    --platform "$(docker_platform "${PLOYZ_DIND_PLATFORM:-}")" \
+    --entrypoint /bin/sh \
+    --volume "${TARGET_DIR}/release:/opt/ployz/artifacts:ro" \
+    "${MACHINE_IMAGE}" \
+    -c 'bpftool version >/dev/null && ufw version >/dev/null'
+}
+
 build_linux_artifacts
 build_ebpf_bytecode
 stage_railpack
+stage_corrosion
 
 if [ "${mode}" = "full" ]; then
   bake_workload_tarball
   build_machine_image
+  verify_machine_tools
   echo "DinD machine image built: ${MACHINE_IMAGE}"
   echo "Host-arch linux artifacts (volume-mount these at test time):"
 else
@@ -368,5 +476,6 @@ cat <<EOF
   ployz:          ${TARGET_DIR}/release/ployz
   ployz-ebpf-ctl: ${TARGET_DIR}/release/ployz-ebpf-ctl
   ployz-ebpf-tc:  ${TARGET_DIR}/release/ployz-ebpf-tc
+  corrosion:      ${TARGET_DIR}/release/corrosion
   railpack:       ${TARGET_DIR}/release/railpack
 EOF

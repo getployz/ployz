@@ -21,6 +21,7 @@ ipnet = "2"
 async-trait = "0.1"
 pingora = { version = "0.8.1", features = ["lb", "openssl", "proxy"] }
 ployz-core.workspace = true
+ployz-host-runner.workspace = true
 ployz-ebpf-common = { path = "../../ebpf/common", features = ["validation"] }
 ployz-telemetry.workspace = true
 reqwest.workspace = true

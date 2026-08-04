@@ -1,3 +1,10 @@
-//! Privileged machine-substrate mechanics owned by the root Keeper role.
+//! Root-owned convergence from accepted roster rows to machine substrate.
 
-pub mod host_dataplane;
+mod config;
+mod provider;
+mod runtime;
+mod status;
+mod store;
+
+pub use config::{KeeperRoleConfig, KeeperRoleConfigError, KeeperTimingConfig};
+pub use runtime::{KeeperRoleRuntimeError, run_from_environment};

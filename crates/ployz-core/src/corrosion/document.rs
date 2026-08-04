@@ -7,7 +7,6 @@ use std::fmt;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::num::NonZeroU16;
 
-use ipnet::Ipv4Net;
 use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, UtcOffset};
 
@@ -15,9 +14,10 @@ use crate::deploy::ImageReference;
 use crate::ids::{ClusterId, MachineRowId, NamespaceRowId, OperationRowId, ServiceRowId};
 use crate::ingress::RouteBindingOrigin;
 use crate::machine::{MachineLifecycle, MachineName};
-use crate::network::WireGuardPublicKey;
+use crate::network::{MachineEndpointSubnet, MachineEndpointSupernet, WireGuardPublicKey};
 use crate::operation::{RouteHostname, RoutePort};
 
+use super::mesh::{BuiltinWireguardKeyMismatch, BuiltinWireguardMemberAddress};
 use super::principal::OperationInitiator;
 
 /// A table in the additive Corrosion schema.
@@ -287,14 +287,12 @@ pub enum MachineTransport {
         addr_v6: Ipv6Addr,
         #[cfg_attr(feature = "ts", ts(type = "string | null"))]
         endpoint: Option<SocketAddr>,
-        #[cfg_attr(feature = "ts", ts(type = "string"))]
-        subnet_v4: Ipv4Net,
+        subnet_v4: MachineEndpointSubnet,
     },
     Tailscale {
         #[cfg_attr(feature = "ts", ts(type = "string"))]
         ip: Ipv4Addr,
-        #[cfg_attr(feature = "ts", ts(type = "string"))]
-        subnet_v4: Ipv4Net,
+        subnet_v4: MachineEndpointSubnet,
     },
 }
 
@@ -591,8 +589,7 @@ pub struct ClusterDocument {
     pub name: String,
     pub storage_default: StorageMode,
     pub hostname_mode: AutomaticHostnameMode,
-    #[cfg_attr(feature = "ts", ts(type = "string"))]
-    pub prefix: Ipv4Net,
+    pub prefix: MachineEndpointSupernet,
     pub provider: MeshProvider,
     pub acme_directory_url: String,
     pub acme_contact: Option<String>,
@@ -712,6 +709,95 @@ pub struct MachineStatusDocument {
     pub free_memory_bytes: u64,
     pub load: MachineLoadBand,
     pub observed_at: CorrosionTimestamp,
+    /// `None` denotes an additive v1 status document without mesh testimony.
+    /// Keeper mesh status writes populate this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mesh: Option<MeshConvergenceTestimony>,
+}
+
+/// Current successful evidence for one independently converged host component.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct MeshComponentReady {
+    pub converged_at: CorrosionTimestamp,
+}
+
+/// Current failure evidence for one independently converged host component.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct MeshComponentDegraded {
+    pub message: String,
+}
+
+/// Why a component was deliberately not attempted in the latest sequential fold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum MeshNotAttemptedReason {
+    DependencyDegraded,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct MeshComponentNotAttempted {
+    pub reason: MeshNotAttemptedReason,
+}
+
+/// Typed eBPF failure classes needed by status and `doctor`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum EbpfMeshDegradationReason {
+    MissingBridge { ifname: String },
+    HostEffect { message: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct EbpfMeshDegraded {
+    pub reason: EbpfMeshDegradationReason,
+}
+
+/// A degraded testimony with the failing component combination encoded in its variant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "components", rename_all = "snake_case")]
+pub enum MeshDegradation {
+    Wireguard {
+        wireguard: MeshComponentDegraded,
+        ebpf: MeshComponentNotAttempted,
+    },
+    Ebpf {
+        wireguard: MeshComponentReady,
+        ebpf: EbpfMeshDegraded,
+    },
+}
+
+/// Keeper's durable testimony about its latest builtin mesh convergence attempt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum MeshConvergenceTestimony {
+    NoRoster {
+        attempted_at: CorrosionTimestamp,
+    },
+    KeyMismatch {
+        attempted_at: CorrosionTimestamp,
+        mismatches: Vec<BuiltinWireguardKeyMismatch>,
+    },
+    Converged {
+        bind_address: BuiltinWireguardMemberAddress,
+        attempted_at: CorrosionTimestamp,
+        last_successful_converge: CorrosionTimestamp,
+        wireguard: MeshComponentReady,
+        ebpf: MeshComponentReady,
+    },
+    Degraded {
+        bind_address: BuiltinWireguardMemberAddress,
+        attempted_at: CorrosionTimestamp,
+        last_successful_converge: Option<CorrosionTimestamp>,
+        degradation: MeshDegradation,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

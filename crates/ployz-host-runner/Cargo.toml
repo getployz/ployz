@@ -11,7 +11,10 @@ workspace = true
 
 [dependencies]
 atomic-write-file.workspace = true
+defguard_wireguard_rs.workspace = true
+ipnet = "2"
 ployz-core.workspace = true
+rustix = { version = "1.1.4", features = ["fs"] }
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
@@ -20,6 +23,7 @@ url = "2"
 wait-timeout.workspace = true
 
 [dev-dependencies]
+base64 = "0.22"
 tempfile = "3"
 
 [lib]

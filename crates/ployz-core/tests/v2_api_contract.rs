@@ -1,14 +1,13 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::str::FromStr;
 
-use ipnet::Ipv4Net;
 use ployz_core::corrosion::{
     AcceptedRosterPrincipal, CorrosionDocumentVersion, CorrosionTimestamp, MachineLoadBand,
     MachineStatusDocument, MachineTransport, OperationInitiator, OperatorWriteProvenance,
     PeerTransport, Principal, SourcePrincipalResolutionError, resolve_source_principal,
 };
 use ployz_core::ids::{ClusterId, MachineRowId, PeerId};
-use ployz_core::network::WireGuardPublicKey;
+use ployz_core::network::{MachineEndpointSubnet, WireGuardPublicKey};
 use ployz_core::{
     API_MAJOR, ApiFeature, ApiRefusal, ApiVersion, KnownApiFeature, LENS_SNAPSHOT_EVENT,
     LENS_STATE_EVENT, LENS_TERMINAL_EVENT, LensCollection, LensSnapshot, LensWatchEvent,
@@ -32,16 +31,18 @@ fn peer_id(value: &str) -> PeerId {
 
 fn wireguard_machine(addr_v6: Ipv6Addr) -> MachineTransport {
     MachineTransport::Wireguard {
-        pubkey: WireGuardPublicKey::try_new("machine-public-key").expect("fixture public key"),
+        pubkey: WireGuardPublicKey::try_new("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+            .expect("fixture public key"),
         addr_v6,
         endpoint: Some(SocketAddr::from_str("198.51.100.10:51820").expect("fixture endpoint")),
-        subnet_v4: Ipv4Net::from_str("10.210.20.0/24").expect("fixture subnet"),
+        subnet_v4: MachineEndpointSubnet::try_new("10.210.20.0/24").expect("fixture subnet"),
     }
 }
 
 fn wireguard_peer(addr_v6: Ipv6Addr) -> PeerTransport {
     PeerTransport::Wireguard {
-        pubkey: WireGuardPublicKey::try_new("peer-public-key").expect("fixture public key"),
+        pubkey: WireGuardPublicKey::try_new("AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=")
+            .expect("fixture public key"),
         addr_v6,
         endpoint: Some(SocketAddr::from_str("198.51.100.11:51820").expect("fixture endpoint")),
     }
@@ -50,7 +51,7 @@ fn wireguard_peer(addr_v6: Ipv6Addr) -> PeerTransport {
 fn tailscale_machine(ip: Ipv4Addr) -> MachineTransport {
     MachineTransport::Tailscale {
         ip,
-        subnet_v4: Ipv4Net::from_str("10.210.30.0/24").expect("fixture subnet"),
+        subnet_v4: MachineEndpointSubnet::try_new("10.210.30.0/24").expect("fixture subnet"),
     }
 }
 
@@ -195,6 +196,7 @@ fn machine_status_lens_row_requires_its_machine_owned_key() {
         load: MachineLoadBand::Idle,
         observed_at: CorrosionTimestamp::try_new("2026-08-04T10:00:00Z")
             .expect("fixture timestamp"),
+        mesh: None,
     };
 
     assert!(MachineStatusLensRow::try_new(machine_id(MACHINE_A), document.clone()).is_ok());

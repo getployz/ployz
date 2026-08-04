@@ -1,5 +1,6 @@
 //! Dataplane preparation models.
 
+use base64::Engine as _;
 use ipnet::{IpNet, Ipv4Net};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -262,9 +263,47 @@ impl MachineEndpointSupernet {
         })
     }
 
+    /// Selects from the currently free `/24`s using fresh process randomness.
+    pub fn allocate_random_free(
+        &self,
+        assigned: impl IntoIterator<Item = MachineEndpointSubnet>,
+    ) -> Result<MachineEndpointSubnet, MachineEndpointSubnetAllocationError> {
+        let assigned = assigned.into_iter().collect::<BTreeSet<_>>();
+        let octets = self.0.network().octets();
+        let free = (0..=u8::MAX)
+            .map(|third_octet| {
+                MachineEndpointSubnet::try_new(format!(
+                    "{}.{}.{}.0/24",
+                    octets[0], octets[1], third_octet
+                ))
+                .expect("candidate from /16 supernet is a valid /24")
+            })
+            .filter(|candidate| !assigned.contains(candidate))
+            .collect::<Vec<_>>();
+        if free.is_empty() {
+            return Err(MachineEndpointSubnetAllocationError::Exhausted {
+                supernet: self.as_string(),
+            });
+        }
+        let random = u128::from(ulid::Ulid::new());
+        let index = (random % free.len() as u128) as usize;
+        Ok(free
+            .into_iter()
+            .nth(index)
+            .expect("the random index is reduced modulo the nonempty free set"))
+    }
+
     #[must_use]
     pub fn as_string(&self) -> String {
         self.0.to_string()
+    }
+
+    #[must_use]
+    pub fn contains_subnet(&self, subnet: &MachineEndpointSubnet) -> bool {
+        let IpNet::V4(subnet) = subnet.ipnet() else {
+            unreachable!("machine endpoint subnets are always IPv4");
+        };
+        self.0.contains(&subnet.network()) && self.0.contains(&subnet.broadcast())
     }
 }
 
@@ -427,14 +466,20 @@ pub struct WireGuardPublicKey(String);
 impl WireGuardPublicKey {
     pub fn try_new(value: impl Into<String>) -> Result<Self, WireGuardPublicKeyError> {
         let value = value.into();
-        if value.is_empty() {
-            return Err(WireGuardPublicKeyError::Empty);
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&value)
+            .map_err(|_| WireGuardPublicKeyError::InvalidEncoding {
+                value: value.clone(),
+            })?;
+        if decoded.len() != 32 {
+            return Err(WireGuardPublicKeyError::InvalidLength {
+                value,
+                decoded_bytes: decoded.len(),
+            });
         }
-        if value
-            .chars()
-            .any(|character| character.is_whitespace() || character.is_control())
-        {
-            return Err(WireGuardPublicKeyError::Invalid { value });
+        let canonical = base64::engine::general_purpose::STANDARD.encode(decoded);
+        if value != canonical {
+            return Err(WireGuardPublicKeyError::NonCanonical { value, canonical });
         }
         Ok(Self(value))
     }
@@ -442,6 +487,17 @@ impl WireGuardPublicKey {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// Returns the canonical 32-byte WireGuard public key material.
+    #[must_use]
+    pub fn decoded_bytes(&self) -> [u8; 32] {
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&self.0)
+            .expect("validated WireGuard public key remains valid base64");
+        decoded
+            .try_into()
+            .expect("validated WireGuard public key remains exactly 32 bytes")
     }
 }
 
@@ -470,10 +526,14 @@ impl From<WireGuardPublicKey> for String {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum WireGuardPublicKeyError {
-    #[error("wireguard public key is empty")]
-    Empty,
-    #[error("wireguard public key {value:?} must not contain whitespace")]
-    Invalid { value: String },
+    #[error("WireGuard public key is not valid standard base64: {value:?}")]
+    InvalidEncoding { value: String },
+    #[error("WireGuard public key must decode to exactly 32 bytes, got {decoded_bytes}: {value:?}")]
+    InvalidLength { value: String, decoded_bytes: usize },
+    #[error(
+        "WireGuard public key is not canonical: {value:?}; canonical spelling is {canonical:?}"
+    )]
+    NonCanonical { value: String, canonical: String },
 }
 
 #[must_use]
@@ -519,6 +579,25 @@ mod allocation_tests {
     #[test]
     fn endpoint_supernet_must_be_ipv4_slash_16() {
         assert!(MachineEndpointSupernet::try_new("10.199.0.0/24").is_err());
+    }
+
+    #[test]
+    fn random_free_allocation_never_returns_an_occupied_subnet() {
+        let supernet = MachineEndpointSupernet::try_new("10.199.0.0/16").expect("supernet");
+        let assigned = (0..=u8::MAX)
+            .filter(|third_octet| *third_octet != 73)
+            .map(|third_octet| {
+                MachineEndpointSubnet::try_new(format!("10.199.{third_octet}.0/24"))
+                    .expect("subnet")
+            });
+
+        assert_eq!(
+            supernet
+                .allocate_random_free(assigned)
+                .expect("one subnet remains free")
+                .as_string(),
+            "10.199.73.0/24"
+        );
     }
 }
 
@@ -607,6 +686,48 @@ mod tests {
     use super::*;
 
     #[test]
+    fn wireguard_public_key_requires_canonical_base64_for_32_bytes() {
+        let canonical = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        assert_eq!(
+            WireGuardPublicKey::try_new(canonical)
+                .expect("32-byte standard base64 key")
+                .as_str(),
+            canonical
+        );
+
+        for invalid in [
+            "",
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+            "___________________________________________=",
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n",
+        ] {
+            assert!(
+                WireGuardPublicKey::try_new(invalid).is_err(),
+                "accepted invalid key {invalid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn wireguard_public_key_serde_rejects_noncanonical_input() {
+        let canonical = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        let key: WireGuardPublicKey = serde_json::from_value(serde_json::json!(canonical))
+            .expect("canonical key deserializes");
+        assert_eq!(
+            serde_json::to_value(key).expect("key serializes"),
+            canonical
+        );
+        assert!(
+            serde_json::from_value::<WireGuardPublicKey>(serde_json::json!(
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            ))
+            .is_err()
+        );
+    }
+
+    #[test]
     fn default_endpoint_subnet_uses_trailing_machine_number() {
         assert_eq!(
             default_endpoint_subnet(&machine_id("edge_2")),
@@ -668,8 +789,10 @@ mod tests {
                 "192.0.2.1:51820".parse().expect("endpoint"),
                 "192.0.2.2:51820".parse().expect("endpoint"),
             ],
-            wireguard_public_key: WireGuardPublicKey::try_new(format!("public-{machine}"))
-                .expect("public key"),
+            wireguard_public_key: WireGuardPublicKey::try_new(
+                base64::engine::general_purpose::STANDARD.encode(Sha256::digest(machine)),
+            )
+            .expect("public key"),
         }
     }
 

@@ -609,7 +609,7 @@ fn fixtures() -> Result<Vec<Fixture>, String> {
                 "lifecycle": "active",
                 "transport": {
                     "kind": "wireguard",
-                    "pubkey": "wireguard-public-key",
+                    "pubkey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
                     "addr_v6": "fd00::20",
                     "endpoint": null,
                     "subnet_v4": "10.210.20.0/24"

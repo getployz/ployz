@@ -139,6 +139,10 @@ export type BuildTimeoutFailure = { "kind": "deadline_exceeded", message: Failur
 
 export type BuildToolchainEvidence = { buildkit_image: OciDigest, adapter: BuildAdapterToolchainEvidence, };
 
+export type BuiltinWireguardKeyMismatch = { "kind": "local_public_key", machine_id: MachineRowId, stored: WireGuardPublicKey, local: WireGuardPublicKey, } | { "kind": "stored_ipv6_address", member_id: RosterMemberId, stored: string, derived: BuiltinWireguardMemberAddress, };
+
+export type BuiltinWireguardMemberAddress = string;
+
 export type CancellationReason = Brand<string, "CancellationReason">;
 
 export type CertBundleRef = Brand<string, "CertBundleRef">;
@@ -171,7 +175,7 @@ export type ClusterBuildMachineCapability = { "observation": "answered", machine
 
 export type ClusterBuildTargetCapabilities = { machines: Array<ClusterBuildMachineCapability>, };
 
-export type ClusterDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, name: string, storage_default: StorageMode, hostname_mode: AutomaticHostnameMode, prefix: string, provider: MeshProvider, acme_directory_url: string, acme_contact: string | null, written_by: Principal, written_at: CorrosionTimestamp, };
+export type ClusterDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, name: string, storage_default: StorageMode, hostname_mode: AutomaticHostnameMode, prefix: MachineEndpointSupernet, provider: MeshProvider, acme_directory_url: string, acme_contact: string | null, written_by: Principal, written_at: CorrosionTimestamp, };
 
 export type ClusterId = Brand<string, "ClusterId">;
 
@@ -373,6 +377,10 @@ export type DockerfileStageName = string;
 
 export type EbpfAttachmentStatus = { "status": "attached" } | { "status": "detached", message: string, } | { "status": "unknown", message: string, };
 
+export type EbpfMeshDegradationReason = { "kind": "missing_bridge", ifname: string, } | { "kind": "host_effect", message: string, };
+
+export type EbpfMeshDegraded = { reason: EbpfMeshDegradationReason, };
+
 export type EndpointBridgeStatus = { "status": "ready", subnet: MachineEndpointSubnet, } | { "status": "missing" } | { "status": "subnet_mismatch", expected: MachineEndpointSubnet, observed: MachineEndpointSubnet, } | { "status": "invalid_subnet", observed: string, } | { "status": "unavailable", message: FailureMessage, };
 
 export type EnvName = Brand<string, "EnvName">;
@@ -539,6 +547,8 @@ export type MachineEndpointObservation = { machine_id: MachineId, control_endpoi
 
 export type MachineEndpointSubnet = string;
 
+export type MachineEndpointSupernet = string;
+
 export type MachineFactsRefreshConfirmation = { machine_id: MachineId, observed_at_unix_ms: number, };
 
 export type MachineId = Brand<string, "MachineId">;
@@ -577,7 +587,12 @@ export type MachineRowId = Brand<string, "MachineRowId">;
 
 export type MachineSnapshot = { active: ActiveMachineState, testimony: MachineTestimony, storage_alarms?: Array<StrandedVolumeAlarm>, };
 
-export type MachineStatusDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, machine_id: MachineRowId, ployz_version: string, corrosion_version: string, architecture: string, free_disk_bytes: number, free_memory_bytes: number, load: MachineLoadBand, observed_at: CorrosionTimestamp, };
+export type MachineStatusDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, machine_id: MachineRowId, ployz_version: string, corrosion_version: string, architecture: string, free_disk_bytes: number, free_memory_bytes: number, load: MachineLoadBand, observed_at: CorrosionTimestamp,
+/**
+ * `None` denotes an additive v1 status document without mesh testimony.
+ * Keeper mesh status writes populate this field.
+ */
+mesh?: MeshConvergenceTestimony | null, };
 
 export type MachineStatusLensRow = { id: MachineRowId, document: MachineStatusDocument, };
 
@@ -609,7 +624,7 @@ export type MachineTestimony = { "status": "answered", endpoints: MachineEndpoin
  */
 last_observed_at_unix_seconds: number, } | { "status": "no_answer" };
 
-export type MachineTransport = { "kind": "wireguard", pubkey: WireGuardPublicKey, addr_v6: string, endpoint: string | null, subnet_v4: string, } | { "kind": "tailscale", ip: string, subnet_v4: string, };
+export type MachineTransport = { "kind": "wireguard", pubkey: WireGuardPublicKey, addr_v6: string, endpoint: string | null, subnet_v4: MachineEndpointSubnet, } | { "kind": "tailscale", ip: string, subnet_v4: MachineEndpointSubnet, };
 
 export type MachineUpdateError = { "error": "no_such_machine", operation_id: OperationId, machine_id: MachineId, } | { "error": "current_machine_unsupported", operation_id: OperationId, machine_id: MachineId, } | { "error": "machine_substrate_busy", operation_id: OperationId, machine_id: MachineId, owner_operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
 
@@ -642,6 +657,18 @@ export type ManagedDnsWithdrawAuthorization = { "authorization": "projection_una
 export type ManagedLeaseName = Brand<string, "ManagedLeaseName">;
 
 export type MemoryBytes = SafeInteger<"MemoryBytes">;
+
+export type MeshComponentDegraded = { message: string, };
+
+export type MeshComponentNotAttempted = { reason: MeshNotAttemptedReason, };
+
+export type MeshComponentReady = { converged_at: CorrosionTimestamp, };
+
+export type MeshConvergenceTestimony = { "state": "no_roster", attempted_at: CorrosionTimestamp, } | { "state": "key_mismatch", attempted_at: CorrosionTimestamp, mismatches: Array<BuiltinWireguardKeyMismatch>, } | { "state": "converged", bind_address: BuiltinWireguardMemberAddress, attempted_at: CorrosionTimestamp, last_successful_converge: CorrosionTimestamp, wireguard: MeshComponentReady, ebpf: MeshComponentReady, } | { "state": "degraded", bind_address: BuiltinWireguardMemberAddress, attempted_at: CorrosionTimestamp, last_successful_converge: CorrosionTimestamp | null, degradation: MeshDegradation, };
+
+export type MeshDegradation = { "components": "wireguard", wireguard: MeshComponentDegraded, ebpf: MeshComponentNotAttempted, } | { "components": "ebpf", wireguard: MeshComponentReady, ebpf: EbpfMeshDegraded, };
+
+export type MeshNotAttemptedReason = "dependency_degraded";
 
 export type MeshProvider = "builtin_wireguard" | "tailscale";
 
@@ -825,6 +852,8 @@ export type ReplicaSlot = { "kind": "replicated", number: ReplicatedReplicaSlot,
 export type ReplicatedReplicaSlot = SafeInteger<"ReplicatedReplicaSlot">;
 
 export type RetainedArtifact = { "type": "created_container", machine_id: MachineId, container_id: ContainerId, inspect_hint: OperatorHint, } | { "type": "started_container", machine_id: MachineId, container_id: ContainerId, log_hint: OperatorHint, } | { "type": "container_stop_failed", machine_id: MachineId, container_id: ContainerId, message: FailureMessage, inspect_hint: OperatorHint, } | { "type": "volume_owner_stop_uncertain", target: DeployCleanupContainer, prior_state: DeployVolumeHandoffPriorState, uncertainty: DeployVolumeHandoffStopUncertain, } | { "type": "volume_consumer_quiescence_uncertain", target: DeployCleanupContainer, uncertainty: DeployVolumeHandoffStopUncertain, } | { "type": "volume_consumer_start_uncertain", machine_id: MachineId, expected_identity: ManagedContainerIdentity, message: FailureMessage, inspect_hint: OperatorHint, } | { "type": "volume_owner_restoration_unconfirmed", target: DeployCleanupContainer, reason: DeployVolumeHandoffRestorationUnconfirmed, };
+
+export type RosterMemberId = { "kind": "machine", machine_id: MachineRowId, } | { "kind": "peer", peer_id: PeerId, };
 
 export type RouteBindingDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, hostname: RouteHostname, service_id: ServiceRowId, namespace_id: NamespaceRowId, endpoint_port: RoutePort, origin: RouteBindingOrigin, ingress_mode: IngressMode, written_by: Principal, written_at: CorrosionTimestamp, };
 

@@ -2,7 +2,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::str::FromStr;
 
-use ipnet::Ipv4Net;
 use ployz_core::corrosion::{
     AcmeHttp01Document, AutomaticHostnameMode, CertHoldingDocument, ClusterDocument,
     ContainerDocument, CorrosionDocument, CorrosionDocumentVersion, CorrosionExecutionFailureClass,
@@ -21,7 +20,7 @@ use ployz_core::ids::{
 };
 use ployz_core::ingress::RouteBindingOrigin;
 use ployz_core::machine::{MachineLifecycle, MachineName};
-use ployz_core::network::WireGuardPublicKey;
+use ployz_core::network::{MachineEndpointSubnet, MachineEndpointSupernet, WireGuardPublicKey};
 use ployz_core::operation::{RouteHostname, RoutePort};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -152,6 +151,20 @@ fn machine_transport_requires_a_container_subnet() {
         .expect("machine transport object")
         .insert("subnet_v4".to_owned(), Value::Null);
 
+    assert!(serde_json::from_value::<MachineDocument>(machine).is_err());
+}
+
+#[test]
+fn cluster_and_machine_documents_enforce_container_prefix_shapes() {
+    let mut cluster = serde_json::to_value(cluster_document()).expect("cluster JSON");
+    *cluster.get_mut("prefix").expect("cluster prefix") = json!("10.210.0.0/24");
+    assert!(serde_json::from_value::<ClusterDocument>(cluster).is_err());
+
+    let mut machine = serde_json::to_value(machine_document()).expect("machine JSON");
+    *machine
+        .get_mut("transport")
+        .and_then(|transport| transport.get_mut("subnet_v4"))
+        .expect("machine subnet") = json!("10.210.20.0/25");
     assert!(serde_json::from_value::<MachineDocument>(machine).is_err());
 }
 
@@ -473,7 +486,7 @@ fn cluster_document() -> ClusterDocument {
         hostname_mode: AutomaticHostnameMode::Custom {
             suffix: RouteHostname::try_new("apps.example.com").expect("suffix"),
         },
-        prefix: Ipv4Net::from_str("10.210.0.0/16").expect("prefix"),
+        prefix: MachineEndpointSupernet::try_new("10.210.0.0/16").expect("prefix"),
         provider: MeshProvider::BuiltinWireguard,
         acme_directory_url: "https://acme.example/directory".to_owned(),
         acme_contact: Some("mailto:ops@example.com".to_owned()),
@@ -488,10 +501,11 @@ fn machine_document() -> MachineDocument {
         name: MachineName::try_new("edge-a").expect("machine name"),
         lifecycle: MachineLifecycle::Active,
         transport: MachineTransport::Wireguard {
-            pubkey: WireGuardPublicKey::try_new("wireguard-public-key").expect("public key"),
+            pubkey: WireGuardPublicKey::try_new("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+                .expect("public key"),
             addr_v6: Ipv6Addr::from_str("fd00::20").expect("IPv6"),
             endpoint: Some(SocketAddr::from_str("192.0.2.10:51820").expect("endpoint")),
-            subnet_v4: Ipv4Net::from_str("10.210.20.0/24").expect("subnet"),
+            subnet_v4: MachineEndpointSubnet::try_new("10.210.20.0/24").expect("subnet"),
         },
         storage: MachineStorageSelection {
             mode: StorageMode::Plain,
@@ -597,6 +611,7 @@ fn machine_status_document() -> MachineStatusDocument {
         free_memory_bytes: 4_000_000_000,
         load: MachineLoadBand::Idle,
         observed_at: timestamp("2026-08-04T10:06:00Z"),
+        mesh: None,
     }
 }
 

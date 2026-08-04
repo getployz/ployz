@@ -44,3 +44,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: raven-actions/actionlint@v2
+
+  keeper-mesh-dind:
+    runs-on: ubuntu-24.04
+    env:
+      PLOYZ_DIND_PLATFORM: linux/amd64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: docker/setup-buildx-action@v3
+      - run: scripts/dind-e2e.sh

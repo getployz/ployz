@@ -2,8 +2,9 @@
 #
 # One container from this image is one ployz "machine": systemd as PID 1,
 # an inner Docker daemon, and the runtime dependencies the Host Runner expects
-# (WireGuard tools, iproute2, iptables). Debian bookworm keeps the glibc
-# compatible with the rust:1.91-bookworm artifact builds.
+# (WireGuard tools, iproute2, UFW/iptables, and eBPF inspection). Debian trixie supplies the minimum
+# glibc required by the pinned Corrosion release while remaining compatible
+# with binaries built by the older rust:1.91-bookworm builder.
 #
 # ployz binaries are deliberately NOT baked here — they are volume-mounted
 # at test time so slow Rust rebuilds never go stale inside the image.
@@ -11,17 +12,19 @@
 # Build context requirements (provided by scripts/build-dind-machine-image.sh):
 #   nginx.tar, registry.tar, umami.tar, and postgres.tar — `docker save`
 #   archives for the host arch.
-ARG BASE_IMAGE=debian:bookworm
+ARG BASE_IMAGE=debian:trixie
 FROM ${BASE_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     ca-certificates \
+    bpftool \
     curl \
     dbus \
+    docker-cli=26.1.5+dfsg1-9+b13 \
+    docker.io=26.1.5+dfsg1-9+b13 \
     git \
-    gnupg \
     iproute2 \
     iptables \
     iputils-ping \
@@ -30,17 +33,8 @@ RUN apt-get update \
     python3 \
     systemd \
     systemd-sysv \
+    ufw \
     wireguard-tools \
-  && install -m 0755 -d /etc/apt/keyrings \
-  && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
-  && chmod a+r /etc/apt/keyrings/docker.asc \
-  && arch="$(dpkg --print-architecture)" \
-  && echo "deb [arch=${arch} signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list \
-  && apt-get update \
-  && apt-get install -y --no-install-recommends \
-    containerd.io=1.7.27-1 \
-    docker-ce=5:28.5.2-1~debian.12~bookworm \
-    docker-ce-cli=5:28.5.2-1~debian.12~bookworm \
   && rm -rf /var/lib/apt/lists/*
 
 COPY daemon.json /etc/docker/daemon.json
