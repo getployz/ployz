@@ -961,7 +961,10 @@ fn corrosion_release_pin_parser_rejects_schema_extensions() {
         &fs::read(repo_root.join("corrosion-release.json")).expect("manifest reads"),
     )
     .expect("manifest parses");
-    manifest["unexpected"] = json!(true);
+    let Some(root) = manifest.as_object_mut() else {
+        panic!("release manifest has an object root")
+    };
+    root.insert("unexpected".to_owned(), json!(true));
     fs::write(
         &manifest_path,
         serde_json::to_vec(&manifest).expect("invalid manifest serializes"),
