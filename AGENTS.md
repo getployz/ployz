@@ -66,18 +66,19 @@ exists to prevent.
 The contributor code map is the canonical path-level ownership guide. At the
 crate level:
 
-- `ployz-core`: canonical domain models and policy under Operation, Intent,
-  Machine, Network, Certificate, Deploy, and Install modules.
-- `ployz-nats`: NATS connection, bootstrap, services, subject construction,
-  permissions, and plain-subject transport helpers.
-- `ployzd`: separate Control, Machine, Gateway, and DNS role-process wiring and
-  implementation behind one shipped daemon artifact.
-- `ployz`: feature-owned CLI command, execution, and presentation modules.
+- `ployz-core`: row types, HTTP DTOs, typed ids, operation states, and domain
+  policy shared by every surface; TypeScript derives and export bins live here
+  behind the `ts` feature.
+- `ployzd`: Keeper, API, Gateway, and DNS role-process wiring and implementation
+  behind one shipped daemon artifact.
+- `ployz`: feature-owned CLI command, HTTP/SSE client, execution, and
+  presentation modules.
 - `ployz-build-executor`: process-wiring-neutral Dockerfile and Railpack execution
   mechanics, including workspace, toolchain, log, cleanup, and validated OCI-layout
   production.
-- `ployz-host-runner`: privileged machine-local lifecycle planning and effects.
-- `ployz-sdk-types`: public schema/type export surface.
+- `ployz-host-runner`: privileged machine-local imperative effects and artifact
+  staging used by Keeper and explicit machine commands.
+- `ployz-telemetry`: process-neutral telemetry adapters for executable surfaces.
 - `ebpf/{common,control,program}`: shared contract, userspace controller, and
   separately built eBPF program.
 - `testing/`: test-only support, external fakes, and black-box cluster E2E.
@@ -111,8 +112,8 @@ Transport adapters must not import product orchestration convenience types.
   and operation state.
 - Keep handlers small. A handler must not own transport, authorization,
   orchestration, storage, and presentation at once.
-- Centralize subject construction without building a complex type-level subject
-  language.
+- Centralize public route and path construction without building a complex
+  type-level routing language.
 - No external control-plane I/O may wait forever.
 - Every long-running task needs shutdown, timeout, retry/backoff, and visible
   health.
@@ -231,29 +232,13 @@ workflow is added here in the same change:
   When SDK source or generated output changed, also run `pnpm typecheck` and
   `pnpm test`; otherwise record both as not applicable.
 - When `.github/workflows/` changes: `actionlint`.
-- Run the full gated DinD suite (`scripts/dind-e2e.sh`) only when the changed
-  behavior cannot be exercised reliably by deterministic unit or in-process
-  integration tests. DinD is for real cross-process or cross-machine seams
-  such as Docker/containerd execution, process supervision, install/bootstrap,
-  network namespaces, gateway/TLS/DNS traffic, or credential enforcement. If
-  local tests can cover the regression, they replace DinD even when product
-  behavior changes. Record `DinD: not applicable` with the covering tests, or
-  name the untestable seam that requires DinD.
-- When DinD applies, run the full suite once on the sealed landing candidate:
-  after accepted review fixes, after merging current main, and after local
-  gates. During diagnosis, use the affected scenario or a deterministic focused
-  test; do not repeatedly run the complete suite while the candidate changes.
-  Run every scenario and rebuild product binaries (no `PLOYZ_DIND_SKIP_BUILD`).
-  Each worktree sets its own `PLOYZ_DIND_TARGET_DIR` — every worktree mounts as
-  `/work`, so the shared default target dir serves another branch's binaries as
-  fresh. On failure, read the evidence directory the harness prints before
-  retrying.
-- For real-host validation (tcx eBPF, real WireGuard, the public install path)
-  the DinD harness cannot cover, provision two cheap Ubuntu hosts and run
-  `scripts/real-host-acceptance.sh <core-ip> <edge-ip>` and
-  `scripts/cli-smoke-test.sh <core-ip> <edge-ip>` — see
-  `docs/operations/real-host-acceptance.md`. It installs the public alpha
-  channel, so promote the build under test first.
+- `scripts/dind-e2e.sh` currently compiles and tests the surviving role-neutral
+  DinD harness. The incumbent cluster scenarios and real-host scripts were
+  deleted with their NATS-era subjects. A v2 slice that introduces behavior
+  requiring Docker-in-Docker or real-host proof must add a public-seam scenario
+  and restore the corresponding gated invocation in the same change. Until
+  then record `DinD: not applicable` with the deterministic tests that cover
+  the changed seam.
 - When merging main into a branch, compose semantic conflicts: union the
   imports, keep both sides' additions, and give each side's exhaustive
   matches the arms the other side's new enum variants need.

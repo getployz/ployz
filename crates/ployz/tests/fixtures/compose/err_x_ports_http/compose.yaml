@@ -1,6 +1,0 @@
-name: fixture_x_ports_http
-services:
-  web:
-    image: nginx
-    x-ports:
-      - 8080/http

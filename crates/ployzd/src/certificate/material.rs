@@ -4,10 +4,9 @@ use pingora::tls::pkey::PKey;
 use pingora::tls::x509::{X509, X509Ref};
 use ployz_core::certificate::{
     ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow, CustomCertBundle,
-    ManagedCertBundle, custom_bundle_digest,
+    custom_bundle_digest,
 };
 use ployz_core::ids::CertId;
-use ployz_core::ingress::{ActiveCertificateMetadata, CertificateOwner};
 use ployz_core::install::{AbsoluteInstallPath, InstallSha256Digest};
 use ployz_core::operation::RouteHostname;
 use time::PrimitiveDateTime;
@@ -16,7 +15,9 @@ use crate::adapters::atomic_file::{
     restrict_secret_file_permissions, write_secret_file_atomically,
 };
 
-pub(crate) fn prepare_custom_certificate(
+/// Validates issued PEM material and packages it as a content-addressed
+/// gateway artifact. Issuance and distribution remain role orchestration.
+pub fn prepare_custom_certificate(
     state_dir: &Path,
     cert_id: CertId,
     hostname: RouteHostname,
@@ -43,31 +44,6 @@ pub(crate) fn prepare_custom_certificate(
         private_key_pem,
     )
     .map_err(invalid_material)
-}
-
-/// Adapts Worker-issued wildcard material into the same validated artifact
-/// path used by exact-route certificates.
-pub(crate) fn prepare_ployz_wildcard_certificate(
-    state_dir: &Path,
-    bundle: ManagedCertBundle,
-) -> Result<(ActiveCertificateMetadata, CustomCertBundle), CertificateMaterialError> {
-    let hostname = RouteHostname::try_new(bundle.dns_names[1].clone()).map_err(invalid_material)?;
-    let cert_id = CertId::try_new(format!("cert_ployz_{}", bundle.lease.as_str()))
-        .map_err(invalid_material)?;
-    let material = prepare_custom_certificate(
-        state_dir,
-        cert_id,
-        hostname,
-        bundle.certificate_chain_pem,
-        bundle.private_key_pem,
-    )?;
-    Ok((
-        ActiveCertificateMetadata {
-            owner: CertificateOwner::PloyzAutomaticNamespace,
-            active: material.active_cert().clone(),
-        },
-        material,
-    ))
 }
 
 pub(crate) fn write_custom_certificate(
@@ -268,7 +244,7 @@ fn asn1_unix_seconds(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub(crate) enum CertificateMaterialError {
+pub enum CertificateMaterialError {
     #[error("certificate material path is not UTF-8: {}", path.display())]
     NonUtf8Path { path: PathBuf },
     #[error("invalid certificate material: {message}")]
@@ -317,15 +293,44 @@ fn invalid_material(error: impl std::fmt::Display) -> CertificateMaterialError {
 mod tests {
     use std::path::Path;
 
+    use super::*;
     use ployz_core::certificate::{
-        ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow, LeaseBearerToken,
-        ManagedLeaseAcquireRequest, ManagedLeaseAcquisitionId,
+        ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow,
     };
     use ployz_core::ids::CertId;
     use ployz_core::operation::RouteHostname;
-    use ployz_test_lease_worker::{LeaseWorkerRequest, LeaseWorkerResponse, StubLeaseWorker};
+    use rcgen::generate_simple_self_signed;
 
-    use super::*;
+    #[test]
+    fn issued_material_becomes_a_valid_content_addressed_bundle() {
+        let state = tempfile::tempdir().expect("state directory");
+        let generated =
+            generate_simple_self_signed(["api.example.com".to_owned()]).expect("certificate");
+
+        let bundle = prepare_custom_certificate(
+            state.path(),
+            CertId::try_new("cert_api_example_com").expect("cert id"),
+            RouteHostname::try_new("api.example.com").expect("hostname"),
+            generated.cert.pem(),
+            generated.signing_key.serialize_pem(),
+        )
+        .expect("valid bundle");
+
+        validate_custom_certificate(&bundle).expect("prepared bundle remains valid");
+        let (digest, referenced_path) = bundle
+            .active_cert()
+            .bundle_ref
+            .artifact_parts()
+            .expect("artifact reference");
+        assert_eq!(
+            Path::new(referenced_path.as_str()),
+            certificate_material_path_for_digest(
+                state.path(),
+                &bundle.active_cert().cert_id,
+                &digest,
+            )
+        );
+    }
 
     #[test]
     fn local_path_uses_typed_identity_and_digest_not_referenced_path() {
@@ -349,48 +354,5 @@ mod tests {
                 .join("bundles")
                 .join(format!("cert_example-{digest}.bundle"))
         );
-    }
-
-    #[test]
-    fn worker_wildcard_adapts_to_namespace_owned_gateway_material() {
-        let mut worker = StubLeaseWorker::new();
-        let LeaseWorkerResponse::LeaseAcquired(acquired) = worker
-            .handle(LeaseWorkerRequest::Acquire(ManagedLeaseAcquireRequest {
-                acquisition_id: ManagedLeaseAcquisitionId::try_new("a1").expect("acquisition id"),
-                token: LeaseBearerToken::try_new("token").expect("token"),
-                ipv4: Vec::new(),
-                ipv6: Vec::new(),
-            }))
-            .expect("acquire")
-        else {
-            panic!("acquire response");
-        };
-        let _ = worker
-            .handle(LeaseWorkerRequest::DownloadBundle {
-                lease: acquired.lease.name.clone(),
-                token: acquired.lease.token.clone(),
-            })
-            .expect("pending download");
-        let LeaseWorkerResponse::Bundle(bundle) = worker
-            .handle(LeaseWorkerRequest::DownloadBundle {
-                lease: acquired.lease.name.clone(),
-                token: acquired.lease.token,
-            })
-            .expect("bundle download")
-        else {
-            panic!("ready bundle");
-        };
-        let state = tempfile::tempdir().expect("state directory");
-
-        let (metadata, material) =
-            prepare_ployz_wildcard_certificate(state.path(), bundle).expect("valid wildcard");
-
-        assert_eq!(metadata.owner, CertificateOwner::PloyzAutomaticNamespace);
-        assert_eq!(metadata.active, *material.active_cert());
-        assert_eq!(
-            metadata.active.hostname.as_str(),
-            acquired.lease.name.hostname_suffix()
-        );
-        validate_custom_certificate(&material).expect("gateway material validates");
     }
 }

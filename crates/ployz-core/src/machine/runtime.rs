@@ -17,7 +17,7 @@ use crate::image::OciPlatform;
 pub const OBSERVATION_PUBLISH_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct MachineFactsRefreshConfirmation {
     pub machine_id: MachineId,
@@ -133,7 +133,7 @@ pub enum MachineContainerTestimony {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum MachineContainerUnavailableReason {
     DockerUnavailable,
@@ -383,7 +383,7 @@ fn validate_machine_endpoints(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct MachineDiskSpace {
     pub available_bytes: u64,
@@ -475,7 +475,7 @@ impl From<MachineFactsSnapshot> for MachineFactsSnapshotWire {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum ManagedContainerKind {
     Service,
@@ -505,7 +505,7 @@ impl ManagedContainerKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ContainerRuntimeState {
     Running {
@@ -568,7 +568,7 @@ impl ContainerRuntimeState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum ContainerHealth {
     #[default]
@@ -589,7 +589,7 @@ pub enum ContainerHealth {
 /// this shape intentionally breaks existing clusters unless paired with
 /// container cleanup.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct ManagedContainerIdentity {
     pub namespace_id: NamespaceId,
@@ -619,7 +619,7 @@ impl ManagedContainerIdentity {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum ManagedContainerHealthStatus {
     Starting,
@@ -629,7 +629,7 @@ pub enum ManagedContainerHealthStatus {
 
 /// Machine-owned container fact payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct ManagedContainerObservation {
     pub machine_id: MachineId,

@@ -1,10 +1,11 @@
 //! Versioned release manifest parsing for Host Runner-owned installs.
 
+use std::time::Duration;
+
 use ployz_core::build::railpack_pins;
 use ployz_core::install::{
-    AbsoluteInstallPath, ExactPloyzVersion, FirstMachineInstallArtifacts, InstallArtifactSource,
-    InstallArtifactSpec, InstallArtifactVersion, InstallSha256Digest, NatsServerInstallSpec,
-    ReleasePlatformFailure,
+    AbsoluteInstallPath, ExactPloyzVersion, InstallArtifactSource, InstallArtifactSpec,
+    InstallArtifactVersion, InstallSha256Digest, ReleasePlatformFailure,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,16 +69,14 @@ pub struct ReleaseManifest {
     ebpf_ctl_url: String,
     ebpf_ctl_sha256: String,
     railpack: RailpackManifestEntry,
-    /// Absent when the manifest ships no `nats-server` (a dev substrate
-    /// push); installs that found or promote a core reject such a manifest.
-    nats_server: Option<NatsServerManifestEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct NatsServerManifestEntry {
-    version: String,
-    url: String,
-    sha256: String,
+pub struct ReleaseArtifacts {
+    pub ployzd: InstallArtifactSpec,
+    pub ebpf_bytecode: InstallArtifactSpec,
+    pub ebpf_ctl: InstallArtifactSpec,
+    pub railpack: InstallArtifactSpec,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,7 +109,6 @@ impl ReleaseManifest {
             ebpf_ctl_url: manifest_value(contents, "PLOYZ_EBPF_CTL_URL")?,
             ebpf_ctl_sha256: manifest_value(contents, "PLOYZ_EBPF_CTL_SHA256")?,
             railpack: railpack_entry(contents).map_err(invalid_manifest)?,
-            nats_server: nats_server_entry(contents).map_err(invalid_manifest)?,
         })
     }
 
@@ -132,21 +130,13 @@ impl ReleaseManifest {
     pub fn install_artifacts_for(
         &self,
         local_platform: ReleasePlatform,
-    ) -> Result<FirstMachineInstallArtifacts, String> {
+    ) -> Result<ReleaseArtifacts, String> {
         self.require_platform(local_platform)?;
         self.install_artifacts()
     }
 
-    pub fn nats_server_install_spec_for(
-        &self,
-        local_platform: ReleasePlatform,
-    ) -> Result<Option<NatsServerInstallSpec>, String> {
-        self.require_platform(local_platform)?;
-        self.nats_server_install_spec()
-    }
-
-    pub fn install_artifacts(&self) -> Result<FirstMachineInstallArtifacts, String> {
-        Ok(FirstMachineInstallArtifacts {
+    pub fn install_artifacts(&self) -> Result<ReleaseArtifacts, String> {
+        Ok(ReleaseArtifacts {
             ployzd: artifact_spec(
                 self.ployz_version(),
                 &self.ployzd_url,
@@ -171,7 +161,6 @@ impl ReleaseManifest {
                 &self.railpack.sha256,
                 &self.railpack.install_path,
             )?,
-            nats_server: self.nats_server_install_spec()?,
         })
     }
 
@@ -184,26 +173,6 @@ impl ReleaseManifest {
             self.platform.manifest_slug(),
             local_platform.manifest_slug()
         ))
-    }
-
-    fn nats_server_install_spec(&self) -> Result<Option<NatsServerInstallSpec>, String> {
-        self.nats_server
-            .as_ref()
-            .map(|entry| {
-                Ok(NatsServerInstallSpec {
-                    version: InstallArtifactVersion::try_new(&entry.version)
-                        .map_err(|error| error.to_string())?,
-                    source: InstallArtifactSource::try_new(&entry.url)
-                        .map_err(|error| error.to_string())?,
-                    sha256: InstallSha256Digest::try_new(&entry.sha256)
-                        .map_err(|error| error.to_string())?,
-                    binary: AbsoluteInstallPath::try_new("/usr/local/bin/nats-server")
-                        .map_err(|error| error.to_string())?,
-                    config: AbsoluteInstallPath::try_new("/etc/nats/nats-server.conf")
-                        .map_err(|error| error.to_string())?,
-                })
-            })
-            .transpose()
     }
 }
 
@@ -222,27 +191,6 @@ fn railpack_entry(contents: &str) -> Result<RailpackManifestEntry, String> {
         sha256: manifest_value(contents, "PLOYZ_RAILPACK_SHA256")?,
         install_path: pins.install_path().to_owned(),
     })
-}
-
-/// A manifest either carries all three `PLOYZ_NATS_SERVER_*` values or none;
-/// a partial entry is a broken manifest, not an omitted artifact.
-fn nats_server_entry(contents: &str) -> Result<Option<NatsServerManifestEntry>, String> {
-    let version = manifest_value(contents, "PLOYZ_NATS_SERVER_VERSION").ok();
-    let url = manifest_value(contents, "PLOYZ_NATS_SERVER_URL").ok();
-    let sha256 = manifest_value(contents, "PLOYZ_NATS_SERVER_SHA256").ok();
-    match (version, url, sha256) {
-        (None, None, None) => Ok(None),
-        (Some(version), Some(url), Some(sha256)) => Ok(Some(NatsServerManifestEntry {
-            version,
-            url,
-            sha256,
-        })),
-        _ => Err(
-            "release manifest has a partial nats-server entry: PLOYZ_NATS_SERVER_VERSION, \
-             PLOYZ_NATS_SERVER_URL, and PLOYZ_NATS_SERVER_SHA256 must all be set or all be absent"
-                .to_owned(),
-        ),
-    }
 }
 
 #[must_use]
@@ -312,16 +260,28 @@ fn manifest_value(contents: &str, key: &str) -> Result<String, String> {
         .ok_or_else(|| format!("release manifest is missing {key}"))
 }
 
-/// Reads the manifest text behind a release manifest URL. Published release
-/// manifests live behind https and go through the https-only cloud client;
-/// a `file://` URL names manifest material already present on the machine
-/// (local installs, e2e formations) and is read directly from disk.
-pub(crate) fn read_release_manifest_text(url: &str) -> Result<String, String> {
+/// Reads the manifest text behind a release manifest URL.
+pub fn read_release_manifest_text(url: &str) -> Result<String, String> {
     if let Some(path) = url.strip_prefix("file://") {
         return std::fs::read_to_string(path)
             .map_err(|error| format!("failed to read release manifest {url}: {error}"));
     }
-    crate::cloud_client::get_text_url(url)
+    let parsed = url::Url::parse(url)
+        .map_err(|error| format!("failed to download release manifest {url}: {error}"))?;
+    if parsed.scheme() != "https" || parsed.host().is_none() {
+        return Err(format!(
+            "failed to download release manifest {url}: URL must use https"
+        ));
+    }
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(15)))
+        .timeout_connect(Some(Duration::from_secs(5)))
+        .build()
+        .into();
+    agent
+        .get(url)
+        .call()
+        .and_then(|mut response| response.body_mut().read_to_string())
         .map_err(|error| format!("failed to download release manifest {url}: {error}"))
 }
 
@@ -335,7 +295,7 @@ mod tests {
 
     const SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
-    fn manifest_without_nats(platform: Option<&str>) -> String {
+    fn manifest(platform: Option<&str>) -> String {
         let platform = platform
             .map(|platform| format!("PLOYZ_RELEASE_PLATFORM={platform}\n"))
             .unwrap_or_default();
@@ -408,23 +368,8 @@ mod tests {
 
     #[test]
     fn release_manifest_builds_host_runner_artifacts() {
-        let manifest = ReleaseManifest::parse(&format!(
-            "PLOYZ_RELEASE_PLATFORM=linux-amd64\n\
-             PLOYZ_VERSION=0.1.0\n\
-             PLOYZD_URL=https://example.test/ployzd\n\
-             PLOYZD_SHA256={SHA}\n\
-             PLOYZ_EBPF_TC_URL=https://example.test/ployz-ebpf-tc\n\
-             PLOYZ_EBPF_TC_SHA256={SHA}\n\
-             PLOYZ_EBPF_CTL_URL=https://example.test/ployz-ebpf-ctl\n\
-             PLOYZ_EBPF_CTL_SHA256={SHA}\n\
-             PLOYZ_RAILPACK_VERSION=v0.31.0\n\
-             PLOYZ_RAILPACK_URL=https://example.test/railpack\n\
-             PLOYZ_RAILPACK_SHA256={SHA}\n\
-             PLOYZ_NATS_SERVER_VERSION=2.14.2\n\
-             PLOYZ_NATS_SERVER_URL=https://example.test/nats-server\n\
-             PLOYZ_NATS_SERVER_SHA256={SHA}\n"
-        ))
-        .expect("manifest parses");
+        let manifest =
+            ReleaseManifest::parse(&manifest(Some("linux-amd64"))).expect("manifest parses");
         let artifacts = manifest.install_artifacts().expect("artifacts build");
 
         assert_eq!(
@@ -436,20 +381,12 @@ mod tests {
             artifacts.railpack.install_path.as_str(),
             "/usr/local/lib/ployz/railpack/v0.31.0/railpack"
         );
-        assert_eq!(
-            artifacts
-                .nats_server
-                .expect("manifest carries nats-server")
-                .binary
-                .as_str(),
-            "/usr/local/bin/nats-server"
-        );
     }
 
     #[test]
     fn release_manifest_rejects_artifacts_for_another_local_platform() {
-        let manifest = ReleaseManifest::parse(&manifest_without_nats(Some("linux-amd64")))
-            .expect("manifest parses");
+        let manifest =
+            ReleaseManifest::parse(&manifest(Some("linux-amd64"))).expect("manifest parses");
 
         let error = manifest
             .install_artifacts_for(ReleasePlatform::LinuxArm64)
@@ -463,7 +400,7 @@ mod tests {
 
     #[test]
     fn release_manifest_requires_release_platform() {
-        let error = ReleaseManifest::parse(&manifest_without_nats(None))
+        let error = ReleaseManifest::parse(&manifest(None))
             .expect_err("platform is required release identity");
 
         assert_eq!(
@@ -476,7 +413,7 @@ mod tests {
 
     #[test]
     fn release_manifest_rejects_unknown_release_platform() {
-        let error = ReleaseManifest::parse(&manifest_without_nats(Some("linux-riscv64")))
+        let error = ReleaseManifest::parse(&manifest(Some("linux-riscv64")))
             .expect_err("platform is unsupported");
 
         assert_eq!(
@@ -491,24 +428,24 @@ mod tests {
 
     #[test]
     fn release_manifest_exposes_typed_platform() {
-        let manifest = ReleaseManifest::parse(&manifest_without_nats(Some("linux-arm64")))
-            .expect("manifest parses");
+        let manifest =
+            ReleaseManifest::parse(&manifest(Some("linux-arm64"))).expect("manifest parses");
 
         assert_eq!(manifest.platform(), ReleasePlatform::LinuxArm64);
     }
 
     #[test]
     fn release_manifest_exposes_ployz_release_version() {
-        let manifest = ReleaseManifest::parse(&manifest_without_nats(Some("linux-amd64")))
-            .expect("manifest parses");
+        let manifest =
+            ReleaseManifest::parse(&manifest(Some("linux-amd64"))).expect("manifest parses");
 
         assert_eq!(manifest.ployz_version(), "0.1.0");
     }
 
     #[test]
     fn release_manifest_rejects_mutable_ployz_release_version() {
-        let manifest = manifest_without_nats(Some("linux-amd64"))
-            .replace("PLOYZ_VERSION=0.1.0", "PLOYZ_VERSION=alpha");
+        let manifest =
+            manifest(Some("linux-amd64")).replace("PLOYZ_VERSION=0.1.0", "PLOYZ_VERSION=alpha");
 
         let error = ReleaseManifest::parse(&manifest).expect_err("release must be immutable");
 
@@ -546,36 +483,6 @@ mod tests {
         ))
         .expect_err("partial Railpack tuple is rejected");
         assert!(partial.to_string().contains("PLOYZ_RAILPACK_URL"));
-    }
-
-    #[test]
-    fn release_manifest_without_nats_server_omits_the_artifact() {
-        let manifest = ReleaseManifest::parse(&manifest_without_nats(Some("linux-amd64")))
-            .expect("manifest parses");
-        let artifacts = manifest.install_artifacts().expect("artifacts build");
-
-        assert!(artifacts.nats_server.is_none());
-    }
-
-    #[test]
-    fn release_manifest_with_partial_nats_server_entry_is_rejected() {
-        let error = ReleaseManifest::parse(&format!(
-            "PLOYZ_RELEASE_PLATFORM=linux-amd64\n\
-             PLOYZ_VERSION=0.1.0\n\
-             PLOYZD_URL=https://example.test/ployzd\n\
-             PLOYZD_SHA256={SHA}\n\
-             PLOYZ_EBPF_TC_URL=https://example.test/ployz-ebpf-tc\n\
-             PLOYZ_EBPF_TC_SHA256={SHA}\n\
-             PLOYZ_EBPF_CTL_URL=https://example.test/ployz-ebpf-ctl\n\
-             PLOYZ_EBPF_CTL_SHA256={SHA}\n\
-             PLOYZ_RAILPACK_VERSION=v0.31.0\n\
-             PLOYZ_RAILPACK_URL=https://example.test/railpack\n\
-             PLOYZ_RAILPACK_SHA256={SHA}\n\
-             PLOYZ_NATS_SERVER_VERSION=2.14.2\n"
-        ))
-        .expect_err("partial entry is rejected");
-
-        assert!(error.to_string().contains("partial nats-server entry"));
     }
 
     #[test]

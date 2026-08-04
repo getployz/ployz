@@ -142,26 +142,3 @@ fn recovery_requires_online_health_and_a_mounted_dataset_root() {
         Err(ZfsEffectError::PreparedStateMismatch { .. })
     ));
 }
-
-#[test]
-fn owned_recovery_service_refuses_openrc_before_writing_or_enabling() {
-    let root = tempfile::tempdir().unwrap();
-    let mut runner = RecordingRunner::new([]);
-    let origin = PreparedStorageOrigin::OwnedImage {
-        backing_file: PathBuf::from(PLOYZ_OWNED_ZFS_BACKING_FILE),
-    };
-
-    assert!(matches!(
-        super::super::preparation::install_docker_zfs_ordering(
-            &mut runner,
-            crate::execution::SupervisorBackend::OpenRc,
-            &root.path().join("docker.service.d"),
-            root.path(),
-            &origin,
-        ),
-        Err(ZfsEffectError::Dataset { .. })
-    ));
-    assert!(runner.invocations.is_empty());
-    assert!(!root.path().join("docker.service.d").exists());
-    assert!(!root.path().join("ployz-owned-zfs-import.service").exists());
-}

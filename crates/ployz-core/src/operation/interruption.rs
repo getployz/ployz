@@ -1,17 +1,17 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    BuildOperationState, CredentialGrantOperationState, DeployOperationState, DeployRunningStage,
-    IngressConfigureOperationState, MachineBuildCachePruneOperationState,
-    MachineLifecycleOperationState, MachineStoragePrepareOperationState,
-    MachineUpdateOperationState, NamespaceRemoveOperationState, NamespaceRemoveRunningStage,
-    NetworkRepairOperationState, NetworkRepairRunningStage, OperationKind, OperationStatus,
-    ServiceRestartOperationState, ServiceRestartRunningStage, VolumeCreateOperationState,
-    VolumeCreateRunningStage, VolumeRemoveOperationState, VolumeRemoveRunningStage,
+    BuildOperationState, DeployOperationState, DeployRunningStage, IngressConfigureOperationState,
+    MachineBuildCachePruneOperationState, MachineLifecycleOperationState,
+    MachineStoragePrepareOperationState, MachineUpdateOperationState,
+    NamespaceRemoveOperationState, NamespaceRemoveRunningStage, NetworkRepairOperationState,
+    NetworkRepairRunningStage, OperationKind, OperationStatus, ServiceRestartOperationState,
+    ServiceRestartRunningStage, VolumeCreateOperationState, VolumeCreateRunningStage,
+    VolumeRemoveOperationState, VolumeRemoveRunningStage,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum OperationInterruptionCause {
     CoreShutdown,
@@ -19,7 +19,7 @@ pub enum OperationInterruptionCause {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DeployInterruptionStage {
     Accepted,
@@ -28,7 +28,7 @@ pub enum DeployInterruptionStage {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum BuildInterruptionStage {
     Accepted,
@@ -37,12 +37,11 @@ pub enum BuildInterruptionStage {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OperationInterruptionStage {
     Build { stage: BuildInterruptionStage },
     Deploy { stage: DeployInterruptionStage },
-    CredentialGrantAccepted,
     IngressConfigureAccepted,
     MachineUpdateAccepted,
     MachineUpdateRunning,
@@ -70,7 +69,6 @@ impl OperationInterruptionStage {
         match self {
             Self::Build { .. } => OperationKind::Build,
             Self::Deploy { .. } => OperationKind::Deploy,
-            Self::CredentialGrantAccepted => OperationKind::CredentialGrant,
             Self::IngressConfigureAccepted => OperationKind::IngressConfigure,
             Self::MachineUpdateAccepted | Self::MachineUpdateRunning => {
                 OperationKind::MachineUpdate
@@ -104,9 +102,9 @@ impl OperationInterruptionStage {
     pub const fn uncertain_work(self) -> OperationInterruptionUncertainWork {
         match self {
             Self::Build { .. } => OperationInterruptionUncertainWork::Runtime,
-            Self::CredentialGrantAccepted
-            | Self::IngressConfigureAccepted
-            | Self::MachineLifecycleAccepted => OperationInterruptionUncertainWork::Intent,
+            Self::IngressConfigureAccepted | Self::MachineLifecycleAccepted => {
+                OperationInterruptionUncertainWork::Intent
+            }
             Self::MachineUpdateAccepted
             | Self::MachineUpdateRunning
             | Self::MachineStoragePrepareAccepted
@@ -135,8 +133,7 @@ impl OperationInterruptionStage {
         match self {
             Self::Build { .. } => OperationInterruptionNextAction::InspectThenResubmit,
             Self::Deploy { .. } => OperationInterruptionNextAction::RetryFromObservedReality,
-            Self::CredentialGrantAccepted
-            | Self::IngressConfigureAccepted
+            Self::IngressConfigureAccepted
             | Self::MachineUpdateAccepted
             | Self::MachineUpdateRunning
             | Self::MachineStoragePrepareAccepted
@@ -162,7 +159,7 @@ impl OperationInterruptionStage {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum OperationInterruptionUncertainWork {
     Intent,
@@ -171,7 +168,7 @@ pub enum OperationInterruptionUncertainWork {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum OperationInterruptionNextAction {
     RetryFromObservedReality,
@@ -179,9 +176,9 @@ pub enum OperationInterruptionNextAction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(
-    feature = "typescript",
+    feature = "ts",
     ts(
         type = "{ cause: OperationInterruptionCause, last_durable_stage: OperationInterruptionStage, kind: OperationKind, uncertain_work: OperationInterruptionUncertainWork, next_action: OperationInterruptionNextAction }"
     )
@@ -288,7 +285,6 @@ impl OperationStatus {
         match self {
             Self::Build { status } => status.state().interruption_evidence(cause),
             Self::Deploy { state, .. } => state.interruption_evidence(cause),
-            Self::CredentialGrant { state, .. } => state.interruption_evidence(cause),
             Self::IngressConfigure { state, .. } => state.interruption_evidence(cause),
             Self::MachineUpdate { state, .. } => state.interruption_evidence(cause),
             Self::MachineStoragePrepare { state, .. } => state.interruption_evidence(cause),
@@ -299,10 +295,7 @@ impl OperationStatus {
             Self::NamespaceRemove { state, .. } => state.interruption_evidence(cause),
             Self::VolumeRemove { state, .. } => state.interruption_evidence(cause),
             Self::VolumeCreate { state, .. } => state.interruption_evidence(cause),
-            Self::Cert { .. }
-            | Self::MachineAdd { .. }
-            | Self::CoreReplace { .. }
-            | Self::ManagedDnsReconcile { .. } => None,
+            Self::Cert { .. } | Self::MachineAdd { .. } | Self::ManagedDnsReconcile { .. } => None,
         }
     }
 
@@ -323,10 +316,6 @@ impl OperationStatus {
         match self {
             Self::Deploy {
                 state: DeployOperationState::Interrupted { evidence },
-                ..
-            }
-            | Self::CredentialGrant {
-                state: CredentialGrantOperationState::Interrupted { evidence },
                 ..
             }
             | Self::IngressConfigure {
@@ -371,7 +360,6 @@ impl OperationStatus {
             } => Some(evidence),
             Self::Build { .. }
             | Self::Deploy { .. }
-            | Self::CredentialGrant { .. }
             | Self::IngressConfigure { .. }
             | Self::MachineUpdate { .. }
             | Self::MachineStoragePrepare { .. }
@@ -384,7 +372,6 @@ impl OperationStatus {
             | Self::VolumeCreate { .. }
             | Self::Cert { .. }
             | Self::MachineAdd { .. }
-            | Self::CoreReplace { .. }
             | Self::ManagedDnsReconcile { .. } => None,
         }
     }

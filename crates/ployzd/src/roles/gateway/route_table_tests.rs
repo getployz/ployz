@@ -317,7 +317,7 @@ fn invalid_source() -> GatewayProjectionError {
 
 fn source_unavailable() -> GatewayProjectionError {
     GatewayProjectionError::SourceUnavailable {
-        message: "nats unavailable".to_owned(),
+        message: "row source unavailable".to_owned(),
     }
 }
 

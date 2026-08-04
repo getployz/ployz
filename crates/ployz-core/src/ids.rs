@@ -19,8 +19,8 @@ macro_rules! subject_token_id {
         ts_brand: $brand:literal;
     ) => {
         #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-        #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-        #[cfg_attr(feature = "typescript", ts(type = $brand))]
+        #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+        #[cfg_attr(feature = "ts", ts(type = $brand))]
         #[serde(transparent)]
         pub struct $name(SubjectToken);
 

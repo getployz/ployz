@@ -4,21 +4,17 @@ use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
+use super::fsx::{FileMode, StagedFile, StagedFileError};
 use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion,
     InstallContractError, InstallSha256Digest,
 };
-use tempfile::TempDir;
-
-use super::fsx::{FileMode, StagedFile, StagedFileError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArtifactKind {
     EbpfBytecode,
     EbpfCtl,
-    NatsServer,
     Ployzd,
     Railpack,
 }
@@ -197,9 +193,61 @@ pub struct InstalledArtifactFile {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContentAddressedArtifactFile {
+    pub source_path: PathBuf,
+    pub staged_path: PathBuf,
+    pub digest: Sha256Digest,
+    pub durability: ArtifactInstallDurability,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ArtifactInstallDurability {
     Confirmed,
     Unconfirmed { message: String },
+}
+
+/// Stages a verified artifact at `<store>/<sha256>`. Existing valid content is
+/// reused; corrupted content is replaced through an atomic sibling rename.
+pub fn stage_verified_artifact_content_addressed(
+    verified: &VerifiedArtifactFile,
+    store: &Path,
+) -> Result<ContentAddressedArtifactFile, ArtifactInstallError> {
+    if !store.is_absolute() {
+        return Err(ArtifactInstallError::RelativeContentStore {
+            path: store.to_path_buf(),
+        });
+    }
+    let staged_path = store.join(verified.digest.as_str());
+    if staged_path.exists() {
+        match verify_artifact_file(&staged_path, &verified.digest) {
+            Ok(existing) => {
+                make_executable(&staged_path).map_err(|error| {
+                    ArtifactInstallError::SetExecutableFailed {
+                        staged_path: staged_path.clone(),
+                        message: error.to_string(),
+                    }
+                })?;
+                sync_staged_file(&staged_path)?;
+                return Ok(ContentAddressedArtifactFile {
+                    source_path: verified.path.clone(),
+                    staged_path,
+                    digest: existing.digest,
+                    durability: ArtifactInstallDurability::Confirmed,
+                });
+            }
+            Err(ArtifactVerificationError::DigestMismatch { .. }) => {}
+            Err(error) => return Err(ArtifactInstallError::VerificationFailed(error)),
+        }
+    }
+
+    let (digest, durability) = copy_verified_artifact_to(verified, &verified.digest, &staged_path)?;
+
+    Ok(ContentAddressedArtifactFile {
+        source_path: verified.path.clone(),
+        staged_path,
+        digest,
+        durability,
+    })
 }
 
 pub fn install_verified_artifact(
@@ -214,6 +262,21 @@ pub fn install_verified_artifact(
         });
     }
     let install_path = target.install_path();
+    let (digest, durability) = copy_verified_artifact_to(verified, &target.digest, install_path)?;
+
+    Ok(InstalledArtifactFile {
+        source_path: verified.path.clone(),
+        install_path: install_path.to_path_buf(),
+        digest,
+        durability,
+    })
+}
+
+fn copy_verified_artifact_to(
+    verified: &VerifiedArtifactFile,
+    expected: &Sha256Digest,
+    install_path: &Path,
+) -> Result<(Sha256Digest, ArtifactInstallDurability), ArtifactInstallError> {
     let parent = install_path
         .parent()
         .expect("artifact install path is validated with a parent");
@@ -226,141 +289,14 @@ pub fn install_verified_artifact(
         message: error.to_string(),
     })?;
     let mut staged_artifact = create_staged_artifact(&verified.path, parent, file_name)?;
-    let staged = match verify_artifact_file(staged_artifact.path(), &target.digest) {
+    let staged = match verify_artifact_file(staged_artifact.path(), expected) {
         Ok(staged) => staged,
         Err(error) => {
             return Err(ArtifactInstallError::VerificationFailed(error));
         }
     };
     let durability = commit_staged_artifact(&mut staged_artifact, install_path)?;
-
-    Ok(InstalledArtifactFile {
-        source_path: verified.path.clone(),
-        install_path: install_path.to_path_buf(),
-        digest: staged.digest,
-        durability,
-    })
-}
-
-pub fn install_verified_nats_server_archive(
-    verified: &VerifiedArtifactFile,
-    target: &ArtifactTarget,
-) -> Result<InstalledArtifactFile, ArtifactInstallError> {
-    if target.kind != ArtifactKind::NatsServer {
-        return Err(ArtifactInstallError::ArchiveKindMismatch { kind: target.kind });
-    }
-    if verified.digest != target.digest {
-        return Err(ArtifactInstallError::VerifiedDigestMismatch {
-            install_path: target.install_path().to_path_buf(),
-            expected: target.digest.clone(),
-            verified: verified.digest.clone(),
-        });
-    }
-    let extracted = extract_nats_server_binary(&verified.path)?;
-    install_extracted_artifact(extracted.path(), verified.path.clone(), target)
-}
-
-struct ExtractedNatsServer {
-    _directory: TempDir,
-    path: PathBuf,
-}
-
-impl ExtractedNatsServer {
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-fn extract_nats_server_binary(archive: &Path) -> Result<ExtractedNatsServer, ArtifactInstallError> {
-    let directory = tempfile::Builder::new()
-        .prefix("ployz-nats-server-")
-        .tempdir()
-        .map_err(|error| ArtifactInstallError::ExtractArchiveFailed {
-            archive: archive.to_path_buf(),
-            message: error.to_string(),
-        })?;
-    let output = Command::new("tar")
-        .arg("-xzf")
-        .arg(archive)
-        .arg("-C")
-        .arg(directory.path())
-        .output()
-        .map_err(|error| ArtifactInstallError::ExtractArchiveFailed {
-            archive: archive.to_path_buf(),
-            message: error.to_string(),
-        })?;
-    if !output.status.success() {
-        return Err(ArtifactInstallError::ExtractArchiveFailed {
-            archive: archive.to_path_buf(),
-            message: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        });
-    }
-    let Some(path) = find_file_named(directory.path(), "nats-server")? else {
-        return Err(ArtifactInstallError::ArchiveMemberMissing {
-            archive: archive.to_path_buf(),
-            member: "nats-server",
-        });
-    };
-    Ok(ExtractedNatsServer {
-        _directory: directory,
-        path,
-    })
-}
-
-fn find_file_named(
-    directory: &Path,
-    name: &'static str,
-) -> Result<Option<PathBuf>, ArtifactInstallError> {
-    for entry in fs::read_dir(directory).map_err(|error| ArtifactInstallError::ReadDirFailed {
-        path: directory.to_path_buf(),
-        message: error.to_string(),
-    })? {
-        let entry = entry.map_err(|error| ArtifactInstallError::ReadDirFailed {
-            path: directory.to_path_buf(),
-            message: error.to_string(),
-        })?;
-        let path = entry.path();
-        if path.is_dir() {
-            if let Some(found) = find_file_named(&path, name)? {
-                return Ok(Some(found));
-            }
-            continue;
-        }
-        if path.file_name().is_some_and(|file_name| file_name == name) {
-            return Ok(Some(path));
-        }
-    }
-    Ok(None)
-}
-
-fn install_extracted_artifact(
-    source_path: &Path,
-    archive_path: PathBuf,
-    target: &ArtifactTarget,
-) -> Result<InstalledArtifactFile, ArtifactInstallError> {
-    let install_path = target.install_path();
-    let parent = install_path
-        .parent()
-        .expect("artifact install path is validated with a parent");
-    let file_name = install_path
-        .file_name()
-        .expect("artifact install path is validated with a file name");
-
-    fs::create_dir_all(parent).map_err(|error| ArtifactInstallError::CreateParentFailed {
-        path: parent.to_path_buf(),
-        message: error.to_string(),
-    })?;
-    let mut staged_artifact = create_staged_artifact(source_path, parent, file_name)?;
-    let digest =
-        sha256_file(staged_artifact.path()).map_err(ArtifactInstallError::VerificationFailed)?;
-    let durability = commit_staged_artifact(&mut staged_artifact, install_path)?;
-
-    Ok(InstalledArtifactFile {
-        source_path: archive_path,
-        install_path: install_path.to_path_buf(),
-        digest,
-        durability,
-    })
+    Ok((staged.digest, durability))
 }
 
 #[cfg(unix)]
@@ -480,17 +416,8 @@ fn sync_parent_directory(_install_path: &Path) -> std::io::Result<()> {
 pub enum ArtifactInstallError {
     #[error("artifact verification failed before install: {0}")]
     VerificationFailed(ArtifactVerificationError),
-    #[error("artifact kind {kind:?} is not an archive install")]
-    ArchiveKindMismatch { kind: ArtifactKind },
-    #[error("failed to extract artifact archive {}: {message}", archive.display())]
-    ExtractArchiveFailed { archive: PathBuf, message: String },
-    #[error("artifact archive {} does not contain {member}", archive.display())]
-    ArchiveMemberMissing {
-        archive: PathBuf,
-        member: &'static str,
-    },
-    #[error("failed to read artifact directory {}: {message}", path.display())]
-    ReadDirFailed { path: PathBuf, message: String },
+    #[error("content-addressed artifact store {} must be absolute", path.display())]
+    RelativeContentStore { path: PathBuf },
     #[error(
         "verified artifact digest {} does not match install target {} for {}",
         verified.as_str(),

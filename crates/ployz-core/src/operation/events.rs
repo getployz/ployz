@@ -13,22 +13,15 @@ use crate::deploy::{
 };
 use crate::ids::{CertId, ContainerId, MachineId, NamespaceId, OperationId, ServiceId};
 use crate::ingress::{ActiveCertificateMetadata, IngressConfiguration};
-use crate::install::{InstallArtifactVersion, MachineJoinRuntimeNatsUrl};
+use crate::install::InstallArtifactVersion;
 use crate::machine::{InstallRolePolicy, MachineLifecycle};
-use crate::machine::{
-    IssuedJoinToken, JoinTokenRedeemedAt, MachineAddFailure, MachineCredentialProvisioningStep,
-    MachineName,
-};
+use crate::machine::{IssuedJoinToken, JoinTokenRedeemedAt, MachineAddFailure, MachineName};
 
 use super::build::{
     BuildCleanupEvidence, BuildEvent, BuildEvidence, BuildLogChunk, BuildOperationFailure,
     BuildPlatformFailure, BuildTimeoutFailure, BuildToolchainEvidence, BuildTransition,
 };
 use super::cert::{CertEvent, CertTransition, CertificateProvisionWarning};
-use super::core_replace::{CoreReplaceEvent, CoreReplaceFailure, CoreReplaceTransition};
-use super::credential_grant::{
-    CredentialGrantAction, CredentialGrantEvent, CredentialGrantFailure, CredentialGrantTransition,
-};
 use super::deploy::{DeployEvent, DeployEvidence, DeployTransition};
 use super::ingress_configure::{IngressConfigureEvent, IngressConfigureTransition};
 use super::machine_add::MachineAddEvent;
@@ -57,7 +50,7 @@ use super::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OperationSubject {
     Build,
@@ -79,10 +72,6 @@ pub enum OperationSubject {
     MachineStoragePrepare {
         machine_id: MachineId,
     },
-    CoreReplace {
-        machine_id: MachineId,
-    },
-    CredentialGrant,
     NetworkRepair,
     ServiceRestart {
         service_id: ServiceId,
@@ -104,12 +93,12 @@ pub enum OperationSubject {
     },
 }
 
-/// Local operation evidence event and plain NATS progress payload.
+/// Local operation evidence event and durable progress payload.
 ///
 /// Changing this shape intentionally breaks operation replay/history unless
 /// paired with evidence cleanup or migration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "event", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OperationEvent {
     BuildSubmitted {
@@ -126,14 +115,14 @@ pub enum OperationEvent {
         operation_id: OperationId,
         platform: crate::image::OciPlatform,
         #[serde(flatten)]
-        #[cfg_attr(feature = "typescript", ts(flatten))]
+        #[cfg_attr(feature = "ts", ts(flatten))]
         executor: BuildExecutorEvidence,
     },
     BuildSourceVerified {
         operation_id: OperationId,
         platform: crate::image::OciPlatform,
         #[serde(flatten)]
-        #[cfg_attr(feature = "typescript", ts(flatten))]
+        #[cfg_attr(feature = "ts", ts(flatten))]
         executor: BuildExecutorEvidence,
         source: VerifiedBuildSource,
     },
@@ -141,7 +130,7 @@ pub enum OperationEvent {
         operation_id: OperationId,
         platform: crate::image::OciPlatform,
         #[serde(flatten)]
-        #[cfg_attr(feature = "typescript", ts(flatten))]
+        #[cfg_attr(feature = "ts", ts(flatten))]
         executor: BuildExecutorEvidence,
         toolchain: BuildToolchainEvidence,
     },
@@ -152,7 +141,7 @@ pub enum OperationEvent {
         operation_id: OperationId,
         platform: crate::image::OciPlatform,
         #[serde(flatten)]
-        #[cfg_attr(feature = "typescript", ts(flatten))]
+        #[cfg_attr(feature = "ts", ts(flatten))]
         executor: BuildExecutorEvidence,
         chunk: BuildLogChunk,
     },
@@ -160,7 +149,7 @@ pub enum OperationEvent {
         operation_id: OperationId,
         platform: crate::image::OciPlatform,
         #[serde(flatten)]
-        #[cfg_attr(feature = "typescript", ts(flatten))]
+        #[cfg_attr(feature = "ts", ts(flatten))]
         executor: BuildExecutorEvidence,
         omitted_bytes: u64,
     },
@@ -168,7 +157,7 @@ pub enum OperationEvent {
         operation_id: OperationId,
         platform: crate::image::OciPlatform,
         #[serde(flatten)]
-        #[cfg_attr(feature = "typescript", ts(flatten))]
+        #[cfg_attr(feature = "ts", ts(flatten))]
         executor: BuildExecutorEvidence,
         expected_sequence: u64,
         final_sequence: u64,
@@ -177,7 +166,7 @@ pub enum OperationEvent {
         operation_id: OperationId,
         platform: crate::image::OciPlatform,
         #[serde(flatten)]
-        #[cfg_attr(feature = "typescript", ts(flatten))]
+        #[cfg_attr(feature = "ts", ts(flatten))]
         executor: BuildExecutorEvidence,
         image: crate::deploy::PlatformImage,
     },
@@ -185,7 +174,7 @@ pub enum OperationEvent {
         operation_id: OperationId,
         platform: crate::image::OciPlatform,
         #[serde(flatten)]
-        #[cfg_attr(feature = "typescript", ts(flatten))]
+        #[cfg_attr(feature = "ts", ts(flatten))]
         executor: BuildExecutorEvidence,
         failure: BuildPlatformFailure,
     },
@@ -324,11 +313,6 @@ pub enum OperationEvent {
         machine_id: MachineId,
         joined_at: JoinTokenRedeemedAt,
     },
-    MachineAddCredentialProvisioned {
-        operation_id: OperationId,
-        machine_id: MachineId,
-        step: MachineCredentialProvisioningStep,
-    },
     MachineAddCompleted {
         operation_id: OperationId,
         machine_id: MachineId,
@@ -408,31 +392,6 @@ pub enum OperationEvent {
         operation_id: OperationId,
         machine_id: MachineId,
         failure: MachineLifecycleFailure,
-    },
-    CoreReplaceSubmitted {
-        operation_id: OperationId,
-        machine_id: MachineId,
-        successor_nats_url: MachineJoinRuntimeNatsUrl,
-    },
-    CoreReplaceCompleted {
-        operation_id: OperationId,
-        machine_id: MachineId,
-    },
-    CoreReplaceFailed {
-        operation_id: OperationId,
-        machine_id: MachineId,
-        failure: CoreReplaceFailure,
-    },
-    CredentialGrantSubmitted {
-        operation_id: OperationId,
-        action: CredentialGrantAction,
-    },
-    CredentialGrantCompleted {
-        operation_id: OperationId,
-    },
-    CredentialGrantFailed {
-        operation_id: OperationId,
-        failure: CredentialGrantFailure,
     },
     NetworkRepairSubmitted {
         operation_id: OperationId,
@@ -618,7 +577,6 @@ impl OperationEvent {
             | Self::CertFailed { operation_id, .. }
             | Self::MachineAddSubmitted { operation_id, .. }
             | Self::MachineAddJoined { operation_id, .. }
-            | Self::MachineAddCredentialProvisioned { operation_id, .. }
             | Self::MachineAddCompleted { operation_id, .. }
             | Self::MachineAddFailed { operation_id, .. }
             | Self::MachineUpdateSubmitted { operation_id, .. }
@@ -636,12 +594,6 @@ impl OperationEvent {
             | Self::MachineLifecycleSubmitted { operation_id, .. }
             | Self::MachineLifecycleCompleted { operation_id, .. }
             | Self::MachineLifecycleFailed { operation_id, .. }
-            | Self::CoreReplaceSubmitted { operation_id, .. }
-            | Self::CoreReplaceCompleted { operation_id, .. }
-            | Self::CoreReplaceFailed { operation_id, .. }
-            | Self::CredentialGrantSubmitted { operation_id, .. }
-            | Self::CredentialGrantCompleted { operation_id }
-            | Self::CredentialGrantFailed { operation_id, .. }
             | Self::NetworkRepairSubmitted { operation_id, .. }
             | Self::NetworkRepairRunning { operation_id, .. }
             | Self::NetworkRepairDataplaneConverged { operation_id, .. }
@@ -734,7 +686,6 @@ impl OperationEvent {
             | Self::CertFailed { .. }
             | Self::MachineAddSubmitted { .. }
             | Self::MachineAddJoined { .. }
-            | Self::MachineAddCredentialProvisioned { .. }
             | Self::MachineAddCompleted { .. }
             | Self::MachineAddFailed { .. }
             | Self::MachineUpdateSubmitted { .. }
@@ -752,12 +703,6 @@ impl OperationEvent {
             | Self::MachineLifecycleSubmitted { .. }
             | Self::MachineLifecycleCompleted { .. }
             | Self::MachineLifecycleFailed { .. }
-            | Self::CoreReplaceSubmitted { .. }
-            | Self::CoreReplaceCompleted { .. }
-            | Self::CoreReplaceFailed { .. }
-            | Self::CredentialGrantSubmitted { .. }
-            | Self::CredentialGrantCompleted { .. }
-            | Self::CredentialGrantFailed { .. }
             | Self::NetworkRepairSubmitted { .. }
             | Self::NetworkRepairRunning { .. }
             | Self::NetworkRepairCompleted { .. }
@@ -908,7 +853,6 @@ impl OperationEvent {
             | Self::CertFailed { .. }
             | Self::MachineAddSubmitted { .. }
             | Self::MachineAddJoined { .. }
-            | Self::MachineAddCredentialProvisioned { .. }
             | Self::MachineAddCompleted { .. }
             | Self::MachineAddFailed { .. }
             | Self::MachineUpdateSubmitted { .. }
@@ -926,12 +870,6 @@ impl OperationEvent {
             | Self::MachineLifecycleSubmitted { .. }
             | Self::MachineLifecycleCompleted { .. }
             | Self::MachineLifecycleFailed { .. }
-            | Self::CoreReplaceSubmitted { .. }
-            | Self::CoreReplaceCompleted { .. }
-            | Self::CoreReplaceFailed { .. }
-            | Self::CredentialGrantSubmitted { .. }
-            | Self::CredentialGrantCompleted { .. }
-            | Self::CredentialGrantFailed { .. }
             | Self::NetworkRepairSubmitted { .. }
             | Self::NetworkRepairRunning { .. }
             | Self::NetworkRepairDataplaneConverged { .. }
@@ -983,8 +921,6 @@ pub enum OperationSubjectRef {
     MachineStoragePrepare(MachineId),
     MachineBuildCachePrune(MachineId),
     MachineLifecycle(MachineId),
-    CoreReplace(MachineId),
-    CredentialGrant,
     ManagedDnsReconcile(super::ManagedDnsReconcileSubject),
     IngressConfigure,
 }
@@ -1021,14 +957,6 @@ pub(super) enum ClassifiedOperationEvent {
     MachineLifecycle {
         operation_id: OperationId,
         event: MachineLifecycleEvent,
-    },
-    CoreReplace {
-        operation_id: OperationId,
-        event: CoreReplaceEvent,
-    },
-    CredentialGrant {
-        operation_id: OperationId,
-        event: CredentialGrantEvent,
     },
     NetworkRepair {
         operation_id: OperationId,
@@ -1075,8 +1003,6 @@ impl ClassifiedOperationEvent {
             | Self::MachineStoragePrepare { operation_id, .. }
             | Self::MachineBuildCachePrune { operation_id, .. }
             | Self::MachineLifecycle { operation_id, .. }
-            | Self::CoreReplace { operation_id, .. }
-            | Self::CredentialGrant { operation_id, .. }
             | Self::NetworkRepair { operation_id, .. }
             | Self::ServiceRestart { operation_id, .. }
             | Self::ManagedDnsReconcile { operation_id, .. }
@@ -1465,14 +1391,6 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                     state: MachineAddOperationState::Joining { joined_at },
                 },
             },
-            OperationEvent::MachineAddCredentialProvisioned {
-                operation_id,
-                machine_id,
-                ..
-            } => Self::MachineAdd {
-                operation_id,
-                event: MachineAddEvent::CredentialProvisioned { machine_id },
-            },
             OperationEvent::MachineAddCompleted {
                 operation_id,
                 machine_id,
@@ -1641,55 +1559,6 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                     machine_id,
                     transition: MachineLifecycleTransition::Failed { failure },
                 },
-            },
-            OperationEvent::CoreReplaceSubmitted {
-                operation_id,
-                machine_id,
-                ..
-            } => Self::CoreReplace {
-                operation_id,
-                event: CoreReplaceEvent::Submitted { machine_id },
-            },
-            OperationEvent::CoreReplaceCompleted {
-                operation_id,
-                machine_id,
-            } => Self::CoreReplace {
-                operation_id,
-                event: CoreReplaceEvent::Transition {
-                    machine_id,
-                    transition: CoreReplaceTransition::Completed,
-                },
-            },
-            OperationEvent::CoreReplaceFailed {
-                operation_id,
-                machine_id,
-                failure,
-            } => Self::CoreReplace {
-                operation_id,
-                event: CoreReplaceEvent::Transition {
-                    machine_id,
-                    transition: CoreReplaceTransition::Failed { failure },
-                },
-            },
-            OperationEvent::CredentialGrantSubmitted {
-                operation_id,
-                action,
-            } => Self::CredentialGrant {
-                operation_id,
-                event: CredentialGrantEvent::Submitted { action },
-            },
-            OperationEvent::CredentialGrantCompleted { operation_id } => Self::CredentialGrant {
-                operation_id,
-                event: CredentialGrantEvent::Transition(CredentialGrantTransition::Completed),
-            },
-            OperationEvent::CredentialGrantFailed {
-                operation_id,
-                failure,
-            } => Self::CredentialGrant {
-                operation_id,
-                event: CredentialGrantEvent::Transition(CredentialGrantTransition::Failed {
-                    failure,
-                }),
             },
             OperationEvent::NetworkRepairSubmitted {
                 operation_id,
@@ -1983,14 +1852,6 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 OperationKind::MachineLifecycle => Self::MachineLifecycle {
                     operation_id,
                     event: MachineLifecycleEvent::Cancelled(reason),
-                },
-                OperationKind::CoreReplace => Self::CoreReplace {
-                    operation_id,
-                    event: CoreReplaceEvent::Cancelled(reason),
-                },
-                OperationKind::CredentialGrant => Self::CredentialGrant {
-                    operation_id,
-                    event: CredentialGrantEvent::Cancelled(reason),
                 },
                 OperationKind::NetworkRepair => Self::NetworkRepair {
                     operation_id,

@@ -1,11 +1,10 @@
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
 
 use crate::execution::{
     ArtifactInstallDurability, ArtifactInstallError, ArtifactKind, ArtifactSource, ArtifactTarget,
     ArtifactVerificationError, ArtifactVersion, Sha256Digest, install_verified_artifact,
-    install_verified_nats_server_archive, verify_artifact_file,
+    stage_verified_artifact_content_addressed, verify_artifact_file,
 };
 
 #[test]
@@ -97,35 +96,98 @@ fn installed_artifact_is_executable_on_unix() {
 }
 
 #[test]
-fn nats_server_archive_install_extracts_binary() {
-    let root = temp_artifact("ployz-nats-archive");
-    let package = root.join("nats-server-v2.14.2-linux-amd64");
-    fs::create_dir_all(&package).expect("package dir can be created");
-    fs::write(package.join("nats-server"), "nats-server-binary\n")
-        .expect("nats-server binary can be written");
-    let archive = root.join("nats-server.tar.gz");
-    let status = Command::new("tar")
-        .arg("-czf")
-        .arg(&archive)
-        .arg("-C")
-        .arg(&root)
-        .arg("nats-server-v2.14.2-linux-amd64")
-        .status()
-        .expect("tar can run");
-    assert!(status.success());
-    let install_path = root.join("bin/nats-server");
-    let archive_digest = sha256(&archive);
-    let target = nats_server_target(&install_path, archive_digest.as_str());
-    let verified = verify_artifact_file(&archive, &target.digest).expect("archive verifies");
+fn content_addressed_staging_uses_the_verified_sha256_as_its_path() {
+    let root = tempfile::tempdir().expect("artifact root");
+    let source = root.path().join("ployzd.download");
+    let store = root.path().join("artifacts");
+    fs::write(&source, "ployz\n").expect("artifact can be written");
+    let verified =
+        verify_artifact_file(&source, &digest(PLOYZ_NEWLINE_SHA256)).expect("artifact verifies");
 
-    let installed =
-        install_verified_nats_server_archive(&verified, &target).expect("nats archive installs");
+    let staged = stage_verified_artifact_content_addressed(&verified, &store)
+        .expect("artifact stages by content");
 
-    assert_eq!(installed.source_path, archive);
-    assert_eq!(installed.install_path, install_path);
+    assert_eq!(staged.staged_path, store.join(PLOYZ_NEWLINE_SHA256));
+    assert_eq!(staged.digest, digest(PLOYZ_NEWLINE_SHA256));
+    assert_eq!(staged.durability, ArtifactInstallDurability::Confirmed);
     assert_eq!(
-        fs::read_to_string(&installed.install_path).expect("installed binary is readable"),
-        "nats-server-binary\n"
+        fs::read(&staged.staged_path).expect("staged bytes"),
+        b"ployz\n"
+    );
+}
+
+#[test]
+fn content_addressed_staging_reuses_valid_existing_content() {
+    let root = tempfile::tempdir().expect("artifact root");
+    let source = root.path().join("ployzd.download");
+    let store = root.path().join("artifacts");
+    fs::write(&source, "ployz\n").expect("artifact can be written");
+    let verified =
+        verify_artifact_file(&source, &digest(PLOYZ_NEWLINE_SHA256)).expect("artifact verifies");
+    let first =
+        stage_verified_artifact_content_addressed(&verified, &store).expect("first stage succeeds");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::set_permissions(&first.staged_path, fs::Permissions::from_mode(0o644))
+            .expect("stored mode can change");
+    }
+    fs::remove_file(&source).expect("download can disappear after staging");
+
+    let repeated = stage_verified_artifact_content_addressed(&verified, &store)
+        .expect("valid content is reusable without its source");
+
+    assert_eq!(repeated.staged_path, first.staged_path);
+    assert_eq!(repeated.digest, first.digest);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mode = fs::metadata(repeated.staged_path)
+            .expect("stored metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o755);
+    }
+}
+
+#[test]
+fn content_addressed_staging_replaces_corrupted_content() {
+    let root = tempfile::tempdir().expect("artifact root");
+    let source = root.path().join("ployzd.download");
+    let store = root.path().join("artifacts");
+    fs::write(&source, "ployz\n").expect("artifact can be written");
+    let verified =
+        verify_artifact_file(&source, &digest(PLOYZ_NEWLINE_SHA256)).expect("artifact verifies");
+    let first =
+        stage_verified_artifact_content_addressed(&verified, &store).expect("first stage succeeds");
+    fs::write(&first.staged_path, "corrupt\n").expect("stored artifact can be corrupted");
+
+    let repaired = stage_verified_artifact_content_addressed(&verified, &store)
+        .expect("verified source replaces corrupted content");
+
+    assert_eq!(repaired.staged_path, first.staged_path);
+    assert_eq!(
+        fs::read(repaired.staged_path).expect("repaired bytes"),
+        b"ployz\n"
+    );
+}
+
+#[test]
+fn content_addressed_staging_rejects_a_relative_store() {
+    let root = tempfile::tempdir().expect("artifact root");
+    let source = root.path().join("ployzd.download");
+    fs::write(&source, "ployz\n").expect("artifact can be written");
+    let verified =
+        verify_artifact_file(&source, &digest(PLOYZ_NEWLINE_SHA256)).expect("artifact verifies");
+
+    assert_eq!(
+        stage_verified_artifact_content_addressed(&verified, std::path::Path::new("artifacts")),
+        Err(ArtifactInstallError::RelativeContentStore {
+            path: PathBuf::from("artifacts"),
+        })
     );
 }
 
@@ -199,26 +261,6 @@ fn ployzd_target(install_path: &std::path::Path, digest: &str) -> ArtifactTarget
         install_path.to_path_buf(),
     )
     .expect("valid ployzd target")
-}
-
-fn nats_server_target(install_path: &std::path::Path, digest: &str) -> ArtifactTarget {
-    ArtifactTarget::new(
-        ArtifactKind::NatsServer,
-        ArtifactVersion::try_new("2.14.2").expect("valid version"),
-        ArtifactSource::try_new("https://example.invalid/nats-server.tar.gz")
-            .expect("valid source"),
-        Sha256Digest::try_new(digest).expect("valid digest"),
-        install_path.to_path_buf(),
-    )
-    .expect("valid nats-server target")
-}
-
-fn sha256(path: &std::path::Path) -> Sha256Digest {
-    use sha2::{Digest, Sha256};
-
-    let bytes = fs::read(path).expect("file can be read");
-    let digest = Sha256::digest(bytes);
-    Sha256Digest::try_new(format!("{digest:x}")).expect("valid digest")
 }
 
 fn temp_artifact(prefix: &str) -> PathBuf {

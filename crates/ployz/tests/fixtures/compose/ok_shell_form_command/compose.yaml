@@ -1,5 +1,0 @@
-name: fixture_shell_command
-services:
-  web:
-    image: nginx:latest
-    command: "sh -c 'echo hello world'"

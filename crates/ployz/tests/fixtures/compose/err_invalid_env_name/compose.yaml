@@ -1,6 +1,0 @@
-name: fixture_invalid_env_name
-services:
-  web:
-    image: nginx:latest
-    environment:
-      BAD=NAME: value

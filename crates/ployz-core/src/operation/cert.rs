@@ -17,7 +17,7 @@ use super::{EventSequence, OperationStatus};
 
 /// One typed failure taxonomy shared by deploy-time issuance and renewal.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "class", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CertificateProvisionFailure {
     OperationEvidenceWrite {
@@ -51,7 +51,7 @@ pub enum CertificateProvisionFailure {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CertInterruptionStage {
     Accepted,
@@ -59,14 +59,14 @@ pub enum CertInterruptionStage {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum CertificateInterruptionNextAction {
     RetryFromCurrentIntent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "warning", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CertificateProvisionWarning {
     DnsPreflightMismatch { message: FailureMessage },
@@ -74,7 +74,7 @@ pub enum CertificateProvisionWarning {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum CertRunningStage {
     ChallengePublished,
@@ -82,7 +82,7 @@ pub enum CertRunningStage {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CertOperationState {
     Accepted,
@@ -103,7 +103,7 @@ impl CertOperationState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(
     try_from = "CertOperationFailureWire",
     into = "CertOperationFailureWire"

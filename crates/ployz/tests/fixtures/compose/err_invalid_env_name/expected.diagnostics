@@ -1,1 +1,0 @@
-services.web.environment.BAD=NAME  invalid value  environment variable name contains '=': BAD=NAME

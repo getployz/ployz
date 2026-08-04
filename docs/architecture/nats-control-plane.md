@@ -1,51 +1,9 @@
-# NATS Control Plane
+# Retired NATS Control Plane
 
-Ployz uses NATS as the control-plane backplane. Machines connect to the control
-plane through direct TLS-authenticated NATS in v1.
+The NATS-backed v1 control plane is not part of the current workspace or
+product architecture. [ADR 0040](../adr/0040-corrosion-replaces-the-core-and-nats.md)
+supersedes it with Corrosion rows over HTTP/JSON/SSE on the WireGuard mesh.
 
-## Shape
-
-```text
-CLI / SDK / Cloud
-  -> NATS services
-  -> operation workers
-  -> machine services
-  -> Docker / gateway / DNS / local machine reality
-```
-
-Machines connect directly to NATS:
-
-```text
-async-nats
-  -> TLS NATS
-  -> nats-server
-```
-
-Product commands are NATS services. NATS credentials and subject permissions are
-the authority boundary for every caller.
-
-## Ownership
-
-The path-level ownership and dependency map is maintained in
-[`code-map.md`](code-map.md). This section records only the NATS boundary:
-
-- `ployz-core`: domain models and product policy.
-- `ployz-nats`: NATS resources and API wrappers.
-- `ployzd`: process wiring, service handlers, controllers, machine services, and
-  runtime adapters.
-- `ployz`: CLI client.
-- `ployz-sdk-types`: public schema/type export surface.
-
-## Rules
-
-- Plain NATS subjects carry fact broadcasts, intent broadcasts, service calls,
-  and live operation progress.
-- Core-local files hold operator intent and operation evidence.
-- Machine-local fact ledgers hold machine-owned facts.
-- Core-local timers create explicit operations for delayed or recurring work.
-- RPC artifact push moves larger control-plane artifacts to the machines that
-  use them.
-- Docker is execution reality.
-- Local machine storage is cache/evidence.
-- Private overlay transport is deferred from v1.
-- NATS permissions are authoritative over every transport.
+Current path ownership and dependency direction live in
+[`code-map.md`](code-map.md). Historical ADRs retain the decisions that led to
+the retired design; they are not implementation guidance for v2.

@@ -225,9 +225,6 @@ esac
         .env("PLOYZ_RELEASE_PLATFORM", "linux/amd64")
         .env("PLOYZ_RELEASE_ARTIFACT_DIR", &artifact_dir)
         .env("PLOYZ_RELEASE_DIST_DIR", &dist_dir)
-        .env("PLOYZ_NATS_SERVER_VERSION", "2.14.2")
-        .env("PLOYZ_NATS_SERVER_URL", "https://example.invalid/nats.tar.gz")
-        .env("PLOYZ_NATS_SERVER_SHA256", EMPTY_SHA256)
         .env("PLOYZ_RAILPACK_VERSION", "v0.31.0")
         .env(
             "PLOYZ_RAILPACK_ARCHIVE_URL",

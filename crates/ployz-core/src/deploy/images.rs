@@ -13,7 +13,7 @@ pub use crate::image::{
 pub const IMAGE_AVAILABILITY_SAFETY_MARGIN: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct PlatformImage {
     pub seed: MachineId,
@@ -55,11 +55,11 @@ impl ImageAvailabilityExpiresAt {
 /// A validated pushed-image receipt whose identity describes replacement-relevant
 /// platform content, independently of the machines currently serving it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(try_from = "PushedImageReceiptWire", into = "PushedImageReceiptWire")]
 pub struct PushedImageReceipt {
     index_digest: OciDigest,
-    #[cfg_attr(feature = "typescript", ts(type = "[OciPlatform, PlatformImage][]"))]
+    #[cfg_attr(feature = "ts", ts(type = "[OciPlatform, PlatformImage][]"))]
     platforms: BTreeMap<OciPlatform, PlatformImage>,
 }
 
@@ -201,9 +201,9 @@ impl From<ImageSource> for ImageSourceWire {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(
-    feature = "typescript",
+    feature = "ts",
     ts(
         type = "{ source: \"registry\" } | { source: \"pushed_to_seed\", index_digest: OciDigest, platforms: [OciPlatform, PlatformImage][] }"
     )
@@ -322,8 +322,8 @@ pub(super) fn registry_image_source() -> ImageSource {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "Brand<string, \"ImageReference\">"))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "Brand<string, \"ImageReference\">"))]
 #[serde(try_from = "String", into = "String")]
 pub struct ImageReference(String);
 

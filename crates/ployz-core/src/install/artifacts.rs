@@ -8,27 +8,7 @@ use super::paths::AbsoluteInstallPath;
 use super::validation::InstallContractError;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct FirstMachineInstallArtifacts {
-    pub ployzd: InstallArtifactSpec,
-    pub ebpf_bytecode: InstallArtifactSpec,
-    pub ebpf_ctl: InstallArtifactSpec,
-    pub railpack: InstallArtifactSpec,
-    /// Absent when the release manifest ships no `nats-server` (a dev
-    /// substrate push). Installs that found or promote a core require it.
-    pub nats_server: Option<NatsServerInstallSpec>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct MachineJoinSubstrateRelease {
-    pub version: ExactPloyzVersion,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ReleasePlatformFailure {
     Missing,
@@ -36,8 +16,8 @@ pub enum ReleasePlatformFailure {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "string"))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "string"))]
 #[serde(try_from = "String", into = "String")]
 pub struct ExactPloyzVersion(String);
 
@@ -116,7 +96,7 @@ pub enum ExactPloyzVersionError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct InstallArtifactSpec {
     pub version: InstallArtifactVersion,
@@ -126,19 +106,8 @@ pub struct InstallArtifactSpec {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct NatsServerInstallSpec {
-    pub version: InstallArtifactVersion,
-    pub source: InstallArtifactSource,
-    pub sha256: InstallSha256Digest,
-    pub binary: AbsoluteInstallPath,
-    pub config: AbsoluteInstallPath,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "string"))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "string"))]
 #[serde(try_from = "String", into = "String")]
 pub struct InstallArtifactVersion(String);
 
@@ -172,8 +141,8 @@ impl From<InstallArtifactVersion> for String {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "string"))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "string"))]
 #[serde(try_from = "String", into = "String")]
 pub struct InstallArtifactSource(String);
 
@@ -214,8 +183,8 @@ impl From<InstallArtifactSource> for String {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "string"))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "string"))]
 #[serde(try_from = "String", into = "String")]
 pub struct InstallSha256Digest(String);
 

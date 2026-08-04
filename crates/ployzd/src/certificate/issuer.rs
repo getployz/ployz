@@ -1,3 +1,7 @@
+//! Transport-neutral ACME HTTP-01 issuance mechanics.
+
+use std::time::Duration;
+
 use async_trait::async_trait;
 use instant_acme::{
     Account, AccountCredentials, AuthorizationStatus, ChallengeType, Identifier, NewAccount,
@@ -6,165 +10,109 @@ use instant_acme::{
 use ployz_core::certificate::{
     AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue, AcmeHttp01Challenge,
 };
-use ployz_core::ids::{CertId, MachineId, OperationId};
 use ployz_core::operation::RouteHostname;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 
-use crate::control::intent::certificate_intent::CertificateIntentStore;
-use crate::control::operation_evidence::OperationRepository;
-
-use super::gateway::GatewayCertificateClient;
-
+pub const DEFAULT_ACME_DIRECTORY_URL: &str = "https://acme-v02.api.letsencrypt.org/directory";
+pub const DEFAULT_ACME_ISSUE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+pub const DEFAULT_ACME_CLEANUP_TIMEOUT: Duration = Duration::from_secs(30);
 const CHALLENGE_TTL_SECONDS: u64 = 15 * 60;
 
-#[derive(Debug, Clone)]
+/// Machine-local persistence for one gateway's ACME account credentials.
+#[async_trait]
+pub trait AcmeAccountStore: Send + Sync {
+    async fn load_account_credentials(&self, directory_url: &str)
+    -> Result<Option<String>, String>;
+
+    async fn store_account_credentials(
+        &self,
+        directory_url: &str,
+        credentials: String,
+    ) -> Result<(), String>;
+}
+
+/// Publishes HTTP-01 material and confirms it is ready before ACME validation.
+/// Removal must be idempotent so cleanup can run after every issuance outcome.
+#[async_trait]
+pub trait Http01ChallengePublisher: Send + Sync {
+    async fn publish_challenge(&self, challenge: &AcmeHttp01Challenge) -> Result<(), String>;
+
+    async fn remove_challenge(&self, challenge: &AcmeHttp01Challenge) -> Result<(), String>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IssuedCertificate {
     pub certificate_chain_pem: String,
     pub private_key_pem: String,
 }
 
-#[async_trait]
-pub trait AcmeIssuer: Send + Sync {
-    async fn issue_http01(
-        &self,
-        context: &AcmeIssueContext,
-        hostname: &RouteHostname,
-    ) -> Result<IssuedCertificate, AcmeIssuerError>;
-}
-
-#[derive(Debug, Clone)]
-pub struct AcmeIssueContext {
-    repository: OperationRepository,
-    operation_id: OperationId,
-    cert_id: CertId,
-    gateway_client: GatewayCertificateClient,
-    challenge_machine_ids: Vec<MachineId>,
-    challenge_published: Arc<AtomicBool>,
-    applied_challenges: Arc<Mutex<Vec<AcmeHttp01Challenge>>>,
-}
-
-impl AcmeIssueContext {
-    pub(crate) fn new(
-        repository: OperationRepository,
-        client: async_nats::Client,
-        operation_id: OperationId,
-        cert_id: CertId,
-        challenge_machine_ids: Vec<MachineId>,
-        _challenge_readiness_timeout: std::time::Duration,
-    ) -> Self {
-        Self {
-            repository,
-            operation_id,
-            cert_id,
-            gateway_client: GatewayCertificateClient::new(client),
-            challenge_machine_ids,
-            challenge_published: Arc::new(AtomicBool::new(false)),
-            applied_challenges: Arc::new(Mutex::new(Vec::new())),
-        }
-    }
-
-    pub async fn publish_challenge(
-        &self,
-        challenge: AcmeHttp01Challenge,
-    ) -> Result<(), AcmeIssuerError> {
-        self.repository
-            .record_cert_challenge(&self.operation_id, self.cert_id.clone(), challenge.clone())
-            .await
-            .map_err(operation_evidence_error)?;
-        self.gateway_client
-            .apply_challenge(&self.operation_id, &challenge, &self.challenge_machine_ids)
-            .await
-            .map_err(|error| AcmeIssuerError::ChallengeReadiness {
-                missing_machine_ids: error.missing_machine_ids,
-            })?;
-        self.applied_challenges
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .push(challenge);
-        self.challenge_published.store(true, Ordering::Release);
-        Ok(())
-    }
-
-    pub async fn validation_started(&self) -> Result<(), AcmeIssuerError> {
-        if !self.challenge_published.load(Ordering::Acquire) {
-            return Err(AcmeIssuerError::Validation {
-                message: "HTTP-01 validation cannot start before challenge intent is published"
-                    .to_owned(),
-            });
-        }
-        self.repository
-            .record_cert_validation_started(&self.operation_id, self.cert_id.clone())
-            .await
-            .map_err(operation_evidence_error)?;
-        Ok(())
-    }
-
-    pub(crate) async fn clear_challenges(&self, _hostname: &RouteHostname) -> Vec<MachineId> {
-        let challenges = std::mem::take(
-            &mut *self
-                .applied_challenges
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()),
-        );
-        let mut missing = Vec::new();
-        for challenge in challenges {
-            missing.extend(
-                self.gateway_client
-                    .remove_challenge(&self.operation_id, &challenge, &self.challenge_machine_ids)
-                    .await,
-            );
-        }
-        missing.sort_by(|left, right| left.as_str().cmp(right.as_str()));
-        missing.dedup();
-        missing
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum AcmeIssuerError {
-    #[error("certificate operation evidence write failed: {message}")]
-    OperationEvidenceWrite { message: String },
-    #[error("HTTP-01 challenge is not applied on gateways {missing_machine_ids:?}")]
-    ChallengeReadiness { missing_machine_ids: Vec<MachineId> },
-    #[error("ACME validation failed: {message}")]
-    Validation { message: String },
-}
-
-fn validation_error(error: impl std::fmt::Display) -> AcmeIssuerError {
-    AcmeIssuerError::Validation {
-        message: error.to_string(),
-    }
-}
-
-fn operation_evidence_error(error: impl std::fmt::Display) -> AcmeIssuerError {
-    AcmeIssuerError::OperationEvidenceWrite {
-        message: error.to_string(),
-    }
-}
-
-pub(super) struct InstantAcmeIssuer {
+#[derive(Debug)]
+pub struct InstantAcmeIssuer<S> {
     directory_url: String,
-    store: CertificateIntentStore,
+    account_store: S,
+    issue_timeout: Duration,
+    cleanup_timeout: Duration,
 }
 
-impl InstantAcmeIssuer {
-    pub(super) fn new(directory_url: String, store: CertificateIntentStore) -> Self {
+impl<S> InstantAcmeIssuer<S> {
+    #[must_use]
+    pub fn new(directory_url: impl Into<String>, account_store: S) -> Self {
         Self {
-            directory_url,
-            store,
+            directory_url: directory_url.into(),
+            account_store,
+            issue_timeout: DEFAULT_ACME_ISSUE_TIMEOUT,
+            cleanup_timeout: DEFAULT_ACME_CLEANUP_TIMEOUT,
         }
+    }
+
+    #[must_use]
+    pub const fn with_timeouts(
+        mut self,
+        issue_timeout: Duration,
+        cleanup_timeout: Duration,
+    ) -> Self {
+        self.issue_timeout = issue_timeout;
+        self.cleanup_timeout = cleanup_timeout;
+        self
     }
 }
 
-#[async_trait]
-impl AcmeIssuer for InstantAcmeIssuer {
-    async fn issue_http01(
+impl<S: AcmeAccountStore> InstantAcmeIssuer<S> {
+    pub async fn issue_http01<P: Http01ChallengePublisher>(
         &self,
-        context: &AcmeIssueContext,
+        publisher: &P,
         hostname: &RouteHostname,
     ) -> Result<IssuedCertificate, AcmeIssuerError> {
-        let account = load_or_create_account(self).await?;
+        let mut presented = Vec::new();
+        let issuance = tokio::time::timeout(
+            self.issue_timeout,
+            self.issue_inner(publisher, hostname, &mut presented),
+        )
+        .await
+        .map_err(|_| AcmeIssuerError::TimedOut {
+            phase: AcmeTimeoutPhase::Issue,
+            timeout: self.issue_timeout,
+        })
+        .and_then(|result| result);
+        let cleanup = tokio::time::timeout(
+            self.cleanup_timeout,
+            cleanup_presented_challenges(publisher, &presented),
+        )
+        .await
+        .map_err(|_| AcmeIssuerError::TimedOut {
+            phase: AcmeTimeoutPhase::Cleanup,
+            timeout: self.cleanup_timeout,
+        })
+        .and_then(|result| result);
+        combine_issuance_and_cleanup(issuance, cleanup)
+    }
+
+    async fn issue_inner<P: Http01ChallengePublisher>(
+        &self,
+        publisher: &P,
+        hostname: &RouteHostname,
+        presented: &mut Vec<AcmeHttp01Challenge>,
+    ) -> Result<IssuedCertificate, AcmeIssuerError> {
+        let account = load_or_create_account(&self.directory_url, &self.account_store).await?;
         let identifiers = [Identifier::Dns(hostname.as_str().to_owned())];
         let mut order = account
             .new_order(&NewOrder::new(&identifiers))
@@ -205,10 +153,14 @@ impl AcmeIssuer for InstantAcmeIssuer {
                     .map_err(validation_error)?,
             )
             .map_err(validation_error)?;
-            context.publish_challenge(challenge_state).await?;
-            context.validation_started().await?;
+            publisher
+                .publish_challenge(&challenge_state)
+                .await
+                .map_err(|message| AcmeIssuerError::ChallengePublication { message })?;
+            presented.push(challenge_state);
             challenge.set_ready().await.map_err(validation_error)?;
         }
+
         let status = order
             .poll_ready(&RetryPolicy::default())
             .await
@@ -234,15 +186,17 @@ impl AcmeIssuer for InstantAcmeIssuer {
     }
 }
 
-async fn load_or_create_account(issuer: &InstantAcmeIssuer) -> Result<Account, AcmeIssuerError> {
-    if let Some(credentials) = issuer
-        .store
-        .account_credentials(&issuer.directory_url)
+async fn load_or_create_account<S: AcmeAccountStore>(
+    directory_url: &str,
+    store: &S,
+) -> Result<Account, AcmeIssuerError> {
+    if let Some(credentials) = store
+        .load_account_credentials(directory_url)
         .await
-        .map_err(validation_error)?
+        .map_err(|message| AcmeIssuerError::AccountPersistence { message })?
     {
         let credentials: AccountCredentials =
-            serde_json::from_str(&credentials).map_err(validation_error)?;
+            serde_json::from_str(&credentials).map_err(account_credentials_error)?;
         return Account::builder()
             .map_err(validation_error)?
             .from_credentials(credentials)
@@ -258,16 +212,182 @@ async fn load_or_create_account(issuer: &InstantAcmeIssuer) -> Result<Account, A
                 terms_of_service_agreed: true,
                 only_return_existing: false,
             },
-            issuer.directory_url.clone(),
+            directory_url.to_owned(),
             None,
         )
         .await
         .map_err(validation_error)?;
-    let credentials = serde_json::to_string(&credentials).map_err(validation_error)?;
-    issuer
-        .store
-        .store_account_credentials(issuer.directory_url.clone(), credentials)
+    let credentials = serde_json::to_string(&credentials).map_err(account_credentials_error)?;
+    store
+        .store_account_credentials(directory_url, credentials)
         .await
-        .map_err(validation_error)?;
+        .map_err(|message| AcmeIssuerError::AccountPersistence { message })?;
     Ok(account)
+}
+
+async fn cleanup_presented_challenges<P: Http01ChallengePublisher>(
+    publisher: &P,
+    challenges: &[AcmeHttp01Challenge],
+) -> Result<(), AcmeIssuerError> {
+    let mut failures = Vec::new();
+    for challenge in challenges {
+        if let Err(message) = publisher.remove_challenge(challenge).await {
+            failures.push(format!("{}: {message}", challenge.hostname().as_str()));
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(AcmeIssuerError::ChallengeCleanup {
+            message: failures.join("; "),
+        })
+    }
+}
+
+fn combine_issuance_and_cleanup(
+    issuance: Result<IssuedCertificate, AcmeIssuerError>,
+    cleanup: Result<(), AcmeIssuerError>,
+) -> Result<IssuedCertificate, AcmeIssuerError> {
+    match (issuance, cleanup) {
+        (Ok(certificate), Ok(())) => Ok(certificate),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Err(issuance), Err(cleanup)) => Err(AcmeIssuerError::IssuanceAndChallengeCleanup {
+            issuance_message: issuance.to_string(),
+            cleanup_message: cleanup.to_string(),
+        }),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcmeTimeoutPhase {
+    Issue,
+    Cleanup,
+}
+
+impl std::fmt::Display for AcmeTimeoutPhase {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Issue => formatter.write_str("issuance"),
+            Self::Cleanup => formatter.write_str("challenge cleanup"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum AcmeIssuerError {
+    #[error("ACME account persistence failed: {message}")]
+    AccountPersistence { message: String },
+    #[error("ACME account credentials are invalid: {message}")]
+    AccountCredentials { message: String },
+    #[error("HTTP-01 challenge publication failed: {message}")]
+    ChallengePublication { message: String },
+    #[error("HTTP-01 challenge cleanup failed: {message}")]
+    ChallengeCleanup { message: String },
+    #[error(
+        "ACME issuance failed: {issuance_message}; HTTP-01 cleanup also failed: {cleanup_message}"
+    )]
+    IssuanceAndChallengeCleanup {
+        issuance_message: String,
+        cleanup_message: String,
+    },
+    #[error("ACME {phase} timed out after {timeout:?}")]
+    TimedOut {
+        phase: AcmeTimeoutPhase,
+        timeout: Duration,
+    },
+    #[error("ACME validation failed: {message}")]
+    Validation { message: String },
+}
+
+fn validation_error(error: impl std::fmt::Display) -> AcmeIssuerError {
+    AcmeIssuerError::Validation {
+        message: error.to_string(),
+    }
+}
+
+fn account_credentials_error(error: impl std::fmt::Display) -> AcmeIssuerError {
+    AcmeIssuerError::AccountCredentials {
+        message: error.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ployz_core::certificate::{
+        AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue,
+    };
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct RecordingPublisher {
+        removed: Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl Http01ChallengePublisher for RecordingPublisher {
+        async fn publish_challenge(&self, _challenge: &AcmeHttp01Challenge) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn remove_challenge(&self, challenge: &AcmeHttp01Challenge) -> Result<(), String> {
+            self.removed
+                .lock()
+                .expect("recording lock")
+                .push(challenge.hostname().as_str().to_owned());
+            (challenge.hostname().as_str() != "bad.example.com")
+                .then_some(())
+                .ok_or_else(|| "row unavailable".to_owned())
+        }
+    }
+
+    #[tokio::test]
+    async fn cleanup_attempts_every_presented_challenge() {
+        let publisher = RecordingPublisher::default();
+        let challenges = [challenge("bad.example.com"), challenge("good.example.com")];
+
+        let error = cleanup_presented_challenges(&publisher, &challenges)
+            .await
+            .expect_err("one cleanup fails");
+
+        assert!(matches!(error, AcmeIssuerError::ChallengeCleanup { .. }));
+        assert_eq!(
+            *publisher.removed.lock().expect("recording lock"),
+            ["bad.example.com", "good.example.com"]
+        );
+    }
+
+    #[test]
+    fn cleanup_failure_preserves_the_issuance_failure() {
+        let issuance = AcmeIssuerError::Validation {
+            message: "authorization rejected".to_owned(),
+        };
+        let cleanup = AcmeIssuerError::TimedOut {
+            phase: AcmeTimeoutPhase::Cleanup,
+            timeout: Duration::from_secs(30),
+        };
+
+        let error = combine_issuance_and_cleanup(Err(issuance), Err(cleanup))
+            .expect_err("both phases fail");
+
+        assert!(matches!(
+            error,
+            AcmeIssuerError::IssuanceAndChallengeCleanup {
+                issuance_message,
+                ..
+            } if issuance_message.contains("authorization rejected")
+        ));
+    }
+
+    fn challenge(hostname: &str) -> AcmeHttp01Challenge {
+        let token = "token123";
+        AcmeHttp01Challenge::try_new(
+            RouteHostname::try_new(hostname).expect("hostname"),
+            AcmeChallengeToken::try_new(token).expect("challenge token"),
+            AcmeChallengeValue::try_new(format!("{token}.thumbprint")).expect("challenge value"),
+            AcmeChallengeTtlSeconds::try_new(CHALLENGE_TTL_SECONDS).expect("challenge ttl"),
+        )
+        .expect("challenge")
+    }
 }

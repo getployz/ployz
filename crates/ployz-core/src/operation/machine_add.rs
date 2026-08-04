@@ -1,5 +1,5 @@
 //! The Machine Add operation: a join token is minted, the machine joins,
-//! credentials are provisioned, and the machine activates. States,
+//! and the machine activates. States,
 //! transitions, and status projection live together here; the failure type
 //! stays in `crate::machine` beside the join-flow evidence it renders.
 
@@ -18,7 +18,7 @@ use super::text::CancellationReason;
 use super::{EventSequence, OperationStatus};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MachineAddOperationState {
     Pending { join_token: IssuedJoinToken },
@@ -29,7 +29,7 @@ pub enum MachineAddOperationState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum MachineAddOperationStateName {
     Pending,
@@ -79,9 +79,6 @@ impl MachineAddOperationState {
 /// cancel names no subject.
 pub(super) enum MachineAddEvent {
     Submitted {
-        machine_id: MachineId,
-    },
-    CredentialProvisioned {
         machine_id: MachineId,
     },
     Transition {
@@ -137,17 +134,6 @@ pub(super) fn project_event(
             )?;
             Ok(OperationProjection::AlreadySatisfied)
         }
-        MachineAddEvent::CredentialProvisioned {
-            machine_id: event_machine_id,
-        } => {
-            verify_subject(
-                fields.id,
-                fields.machine_id,
-                &event_machine_id,
-                OperationSubjectRef::MachineAdd,
-            )?;
-            project_credential_evidence(fields, event_sequence)
-        }
         MachineAddEvent::Transition {
             machine_id: event_machine_id,
             state: attempted,
@@ -166,22 +152,6 @@ pub(super) fn project_event(
             event_sequence,
         ),
     }
-}
-
-/// Credential-provisioning steps are evidence: they advance the status
-/// cursor without changing the machine-add state. They are only recorded
-/// while the operation is live; once terminal, the evidence is satisfied.
-fn project_credential_evidence(
-    fields: MachineAddFields<'_>,
-    event_sequence: EventSequence,
-) -> Result<OperationProjection, StatusProjectionError> {
-    if fields.state.is_terminal() {
-        return Ok(OperationProjection::AlreadySatisfied);
-    }
-
-    Ok(OperationProjection::StatusChanged {
-        status: Box::new(fields.status_with(fields.state.clone(), event_sequence)),
-    })
 }
 
 pub(super) fn project_state(
@@ -247,13 +217,7 @@ fn failure_allowed(current: &MachineAddOperationState, failure: &MachineAddFailu
     match (current, failure) {
         (
             MachineAddOperationState::Pending { .. },
-            MachineAddFailure::InvalidJoinToken
-            | MachineAddFailure::JoinTokenExpired { .. }
-            | MachineAddFailure::AuthorizationRenderFailed { .. }
-            | MachineAddFailure::NatsReloadFailed { .. }
-            | MachineAddFailure::MintedCredentialUnusable { .. }
-            | MachineAddFailure::ControlTaskInterrupted { .. }
-            | MachineAddFailure::CredentialEvidenceWriteFailed { .. },
+            MachineAddFailure::InvalidJoinToken | MachineAddFailure::JoinTokenExpired { .. },
         )
         | (
             MachineAddOperationState::Joining { .. },
@@ -271,13 +235,7 @@ fn failure_allowed(current: &MachineAddOperationState, failure: &MachineAddFailu
         )
         | (
             MachineAddOperationState::Joining { .. },
-            MachineAddFailure::InvalidJoinToken
-            | MachineAddFailure::JoinTokenExpired { .. }
-            | MachineAddFailure::AuthorizationRenderFailed { .. }
-            | MachineAddFailure::NatsReloadFailed { .. }
-            | MachineAddFailure::MintedCredentialUnusable { .. }
-            | MachineAddFailure::ControlTaskInterrupted { .. }
-            | MachineAddFailure::CredentialEvidenceWriteFailed { .. },
+            MachineAddFailure::InvalidJoinToken | MachineAddFailure::JoinTokenExpired { .. },
         )
         | (
             MachineAddOperationState::Completed

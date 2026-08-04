@@ -6,15 +6,9 @@ use serde::{Deserialize, Serialize};
 
 use super::validation::InstallContractError;
 
-/// The machine-local intent mirror's file name, persisted beside the machine's
-/// NKey seed file (ADR 0031). Shared by `ployzd` (which writes and reads the
-/// mirror) and `ployz host` (which reads it for core promotion) so both
-/// always derive the same path.
-pub const INTENT_MIRROR_FILE_NAME: &str = "intent-mirror.json";
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "string"))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "string"))]
 #[serde(try_from = "String", into = "String")]
 pub struct AbsoluteInstallPath(String);
 

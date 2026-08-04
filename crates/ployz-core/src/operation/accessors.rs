@@ -12,8 +12,6 @@ impl OperationStatus {
             | Self::MachineStoragePrepare { id, .. }
             | Self::MachineBuildCachePrune { id, .. }
             | Self::MachineLifecycle { id, .. }
-            | Self::CoreReplace { id, .. }
-            | Self::CredentialGrant { id, .. }
             | Self::NetworkRepair { id, .. }
             | Self::ServiceRestart { id, .. }
             | Self::ManagedDnsReconcile { id, .. }
@@ -35,8 +33,6 @@ impl OperationStatus {
             Self::MachineStoragePrepare { .. } => OperationKind::MachineStoragePrepare,
             Self::MachineBuildCachePrune { .. } => OperationKind::MachineBuildCachePrune,
             Self::MachineLifecycle { .. } => OperationKind::MachineLifecycle,
-            Self::CoreReplace { .. } => OperationKind::CoreReplace,
-            Self::CredentialGrant { .. } => OperationKind::CredentialGrant,
             Self::NetworkRepair { .. } => OperationKind::NetworkRepair,
             Self::ServiceRestart { .. } => OperationKind::ServiceRestart,
             Self::ManagedDnsReconcile { .. } => OperationKind::ManagedDnsReconcile,
@@ -64,17 +60,15 @@ impl OperationStatus {
             Self::VolumeRemove { namespace_id, .. } => OperationProgressScope::Namespace {
                 namespace_id: namespace_id.clone(),
             },
-            Self::Cert { .. }
-            | Self::CredentialGrant { .. }
-            | Self::NetworkRepair { .. }
-            | Self::ManagedDnsReconcile { .. } => OperationProgressScope::Cluster,
+            Self::Cert { .. } | Self::NetworkRepair { .. } | Self::ManagedDnsReconcile { .. } => {
+                OperationProgressScope::Cluster
+            }
             Self::IngressConfigure { .. } => OperationProgressScope::Cluster,
             Self::MachineAdd { machine_id, .. }
             | Self::MachineUpdate { machine_id, .. }
             | Self::MachineStoragePrepare { machine_id, .. }
             | Self::MachineBuildCachePrune { machine_id, .. }
-            | Self::MachineLifecycle { machine_id, .. }
-            | Self::CoreReplace { machine_id, .. } => OperationProgressScope::Machine {
+            | Self::MachineLifecycle { machine_id, .. } => OperationProgressScope::Machine {
                 machine_id: machine_id.clone(),
             },
         }
@@ -97,14 +91,6 @@ impl OperationStatus {
                 ..
             }
             | Self::MachineLifecycle {
-                last_event_sequence,
-                ..
-            }
-            | Self::CoreReplace {
-                last_event_sequence,
-                ..
-            }
-            | Self::CredentialGrant {
                 last_event_sequence,
                 ..
             }

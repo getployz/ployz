@@ -1,6 +1,6 @@
 # @ployz/sdk
 
-TypeScript client for the Ployz operator API.
+TypeScript contracts for the Ployz operator API.
 
 ## Stability
 
@@ -15,29 +15,6 @@ promise.
 npm install @ployz/sdk
 ```
 
-## Use
-
-```ts
-import { connectPloyzNatsClient } from "@ployz/sdk";
-
-const connection = await connectPloyzNatsClient({
-  nats: { servers: "tls://127.0.0.1:4222" },
-});
-
-try {
-  const operation = await connection.client.deploy({
-    idempotencyKey: "deploy-001",
-    namespaceId: "default",
-    serviceId: "api",
-    image: "ghcr.io/acme/api:rev-1",
-    mode: { kind: "replicated", replicas: 1 },
-  });
-
-  console.log(await operation.status());
-} finally {
-  await connection.close();
-}
-```
-
 Generated wire types are exported from `@ployz/sdk/generated` and re-exported
-from the package root.
+from the package root. The coreless HTTP/SSE transport lands with the v2 SDK;
+this package deliberately exposes no incumbent transport in the meantime.

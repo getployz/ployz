@@ -35,19 +35,11 @@ use ployz_test_support::ids::{
 use std::collections::{BTreeMap, BTreeSet};
 
 fn environment_revision_key() -> EnvironmentRevisionKey {
-    let seed = ployz_core::nats_config::NatsUserSeed::try_new(
-        "SUAIZ5LKGG2Y4WC7ZPKS46LSLLJQIFTO6KMSWSU2VN3TC7YRRIKH5WRXJQ",
-    )
-    .expect("valid deterministic controller seed");
-    EnvironmentRevisionKey::derive_from_controller_seed(&seed)
+    EnvironmentRevisionKey::derive_from_key_material(b"deploy-planner-environment-key")
 }
 
 fn different_environment_revision_key() -> EnvironmentRevisionKey {
-    let seed = ployz_core::nats_config::NatsUserSeed::try_new(
-        "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM",
-    )
-    .expect("valid deterministic controller seed");
-    EnvironmentRevisionKey::derive_from_controller_seed(&seed)
+    EnvironmentRevisionKey::derive_from_key_material(b"different-environment-key")
 }
 
 #[derive(Clone)]

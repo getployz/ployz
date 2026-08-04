@@ -74,10 +74,6 @@ impl HostPlatformProfile {
         self.package_family
     }
 
-    pub(crate) const fn requires_iproute_tc_package(&self) -> bool {
-        matches!(self.distribution, LinuxDistribution::Fedora)
-    }
-
     /// Returns the host process supervisor.
     #[must_use]
     pub const fn supervisor(&self) -> SupervisorKind {

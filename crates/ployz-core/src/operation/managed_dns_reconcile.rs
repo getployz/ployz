@@ -14,7 +14,7 @@ use super::projection::{
 use super::{EventSequence, FailureMessage, OperationStatus};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "authorization", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ManagedDnsWithdrawAuthorization {
     ProjectionUnavailable {
@@ -24,7 +24,7 @@ pub enum ManagedDnsWithdrawAuthorization {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ManagedDnsReconcileSubject {
     Acquire,
@@ -43,7 +43,7 @@ pub enum ManagedDnsReconcileSubject {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ManagedDnsReconcileOperationState {
     Accepted,
@@ -62,7 +62,7 @@ impl ManagedDnsReconcileOperationState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct ManagedDnsReconcileFailure {
     pub class: ManagedDnsReconcileFailureClass,
@@ -70,7 +70,7 @@ pub struct ManagedDnsReconcileFailure {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum ManagedDnsReconcileFailureClass {
     WorkerUnauthorized,

@@ -10,14 +10,13 @@ use crate::deploy::PlatformImage;
 use crate::ids::{BuildExecutorId, BuildPoolId, MachineId, OperationId};
 use crate::image::OciPlatform;
 use crate::machine::MachineUsabilityReason;
-use crate::nats_config::CredentialGrant;
 use crate::operation::{
     BuildLogChunk, BuildPlatformFailure, BuildToolchainEvidence, FailureMessage,
 };
 
 /// Durable identity of one external Build Executor within one Build Pool.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct BuildExecutorIdentity {
     pub pool_id: BuildPoolId,
@@ -26,7 +25,7 @@ pub struct BuildExecutorIdentity {
 
 /// One point-of-use readiness answer from an external Build Executor.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct BuildExecutorReadinessAnswer<T> {
     pub identity: BuildExecutorIdentity,
@@ -40,7 +39,7 @@ pub struct BuildExecutorReadinessRequest {}
 
 /// Native execution capability reported at the point of build admission.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct BuildExecutorReadiness {
     pub native_platform: OciPlatform,
@@ -49,7 +48,7 @@ pub struct BuildExecutorReadiness {
 
 /// The complete adapter set one external executor can accept now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum BuildExecutorCapability {
     DockerfileAndRailpack,
@@ -59,7 +58,7 @@ pub enum BuildExecutorCapability {
 
 /// Point-of-use Build Target capability testimony for the operator UI.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct BuildTargetCapabilities {
     pub cluster: ClusterBuildTargetCapabilities,
@@ -67,14 +66,14 @@ pub struct BuildTargetCapabilities {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct ClusterBuildTargetCapabilities {
     pub machines: Vec<ClusterBuildMachineCapability>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "observation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ClusterBuildMachineCapability {
     Answered {
@@ -89,7 +88,7 @@ pub enum ClusterBuildMachineCapability {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct ExternalBuildPoolCapabilities {
     pub pool_id: BuildPoolId,
@@ -98,7 +97,7 @@ pub struct ExternalBuildPoolCapabilities {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "observation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ExternalBuildExecutorCapability {
     Answered {
@@ -126,7 +125,7 @@ impl BuildExecutorCapability {
 
 /// Adapter identity used in typed admission failures without repeating adapter input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum BuildAdapterKind {
     Dockerfile,
@@ -164,22 +163,19 @@ pub enum BuildExecutorReadinessReconcileError {
     DuplicateResponse { identity: BuildExecutorIdentity },
 }
 
-/// Reconciles readiness answers against active durable credential intent at an explicit time.
-pub fn reconcile_build_executor_readiness_at<T>(
-    credentials: &[CredentialGrant],
+/// Reconciles readiness answers against the known executor set.
+pub fn reconcile_build_executor_readiness<T>(
+    known: &[BuildExecutorIdentity],
     answers: impl IntoIterator<Item = BuildExecutorReadinessAnswer<T>>,
-    now_unix_seconds: u64,
 ) -> Result<Vec<BuildExecutorReadinessTestimony<T>>, BuildExecutorReadinessReconcileError> {
     let mut testimony = BTreeMap::new();
-    for identity in credentials.iter().filter_map(|credential| {
-        credential
-            .role
-            .is_active_at(now_unix_seconds)
-            .then(|| credential.role.build_executor_identity())
-            .flatten()
-    }) {
+    for identity in known {
         if testimony.insert(identity.clone(), None).is_some() {
-            return Err(BuildExecutorReadinessReconcileError::DuplicateKnownIdentity { identity });
+            return Err(
+                BuildExecutorReadinessReconcileError::DuplicateKnownIdentity {
+                    identity: identity.clone(),
+                },
+            );
         }
     }
 
@@ -209,7 +205,7 @@ pub fn reconcile_build_executor_readiness_at<T>(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "target", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BuildTarget {
     Cluster,
@@ -217,7 +213,7 @@ pub enum BuildTarget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "executor", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BuildExecutorAssignment {
     Cluster {
@@ -265,7 +261,7 @@ pub struct ExternalBuildExecutorCandidate {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct BuildPlatformExecutorAssignment {
     pub platform: OciPlatform,
@@ -274,11 +270,8 @@ pub struct BuildPlatformExecutorAssignment {
 
 /// Canonical per-platform executor provenance for one build operation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "typescript",
-    ts(type = "Array<BuildPlatformExecutorAssignment>")
-)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "Array<BuildPlatformExecutorAssignment>"))]
 #[serde(
     try_from = "Vec<BuildPlatformExecutorAssignment>",
     into = "Vec<BuildPlatformExecutorAssignment>"
@@ -486,7 +479,7 @@ pub fn place_external_build_platforms(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "origin", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BuildExecutorOrigin {
     Cluster {
@@ -506,7 +499,7 @@ pub enum BuildExecutorOrigin {
 )]
 pub struct BuildExecutorEvidence(BuildExecutorAssignment);
 
-#[cfg(feature = "typescript")]
+#[cfg(feature = "ts")]
 impl ts_rs::TS for BuildExecutorEvidence {
     type WithoutGenerics = Self;
     type OptionInnerType = Self;
@@ -566,7 +559,7 @@ pub enum BuildExecutorEvidenceError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 struct BuildExecutorEvidenceWire {
     machine_id: MachineId,
@@ -618,8 +611,8 @@ pub struct BuildExecutorStartRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "string"))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "string"))]
 #[serde(try_from = "String", into = "String")]
 pub struct BuildRequestCommitment(String);
 
@@ -766,7 +759,7 @@ pub enum BuildExecutorSuccessCleanupOutcome {
     Confirmed,
 }
 
-/// Terminal response from one exact external Build Executor start subject.
+/// Terminal response from one exact external Build Executor start request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BuildExecutorStartResponse {
@@ -982,7 +975,7 @@ pub struct BuildExecutorCancelOk {
     pub outcome: BuildExecutorCancelOutcome,
 }
 
-/// Response from one exact external Build Executor cancellation subject.
+/// Response from one exact external Build Executor cancellation request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BuildExecutorCancelResponse {
@@ -1025,9 +1018,6 @@ pub struct BuildExecutorLogFrame {
 mod tests {
     use super::*;
     use crate::build::GitSource;
-    use crate::nats_config::{
-        BuildExecutorCredentialExpiresAt, CredentialName, CredentialRole, MintedNatsUser,
-    };
 
     #[test]
     fn external_executor_transport_envelopes_are_strict() {
@@ -1136,17 +1126,12 @@ mod tests {
     fn readiness_reconcile_is_known_set_driven_and_preserves_silence() {
         let first = executor_identity("pool-a", "executor-a");
         let second = executor_identity("pool-a", "executor-b");
-        let testimony = reconcile_build_executor_readiness_at(
-            &[
-                build_executor_credential(second.clone(), 30),
-                build_executor_credential(first.clone(), 20),
-                build_executor_credential(executor_identity("pool-a", "expired"), 10),
-            ],
+        let testimony = reconcile_build_executor_readiness(
+            &[second.clone(), first.clone()],
             [BuildExecutorReadinessAnswer {
                 identity: first.clone(),
                 readiness: "ready",
             }],
-            10,
         )
         .expect("known response");
 
@@ -1175,46 +1160,26 @@ mod tests {
             executor_identity("pool-b", "executor-a"),
         ] {
             assert!(matches!(
-                reconcile_build_executor_readiness_at(
-                    &[build_executor_credential(known.clone(), 20)],
-                    [answer(unknown)],
-                    10,
-                ),
+                reconcile_build_executor_readiness(std::slice::from_ref(&known), [answer(unknown)]),
                 Err(BuildExecutorReadinessReconcileError::UnknownIdentity { .. })
             ));
         }
         assert!(matches!(
-            reconcile_build_executor_readiness_at(
-                &[build_executor_credential(known.clone(), 20)],
-                [answer(known.clone()), answer(known)],
-                10,
+            reconcile_build_executor_readiness(
+                std::slice::from_ref(&known),
+                [answer(known.clone()), answer(known.clone())],
             ),
             Err(BuildExecutorReadinessReconcileError::DuplicateResponse { .. })
         ));
     }
 
     #[test]
-    fn readiness_reconcile_excludes_expired_and_rejects_duplicate_active_identity() {
+    fn readiness_reconcile_rejects_duplicate_known_identity() {
         let identity = executor_identity("pool-a", "executor-a");
         assert!(matches!(
-            reconcile_build_executor_readiness_at(
-                &[build_executor_credential(identity.clone(), 10)],
-                [BuildExecutorReadinessAnswer {
-                    identity: identity.clone(),
-                    readiness: (),
-                }],
-                10,
-            ),
-            Err(BuildExecutorReadinessReconcileError::UnknownIdentity { .. })
-        ));
-        assert!(matches!(
-            reconcile_build_executor_readiness_at(
-                &[
-                    build_executor_credential(identity.clone(), 20),
-                    build_executor_credential(identity, 30),
-                ],
+            reconcile_build_executor_readiness(
+                &[identity.clone(), identity],
                 std::iter::empty::<BuildExecutorReadinessAnswer<()>>(),
-                10,
             ),
             Err(BuildExecutorReadinessReconcileError::DuplicateKnownIdentity { .. })
         ));
@@ -1224,21 +1189,6 @@ mod tests {
         BuildExecutorIdentity {
             pool_id: BuildPoolId::try_new(pool).expect("pool id"),
             executor_id: BuildExecutorId::try_new(executor).expect("executor id"),
-        }
-    }
-
-    fn build_executor_credential(
-        identity: BuildExecutorIdentity,
-        expires_at: u64,
-    ) -> CredentialGrant {
-        CredentialGrant {
-            public_key: MintedNatsUser::generate().expect("mint credential").public,
-            name: CredentialName::try_new("External builder").expect("credential name"),
-            role: CredentialRole::BuildExecutor {
-                pool_id: identity.pool_id,
-                executor_id: identity.executor_id,
-                expires_at: BuildExecutorCredentialExpiresAt::try_new(expires_at).expect("expiry"),
-            },
         }
     }
 
@@ -1378,7 +1328,7 @@ mod tests {
     }
 
     #[test]
-    fn build_executor_ids_are_validated_subject_tokens() {
+    fn build_executor_ids_are_validated_stable_key_tokens() {
         assert!(BuildPoolId::try_new("pool-a").is_ok());
         assert!(BuildExecutorId::try_new("executor.a").is_err());
     }

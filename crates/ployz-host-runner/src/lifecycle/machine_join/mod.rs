@@ -1,9 +1,7 @@
-//! Machine Join Redemption, local application, and later Report evidence.
+//! Local join-token and material handling.
 
-pub(crate) mod client;
-pub(crate) mod execution;
 mod material;
-mod template_compatibility;
+mod one_shot;
 
 pub use material::*;
-pub(super) use template_compatibility::prepare_machine_join_template_release_promotion;
+pub use one_shot::*;

@@ -38,7 +38,7 @@ pub use gateway_rpc::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct ManagedLeaseAcquireRequest {
     pub acquisition_id: ManagedLeaseAcquisitionId,
@@ -48,7 +48,7 @@ pub struct ManagedLeaseAcquireRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct ManagedLeaseRenewRequest {
     pub ipv4: Vec<Ipv4Addr>,
@@ -57,7 +57,7 @@ pub struct ManagedLeaseRenewRequest {
 
 /// Canonical public gateway addresses applied to a managed lease.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct ManagedLeaseAddressSet {
     ipv4: BTreeSet<Ipv4Addr>,
@@ -90,7 +90,7 @@ fn two_thirds_due(issued_at: u64, expires_at: u64, now_seconds: u64) -> bool {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum ManagedCertificateIssuanceFailureKind {
     RateLimit,
@@ -103,7 +103,7 @@ pub enum ManagedCertificateIssuanceFailureKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct ManagedLeaseAcquired {
     pub lease: ManagedLeaseRecord,
@@ -111,7 +111,7 @@ pub struct ManagedLeaseAcquired {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct ManagedLeaseRenewed {
     pub lease: ManagedLeaseRecord,
@@ -119,7 +119,7 @@ pub struct ManagedLeaseRenewed {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(try_from = "ManagedLeaseRecordWire", into = "ManagedLeaseRecordWire")]
 pub struct ManagedLeaseRecord {
     pub name: ManagedLeaseName,
@@ -197,11 +197,8 @@ impl From<ManagedLeaseRecord> for ManagedLeaseRecordWire {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "typescript",
-    ts(type = "Brand<string, \"ManagedLeaseName\">")
-)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "Brand<string, \"ManagedLeaseName\">"))]
 #[serde(try_from = "String", into = "String")]
 pub struct ManagedLeaseName(String);
 
@@ -256,9 +253,9 @@ impl From<ManagedLeaseName> for String {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(
-    feature = "typescript",
+    feature = "ts",
     ts(type = "Brand<string, \"ManagedLeaseAcquisitionId\">")
 )]
 #[serde(try_from = "String", into = "String")]
@@ -297,11 +294,8 @@ impl From<ManagedLeaseAcquisitionId> for String {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "typescript",
-    ts(type = "Brand<string, \"LeaseBearerToken\">")
-)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "Brand<string, \"LeaseBearerToken\">"))]
 #[serde(try_from = "String", into = "String")]
 pub struct LeaseBearerToken(String);
 
@@ -362,7 +356,7 @@ positive_u64_wire_error! {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(try_from = "ManagedCertBundleWire", into = "ManagedCertBundleWire")]
 pub struct ManagedCertBundle {
     pub lease: ManagedLeaseName,
@@ -512,7 +506,7 @@ id_prefixed_state_key! { pub struct AcmeChallengeStateKey; prefix: ACME_CHALLENG
 
 /// ACME HTTP-01 challenge evidence value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(try_from = "AcmeHttp01ChallengeWire", into = "AcmeHttp01ChallengeWire")]
 pub struct AcmeHttp01Challenge {
     hostname: RouteHostname,
@@ -599,7 +593,7 @@ pub enum AcmeChallengeError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct CertValidityWindow {
     pub not_before: CertValidAt,
@@ -659,11 +653,8 @@ positive_u64_wire_error! {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "typescript",
-    ts(type = "Brand<string, \"AcmeChallengeToken\">")
-)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "Brand<string, \"AcmeChallengeToken\">"))]
 #[serde(try_from = "String", into = "String")]
 pub struct AcmeChallengeToken(String);
 
@@ -706,11 +697,8 @@ impl From<AcmeChallengeToken> for String {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "typescript",
-    ts(type = "Brand<string, \"AcmeChallengeValue\">")
-)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "Brand<string, \"AcmeChallengeValue\">"))]
 #[serde(try_from = "String", into = "String")]
 pub struct AcmeChallengeValue(String);
 
@@ -749,8 +737,8 @@ impl From<AcmeChallengeValue> for String {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "Brand<string, \"CertBundleRef\">"))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "Brand<string, \"CertBundleRef\">"))]
 #[serde(try_from = "String", into = "String")]
 pub struct CertBundleRef(String);
 

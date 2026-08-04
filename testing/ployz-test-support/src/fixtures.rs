@@ -1,26 +1,19 @@
-//! Canonical control-plane fixtures: the machine-join template/bundle, the
-//! install artifact family, and deploy request builders shared by the
+//! Canonical deploy, runtime, and install-artifact fixtures shared by the
 //! workspace test suites.
 
 use ployz_core::deploy::{
     DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec, ImageReference, ReplicaCount,
 };
 use ployz_core::install::{
-    AbsoluteInstallPath, ExactPloyzVersion, InstallArtifactSource, InstallArtifactSpec,
-    InstallArtifactVersion, InstallSha256Digest, MachineJoinBundle, MachineJoinClusterName,
-    MachineJoinMaterial, MachineJoinRuntimeNatsUrl, MachineJoinSubstrateRelease,
-    MachineJoinTemplate, MachineJoinTrustedNats,
+    AbsoluteInstallPath, InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion,
+    InstallSha256Digest,
 };
 use ployz_core::intent::ServingTargetEntry;
 use ployz_core::machine::runtime::MachineDiskSpace;
-use ployz_core::nats_config::NatsCaCertificatePem;
 
 use crate::ids::{
     namespace_id, namespace_revision_entry_id, route_hostname, route_port, service_id,
 };
-
-/// A syntactically valid (not real) PEM literal for join-material fixtures.
-pub const TEST_CA_PEM: &str = "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n";
 
 /// A syntactically valid sha256 hex digest for artifact fixtures.
 pub const TEST_SHA256_DIGEST: &str =
@@ -61,41 +54,6 @@ pub fn install_artifact(source: &str, install_path: &str) -> InstallArtifactSpec
         sha256: InstallSha256Digest::try_new(TEST_SHA256_DIGEST).expect("valid artifact digest"),
         install_path: AbsoluteInstallPath::try_new(install_path)
             .expect("valid artifact install path"),
-    }
-}
-
-/// Join material for cluster `prod` with the canonical release artifacts.
-#[must_use]
-pub fn machine_join_material(runtime_nats_url: &str, ca_pem: &str) -> MachineJoinMaterial {
-    MachineJoinMaterial {
-        cluster_name: MachineJoinClusterName::try_new("prod").expect("valid cluster name"),
-        dataplane_endpoint_supernet: ployz_core::network::MachineEndpointSupernet::default_v1(),
-        runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new(runtime_nats_url)
-            .expect("valid runtime nats url"),
-        trusted_nats: MachineJoinTrustedNats {
-            ca_pem: NatsCaCertificatePem::try_new(ca_pem).expect("valid ca pem"),
-        },
-        recovery_key_wrapped: ployz_core::install::WrappedCaKey::new(vec![1, 2, 3]),
-        core_seeds_wrapped: ployz_core::install::WrappedCoreSeeds::new(vec![4, 5, 6]),
-        substrate_release: MachineJoinSubstrateRelease {
-            version: ExactPloyzVersion::try_new("v0.1.0").expect("exact release version"),
-        },
-    }
-}
-
-/// The static join bundle used where no live NATS fixture is involved.
-#[must_use]
-pub fn machine_join_bundle() -> MachineJoinBundle {
-    MachineJoinBundle {
-        material: machine_join_material("nats://127.0.0.1:7422", TEST_CA_PEM),
-    }
-}
-
-/// The static join template counterpart of [`machine_join_bundle`].
-#[must_use]
-pub fn machine_join_template() -> MachineJoinTemplate {
-    MachineJoinTemplate {
-        join_bundle: machine_join_bundle(),
     }
 }
 

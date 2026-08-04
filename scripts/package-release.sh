@@ -167,10 +167,6 @@ ployz_asset="$(copy_asset ployz 0755)"
 staged_assets+=("${ployz_asset}")
 
 if [ "${platform_os}" = "linux" ]; then
-  : "${PLOYZ_NATS_SERVER_VERSION:?PLOYZ_NATS_SERVER_VERSION is required for Linux release manifests}"
-  : "${PLOYZ_NATS_SERVER_URL:?PLOYZ_NATS_SERVER_URL is required for Linux release manifests}"
-  : "${PLOYZ_NATS_SERVER_SHA256:?PLOYZ_NATS_SERVER_SHA256 is required for Linux release manifests}"
-
   ployzd_asset="$(copy_asset ployzd 0755)"
   ebpf_ctl_asset="$(copy_asset ployz-ebpf-ctl 0755)"
   ebpf_tc_asset="$(copy_asset ployz-ebpf-tc 0644)"
@@ -206,9 +202,6 @@ fi
     write_manifest_pair PLOYZ_EBPF_TC "${ebpf_tc_asset}"
     printf 'PLOYZ_RAILPACK_VERSION=%s\n' "${PLOYZ_RAILPACK_VERSION}"
     write_manifest_pair PLOYZ_RAILPACK "${railpack_asset}"
-    printf 'PLOYZ_NATS_SERVER_VERSION=%s\n' "${PLOYZ_NATS_SERVER_VERSION}"
-    printf 'PLOYZ_NATS_SERVER_URL=%s\n' "${PLOYZ_NATS_SERVER_URL}"
-    printf 'PLOYZ_NATS_SERVER_SHA256=%s\n' "${PLOYZ_NATS_SERVER_SHA256}"
   fi
 } > "${manifest_path}"
 

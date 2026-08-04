@@ -1,6 +1,5 @@
 use ployz_telemetry::{FailureClass, Surface, Telemetry};
-use ployzd::config::load_daemon_process_config;
-use ployzd::dispatch::run_daemon_process_until_shutdown;
+use ployzd::dispatch::run_daemon_process;
 use ployzd::role_cli::parse_role_args;
 
 fn main() {
@@ -23,22 +22,16 @@ fn main() {
     }
 }
 
-fn env_var(name: &str) -> Option<String> {
-    std::env::var(name).ok()
-}
-
 async fn run(telemetry: &Telemetry) -> Result<(), MainError> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let role = parse_role_args(args).map_err(MainError::Role)?;
-    let config = load_daemon_process_config(role, env_var).map_err(MainError::Config)?;
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
+        role = role.as_str(),
         "daemon process starting"
     );
     telemetry.capture_daemon_started();
-    run_daemon_process_until_shutdown(&config)
-        .await
-        .map_err(MainError::Runtime)
+    run_daemon_process(role).await.map_err(MainError::Runtime)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -46,15 +39,13 @@ enum MainError {
     #[error("{0}")]
     Role(ployzd::role_cli::DaemonRoleParseError),
     #[error("{0}")]
-    Config(ployzd::config::DaemonProcessConfigError),
-    #[error("{0}")]
     Runtime(ployzd::dispatch::DaemonError),
 }
 
 impl MainError {
     const fn exit_code(&self) -> i32 {
         match self {
-            Self::Role(_) | Self::Config(_) => 2,
+            Self::Role(_) => 2,
             Self::Runtime(_) => 3,
         }
     }
@@ -62,7 +53,6 @@ impl MainError {
     const fn failure_class(&self) -> FailureClass {
         match self {
             Self::Role(_) => FailureClass::DaemonRole,
-            Self::Config(_) => FailureClass::DaemonConfig,
             Self::Runtime(_) => FailureClass::DaemonRuntime,
         }
     }

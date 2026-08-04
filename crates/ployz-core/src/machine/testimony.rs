@@ -8,7 +8,7 @@ use crate::ids::MachineId;
 
 /// Machine-owned endpoint facts reported with machine facts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct MachineEndpointObservation {
     pub machine_id: MachineId,
@@ -18,7 +18,7 @@ pub struct MachineEndpointObservation {
 
 /// Gateway role status fact reported by the gateway process.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct GatewayStatusObservation {
     pub machine_id: MachineId,
@@ -30,7 +30,7 @@ pub struct GatewayStatusObservation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum GatewayServingStatus {
     Current,
@@ -39,7 +39,7 @@ pub enum GatewayServingStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct GatewayProcessHealth {
     pub last_attempt: Option<GatewayProcessAttempt>,
@@ -53,7 +53,7 @@ pub struct GatewayProcessHealth {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum GatewayProcessAttempt {
     Current { route_count: usize },
@@ -62,14 +62,14 @@ pub enum GatewayProcessAttempt {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "failure", rename_all = "snake_case", deny_unknown_fields)]
 pub enum GatewayHttpFailure {
     Proxy { message: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "failure", rename_all = "snake_case", deny_unknown_fields)]
 pub enum GatewayWatchFailure {
     Open { message: String },
@@ -77,7 +77,7 @@ pub enum GatewayWatchFailure {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "failure", rename_all = "snake_case", deny_unknown_fields)]
 pub enum GatewayStatusPublishFailure {
     Write { message: String },

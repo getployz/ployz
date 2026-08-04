@@ -336,7 +336,6 @@ fn machine_add_completed_before_join_is_rejected() {
 
 fn missing_heartbeat_readiness() -> MachineReadinessEvidence {
     MachineReadinessEvidence {
-        nats_connection: MachineReadinessCheck::Confirmed,
         heartbeat: MachineReadinessCheck::Missing {
             reason: FailureMessage::try_new("heartbeat missing").expect("valid failure message"),
         },

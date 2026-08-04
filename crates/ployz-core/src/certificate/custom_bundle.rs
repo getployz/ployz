@@ -11,7 +11,7 @@ use super::{CertBundleRef, CertValidityWindow, two_thirds_due};
 
 /// Active certificate intent/evidence value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct ActiveCertState {
     pub cert_id: CertId,

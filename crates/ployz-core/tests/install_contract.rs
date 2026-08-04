@@ -1,376 +1,64 @@
-use ployz_core::ids::MachineId;
-use ployz_core::install::HostPortAssurance;
 use ployz_core::install::{
-    AbsoluteInstallPath, ExactPloyzVersion, FirstMachineInstallArtifacts, FirstMachineInstallSpec,
-    InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion, InstallSha256Digest,
-    MachineBootstrapUrl, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
-    MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinSubstrateRelease,
-    MachineJoinTrustedNats, NatsServerInstallSpec,
+    AbsoluteInstallPath, ExactPloyzVersion, HostPortAssurance, InstallArtifactSource,
+    InstallArtifactSpec, InstallArtifactVersion, InstallSha256Digest,
 };
-use ployz_core::machine::{GatewayRole, InstallRolePolicy};
-use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
 
 #[test]
-fn host_port_assurance_has_explicit_wire_values() {
-    assert_eq!(
-        serde_json::to_value(HostPortAssurance::Keeper).expect("serializes"),
-        serde_json::json!("keeper")
-    );
-    assert_eq!(
-        serde_json::to_value(HostPortAssurance::External).expect("serializes"),
-        serde_json::json!("external")
-    );
-}
-
-#[test]
-fn first_machine_install_spec_wire_shape_is_grouped_json() {
-    let mut install = first_machine_install_spec(GatewayRole::Install);
-    install.machine_bootstrap_url = Some(
-        MachineBootstrapUrl::try_new("https://example.test/ployz.sh").expect("valid bootstrap url"),
-    );
-    install.machine_join_template_file = Some(
-        AbsoluteInstallPath::try_new("/etc/ployz/machine-join-template.json")
-            .expect("valid template file path"),
-    );
-    install.machine_public_ip = Some("203.0.113.10".parse().expect("valid IP"));
-
-    let value = serde_json::to_value(install).expect("spec serializes");
-
-    assert_eq!(
-        value,
-        serde_json::json!({
-            "machine_id": "machine_1",
-            "dataplane_endpoint_supernet": "10.198.0.0/16",
-            "gateway": "install",
-            "host_port_assurance": "keeper",
-            "machine_public_ip": "203.0.113.10",
-            "machine_bootstrap_url": "https://example.test/ployz.sh",
-            "machine_join_template_file": "/etc/ployz/machine-join-template.json",
-            "machine_join_cluster_name": "ployz",
-            "machine_join_runtime_nats_url": "tls://203.0.113.10:4222",
-            "artifacts": {
-                "ployzd": {
-                    "version": "0.1.0",
-                    "source": "/tmp/ployzd",
-                    "sha256": "0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e",
-                    "install_path": "/usr/local/bin/ployzd"
-                },
-                "ebpf_bytecode": {
-                    "version": "0.1.0",
-                    "source": "/tmp/ployz-ebpf-tc",
-                    "sha256": "0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e",
-                    "install_path": "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"
-                },
-                "ebpf_ctl": {
-                    "version": "0.1.0",
-                    "source": "/tmp/ployz-ebpf-ctl",
-                    "sha256": "0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e",
-                    "install_path": "/usr/local/bin/ployz-ebpf-ctl"
-                },
-                "railpack": {
-                    "version": "0.1.0",
-                    "source": "/tmp/railpack",
-                    "sha256": "0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e",
-                    "install_path": "/usr/local/lib/ployz/railpack/v0.31.0/railpack"
-                },
-                "nats_server": {
-                    "version": "2.12.0",
-                    "source": "/tmp/nats-server",
-                    "sha256": "0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e",
-                    "binary": "/usr/local/bin/nats-server",
-                    "config": "/etc/nats/nats-server.conf"
-                }
-            }
-        })
-    );
-}
-
-#[test]
-fn first_machine_install_spec_parses_from_grouped_json() {
-    let spec = serde_json::from_value::<FirstMachineInstallSpec>(serde_json::json!({
-        "machine_id": "machine_1",
-        "gateway": "skip",
-        "machine_public_ip": null,
-        "machine_bootstrap_url": null,
-        "machine_join_template_file": null,
-        "machine_join_cluster_name": "ployz",
-        "machine_join_runtime_nats_url": "tls://203.0.113.10:4222",
-        "artifacts": {
-            "ployzd": {
-                "version": "0.1.0",
-                "source": "/tmp/ployzd",
-                "sha256": "0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e",
-                "install_path": "/usr/local/bin/ployzd"
-            },
-            "ebpf_bytecode": {
-                "version": "0.1.0",
-                "source": "/tmp/ployz-ebpf-tc",
-                "sha256": "0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e",
-                "install_path": "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"
-            },
-            "ebpf_ctl": {
-                "version": "0.1.0",
-                "source": "/tmp/ployz-ebpf-ctl",
-                "sha256": "0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e",
-                "install_path": "/usr/local/bin/ployz-ebpf-ctl"
-            },
-            "railpack": {
-                "version": "0.1.0",
-                "source": "/tmp/railpack",
-                "sha256": "0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e",
-                "install_path": "/usr/local/lib/ployz/railpack/v0.31.0/railpack"
-            },
-            "nats_server": {
-                "version": "2.12.0",
-                "source": "/tmp/nats-server",
-                "sha256": "0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e",
-                "binary": "/usr/local/bin/nats-server",
-                "config": "/etc/nats/nats-server.conf"
-            }
-        }
-    }))
-    .expect("spec parses");
-
-    assert_eq!(spec, first_machine_install_spec(GatewayRole::Skip));
-    assert_eq!(
-        spec.role_policy(),
-        InstallRolePolicy::install_all().without_gateway()
-    );
-}
-
-#[test]
-fn first_machine_install_spec_rejects_explicit_dns_opt_out() {
-    let mut with_dns_skip = serde_json::to_value(first_machine_install_spec(GatewayRole::Install))
-        .expect("spec serializes");
-    with_dns_skip
-        .as_object_mut()
-        .expect("spec is an object")
-        .insert("dns".to_owned(), serde_json::json!("skip"));
-
-    assert!(serde_json::from_value::<FirstMachineInstallSpec>(with_dns_skip).is_err());
-}
-
-#[test]
-fn install_role_policy_rejects_dns_choice() {
-    assert!(
-        serde_json::from_value::<InstallRolePolicy>(serde_json::json!({
-            "gateway": "install",
-            "dns": "skip"
-        }))
-        .is_err()
-    );
-}
-
-#[test]
-fn host_runner_install_contract_validates_artifact_inputs() {
-    assert!(MachineJoinClusterName::try_new("").is_err());
-    assert!(MachineJoinClusterName::try_new("prod\nother").is_err());
-    assert!(MachineJoinClusterName::try_new("prod=west").is_err());
-    assert!(MachineBootstrapUrl::try_new("").is_err());
-    assert!(MachineBootstrapUrl::try_new("http://example.test/ployz.sh").is_err());
-    assert!(MachineBootstrapUrl::try_new("https://example.test/ployz.sh").is_ok());
-    assert!(MachineJoinRuntimeNatsUrl::try_new("").is_err());
-    assert!(MachineJoinRuntimeNatsUrl::try_new("http://127.0.0.1:7422").is_err());
-    assert!(MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422\n").is_err());
-    assert!(MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1").is_err());
-    assert!(MachineJoinRuntimeNatsUrl::try_new("tls://core.example.test").is_err());
-    assert!(MachineJoinRuntimeNatsUrl::try_new("nats://core_1:7422").is_err());
-    assert!(MachineJoinRuntimeNatsUrl::try_new("nats://-bad.example.test:7422").is_err());
-    assert!(MachineJoinRuntimeNatsUrl::try_new("nats://[::1:7422").is_err());
-    assert!(MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:0").is_err());
-    assert!(MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:99999").is_err());
-    assert!(MachineJoinRuntimeNatsUrl::try_new("nats://localhost:7422").is_ok());
-    assert!(MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422").is_ok());
-    assert!(MachineJoinRuntimeNatsUrl::try_new("nats://[::1]:7422").is_ok());
-    assert!(MachineJoinRuntimeNatsUrl::try_new("tls://core.example.test:4222").is_ok());
-    assert!(MachineJoinRuntimeNatsUrl::try_new("tls://203.0.113.10:4222").is_ok());
-    assert!(NatsUserSeed::try_new("").is_err());
-    assert!(NatsUserSeed::try_new("creds\0bad").is_err());
-    assert!(
-        NatsUserSeed::try_new("SUAIZ5LKGG2Y4WC7ZPKS46LSLLJQIFTO6KMSWSU2VN3TC7YRRIKH5WRXJQ").is_ok()
-    );
-    assert!(NatsCaCertificatePem::try_new("").is_err());
-    assert!(NatsCaCertificatePem::try_new("not-a-pem").is_err());
-    assert!(NatsCaCertificatePem::try_new("-----BEGIN CERTIFICATE-----\nTUlJQg==").is_err());
-    assert!(
-        NatsCaCertificatePem::try_new(
-            "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"
-        )
-        .is_ok()
-    );
-    assert!(InstallArtifactVersion::try_new("").is_err());
-    assert!(InstallArtifactSource::try_new("").is_err());
-    assert!(InstallArtifactSource::try_new("relative/ployzd").is_err());
-    assert!(InstallArtifactSource::try_new("/tmp/ployzd").is_ok());
-    assert!(InstallArtifactSource::try_new("https://example.test/ployzd").is_ok());
-    assert!(InstallSha256Digest::try_new("").is_err());
-    assert!(InstallSha256Digest::try_new("not-a-digest").is_err());
+fn absolute_install_paths_require_a_file_beneath_root() {
     assert!(AbsoluteInstallPath::try_new("").is_err());
-    assert!(AbsoluteInstallPath::try_new("relative/path").is_err());
+    assert!(AbsoluteInstallPath::try_new("usr/local/bin/ployzd").is_err());
     assert!(AbsoluteInstallPath::try_new("/").is_err());
     assert!(AbsoluteInstallPath::try_new("/usr/local/bin/").is_err());
     assert!(AbsoluteInstallPath::try_new("/usr/local/bin/ployzd").is_ok());
 }
 
 #[test]
-fn machine_join_release_requires_an_exact_immutable_version() {
-    for mutable in ["", "latest", "alpha", "beta", "stable"] {
-        assert!(ExactPloyzVersion::try_new(mutable).is_err());
-    }
-    for range in ["^0.1.0", "~0.1.0", ">=0.1.0", "0.1.*", "0.1,0.2"] {
-        assert!(ExactPloyzVersion::try_new(range).is_err());
-    }
+fn exact_versions_reject_mutable_or_range_selectors() {
+    assert!(ExactPloyzVersion::try_new("").is_err());
+    assert!(ExactPloyzVersion::try_new("latest").is_err());
+    assert!(ExactPloyzVersion::try_new("^1.2").is_err());
 
-    let tagged = ExactPloyzVersion::try_new("v0.0.2-alpha.87").expect("exact tagged version");
-    assert_eq!(tagged.as_str(), "0.0.2-alpha.87");
-    assert_eq!(tagged.tag(), "v0.0.2-alpha.87");
-
-    let untagged = ExactPloyzVersion::try_new("0.1.0").expect("exact untagged version");
-    assert_eq!(untagged.tag(), "v0.1.0");
+    let version = ExactPloyzVersion::try_new("v1.2.3-alpha.1").expect("exact version");
+    assert_eq!(version.as_str(), "1.2.3-alpha.1");
+    assert_eq!(version.tag(), "v1.2.3-alpha.1");
 }
 
 #[test]
-fn exact_ployz_version_canonicalizes_an_optional_tag_prefix() {
-    let tagged = ExactPloyzVersion::try_new("v0.1.0").expect("tagged version is exact");
-    let untagged = ExactPloyzVersion::try_new("0.1.0").expect("untagged version is exact");
-
-    assert_eq!(tagged, untagged);
-    assert_eq!(tagged.as_str(), "0.1.0");
-    assert_eq!(serde_json::to_string(&tagged).unwrap(), "\"0.1.0\"");
-    assert_eq!(tagged.tag(), "v0.1.0");
+fn artifact_sources_are_http_urls_or_absolute_paths() {
+    assert!(InstallArtifactSource::try_new("ployzd").is_err());
+    assert!(InstallArtifactSource::try_new("https://example.test/ployzd").is_ok());
+    assert!(InstallArtifactSource::try_new("http://127.0.0.1/ployzd").is_ok());
+    assert!(InstallArtifactSource::try_new("/tmp/ployzd").is_ok());
 }
 
 #[test]
-fn machine_join_bundle_rejects_mutable_release_before_storage() {
-    let value = serde_json::json!({
-        "material": {
-            "cluster_name": "prod",
-            "runtime_nats_url": "nats://127.0.0.1:7422",
-            "trusted_nats": {
-                "ca_pem": "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"
-            },
-            "substrate_release": {
-                "version": "alpha"
-            }
-        }
-    });
+fn sha256_digests_are_normalized_and_validated() {
+    assert!(InstallSha256Digest::try_new("").is_err());
+    assert!(InstallSha256Digest::try_new("abcd").is_err());
 
-    assert!(serde_json::from_value::<MachineJoinBundle>(value).is_err());
+    let digest = InstallSha256Digest::try_new("AB".repeat(32)).expect("sha256");
+    assert_eq!(digest.as_str(), "ab".repeat(32));
 }
 
 #[test]
-fn machine_join_bundle_wire_shape_stays_plain_json() {
-    let value = serde_json::to_value(machine_join_bundle()).expect("bundle serializes");
+fn artifact_specs_round_trip_without_transport_metadata() {
+    let spec = InstallArtifactSpec {
+        version: InstallArtifactVersion::try_new("1.2.3").expect("artifact version"),
+        source: InstallArtifactSource::try_new("https://example.test/ployzd")
+            .expect("artifact source"),
+        sha256: InstallSha256Digest::try_new("ab".repeat(32)).expect("sha256"),
+        install_path: AbsoluteInstallPath::try_new("/usr/local/bin/ployzd").expect("install path"),
+    };
 
+    let encoded = serde_json::to_value(&spec).expect("artifact spec serializes");
     assert_eq!(
-        value,
-        serde_json::json!({
-            "material": {
-                "cluster_name": "prod",
-                "dataplane_endpoint_supernet": "10.198.0.0/16",
-                "runtime_nats_url": "nats://127.0.0.1:7422",
-                "trusted_nats": {
-                    "ca_pem": "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"
-                },
-                "recovery_key_wrapped": [1, 2, 3],
-                "core_seeds_wrapped": [4, 5, 6],
-                "substrate_release": {
-                    "version": "0.1.0"
-                }
-            }
-        })
+        serde_json::from_value::<InstallArtifactSpec>(encoded).expect("artifact spec deserializes"),
+        spec
     );
 }
 
 #[test]
-fn machine_join_bundle_debug_redacts_secrets() {
-    let rendered = format!("{:?}", machine_join_secret_delivery());
-
-    assert!(!rendered.contains("SUAIZ5LKGG2Y4WC7ZPKS46LSLLJQIFTO6KMSWSU2VN3TC7YRRIKH5WRXJQ"));
-}
-
-fn first_machine_install_spec(gateway: GatewayRole) -> FirstMachineInstallSpec {
-    FirstMachineInstallSpec {
-        machine_id: MachineId::try_new("machine_1").expect("valid machine id"),
-        dataplane_endpoint_supernet: ployz_core::network::MachineEndpointSupernet::default_v1(),
-        gateway,
-        host_port_assurance: HostPortAssurance::Keeper,
-        machine_public_ip: None,
-        machine_bootstrap_url: None,
-        machine_join_template_file: None,
-        machine_join_cluster_name: MachineJoinClusterName::try_new("ployz")
-            .expect("valid cluster name"),
-        machine_join_runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new(
-            "tls://203.0.113.10:4222",
-        )
-        .expect("valid runtime nats url"),
-        artifacts: FirstMachineInstallArtifacts {
-            ployzd: install_artifact("/tmp/ployzd", "/usr/local/bin/ployzd"),
-            ebpf_bytecode: install_artifact(
-                "/tmp/ployz-ebpf-tc",
-                "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
-            ),
-            ebpf_ctl: install_artifact("/tmp/ployz-ebpf-ctl", "/usr/local/bin/ployz-ebpf-ctl"),
-            railpack: install_artifact(
-                "/tmp/railpack",
-                "/usr/local/lib/ployz/railpack/v0.31.0/railpack",
-            ),
-            nats_server: Some(NatsServerInstallSpec {
-                version: InstallArtifactVersion::try_new("2.12.0").expect("valid nats version"),
-                source: InstallArtifactSource::try_new("/tmp/nats-server")
-                    .expect("valid nats source"),
-                sha256: InstallSha256Digest::try_new(
-                    "0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e",
-                )
-                .expect("valid nats digest"),
-                binary: AbsoluteInstallPath::try_new("/usr/local/bin/nats-server")
-                    .expect("valid nats binary path"),
-                config: AbsoluteInstallPath::try_new("/etc/nats/nats-server.conf")
-                    .expect("valid nats config path"),
-            }),
-        },
-    }
-}
-
-fn install_artifact(source: &str, install_path: &str) -> InstallArtifactSpec {
-    InstallArtifactSpec {
-        version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
-        source: InstallArtifactSource::try_new(source).expect("valid source"),
-        sha256: InstallSha256Digest::try_new(
-            "0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e",
-        )
-        .expect("valid digest"),
-        install_path: AbsoluteInstallPath::try_new(install_path).expect("valid install path"),
-    }
-}
-
-fn machine_join_bundle() -> MachineJoinBundle {
-    MachineJoinBundle {
-        material: MachineJoinMaterial {
-            cluster_name: MachineJoinClusterName::try_new("prod").expect("valid cluster name"),
-            dataplane_endpoint_supernet: ployz_core::network::MachineEndpointSupernet::default_v1(),
-            runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
-                .expect("valid runtime nats url"),
-            trusted_nats: MachineJoinTrustedNats {
-                ca_pem: NatsCaCertificatePem::try_new(
-                    "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n",
-                )
-                .expect("valid ca pem"),
-            },
-            recovery_key_wrapped: ployz_core::install::WrappedCaKey::new(vec![1, 2, 3]),
-            core_seeds_wrapped: ployz_core::install::WrappedCoreSeeds::new(vec![4, 5, 6]),
-            substrate_release: MachineJoinSubstrateRelease {
-                version: ExactPloyzVersion::try_new("v0.1.0").expect("exact release version"),
-            },
-        },
-    }
-}
-
-fn machine_join_secret_delivery() -> MachineJoinSecretDelivery {
-    MachineJoinSecretDelivery {
-        nats_credentials: NatsUserSeed::try_new(
-            "SUAIZ5LKGG2Y4WC7ZPKS46LSLLJQIFTO6KMSWSU2VN3TC7YRRIKH5WRXJQ",
-        )
-        .expect("valid nats credentials"),
-    }
+fn host_port_assurance_has_explicit_modes() {
+    assert_eq!(HostPortAssurance::keeper(), HostPortAssurance::Keeper);
+    assert_ne!(HostPortAssurance::Keeper, HostPortAssurance::External);
 }

@@ -28,7 +28,7 @@ use super::text::{CancellationReason, FailureMessage, OperatorHint};
 use super::{EventSequence, OperationKind, OperationStatus};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum DeployRunningStage {
     EnsuringImages,
@@ -42,7 +42,7 @@ pub enum DeployRunningStage {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum DeployCompletionOutcome {
     Completed,
@@ -52,7 +52,7 @@ pub enum DeployCompletionOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "result", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DeployServiceResult {
     Completed {
@@ -87,7 +87,7 @@ impl DeployServiceResult {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum DeployPhaseOutcome {
     Promoted,
@@ -95,7 +95,7 @@ pub enum DeployPhaseOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DeployOperationState {
     Accepted,
@@ -162,7 +162,7 @@ impl DeployOperationState {
 
 /// One machine's placement rejection, carried on NoUsableMachines evidence.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct UnusableMachine {
     pub machine_id: MachineId,
@@ -170,11 +170,8 @@ pub struct UnusableMachine {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "typescript",
-    ts(type = "SafeInteger<\"DeployPhaseNumber\">")
-)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "SafeInteger<\"DeployPhaseNumber\">"))]
 #[serde(try_from = "u16", into = "u16")]
 pub struct DeployPhaseNumber(NonZeroU16);
 
@@ -222,7 +219,7 @@ pub enum DeployPhaseNumberError {
 /// commit no service entry, so namespace-level record failures carry the
 /// namespace revision id instead of a counterfeit entry digest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "scope", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ControlPlaneCommitScope {
     DeployPhase {
@@ -279,7 +276,7 @@ impl DeployFailureClass {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DeployOperationFailure {
     NoUsableMachines {
@@ -394,7 +391,7 @@ pub enum DeployOperationFailure {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PreStartHookFailure {
     RuntimeUnavailable {
@@ -535,7 +532,7 @@ impl DeployOperationFailure {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ArtifactUnavailableReason {
     BundleMissing,
@@ -556,7 +553,7 @@ pub enum ArtifactUnavailableReason {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HealthCheckFailure {
     ProbeFailed {
@@ -571,7 +568,7 @@ pub enum HealthCheckFailure {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RouteCutoverFailureReason {
     GatewayUnavailable { machine_id: MachineId },
@@ -581,7 +578,7 @@ pub enum RouteCutoverFailureReason {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RetainedArtifact {
     CreatedContainer {
@@ -653,7 +650,7 @@ impl RetainedArtifact {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DeployVolumeHandoffStopUncertain {
     RuntimeUnavailable {
@@ -671,7 +668,7 @@ pub enum DeployVolumeHandoffStopUncertain {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct DeployCleanupFailure {
     pub target: DeployCleanupContainer,
@@ -679,7 +676,7 @@ pub struct DeployCleanupFailure {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DeployImageCleanup {
     Removed {
@@ -772,7 +769,7 @@ impl DeployTransition {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct DeployVolumeHandoffRollbackContainerOutcome {
     pub target: DeployCleanupContainer,
@@ -780,7 +777,7 @@ pub struct DeployVolumeHandoffRollbackContainerOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DeployVolumeHandoffRollbackOutcome {
     Restarted,
@@ -791,7 +788,7 @@ pub enum DeployVolumeHandoffRollbackOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DeployVolumeHandoffRestartFailure {
     RuntimeUnavailable {
@@ -809,7 +806,7 @@ pub enum DeployVolumeHandoffRestartFailure {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DeployVolumeHandoffRestorationUnconfirmed {
     RestartFailed {

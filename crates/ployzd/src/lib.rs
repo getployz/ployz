@@ -1,48 +1,41 @@
 #![forbid(unsafe_code)]
 
-//! Ployz daemon process wiring.
+//! Ployz daemon roles and transport-free runtime mechanics.
 //!
-//! The daemon owns lifecycle, configuration, service registration,
-//! controllers, machine-local services, and integration adapters. Product policy stays
-//! in `ployz-core`; NATS mechanics stay in `ployz-nats`.
+//! Role selection is explicit and unavailable roles return a typed startup
+//! error. Cluster storage and transport are outside the mechanics retained
+//! here.
 
 mod adapters {
     pub(crate) mod atomic_file;
-    pub mod credentials;
-    pub mod nats_server;
 }
-mod certificate;
-pub mod config;
-mod control;
-mod identity;
-mod recovery;
-mod role_testimony;
-mod roles {
+pub mod certificate {
+    mod issuer;
+    pub(crate) mod material;
+    pub use issuer::{
+        AcmeAccountStore, AcmeIssuerError, AcmeTimeoutPhase, DEFAULT_ACME_CLEANUP_TIMEOUT,
+        DEFAULT_ACME_DIRECTORY_URL, DEFAULT_ACME_ISSUE_TIMEOUT, Http01ChallengePublisher,
+        InstantAcmeIssuer, IssuedCertificate,
+    };
+    pub use material::{CertificateMaterialError, prepare_custom_certificate};
+}
+pub mod roles {
     pub mod dns {
-        mod internal;
+        pub mod internal;
         pub use internal::InternalResolverHealth;
-        pub mod process;
-        pub(crate) mod protocol;
-        pub(crate) mod service;
     }
     pub mod gateway {
+        #[path = "source/certificate_store.rs"]
+        pub mod certificate_store;
         pub mod pingora;
-        pub mod process;
         pub mod projection;
-        pub(crate) mod protocol;
         pub mod route_table;
-        pub mod source;
     }
-    pub mod machine;
+    pub mod api;
+    pub mod keeper;
 }
 pub mod dispatch;
-mod lease;
 pub mod logging;
-mod process_support;
+mod network_mtu;
+pub use network_mtu::WireGuardMtuPolicy;
 pub mod role_cli;
-mod seed;
-mod service_catalog;
-mod tasks;
-
-#[cfg(test)]
-mod tests;

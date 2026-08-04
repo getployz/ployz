@@ -1,7 +1,0 @@
-name: fixture_x_ports_custom_host
-services:
-  web:
-    image: nginx
-    x-ports:
-      - app.example.com:8080
-      - plain.example.com:8081

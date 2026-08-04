@@ -19,8 +19,8 @@
     "./generated": "./src/generated.ts"
   },
   "scripts": {
-    "generate:types": "cargo run -p ployz-nats --bin export-typescript > src/generated.ts",
-    "generate:fixture": "cargo run -p ployz-sdk-types --bin export-operation-contract > test/fixtures/operation-contract.json",
+    "generate:types": "cargo run -p ployz-core --features ts --bin export-typescript > src/generated.ts",
+    "generate:fixture": "cargo run -p ployz-core --features ts --bin export-operation-contract > test/fixtures/operation-contract.json",
     "check:generated": "pnpm generate:types && pnpm generate:fixture && git diff --exit-code -- src/generated.ts test/fixtures/operation-contract.json",
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types --test test/*.test.ts"
@@ -28,8 +28,5 @@
   "devDependencies": {
     "@types/node": "^24.0.0",
     "typescript": "^7.0.2"
-  },
-  "dependencies": {
-    "@nats-io/transport-node": "^3.4.0"
   }
 }

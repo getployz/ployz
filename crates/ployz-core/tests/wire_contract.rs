@@ -26,11 +26,9 @@ use ployz_test_support::ids::{
 };
 
 fn environment_revision_key() -> ployz_core::deploy::EnvironmentRevisionKey {
-    let seed = ployz_core::nats_config::NatsUserSeed::try_new(
-        "SUAIZ5LKGG2Y4WC7ZPKS46LSLLJQIFTO6KMSWSU2VN3TC7YRRIKH5WRXJQ",
+    ployz_core::deploy::EnvironmentRevisionKey::derive_from_key_material(
+        b"wire-contract-environment-key",
     )
-    .expect("valid deterministic controller seed");
-    ployz_core::deploy::EnvironmentRevisionKey::derive_from_controller_seed(&seed)
 }
 
 #[test]

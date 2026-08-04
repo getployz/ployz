@@ -135,11 +135,9 @@ jobs:
           - runner: ubuntu-24.04
             platform: linux/amd64
             slug: linux-amd64
-            nats_server_sha256: b3e7b14eb10c895fd90c2dacdb6b65bd3208adcc9524dd7689ba2c1024e6b97a
           - runner: ubuntu-24.04-arm
             platform: linux/arm64
             slug: linux-arm64
-            nats_server_sha256: 15fd0c3438e7178e5316e63be68373ad581c8d78db26e649113aa303b74e5e58
           - platform: darwin/arm64
             slug: darwin-arm64
             runner: macos-14
@@ -178,9 +176,6 @@ jobs:
           PLOYZ_RELEASE_SKIP_BUILD: ${{ steps.linux-cache.outputs.cache-hit == 'true' && '1' || '0' }}
           PLOYZ_RELEASE_VERSION: ${{ inputs.tag }}
           PLOYZ_RELEASE_PLATFORM: ${{ matrix.platform }}
-          PLOYZ_NATS_SERVER_VERSION: 2.14.2
-          PLOYZ_NATS_SERVER_URL: https://github.com/nats-io/nats-server/releases/download/v2.14.2/nats-server-v2.14.2-${{ matrix.slug }}.tar.gz
-          PLOYZ_NATS_SERVER_SHA256: ${{ matrix.nats_server_sha256 }}
         run: |
           source config/railpack-pins.env
           case "${PLOYZ_RELEASE_PLATFORM}" in

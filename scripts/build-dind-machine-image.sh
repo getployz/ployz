@@ -25,7 +25,6 @@ BUILD_IMAGE="${PLOYZ_DIND_BUILD_IMAGE:-rust:1.91-bookworm}"
 MACHINE_BASE_IMAGE="debian:bookworm"
 BUILDER_IMAGE="${PLOYZ_DIND_BUILDER_IMAGE:-ployz-dind-builder:rust-1.91-bookworm-v2}"
 DOCKER_HUB_MIRROR="${PLOYZ_DIND_DOCKER_HUB_MIRROR:-mirror.gcr.io}"
-NATS_SERVER_VERSION="${PLOYZ_DIND_NATS_SERVER_VERSION:-2.14.2}"
 WORKLOAD_IMAGE="${PLOYZ_DIND_WORKLOAD_IMAGE:-nginx:1.27-alpine}"
 REGISTRY_IMAGE="${PLOYZ_DIND_REGISTRY_IMAGE:-registry:2.8.3}"
 UMAMI_IMAGE="${PLOYZ_DIND_UMAMI_IMAGE:-ghcr.io/umami-software/umami:postgresql-latest@sha256:8edfe4beaef13f9d1300619fa264ef250a3688df9cc54d24ca830ca31cb475ec}"
@@ -157,7 +156,6 @@ machine_fingerprint() (
   {
     printf '%s\0' \
       "platform=${platform}" \
-      "nats=${NATS_SERVER_VERSION}" \
       "docker_hub_mirror=${DOCKER_HUB_MIRROR}" \
       "machine_base_image=${MACHINE_BASE_IMAGE_SOURCE}"
     for index in "${!WORKLOAD_NAMES[@]}"; do
@@ -348,7 +346,6 @@ build_machine_image() {
     --label "dev.ployz.dind.fingerprint=${fingerprint}" \
     --build-arg "BASE_IMAGE=${MACHINE_BASE_IMAGE_SOURCE}" \
     --build-arg "DOCKER_HUB_MIRROR=${DOCKER_HUB_MIRROR}" \
-    --build-arg "NATS_SERVER_VERSION=${NATS_SERVER_VERSION}" \
     --tag "${MACHINE_IMAGE}" \
     "${CONTEXT_DIR}"
 }
@@ -369,7 +366,6 @@ fi
 cat <<EOF
   ployzd:         ${TARGET_DIR}/release/ployzd
   ployz:          ${TARGET_DIR}/release/ployz
-  lease worker:   ${TARGET_DIR}/release/ployz-test-lease-worker
   ployz-ebpf-ctl: ${TARGET_DIR}/release/ployz-ebpf-ctl
   ployz-ebpf-tc:  ${TARGET_DIR}/release/ployz-ebpf-tc
   railpack:       ${TARGET_DIR}/release/railpack

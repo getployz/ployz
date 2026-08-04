@@ -5,8 +5,6 @@
 
 use super::build::{self, BuildOperationState};
 use super::cert::{self, CertOperationState};
-use super::core_replace::{self, CoreReplaceOperationState};
-use super::credential_grant::{self, CredentialGrantOperationState};
 use super::deploy::{self, DeployOperationState};
 use super::events::{ClassifiedOperationEvent, OperationSubjectRef};
 use super::ingress_configure::{self, IngressConfigureOperationState};
@@ -67,8 +65,6 @@ pub enum StatusProjectionError {
         expected_operation_id: OperationId,
         actual_operation_id: OperationId,
     },
-    #[error("credential grant operation {} action does not match its submitted action", .operation_id.as_str())]
-    CredentialGrantActionMismatch { operation_id: OperationId },
     #[error("ingress configuration operation {} does not match its submitted configuration", .operation_id.as_str())]
     IngressConfigurationMismatch { operation_id: OperationId },
     #[error("operation {} interruption evidence does not match its last durable status", .operation_id.as_str())]
@@ -109,8 +105,6 @@ pub enum ProjectionOperationState {
     MachineUpdate(MachineUpdateOperationState),
     MachineStoragePrepare(MachineStoragePrepareOperationState),
     MachineLifecycle(MachineLifecycleOperationState),
-    CoreReplace(CoreReplaceOperationState),
-    CredentialGrant(CredentialGrantOperationState),
     NetworkRepair(NetworkRepairOperationState),
     ServiceRestart(ServiceRestartOperationState),
     ManagedDnsReconcile(ManagedDnsReconcileOperationState),
@@ -132,8 +126,6 @@ impl ProjectionOperationState {
             Self::MachineUpdate(_) => OperationKind::MachineUpdate,
             Self::MachineStoragePrepare(_) => OperationKind::MachineStoragePrepare,
             Self::MachineLifecycle(_) => OperationKind::MachineLifecycle,
-            Self::CoreReplace(_) => OperationKind::CoreReplace,
-            Self::CredentialGrant(_) => OperationKind::CredentialGrant,
             Self::NetworkRepair(_) => OperationKind::NetworkRepair,
             Self::ServiceRestart(_) => OperationKind::ServiceRestart,
             Self::ManagedDnsReconcile(_) => OperationKind::ManagedDnsReconcile,
@@ -155,8 +147,6 @@ pub(crate) const fn operation_kind_name(kind: OperationKind) -> &'static str {
         OperationKind::MachineUpdate => "machine-update",
         OperationKind::MachineStoragePrepare => "machine-storage-prepare",
         OperationKind::MachineLifecycle => "machine-lifecycle",
-        OperationKind::CoreReplace => "core-replace",
-        OperationKind::CredentialGrant => "credential-grant",
         OperationKind::NetworkRepair => "network-repair",
         OperationKind::ServiceRestart => "service-restart",
         OperationKind::ManagedDnsReconcile => "managed-dns-reconcile",
@@ -186,10 +176,6 @@ fn subject_ref_text(subject: &OperationSubjectRef) -> String {
         OperationSubjectRef::MachineLifecycle(machine_id) => {
             format!("machine-lifecycle {}", machine_id.as_str())
         }
-        OperationSubjectRef::CoreReplace(machine_id) => {
-            format!("core-replace {}", machine_id.as_str())
-        }
-        OperationSubjectRef::CredentialGrant => "credential-grant".to_owned(),
         OperationSubjectRef::ManagedDnsReconcile(subject) => {
             format!("managed-dns-reconcile {subject:?}")
         }
@@ -425,35 +411,6 @@ pub fn project_operation_event(
             };
             machine_lifecycle::project_event(id, machine_id, *target, state, event, event_sequence)
         }
-        ClassifiedOperationEvent::CoreReplace { event, .. } => {
-            let OperationStatus::CoreReplace {
-                id,
-                machine_id,
-                successor_nats_url,
-                state,
-                ..
-            } = current
-            else {
-                return Err(kind_mismatch(current, OperationKind::CoreReplace));
-            };
-            core_replace::project_event(
-                id,
-                machine_id,
-                successor_nats_url,
-                state,
-                event,
-                event_sequence,
-            )
-        }
-        ClassifiedOperationEvent::CredentialGrant { event, .. } => {
-            let OperationStatus::CredentialGrant {
-                id, action, state, ..
-            } = current
-            else {
-                return Err(kind_mismatch(current, OperationKind::CredentialGrant));
-            };
-            credential_grant::project_event(id, action, state, event, event_sequence)
-        }
         ClassifiedOperationEvent::NetworkRepair { event, .. } => {
             let OperationStatus::NetworkRepair {
                 id,
@@ -573,14 +530,6 @@ fn project_operation_interruption(
             *state = DeployOperationState::interrupted(evidence);
             *last_event_sequence = event_sequence;
         }
-        OperationStatus::CredentialGrant {
-            state,
-            last_event_sequence,
-            ..
-        } => {
-            *state = CredentialGrantOperationState::interrupted(evidence);
-            *last_event_sequence = event_sequence;
-        }
         OperationStatus::IngressConfigure {
             state,
             last_event_sequence,
@@ -663,7 +612,6 @@ fn project_operation_interruption(
         }
         OperationStatus::Cert { .. }
         | OperationStatus::MachineAdd { .. }
-        | OperationStatus::CoreReplace { .. }
         | OperationStatus::ManagedDnsReconcile { .. } => {
             return Err(StatusProjectionError::OperationInterruptionMismatch {
                 operation_id: current.id().clone(),
