@@ -311,7 +311,8 @@ async fn exercise_api_version(harness: &StockCorrosion) -> Result<(), String> {
             .serve(async move {
                 let _ = shutdown_rx.await;
             })
-            .await;
+            .await
+            .expect("API server stops cleanly after controlled shutdown");
     });
 
     let response = get_version_from_loopback(listen_addr).await;

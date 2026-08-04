@@ -1,8 +1,9 @@
 use super::roster::validate_listener_principal;
 use super::server::{
-    HttpBody, await_lens_state, fallback_terminal_sse_event, initial_watch_event,
-    lens_snapshot_response, parse_get_route, refusal_response, source_from_peer, sse_data,
-    sse_event, sse_keepalive, sse_watch_body, version_response,
+    ApiServerServeError, HttpBody, await_lens_state, await_server_stop,
+    fallback_terminal_sse_event, initial_watch_event, lens_snapshot_response, parse_get_route,
+    refusal_response, source_from_peer, sse_data, sse_event, sse_keepalive, sse_watch_body,
+    version_response,
 };
 use super::{ApiListenerValidationError, ApiRoleConfig, ApiRoleConfigError};
 use crate::corrosion::{BearerToken, CorrosionClientBounds, CorrosionClientConfig};
@@ -18,9 +19,11 @@ use ployz_core::{
     API_MAJOR, ApiFeature, ApiRefusal, ApiVersion, CorrosionRetryAfterSeconds, KnownApiFeature,
     LensCollection, LensSnapshot, LensWatchEvent, V2Route,
 };
+use std::future::Future;
 use std::net::SocketAddr;
+use std::task::Poll;
 use std::time::Duration;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, oneshot, watch};
 
 fn corrosion_config() -> CorrosionClientConfig {
     CorrosionClientConfig::new(
@@ -63,6 +66,67 @@ fn corrosion_unavailable() -> ApiRefusal {
     ApiRefusal::CorrosionUnavailable {
         retry_after_seconds: CorrosionRetryAfterSeconds::DEFAULT,
     }
+}
+
+#[tokio::test]
+async fn server_stop_maps_an_exhausted_lens_to_a_typed_serve_error() {
+    let (sender, mut failures) = mpsc::unbounded_channel();
+    sender
+        .send(LensCollection::Services)
+        .expect("server still owns the lifecycle receiver");
+
+    assert_eq!(
+        await_server_stop(std::future::pending(), &mut failures).await,
+        Err(ApiServerServeError::LensRecoveryExhausted {
+            collection: LensCollection::Services,
+        })
+    );
+}
+
+#[tokio::test]
+async fn controlled_shutdown_wins_over_a_ready_lens_lifecycle_failure() {
+    let (shutdown_sender, shutdown) = oneshot::channel();
+    let (sender, mut failures) = mpsc::unbounded_channel();
+    sender
+        .send(LensCollection::Services)
+        .expect("server still owns the lifecycle receiver");
+    shutdown_sender
+        .send(())
+        .expect("server still waits for controlled shutdown");
+
+    assert_eq!(
+        await_server_stop(
+            async move {
+                let _ = shutdown.await;
+            },
+            &mut failures,
+        )
+        .await,
+        Ok(())
+    );
+}
+
+#[tokio::test]
+async fn a_closed_lifecycle_channel_waits_for_controlled_shutdown() {
+    let (sender, mut failures) = mpsc::unbounded_channel();
+    drop(sender);
+    let (shutdown_sender, shutdown) = oneshot::channel();
+    let stop = await_server_stop(
+        async move {
+            let _ = shutdown.await;
+        },
+        &mut failures,
+    );
+    tokio::pin!(stop);
+
+    let first_poll =
+        std::future::poll_fn(|context| Poll::Ready(Future::poll(stop.as_mut(), context))).await;
+    assert!(first_poll.is_pending());
+
+    shutdown_sender
+        .send(())
+        .expect("server still waits for controlled shutdown");
+    assert_eq!(stop.await, Ok(()));
 }
 
 async fn next_sse_frame(body: &mut HttpBody) -> Bytes {
@@ -353,6 +417,37 @@ async fn later_watch_states_are_state_events_and_refusals_are_terminal_events() 
     sender
         .send(Some(Err(refusal.clone())))
         .expect("the receiver remains subscribed");
+    assert_eq!(
+        next_sse_frame(&mut body).await,
+        sse_event(&LensWatchEvent::terminal(refusal)).expect("terminal refusal encodes")
+    );
+    assert!(body.frame().await.is_none());
+}
+
+#[tokio::test]
+async fn a_ready_terminal_lens_update_precedes_a_ready_api_shutdown() {
+    let snapshot = services_snapshot();
+    let (state_sender, mut updates) = watch::channel(Some(Ok(snapshot)));
+    let initial = initial_watch_event(
+        await_lens_state(&mut updates)
+            .await
+            .expect("the populated state cell is available"),
+    );
+    let (shutdown_sender, shutdown) = watch::channel(false);
+    let mut body = sse_watch_body(updates, initial.clone(), shutdown);
+    assert_eq!(
+        next_sse_frame(&mut body).await,
+        sse_event(&initial).expect("initial snapshot encodes")
+    );
+
+    let refusal = corrosion_unavailable();
+    state_sender
+        .send(Some(Err(refusal.clone())))
+        .expect("the stream remains subscribed to lens updates");
+    shutdown_sender
+        .send(true)
+        .expect("the stream remains subscribed to API shutdown");
+
     assert_eq!(
         next_sse_frame(&mut body).await,
         sse_event(&LensWatchEvent::terminal(refusal)).expect("terminal refusal encodes")

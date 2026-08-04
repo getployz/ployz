@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use ployz_core::ids::ClusterId;
 use ployz_core::{ApiRefusal, LensCollection, LensSnapshot};
-use tokio::sync::{oneshot, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use crate::corrosion::CorrosionClient;
@@ -167,8 +167,9 @@ pub enum LensRecoveryPolicyError {
 ///
 /// The receiver is a state cell: a slow consumer receives the newest complete
 /// value rather than an unbounded queue of obsolete states. A successful state
-/// is an `Ok` snapshot; a terminal refusal remains available as the final
-/// `Err` value after the worker exits.
+/// is an `Ok` snapshot. A domain-terminal refusal remains the final `Err`
+/// value after its worker exits; recovery exhaustion publishes
+/// `CorrosionUnavailable` before the API role exits for supervisor restart.
 pub struct LensWatch {
     receiver: watch::Receiver<Option<Result<LensSnapshot, ApiRefusal>>>,
     shutdown: Option<oneshot::Sender<()>>,
@@ -198,5 +199,17 @@ pub fn start_lens(
     collection: LensCollection,
     config: LensEngineConfig,
 ) -> LensWatch {
-    actor::start_lens_with_store(Arc::new(client), collection, config)
+    let (lifecycle_failures, _receiver) = mpsc::unbounded_channel();
+    actor::start_lens_with_store(Arc::new(client), collection, config, lifecycle_failures)
+}
+
+/// Starts one bounded Corrosion-backed state lens owned by the API role.
+#[must_use]
+pub(super) fn start_lens_with_lifecycle(
+    client: CorrosionClient,
+    collection: LensCollection,
+    config: LensEngineConfig,
+    lifecycle_failures: mpsc::UnboundedSender<LensCollection>,
+) -> LensWatch {
+    actor::start_lens_with_store(Arc::new(client), collection, config, lifecycle_failures)
 }

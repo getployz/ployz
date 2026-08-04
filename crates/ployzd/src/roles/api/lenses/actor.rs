@@ -5,7 +5,8 @@ use std::time::Duration;
 
 use ployz_core::ids::ClusterId;
 use ployz_core::{ApiRefusal, CorrosionRetryAfterSeconds, LensCollection, LensSnapshot};
-use tokio::sync::{oneshot, watch};
+use tokio::sync::oneshot::error::TryRecvError;
+use tokio::sync::{mpsc, oneshot, watch};
 
 use super::adapter::{
     LensInput, LensStore, LensStoreError, LensSubscription, LensSubscriptionEvent,
@@ -56,6 +57,7 @@ pub(super) fn start_lens_with_store<Store>(
     store: Arc<Store>,
     collection: LensCollection,
     config: LensEngineConfig,
+    lifecycle_failures: mpsc::UnboundedSender<LensCollection>,
 ) -> LensWatch
 where
     Store: LensStore + 'static,
@@ -68,6 +70,7 @@ where
         config,
         sender,
         shutdown_receiver,
+        lifecycle_failures,
     ));
     LensWatch {
         receiver,
@@ -82,6 +85,7 @@ async fn run_lens<Store>(
     config: LensEngineConfig,
     sender: watch::Sender<LensCell>,
     mut shutdown: oneshot::Receiver<()>,
+    lifecycle_failures: mpsc::UnboundedSender<LensCollection>,
 ) where
     Store: LensStore + 'static,
 {
@@ -108,7 +112,10 @@ async fn run_lens<Store>(
             return;
         }
         RecoveryOutcome::Exhausted => {
-            publish_terminal(&sender, unavailable_refusal(config.recovery()));
+            if shutdown_requested(&mut shutdown, &sender) {
+                return;
+            }
+            publish_exhaustion(&sender, &lifecycle_failures, collection, config.recovery());
             return;
         }
         RecoveryOutcome::Stopped => return,
@@ -160,12 +167,32 @@ async fn run_lens<Store>(
                 return;
             }
             RecoveryOutcome::Exhausted => {
-                publish_terminal(&sender, unavailable_refusal(config.recovery()));
+                if shutdown_requested(&mut shutdown, &sender) {
+                    return;
+                }
+                publish_exhaustion(&sender, &lifecycle_failures, collection, config.recovery());
                 return;
             }
             RecoveryOutcome::Stopped => return,
         }
     }
+}
+
+fn shutdown_requested(
+    shutdown: &mut oneshot::Receiver<()>,
+    sender: &watch::Sender<LensCell>,
+) -> bool {
+    sender.is_closed() || !matches!(shutdown.try_recv(), Err(TryRecvError::Empty))
+}
+
+fn publish_exhaustion(
+    sender: &watch::Sender<LensCell>,
+    lifecycle_failures: &mpsc::UnboundedSender<LensCollection>,
+    collection: LensCollection,
+    recovery: LensRecoveryPolicy,
+) {
+    publish_terminal(sender, unavailable_refusal(recovery));
+    let _ = lifecycle_failures.send(collection);
 }
 
 fn publish_snapshot(
