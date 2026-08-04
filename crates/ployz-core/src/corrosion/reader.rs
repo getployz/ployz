@@ -8,7 +8,8 @@ use super::{
     ClusterDocument, CorrosionDocument, CorrosionTable, MeshProvider, NameClaim,
     NamedCorrosionDocument, OrdinaryCorrosionDocument, RosterCorrosionDocument,
 };
-use crate::ids::{ClusterId, CorrosionUlid, CorrosionUlidError};
+use crate::ids::{ClusterId, CorrosionUlid, CorrosionUlidError, MachineRowId};
+use crate::operation::RouteHostname;
 
 /// A row as returned by a Corrosion query.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,6 +62,9 @@ pub enum RowSkipReason {
     InvalidRowId {
         error: CorrosionUlidError,
     },
+    InvalidRowKey {
+        expected: String,
+    },
 }
 
 /// The precise malformed-document class observed during staged parsing.
@@ -81,29 +85,6 @@ pub enum MalformedDocument {
 pub struct ReadReport<Document> {
     pub accepted: Vec<AcceptedRow<Document>>,
     pub skipped: Vec<SkippedRow>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RowKeyKind {
-    CanonicalUlid,
-    Natural,
-}
-
-const fn row_key_kind(table: CorrosionTable) -> RowKeyKind {
-    match table {
-        CorrosionTable::Cluster
-        | CorrosionTable::Machines
-        | CorrosionTable::Peers
-        | CorrosionTable::Tokens
-        | CorrosionTable::Namespaces
-        | CorrosionTable::Services
-        | CorrosionTable::RouteBindings
-        | CorrosionTable::MachineStatus
-        | CorrosionTable::Operations => RowKeyKind::CanonicalUlid,
-        CorrosionTable::Containers | CorrosionTable::CertHoldings | CorrosionTable::AcmeHttp01 => {
-            RowKeyKind::Natural
-        }
-    }
 }
 
 /// Reads stored rows using the cross-cutting cluster and version fences.
@@ -258,7 +239,7 @@ where
         ));
     }
 
-    let value = match serde_json::from_value::<Document>(parsed) {
+    let value = match Document::deserialize(&parsed) {
         Ok(value) => value,
         Err(error) => {
             return Err(skipped(
@@ -270,13 +251,45 @@ where
         }
     };
 
-    match row_key_kind(Document::TABLE) {
-        RowKeyKind::CanonicalUlid => {
+    match Document::TABLE {
+        CorrosionTable::Cluster
+        | CorrosionTable::Machines
+        | CorrosionTable::Peers
+        | CorrosionTable::Tokens
+        | CorrosionTable::Namespaces
+        | CorrosionTable::Services
+        | CorrosionTable::RouteBindings
+        | CorrosionTable::MachineStatus
+        | CorrosionTable::Operations => {
             if let Err(error) = CorrosionUlid::try_new(source.key.clone()) {
                 return Err(skipped(source, RowSkipReason::InvalidRowId { error }));
             }
         }
-        RowKeyKind::Natural => {}
+        CorrosionTable::CertHoldings => {
+            let expected = fields
+                .get("machine_id")
+                .and_then(Value::as_str)
+                .and_then(|value| MachineRowId::try_new(value.to_owned()).ok())
+                .zip(
+                    fields
+                        .get("hostname")
+                        .and_then(Value::as_str)
+                        .and_then(|value| RouteHostname::try_new(value.to_owned()).ok()),
+                )
+                .map(|(machine_id, hostname)| format!("{machine_id}:{}", hostname.as_str()));
+            let Some(expected) = expected else {
+                return Err(skipped(
+                    source,
+                    RowSkipReason::Malformed(MalformedDocument::InvalidPayload {
+                        message: "certificate holding identity fields are invalid".to_owned(),
+                    }),
+                ));
+            };
+            if source.key != expected {
+                return Err(skipped(source, RowSkipReason::InvalidRowKey { expected }));
+            }
+        }
+        CorrosionTable::Containers | CorrosionTable::AcmeHttp01 => {}
     }
 
     Ok(AcceptedRow { source, value })
