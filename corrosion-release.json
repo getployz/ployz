@@ -1,0 +1,9 @@
+{
+  "release_tag": "v1.0.0",
+  "archive": {
+    "name": "corrosion-x86_64-unknown-linux-gnu.tar.gz",
+    "url": "https://github.com/superfly/corrosion/releases/download/v1.0.0/corrosion-x86_64-unknown-linux-gnu.tar.gz",
+    "sha256": "3504d7d1b4b53737457fc40f2353a400cf4df0c1217ec318924d7ee310876194"
+  },
+  "embedded_version": "corrosion 0.2.0-beta.0"
+}

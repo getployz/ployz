@@ -28,6 +28,16 @@ CREATE TABLE machines (
 );
 CREATE INDEX machines_name ON machines (name);
 
+-- Non-machine mesh peers: operator laptops and Cloud. Operator authority;
+-- swept by peer rm. Document carries the same transport union as machines,
+-- with no IPv4 subnet (peers run no containers).
+CREATE TABLE peers (
+    id TEXT NOT NULL PRIMARY KEY,
+    document TEXT NOT NULL DEFAULT '{}',
+    name TEXT GENERATED ALWAYS AS (json_extract(document, '$.name')) VIRTUAL
+);
+CREATE INDEX peers_name ON peers (name);
+
 -- Join and API tokens. The secret never enters the row: the issued string is
 -- pz_<token-ulid>.<32-byte-random-base64>; the row keeps sha256(secret part).
 -- Expiry and revocation are checked at point of use, never swept on a timer.

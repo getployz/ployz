@@ -8,338 +8,23 @@ export const MAX_OPERATION_EVENT_REPLAY_LIMIT = 512 as const;
 
 export const MAX_LOGS_TAIL_LINES = 1000 as const;
 
-export type BuildTargetCapabilitiesRequest = Record<symbol, never>;
-
-export type BuildPoolId = Brand<string, "BuildPoolId">;
-
-export type BuildExecutorId = Brand<string, "BuildExecutorId">;
-
-export type BuildExecutorIdentity = { pool_id: BuildPoolId, executor_id: BuildExecutorId, };
-
-export type OciPlatform = { os: string, architecture: string, };
-
-export type BuildExecutorCapability = "dockerfile_and_railpack" | "dockerfile_only" | "runtime_unavailable";
-
-export type BuildExecutorReadiness = { native_platform: OciPlatform, capability: BuildExecutorCapability, };
-
-export type MachineId = Brand<string, "MachineId">;
-
-export type ExternalBuildExecutorCapability = { "observation": "answered", identity: BuildExecutorIdentity, readiness: BuildExecutorReadiness, } | { "observation": "silent", identity: BuildExecutorIdentity, };
-
-export type ExternalBuildPoolCapabilities = { pool_id: BuildPoolId, executors: Array<ExternalBuildExecutorCapability>, reachable_image_seeds: Array<MachineId>, };
-
-export type BuildPlatforms = Array<OciPlatform>;
-
-export type ZfsPoolName = Brand<string, "ZfsPoolName">;
-
-export type StorageUnavailableReason = { "reason": "zfs_module_missing" } | { "reason": "pool_not_imported", pool: ZfsPoolName, } | { "reason": "pool_faulted", pool: ZfsPoolName, } | { "reason": "capacity_facts_unavailable" };
-
-export type DataplaneProjectionComponent = "endpoint_bridge" | "wire_guard" | "ebpf";
-
-export type FailureMessage = Brand<string, "FailureMessage">;
-
-export type MachineEndpointSubnet = string;
-
-export type DataplaneProjectionFailure = { "kind": "fetch_failed", message: FailureMessage, } | { "kind": "invalid_view", message: FailureMessage, } | { "kind": "local_member_missing" } | { "kind": "endpoint_bridge_missing" } | { "kind": "endpoint_bridge_subnet_mismatch", expected: MachineEndpointSubnet, observed: MachineEndpointSubnet, } | { "kind": "apply_failed", component: DataplaneProjectionComponent, message: FailureMessage, } | { "kind": "apply_timed_out", timeout_seconds: number, };
-
-export type WireGuardPublicKey = string;
-
-export type WireGuardPeerEndpointSubnet = { "status": "missing" } | { "status": "valid", subnet: MachineEndpointSubnet, } | { "status": "invalid", value: string, message: string, };
-
-export type WireGuardInterfaceMtu = { "status": "detected", mtu: number, } | { "status": "unavailable", message: string, };
-
-export type WireGuardReadinessFailure = { "status": "interface_missing" } | { "status": "interface_mtu_unavailable", observed: WireGuardInterfaceMtu, };
-
-export type EndpointBridgeStatus = { "status": "ready", subnet: MachineEndpointSubnet, } | { "status": "missing" } | { "status": "subnet_mismatch", expected: MachineEndpointSubnet, observed: MachineEndpointSubnet, } | { "status": "invalid_subnet", observed: string, } | { "status": "unavailable", message: FailureMessage, };
-
-export type EbpfAttachmentStatus = { "status": "attached" } | { "status": "detached", message: string, } | { "status": "unknown", message: string, };
-
-export type DataplaneAdmissionPeer = { public_key: WireGuardPublicKey, endpoint_subnet: WireGuardPeerEndpointSubnet, };
-
-export type DataplaneProjectionRevision = Brand<string, "DataplaneProjectionRevision">;
-
-export type DataplaneProjectionAdmissionFailure = { "kind": "no_answer", message: FailureMessage, } | { "kind": "unusable_projection", failure: DataplaneProjectionFailure, } | { "kind": "awaiting_target_revision", expected: DataplaneProjectionRevision, observed: DataplaneProjectionRevision | null, } | { "kind": "endpoint_bridge_not_ready", status: EndpointBridgeStatus, } | { "kind": "wire_guard_not_ready", failure: WireGuardReadinessFailure, } | { "kind": "ebpf_not_ready", status: EbpfAttachmentStatus, } | { "kind": "peer_set_mismatch", expected: Array<DataplaneAdmissionPeer>, observed: Array<DataplaneAdmissionPeer>, } | { "kind": "peer_handshake_never", peer_machine_id: MachineId, } | { "kind": "peer_handshake_stale", peer_machine_id: MachineId, observed_age_seconds: number, };
-
-export type DataplaneUnavailableReason = { "kind": "not_declared" } | { "kind": "testimony_missing" } | { "kind": "admission", failure: DataplaneProjectionAdmissionFailure, };
-
-export type MachineUsabilityReason = { "kind": "platform_mismatch", supported: BuildPlatforms, reported: OciPlatform, } | { "kind": "draining" } | { "kind": "facts_unavailable" } | { "kind": "build_unavailable" } | { "kind": "storage_testimony_not_reported" } | { "kind": "storage_unprepared" } | { "kind": "storage_unavailable", reason: StorageUnavailableReason, } | { "kind": "storage_pool_mismatch", expected: ZfsPoolName, reported: ZfsPoolName, } | { "kind": "dataplane_unavailable", reason: DataplaneUnavailableReason, };
-
-export type ClusterBuildMachineCapability = { "observation": "answered", machine_id: MachineId, native_platform: OciPlatform, capability: BuildExecutorCapability, } | { "observation": "unavailable", machine_id: MachineId, reason: MachineUsabilityReason, };
-
-export type ClusterBuildTargetCapabilities = { machines: Array<ClusterBuildMachineCapability>, };
-
-export type BuildTargetCapabilities = { cluster: ClusterBuildTargetCapabilities, external_pools: Array<ExternalBuildPoolCapabilities>, };
-
-export type BuildTargetCapabilitiesError = { "error": "unavailable", message: string, };
-
-export type BuildSubmitRequest = { operation_id: OperationId, target?: BuildTarget, source: BuildSource, adapter: BuildAdapter, platforms: BuildPlatforms };
-
-export type OperationId = Brand<string, "OperationId">;
-
-export type EventSequence = Brand<string, "EventSequence">;
+export type AbsoluteInstallPath = string;
 
 export type AcceptedOperation = { operation_id: OperationId, start_sequence: EventSequence, };
 
-export type BuildSubmitError = { "error": "local_snapshot_requires_external_target", operation_id: OperationId, } | { "error": "local_snapshot_requires_single_platform", operation_id: OperationId, actual: number, } | { "error": "operation_conflict", operation_id: OperationId, } | { "error": "no_capable_external_executor", operation_id: OperationId, pool_id: BuildPoolId, platform: OciPlatform, } | { "error": "no_reachable_image_seed", operation_id: OperationId, pool_id: BuildPoolId, } | { "error": "unavailable", operation_id: OperationId, message: string, };
+export type AcmeChallengeToken = Brand<string, "AcmeChallengeToken">;
 
-export type CancellationReason = Brand<string, "CancellationReason">;
+export type AcmeChallengeTtlSeconds = Brand<string, "AcmeChallengeTtlSeconds">;
 
-export type BuildCancelRequest = { operation_id: OperationId, reason: CancellationReason, };
+export type AcmeChallengeValue = Brand<string, "AcmeChallengeValue">;
 
-export type BuildCancelError = { "error": "no_such_operation", operation_id: OperationId, } | { "error": "already_terminal", operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, };
+export type AcmeHttp01Challenge = { hostname: RouteHostname, token: AcmeChallengeToken, value: AcmeChallengeValue, ttl_seconds: AcmeChallengeTtlSeconds, };
 
-export type NamespaceId = Brand<string, "NamespaceId">;
+export type AcmeHttp01Document = { v: CorrosionDocumentVersion, cluster_id: ClusterId, machine_id: MachineId, hostname: RouteHostname, key_authorization: string, created_at: string, };
 
-export type DeployReserveRequest = { namespace_id: NamespaceId, };
+export type ActiveCertState = { cert_id: CertId, hostname: RouteHostname, bundle_ref: CertBundleRef, validity: CertValidityWindow, };
 
-export type DeployReservationExpiresAt = Brand<string, "DeployReservationExpiresAt">;
-
-export type DeployReservationId = Brand<string, "DeployReservationId">;
-
-export type DeployReserved = { reservation_id: DeployReservationId, expires_at: DeployReservationExpiresAt, };
-
-export type DeployReserveError = { "error": "unavailable", message: string, };
-
-export type ServiceId = Brand<string, "ServiceId">;
-
-export type RegistryCredentialUsername = string;
-
-export type RegistryCredentialSecret = string;
-
-export type RegistryCredential = { "kind": "basic", username: RegistryCredentialUsername, password: RegistryCredentialSecret, } | { "kind": "identity_token", token: RegistryCredentialSecret, };
-
-export type DeployOrigin = Brand<string, "DeployOrigin">;
-
-export type ServiceEnvironment = Record<EnvName, EnvValue>;
-
-export type ContainerCommand = Array<string>;
-
-export type StopGracePeriod = SafeInteger<"StopGracePeriod">;
-
-export type ContainerEntrypoint = "clear" | { "argv": ContainerCommand };
-
-export type HealthcheckShellCommand = Brand<string, "HealthcheckShellCommand">;
-
-export type ContainerHealthcheckTest = "inherit" | "disable" | { "exec": ContainerCommand } | { "shell": HealthcheckShellCommand };
-
-export type HealthcheckDurationNanos = SafeInteger<"HealthcheckDurationNanos">;
-
-export type HealthcheckRetries = SafeInteger<"HealthcheckRetries">;
-
-export type ContainerHealthcheck = { test: ContainerHealthcheckTest, interval?: HealthcheckDurationNanos | null, timeout?: HealthcheckDurationNanos | null, retries?: HealthcheckRetries | null, start_period?: HealthcheckDurationNanos | null, };
-
-export type VolumeName = Brand<string, "VolumeName">;
-
-export type ContainerMountPath = Brand<string, "ContainerMountPath">;
-
-export type LinuxCapability = Brand<string, "LinuxCapability">;
-
-export type NanoCpus = SafeInteger<"NanoCpus">;
-
-export type MemoryBytes = SafeInteger<"MemoryBytes">;
-
-export type PidsLimit = SafeInteger<"PidsLimit">;
-
-export type ContainerResourceLimits = { nano_cpus?: NanoCpus | null, memory_bytes?: MemoryBytes | null, pids?: PidsLimit | null, };
-
-export type ContainerRestartPolicy = "docker-default" | "no" | "always" | "on-failure" | "unless-stopped";
-
-export type ServiceVolumeMount = { volume_name: VolumeName, target: ContainerMountPath, };
-
-export type ContainerRuntimeSpec = { command: ContainerCommand | null, entrypoint: ContainerEntrypoint | null, environment: ServiceEnvironment, stop_grace_period: StopGracePeriod, volume_mounts?: Array<ServiceVolumeMount>, healthcheck?: ContainerHealthcheck | null, restart_policy?: ContainerRestartPolicy, cap_add?: Array<LinuxCapability>, cap_drop?: Array<LinuxCapability>, resources?: ContainerResourceLimits, };
-
-export type RoutePort = SafeInteger<"RoutePort">;
-
-export type AutomaticHostnameLabel = Brand<string, "AutomaticHostnameLabel">;
-
-export type RouteHostname = Brand<string, "RouteHostname">;
-
-export type DeployRouteTarget = { "kind": "auto_hostname", label: AutomaticHostnameLabel, } | { "kind": "hostname", hostname: RouteHostname, };
-
-export type DeployRoute = { target: DeployRouteTarget, endpoint_port: RoutePort, };
-
-export type ContainerRetentionCount = SafeInteger<"ContainerRetentionCount">;
-
-export type DependencyCondition = "started" | "healthy";
-
-export type ImageReference = Brand<string, "ImageReference">;
-
-export type ImageSource = { source: "registry" } | { source: "pushed_to_seed", index_digest: OciDigest, platforms: [OciPlatform, PlatformImage][] };
-
-export type DeployPreviewImage = { "state": "concrete", image: ImageReference, image_source: ImageSource, } | { "state": "pending_build" };
-
-export type ServiceDependency = { service_id: ServiceId, condition: DependencyCondition, };
-
-export type PreStartHook = { command: ContainerCommand, };
-
-export type ReplicaCount = SafeInteger<"ReplicaCount">;
-
-export type ServiceMode = { "kind": "replicated", replicas: ReplicaCount, } | { "kind": "global" };
-
-export type DeployPreviewService = { service_id: ServiceId, image: DeployPreviewImage, mode: ServiceMode, keep?: ContainerRetentionCount | null, runtime: ContainerRuntimeSpec, pre_start?: PreStartHook | null, depends_on?: Array<ServiceDependency>, routes?: Array<DeployRoute>, };
-
-export type VolumeMaxSizeBytes = SafeInteger<"VolumeMaxSizeBytes">;
-
-export type VolumeSpec = { "kind": "plain" } | { "kind": "provisioned", max_size_bytes: VolumeMaxSizeBytes, };
-
-export type DeployPreviewTarget = { namespace_id: NamespaceId, origin?: DeployOrigin | null, volumes?: { [key in VolumeName]: VolumeSpec }, services: Array<DeployPreviewService>, };
-
-export type DeployPreviewRequest = { target: DeployPreviewTarget, registry_credentials?: { [key in ServiceId]: RegistryCredential }, };
-
-export type UnusableMachine = { machine_id: MachineId, reason: MachineUsabilityReason, };
-
-export type PreStartHookStep = { machine_id: MachineId, };
-
-export type ContainerId = Brand<string, "ContainerId">;
-
-export type ReplicatedReplicaSlot = SafeInteger<"ReplicatedReplicaSlot">;
-
-export type ReplicaSlot = { "kind": "replicated", number: ReplicatedReplicaSlot, } | { "kind": "global" };
-
-export type DeployPlanStep = { "step": "use_existing_container", machine_id: MachineId, container_id: ContainerId, slot: ReplicaSlot, } | { "step": "run_container", machine_id: MachineId, slot: ReplicaSlot, };
-
-export type DeployRunContainerStep = { machine_id: MachineId, slot: ReplicaSlot, };
-
-export type DeployVolumeHandoffPriorState = "running" | "stopped";
-
-export type ManagedContainerKind = "service" | "predeploy" | "job";
-
-export type StepId = Brand<string, "StepId">;
-
-export type NamespaceRevisionEntryId = Brand<string, "NamespaceRevisionEntryId">;
-
-export type ManagedContainerIdentity = { namespace_id: NamespaceId, service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, operation_id: OperationId, step_id: StepId, kind: ManagedContainerKind, };
-
-export type DeployCleanupContainer = { machine_id: MachineId, container_id: ContainerId, identity: ManagedContainerIdentity, };
-
-export type NonEmptyVolumeNames = Array<VolumeName>;
-
-export type DeployVolumeHandoffParticipant = { target: DeployCleanupContainer, prior_state: DeployVolumeHandoffPriorState, shared_volume_names: NonEmptyVolumeNames, };
-
-export type NonEmptyVolumeHandoffParticipants = Array<DeployVolumeHandoffParticipant>;
-
-export type DeployServiceWork = { "kind": "ordinary", steps: Array<DeployPlanStep>, } | { "kind": "volume_handoff", replacement: DeployRunContainerStep, remaining_steps?: Array<DeployPlanStep>, participants: NonEmptyVolumeHandoffParticipants, };
-
-export type DeployServicePlacement = { "kind": "replicated" } | { "kind": "global", candidates: Array<MachineId>, selected: Array<MachineId>, deferred: Array<UnusableMachine>, draining: Array<MachineId>, };
-
-export type DeployServicePlan = { service_id: ServiceId, placement: DeployServicePlacement, work: DeployServiceWork, pre_start?: PreStartHookStep | null, };
-
-export type DeployPhasePlan = { services: Array<DeployServicePlan>, };
-
-export type RouteBindingOrigin = "declared" | "automatic";
-
-export type RouteTarget = { hostname: RouteHostname, };
-
-export type DatasetName = Brand<string, "DatasetName">;
-
-export type VolumeKind = { "kind": "plain" } | { "kind": "provisioned", dataset: DatasetName, max_size_bytes: VolumeMaxSizeBytes, };
-
-export type RouteBindingId = Brand<string, "RouteBindingId">;
-
-export type VolumePinState = { namespace_id: NamespaceId, volume_name: VolumeName, machine_id: MachineId, kind: VolumeKind, };
-
-export type RouteBindingState = { id: RouteBindingId, namespace_id: NamespaceId, target: RouteTarget, endpoint_port: RoutePort, service_id: ServiceId, origin: RouteBindingOrigin, };
-
-export type OciDigest = string;
-
-export type DeployCleanupAction = { "action": "remove_container", target: DeployCleanupContainer, } | { "action": "remove_container_and_reclaim_image", target: DeployCleanupContainer, image_identity: OciDigest, } | { "action": "remove_container_with_invalid_image_identity", target: DeployCleanupContainer, observed_identity: string | null, };
-
-export type DeployRouteBindingAddition = { namespace_id: NamespaceId, target: RouteTarget, endpoint_port: RoutePort, service_id: ServiceId, origin: RouteBindingOrigin, };
-
-export type ServingTargetEntry = { namespace_id: NamespaceId, service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, image: ImageReference, mode: ServiceMode, volume_names: Array<VolumeName>, };
-
-export type DeployPreviewProjection = { namespace_id: NamespaceId, phases: Array<DeployPhasePlan>, volume_pins?: Array<VolumePinState>, volume_preparations?: Array<VolumePinState>, cleanup_candidates?: Array<DeployCleanupAction>, route_binding_additions?: Array<DeployRouteBindingAddition>, route_binding_removals?: Array<RouteBindingState>, serving_target_commits?: Array<ServingTargetEntry>, serving_target_removals?: Array<ServingTargetEntry>, };
-
-export type DeployPreview = { projection: DeployPreviewProjection, build_platform_requirements: { [key in ServiceId]: BuildPlatforms }, unusable_machines?: Array<UnusableMachine>, unusable_machines_by_service?: { [key in ServiceId]: Array<UnusableMachine> }, };
-
-export type DatasetNameError = { "kind": "empty" } | { "kind": "empty_component" } | { "kind": "invalid_character", value: string, } | { "kind": "non_canonical", value: string, } | { "kind": "name_budget_exceeded", bytes: number, maximum: number, };
-
-export type ImageAvailabilityExpiresAt = Brand<string, "ImageAvailabilityExpiresAt">;
-
-export type DeployPreviewImageFailure = { "kind": "image_resolution_failed", service_id: ServiceId, machine_id: MachineId, image: ImageReference, message: FailureMessage, } | { "kind": "platform_image_unavailable", service_id: ServiceId, machine_id: MachineId, target_platform: OciPlatform, } | { "kind": "seed_unavailable", service_id: ServiceId, seed: MachineId, message: FailureMessage, } | { "kind": "platform_image_expired", service_id: ServiceId, seed: MachineId, target_platform: OciPlatform, expired_at: ImageAvailabilityExpiresAt, };
-
-export type VolumeAdmissionFailure = { "kind": "missing_declaration", volume_name: VolumeName, } | { "kind": "ambiguous_pins", volume_name: VolumeName, pin_count: number, } | { "kind": "pinned_to_different_machine", volume_name: VolumeName, pinned_machine_id: MachineId, selected_machine_id: MachineId, } | { "kind": "kind_conversion", volume_name: VolumeName, declaration: VolumeSpec, pin_kind: VolumeKind, } | { "kind": "quota_shrink", volume_name: VolumeName, declared_max_size_bytes: VolumeMaxSizeBytes, pinned_max_size_bytes: VolumeMaxSizeBytes, } | { "kind": "machine_silent", machine_id: MachineId, } | { "kind": "storage_testimony_not_reported", machine_id: MachineId, } | { "kind": "storage_unprepared", machine_id: MachineId, } | { "kind": "storage_unavailable", machine_id: MachineId, reason: StorageUnavailableReason, } | { "kind": "pool_mismatch", volume_name: VolumeName, pinned_pool: ZfsPoolName, reported_pool: ZfsPoolName, } | { "kind": "dataset_identity", volume_name: VolumeName, source: DatasetNameError, } | { "kind": "duplicate_dataset_quota", dataset: DatasetName, } | { "kind": "dataset_quota_not_reported", dataset: DatasetName, } | { "kind": "unpinned_dataset_exists", dataset: DatasetName, } | { "kind": "capacity_overflow" } | { "kind": "capacity_exceeded", total_bytes: number, provisioned_used_bytes: number, free_bytes: number, required_headroom_bytes: number, requested_total_bytes: number, } | { "kind": "inconsistent_capacity_facts", total_bytes: number, provisioned_used_bytes: number, free_bytes: number, };
-
-export type DeployPreviewError = { "error": "invalid_target", message: FailureMessage, } | { "error": "planning_failed", message: FailureMessage, unusable_machines?: Array<UnusableMachine>, } | { "error": "volume_admission_failed", service_id: ServiceId, machine_id: MachineId, failure: VolumeAdmissionFailure, } | { "error": "image_unavailable", failure: DeployPreviewImageFailure, unusable_machines?: Array<UnusableMachine>, } | { "error": "unavailable", message: string, };
-
-export type OperationIdempotencyKey = Brand<string, "OperationIdempotencyKey">;
-
-export type DeployServiceSpec = { service_id: ServiceId, image: ImageReference, image_source?: ImageSource, mode: ServiceMode,
-/**
- * Number of newest stopped superseded containers retained for inspection.
- * Absence preserves full container cleanup and disables image reclamation.
- */
-keep?: ContainerRetentionCount | null, runtime: ContainerRuntimeSpec, pre_start?: PreStartHook | null, depends_on?: Array<ServiceDependency>, routes?: Array<DeployRoute>, };
-
-export type DeployRequest = { namespace_id: NamespaceId, origin?: DeployOrigin | null, volumes?: { [key in VolumeName]: VolumeSpec }, services: Array<DeployServiceSpec>, };
-
-export type DeploySubmitRequest = { idempotency_key: OperationIdempotencyKey, reservation_id: DeployReservationId, target: DeployRequest, registry_credentials?: { [key in ServiceId]: RegistryCredential }, };
-
-export type DeploySubmitError = { "error": "reserved_system_namespace", operation_id: OperationId, namespace_id: NamespaceId, } | { "error": "reservation_not_found", operation_id: OperationId, namespace_id: NamespaceId, reservation_id: DeployReservationId, } | { "error": "reservation_expired", operation_id: OperationId, namespace_id: NamespaceId, reservation_id: DeployReservationId, expired_at: DeployReservationExpiresAt, } | { "error": "stale_reservation", operation_id: OperationId, namespace_id: NamespaceId, reservation_id: DeployReservationId, last_committed_reservation_id: DeployReservationId, } | { "error": "reservation_already_committed", operation_id: OperationId, namespace_id: NamespaceId, reservation_id: DeployReservationId, owner_operation_id: OperationId, } | { "error": "invalid_target", operation_id: OperationId, message: FailureMessage, } | { "error": "resource_busy", operation_id: OperationId, namespace_id: NamespaceId, owner_operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
-
-export type SystemDeployTarget = { origin?: DeployOrigin | null, services: Array<DeployServiceSpec>, };
-
-export type SystemDeployRequest = { idempotency_key: OperationIdempotencyKey, reservation_id: DeployReservationId, target: SystemDeployTarget, registry_credentials?: { [key in ServiceId]: RegistryCredential }, };
-
-export type MachineBuildCachePruneRequest = { operation_id: OperationId, machine_id: MachineId, };
-
-export type MachineBuildCachePruneError = { "error": "no_such_machine", operation_id: OperationId, machine_id: MachineId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
-
-export type InstallArtifactVersion = string;
-
-export type MachineUpdateRequest = { operation_id: OperationId, machine_id: MachineId, target_version: InstallArtifactVersion, };
-
-export type MachineUpdateError = { "error": "no_such_machine", operation_id: OperationId, machine_id: MachineId, } | { "error": "current_machine_unsupported", operation_id: OperationId, machine_id: MachineId, } | { "error": "machine_substrate_busy", operation_id: OperationId, machine_id: MachineId, owner_operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
-
-export type MachineStoragePrepareRequest = { operation_id: OperationId, machine_id: MachineId, pool?: ZfsPoolName | null, };
-
-export type MachineStoragePrepareError = { "error": "no_such_machine", operation_id: OperationId, machine_id: MachineId, } | { "error": "machine_substrate_busy", operation_id: OperationId, machine_id: MachineId, owner_operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
-
-export type MachineStoragePrepareCancelRequest = { operation_id: OperationId, reason: CancellationReason, };
-
-export type MachineStoragePrepareCancelError = { "error": "no_such_operation", operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
-
-export type MachineLifecycleRequest = { operation_id: OperationId, machine_id: MachineId, };
-
-export type MachineLifecycleError = { "error": "no_such_machine", operation_id: OperationId, machine_id: MachineId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
-
-export type ServiceRestartRequest = { operation_id: OperationId, namespace_id: NamespaceId, service_id: ServiceId, };
-
-export type ServiceRestartError = { "error": "reserved_system_namespace", operation_id: OperationId, namespace_id: NamespaceId, } | { "error": "resource_busy", operation_id: OperationId, namespace_id: NamespaceId, owner_operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
-
-export type NamespaceRemoveRequest = { operation_id: OperationId, namespace_id: NamespaceId, };
-
-export type NamespaceRemoveError = { "error": "reserved_system_namespace", operation_id: OperationId, namespace_id: NamespaceId, } | { "error": "resource_busy", operation_id: OperationId, namespace_id: NamespaceId, owner_operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
-
-export type VolumeCreateRequest = { operation_id: OperationId, namespace_id: NamespaceId, volume_name: VolumeName, machine_id: MachineId, spec: VolumeSpec, };
-
-export type VolumeCreateError = { "error": "reserved_system_namespace", operation_id: OperationId, namespace_id: NamespaceId, } | { "error": "resource_busy", operation_id: OperationId, namespace_id: NamespaceId, owner_operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
-
-export type VolumeRemoveRequest = { operation_id: OperationId, namespace_id: NamespaceId, volume_name: VolumeName, };
-
-export type VolumeRemoveError = { "error": "reserved_system_namespace", operation_id: OperationId, namespace_id: NamespaceId, } | { "error": "resource_busy", operation_id: OperationId, namespace_id: NamespaceId, owner_operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
-
-export type PloyzDnsTargetIntent = "enabled" | "disabled";
-
-export type AutomaticHostnameSuffix = Brand<string, "AutomaticHostnameSuffix">;
-
-export type AutomaticHostnameConfiguration = { "mode": "disabled" } | { "mode": "ployz" } | { "mode": "custom", suffix: AutomaticHostnameSuffix, };
-
-export type IngressConfiguration = { automatic_hostnames: AutomaticHostnameConfiguration, ployz_dns_target: PloyzDnsTargetIntent, };
-
-export type IngressConfigureRequest = { operation_id: OperationId, configuration: IngressConfiguration, };
-
-export type IngressConfigureError = { "error": "invalid_configuration", message: string, } | { "error": "resource_busy", owner: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
-
-export type MachineListRequest = Record<symbol, never>;
-
-export type MachineName = Brand<string, "MachineName">;
-
-export type GatewayRole = "install" | "skip";
-
-export type InstallRolePolicy = { gateway: GatewayRole, };
-
-export type MachineLifecycle = "active" | "draining";
+export type ActiveCertificateMetadata = { owner: CertificateOwner, active: ActiveCertState, };
 
 export type ActiveMachineState = { machine_id: MachineId, name: MachineName, activated_by: OperationId, roles: InstallRolePolicy,
 /**
@@ -362,136 +47,143 @@ mesh_endpoints: Array<string>,
  */
 endpoint_subnet: MachineEndpointSubnet, wireguard_public_key: WireGuardPublicKey, };
 
-export type StrandedVolumeReason = { "kind": "machine_silent" } | { "kind": "storage_testimony_not_reported" } | { "kind": "storage_unprepared" } | { "kind": "storage_unavailable", reason: StorageUnavailableReason, } | { "kind": "pool_mismatch", expected: ZfsPoolName, reported: ZfsPoolName, };
+export type ArtifactUnavailableReason = { "reason": "bundle_missing" } | { "reason": "bundle_unreadable", message: FailureMessage, } | { "reason": "image_pull_failed", machine_id: MachineId, message: FailureMessage, } | { "reason": "image_pull_stalled", machine_id: MachineId, timeout_millis: number, } | { "reason": "image_pull_cancelled", machine_id: MachineId, };
 
-export type StrandedVolumeAlarm = { namespace_id: NamespaceId, volume_name: VolumeName, machine_id: MachineId, reason: StrandedVolumeReason, };
+export type AutomaticHostnameConfiguration = { "mode": "disabled" } | { "mode": "ployz" } | { "mode": "custom", suffix: AutomaticHostnameSuffix, };
 
-export type GatewayServingStatus = "current" | "last_known_good" | "unavailable";
+export type AutomaticHostnameLabel = Brand<string, "AutomaticHostnameLabel">;
 
-export type GatewayStatusPublishFailure = { "failure": "write", message: string, };
+export type AutomaticHostnameMode = { "mode": "disabled" } | { "mode": "ployz" } | { "mode": "custom", suffix: RouteHostname, };
 
-export type GatewayWatchFailure = { "failure": "open", message: string, } | { "failure": "ended", source: string, };
+export type AutomaticHostnameSuffix = Brand<string, "AutomaticHostnameSuffix">;
 
-export type GatewayProcessAttempt = { "status": "current", route_count: number, } | { "status": "serving_last_known_good", route_count: number, message: string, } | { "status": "failed", message: string, };
+export type BuildAdapter = { "adapter": "dockerfile", dockerfile: BuildContextPath, target?: DockerfileStageName | null, } | { "adapter": "railpack", cache_scope: BuildCacheScope, };
 
-export type GatewayHttpFailure = { "failure": "proxy", message: string, };
+export type BuildAdapterToolchainEvidence = { "adapter": "dockerfile" } | { "adapter": "railpack", helper_version: InstallArtifactVersion, helper_sha256: InstallSha256Digest, frontend_image: OciDigest, };
 
-export type GatewayProcessHealth = { last_attempt: GatewayProcessAttempt | null, consecutive_failures: number, last_http_failure: GatewayHttpFailure | null, consecutive_http_failures: number, last_watch_failure: GatewayWatchFailure | null, consecutive_watch_failures: number, last_status_publish_failure: GatewayStatusPublishFailure | null, consecutive_status_publish_failures: number, };
+export type BuildCachePruneEvidence = { before_available_bytes: number, reclaimed_bytes: number, after_available_bytes: number, };
 
-export type GatewayStatusObservation = { machine_id: MachineId, listen_addr: string, serving: GatewayServingStatus, route_count: number, process_health: GatewayProcessHealth, };
+export type BuildCacheScope = string;
 
-export type MachineEndpointObservation = { machine_id: MachineId, control_endpoints: Array<string>, mesh_endpoints: Array<string>, };
+export type BuildCancelError = { "error": "no_such_operation", operation_id: OperationId, } | { "error": "already_terminal", operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, };
 
-export type DatasetQuotaFact = { dataset: DatasetName, quota_bytes: number, };
+export type BuildCancelRequest = { operation_id: OperationId, reason: CancellationReason, };
 
-export type PoolCapacityFacts = { total_bytes: number,
-/**
- * Physical bytes consumed beneath the Ployz provisioned dataset root.
- * Unrelated pool or backing-filesystem allocations are excluded.
- */
-provisioned_used_bytes: number, free_bytes: number, child_quotas: Array<DatasetQuotaFact>, };
+export type BuildCleanupEvidence = { "kind": "not_required" } | { "kind": "completed", machine_ids: Array<MachineId>, } | { "kind": "unconfirmed", machine_ids: Array<MachineId>, } | { "kind": "external_completed", executors: Array<BuildExecutorEvidence>, } | { "kind": "external_unconfirmed", executors: Array<BuildExecutorEvidence>, };
 
-export type StorageCapability = { "state": "unprepared" } | { "state": "ready", pool: ZfsPoolName, capacity: PoolCapacityFacts, } | { "state": "unavailable", reason: StorageUnavailableReason, };
+export type BuildContextPath = string;
 
-export type MachineContainerUnavailableReason = "docker_unavailable";
+export type BuildExecutorAssignment = { "executor": "cluster", machine_id: MachineId, } | { "executor": "external", pool_id: BuildPoolId, executor_id: BuildExecutorId, image_seed: MachineId, };
 
-export type MachineContainerAvailability = { "status": "answered", observed_count: number, } | { "status": "unavailable", reason: MachineContainerUnavailableReason, };
+export type BuildExecutorAssignments = Array<BuildPlatformExecutorAssignment>;
 
-export type MachineDiskSpace = { available_bytes: number, total_bytes: number, };
+export type BuildExecutorCapability = "dockerfile_and_railpack" | "dockerfile_only" | "runtime_unavailable";
 
-export type MachineTestimony = { "status": "answered", endpoints: MachineEndpointObservation | null, gateway: GatewayStatusObservation | null, containers: MachineContainerAvailability, disk_space: MachineDiskSpace, storage?: StorageCapability | null,
-/**
- * When this machine last self-reported, as display evidence for the
- * operator. Never an input to behavior: liveness surfaces at the point
- * of use (ADR 0027).
- */
-last_observed_at_unix_seconds: number, } | { "status": "no_answer" };
+export type BuildExecutorEvidence = { machine_id: MachineId, executor_origin: BuildExecutorOrigin, };
 
-export type MachineSnapshot = { active: ActiveMachineState, testimony: MachineTestimony, storage_alarms?: Array<StrandedVolumeAlarm>, };
+export type BuildExecutorId = Brand<string, "BuildExecutorId">;
 
-export type MachineListResult = { machines: Array<MachineSnapshot>, };
+export type BuildExecutorIdentity = { pool_id: BuildPoolId, executor_id: BuildExecutorId, };
 
-export type MachineListError = { "error": "unavailable", message: string, };
+export type BuildExecutorOrigin = { "origin": "cluster", machine_id: MachineId, } | { "origin": "external", pool_id: BuildPoolId, executor_id: BuildExecutorId, };
 
-export type MachineInspectRequest = { machine_id: MachineId, };
+export type BuildExecutorReadiness = { native_platform: OciPlatform, capability: BuildExecutorCapability, };
 
-export type MachineInspectError = { "error": "no_such_machine", machine_id: MachineId, } | { "error": "unavailable", message: string, };
+export type BuildInterruptionStage = "accepted" | "placing" | "building";
 
-export type NetworkStatusIntentFingerprint = Brand<string, "NetworkStatusIntentFingerprint">;
+export type BuildLogChunk = string;
 
-export type NetworkStatusMode = "snapshot" | "probe_path_mtu";
+export type BuildOperationFailure = { "kind": "no_eligible_machine", platform: OciPlatform, unusable: Array<UnusableMachine>, } | { "kind": "platform_failed", platform: OciPlatform, machine_id: MachineId, failure: BuildPlatformFailure, } | { "kind": "external_platform_failed", platform: OciPlatform, executor: BuildExecutorEvidence, failure: BuildPlatformFailure, } | { "kind": "receipt_assembly_failed", message: FailureMessage, } | { "kind": "evidence_recording_failed", message: FailureMessage, } | { "kind": "control_unavailable", message: FailureMessage, };
 
-export type NetworkStatusRequest = { "page": "first", mode: NetworkStatusMode, } | { "page": "continuation", mode: NetworkStatusMode, snapshot: NetworkStatusIntentFingerprint, after: MachineId, };
+export type BuildOperationState = { "state": "accepted" } | { "state": "placing" } | { "state": "building" } | { "state": "completed", receipt: PushedImageReceipt, } | { "state": "failed", failure: BuildOperationFailure, } | { "state": "cancelled", reason: CancellationReason, cleanup: BuildCleanupEvidence, } | { "state": "timed_out", failure: BuildTimeoutFailure, cleanup: BuildCleanupEvidence, } | { "state": "interrupted", evidence: OperationInterruptionEvidence, };
 
-export type InternalDnsIntentRefreshHealth = { "status": "unknown" } | { "status": "pending" } | { "status": "current" } | { "status": "request_failed", message: string, } | { "status": "timed_out", timeout_seconds: number, };
+export type BuildPlatformExecutorAssignment = { platform: OciPlatform, executor: BuildExecutorAssignment, };
 
-export type InternalDnsIntentWatchHealth = { "status": "unknown" } | { "status": "pending" } | { "status": "watching" } | { "status": "open_failed", message: string, } | { "status": "subscription_closed" };
+export type BuildPlatformFailure = { "kind": "machine_unavailable", message: FailureMessage, } | { "kind": "executor_unavailable", message: FailureMessage, } | { "kind": "image_seed_unavailable", image_seed: MachineId, } | { "kind": "buildkit_digest_mismatch", expected: OciDigest, actual: OciDigest, } | { "kind": "helper_digest_mismatch", expected: InstallSha256Digest, actual: InstallSha256Digest, } | { "kind": "frontend_digest_mismatch", expected: OciDigest, actual: OciDigest, } | { "kind": "platform_mismatch", expected: OciPlatform, actual: OciPlatform, } | { "kind": "insufficient_host_disk", available_bytes: number, required_free_bytes: number, } | { "kind": "source_fetch_failed", message: FailureMessage, } | { "kind": "adapter_failed", message: FailureMessage, } | { "kind": "image_push_failed", message: FailureMessage, };
 
-export type InternalDnsIntentHealth = { refresh: InternalDnsIntentRefreshHealth, watch: InternalDnsIntentWatchHealth, };
+export type BuildPlatforms = Array<OciPlatform>;
 
-export type InternalDnsResolverStatus = { "status": "awaiting_bind", attempts: number, } | { "status": "serving", bound: string, } | { "status": "not_configured" };
+export type BuildPoolId = Brand<string, "BuildPoolId">;
 
-export type InternalDnsResolverCacheIncarnation = Brand<string, "InternalDnsResolverCacheIncarnation">;
+export type BuildSource = { "source": "git", url: GitRepositoryUrl, commit: GitCommit, credential: GitBasicCredential, subdir?: BuildContextPath, } | { "source": "local_snapshot", digest: LocalSnapshotDigest, subdir?: BuildContextPath, };
 
-export type InternalDnsFactGeneration = Brand<string, "InternalDnsFactGeneration">;
+export type BuildSourceEvidence = { "source": "git", url: GitRepositoryUrl, commit: GitCommit, subdir?: BuildContextPath | null, } | { "source": "local_snapshot", digest: LocalSnapshotDigest, subdir?: BuildContextPath, };
 
-export type InternalDnsFactWatermark = { machine_id: MachineId, observed_at_unix_ms: number, resolver_cache_incarnation: InternalDnsResolverCacheIncarnation, generation: InternalDnsFactGeneration, };
+export type BuildSubmitError = { "error": "local_snapshot_requires_external_target", operation_id: OperationId, } | { "error": "local_snapshot_requires_single_platform", operation_id: OperationId, actual: number, } | { "error": "operation_conflict", operation_id: OperationId, } | { "error": "no_capable_external_executor", operation_id: OperationId, pool_id: BuildPoolId, platform: OciPlatform, } | { "error": "no_reachable_image_seed", operation_id: OperationId, pool_id: BuildPoolId, } | { "error": "unavailable", operation_id: OperationId, message: string, };
 
-export type InternalDnsStatus = { resolver: InternalDnsResolverStatus, fact_watermarks: Array<InternalDnsFactWatermark>, intent_health: InternalDnsIntentHealth, };
+export type BuildSubmitRequest = { operation_id: OperationId, target?: BuildTarget, source: BuildSource, adapter: BuildAdapter, platforms: BuildPlatforms };
 
-export type NetworkInternalDnsTestimony = { "status": "answered", value: InternalDnsStatus, } | { "status": "no_answer" } | { "status": "wrong_responder", actual_machine_id: MachineId, } | { "status": "timed_out" } | { "status": "request_failed", message: string, } | { "status": "protocol_failed", message: string, } | { "status": "decode_failed", message: string, };
+export type BuildTarget = { "target": "cluster" } | { "target": "external", pool_id: BuildPoolId, };
 
-export type DataplaneProjectionRevisions = { declared_revision: DataplaneProjectionRevision, target_revision: DataplaneProjectionRevision, };
+export type BuildTargetCapabilities = { cluster: ClusterBuildTargetCapabilities, external_pools: Array<ExternalBuildPoolCapabilities>, };
 
-export type DataplaneProjectionTestimony = { "status": "applied", revisions: DataplaneProjectionRevisions, } | { "status": "unusable", attempted_revisions: DataplaneProjectionRevisions | null, last_applied_revisions: DataplaneProjectionRevisions | null, failure: DataplaneProjectionFailure, };
+export type BuildTargetCapabilitiesError = { "error": "unavailable", message: string, };
 
-export type NativeDataplaneProjectionStatus = { endpoint_bridge: EndpointBridgeStatus, testimony: DataplaneProjectionTestimony, };
+export type BuildTargetCapabilitiesRequest = Record<symbol, never>;
 
-export type WireGuardConfiguredMtu = { "mode": "auto" } | { "mode": "fixed", mtu: number, };
+export type BuildTimeoutFailure = { "kind": "deadline_exceeded", message: FailureMessage, };
 
-export type WireGuardDetectedMtu = { "status": "detected", mtu: number, } | { "status": "unavailable", message: string, };
+export type BuildToolchainEvidence = { buildkit_image: OciDigest, adapter: BuildAdapterToolchainEvidence, };
 
-export type WireGuardRttStatus = { "status": "measured", micros: number, } | { "status": "unavailable", message: string, };
+export type CancellationReason = Brand<string, "CancellationReason">;
 
-export type WireGuardHandshakeStatus = { "status": "never" } | { "status": "ago", seconds: number, };
+export type CertBundleRef = Brand<string, "CertBundleRef">;
 
-export type WireGuardMtuProbe = { "status": "not_requested" } | { "status": "measured", mtu: number, } | { "status": "unavailable", message: string, };
+export type CertHoldingDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, machine_id: MachineId, hostname: RouteHostname, fingerprint: Sha256Hex, issued_at: string, expires_at: string, };
 
-export type WireGuardPeerStatus = { public_key: WireGuardPublicKey, endpoint_subnet: WireGuardPeerEndpointSubnet, endpoint: string | null, handshake: WireGuardHandshakeStatus, rtt: WireGuardRttStatus, rx_bytes: number, tx_bytes: number, mtu_probe: WireGuardMtuProbe, };
+export type CertId = Brand<string, "CertId">;
 
-export type WireGuardStatus = { interface: string, configured_mtu: WireGuardConfiguredMtu, detected_mtu: WireGuardDetectedMtu, interface_mtu: WireGuardInterfaceMtu, peers: Array<WireGuardPeerStatus>, };
+export type CertInterruptionStage = { "state": "accepted" } | { "state": "running", stage: CertRunningStage, };
 
-export type MachineDataplaneStatus = { projection: NativeDataplaneProjectionStatus, wireguard: WireGuardStatus, ebpf_attachment: EbpfAttachmentStatus, };
+export type CertOperationFailure = { cert_id: CertId, failure: CertificateProvisionFailure, retained_active_cert: ActiveCertState | null, };
 
-export type NetworkDataplaneTestimony = { "status": "answered", value: MachineDataplaneStatus, } | { "status": "no_answer" } | { "status": "read_failed", message: FailureMessage, } | { "status": "wrong_responder", actual_machine_id: MachineId, } | { "status": "timed_out" } | { "status": "request_failed", message: string, } | { "status": "protocol_failed", message: string, } | { "status": "decode_failed", message: string, };
+export type CertOperationState = { "state": "accepted" } | { "state": "running", stage: CertRunningStage, } | { "state": "completed" } | { "state": "failed", failure: CertOperationFailure, } | { "state": "cancelled", reason: CancellationReason, };
 
-export type NetworkStatusMachine = { active: ActiveMachineState, dataplane: NetworkDataplaneTestimony, internal_dns: NetworkInternalDnsTestimony, };
+export type CertRunningStage = "challenge_published" | "validation_started";
 
-export type NetworkStatusResult = { snapshot: NetworkStatusIntentFingerprint, machines: Array<NetworkStatusMachine>, next_cursor?: MachineId, };
+export type CertValidAt = Brand<string, "CertValidAt">;
 
-export type NetworkStatusError = { "error": "unavailable", message: string, } | { "error": "snapshot_changed", requested: NetworkStatusIntentFingerprint, current: NetworkStatusIntentFingerprint, };
+export type CertValidityWindow = { not_before: CertValidAt, not_after: CertValidAt, };
 
-export type NetworkResolveRequest = { name: string, };
+export type CertificateInterruptionNextAction = "retry_from_current_intent";
 
-export type NetworkResolveMachineTestimony = { "status": "answered", machine_id: MachineId, addresses: Array<string>, } | { "status": "no_answer", machine_id: MachineId, } | { "status": "wrong_responder", machine_id: MachineId, actual_machine_id: MachineId, } | { "status": "timed_out", machine_id: MachineId, } | { "status": "request_failed", machine_id: MachineId, message: string, } | { "status": "protocol_failed", machine_id: MachineId, message: string, } | { "status": "decode_failed", machine_id: MachineId, message: string, };
+export type CertificateOwner = { "owner": "ployz_automatic_namespace" } | { "owner": "route_binding", route_binding_id: RouteBindingId, };
 
-export type InternalServiceName = Brand<string, "InternalServiceName">;
+export type CertificateProvisionFailure = { "class": "operation_evidence_write", message: FailureMessage, } | { "class": "dns_preflight", message: FailureMessage, } | { "class": "challenge_publish", message: FailureMessage, } | { "class": "challenge_readiness", missing_machine_ids: Array<MachineId>, } | { "class": "acme_validation", message: FailureMessage, } | { "class": "core_interrupted", cause: OperationInterruptionCause, last_durable_stage: CertInterruptionStage, next_action: CertificateInterruptionNextAction, } | { "class": "gateway_artifact_push", machine_id: MachineId, message: FailureMessage, } | { "class": "active_cert_commit", attempted_active_cert: ActiveCertState, message: FailureMessage, };
 
-export type NetworkResolveResult = { name: InternalServiceName, machines: Array<NetworkResolveMachineTestimony>, };
+export type CertificateProvisionWarning = { "warning": "dns_preflight_mismatch", message: FailureMessage, } | { "warning": "challenge_cleanup_incomplete", missing_machine_ids: Array<MachineId>, };
 
-export type NetworkResolveError = { "error": "invalid_name", name: string, } | { "error": "unavailable", message: string, };
+export type ClusterBuildMachineCapability = { "observation": "answered", machine_id: MachineId, native_platform: OciPlatform, capability: BuildExecutorCapability, } | { "observation": "unavailable", machine_id: MachineId, reason: MachineUsabilityReason, };
 
-export type NetworkRepairRequest = { operation_id: OperationId, machine_id?: MachineId, };
+export type ClusterBuildTargetCapabilities = { machines: Array<ClusterBuildMachineCapability>, };
 
-export type NetworkRepairError = { "error": "no_active_machines", operation_id: OperationId, } | { "error": "target_machine_not_found", operation_id: OperationId, machine_id: MachineId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
+export type ClusterDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, name: string, storage_default: StorageMode, hostname_mode: AutomaticHostnameMode, prefix: string, provider: MeshProvider, acme_directory_url: string, acme_contact: string | null, };
 
-export type ServiceListRequest = Record<symbol, never>;
+export type ClusterId = Brand<string, "ClusterId">;
 
-export type ServiceContainerMembership = "serving_target_member" | "retained_evidence";
+export type ContainerCommand = Array<string>;
 
-export type ManagedContainerHealthStatus = "starting" | "healthy" | "unhealthy";
+export type ContainerDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, machine_id: MachineId, service_id: ServiceId, namespace_id: NamespaceId, ip: string, deploy: OperationId, };
+
+export type ContainerEntrypoint = "clear" | { "argv": ContainerCommand };
 
 export type ContainerHealth = "none" | "starting" | "healthy" | "unhealthy";
+
+export type ContainerHealthcheck = { test: ContainerHealthcheckTest, interval?: HealthcheckDurationNanos | null, timeout?: HealthcheckDurationNanos | null, retries?: HealthcheckRetries | null, start_period?: HealthcheckDurationNanos | null, };
+
+export type ContainerHealthcheckTest = "inherit" | "disable" | { "exec": ContainerCommand } | { "shell": HealthcheckShellCommand };
+
+export type ContainerId = Brand<string, "ContainerId">;
+
+export type ContainerMountPath = Brand<string, "ContainerMountPath">;
+
+export type ContainerResourceLimits = { nano_cpus?: NanoCpus | null, memory_bytes?: MemoryBytes | null, pids?: PidsLimit | null, };
+
+export type ContainerRestartPolicy = "docker-default" | "no" | "always" | "on-failure" | "unless-stopped";
+
+export type ContainerRetentionCount = SafeInteger<"ContainerRetentionCount">;
+
+export type ContainerRuntimeSpec = { command: ContainerCommand | null, entrypoint: ContainerEntrypoint | null, environment: ServiceEnvironment, stop_grace_period: StopGracePeriod, volume_mounts?: Array<ServiceVolumeMount>, healthcheck?: ContainerHealthcheck | null, restart_policy?: ContainerRestartPolicy, cap_add?: Array<LinuxCapability>, cap_drop?: Array<LinuxCapability>, resources?: ContainerResourceLimits, };
 
 export type ContainerRuntimeState = { "state": "running",
 /**
@@ -501,179 +193,53 @@ export type ContainerRuntimeState = { "state": "running",
  */
 ip?: string | null, health: ContainerHealth, started_at_unix_ms?: number | null, } | { "state": "exited" };
 
-export type ManagedContainerObservation = { machine_id: MachineId, container_id: ContainerId, identity: ManagedContainerIdentity, state: ContainerRuntimeState, health_status?: ManagedContainerHealthStatus | null, resolved_image_identity?: string | null, created_at_unix_seconds?: number | null, named_volume_names?: Array<VolumeName>, };
-
-export type ServiceContainerTestimony = { observation: ManagedContainerObservation, membership: ServiceContainerMembership, };
-
-export type ServiceMachineTestimony = { "status": "answered", machine_id: MachineId, containers: Array<ServiceContainerTestimony>, } | { "status": "no_answer", machine_id: MachineId, };
-
-export type ServiceTestimony = { ready_container_count: number, observed_container_count: number, machines: Array<ServiceMachineTestimony>, };
-
-export type ServiceSnapshot = { active: ServingTargetEntry, route_bindings: Array<RouteBindingState>, testimony: ServiceTestimony, };
-
-export type ServiceListResult = { services: Array<ServiceSnapshot>, };
-
-export type ServiceListError = { "error": "unavailable", message: string, };
-
-export type VolumeListRequest = Record<symbol, never>;
-
-export type VolumeStatus = "in_use" | "orphaned";
-
-export type VolumeTestimony = { "status": "available", used_bytes: number, last_write_unix_seconds: number, } | { "status": "unavailable" } | { "status": "no_answer" };
-
-export type VolumeSnapshot = { namespace_id: NamespaceId, volume_name: VolumeName, machine_id: MachineId, kind: VolumeKind,
-/**
- * Service ids are sorted and deduplicated by the projection owner.
- */
-referencing_services: Array<ServiceId>, testimony: VolumeTestimony, status: VolumeStatus, };
-
-export type VolumeListResult = { volumes: Array<VolumeSnapshot>, };
-
-export type VolumeListError = { "error": "unavailable", message: string, };
-
-export type ServiceInspectRequest = { namespace_id: NamespaceId, service_id: ServiceId, };
-
-export type ServiceInspectError = { "error": "no_such_service", service_id: ServiceId, } | { "error": "unavailable", message: string, };
-
-export type RuntimeSnapshotRequest = Record<symbol, never>;
-
-export type IngressEndpointProjectionIdentity = { revision: number, };
-
-export type RuntimePloyzDnsTargetPublication = { "status": "unpublished" } | { "status": "applied", ingress_projection: IngressEndpointProjectionIdentity | null, } | { "status": "withdrawn" };
-
-export type RuntimePloyzDnsTargetAllocation = { "status": "unacquired" } | { "status": "allocated", hostname: RouteHostname, issued_at_unix_seconds: number, expires_at_unix_seconds: number, };
-
-export type RuntimePloyzDnsTarget = { intent: PloyzDnsTargetIntent, allocation: RuntimePloyzDnsTargetAllocation, publication: RuntimePloyzDnsTargetPublication, };
-
-export type CertId = Brand<string, "CertId">;
-
-export type CertBundleRef = Brand<string, "CertBundleRef">;
-
-export type CertValidAt = Brand<string, "CertValidAt">;
-
-export type CertValidityWindow = { not_before: CertValidAt, not_after: CertValidAt, };
-
-export type ActiveCertState = { cert_id: CertId, hostname: RouteHostname, bundle_ref: CertBundleRef, validity: CertValidityWindow, };
-
-export type CertificateOwner = { "owner": "ployz_automatic_namespace" } | { "owner": "route_binding", route_binding_id: RouteBindingId, };
-
-export type RouteTlsAvailability = { "status": "available", certificate_id: CertId, } | { "status": "unavailable" };
-
-export type RouteTlsStatus = { route_binding_id: RouteBindingId, availability: RouteTlsAvailability, };
-
-export type IngressEndpointSet = { ipv4: Array<string>, ipv6: Array<string>, };
-
-export type IngressEndpointUnavailableReason = "no_declared_gateways" | "no_publishable_endpoints";
-
-export type IngressEndpointProjectionState = { "status": "pending" } | { "status": "current", endpoints: IngressEndpointSet, } | { "status": "retained", endpoints: IngressEndpointSet, } | { "status": "unavailable", reason: IngressEndpointUnavailableReason, };
-
-export type IngressEndpointProjection = { revision: number, state: IngressEndpointProjectionState, };
-
-export type RuntimeDerivedCollectionStatus = "complete" | "partial";
-
-export type RuntimeDerivedCollectionSource = { status: RuntimeDerivedCollectionStatus, source_count: number, missing_link_count: number, };
-
-export type RuntimeProjectionSource = { read_at_unix_seconds: number, };
-
-export type RuntimeProjectionSources = { intent: RuntimeProjectionSource, facts: RuntimeProjectionSource, revisions: RuntimeDerivedCollectionSource, releases: RuntimeDerivedCollectionSource, instances: RuntimeDerivedCollectionSource, };
-
-export type RuntimeServiceRevision = { namespace_id: NamespaceId, service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, };
-
-export type RuntimeServiceInstance = { namespace_id: NamespaceId, machine_id: MachineId, container_id: ContainerId, service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, operation_id: OperationId, step_id: StepId, state: ContainerRuntimeState, };
-
-export type ActiveCertificateMetadata = { owner: CertificateOwner, active: ActiveCertState, };
-
-export type RuntimeServiceRelease = { namespace_id: NamespaceId, service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, routes: Array<RouteTarget>, };
-
-export type RuntimeSnapshot = { automatic_hostname_configuration: AutomaticHostnameConfiguration, ployz_dns_target: RuntimePloyzDnsTarget, ingress_endpoint_projection: IngressEndpointProjection, active_certificates: Array<ActiveCertificateMetadata>, route_tls: Array<RouteTlsStatus>, machines: Array<MachineSnapshot>, services: Array<ServiceSnapshot>, routes: Array<RouteBindingState>, containers: Array<ManagedContainerObservation>, revisions: Array<RuntimeServiceRevision>, releases: Array<RuntimeServiceRelease>, instances: Array<RuntimeServiceInstance>, projection_sources: RuntimeProjectionSources, updated_at_unix_seconds: number, };
-
-export type RuntimeSnapshotResult = { snapshot: RuntimeSnapshot, };
-
-export type RuntimeSnapshotError = { "error": "unavailable", message: string, };
-
-export type LogsTailLines = SafeInteger<"LogsTailLines">;
-
-export type LogsTailTarget = { "target": "service", namespace_id: NamespaceId, service_id: ServiceId, } | { "target": "container", container_id: ContainerId, machine_id?: MachineId | null, };
-
-export type LogsTailRequest = { target: LogsTailTarget, tail_lines?: LogsTailLines | null, since_unix_seconds?: number | null, };
-
-export type LogsTailResultTarget = { "target": "service", namespace_id: NamespaceId, service_id: ServiceId, } | { "target": "container", machine_id: MachineId, container_id: ContainerId, };
-
-export type LogsTailResult = { target: LogsTailResultTarget, text: string, truncated: boolean, };
-
-export type LogsTailError = { "error": "no_such_service", service_id: ServiceId, } | { "error": "no_such_container", container_id: ContainerId, } | { "error": "ambiguous_container", container_id: ContainerId, machine_ids: Array<MachineId>, } | { "error": "read_failed", machine_id: MachineId, container_id: ContainerId, message: FailureMessage, } | { "error": "unavailable", message: string, machine_id?: MachineId | null, };
-
-export type OpsListRequest = { active_only: boolean, before: OperationId | null, };
-
-export type StorageEffectFailure = { "kind": "unsupported_platform" } | { "kind": "installation", message: string, } | { "kind": "pool_list", message: string, } | { "kind": "ambiguous_pools", candidates: Array<ZfsPoolName>, } | { "kind": "explicit_pool_absent", pool: ZfsPoolName, } | { "kind": "owned_pool", message: string, } | { "kind": "owned_pool_evidence_present", backing_file: string, } | { "kind": "owned_pool_too_small", total_bytes: number, available_bytes: number, required_headroom_bytes: number, minimum_pool_bytes: number, } | { "kind": "owned_pool_headroom_not_preserved", available_bytes: number, required_headroom_bytes: number, } | { "kind": "dataset", message: string, } | { "kind": "prepared_state_unavailable", message: string, } | { "kind": "prepared_state_mismatch", message: string, } | { "kind": "gather_parse", message: string, } | { "kind": "quota_shrink", dataset: DatasetName, current: number, requested: number, } | { "kind": "quota_capacity_exceeded", total_bytes: number, provisioned_used_bytes: number, free_bytes: number, required_headroom_bytes: number, requested_total_bytes: number, } | { "kind": "destructive_effect", message: string, } | { "kind": "operation_timed_out" } | { "kind": "process_failed", message: string, } | { "kind": "interrupted", message: string, };
-
-export type MachineStoragePrepareFailure = { "kind": "machine_unavailable", machine_id: MachineId, message: FailureMessage, } | { "kind": "preparation_rejected", machine_id: MachineId, failure: StorageEffectFailure, } | { "kind": "machine_substrate_busy", machine_id: MachineId, owner_operation_id: OperationId, } | { "kind": "evidence_unavailable", machine_id: MachineId, message: FailureMessage, } | { "kind": "state_commit_failed", machine_id: MachineId, message: FailureMessage, };
-
-export type OperationInterruptionEvidence = { cause: OperationInterruptionCause, last_durable_stage: OperationInterruptionStage, kind: OperationKind, uncertain_work: OperationInterruptionUncertainWork, next_action: OperationInterruptionNextAction };
-
-export type MachineStoragePrepareOperationState = { "state": "accepted" } | { "state": "preparing" } | { "state": "completed", pool: ZfsPoolName, } | { "state": "failed", failure: MachineStoragePrepareFailure, } | { "state": "cancelled", reason: CancellationReason, } | { "state": "interrupted", evidence: OperationInterruptionEvidence, };
-
-export type MachineSubstrateVersions = { ployzd?: InstallArtifactVersion | null, host_runner?: InstallArtifactVersion | null, };
-
-export type MachineUpdateFailure = { "kind": "machine_unavailable", machine_id: MachineId, message: FailureMessage, } | { "kind": "update_rejected", machine_id: MachineId, message: FailureMessage, } | { "kind": "version_not_reported", machine_id: MachineId, target_version: InstallArtifactVersion, reported: MachineSubstrateVersions, } | { "kind": "state_commit_failed", machine_id: MachineId, message: FailureMessage, };
-
-export type MachineUpdateOperationState = { "state": "accepted" } | { "state": "running" } | { "state": "completed", reported: MachineSubstrateVersions, } | { "state": "failed", failure: MachineUpdateFailure, } | { "state": "cancelled", reason: CancellationReason, } | { "state": "interrupted", evidence: OperationInterruptionEvidence, };
-
-export type OperatorHint = Brand<string, "OperatorHint">;
-
-export type NamespaceRemoveFailure = { "kind": "intent_read_failed", namespace_id: NamespaceId, message: FailureMessage, } | { "kind": "control_plane_commit_failed", namespace_id: NamespaceId, message: FailureMessage, } | { "kind": "machine_unavailable", machine_id: MachineId, message: FailureMessage, } | { "kind": "container_remove_failed", machine_id: MachineId, container_id: ContainerId, message: FailureMessage, inspect_hint: OperatorHint, } | { "kind": "timeout", machine_id: MachineId, container_id: ContainerId, timeout_seconds: number, };
-
-export type NamespaceRemoveRunningStage = "removing_route_bindings" | "removing_serving_targets" | "removing_containers";
-
-export type NamespaceRemoveOperationState = { "state": "accepted" } | { "state": "running", stage: NamespaceRemoveRunningStage, } | { "state": "completed" } | { "state": "failed", failure: NamespaceRemoveFailure, } | { "state": "cancelled", reason: CancellationReason, } | { "state": "interrupted", evidence: OperationInterruptionEvidence, };
-
-export type VolumeRemoveRunningStage = "removing_volume_data" | "removing_dataset";
-
-export type VolumeRemoveFailure = { "kind": "volume_not_found", namespace_id: NamespaceId, volume_name: VolumeName, } | { "kind": "volume_in_use", namespace_id: NamespaceId, volume_name: VolumeName, referencing_services: Array<ServiceId>, } | { "kind": "intent_read_failed", namespace_id: NamespaceId, volume_name: VolumeName, message: FailureMessage, } | { "kind": "machine_unavailable", machine_id: MachineId, message: FailureMessage, } | { "kind": "volume_remove_failed", machine_id: MachineId, volume: VolumeName, message: FailureMessage, } | { "kind": "dataset_destroy_failed", machine_id: MachineId, dataset: DatasetName, message: FailureMessage, } | { "kind": "control_plane_commit_failed", namespace_id: NamespaceId, volume_name: VolumeName, message: FailureMessage, };
-
-export type VolumeRemoveOperationState = { "state": "accepted" } | { "state": "running", stage: VolumeRemoveRunningStage, } | { "state": "completed" } | { "state": "failed", failure: VolumeRemoveFailure, } | { "state": "interrupted", evidence: OperationInterruptionEvidence, };
-
-export type IngressConfigureFailure = { "kind": "invalid_configuration", message: FailureMessage, } | { "kind": "intent_store_failed", message: FailureMessage, };
-
-export type IngressConfigureOperationState = { "state": "accepted" } | { "state": "completed" } | { "state": "failed", failure: IngressConfigureFailure, } | { "state": "interrupted", evidence: OperationInterruptionEvidence, };
-
-export type OperationInterruptionCause = "core_shutdown" | "prior_core_process_loss";
-
-export type CertRunningStage = "challenge_published" | "validation_started";
-
-export type CertInterruptionStage = { "state": "accepted" } | { "state": "running", stage: CertRunningStage, };
-
-export type CertificateInterruptionNextAction = "retry_from_current_intent";
-
-export type CertificateProvisionFailure = { "class": "operation_evidence_write", message: FailureMessage, } | { "class": "dns_preflight", message: FailureMessage, } | { "class": "challenge_publish", message: FailureMessage, } | { "class": "challenge_readiness", missing_machine_ids: Array<MachineId>, } | { "class": "acme_validation", message: FailureMessage, } | { "class": "core_interrupted", cause: OperationInterruptionCause, last_durable_stage: CertInterruptionStage, next_action: CertificateInterruptionNextAction, } | { "class": "gateway_artifact_push", machine_id: MachineId, message: FailureMessage, } | { "class": "active_cert_commit", attempted_active_cert: ActiveCertState, message: FailureMessage, };
-
-export type CertOperationFailure = { cert_id: CertId, failure: CertificateProvisionFailure, retained_active_cert: ActiveCertState | null, };
-
-export type CertOperationState = { "state": "accepted" } | { "state": "running", stage: CertRunningStage, } | { "state": "completed" } | { "state": "failed", failure: CertOperationFailure, } | { "state": "cancelled", reason: CancellationReason, };
-
-export type ArtifactUnavailableReason = { "reason": "bundle_missing" } | { "reason": "bundle_unreadable", message: FailureMessage, } | { "reason": "image_pull_failed", machine_id: MachineId, message: FailureMessage, } | { "reason": "image_pull_stalled", machine_id: MachineId, timeout_millis: number, } | { "reason": "image_pull_cancelled", machine_id: MachineId, };
-
-export type HealthCheckFailure = { "reason": "probe_failed", machine_id: MachineId, container_id: ContainerId, message: FailureMessage, log_hint: OperatorHint, } | { "reason": "timed_out", timeout_seconds: number, };
-
-export type NamespaceRevisionId = Brand<string, "NamespaceRevisionId">;
-
-export type DeployVolumeHandoffStopUncertain = { "reason": "runtime_unavailable", message: FailureMessage, inspect_hint: OperatorHint, } | { "reason": "stop_failed", message: FailureMessage, inspect_hint: OperatorHint, } | { "reason": "timed_out", timeout_seconds: number, inspect_hint: OperatorHint, };
-
-export type DeployVolumeHandoffRestartFailure = { "reason": "runtime_unavailable", message: FailureMessage, inspect_hint: OperatorHint, } | { "reason": "start_failed", message: FailureMessage, inspect_hint: OperatorHint, } | { "reason": "timed_out", timeout_seconds: number, inspect_hint: OperatorHint, };
-
-export type DeployVolumeHandoffRestorationUnconfirmed = { "reason": "restart_failed", failure: DeployVolumeHandoffRestartFailure, } | { "reason": "new_consumer_quiescence_unconfirmed" };
-
-export type PreStartHookFailure = { "reason": "runtime_unavailable", message: FailureMessage, } | { "reason": "operation_step_ambiguous", operation_id: OperationId, step_id: StepId, container_ids: Array<ContainerId>, } | { "reason": "create_failed", message: FailureMessage, } | { "reason": "start_failed", container_id: ContainerId, message: FailureMessage, inspect_hint: OperatorHint, } | { "reason": "wait_failed", container_id: ContainerId, message: FailureMessage, log_hint: OperatorHint, } | { "reason": "timed_out", container_id: ContainerId, timeout_millis: number, message: FailureMessage, inspect_hint: OperatorHint, } | { "reason": "exited", container_id: ContainerId, exit_code: number, message: FailureMessage, log_hint: OperatorHint, } | { "reason": "cleanup_failed", container_id: ContainerId, message: FailureMessage, inspect_hint: OperatorHint, };
-
-export type DeployPhaseNumber = SafeInteger<"DeployPhaseNumber">;
-
 export type ControlPlaneCommitScope = { "scope": "deploy_phase", namespace_revision_id: NamespaceRevisionId, phase: DeployPhaseNumber, } | { "scope": "service_entry", service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, } | { "scope": "namespace", namespace_revision_id: NamespaceRevisionId, } | { "scope": "volume_pin", namespace_id: NamespaceId, volume_name: VolumeName, };
 
-export type RetainedArtifact = { "type": "created_container", machine_id: MachineId, container_id: ContainerId, inspect_hint: OperatorHint, } | { "type": "started_container", machine_id: MachineId, container_id: ContainerId, log_hint: OperatorHint, } | { "type": "container_stop_failed", machine_id: MachineId, container_id: ContainerId, message: FailureMessage, inspect_hint: OperatorHint, } | { "type": "volume_owner_stop_uncertain", target: DeployCleanupContainer, prior_state: DeployVolumeHandoffPriorState, uncertainty: DeployVolumeHandoffStopUncertain, } | { "type": "volume_consumer_quiescence_uncertain", target: DeployCleanupContainer, uncertainty: DeployVolumeHandoffStopUncertain, } | { "type": "volume_consumer_start_uncertain", machine_id: MachineId, expected_identity: ManagedContainerIdentity, message: FailureMessage, inspect_hint: OperatorHint, } | { "type": "volume_owner_restoration_unconfirmed", target: DeployCleanupContainer, reason: DeployVolumeHandoffRestorationUnconfirmed, };
+export type CorrosionDocumentVersion = SafeInteger<"CorrosionDocumentVersion">;
 
-export type RouteCutoverFailureReason = { "reason": "gateway_unavailable", machine_id: MachineId, } | { "reason": "route_rejected", message: FailureMessage, } | { "reason": "state_store_failed", message: FailureMessage, } | { "reason": "timed_out", timeout_seconds: number, };
+export type CorrosionExecutionFailureClass = "build_failed" | "image_pull_failed" | "container_start_failed" | "health_gate_failed" | "storage_failed" | "network_failed" | "internal";
 
-export type VolumeEnsureFailure = { "kind": "machine_mismatch", expected_machine_id: MachineId, responder_machine_id: MachineId, } | { "kind": "dataset", dataset: DatasetName, failure: StorageEffectFailure, } | { "kind": "docker_shape_mismatch", volume_name: VolumeName, retained_dataset?: DatasetName | null, message: string, } | { "kind": "docker_ensure_failed", volume_name: VolumeName, retained_dataset?: DatasetName | null, message: string, };
+export type CorrosionOperationFailure = { "kind": "precondition", message: string, } | { "kind": "machine_unavailable", machine_id: MachineId, message: string, } | { "kind": "timeout", stage: string, message: string, } | { "kind": "execution", class: CorrosionExecutionFailureClass, message: string, } | { "kind": "interrupted", message: string, } | { "kind": "superseded", winner: OperationId, };
+
+export type CorrosionTable = "cluster" | "machines" | "peers" | "tokens" | "namespaces" | "services" | "route_bindings" | "containers" | "machine_status" | "operations" | "cert_holdings" | "acme_http01";
+
+export type DataplaneAdmissionPeer = { public_key: WireGuardPublicKey, endpoint_subnet: WireGuardPeerEndpointSubnet, };
+
+export type DataplaneProjectionAdmissionEvidence = { machine_id: MachineId, reason: DataplaneProjectionAdmissionFailure, };
+
+export type DataplaneProjectionAdmissionFailure = { "kind": "no_answer", message: FailureMessage, } | { "kind": "unusable_projection", failure: DataplaneProjectionFailure, } | { "kind": "awaiting_target_revision", expected: DataplaneProjectionRevision, observed: DataplaneProjectionRevision | null, } | { "kind": "endpoint_bridge_not_ready", status: EndpointBridgeStatus, } | { "kind": "wire_guard_not_ready", failure: WireGuardReadinessFailure, } | { "kind": "ebpf_not_ready", status: EbpfAttachmentStatus, } | { "kind": "peer_set_mismatch", expected: Array<DataplaneAdmissionPeer>, observed: Array<DataplaneAdmissionPeer>, } | { "kind": "peer_handshake_never", peer_machine_id: MachineId, } | { "kind": "peer_handshake_stale", peer_machine_id: MachineId, observed_age_seconds: number, };
+
+export type DataplaneProjectionComponent = "endpoint_bridge" | "wire_guard" | "ebpf";
+
+export type DataplaneProjectionFailure = { "kind": "fetch_failed", message: FailureMessage, } | { "kind": "invalid_view", message: FailureMessage, } | { "kind": "local_member_missing" } | { "kind": "endpoint_bridge_missing" } | { "kind": "endpoint_bridge_subnet_mismatch", expected: MachineEndpointSubnet, observed: MachineEndpointSubnet, } | { "kind": "apply_failed", component: DataplaneProjectionComponent, message: FailureMessage, } | { "kind": "apply_timed_out", timeout_seconds: number, };
+
+export type DataplaneProjectionRevision = Brand<string, "DataplaneProjectionRevision">;
+
+export type DataplaneProjectionRevisions = { declared_revision: DataplaneProjectionRevision, target_revision: DataplaneProjectionRevision, };
+
+export type DataplaneProjectionTestimony = { "status": "applied", revisions: DataplaneProjectionRevisions, } | { "status": "unusable", attempted_revisions: DataplaneProjectionRevisions | null, last_applied_revisions: DataplaneProjectionRevisions | null, failure: DataplaneProjectionFailure, };
+
+export type DataplaneUnavailableReason = { "kind": "not_declared" } | { "kind": "testimony_missing" } | { "kind": "admission", failure: DataplaneProjectionAdmissionFailure, };
+
+export type DatasetName = Brand<string, "DatasetName">;
+
+export type DatasetNameError = { "kind": "empty" } | { "kind": "empty_component" } | { "kind": "invalid_character", value: string, } | { "kind": "non_canonical", value: string, } | { "kind": "name_budget_exceeded", bytes: number, maximum: number, };
+
+export type DatasetQuotaFact = { dataset: DatasetName, quota_bytes: number, };
+
+export type DependencyCondition = "started" | "healthy";
+
+export type DeployCleanupAction = { "action": "remove_container", target: DeployCleanupContainer, } | { "action": "remove_container_and_reclaim_image", target: DeployCleanupContainer, image_identity: OciDigest, } | { "action": "remove_container_with_invalid_image_identity", target: DeployCleanupContainer, observed_identity: string | null, };
+
+export type DeployCleanupContainer = { machine_id: MachineId, container_id: ContainerId, identity: ManagedContainerIdentity, };
+
+export type DeployCleanupFailure = { target: DeployCleanupContainer, message: FailureMessage, };
+
+export type DeployCompletionOutcome = "completed" | "completed_with_warnings" | "partially_completed" | "partially_completed_with_warnings";
+
+export type DeployImageCleanup = { "outcome": "removed", machine_id: MachineId, service_id: ServiceId, image_identity: OciDigest, } | { "outcome": "already_absent", machine_id: MachineId, service_id: ServiceId, image_identity: OciDigest, } | { "outcome": "retained_in_use", machine_id: MachineId, service_id: ServiceId, image_identity: OciDigest, } | { "outcome": "missing_identity", machine_id: MachineId, service_id: ServiceId, container_id: ContainerId, observed_identity: string | null, } | { "outcome": "failed", machine_id: MachineId, service_id: ServiceId, image_identity: OciDigest, message: FailureMessage, };
+
+export type DeployInterruptionStage = { "state": "accepted" } | { "state": "planning" } | { "state": "running", stage: DeployRunningStage, };
 
 export type DeployOperationFailure = { "kind": "no_usable_machines",
 /**
@@ -681,163 +247,15 @@ export type DeployOperationFailure = { "kind": "no_usable_machines",
  */
 reasons: Array<UnusableMachine>, } | { "kind": "planning_failed", service_id: ServiceId, namespace_revision_id: NamespaceRevisionId, message: FailureMessage, } | { "kind": "volume_admission_failed", service_id: ServiceId, machine_id: MachineId, failure: VolumeAdmissionFailure, } | { "kind": "automatic_hostname_collision", hostname: RouteHostname, route_binding_id: RouteBindingId, } | { "kind": "image_resolution_failed", service_id: ServiceId, machine_id: MachineId, image: ImageReference, message: FailureMessage, } | { "kind": "artifact_unavailable", service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, reason: ArtifactUnavailableReason, } | { "kind": "image_missing_on_seed", service_id: ServiceId, seed: MachineId, manifest_digest: OciDigest, } | { "kind": "image_digest_mismatch", service_id: ServiceId, seed: MachineId, expected: OciDigest, actual: OciDigest, } | { "kind": "seed_unavailable", service_id: ServiceId, seed: MachineId, message: FailureMessage, } | { "kind": "platform_image_unavailable", service_id: ServiceId, machine_id: MachineId, target_platform: OciPlatform, } | { "kind": "platform_image_expired", service_id: ServiceId, seed: MachineId, target_platform: OciPlatform, expired_at: ImageAvailabilityExpiresAt, } | { "kind": "unsupported_target_platform", service_id: ServiceId, machine_id: MachineId, image_platform: OciPlatform, target_platform: OciPlatform, } | { "kind": "runtime_unavailable", machine_id: MachineId, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "volume_ensure_failed", machine_id: MachineId, volume_name: VolumeName, failure: VolumeEnsureFailure, } | { "kind": "container_start_failed", machine_id: MachineId, container_id: ContainerId, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "pre_start_hook_failed", machine_id: MachineId, failure: PreStartHookFailure, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "health_check_failed", health_check: HealthCheckFailure, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "certificate_provision_failed", hostname: RouteHostname, namespace_revision_id: NamespaceRevisionId, failure: CertificateProvisionFailure, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "certificate_provision_timed_out", hostname: RouteHostname, namespace_revision_id: NamespaceRevisionId, timeout_seconds: number, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "control_plane_commit_failed", scope: ControlPlaneCommitScope, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "route_cutover_failed", route: RouteTarget, reason: RouteCutoverFailureReason, retained_artifacts: Array<RetainedArtifact>, };
 
-export type DeployCompletionOutcome = "completed" | "completed_with_warnings" | "partially_completed" | "partially_completed_with_warnings";
-
-export type DeployRunningStage = "ensuring_images" | "ensuring_volumes" | "starting_containers" | "waiting_for_health" | "ensuring_certificates" | "route_cutover" | "serving_target_commit" | "removing_superseded_containers";
-
 export type DeployOperationState = { "state": "accepted" } | { "state": "planning" } | { "state": "running", stage: DeployRunningStage, } | { "state": "completed", outcome: DeployCompletionOutcome, } | { "state": "failed", failure: DeployOperationFailure, } | { "state": "cancelled", reason: CancellationReason, } | { "state": "interrupted", evidence: OperationInterruptionEvidence, };
 
-export type VolumeCreateFailure = { "kind": "intent_read_failed", message: FailureMessage, } | { "kind": "machine_not_accepted", machine_id: MachineId, } | { "kind": "admission_failed", failure: VolumeAdmissionFailure, } | { "kind": "pin_commit_failed", pin: VolumePinState, message: FailureMessage, } | { "kind": "machine_unavailable", machine_id: MachineId, message: FailureMessage, } | { "kind": "ensure_failed", machine_id: MachineId, volume_name: VolumeName, failure: VolumeEnsureFailure, };
+export type DeployOrigin = Brand<string, "DeployOrigin">;
 
-export type VolumeCreateRunningStage = "committing_pin" | "ensuring_volume";
+export type DeployPhaseNumber = SafeInteger<"DeployPhaseNumber">;
 
-export type VolumeCreateOperationState = { "state": "accepted" } | { "state": "planning" } | { "state": "running", stage: VolumeCreateRunningStage, } | { "state": "completed" } | { "state": "failed", failure: VolumeCreateFailure, } | { "state": "interrupted", evidence: OperationInterruptionEvidence, };
+export type DeployPhaseOutcome = "promoted" | "failed";
 
-export type ServiceRestartFailure = { "kind": "no_such_service", namespace_id: NamespaceId, service_id: ServiceId, } | { "kind": "no_running_containers", namespace_id: NamespaceId, service_id: ServiceId, } | { "kind": "intent_read_failed", namespace_id: NamespaceId, service_id: ServiceId, message: FailureMessage, } | { "kind": "machine_unavailable", machine_id: MachineId, message: FailureMessage, } | { "kind": "container_restart_failed", machine_id: MachineId, container_id: ContainerId, message: FailureMessage, inspect_hint: OperatorHint, } | { "kind": "health_gate_failed", machine_id: MachineId, container_id: ContainerId, message: FailureMessage, log_hint: OperatorHint, } | { "kind": "timeout", machine_id: MachineId, container_id: ContainerId, timeout_seconds: number, };
-
-export type ServiceRestartRunningStage = "restarting_containers" | "waiting_for_health";
-
-export type ServiceRestartOperationState = { "state": "accepted" } | { "state": "running", stage: ServiceRestartRunningStage, } | { "state": "completed" } | { "state": "failed", failure: ServiceRestartFailure, } | { "state": "cancelled", reason: CancellationReason, } | { "state": "interrupted", evidence: OperationInterruptionEvidence, };
-
-export type ManagedDnsReconcileFailureClass = "worker_unauthorized" | "lease_not_found" | "worker_http" | "transport" | "decode" | "superseded" | "storage" | "interrupted";
-
-export type ManagedDnsReconcileFailure = { class: ManagedDnsReconcileFailureClass, message: FailureMessage, };
-
-export type ManagedDnsReconcileOperationState = { "state": "accepted" } | { "state": "completed" } | { "state": "failed", failure: ManagedDnsReconcileFailure, };
-
-export type BuildCachePruneEvidence = { before_available_bytes: number, reclaimed_bytes: number, after_available_bytes: number, };
-
-export type MachineBuildCachePruneFailure = { "kind": "machine_unavailable", machine_id: MachineId, message: FailureMessage, } | { "kind": "prune_rejected", machine_id: MachineId, message: FailureMessage, } | { "kind": "state_commit_failed", machine_id: MachineId, message: FailureMessage, };
-
-export type MachineBuildCachePruneOperationState = { "state": "accepted" } | { "state": "pruning" } | { "state": "completed", evidence: BuildCachePruneEvidence, } | { "state": "failed", failure: MachineBuildCachePruneFailure, } | { "state": "cancelled", reason: CancellationReason, } | { "state": "interrupted", evidence: OperationInterruptionEvidence, };
-
-export type ManagedDnsWithdrawAuthorization = { "authorization": "projection_unavailable", projection: IngressEndpointProjectionIdentity, } | { "authorization": "target_disabled" };
-
-export type ManagedLeaseName = Brand<string, "ManagedLeaseName">;
-
-export type ManagedDnsReconcileSubject = { "reason": "acquire" } | { "reason": "projection_apply", lease: ManagedLeaseName, projection: IngressEndpointProjectionIdentity, } | { "reason": "authorized_withdraw", lease: ManagedLeaseName, authorization: ManagedDnsWithdrawAuthorization, } | { "reason": "lease_renewal", lease: ManagedLeaseName, projection: IngressEndpointProjectionIdentity | null, };
-
-export type JoinTokenRedeemedAt = Brand<string, "JoinTokenRedeemedAt">;
-
-export type JoinTokenFingerprint = Brand<string, "JoinTokenFingerprint">;
-
-export type JoinTokenExpiresAt = Brand<string, "JoinTokenExpiresAt">;
-
-export type IssuedJoinToken = { fingerprint: JoinTokenFingerprint, expires_at: JoinTokenExpiresAt, };
-
-export type DataplaneProjectionAdmissionEvidence = { machine_id: MachineId, reason: DataplaneProjectionAdmissionFailure, };
-
-export type ReleasePlatformFailure = { "kind": "missing" } | { "kind": "unsupported", platform: string, };
-
-export type MachineReadinessCheck = { "state": "confirmed" } | { "state": "missing", reason: FailureMessage, };
-
-export type MachineReadinessEvidence = { heartbeat: MachineReadinessCheck, machine_inspect: MachineReadinessCheck, };
-
-export type MachineAddFailure = { "kind": "invalid_join_token" } | { "kind": "join_token_expired", expired_at: JoinTokenExpiresAt, } | { "kind": "bootstrap_failed", message: FailureMessage, } | { "kind": "release_platform", failure: ReleasePlatformFailure, } | { "kind": "readiness_failed", evidence: MachineReadinessEvidence, } | { "kind": "dataplane_projection_admission_failed", evidence: DataplaneProjectionAdmissionEvidence, };
-
-export type MachineAddOperationState = { "state": "pending", join_token: IssuedJoinToken, } | { "state": "joining", joined_at: JoinTokenRedeemedAt, } | { "state": "completed" } | { "state": "failed", failure: MachineAddFailure, } | { "state": "cancelled", reason: CancellationReason, };
-
-export type BuildExecutorAssignments = Array<BuildPlatformExecutorAssignment>;
-
-export type BuildTarget = { "target": "cluster" } | { "target": "external", pool_id: BuildPoolId, };
-
-export type DockerfileStageName = string;
-
-export type BuildCacheScope = string;
-
-export type BuildContextPath = string;
-
-export type BuildAdapter = { "adapter": "dockerfile", dockerfile: BuildContextPath, target?: DockerfileStageName | null, } | { "adapter": "railpack", cache_scope: BuildCacheScope, };
-
-export type GitCommit = string;
-
-export type GitRepositoryUrl = string;
-
-export type LocalSnapshotDigest = string;
-
-export type BuildSourceEvidence = { "source": "git", url: GitRepositoryUrl, commit: GitCommit, subdir?: BuildContextPath | null, } | { "source": "local_snapshot", digest: LocalSnapshotDigest, subdir?: BuildContextPath, };
-
-export type BuildExecutorOrigin = { "origin": "cluster", machine_id: MachineId, } | { "origin": "external", pool_id: BuildPoolId, executor_id: BuildExecutorId, };
-
-export type InstallSha256Digest = string;
-
-export type BuildPlatformFailure = { "kind": "machine_unavailable", message: FailureMessage, } | { "kind": "executor_unavailable", message: FailureMessage, } | { "kind": "image_seed_unavailable", image_seed: MachineId, } | { "kind": "buildkit_digest_mismatch", expected: OciDigest, actual: OciDigest, } | { "kind": "helper_digest_mismatch", expected: InstallSha256Digest, actual: InstallSha256Digest, } | { "kind": "frontend_digest_mismatch", expected: OciDigest, actual: OciDigest, } | { "kind": "platform_mismatch", expected: OciPlatform, actual: OciPlatform, } | { "kind": "insufficient_host_disk", available_bytes: number, required_free_bytes: number, } | { "kind": "source_fetch_failed", message: FailureMessage, } | { "kind": "adapter_failed", message: FailureMessage, } | { "kind": "image_push_failed", message: FailureMessage, };
-
-export type BuildOperationFailure = { "kind": "no_eligible_machine", platform: OciPlatform, unusable: Array<UnusableMachine>, } | { "kind": "platform_failed", platform: OciPlatform, machine_id: MachineId, failure: BuildPlatformFailure, } | { "kind": "external_platform_failed", platform: OciPlatform, executor: BuildExecutorEvidence, failure: BuildPlatformFailure, } | { "kind": "receipt_assembly_failed", message: FailureMessage, } | { "kind": "evidence_recording_failed", message: FailureMessage, } | { "kind": "control_unavailable", message: FailureMessage, };
-
-export type PushedImageReceipt = { index_digest: OciDigest, platforms: [OciPlatform, PlatformImage][], };
-
-export type BuildTimeoutFailure = { "kind": "deadline_exceeded", message: FailureMessage, };
-
-export type BuildCleanupEvidence = { "kind": "not_required" } | { "kind": "completed", machine_ids: Array<MachineId>, } | { "kind": "unconfirmed", machine_ids: Array<MachineId>, } | { "kind": "external_completed", executors: Array<BuildExecutorEvidence>, } | { "kind": "external_unconfirmed", executors: Array<BuildExecutorEvidence>, };
-
-export type BuildOperationState = { "state": "accepted" } | { "state": "placing" } | { "state": "building" } | { "state": "completed", receipt: PushedImageReceipt, } | { "state": "failed", failure: BuildOperationFailure, } | { "state": "cancelled", reason: CancellationReason, cleanup: BuildCleanupEvidence, } | { "state": "timed_out", failure: BuildTimeoutFailure, cleanup: BuildCleanupEvidence, } | { "state": "interrupted", evidence: OperationInterruptionEvidence, };
-
-export type NetworkRepairRequestFailure = { "failure": "no_answer" } | { "failure": "timed_out" } | { "failure": "request_failed", message: FailureMessage, } | { "failure": "protocol_failed", message: FailureMessage, } | { "failure": "decode_failed", message: FailureMessage, } | { "failure": "wrong_responder", actual_machine_id: MachineId, };
-
-export type MachineFactsRefreshConfirmation = { machine_id: MachineId, observed_at_unix_ms: number, };
-
-export type NetworkRepairDnsRefreshProblem = { "problem": "unavailable", machine_id: MachineId, failure: NetworkRepairRequestFailure, } | { "problem": "resolver_not_serving", machine_id: MachineId, } | { "problem": "stale", machine_id: MachineId, stale_machine_ids: Array<MachineId>, };
-
-export type NetworkRepairMachineFactsRefreshOutcome = { "outcome": "refreshed", refresh: MachineFactsRefreshConfirmation, } | { "outcome": "unavailable", machine_id: MachineId, failure: NetworkRepairRequestFailure, } | { "outcome": "failed", machine_id: MachineId, message: FailureMessage, };
-
-export type NetworkRepairProgressPhase = "starting" | "recording_dataplane_evidence" | "advancing_machine_facts" | "recording_machine_facts_evidence" | "advancing_dns_refresh" | "recording_dns_refresh_evidence" | "completing" | "recording_terminal";
-
-export type NetworkRepairFailure = { "kind": "no_active_machines" } | { "kind": "target_machine_not_found", machine_id: MachineId, } | { "kind": "projection_member_missing", machine_id: MachineId, revision: DataplaneProjectionRevision, } | { "kind": "intent_read_failed", message: FailureMessage, } | { "kind": "dataplane_unavailable", machine_id: MachineId, reason: DataplaneProjectionAdmissionFailure, } | { "kind": "machine_facts_refresh_failed", outcomes: Array<NetworkRepairMachineFactsRefreshOutcome>, } | { "kind": "dns_refresh_failed", confirmed_machine_ids: Array<MachineId>, problems: Array<NetworkRepairDnsRefreshProblem>, } | { "kind": "progress_record_failed", phase: NetworkRepairProgressPhase, message: FailureMessage, };
-
-export type NetworkRepairRunningStage = "awaiting_dataplane" | "refreshing_machine_facts" | "confirming_dns_refresh";
-
-export type NetworkRepairOperationState = { "state": "accepted" } | { "state": "running", stage: NetworkRepairRunningStage, } | { "state": "completed" } | { "state": "failed", failure: NetworkRepairFailure, } | { "state": "cancelled", reason: CancellationReason, } | { "state": "interrupted", evidence: OperationInterruptionEvidence, };
-
-export type MachineLifecycleFailure = { "kind": "no_such_machine", machine_id: MachineId, } | { "kind": "evidence_write_failed", message: FailureMessage, } | { "kind": "state_commit_failed", message: FailureMessage, };
-
-export type MachineLifecycleOperationState = { "state": "accepted" } | { "state": "completed" } | { "state": "failed", failure: MachineLifecycleFailure, } | { "state": "cancelled", reason: CancellationReason, } | { "state": "interrupted", evidence: OperationInterruptionEvidence, };
-
-export type HostPortAssurance = "keeper" | "external";
-
-export type OperationStatus = { "kind": "build", id: OperationId, target: BuildTarget, source: BuildSourceEvidence, adapter: BuildAdapter, platforms: BuildPlatforms, executor_assignments: BuildExecutorAssignments, state: BuildOperationState, last_event_sequence: EventSequence, } | { "kind": "deploy", id: OperationId, namespace_id: NamespaceId, service_id: ServiceId, origin?: DeployOrigin | null, state: DeployOperationState, last_event_sequence: EventSequence, } | { "kind": "cert", id: OperationId, cert_id: CertId, state: CertOperationState, last_event_sequence: EventSequence, } | { "kind": "machine_add", id: OperationId, machine_id: MachineId, name: MachineName, roles: InstallRolePolicy, host_port_assurance: HostPortAssurance, state: MachineAddOperationState, last_event_sequence: EventSequence, } | { "kind": "machine_build_cache_prune", id: OperationId, machine_id: MachineId, state: MachineBuildCachePruneOperationState, last_event_sequence: EventSequence, } | { "kind": "machine_update", id: OperationId, machine_id: MachineId, target_version: InstallArtifactVersion, state: MachineUpdateOperationState, last_event_sequence: EventSequence, } | { "kind": "machine_storage_prepare", id: OperationId, machine_id: MachineId, requested_pool?: ZfsPoolName | null, state: MachineStoragePrepareOperationState, last_event_sequence: EventSequence, } | { "kind": "machine_lifecycle", id: OperationId, machine_id: MachineId, target: MachineLifecycle, state: MachineLifecycleOperationState, last_event_sequence: EventSequence, } | { "kind": "network_repair", id: OperationId, target_machine_id?: MachineId | null, state: NetworkRepairOperationState, last_event_sequence: EventSequence, } | { "kind": "service_restart", id: OperationId, namespace_id: NamespaceId, service_id: ServiceId, state: ServiceRestartOperationState, last_event_sequence: EventSequence, } | { "kind": "managed_dns_reconcile", id: OperationId, subject: ManagedDnsReconcileSubject, state: ManagedDnsReconcileOperationState, last_event_sequence: EventSequence, } | { "kind": "ingress_configure", id: OperationId, configuration: IngressConfiguration, state: IngressConfigureOperationState, last_event_sequence: EventSequence, } | { "kind": "namespace_remove", id: OperationId, namespace_id: NamespaceId, state: NamespaceRemoveOperationState, last_event_sequence: EventSequence, } | { "kind": "volume_create", request: VolumeCreateRequest, state: VolumeCreateOperationState, last_event_sequence: EventSequence, } | { "kind": "volume_remove", id: OperationId, namespace_id: NamespaceId, volume_name: VolumeName, state: VolumeRemoveOperationState, last_event_sequence: EventSequence, };
-
-export type OperationStatusSnapshot = { status: OperationStatus, };
-
-export type OpsListResult = { operations: Array<OperationStatusSnapshot>, has_more: boolean, };
-
-export type OpsListError = { "error": "no_such_operation", operation_id: OperationId, } | { "error": "unavailable", message: string, };
-
-export type OpsStatusRequest = { operation_id: OperationId, };
-
-export type OpsStatusError = { "error": "no_such_operation", operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, };
-
-export type OperationEventReplayLimit = SafeInteger<"OperationEventReplayLimit">;
-
-export type OperationEventReplayRequest = { operation_id: OperationId, start_sequence: EventSequence, limit: OperationEventReplayLimit, };
-
-export type OperationEventRecordedAtUnixMs = Brand<string, "OperationEventRecordedAtUnixMs">;
-
-export type PlatformImage = { seed: MachineId, manifest_digest: OciDigest, image_id: OciDigest, availability_expires_at: ImageAvailabilityExpiresAt, };
-
-export type CertificateProvisionWarning = { "warning": "dns_preflight_mismatch", message: FailureMessage, } | { "warning": "challenge_cleanup_incomplete", missing_machine_ids: Array<MachineId>, };
-
-export type BuildLogChunk = string;
-
-export type DeployImageCleanup = { "outcome": "removed", machine_id: MachineId, service_id: ServiceId, image_identity: OciDigest, } | { "outcome": "already_absent", machine_id: MachineId, service_id: ServiceId, image_identity: OciDigest, } | { "outcome": "retained_in_use", machine_id: MachineId, service_id: ServiceId, image_identity: OciDigest, } | { "outcome": "missing_identity", machine_id: MachineId, service_id: ServiceId, container_id: ContainerId, observed_identity: string | null, } | { "outcome": "failed", machine_id: MachineId, service_id: ServiceId, image_identity: OciDigest, message: FailureMessage, };
-
-export type DeployVolumeHandoffRollbackOutcome = { "outcome": "restarted" } | { "outcome": "restart_failed", failure: DeployVolumeHandoffRestartFailure, } | { "outcome": "not_restarted_new_consumer_quiescence_unconfirmed" };
-
-export type DeployVolumeHandoffStopOutcome = "stopped_running" | "already_stopped" | "missing";
-
-export type DeployVolumeHandoffAppliedParticipant = { target: DeployCleanupContainer, stop_outcome: DeployVolumeHandoffStopOutcome, shared_volume_names: NonEmptyVolumeNames, };
-
-export type NonEmptyAppliedVolumeHandoffParticipants = Array<DeployVolumeHandoffAppliedParticipant>;
-
-export type DeployVolumeHandoffApplied = { machine_id: MachineId, volume_names: NonEmptyVolumeNames, superseded: NonEmptyAppliedVolumeHandoffParticipants, };
-
-export type EnvName = Brand<string, "EnvName">;
-
-export type ServiceEnvironmentNames = { service_id: ServiceId, names: Array<EnvName>, };
-
-export type DeployRequestEvidence = { request: DeployRequest, environment_names: Array<ServiceEnvironmentNames>, };
-
-export type VerifiedBuildSource = { "source": "git", url: GitRepositoryUrl, commit: GitCommit, subdir?: BuildContextPath | null, } | { "source": "local_snapshot", digest: LocalSnapshotDigest, subdir?: BuildContextPath, };
+export type DeployPhasePlan = { services: Array<DeployServicePlan>, };
 
 export type DeployPlan = { namespace_id: NamespaceId, namespace_revision_id: NamespaceRevisionId, phases: Array<DeployPhasePlan>,
 /**
@@ -846,75 +264,721 @@ export type DeployPlan = { namespace_id: NamespaceId, namespace_revision_id: Nam
  */
 volume_pin_commits?: Array<VolumePinState>, volume_ensures?: Array<VolumePinState>, cleanup_actions?: Array<DeployCleanupAction>, };
 
-export type DeployCleanupFailure = { target: DeployCleanupContainer, message: FailureMessage, };
+export type DeployPlanStep = { "step": "use_existing_container", machine_id: MachineId, container_id: ContainerId, slot: ReplicaSlot, } | { "step": "run_container", machine_id: MachineId, slot: ReplicaSlot, };
+
+export type DeployPreview = { projection: DeployPreviewProjection, build_platform_requirements: { [key in ServiceId]: BuildPlatforms }, unusable_machines?: Array<UnusableMachine>, unusable_machines_by_service?: { [key in ServiceId]: Array<UnusableMachine> }, };
+
+export type DeployPreviewError = { "error": "invalid_target", message: FailureMessage, } | { "error": "planning_failed", message: FailureMessage, unusable_machines?: Array<UnusableMachine>, } | { "error": "volume_admission_failed", service_id: ServiceId, machine_id: MachineId, failure: VolumeAdmissionFailure, } | { "error": "image_unavailable", failure: DeployPreviewImageFailure, unusable_machines?: Array<UnusableMachine>, } | { "error": "unavailable", message: string, };
+
+export type DeployPreviewImage = { "state": "concrete", image: ImageReference, image_source: ImageSource, } | { "state": "pending_build" };
+
+export type DeployPreviewImageFailure = { "kind": "image_resolution_failed", service_id: ServiceId, machine_id: MachineId, image: ImageReference, message: FailureMessage, } | { "kind": "platform_image_unavailable", service_id: ServiceId, machine_id: MachineId, target_platform: OciPlatform, } | { "kind": "seed_unavailable", service_id: ServiceId, seed: MachineId, message: FailureMessage, } | { "kind": "platform_image_expired", service_id: ServiceId, seed: MachineId, target_platform: OciPlatform, expired_at: ImageAvailabilityExpiresAt, };
+
+export type DeployPreviewProjection = { namespace_id: NamespaceId, phases: Array<DeployPhasePlan>, volume_pins?: Array<VolumePinState>, volume_preparations?: Array<VolumePinState>, cleanup_candidates?: Array<DeployCleanupAction>, route_binding_additions?: Array<DeployRouteBindingAddition>, route_binding_removals?: Array<RouteBindingState>, serving_target_commits?: Array<ServingTargetEntry>, serving_target_removals?: Array<ServingTargetEntry>, };
+
+export type DeployPreviewRequest = { target: DeployPreviewTarget, registry_credentials?: { [key in ServiceId]: RegistryCredential }, };
+
+export type DeployPreviewService = { service_id: ServiceId, image: DeployPreviewImage, mode: ServiceMode, keep?: ContainerRetentionCount | null, runtime: ContainerRuntimeSpec, pre_start?: PreStartHook | null, depends_on?: Array<ServiceDependency>, routes?: Array<DeployRoute>, };
+
+export type DeployPreviewTarget = { namespace_id: NamespaceId, origin?: DeployOrigin | null, volumes?: { [key in VolumeName]: VolumeSpec }, services: Array<DeployPreviewService>, };
+
+export type DeployRequest = { namespace_id: NamespaceId, origin?: DeployOrigin | null, volumes?: { [key in VolumeName]: VolumeSpec }, services: Array<DeployServiceSpec>, };
+
+export type DeployRequestEvidence = { request: DeployRequest, environment_names: Array<ServiceEnvironmentNames>, };
+
+export type DeployReservationExpiresAt = Brand<string, "DeployReservationExpiresAt">;
+
+export type DeployReservationId = Brand<string, "DeployReservationId">;
+
+export type DeployReserveError = { "error": "unavailable", message: string, };
+
+export type DeployReserveRequest = { namespace_id: NamespaceId, };
+
+export type DeployReserved = { reservation_id: DeployReservationId, expires_at: DeployReservationExpiresAt, };
+
+export type DeployRoute = { target: DeployRouteTarget, endpoint_port: RoutePort, };
+
+export type DeployRouteBindingAddition = { namespace_id: NamespaceId, target: RouteTarget, endpoint_port: RoutePort, service_id: ServiceId, origin: RouteBindingOrigin, };
+
+export type DeployRouteTarget = { "kind": "auto_hostname", label: AutomaticHostnameLabel, } | { "kind": "hostname", hostname: RouteHostname, };
+
+export type DeployRunContainerStep = { machine_id: MachineId, slot: ReplicaSlot, };
+
+export type DeployRunningStage = "ensuring_images" | "ensuring_volumes" | "starting_containers" | "waiting_for_health" | "ensuring_certificates" | "route_cutover" | "serving_target_commit" | "removing_superseded_containers";
+
+export type DeployServicePlacement = { "kind": "replicated" } | { "kind": "global", candidates: Array<MachineId>, selected: Array<MachineId>, deferred: Array<UnusableMachine>, draining: Array<MachineId>, };
+
+export type DeployServicePlan = { service_id: ServiceId, placement: DeployServicePlacement, work: DeployServiceWork, pre_start?: PreStartHookStep | null, };
 
 export type DeployServiceResult = { "result": "completed", service_id: ServiceId, } | { "result": "failed", service_id: ServiceId, failure: DeployOperationFailure, } | { "result": "skipped", service_id: ServiceId, } | { "result": "unchanged", service_id: ServiceId, } | { "result": "removed", service_id: ServiceId, };
 
-export type AcmeChallengeValue = Brand<string, "AcmeChallengeValue">;
+export type DeployServiceSpec = { service_id: ServiceId, image: ImageReference, image_source?: ImageSource, mode: ServiceMode,
+/**
+ * Number of newest stopped superseded containers retained for inspection.
+ * Absence preserves full container cleanup and disables image reclamation.
+ */
+keep?: ContainerRetentionCount | null, runtime: ContainerRuntimeSpec, pre_start?: PreStartHook | null, depends_on?: Array<ServiceDependency>, routes?: Array<DeployRoute>, };
 
-export type AcmeChallengeToken = Brand<string, "AcmeChallengeToken">;
+export type DeployServiceWork = { "kind": "ordinary", steps: Array<DeployPlanStep>, } | { "kind": "volume_handoff", replacement: DeployRunContainerStep, remaining_steps?: Array<DeployPlanStep>, participants: NonEmptyVolumeHandoffParticipants, };
 
-export type AcmeChallengeTtlSeconds = Brand<string, "AcmeChallengeTtlSeconds">;
+export type DeploySubmitError = { "error": "reserved_system_namespace", operation_id: OperationId, namespace_id: NamespaceId, } | { "error": "reservation_not_found", operation_id: OperationId, namespace_id: NamespaceId, reservation_id: DeployReservationId, } | { "error": "reservation_expired", operation_id: OperationId, namespace_id: NamespaceId, reservation_id: DeployReservationId, expired_at: DeployReservationExpiresAt, } | { "error": "stale_reservation", operation_id: OperationId, namespace_id: NamespaceId, reservation_id: DeployReservationId, last_committed_reservation_id: DeployReservationId, } | { "error": "reservation_already_committed", operation_id: OperationId, namespace_id: NamespaceId, reservation_id: DeployReservationId, owner_operation_id: OperationId, } | { "error": "invalid_target", operation_id: OperationId, message: FailureMessage, } | { "error": "resource_busy", operation_id: OperationId, namespace_id: NamespaceId, owner_operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
 
-export type AcmeHttp01Challenge = { hostname: RouteHostname, token: AcmeChallengeToken, value: AcmeChallengeValue, ttl_seconds: AcmeChallengeTtlSeconds, };
+export type DeploySubmitRequest = { idempotency_key: OperationIdempotencyKey, reservation_id: DeployReservationId, target: DeployRequest, registry_credentials?: { [key in ServiceId]: RegistryCredential }, };
 
-export type BuildAdapterToolchainEvidence = { "adapter": "dockerfile" } | { "adapter": "railpack", helper_version: InstallArtifactVersion, helper_sha256: InstallSha256Digest, frontend_image: OciDigest, };
+export type DeployVolumeHandoffApplied = { machine_id: MachineId, volume_names: NonEmptyVolumeNames, superseded: NonEmptyAppliedVolumeHandoffParticipants, };
 
-export type BuildToolchainEvidence = { buildkit_image: OciDigest, adapter: BuildAdapterToolchainEvidence, };
+export type DeployVolumeHandoffAppliedParticipant = { target: DeployCleanupContainer, stop_outcome: DeployVolumeHandoffStopOutcome, shared_volume_names: NonEmptyVolumeNames, };
 
-export type DeployPhaseOutcome = "promoted" | "failed";
+export type DeployVolumeHandoffParticipant = { target: DeployCleanupContainer, prior_state: DeployVolumeHandoffPriorState, shared_volume_names: NonEmptyVolumeNames, };
 
-export type OperationKind = "build" | "deploy" | "cert" | "machine_add" | "machine_build_cache_prune" | "machine_update" | "machine_storage_prepare" | "machine_lifecycle" | "network_repair" | "service_restart" | "managed_dns_reconcile" | "ingress_configure" | "namespace_remove" | "volume_create" | "volume_remove";
+export type DeployVolumeHandoffPriorState = "running" | "stopped";
+
+export type DeployVolumeHandoffRestartFailure = { "reason": "runtime_unavailable", message: FailureMessage, inspect_hint: OperatorHint, } | { "reason": "start_failed", message: FailureMessage, inspect_hint: OperatorHint, } | { "reason": "timed_out", timeout_seconds: number, inspect_hint: OperatorHint, };
+
+export type DeployVolumeHandoffRestorationUnconfirmed = { "reason": "restart_failed", failure: DeployVolumeHandoffRestartFailure, } | { "reason": "new_consumer_quiescence_unconfirmed" };
 
 export type DeployVolumeHandoffRollbackContainerOutcome = { target: DeployCleanupContainer, outcome: DeployVolumeHandoffRollbackOutcome, };
 
-export type OperationEvent = { "event": "build_submitted", operation_id: OperationId, target: BuildTarget, source: BuildSourceEvidence, adapter: BuildAdapter, platforms: BuildPlatforms, } | { "event": "build_placement_started", operation_id: OperationId, } | { "event": "build_platform_placed", operation_id: OperationId, platform: OciPlatform, machine_id: MachineId, executor_origin: BuildExecutorOrigin, } | { "event": "build_source_verified", operation_id: OperationId, platform: OciPlatform, source: VerifiedBuildSource, machine_id: MachineId, executor_origin: BuildExecutorOrigin, } | { "event": "build_platform_toolchain_verified", operation_id: OperationId, platform: OciPlatform, toolchain: BuildToolchainEvidence, machine_id: MachineId, executor_origin: BuildExecutorOrigin, } | { "event": "build_running", operation_id: OperationId, } | { "event": "build_platform_log", operation_id: OperationId, platform: OciPlatform, chunk: BuildLogChunk, machine_id: MachineId, executor_origin: BuildExecutorOrigin, } | { "event": "build_platform_log_truncated", operation_id: OperationId, platform: OciPlatform, omitted_bytes: number, machine_id: MachineId, executor_origin: BuildExecutorOrigin, } | { "event": "build_platform_log_gap", operation_id: OperationId, platform: OciPlatform, expected_sequence: number, final_sequence: number, machine_id: MachineId, executor_origin: BuildExecutorOrigin, } | { "event": "build_platform_completed", operation_id: OperationId, platform: OciPlatform, image: PlatformImage, machine_id: MachineId, executor_origin: BuildExecutorOrigin, } | { "event": "build_platform_failed", operation_id: OperationId, platform: OciPlatform, failure: BuildPlatformFailure, machine_id: MachineId, executor_origin: BuildExecutorOrigin, } | { "event": "build_completed", operation_id: OperationId, receipt: PushedImageReceipt, } | { "event": "build_failed", operation_id: OperationId, failure: BuildOperationFailure, } | { "event": "build_cancelled", operation_id: OperationId, reason: CancellationReason, cleanup: BuildCleanupEvidence, } | { "event": "build_timed_out", operation_id: OperationId, failure: BuildTimeoutFailure, cleanup: BuildCleanupEvidence, } | { "event": "deploy_submitted", operation_id: OperationId, reservation_id?: DeployReservationId | null, target: DeployRequestEvidence, } | { "event": "deploy_planning_started", operation_id: OperationId, } | { "event": "deploy_image_resolved", operation_id: OperationId, service_id: ServiceId, machine_id: MachineId, requested: ImageReference, resolved: ImageReference, credential_supplied: boolean, } | { "event": "deploy_plan_created", operation_id: OperationId, plan: DeployPlan, } | { "event": "deploy_running", operation_id: OperationId, stage: DeployRunningStage, } | { "event": "deploy_image_availability_verified", operation_id: OperationId, service_id: ServiceId, machine_id: MachineId, image: ImageReference, platform: OciPlatform, } | { "event": "deploy_container_started", operation_id: OperationId, machine_id: MachineId, container_id: ContainerId, } | { "event": "deploy_volume_handoff_applied", operation_id: OperationId, service_id: ServiceId, handoff: DeployVolumeHandoffApplied, } | { "event": "deploy_volume_handoff_rollback_finished", operation_id: OperationId, service_id: ServiceId, machine_id: MachineId, outcomes: Array<DeployVolumeHandoffRollbackContainerOutcome>, } | { "event": "deploy_health_check_started", operation_id: OperationId, } | { "event": "deploy_phase_started", operation_id: OperationId, phase: DeployPhaseNumber, service_ids: Array<ServiceId>, } | { "event": "deploy_phase_finished", operation_id: OperationId, phase: DeployPhaseNumber, outcome: DeployPhaseOutcome, services: Array<DeployServiceResult>, } | { "event": "deploy_cleanup_finished", operation_id: OperationId, removed: Array<DeployCleanupContainer>, failed: Array<DeployCleanupFailure>, images?: Array<DeployImageCleanup>, } | { "event": "deploy_completed", operation_id: OperationId, outcome: DeployCompletionOutcome, } | { "event": "deploy_failed", operation_id: OperationId, failure: DeployOperationFailure, } | { "event": "cert_provision_submitted", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_challenge_published", operation_id: OperationId, cert_id: CertId, challenge: AcmeHttp01Challenge, } | { "event": "cert_validation_started", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_warning", operation_id: OperationId, cert_id: CertId, warning: CertificateProvisionWarning, } | { "event": "cert_completed", operation_id: OperationId, certificate: ActiveCertificateMetadata, } | { "event": "cert_failed", operation_id: OperationId, failure: CertOperationFailure, } | { "event": "machine_add_submitted", operation_id: OperationId, machine_id: MachineId, name: MachineName, roles: InstallRolePolicy, host_port_assurance: HostPortAssurance, join_token: IssuedJoinToken, } | { "event": "machine_add_joined", operation_id: OperationId, machine_id: MachineId, joined_at: JoinTokenRedeemedAt, } | { "event": "machine_add_completed", operation_id: OperationId, machine_id: MachineId, } | { "event": "machine_add_failed", operation_id: OperationId, machine_id: MachineId, failure: MachineAddFailure, } | { "event": "machine_update_submitted", operation_id: OperationId, machine_id: MachineId, target_version: InstallArtifactVersion, } | { "event": "machine_update_running", operation_id: OperationId, machine_id: MachineId, } | { "event": "machine_update_completed", operation_id: OperationId, machine_id: MachineId, reported: MachineSubstrateVersions, } | { "event": "machine_update_failed", operation_id: OperationId, machine_id: MachineId, failure: MachineUpdateFailure, } | { "event": "machine_storage_prepare_submitted", operation_id: OperationId, machine_id: MachineId, requested_pool?: ZfsPoolName | null, } | { "event": "machine_storage_prepare_preparing", operation_id: OperationId, machine_id: MachineId, } | { "event": "machine_storage_prepare_completed", operation_id: OperationId, machine_id: MachineId, pool: ZfsPoolName, } | { "event": "machine_storage_prepare_failed", operation_id: OperationId, machine_id: MachineId, failure: MachineStoragePrepareFailure, } | { "event": "machine_build_cache_prune_submitted", operation_id: OperationId, machine_id: MachineId, } | { "event": "machine_build_cache_prune_pruning", operation_id: OperationId, machine_id: MachineId, } | { "event": "machine_build_cache_prune_completed", operation_id: OperationId, machine_id: MachineId, evidence: BuildCachePruneEvidence, } | { "event": "machine_build_cache_prune_failed", operation_id: OperationId, machine_id: MachineId, failure: MachineBuildCachePruneFailure, } | { "event": "machine_lifecycle_submitted", operation_id: OperationId, machine_id: MachineId, target: MachineLifecycle, } | { "event": "machine_lifecycle_completed", operation_id: OperationId, machine_id: MachineId, } | { "event": "machine_lifecycle_failed", operation_id: OperationId, machine_id: MachineId, failure: MachineLifecycleFailure, } | { "event": "network_repair_submitted", operation_id: OperationId, target_machine_id?: MachineId | null, } | { "event": "network_repair_running", operation_id: OperationId, stage: NetworkRepairRunningStage, } | { "event": "network_repair_dataplane_converged", operation_id: OperationId, revision: DataplaneProjectionRevision, machine_ids: Array<MachineId>, } | { "event": "network_repair_machine_facts_refreshed", operation_id: OperationId, refreshes: Array<MachineFactsRefreshConfirmation>, } | { "event": "network_repair_dns_refresh_confirmed", operation_id: OperationId, machine_ids: Array<MachineId>, } | { "event": "network_repair_completed", operation_id: OperationId, } | { "event": "network_repair_failed", operation_id: OperationId, failure: NetworkRepairFailure, } | { "event": "service_restart_submitted", operation_id: OperationId, namespace_id: NamespaceId, service_id: ServiceId, } | { "event": "service_restart_running", operation_id: OperationId, stage: ServiceRestartRunningStage, } | { "event": "service_restart_container_restarted", operation_id: OperationId, machine_id: MachineId, container_id: ContainerId, } | { "event": "service_restart_completed", operation_id: OperationId, } | { "event": "service_restart_failed", operation_id: OperationId, failure: ServiceRestartFailure, } | { "event": "managed_dns_reconcile_submitted", operation_id: OperationId, subject: ManagedDnsReconcileSubject, } | { "event": "managed_dns_reconcile_completed", operation_id: OperationId, subject: ManagedDnsReconcileSubject, } | { "event": "managed_dns_reconcile_failed", operation_id: OperationId, subject: ManagedDnsReconcileSubject, failure: ManagedDnsReconcileFailure, } | { "event": "ingress_configure_submitted", operation_id: OperationId, configuration: IngressConfiguration, } | { "event": "ingress_configure_completed", operation_id: OperationId, } | { "event": "ingress_configure_failed", operation_id: OperationId, failure: IngressConfigureFailure, } | { "event": "namespace_remove_submitted", operation_id: OperationId, namespace_id: NamespaceId, } | { "event": "namespace_remove_running", operation_id: OperationId, stage: NamespaceRemoveRunningStage, } | { "event": "namespace_remove_route_binding_removed", operation_id: OperationId, target: RouteTarget, } | { "event": "namespace_remove_container_removed", operation_id: OperationId, machine_id: MachineId, container_id: ContainerId, } | { "event": "namespace_remove_completed", operation_id: OperationId, } | { "event": "namespace_remove_failed", operation_id: OperationId, failure: NamespaceRemoveFailure, } | { "event": "volume_create_submitted", request: VolumeCreateRequest, } | { "event": "volume_create_planning_started", operation_id: OperationId, } | { "event": "volume_create_running", operation_id: OperationId, stage: VolumeCreateRunningStage, } | { "event": "volume_create_completed", operation_id: OperationId, } | { "event": "volume_create_failed", operation_id: OperationId, failure: VolumeCreateFailure, } | { "event": "volume_remove_submitted", operation_id: OperationId, namespace_id: NamespaceId, volume_name: VolumeName, } | { "event": "volume_remove_running", operation_id: OperationId, stage: VolumeRemoveRunningStage, } | { "event": "volume_remove_completed", operation_id: OperationId, } | { "event": "volume_remove_failed", operation_id: OperationId, failure: VolumeRemoveFailure, } | { "event": "operation_interrupted", operation_id: OperationId, evidence: OperationInterruptionEvidence, } | { "event": "cancelled", operation_id: OperationId, kind: OperationKind, reason: CancellationReason, };
+export type DeployVolumeHandoffRollbackOutcome = { "outcome": "restarted" } | { "outcome": "restart_failed", failure: DeployVolumeHandoffRestartFailure, } | { "outcome": "not_restarted_new_consumer_quiescence_unconfirmed" };
 
-export type OperationOutcome = "succeeded" | "failed" | "cancelled";
+export type DeployVolumeHandoffStopOutcome = "stopped_running" | "already_stopped" | "missing";
 
-export type OperationEventReplayCursor = { "state": "caught_up" } | { "state": "terminal", outcome: OperationOutcome, } | { "state": "more", next_start_sequence: EventSequence, };
+export type DeployVolumeHandoffStopUncertain = { "reason": "runtime_unavailable", message: FailureMessage, inspect_hint: OperatorHint, } | { "reason": "stop_failed", message: FailureMessage, inspect_hint: OperatorHint, } | { "reason": "timed_out", timeout_seconds: number, inspect_hint: OperatorHint, };
 
-export type ReplayedOperationEvent = { sequence: EventSequence, recorded_at_unix_ms: OperationEventRecordedAtUnixMs, event: OperationEvent, };
+export type DockerfileStageName = string;
 
-export type OperationEventReplayPage = { events: Array<ReplayedOperationEvent>, cursor: OperationEventReplayCursor, };
+export type EbpfAttachmentStatus = { "status": "attached" } | { "status": "detached", message: string, } | { "status": "unknown", message: string, };
 
-export type OpsWatchError = { "error": "no_such_operation", operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, };
+export type EndpointBridgeStatus = { "status": "ready", subnet: MachineEndpointSubnet, } | { "status": "missing" } | { "status": "subnet_mismatch", expected: MachineEndpointSubnet, observed: MachineEndpointSubnet, } | { "status": "invalid_subnet", observed: string, } | { "status": "unavailable", message: FailureMessage, };
 
-export type OperationApiResponse<T, E> = { "status": "ok", value: T, } | { "status": "domain_error", error: E, };
-
-export type GitCredentialUsername = string;
-
-export type GitCredentialSecret = string;
-
-export type GitBasicCredential = { username: GitCredentialUsername, secret: GitCredentialSecret, };
-
-export type BuildSource = { "source": "git", url: GitRepositoryUrl, commit: GitCommit, credential: GitBasicCredential, subdir?: BuildContextPath, } | { "source": "local_snapshot", digest: LocalSnapshotDigest, subdir?: BuildContextPath, };
+export type EnvName = Brand<string, "EnvName">;
 
 export type EnvValue = Brand<string, "EnvValue">;
 
-export type DeployInterruptionStage = { "state": "accepted" } | { "state": "planning" } | { "state": "running", stage: DeployRunningStage, };
+export type EventSequence = Brand<string, "EventSequence">;
 
-export type BuildInterruptionStage = "accepted" | "placing" | "building";
+export type ExactPloyzVersion = string;
+
+export type ExternalBuildExecutorCapability = { "observation": "answered", identity: BuildExecutorIdentity, readiness: BuildExecutorReadiness, } | { "observation": "silent", identity: BuildExecutorIdentity, };
+
+export type ExternalBuildPoolCapabilities = { pool_id: BuildPoolId, executors: Array<ExternalBuildExecutorCapability>, reachable_image_seeds: Array<MachineId>, };
+
+export type FailureMessage = Brand<string, "FailureMessage">;
+
+export type GatewayHttpFailure = { "failure": "proxy", message: string, };
+
+export type GatewayProcessAttempt = { "status": "current", route_count: number, } | { "status": "serving_last_known_good", route_count: number, message: string, } | { "status": "failed", message: string, };
+
+export type GatewayProcessHealth = { last_attempt: GatewayProcessAttempt | null, consecutive_failures: number, last_http_failure: GatewayHttpFailure | null, consecutive_http_failures: number, last_watch_failure: GatewayWatchFailure | null, consecutive_watch_failures: number, last_status_publish_failure: GatewayStatusPublishFailure | null, consecutive_status_publish_failures: number, };
+
+export type GatewayRole = "install" | "skip";
+
+export type GatewayServingStatus = "current" | "last_known_good" | "unavailable";
+
+export type GatewayStatusObservation = { machine_id: MachineId, listen_addr: string, serving: GatewayServingStatus, route_count: number, process_health: GatewayProcessHealth, };
+
+export type GatewayStatusPublishFailure = { "failure": "write", message: string, };
+
+export type GatewayWatchFailure = { "failure": "open", message: string, } | { "failure": "ended", source: string, };
+
+export type GitBasicCredential = { username: GitCredentialUsername, secret: GitCredentialSecret, };
+
+export type GitCommit = string;
+
+export type GitCredentialSecret = string;
+
+export type GitCredentialUsername = string;
+
+export type GitRepositoryUrl = string;
+
+export type HealthCheckFailure = { "reason": "probe_failed", machine_id: MachineId, container_id: ContainerId, message: FailureMessage, log_hint: OperatorHint, } | { "reason": "timed_out", timeout_seconds: number, };
+
+export type HealthcheckDurationNanos = SafeInteger<"HealthcheckDurationNanos">;
+
+export type HealthcheckRetries = SafeInteger<"HealthcheckRetries">;
+
+export type HealthcheckShellCommand = Brand<string, "HealthcheckShellCommand">;
+
+export type HostPortAssurance = "keeper" | "external";
+
+export type ImageAvailabilityExpiresAt = Brand<string, "ImageAvailabilityExpiresAt">;
+
+export type ImageReference = Brand<string, "ImageReference">;
+
+export type ImageSource = { source: "registry" } | { source: "pushed_to_seed", index_digest: OciDigest, platforms: [OciPlatform, PlatformImage][] };
+
+export type IngressConfiguration = { automatic_hostnames: AutomaticHostnameConfiguration, ployz_dns_target: PloyzDnsTargetIntent, };
+
+export type IngressConfigureError = { "error": "invalid_configuration", message: string, } | { "error": "resource_busy", owner: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
+
+export type IngressConfigureFailure = { "kind": "invalid_configuration", message: FailureMessage, } | { "kind": "intent_store_failed", message: FailureMessage, };
+
+export type IngressConfigureOperationState = { "state": "accepted" } | { "state": "completed" } | { "state": "failed", failure: IngressConfigureFailure, } | { "state": "interrupted", evidence: OperationInterruptionEvidence, };
+
+export type IngressConfigureRequest = { operation_id: OperationId, configuration: IngressConfiguration, };
+
+export type IngressEndpointProjection = { revision: number, state: IngressEndpointProjectionState, };
+
+export type IngressEndpointProjectionIdentity = { revision: number, };
+
+export type IngressEndpointProjectionState = { "status": "pending" } | { "status": "current", endpoints: IngressEndpointSet, } | { "status": "retained", endpoints: IngressEndpointSet, } | { "status": "unavailable", reason: IngressEndpointUnavailableReason, };
+
+export type IngressEndpointSet = { ipv4: Array<string>, ipv6: Array<string>, };
+
+export type IngressEndpointUnavailableReason = "no_declared_gateways" | "no_publishable_endpoints";
+
+export type IngressMode = "direct" | "cloudflare_tunnel" | "tailscale_funnel";
+
+export type InstallArtifactSource = string;
+
+export type InstallArtifactSpec = { version: InstallArtifactVersion, source: InstallArtifactSource, sha256: InstallSha256Digest, install_path: AbsoluteInstallPath, };
+
+export type InstallArtifactVersion = string;
+
+export type InstallRolePolicy = { gateway: GatewayRole, };
+
+export type InstallSha256Digest = string;
+
+export type InternalDnsFactGeneration = Brand<string, "InternalDnsFactGeneration">;
+
+export type InternalDnsFactWatermark = { machine_id: MachineId, observed_at_unix_ms: number, resolver_cache_incarnation: InternalDnsResolverCacheIncarnation, generation: InternalDnsFactGeneration, };
+
+export type InternalDnsIntentHealth = { refresh: InternalDnsIntentRefreshHealth, watch: InternalDnsIntentWatchHealth, };
+
+export type InternalDnsIntentRefreshHealth = { "status": "unknown" } | { "status": "pending" } | { "status": "current" } | { "status": "request_failed", message: string, } | { "status": "timed_out", timeout_seconds: number, };
+
+export type InternalDnsIntentWatchHealth = { "status": "unknown" } | { "status": "pending" } | { "status": "watching" } | { "status": "open_failed", message: string, } | { "status": "subscription_closed" };
+
+export type InternalDnsResolverCacheIncarnation = Brand<string, "InternalDnsResolverCacheIncarnation">;
+
+export type InternalDnsResolverStatus = { "status": "awaiting_bind", attempts: number, } | { "status": "serving", bound: string, } | { "status": "not_configured" };
+
+export type InternalDnsStatus = { resolver: InternalDnsResolverStatus, fact_watermarks: Array<InternalDnsFactWatermark>, intent_health: InternalDnsIntentHealth, };
+
+export type InternalServiceName = Brand<string, "InternalServiceName">;
+
+export type IssuedJoinToken = { fingerprint: JoinTokenFingerprint, expires_at: JoinTokenExpiresAt, };
+
+export type JoinTokenExpiresAt = Brand<string, "JoinTokenExpiresAt">;
+
+export type JoinTokenFingerprint = Brand<string, "JoinTokenFingerprint">;
+
+export type JoinTokenRedeemedAt = Brand<string, "JoinTokenRedeemedAt">;
+
+export type LinuxCapability = Brand<string, "LinuxCapability">;
+
+export type LocalSnapshotDigest = string;
+
+export type LogsTailError = { "error": "no_such_service", service_id: ServiceId, } | { "error": "no_such_container", container_id: ContainerId, } | { "error": "ambiguous_container", container_id: ContainerId, machine_ids: Array<MachineId>, } | { "error": "read_failed", machine_id: MachineId, container_id: ContainerId, message: FailureMessage, } | { "error": "unavailable", message: string, machine_id?: MachineId | null, };
+
+export type LogsTailLines = SafeInteger<"LogsTailLines">;
+
+export type LogsTailRequest = { target: LogsTailTarget, tail_lines?: LogsTailLines | null, since_unix_seconds?: number | null, };
+
+export type LogsTailResult = { target: LogsTailResultTarget, text: string, truncated: boolean, };
+
+export type LogsTailResultTarget = { "target": "service", namespace_id: NamespaceId, service_id: ServiceId, } | { "target": "container", machine_id: MachineId, container_id: ContainerId, };
+
+export type LogsTailTarget = { "target": "service", namespace_id: NamespaceId, service_id: ServiceId, } | { "target": "container", container_id: ContainerId, machine_id?: MachineId | null, };
+
+export type MachineAddFailure = { "kind": "invalid_join_token" } | { "kind": "join_token_expired", expired_at: JoinTokenExpiresAt, } | { "kind": "bootstrap_failed", message: FailureMessage, } | { "kind": "release_platform", failure: ReleasePlatformFailure, } | { "kind": "readiness_failed", evidence: MachineReadinessEvidence, } | { "kind": "dataplane_projection_admission_failed", evidence: DataplaneProjectionAdmissionEvidence, };
+
+export type MachineAddOperationState = { "state": "pending", join_token: IssuedJoinToken, } | { "state": "joining", joined_at: JoinTokenRedeemedAt, } | { "state": "completed" } | { "state": "failed", failure: MachineAddFailure, } | { "state": "cancelled", reason: CancellationReason, };
+
+export type MachineBuildCachePruneError = { "error": "no_such_machine", operation_id: OperationId, machine_id: MachineId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
+
+export type MachineBuildCachePruneFailure = { "kind": "machine_unavailable", machine_id: MachineId, message: FailureMessage, } | { "kind": "prune_rejected", machine_id: MachineId, message: FailureMessage, } | { "kind": "state_commit_failed", machine_id: MachineId, message: FailureMessage, };
+
+export type MachineBuildCachePruneOperationState = { "state": "accepted" } | { "state": "pruning" } | { "state": "completed", evidence: BuildCachePruneEvidence, } | { "state": "failed", failure: MachineBuildCachePruneFailure, } | { "state": "cancelled", reason: CancellationReason, } | { "state": "interrupted", evidence: OperationInterruptionEvidence, };
+
+export type MachineBuildCachePruneRequest = { operation_id: OperationId, machine_id: MachineId, };
+
+export type MachineContainerAvailability = { "status": "answered", observed_count: number, } | { "status": "unavailable", reason: MachineContainerUnavailableReason, };
+
+export type MachineContainerUnavailableReason = "docker_unavailable";
+
+export type MachineDataplaneStatus = { projection: NativeDataplaneProjectionStatus, wireguard: WireGuardStatus, ebpf_attachment: EbpfAttachmentStatus, };
+
+export type MachineDiskSpace = { available_bytes: number, total_bytes: number, };
+
+export type MachineDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, name: MachineName, lifecycle: MachineLifecycle, transport: Transport, storage: MachineStorageSelection, };
+
+export type MachineEndpointObservation = { machine_id: MachineId, control_endpoints: Array<string>, mesh_endpoints: Array<string>, };
+
+export type MachineEndpointSubnet = string;
+
+export type MachineFactsRefreshConfirmation = { machine_id: MachineId, observed_at_unix_ms: number, };
+
+export type MachineId = Brand<string, "MachineId">;
+
+export type MachineInspectError = { "error": "no_such_machine", machine_id: MachineId, } | { "error": "unavailable", message: string, };
+
+export type MachineInspectRequest = { machine_id: MachineId, };
+
+export type MachineLifecycle = "active" | "draining";
+
+export type MachineLifecycleError = { "error": "no_such_machine", operation_id: OperationId, machine_id: MachineId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
+
+export type MachineLifecycleFailure = { "kind": "no_such_machine", machine_id: MachineId, } | { "kind": "evidence_write_failed", message: FailureMessage, } | { "kind": "state_commit_failed", message: FailureMessage, };
+
+export type MachineLifecycleOperationState = { "state": "accepted" } | { "state": "completed" } | { "state": "failed", failure: MachineLifecycleFailure, } | { "state": "cancelled", reason: CancellationReason, } | { "state": "interrupted", evidence: OperationInterruptionEvidence, };
+
+export type MachineLifecycleRequest = { operation_id: OperationId, machine_id: MachineId, };
+
+export type MachineListError = { "error": "unavailable", message: string, };
+
+export type MachineListRequest = Record<symbol, never>;
+
+export type MachineListResult = { machines: Array<MachineSnapshot>, };
+
+export type MachineLoadBand = "idle" | "normal" | "hot";
+
+export type MachineName = Brand<string, "MachineName">;
+
+export type MachineReadinessCheck = { "state": "confirmed" } | { "state": "missing", reason: FailureMessage, };
+
+export type MachineReadinessEvidence = { heartbeat: MachineReadinessCheck, machine_inspect: MachineReadinessCheck, };
+
+export type MachineSnapshot = { active: ActiveMachineState, testimony: MachineTestimony, storage_alarms?: Array<StrandedVolumeAlarm>, };
+
+export type MachineStatusDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, machine_id: MachineId, ployz_version: string, corrosion_version: string, architecture: string, free_disk_bytes: number, free_memory_bytes: number, load: MachineLoadBand, observed_at: string, };
+
+export type MachineStorageIneligibleReason = "low_ram";
+
+export type MachineStoragePrepareCancelError = { "error": "no_such_operation", operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
+
+export type MachineStoragePrepareCancelRequest = { operation_id: OperationId, reason: CancellationReason, };
+
+export type MachineStoragePrepareError = { "error": "no_such_machine", operation_id: OperationId, machine_id: MachineId, } | { "error": "machine_substrate_busy", operation_id: OperationId, machine_id: MachineId, owner_operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
+
+export type MachineStoragePrepareFailure = { "kind": "machine_unavailable", machine_id: MachineId, message: FailureMessage, } | { "kind": "preparation_rejected", machine_id: MachineId, failure: StorageEffectFailure, } | { "kind": "machine_substrate_busy", machine_id: MachineId, owner_operation_id: OperationId, } | { "kind": "evidence_unavailable", machine_id: MachineId, message: FailureMessage, } | { "kind": "state_commit_failed", machine_id: MachineId, message: FailureMessage, };
+
+export type MachineStoragePrepareOperationState = { "state": "accepted" } | { "state": "preparing" } | { "state": "completed", pool: ZfsPoolName, } | { "state": "failed", failure: MachineStoragePrepareFailure, } | { "state": "cancelled", reason: CancellationReason, } | { "state": "interrupted", evidence: OperationInterruptionEvidence, };
+
+export type MachineStoragePrepareRequest = { operation_id: OperationId, machine_id: MachineId, pool?: ZfsPoolName | null, };
+
+export type MachineStorageSelection = { mode: StorageMode, reason: MachineStorageSelectionReason, };
+
+export type MachineStorageSelectionReason = { "kind": "default" } | { "kind": "flag" } | { "kind": "ineligible", reason: MachineStorageIneligibleReason, };
+
+export type MachineSubstrateVersions = { ployzd?: InstallArtifactVersion | null, host_runner?: InstallArtifactVersion | null, };
+
+export type MachineTestimony = { "status": "answered", endpoints: MachineEndpointObservation | null, gateway: GatewayStatusObservation | null, containers: MachineContainerAvailability, disk_space: MachineDiskSpace, storage?: StorageCapability | null,
+/**
+ * When this machine last self-reported, as display evidence for the
+ * operator. Never an input to behavior: liveness surfaces at the point
+ * of use (ADR 0027).
+ */
+last_observed_at_unix_seconds: number, } | { "status": "no_answer" };
+
+export type MachineUpdateError = { "error": "no_such_machine", operation_id: OperationId, machine_id: MachineId, } | { "error": "current_machine_unsupported", operation_id: OperationId, machine_id: MachineId, } | { "error": "machine_substrate_busy", operation_id: OperationId, machine_id: MachineId, owner_operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
+
+export type MachineUpdateFailure = { "kind": "machine_unavailable", machine_id: MachineId, message: FailureMessage, } | { "kind": "update_rejected", machine_id: MachineId, message: FailureMessage, } | { "kind": "version_not_reported", machine_id: MachineId, target_version: InstallArtifactVersion, reported: MachineSubstrateVersions, } | { "kind": "state_commit_failed", machine_id: MachineId, message: FailureMessage, };
+
+export type MachineUpdateOperationState = { "state": "accepted" } | { "state": "running" } | { "state": "completed", reported: MachineSubstrateVersions, } | { "state": "failed", failure: MachineUpdateFailure, } | { "state": "cancelled", reason: CancellationReason, } | { "state": "interrupted", evidence: OperationInterruptionEvidence, };
+
+export type MachineUpdateRequest = { operation_id: OperationId, machine_id: MachineId, target_version: InstallArtifactVersion, };
+
+export type MachineUsabilityReason = { "kind": "platform_mismatch", supported: BuildPlatforms, reported: OciPlatform, } | { "kind": "draining" } | { "kind": "facts_unavailable" } | { "kind": "build_unavailable" } | { "kind": "storage_testimony_not_reported" } | { "kind": "storage_unprepared" } | { "kind": "storage_unavailable", reason: StorageUnavailableReason, } | { "kind": "storage_pool_mismatch", expected: ZfsPoolName, reported: ZfsPoolName, } | { "kind": "dataplane_unavailable", reason: DataplaneUnavailableReason, };
+
+export type ManagedContainerHealthStatus = "starting" | "healthy" | "unhealthy";
+
+export type ManagedContainerIdentity = { namespace_id: NamespaceId, service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, operation_id: OperationId, step_id: StepId, kind: ManagedContainerKind, };
+
+export type ManagedContainerKind = "service" | "predeploy" | "job";
+
+export type ManagedContainerObservation = { machine_id: MachineId, container_id: ContainerId, identity: ManagedContainerIdentity, state: ContainerRuntimeState, health_status?: ManagedContainerHealthStatus | null, resolved_image_identity?: string | null, created_at_unix_seconds?: number | null, named_volume_names?: Array<VolumeName>, };
+
+export type ManagedDnsReconcileFailure = { class: ManagedDnsReconcileFailureClass, message: FailureMessage, };
+
+export type ManagedDnsReconcileFailureClass = "worker_unauthorized" | "lease_not_found" | "worker_http" | "transport" | "decode" | "superseded" | "storage" | "interrupted";
+
+export type ManagedDnsReconcileOperationState = { "state": "accepted" } | { "state": "completed" } | { "state": "failed", failure: ManagedDnsReconcileFailure, };
+
+export type ManagedDnsReconcileSubject = { "reason": "acquire" } | { "reason": "projection_apply", lease: ManagedLeaseName, projection: IngressEndpointProjectionIdentity, } | { "reason": "authorized_withdraw", lease: ManagedLeaseName, authorization: ManagedDnsWithdrawAuthorization, } | { "reason": "lease_renewal", lease: ManagedLeaseName, projection: IngressEndpointProjectionIdentity | null, };
+
+export type ManagedDnsWithdrawAuthorization = { "authorization": "projection_unavailable", projection: IngressEndpointProjectionIdentity, } | { "authorization": "target_disabled" };
+
+export type ManagedLeaseName = Brand<string, "ManagedLeaseName">;
+
+export type MemoryBytes = SafeInteger<"MemoryBytes">;
+
+export type MeshProvider = "builtin_wireguard" | "tailscale";
+
+export type NameClaim = { "table": "machine", name: string, } | { "table": "peer", name: string, } | { "table": "namespace", name: string, } | { "table": "service", namespace_id: NamespaceId, name: string, } | { "table": "route_binding", hostname: RouteHostname, };
+
+export type NamespaceDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, name: string, };
+
+export type NamespaceId = Brand<string, "NamespaceId">;
+
+export type NamespaceRemoveError = { "error": "reserved_system_namespace", operation_id: OperationId, namespace_id: NamespaceId, } | { "error": "resource_busy", operation_id: OperationId, namespace_id: NamespaceId, owner_operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
+
+export type NamespaceRemoveFailure = { "kind": "intent_read_failed", namespace_id: NamespaceId, message: FailureMessage, } | { "kind": "control_plane_commit_failed", namespace_id: NamespaceId, message: FailureMessage, } | { "kind": "machine_unavailable", machine_id: MachineId, message: FailureMessage, } | { "kind": "container_remove_failed", machine_id: MachineId, container_id: ContainerId, message: FailureMessage, inspect_hint: OperatorHint, } | { "kind": "timeout", machine_id: MachineId, container_id: ContainerId, timeout_seconds: number, };
+
+export type NamespaceRemoveOperationState = { "state": "accepted" } | { "state": "running", stage: NamespaceRemoveRunningStage, } | { "state": "completed" } | { "state": "failed", failure: NamespaceRemoveFailure, } | { "state": "cancelled", reason: CancellationReason, } | { "state": "interrupted", evidence: OperationInterruptionEvidence, };
+
+export type NamespaceRemoveRequest = { operation_id: OperationId, namespace_id: NamespaceId, };
+
+export type NamespaceRemoveRunningStage = "removing_route_bindings" | "removing_serving_targets" | "removing_containers";
+
+export type NamespaceRevisionEntryId = Brand<string, "NamespaceRevisionEntryId">;
+
+export type NamespaceRevisionId = Brand<string, "NamespaceRevisionId">;
+
+export type NanoCpus = SafeInteger<"NanoCpus">;
+
+export type NativeDataplaneProjectionStatus = { endpoint_bridge: EndpointBridgeStatus, testimony: DataplaneProjectionTestimony, };
+
+export type NetworkDataplaneTestimony = { "status": "answered", value: MachineDataplaneStatus, } | { "status": "no_answer" } | { "status": "read_failed", message: FailureMessage, } | { "status": "wrong_responder", actual_machine_id: MachineId, } | { "status": "timed_out" } | { "status": "request_failed", message: string, } | { "status": "protocol_failed", message: string, } | { "status": "decode_failed", message: string, };
+
+export type NetworkInternalDnsTestimony = { "status": "answered", value: InternalDnsStatus, } | { "status": "no_answer" } | { "status": "wrong_responder", actual_machine_id: MachineId, } | { "status": "timed_out" } | { "status": "request_failed", message: string, } | { "status": "protocol_failed", message: string, } | { "status": "decode_failed", message: string, };
+
+export type NetworkRepairDnsRefreshProblem = { "problem": "unavailable", machine_id: MachineId, failure: NetworkRepairRequestFailure, } | { "problem": "resolver_not_serving", machine_id: MachineId, } | { "problem": "stale", machine_id: MachineId, stale_machine_ids: Array<MachineId>, };
+
+export type NetworkRepairError = { "error": "no_active_machines", operation_id: OperationId, } | { "error": "target_machine_not_found", operation_id: OperationId, machine_id: MachineId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
+
+export type NetworkRepairFailure = { "kind": "no_active_machines" } | { "kind": "target_machine_not_found", machine_id: MachineId, } | { "kind": "projection_member_missing", machine_id: MachineId, revision: DataplaneProjectionRevision, } | { "kind": "intent_read_failed", message: FailureMessage, } | { "kind": "dataplane_unavailable", machine_id: MachineId, reason: DataplaneProjectionAdmissionFailure, } | { "kind": "machine_facts_refresh_failed", outcomes: Array<NetworkRepairMachineFactsRefreshOutcome>, } | { "kind": "dns_refresh_failed", confirmed_machine_ids: Array<MachineId>, problems: Array<NetworkRepairDnsRefreshProblem>, } | { "kind": "progress_record_failed", phase: NetworkRepairProgressPhase, message: FailureMessage, };
+
+export type NetworkRepairMachineFactsRefreshOutcome = { "outcome": "refreshed", refresh: MachineFactsRefreshConfirmation, } | { "outcome": "unavailable", machine_id: MachineId, failure: NetworkRepairRequestFailure, } | { "outcome": "failed", machine_id: MachineId, message: FailureMessage, };
+
+export type NetworkRepairOperationState = { "state": "accepted" } | { "state": "running", stage: NetworkRepairRunningStage, } | { "state": "completed" } | { "state": "failed", failure: NetworkRepairFailure, } | { "state": "cancelled", reason: CancellationReason, } | { "state": "interrupted", evidence: OperationInterruptionEvidence, };
+
+export type NetworkRepairProgressPhase = "starting" | "recording_dataplane_evidence" | "advancing_machine_facts" | "recording_machine_facts_evidence" | "advancing_dns_refresh" | "recording_dns_refresh_evidence" | "completing" | "recording_terminal";
+
+export type NetworkRepairRequest = { operation_id: OperationId, machine_id?: MachineId, };
+
+export type NetworkRepairRequestFailure = { "failure": "no_answer" } | { "failure": "timed_out" } | { "failure": "request_failed", message: FailureMessage, } | { "failure": "protocol_failed", message: FailureMessage, } | { "failure": "decode_failed", message: FailureMessage, } | { "failure": "wrong_responder", actual_machine_id: MachineId, };
+
+export type NetworkRepairRunningStage = "awaiting_dataplane" | "refreshing_machine_facts" | "confirming_dns_refresh";
+
+export type NetworkResolveError = { "error": "invalid_name", name: string, } | { "error": "unavailable", message: string, };
+
+export type NetworkResolveMachineTestimony = { "status": "answered", machine_id: MachineId, addresses: Array<string>, } | { "status": "no_answer", machine_id: MachineId, } | { "status": "wrong_responder", machine_id: MachineId, actual_machine_id: MachineId, } | { "status": "timed_out", machine_id: MachineId, } | { "status": "request_failed", machine_id: MachineId, message: string, } | { "status": "protocol_failed", machine_id: MachineId, message: string, } | { "status": "decode_failed", machine_id: MachineId, message: string, };
+
+export type NetworkResolveRequest = { name: string, };
+
+export type NetworkResolveResult = { name: InternalServiceName, machines: Array<NetworkResolveMachineTestimony>, };
+
+export type NetworkStatusError = { "error": "unavailable", message: string, } | { "error": "snapshot_changed", requested: NetworkStatusIntentFingerprint, current: NetworkStatusIntentFingerprint, };
+
+export type NetworkStatusIntentFingerprint = Brand<string, "NetworkStatusIntentFingerprint">;
+
+export type NetworkStatusMachine = { active: ActiveMachineState, dataplane: NetworkDataplaneTestimony, internal_dns: NetworkInternalDnsTestimony, };
+
+export type NetworkStatusMode = "snapshot" | "probe_path_mtu";
+
+export type NetworkStatusRequest = { "page": "first", mode: NetworkStatusMode, } | { "page": "continuation", mode: NetworkStatusMode, snapshot: NetworkStatusIntentFingerprint, after: MachineId, };
+
+export type NetworkStatusResult = { snapshot: NetworkStatusIntentFingerprint, machines: Array<NetworkStatusMachine>, next_cursor?: MachineId, };
+
+export type NonEmptyAppliedVolumeHandoffParticipants = Array<DeployVolumeHandoffAppliedParticipant>;
+
+export type NonEmptyVolumeHandoffParticipants = Array<DeployVolumeHandoffParticipant>;
+
+export type NonEmptyVolumeNames = Array<VolumeName>;
+
+export type OciDigest = string;
+
+export type OciPlatform = { os: string, architecture: string, };
+
+export type OperationApiResponse<T, E> = { "status": "ok", value: T, } | { "status": "domain_error", error: E, };
+
+export type OperationDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, machine_id: MachineId, initiator: OperationInitiator, } & ({ "kind": "build", service_id: ServiceId, } | { "kind": "deploy", namespace_id: NamespaceId, service_id: ServiceId, } | { "kind": "machine_add", target_machine_id: MachineId, } | { "kind": "machine_remove", target_machine_id: MachineId, } | { "kind": "recovery", target_machine_id: MachineId, }) & ({ "state": "created", created_at: string, } | { "state": "running", started_at: string, heartbeat_at: string, } | { "state": "succeeded", started_at: string, completed_at: string, } | { "state": "failed", started_at: string, completed_at: string, failure: CorrosionOperationFailure, });
+
+export type OperationEvent = { "event": "build_submitted", operation_id: OperationId, target: BuildTarget, source: BuildSourceEvidence, adapter: BuildAdapter, platforms: BuildPlatforms, } | { "event": "build_placement_started", operation_id: OperationId, } | { "event": "build_platform_placed", operation_id: OperationId, platform: OciPlatform, machine_id: MachineId, executor_origin: BuildExecutorOrigin, } | { "event": "build_source_verified", operation_id: OperationId, platform: OciPlatform, source: VerifiedBuildSource, machine_id: MachineId, executor_origin: BuildExecutorOrigin, } | { "event": "build_platform_toolchain_verified", operation_id: OperationId, platform: OciPlatform, toolchain: BuildToolchainEvidence, machine_id: MachineId, executor_origin: BuildExecutorOrigin, } | { "event": "build_running", operation_id: OperationId, } | { "event": "build_platform_log", operation_id: OperationId, platform: OciPlatform, chunk: BuildLogChunk, machine_id: MachineId, executor_origin: BuildExecutorOrigin, } | { "event": "build_platform_log_truncated", operation_id: OperationId, platform: OciPlatform, omitted_bytes: number, machine_id: MachineId, executor_origin: BuildExecutorOrigin, } | { "event": "build_platform_log_gap", operation_id: OperationId, platform: OciPlatform, expected_sequence: number, final_sequence: number, machine_id: MachineId, executor_origin: BuildExecutorOrigin, } | { "event": "build_platform_completed", operation_id: OperationId, platform: OciPlatform, image: PlatformImage, machine_id: MachineId, executor_origin: BuildExecutorOrigin, } | { "event": "build_platform_failed", operation_id: OperationId, platform: OciPlatform, failure: BuildPlatformFailure, machine_id: MachineId, executor_origin: BuildExecutorOrigin, } | { "event": "build_completed", operation_id: OperationId, receipt: PushedImageReceipt, } | { "event": "build_failed", operation_id: OperationId, failure: BuildOperationFailure, } | { "event": "build_cancelled", operation_id: OperationId, reason: CancellationReason, cleanup: BuildCleanupEvidence, } | { "event": "build_timed_out", operation_id: OperationId, failure: BuildTimeoutFailure, cleanup: BuildCleanupEvidence, } | { "event": "deploy_submitted", operation_id: OperationId, reservation_id?: DeployReservationId | null, target: DeployRequestEvidence, } | { "event": "deploy_planning_started", operation_id: OperationId, } | { "event": "deploy_image_resolved", operation_id: OperationId, service_id: ServiceId, machine_id: MachineId, requested: ImageReference, resolved: ImageReference, credential_supplied: boolean, } | { "event": "deploy_plan_created", operation_id: OperationId, plan: DeployPlan, } | { "event": "deploy_running", operation_id: OperationId, stage: DeployRunningStage, } | { "event": "deploy_image_availability_verified", operation_id: OperationId, service_id: ServiceId, machine_id: MachineId, image: ImageReference, platform: OciPlatform, } | { "event": "deploy_container_started", operation_id: OperationId, machine_id: MachineId, container_id: ContainerId, } | { "event": "deploy_volume_handoff_applied", operation_id: OperationId, service_id: ServiceId, handoff: DeployVolumeHandoffApplied, } | { "event": "deploy_volume_handoff_rollback_finished", operation_id: OperationId, service_id: ServiceId, machine_id: MachineId, outcomes: Array<DeployVolumeHandoffRollbackContainerOutcome>, } | { "event": "deploy_health_check_started", operation_id: OperationId, } | { "event": "deploy_phase_started", operation_id: OperationId, phase: DeployPhaseNumber, service_ids: Array<ServiceId>, } | { "event": "deploy_phase_finished", operation_id: OperationId, phase: DeployPhaseNumber, outcome: DeployPhaseOutcome, services: Array<DeployServiceResult>, } | { "event": "deploy_cleanup_finished", operation_id: OperationId, removed: Array<DeployCleanupContainer>, failed: Array<DeployCleanupFailure>, images?: Array<DeployImageCleanup>, } | { "event": "deploy_completed", operation_id: OperationId, outcome: DeployCompletionOutcome, } | { "event": "deploy_failed", operation_id: OperationId, failure: DeployOperationFailure, } | { "event": "cert_provision_submitted", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_challenge_published", operation_id: OperationId, cert_id: CertId, challenge: AcmeHttp01Challenge, } | { "event": "cert_validation_started", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_warning", operation_id: OperationId, cert_id: CertId, warning: CertificateProvisionWarning, } | { "event": "cert_completed", operation_id: OperationId, certificate: ActiveCertificateMetadata, } | { "event": "cert_failed", operation_id: OperationId, failure: CertOperationFailure, } | { "event": "machine_add_submitted", operation_id: OperationId, machine_id: MachineId, name: MachineName, roles: InstallRolePolicy, host_port_assurance: HostPortAssurance, join_token: IssuedJoinToken, } | { "event": "machine_add_joined", operation_id: OperationId, machine_id: MachineId, joined_at: JoinTokenRedeemedAt, } | { "event": "machine_add_completed", operation_id: OperationId, machine_id: MachineId, } | { "event": "machine_add_failed", operation_id: OperationId, machine_id: MachineId, failure: MachineAddFailure, } | { "event": "machine_update_submitted", operation_id: OperationId, machine_id: MachineId, target_version: InstallArtifactVersion, } | { "event": "machine_update_running", operation_id: OperationId, machine_id: MachineId, } | { "event": "machine_update_completed", operation_id: OperationId, machine_id: MachineId, reported: MachineSubstrateVersions, } | { "event": "machine_update_failed", operation_id: OperationId, machine_id: MachineId, failure: MachineUpdateFailure, } | { "event": "machine_storage_prepare_submitted", operation_id: OperationId, machine_id: MachineId, requested_pool?: ZfsPoolName | null, } | { "event": "machine_storage_prepare_preparing", operation_id: OperationId, machine_id: MachineId, } | { "event": "machine_storage_prepare_completed", operation_id: OperationId, machine_id: MachineId, pool: ZfsPoolName, } | { "event": "machine_storage_prepare_failed", operation_id: OperationId, machine_id: MachineId, failure: MachineStoragePrepareFailure, } | { "event": "machine_build_cache_prune_submitted", operation_id: OperationId, machine_id: MachineId, } | { "event": "machine_build_cache_prune_pruning", operation_id: OperationId, machine_id: MachineId, } | { "event": "machine_build_cache_prune_completed", operation_id: OperationId, machine_id: MachineId, evidence: BuildCachePruneEvidence, } | { "event": "machine_build_cache_prune_failed", operation_id: OperationId, machine_id: MachineId, failure: MachineBuildCachePruneFailure, } | { "event": "machine_lifecycle_submitted", operation_id: OperationId, machine_id: MachineId, target: MachineLifecycle, } | { "event": "machine_lifecycle_completed", operation_id: OperationId, machine_id: MachineId, } | { "event": "machine_lifecycle_failed", operation_id: OperationId, machine_id: MachineId, failure: MachineLifecycleFailure, } | { "event": "network_repair_submitted", operation_id: OperationId, target_machine_id?: MachineId | null, } | { "event": "network_repair_running", operation_id: OperationId, stage: NetworkRepairRunningStage, } | { "event": "network_repair_dataplane_converged", operation_id: OperationId, revision: DataplaneProjectionRevision, machine_ids: Array<MachineId>, } | { "event": "network_repair_machine_facts_refreshed", operation_id: OperationId, refreshes: Array<MachineFactsRefreshConfirmation>, } | { "event": "network_repair_dns_refresh_confirmed", operation_id: OperationId, machine_ids: Array<MachineId>, } | { "event": "network_repair_completed", operation_id: OperationId, } | { "event": "network_repair_failed", operation_id: OperationId, failure: NetworkRepairFailure, } | { "event": "service_restart_submitted", operation_id: OperationId, namespace_id: NamespaceId, service_id: ServiceId, } | { "event": "service_restart_running", operation_id: OperationId, stage: ServiceRestartRunningStage, } | { "event": "service_restart_container_restarted", operation_id: OperationId, machine_id: MachineId, container_id: ContainerId, } | { "event": "service_restart_completed", operation_id: OperationId, } | { "event": "service_restart_failed", operation_id: OperationId, failure: ServiceRestartFailure, } | { "event": "managed_dns_reconcile_submitted", operation_id: OperationId, subject: ManagedDnsReconcileSubject, } | { "event": "managed_dns_reconcile_completed", operation_id: OperationId, subject: ManagedDnsReconcileSubject, } | { "event": "managed_dns_reconcile_failed", operation_id: OperationId, subject: ManagedDnsReconcileSubject, failure: ManagedDnsReconcileFailure, } | { "event": "ingress_configure_submitted", operation_id: OperationId, configuration: IngressConfiguration, } | { "event": "ingress_configure_completed", operation_id: OperationId, } | { "event": "ingress_configure_failed", operation_id: OperationId, failure: IngressConfigureFailure, } | { "event": "namespace_remove_submitted", operation_id: OperationId, namespace_id: NamespaceId, } | { "event": "namespace_remove_running", operation_id: OperationId, stage: NamespaceRemoveRunningStage, } | { "event": "namespace_remove_route_binding_removed", operation_id: OperationId, target: RouteTarget, } | { "event": "namespace_remove_container_removed", operation_id: OperationId, machine_id: MachineId, container_id: ContainerId, } | { "event": "namespace_remove_completed", operation_id: OperationId, } | { "event": "namespace_remove_failed", operation_id: OperationId, failure: NamespaceRemoveFailure, } | { "event": "volume_create_submitted", request: VolumeCreateRequest, } | { "event": "volume_create_planning_started", operation_id: OperationId, } | { "event": "volume_create_running", operation_id: OperationId, stage: VolumeCreateRunningStage, } | { "event": "volume_create_completed", operation_id: OperationId, } | { "event": "volume_create_failed", operation_id: OperationId, failure: VolumeCreateFailure, } | { "event": "volume_remove_submitted", operation_id: OperationId, namespace_id: NamespaceId, volume_name: VolumeName, } | { "event": "volume_remove_running", operation_id: OperationId, stage: VolumeRemoveRunningStage, } | { "event": "volume_remove_completed", operation_id: OperationId, } | { "event": "volume_remove_failed", operation_id: OperationId, failure: VolumeRemoveFailure, } | { "event": "operation_interrupted", operation_id: OperationId, evidence: OperationInterruptionEvidence, } | { "event": "cancelled", operation_id: OperationId, kind: OperationKind, reason: CancellationReason, };
+
+export type OperationEventRecordedAtUnixMs = Brand<string, "OperationEventRecordedAtUnixMs">;
+
+export type OperationEventReplayCursor = { "state": "caught_up" } | { "state": "terminal", outcome: OperationOutcome, } | { "state": "more", next_start_sequence: EventSequence, };
+
+export type OperationEventReplayLimit = SafeInteger<"OperationEventReplayLimit">;
+
+export type OperationEventReplayPage = { events: Array<ReplayedOperationEvent>, cursor: OperationEventReplayCursor, };
+
+export type OperationEventReplayRequest = { operation_id: OperationId, start_sequence: EventSequence, limit: OperationEventReplayLimit, };
+
+export type OperationId = Brand<string, "OperationId">;
+
+export type OperationIdempotencyKey = Brand<string, "OperationIdempotencyKey">;
+
+export type OperationInitiator = { "kind": "machine", machine_id: MachineId, } | { "kind": "peer", peer_id: PeerId, } | { "kind": "api_token", token_id: TokenId, };
+
+export type OperationInterruptionCause = "core_shutdown" | "prior_core_process_loss";
+
+export type OperationInterruptionEvidence = { cause: OperationInterruptionCause, last_durable_stage: OperationInterruptionStage, kind: OperationKind, uncertain_work: OperationInterruptionUncertainWork, next_action: OperationInterruptionNextAction };
+
+export type OperationInterruptionNextAction = "retry_from_observed_reality" | "inspect_then_resubmit";
 
 export type OperationInterruptionStage = { "kind": "build", stage: BuildInterruptionStage, } | { "kind": "deploy", stage: DeployInterruptionStage, } | { "kind": "ingress_configure_accepted" } | { "kind": "machine_update_accepted" } | { "kind": "machine_update_running" } | { "kind": "machine_storage_prepare_accepted" } | { "kind": "machine_storage_prepare_preparing" } | { "kind": "machine_build_cache_prune_accepted" } | { "kind": "machine_build_cache_prune_pruning" } | { "kind": "machine_lifecycle_accepted" } | { "kind": "network_repair_accepted" } | { "kind": "network_repair_running", stage: NetworkRepairRunningStage, } | { "kind": "service_restart_accepted" } | { "kind": "service_restart_running", stage: ServiceRestartRunningStage, } | { "kind": "namespace_remove_accepted" } | { "kind": "namespace_remove_running", stage: NamespaceRemoveRunningStage, } | { "kind": "volume_remove_accepted" } | { "kind": "volume_remove_running", stage: VolumeRemoveRunningStage, } | { "kind": "volume_create_accepted" } | { "kind": "volume_create_planning" } | { "kind": "volume_create_running", stage: VolumeCreateRunningStage, };
 
 export type OperationInterruptionUncertainWork = "intent" | "runtime" | "intent_and_runtime";
 
-export type OperationInterruptionNextAction = "retry_from_observed_reality" | "inspect_then_resubmit";
+export type OperationKind = "build" | "deploy" | "cert" | "machine_add" | "machine_build_cache_prune" | "machine_update" | "machine_storage_prepare" | "machine_lifecycle" | "network_repair" | "service_restart" | "managed_dns_reconcile" | "ingress_configure" | "namespace_remove" | "volume_create" | "volume_remove";
 
-export type BuildExecutorEvidence = { machine_id: MachineId, executor_origin: BuildExecutorOrigin, };
+export type OperationOutcome = "succeeded" | "failed" | "cancelled";
 
-export type BuildExecutorAssignment = { "executor": "cluster", machine_id: MachineId, } | { "executor": "external", pool_id: BuildPoolId, executor_id: BuildExecutorId, image_seed: MachineId, };
+export type OperationStatus = { "kind": "build", id: OperationId, target: BuildTarget, source: BuildSourceEvidence, adapter: BuildAdapter, platforms: BuildPlatforms, executor_assignments: BuildExecutorAssignments, state: BuildOperationState, last_event_sequence: EventSequence, } | { "kind": "deploy", id: OperationId, namespace_id: NamespaceId, service_id: ServiceId, origin?: DeployOrigin | null, state: DeployOperationState, last_event_sequence: EventSequence, } | { "kind": "cert", id: OperationId, cert_id: CertId, state: CertOperationState, last_event_sequence: EventSequence, } | { "kind": "machine_add", id: OperationId, machine_id: MachineId, name: MachineName, roles: InstallRolePolicy, host_port_assurance: HostPortAssurance, state: MachineAddOperationState, last_event_sequence: EventSequence, } | { "kind": "machine_build_cache_prune", id: OperationId, machine_id: MachineId, state: MachineBuildCachePruneOperationState, last_event_sequence: EventSequence, } | { "kind": "machine_update", id: OperationId, machine_id: MachineId, target_version: InstallArtifactVersion, state: MachineUpdateOperationState, last_event_sequence: EventSequence, } | { "kind": "machine_storage_prepare", id: OperationId, machine_id: MachineId, requested_pool?: ZfsPoolName | null, state: MachineStoragePrepareOperationState, last_event_sequence: EventSequence, } | { "kind": "machine_lifecycle", id: OperationId, machine_id: MachineId, target: MachineLifecycle, state: MachineLifecycleOperationState, last_event_sequence: EventSequence, } | { "kind": "network_repair", id: OperationId, target_machine_id?: MachineId | null, state: NetworkRepairOperationState, last_event_sequence: EventSequence, } | { "kind": "service_restart", id: OperationId, namespace_id: NamespaceId, service_id: ServiceId, state: ServiceRestartOperationState, last_event_sequence: EventSequence, } | { "kind": "managed_dns_reconcile", id: OperationId, subject: ManagedDnsReconcileSubject, state: ManagedDnsReconcileOperationState, last_event_sequence: EventSequence, } | { "kind": "ingress_configure", id: OperationId, configuration: IngressConfiguration, state: IngressConfigureOperationState, last_event_sequence: EventSequence, } | { "kind": "namespace_remove", id: OperationId, namespace_id: NamespaceId, state: NamespaceRemoveOperationState, last_event_sequence: EventSequence, } | { "kind": "volume_create", request: VolumeCreateRequest, state: VolumeCreateOperationState, last_event_sequence: EventSequence, } | { "kind": "volume_remove", id: OperationId, namespace_id: NamespaceId, volume_name: VolumeName, state: VolumeRemoveOperationState, last_event_sequence: EventSequence, };
 
-export type BuildPlatformExecutorAssignment = { platform: OciPlatform, executor: BuildExecutorAssignment, };
+export type OperationStatusSnapshot = { status: OperationStatus, };
 
-export type AbsoluteInstallPath = string;
+export type OperatorHint = Brand<string, "OperatorHint">;
 
-export type ExactPloyzVersion = string;
+export type OpsListError = { "error": "no_such_operation", operation_id: OperationId, } | { "error": "unavailable", message: string, };
 
-export type InstallArtifactSource = string;
+export type OpsListRequest = { active_only: boolean, before: OperationId | null, };
 
-export type InstallArtifactSpec = { version: InstallArtifactVersion, source: InstallArtifactSource, sha256: InstallSha256Digest, install_path: AbsoluteInstallPath, };
+export type OpsListResult = { operations: Array<OperationStatusSnapshot>, has_more: boolean, };
+
+export type OpsStatusError = { "error": "no_such_operation", operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, };
+
+export type OpsStatusRequest = { operation_id: OperationId, };
+
+export type OpsWatchError = { "error": "no_such_operation", operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, };
+
+export type PeerDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, name: string, transport: Transport, };
+
+export type PeerId = Brand<string, "PeerId">;
+
+export type PidsLimit = SafeInteger<"PidsLimit">;
+
+export type PlatformImage = { seed: MachineId, manifest_digest: OciDigest, image_id: OciDigest, availability_expires_at: ImageAvailabilityExpiresAt, };
+
+export type PloyzDnsTargetIntent = "enabled" | "disabled";
+
+export type PoolCapacityFacts = { total_bytes: number,
+/**
+ * Physical bytes consumed beneath the Ployz provisioned dataset root.
+ * Unrelated pool or backing-filesystem allocations are excluded.
+ */
+provisioned_used_bytes: number, free_bytes: number, child_quotas: Array<DatasetQuotaFact>, };
+
+export type PreStartHook = { command: ContainerCommand, };
+
+export type PreStartHookFailure = { "reason": "runtime_unavailable", message: FailureMessage, } | { "reason": "operation_step_ambiguous", operation_id: OperationId, step_id: StepId, container_ids: Array<ContainerId>, } | { "reason": "create_failed", message: FailureMessage, } | { "reason": "start_failed", container_id: ContainerId, message: FailureMessage, inspect_hint: OperatorHint, } | { "reason": "wait_failed", container_id: ContainerId, message: FailureMessage, log_hint: OperatorHint, } | { "reason": "timed_out", container_id: ContainerId, timeout_millis: number, message: FailureMessage, inspect_hint: OperatorHint, } | { "reason": "exited", container_id: ContainerId, exit_code: number, message: FailureMessage, log_hint: OperatorHint, } | { "reason": "cleanup_failed", container_id: ContainerId, message: FailureMessage, inspect_hint: OperatorHint, };
+
+export type PreStartHookStep = { machine_id: MachineId, };
+
+export type PushedImageReceipt = { index_digest: OciDigest, platforms: [OciPlatform, PlatformImage][], };
+
+export type RegistryCredential = { "kind": "basic", username: RegistryCredentialUsername, password: RegistryCredentialSecret, } | { "kind": "identity_token", token: RegistryCredentialSecret, };
+
+export type RegistryCredentialSecret = string;
+
+export type RegistryCredentialUsername = string;
+
+export type ReleasePlatformFailure = { "kind": "missing" } | { "kind": "unsupported", platform: string, };
+
+export type ReplayedOperationEvent = { sequence: EventSequence, recorded_at_unix_ms: OperationEventRecordedAtUnixMs, event: OperationEvent, };
+
+export type ReplicaCount = SafeInteger<"ReplicaCount">;
+
+export type ReplicaSlot = { "kind": "replicated", number: ReplicatedReplicaSlot, } | { "kind": "global" };
+
+export type ReplicatedReplicaSlot = SafeInteger<"ReplicatedReplicaSlot">;
+
+export type RetainedArtifact = { "type": "created_container", machine_id: MachineId, container_id: ContainerId, inspect_hint: OperatorHint, } | { "type": "started_container", machine_id: MachineId, container_id: ContainerId, log_hint: OperatorHint, } | { "type": "container_stop_failed", machine_id: MachineId, container_id: ContainerId, message: FailureMessage, inspect_hint: OperatorHint, } | { "type": "volume_owner_stop_uncertain", target: DeployCleanupContainer, prior_state: DeployVolumeHandoffPriorState, uncertainty: DeployVolumeHandoffStopUncertain, } | { "type": "volume_consumer_quiescence_uncertain", target: DeployCleanupContainer, uncertainty: DeployVolumeHandoffStopUncertain, } | { "type": "volume_consumer_start_uncertain", machine_id: MachineId, expected_identity: ManagedContainerIdentity, message: FailureMessage, inspect_hint: OperatorHint, } | { "type": "volume_owner_restoration_unconfirmed", target: DeployCleanupContainer, reason: DeployVolumeHandoffRestorationUnconfirmed, };
+
+export type RouteBindingDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, hostname: RouteHostname, service_id: ServiceId, namespace_id: NamespaceId, endpoint_port: RoutePort, origin: RouteBindingOrigin, ingress_mode: IngressMode, };
+
+export type RouteBindingId = Brand<string, "RouteBindingId">;
+
+export type RouteBindingOrigin = "declared" | "automatic";
+
+export type RouteBindingState = { id: RouteBindingId, namespace_id: NamespaceId, target: RouteTarget, endpoint_port: RoutePort, service_id: ServiceId, origin: RouteBindingOrigin, };
+
+export type RouteCutoverFailureReason = { "reason": "gateway_unavailable", machine_id: MachineId, } | { "reason": "route_rejected", message: FailureMessage, } | { "reason": "state_store_failed", message: FailureMessage, } | { "reason": "timed_out", timeout_seconds: number, };
+
+export type RouteHostname = Brand<string, "RouteHostname">;
+
+export type RoutePort = SafeInteger<"RoutePort">;
+
+export type RouteTarget = { hostname: RouteHostname, };
+
+export type RouteTlsAvailability = { "status": "available", certificate_id: CertId, } | { "status": "unavailable" };
+
+export type RouteTlsStatus = { route_binding_id: RouteBindingId, availability: RouteTlsAvailability, };
+
+export type RuntimeDerivedCollectionSource = { status: RuntimeDerivedCollectionStatus, source_count: number, missing_link_count: number, };
+
+export type RuntimeDerivedCollectionStatus = "complete" | "partial";
+
+export type RuntimePloyzDnsTarget = { intent: PloyzDnsTargetIntent, allocation: RuntimePloyzDnsTargetAllocation, publication: RuntimePloyzDnsTargetPublication, };
+
+export type RuntimePloyzDnsTargetAllocation = { "status": "unacquired" } | { "status": "allocated", hostname: RouteHostname, issued_at_unix_seconds: number, expires_at_unix_seconds: number, };
+
+export type RuntimePloyzDnsTargetPublication = { "status": "unpublished" } | { "status": "applied", ingress_projection: IngressEndpointProjectionIdentity | null, } | { "status": "withdrawn" };
+
+export type RuntimeProjectionSource = { read_at_unix_seconds: number, };
+
+export type RuntimeProjectionSources = { intent: RuntimeProjectionSource, facts: RuntimeProjectionSource, revisions: RuntimeDerivedCollectionSource, releases: RuntimeDerivedCollectionSource, instances: RuntimeDerivedCollectionSource, };
+
+export type RuntimeServiceInstance = { namespace_id: NamespaceId, machine_id: MachineId, container_id: ContainerId, service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, operation_id: OperationId, step_id: StepId, state: ContainerRuntimeState, };
+
+export type RuntimeServiceRelease = { namespace_id: NamespaceId, service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, routes: Array<RouteTarget>, };
+
+export type RuntimeServiceRevision = { namespace_id: NamespaceId, service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, };
+
+export type RuntimeSnapshot = { automatic_hostname_configuration: AutomaticHostnameConfiguration, ployz_dns_target: RuntimePloyzDnsTarget, ingress_endpoint_projection: IngressEndpointProjection, active_certificates: Array<ActiveCertificateMetadata>, route_tls: Array<RouteTlsStatus>, machines: Array<MachineSnapshot>, services: Array<ServiceSnapshot>, routes: Array<RouteBindingState>, containers: Array<ManagedContainerObservation>, revisions: Array<RuntimeServiceRevision>, releases: Array<RuntimeServiceRelease>, instances: Array<RuntimeServiceInstance>, projection_sources: RuntimeProjectionSources, updated_at_unix_seconds: number, };
+
+export type RuntimeSnapshotError = { "error": "unavailable", message: string, };
+
+export type RuntimeSnapshotRequest = Record<symbol, never>;
+
+export type RuntimeSnapshotResult = { snapshot: RuntimeSnapshot, };
+
+export type ServiceContainerMembership = "serving_target_member" | "retained_evidence";
+
+export type ServiceContainerTestimony = { observation: ManagedContainerObservation, membership: ServiceContainerMembership, };
+
+export type ServiceDependency = { service_id: ServiceId, condition: DependencyCondition, };
+
+export type ServiceDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, namespace_id: NamespaceId, name: string, image: ImageReference, env_fingerprints: { [key in string]: Sha256Hex }, pinned_machines: Array<MachineId>, active_deploy: OperationId, previous_image: ImageReference | null, deployed_at: string, operation_id: OperationId, } & ({ "mode": "replicated", replicas: ServiceReplicaCount, } | { "mode": "global" });
+
+export type ServiceEnvironment = Record<EnvName, EnvValue>;
+
+export type ServiceEnvironmentNames = { service_id: ServiceId, names: Array<EnvName>, };
+
+export type ServiceId = Brand<string, "ServiceId">;
+
+export type ServiceInspectError = { "error": "no_such_service", service_id: ServiceId, } | { "error": "unavailable", message: string, };
+
+export type ServiceInspectRequest = { namespace_id: NamespaceId, service_id: ServiceId, };
+
+export type ServiceListError = { "error": "unavailable", message: string, };
+
+export type ServiceListRequest = Record<symbol, never>;
+
+export type ServiceListResult = { services: Array<ServiceSnapshot>, };
+
+export type ServiceMachineTestimony = { "status": "answered", machine_id: MachineId, containers: Array<ServiceContainerTestimony>, } | { "status": "no_answer", machine_id: MachineId, };
+
+export type ServiceMode = { "kind": "replicated", replicas: ReplicaCount, } | { "kind": "global" };
+
+export type ServiceReplicaCount = SafeInteger<"ServiceReplicaCount">;
+
+export type ServiceRestartError = { "error": "reserved_system_namespace", operation_id: OperationId, namespace_id: NamespaceId, } | { "error": "resource_busy", operation_id: OperationId, namespace_id: NamespaceId, owner_operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
+
+export type ServiceRestartFailure = { "kind": "no_such_service", namespace_id: NamespaceId, service_id: ServiceId, } | { "kind": "no_running_containers", namespace_id: NamespaceId, service_id: ServiceId, } | { "kind": "intent_read_failed", namespace_id: NamespaceId, service_id: ServiceId, message: FailureMessage, } | { "kind": "machine_unavailable", machine_id: MachineId, message: FailureMessage, } | { "kind": "container_restart_failed", machine_id: MachineId, container_id: ContainerId, message: FailureMessage, inspect_hint: OperatorHint, } | { "kind": "health_gate_failed", machine_id: MachineId, container_id: ContainerId, message: FailureMessage, log_hint: OperatorHint, } | { "kind": "timeout", machine_id: MachineId, container_id: ContainerId, timeout_seconds: number, };
+
+export type ServiceRestartOperationState = { "state": "accepted" } | { "state": "running", stage: ServiceRestartRunningStage, } | { "state": "completed" } | { "state": "failed", failure: ServiceRestartFailure, } | { "state": "cancelled", reason: CancellationReason, } | { "state": "interrupted", evidence: OperationInterruptionEvidence, };
+
+export type ServiceRestartRequest = { operation_id: OperationId, namespace_id: NamespaceId, service_id: ServiceId, };
+
+export type ServiceRestartRunningStage = "restarting_containers" | "waiting_for_health";
+
+export type ServiceSnapshot = { active: ServingTargetEntry, route_bindings: Array<RouteBindingState>, testimony: ServiceTestimony, };
+
+export type ServiceTestimony = { ready_container_count: number, observed_container_count: number, machines: Array<ServiceMachineTestimony>, };
+
+export type ServiceVolumeMount = { volume_name: VolumeName, target: ContainerMountPath, };
+
+export type ServingTargetEntry = { namespace_id: NamespaceId, service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, image: ImageReference, mode: ServiceMode, volume_names: Array<VolumeName>, };
+
+export type Sha256Hex = Brand<string, "Sha256Hex">;
+
+export type StepId = Brand<string, "StepId">;
+
+export type StopGracePeriod = SafeInteger<"StopGracePeriod">;
+
+export type StorageCapability = { "state": "unprepared" } | { "state": "ready", pool: ZfsPoolName, capacity: PoolCapacityFacts, } | { "state": "unavailable", reason: StorageUnavailableReason, };
+
+export type StorageEffectFailure = { "kind": "unsupported_platform" } | { "kind": "installation", message: string, } | { "kind": "pool_list", message: string, } | { "kind": "ambiguous_pools", candidates: Array<ZfsPoolName>, } | { "kind": "explicit_pool_absent", pool: ZfsPoolName, } | { "kind": "owned_pool", message: string, } | { "kind": "owned_pool_evidence_present", backing_file: string, } | { "kind": "owned_pool_too_small", total_bytes: number, available_bytes: number, required_headroom_bytes: number, minimum_pool_bytes: number, } | { "kind": "owned_pool_headroom_not_preserved", available_bytes: number, required_headroom_bytes: number, } | { "kind": "dataset", message: string, } | { "kind": "prepared_state_unavailable", message: string, } | { "kind": "prepared_state_mismatch", message: string, } | { "kind": "gather_parse", message: string, } | { "kind": "quota_shrink", dataset: DatasetName, current: number, requested: number, } | { "kind": "quota_capacity_exceeded", total_bytes: number, provisioned_used_bytes: number, free_bytes: number, required_headroom_bytes: number, requested_total_bytes: number, } | { "kind": "destructive_effect", message: string, } | { "kind": "operation_timed_out" } | { "kind": "process_failed", message: string, } | { "kind": "interrupted", message: string, };
+
+export type StorageMode = "plain" | "zfs";
+
+export type StorageUnavailableReason = { "reason": "zfs_module_missing" } | { "reason": "pool_not_imported", pool: ZfsPoolName, } | { "reason": "pool_faulted", pool: ZfsPoolName, } | { "reason": "capacity_facts_unavailable" };
+
+export type StrandedVolumeAlarm = { namespace_id: NamespaceId, volume_name: VolumeName, machine_id: MachineId, reason: StrandedVolumeReason, };
+
+export type StrandedVolumeReason = { "kind": "machine_silent" } | { "kind": "storage_testimony_not_reported" } | { "kind": "storage_unprepared" } | { "kind": "storage_unavailable", reason: StorageUnavailableReason, } | { "kind": "pool_mismatch", expected: ZfsPoolName, reported: ZfsPoolName, };
+
+export type SystemDeployRequest = { idempotency_key: OperationIdempotencyKey, reservation_id: DeployReservationId, target: SystemDeployTarget, registry_credentials?: { [key in ServiceId]: RegistryCredential }, };
+
+export type SystemDeployTarget = { origin?: DeployOrigin | null, services: Array<DeployServiceSpec>, };
+
+export type TokenDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, secret_sha256: Sha256Hex, created_at: string, expires_at: string, };
+
+export type TokenId = Brand<string, "TokenId">;
+
+export type Transport = { "kind": "wireguard", pubkey: WireGuardPublicKey, addr_v6: string, endpoint: string | null, subnet_v4: string | null, } | { "kind": "tailscale", ip: string, subnet_v4: string | null, };
+
+export type UnusableMachine = { machine_id: MachineId, reason: MachineUsabilityReason, };
+
+export type VerifiedBuildSource = { "source": "git", url: GitRepositoryUrl, commit: GitCommit, subdir?: BuildContextPath | null, } | { "source": "local_snapshot", digest: LocalSnapshotDigest, subdir?: BuildContextPath, };
+
+export type VolumeAdmissionFailure = { "kind": "missing_declaration", volume_name: VolumeName, } | { "kind": "ambiguous_pins", volume_name: VolumeName, pin_count: number, } | { "kind": "pinned_to_different_machine", volume_name: VolumeName, pinned_machine_id: MachineId, selected_machine_id: MachineId, } | { "kind": "kind_conversion", volume_name: VolumeName, declaration: VolumeSpec, pin_kind: VolumeKind, } | { "kind": "quota_shrink", volume_name: VolumeName, declared_max_size_bytes: VolumeMaxSizeBytes, pinned_max_size_bytes: VolumeMaxSizeBytes, } | { "kind": "machine_silent", machine_id: MachineId, } | { "kind": "storage_testimony_not_reported", machine_id: MachineId, } | { "kind": "storage_unprepared", machine_id: MachineId, } | { "kind": "storage_unavailable", machine_id: MachineId, reason: StorageUnavailableReason, } | { "kind": "pool_mismatch", volume_name: VolumeName, pinned_pool: ZfsPoolName, reported_pool: ZfsPoolName, } | { "kind": "dataset_identity", volume_name: VolumeName, source: DatasetNameError, } | { "kind": "duplicate_dataset_quota", dataset: DatasetName, } | { "kind": "dataset_quota_not_reported", dataset: DatasetName, } | { "kind": "unpinned_dataset_exists", dataset: DatasetName, } | { "kind": "capacity_overflow" } | { "kind": "capacity_exceeded", total_bytes: number, provisioned_used_bytes: number, free_bytes: number, required_headroom_bytes: number, requested_total_bytes: number, } | { "kind": "inconsistent_capacity_facts", total_bytes: number, provisioned_used_bytes: number, free_bytes: number, };
+
+export type VolumeCreateError = { "error": "reserved_system_namespace", operation_id: OperationId, namespace_id: NamespaceId, } | { "error": "resource_busy", operation_id: OperationId, namespace_id: NamespaceId, owner_operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
+
+export type VolumeCreateFailure = { "kind": "intent_read_failed", message: FailureMessage, } | { "kind": "machine_not_accepted", machine_id: MachineId, } | { "kind": "admission_failed", failure: VolumeAdmissionFailure, } | { "kind": "pin_commit_failed", pin: VolumePinState, message: FailureMessage, } | { "kind": "machine_unavailable", machine_id: MachineId, message: FailureMessage, } | { "kind": "ensure_failed", machine_id: MachineId, volume_name: VolumeName, failure: VolumeEnsureFailure, };
+
+export type VolumeCreateOperationState = { "state": "accepted" } | { "state": "planning" } | { "state": "running", stage: VolumeCreateRunningStage, } | { "state": "completed" } | { "state": "failed", failure: VolumeCreateFailure, } | { "state": "interrupted", evidence: OperationInterruptionEvidence, };
+
+export type VolumeCreateRequest = { operation_id: OperationId, namespace_id: NamespaceId, volume_name: VolumeName, machine_id: MachineId, spec: VolumeSpec, };
+
+export type VolumeCreateRunningStage = "committing_pin" | "ensuring_volume";
+
+export type VolumeEnsureFailure = { "kind": "machine_mismatch", expected_machine_id: MachineId, responder_machine_id: MachineId, } | { "kind": "dataset", dataset: DatasetName, failure: StorageEffectFailure, } | { "kind": "docker_shape_mismatch", volume_name: VolumeName, retained_dataset?: DatasetName | null, message: string, } | { "kind": "docker_ensure_failed", volume_name: VolumeName, retained_dataset?: DatasetName | null, message: string, };
+
+export type VolumeKind = { "kind": "plain" } | { "kind": "provisioned", dataset: DatasetName, max_size_bytes: VolumeMaxSizeBytes, };
+
+export type VolumeListError = { "error": "unavailable", message: string, };
+
+export type VolumeListRequest = Record<symbol, never>;
+
+export type VolumeListResult = { volumes: Array<VolumeSnapshot>, };
+
+export type VolumeMaxSizeBytes = SafeInteger<"VolumeMaxSizeBytes">;
+
+export type VolumeName = Brand<string, "VolumeName">;
+
+export type VolumePinState = { namespace_id: NamespaceId, volume_name: VolumeName, machine_id: MachineId, kind: VolumeKind, };
+
+export type VolumeRemoveError = { "error": "reserved_system_namespace", operation_id: OperationId, namespace_id: NamespaceId, } | { "error": "resource_busy", operation_id: OperationId, namespace_id: NamespaceId, owner_operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
+
+export type VolumeRemoveFailure = { "kind": "volume_not_found", namespace_id: NamespaceId, volume_name: VolumeName, } | { "kind": "volume_in_use", namespace_id: NamespaceId, volume_name: VolumeName, referencing_services: Array<ServiceId>, } | { "kind": "intent_read_failed", namespace_id: NamespaceId, volume_name: VolumeName, message: FailureMessage, } | { "kind": "machine_unavailable", machine_id: MachineId, message: FailureMessage, } | { "kind": "volume_remove_failed", machine_id: MachineId, volume: VolumeName, message: FailureMessage, } | { "kind": "dataset_destroy_failed", machine_id: MachineId, dataset: DatasetName, message: FailureMessage, } | { "kind": "control_plane_commit_failed", namespace_id: NamespaceId, volume_name: VolumeName, message: FailureMessage, };
+
+export type VolumeRemoveOperationState = { "state": "accepted" } | { "state": "running", stage: VolumeRemoveRunningStage, } | { "state": "completed" } | { "state": "failed", failure: VolumeRemoveFailure, } | { "state": "interrupted", evidence: OperationInterruptionEvidence, };
+
+export type VolumeRemoveRequest = { operation_id: OperationId, namespace_id: NamespaceId, volume_name: VolumeName, };
+
+export type VolumeRemoveRunningStage = "removing_volume_data" | "removing_dataset";
+
+export type VolumeSnapshot = { namespace_id: NamespaceId, volume_name: VolumeName, machine_id: MachineId, kind: VolumeKind,
+/**
+ * Service ids are sorted and deduplicated by the projection owner.
+ */
+referencing_services: Array<ServiceId>, testimony: VolumeTestimony, status: VolumeStatus, };
+
+export type VolumeSpec = { "kind": "plain" } | { "kind": "provisioned", max_size_bytes: VolumeMaxSizeBytes, };
+
+export type VolumeStatus = "in_use" | "orphaned";
+
+export type VolumeTestimony = { "status": "available", used_bytes: number, last_write_unix_seconds: number, } | { "status": "unavailable" } | { "status": "no_answer" };
+
+export type WireGuardConfiguredMtu = { "mode": "auto" } | { "mode": "fixed", mtu: number, };
+
+export type WireGuardDetectedMtu = { "status": "detected", mtu: number, } | { "status": "unavailable", message: string, };
+
+export type WireGuardHandshakeStatus = { "status": "never" } | { "status": "ago", seconds: number, };
+
+export type WireGuardInterfaceMtu = { "status": "detected", mtu: number, } | { "status": "unavailable", message: string, };
+
+export type WireGuardMtuProbe = { "status": "not_requested" } | { "status": "measured", mtu: number, } | { "status": "unavailable", message: string, };
+
+export type WireGuardPeerEndpointSubnet = { "status": "missing" } | { "status": "valid", subnet: MachineEndpointSubnet, } | { "status": "invalid", value: string, message: string, };
+
+export type WireGuardPeerStatus = { public_key: WireGuardPublicKey, endpoint_subnet: WireGuardPeerEndpointSubnet, endpoint: string | null, handshake: WireGuardHandshakeStatus, rtt: WireGuardRttStatus, rx_bytes: number, tx_bytes: number, mtu_probe: WireGuardMtuProbe, };
+
+export type WireGuardPublicKey = string;
+
+export type WireGuardReadinessFailure = { "status": "interface_missing" } | { "status": "interface_mtu_unavailable", observed: WireGuardInterfaceMtu, };
+
+export type WireGuardRttStatus = { "status": "measured", micros: number, } | { "status": "unavailable", message: string, };
+
+export type WireGuardStatus = { interface: string, configured_mtu: WireGuardConfiguredMtu, detected_mtu: WireGuardDetectedMtu, interface_mtu: WireGuardInterfaceMtu, peers: Array<WireGuardPeerStatus>, };
+
+export type ZfsPoolName = Brand<string, "ZfsPoolName">;
 
 export type BuildTargetCapabilitiesResponse = OperationApiResponse<BuildTargetCapabilities, BuildTargetCapabilitiesError>;
 

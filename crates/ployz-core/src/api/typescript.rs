@@ -1,12 +1,17 @@
 //! TypeScript generation for the transport-neutral public API contracts.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 use serde_json::{Value, json};
 use ts_rs::{Config, Dependency, TS, TypeVisitor};
 
 use crate::build::{BuildExecutorEvidence, BuildPlatformExecutorAssignment, BuildSource};
+use crate::corrosion::{
+    AcmeHttp01Document, CertHoldingDocument, ClusterDocument, ContainerDocument, CorrosionTable,
+    MachineDocument, MachineStatusDocument, NameClaim, NamespaceDocument, OperationDocument,
+    PeerDocument, RouteBindingDocument, ServiceDocument, TokenDocument,
+};
 use crate::deploy::EnvValue;
 use crate::ids::OperationId;
 use crate::install::{
@@ -44,6 +49,7 @@ pub fn api_typescript() -> String {
 
     let mut declarations = DeclarationCollector::new(&config);
     collect_operation_contracts(&mut declarations);
+    collect_corrosion_contracts(&mut declarations);
     declarations.visit::<OperationApiResponse<AcceptedOperation, DeploySubmitError>>();
 
     // Some domain types use explicit TypeScript representations. The representation is the
@@ -74,11 +80,28 @@ pub fn api_typescript() -> String {
     strip_trailing_whitespace(&output)
 }
 
+fn collect_corrosion_contracts(declarations: &mut DeclarationCollector<'_>) {
+    declarations.visit::<CorrosionTable>();
+    declarations.visit::<NameClaim>();
+    declarations.visit::<ClusterDocument>();
+    declarations.visit::<MachineDocument>();
+    declarations.visit::<PeerDocument>();
+    declarations.visit::<TokenDocument>();
+    declarations.visit::<NamespaceDocument>();
+    declarations.visit::<ServiceDocument>();
+    declarations.visit::<RouteBindingDocument>();
+    declarations.visit::<ContainerDocument>();
+    declarations.visit::<MachineStatusDocument>();
+    declarations.visit::<OperationDocument>();
+    declarations.visit::<CertHoldingDocument>();
+    declarations.visit::<AcmeHttp01Document>();
+}
+
 struct DeclarationCollector<'a> {
     config: &'a Config,
     seen: BTreeSet<String>,
     declared: BTreeSet<String>,
-    declarations: Vec<String>,
+    declarations: BTreeMap<String, String>,
 }
 
 impl<'a> DeclarationCollector<'a> {
@@ -87,21 +110,22 @@ impl<'a> DeclarationCollector<'a> {
             config,
             seen: BTreeSet::new(),
             declared: BTreeSet::new(),
-            declarations: Vec::new(),
+            declarations: BTreeMap::new(),
         }
     }
 
     fn declare<T: TS + 'static>(&mut self) {
-        if !self.declared.insert(T::name(self.config)) {
+        let name = T::name(self.config);
+        if !self.declared.insert(name.clone()) {
             return;
         }
 
         T::visit_dependencies(self);
-        self.declarations.push(T::decl(self.config));
+        self.declarations.insert(name, T::decl(self.config));
     }
 
     fn write_to(self, output: &mut String) {
-        for declaration in self.declarations {
+        for declaration in self.declarations.into_values() {
             output.push_str("export ");
             output.push_str(&declaration);
             output.push_str("\n\n");
@@ -120,8 +144,9 @@ impl TypeVisitor for DeclarationCollector<'_> {
         }
 
         T::visit_dependencies(self);
-        self.declared.insert(T::name(self.config));
-        self.declarations.push(T::decl(self.config));
+        let name = T::name(self.config);
+        self.declared.insert(name.clone());
+        self.declarations.insert(name, T::decl(self.config));
     }
 }
 
@@ -342,6 +367,33 @@ mod tests {
             "OperationInterruptionNextAction",
             "BuildExecutorEvidence",
             "BuildPlatformExecutorAssignment",
+        ] {
+            assert!(
+                generated.contains(&format!("export type {name} =")),
+                "missing declaration for {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn generated_contract_declares_corrosion_documents() {
+        let generated = api_typescript();
+
+        for name in [
+            "ClusterDocument",
+            "MachineDocument",
+            "PeerDocument",
+            "TokenDocument",
+            "NamespaceDocument",
+            "ServiceDocument",
+            "RouteBindingDocument",
+            "ContainerDocument",
+            "MachineStatusDocument",
+            "OperationDocument",
+            "CertHoldingDocument",
+            "AcmeHttp01Document",
+            "Transport",
+            "NameClaim",
         ] {
             assert!(
                 generated.contains(&format!("export type {name} =")),

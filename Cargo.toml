@@ -37,6 +37,7 @@ ployz-test-support = { path = "testing/ployz-test-support" }
 ployz-telemetry = { path = "crates/ployz-telemetry" }
 posthog-rs = { version = "0.19", default-features = false }
 rtnetlink = "0.21"
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sentry = { version = "0.48", default-features = false, features = ["backtrace", "reqwest", "rustls"] }
@@ -49,6 +50,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["a
 ts-rs = { version = "12", features = ["no-serde-warnings"] }
 wait-timeout = "0.2"
 uuid = { version = "1", features = ["serde", "v4"] }
+ulid = "1"
 
 [workspace.lints.clippy]
 indexing_slicing = "warn"

@@ -1,6 +1,148 @@
 //! Typed identifiers used in storage keys, subjects, operations, and routing.
 
+use std::fmt;
+use std::str::FromStr;
+
 use serde::{Deserialize, Serialize};
+
+/// A canonical ULID used by Corrosion's deterministic reader law.
+///
+/// The stored spelling is exactly 26 uppercase Crockford Base32 characters,
+/// so lexical ordering and ULID numeric ordering are identical.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "Brand<string, \"CorrosionUlid\">"))]
+#[serde(try_from = "String", into = "String")]
+pub struct CorrosionUlid(String);
+
+impl CorrosionUlid {
+    pub const TEXT_LENGTH: usize = 26;
+
+    /// Mints a new canonical ULID.
+    #[must_use]
+    pub fn generate() -> Self {
+        Self(ulid::Ulid::new().to_string())
+    }
+
+    /// Parses a canonical Corrosion row identifier.
+    pub fn try_new(value: impl Into<String>) -> Result<Self, CorrosionUlidError> {
+        let value = value.into();
+        if value.len() != Self::TEXT_LENGTH {
+            return Err(CorrosionUlidError::InvalidLength {
+                value,
+                expected: Self::TEXT_LENGTH,
+            });
+        }
+
+        let parsed =
+            value
+                .parse::<ulid::Ulid>()
+                .map_err(|_| CorrosionUlidError::InvalidEncoding {
+                    value: value.clone(),
+                })?;
+        let canonical = parsed.to_string();
+        if value != canonical {
+            return Err(CorrosionUlidError::NonCanonical { value, canonical });
+        }
+
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl fmt::Display for CorrosionUlid {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl FromStr for CorrosionUlid {
+    type Err = CorrosionUlidError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::try_new(value)
+    }
+}
+
+impl TryFrom<String> for CorrosionUlid {
+    type Error = CorrosionUlidError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<CorrosionUlid> for String {
+    fn from(value: CorrosionUlid) -> Self {
+        value.into_string()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum CorrosionUlidError {
+    #[error("Corrosion ULID must contain exactly {expected} characters: {value}")]
+    InvalidLength { value: String, expected: usize },
+    #[error("Corrosion ULID is not valid Crockford Base32: {value}")]
+    InvalidEncoding { value: String },
+    #[error("Corrosion ULID is not canonical: {value}; canonical spelling is {canonical}")]
+    NonCanonical { value: String, canonical: String },
+}
+
+macro_rules! corrosion_ulid_id {
+    (
+        pub struct $name:ident;
+        ts_brand: $brand:literal;
+    ) => {
+        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+        #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+        #[cfg_attr(feature = "ts", ts(type = $brand))]
+        #[serde(transparent)]
+        pub struct $name(CorrosionUlid);
+
+        impl $name {
+            #[must_use]
+            pub fn generate() -> Self {
+                Self(CorrosionUlid::generate())
+            }
+
+            pub fn try_new(value: impl Into<String>) -> Result<Self, CorrosionUlidError> {
+                Ok(Self(CorrosionUlid::try_new(value)?))
+            }
+
+            #[must_use]
+            pub fn as_str(&self) -> &str {
+                self.0.as_str()
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str(self.as_str())
+            }
+        }
+
+        impl FromStr for $name {
+            type Err = CorrosionUlidError;
+
+            fn from_str(value: &str) -> Result<Self, Self::Err> {
+                Self::try_new(value)
+            }
+        }
+    };
+}
+
+corrosion_ulid_id! { pub struct ClusterId; ts_brand: "Brand<string, \"ClusterId\">"; }
+corrosion_ulid_id! { pub struct TokenId; ts_brand: "Brand<string, \"TokenId\">"; }
+corrosion_ulid_id! { pub struct PeerId; ts_brand: "Brand<string, \"PeerId\">"; }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SubjectTokenError {

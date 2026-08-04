@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage:
-#   sudo ./bootstrap.sh install <corrosion-binary> <sha256> <config-values.json> <schema-directory>
+#   sudo ./bootstrap.sh install <corrosion-binary> <sha256> <release> <embedded-version> <config-values.json> <schema-directory>
 #   sudo ./bootstrap.sh clock-gate
 #   sudo ./bootstrap.sh start
 #
@@ -25,8 +25,6 @@
 
 set -euo pipefail
 
-readonly CORROSION_RELEASE="v1.0.0"
-readonly CORROSION_EMBEDDED_VERSION="corrosion 0.2.0-beta.0"
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 readonly SCRIPT_DIR
 readonly CONFIG_TEMPLATE="${SCRIPT_DIR}/config.toml.tpl"
@@ -74,13 +72,15 @@ require_root_secret_file() {
 }
 
 install_corrosion() {
-    [[ $# -eq 4 ]] ||
-        fail "install requires <corrosion-binary> <sha256> <config-values.json> <schema-directory>"
+    [[ $# -eq 6 ]] ||
+        fail "install requires <corrosion-binary> <sha256> <release> <embedded-version> <config-values.json> <schema-directory>"
 
     local binary_path=$1
     local expected_sha256=$2
-    local values_path=$3
-    local schema_source=$4
+    local expected_release=$3
+    local expected_embedded_version=$4
+    local values_path=$5
+    local schema_source=$6
     local actual_sha256
     local admin_socket
     local db_path
@@ -94,6 +94,10 @@ install_corrosion() {
     [[ -f ${binary_path} ]] || fail "missing Corrosion binary: ${binary_path}"
     [[ ${expected_sha256} =~ ^[[:xdigit:]]{64}$ ]] ||
         fail "expected SHA-256 must be exactly 64 hexadecimal characters"
+    [[ ${expected_release} =~ ^v[0-9A-Za-z][0-9A-Za-z._-]*$ ]] ||
+        fail "expected release must be a version tag"
+    [[ ${expected_embedded_version} == corrosion\ * ]] ||
+        fail "expected embedded version must be corrosion --version output"
     require_root_secret_file "${values_path}"
     [[ -d ${schema_source} ]] || fail "missing schema directory: ${schema_source}"
     [[ -f ${CONFIG_TEMPLATE} ]] || fail "missing template: ${CONFIG_TEMPLATE}"
@@ -129,8 +133,8 @@ install_corrosion() {
 
     install -o root -g root -m 0755 -- "${binary_path}" /usr/local/bin/corrosion
     installed_version=$(/usr/local/bin/corrosion --version)
-    [[ ${installed_version} == "${CORROSION_EMBEDDED_VERSION}" ]] ||
-        fail "binary does not carry the version string embedded in the official ${CORROSION_RELEASE} asset"
+    [[ ${installed_version} == "${expected_embedded_version}" ]] ||
+        fail "binary does not carry the version string embedded in the official ${expected_release} asset"
 
     install -d -o root -g corrosion -m 0750 /etc/corrosion
     rendered_config=$(mktemp /etc/corrosion/config.toml.XXXXXX)
@@ -291,7 +295,7 @@ PY
     systemctl daemon-reload
     systemctl enable corrosion.service
 
-    printf 'corrosion_release=%s\n' "${CORROSION_RELEASE}"
+    printf 'corrosion_release=%s\n' "${expected_release}"
     printf 'clock_gate_command=sudo %q clock-gate\n' "$0"
     printf 'corrosion_start_command=sudo %q start\n' "$0"
     printf 'next_step=configure_wg0\n'
@@ -311,6 +315,6 @@ case ${1:-} in
         start_corrosion
         ;;
     *)
-        fail "usage: $0 {install <binary> <sha256> <config-values.json> <schema-directory>|clock-gate|start}"
+        fail "usage: $0 {install <binary> <sha256> <release> <embedded-version> <config-values.json> <schema-directory>|clock-gate|start}"
         ;;
 esac

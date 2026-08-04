@@ -4,12 +4,16 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 RUNS_ROOT="${CORROSION_SPIKE_RUNS_ROOT:-$REPO_ROOT/.scratch/corrosion-spike}"
+readonly RELEASE_MANIFEST="$REPO_ROOT/corrosion-release.json"
 VULTR_API="https://api.vultr.com/v2"
 REGION="${CORROSION_SPIKE_REGION:-ewr}"
 PLAN="${CORROSION_SPIKE_PLAN:-vc2-1c-1gb}"
 OS_ID="${CORROSION_SPIKE_OS_ID:-2284}"
-RELEASE_URL="https://github.com/superfly/corrosion/releases/download/v1.0.0/corrosion-x86_64-unknown-linux-gnu.tar.gz"
-RELEASE_SHA256="3504d7d1b4b53737457fc40f2353a400cf4df0c1217ec318924d7ee310876194"
+RELEASE_TAG=""
+RELEASE_ARCHIVE_NAME=""
+RELEASE_URL=""
+RELEASE_SHA256=""
+RELEASE_EMBEDDED_VERSION=""
 SSH_OPTIONS=()
 TUNNEL_PIDS=()
 RUN_DIR=""
@@ -30,6 +34,36 @@ require_command() {
         printf 'missing required command: %s\n' "$command_name" >&2
         return 1
     }
+}
+
+load_release_manifest() {
+    if ! jq -e '
+        type == "object" and
+        ((keys_unsorted | sort) == ["archive", "embedded_version", "release_tag"]) and
+        (.release_tag | type == "string" and test("^v[0-9A-Za-z][0-9A-Za-z._-]*$")) and
+        (.archive | type == "object") and
+        ((.archive | keys_unsorted | sort) == ["name", "sha256", "url"]) and
+        (.archive.name | type == "string" and test("^[A-Za-z0-9._-]+$")) and
+        (.archive.url | type == "string") and
+        (.archive.url == (
+            "https://github.com/superfly/corrosion/releases/download/" +
+            .release_tag + "/" + .archive.name
+        )) and
+        (.archive.sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
+        (.embedded_version |
+            type == "string" and test("^corrosion [^\\t\\r\\n]+$"))
+    ' "$RELEASE_MANIFEST" >/dev/null; then
+        printf 'invalid Corrosion release manifest: %s\n' "$RELEASE_MANIFEST" >&2
+        return 1
+    fi
+
+    RELEASE_TAG="$(jq -er '.release_tag' "$RELEASE_MANIFEST")"
+    RELEASE_ARCHIVE_NAME="$(jq -er '.archive.name' "$RELEASE_MANIFEST")"
+    RELEASE_URL="$(jq -er '.archive.url' "$RELEASE_MANIFEST")"
+    RELEASE_SHA256="$(jq -er '.archive.sha256' "$RELEASE_MANIFEST")"
+    RELEASE_EMBEDDED_VERSION="$(jq -er '.embedded_version' "$RELEASE_MANIFEST")"
+    readonly RELEASE_TAG RELEASE_ARCHIVE_NAME RELEASE_URL RELEASE_SHA256
+    readonly RELEASE_EMBEDDED_VERSION
 }
 
 require_api_key() {
@@ -129,8 +163,8 @@ remote_driver() {
 }
 
 download_release() {
-    local cache_dir="$RUNS_ROOT/cache/v1.0.0"
-    local archive="$cache_dir/corrosion-x86_64-unknown-linux-gnu.tar.gz"
+    local cache_dir="$RUNS_ROOT/cache/$RELEASE_TAG"
+    local archive="$cache_dir/$RELEASE_ARCHIVE_NAME"
     mkdir -p "$cache_dir"
 
     if [[ ! -f "$archive" ]] || ! printf '%s  %s\n' "$RELEASE_SHA256" "$archive" | sha256sum --check --status; then
@@ -150,6 +184,8 @@ preflight() {
     for command_name in curl jq openssl ssh scp ssh-keygen sha256sum sqlite3 tar python3; do
         require_command "$command_name"
     done
+    load_release_manifest
+    jq '.' "$RELEASE_MANIFEST" >"$RUN_DIR/evidence/corrosion-release.json"
 
     local plan_json
     plan_json="$(api GET "/plans?type=vc2&per_page=500" | jq -e \
@@ -590,6 +626,8 @@ upload_and_install() {
             /root/ployz-spike/remote/bootstrap.sh install \
             /root/ployz-spike/corrosion \
             "$binary_sha" \
+            "$RELEASE_TAG" \
+            "$RELEASE_EMBEDDED_VERSION" \
             /root/ployz-spike/values.json \
             /root/ployz-spike/schema
     }
@@ -1178,12 +1216,14 @@ run_same_version_replacement() {
         collect_node "$node" "$phase_dir/node${node}.json"
     done
     jq -n \
+        --arg release_tag "$RELEASE_TAG" \
+        --arg embedded_version "$RELEASE_EMBEDDED_VERSION" \
         '{
             command: "same-version-atomic-replacement",
             ok: true,
             limitations: [
-                "v1.0.0 is the only published stable v1 asset, so no adjacent-version rolling upgrade was invented.",
-                "The official v1.0.0 asset embeds the version string corrosion 0.2.0-beta.0."
+                ($release_tag + " is the only published stable v1 asset, so no adjacent-version rolling upgrade was invented."),
+                ("The official " + $release_tag + " asset embeds the version string " + $embedded_version + ".")
             ],
             operator_steps: [
                 {
@@ -1477,6 +1517,8 @@ resume_run() {
         printf 'retained run is missing state or SSH key: %s\n' "$RUN_DIR" >&2
         return 1
     fi
+    require_command jq
+    load_release_manifest
     validate_retained_hosts
     wait_for_ssh
     trap keep_hosts_on_exit EXIT INT TERM

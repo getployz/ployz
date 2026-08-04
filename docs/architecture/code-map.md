@@ -88,6 +88,11 @@ API, Gateway, and DNS process implementations. Keep role entrypoints small.
 Transport adapters may call domain policy; domain policy must not import role
 wiring.
 
+The shared concrete Corrosion exec/query/subscribe client lives under
+`crates/ployzd/src/corrosion/`; every daemon role uses that one adapter. Core
+owns its transport-neutral wire shapes and row-reader policy, not the HTTP
+client.
+
 Gateway/DNS/certificate mechanics that do not depend on a process transport can
 remain local modules until churn proves a crate boundary pays for itself. Do not
 split per-role crates ahead of that pain.
@@ -134,7 +139,7 @@ is the manual upstream Corrosion certification harness, not a workspace crate.
 | Change | Start here | Keep out |
 | --- | --- | --- |
 | Row, HTTP DTO, typed refusal, id, invariant, or transition | `crates/ployz-core/` | daemon handles and CLI copy |
-| Corrosion query/exec/subscribe adapter | the core-owned store client seam selected by the row-model slice | role-private convenience types |
+| Corrosion query/exec/subscribe adapter | `crates/ployzd/src/corrosion/`, with wire DTOs and reader policy in Core | role-private convenience types |
 | Keeper/API/Gateway/DNS behavior | matching module under `crates/ployzd/` | another role's private implementation |
 | Dockerfile or Railpack execution mechanic | `crates/ployz-build-executor/` | admission and operation evidence |
 | CLI command, mesh dial, HTTP client, or presentation | `crates/ployz/` | Core presentation logic |

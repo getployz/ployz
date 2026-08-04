@@ -23,6 +23,7 @@ pingora = { version = "0.8.1", features = ["lb", "openssl", "proxy"] }
 ployz-core.workspace = true
 ployz-ebpf-common = { path = "../../ebpf/common", features = ["validation"] }
 ployz-telemetry.workspace = true
+reqwest.workspace = true
 serde_json.workspace = true
 sysctl.workspace = true
 tempfile = "3"
@@ -43,6 +44,7 @@ rtnetlink.workspace = true
 [dev-dependencies]
 ployz-test-support.workspace = true
 rcgen = { version = "0.14.8", features = ["crypto", "pem"] }
+sha2.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
 
 [lib]

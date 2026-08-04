@@ -1,0 +1,838 @@
+#![cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    allow(dead_code, unused_imports)
+)]
+
+use std::fs::{self, File};
+use std::net::{SocketAddr, TcpListener};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
+
+use ployz_core::corrosion::{
+    AcmeHttp01Document, CertHoldingDocument, ChangeKind, ClusterDocument, ContainerDocument,
+    CorrosionDocument, CorrosionTable, MachineDocument, MachineStatusDocument, NamespaceDocument,
+    OperationDocument, PeerDocument, RouteBindingDocument, ServiceDocument, SqliteParameter,
+    SqliteValue, Statement, TokenDocument, read_named_rows,
+};
+use ployz_core::ids::{ClusterId, CorrosionUlid};
+use ployzd::corrosion::{
+    BearerToken, CorrosionClient, CorrosionClientBounds, CorrosionClientConfig, NameClaimOutcome,
+    QueryStreamEvent, SubscriptionStream, SubscriptionStreamEvent,
+};
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use tempfile::TempDir;
+
+const CLUSTER_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+const ROW_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
+const SECOND_ROW_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
+const RESUME_ROW_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAY";
+const RACE_LOWER_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAZ";
+const RACE_HIGHER_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB0";
+const TOKEN: &str = "ployz-stock-corrosion-test";
+
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+#[test]
+fn pinned_corrosion_archive_has_no_supported_asset_for_this_platform() {
+    panic!(
+        "the pinned Corrosion integration test supports only linux/x86_64; add and pin an official asset before enabling this platform"
+    );
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[tokio::test]
+async fn pinned_corrosion_executes_schema_rows_queries_and_subscriptions() {
+    let mut harness = StockCorrosion::start()
+        .await
+        .unwrap_or_else(|error| panic!("could not start pinned Corrosion: {error}"));
+
+    let result = exercise_contract(&harness.client).await;
+    if let Err(error) = result {
+        let logs = harness.logs();
+        panic!("stock Corrosion contract failed: {error}\n--- corrosion.log ---\n{logs}");
+    }
+
+    harness.stop();
+}
+
+async fn exercise_contract(client: &CorrosionClient) -> Result<(), String> {
+    let fixtures = fixtures()?;
+    let inserts = fixtures
+        .iter()
+        .map(Fixture::insert_statement)
+        .collect::<Vec<_>>();
+    client
+        .execute(&inserts)
+        .await
+        .map_err(|error| error.to_string())?;
+
+    for fixture in &fixtures {
+        let selected_columns = std::iter::once(fixture.key_column)
+            .chain(std::iter::once("document"))
+            .chain(fixture.generated.iter().map(|column| column.name))
+            .collect::<Vec<_>>();
+        let statement = Statement::with_params(
+            format!(
+                "SELECT {} FROM {} WHERE {} = ?",
+                selected_columns.join(", "),
+                fixture.table.as_str(),
+                fixture.key_column
+            ),
+            vec![SqliteParameter::Text(fixture.key.to_owned())],
+        );
+        let (columns, values) = query_one(client, &statement).await?;
+        if columns != selected_columns {
+            return Err(format!(
+                "{} returned columns {columns:?}, expected {selected_columns:?}",
+                fixture.table.as_str()
+            ));
+        }
+        let Some(SqliteValue::Text(key)) = values.first() else {
+            return Err(format!("{} returned no text key", fixture.table.as_str()));
+        };
+        if key != fixture.key {
+            return Err(format!(
+                "{} returned key {key}, expected {}",
+                fixture.table.as_str(),
+                fixture.key
+            ));
+        }
+        let Some(SqliteValue::Text(document)) = values.get(1) else {
+            return Err(format!(
+                "{} returned no text document",
+                fixture.table.as_str()
+            ));
+        };
+        if document != &fixture.document {
+            return Err(format!(
+                "{} did not return the inserted typed document",
+                fixture.table.as_str()
+            ));
+        }
+        let generated = values.get(2..).unwrap_or_default();
+        let expected = fixture
+            .generated
+            .iter()
+            .map(|column| column.expected.clone())
+            .collect::<Vec<_>>();
+        if generated != expected {
+            return Err(format!(
+                "{} generated values were {generated:?}, expected {expected:?}",
+                fixture.table.as_str()
+            ));
+        }
+    }
+
+    let namespace_query = Statement::simple("SELECT id, document FROM namespaces");
+    let (columns, values) = query_one(client, &namespace_query).await?;
+    if columns != ["id", "document"] {
+        return Err(format!("namespace query returned columns {columns:?}"));
+    }
+    let [SqliteValue::Text(key), SqliteValue::Text(document)] = values.as_slice() else {
+        return Err(format!("namespace query returned values {values:?}"));
+    };
+    let cluster_id = ClusterId::try_new(CLUSTER_ID).map_err(|error| error.to_string())?;
+    let report = read_named_rows::<NamespaceDocument>(
+        &cluster_id,
+        [ployz_core::corrosion::StoredRow::new(key, document)],
+    );
+    if report.accepted.len() != 1 || !report.skipped.is_empty() || !report.shadows.is_empty() {
+        return Err("typed namespace reader rejected the stock query row".to_owned());
+    }
+
+    let mut subscription = client
+        .subscribe(&namespace_query)
+        .await
+        .map_err(|error| error.to_string())?;
+    consume_initial_snapshot(&mut subscription).await?;
+
+    let second_document = encode::<NamespaceDocument>(json!({
+        "v": 1,
+        "cluster_id": CLUSTER_ID,
+        "name": "staging"
+    }))?;
+    client
+        .execute(&[Statement::with_params(
+            "INSERT INTO namespaces (id, document) VALUES (?, ?)",
+            vec![
+                SqliteParameter::Text(SECOND_ROW_ID.to_owned()),
+                SqliteParameter::Text(second_document),
+            ],
+        )])
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let change_id = match subscription
+        .next()
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        Some(SubscriptionStreamEvent::Change(ChangeKind::Insert, _, values, change_id)) => {
+            if values.first() != Some(&SqliteValue::Text(SECOND_ROW_ID.to_owned())) {
+                return Err(format!(
+                    "subscription inserted unexpected namespace values {values:?}"
+                ));
+            }
+            if subscription.last_contiguous_change_id() != Some(change_id) {
+                return Err("subscription did not advance its contiguous cursor".to_owned());
+            }
+            change_id
+        }
+        event => return Err(format!("subscription returned unexpected event {event:?}")),
+    };
+
+    let identity = subscription.identity().clone();
+    drop(subscription);
+    let mut resumed = client
+        .resume(&identity, change_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let resume_document = encode::<NamespaceDocument>(json!({
+        "v": 1,
+        "cluster_id": CLUSTER_ID,
+        "name": "resumed"
+    }))?;
+    client
+        .execute(&[Statement::with_params(
+            "INSERT INTO namespaces (id, document) VALUES (?, ?)",
+            vec![
+                SqliteParameter::Text(RESUME_ROW_ID.to_owned()),
+                SqliteParameter::Text(resume_document),
+            ],
+        )])
+        .await
+        .map_err(|error| error.to_string())?;
+    match resumed.next().await.map_err(|error| error.to_string())? {
+        Some(SubscriptionStreamEvent::Change(ChangeKind::Insert, _, values, resumed_change_id))
+            if values.first() == Some(&SqliteValue::Text(RESUME_ROW_ID.to_owned()))
+                && resumed.last_contiguous_change_id() == Some(resumed_change_id) => {}
+        event => return Err(format!("resumed subscription returned {event:?}")),
+    }
+    drop(resumed);
+
+    let race_document = serde_json::from_value::<NamespaceDocument>(json!({
+        "v": 1,
+        "cluster_id": CLUSTER_ID,
+        "name": "race"
+    }))
+    .map_err(|error| error.to_string())?;
+    let lower_id = CorrosionUlid::try_new(RACE_LOWER_ID).map_err(|error| error.to_string())?;
+    let higher_id = CorrosionUlid::try_new(RACE_HIGHER_ID).map_err(|error| error.to_string())?;
+    let (lower, higher) = tokio::join!(
+        client.claim_named(lower_id.clone(), &race_document),
+        client.claim_named(higher_id.clone(), &race_document),
+    );
+    match lower.map_err(|error| error.to_string())? {
+        NameClaimOutcome::Claimed { id, .. } if id == lower_id => {}
+        NameClaimOutcome::Claimed { id, .. } => {
+            return Err(format!("lower claim reported unexpected winner {id}"));
+        }
+        NameClaimOutcome::Lost { winner, .. } => {
+            return Err(format!("lower claim lost to {}", winner.id));
+        }
+    }
+    match higher.map_err(|error| error.to_string())? {
+        NameClaimOutcome::Lost { id, winner, .. } if id == higher_id && winner.id == lower_id => {}
+        NameClaimOutcome::Lost { id, winner, .. } => {
+            return Err(format!(
+                "claim {id} lost to unexpected winner {}",
+                winner.id
+            ));
+        }
+        NameClaimOutcome::Claimed { id, .. } => {
+            return Err(format!("higher claim {id} won"));
+        }
+    }
+    let (_, values) = query_one(
+        client,
+        &Statement::with_params(
+            "SELECT id, document FROM namespaces WHERE name = ?",
+            vec![SqliteParameter::Text("race".to_owned())],
+        ),
+    )
+    .await?;
+    if values.first() != Some(&SqliteValue::Text(RACE_LOWER_ID.to_owned())) {
+        return Err(format!(
+            "claim cleanup retained the wrong namespace row: {values:?}"
+        ));
+    }
+
+    Ok(())
+}
+
+async fn consume_initial_snapshot(stream: &mut SubscriptionStream) -> Result<(), String> {
+    loop {
+        match stream.next().await.map_err(|error| error.to_string())? {
+            Some(SubscriptionStreamEvent::Columns(_) | SubscriptionStreamEvent::Row(_, _)) => {}
+            Some(SubscriptionStreamEvent::EndOfQuery(_)) => return Ok(()),
+            Some(SubscriptionStreamEvent::Change(_, _, _, _)) | None => {
+                return Err("subscription left its initial snapshot without eoq".to_owned());
+            }
+        }
+    }
+}
+
+async fn query_one(
+    client: &CorrosionClient,
+    statement: &Statement,
+) -> Result<(Vec<String>, Vec<SqliteValue>), String> {
+    let mut stream = client
+        .query(statement)
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut columns = None;
+    let mut row = None;
+    while let Some(event) = stream.next().await.map_err(|error| error.to_string())? {
+        match event {
+            QueryStreamEvent::Columns(value) => columns = Some(value),
+            QueryStreamEvent::Row(_, value) if row.is_none() => row = Some(value),
+            QueryStreamEvent::Row(_, _) => {
+                return Err("query returned more than one row".to_owned());
+            }
+            QueryStreamEvent::EndOfQuery(_) => break,
+        }
+    }
+    let Some(columns) = columns else {
+        return Err("query returned no columns frame".to_owned());
+    };
+    let Some(row) = row else {
+        return Err("query returned no row".to_owned());
+    };
+    Ok((columns, row))
+}
+
+struct GeneratedColumn {
+    name: &'static str,
+    expected: SqliteValue,
+}
+
+struct Fixture {
+    table: CorrosionTable,
+    key_column: &'static str,
+    key: &'static str,
+    document: String,
+    generated: Vec<GeneratedColumn>,
+}
+
+impl Fixture {
+    fn insert_statement(&self) -> Statement {
+        Statement::with_params(
+            format!(
+                "INSERT INTO {} ({}, document) VALUES (?, ?)",
+                self.table.as_str(),
+                self.key_column
+            ),
+            vec![
+                SqliteParameter::Text(self.key.to_owned()),
+                SqliteParameter::Text(self.document.clone()),
+            ],
+        )
+    }
+}
+
+fn column(name: &'static str, expected: impl Into<String>) -> GeneratedColumn {
+    GeneratedColumn {
+        name,
+        expected: SqliteValue::Text(expected.into()),
+    }
+}
+
+fn fixture<Document>(
+    table: CorrosionTable,
+    key_column: &'static str,
+    key: &'static str,
+    value: Value,
+    generated: Vec<GeneratedColumn>,
+) -> Result<Fixture, String>
+where
+    Document: CorrosionDocument,
+{
+    if Document::TABLE != table {
+        return Err(format!(
+            "fixture type owns {}, not {}",
+            Document::TABLE.as_str(),
+            table.as_str()
+        ));
+    }
+    Ok(Fixture {
+        table,
+        key_column,
+        key,
+        document: encode::<Document>(value)?,
+        generated,
+    })
+}
+
+fn encode<Document>(value: Value) -> Result<String, String>
+where
+    Document: CorrosionDocument,
+{
+    let typed = serde_json::from_value::<Document>(value).map_err(|error| error.to_string())?;
+    serde_json::to_string(&typed).map_err(|error| error.to_string())
+}
+
+fn fixtures() -> Result<Vec<Fixture>, String> {
+    let machine_id = ROW_ID;
+    let namespace_id = "namespace_production";
+    let service_id = "service_api";
+    let operation_id = "operation_deploy";
+    let base = |name: &str| json!({"v": 1, "cluster_id": CLUSTER_ID, "name": name});
+
+    Ok(vec![
+        fixture::<ClusterDocument>(
+            CorrosionTable::Cluster,
+            "id",
+            CLUSTER_ID,
+            json!({
+                "v": 1,
+                "cluster_id": CLUSTER_ID,
+                "name": "acme-prod",
+                "storage_default": "plain",
+                "hostname_mode": {"mode": "disabled"},
+                "prefix": "10.210.0.0/16",
+                "provider": "builtin_wireguard",
+                "acme_directory_url": "https://acme.example/directory",
+                "acme_contact": null
+            }),
+            vec![],
+        )?,
+        fixture::<MachineDocument>(
+            CorrosionTable::Machines,
+            "id",
+            ROW_ID,
+            json!({
+                "v": 1,
+                "cluster_id": CLUSTER_ID,
+                "name": "edge-a",
+                "lifecycle": "active",
+                "transport": {"kind": "tailscale", "ip": "100.64.0.10", "subnet_v4": "10.210.20.0/24"},
+                "storage": {"mode": "plain", "reason": {"kind": "default"}}
+            }),
+            vec![column("name", "edge-a"), column("lifecycle", "active")],
+        )?,
+        fixture::<PeerDocument>(
+            CorrosionTable::Peers,
+            "id",
+            ROW_ID,
+            json!({
+                "v": 1,
+                "cluster_id": CLUSTER_ID,
+                "name": "operator-laptop",
+                "transport": {"kind": "tailscale", "ip": "100.64.0.11", "subnet_v4": null}
+            }),
+            vec![column("name", "operator-laptop")],
+        )?,
+        fixture::<TokenDocument>(
+            CorrosionTable::Tokens,
+            "id",
+            ROW_ID,
+            json!({
+                "v": 1,
+                "cluster_id": CLUSTER_ID,
+                "secret_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "created_at": "2026-08-04T10:00:00Z",
+                "expires_at": "2026-08-05T10:00:00Z"
+            }),
+            vec![GeneratedColumn {
+                name: "kind",
+                expected: SqliteValue::Null,
+            }],
+        )?,
+        fixture::<NamespaceDocument>(
+            CorrosionTable::Namespaces,
+            "id",
+            ROW_ID,
+            base("production"),
+            vec![column("name", "production")],
+        )?,
+        fixture::<ServiceDocument>(
+            CorrosionTable::Services,
+            "id",
+            ROW_ID,
+            json!({
+                "v": 1,
+                "cluster_id": CLUSTER_ID,
+                "namespace_id": namespace_id,
+                "name": "api",
+                "image": "ghcr.io/acme/api:2026-08-04",
+                "env_fingerprints": {"DATABASE_URL": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+                "mode": "replicated",
+                "replicas": 1,
+                "pinned_machines": [machine_id],
+                "active_deploy": operation_id,
+                "previous_image": null,
+                "deployed_at": "2026-08-04T10:05:00Z",
+                "operation_id": operation_id
+            }),
+            vec![column("namespace_id", namespace_id), column("name", "api")],
+        )?,
+        fixture::<RouteBindingDocument>(
+            CorrosionTable::RouteBindings,
+            "id",
+            ROW_ID,
+            json!({
+                "v": 1,
+                "cluster_id": CLUSTER_ID,
+                "hostname": "api.example.com",
+                "service_id": service_id,
+                "namespace_id": namespace_id,
+                "endpoint_port": 8080,
+                "origin": "declared",
+                "ingress_mode": "direct"
+            }),
+            vec![
+                column("hostname", "api.example.com"),
+                column("service_id", service_id),
+                column("namespace_id", namespace_id),
+            ],
+        )?,
+        fixture::<ContainerDocument>(
+            CorrosionTable::Containers,
+            "id",
+            "container-runtime-id",
+            json!({
+                "v": 1,
+                "cluster_id": CLUSTER_ID,
+                "machine_id": machine_id,
+                "service_id": service_id,
+                "namespace_id": namespace_id,
+                "ip": "10.210.20.2",
+                "deploy": operation_id
+            }),
+            vec![
+                column("machine_id", machine_id),
+                column("service_id", service_id),
+                column("namespace_id", namespace_id),
+            ],
+        )?,
+        fixture::<MachineStatusDocument>(
+            CorrosionTable::MachineStatus,
+            "machine_id",
+            ROW_ID,
+            json!({
+                "v": 1,
+                "cluster_id": CLUSTER_ID,
+                "machine_id": machine_id,
+                "ployz_version": "0.1.0-alpha.7",
+                "corrosion_version": "0.2.0-beta.0",
+                "architecture": "x86_64",
+                "free_disk_bytes": 80000000000_u64,
+                "free_memory_bytes": 4000000000_u64,
+                "load": "idle",
+                "observed_at": "2026-08-04T10:06:00Z"
+            }),
+            vec![],
+        )?,
+        fixture::<OperationDocument>(
+            CorrosionTable::Operations,
+            "id",
+            operation_id,
+            json!({
+                "v": 1,
+                "cluster_id": CLUSTER_ID,
+                "machine_id": machine_id,
+                "kind": "deploy",
+                "namespace_id": namespace_id,
+                "service_id": service_id,
+                "initiator": {"kind": "peer", "peer_id": ROW_ID},
+                "state": "failed",
+                "started_at": "2026-08-04T10:00:00Z",
+                "completed_at": "2026-08-04T10:07:00Z",
+                "failure": {
+                    "kind": "execution",
+                    "class": "health_gate_failed",
+                    "message": "container did not become healthy"
+                }
+            }),
+            vec![
+                column("kind", "deploy"),
+                column("state", "failed"),
+                column("machine_id", machine_id),
+            ],
+        )?,
+        fixture::<CertHoldingDocument>(
+            CorrosionTable::CertHoldings,
+            "id",
+            "cert-holding-id",
+            json!({
+                "v": 1,
+                "cluster_id": CLUSTER_ID,
+                "machine_id": machine_id,
+                "hostname": "api.example.com",
+                "fingerprint": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "issued_at": "2026-08-04T10:08:00Z",
+                "expires_at": "2026-11-02T10:08:00Z"
+            }),
+            vec![
+                column("hostname", "api.example.com"),
+                column("machine_id", machine_id),
+                column("expires_at", "2026-11-02T10:08:00Z"),
+            ],
+        )?,
+        fixture::<AcmeHttp01Document>(
+            CorrosionTable::AcmeHttp01,
+            "id",
+            "acme-challenge-token",
+            json!({
+                "v": 1,
+                "cluster_id": CLUSTER_ID,
+                "machine_id": machine_id,
+                "hostname": "api.example.com",
+                "key_authorization": "public-acme-key-authorization",
+                "created_at": "2026-08-04T10:09:00Z"
+            }),
+            vec![column("machine_id", machine_id)],
+        )?,
+    ])
+}
+
+struct ReleasePin {
+    release_tag: String,
+    archive_name: String,
+    archive_url: String,
+    archive_sha256: String,
+    embedded_version: String,
+}
+
+impl ReleasePin {
+    fn load(repo_root: &Path) -> Result<Self, String> {
+        let path = repo_root.join("corrosion-release.json");
+        let bytes = fs::read(&path).map_err(|error| format!("read {}: {error}", path.display()))?;
+        let manifest: Value =
+            serde_json::from_slice(&bytes).map_err(|error| format!("parse manifest: {error}"))?;
+        let text = |value: Option<&Value>, field: &str| {
+            value
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| format!("release manifest field {field} is missing or not text"))
+        };
+        let archive = manifest.get("archive");
+        Ok(Self {
+            release_tag: text(manifest.get("release_tag"), "release_tag")?,
+            archive_name: text(archive.and_then(|value| value.get("name")), "archive.name")?,
+            archive_url: text(archive.and_then(|value| value.get("url")), "archive.url")?,
+            archive_sha256: text(
+                archive.and_then(|value| value.get("sha256")),
+                "archive.sha256",
+            )?,
+            embedded_version: text(manifest.get("embedded_version"), "embedded_version")?,
+        })
+    }
+}
+
+struct StockCorrosion {
+    _temp: TempDir,
+    child: Option<Child>,
+    log_path: PathBuf,
+    client: CorrosionClient,
+}
+
+impl StockCorrosion {
+    async fn start() -> Result<Self, String> {
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let release = ReleasePin::load(&repo_root)?;
+        let archive = release_archive(&repo_root, &release)?;
+        verify_sha256(&archive, &release.archive_sha256)?;
+
+        let temp = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let extract = Command::new("tar")
+            .args(["-xzf"])
+            .arg(&archive)
+            .arg("-C")
+            .arg(temp.path())
+            .output()
+            .map_err(|error| format!("run tar: {error}"))?;
+        if !extract.status.success() {
+            return Err(format!(
+                "extract {}: {}",
+                archive.display(),
+                String::from_utf8_lossy(&extract.stderr)
+            ));
+        }
+        let binary = temp.path().join("corrosion");
+        let version = Command::new(&binary)
+            .arg("--version")
+            .output()
+            .map_err(|error| format!("run {} --version: {error}", binary.display()))?;
+        if !version.status.success() {
+            return Err(format!(
+                "{} --version failed: {}",
+                binary.display(),
+                String::from_utf8_lossy(&version.stderr)
+            ));
+        }
+        let actual_version = String::from_utf8_lossy(&version.stdout).trim().to_owned();
+        if actual_version != release.embedded_version {
+            return Err(format!(
+                "{} contains {actual_version:?}, expected {:?} for {}",
+                archive.display(),
+                release.embedded_version,
+                release.release_tag
+            ));
+        }
+
+        let api_addr = unused_loopback_addr()?;
+        let gossip_addr = unused_loopback_addr()?;
+        let subscriptions = temp.path().join("subscriptions");
+        let run = temp.path().join("run");
+        fs::create_dir_all(&subscriptions).map_err(|error| error.to_string())?;
+        fs::create_dir_all(&run).map_err(|error| error.to_string())?;
+        let config_path = temp.path().join("config.toml");
+        let schema_path = repo_root.join("docs/design/corrosion-schema-v1.sql");
+        let quote = |path: &Path| {
+            serde_json::to_string(&path.to_string_lossy())
+                .map_err(|error| format!("quote path {}: {error}", path.display()))
+        };
+        let config = format!(
+            "[db]\npath = {}\nschema_paths = [{}]\nsubscriptions_path = {}\n\n[gossip]\naddr = {:?}\nbootstrap = []\nplaintext = true\nmax_mtu = 1232\n\n[api]\naddr = {:?}\nauthz.bearer-token = {TOKEN:?}\n\n[admin]\npath = {}\n",
+            quote(&temp.path().join("corrosion.db"))?,
+            quote(&schema_path)?,
+            quote(&subscriptions)?,
+            gossip_addr.to_string(),
+            api_addr.to_string(),
+            quote(&run.join("admin.sock"))?,
+        );
+        fs::write(&config_path, config).map_err(|error| error.to_string())?;
+
+        let bearer = BearerToken::new(TOKEN).map_err(|error| error.to_string())?;
+        let config = CorrosionClientConfig::new(
+            api_addr,
+            bearer,
+            CorrosionClientBounds {
+                connect_timeout: Duration::from_millis(500),
+                request_timeout: Duration::from_secs(2),
+                stream_idle_timeout: Duration::from_secs(5),
+                max_ndjson_frame_bytes: 1024 * 1024,
+                max_error_body_bytes: 64 * 1024,
+            },
+        )
+        .map_err(|error| error.to_string())?;
+        let client = CorrosionClient::new(config).map_err(|error| error.to_string())?;
+
+        let log_path = temp.path().join("corrosion.log");
+        let log = File::create(&log_path).map_err(|error| error.to_string())?;
+        let stderr = log.try_clone().map_err(|error| error.to_string())?;
+        let child = Command::new(&binary)
+            .args(["--config"])
+            .arg(&config_path)
+            .arg("agent")
+            .stdout(Stdio::from(log))
+            .stderr(Stdio::from(stderr))
+            .spawn()
+            .map_err(|error| format!("spawn {}: {error}", binary.display()))?;
+
+        let mut harness = Self {
+            _temp: temp,
+            child: Some(child),
+            log_path,
+            client,
+        };
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut last_error = "Corrosion was not queried".to_owned();
+        while Instant::now() < deadline {
+            if let Some(status) = harness
+                .child
+                .as_mut()
+                .expect("running child")
+                .try_wait()
+                .map_err(|error| error.to_string())?
+            {
+                return Err(format!(
+                    "Corrosion exited during startup with {status}: {}",
+                    harness.logs()
+                ));
+            }
+            match query_one(&harness.client, &Statement::simple("SELECT 1")).await {
+                Ok(_) => return Ok(harness),
+                Err(error) => last_error = error,
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        Err(format!(
+            "Corrosion did not become ready: {last_error}: {}",
+            harness.logs()
+        ))
+    }
+
+    fn logs(&self) -> String {
+        fs::read_to_string(&self.log_path)
+            .unwrap_or_else(|error| format!("could not read {}: {error}", self.log_path.display()))
+    }
+
+    fn stop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+impl Drop for StockCorrosion {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+fn unused_loopback_addr() -> Result<SocketAddr, String> {
+    let listener = TcpListener::bind("127.0.0.1:0").map_err(|error| error.to_string())?;
+    listener.local_addr().map_err(|error| error.to_string())
+}
+
+fn release_archive(repo_root: &Path, release: &ReleasePin) -> Result<PathBuf, String> {
+    if let Some(path) = std::env::var_os("PLOYZ_CORROSION_ARCHIVE") {
+        return Ok(PathBuf::from(path));
+    }
+
+    let cache_dir = repo_root
+        .join("target/corrosion-cache")
+        .join(&release.release_tag);
+    fs::create_dir_all(&cache_dir).map_err(|error| error.to_string())?;
+    let archive = cache_dir.join(&release.archive_name);
+    if archive.is_file() && verify_sha256(&archive, &release.archive_sha256).is_ok() {
+        return Ok(archive);
+    }
+
+    let partial = cache_dir.join(format!(
+        "{}.{}.partial",
+        release.archive_name,
+        std::process::id()
+    ));
+    let output = Command::new("curl")
+        .args(["--fail", "--location", "--retry", "3", "--output"])
+        .arg(&partial)
+        .arg(&release.archive_url)
+        .output()
+        .map_err(|error| {
+            format!(
+                "download {}: {error}; offline runs must set PLOYZ_CORROSION_ARCHIVE",
+                release.archive_url
+            )
+        })?;
+    if !output.status.success() {
+        return Err(format!(
+            "download {} failed: {}; offline runs must set PLOYZ_CORROSION_ARCHIVE",
+            release.archive_url,
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    verify_sha256(&partial, &release.archive_sha256)?;
+    fs::rename(&partial, &archive).map_err(|error| error.to_string())?;
+    Ok(archive)
+}
+
+fn verify_sha256(path: &Path, expected: &str) -> Result<(), String> {
+    let mut file = File::open(path).map_err(|error| format!("open {}: {error}", path.display()))?;
+    let mut digest = Sha256::new();
+    std::io::copy(&mut file, &mut digest)
+        .map_err(|error| format!("hash {}: {error}", path.display()))?;
+    let actual = format!("{:x}", digest.finalize());
+    if actual != expected {
+        return Err(format!(
+            "{} has SHA-256 {actual}, expected {expected}",
+            path.display()
+        ));
+    }
+    Ok(())
+}
