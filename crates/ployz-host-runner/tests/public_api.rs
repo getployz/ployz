@@ -1,4 +1,4 @@
-use ployz_host_runner::lifecycle::machine_join::JoinToken;
+use ployz_host_runner::lifecycle::machine_join::{JoinToken, OneShotMachineJoinPlan};
 use ployz_host_runner::{
     ArtifactKind, ReleaseManifest, SupervisorBackend, SystemHostRunnerCommandRunner,
     detect_host_platform,
@@ -12,10 +12,7 @@ fn transport_free_host_mechanics_are_public() {
     let _manifest_parser = ReleaseManifest::parse;
 
     assert!(detect_host_platform("ID=ubuntu\n").is_ok());
-    assert_eq!(
-        JoinToken::try_new("join_secret_123")
-            .expect("join token")
-            .as_str(),
-        "join_secret_123"
-    );
+    let token = JoinToken::try_new("join_secret_123").expect("join token");
+    let join = OneShotMachineJoinPlan::new(token);
+    assert_eq!(join.token().as_str(), "join_secret_123");
 }

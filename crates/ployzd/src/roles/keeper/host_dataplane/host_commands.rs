@@ -1,3 +1,5 @@
+//! Bounded privileged command plans used by Keeper convergence.
+
 use ployz_core::ids::MachineId;
 use ployz_core::network::{
     EbpfForwardingReadyEvidence, PloyzNativeMeshComponent, WireGuardEbpfPrepareError,

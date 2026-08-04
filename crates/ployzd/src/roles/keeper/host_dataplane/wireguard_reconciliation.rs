@@ -1,3 +1,5 @@
+//! Keeper reconciliation of the machine's WireGuard interface and peers.
+
 use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;

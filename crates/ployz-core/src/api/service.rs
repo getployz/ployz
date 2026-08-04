@@ -1,6 +1,10 @@
 use serde::{Deserialize, Serialize};
 
-use super::core_types::*;
+use crate::ids::{MachineId, NamespaceId, OperationId, ServiceId};
+use crate::intent::{RouteBindingState, ServingTargetEntry};
+use crate::machine::ManagedContainerObservation;
+use crate::operation::EventSequence;
+
 use super::ops::{AcceptedOperation, OperationApiResponse};
 
 pub type ServiceListResponse = OperationApiResponse<ServiceListResult, ServiceListError>;

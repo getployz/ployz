@@ -1,6 +1,17 @@
 use serde::{Deserialize, Serialize};
 
-use super::core_types::*;
+use crate::ids::{
+    CertId, ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId,
+    RouteBindingId, ServiceId, StepId,
+};
+use crate::ingress::{
+    ActiveCertificateMetadata, AutomaticHostnameConfiguration, IngressEndpointProjection,
+    IngressEndpointProjectionIdentity, PloyzDnsTargetIntent,
+};
+use crate::intent::RouteBindingState;
+use crate::machine::{ContainerRuntimeState, ManagedContainerObservation};
+use crate::operation::{RouteHostname, RouteTarget};
+
 use super::machine::MachineSnapshot;
 use super::ops::OperationApiResponse;
 use super::service::ServiceSnapshot;

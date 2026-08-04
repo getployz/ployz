@@ -1,3 +1,5 @@
+//! Root-owned host route and eBPF programming effects.
+
 use ployz_core::ids::MachineId;
 use ployz_core::network::{
     EbpfAttachmentStatus, PloyzNativeMeshComponent, WireGuardEbpfEndpointRoute,

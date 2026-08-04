@@ -13,7 +13,7 @@ use ployz_core::network::INTERNAL_DNS_SUFFIX;
 use ployz_core::network::internal_dns::InternalServiceName;
 use tokio::net::UdpSocket;
 use tokio::sync::{broadcast, watch};
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
 
 const DNS_PORT: u16 = 53;
 const DNS_TTL_SECONDS: u32 = 5;
@@ -23,6 +23,7 @@ const BIND_RETRY_CAP: Duration = Duration::from_secs(1);
 const BIND_DIAGNOSTIC_REPEAT: Duration = Duration::from_secs(30);
 const LOCAL_QUERY_TIMEOUT: Duration = Duration::from_millis(500);
 const LOCAL_QUERY_ID: u16 = 0x504c;
+const MAX_IN_FLIGHT_REQUESTS: usize = 32;
 
 #[derive(Debug)]
 struct DnsRequest {
@@ -162,12 +163,6 @@ impl InternalResolverHealth {
     }
 
     #[must_use]
-    pub fn serving(bound: SocketAddr) -> Self {
-        let (state, _) = watch::channel(InternalResolverState::Serving { bound });
-        Self { state }
-    }
-
-    #[must_use]
     pub fn snapshot(&self) -> InternalResolverState {
         self.state.borrow().clone()
     }
@@ -254,10 +249,20 @@ impl BindFailureDiagnostics {
 pub fn spawn_internal_resolver(
     records: InternalDnsRecords,
     bind: SocketAddr,
+    shutdown: broadcast::Receiver<()>,
+    health: InternalResolverHealth,
+) -> JoinHandle<()> {
+    let upstream = SocketAddr::new(load_upstream_nameserver(bind.ip()), DNS_PORT);
+    spawn_internal_resolver_with_upstream(records, bind, upstream, shutdown, health)
+}
+
+fn spawn_internal_resolver_with_upstream(
+    records: InternalDnsRecords,
+    bind: SocketAddr,
+    upstream: SocketAddr,
     mut shutdown: broadcast::Receiver<()>,
     health: InternalResolverHealth,
 ) -> JoinHandle<()> {
-    let upstream = load_upstream_nameserver(bind.ip());
     tokio::spawn(async move {
         let mut backoff = BIND_RETRY_INITIAL;
         let mut diagnostics = BindFailureDiagnostics::new();
@@ -285,9 +290,23 @@ pub fn spawn_internal_resolver(
         };
         health.record_serving(bind);
         let socket = Arc::new(socket);
+        let mut requests = JoinSet::new();
         let mut packet = [0_u8; 4096];
         loop {
             tokio::select! {
+                biased;
+                _ = shutdown.recv() => {
+                    requests.abort_all();
+                    while requests.join_next().await.is_some() {}
+                    break;
+                }
+                Some(result) = requests.join_next(), if !requests.is_empty() => {
+                    if let Err(error) = result
+                        && !error.is_cancelled()
+                    {
+                        tracing::warn!(phase = "request", error = %error, "internal DNS request task failed");
+                    }
+                }
                 received = socket.recv_from(&mut packet) => {
                     let (length, peer) = match received {
                         Ok(received) => received,
@@ -305,9 +324,22 @@ pub fn spawn_internal_resolver(
                         continue;
                     };
                     let request = request.to_vec();
+                    if requests.len() >= MAX_IN_FLIGHT_REQUESTS {
+                        if let Some(response) = overloaded_response(&request)
+                            && let Err(error) = socket.send_to(&response, peer).await
+                        {
+                            tracing::warn!(
+                                phase = "overload",
+                                peer = %peer,
+                                error = %error,
+                                "internal DNS overload response failed"
+                            );
+                        }
+                        continue;
+                    }
                     let request_records = records.clone();
                     let response_socket = Arc::clone(&socket);
-                    tokio::spawn(async move {
+                    requests.spawn(async move {
                         let Some(response) =
                             response_for_request(&request_records, upstream, request).await
                         else {
@@ -323,15 +355,19 @@ pub fn spawn_internal_resolver(
                         }
                     });
                 }
-                _ = shutdown.recv() => break,
             }
         }
     })
 }
 
+fn overloaded_response(packet: &[u8]) -> Option<Vec<u8>> {
+    let request = parse_request(packet)?;
+    build_response(&request, ResponseCode::ServFail, &[])
+}
+
 async fn response_for_request(
     records: &InternalDnsRecords,
-    upstream: IpAddr,
+    upstream: SocketAddr,
     packet: Vec<u8>,
 ) -> Option<Vec<u8>> {
     let request = parse_request(&packet)?;
@@ -367,13 +403,13 @@ async fn response_for_request(
     }
 }
 
-async fn forward_to_upstream(upstream: IpAddr, packet: &[u8]) -> Result<Vec<u8>, io::Error> {
-    let local = match upstream {
+async fn forward_to_upstream(upstream: SocketAddr, packet: &[u8]) -> Result<Vec<u8>, io::Error> {
+    let local = match upstream.ip() {
         IpAddr::V4(_) => SocketAddr::from(([0, 0, 0, 0], 0)),
         IpAddr::V6(_) => SocketAddr::from(([0_u16; 8], 0)),
     };
     let socket = UdpSocket::bind(local).await?;
-    socket.connect(SocketAddr::new(upstream, DNS_PORT)).await?;
+    socket.connect(upstream).await?;
     socket.send(packet).await?;
     let mut response = vec![0_u8; 4096];
     let length = tokio::time::timeout(UPSTREAM_TIMEOUT, socket.recv(&mut response))
@@ -457,7 +493,7 @@ mod tests {
     async fn unknown_internal_name_returns_noerror_without_answers() {
         let response = response_for_request(
             &InternalDnsRecords::default(),
-            IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
+            SocketAddr::from((Ipv4Addr::new(1, 1, 1, 1), DNS_PORT)),
             query_packet("missing.default.internal", TEST_QTYPE_A),
         )
         .await
@@ -518,6 +554,127 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resolver_sheds_requests_above_its_concurrency_budget() {
+        let upstream = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind blackhole upstream");
+        let reservation = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("reserve resolver port");
+        let bind = reservation.local_addr().expect("resolver address");
+        drop(reservation);
+        let (shutdown, receiver) = broadcast::channel(1);
+        let health = InternalResolverHealth::awaiting_bind();
+        let task = spawn_internal_resolver_with_upstream(
+            InternalDnsRecords::default(),
+            bind,
+            upstream.local_addr().expect("upstream address"),
+            receiver,
+            health.clone(),
+        );
+        health
+            .await_bound(Duration::from_secs(1))
+            .await
+            .expect("resolver binds");
+        let client = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind test client");
+        let request = query_packet("example.com", TEST_QTYPE_A);
+
+        for _ in 0..=MAX_IN_FLIGHT_REQUESTS {
+            client
+                .send_to(&request, bind)
+                .await
+                .expect("send external query");
+        }
+
+        let mut forwarded = [0_u8; 512];
+        for _ in 0..MAX_IN_FLIGHT_REQUESTS {
+            tokio::time::timeout(Duration::from_secs(1), upstream.recv_from(&mut forwarded))
+                .await
+                .expect("forward arrives before deadline")
+                .expect("receive forwarded query");
+        }
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(100),
+                upstream.recv_from(&mut forwarded),
+            )
+            .await
+            .is_err(),
+            "request above the budget must not allocate an upstream socket"
+        );
+        let mut overloaded = [0_u8; 512];
+        let (length, _) =
+            tokio::time::timeout(Duration::from_secs(1), client.recv_from(&mut overloaded))
+                .await
+                .expect("overload response arrives")
+                .expect("receive overload response");
+        assert_eq!(
+            response_header(overloaded.get(..length).expect("response length")).0 & 0x000f,
+            2
+        );
+
+        let _ = shutdown.send(());
+        task.await.expect("resolver task exits");
+    }
+
+    #[tokio::test]
+    async fn resolver_shutdown_cancels_and_joins_forwarding_children() {
+        let upstream = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind blackhole upstream");
+        let reservation = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("reserve resolver port");
+        let bind = reservation.local_addr().expect("resolver address");
+        drop(reservation);
+        let (shutdown, receiver) = broadcast::channel(1);
+        let health = InternalResolverHealth::awaiting_bind();
+        let task = spawn_internal_resolver_with_upstream(
+            InternalDnsRecords::default(),
+            bind,
+            upstream.local_addr().expect("upstream address"),
+            receiver,
+            health.clone(),
+        );
+        health
+            .await_bound(Duration::from_secs(1))
+            .await
+            .expect("resolver binds");
+        let client = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind test client");
+        client
+            .send_to(&query_packet("example.com", TEST_QTYPE_A), bind)
+            .await
+            .expect("send external query");
+        let mut forwarded = [0_u8; 512];
+        let (_, child_upstream_peer) =
+            tokio::time::timeout(Duration::from_secs(1), upstream.recv_from(&mut forwarded))
+                .await
+                .expect("forward arrives before deadline")
+                .expect("receive forwarded query");
+
+        let _ = shutdown.send(());
+        tokio::time::timeout(Duration::from_millis(500), task)
+            .await
+            .expect("resolver joins children during shutdown")
+            .expect("resolver task exits");
+        upstream
+            .send_to(b"late upstream response", child_upstream_peer)
+            .await
+            .expect("send late response");
+        let mut response = [0_u8; 512];
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), client.recv_from(&mut response))
+                .await
+                .is_err(),
+            "cancelled child must not forward a late upstream response"
+        );
+    }
+
+    #[tokio::test]
     async fn aaaa_query_for_known_name_has_no_answers() {
         let records = InternalDnsRecords::default();
         records.replace(BTreeMap::from([(
@@ -527,7 +684,7 @@ mod tests {
 
         let response = response_for_request(
             &records,
-            IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
+            SocketAddr::from((Ipv4Addr::new(1, 1, 1, 1), DNS_PORT)),
             query_packet("db.default.internal", TEST_QTYPE_AAAA),
         )
         .await

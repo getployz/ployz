@@ -10,7 +10,6 @@ use tokio::io::AsyncReadExt;
 use super::provisioned_volume::{plain_volume_request, validate_volume_shape};
 use super::runner::DockerManagedContainerRunner;
 use crate::roles::api::runner::MachineVolumeUsageReader;
-use crate::roles::api::volume::docker_volume_name;
 
 const PLAIN_VOLUME_USAGE_TIMEOUT: Duration = Duration::from_secs(4);
 const MAX_COMMAND_OUTPUT_BYTES: u64 = 1024 * 1024;
@@ -21,7 +20,9 @@ impl MachineVolumeUsageReader for DockerManagedContainerRunner {
             VolumeKind::Provisioned { .. } => None,
             VolumeKind::Plain => {
                 let docker = self.docker().await.ok()?;
-                let storage_name = docker_volume_name(volume.namespace_id(), volume.volume_name());
+                let storage_name = volume
+                    .volume_name()
+                    .stable_storage_name(volume.namespace_id());
                 let observed = docker.inspect_volume(&storage_name).await.ok()?;
                 let expected = plain_volume_request(volume);
                 validate_volume_shape(

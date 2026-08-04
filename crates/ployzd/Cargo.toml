@@ -15,6 +15,7 @@ defguard_wireguard_rs.workspace = true
 futures-util.workspace = true
 getifs.workspace = true
 hickory-proto.workspace = true
+instant-acme = { version = "0.8.5", default-features = false, features = ["hyper-rustls", "ring"] }
 rustix = { version = "1.1.4", features = ["fs"] }
 ipnet = "2"
 async-trait = "0.1"
@@ -22,6 +23,7 @@ pingora = { version = "0.8.1", features = ["lb", "openssl", "proxy"] }
 ployz-core.workspace = true
 ployz-ebpf-common = { path = "../../ebpf/common", features = ["validation"] }
 ployz-telemetry.workspace = true
+serde_json.workspace = true
 sysctl.workspace = true
 tempfile = "3"
 thiserror.workspace = true

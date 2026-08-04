@@ -10,7 +10,6 @@ use ployz_core::machine::VolumeEnsureFailure;
 use ployz_core::storage::PROVISIONED_VOLUME_MOUNTPOINT;
 
 use super::network::is_docker_object_missing;
-use crate::roles::api::volume::docker_volume_name;
 
 pub(super) async fn ensure_docker_volume(
     docker: &Docker,
@@ -20,7 +19,9 @@ pub(super) async fn ensure_docker_volume(
         VolumeKind::Plain => plain_volume_request(volume),
         VolumeKind::Provisioned { .. } => local_bind_volume_request(volume),
     };
-    let storage_name = docker_volume_name(volume.namespace_id(), volume.volume_name());
+    let storage_name = volume
+        .volume_name()
+        .stable_storage_name(volume.namespace_id());
     let expected_driver = "local";
     let expected_options = request.driver_opts.as_ref().cloned().unwrap_or_default();
     match docker.inspect_volume(&storage_name).await {
@@ -37,7 +38,9 @@ pub(super) async fn ensure_docker_volume(
 }
 
 pub(super) fn local_bind_volume_request(volume: &VolumePinState) -> VolumeCreateRequest {
-    let storage_name = docker_volume_name(volume.namespace_id(), volume.volume_name());
+    let storage_name = volume
+        .volume_name()
+        .stable_storage_name(volume.namespace_id());
     VolumeCreateRequest {
         name: Some(storage_name.clone()),
         driver: Some("local".to_owned()),
@@ -55,10 +58,11 @@ pub(super) fn local_bind_volume_request(volume: &VolumePinState) -> VolumeCreate
 
 pub(super) fn plain_volume_request(volume: &VolumePinState) -> VolumeCreateRequest {
     VolumeCreateRequest {
-        name: Some(docker_volume_name(
-            volume.namespace_id(),
-            volume.volume_name(),
-        )),
+        name: Some(
+            volume
+                .volume_name()
+                .stable_storage_name(volume.namespace_id()),
+        ),
         driver: Some("local".to_owned()),
         ..Default::default()
     }

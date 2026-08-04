@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use crate::execution::{
     ArtifactInstallDurability, ArtifactInstallError, ArtifactKind, ArtifactSource, ArtifactTarget,
     ArtifactVerificationError, ArtifactVersion, Sha256Digest, install_verified_artifact,
-    verify_artifact_file,
+    stage_verified_artifact_content_addressed, verify_artifact_file,
 };
 
 #[test]
@@ -93,6 +93,102 @@ fn installed_artifact_is_executable_on_unix() {
         .mode()
         & 0o777;
     assert_eq!(mode, 0o755);
+}
+
+#[test]
+fn content_addressed_staging_uses_the_verified_sha256_as_its_path() {
+    let root = tempfile::tempdir().expect("artifact root");
+    let source = root.path().join("ployzd.download");
+    let store = root.path().join("artifacts");
+    fs::write(&source, "ployz\n").expect("artifact can be written");
+    let verified =
+        verify_artifact_file(&source, &digest(PLOYZ_NEWLINE_SHA256)).expect("artifact verifies");
+
+    let staged = stage_verified_artifact_content_addressed(&verified, &store)
+        .expect("artifact stages by content");
+
+    assert_eq!(staged.staged_path, store.join(PLOYZ_NEWLINE_SHA256));
+    assert_eq!(staged.digest, digest(PLOYZ_NEWLINE_SHA256));
+    assert_eq!(staged.durability, ArtifactInstallDurability::Confirmed);
+    assert_eq!(
+        fs::read(&staged.staged_path).expect("staged bytes"),
+        b"ployz\n"
+    );
+}
+
+#[test]
+fn content_addressed_staging_reuses_valid_existing_content() {
+    let root = tempfile::tempdir().expect("artifact root");
+    let source = root.path().join("ployzd.download");
+    let store = root.path().join("artifacts");
+    fs::write(&source, "ployz\n").expect("artifact can be written");
+    let verified =
+        verify_artifact_file(&source, &digest(PLOYZ_NEWLINE_SHA256)).expect("artifact verifies");
+    let first =
+        stage_verified_artifact_content_addressed(&verified, &store).expect("first stage succeeds");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::set_permissions(&first.staged_path, fs::Permissions::from_mode(0o644))
+            .expect("stored mode can change");
+    }
+    fs::remove_file(&source).expect("download can disappear after staging");
+
+    let repeated = stage_verified_artifact_content_addressed(&verified, &store)
+        .expect("valid content is reusable without its source");
+
+    assert_eq!(repeated.staged_path, first.staged_path);
+    assert_eq!(repeated.digest, first.digest);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mode = fs::metadata(repeated.staged_path)
+            .expect("stored metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o755);
+    }
+}
+
+#[test]
+fn content_addressed_staging_replaces_corrupted_content() {
+    let root = tempfile::tempdir().expect("artifact root");
+    let source = root.path().join("ployzd.download");
+    let store = root.path().join("artifacts");
+    fs::write(&source, "ployz\n").expect("artifact can be written");
+    let verified =
+        verify_artifact_file(&source, &digest(PLOYZ_NEWLINE_SHA256)).expect("artifact verifies");
+    let first =
+        stage_verified_artifact_content_addressed(&verified, &store).expect("first stage succeeds");
+    fs::write(&first.staged_path, "corrupt\n").expect("stored artifact can be corrupted");
+
+    let repaired = stage_verified_artifact_content_addressed(&verified, &store)
+        .expect("verified source replaces corrupted content");
+
+    assert_eq!(repaired.staged_path, first.staged_path);
+    assert_eq!(
+        fs::read(repaired.staged_path).expect("repaired bytes"),
+        b"ployz\n"
+    );
+}
+
+#[test]
+fn content_addressed_staging_rejects_a_relative_store() {
+    let root = tempfile::tempdir().expect("artifact root");
+    let source = root.path().join("ployzd.download");
+    fs::write(&source, "ployz\n").expect("artifact can be written");
+    let verified =
+        verify_artifact_file(&source, &digest(PLOYZ_NEWLINE_SHA256)).expect("artifact verifies");
+
+    assert_eq!(
+        stage_verified_artifact_content_addressed(&verified, std::path::Path::new("artifacts")),
+        Err(ArtifactInstallError::RelativeContentStore {
+            path: PathBuf::from("artifacts"),
+        })
+    );
 }
 
 #[test]

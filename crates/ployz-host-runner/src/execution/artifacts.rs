@@ -193,9 +193,61 @@ pub struct InstalledArtifactFile {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContentAddressedArtifactFile {
+    pub source_path: PathBuf,
+    pub staged_path: PathBuf,
+    pub digest: Sha256Digest,
+    pub durability: ArtifactInstallDurability,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ArtifactInstallDurability {
     Confirmed,
     Unconfirmed { message: String },
+}
+
+/// Stages a verified artifact at `<store>/<sha256>`. Existing valid content is
+/// reused; corrupted content is replaced through an atomic sibling rename.
+pub fn stage_verified_artifact_content_addressed(
+    verified: &VerifiedArtifactFile,
+    store: &Path,
+) -> Result<ContentAddressedArtifactFile, ArtifactInstallError> {
+    if !store.is_absolute() {
+        return Err(ArtifactInstallError::RelativeContentStore {
+            path: store.to_path_buf(),
+        });
+    }
+    let staged_path = store.join(verified.digest.as_str());
+    if staged_path.exists() {
+        match verify_artifact_file(&staged_path, &verified.digest) {
+            Ok(existing) => {
+                make_executable(&staged_path).map_err(|error| {
+                    ArtifactInstallError::SetExecutableFailed {
+                        staged_path: staged_path.clone(),
+                        message: error.to_string(),
+                    }
+                })?;
+                sync_staged_file(&staged_path)?;
+                return Ok(ContentAddressedArtifactFile {
+                    source_path: verified.path.clone(),
+                    staged_path,
+                    digest: existing.digest,
+                    durability: ArtifactInstallDurability::Confirmed,
+                });
+            }
+            Err(ArtifactVerificationError::DigestMismatch { .. }) => {}
+            Err(error) => return Err(ArtifactInstallError::VerificationFailed(error)),
+        }
+    }
+
+    let (digest, durability) = copy_verified_artifact_to(verified, &verified.digest, &staged_path)?;
+
+    Ok(ContentAddressedArtifactFile {
+        source_path: verified.path.clone(),
+        staged_path,
+        digest,
+        durability,
+    })
 }
 
 pub fn install_verified_artifact(
@@ -210,6 +262,21 @@ pub fn install_verified_artifact(
         });
     }
     let install_path = target.install_path();
+    let (digest, durability) = copy_verified_artifact_to(verified, &target.digest, install_path)?;
+
+    Ok(InstalledArtifactFile {
+        source_path: verified.path.clone(),
+        install_path: install_path.to_path_buf(),
+        digest,
+        durability,
+    })
+}
+
+fn copy_verified_artifact_to(
+    verified: &VerifiedArtifactFile,
+    expected: &Sha256Digest,
+    install_path: &Path,
+) -> Result<(Sha256Digest, ArtifactInstallDurability), ArtifactInstallError> {
     let parent = install_path
         .parent()
         .expect("artifact install path is validated with a parent");
@@ -222,20 +289,14 @@ pub fn install_verified_artifact(
         message: error.to_string(),
     })?;
     let mut staged_artifact = create_staged_artifact(&verified.path, parent, file_name)?;
-    let staged = match verify_artifact_file(staged_artifact.path(), &target.digest) {
+    let staged = match verify_artifact_file(staged_artifact.path(), expected) {
         Ok(staged) => staged,
         Err(error) => {
             return Err(ArtifactInstallError::VerificationFailed(error));
         }
     };
     let durability = commit_staged_artifact(&mut staged_artifact, install_path)?;
-
-    Ok(InstalledArtifactFile {
-        source_path: verified.path.clone(),
-        install_path: install_path.to_path_buf(),
-        digest: staged.digest,
-        durability,
-    })
+    Ok((staged.digest, durability))
 }
 
 #[cfg(unix)]
@@ -355,6 +416,8 @@ fn sync_parent_directory(_install_path: &Path) -> std::io::Result<()> {
 pub enum ArtifactInstallError {
     #[error("artifact verification failed before install: {0}")]
     VerificationFailed(ArtifactVerificationError),
+    #[error("content-addressed artifact store {} must be absolute", path.display())]
+    RelativeContentStore { path: PathBuf },
     #[error(
         "verified artifact digest {} does not match install target {} for {}",
         verified.as_str(),

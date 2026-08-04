@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use super::core_types::*;
+use crate::ids::OperationId;
+use crate::operation::{
+    EventSequence, OperationEventReplayPage, OperationEventReplayRequest, OperationStatusSnapshot,
+};
 
 pub type OpsListResponse = OperationApiResponse<OpsListResult, OpsListError>;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

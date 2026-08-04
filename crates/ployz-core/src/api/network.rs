@@ -2,10 +2,12 @@ use serde::{Deserialize, Serialize};
 
 use std::net::Ipv4Addr;
 
-use super::core_types::{
-    ActiveMachineState, EventSequence, FailureMessage, InternalDnsStatus, InternalServiceName,
-    MachineDataplaneStatus, MachineId, NetworkStatusMode, OperationId,
-};
+use crate::ids::{MachineId, OperationId};
+use crate::intent::ActiveMachineState;
+use crate::network::internal_dns::{InternalDnsStatus, InternalServiceName};
+use crate::network::{MachineDataplaneStatus, NetworkStatusMode};
+use crate::operation::{EventSequence, FailureMessage};
+
 use super::ops::{AcceptedOperation, OperationApiResponse};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

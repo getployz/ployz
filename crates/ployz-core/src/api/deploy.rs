@@ -2,7 +2,16 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::core_types::*;
+use crate::build::BuildPlatforms;
+use crate::deploy::{
+    DeployOrigin, DeployPreviewProjection, DeployPreviewTarget, DeployRequest,
+    DeployReservationExpiresAt, DeployReservationId, DeployServiceSpec, ImageAvailabilityExpiresAt,
+    ImageReference, VolumeAdmissionFailure,
+};
+use crate::ids::{MachineId, NamespaceId, OperationId, ServiceId};
+use crate::image::{OciPlatform, RegistryCredential};
+use crate::operation::{EventSequence, FailureMessage, OperationIdempotencyKey, UnusableMachine};
+
 use super::ops::{AcceptedOperation, OperationApiResponse};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

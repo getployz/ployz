@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use super::core_types::*;
+use crate::ids::{ContainerId, MachineId, NamespaceId, ServiceId};
+use crate::operation::FailureMessage;
+
 use super::ops::OperationApiResponse;
 
 pub const MAX_LOGS_TAIL_LINES: u16 = 1_000;

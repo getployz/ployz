@@ -3,11 +3,6 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PloyzCommand {
-    Telemetry(TelemetryCommand),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TelemetryCommand {
     Enable,
     Disable,
@@ -17,18 +12,17 @@ pub enum TelemetryCommand {
 /// shell. Transport-backed commands appear only when their client exists.
 pub fn parse_command(
     args: impl IntoIterator<Item = String>,
-) -> Result<PloyzCommand, PloyzCliError> {
-    let parsed = Cli::try_parse_from(std::iter::once("ployz".to_owned()).chain(args))
-        .map_err(PloyzCliError::Clap)?;
+) -> Result<TelemetryCommand, clap::Error> {
+    let parsed = Cli::try_parse_from(std::iter::once("ployz".to_owned()).chain(args))?;
     let Some(command) = parsed.command else {
-        return Err(PloyzCliError::Clap(root_help()));
+        return Err(root_help());
     };
 
     Ok(match command {
-        CommandCli::Telemetry { command } => PloyzCommand::Telemetry(match command {
+        CommandCli::Telemetry { command } => match command {
             TelemetryCli::Enable => TelemetryCommand::Enable,
             TelemetryCli::Disable => TelemetryCommand::Disable,
-        }),
+        },
     })
 }
 
@@ -65,32 +59,6 @@ enum TelemetryCli {
     Disable,
 }
 
-#[derive(Debug)]
-pub enum PloyzCliError {
-    Clap(clap::Error),
-}
-
-impl PloyzCliError {
-    /// Help and version displays are successful terminal parser results.
-    #[must_use]
-    pub fn is_display_requested(&self) -> bool {
-        let Self::Clap(error) = self;
-        matches!(
-            error.kind(),
-            clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
-        )
-    }
-}
-
-impl std::fmt::Display for PloyzCliError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let Self::Clap(error) = self;
-        error.fmt(formatter)
-    }
-}
-
-impl std::error::Error for PloyzCliError {}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,7 +72,7 @@ mod tests {
             let command = parse_command(["telemetry", verb].map(str::to_owned))
                 .expect("telemetry preference parses");
 
-            assert_eq!(command, PloyzCommand::Telemetry(expected));
+            assert_eq!(command, expected);
         }
     }
 
@@ -112,7 +80,7 @@ mod tests {
     fn bare_invocation_displays_help() {
         let error = parse_command(std::iter::empty()).expect_err("command is required");
 
-        assert!(error.is_display_requested());
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
         assert!(error.to_string().contains("telemetry"));
     }
 
@@ -121,7 +89,7 @@ mod tests {
         for command in ["deploy", "machine", "ops", "core", "host", "init"] {
             let error = parse_command([command.to_owned()]).expect_err("command was removed");
 
-            assert!(!error.is_display_requested());
+            assert_eq!(error.kind(), clap::error::ErrorKind::InvalidSubcommand);
         }
     }
 }

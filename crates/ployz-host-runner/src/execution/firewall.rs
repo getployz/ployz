@@ -1,13 +1,11 @@
 //! Host firewall detection and port operations.
 
 use ployz_core::operation::FailureMessage;
-use serde::{Deserialize, Serialize};
 
 use super::command::HostRunnerCommandRunner;
 use super::supervisor::SupervisorBackend;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AssignedHostPort {
     pub port: u16,
     pub protocol: HostPortProtocol,
@@ -31,8 +29,7 @@ impl AssignedHostPort {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostPortProtocol {
     Tcp,
     Udp,

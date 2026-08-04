@@ -1,6 +1,10 @@
 use serde::{Deserialize, Serialize};
 
-use super::core_types::*;
+use crate::deploy::VolumeName;
+use crate::ids::{MachineId, NamespaceId, OperationId, ServiceId};
+use crate::intent::VolumeKind;
+use crate::operation::EventSequence;
+
 use super::ops::{AcceptedOperation, OperationApiResponse};
 
 pub use crate::operation::VolumeCreateRequest;

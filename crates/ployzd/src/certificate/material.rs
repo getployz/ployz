@@ -2,15 +2,49 @@ use std::path::{Path, PathBuf};
 
 use pingora::tls::pkey::PKey;
 use pingora::tls::x509::{X509, X509Ref};
-use ployz_core::certificate::{ActiveCertState, CertValidAt, CertValidityWindow, CustomCertBundle};
+use ployz_core::certificate::{
+    ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow, CustomCertBundle,
+    custom_bundle_digest,
+};
 use ployz_core::ids::CertId;
-use ployz_core::install::InstallSha256Digest;
+use ployz_core::install::{AbsoluteInstallPath, InstallSha256Digest};
 use ployz_core::operation::RouteHostname;
 use time::PrimitiveDateTime;
 
 use crate::adapters::atomic_file::{
     restrict_secret_file_permissions, write_secret_file_atomically,
 };
+
+/// Validates issued PEM material and packages it as a content-addressed
+/// gateway artifact. Issuance and distribution remain role orchestration.
+pub fn prepare_custom_certificate(
+    state_dir: &Path,
+    cert_id: CertId,
+    hostname: RouteHostname,
+    certificate_chain_pem: String,
+    private_key_pem: String,
+) -> Result<CustomCertBundle, CertificateMaterialError> {
+    let validity = validate_and_read_validity(&certificate_chain_pem, &private_key_pem, &hostname)?;
+    let digest =
+        custom_bundle_digest(&certificate_chain_pem, &private_key_pem).map_err(invalid_material)?;
+    let path = certificate_material_path_for_digest(state_dir, &cert_id, &digest);
+    let Some(path_text) = path.to_str() else {
+        return Err(CertificateMaterialError::NonUtf8Path { path });
+    };
+    let path = AbsoluteInstallPath::try_new(path_text).map_err(invalid_material)?;
+    let bundle_ref = CertBundleRef::for_bundle(&digest, &path).map_err(invalid_material)?;
+    CustomCertBundle::try_new(
+        ActiveCertState {
+            cert_id,
+            hostname,
+            bundle_ref,
+            validity,
+        },
+        certificate_chain_pem,
+        private_key_pem,
+    )
+    .map_err(invalid_material)
+}
 
 pub(crate) fn write_custom_certificate(
     state_dir: &Path,
@@ -210,7 +244,9 @@ fn asn1_unix_seconds(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub(crate) enum CertificateMaterialError {
+pub enum CertificateMaterialError {
+    #[error("certificate material path is not UTF-8: {}", path.display())]
+    NonUtf8Path { path: PathBuf },
     #[error("invalid certificate material: {message}")]
     InvalidMaterial { message: String },
     #[error("certificate material file {}: {message}", path.display())]
@@ -263,6 +299,38 @@ mod tests {
     };
     use ployz_core::ids::CertId;
     use ployz_core::operation::RouteHostname;
+    use rcgen::generate_simple_self_signed;
+
+    #[test]
+    fn issued_material_becomes_a_valid_content_addressed_bundle() {
+        let state = tempfile::tempdir().expect("state directory");
+        let generated =
+            generate_simple_self_signed(["api.example.com".to_owned()]).expect("certificate");
+
+        let bundle = prepare_custom_certificate(
+            state.path(),
+            CertId::try_new("cert_api_example_com").expect("cert id"),
+            RouteHostname::try_new("api.example.com").expect("hostname"),
+            generated.cert.pem(),
+            generated.signing_key.serialize_pem(),
+        )
+        .expect("valid bundle");
+
+        validate_custom_certificate(&bundle).expect("prepared bundle remains valid");
+        let (digest, referenced_path) = bundle
+            .active_cert()
+            .bundle_ref
+            .artifact_parts()
+            .expect("artifact reference");
+        assert_eq!(
+            Path::new(referenced_path.as_str()),
+            certificate_material_path_for_digest(
+                state.path(),
+                &bundle.active_cert().cert_id,
+                &digest,
+            )
+        );
+    }
 
     #[test]
     fn local_path_uses_typed_identity_and_digest_not_referenced_path() {

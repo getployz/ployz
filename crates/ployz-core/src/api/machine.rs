@@ -1,4 +1,13 @@
-use super::core_types::*;
+use crate::deploy::ZfsPoolName;
+use crate::ids::{MachineId, OperationId};
+use crate::install::InstallArtifactVersion;
+use crate::intent::ActiveMachineState;
+use crate::machine::{
+    GatewayStatusObservation, MachineContainerUnavailableReason, MachineDiskSpace,
+    MachineEndpointObservation, StorageCapability, StrandedVolumeAlarm,
+};
+use crate::operation::{CancellationReason, EventSequence};
+
 use super::ops::{AcceptedOperation, OperationApiResponse};
 use serde::{Deserialize, Serialize};
 

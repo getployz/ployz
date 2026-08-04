@@ -1,6 +1,12 @@
 use serde::{Deserialize, Serialize};
 
-use super::core_types::*;
+use crate::build::{
+    BuildAdapter, BuildPlatforms, BuildSource, BuildTarget, BuildTargetCapabilities,
+};
+use crate::ids::{BuildPoolId, OperationId};
+use crate::image::OciPlatform;
+use crate::operation::CancellationReason;
+
 use super::ops::{AcceptedOperation, OperationApiResponse};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

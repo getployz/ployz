@@ -155,6 +155,12 @@ impl GatewayCertificateStore {
 
 fn store_error(error: CertificateMaterialError) -> GatewayCertificateStoreError {
     match error {
+        CertificateMaterialError::NonUtf8Path { path } => {
+            GatewayCertificateStoreError::ArtifactFile {
+                path,
+                message: "certificate material path is not UTF-8".to_owned(),
+            }
+        }
         CertificateMaterialError::ArtifactFile { path, message } => {
             GatewayCertificateStoreError::ArtifactFile { path, message }
         }

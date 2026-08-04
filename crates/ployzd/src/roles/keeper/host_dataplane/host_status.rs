@@ -1,3 +1,5 @@
+//! Keeper testimony for the root-owned WireGuard substrate.
+
 use defguard_wireguard_rs::{WGApi, WireguardInterfaceApi, peer::Peer};
 use futures_util::{StreamExt, TryStreamExt, stream};
 use ipnet::Ipv4Net;
@@ -11,9 +13,9 @@ use std::time::SystemTime;
 use tokio::time::Instant;
 
 use super::host_network::{
-    HostWireGuardApi, WireGuardMtuPolicy, detect_wireguard_mtu, probe_wireguard_path_mtu,
-    probe_wireguard_rtt, wireguard_host_ipv4,
+    HostWireGuardApi, probe_wireguard_path_mtu, probe_wireguard_rtt, wireguard_host_ipv4,
 };
+use crate::network_mtu::{WireGuardMtuPolicy, detect_wireguard_mtu};
 const MAX_CONCURRENT_PEER_DIAGNOSTICS: usize = 4;
 
 // WireGuard peer diagnostics finish before the machine endpoint so the host

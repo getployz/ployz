@@ -6,16 +6,23 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use ts_rs::{Config, Dependency, TS, TypeVisitor};
 
+use crate::build::{BuildExecutorEvidence, BuildPlatformExecutorAssignment, BuildSource};
+use crate::deploy::EnvValue;
+use crate::ids::OperationId;
+use crate::install::{
+    AbsoluteInstallPath, ExactPloyzVersion, HostPortAssurance, InstallArtifactSource,
+    InstallArtifactSpec, InstallArtifactVersion, InstallSha256Digest, ReleasePlatformFailure,
+};
+use crate::machine::roles::{GatewayRole, InstallRolePolicy};
+use crate::operation::{
+    EventSequence, MAX_OPERATION_EVENT_REPLAY_LIMIT, OperationEventReplayLimit,
+    OperationEventReplayPage, OperationEventReplayRequest, OperationInterruptionNextAction,
+    OperationInterruptionStage, OperationInterruptionUncertainWork,
+};
 use crate::operation_api::OperationApiContract;
 use crate::{
-    AbsoluteInstallPath, AcceptedOperation, BuildExecutorEvidence, BuildPlatformExecutorAssignment,
-    BuildSource, DeploySubmitError, EnvValue, EventSequence, ExactPloyzVersion, GatewayRole,
-    HostPortAssurance, InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion,
-    InstallRolePolicy, InstallSha256Digest, MAX_LOGS_TAIL_LINES, MAX_OPERATION_EVENT_REPLAY_LIMIT,
-    OperationApiResponse, OperationEventReplayLimit, OperationEventReplayPage,
-    OperationEventReplayRequest, OperationId, OperationInterruptionNextAction,
-    OperationInterruptionStage, OperationInterruptionUncertainWork, OpsStatusError,
-    OpsStatusRequest, ReleasePlatformFailure,
+    AcceptedOperation, DeploySubmitError, MAX_LOGS_TAIL_LINES, OperationApiResponse,
+    OpsStatusError, OpsStatusRequest,
 };
 
 /// Generate the complete TypeScript API contract from the Rust domain types.
@@ -120,8 +127,8 @@ impl TypeVisitor for DeclarationCollector<'_> {
 
 fn collect_operation_contracts(declarations: &mut DeclarationCollector<'_>) {
     macro_rules! collect {
-        ($($contract:ty),+ $(,)?) => {
-            $(collect_operation_contract::<$contract>(declarations);)+
+        ($( $marker:ident => $contract:tt ),+ $(,)?) => {
+            $(collect_operation_contract::<crate::operation_api::$marker>(declarations);)+
         };
     }
     crate::operation_api_contracts!(collect);
@@ -141,16 +148,16 @@ where
 
 fn push_operation_api_contracts(output: &mut String, config: &Config) {
     macro_rules! push_aliases {
-        ($($contract:ty),+ $(,)?) => {
-            $(push_operation_api_aliases_for::<$contract>(output, config);)+
+        ($( $marker:ident => $contract:tt ),+ $(,)?) => {
+            $(push_operation_api_aliases_for::<crate::operation_api::$marker>(output, config);)+
         };
     }
     crate::operation_api_contracts!(push_aliases);
 
     output.push_str("export const OPERATION_API_CONTRACTS = [\n");
     macro_rules! push_rows {
-        ($($contract:ty),+ $(,)?) => {
-            $(push_operation_api_contract_row_for::<$contract>(output, config);)+
+        ($( $marker:ident => $contract:tt ),+ $(,)?) => {
+            $(push_operation_api_contract_row_for::<crate::operation_api::$marker>(output, config);)+
         };
     }
     crate::operation_api_contracts!(push_rows);
@@ -161,8 +168,8 @@ fn push_operation_api_contracts(output: &mut String, config: &Config) {
 
     output.push_str("export type OperationApiRequestByEndpoint = {\n");
     macro_rules! push_request_map {
-        ($($contract:ty),+ $(,)?) => {
-            $(push_operation_api_request_map_row_for::<$contract>(output, config);)+
+        ($( $marker:ident => $contract:tt ),+ $(,)?) => {
+            $(push_operation_api_request_map_row_for::<crate::operation_api::$marker>(output, config);)+
         };
     }
     crate::operation_api_contracts!(push_request_map);
@@ -170,8 +177,8 @@ fn push_operation_api_contracts(output: &mut String, config: &Config) {
 
     output.push_str("export type OperationApiResponseByEndpoint = {\n");
     macro_rules! push_response_map {
-        ($($contract:ty),+ $(,)?) => {
-            $(push_operation_api_response_map_row_for::<$contract>(output);)+
+        ($( $marker:ident => $contract:tt ),+ $(,)?) => {
+            $(push_operation_api_response_map_row_for::<crate::operation_api::$marker>(output);)+
         };
     }
     crate::operation_api_contracts!(push_response_map);
@@ -292,6 +299,7 @@ fn strip_trailing_whitespace(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::operation_api::OperationApiEndpoint;
 
     #[test]
     fn generated_contract_contains_no_transport_metadata() {
@@ -305,6 +313,21 @@ mod tests {
         assert!(generated.contains("name: \"deploy.submit\""));
         assert!(!registry.contains("subject:"));
         assert!(!registry.contains("execution:"));
+
+        let rows = registry
+            .lines()
+            .filter(|line| line.trim_start().starts_with("{ name:"))
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), OperationApiEndpoint::ALL.len());
+        for endpoint in OperationApiEndpoint::ALL {
+            let name = format!("name: \"{}\"", endpoint.name());
+            assert_eq!(
+                rows.iter().filter(|row| row.contains(&name)).count(),
+                1,
+                "endpoint {} must have one generated contract row",
+                endpoint.name()
+            );
+        }
     }
 
     #[test]

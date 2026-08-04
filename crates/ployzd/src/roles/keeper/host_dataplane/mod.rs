@@ -1,4 +1,4 @@
-//! Host WireGuard/eBPF readiness for machine-local dataplane preparation.
+//! Root-owned WireGuard/eBPF readiness for Keeper convergence.
 
 use ployz_core::ids::MachineId;
 use ployz_core::network::{
@@ -20,11 +20,11 @@ mod host_routes;
 mod host_status;
 mod wireguard_reconciliation;
 
+pub use crate::WireGuardMtuPolicy;
+use crate::network_mtu::resolve_wireguard_mtu;
 #[cfg(test)]
 use host_commands::HostCommandAction;
 use host_commands::{HostCommandPlan, HostDataplaneEvidence, default_command_plans, unavailable};
-pub use host_network::WireGuardMtuPolicy;
-pub(crate) use host_network::resolve_wireguard_mtu;
 use host_network::{ensure_private_key, public_key_from_private_key};
 use host_routes::HostDataplaneRouteProgramming;
 use wireguard_reconciliation::{WireGuardReconciliation, ensure_wireguard_interface};

@@ -1,7 +1,6 @@
 //! Transport-neutral request, response, event, and SDK export contracts.
 
 mod build;
-mod core_types;
 mod deploy;
 mod ingress;
 mod logs;
@@ -17,7 +16,6 @@ pub mod typescript;
 mod volume;
 
 pub use build::*;
-pub use core_types::*;
 pub use deploy::*;
 pub use ingress::*;
 pub use logs::*;

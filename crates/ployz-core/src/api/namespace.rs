@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use super::core_types::*;
+use crate::ids::{NamespaceId, OperationId};
+use crate::operation::EventSequence;
+
 use super::ops::{AcceptedOperation, OperationApiResponse};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

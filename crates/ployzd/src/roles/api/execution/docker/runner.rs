@@ -3,7 +3,7 @@ use super::network::{
     ENDPOINT_NETWORK_NAME, ensure_endpoint_network, is_docker_object_missing,
     read_endpoint_network_status, require_endpoint_network,
 };
-use crate::roles::api::execution::host_dataplane::{WireGuardMtuPolicy, resolve_wireguard_mtu};
+use crate::network_mtu::{WireGuardMtuPolicy, resolve_wireguard_mtu};
 use crate::roles::api::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
     MachineContainerCreateError, MachineContainerListError, MachineContainerRemoveError,
@@ -13,7 +13,6 @@ use crate::roles::api::runner::{
     MachineLogTail, MachineLogTimestamps, MachineRegistryImageResolveError,
     MachineVolumeRemoveError,
 };
-use crate::roles::api::volume::docker_volume_name;
 use bollard::Docker;
 use bollard::errors::Error as BollardError;
 use bollard::models::{
@@ -931,7 +930,7 @@ fn docker_volume_mounts(
             .iter()
             .map(|mount| Mount {
                 target: Some(mount.target.as_str().to_owned()),
-                source: Some(docker_volume_name(namespace_id, &mount.volume_name)),
+                source: Some(mount.volume_name.stable_storage_name(namespace_id)),
                 typ: Some(MountType::VOLUME),
                 read_only: None,
                 consistency: None,

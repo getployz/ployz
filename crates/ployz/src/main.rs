@@ -1,12 +1,18 @@
 use std::process::ExitCode;
 
-use ployz::commands::{PloyzCommand, TelemetryCommand, parse_command};
+use clap::error::ErrorKind;
+use ployz::commands::{TelemetryCommand, parse_command};
 use ployz_telemetry::ConfigFile;
 
 fn main() -> ExitCode {
     let command = match parse_command(std::env::args().skip(1)) {
         Ok(command) => command,
-        Err(error) if error.is_display_requested() => {
+        Err(error)
+            if matches!(
+                error.kind(),
+                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
+            ) =>
+        {
             print!("{error}");
             return ExitCode::SUCCESS;
         }
@@ -16,9 +22,7 @@ fn main() -> ExitCode {
         }
     };
 
-    match command {
-        PloyzCommand::Telemetry(command) => set_telemetry(command),
-    }
+    set_telemetry(command)
 }
 
 fn set_telemetry(command: TelemetryCommand) -> ExitCode {

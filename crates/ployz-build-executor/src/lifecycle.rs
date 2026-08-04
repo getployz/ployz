@@ -1,5 +1,6 @@
 use super::logs::{
-    BuildLogDestination, BuildLogProgress, BuildLogPublisher, PublishedLogs, read_output,
+    BuildLogDestination, BuildLogProgress, BuildLogPublisher, PublishOutcome, PublishedLogs,
+    read_output,
 };
 use super::plan::{BuildExecutionPlan, PrepareCommand};
 use super::runner::{
@@ -526,20 +527,28 @@ pub(super) async fn run_buildctl(
         changed = cancelled.changed() => {
             let _ = changed;
             let _ = child.kill().await;
-            let logs = publisher.finish().await?;
+            let logs = publisher.finish(cancelled).await?;
             return Err(BuildExecutionError::cancelled().with_logs(logs));
         }
     } {
-        if let Err(error) = publisher.push(&bytes).await {
-            let logs = publisher.finish().await?;
-            return Err(error.with_logs(logs));
+        match publisher.push(&bytes, cancelled).await {
+            Ok(PublishOutcome::Continue) => {}
+            Ok(PublishOutcome::Cancelled) => {
+                let _ = child.kill().await;
+                let logs = publisher.finish(cancelled).await?;
+                return Err(BuildExecutionError::cancelled().with_logs(logs));
+            }
+            Err(error) => {
+                let logs = publisher.finish(cancelled).await?;
+                return Err(error.with_logs(logs));
+            }
         }
     }
     let status = child
         .wait()
         .await
         .map_err(|error| infrastructure("wait for buildctl", error.to_string()))?;
-    let logs = publisher.finish().await?;
+    let logs = publisher.finish(cancelled).await?;
     if !status.success() {
         return Err(adapter_failure(format!(
             "BuildKit build failed with exit code {:?}",
