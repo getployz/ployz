@@ -198,22 +198,15 @@ fn mismatched_machine_a_transaction(
     public_key_a: &WireGuardPublicKey,
     mismatched_address: Ipv6Addr,
 ) -> Result<Value, String> {
-    let document = json!({
-        "v": 1,
-        "cluster_id": CLUSTER_ID,
-        "name": "edge-a",
-        "lifecycle": "active",
-        "transport": {
-            "kind": "wireguard",
-            "pubkey": public_key_a.as_str(),
-            "addr_v6": mismatched_address,
-            "endpoint": endpoint(machine_a)?,
-            "subnet_v4": "10.210.10.0/24"
-        },
-        "storage": {"mode": "plain", "reason": {"kind": "default"}},
-        "written_by": {"kind": "machine", "machine_id": MACHINE_A_ID},
-        "written_at": "2026-08-04T10:02:00.000000000Z"
-    });
+    let document = machine_document(
+        "edge-a",
+        MACHINE_A_ID,
+        public_key_a,
+        mismatched_address,
+        endpoint(machine_a)?,
+        "10.210.10.0/24",
+        "2026-08-04T10:02:00.000000000Z",
+    );
     Ok(json!([[
         "UPDATE machines SET document = ? WHERE id = ?",
         [
@@ -221,6 +214,33 @@ fn mismatched_machine_a_transaction(
             MACHINE_A_ID
         ]
     ]]))
+}
+
+fn machine_document(
+    name: &str,
+    id: &str,
+    public_key: &WireGuardPublicKey,
+    address: Ipv6Addr,
+    endpoint: String,
+    subnet: &str,
+    written_at: &str,
+) -> Value {
+    json!({
+        "v": 1,
+        "cluster_id": CLUSTER_ID,
+        "name": name,
+        "lifecycle": "active",
+        "transport": {
+            "kind": "wireguard",
+            "pubkey": public_key.as_str(),
+            "addr_v6": address,
+            "endpoint": endpoint,
+            "subnet_v4": subnet
+        },
+        "storage": {"mode": "plain", "reason": {"kind": "default"}},
+        "written_by": {"kind": "machine", "machine_id": id},
+        "written_at": written_at
+    })
 }
 
 fn roster_transaction(
@@ -246,29 +266,6 @@ fn roster_transaction(
         "written_by": {"kind": "machine", "machine_id": MACHINE_A_ID},
         "written_at": "2026-08-04T10:00:00.000000000Z"
     });
-    let machine_document = |name: &str,
-                            id: &str,
-                            public_key: &WireGuardPublicKey,
-                            address: Ipv6Addr,
-                            endpoint: String,
-                            subnet: &str| {
-        json!({
-            "v": 1,
-            "cluster_id": CLUSTER_ID,
-            "name": name,
-            "lifecycle": "active",
-            "transport": {
-                "kind": "wireguard",
-                "pubkey": public_key.as_str(),
-                "addr_v6": address,
-                "endpoint": endpoint,
-                "subnet_v4": subnet
-            },
-            "storage": {"mode": "plain", "reason": {"kind": "default"}},
-            "written_by": {"kind": "machine", "machine_id": id},
-            "written_at": "2026-08-04T10:00:00.000000000Z"
-        })
-    };
     let machine_a_document = machine_document(
         "edge-a",
         MACHINE_A_ID,
@@ -276,6 +273,7 @@ fn roster_transaction(
         address_a,
         endpoint_a,
         "10.210.10.0/24",
+        "2026-08-04T10:00:00.000000000Z",
     );
     let machine_b_document = machine_document(
         "edge-b",
@@ -284,6 +282,7 @@ fn roster_transaction(
         address_b,
         endpoint_b,
         "10.210.20.0/24",
+        "2026-08-04T10:00:00.000000000Z",
     );
     Ok(json!([
         [

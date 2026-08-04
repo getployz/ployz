@@ -204,43 +204,7 @@ mod tests {
     }
 
     #[test]
-    fn local_writer_uses_one_identity_for_sql_and_document() {
-        let writer = LocalMachineStatusWriter::new(
-            ClusterId::try_new(CLUSTER).expect("cluster"),
-            MachineRowId::try_new(MACHINE).expect("machine"),
-            "0.2.0-beta.0".to_owned(),
-        );
-        let statement = writer
-            .statement_with_observation(
-                MeshConvergenceTestimony::NoRoster {
-                    attempted_at: timestamp(),
-                },
-                SystemObservation {
-                    free_disk_bytes: 11,
-                    free_memory_bytes: 22,
-                    load: MachineLoadBand::Idle,
-                },
-                timestamp(),
-            )
-            .expect("status statement");
-        let Statement::WithParams(sql, params) = statement else {
-            panic!("status write must be parameterized");
-        };
-        assert!(sql.starts_with("INSERT INTO machine_status"));
-        let [SqliteParameter::Text(key), SqliteParameter::Text(document)] = params.as_slice()
-        else {
-            panic!("status write has one key and one document parameter");
-        };
-        let decoded: MachineStatusDocument =
-            serde_json::from_str(document).expect("status document");
-        assert_eq!(key, MACHINE);
-        assert_eq!(decoded.machine_id.as_str(), key);
-        assert_eq!(decoded.cluster_id.as_str(), CLUSTER);
-        assert!(decoded.mesh.is_some());
-    }
-
-    #[test]
-    fn local_writer_encodes_key_mismatch_as_an_upsert() {
+    fn local_writer_encodes_key_mismatch_upsert_with_one_identity() {
         let writer = LocalMachineStatusWriter::new(
             ClusterId::try_new(CLUSTER).expect("cluster"),
             MachineRowId::try_new(MACHINE).expect("machine"),
@@ -282,6 +246,8 @@ mod tests {
         let decoded: MachineStatusDocument =
             serde_json::from_str(document).expect("status document");
         assert_eq!(key, MACHINE);
+        assert_eq!(decoded.machine_id.as_str(), key);
+        assert_eq!(decoded.cluster_id.as_str(), CLUSTER);
         assert_eq!(decoded.mesh, Some(testimony));
     }
 
