@@ -273,28 +273,45 @@ fn install_ufw_reload_backstop(
     if plan.current_present {
         return Ok(());
     }
-    require_success(
-        runner,
-        "ufw",
-        &[
-            "insert",
-            "1",
-            "deny",
-            "in",
-            "on",
-            interface,
-            "from",
-            "::/0",
-            "to",
-            "any",
-            "port",
-            &port,
-            "proto",
-            "udp",
-            "comment",
-            UFW_CORROSION_MARKER,
-        ],
-    )
+    let refreshed = runner.command("ufw", &["status", "numbered"])?;
+    if !refreshed.success {
+        return Err(failure_message(refreshed.failure));
+    }
+    if refreshed.stdout_truncated {
+        return Err(failure_message("UFW numbered status was truncated"));
+    }
+    let position = refreshed
+        .stdout
+        .lines()
+        .find(|line| line.contains("(v6)"))
+        .map(|line| {
+            ufw_rule_number(line)
+                .ok_or_else(|| failure_message("UFW IPv6 rule had no numbered status index"))
+        })
+        .transpose()?;
+    let rule = [
+        "deny",
+        "in",
+        "on",
+        interface,
+        "from",
+        "::/0",
+        "to",
+        "any",
+        "port",
+        &port,
+        "proto",
+        "udp",
+        "comment",
+        UFW_CORROSION_MARKER,
+    ];
+    let Some(position) = position else {
+        return require_success(runner, "ufw", &rule);
+    };
+    let position = position.to_string();
+    let mut insert = vec!["insert", &position];
+    insert.extend(rule);
+    require_success(runner, "ufw", &insert)
 }
 
 struct UfwRulePlan {

@@ -17,6 +17,7 @@ fn desired_gossip_fence_precedes_interface_activation_and_api_admission() {
         active("Status: active\n"),
         active(""),
         active(""),
+        active(""),
         active("-P INPUT ACCEPT\n"),
         active(""),
         active(""),

@@ -670,8 +670,13 @@ table ip6 filter {
 
     #[test]
     fn machine_only_udp_chain_accepts_machines_and_rejects_roaming_peers() {
+        let status = concat!(
+            "[ 1] 51820/udp ALLOW IN Anywhere\n",
+            "[ 2] 51820/udp (v6) ALLOW IN Anywhere (v6)\n",
+        );
         let mut runner = RecordingRunner::with_outputs([
-            active(""),
+            active(status),
+            active(status),
             active(""),
             active("-P INPUT ACCEPT\n"),
             active(""),
@@ -685,16 +690,17 @@ table ip6 filter {
             .restrict_udp_to_ipv6_sources_with("ployz0", 8_787, &sources, &mut runner)
             .expect("machine-only gossip");
 
-        let [status, ufw, observe, restore] = runner.calls.as_slice() else {
+        let [status, refreshed, ufw, observe, restore] = runner.calls.as_slice() else {
             panic!(
                 "expected UFW backstop, save, and restore: {:?}",
                 runner.calls
             );
         };
         assert_eq!(status, "ufw status numbered");
+        assert_eq!(refreshed, "ufw status numbered");
         assert_eq!(
             ufw,
-            "ufw insert 1 deny in on ployz0 from ::/0 to any port 8787 proto udp comment ployz-corrosion-gossip"
+            "ufw insert 2 deny in on ployz0 from ::/0 to any port 8787 proto udp comment ployz-corrosion-gossip"
         );
         assert_eq!(observe, "ip6tables -S INPUT");
         assert!(restore.starts_with("ip6tables-restore --noflush --wait 5 "));
