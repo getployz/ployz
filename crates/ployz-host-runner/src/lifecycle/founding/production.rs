@@ -13,6 +13,7 @@ use ployz_core::corrosion::{
     MachineDocument, MachineTransport, MeshProvider, OperationInitiator, OperatorWriteProvenance,
     PeerDocument, PeerTransport, StorageMode, derive_builtin_wireguard_member,
 };
+use ployz_core::deploy::ZfsPoolName;
 use ployz_core::founding::{
     FoundingDriverEnrollment, FoundingRefusal, FoundingRequest, InitStorageChoice,
     InitStorageFacts, InitStorageSelectionError, ValidatedFoundingRequest,
@@ -37,6 +38,7 @@ use super::{FoundingHostEffects, FoundingStateDirectory};
 
 const MACHINE_SEED_FILE: &str = "machine-seed.json";
 const FOUNDING_REQUEST_FILE: &str = "founding-request.json";
+const ZFS_POOL_FILE: &str = "founding-zfs-pool";
 const WIREGUARD_KEY_FILE: &str = "wireguard.key";
 const DOOR_KEY_FILE: &str = "door.key";
 const DOOR_CERTIFICATE_FILE: &str = "door.crt";
@@ -55,6 +57,12 @@ enum FoundingRoleDisposition {
     DisabledAndInactive,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CorrosionServiceChange {
+    Enable,
+    Restart,
+}
+
 const fn founding_role_disposition(role: PloyzdRole) -> FoundingRoleDisposition {
     match role {
         PloyzdRole::Keeper | PloyzdRole::Api => FoundingRoleDisposition::Enabled,
@@ -70,13 +78,11 @@ pub enum FoundingDriverInput {
         peer_id: PeerId,
         name: String,
         public_key: WireGuardPublicKey,
-        endpoint: Option<SocketAddr>,
     },
     Cloud {
         peer_id: PeerId,
         name: String,
         public_key: WireGuardPublicKey,
-        endpoint: Option<SocketAddr>,
     },
 }
 
@@ -252,20 +258,24 @@ pub fn prepare_linux_founding<R: HostRunnerCommandRunner>(
     let key = Key::try_from(seed.private_key.as_str()).map_err(preparation)?;
     let public_key =
         WireGuardPublicKey::try_new(key.public_key().to_string()).map_err(preparation)?;
-    let facts = match input.storage {
+    let inventory = match input.storage {
         InitStorageChoice::Flag {
             mode: StorageMode::Plain,
-        } => InitStorageFacts {
-            imported_zfs_pool: false,
-            total_memory_bytes: 0,
+        } => StorageInventory {
+            facts: InitStorageFacts {
+                imported_zfs_pool: false,
+                total_memory_bytes: 0,
+            },
+            pools: Vec::new(),
         },
         InitStorageChoice::Automatic
         | InitStorageChoice::Flag {
             mode: StorageMode::Zfs,
-        } => storage_facts(&mut runner)?,
+        } => storage_inventory(&mut runner)?,
     };
-    let storage =
-        select_init_storage(input.storage, facts).map_err(FoundingPreparationError::Storage)?;
+    let storage = select_init_storage(input.storage, inventory.facts)
+        .map_err(FoundingPreparationError::Storage)?;
+    let zfs_pool = select_zfs_pool(state.path(), storage.mode, inventory.pools)?;
     let subnet = input.prefix.allocate_next([]).map_err(preparation)?;
     let provenance = OperatorWriteProvenance {
         written_by: OperationInitiator::Machine {
@@ -321,6 +331,7 @@ pub fn prepare_linux_founding<R: HostRunnerCommandRunner>(
         door_material: read_or_generate_door_material(state.path())?,
         bootstrap_credential: bootstrap_credential.clone(),
         corrosion_token: read_or_generate_secret(&state.path().join(CORROSION_TOKEN_FILE))?,
+        zfs_pool,
         runner,
         profile: None,
         supervisor_directories: SupervisorDirectories::host_defaults(),
@@ -338,6 +349,14 @@ pub enum FoundingPreparationError {
     Refused(FoundingRefusal),
     #[error("founding storage selection refused: {0}")]
     Storage(InitStorageSelectionError),
+    #[error(
+        "founding ZFS selection found multiple imported pools ({pools:?}); export all but the intended pool or choose --storage plain"
+    )]
+    MultipleImportedZfsPools { pools: Vec<ZfsPoolName> },
+    #[error(
+        "founding ZFS selection retained pool {pool:?}, but it is no longer imported; import that pool or choose --storage plain after resetting founding state"
+    )]
+    RetainedZfsPoolNotImported { pool: ZfsPoolName },
     #[error("failed to prepare machine-one founding: {message}")]
     Failed { message: String },
 }
@@ -405,6 +424,7 @@ fn prepared_from_request<R: HostRunnerCommandRunner>(
         door_material: read_or_generate_door_material(state.path())?,
         bootstrap_credential: bootstrap_credential.clone(),
         corrosion_token: read_or_generate_secret(&state.path().join(CORROSION_TOKEN_FILE))?,
+        zfs_pool: read_required_zfs_pool(state.path(), request.request().machine.storage.mode)?,
         runner,
         profile: None,
         supervisor_directories: SupervisorDirectories::host_defaults(),
@@ -509,9 +529,14 @@ fn read_or_generate_machine_seed(state: &Path) -> Result<MachineSeed, FoundingPr
     }
 }
 
-fn storage_facts(
+struct StorageInventory {
+    facts: InitStorageFacts,
+    pools: Vec<ZfsPoolName>,
+}
+
+fn storage_inventory(
     runner: &mut impl HostRunnerCommandRunner,
-) -> Result<InitStorageFacts, FoundingPreparationError> {
+) -> Result<StorageInventory, FoundingPreparationError> {
     let memory = runner
         .command("cat", &["/proc/meminfo"])
         .map_err(preparation)?;
@@ -526,13 +551,76 @@ fn storage_facts(
         .and_then(|value| value.parse::<u64>().ok())
         .and_then(|kib| kib.checked_mul(1_024))
         .ok_or_else(|| preparation("/proc/meminfo has no valid MemTotal"))?;
-    let imported_zfs_pool = runner
-        .command("zpool", &["list", "-H", "-o", "name"])
-        .is_ok_and(|pools| pools.success && !pools.stdout.trim().is_empty());
-    Ok(InitStorageFacts {
-        imported_zfs_pool,
-        total_memory_bytes,
+    let mut pools = match runner.command("zpool", &["list", "-H", "-o", "name"]) {
+        Ok(output) if output.success => {
+            if output.stdout_truncated {
+                return Err(preparation("imported ZFS pool inventory was truncated"));
+            }
+            output
+                .stdout
+                .lines()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(|name| ZfsPoolName::try_new(name.to_owned()).map_err(preparation))
+                .collect::<Result<Vec<_>, _>>()?
+        }
+        Ok(_) | Err(_) => Vec::new(),
+    };
+    pools.sort();
+    pools.dedup();
+    Ok(StorageInventory {
+        facts: InitStorageFacts {
+            imported_zfs_pool: !pools.is_empty(),
+            total_memory_bytes,
+        },
+        pools,
     })
+}
+
+fn select_zfs_pool(
+    state: &Path,
+    mode: StorageMode,
+    pools: Vec<ZfsPoolName>,
+) -> Result<Option<ZfsPoolName>, FoundingPreparationError> {
+    if mode == StorageMode::Plain {
+        return Ok(None);
+    }
+    if let Some(retained) = read_optional_zfs_pool(state)? {
+        if pools.contains(&retained) {
+            return Ok(Some(retained));
+        }
+        return Err(FoundingPreparationError::RetainedZfsPoolNotImported { pool: retained });
+    }
+    match pools.as_slice() {
+        [pool] => Ok(Some(pool.clone())),
+        [] => Err(FoundingPreparationError::Storage(
+            InitStorageSelectionError::ZfsPoolNotImported,
+        )),
+        _ => Err(FoundingPreparationError::MultipleImportedZfsPools { pools }),
+    }
+}
+
+fn read_optional_zfs_pool(state: &Path) -> Result<Option<ZfsPoolName>, FoundingPreparationError> {
+    match fs::read_to_string(state.join(ZFS_POOL_FILE)) {
+        Ok(value) => ZfsPoolName::try_new(value.trim().to_owned())
+            .map(Some)
+            .map_err(preparation),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(preparation(error)),
+    }
+}
+
+fn read_required_zfs_pool(
+    state: &Path,
+    mode: StorageMode,
+) -> Result<Option<ZfsPoolName>, FoundingPreparationError> {
+    match (mode, read_optional_zfs_pool(state)?) {
+        (StorageMode::Plain, _) => Ok(None),
+        (StorageMode::Zfs, Some(pool)) => Ok(Some(pool)),
+        (StorageMode::Zfs, None) => Err(preparation(
+            "persisted ZFS founding request has no retained pool selection",
+        )),
+    }
 }
 
 fn build_driver(
@@ -540,7 +628,7 @@ fn build_driver(
     provenance: &OperatorWriteProvenance,
     input: FoundingDriverInput,
 ) -> FoundingDriverEnrollment {
-    let row = |name, public_key: WireGuardPublicKey, endpoint| PeerDocument {
+    let row = |name, public_key: WireGuardPublicKey| PeerDocument {
         v: CorrosionDocumentVersion::V1,
         cluster_id: cluster_id.clone(),
         provenance: provenance.clone(),
@@ -550,7 +638,7 @@ fn build_driver(
                 .bind_address()
                 .get(),
             pubkey: public_key,
-            endpoint,
+            endpoint: None,
         },
     };
     match input {
@@ -559,19 +647,17 @@ fn build_driver(
             peer_id,
             name,
             public_key,
-            endpoint,
         } => FoundingDriverEnrollment::Ssh {
             peer_id,
-            document: row(name, public_key, endpoint),
+            document: row(name, public_key),
         },
         FoundingDriverInput::Cloud {
             peer_id,
             name,
             public_key,
-            endpoint,
         } => FoundingDriverEnrollment::Cloud {
             peer_id,
-            document: row(name, public_key, endpoint),
+            document: row(name, public_key),
         },
     }
 }
@@ -586,6 +672,7 @@ pub struct LinuxFoundingHostEffects<R = SystemHostRunnerCommandRunner> {
     door_material: DoorMaterial,
     bootstrap_credential: FoundingBootstrapCredential,
     corrosion_token: String,
+    zfs_pool: Option<ZfsPoolName>,
     runner: R,
     profile: Option<HostPlatformProfile>,
     supervisor_directories: SupervisorDirectories,
@@ -602,404 +689,7 @@ impl<R> fmt::Debug for LinuxFoundingHostEffects<R> {
     }
 }
 
-impl<R: HostRunnerCommandRunner> LinuxFoundingHostEffects<R> {
-    fn profile(&mut self) -> Result<&HostPlatformProfile, FailureMessage> {
-        if self.profile.is_none() {
-            let release = self.runner.read_os_release()?;
-            self.profile = Some(detect_host_platform(&release).map_err(failure)?);
-        }
-        Ok(self.profile.as_ref().expect("profile was populated"))
-    }
-
-    fn require(&mut self, program: &str, args: &[&str]) -> Result<(), FailureMessage> {
-        let output = self.runner.command(program, args)?;
-        if output.success {
-            Ok(())
-        } else {
-            Err(failure(output.failure))
-        }
-    }
-
-    fn install_artifact(
-        &mut self,
-        kind: ArtifactKind,
-        spec: &ployz_core::install::InstallArtifactSpec,
-    ) -> Result<(), FailureMessage> {
-        let target = artifact_target(kind, spec).map_err(failure)?;
-        let source = match target.source_view() {
-            ArtifactSourceView::LocalPath(path) => path.to_path_buf(),
-            ArtifactSourceView::RemoteUrl(url) => {
-                let downloads = self.state.path().join("downloads");
-                fs::create_dir_all(&downloads).map_err(failure)?;
-                let download = downloads.join(spec.sha256.as_str());
-                if !download.exists() {
-                    self.runner.download(url, &download)?;
-                }
-                download
-            }
-        };
-        let verified = verify_artifact_file(&source, &target.digest).map_err(failure)?;
-        install_verified_artifact(&verified, &target).map_err(failure)?;
-        Ok(())
-    }
-
-    fn supervisor_backend(&mut self) -> Result<SupervisorBackend, FailureMessage> {
-        Ok(self.profile()?.supervisor().into())
-    }
-
-    fn env_contents(&self, include_bootstrap: bool) -> Result<Vec<u8>, FailureMessage> {
-        let request = self.request.request();
-        let MachineTransport::Wireguard { addr_v6, .. } = &request.machine.transport else {
-            return Err(failure("founding machine transport is not WireGuard"));
-        };
-        let mut env = format!(
-            "PLOYZ_CORROSION_API_ADDR=127.0.0.1:{CORROSION_API_PORT}\nPLOYZ_CORROSION_BEARER_TOKEN={}\nPLOYZ_CLUSTER_ID={}\nPLOYZ_MACHINE_ID={}\nPLOYZ_API_LISTEN_ADDR=[{addr_v6}]:{API_PORT}\nPLOYZ_BUILD={}\nPLOYZ_WIREGUARD_PRIVATE_KEY_PATH={}/{}\nPLOYZ_CORROSION_VERSION={}\n",
-            self.corrosion_token,
-            request.cluster_id,
-            request.machine_id,
-            self.artifacts.ployzd.version.as_str(),
-            self.state.path().display(),
-            WIREGUARD_KEY_FILE,
-            self.corrosion_embedded_version,
-        );
-        if include_bootstrap {
-            env.push_str("PLOYZ_API_BOOTSTRAP_SECRET=");
-            env.push_str(self.bootstrap_credential.as_str());
-            env.push('\n');
-        }
-        Ok(env.into_bytes())
-    }
-}
-
-impl<R: HostRunnerCommandRunner> FoundingHostEffects for LinuxFoundingHostEffects<R> {
-    fn stage_exact_ployz_and_corrosion(&mut self) -> Result<(), FailureMessage> {
-        for (kind, spec) in [
-            (ArtifactKind::Ployzd, self.artifacts.ployzd.clone()),
-            (ArtifactKind::Corrosion, self.artifacts.corrosion.clone()),
-            (
-                ArtifactKind::CorrosionSchema,
-                self.artifacts.corrosion_schema.clone(),
-            ),
-            (
-                ArtifactKind::EbpfBytecode,
-                self.artifacts.ebpf_bytecode.clone(),
-            ),
-            (ArtifactKind::EbpfCtl, self.artifacts.ebpf_ctl.clone()),
-        ] {
-            self.install_artifact(kind, &spec)?;
-        }
-        let version = self
-            .runner
-            .command("/usr/local/bin/corrosion", &["--version"])?;
-        if version.success && version.stdout.trim() == self.corrosion_embedded_version {
-            Ok(())
-        } else {
-            Err(failure(format!(
-                "installed Corrosion version mismatch: expected {:?}, got {:?}",
-                self.corrosion_embedded_version,
-                version.stdout.trim()
-            )))
-        }
-    }
-
-    fn ensure_docker(&mut self) -> Result<(), FailureMessage> {
-        if !self.runner.docker_is_installed() {
-            let install = self.profile()?.docker_install();
-            match install {
-                crate::DockerInstall::GetDocker => {
-                    let script = self.state.path().join("get-docker.sh");
-                    self.runner.download("https://get.docker.com", &script)?;
-                    self.require("sh", &[script.to_string_lossy().as_ref()])?;
-                }
-                crate::DockerInstall::AlpinePackages => {
-                    self.require("apk", &["add", "docker"])?;
-                }
-                crate::DockerInstall::ArchPackages => {
-                    self.require("pacman", &["--noconfirm", "-S", "docker"])?;
-                }
-                crate::DockerInstall::SusePackages => {
-                    self.require("zypper", &["--non-interactive", "install", "docker"])?;
-                }
-                crate::DockerInstall::AmazonPackages => {
-                    self.require("dnf", &["install", "-y", "docker"])?;
-                }
-                crate::DockerInstall::RhelRepositoryFile
-                | crate::DockerInstall::CentosRepositoryFile => {
-                    self.require("dnf", &["install", "-y", "docker-ce"])?;
-                }
-            }
-        }
-        let backend = self.supervisor_backend()?;
-        for (program, args) in backend.docker_commands(SupervisorChange::InstallAndStart) {
-            let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
-            self.require(program, &refs)?;
-        }
-        self.runner.docker_info()
-    }
-
-    fn ensure_machine_identity_and_wireguard(&mut self) -> Result<(), FailureMessage> {
-        let bytes = serde_json::to_vec_pretty(&self.machine_seed).map_err(failure)?;
-        write_durable_file(
-            self.state.path(),
-            MACHINE_SEED_FILE,
-            FileMode::Secret0600,
-            &bytes,
-        )?;
-        write_durable_file(
-            self.state.path(),
-            WIREGUARD_KEY_FILE,
-            FileMode::Secret0600,
-            format!("{}\n", self.machine_seed.private_key).as_bytes(),
-        )
-    }
-
-    fn ensure_cluster_door_material(&mut self) -> Result<(), FailureMessage> {
-        write_durable_file(
-            self.state.path(),
-            DOOR_KEY_FILE,
-            FileMode::Secret0600,
-            self.door_material.private_key_pem.as_bytes(),
-        )?;
-        write_durable_file(
-            self.state.path(),
-            DOOR_CERTIFICATE_FILE,
-            FileMode::Plain,
-            self.door_material.certificate_pem.as_bytes(),
-        )?;
-        write_durable_file(
-            self.state.path(),
-            DOOR_FINGERPRINT_FILE,
-            FileMode::Plain,
-            format!("{}\n", self.door_material.fingerprint).as_bytes(),
-        )
-    }
-
-    fn ensure_machine_endpoint_subnet(&mut self) -> Result<(), FailureMessage> {
-        let request = self.request.request();
-        let MachineTransport::Wireguard { subnet_v4, .. } = &request.machine.transport else {
-            return Err(failure("founding machine transport is not WireGuard"));
-        };
-        if request.cluster.prefix.contains_subnet(subnet_v4) {
-            Ok(())
-        } else {
-            Err(failure(
-                "machine-one endpoint subnet is outside cluster prefix",
-            ))
-        }
-    }
-
-    fn prepare_selected_storage(&mut self) -> Result<(), FailureMessage> {
-        match self.request.request().machine.storage.mode {
-            StorageMode::Plain => {
-                fs::create_dir_all(self.state.path().join("volumes")).map_err(failure)
-            }
-            StorageMode::Zfs => {
-                let profile = self.profile()?.clone();
-                prepare_storage(
-                    &mut self.runner,
-                    &profile,
-                    &PoolSelection::Automatic,
-                    self.state.path(),
-                    Path::new("/etc/systemd/system/docker.service.d"),
-                )
-                .map(|_| ())
-                .map_err(failure)
-            }
-        }
-    }
-
-    fn write_configuration_with_bootstrap(&mut self) -> Result<(), FailureMessage> {
-        let request = self.request.request();
-        let MachineTransport::Wireguard { addr_v6, .. } = &request.machine.transport else {
-            return Err(failure("founding machine transport is not WireGuard"));
-        };
-        write_durable_file(
-            self.state.path(),
-            CORROSION_TOKEN_FILE,
-            FileMode::Secret0600,
-            format!("{}\n", self.corrosion_token).as_bytes(),
-        )?;
-        write_durable_file(
-            self.state.path(),
-            BOOTSTRAP_CREDENTIAL_FILE,
-            FileMode::Secret0600,
-            format!("{}\n", self.bootstrap_credential.as_str()).as_bytes(),
-        )?;
-        let subscriptions = self.state.path().join("subscriptions");
-        fs::create_dir_all(&subscriptions).map_err(failure)?;
-        let corrosion = format!(
-            "[db]\npath = {db:?}\nschema_paths = [{schema:?}]\nsubscriptions_path = {subscriptions:?}\n\n[gossip]\naddr = {gossip:?}\nbootstrap = []\nplaintext = true\nmax_mtu = 1232\n\n[api]\naddr = {api:?}\nauthz.bearer-token = {token:?}\n\n[admin]\npath = {admin:?}\n",
-            db = self.state.path().join("corrosion.db").display().to_string(),
-            schema = self.artifacts.corrosion_schema.install_path.as_str(),
-            subscriptions = subscriptions.display().to_string(),
-            gossip = format!("[{addr_v6}]:{CORROSION_GOSSIP_PORT}"),
-            api = format!("127.0.0.1:{CORROSION_API_PORT}"),
-            token = self.corrosion_token,
-            admin = self
-                .state
-                .path()
-                .join("corrosion-admin.sock")
-                .display()
-                .to_string(),
-        );
-        write_durable_file(
-            self.state.path(),
-            CORROSION_CONFIG_FILE,
-            FileMode::Secret0600,
-            corrosion.as_bytes(),
-        )?;
-        write_durable_file(
-            self.state.path(),
-            ENV_FILE,
-            FileMode::Secret0600,
-            &self.env_contents(true)?,
-        )?;
-        merge_docker_daemon_config(&request.cluster.prefix)
-    }
-
-    fn persist_validated_founding_request(&mut self) -> Result<(), FailureMessage> {
-        let bytes = serde_json::to_vec_pretty(self.request.request()).map_err(failure)?;
-        write_durable_file(
-            self.state.path(),
-            FOUNDING_REQUEST_FILE,
-            FileMode::Secret0600,
-            &bytes,
-        )
-    }
-
-    fn restart_and_verify_docker_configuration(&mut self) -> Result<(), FailureMessage> {
-        let backend = self.supervisor_backend()?;
-        for (program, args) in backend.docker_commands(SupervisorChange::Restart) {
-            let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
-            self.require(program, &refs)?;
-        }
-        self.runner.docker_info()
-    }
-
-    fn install_units_and_enable_ready_roles(&mut self) -> Result<(), FailureMessage> {
-        let backend = self.supervisor_backend()?;
-        let ployzd =
-            artifact_target(ArtifactKind::Ployzd, &self.artifacts.ployzd).map_err(failure)?;
-        let environment =
-            PloyzdRoleEnvironmentFile::new(self.state.path().join(ENV_FILE)).map_err(failure)?;
-        for role in [
-            PloyzdRole::Keeper,
-            PloyzdRole::Api,
-            PloyzdRole::Gateway,
-            PloyzdRole::Dns,
-        ] {
-            let spec = SupervisorUnitSpec::PloyzdRole {
-                role,
-                artifact: ployzd.clone(),
-                environment_file: environment.clone(),
-            };
-            let rendered = backend.render(&spec).map_err(failure)?;
-            write_durable_file(
-                self.supervisor_directories.directory(backend),
-                rendered.file_name(),
-                FileMode::Executable0755,
-                rendered.contents().as_bytes(),
-            )?;
-            let target = spec.target();
-            let changes: &[SupervisorChange] = match founding_role_disposition(role) {
-                FoundingRoleDisposition::Enabled => &[SupervisorChange::Enable],
-                FoundingRoleDisposition::DisabledAndInactive => {
-                    &[SupervisorChange::Disable, SupervisorChange::Stop]
-                }
-            };
-            for change in changes {
-                for (program, args) in backend.commands(*change, &target) {
-                    let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
-                    self.require(program, &refs)?;
-                }
-            }
-        }
-        install_corrosion_unit(
-            backend,
-            &self.supervisor_directories,
-            self.state.path().join(CORROSION_CONFIG_FILE),
-        )?;
-        for (program, args) in corrosion_commands(backend, SupervisorChange::Enable) {
-            let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
-            self.require(program, &refs)?;
-        }
-        Ok(())
-    }
-
-    fn start_keeper(&mut self) -> Result<(), FailureMessage> {
-        self.restart_role(PloyzdRole::Keeper)
-    }
-
-    fn start_corrosion(&mut self) -> Result<(), FailureMessage> {
-        let backend = self.supervisor_backend()?;
-        for (program, args) in corrosion_commands(backend, SupervisorChange::Restart) {
-            let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
-            self.require(program, &refs)?;
-        }
-        Ok(())
-    }
-
-    fn start_api_with_bootstrap(&mut self) -> Result<(), FailureMessage> {
-        self.restart_role(PloyzdRole::Api)
-    }
-
-    fn await_driver_peer_convergence(
-        &mut self,
-        driver: &FoundingDriverEnrollment,
-    ) -> Result<(), FailureMessage> {
-        let Some((_peer_id, document)) = driver.enrolled_peer() else {
-            return Ok(());
-        };
-        let PeerTransport::Wireguard { pubkey, .. } = &document.transport else {
-            return Err(failure("founding driver transport is not WireGuard"));
-        };
-        for _ in 0..30 {
-            let output = self.runner.command("wg", &["show", "ployz0", "peers"])?;
-            if output.success
-                && output
-                    .stdout
-                    .lines()
-                    .any(|line| line.trim() == pubkey.as_str())
-            {
-                return Ok(());
-            }
-            thread::sleep(Duration::from_secs(1));
-        }
-        Err(failure(
-            "Keeper did not converge the founding driver peer within 30 seconds",
-        ))
-    }
-
-    fn remove_bootstrap_credential(&mut self) -> Result<(), FailureMessage> {
-        write_durable_file(
-            self.state.path(),
-            ENV_FILE,
-            FileMode::Secret0600,
-            &self.env_contents(false)?,
-        )?;
-        match fs::remove_file(self.state.path().join(BOOTSTRAP_CREDENTIAL_FILE)) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(failure(error)),
-        }
-    }
-
-    fn restart_api_without_bootstrap(&mut self) -> Result<(), FailureMessage> {
-        self.restart_role(PloyzdRole::Api)
-    }
-}
-
-impl<R: HostRunnerCommandRunner> LinuxFoundingHostEffects<R> {
-    fn restart_role(&mut self, role: PloyzdRole) -> Result<(), FailureMessage> {
-        let backend = self.supervisor_backend()?;
-        let target = crate::SupervisorUnitTarget::PloyzdRole(role);
-        for (program, args) in backend.commands(SupervisorChange::Restart, &target) {
-            let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
-            self.require(program, &refs)?;
-        }
-        Ok(())
-    }
-}
+mod effects;
 
 fn merge_docker_daemon_config(prefix: &MachineEndpointSupernet) -> Result<(), FailureMessage> {
     let path = Path::new("/etc/docker/daemon.json");
@@ -1090,21 +780,21 @@ fn install_corrosion_unit(
 
 fn corrosion_commands(
     backend: SupervisorBackend,
-    change: SupervisorChange,
+    change: CorrosionServiceChange,
 ) -> Vec<(&'static str, Vec<String>)> {
     match (backend, change) {
-        (SupervisorBackend::Systemd, SupervisorChange::Enable) => vec![
+        (SupervisorBackend::Systemd, CorrosionServiceChange::Enable) => vec![
             ("systemctl", vec!["daemon-reload".to_owned()]),
             (
                 "systemctl",
                 vec!["enable".to_owned(), "ployz-corrosion.service".to_owned()],
             ),
         ],
-        (SupervisorBackend::Systemd, SupervisorChange::Restart) => vec![(
+        (SupervisorBackend::Systemd, CorrosionServiceChange::Restart) => vec![(
             "systemctl",
             vec!["restart".to_owned(), "ployz-corrosion.service".to_owned()],
         )],
-        (SupervisorBackend::OpenRc, SupervisorChange::Enable) => vec![(
+        (SupervisorBackend::OpenRc, CorrosionServiceChange::Enable) => vec![(
             "rc-update",
             vec![
                 "add".to_owned(),
@@ -1112,11 +802,10 @@ fn corrosion_commands(
                 "default".to_owned(),
             ],
         )],
-        (SupervisorBackend::OpenRc, SupervisorChange::Restart) => vec![(
+        (SupervisorBackend::OpenRc, CorrosionServiceChange::Restart) => vec![(
             "rc-service",
             vec!["ployz-corrosion".to_owned(), "restart".to_owned()],
         )],
-        _ => Vec::new(),
     }
 }
 
@@ -1127,313 +816,4 @@ fn failure(error: impl fmt::Display) -> FailureMessage {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::HostRunnerCommandOutput;
-
-    #[test]
-    fn founding_enables_only_implemented_roles() {
-        assert_eq!(
-            founding_role_disposition(PloyzdRole::Keeper),
-            FoundingRoleDisposition::Enabled
-        );
-        assert_eq!(
-            founding_role_disposition(PloyzdRole::Api),
-            FoundingRoleDisposition::Enabled
-        );
-        assert_eq!(
-            founding_role_disposition(PloyzdRole::Gateway),
-            FoundingRoleDisposition::DisabledAndInactive
-        );
-        assert_eq!(
-            founding_role_disposition(PloyzdRole::Dns),
-            FoundingRoleDisposition::DisabledAndInactive
-        );
-    }
-
-    #[derive(Debug)]
-    struct FactsRunner;
-
-    impl HostRunnerCommandRunner for FactsRunner {
-        fn command(
-            &mut self,
-            program: &str,
-            _args: &[&str],
-        ) -> Result<HostRunnerCommandOutput, FailureMessage> {
-            match program {
-                "cat" => Ok(output(true, "MemTotal:       4194304 kB\n")),
-                "zpool" => Ok(output(false, "")),
-                _ => Err(failure("unexpected command")),
-            }
-        }
-
-        fn is_linux(&mut self) -> bool {
-            true
-        }
-
-        fn current_uid(&mut self) -> Result<u32, FailureMessage> {
-            Ok(0)
-        }
-
-        fn download(&mut self, _url: &str, _destination: &Path) -> Result<(), FailureMessage> {
-            Err(failure("download is not used during preparation"))
-        }
-
-        fn docker_info(&mut self) -> Result<(), FailureMessage> {
-            Ok(())
-        }
-
-        fn docker_is_installed(&mut self) -> bool {
-            true
-        }
-
-        fn docker_uses_containerd_snapshotter(&mut self) -> Result<bool, FailureMessage> {
-            Ok(true)
-        }
-
-        fn docker_has_insecure_registry(&mut self, _cidr: &str) -> Result<bool, FailureMessage> {
-            Ok(true)
-        }
-    }
-
-    #[test]
-    fn preparation_builds_matching_request_without_persisting_generated_material() {
-        let directory = tempfile::tempdir().expect("tempdir");
-        let state = FoundingStateDirectory::initialize(directory.path().join("state"))
-            .expect("state initializes");
-        let prepared = prepare_linux_founding(
-            &state,
-            LinuxFoundingInput {
-                cluster_name: "ares".to_owned(),
-                machine_name: MachineName::try_new("ares").expect("machine name"),
-                endpoint: Some("203.0.113.7:51820".parse().expect("endpoint")),
-                prefix: MachineEndpointSupernet::default_v1(),
-                hostname_mode: AutomaticHostnameMode::Disabled,
-                storage: InitStorageChoice::Automatic,
-                driver: FoundingDriverInput::OnHost,
-                written_at: CorrosionTimestamp::try_new("2026-08-04T12:00:00Z").expect("timestamp"),
-                acme_directory_url: "https://acme.example/directory".to_owned(),
-                acme_contact: None,
-            },
-            fixture_artifacts(),
-            "corrosion 0.2.0-beta.0".to_owned(),
-            FactsRunner,
-        )
-        .expect("preparation succeeds");
-
-        assert_eq!(
-            prepared.request.request().machine.storage.mode,
-            StorageMode::Plain
-        );
-        assert!(!state.path().join("cluster-id").exists());
-        assert!(!state.path().join(MACHINE_SEED_FILE).exists());
-        let debug = format!("{:?}", prepared.effects);
-        assert!(debug.contains("[REDACTED]"));
-        assert!(!debug.contains(prepared.bootstrap_credential.as_str()));
-    }
-
-    #[derive(Debug)]
-    struct RecordingRunner {
-        calls: Vec<String>,
-        allow_facts: bool,
-    }
-
-    impl HostRunnerCommandRunner for RecordingRunner {
-        fn command(
-            &mut self,
-            program: &str,
-            args: &[&str],
-        ) -> Result<HostRunnerCommandOutput, FailureMessage> {
-            self.calls.push(format!("{program} {}", args.join(" ")));
-            match program {
-                "cat" if self.allow_facts => Ok(output(true, "MemTotal: 4194304 kB\n")),
-                "zpool" if self.allow_facts => Ok(output(false, "")),
-                _ => Err(failure(format!("unexpected command {program}"))),
-            }
-        }
-
-        fn is_linux(&mut self) -> bool {
-            true
-        }
-
-        fn current_uid(&mut self) -> Result<u32, FailureMessage> {
-            Ok(0)
-        }
-
-        fn download(&mut self, _url: &str, _destination: &Path) -> Result<(), FailureMessage> {
-            Err(failure("unexpected download"))
-        }
-
-        fn docker_info(&mut self) -> Result<(), FailureMessage> {
-            Ok(())
-        }
-
-        fn docker_is_installed(&mut self) -> bool {
-            true
-        }
-
-        fn docker_uses_containerd_snapshotter(&mut self) -> Result<bool, FailureMessage> {
-            Ok(true)
-        }
-
-        fn docker_has_insecure_registry(&mut self, _cidr: &str) -> Result<bool, FailureMessage> {
-            Ok(true)
-        }
-    }
-
-    #[test]
-    fn machine_material_persists_keys_without_mutating_keeper_owned_wireguard() {
-        let directory = tempfile::tempdir().expect("tempdir");
-        let state = FoundingStateDirectory::initialize(directory.path().join("state"))
-            .expect("state initializes");
-        let mut prepared = prepare_linux_founding(
-            &state,
-            input("2026-08-04T12:00:00Z"),
-            fixture_artifacts(),
-            "corrosion 0.2.0-beta.0".to_owned(),
-            RecordingRunner {
-                calls: Vec::new(),
-                allow_facts: true,
-            },
-        )
-        .expect("preparation succeeds");
-        let commands_before_material = prepared.effects.runner.calls.len();
-
-        prepared
-            .effects
-            .ensure_machine_identity_and_wireguard()
-            .expect("first persistence succeeds");
-        prepared
-            .effects
-            .ensure_machine_identity_and_wireguard()
-            .expect("second persistence succeeds");
-
-        let calls = &prepared.effects.runner.calls;
-        assert_eq!(calls.len(), commands_before_material);
-        assert!(state.path().join(MACHINE_SEED_FILE).is_file());
-        assert!(state.path().join(WIREGUARD_KEY_FILE).is_file());
-    }
-
-    #[test]
-    fn persisted_request_and_secrets_are_reloaded_without_host_fact_probes() {
-        let directory = tempfile::tempdir().expect("tempdir");
-        let state = FoundingStateDirectory::initialize(directory.path().join("state"))
-            .expect("state initializes");
-        let mut first = prepare_linux_founding(
-            &state,
-            input("2026-08-04T12:00:00Z"),
-            fixture_artifacts(),
-            "corrosion 0.2.0-beta.0".to_owned(),
-            RecordingRunner {
-                calls: Vec::new(),
-                allow_facts: true,
-            },
-        )
-        .expect("first preparation succeeds");
-        first
-            .effects
-            .ensure_machine_identity_and_wireguard()
-            .expect("machine material persists");
-        first
-            .effects
-            .persist_validated_founding_request()
-            .expect("request persists");
-        first
-            .effects
-            .ensure_cluster_door_material()
-            .expect("door persists");
-        write_durable_file(
-            state.path(),
-            BOOTSTRAP_CREDENTIAL_FILE,
-            FileMode::Secret0600,
-            first.bootstrap_credential.as_str().as_bytes(),
-        )
-        .expect("bootstrap credential persists");
-        write_durable_file(
-            state.path(),
-            CORROSION_TOKEN_FILE,
-            FileMode::Secret0600,
-            first.effects.corrosion_token.as_bytes(),
-        )
-        .expect("Corrosion token persists");
-        state
-            .persist_cluster_id_exclusive(&first.request.request().cluster_id)
-            .expect("cluster anchor persists");
-        let expected_request = serde_json::to_value(first.request.request()).expect("request wire");
-        let expected_bootstrap = first.bootstrap_credential.clone();
-        let expected_corrosion = first.effects.corrosion_token.clone();
-        let expected_door = first.effects.door_material.fingerprint.clone();
-
-        let second = prepare_linux_founding(
-            &state,
-            input("2026-08-05T12:00:00Z"),
-            fixture_artifacts(),
-            "corrosion 0.2.0-beta.0".to_owned(),
-            RecordingRunner {
-                calls: Vec::new(),
-                allow_facts: false,
-            },
-        )
-        .expect("resume preparation succeeds");
-
-        assert_eq!(
-            serde_json::to_value(second.request.request()).expect("request wire"),
-            expected_request
-        );
-        assert_eq!(second.bootstrap_credential, expected_bootstrap);
-        assert_eq!(second.effects.corrosion_token, expected_corrosion);
-        assert_eq!(second.effects.door_material.fingerprint, expected_door);
-        assert!(second.effects.runner.calls.is_empty());
-    }
-
-    fn input(timestamp: &str) -> LinuxFoundingInput {
-        LinuxFoundingInput {
-            cluster_name: "ares".to_owned(),
-            machine_name: MachineName::try_new("ares").expect("machine name"),
-            endpoint: Some("203.0.113.7:51820".parse().expect("endpoint")),
-            prefix: MachineEndpointSupernet::default_v1(),
-            hostname_mode: AutomaticHostnameMode::Disabled,
-            storage: InitStorageChoice::Automatic,
-            driver: FoundingDriverInput::OnHost,
-            written_at: CorrosionTimestamp::try_new(timestamp).expect("timestamp"),
-            acme_directory_url: "https://acme.example/directory".to_owned(),
-            acme_contact: None,
-        }
-    }
-
-    fn fixture_artifacts() -> ReleaseArtifacts {
-        let spec = |name: &str, path: &str| ployz_core::install::InstallArtifactSpec {
-            version: ployz_core::install::InstallArtifactVersion::try_new("v1").expect("version"),
-            source: ployz_core::install::InstallArtifactSource::try_new(format!("/tmp/{name}"))
-                .expect("source"),
-            sha256: ployz_core::install::InstallSha256Digest::try_new(
-                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            )
-            .expect("digest"),
-            install_path: ployz_core::install::AbsoluteInstallPath::try_new(path)
-                .expect("install path"),
-        };
-        ReleaseArtifacts {
-            ployzd: spec("ployzd", "/usr/local/bin/ployzd"),
-            ebpf_bytecode: spec("ebpf", "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"),
-            ebpf_ctl: spec("ebpf-ctl", "/usr/local/bin/ployz-ebpf-ctl"),
-            corrosion: spec("corrosion", "/usr/local/bin/corrosion"),
-            corrosion_schema: spec("schema", "/usr/local/lib/ployz/corrosion-schema-v1.sql"),
-            railpack: spec("railpack", "/usr/local/bin/railpack"),
-        }
-    }
-
-    fn output(success: bool, stdout: &str) -> HostRunnerCommandOutput {
-        HostRunnerCommandOutput {
-            success,
-            exit_code: success.then_some(0),
-            stdout: stdout.to_owned(),
-            stdout_truncated: false,
-            failure: if success {
-                String::new()
-            } else {
-                "not installed".to_owned()
-            },
-        }
-    }
-}
+mod tests;

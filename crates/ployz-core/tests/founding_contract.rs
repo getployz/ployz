@@ -146,7 +146,17 @@ fn on_host_founding_has_no_peer_while_ssh_and_cloud_carry_public_peer_rows() {
         document: peer_document(&cluster_id(CLUSTER)),
     }))
     .expect("Cloud founding request serializes");
-    cloud_wire["driver"]["callback_url"] = json!("https://cloud.example/callback");
+    let Some(driver) = cloud_wire
+        .as_object_mut()
+        .and_then(|request| request.get_mut("driver"))
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        panic!("founding request has a driver object")
+    };
+    driver.insert(
+        "callback_url".to_owned(),
+        json!("https://cloud.example/callback"),
+    );
     assert!(serde_json::from_value::<FoundingRequest>(cloud_wire).is_err());
 }
 
@@ -183,7 +193,14 @@ fn founding_validation_rejects_divergent_row_ids_clusters_and_versions() {
 
     let request = founding_request(FoundingDriverEnrollment::OnHost);
     let mut wire = serde_json::to_value(request).expect("founding request serializes");
-    wire["machine"]["v"] = json!(2);
+    let Some(machine) = wire
+        .as_object_mut()
+        .and_then(|request| request.get_mut("machine"))
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        panic!("founding request has a machine object")
+    };
+    machine.insert("v".to_owned(), json!(2));
     let unsupported: FoundingRequest =
         serde_json::from_value(wire).expect("additive document version parses");
     assert_eq!(

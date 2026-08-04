@@ -2,12 +2,11 @@
 
 use std::io::{self, BufRead as _, Write as _};
 
-use ployz_core::corrosion::{AutomaticHostnameMode, StorageMode};
+use ployz_core::corrosion::StorageMode;
 use ployz_core::founding::{InitStorageChoice, PLAIN_STORAGE_FORFEIT};
 use ployz_core::network::MachineEndpointSupernet;
-use ployz_core::operation::RouteHostname;
 
-use crate::commands::InitCommand;
+use crate::commands::{InitCommand, parse_service_urls, parse_storage};
 
 pub trait Prompt {
     fn ask(&mut self, question: &str) -> Result<String, PromptError>;
@@ -43,9 +42,11 @@ pub fn resolve_answers(
         return Ok(());
     }
     if command.prompt.storage {
-        command.storage = parse_storage(&prompt.ask(
+        let answer = prompt.ask(
             "? volume storage [auto — zfs when an imported pool and ≥2 GiB RAM are present]: ",
-        )?)?;
+        )?;
+        command.storage = parse_storage(if answer.is_empty() { "auto" } else { &answer })
+            .map_err(PromptError::InvalidAnswer)?;
     }
     if command.prompt.container_network {
         let answer = prompt.ask("? container network [10.210.0.0/16]: ")?;
@@ -55,9 +56,10 @@ pub fn resolve_answers(
         }
     }
     if command.prompt.service_urls {
-        command.service_urls = parse_service_urls(
-            &prompt.ask("? service URLs [ployz] (ployz | custom:<suffix> | disabled): ")?,
-        )?;
+        let answer = prompt.ask("? service URLs [ployz] (ployz | custom:<suffix> | disabled): ")?;
+        command.service_urls =
+            parse_service_urls(if answer.is_empty() { "ployz" } else { &answer })
+                .map_err(PromptError::InvalidAnswer)?;
     }
     if command.storage
         == (InitStorageChoice::Flag {
@@ -72,39 +74,6 @@ pub fn resolve_answers(
     Ok(())
 }
 
-fn parse_storage(answer: &str) -> Result<InitStorageChoice, PromptError> {
-    match answer {
-        "" | "auto" => Ok(InitStorageChoice::Automatic),
-        "zfs" => Ok(InitStorageChoice::Flag {
-            mode: StorageMode::Zfs,
-        }),
-        "plain" => Ok(InitStorageChoice::Flag {
-            mode: StorageMode::Plain,
-        }),
-        _ => Err(PromptError::InvalidAnswer(
-            "storage must be auto, zfs, or plain".to_owned(),
-        )),
-    }
-}
-
-fn parse_service_urls(answer: &str) -> Result<AutomaticHostnameMode, PromptError> {
-    match answer {
-        "" | "ployz" => Ok(AutomaticHostnameMode::Ployz),
-        "disabled" => Ok(AutomaticHostnameMode::Disabled),
-        _ => {
-            let Some(suffix) = answer.strip_prefix("custom:") else {
-                return Err(PromptError::InvalidAnswer(
-                    "service URLs must be ployz, disabled, or custom:<suffix>".to_owned(),
-                ));
-            };
-            Ok(AutomaticHostnameMode::Custom {
-                suffix: RouteHostname::try_new(suffix)
-                    .map_err(|error| PromptError::InvalidAnswer(error.to_string()))?,
-            })
-        }
-    }
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum PromptError {
     #[error("could not read bootstrap answer: {0}")]
@@ -117,6 +86,7 @@ pub enum PromptError {
 mod tests {
     use super::*;
     use crate::commands::{Command, parse_command};
+    use ployz_core::corrosion::AutomaticHostnameMode;
 
     #[derive(Default)]
     struct Answers {

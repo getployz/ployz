@@ -324,50 +324,8 @@ stage_corrosion() {
   }
   manifest_file="${ROOT_DIR}/corrosion-release.json"
   pin_file="$(mktemp "${TMPDIR:-/tmp}/ployz-corrosion-pin.XXXXXX")"
-  if ! python3 - "${manifest_file}" "${corrosion_platform}" > "${pin_file}" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], encoding="utf-8") as source:
-    pin = json.load(source)
-if set(pin) != {"release_tag", "platforms", "embedded_version"}:
-    raise SystemExit("corrosion release manifest has unexpected top-level fields")
-platforms = pin["platforms"]
-if not isinstance(platforms, dict) or set(platforms) != {"linux-amd64", "linux-arm64"}:
-    raise SystemExit("corrosion release manifest must pin linux-amd64 and linux-arm64 exactly")
-platform = sys.argv[2]
-if platform not in platforms:
-    raise SystemExit(f"corrosion release manifest has no pin for {platform}")
-for pinned_platform, entry in platforms.items():
-    if not isinstance(entry, dict) or set(entry) != {"archive"}:
-        raise SystemExit(f"corrosion release manifest entry {pinned_platform} is invalid")
-    pinned_archive = entry["archive"]
-    if not isinstance(pinned_archive, dict) or set(pinned_archive) != {"name", "url", "sha256"}:
-        raise SystemExit(f"corrosion release manifest archive {pinned_platform} is invalid")
-    for value in pinned_archive.values():
-        if not isinstance(value, str) or not value:
-            raise SystemExit(f"corrosion release manifest archive {pinned_platform} contains an empty pin")
-    expected_url = (
-        "https://github.com/superfly/corrosion/releases/download/"
-        f"{pin['release_tag']}/{pinned_archive['name']}"
-    )
-    if pinned_archive["url"] != expected_url:
-        raise SystemExit(f"corrosion release manifest URL for {pinned_platform} is not canonical")
-    if len(pinned_archive["sha256"]) != 64 or any(c not in "0123456789abcdef" for c in pinned_archive["sha256"]):
-        raise SystemExit(f"corrosion release manifest SHA-256 for {pinned_platform} is invalid")
-archive = platforms[platform]["archive"]
-for value in (pin["release_tag"], pin["embedded_version"]):
-    if not isinstance(value, str) or not value:
-        raise SystemExit("corrosion release manifest contains an empty non-string pin")
-for value in (
-    pin["release_tag"],
-    archive["name"],
-    archive["url"],
-    archive["sha256"],
-    pin["embedded_version"],
-):
-    print(value)
-PY
+  if ! python3 "${ROOT_DIR}/scripts/read-corrosion-release.py" \
+    "${manifest_file}" "${corrosion_platform}" > "${pin_file}"
   then
     rm -f "${pin_file}"
     return 1

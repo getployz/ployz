@@ -8,14 +8,12 @@ use std::process::Command;
 use std::time::Duration;
 
 use defguard_wireguard_rs::key::Key;
-use ployz_core::corrosion::{AutomaticHostnameMode, StorageMode};
-use ployz_core::founding::InitStorageChoice;
 use ployz_core::ids::PeerId;
 use ployz_core::network::WireGuardPublicKey;
 use serde::{Deserialize, Serialize};
 use wait_timeout::ChildExt as _;
 
-use crate::commands::{InitCommand, SshTarget};
+use crate::commands::{InitCommand, InitDriver, SshTarget, render_service_urls, render_storage};
 
 const SSH_PROCESS_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
@@ -102,18 +100,21 @@ impl SshPeerKey {
     #[must_use]
     pub fn remote_script(&self, command: &InitCommand) -> String {
         let mut args = vec!["sudo".to_owned(), "ployz".to_owned(), "init".to_owned()];
-        args.extend(storage_args(command.storage));
+        args.extend([
+            "--storage".to_owned(),
+            render_storage(command.storage).to_owned(),
+        ]);
         args.extend([
             "--container-network".to_owned(),
             command.container_network.as_string(),
             "--service-urls".to_owned(),
-            service_urls_arg(&command.service_urls),
+            render_service_urls(&command.service_urls),
         ]);
         push_option(&mut args, "--cluster-name", command.cluster_name.as_deref());
         push_option(&mut args, "--machine-name", command.machine_name.as_deref());
-        let inferred_endpoint = match &command.target {
-            crate::commands::InitTarget::Ssh(target) => target.inferred_wireguard_endpoint(),
-            crate::commands::InitTarget::OnHost => None,
+        let inferred_endpoint = match &command.driver {
+            InitDriver::SshTarget(target) => target.inferred_wireguard_endpoint(),
+            InitDriver::OnHost | InitDriver::Cloud(_) | InitDriver::SshPeer(_) => None,
         };
         if let Some(endpoint) = command.wireguard_endpoint.or(inferred_endpoint) {
             args.extend(["--wireguard-endpoint".to_owned(), endpoint.to_string()]);
@@ -185,27 +186,6 @@ fn decode_key(bytes: &[u8]) -> Result<SshPeerKey, SshInitError> {
         ));
     }
     Ok(key)
-}
-
-fn storage_args(choice: InitStorageChoice) -> Vec<String> {
-    let value = match choice {
-        InitStorageChoice::Automatic => "auto",
-        InitStorageChoice::Flag {
-            mode: StorageMode::Zfs,
-        } => "zfs",
-        InitStorageChoice::Flag {
-            mode: StorageMode::Plain,
-        } => "plain",
-    };
-    vec!["--storage".to_owned(), value.to_owned()]
-}
-
-fn service_urls_arg(mode: &AutomaticHostnameMode) -> String {
-    match mode {
-        AutomaticHostnameMode::Disabled => "disabled".to_owned(),
-        AutomaticHostnameMode::Ployz => "ployz".to_owned(),
-        AutomaticHostnameMode::Custom { suffix } => format!("custom:{}", suffix.as_str()),
-    }
 }
 
 fn push_option(args: &mut Vec<String>, flag: &str, value: Option<&str>) {

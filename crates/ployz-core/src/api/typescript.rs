@@ -19,9 +19,8 @@ use crate::corrosion::{
 };
 use crate::deploy::EnvValue;
 use crate::founding::{
-    FoundingArrival, FoundingDriverEnrollment, FoundingRefusal, FoundingRepairCommand,
-    FoundingRequest, FoundingResult, FoundingRow, FoundingValidationError, InitStorageChoice,
-    InitStorageSelectionError,
+    FoundingDriverEnrollment, FoundingRefusal, FoundingRepairCommand, FoundingRequest,
+    FoundingResult, FoundingRow, FoundingValidationError,
 };
 use crate::ids::{
     MachineRowId, NamespaceRowId, OperationId, OperationRowId, RouteBindingRowId, ServiceRowId,
@@ -141,13 +140,10 @@ fn collect_v2_contracts(declarations: &mut DeclarationCollector<'_>) {
     declarations.visit::<CorrosionRetryAfterSeconds>();
     declarations.visit::<ApiRefusal>();
     declarations.visit::<LensWatchEvent>();
-    declarations.visit::<InitStorageChoice>();
-    declarations.visit::<InitStorageSelectionError>();
     declarations.visit::<FoundingDriverEnrollment>();
     declarations.visit::<FoundingRequest>();
     declarations.visit::<FoundingRow>();
     declarations.visit::<FoundingValidationError>();
-    declarations.visit::<FoundingArrival>();
     declarations.visit::<FoundingResult>();
     declarations.visit::<FoundingRepairCommand>();
     declarations.visit::<FoundingRefusal>();
@@ -496,13 +492,10 @@ mod tests {
             "CorrosionRetryAfterSeconds",
             "ApiRefusal",
             "LensWatchEvent",
-            "InitStorageChoice",
-            "InitStorageSelectionError",
             "FoundingDriverEnrollment",
             "FoundingRequest",
             "FoundingRow",
             "FoundingValidationError",
-            "FoundingArrival",
             "FoundingResult",
             "FoundingRepairCommand",
             "FoundingRefusal",
@@ -510,6 +503,16 @@ mod tests {
             assert!(
                 generated.contains(&format!("export type {name} =")),
                 "missing declaration for {name}"
+            );
+        }
+        for local_only in [
+            "InitStorageChoice",
+            "InitStorageSelectionError",
+            "FoundingArrival",
+        ] {
+            assert!(
+                !generated.contains(&format!("export type {local_only} =")),
+                "local-only declaration leaked: {local_only}"
             );
         }
     }

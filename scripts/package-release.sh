@@ -60,42 +60,11 @@ case "${platform_os}" in
       echo "python3 is required to read corrosion-release.json" >&2
       exit 1
     }
-    if ! corrosion_embedded_version="$(python3 - "${ROOT_DIR}/corrosion-release.json" "${platform_slug}" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], encoding="utf-8") as source:
-    pin = json.load(source)
-if set(pin) != {"release_tag", "platforms", "embedded_version"}:
-    raise SystemExit("corrosion release manifest has unexpected top-level fields")
-platforms = pin["platforms"]
-if not isinstance(platforms, dict) or set(platforms) != {"linux-amd64", "linux-arm64"}:
-    raise SystemExit("corrosion release manifest must pin linux-amd64 and linux-arm64 exactly")
-for platform, entry in platforms.items():
-    if not isinstance(entry, dict) or set(entry) != {"archive"}:
-        raise SystemExit(f"corrosion release manifest entry {platform} is invalid")
-    archive = entry["archive"]
-    if not isinstance(archive, dict) or set(archive) != {"name", "url", "sha256"}:
-        raise SystemExit(f"corrosion release manifest archive {platform} is invalid")
-    for value in archive.values():
-        if not isinstance(value, str) or not value:
-            raise SystemExit(f"corrosion release manifest archive {platform} contains an empty pin")
-    expected_url = (
-        "https://github.com/superfly/corrosion/releases/download/"
-        f"{pin['release_tag']}/{archive['name']}"
-    )
-    if archive["url"] != expected_url:
-        raise SystemExit(f"corrosion release manifest URL for {platform} is not canonical")
-    if len(archive["sha256"]) != 64 or any(c not in "0123456789abcdef" for c in archive["sha256"]):
-        raise SystemExit(f"corrosion release manifest SHA-256 for {platform} is invalid")
-if sys.argv[2] not in platforms:
-    raise SystemExit(f"corrosion release manifest has no pin for {sys.argv[2]}")
-embedded_version = pin["embedded_version"]
-if not isinstance(embedded_version, str) or not embedded_version.startswith("corrosion "):
-    raise SystemExit("corrosion release manifest embedded version is invalid")
-print(embedded_version)
-PY
-)"; then
+    if ! corrosion_embedded_version="$(python3 \
+      "${ROOT_DIR}/scripts/read-corrosion-release.py" \
+      "${ROOT_DIR}/corrosion-release.json" \
+      "${platform_slug}" \
+      embedded_version)"; then
       exit 1
     fi
     : "${PLOYZ_RAILPACK_VERSION:?PLOYZ_RAILPACK_VERSION is required for Linux release manifests}"

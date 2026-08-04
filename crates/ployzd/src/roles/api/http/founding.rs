@@ -1,11 +1,21 @@
 //! Bootstrap-only admission of machine one's initial authority rows.
 
+use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
+use bytes::Bytes;
+use http_body_util::BodyExt;
+use hyper::body::Body;
+use hyper::header::{AUTHORIZATION, HeaderValue};
+use hyper::{Response, StatusCode};
+use ployz_core::ApiRefusal;
 use ployz_core::corrosion::{
     CorrosionTable, MachineTransport, SqliteParameter, Statement, StoredRow,
 };
-use ployz_core::founding::{FoundingResult, ValidatedFoundingRequest};
+use ployz_core::founding::{
+    FoundingRefusal, FoundingRequest, FoundingResult, FoundingValidationError,
+    ValidatedFoundingRequest,
+};
 use ployz_core::network::MachineEndpointSubnet;
 use serde::Serialize;
 
@@ -17,10 +27,196 @@ use crate::corrosion::{
 use crate::roles::api::execution::docker::runner::DockerManagedContainerRunner;
 use crate::roles::api::runner::{MachineContainerRunner, MachineEndpointNetworkError};
 
+use super::config::{ApiRoleMode, BootstrapSecret};
+use super::roster::corrosion_unavailable_refusal;
+use super::server::{
+    ApiService, HttpBody, corrosion_unavailable_response, json_response, refusal_response,
+};
+
 const MAX_FOUNDING_ROWS_PER_TABLE: usize = 1;
+const MAX_FOUNDING_REQUEST_BYTES: usize = 1024 * 1024;
+const FOUNDING_BODY_READ_TIMEOUT: Duration = Duration::from_secs(10);
 const ENDPOINT_NETWORK_TIMEOUT: Duration = Duration::from_secs(30);
 const ENDPOINT_BRIDGE_IFNAME: &str = "br-ployz";
 const WIREGUARD_IFNAME: &str = "ployz0";
+
+pub(super) async fn handle_founding(
+    service: &ApiService,
+    peer: SocketAddr,
+    request: hyper::Request<hyper::body::Incoming>,
+) -> Response<HttpBody> {
+    if let Err(refusal) = authorize_founding(
+        &service.mode,
+        service.listen_addr,
+        peer,
+        request.headers().get(AUTHORIZATION),
+    ) {
+        return refusal_response(refusal);
+    }
+    let body = match read_bounded_founding_body(request.into_body()).await {
+        Ok(body) => body,
+        Err(FoundingBodyError::TooLarge) => {
+            return founding_http_error(StatusCode::PAYLOAD_TOO_LARGE, "request_too_large");
+        }
+        Err(FoundingBodyError::Deadline { .. }) => {
+            return founding_http_error(StatusCode::REQUEST_TIMEOUT, "request_timeout");
+        }
+        Err(FoundingBodyError::Read) => {
+            return founding_http_error(StatusCode::BAD_REQUEST, "invalid_request");
+        }
+    };
+    let request = match serde_json::from_slice::<FoundingRequest>(&body) {
+        Ok(request) => request,
+        Err(_) => return founding_http_error(StatusCode::BAD_REQUEST, "invalid_request"),
+    };
+    if request.cluster_id != service.cluster_id || request.machine_id != service.local_machine_id {
+        return refusal_response(ApiRefusal::InvalidCluster);
+    }
+    let MachineTransport::Wireguard { addr_v6, .. } = &request.machine.transport else {
+        return founding_refusal_response(FoundingRefusal::from(
+            FoundingValidationError::MachineTransportProviderMismatch,
+        ));
+    };
+    if service.listen_addr.ip() != IpAddr::V6(*addr_v6) {
+        return refusal_response(ApiRefusal::InvalidCluster);
+    }
+    let validated = match request.try_validate() {
+        Ok(validated) => validated,
+        Err(reason) => {
+            return founding_refusal_response(FoundingRefusal::InvalidRequest { reason });
+        }
+    };
+
+    let _guard = service.founding_lock.lock().await;
+    match complete_founding(service, &validated).await {
+        Ok(result) => founding_result_response(result),
+        Err(refusal) => refusal_response(refusal),
+    }
+}
+
+async fn complete_founding(
+    service: &ApiService,
+    validated: &ValidatedFoundingRequest,
+) -> Result<FoundingResult, ApiRefusal> {
+    let write = match write_initial_rows(&service.corrosion, validated).await {
+        Ok(write) => write,
+        Err(error) if error.is_state_mismatch() => {
+            tracing::warn!(error = %error, "founding rows did not match persisted state");
+            return Err(ApiRefusal::InvalidCluster);
+        }
+        Err(error) => {
+            tracing::warn!(error = %error, "could not commit founding rows");
+            return Err(corrosion_unavailable_refusal());
+        }
+    };
+    ensure_endpoint_network(&write.machine_subnet)
+        .await
+        .map_err(|error| {
+            tracing::warn!(error = %error, "could not fold founding rows into the endpoint network");
+            corrosion_unavailable_refusal()
+        })?;
+    if !service.start_founding_lenses_and_observe_machine().await {
+        tracing::warn!("machines lens did not observe machine one after founding");
+        return Err(corrosion_unavailable_refusal());
+    }
+    Ok(write.result)
+}
+
+fn bootstrap_authorized(authorization: Option<&HeaderValue>, secret: &BootstrapSecret) -> bool {
+    let Some(authorization) = authorization.and_then(|value| value.to_str().ok()) else {
+        return false;
+    };
+    let Some(candidate) = authorization.strip_prefix("Bearer ") else {
+        return false;
+    };
+    !candidate.is_empty() && secret.verifies(candidate.as_bytes())
+}
+
+pub(super) fn authorize_founding(
+    mode: &ApiRoleMode,
+    listen_addr: SocketAddr,
+    peer: SocketAddr,
+    authorization: Option<&HeaderValue>,
+) -> Result<(), ApiRefusal> {
+    let ApiRoleMode::Founding(secret) = mode else {
+        return Err(ApiRefusal::UnsupportedRoute);
+    };
+    if peer.ip() != listen_addr.ip() || !bootstrap_authorized(authorization, secret) {
+        return Err(ApiRefusal::UnknownSource { source: peer.ip() });
+    }
+    Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum FoundingBodyError {
+    TooLarge,
+    Deadline { timeout: Duration },
+    Read,
+}
+
+async fn read_bounded_founding_body<Payload>(body: Payload) -> Result<Vec<u8>, FoundingBodyError>
+where
+    Payload: Body<Data = Bytes> + Unpin,
+{
+    tokio::time::timeout(FOUNDING_BODY_READ_TIMEOUT, collect_founding_body(body))
+        .await
+        .map_err(|_| FoundingBodyError::Deadline {
+            timeout: FOUNDING_BODY_READ_TIMEOUT,
+        })?
+}
+
+async fn collect_founding_body<Payload>(mut body: Payload) -> Result<Vec<u8>, FoundingBodyError>
+where
+    Payload: Body<Data = Bytes> + Unpin,
+{
+    let mut bytes = Vec::new();
+    while let Some(frame) = body.frame().await {
+        let frame = frame.map_err(|_| FoundingBodyError::Read)?;
+        let Ok(data) = frame.into_data() else {
+            continue;
+        };
+        append_founding_body_chunk(&mut bytes, &data)?;
+    }
+    Ok(bytes)
+}
+
+pub(super) fn append_founding_body_chunk(
+    body: &mut Vec<u8>,
+    chunk: &[u8],
+) -> Result<(), FoundingBodyError> {
+    let Some(total) = body.len().checked_add(chunk.len()) else {
+        return Err(FoundingBodyError::TooLarge);
+    };
+    if total > MAX_FOUNDING_REQUEST_BYTES {
+        return Err(FoundingBodyError::TooLarge);
+    }
+    body.extend_from_slice(chunk);
+    Ok(())
+}
+
+fn founding_http_error(status: StatusCode, kind: &'static str) -> Response<HttpBody> {
+    json_response(status, format!("{{\"kind\":\"{kind}\"}}").into_bytes())
+}
+
+fn founding_refusal_response(refusal: FoundingRefusal) -> Response<HttpBody> {
+    match serde_json::to_vec(&refusal) {
+        Ok(body) => json_response(StatusCode::BAD_REQUEST, body),
+        Err(error) => {
+            tracing::error!(error = %error, "could not encode founding refusal");
+            corrosion_unavailable_response()
+        }
+    }
+}
+
+fn founding_result_response(result: FoundingResult) -> Response<HttpBody> {
+    match serde_json::to_vec(&result) {
+        Ok(body) => json_response(StatusCode::OK, body),
+        Err(error) => {
+            tracing::error!(error = %error, "could not encode founding result");
+            corrosion_unavailable_response()
+        }
+    }
+}
 
 pub(super) struct FoundingWrite {
     pub(super) result: FoundingResult,
@@ -294,6 +490,11 @@ pub(super) enum FoundingEndpointNetworkError {
 
 #[cfg(test)]
 mod tests {
+    use std::convert::Infallible;
+
+    use futures_util::stream;
+    use http_body_util::StreamBody;
+    use hyper::body::Frame;
     use ployz_core::corrosion::{
         AutomaticHostnameMode, ClusterDocument, CorrosionDocumentVersion, CorrosionTimestamp,
         MachineDocument, MachineStorageSelection, MachineStorageSelectionReason, MachineTransport,
@@ -489,5 +690,30 @@ mod tests {
             limit: MAX_FOUNDING_ROWS_PER_TABLE,
         });
         assert!(overfull_table.is_state_mismatch());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stalled_request_body_hits_the_whole_body_deadline() {
+        let body = StreamBody::new(stream::pending::<Result<Frame<Bytes>, Infallible>>());
+        let read = tokio::spawn(read_bounded_founding_body(body));
+        tokio::task::yield_now().await;
+        tokio::time::advance(FOUNDING_BODY_READ_TIMEOUT).await;
+
+        assert_eq!(
+            read.await.expect("body reader joins"),
+            Err(FoundingBodyError::Deadline {
+                timeout: FOUNDING_BODY_READ_TIMEOUT,
+            })
+        );
+    }
+
+    #[test]
+    fn request_body_limit_still_accepts_exactly_one_mebibyte() {
+        let mut body = vec![0_u8; MAX_FOUNDING_REQUEST_BYTES - 1];
+        append_founding_body_chunk(&mut body, b"x").expect("the exact request bound is accepted");
+        assert!(matches!(
+            append_founding_body_chunk(&mut body, b"x"),
+            Err(FoundingBodyError::TooLarge)
+        ));
     }
 }

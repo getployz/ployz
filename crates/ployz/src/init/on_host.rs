@@ -8,14 +8,12 @@ use ployz_core::corrosion::{CorrosionTimestamp, MachineTransport};
 use ployz_core::founding::{
     FoundingDriverEnrollment, FoundingRefusal, FoundingResult, ValidatedFoundingRequest,
 };
-use ployz_core::ids::PeerId;
 use ployz_core::machine::MachineName;
 use ployz_core::network::WireGuardPublicKey;
 use ployz_core::operation::FailureMessage;
 use ployz_host_runner::lifecycle::founding::{
-    FoundingDriverInput, FoundingFailure, FoundingPreparationError, FoundingProgressObserver,
-    FoundingStateDirectory, LinuxFoundingInput, LinuxFoundingPreflight, found_machine_one,
-    found_machine_one_with_progress, inspect_linux_founding, prepare_linux_founding,
+    FoundingDriverInput, FoundingPreparationError, FoundingStateDirectory, LinuxFoundingInput,
+    LinuxFoundingPreflight, inspect_linux_founding, prepare_linux_founding,
 };
 use ployz_host_runner::{
     HostRunnerCommandRunner as _, ReleaseManifest, ReleasePlatform, SystemHostRunnerCommandRunner,
@@ -24,9 +22,12 @@ use ployz_host_runner::{
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-use crate::commands::{DriverPeerArgs, InitCommand};
+use crate::commands::{InitCommand, InitDriver};
 use crate::init::cloud::{CloudEnvelope, CloudProgress};
 use crate::init::http::{BootstrapSecret, HttpFoundingControlPlane};
+use crate::init::orchestration::{
+    FoundingFailure, FoundingProgressObserver, found_machine_one, found_machine_one_with_progress,
+};
 
 const RELEASE_ENV_PATH: &str = "/etc/ployz/release.env";
 const FOUNDING_STATE_PATH: &str = "/var/lib/ployz";
@@ -57,18 +58,17 @@ pub async fn execute(command: InitCommand) -> Result<OnHostSuccess, OnHostInitEr
             });
         }
         LinuxFoundingPreflight::Refused(refusal) => {
-            return Err(OnHostInitError::Refused(refusal));
+            return report_preflight_refusal(&command.driver, refusal).await;
         }
         LinuxFoundingPreflight::Clean => None,
         LinuxFoundingPreflight::Resume { canonical_request } => canonical_request,
     };
-    let cloud = command
-        .cloud_token
-        .as_ref()
-        .map(CloudEnvelope::decode)
-        .transpose()?;
+    let cloud = match &command.driver {
+        InitDriver::Cloud(token) => Some(CloudEnvelope::decode(token)?),
+        InitDriver::OnHost | InitDriver::SshTarget(_) | InitDriver::SshPeer(_) => None,
+    };
     if let Some(canonical) = canonical_resume.as_ref() {
-        validate_resume_driver(canonical, command.driver_peer.as_ref(), cloud.as_ref())?;
+        validate_resume_driver(canonical, &command.driver, cloud.as_ref())?;
     }
     let hostname = host_name()?;
     let machine_name = MachineName::try_new(
@@ -87,7 +87,7 @@ pub async fn execute(command: InitCommand) -> Result<OnHostSuccess, OnHostInitEr
             "cluster name must not be empty".to_owned(),
         ));
     }
-    let driver = driver_input(command.driver_peer.as_ref(), cloud.as_ref())?;
+    let driver = driver_input(&command.driver, cloud.as_ref())?;
     let written_at = CorrosionTimestamp::try_new(
         OffsetDateTime::now_utc()
             .format(&Rfc3339)
@@ -182,7 +182,7 @@ pub async fn execute(command: InitCommand) -> Result<OnHostSuccess, OnHostInitEr
                 let _ = cloud
                     .report(CloudProgress::Failed {
                         cluster_id: cluster_id.clone(),
-                        machine_id: machine_id.clone(),
+                        machine_id: Some(machine_id.clone()),
                         reason: error.to_string(),
                         repair_command,
                     })
@@ -197,6 +197,32 @@ pub async fn execute(command: InitCommand) -> Result<OnHostSuccess, OnHostInitEr
         machine_name: output_machine_name,
         storage,
     })
+}
+
+async fn report_preflight_refusal(
+    driver: &InitDriver,
+    refusal: FoundingRefusal,
+) -> Result<OnHostSuccess, OnHostInitError> {
+    if let (
+        InitDriver::Cloud(token),
+        FoundingRefusal::ForeignState {
+            requested_cluster_id,
+            found_cluster_id,
+            repair_command,
+        },
+    ) = (driver, &refusal)
+    {
+        let cloud = CloudEnvelope::decode(token)?;
+        cloud
+            .report(CloudProgress::Failed {
+                cluster_id: requested_cluster_id.clone(),
+                machine_id: None,
+                reason: format!("machine contains state from cluster {found_cluster_id}"),
+                repair_command: Some(repair_command.as_str().to_owned()),
+            })
+            .await?;
+    }
+    Err(OnHostInitError::Refused(refusal))
 }
 
 fn open_or_initialize_state() -> Result<FoundingStateDirectory, OnHostInitError> {
@@ -221,21 +247,25 @@ fn map_preparation(error: FoundingPreparationError) -> OnHostInitError {
     match error {
         FoundingPreparationError::Refused(refusal) => OnHostInitError::Refused(refusal),
         FoundingPreparationError::Storage(reason) => OnHostInitError::Storage(reason),
-        error @ FoundingPreparationError::Failed { .. } => OnHostInitError::Preparation(error),
+        error @ (FoundingPreparationError::Failed { .. }
+        | FoundingPreparationError::MultipleImportedZfsPools { .. }
+        | FoundingPreparationError::RetainedZfsPoolNotImported { .. }) => {
+            OnHostInitError::Preparation(error)
+        }
     }
 }
 
 fn validate_resume_driver(
     canonical: &ValidatedFoundingRequest,
-    ssh: Option<&DriverPeerArgs>,
+    driver: &InitDriver,
     cloud: Option<&CloudEnvelope>,
 ) -> Result<(), OnHostInitError> {
-    validate_resume_driver_enrollment(&canonical.request().driver, ssh, cloud)
+    validate_resume_driver_enrollment(&canonical.request().driver, driver, cloud)
 }
 
 fn validate_resume_driver_enrollment(
     canonical: &FoundingDriverEnrollment,
-    ssh: Option<&DriverPeerArgs>,
+    driver: &InitDriver,
     cloud: Option<&CloudEnvelope>,
 ) -> Result<(), OnHostInitError> {
     // A partial Cloud founding always needs its original token. Otherwise the
@@ -243,11 +273,17 @@ fn validate_resume_driver_enrollment(
     // without notifying Cloud.
     use ployz_core::corrosion::PeerTransport;
 
-    match (canonical, ssh, cloud) {
-        (FoundingDriverEnrollment::Cloud { .. }, None, None) => Err(OnHostInitError::Input(
-            "partial Cloud founding requires the original matching --cloud-token".to_owned(),
-        )),
-        (FoundingDriverEnrollment::Cloud { peer_id, document }, None, Some(envelope)) => {
+    match (canonical, driver, cloud) {
+        (FoundingDriverEnrollment::Cloud { .. }, InitDriver::OnHost, None) => {
+            Err(OnHostInitError::Input(
+                "partial Cloud founding requires the original matching --cloud-token".to_owned(),
+            ))
+        }
+        (
+            FoundingDriverEnrollment::Cloud { peer_id, document },
+            InitDriver::Cloud(_),
+            Some(envelope),
+        ) => {
             let PeerTransport::Wireguard { pubkey, .. } = &document.transport else {
                 return Err(OnHostInitError::Input(
                     "canonical Cloud peer is not WireGuard".to_owned(),
@@ -265,23 +301,22 @@ fn validate_resume_driver_enrollment(
                 ))
             }
         }
-        (FoundingDriverEnrollment::Cloud { .. }, Some(_), None | Some(_))
-        | (FoundingDriverEnrollment::OnHost, _, Some(_))
-        | (FoundingDriverEnrollment::Ssh { .. }, _, Some(_)) => Err(OnHostInitError::Input(
-            "Cloud token does not match the canonical founding driver".to_owned(),
-        )),
-        (FoundingDriverEnrollment::OnHost, None, None)
-        | (FoundingDriverEnrollment::Ssh { .. }, None, None) => Ok(()),
-        (FoundingDriverEnrollment::Ssh { peer_id, document }, Some(peer), None) => {
+        (FoundingDriverEnrollment::Cloud { .. }, InitDriver::SshPeer(_), None)
+        | (FoundingDriverEnrollment::OnHost, InitDriver::Cloud(_), Some(_))
+        | (FoundingDriverEnrollment::Ssh { .. }, InitDriver::Cloud(_), Some(_)) => {
+            Err(OnHostInitError::Input(
+                "Cloud token does not match the canonical founding driver".to_owned(),
+            ))
+        }
+        (FoundingDriverEnrollment::OnHost, InitDriver::OnHost, None)
+        | (FoundingDriverEnrollment::Ssh { .. }, InitDriver::OnHost, None) => Ok(()),
+        (FoundingDriverEnrollment::Ssh { peer_id, document }, InitDriver::SshPeer(peer), None) => {
             let PeerTransport::Wireguard { pubkey, .. } = &document.transport else {
                 return Err(OnHostInitError::Input(
                     "canonical SSH peer is not WireGuard".to_owned(),
                 ));
             };
-            if peer_id.as_str() == peer.id
-                && document.name == peer.name
-                && pubkey.as_str() == peer.public_key
-            {
+            if *peer_id == peer.id && document.name == peer.name && *pubkey == peer.public_key {
                 Ok(())
             } else {
                 Err(OnHostInitError::Input(
@@ -289,9 +324,16 @@ fn validate_resume_driver_enrollment(
                 ))
             }
         }
-        (FoundingDriverEnrollment::OnHost, Some(_), None) => Err(OnHostInitError::Input(
-            "SSH enrollment does not match the canonical on-host founding driver".to_owned(),
-        )),
+        (FoundingDriverEnrollment::OnHost, InitDriver::SshPeer(_), None) => {
+            Err(OnHostInitError::Input(
+                "SSH enrollment does not match the canonical on-host founding driver".to_owned(),
+            ))
+        }
+        (_, InitDriver::SshTarget(_), _) | (_, InitDriver::Cloud(_), None) | (_, _, Some(_)) => {
+            Err(OnHostInitError::Input(
+                "init driver does not match the canonical founding driver".to_owned(),
+            ))
+        }
     }
 }
 
@@ -339,28 +381,26 @@ impl FoundingProgressObserver for CloudProgressReporter<'_> {
 }
 
 fn driver_input(
-    ssh: Option<&DriverPeerArgs>,
+    driver: &InitDriver,
     cloud: Option<&CloudEnvelope>,
 ) -> Result<FoundingDriverInput, OnHostInitError> {
-    match (ssh, cloud) {
-        (None, None) => Ok(FoundingDriverInput::OnHost),
-        (Some(peer), None) => Ok(FoundingDriverInput::Ssh {
-            peer_id: PeerId::try_new(peer.id.clone())
-                .map_err(|error| OnHostInitError::Input(error.to_string()))?,
+    match (driver, cloud) {
+        (InitDriver::OnHost, None) => Ok(FoundingDriverInput::OnHost),
+        (InitDriver::SshPeer(peer), None) => Ok(FoundingDriverInput::Ssh {
+            peer_id: peer.id.clone(),
             name: peer.name.clone(),
-            public_key: WireGuardPublicKey::try_new(peer.public_key.clone())
-                .map_err(|error| OnHostInitError::Input(error.to_string()))?,
-            endpoint: None,
+            public_key: peer.public_key.clone(),
         }),
-        (None, Some(cloud)) => Ok(FoundingDriverInput::Cloud {
+        (InitDriver::Cloud(_), Some(cloud)) => Ok(FoundingDriverInput::Cloud {
             peer_id: cloud.peer_id.clone(),
             name: cloud.peer_name.clone(),
             public_key: cloud.public_key.clone(),
-            endpoint: None,
         }),
-        (Some(_), Some(_)) => Err(OnHostInitError::Input(
-            "Cloud and SSH driver enrollment cannot be combined".to_owned(),
-        )),
+        (InitDriver::SshTarget(_), None)
+        | (InitDriver::Cloud(_), None)
+        | (InitDriver::OnHost | InitDriver::SshPeer(_) | InitDriver::SshTarget(_), Some(_)) => Err(
+            OnHostInitError::Input("init driver is not valid for on-host founding".to_owned()),
+        ),
     }
 }
 
@@ -427,7 +467,7 @@ mod tests {
         CorrosionDocumentVersion, OperatorWriteProvenance, PeerDocument, PeerTransport,
         derive_builtin_wireguard_member,
     };
-    use ployz_core::ids::{ClusterId, MachineRowId};
+    use ployz_core::ids::{ClusterId, MachineRowId, PeerId};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::net::TcpListener;
 
@@ -435,7 +475,7 @@ mod tests {
 
     const CLOUD_PUBLIC_KEY: &str = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
 
-    fn cloud_driver() -> (FoundingDriverEnrollment, CloudEnvelope) {
+    fn cloud_driver() -> (FoundingDriverEnrollment, CloudToken, CloudEnvelope) {
         let cluster_id = ClusterId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("cluster id");
         let machine_id = MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAX").expect("machine id");
         let peer_id = PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAY").expect("peer id");
@@ -460,15 +500,16 @@ mod tests {
                 },
             },
         };
-        let envelope = cloud_envelope("https://cloud.example/bootstrap", &peer_id, &public_key);
-        (driver, envelope)
+        let token = cloud_token("https://cloud.example/bootstrap", &peer_id, &public_key);
+        let envelope = CloudEnvelope::decode(&token).expect("Cloud envelope");
+        (driver, token, envelope)
     }
 
-    fn cloud_envelope(
+    fn cloud_token(
         callback_url: &str,
         peer_id: &PeerId,
         public_key: &WireGuardPublicKey,
-    ) -> CloudEnvelope {
+    ) -> CloudToken {
         let wire = serde_json::json!({
             "callback_url": callback_url,
             "callback_token": "callback-secret",
@@ -478,21 +519,20 @@ mod tests {
         });
         let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(serde_json::to_vec(&wire).expect("Cloud envelope JSON"));
-        let token: CloudToken = format!("pcbs2_{payload}").parse().expect("Cloud token");
-        CloudEnvelope::decode(&token).expect("Cloud envelope")
+        format!("pcbs2_{payload}").parse().expect("Cloud token")
     }
 
     #[test]
     fn partial_cloud_resume_requires_the_original_matching_token() {
-        let (driver, envelope) = cloud_driver();
-        let error = validate_resume_driver_enrollment(&driver, None, None)
+        let (canonical, token, envelope) = cloud_driver();
+        let error = validate_resume_driver_enrollment(&canonical, &InitDriver::OnHost, None)
             .expect_err("Cloud resume without callback authority must stop");
         assert!(
             error
                 .to_string()
                 .contains("original matching --cloud-token")
         );
-        validate_resume_driver_enrollment(&driver, None, Some(&envelope))
+        validate_resume_driver_enrollment(&canonical, &InitDriver::Cloud(token), Some(&envelope))
             .expect("matching Cloud token resumes");
     }
 
@@ -513,11 +553,12 @@ mod tests {
         });
         let peer_id = PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAY").expect("peer id");
         let public_key = WireGuardPublicKey::try_new(CLOUD_PUBLIC_KEY).expect("Cloud public key");
-        let envelope = cloud_envelope(
+        let token = cloud_token(
             &format!("http://{address}/bootstrap"),
             &peer_id,
             &public_key,
         );
+        let envelope = CloudEnvelope::decode(&token).expect("Cloud envelope");
         let mut reporter = CloudProgressReporter {
             envelope: &envelope,
             cluster_id: ClusterId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("cluster id"),
@@ -535,6 +576,55 @@ mod tests {
         let body = request.split_once("\r\n\r\n").expect("HTTP request body").1;
         assert!(body.contains("\"state\":\"ready\""));
         assert!(!body.contains("\"state\":\"enrolled\""));
+    }
+
+    #[tokio::test]
+    async fn foreign_cloud_preflight_reports_failed_before_returning_refusal() {
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("callback listener");
+        let address = listener.local_addr().expect("callback address");
+        let callback = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("callback accept");
+            let request = read_http_request(&mut stream).await;
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await
+                .expect("callback response");
+            request
+        });
+        let peer_id = PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAY").expect("peer id");
+        let public_key = WireGuardPublicKey::try_new(CLOUD_PUBLIC_KEY).expect("public key");
+        let token = cloud_token(
+            &format!("http://{address}/bootstrap"),
+            &peer_id,
+            &public_key,
+        );
+        let requested_cluster_id =
+            ClusterId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("requested cluster");
+        let found_cluster_id =
+            ClusterId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAW").expect("found cluster");
+        let refusal = FoundingRefusal::ForeignState {
+            requested_cluster_id: requested_cluster_id.clone(),
+            found_cluster_id: found_cluster_id.clone(),
+            repair_command: ployz_core::founding::FoundingRepairCommand::ResetMachine,
+        };
+        let error = report_preflight_refusal(&InitDriver::Cloud(token), refusal.clone())
+            .await
+            .expect_err("foreign state remains a refusal");
+        assert!(matches!(error, OnHostInitError::Refused(found) if found == refusal));
+
+        let request = callback.await.expect("callback task");
+        let (headers, body) = request.split_once("\r\n\r\n").expect("HTTP request body");
+        assert!(headers.contains(&format!(
+            "idempotency-key: ployz-init-{requested_cluster_id}-preflight-failed"
+        )));
+        assert!(body.contains("\"state\":\"failed\""));
+        assert!(body.contains(&format!("\"cluster_id\":\"{requested_cluster_id}\"")));
+        assert!(body.contains(&found_cluster_id.to_string()));
+        assert!(body.contains("\"repair_command\":\"ployz machine reset\""));
+        assert!(!body.contains("machine_id"));
+        assert!(!body.contains("callback-secret"));
     }
 
     async fn read_http_request(stream: &mut tokio::net::TcpStream) -> String {

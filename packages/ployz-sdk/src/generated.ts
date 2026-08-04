@@ -398,8 +398,6 @@ export type ExternalBuildPoolCapabilities = { pool_id: BuildPoolId, executors: A
 
 export type FailureMessage = Brand<string, "FailureMessage">;
 
-export type FoundingArrival = { "kind": "clean" } | { "kind": "partial", persisted_cluster_id: ClusterId, } | { "kind": "complete", persisted_cluster_id: ClusterId, } | { "kind": "joined", persisted_cluster_id: ClusterId, };
-
 export type FoundingDriverEnrollment = { "kind": "on_host" } | { "kind": "ssh", peer_id: PeerId, document: PeerDocument, } | { "kind": "cloud", peer_id: PeerId, document: PeerDocument, };
 
 export type FoundingRefusal = { "kind": "invalid_request", reason: FoundingValidationError, } | { "kind": "foreign_state", requested_cluster_id: ClusterId, found_cluster_id: ClusterId, repair_command: FoundingRepairCommand, };
@@ -477,10 +475,6 @@ export type IngressEndpointSet = { ipv4: Array<string>, ipv6: Array<string>, };
 export type IngressEndpointUnavailableReason = "no_declared_gateways" | "no_publishable_endpoints";
 
 export type IngressMode = "direct" | "cloudflare_tunnel" | "tailscale_funnel";
-
-export type InitStorageChoice = { "kind": "automatic" } | { "kind": "flag", mode: StorageMode, };
-
-export type InitStorageSelectionError = { "kind": "zfs_pool_not_imported" } | { "kind": "zfs_memory_below_minimum" };
 
 export type InstallArtifactSource = string;
 

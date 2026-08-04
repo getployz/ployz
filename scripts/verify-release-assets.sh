@@ -40,7 +40,15 @@ case "${release_tag}" in
     ;;
 esac
 release_base_url="https://github.com/getployz/ployz/releases/download/${release_tag}"
-expected_corrosion_embedded_version="corrosion 0.2.0-beta.0"
+command -v python3 >/dev/null 2>&1 || {
+  echo "python3 is required to read corrosion-release.json" >&2
+  exit 1
+}
+expected_corrosion_embedded_version="$(python3 \
+  "${ROOT_DIR}/scripts/read-corrosion-release.py" \
+  "${ROOT_DIR}/corrosion-release.json" \
+  linux-amd64 \
+  embedded_version)"
 
 assets_dir="${PLOYZ_RELEASE_VERIFY_DIR:-}"
 channel_name="alpha"

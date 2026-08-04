@@ -147,7 +147,8 @@ pub enum CloudProgress {
     },
     Failed {
         cluster_id: ClusterId,
-        machine_id: MachineRowId,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        machine_id: Option<MachineRowId>,
         reason: String,
         repair_command: Option<String>,
     },
@@ -169,9 +170,14 @@ impl CloudProgress {
             } => ("ready", cluster_id, machine_id),
             Self::Failed {
                 cluster_id,
-                machine_id,
+                machine_id: Some(machine_id),
                 ..
-            } => ("failed", cluster_id, machine_id),
+            } => return format!("ployz-init-{cluster_id}-{machine_id}-failed"),
+            Self::Failed {
+                cluster_id,
+                machine_id: None,
+                ..
+            } => return format!("ployz-init-{cluster_id}-preflight-failed"),
         };
         format!("ployz-init-{cluster_id}-{machine_id}-{state}")
     }
@@ -219,7 +225,7 @@ mod tests {
     fn callback_payload_has_no_bootstrap_answers_or_credentials() {
         let progress = CloudProgress::Failed {
             cluster_id: ClusterId::generate(),
-            machine_id: MachineRowId::generate(),
+            machine_id: Some(MachineRowId::generate()),
             reason: "bounded failure".to_owned(),
             repair_command: None,
         };
@@ -249,6 +255,23 @@ mod tests {
             serde_json::to_vec(&progress).expect("replayed body")
         );
         assert_eq!(progress.idempotency_key(), progress.idempotency_key());
+    }
+
+    #[test]
+    fn preflight_failure_has_no_fake_machine_and_a_stable_key() {
+        let cluster_id = ClusterId::generate();
+        let progress = CloudProgress::Failed {
+            cluster_id: cluster_id.clone(),
+            machine_id: None,
+            reason: "foreign state".to_owned(),
+            repair_command: Some("ployz machine reset".to_owned()),
+        };
+        let payload = serde_json::to_string(&progress).expect("preflight failure JSON");
+        assert!(!payload.contains("machine_id"));
+        assert_eq!(
+            progress.idempotency_key(),
+            format!("ployz-init-{cluster_id}-preflight-failed")
+        );
     }
 
     #[test]

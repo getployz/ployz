@@ -24,7 +24,6 @@ pub const MINIMUM_ZFS_MEMORY_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 /// Whether init should choose storage from host facts or honor an explicit flag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum InitStorageChoice {
     Automatic,
@@ -40,7 +39,6 @@ pub struct InitStorageFacts {
 
 /// Why an explicit ZFS choice is not eligible on this host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum InitStorageSelectionError {
     #[error("ZFS storage requires an imported pool")]
@@ -372,7 +370,6 @@ fn validate_provenance(
 
 /// Durable host state observed when the founding primitive arrives.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FoundingArrival {
     Clean,

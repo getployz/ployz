@@ -1,7 +1,7 @@
+use super::founding::authorize_founding;
 use super::roster::validate_listener_principal;
 use super::server::{
-    ApiServerServeError, FoundingPostconditions, HttpBody, append_founding_body_chunk,
-    authorize_founding, await_lens_state, await_server_stop, execute_founding,
+    ApiServerServeError, HttpBody, await_lens_state, await_server_stop,
     fallback_terminal_sse_event, founding_route_disabled, initial_watch_event,
     lens_snapshot_response, parse_founding_route, parse_route, refusal_response,
     refusal_response_with_allow, source_from_peer, sse_data, sse_event, sse_keepalive,
@@ -18,9 +18,7 @@ use hyper::{Method, Request, StatusCode};
 use ployz_core::corrosion::{
     AcceptedRosterPrincipal, MachineTransport, PeerTransport, Principal, resolve_source_principal,
 };
-use ployz_core::founding::FoundingResult;
 use ployz_core::ids::{ClusterId, MachineRowId, PeerId};
-use ployz_core::network::MachineEndpointSubnet;
 use ployz_core::{
     API_MAJOR, ApiFeature, ApiRefusal, ApiVersion, CorrosionRetryAfterSeconds, KnownApiFeature,
     LensCollection, LensSnapshot, LensWatchEvent, V2Route,
@@ -368,99 +366,6 @@ fn ordinary_mode_hides_the_disabled_founding_route_for_every_method() {
     }
     assert!(parse_founding_route(&ApiRoleMode::Ordinary, &Method::GET, "/version").is_none());
     assert!(!founding_route_disabled(&ApiRoleMode::Ordinary, "/version"));
-}
-
-#[test]
-fn founding_body_accumulation_refuses_the_first_byte_past_its_bound() {
-    let mut body = vec![0_u8; super::server::MAX_FOUNDING_REQUEST_BYTES - 1];
-    append_founding_body_chunk(&mut body, b"x").expect("the exact request bound is accepted");
-    assert!(matches!(
-        append_founding_body_chunk(&mut body, b"x"),
-        Err(super::server::FoundingBodyError::TooLarge)
-    ));
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum FoundingFailurePoint {
-    Write,
-    Network,
-    Lens,
-}
-
-struct RecordingFoundingPostconditions {
-    calls: std::sync::Mutex<Vec<&'static str>>,
-    fail_at: Option<FoundingFailurePoint>,
-}
-
-impl RecordingFoundingPostconditions {
-    fn new(fail_at: Option<FoundingFailurePoint>) -> Self {
-        Self {
-            calls: std::sync::Mutex::new(Vec::new()),
-            fail_at,
-        }
-    }
-
-    fn calls(&self) -> Vec<&'static str> {
-        self.calls.lock().expect("recording lock").clone()
-    }
-
-    fn record(&self, call: &'static str, point: FoundingFailurePoint) -> Result<(), ApiRefusal> {
-        self.calls.lock().expect("recording lock").push(call);
-        if self.fail_at == Some(point) {
-            Err(corrosion_unavailable())
-        } else {
-            Ok(())
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl FoundingPostconditions for RecordingFoundingPostconditions {
-    async fn write_and_read_back(&self) -> Result<super::founding::FoundingWrite, ApiRefusal> {
-        self.record("write_readback", FoundingFailurePoint::Write)?;
-        Ok(super::founding::FoundingWrite {
-            result: FoundingResult::Found,
-            machine_subnet: MachineEndpointSubnet::try_new("10.210.0.0/24")
-                .expect("fixture subnet"),
-        })
-    }
-
-    async fn ensure_endpoint_network(
-        &self,
-        _subnet: &MachineEndpointSubnet,
-    ) -> Result<(), ApiRefusal> {
-        self.record("endpoint_network", FoundingFailurePoint::Network)
-    }
-
-    async fn start_lenses_and_observe_machine(&self) -> Result<(), ApiRefusal> {
-        self.record("machine_lens", FoundingFailurePoint::Lens)
-    }
-}
-
-#[tokio::test]
-async fn founding_starts_lenses_only_after_readback_and_endpoint_network() {
-    let success = RecordingFoundingPostconditions::new(None);
-    assert_eq!(execute_founding(&success).await, Ok(FoundingResult::Found));
-    assert_eq!(
-        success.calls(),
-        ["write_readback", "endpoint_network", "machine_lens"]
-    );
-
-    for (failure, expected_calls) in [
-        (FoundingFailurePoint::Write, vec!["write_readback"]),
-        (
-            FoundingFailurePoint::Network,
-            vec!["write_readback", "endpoint_network"],
-        ),
-        (
-            FoundingFailurePoint::Lens,
-            vec!["write_readback", "endpoint_network", "machine_lens"],
-        ),
-    ] {
-        let postconditions = RecordingFoundingPostconditions::new(Some(failure));
-        assert!(execute_founding(&postconditions).await.is_err());
-        assert_eq!(postconditions.calls(), expected_calls);
-    }
 }
 
 #[tokio::test]

@@ -4,10 +4,11 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::str::FromStr;
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand};
 use ployz_core::corrosion::{AutomaticHostnameMode, StorageMode};
 use ployz_core::founding::InitStorageChoice;
-use ployz_core::network::{DEFAULT_ENDPOINT_SUPERNET, MachineEndpointSupernet};
+use ployz_core::ids::PeerId;
+use ployz_core::network::{DEFAULT_ENDPOINT_SUPERNET, MachineEndpointSupernet, WireGuardPublicKey};
 use ployz_core::operation::RouteHostname;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,15 +52,13 @@ impl FromStr for CloudToken {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InitCommand {
-    pub target: InitTarget,
+    pub driver: InitDriver,
     pub storage: InitStorageChoice,
     pub container_network: MachineEndpointSupernet,
     pub service_urls: AutomaticHostnameMode,
     pub cluster_name: Option<String>,
     pub machine_name: Option<String>,
     pub wireguard_endpoint: Option<SocketAddr>,
-    pub cloud_token: Option<CloudToken>,
-    pub driver_peer: Option<DriverPeerArgs>,
     pub prompt: InitPromptMask,
 }
 
@@ -71,9 +70,11 @@ pub struct InitPromptMask {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum InitTarget {
+pub enum InitDriver {
     OnHost,
-    Ssh(SshTarget),
+    Cloud(CloudToken),
+    SshTarget(SshTarget),
+    SshPeer(DriverPeerArgs),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,9 +120,9 @@ impl FromStr for SshTarget {
 /// Public peer material carried across the already-authenticated SSH channel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DriverPeerArgs {
-    pub id: String,
+    pub id: PeerId,
     pub name: String,
-    pub public_key: String,
+    pub public_key: WireGuardPublicKey,
 }
 
 /// Parses a `ployz` invocation.
@@ -180,7 +181,7 @@ struct InitArgs {
     /// Remote root SSH target. Omit when running on machine one.
     target: Option<SshTarget>,
     /// Machine-one storage selection.
-    #[arg(long, value_enum)]
+    #[arg(long)]
     storage: Option<StorageArg>,
     /// Cluster-fixed container network. Must be an IPv4 /16.
     #[arg(long)]
@@ -200,12 +201,12 @@ struct InitArgs {
     /// Cloud callback and public-enrollment envelope.
     #[arg(long, conflicts_with = "target")]
     cloud_token: Option<CloudToken>,
-    #[arg(long, hide = true, requires_all = ["driver_peer_name", "driver_peer_public_key"])]
-    driver_peer_id: Option<String>,
-    #[arg(long, hide = true, requires_all = ["driver_peer_id", "driver_peer_public_key"])]
+    #[arg(long, hide = true, conflicts_with_all = ["target", "cloud_token"], requires_all = ["driver_peer_name", "driver_peer_public_key"])]
+    driver_peer_id: Option<PeerId>,
+    #[arg(long, hide = true, conflicts_with_all = ["target", "cloud_token"], requires_all = ["driver_peer_id", "driver_peer_public_key"])]
     driver_peer_name: Option<String>,
-    #[arg(long, hide = true, requires_all = ["driver_peer_id", "driver_peer_name"])]
-    driver_peer_public_key: Option<String>,
+    #[arg(long, hide = true, conflicts_with_all = ["target", "cloud_token"], requires_all = ["driver_peer_id", "driver_peer_name"], value_parser = parse_wireguard_public_key)]
+    driver_peer_public_key: Option<WireGuardPublicKey>,
 }
 
 impl InitArgs {
@@ -215,29 +216,30 @@ impl InitArgs {
             container_network: self.container_network.is_none(),
             service_urls: self.service_urls.is_none(),
         };
-        let target = self.target.map_or(InitTarget::OnHost, InitTarget::Ssh);
-        if matches!(target, InitTarget::Ssh(_)) && self.driver_peer_id.is_some() {
-            return Err("driver peer flags are accepted only by on-host init".to_owned());
-        }
-        let driver_peer = match (
+        let driver = match (
+            self.target,
+            self.cloud_token,
             self.driver_peer_id,
             self.driver_peer_name,
             self.driver_peer_public_key,
         ) {
-            (Some(id), Some(name), Some(public_key)) => Some(DriverPeerArgs {
-                id,
-                name,
-                public_key,
-            }),
-            (None, None, None) => None,
-            _ => return Err("driver peer enrollment is incomplete".to_owned()),
+            (Some(target), None, None, None, None) => InitDriver::SshTarget(target),
+            (None, Some(token), None, None, None) => InitDriver::Cloud(token),
+            (None, None, Some(id), Some(name), Some(public_key)) => {
+                InitDriver::SshPeer(DriverPeerArgs {
+                    id,
+                    name,
+                    public_key,
+                })
+            }
+            (None, None, None, None, None) => InitDriver::OnHost,
+            _ => return Err("init driver arguments are inconsistent".to_owned()),
         };
-        if self.cloud_token.is_some() && driver_peer.is_some() {
-            return Err("cloud and SSH driver enrollment cannot be combined".to_owned());
-        }
         Ok(InitCommand {
-            target,
-            storage: self.storage.unwrap_or(StorageArg::Auto).into(),
+            driver,
+            storage: self
+                .storage
+                .map_or(InitStorageChoice::Automatic, |value| value.0),
             container_network: MachineEndpointSupernet::try_new(
                 self.container_network
                     .unwrap_or_else(|| DEFAULT_ENDPOINT_SUPERNET.to_owned()),
@@ -249,31 +251,19 @@ impl InitArgs {
             cluster_name: self.cluster_name,
             machine_name: self.machine_name,
             wireguard_endpoint: self.wireguard_endpoint,
-            cloud_token: self.cloud_token,
-            driver_peer,
             prompt,
         })
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum StorageArg {
-    Auto,
-    Zfs,
-    Plain,
-}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StorageArg(InitStorageChoice);
 
-impl From<StorageArg> for InitStorageChoice {
-    fn from(value: StorageArg) -> Self {
-        match value {
-            StorageArg::Auto => Self::Automatic,
-            StorageArg::Zfs => Self::Flag {
-                mode: StorageMode::Zfs,
-            },
-            StorageArg::Plain => Self::Flag {
-                mode: StorageMode::Plain,
-            },
-        }
+impl FromStr for StorageArg {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        parse_storage(value).map(Self)
     }
 }
 
@@ -284,22 +274,62 @@ impl FromStr for ServiceUrlsArg {
     type Err = String;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let mode = match value {
-            "ployz" => AutomaticHostnameMode::Ployz,
-            "disabled" => AutomaticHostnameMode::Disabled,
-            _ => {
-                let Some(suffix) = value.strip_prefix("custom:") else {
-                    return Err(
-                        "service URLs must be ployz, disabled, or custom:<suffix>".to_owned()
-                    );
-                };
-                AutomaticHostnameMode::Custom {
-                    suffix: RouteHostname::try_new(suffix).map_err(|error| error.to_string())?,
-                }
-            }
-        };
-        Ok(Self(mode))
+        parse_service_urls(value).map(Self)
     }
+}
+
+pub(crate) fn parse_storage(value: &str) -> Result<InitStorageChoice, String> {
+    match value {
+        "auto" => Ok(InitStorageChoice::Automatic),
+        "zfs" => Ok(InitStorageChoice::Flag {
+            mode: StorageMode::Zfs,
+        }),
+        "plain" => Ok(InitStorageChoice::Flag {
+            mode: StorageMode::Plain,
+        }),
+        _ => Err("storage must be auto, zfs, or plain".to_owned()),
+    }
+}
+
+#[must_use]
+pub(crate) const fn render_storage(value: InitStorageChoice) -> &'static str {
+    match value {
+        InitStorageChoice::Automatic => "auto",
+        InitStorageChoice::Flag {
+            mode: StorageMode::Zfs,
+        } => "zfs",
+        InitStorageChoice::Flag {
+            mode: StorageMode::Plain,
+        } => "plain",
+    }
+}
+
+pub(crate) fn parse_service_urls(value: &str) -> Result<AutomaticHostnameMode, String> {
+    match value {
+        "ployz" => Ok(AutomaticHostnameMode::Ployz),
+        "disabled" => Ok(AutomaticHostnameMode::Disabled),
+        _ => {
+            let Some(suffix) = value.strip_prefix("custom:") else {
+                return Err("service URLs must be ployz, disabled, or custom:<suffix>".to_owned());
+            };
+            Ok(AutomaticHostnameMode::Custom {
+                suffix: RouteHostname::try_new(suffix).map_err(|error| error.to_string())?,
+            })
+        }
+    }
+}
+
+#[must_use]
+pub(crate) fn render_service_urls(value: &AutomaticHostnameMode) -> String {
+    match value {
+        AutomaticHostnameMode::Ployz => "ployz".to_owned(),
+        AutomaticHostnameMode::Disabled => "disabled".to_owned(),
+        AutomaticHostnameMode::Custom { suffix } => format!("custom:{}", suffix.as_str()),
+    }
+}
+
+fn parse_wireguard_public_key(value: &str) -> Result<WireGuardPublicKey, String> {
+    WireGuardPublicKey::try_new(value).map_err(|error| error.to_string())
 }
 
 #[derive(Debug, Subcommand)]
@@ -343,7 +373,7 @@ mod tests {
             MachineEndpointSupernet::default_v1()
         );
         assert_eq!(command.service_urls, AutomaticHostnameMode::Ployz);
-        assert!(matches!(command.target, InitTarget::Ssh(_)));
+        assert!(matches!(command.driver, InitDriver::SshTarget(_)));
     }
 
     #[test]
@@ -391,8 +421,8 @@ mod tests {
             panic!("expected init")
         };
         assert_eq!(
-            format!("{:?}", command.cloud_token),
-            "Some(CloudToken([REDACTED]))"
+            format!("{:?}", command.driver),
+            "Cloud(CloudToken([REDACTED]))"
         );
     }
 
@@ -402,6 +432,57 @@ mod tests {
         assert!(parse(&["init", "root@host;reboot"]).is_err());
         assert!(parse(&["init", "--container-network", "10.0.0.0/24"]).is_err());
         assert!(parse(&["init", "--service-urls", "custom:*bad.example"]).is_err());
+    }
+
+    #[test]
+    fn hidden_ssh_peer_is_typed_and_driver_combinations_do_not_parse() {
+        let peer_id = PeerId::generate();
+        let Command::Init(command) = parse(&[
+            "init",
+            "--driver-peer-id",
+            peer_id.as_str(),
+            "--driver-peer-name",
+            "operator laptop",
+            "--driver-peer-public-key",
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        ])
+        .expect("typed SSH peer parses") else {
+            panic!("expected init")
+        };
+        assert!(matches!(
+            command.driver,
+            InitDriver::SshPeer(DriverPeerArgs { id, public_key, .. })
+                if id == peer_id
+                    && public_key.as_str()
+                        == "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+        ));
+
+        assert!(
+            parse(&[
+                "init",
+                "--cloud-token",
+                "opaque",
+                "--driver-peer-id",
+                peer_id.as_str(),
+                "--driver-peer-name",
+                "operator laptop",
+                "--driver-peer-public-key",
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn init_value_parsers_and_renderers_are_canonical_round_trips() {
+        for value in ["auto", "zfs", "plain"] {
+            let parsed = parse_storage(value).expect("storage parses");
+            assert_eq!(render_storage(parsed), value);
+        }
+        for value in ["ployz", "disabled", "custom:apps.example.com"] {
+            let parsed = parse_service_urls(value).expect("service URL mode parses");
+            assert_eq!(render_service_urls(&parsed), value);
+        }
     }
 
     #[test]

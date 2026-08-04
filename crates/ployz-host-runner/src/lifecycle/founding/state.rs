@@ -190,7 +190,7 @@ impl FoundingStateDirectory {
         })
     }
 
-    pub(crate) fn milestone_complete(
+    pub fn milestone_complete(
         &self,
         milestone: FoundingMilestone,
     ) -> Result<bool, FoundingStateError> {
@@ -206,10 +206,7 @@ impl FoundingStateDirectory {
         }
     }
 
-    pub(crate) fn record_milestone(
-        &self,
-        milestone: FoundingMilestone,
-    ) -> Result<(), FoundingStateError> {
+    pub fn record_milestone(&self, milestone: FoundingMilestone) -> Result<(), FoundingStateError> {
         let directory = self.0.join(MILESTONE_DIRECTORY);
         std::fs::create_dir_all(&directory).map_err(|error| {
             FoundingStateError::CreateMilestoneDirectory {
@@ -256,12 +253,11 @@ impl Drop for FoundingInitLock {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FoundingMilestone {
+pub enum FoundingMilestone {
     Artifacts,
     Docker,
     MachineMaterial,
     DoorMaterial,
-    EndpointSubnet,
     Storage,
     Configuration,
     FoundingRequest,
@@ -290,7 +286,6 @@ impl FoundingMilestone {
             Self::MachineMaterial => "03-machine-material",
             Self::FoundingRequest => "04-founding-request",
             Self::DoorMaterial => "05-door-material",
-            Self::EndpointSubnet => "06-endpoint-subnet",
             Self::Storage => "07-storage",
             Self::Configuration => "08-configuration",
             Self::DockerConfigured => "09-docker-configured",
@@ -341,8 +336,6 @@ pub enum FoundingStateError {
     ClusterIdAlreadyExists { path: PathBuf },
     #[error("failed to stage cluster id for {}: {message}", path.display())]
     StageClusterId { path: PathBuf, message: String },
-    #[error("failed to create cluster id {}: {message}", path.display())]
-    CreateClusterId { path: PathBuf, message: String },
     #[error("failed to write cluster id {}: {message}", path.display())]
     WriteClusterId { path: PathBuf, message: String },
     #[error("failed to publish cluster id {}: {message}", path.display())]

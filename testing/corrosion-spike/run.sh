@@ -39,6 +39,8 @@ require_command() {
 }
 
 load_release_manifest() {
+    local pin_output
+    local -a corrosion_pin
     case "$CORROSION_SPIKE_PLATFORM" in
         linux-amd64) VULTR_OS_ARCH="x64" ;;
         linux-arm64) VULTR_OS_ARCH="arm64" ;;
@@ -49,39 +51,22 @@ load_release_manifest() {
             ;;
     esac
 
-    if ! jq -e --arg platform "$CORROSION_SPIKE_PLATFORM" '
-        .release_tag as $release_tag |
-        type == "object" and
-        ((keys_unsorted | sort) == ["embedded_version", "platforms", "release_tag"]) and
-        (.release_tag | type == "string" and test("^v[0-9A-Za-z][0-9A-Za-z._-]*$")) and
-        (.platforms | type == "object") and
-        ((.platforms | keys_unsorted | sort) == ["linux-amd64", "linux-arm64"]) and
-        (all(.platforms | to_entries[];
-            (.value | type == "object") and
-            ((.value | keys_unsorted | sort) == ["archive"]) and
-            (.value.archive | type == "object") and
-            ((.value.archive | keys_unsorted | sort) == ["name", "sha256", "url"]) and
-            (.value.archive.name | type == "string" and test("^[A-Za-z0-9._-]+$")) and
-            (.value.archive.url | type == "string") and
-            (.value.archive.url == (
-                "https://github.com/superfly/corrosion/releases/download/" +
-                $release_tag + "/" + .value.archive.name
-            )) and
-            (.value.archive.sha256 | type == "string" and test("^[0-9a-f]{64}$"))
-        )) and
-        (.platforms[$platform] | type == "object") and
-        (.embedded_version |
-            type == "string" and test("^corrosion [^\\t\\r\\n]+$"))
-    ' "$RELEASE_MANIFEST" >/dev/null; then
-        printf 'invalid Corrosion release manifest: %s\n' "$RELEASE_MANIFEST" >&2
+    if ! pin_output="$(python3 \
+        "$REPO_ROOT/scripts/read-corrosion-release.py" \
+        "$RELEASE_MANIFEST" \
+        "$CORROSION_SPIKE_PLATFORM")"; then
         return 1
     fi
-
-    RELEASE_TAG="$(jq -er '.release_tag' "$RELEASE_MANIFEST")"
-    RELEASE_ARCHIVE_NAME="$(jq -er --arg platform "$CORROSION_SPIKE_PLATFORM" '.platforms[$platform].archive.name' "$RELEASE_MANIFEST")"
-    RELEASE_URL="$(jq -er --arg platform "$CORROSION_SPIKE_PLATFORM" '.platforms[$platform].archive.url' "$RELEASE_MANIFEST")"
-    RELEASE_SHA256="$(jq -er --arg platform "$CORROSION_SPIKE_PLATFORM" '.platforms[$platform].archive.sha256' "$RELEASE_MANIFEST")"
-    RELEASE_EMBEDDED_VERSION="$(jq -er '.embedded_version' "$RELEASE_MANIFEST")"
+    mapfile -t corrosion_pin <<<"$pin_output"
+    if [[ "${#corrosion_pin[@]}" -ne 5 ]]; then
+        printf 'corrosion release manifest did not yield exactly five pinned fields\n' >&2
+        return 1
+    fi
+    RELEASE_TAG="${corrosion_pin[0]}"
+    RELEASE_ARCHIVE_NAME="${corrosion_pin[1]}"
+    RELEASE_URL="${corrosion_pin[2]}"
+    RELEASE_SHA256="${corrosion_pin[3]}"
+    RELEASE_EMBEDDED_VERSION="${corrosion_pin[4]}"
     readonly RELEASE_TAG RELEASE_ARCHIVE_NAME RELEASE_URL RELEASE_SHA256
     readonly RELEASE_EMBEDDED_VERSION
 }
@@ -1539,6 +1524,7 @@ resume_run() {
         return 1
     fi
     require_command jq
+    require_command python3
     load_release_manifest
     validate_retained_hosts
     wait_for_ssh

@@ -4,6 +4,7 @@ use std::fmt;
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
+use crate::init::orchestration::{FoundingControlPlane, FoundingReadiness};
 use futures_util::StreamExt as _;
 use ployz_core::founding::ValidatedFoundingRequest;
 use ployz_core::founding::{FoundingRefusal, FoundingRequest, FoundingResult};
@@ -13,7 +14,6 @@ use ployz_core::{
     API_MAJOR, ApiFeature, ApiRefusal, ApiVersion, FOUNDING_ROUTE, KnownApiFeature, LensCollection,
     LensSnapshot, VERSION_ROUTE, lens_route,
 };
-use ployz_host_runner::lifecycle::founding::{FoundingControlPlane, FoundingReadiness};
 use reqwest::{Client, StatusCode};
 use serde::de::DeserializeOwned;
 

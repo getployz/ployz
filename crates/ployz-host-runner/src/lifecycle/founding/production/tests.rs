@@ -1,0 +1,498 @@
+use super::*;
+use crate::HostRunnerCommandOutput;
+
+#[test]
+fn founding_enables_only_implemented_roles() {
+    assert_eq!(
+        founding_role_disposition(PloyzdRole::Keeper),
+        FoundingRoleDisposition::Enabled
+    );
+    assert_eq!(
+        founding_role_disposition(PloyzdRole::Api),
+        FoundingRoleDisposition::Enabled
+    );
+    assert_eq!(
+        founding_role_disposition(PloyzdRole::Gateway),
+        FoundingRoleDisposition::DisabledAndInactive
+    );
+    assert_eq!(
+        founding_role_disposition(PloyzdRole::Dns),
+        FoundingRoleDisposition::DisabledAndInactive
+    );
+}
+
+#[derive(Debug)]
+struct FactsRunner;
+
+impl HostRunnerCommandRunner for FactsRunner {
+    fn command(
+        &mut self,
+        program: &str,
+        _args: &[&str],
+    ) -> Result<HostRunnerCommandOutput, FailureMessage> {
+        match program {
+            "cat" => Ok(output(true, "MemTotal:       4194304 kB\n")),
+            "zpool" => Ok(output(false, "")),
+            _ => Err(failure("unexpected command")),
+        }
+    }
+
+    fn is_linux(&mut self) -> bool {
+        true
+    }
+
+    fn current_uid(&mut self) -> Result<u32, FailureMessage> {
+        Ok(0)
+    }
+
+    fn download(&mut self, _url: &str, _destination: &Path) -> Result<(), FailureMessage> {
+        Err(failure("download is not used during preparation"))
+    }
+
+    fn docker_info(&mut self) -> Result<(), FailureMessage> {
+        Ok(())
+    }
+
+    fn docker_is_installed(&mut self) -> bool {
+        true
+    }
+
+    fn docker_uses_containerd_snapshotter(&mut self) -> Result<bool, FailureMessage> {
+        Ok(true)
+    }
+
+    fn docker_has_insecure_registry(&mut self, _cidr: &str) -> Result<bool, FailureMessage> {
+        Ok(true)
+    }
+}
+
+#[derive(Debug)]
+struct InventoryRunner {
+    pools: &'static str,
+}
+
+impl HostRunnerCommandRunner for InventoryRunner {
+    fn command(
+        &mut self,
+        program: &str,
+        _args: &[&str],
+    ) -> Result<HostRunnerCommandOutput, FailureMessage> {
+        match program {
+            "cat" => Ok(output(true, "MemTotal:       4194304 kB\n")),
+            "zpool" => Ok(output(true, self.pools)),
+            _ => Err(failure("unexpected command")),
+        }
+    }
+
+    fn is_linux(&mut self) -> bool {
+        true
+    }
+
+    fn current_uid(&mut self) -> Result<u32, FailureMessage> {
+        Ok(0)
+    }
+
+    fn download(&mut self, _url: &str, _destination: &Path) -> Result<(), FailureMessage> {
+        Err(failure("download is not used during preparation"))
+    }
+
+    fn docker_info(&mut self) -> Result<(), FailureMessage> {
+        Ok(())
+    }
+
+    fn docker_is_installed(&mut self) -> bool {
+        true
+    }
+
+    fn docker_uses_containerd_snapshotter(&mut self) -> Result<bool, FailureMessage> {
+        Ok(true)
+    }
+
+    fn docker_has_insecure_registry(&mut self, _cidr: &str) -> Result<bool, FailureMessage> {
+        Ok(true)
+    }
+}
+
+#[test]
+fn preparation_builds_matching_request_without_persisting_generated_material() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let state = FoundingStateDirectory::initialize(directory.path().join("state"))
+        .expect("state initializes");
+    let prepared = prepare_linux_founding(
+        &state,
+        LinuxFoundingInput {
+            cluster_name: "ares".to_owned(),
+            machine_name: MachineName::try_new("ares").expect("machine name"),
+            endpoint: Some("203.0.113.7:51820".parse().expect("endpoint")),
+            prefix: MachineEndpointSupernet::default_v1(),
+            hostname_mode: AutomaticHostnameMode::Disabled,
+            storage: InitStorageChoice::Automatic,
+            driver: FoundingDriverInput::OnHost,
+            written_at: CorrosionTimestamp::try_new("2026-08-04T12:00:00Z").expect("timestamp"),
+            acme_directory_url: "https://acme.example/directory".to_owned(),
+            acme_contact: None,
+        },
+        fixture_artifacts(),
+        "corrosion 0.2.0-beta.0".to_owned(),
+        FactsRunner,
+    )
+    .expect("preparation succeeds");
+
+    assert_eq!(
+        prepared.request.request().machine.storage.mode,
+        StorageMode::Plain
+    );
+    assert!(!state.path().join("cluster-id").exists());
+    assert!(!state.path().join(MACHINE_SEED_FILE).exists());
+    let debug = format!("{:?}", prepared.effects);
+    assert!(debug.contains("[REDACTED]"));
+    assert!(!debug.contains(prepared.bootstrap_credential.as_str()));
+}
+
+#[test]
+fn explicit_zfs_refuses_zero_imported_pools_before_resume_anchor() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let state = FoundingStateDirectory::initialize(directory.path().join("state"))
+        .expect("state initializes");
+    let mut founding_input = input("2026-08-04T12:00:00Z");
+    founding_input.storage = InitStorageChoice::Flag {
+        mode: StorageMode::Zfs,
+    };
+
+    let result = prepare_linux_founding(
+        &state,
+        founding_input,
+        fixture_artifacts(),
+        "corrosion 0.2.0-beta.0".to_owned(),
+        InventoryRunner { pools: "" },
+    );
+    let Err(error) = result else {
+        panic!("zero imported pools must refuse explicit ZFS");
+    };
+
+    assert!(matches!(
+        error,
+        FoundingPreparationError::Storage(InitStorageSelectionError::ZfsPoolNotImported)
+    ));
+    assert!(!state.path().join("cluster-id").exists());
+    assert!(!state.path().join(FOUNDING_REQUEST_FILE).exists());
+}
+
+#[test]
+fn one_imported_pool_is_retained_for_explicit_storage_preparation() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let state = FoundingStateDirectory::initialize(directory.path().join("state"))
+        .expect("state initializes");
+    let mut founding_input = input("2026-08-04T12:00:00Z");
+    founding_input.storage = InitStorageChoice::Flag {
+        mode: StorageMode::Zfs,
+    };
+
+    let prepared = prepare_linux_founding(
+        &state,
+        founding_input,
+        fixture_artifacts(),
+        "corrosion 0.2.0-beta.0".to_owned(),
+        InventoryRunner { pools: "tank\n" },
+    )
+    .expect("one imported pool is unambiguous");
+
+    assert_eq!(
+        prepared.request.request().machine.storage.mode,
+        StorageMode::Zfs
+    );
+    assert_eq!(
+        prepared.effects.zfs_pool.as_ref().map(ZfsPoolName::as_str),
+        Some("tank")
+    );
+    assert!(!state.path().join(FOUNDING_REQUEST_FILE).exists());
+}
+
+#[test]
+fn multiple_imported_pools_refuse_before_resume_anchor_or_canonical_request() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let state = FoundingStateDirectory::initialize(directory.path().join("state"))
+        .expect("state initializes");
+
+    let result = prepare_linux_founding(
+        &state,
+        input("2026-08-04T12:00:00Z"),
+        fixture_artifacts(),
+        "corrosion 0.2.0-beta.0".to_owned(),
+        InventoryRunner {
+            pools: "zeta\nalpha\n",
+        },
+    );
+    let Err(error) = result else {
+        panic!("ambiguous imported pools must refuse founding");
+    };
+
+    assert!(
+        error
+            .to_string()
+            .contains("export all but the intended pool or choose --storage plain")
+    );
+    assert!(matches!(
+        error,
+        FoundingPreparationError::MultipleImportedZfsPools { ref pools }
+            if pools.iter().map(ZfsPoolName::as_str).collect::<Vec<_>>() == ["alpha", "zeta"]
+    ));
+    assert!(!state.path().join("cluster-id").exists());
+    assert!(!state.path().join(FOUNDING_REQUEST_FILE).exists());
+    assert!(!state.path().join(MACHINE_SEED_FILE).exists());
+    assert!(!state.path().join(ZFS_POOL_FILE).exists());
+}
+
+#[test]
+fn retry_after_pool_selection_write_retains_the_exact_pool() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let state = FoundingStateDirectory::initialize(directory.path().join("state"))
+        .expect("state initializes");
+    let mut first = prepare_linux_founding(
+        &state,
+        input("2026-08-04T12:00:00Z"),
+        fixture_artifacts(),
+        "corrosion 0.2.0-beta.0".to_owned(),
+        InventoryRunner { pools: "tank\n" },
+    )
+    .expect("initial selection succeeds");
+    first
+        .effects
+        .ensure_machine_identity_and_wireguard()
+        .expect("machine seed persists");
+    state
+        .persist_cluster_id_exclusive(&first.request.request().cluster_id)
+        .expect("cluster anchor persists");
+    write_durable_file(state.path(), ZFS_POOL_FILE, FileMode::Secret0600, b"tank\n")
+        .expect("pool selection persists before canonical request");
+
+    let retry = prepare_linux_founding(
+        &state,
+        input("2026-08-05T12:00:00Z"),
+        fixture_artifacts(),
+        "corrosion 0.2.0-beta.0".to_owned(),
+        InventoryRunner {
+            pools: "archive\ntank\n",
+        },
+    )
+    .expect("retry preserves the already retained pool");
+
+    assert_eq!(
+        retry.effects.zfs_pool.as_ref().map(ZfsPoolName::as_str),
+        Some("tank")
+    );
+    assert!(!state.path().join(FOUNDING_REQUEST_FILE).exists());
+}
+
+#[derive(Debug)]
+struct RecordingRunner {
+    calls: Vec<String>,
+    allow_facts: bool,
+}
+
+impl HostRunnerCommandRunner for RecordingRunner {
+    fn command(
+        &mut self,
+        program: &str,
+        args: &[&str],
+    ) -> Result<HostRunnerCommandOutput, FailureMessage> {
+        self.calls.push(format!("{program} {}", args.join(" ")));
+        match program {
+            "cat" if self.allow_facts => Ok(output(true, "MemTotal: 4194304 kB\n")),
+            "zpool" if self.allow_facts => Ok(output(true, "tank\n")),
+            _ => Err(failure(format!("unexpected command {program}"))),
+        }
+    }
+
+    fn is_linux(&mut self) -> bool {
+        true
+    }
+
+    fn current_uid(&mut self) -> Result<u32, FailureMessage> {
+        Ok(0)
+    }
+
+    fn download(&mut self, _url: &str, _destination: &Path) -> Result<(), FailureMessage> {
+        Err(failure("unexpected download"))
+    }
+
+    fn docker_info(&mut self) -> Result<(), FailureMessage> {
+        Ok(())
+    }
+
+    fn docker_is_installed(&mut self) -> bool {
+        true
+    }
+
+    fn docker_uses_containerd_snapshotter(&mut self) -> Result<bool, FailureMessage> {
+        Ok(true)
+    }
+
+    fn docker_has_insecure_registry(&mut self, _cidr: &str) -> Result<bool, FailureMessage> {
+        Ok(true)
+    }
+}
+
+#[test]
+fn machine_material_persists_keys_without_mutating_keeper_owned_wireguard() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let state = FoundingStateDirectory::initialize(directory.path().join("state"))
+        .expect("state initializes");
+    let mut prepared = prepare_linux_founding(
+        &state,
+        input("2026-08-04T12:00:00Z"),
+        fixture_artifacts(),
+        "corrosion 0.2.0-beta.0".to_owned(),
+        RecordingRunner {
+            calls: Vec::new(),
+            allow_facts: true,
+        },
+    )
+    .expect("preparation succeeds");
+    let commands_before_material = prepared.effects.runner.calls.len();
+
+    prepared
+        .effects
+        .ensure_machine_identity_and_wireguard()
+        .expect("first persistence succeeds");
+    prepared
+        .effects
+        .ensure_machine_identity_and_wireguard()
+        .expect("second persistence succeeds");
+
+    let calls = &prepared.effects.runner.calls;
+    assert_eq!(calls.len(), commands_before_material);
+    assert!(state.path().join(MACHINE_SEED_FILE).is_file());
+    assert!(state.path().join(WIREGUARD_KEY_FILE).is_file());
+}
+
+#[test]
+fn persisted_request_and_secrets_are_reloaded_without_host_fact_probes() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let state = FoundingStateDirectory::initialize(directory.path().join("state"))
+        .expect("state initializes");
+    let mut first = prepare_linux_founding(
+        &state,
+        input("2026-08-04T12:00:00Z"),
+        fixture_artifacts(),
+        "corrosion 0.2.0-beta.0".to_owned(),
+        RecordingRunner {
+            calls: Vec::new(),
+            allow_facts: true,
+        },
+    )
+    .expect("first preparation succeeds");
+    first
+        .effects
+        .ensure_machine_identity_and_wireguard()
+        .expect("machine material persists");
+    first
+        .effects
+        .persist_validated_founding_request()
+        .expect("request persists");
+    first
+        .effects
+        .ensure_cluster_door_material()
+        .expect("door persists");
+    write_durable_file(
+        state.path(),
+        BOOTSTRAP_CREDENTIAL_FILE,
+        FileMode::Secret0600,
+        first.bootstrap_credential.as_str().as_bytes(),
+    )
+    .expect("bootstrap credential persists");
+    write_durable_file(
+        state.path(),
+        CORROSION_TOKEN_FILE,
+        FileMode::Secret0600,
+        first.effects.corrosion_token.as_bytes(),
+    )
+    .expect("Corrosion token persists");
+    state
+        .persist_cluster_id_exclusive(&first.request.request().cluster_id)
+        .expect("cluster anchor persists");
+    let expected_request = serde_json::to_value(first.request.request()).expect("request wire");
+    let expected_bootstrap = first.bootstrap_credential.clone();
+    let expected_corrosion = first.effects.corrosion_token.clone();
+    let expected_door = first.effects.door_material.fingerprint.clone();
+
+    let second = prepare_linux_founding(
+        &state,
+        input("2026-08-05T12:00:00Z"),
+        fixture_artifacts(),
+        "corrosion 0.2.0-beta.0".to_owned(),
+        RecordingRunner {
+            calls: Vec::new(),
+            allow_facts: false,
+        },
+    )
+    .expect("resume preparation succeeds");
+
+    assert_eq!(
+        serde_json::to_value(second.request.request()).expect("request wire"),
+        expected_request
+    );
+    assert_eq!(second.bootstrap_credential, expected_bootstrap);
+    assert_eq!(second.effects.corrosion_token, expected_corrosion);
+    assert_eq!(second.effects.door_material.fingerprint, expected_door);
+    assert_eq!(
+        second.effects.zfs_pool.as_ref().map(ZfsPoolName::as_str),
+        Some("tank")
+    );
+    assert_eq!(
+        fs::read_to_string(state.path().join(ZFS_POOL_FILE)).expect("retained pool is durable"),
+        "tank\n"
+    );
+    assert!(second.effects.runner.calls.is_empty());
+}
+
+fn input(timestamp: &str) -> LinuxFoundingInput {
+    LinuxFoundingInput {
+        cluster_name: "ares".to_owned(),
+        machine_name: MachineName::try_new("ares").expect("machine name"),
+        endpoint: Some("203.0.113.7:51820".parse().expect("endpoint")),
+        prefix: MachineEndpointSupernet::default_v1(),
+        hostname_mode: AutomaticHostnameMode::Disabled,
+        storage: InitStorageChoice::Automatic,
+        driver: FoundingDriverInput::OnHost,
+        written_at: CorrosionTimestamp::try_new(timestamp).expect("timestamp"),
+        acme_directory_url: "https://acme.example/directory".to_owned(),
+        acme_contact: None,
+    }
+}
+
+fn fixture_artifacts() -> ReleaseArtifacts {
+    let spec = |name: &str, path: &str| ployz_core::install::InstallArtifactSpec {
+        version: ployz_core::install::InstallArtifactVersion::try_new("v1").expect("version"),
+        source: ployz_core::install::InstallArtifactSource::try_new(format!("/tmp/{name}"))
+            .expect("source"),
+        sha256: ployz_core::install::InstallSha256Digest::try_new(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        )
+        .expect("digest"),
+        install_path: ployz_core::install::AbsoluteInstallPath::try_new(path)
+            .expect("install path"),
+    };
+    ReleaseArtifacts {
+        ployzd: spec("ployzd", "/usr/local/bin/ployzd"),
+        ebpf_bytecode: spec("ebpf", "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"),
+        ebpf_ctl: spec("ebpf-ctl", "/usr/local/bin/ployz-ebpf-ctl"),
+        corrosion: spec("corrosion", "/usr/local/bin/corrosion"),
+        corrosion_schema: spec("schema", "/usr/local/lib/ployz/corrosion-schema-v1.sql"),
+        railpack: spec("railpack", "/usr/local/bin/railpack"),
+    }
+}
+
+fn output(success: bool, stdout: &str) -> HostRunnerCommandOutput {
+    HostRunnerCommandOutput {
+        success,
+        exit_code: success.then_some(0),
+        stdout: stdout.to_owned(),
+        stdout_truncated: false,
+        failure: if success {
+            String::new()
+        } else {
+            "not installed".to_owned()
+        },
+    }
+}
