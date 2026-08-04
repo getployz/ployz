@@ -14,6 +14,7 @@ clap.workspace = true
 defguard_wireguard_rs.workspace = true
 futures-util.workspace = true
 getifs.workspace = true
+hmac.workspace = true
 hickory-proto.workspace = true
 instant-acme = { version = "0.8.5", default-features = false, features = ["hyper-rustls", "ring"] }
 rustix = { version = "1.1.4", features = ["fs"] }
@@ -25,7 +26,9 @@ ployz-host-runner.workspace = true
 ployz-ebpf-common = { path = "../../ebpf/common", features = ["validation"] }
 ployz-telemetry.workspace = true
 reqwest.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 sysctl.workspace = true
 tempfile = "3"
 thiserror.workspace = true

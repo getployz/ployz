@@ -3,3 +3,4 @@
 //! Local command-line shell for `ployz`.
 
 pub mod commands;
+pub mod init;

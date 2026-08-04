@@ -2,14 +2,15 @@ use std::fs;
 use std::process::{Command, Output};
 
 #[test]
-fn bare_cli_and_help_advertise_only_local_commands() {
+fn bare_cli_and_help_advertise_init_and_local_commands() {
     for args in [Vec::new(), vec!["--help"]] {
         let output = run(&args, None);
 
         assert!(output.status.success(), "{}", stderr(&output));
         let stdout = stdout(&output);
         assert!(stdout.contains("telemetry"));
-        for removed in ["deploy", "machine", "ops", "core", "host", "init"] {
+        assert!(stdout.contains("  init"));
+        for removed in ["deploy", "machine", "ops", "core", "host"] {
             assert!(!stdout.contains(&format!("  {removed}")));
         }
     }

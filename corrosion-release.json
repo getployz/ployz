@@ -1,9 +1,20 @@
 {
   "release_tag": "v1.0.0",
-  "archive": {
-    "name": "corrosion-x86_64-unknown-linux-gnu.tar.gz",
-    "url": "https://github.com/superfly/corrosion/releases/download/v1.0.0/corrosion-x86_64-unknown-linux-gnu.tar.gz",
-    "sha256": "3504d7d1b4b53737457fc40f2353a400cf4df0c1217ec318924d7ee310876194"
+  "platforms": {
+    "linux-amd64": {
+      "archive": {
+        "name": "corrosion-x86_64-unknown-linux-gnu.tar.gz",
+        "url": "https://github.com/superfly/corrosion/releases/download/v1.0.0/corrosion-x86_64-unknown-linux-gnu.tar.gz",
+        "sha256": "3504d7d1b4b53737457fc40f2353a400cf4df0c1217ec318924d7ee310876194"
+      }
+    },
+    "linux-arm64": {
+      "archive": {
+        "name": "corrosion-aarch64-unknown-linux-gnu.tar.gz",
+        "url": "https://github.com/superfly/corrosion/releases/download/v1.0.0/corrosion-aarch64-unknown-linux-gnu.tar.gz",
+        "sha256": "b00b5c6996dee89c36e51e1d4196602bb7e12bbb25abc9b68390e062bdd13be3"
+      }
+    }
   },
   "embedded_version": "corrosion 0.2.0-beta.0"
 }

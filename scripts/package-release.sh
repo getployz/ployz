@@ -53,7 +53,51 @@ case "${platform_os}" in
       ployz
       ployz-ebpf-ctl
       ployz-ebpf-tc
+      corrosion
+      corrosion-schema-v1.sql
     )
+    command -v python3 >/dev/null 2>&1 || {
+      echo "python3 is required to read corrosion-release.json" >&2
+      exit 1
+    }
+    if ! corrosion_embedded_version="$(python3 - "${ROOT_DIR}/corrosion-release.json" "${platform_slug}" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    pin = json.load(source)
+if set(pin) != {"release_tag", "platforms", "embedded_version"}:
+    raise SystemExit("corrosion release manifest has unexpected top-level fields")
+platforms = pin["platforms"]
+if not isinstance(platforms, dict) or set(platforms) != {"linux-amd64", "linux-arm64"}:
+    raise SystemExit("corrosion release manifest must pin linux-amd64 and linux-arm64 exactly")
+for platform, entry in platforms.items():
+    if not isinstance(entry, dict) or set(entry) != {"archive"}:
+        raise SystemExit(f"corrosion release manifest entry {platform} is invalid")
+    archive = entry["archive"]
+    if not isinstance(archive, dict) or set(archive) != {"name", "url", "sha256"}:
+        raise SystemExit(f"corrosion release manifest archive {platform} is invalid")
+    for value in archive.values():
+        if not isinstance(value, str) or not value:
+            raise SystemExit(f"corrosion release manifest archive {platform} contains an empty pin")
+    expected_url = (
+        "https://github.com/superfly/corrosion/releases/download/"
+        f"{pin['release_tag']}/{archive['name']}"
+    )
+    if archive["url"] != expected_url:
+        raise SystemExit(f"corrosion release manifest URL for {platform} is not canonical")
+    if len(archive["sha256"]) != 64 or any(c not in "0123456789abcdef" for c in archive["sha256"]):
+        raise SystemExit(f"corrosion release manifest SHA-256 for {platform} is invalid")
+if sys.argv[2] not in platforms:
+    raise SystemExit(f"corrosion release manifest has no pin for {sys.argv[2]}")
+embedded_version = pin["embedded_version"]
+if not isinstance(embedded_version, str) or not embedded_version.startswith("corrosion "):
+    raise SystemExit("corrosion release manifest embedded version is invalid")
+print(embedded_version)
+PY
+)"; then
+      exit 1
+    fi
     : "${PLOYZ_RAILPACK_VERSION:?PLOYZ_RAILPACK_VERSION is required for Linux release manifests}"
     : "${PLOYZ_RAILPACK_ARCHIVE_URL:?PLOYZ_RAILPACK_ARCHIVE_URL is required for Linux release manifests}"
     : "${PLOYZ_RAILPACK_ARCHIVE_SHA256:?PLOYZ_RAILPACK_ARCHIVE_SHA256 is required for Linux release manifests}"
@@ -145,7 +189,15 @@ copy_asset() {
   local mode="$2"
   local asset="${name}-${platform_slug}"
 
-  install -m "${mode}" "${artifact_dir}/${name}" "${dist_dir}/${asset}"
+  copy_asset_as "${name}" "${asset}" "${mode}"
+}
+
+copy_asset_as() {
+  local source_name="$1"
+  local asset="$2"
+  local mode="$3"
+
+  install -m "${mode}" "${artifact_dir}/${source_name}" "${dist_dir}/${asset}"
   printf '%s\n' "${asset}"
 }
 
@@ -170,6 +222,8 @@ if [ "${platform_os}" = "linux" ]; then
   ployzd_asset="$(copy_asset ployzd 0755)"
   ebpf_ctl_asset="$(copy_asset ployz-ebpf-ctl 0755)"
   ebpf_tc_asset="$(copy_asset ployz-ebpf-tc 0644)"
+  corrosion_asset="$(copy_asset corrosion 0755)"
+  corrosion_schema_asset="$(copy_asset_as corrosion-schema-v1.sql "corrosion-schema-v1-${platform_slug}.sql" 0644)"
   work_dir="$(mktemp -d)"
   railpack_archive="${work_dir}/${railpack_archive_name}"
   curl --fail --location --silent --show-error "${PLOYZ_RAILPACK_ARCHIVE_URL}" --output "${railpack_archive}"
@@ -185,6 +239,8 @@ if [ "${platform_os}" = "linux" ]; then
     "${ployzd_asset}"
     "${ebpf_ctl_asset}"
     "${ebpf_tc_asset}"
+    "${corrosion_asset}"
+    "${corrosion_schema_asset}"
     "${railpack_asset}"
   )
 fi
@@ -200,6 +256,9 @@ fi
     write_manifest_pair PLOYZD "${ployzd_asset}"
     write_manifest_pair PLOYZ_EBPF_CTL "${ebpf_ctl_asset}"
     write_manifest_pair PLOYZ_EBPF_TC "${ebpf_tc_asset}"
+    printf 'PLOYZ_CORROSION_EMBEDDED_VERSION=%s\n' "${corrosion_embedded_version}"
+    write_manifest_pair PLOYZ_CORROSION "${corrosion_asset}"
+    write_manifest_pair PLOYZ_CORROSION_SCHEMA "${corrosion_schema_asset}"
     printf 'PLOYZ_RAILPACK_VERSION=%s\n' "${PLOYZ_RAILPACK_VERSION}"
     write_manifest_pair PLOYZ_RAILPACK "${railpack_asset}"
   fi

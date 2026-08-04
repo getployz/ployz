@@ -17,10 +17,15 @@ pub const VERSION_ROUTE: &str = "/version";
 /// The stable prefix for state lenses.
 pub const LENSES_ROUTE: &str = "/lenses";
 
+/// The stable endpoint for writing machine one's initial authority rows.
+pub const FOUNDING_ROUTE: &str = "/founding";
+
 /// A capability understood by this version of the public API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub enum KnownApiFeature {
+    #[serde(rename = "v2.founding")]
+    Founding,
     #[serde(rename = "v2.lenses")]
     Lenses,
 }
@@ -30,13 +35,15 @@ impl KnownApiFeature {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Founding => "v2.founding",
             Self::Lenses => "v2.lenses",
         }
     }
 }
 
 /// Every capability this version of Core knows how to name.
-pub const KNOWN_API_FEATURES: &[KnownApiFeature] = &[KnownApiFeature::Lenses];
+pub const KNOWN_API_FEATURES: &[KnownApiFeature] =
+    &[KnownApiFeature::Founding, KnownApiFeature::Lenses];
 
 /// An advertised capability, including names added by a newer machine.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -146,8 +153,16 @@ pub fn lens_watch_route(collection: LensCollection) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum V2Route {
     Version,
+    Founding,
     Lens(LensCollection),
     LensWatch(LensCollection),
+}
+
+/// The HTTP method fixed by one public v2 route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum V2Method {
+    Get,
+    Post,
 }
 
 impl V2Route {
@@ -156,6 +171,9 @@ impl V2Route {
     pub fn parse(path: &str) -> Option<Self> {
         if path == VERSION_ROUTE {
             return Some(Self::Version);
+        }
+        if path == FOUNDING_ROUTE {
+            return Some(Self::Founding);
         }
 
         let collection_path = path
@@ -176,8 +194,18 @@ impl V2Route {
     pub fn path(self) -> String {
         match self {
             Self::Version => VERSION_ROUTE.to_owned(),
+            Self::Founding => FOUNDING_ROUTE.to_owned(),
             Self::Lens(collection) => lens_route(collection),
             Self::LensWatch(collection) => lens_watch_route(collection),
+        }
+    }
+
+    /// Returns the one HTTP method accepted by this route.
+    #[must_use]
+    pub const fn method(self) -> V2Method {
+        match self {
+            Self::Version | Self::Lens(_) | Self::LensWatch(_) => V2Method::Get,
+            Self::Founding => V2Method::Post,
         }
     }
 }

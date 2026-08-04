@@ -13,12 +13,25 @@ path = "src/lib.rs"
 doctest = false
 
 [dependencies]
+base64 = "0.22"
 clap.workspace = true
+defguard_wireguard_rs.workspace = true
+futures-util.workspace = true
+ployz-core.workspace = true
+ployz-host-runner.workspace = true
 ployz-telemetry.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "time"] }
+wait-timeout.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
 tempfile = "3"
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "time"] }
 
 [[bin]]
 name = "ployz"

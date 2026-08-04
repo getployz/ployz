@@ -1,5 +1,8 @@
 #![cfg_attr(
-    not(all(target_os = "linux", target_arch = "x86_64")),
+    not(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    )),
     allow(dead_code, unused_imports)
 )]
 
@@ -40,15 +43,21 @@ const API_MACHINE_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB2";
 const API_BUILD: &str = "pinned-corrosion-api-version-test";
 const TOKEN: &str = "ployz-stock-corrosion-test";
 
-#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+#[cfg(not(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+)))]
 #[test]
 fn pinned_corrosion_archive_has_no_supported_asset_for_this_platform() {
     panic!(
-        "the pinned Corrosion integration test supports only linux/x86_64; add and pin an official asset before enabling this platform"
+        "the pinned Corrosion integration test supports only linux/x86_64 and linux/aarch64; add and pin an official asset before enabling this platform"
     );
 }
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 #[tokio::test]
 async fn pinned_corrosion_executes_schema_rows_queries_and_subscriptions() {
     let mut harness = StockCorrosion::start()
@@ -804,6 +813,7 @@ fn fixtures() -> Result<Vec<Fixture>, String> {
     ])
 }
 
+#[derive(Debug)]
 struct ReleasePin {
     release_tag: String,
     archive_name: String,
@@ -816,26 +826,173 @@ impl ReleasePin {
     fn load(repo_root: &Path) -> Result<Self, String> {
         let path = repo_root.join("corrosion-release.json");
         let bytes = fs::read(&path).map_err(|error| format!("read {}: {error}", path.display()))?;
-        let manifest: Value =
-            serde_json::from_slice(&bytes).map_err(|error| format!("parse manifest: {error}"))?;
-        let text = |value: Option<&Value>, field: &str| {
-            value
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-                .ok_or_else(|| format!("release manifest field {field} is missing or not text"))
+        Self::parse_for_target(&bytes, std::env::consts::OS, std::env::consts::ARCH)
+    }
+
+    fn parse_for_target(bytes: &[u8], os: &str, arch: &str) -> Result<Self, String> {
+        let platform = match (os, arch) {
+            ("linux", "x86_64") => "linux-amd64",
+            ("linux", "aarch64") => "linux-arm64",
+            _ => {
+                return Err(format!(
+                    "unsupported Corrosion release platform {os}/{arch}"
+                ));
+            }
         };
-        let archive = manifest.get("archive");
+        let manifest: Value =
+            serde_json::from_slice(bytes).map_err(|error| format!("parse manifest: {error}"))?;
+        let manifest = exact_object(
+            &manifest,
+            &["release_tag", "platforms", "embedded_version"],
+            "root",
+        )?;
+        let release_tag = text_value(manifest.get("release_tag"), "release_tag")?;
+        let embedded_version = text_value(manifest.get("embedded_version"), "embedded_version")?;
+        if !embedded_version.starts_with("corrosion ") {
+            return Err("Corrosion release manifest embedded_version is invalid".to_owned());
+        }
+        let platforms = exact_object(
+            manifest
+                .get("platforms")
+                .ok_or_else(|| "Corrosion release manifest is missing platforms".to_owned())?,
+            &["linux-amd64", "linux-arm64"],
+            "platforms",
+        )?;
+        for (pinned_platform, entry) in platforms {
+            let entry = exact_object(entry, &["archive"], pinned_platform)?;
+            let archive = exact_object(
+                entry.get("archive").ok_or_else(|| {
+                    format!("Corrosion release manifest {pinned_platform} is missing archive")
+                })?,
+                &["name", "url", "sha256"],
+                &format!("{pinned_platform}.archive"),
+            )?;
+            let name = text_value(
+                archive.get("name"),
+                &format!("{pinned_platform}.archive.name"),
+            )?;
+            let url = text_value(
+                archive.get("url"),
+                &format!("{pinned_platform}.archive.url"),
+            )?;
+            let sha256 = text_value(
+                archive.get("sha256"),
+                &format!("{pinned_platform}.archive.sha256"),
+            )?;
+            let expected_url = format!(
+                "https://github.com/superfly/corrosion/releases/download/{}/{}",
+                release_tag, name
+            );
+            if url != expected_url {
+                return Err(format!(
+                    "Corrosion release manifest URL for {pinned_platform} is not canonical"
+                ));
+            }
+            if sha256.len() != 64
+                || !sha256
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            {
+                return Err(format!(
+                    "Corrosion release manifest SHA-256 for {pinned_platform} is invalid"
+                ));
+            }
+        }
+        let entry = exact_object(
+            platforms
+                .get(platform)
+                .ok_or_else(|| format!("Corrosion release manifest has no pin for {platform}"))?,
+            &["archive"],
+            platform,
+        )?;
+        let archive = exact_object(
+            entry.get("archive").ok_or_else(|| {
+                format!("Corrosion release manifest {platform} is missing archive")
+            })?,
+            &["name", "url", "sha256"],
+            &format!("{platform}.archive"),
+        )?;
         Ok(Self {
-            release_tag: text(manifest.get("release_tag"), "release_tag")?,
-            archive_name: text(archive.and_then(|value| value.get("name")), "archive.name")?,
-            archive_url: text(archive.and_then(|value| value.get("url")), "archive.url")?,
-            archive_sha256: text(
-                archive.and_then(|value| value.get("sha256")),
-                "archive.sha256",
-            )?,
-            embedded_version: text(manifest.get("embedded_version"), "embedded_version")?,
+            release_tag: release_tag.to_owned(),
+            archive_name: text_value(archive.get("name"), "archive.name")?.to_owned(),
+            archive_url: text_value(archive.get("url"), "archive.url")?.to_owned(),
+            archive_sha256: text_value(archive.get("sha256"), "archive.sha256")?.to_owned(),
+            embedded_version: embedded_version.to_owned(),
         })
     }
+}
+
+fn exact_object<'a>(
+    value: &'a Value,
+    expected_keys: &[&str],
+    field: &str,
+) -> Result<&'a serde_json::Map<String, Value>, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| format!("Corrosion release manifest field {field} is not an object"))?;
+    if object.len() != expected_keys.len()
+        || expected_keys.iter().any(|key| !object.contains_key(*key))
+    {
+        return Err(format!(
+            "Corrosion release manifest field {field} has unexpected keys"
+        ));
+    }
+    Ok(object)
+}
+
+fn text_value<'a>(value: Option<&'a Value>, field: &str) -> Result<&'a str, String> {
+    value
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            format!("Corrosion release manifest field {field} is missing or not non-empty text")
+        })
+}
+
+#[test]
+fn corrosion_release_pin_parser_selects_both_supported_linux_assets() {
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let bytes = fs::read(repo_root.join("corrosion-release.json")).expect("manifest reads");
+
+    let amd64 =
+        ReleasePin::parse_for_target(&bytes, "linux", "x86_64").expect("amd64 pin is complete");
+    assert_eq!(
+        amd64.archive_name,
+        "corrosion-x86_64-unknown-linux-gnu.tar.gz"
+    );
+    assert_eq!(
+        amd64.archive_sha256,
+        "3504d7d1b4b53737457fc40f2353a400cf4df0c1217ec318924d7ee310876194"
+    );
+
+    let arm64 =
+        ReleasePin::parse_for_target(&bytes, "linux", "aarch64").expect("arm64 pin is complete");
+    assert_eq!(
+        arm64.archive_name,
+        "corrosion-aarch64-unknown-linux-gnu.tar.gz"
+    );
+    assert_eq!(
+        arm64.archive_sha256,
+        "b00b5c6996dee89c36e51e1d4196602bb7e12bbb25abc9b68390e062bdd13be3"
+    );
+    assert_eq!(arm64.release_tag, "v1.0.0");
+    assert_eq!(arm64.embedded_version, "corrosion 0.2.0-beta.0");
+}
+
+#[test]
+fn corrosion_release_pin_parser_rejects_an_unsupported_platform() {
+    let manifest = br#"{
+        "release_tag": "v1.0.0",
+        "platforms": {},
+        "embedded_version": "corrosion 0.2.0-beta.0"
+    }"#;
+
+    let error = ReleasePin::parse_for_target(manifest, "linux", "riscv64")
+        .expect_err("unsupported platform is rejected before pin selection");
+    assert_eq!(
+        error,
+        "unsupported Corrosion release platform linux/riscv64"
+    );
 }
 
 struct StockCorrosion {

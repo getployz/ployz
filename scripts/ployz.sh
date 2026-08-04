@@ -9,7 +9,7 @@ usage() {
   echo "" >&2
   echo "installs the verified ployz binary to /usr/local/bin/ployz" >&2
   echo "--build-executor also installs the verified Railpack helper" >&2
-  echo "default install next step: sudo ployz host bootstrap" >&2
+  echo "default install next step: sudo ployz init" >&2
 }
 
 version_input="${PLOYZ_VERSION:-}"
@@ -395,7 +395,7 @@ if [ "$install_build_executor" -eq 1 ]; then
   echo "installed $railpack_bin"
   echo "ready for Build Executor enrollment"
 else
-  echo "run: sudo ployz host bootstrap"
+  echo "run: sudo ployz init"
   if [ -n "${release_tag:-}" ]; then
     echo "update existing substrate: sudo ployz host substrate-update --version $release_tag"
   else

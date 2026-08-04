@@ -17,7 +17,7 @@ pub const MIN_WIREGUARD_MTU: u32 = 1280;
 pub const MAX_WIREGUARD_MTU: u32 = 1420;
 /// A previously-established peer silent beyond this age is not healthy.
 pub const MAX_HEALTHY_WIREGUARD_HANDSHAKE_AGE_SECONDS: u64 = 275;
-pub const DEFAULT_ENDPOINT_SUPERNET: &str = "10.198.0.0/16";
+pub const DEFAULT_ENDPOINT_SUPERNET: &str = "10.210.0.0/16";
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -731,11 +731,11 @@ mod tests {
     fn default_endpoint_subnet_uses_trailing_machine_number() {
         assert_eq!(
             default_endpoint_subnet(&machine_id("edge_2")),
-            "10.198.2.0/24"
+            "10.210.2.0/24"
         );
         assert_eq!(
             default_endpoint_subnet(&machine_id("machine_255")),
-            "10.198.1.0/24"
+            "10.210.1.0/24"
         );
     }
 

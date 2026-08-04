@@ -14,7 +14,9 @@ atomic-write-file.workspace = true
 defguard_wireguard_rs.workspace = true
 ipnet = "2"
 ployz-core.workspace = true
+rcgen = { version = "0.14.8", features = ["crypto", "pem"] }
 rustix = { version = "1.1.4", features = ["fs"] }
+serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
@@ -25,6 +27,7 @@ wait-timeout.workspace = true
 [dev-dependencies]
 base64 = "0.22"
 tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt"] }
 
 [lib]
 path = "src/lib.rs"

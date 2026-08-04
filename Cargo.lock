@@ -3066,10 +3066,21 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 name = "ployz"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "clap",
+ "defguard_wireguard_rs",
+ "futures-util",
+ "ployz-core",
+ "ployz-host-runner",
  "ployz-telemetry",
+ "reqwest",
+ "serde",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.18",
+ "time",
+ "tokio",
+ "wait-timeout",
 ]
 
 [[package]]
@@ -3147,11 +3158,14 @@ dependencies = [
  "defguard_wireguard_rs",
  "ipnet",
  "ployz-core",
+ "rcgen",
  "rustix",
+ "serde",
  "serde_json",
  "sha2",
  "tempfile",
  "thiserror 2.0.18",
+ "tokio",
  "ureq",
  "url",
  "wait-timeout",
@@ -3192,6 +3206,7 @@ dependencies = [
  "futures-util",
  "getifs",
  "hickory-proto",
+ "hmac",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -3207,6 +3222,7 @@ dependencies = [
  "reqwest",
  "rtnetlink",
  "rustix",
+ "serde",
  "serde_json",
  "sha2",
  "sysctl",
