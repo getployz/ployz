@@ -13,6 +13,7 @@ mod runtime;
 mod service;
 #[cfg(feature = "ts")]
 pub mod typescript;
+pub mod v2;
 mod volume;
 
 pub use build::*;
@@ -27,4 +28,5 @@ pub use runtime::*;
 pub use service::*;
 #[cfg(feature = "ts")]
 pub use typescript::{api_operation_contract_fixture, api_typescript};
+pub use v2::*;
 pub use volume::*;

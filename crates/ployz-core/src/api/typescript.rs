@@ -6,11 +6,16 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use ts_rs::{Config, Dependency, TS, TypeVisitor};
 
+use super::v2::{
+    API_MAJOR, ApiRefusal, ApiVersion, ContainerLensRow, CorrosionRetryAfterSeconds,
+    KNOWN_API_FEATURES, KnownApiFeature, LensCollection, LensSnapshot, LensWatchEvent,
+    MachineLensRow, MachineStatusLensRow, OperationLensRow, ServiceLensRow,
+};
 use crate::build::{BuildExecutorEvidence, BuildPlatformExecutorAssignment, BuildSource};
 use crate::corrosion::{
     AcmeHttp01Document, CertHoldingDocument, ClusterDocument, ContainerDocument, CorrosionTable,
     MachineDocument, MachineStatusDocument, NameClaim, NamespaceDocument, OperationDocument,
-    PeerDocument, RouteBindingDocument, ServiceDocument, TokenDocument,
+    PeerDocument, Principal, RouteBindingDocument, ServiceDocument, TokenDocument,
 };
 use crate::deploy::EnvValue;
 use crate::ids::{
@@ -48,10 +53,23 @@ pub fn api_typescript() -> String {
     output.push_str(&format!(
         "export const MAX_LOGS_TAIL_LINES = {MAX_LOGS_TAIL_LINES} as const;\n\n"
     ));
+    output.push_str(&format!(
+        "export const API_MAJOR = {API_MAJOR} as const;\n\n"
+    ));
+    output.push_str("export const KNOWN_API_FEATURES = [\n");
+    for feature in KNOWN_API_FEATURES {
+        output.push_str(&format!("  \"{}\",\n", feature.as_str()));
+    }
+    output.push_str("] as const;\n\n");
+    // `ts-rs` cannot derive an untagged enum and preserve the additive
+    // `KnownApiFeature | (string & {})` TypeScript widening at once.
+    output.push_str("export type ApiFeature = KnownApiFeature | (string & {});\n\n");
+    output.push_str("export type OperationInitiator = Principal;\n\n");
 
     let mut declarations = DeclarationCollector::new(&config);
     collect_operation_contracts(&mut declarations);
     collect_corrosion_contracts(&mut declarations);
+    collect_v2_contracts(&mut declarations);
     declarations.visit::<OperationApiResponse<AcceptedOperation, DeploySubmitError>>();
 
     // Some domain types use explicit TypeScript representations. The representation is the
@@ -90,6 +108,7 @@ fn collect_corrosion_contracts(declarations: &mut DeclarationCollector<'_>) {
     declarations.visit::<RouteBindingRowId>();
     declarations.visit::<CorrosionTable>();
     declarations.visit::<NameClaim>();
+    declarations.visit::<Principal>();
     declarations.visit::<ClusterDocument>();
     declarations.visit::<MachineDocument>();
     declarations.visit::<PeerDocument>();
@@ -102,6 +121,21 @@ fn collect_corrosion_contracts(declarations: &mut DeclarationCollector<'_>) {
     declarations.visit::<OperationDocument>();
     declarations.visit::<CertHoldingDocument>();
     declarations.visit::<AcmeHttp01Document>();
+}
+
+fn collect_v2_contracts(declarations: &mut DeclarationCollector<'_>) {
+    declarations.visit::<KnownApiFeature>();
+    declarations.visit::<ApiVersion>();
+    declarations.visit::<LensCollection>();
+    declarations.visit::<MachineLensRow>();
+    declarations.visit::<ServiceLensRow>();
+    declarations.visit::<ContainerLensRow>();
+    declarations.visit::<MachineStatusLensRow>();
+    declarations.visit::<OperationLensRow>();
+    declarations.visit::<LensSnapshot>();
+    declarations.visit::<CorrosionRetryAfterSeconds>();
+    declarations.visit::<ApiRefusal>();
+    declarations.visit::<LensWatchEvent>();
 }
 
 struct DeclarationCollector<'a> {
@@ -408,6 +442,44 @@ mod tests {
             "OperationRowId",
             "RouteBindingRowId",
             "NameClaim",
+        ] {
+            assert!(
+                generated.contains(&format!("export type {name} =")),
+                "missing declaration for {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn generated_contract_declares_every_v2_public_wire_shape() {
+        let generated = api_typescript();
+
+        assert!(generated.contains("export const API_MAJOR = 1 as const;"));
+        assert!(generated.contains("export const KNOWN_API_FEATURES = ["));
+        assert!(generated.contains("\"v2.lenses\","));
+        assert!(generated.contains("export type ApiFeature = KnownApiFeature | (string & {});"));
+        assert!(generated.contains("export type OperationInitiator = Principal;"));
+        assert!(!generated.contains("export type AcceptedRosterPrincipal ="));
+        assert!(!generated.contains("export type SourcePrincipalResolutionError ="));
+        assert!(!generated.contains("export type MalformedRequestReason ="));
+        assert!(!generated.contains("LensWatermark"));
+        assert!(generated.contains("id: ContainerId, document: ContainerDocument"));
+
+        for name in [
+            "Principal",
+            "KnownApiFeature",
+            "ApiFeature",
+            "ApiVersion",
+            "LensCollection",
+            "MachineLensRow",
+            "ServiceLensRow",
+            "ContainerLensRow",
+            "MachineStatusLensRow",
+            "OperationLensRow",
+            "LensSnapshot",
+            "CorrosionRetryAfterSeconds",
+            "ApiRefusal",
+            "LensWatchEvent",
         ] {
             assert!(
                 generated.contains(&format!("export type {name} =")),

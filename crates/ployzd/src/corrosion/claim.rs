@@ -8,9 +8,13 @@ use ployz_core::corrosion::{
 };
 use ployz_core::ids::{ClusterId, CorrosionUlid};
 
-use super::{CorrosionClient, CorrosionClientError, QueryStreamEvent};
+use super::{
+    CorrosionClient, CorrosionClientError, StoredRowCollectionError, StoredRowLimit,
+    collect_stored_rows,
+};
 
 const NAME_CLAIM_COURTESY_WAIT: Duration = Duration::from_secs(1);
+const MAX_NAME_CLAIM_ROWS: usize = 10_000;
 
 /// The result of resolving one optimistic named-document claim.
 #[derive(Debug)]
@@ -212,32 +216,9 @@ impl ClaimStore for CorrosionClient {
         claim: &NameClaim,
     ) -> Result<Vec<StoredRow>, NameClaimError> {
         let mut stream = self.query(&claim_query(table, claim)?).await?;
-        let mut saw_columns = false;
-        let mut rows = Vec::new();
-
-        while let Some(event) = stream.next().await? {
-            match event {
-                QueryStreamEvent::Columns(columns) if columns == ["id", "document"] => {
-                    saw_columns = true;
-                }
-                QueryStreamEvent::Columns(columns) => {
-                    return Err(NameClaimError::UnexpectedColumns { columns });
-                }
-                QueryStreamEvent::Row(_, values) => {
-                    let [SqliteValue::Text(key), SqliteValue::Text(document)] = values.as_slice()
-                    else {
-                        return Err(NameClaimError::UnexpectedRow { values });
-                    };
-                    rows.push(StoredRow::new(key.clone(), document.clone()));
-                }
-                QueryStreamEvent::EndOfQuery(_) => break,
-            }
-        }
-
-        if !saw_columns {
-            return Err(NameClaimError::MissingColumns);
-        }
-        Ok(rows)
+        collect_stored_rows(&mut stream, StoredRowLimit::new(MAX_NAME_CLAIM_ROWS))
+            .await
+            .map_err(NameClaimError::from)
     }
 
     async fn delete(
@@ -312,8 +293,14 @@ pub enum NameClaimError {
     UnexpectedColumns { columns: Vec<String> },
     #[error("named Corrosion query returned no columns frame")]
     MissingColumns,
+    #[error("named Corrosion query repeated its columns frame")]
+    DuplicateColumns,
+    #[error("named Corrosion query returned a row before its columns frame")]
+    RowBeforeColumns,
     #[error("named Corrosion query returned an unexpected row: {values:?}")]
     UnexpectedRow { values: Vec<SqliteValue> },
+    #[error("named Corrosion query exceeded the {limit}-row claim bound")]
+    RowLimit { limit: usize },
     #[error("inserted claim was not visible after the courtesy period: {claim:?}")]
     ClaimNotVisible { claim: NameClaim },
     #[error("roster claim targets cluster {found}, but accepted cluster is {expected}")]
@@ -331,6 +318,22 @@ pub enum NameClaimError {
         table: CorrosionTable,
         claim: NameClaim,
     },
+}
+
+impl From<StoredRowCollectionError> for NameClaimError {
+    fn from(error: StoredRowCollectionError) -> Self {
+        match error {
+            StoredRowCollectionError::Client(source) => Self::Client(source),
+            StoredRowCollectionError::MissingColumns => Self::MissingColumns,
+            StoredRowCollectionError::DuplicateColumns => Self::DuplicateColumns,
+            StoredRowCollectionError::RowBeforeColumns => Self::RowBeforeColumns,
+            StoredRowCollectionError::UnexpectedColumns { columns } => {
+                Self::UnexpectedColumns { columns }
+            }
+            StoredRowCollectionError::UnexpectedRow { values } => Self::UnexpectedRow { values },
+            StoredRowCollectionError::RowLimit { limit } => Self::RowLimit { limit },
+        }
+    }
 }
 
 #[cfg(test)]

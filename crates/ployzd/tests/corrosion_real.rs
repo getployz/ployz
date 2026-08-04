@@ -15,14 +15,19 @@ use ployz_core::corrosion::{
     OperationDocument, PeerDocument, RouteBindingDocument, ServiceDocument, SqliteParameter,
     SqliteValue, Statement, TokenDocument, read_named_rows,
 };
-use ployz_core::ids::{ClusterId, CorrosionUlid};
+use ployz_core::ids::{ClusterId, CorrosionUlid, MachineRowId};
+use ployz_core::{API_MAJOR, ApiFeature, ApiVersion, KnownApiFeature};
 use ployzd::corrosion::{
     BearerToken, CorrosionClient, CorrosionClientBounds, CorrosionClientConfig, NameClaimOutcome,
     QueryStreamEvent, SubscriptionStream, SubscriptionStreamEvent,
 };
+use ployzd::roles::api::http::{ApiRoleConfig, ApiServer};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpSocket;
+use tokio::sync::oneshot;
 
 const CLUSTER_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const ROW_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
@@ -30,6 +35,9 @@ const SECOND_ROW_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
 const RESUME_ROW_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAY";
 const RACE_LOWER_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAZ";
 const RACE_HIGHER_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB0";
+const API_CLUSTER_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB1";
+const API_MACHINE_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB2";
+const API_BUILD: &str = "pinned-corrosion-api-version-test";
 const TOKEN: &str = "ployz-stock-corrosion-test";
 
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
@@ -47,7 +55,11 @@ async fn pinned_corrosion_executes_schema_rows_queries_and_subscriptions() {
         .await
         .unwrap_or_else(|error| panic!("could not start pinned Corrosion: {error}"));
 
-    let result = exercise_contract(&harness.client).await;
+    let result = async {
+        exercise_contract(&harness.client).await?;
+        exercise_api_version(&harness).await
+    }
+    .await;
     if let Err(error) = result {
         let logs = harness.logs();
         panic!("stock Corrosion contract failed: {error}\n--- corrosion.log ---\n{logs}");
@@ -265,6 +277,178 @@ async fn exercise_contract(client: &CorrosionClient) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+async fn exercise_api_version(harness: &StockCorrosion) -> Result<(), String> {
+    let (cluster_id, machine_id) = insert_api_loopback_roster(&harness.client).await?;
+    let listen_addr = unused_loopback_addr()?;
+    let corrosion = CorrosionClientConfig::new(
+        harness.api_addr,
+        BearerToken::new(TOKEN).map_err(|error| error.to_string())?,
+        CorrosionClientBounds {
+            connect_timeout: Duration::from_millis(500),
+            request_timeout: Duration::from_secs(2),
+            stream_idle_timeout: Duration::from_secs(5),
+            max_ndjson_frame_bytes: 1024 * 1024,
+            max_error_body_bytes: 64 * 1024,
+        },
+    )
+    .map_err(|error| error.to_string())?;
+    let config = ApiRoleConfig::new(
+        corrosion,
+        cluster_id,
+        machine_id,
+        listen_addr,
+        API_BUILD.to_owned(),
+    )
+    .map_err(|error| error.to_string())?;
+    let server = ApiServer::bind(config)
+        .await
+        .map_err(|error| format!("bind API server: {error}"))?;
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let server_task = tokio::spawn(async move {
+        server
+            .serve(async move {
+                let _ = shutdown_rx.await;
+            })
+            .await;
+    });
+
+    let response = get_version_from_loopback(listen_addr).await;
+    let shutdown = shutdown_api_server(shutdown_tx, server_task).await;
+    let (status, body) = response?;
+    shutdown?;
+
+    if status != 200 {
+        return Err(format!("GET /version returned HTTP {status}: {body}"));
+    }
+    let version = serde_json::from_str::<ApiVersion>(&body)
+        .map_err(|error| format!("decode typed /version response: {error}: {body}"))?;
+    if version.major != API_MAJOR {
+        return Err(format!(
+            "/version major was {}, expected {API_MAJOR}",
+            version.major
+        ));
+    }
+    if version.build != API_BUILD {
+        return Err(format!(
+            "/version build was {:?}, expected {API_BUILD:?}",
+            version.build
+        ));
+    }
+    if !version
+        .features
+        .contains(&ApiFeature::Known(KnownApiFeature::Lenses))
+    {
+        return Err(format!(
+            "/version did not advertise the lenses feature: {:?}",
+            version.features
+        ));
+    }
+
+    Ok(())
+}
+
+async fn insert_api_loopback_roster(
+    client: &CorrosionClient,
+) -> Result<(ClusterId, MachineRowId), String> {
+    let cluster_id = ClusterId::try_new(API_CLUSTER_ID).map_err(|error| error.to_string())?;
+    let machine_id = MachineRowId::try_new(API_MACHINE_ID).map_err(|error| error.to_string())?;
+    let cluster = encode::<ClusterDocument>(json!({
+        "v": 1,
+        "cluster_id": cluster_id.as_str(),
+        "name": "api-loopback-cluster",
+        "storage_default": "plain",
+        "hostname_mode": {"mode": "disabled"},
+        "prefix": "10.211.0.0/16",
+        "provider": "tailscale",
+        "acme_directory_url": "https://acme.invalid/directory",
+        "acme_contact": null,
+        "written_by": {"kind": "machine", "machine_id": machine_id.as_str()},
+        "written_at": "2026-08-04T10:10:00Z"
+    }))?;
+    let machine = encode::<MachineDocument>(json!({
+        "v": 1,
+        "cluster_id": cluster_id.as_str(),
+        "name": "api-loopback-machine",
+        "lifecycle": "active",
+        "transport": {
+            "kind": "tailscale",
+            "ip": "127.0.0.1",
+            "subnet_v4": "10.211.20.0/24"
+        },
+        "storage": {"mode": "plain", "reason": {"kind": "default"}},
+        "written_by": {"kind": "machine", "machine_id": machine_id.as_str()},
+        "written_at": "2026-08-04T10:10:00Z"
+    }))?;
+    client
+        .execute(&[
+            Statement::with_params(
+                "INSERT INTO cluster (id, document) VALUES (?, ?)",
+                vec![
+                    SqliteParameter::Text(cluster_id.as_str().to_owned()),
+                    SqliteParameter::Text(cluster),
+                ],
+            ),
+            Statement::with_params(
+                "INSERT INTO machines (id, document) VALUES (?, ?)",
+                vec![
+                    SqliteParameter::Text(machine_id.as_str().to_owned()),
+                    SqliteParameter::Text(machine),
+                ],
+            ),
+        ])
+        .await
+        .map_err(|error| format!("insert API loopback roster: {error}"))?;
+    Ok((cluster_id, machine_id))
+}
+
+async fn get_version_from_loopback(destination: SocketAddr) -> Result<(u16, String), String> {
+    let socket =
+        TcpSocket::new_v4().map_err(|error| format!("create API client socket: {error}"))?;
+    socket
+        .bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .map_err(|error| format!("bind API client source: {error}"))?;
+    let mut stream = tokio::time::timeout(Duration::from_secs(2), socket.connect(destination))
+        .await
+        .map_err(|_| "connect to API server timed out".to_owned())?
+        .map_err(|error| format!("connect to API server: {error}"))?;
+    let request =
+        format!("GET /version HTTP/1.1\r\nHost: {destination}\r\nConnection: close\r\n\r\n");
+    tokio::time::timeout(Duration::from_secs(2), stream.write_all(request.as_bytes()))
+        .await
+        .map_err(|_| "write API request timed out".to_owned())?
+        .map_err(|error| format!("write API request: {error}"))?;
+    let mut response = Vec::new();
+    tokio::time::timeout(Duration::from_secs(2), stream.read_to_end(&mut response))
+        .await
+        .map_err(|_| "read API response timed out".to_owned())?
+        .map_err(|error| format!("read API response: {error}"))?;
+    let response =
+        String::from_utf8(response).map_err(|error| format!("API response UTF-8: {error}"))?;
+    let (headers, body) = response
+        .split_once("\r\n\r\n")
+        .ok_or_else(|| "API response omitted HTTP headers".to_owned())?;
+    let status = headers
+        .split_whitespace()
+        .nth(1)
+        .ok_or_else(|| "API response omitted a status code".to_owned())?
+        .parse::<u16>()
+        .map_err(|error| format!("parse API response status: {error}"))?;
+    Ok((status, body.to_owned()))
+}
+
+async fn shutdown_api_server(
+    shutdown_tx: oneshot::Sender<()>,
+    server_task: tokio::task::JoinHandle<()>,
+) -> Result<(), String> {
+    shutdown_tx
+        .send(())
+        .map_err(|_| "API server stopped before controlled shutdown".to_owned())?;
+    tokio::time::timeout(Duration::from_secs(3), server_task)
+        .await
+        .map_err(|_| "API server did not stop within three seconds".to_owned())?
+        .map_err(|error| format!("API server task failed: {error}"))
 }
 
 async fn consume_initial_snapshot(stream: &mut SubscriptionStream) -> Result<(), String> {
@@ -657,6 +841,7 @@ struct StockCorrosion {
     _temp: TempDir,
     child: Option<Child>,
     log_path: PathBuf,
+    api_addr: SocketAddr,
     client: CorrosionClient,
 }
 
@@ -758,6 +943,7 @@ impl StockCorrosion {
             _temp: temp,
             child: Some(child),
             log_path,
+            api_addr,
             client,
         };
 

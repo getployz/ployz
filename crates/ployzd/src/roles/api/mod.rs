@@ -4,4 +4,6 @@
 //! command admission.
 
 pub mod execution;
+pub mod http;
+pub mod lenses;
 pub mod runner;
