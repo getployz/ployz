@@ -44,6 +44,7 @@ sentry = { version = "0.48", default-features = false, features = ["backtrace", 
 sha2 = "0.10"
 sysctl = "0.7"
 thiserror = "2"
+time = { version = "=0.3.47", features = ["formatting", "parsing"] }
 tokio = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["ansi", "env-filter", "fmt", "json"] }

@@ -6,6 +6,11 @@ The companion DDL draft is [corrosion-schema-v1.sql](corrosion-schema-v1.sql).
 This governs the coreless v2 design; it replaces the intent-file / evidence-log
 storage rules of the incumbent NATS design.
 
+Schema v1 is the first writable contract. No product path writes these v2
+documents yet, so required provenance, typed identifiers, transport separation,
+and canonical timestamps are part of v1 directly. There is no legacy v2 row
+shape to migrate or accept.
+
 ## The admission lens
 
 A table earns a Corrosion row only if someone must watch it live: the
@@ -36,22 +41,34 @@ runner, the CLI is in one operator's hand.
 
 | Table | Authority | Writer in practice | PK | Swept by |
 |---|---|---|---|---|
-| `cluster` | operator | `ployz init`, settings commands | cluster ULID | never (identity) |
-| `machines` | operator | join/admission, machine rm | machine ULID | `machine rm` |
-| `tokens` | operator/Cloud | token create/revoke | token ULID | `token revoke` / refound |
-| `namespaces` | operator | namespace create/rm | namespace ULID | namespace rm |
-| `services` | operator | deploy promotion | service ULID | superseding deploy |
-| `route_bindings` | operator | route attach/detach | binding ULID | route rm |
+| `cluster` | operator | `ployz init`, settings commands | `ClusterId` | never (identity) |
+| `machines` | operator | join/admission, machine rm | `MachineRowId` | `machine rm` |
+| `peers` | operator | join/admission, peer rm | `PeerId` | `peer rm` |
+| `tokens` | operator/Cloud | token create/revoke | `TokenId` | `token revoke` / refound |
+| `namespaces` | operator | namespace create/rm | `NamespaceRowId` | namespace rm |
+| `services` | operator | deploy promotion | `ServiceRowId` | superseding deploy |
+| `route_bindings` | operator | route attach/detach | `RouteBindingRowId` | route rm |
 | `containers` | machine | the machine running the container | Docker container id | owning machine; `machine rm` |
-| `machine_status` | machine | the machine itself | machine ULID | `machine rm` |
-| `operations` | machine | the executing machine | op ULID | never in v1 (refound compacts) |
-| `cert_holdings` | machine | the holding gateway | `<machine-ulid>:<hostname>` | owning gateway's tick; `machine rm` |
+| `machine_status` | machine | the machine itself | `MachineRowId` | `machine rm` |
+| `operations` | machine | the executing machine | `OperationRowId` | never in v1 (refound compacts) |
+| `cert_holdings` | machine | the holding gateway | `<MachineRowId>:<hostname>` | owning gateway's tick; `machine rm` |
 | `acme_http01` | machine | the issuing gateway | ACME challenge token | issuer on order settle; `machine rm` |
 
 ## Primary-key discipline
 
-- ULIDs wherever the operator mints identity. Natural writer-scoped keys
-  for testimony (Docker container id, machine id) — never reused by
+- Every operator-minted row identity is a domain-typed canonical ULID: exactly
+  26 uppercase Crockford Base32 characters. Every cross-row reference uses the
+  corresponding Corrosion identity type. Human names remain handles used for
+  lookup and lowest-ULID claim resolution; they are never row identities or
+  references. The v1 types are `ClusterId`, `MachineRowId`, `PeerId`,
+  `TokenId`, `NamespaceRowId`, `ServiceRowId`, `OperationRowId`, and
+  `RouteBindingRowId`.
+- These Corrosion identity types are the v2 row contract. The incumbent
+  subject-token identifiers remain frozen and are not accepted in Corrosion
+  keys or references.
+- Natural writer-scoped keys remain for testimony where the external fact is
+  the identity (Docker container id and ACME challenge token). Composite
+  testimony keys embed typed canonical machine identity and are never reused by
   construction.
 - Never-reused PKs everywhere keeps every table reaper-eligible later
   (a reaped-then-reused PK corrupts the cluster).
@@ -89,6 +106,11 @@ visible repair, never silent merged truth. A future additive layer
 (version-vector ack round for rare cluster-singleton mutations) is noted
 but not built.
 
+Machine and peer claims are eligible for that lowest-ULID fold only after a
+roster-specific reader has checked their transport against the accepted
+`ClusterDocument.provider`. A provider-mismatched row is skipped and surfaced;
+it cannot win a name or subnet claim and shadow a valid row.
+
 ## Sweep and retention
 
 - **Author-sweeps-own.** The only writer of a row is its only deleter.
@@ -113,6 +135,24 @@ but not built.
 - **`cluster_id` in every document.** A ULID minted by `ployz init`,
   inert in v1; the cells seed and the stray-node data fence.
   Readers drop foreign-`cluster_id` rows and surface them in `doctor`.
+- **Provenance in every operator-authority document.** `cluster`, `machines`,
+  `peers`, `tokens`, `namespaces`, `services`, and `route_bindings` serialize
+  the shared `OperatorWriteProvenance` fields at the document top level:
+  `written_by` is the nested `OperationInitiator` shape for the authenticated
+  `Principal` (`machine`, `peer`, or `api_token`, with its typed id), for example
+  `{"kind":"peer","peer_id":"01ARZ3NDEKTSV4RRFFQ69G5FAV"}`.
+  `written_at` is a `CorrosionTimestamp`. The initiator is the authenticated
+  principal for the explicit command that wrote the row. Missing or malformed
+  provenance makes the document unparseable, so readers skip and surface it
+  rather than invent attribution.
+- **One timestamp type everywhere.** Every Corrosion document time, including
+  operation state times, testimony observations, token lifetime, deploy time,
+  certificate issue and expiry, and operator `written_at`, is a
+  `CorrosionTimestamp`. It accepts a valid RFC 3339 instant with an explicit
+  offset and serializes it as UTC with exactly nine fractional digits:
+  `2026-08-04T10:30:00.000000000Z`. Comparisons use the parsed instant, never
+  raw JSON or SQL text. A malformed time makes the containing row unparseable;
+  an accepted offset form is normalized on its next serialization.
 - **`v` integer in every document, skip-if-newer.** Evolution within a
   version is additive-only; readers parse with unknown fields tolerated
   (no `deny_unknown_fields` on row documents). `v` bumps only when an
@@ -122,7 +162,9 @@ but not built.
   writer emits a new field, new `v`, or new table. DDL is near-frozen:
   new tables and generated index columns only, riding the same rule.
 - **Reader guards.** Skip rows whose document is empty or unparseable
-  (partial replication mid-sync) — not-yet-arrived, never truth. Never
+  (partial replication mid-sync), whose typed ids or references are
+  noncanonical, or whose roster transport disagrees with the cluster provider
+  — not-yet-arrived or invalid, never truth. Surface every skipped row. Never
   fold from an empty roster (the WG-lockout guard).
 
 ## No secret values
@@ -158,10 +200,11 @@ lock.
   durable cluster storage and no seal key exists.
 - **Possession is testimony:** `cert_holdings`, one row per
   (gateway, hostname), written only by that gateway when it issues or
-  fetches. Readers derive everything: current cert = max-expiry
-  fingerprint across rows; fetch sources = the machines whose rows carry
-  it. A holders array on a shared row is forbidden — membership lists
-  decompose into per-member rows or LWW eats concurrent additions.
+  fetches. Readers derive everything: current cert = fingerprint from the row
+  with the chronologically greatest typed expiry; fetch sources = the machines
+  whose rows carry it. A holders array on a shared row is forbidden —
+  membership lists decompose into per-member rows or LWW eats concurrent
+  additions.
 - **Distribution is holder-to-holder mesh fetch** driven by the named
   set in `cert_holdings` (the known-set gather law), never broadcast
   discovery. A gateway that sees a fresh row but can reach no holder
@@ -172,9 +215,9 @@ lock.
   hostname is missing a cert or under 1/3 lifetime remains
   (CA-agnostic; no fixed 30-day constant). Re-read `cert_holdings`
   first — fetch if a fresher cert exists, else issue. Duplicate
-  issuance under a race is tolerated as harmless; max-expiry
-  adjudication converges readers. The same tick deletes the machine's
-  own holding row and local key material when the hostname no longer
+  issuance under a race is tolerated as harmless; chronologically greatest
+  typed-expiry adjudication converges readers. The same tick deletes the
+  machine's own holding row and local key material when the hostname no longer
   has a direct-mode binding.
 - **HTTP-01 rides public rows:** `acme_http01`, key authorizations are
   public by design. The issuing gateway writes the token row, waits for

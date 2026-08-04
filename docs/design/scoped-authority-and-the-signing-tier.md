@@ -121,14 +121,16 @@ only.
 
 VISION and backbone assert "rows carry writer identity and timestamp,"
 and the trust ceiling's "retrofit stays open by construction" leans on
-that. The drafted schema defines no such field for operator-authority
-rows; Corrosion's internal actor_id is spoofable (a claim in the change
+that. Corrosion's internal actor_id is spoofable (a claim in the change
 message, cryptographically bound to nothing) and no spec claims it. Two
-near-free acts make the claim true:
+near-free acts keep the application contract ready:
 
-1. **`writer` + `written_at` in operator-authority row documents** — pure
-   document addition. Attribution and the promised after-the-fact fold
-   surfacing, and the substrate later signatures cover.
+1. **`written_by` + `written_at` in every operator-authority row document** —
+   the v1 baseline. `written_by` is the nested `OperationInitiator` shape for
+   the authenticated Principal and `written_at` is the canonical typed
+   Corrosion timestamp. They provide
+   attribution and the promised after-the-fact fold surfacing, and they are
+   the substrate later signatures cover.
 2. **Mint the operator root keypair at `ployz init`** — Ed25519, public
    key a field on the cluster document, private key on the operator's
    machine, a spare signing key kept offline. Every surveyed system agrees
@@ -219,8 +221,9 @@ Independent of any decision on scoping itself:
 
 1. The Corrosion port fence (above) — a v1 hole in the stated
    "cannot reach your Corrosion port" reasoning.
-2. The writer-identity claim — VISION/backbone assert a field the schema
-   drafts do not define.
+2. The writer-identity requirement — every operator-authority document
+   requires the v1 `written_by` and `written_at` fields; a missing or malformed
+   value is skipped and surfaced.
 3. The door private key handed to "each joiner" — restrict to machine
    joiners.
 4. `status`/`doctor`/`token list` have no peer-facing surfaces; any

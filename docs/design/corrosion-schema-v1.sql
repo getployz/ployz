@@ -6,12 +6,27 @@
 -- field. Every document carries `v` (integer schema version) and
 -- `cluster_id` (the cluster ULID minted by `ployz init`).
 --
+-- Every operator-authority document also carries top-level `written_by`
+-- (the nested OperationInitiator for the authenticated Principal) and
+-- `written_at` (the canonical Corrosion timestamp). Every document timestamp
+-- serializes as UTC with exactly nine
+-- fractional digits; readers parse and compare instants rather than raw text.
+--
+-- Operator-minted row keys and every cross-row reference are domain-typed
+-- canonical ULIDs: exactly 26 uppercase Crockford Base32 characters. Human
+-- names are lookup handles, never references. The v1 types are ClusterId,
+-- MachineRowId, PeerId, TokenId, NamespaceRowId, ServiceRowId, OperationRowId,
+-- and RouteBindingRowId.
+--
+-- No v2 product writer ships an earlier document shape. Required v1 fields
+-- are part of this contract without a compatibility or migration layer.
+--
 -- Ownership, PK, sweep, and secrecy rules live in corrosion-row-model.md.
 
 -- ─── Operator authority ─────────────────────────────────────────────────────
 
 -- One row: cluster identity and cluster-wide settings.
--- PK = cluster ULID, minted once by `ployz init`.
+-- PK = ClusterId, a canonical ULID minted once by `ployz init`.
 CREATE TABLE cluster (
     id TEXT NOT NULL PRIMARY KEY,
     document TEXT NOT NULL DEFAULT '{}'
@@ -19,7 +34,9 @@ CREATE TABLE cluster (
 
 -- The roster. One row per admitted machine; Keeper converges WG peers,
 -- eBPF, sysctls, and firewall from these rows (never from an empty set).
--- PK = machine ULID minted at admission. wg_public_key is write-once.
+-- PK = MachineRowId, a canonical ULID minted at admission. Transport must match
+-- the ClusterDocument provider before this row may enter a roster or name
+-- claim fold. The public key is write-once and subnet_v4 is required.
 CREATE TABLE machines (
     id TEXT NOT NULL PRIMARY KEY,
     document TEXT NOT NULL DEFAULT '{}',
@@ -29,8 +46,10 @@ CREATE TABLE machines (
 CREATE INDEX machines_name ON machines (name);
 
 -- Non-machine mesh peers: operator laptops and Cloud. Operator authority;
--- swept by peer rm. Document carries the same transport union as machines,
--- with no IPv4 subnet (peers run no containers).
+-- swept by peer rm. PK = PeerId. Peer transport has no subnet_v4 field; a
+-- document that carries one is malformed. Transport must match the
+-- ClusterDocument provider before this row may enter a roster or name claim
+-- fold.
 CREATE TABLE peers (
     id TEXT NOT NULL PRIMARY KEY,
     document TEXT NOT NULL DEFAULT '{}',
@@ -42,6 +61,7 @@ CREATE INDEX peers_name ON peers (name);
 -- pz_<token-ulid>.<32-byte-random-base64>; the row keeps sha256(secret part).
 -- Expiry and revocation are checked at point of use, never swept on a timer.
 -- `token revoke` deletes the row (revoke = delete = cleanup; no `token rm`).
+-- PK = TokenId.
 CREATE TABLE tokens (
     id TEXT NOT NULL PRIMARY KEY,
     document TEXT NOT NULL DEFAULT '{}',
@@ -49,8 +69,8 @@ CREATE TABLE tokens (
 );
 CREATE INDEX tokens_kind ON tokens (kind);
 
--- Namespace registry. PK = namespace ULID; name uniqueness is a
--- wait-for-quiet claim with the lowest-ULID reader rule as backstop.
+-- Namespace registry. PK = NamespaceRowId, a canonical ULID; name uniqueness
+-- is a wait-for-quiet claim with the lowest-ULID reader rule as backstop.
 CREATE TABLE namespaces (
     id TEXT NOT NULL PRIMARY KEY,
     document TEXT NOT NULL DEFAULT '{}',
@@ -61,6 +81,7 @@ CREATE INDEX namespaces_name ON namespaces (name);
 -- Committed serving state: one row per service per namespace, written only
 -- at deploy promotion. Carries env_fingerprints {KEY: sha256 hex of the
 -- JSON-encoded value} so Cloud diffs env without values ever replicating.
+-- PK is ServiceRowId and namespace_id is NamespaceRowId.
 CREATE TABLE services (
     id TEXT NOT NULL PRIMARY KEY,
     document TEXT NOT NULL DEFAULT '{}',
@@ -70,9 +91,11 @@ CREATE TABLE services (
 CREATE INDEX services_namespace_id ON services (namespace_id);
 CREATE INDEX services_name ON services (name);
 
--- Hostname → service + endpoint port. PK = route-binding ULID (Route
--- Binding Identity: detach + recreate is a new identity even for the same
--- hostname). Hostname uniqueness = wait-for-quiet claim + lowest-ULID rule.
+-- Hostname → service + endpoint port. PK is RouteBindingRowId; service_id is
+-- ServiceRowId and namespace_id is NamespaceRowId.
+-- Route Binding Identity means detach + recreate is a new identity even for
+-- the same hostname. Hostname uniqueness = wait-for-quiet claim + lowest-ULID
+-- rule.
 CREATE TABLE route_bindings (
     id TEXT NOT NULL PRIMARY KEY,
     document TEXT NOT NULL DEFAULT '{}',
@@ -92,7 +115,8 @@ CREATE INDEX route_bindings_namespace_id ON route_bindings (namespace_id);
 -- Documents carry `ip` (bridge IPv4) and `deploy` (revision): DNS serves
 -- A records from ip gated on the service's active_deploy, and Keeper
 -- builds the namespace-isolation map from ip — the container-plane
--- ticket (#801) and Keeper's second named converge family.
+-- ticket (#801) and Keeper's second named converge family. All cross-row ids
+-- are their distinct typed canonical ULIDs.
 CREATE TABLE containers (
     id TEXT NOT NULL PRIMARY KEY,
     document TEXT NOT NULL DEFAULT '{}',
@@ -105,14 +129,15 @@ CREATE INDEX containers_service_id ON containers (service_id);
 CREATE INDEX containers_namespace_id ON containers (namespace_id);
 
 -- Slow-changing per-machine testimony: versions, arch, capacity. One row
--- per machine, PK = machine ULID. Never liveness — liveness is WG
+-- per machine, PK = MachineRowId. Never liveness — liveness is WG
 -- last-handshake age at the point of use, never stored truth.
 CREATE TABLE machine_status (
     machine_id TEXT NOT NULL PRIMARY KEY,
     document TEXT NOT NULL DEFAULT '{}'
 );
 
--- Operation summaries (evidence ticket #783): one row per op, at most three
+-- Operation summaries (evidence ticket #783): one row per OperationRowId, at
+-- most three
 -- writes — created, optional running, terminal. Written only by the
 -- executing machine; the terminal write is final. Detail is driver-local
 -- JSONL, never rows.
@@ -129,12 +154,15 @@ CREATE INDEX operations_machine_id ON operations (machine_id);
 
 -- Cert possession testimony (unified-cert ticket #792): one row per
 -- (gateway, hostname), written only by that gateway when it issues or
--- fetches. PK embeds the machine ULID so no two machines can address the
--- same row. Readers derive everything: current cert = max-expiry
--- fingerprint across rows; fetch sources = machines whose row carries it.
+-- fetches. PK embeds the MachineRowId so no two machines can address the
+-- same row. Readers derive everything: current cert = the fingerprint with
+-- the chronologically greatest typed expiry; fetch sources = machines whose
+-- row carries it.
+-- Candidate rows are parsed first and expiry maxima are chronological typed
+-- comparisons; the generated TEXT value is not an authority for ordering.
 -- Key material is machine-local on holders — never rows.
 CREATE TABLE cert_holdings (
-    id TEXT NOT NULL PRIMARY KEY,   -- "<machine-ulid>:<hostname>"
+    id TEXT NOT NULL PRIMARY KEY,   -- "<MachineRowId>:<hostname>"
     document TEXT NOT NULL DEFAULT '{}',
     hostname TEXT GENERATED ALWAYS AS (json_extract(document, '$.hostname')) VIRTUAL,
     machine_id TEXT GENERATED ALWAYS AS (json_extract(document, '$.machine_id')) VIRTUAL,

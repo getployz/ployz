@@ -13,7 +13,9 @@ use crate::corrosion::{
     PeerDocument, RouteBindingDocument, ServiceDocument, TokenDocument,
 };
 use crate::deploy::EnvValue;
-use crate::ids::OperationId;
+use crate::ids::{
+    MachineRowId, NamespaceRowId, OperationId, OperationRowId, RouteBindingRowId, ServiceRowId,
+};
 use crate::install::{
     AbsoluteInstallPath, ExactPloyzVersion, HostPortAssurance, InstallArtifactSource,
     InstallArtifactSpec, InstallArtifactVersion, InstallSha256Digest, ReleasePlatformFailure,
@@ -81,6 +83,11 @@ pub fn api_typescript() -> String {
 }
 
 fn collect_corrosion_contracts(declarations: &mut DeclarationCollector<'_>) {
+    declarations.visit::<MachineRowId>();
+    declarations.visit::<NamespaceRowId>();
+    declarations.visit::<ServiceRowId>();
+    declarations.visit::<OperationRowId>();
+    declarations.visit::<RouteBindingRowId>();
     declarations.visit::<CorrosionTable>();
     declarations.visit::<NameClaim>();
     declarations.visit::<ClusterDocument>();
@@ -392,7 +399,14 @@ mod tests {
             "OperationDocument",
             "CertHoldingDocument",
             "AcmeHttp01Document",
-            "Transport",
+            "MachineTransport",
+            "PeerTransport",
+            "CorrosionTimestamp",
+            "MachineRowId",
+            "NamespaceRowId",
+            "ServiceRowId",
+            "OperationRowId",
+            "RouteBindingRowId",
             "NameClaim",
         ] {
             assert!(

@@ -1,7 +1,10 @@
 use ployz_core::corrosion::{
-    MalformedDocument, NamespaceDocument, RowSkipReason, StoredRow, read_named_rows, read_rows,
+    CertHoldingDocument, ClusterDocument, ContainerDocument, MachineDocument, MalformedDocument,
+    MeshProvider, NamespaceDocument, RowSkipReason, StoredRow, read_named_roster_rows,
+    read_named_rows, read_roster_rows, read_rows,
 };
 use ployz_core::ids::ClusterId;
+use serde_json::json;
 
 const CLUSTER_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const LOWER_ROW_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
@@ -12,7 +15,146 @@ fn cluster_id() -> ClusterId {
 }
 
 fn namespace_document(name: &str) -> String {
-    format!(r#"{{"v":1,"cluster_id":"{CLUSTER_ID}","name":"{name}"}}"#)
+    format!(
+        r#"{{"v":1,"cluster_id":"{CLUSTER_ID}","name":"{name}","written_by":{{"kind":"machine","machine_id":"{LOWER_ROW_ID}"}},"written_at":"2026-08-04T10:00:00Z"}}"#
+    )
+}
+
+fn cluster_document(provider: MeshProvider) -> ClusterDocument {
+    serde_json::from_value(json!({
+        "v": 1,
+        "cluster_id": CLUSTER_ID,
+        "name": "acme-prod",
+        "storage_default": "plain",
+        "hostname_mode": { "mode": "disabled" },
+        "prefix": "10.210.0.0/16",
+        "provider": provider,
+        "acme_directory_url": "https://acme.example/directory",
+        "acme_contact": null,
+        "written_by": {
+            "kind": "machine",
+            "machine_id": LOWER_ROW_ID
+        },
+        "written_at": "2026-08-04T10:00:00Z"
+    }))
+    .expect("cluster fixture")
+}
+
+fn machine_document(transport: serde_json::Value) -> String {
+    json!({
+        "v": 1,
+        "cluster_id": CLUSTER_ID,
+        "name": "edge-a",
+        "lifecycle": "active",
+        "transport": transport,
+        "storage": {
+            "mode": "plain",
+            "reason": { "kind": "default" }
+        },
+        "written_by": {
+            "kind": "machine",
+            "machine_id": LOWER_ROW_ID
+        },
+        "written_at": "2026-08-04T10:00:00Z"
+    })
+    .to_string()
+}
+
+#[test]
+fn roster_reader_accepts_a_transport_matching_the_cluster_provider() {
+    let cluster = cluster_document(MeshProvider::BuiltinWireguard);
+    let report = read_roster_rows::<MachineDocument>(
+        &cluster,
+        [StoredRow::new(
+            LOWER_ROW_ID,
+            machine_document(json!({
+                "kind": "wireguard",
+                "pubkey": "wireguard-public-key",
+                "addr_v6": "fd00::20",
+                "endpoint": "192.0.2.10:51820",
+                "subnet_v4": "10.210.20.0/24"
+            })),
+        )],
+    );
+
+    assert!(report.skipped.is_empty());
+    assert!(matches!(
+        report.accepted.as_slice(),
+        [accepted] if accepted.value.name.as_str() == "edge-a"
+    ));
+}
+
+#[test]
+fn roster_reader_skips_and_surfaces_a_transport_for_the_wrong_provider() {
+    let cluster = cluster_document(MeshProvider::BuiltinWireguard);
+    let report = read_roster_rows::<MachineDocument>(
+        &cluster,
+        [StoredRow::new(
+            LOWER_ROW_ID,
+            machine_document(json!({
+                "kind": "tailscale",
+                "ip": "100.64.0.10",
+                "subnet_v4": "10.210.20.0/24"
+            })),
+        )],
+    );
+
+    assert!(report.accepted.is_empty());
+    assert!(matches!(
+        report.skipped.as_slice(),
+        [skipped]
+            if skipped.source.key == LOWER_ROW_ID
+                && matches!(
+                    skipped.reason,
+                    RowSkipReason::MeshProviderMismatch {
+                        expected: MeshProvider::BuiltinWireguard,
+                        found: MeshProvider::Tailscale,
+                    }
+                )
+    ));
+}
+
+#[test]
+fn wrong_provider_lower_ulid_cannot_win_or_shadow_a_valid_named_roster_row() {
+    let cluster = cluster_document(MeshProvider::BuiltinWireguard);
+    let report = read_named_roster_rows::<MachineDocument>(
+        &cluster,
+        [
+            StoredRow::new(
+                LOWER_ROW_ID,
+                machine_document(json!({
+                    "kind": "tailscale",
+                    "ip": "100.64.0.10",
+                    "subnet_v4": "10.210.20.0/24"
+                })),
+            ),
+            StoredRow::new(
+                HIGHER_ROW_ID,
+                machine_document(json!({
+                    "kind": "wireguard",
+                    "pubkey": "wireguard-public-key",
+                    "addr_v6": "fd00::20",
+                    "endpoint": "192.0.2.10:51820",
+                    "subnet_v4": "10.210.20.0/24"
+                })),
+            ),
+        ],
+    );
+
+    assert!(matches!(
+        report.accepted.as_slice(),
+        [accepted] if accepted.id.as_str() == HIGHER_ROW_ID
+    ));
+    assert!(report.shadows.is_empty());
+    assert!(matches!(
+        report.skipped.as_slice(),
+        [skipped]
+            if skipped.source.key == LOWER_ROW_ID
+                && matches!(
+                    skipped.reason,
+                    RowSkipReason::MeshProviderMismatch { .. }
+                )
+    ));
 }
 
 #[test]
@@ -107,13 +249,113 @@ fn additive_unknown_fields_do_not_hide_a_current_document() {
         [StoredRow::new(
             LOWER_ROW_ID,
             format!(
-                r#"{{"v":1,"cluster_id":"{CLUSTER_ID}","name":"alpha","future":{{"enabled":true}}}}"#
+                r#"{{"v":1,"cluster_id":"{CLUSTER_ID}","name":"alpha","written_by":{{"kind":"machine","machine_id":"{LOWER_ROW_ID}"}},"written_at":"2026-08-04T10:00:00Z","future":{{"enabled":true}}}}"#
             ),
         )],
     );
 
     assert!(report.skipped.is_empty());
     assert!(matches!(report.accepted.as_slice(), [accepted] if accepted.value.name == "alpha"));
+}
+
+#[test]
+fn missing_or_malformed_operator_provenance_is_skipped_and_surfaced() {
+    let report = read_rows::<NamespaceDocument>(
+        &cluster_id(),
+        [
+            StoredRow::new(
+                LOWER_ROW_ID,
+                format!(r#"{{"v":1,"cluster_id":"{CLUSTER_ID}","name":"alpha"}}"#),
+            ),
+            StoredRow::new(
+                HIGHER_ROW_ID,
+                format!(
+                    r#"{{"v":1,"cluster_id":"{CLUSTER_ID}","name":"beta","written_by":{{"kind":"machine","machine_id":"not-a-ulid"}},"written_at":"not-a-time"}}"#
+                ),
+            ),
+        ],
+    );
+
+    assert!(report.accepted.is_empty());
+    assert!(report.skipped.iter().all(|skipped| matches!(
+        skipped.reason,
+        RowSkipReason::Malformed(MalformedDocument::InvalidPayload { .. })
+    )));
+}
+
+#[test]
+fn noncanonical_corrosion_reference_is_skipped_and_surfaced() {
+    let document = json!({
+        "v": 1,
+        "cluster_id": CLUSTER_ID,
+        "machine_id": "machine_edge_a",
+        "service_id": HIGHER_ROW_ID,
+        "namespace_id": HIGHER_ROW_ID,
+        "ip": "10.210.20.2",
+        "deploy": HIGHER_ROW_ID
+    });
+    let report = read_rows::<ContainerDocument>(
+        &cluster_id(),
+        [StoredRow::new(LOWER_ROW_ID, document.to_string())],
+    );
+
+    assert!(report.accepted.is_empty());
+    assert!(matches!(
+        report.skipped.as_slice(),
+        [skipped]
+            if matches!(
+                skipped.reason,
+                RowSkipReason::Malformed(MalformedDocument::InvalidPayload { .. })
+            )
+    ));
+}
+
+#[test]
+fn certificate_times_are_validated_compared_as_instants_and_canonicalized() {
+    let certificate = |expires_at: &str| {
+        json!({
+            "v": 1,
+            "cluster_id": CLUSTER_ID,
+            "machine_id": LOWER_ROW_ID,
+            "hostname": "api.example.com",
+            "fingerprint": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "issued_at": "2026-08-04T10:08:00Z",
+            "expires_at": expires_at
+        })
+        .to_string()
+    };
+
+    let malformed = read_rows::<CertHoldingDocument>(
+        &cluster_id(),
+        [StoredRow::new(LOWER_ROW_ID, certificate("not-a-time"))],
+    );
+    assert!(malformed.accepted.is_empty());
+    assert!(matches!(
+        malformed.skipped.as_slice(),
+        [skipped]
+            if matches!(
+                skipped.reason,
+                RowSkipReason::Malformed(MalformedDocument::InvalidPayload { .. })
+            )
+    ));
+
+    let accepted = read_rows::<CertHoldingDocument>(
+        &cluster_id(),
+        [
+            StoredRow::new(LOWER_ROW_ID, certificate("2026-11-02T11:08:00+01:00")),
+            StoredRow::new(HIGHER_ROW_ID, certificate("2026-11-02T10:08:00.000000001Z")),
+        ],
+    );
+    assert!(accepted.skipped.is_empty());
+    let [offset, later] = accepted.accepted.as_slice() else {
+        panic!("two certificates accepted")
+    };
+    assert!(offset.value.expires_at < later.value.expires_at);
+    let encoded = serde_json::to_value(&offset.value).expect("certificate JSON");
+    assert_eq!(
+        encoded.get("expires_at"),
+        Some(&json!("2026-11-02T10:08:00.000000000Z"))
+    );
 }
 
 #[test]
