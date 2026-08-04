@@ -66,12 +66,18 @@ fn open_ufw(
     }
 
     let port_name = render_port(port);
-    require_success(runner, "ufw", &["insert", "1", "allow", &port_name])?;
-    if query_ufw(port, runner)? {
-        return Ok(());
+    let numbered = runner.command("ufw", &["status", "numbered"])?;
+    if !numbered.success {
+        return Err(failure_message(numbered.failure));
     }
-
-    require_success(runner, "ufw", &["allow", &port_name])?;
+    if numbered.stdout_truncated {
+        return Err(failure_message("UFW numbered status was truncated"));
+    }
+    if numbered.stdout.lines().any(ufw_rule_has_number) {
+        require_success(runner, "ufw", &["insert", "1", "allow", &port_name])?;
+    } else {
+        require_success(runner, "ufw", &["allow", &port_name])?;
+    }
     if query_ufw(port, runner)? {
         return Ok(());
     }
@@ -79,6 +85,13 @@ fn open_ufw(
     Err(failure_message(format!(
         "UFW did not assure inbound reachability for {port_name}"
     )))
+}
+
+fn ufw_rule_has_number(line: &str) -> bool {
+    line.trim_start()
+        .strip_prefix('[')
+        .and_then(|rule| rule.split_once(']'))
+        .is_some_and(|(number, _)| number.trim().parse::<u32>().is_ok())
 }
 
 #[derive(Clone, Copy)]
@@ -755,6 +768,7 @@ table ip6 filter {
         let scoped = "443/tcp                 ALLOW IN    192.0.2.0/24\n443/tcp                 ALLOW IN    Anywhere\n";
         let mut runner = RecordingRunner::with_outputs([
             active(scoped),
+            active("[ 1] 443/tcp ALLOW IN 192.0.2.0/24\n"),
             active(""),
             active("443/tcp                 ALLOW IN    Anywhere\n"),
         ]);
@@ -765,6 +779,7 @@ table ip6 filter {
             runner.calls,
             vec![
                 "ufw status verbose",
+                "ufw status numbered",
                 "ufw insert 1 allow 443/tcp",
                 "ufw status verbose"
             ]
@@ -772,8 +787,9 @@ table ip6 filter {
     }
 
     #[test]
-    fn ufw_open_inserts_missing_rule_and_verifies_it() {
+    fn ufw_open_uses_plain_allow_for_an_empty_ruleset_and_verifies_it() {
         let mut runner = RecordingRunner::with_outputs([
+            active(""),
             active(""),
             active(""),
             active("443/tcp                 ALLOW IN    Anywhere\n"),
@@ -787,7 +803,8 @@ table ip6 filter {
             runner.calls,
             vec![
                 "ufw status verbose",
-                "ufw insert 1 allow 443/tcp",
+                "ufw status numbered",
+                "ufw allow 443/tcp",
                 "ufw status verbose"
             ]
         );
@@ -799,6 +816,7 @@ table ip6 filter {
             active(
                 "443/tcp                 ALLOW FWD   Anywhere\n443/tcp                 ALLOW IN    Anywhere\n",
             ),
+            active("[ 1] 443/tcp ALLOW FWD Anywhere\n"),
             active(""),
             active("443/tcp                 ALLOW IN    Anywhere\n"),
         ]);
@@ -809,6 +827,7 @@ table ip6 filter {
             runner.calls,
             vec![
                 "ufw status verbose",
+                "ufw status numbered",
                 "ufw insert 1 allow 443/tcp",
                 "ufw status verbose"
             ]
@@ -819,6 +838,7 @@ table ip6 filter {
     fn ufw_open_ignores_v6_only_rule() {
         let mut runner = RecordingRunner::with_outputs([
             active("443/tcp (v6)            ALLOW IN    Anywhere (v6)\n"),
+            active("[ 1] 443/tcp (v6) ALLOW IN Anywhere (v6)\n"),
             active(""),
             active("443/tcp                 ALLOW IN    Anywhere\n"),
         ]);
@@ -829,6 +849,7 @@ table ip6 filter {
             runner.calls,
             vec![
                 "ufw status verbose",
+                "ufw status numbered",
                 "ufw insert 1 allow 443/tcp",
                 "ufw status verbose"
             ]
@@ -857,6 +878,7 @@ table ip6 filter {
 
         let mut allow_failure = RecordingRunner::with_outputs([
             active("443/tcp                 DENY IN     Anywhere\n"),
+            active("[ 1] 443/tcp DENY IN Anywhere\n"),
             command_failure("allow failed"),
         ]);
         let error = FirewallBackend::Ufw
@@ -865,7 +887,11 @@ table ip6 filter {
         assert_eq!(error.as_str(), "allow failed");
         assert_eq!(
             allow_failure.calls,
-            vec!["ufw status verbose", "ufw insert 1 allow 443/tcp"]
+            vec![
+                "ufw status verbose",
+                "ufw status numbered",
+                "ufw insert 1 allow 443/tcp"
+            ]
         );
     }
 
@@ -874,8 +900,7 @@ table ip6 filter {
         let deny_then_allow = "443/tcp                 DENY IN     Anywhere\n443/tcp                 ALLOW IN    Anywhere\n";
         let mut runner = RecordingRunner::with_outputs([
             active(deny_then_allow),
-            active(""),
-            active(deny_then_allow),
+            active("[ 1] 443/tcp DENY IN Anywhere\n[ 2] 443/tcp ALLOW IN Anywhere\n"),
             active(""),
             active("443/tcp                 ALLOW IN    Anywhere\n"),
         ]);
@@ -888,9 +913,8 @@ table ip6 filter {
             runner.calls,
             vec![
                 "ufw status verbose",
+                "ufw status numbered",
                 "ufw insert 1 allow 443/tcp",
-                "ufw status verbose",
-                "ufw allow 443/tcp",
                 "ufw status verbose"
             ]
         );
@@ -901,8 +925,7 @@ table ip6 filter {
         let deny_then_allow = "443/tcp                 DENY IN     Anywhere\n443/tcp                 ALLOW IN    Anywhere\n";
         let mut runner = RecordingRunner::with_outputs([
             active(deny_then_allow),
-            active(""),
-            active(deny_then_allow),
+            active("[ 1] 443/tcp DENY IN Anywhere\n[ 2] 443/tcp ALLOW IN Anywhere\n"),
             active(""),
             active(deny_then_allow),
         ]);
@@ -919,17 +942,17 @@ table ip6 filter {
             runner.calls,
             vec![
                 "ufw status verbose",
+                "ufw status numbered",
                 "ufw insert 1 allow 443/tcp",
-                "ufw status verbose",
-                "ufw allow 443/tcp",
                 "ufw status verbose"
             ]
         );
     }
 
     #[test]
-    fn ufw_open_propagates_post_insert_query_failure_without_fallback() {
+    fn ufw_open_propagates_post_allow_query_failure() {
         let mut runner = RecordingRunner::with_outputs([
+            active(""),
             active(""),
             active(""),
             command_failure("post-insert query failed"),
@@ -944,35 +967,43 @@ table ip6 filter {
             runner.calls,
             vec![
                 "ufw status verbose",
-                "ufw insert 1 allow 443/tcp",
+                "ufw status numbered",
+                "ufw allow 443/tcp",
                 "ufw status verbose"
             ]
         );
     }
 
     #[test]
-    fn ufw_open_propagates_fallback_failure_without_final_query() {
-        let deny = "443/tcp                 DENY IN     Anywhere\n";
-        let mut runner = RecordingRunner::with_outputs([
-            active(deny),
-            active(""),
-            active(deny),
-            command_failure("fallback allow failed"),
-        ]);
+    fn ufw_open_propagates_numbered_status_failure_without_mutation() {
+        let mut runner =
+            RecordingRunner::with_outputs([active(""), command_failure("numbered status failed")]);
 
         let error = FirewallBackend::Ufw
             .open_with(TCP_443, &mut runner)
-            .expect_err("fallback failure propagates");
+            .expect_err("numbered status failure propagates");
 
-        assert_eq!(error.as_str(), "fallback allow failed");
+        assert_eq!(error.as_str(), "numbered status failed");
         assert_eq!(
             runner.calls,
-            vec![
-                "ufw status verbose",
-                "ufw insert 1 allow 443/tcp",
-                "ufw status verbose",
-                "ufw allow 443/tcp"
-            ]
+            vec!["ufw status verbose", "ufw status numbered"]
+        );
+    }
+
+    #[test]
+    fn ufw_open_refuses_truncated_numbered_status_without_mutation() {
+        let mut truncated = active("[ 1] 22/tcp ALLOW IN Anywhere\n").expect("output");
+        truncated.stdout_truncated = true;
+        let mut runner = RecordingRunner::with_outputs([active(""), Ok(truncated)]);
+
+        let error = FirewallBackend::Ufw
+            .open_with(TCP_443, &mut runner)
+            .expect_err("truncated status is uncertain");
+
+        assert_eq!(error.as_str(), "UFW numbered status was truncated");
+        assert_eq!(
+            runner.calls,
+            vec!["ufw status verbose", "ufw status numbered"]
         );
     }
 
