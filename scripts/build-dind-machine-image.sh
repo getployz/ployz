@@ -305,13 +305,18 @@ mv /target/release/railpack.source.tmp /target/release/railpack.source'
 }
 
 stage_corrosion() {
-  local platform manifest_file pin_file release_tag archive_name archive_url archive_sha256
+  local platform corrosion_platform manifest_file pin_file release_tag archive_name archive_url archive_sha256
   local embedded_version archive cache_dir actual_sha256 work_dir actual_version host_uid host_gid
+  local -a corrosion_pin
   platform="$(docker_platform "${PLOYZ_DIND_PLATFORM:-}")"
-  if [ "${platform}" != "linux/amd64" ]; then
-    echo "the pinned Corrosion DinD asset supports linux/amd64, got ${platform}" >&2
-    exit 1
-  fi
+  case "${platform}" in
+    linux/amd64) corrosion_platform="linux-amd64" ;;
+    linux/arm64) corrosion_platform="linux-arm64" ;;
+    *)
+      echo "the pinned Corrosion DinD assets support linux/amd64 and linux/arm64, got ${platform}" >&2
+      exit 1
+      ;;
+  esac
 
   command -v python3 >/dev/null 2>&1 || {
     echo "python3 is required to read corrosion-release.json" >&2
@@ -319,24 +324,8 @@ stage_corrosion() {
   }
   manifest_file="${ROOT_DIR}/corrosion-release.json"
   pin_file="$(mktemp "${TMPDIR:-/tmp}/ployz-corrosion-pin.XXXXXX")"
-  if ! python3 - "${manifest_file}" > "${pin_file}" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], encoding="utf-8") as source:
-    pin = json.load(source)
-archive = pin["archive"]
-for value in (
-    pin["release_tag"],
-    archive["name"],
-    archive["url"],
-    archive["sha256"],
-    pin["embedded_version"],
-):
-    if not isinstance(value, str) or not value:
-        raise SystemExit("corrosion release manifest contains an empty non-string pin")
-    print(value)
-PY
+  if ! python3 "${ROOT_DIR}/scripts/read-corrosion-release.py" \
+    "${manifest_file}" "${corrosion_platform}" > "${pin_file}"
   then
     rm -f "${pin_file}"
     return 1

@@ -9,6 +9,8 @@ VULTR_API="https://api.vultr.com/v2"
 REGION="${CORROSION_SPIKE_REGION:-ewr}"
 PLAN="${CORROSION_SPIKE_PLAN:-vc2-1c-1gb}"
 OS_ID="${CORROSION_SPIKE_OS_ID:-2284}"
+CORROSION_SPIKE_PLATFORM="${CORROSION_SPIKE_PLATFORM:-linux-amd64}"
+VULTR_OS_ARCH=""
 RELEASE_TAG=""
 RELEASE_ARCHIVE_NAME=""
 RELEASE_URL=""
@@ -37,31 +39,34 @@ require_command() {
 }
 
 load_release_manifest() {
-    if ! jq -e '
-        type == "object" and
-        ((keys_unsorted | sort) == ["archive", "embedded_version", "release_tag"]) and
-        (.release_tag | type == "string" and test("^v[0-9A-Za-z][0-9A-Za-z._-]*$")) and
-        (.archive | type == "object") and
-        ((.archive | keys_unsorted | sort) == ["name", "sha256", "url"]) and
-        (.archive.name | type == "string" and test("^[A-Za-z0-9._-]+$")) and
-        (.archive.url | type == "string") and
-        (.archive.url == (
-            "https://github.com/superfly/corrosion/releases/download/" +
-            .release_tag + "/" + .archive.name
-        )) and
-        (.archive.sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
-        (.embedded_version |
-            type == "string" and test("^corrosion [^\\t\\r\\n]+$"))
-    ' "$RELEASE_MANIFEST" >/dev/null; then
-        printf 'invalid Corrosion release manifest: %s\n' "$RELEASE_MANIFEST" >&2
+    local pin_output
+    local -a corrosion_pin
+    case "$CORROSION_SPIKE_PLATFORM" in
+        linux-amd64) VULTR_OS_ARCH="x64" ;;
+        linux-arm64) VULTR_OS_ARCH="arm64" ;;
+        *)
+            printf 'unsupported Corrosion spike platform: %s (supported: linux-amd64, linux-arm64)\n' \
+                "$CORROSION_SPIKE_PLATFORM" >&2
+            return 1
+            ;;
+    esac
+
+    if ! pin_output="$(python3 \
+        "$REPO_ROOT/scripts/read-corrosion-release.py" \
+        "$RELEASE_MANIFEST" \
+        "$CORROSION_SPIKE_PLATFORM")"; then
         return 1
     fi
-
-    RELEASE_TAG="$(jq -er '.release_tag' "$RELEASE_MANIFEST")"
-    RELEASE_ARCHIVE_NAME="$(jq -er '.archive.name' "$RELEASE_MANIFEST")"
-    RELEASE_URL="$(jq -er '.archive.url' "$RELEASE_MANIFEST")"
-    RELEASE_SHA256="$(jq -er '.archive.sha256' "$RELEASE_MANIFEST")"
-    RELEASE_EMBEDDED_VERSION="$(jq -er '.embedded_version' "$RELEASE_MANIFEST")"
+    mapfile -t corrosion_pin <<<"$pin_output"
+    if [[ "${#corrosion_pin[@]}" -ne 5 ]]; then
+        printf 'corrosion release manifest did not yield exactly five pinned fields\n' >&2
+        return 1
+    fi
+    RELEASE_TAG="${corrosion_pin[0]}"
+    RELEASE_ARCHIVE_NAME="${corrosion_pin[1]}"
+    RELEASE_URL="${corrosion_pin[2]}"
+    RELEASE_SHA256="${corrosion_pin[3]}"
+    RELEASE_EMBEDDED_VERSION="${corrosion_pin[4]}"
     readonly RELEASE_TAG RELEASE_ARCHIVE_NAME RELEASE_URL RELEASE_SHA256
     readonly RELEASE_EMBEDDED_VERSION
 }
@@ -195,7 +200,8 @@ preflight() {
 
     local os_json
     os_json="$(api GET "/os?per_page=500" | jq -e --argjson os_id "$OS_ID" \
-        '.os[] | select(.id == $os_id and .arch == "x64")')"
+        --arg os_arch "$VULTR_OS_ARCH" \
+        '.os[] | select(.id == $os_id and .arch == $os_arch)')"
     printf '%s\n' "$os_json" >"$RUN_DIR/evidence/vultr-os.json"
 }
 
@@ -1518,6 +1524,7 @@ resume_run() {
         return 1
     fi
     require_command jq
+    require_command python3
     load_release_manifest
     validate_retained_hosts
     wait_for_ssh

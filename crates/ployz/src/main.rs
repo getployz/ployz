@@ -1,10 +1,11 @@
 use std::process::ExitCode;
 
 use clap::error::ErrorKind;
-use ployz::commands::{TelemetryCommand, parse_command};
+use ployz::commands::{Command, TelemetryCommand, parse_command};
 use ployz_telemetry::ConfigFile;
 
-fn main() -> ExitCode {
+#[tokio::main]
+async fn main() -> ExitCode {
     let command = match parse_command(std::env::args().skip(1)) {
         Ok(command) => command,
         Err(error)
@@ -22,7 +23,16 @@ fn main() -> ExitCode {
         }
     };
 
-    set_telemetry(command)
+    match command {
+        Command::Telemetry(command) => set_telemetry(command),
+        Command::Init(command) => match ployz::init::execute(*command).await {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("{error}");
+                ExitCode::FAILURE
+            }
+        },
+    }
 }
 
 fn set_telemetry(command: TelemetryCommand) -> ExitCode {

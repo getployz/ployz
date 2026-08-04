@@ -5,10 +5,11 @@
 //! environment file rather than an API credential supplied by callers.
 
 mod config;
+mod founding;
 mod roster;
 mod server;
 
-pub use config::{ApiRoleConfig, ApiRoleConfigError};
+pub use config::{ApiRoleConfig, ApiRoleConfigError, ApiRoleMode, BootstrapSecret};
 pub use roster::ApiListenerValidationError;
 pub use server::{
     ApiRoleRuntimeError, ApiServer, ApiServerError, ApiServerServeError, run_from_environment,

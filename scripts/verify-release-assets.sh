@@ -40,6 +40,15 @@ case "${release_tag}" in
     ;;
 esac
 release_base_url="https://github.com/getployz/ployz/releases/download/${release_tag}"
+command -v python3 >/dev/null 2>&1 || {
+  echo "python3 is required to read corrosion-release.json" >&2
+  exit 1
+}
+expected_corrosion_embedded_version="$(python3 \
+  "${ROOT_DIR}/scripts/read-corrosion-release.py" \
+  "${ROOT_DIR}/corrosion-release.json" \
+  linux-amd64 \
+  embedded_version)"
 
 assets_dir="${PLOYZ_RELEASE_VERIFY_DIR:-}"
 channel_name="alpha"
@@ -218,10 +227,27 @@ verify_railpack_version() {
   fi
 }
 
-verify_platform linux-amd64 PLOYZ:ployz PLOYZD:ployzd PLOYZ_EBPF_CTL:ployz-ebpf-ctl PLOYZ_EBPF_TC:ployz-ebpf-tc PLOYZ_RAILPACK:railpack
+verify_corrosion_assets() {
+  local platform="$1"
+  local manifest="${assets_dir}/ployz-release-${platform}.env"
+  local embedded_version
+  embedded_version="$(require_value "${manifest}" PLOYZ_CORROSION_EMBEDDED_VERSION)"
+  if [ "${embedded_version}" != "${expected_corrosion_embedded_version}" ]; then
+    echo "release manifest ${manifest} has PLOYZ_CORROSION_EMBEDDED_VERSION=${embedded_version}, expected ${expected_corrosion_embedded_version}" >&2
+    exit 1
+  fi
+  verify_asset_pair \
+    "${manifest}" \
+    PLOYZ_CORROSION_SCHEMA \
+    "corrosion-schema-v1-${platform}.sql"
+}
+
+verify_platform linux-amd64 PLOYZ:ployz PLOYZD:ployzd PLOYZ_EBPF_CTL:ployz-ebpf-ctl PLOYZ_EBPF_TC:ployz-ebpf-tc PLOYZ_CORROSION:corrosion PLOYZ_RAILPACK:railpack
 verify_railpack_version linux-amd64
-verify_platform linux-arm64 PLOYZ:ployz PLOYZD:ployzd PLOYZ_EBPF_CTL:ployz-ebpf-ctl PLOYZ_EBPF_TC:ployz-ebpf-tc PLOYZ_RAILPACK:railpack
+verify_corrosion_assets linux-amd64
+verify_platform linux-arm64 PLOYZ:ployz PLOYZD:ployzd PLOYZ_EBPF_CTL:ployz-ebpf-ctl PLOYZ_EBPF_TC:ployz-ebpf-tc PLOYZ_CORROSION:corrosion PLOYZ_RAILPACK:railpack
 verify_railpack_version linux-arm64
+verify_corrosion_assets linux-arm64
 verify_platform darwin-amd64 PLOYZ:ployz
 verify_platform darwin-arm64 PLOYZ:ployz
 

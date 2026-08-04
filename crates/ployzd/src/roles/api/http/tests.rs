@@ -1,15 +1,19 @@
+use super::founding::authorize_founding;
 use super::roster::validate_listener_principal;
 use super::server::{
     ApiServerServeError, HttpBody, await_lens_state, await_server_stop,
-    fallback_terminal_sse_event, initial_watch_event, lens_snapshot_response, parse_get_route,
-    refusal_response, source_from_peer, sse_data, sse_event, sse_keepalive, sse_watch_body,
-    version_response,
+    fallback_terminal_sse_event, founding_route_disabled, initial_watch_event,
+    lens_snapshot_response, parse_founding_route, parse_route, refusal_response,
+    refusal_response_with_allow, source_from_peer, sse_data, sse_event, sse_keepalive,
+    sse_watch_body, version_response,
 };
-use super::{ApiListenerValidationError, ApiRoleConfig, ApiRoleConfigError};
+use super::{
+    ApiListenerValidationError, ApiRoleConfig, ApiRoleConfigError, ApiRoleMode, BootstrapSecret,
+};
 use crate::corrosion::{BearerToken, CorrosionClientBounds, CorrosionClientConfig};
 use bytes::Bytes;
 use http_body_util::BodyExt;
-use hyper::header::{ALLOW, CONTENT_TYPE, RETRY_AFTER};
+use hyper::header::{ALLOW, CONTENT_TYPE, HeaderValue, RETRY_AFTER};
 use hyper::{Method, Request, StatusCode};
 use ployz_core::corrosion::{
     AcceptedRosterPrincipal, MachineTransport, PeerTransport, Principal, resolve_source_principal,
@@ -209,6 +213,7 @@ fn production_configuration_preserves_a_concrete_listener() {
 
     assert_eq!(config.listen_addr(), listen_addr);
     assert_eq!(config.build(), "build-123");
+    assert!(matches!(config.mode(), ApiRoleMode::Ordinary));
 }
 
 #[test]
@@ -225,28 +230,55 @@ fn sse_keepalive_is_a_comment() {
 }
 
 #[test]
-fn only_get_accepts_exact_v2_routes() {
+fn every_exact_v2_route_accepts_only_its_declared_method() {
     assert_eq!(
-        parse_get_route(&Method::GET, "/version"),
+        parse_route(&Method::GET, "/version").map_err(|error| error.refusal),
         Ok(V2Route::Version)
     );
     assert_eq!(
-        parse_get_route(&Method::GET, "/lenses/services"),
+        parse_route(&Method::GET, "/lenses/services").map_err(|error| error.refusal),
         Ok(V2Route::Lens(LensCollection::Services))
     );
     assert_eq!(
-        parse_get_route(&Method::GET, "/lenses/services/watch"),
+        parse_route(&Method::GET, "/lenses/services/watch").map_err(|error| error.refusal),
         Ok(V2Route::LensWatch(LensCollection::Services))
     );
     assert_eq!(
-        parse_get_route(&Method::POST, "/version"),
+        parse_route(&Method::POST, "/founding").map_err(|error| error.refusal),
+        Ok(V2Route::Founding)
+    );
+    assert_eq!(
+        parse_route(&Method::POST, "/version").map_err(|error| error.refusal),
         Err(ApiRefusal::UnsupportedMethod {
             method: "POST".to_owned(),
         })
     );
+    let error = parse_route(&Method::GET, "/founding").expect_err("founding requires POST");
     assert_eq!(
-        parse_get_route(&Method::GET, "/lenses/services/extra"),
+        error.refusal,
+        ApiRefusal::UnsupportedMethod {
+            method: "GET".to_owned()
+        }
+    );
+    assert_eq!(error.allow, Some(ployz_core::V2Method::Post));
+    assert_eq!(
+        parse_route(&Method::GET, "/lenses/services/extra").map_err(|error| error.refusal),
         Err(ApiRefusal::UnsupportedRoute)
+    );
+}
+
+#[tokio::test]
+async fn founding_method_refusal_advertises_only_post() {
+    let response = refusal_response_with_allow(
+        ApiRefusal::UnsupportedMethod {
+            method: "GET".to_owned(),
+        },
+        Some(ployz_core::V2Method::Post),
+    );
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(
+        response.headers().get(ALLOW),
+        Some(&HeaderValue::from_static("POST"))
     );
 }
 
@@ -270,8 +302,70 @@ async fn version_is_success_json_with_the_core_capability_catalog() {
     assert_eq!(version.build, "build-123");
     assert_eq!(
         version.features,
-        vec![ApiFeature::Known(KnownApiFeature::Lenses)]
+        vec![
+            ApiFeature::Known(KnownApiFeature::Founding),
+            ApiFeature::Known(KnownApiFeature::Lenses),
+        ]
     );
+}
+
+#[test]
+fn bootstrap_secret_is_redacted_and_authenticates_without_retaining_plaintext() {
+    let secret = BootstrapSecret::new("founding-secret").expect("secret is valid");
+    assert!(secret.verifies(b"founding-secret"));
+    assert!(!secret.verifies(b"wrong-secret"));
+    assert_eq!(format!("{secret:?}"), "BootstrapSecret([REDACTED])");
+
+    let config = ApiRoleConfig::new_founding(
+        corrosion_config(),
+        cluster_id(),
+        machine_id(),
+        "[fd00::10]:9876".parse().expect("listen address"),
+        "build-123".to_owned(),
+        secret,
+    )
+    .expect("founding config is valid");
+    assert!(matches!(config.mode(), ApiRoleMode::Founding(_)));
+    assert!(!format!("{config:?}").contains("founding-secret"));
+}
+
+#[test]
+fn founding_authority_requires_mode_exact_local_source_and_secret() {
+    let listen: SocketAddr = "[fd00::10]:9876".parse().expect("listen address");
+    let local: SocketAddr = "[fd00::10]:40123".parse().expect("local peer");
+    let remote: SocketAddr = "[fd00::11]:40123".parse().expect("remote peer");
+    let authorization = HeaderValue::from_static("Bearer founding-secret");
+    let founding =
+        ApiRoleMode::Founding(BootstrapSecret::new("founding-secret").expect("bootstrap secret"));
+
+    assert!(authorize_founding(&founding, listen, local, Some(&authorization)).is_ok());
+    for refusal in [
+        authorize_founding(&ApiRoleMode::Ordinary, listen, local, Some(&authorization)),
+        authorize_founding(&founding, listen, remote, Some(&authorization)),
+        authorize_founding(
+            &founding,
+            listen,
+            local,
+            Some(&HeaderValue::from_static("Bearer wrong-secret")),
+        ),
+        authorize_founding(&founding, listen, local, None),
+    ] {
+        assert!(refusal.is_err());
+    }
+    assert_eq!(
+        authorize_founding(&ApiRoleMode::Ordinary, listen, local, Some(&authorization)),
+        Err(ApiRefusal::UnsupportedRoute)
+    );
+}
+
+#[test]
+fn ordinary_mode_hides_the_disabled_founding_route_for_every_method() {
+    for method in [Method::GET, Method::POST] {
+        assert!(parse_founding_route(&ApiRoleMode::Ordinary, &method, "/founding").is_none());
+        assert!(founding_route_disabled(&ApiRoleMode::Ordinary, "/founding"));
+    }
+    assert!(parse_founding_route(&ApiRoleMode::Ordinary, &Method::GET, "/version").is_none());
+    assert!(!founding_route_disabled(&ApiRoleMode::Ordinary, "/version"));
 }
 
 #[tokio::test]

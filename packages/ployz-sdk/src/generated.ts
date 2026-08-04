@@ -11,6 +11,7 @@ export const MAX_LOGS_TAIL_LINES = 1000 as const;
 export const API_MAJOR = 1 as const;
 
 export const KNOWN_API_FEATURES = [
+  "v2.founding",
   "v2.lenses",
 ] as const;
 
@@ -397,6 +398,20 @@ export type ExternalBuildPoolCapabilities = { pool_id: BuildPoolId, executors: A
 
 export type FailureMessage = Brand<string, "FailureMessage">;
 
+export type FoundingDriverEnrollment = { "kind": "on_host" } | { "kind": "ssh", peer_id: PeerId, document: PeerDocument, } | { "kind": "cloud", peer_id: PeerId, document: PeerDocument, };
+
+export type FoundingRefusal = { "kind": "invalid_request", reason: FoundingValidationError, } | { "kind": "foreign_state", requested_cluster_id: ClusterId, found_cluster_id: ClusterId, repair_command: FoundingRepairCommand, };
+
+export type FoundingRepairCommand = "ployz machine reset";
+
+export type FoundingRequest = { cluster_id: ClusterId, cluster: ClusterDocument, machine_id: MachineRowId, machine: MachineDocument, driver: FoundingDriverEnrollment, };
+
+export type FoundingResult = { "kind": "found" } | { "kind": "resumed" } | { "kind": "no_op" };
+
+export type FoundingRow = "cluster" | "machine" | "peer";
+
+export type FoundingValidationError = { "kind": "cluster_key_mismatch", key: ClusterId, document_cluster_id: ClusterId, } | { "kind": "document_cluster_mismatch", row: FoundingRow, expected: ClusterId, found: ClusterId, } | { "kind": "unsupported_document_version", row: FoundingRow, found: number, } | { "kind": "unsupported_provider", found: MeshProvider, } | { "kind": "machine_transport_provider_mismatch" } | { "kind": "peer_transport_provider_mismatch" } | { "kind": "machine_address_mismatch", stored: string, derived: string, } | { "kind": "peer_address_mismatch", stored: string, derived: string, } | { "kind": "machine_subnet_not_first", expected: MachineEndpointSubnet, found: MachineEndpointSubnet, } | { "kind": "machine_lifecycle_not_active", found: MachineLifecycle, } | { "kind": "storage_default_mismatch", cluster_default: StorageMode, machine_mode: StorageMode, } | { "kind": "invalid_provenance", row: FoundingRow, expected_machine_id: MachineRowId, found: Principal, };
+
 export type GatewayHttpFailure = { "failure": "proxy", message: string, };
 
 export type GatewayProcessAttempt = { "status": "current", route_count: number, } | { "status": "serving_last_known_good", route_count: number, message: string, } | { "status": "failed", message: string, };
@@ -497,7 +512,7 @@ export type JoinTokenFingerprint = Brand<string, "JoinTokenFingerprint">;
 
 export type JoinTokenRedeemedAt = Brand<string, "JoinTokenRedeemedAt">;
 
-export type KnownApiFeature = "v2.lenses";
+export type KnownApiFeature = "v2.founding" | "v2.lenses";
 
 export type LensCollection = "machines" | "services" | "containers" | "machine_status" | "operations";
 
