@@ -75,7 +75,7 @@ impl FirewallBackend {
                 allow_ufw_forward(bridge_interface, wireguard_interface, runner)
             }
             Self::Firewalld => Err(failure_message(format!(
-                "firewalld cannot safely express forwarding only between {wireguard_interface} and {bridge_interface} without owning the bridge's zone"
+                "firewalld cannot safely express forwarding only between {wireguard_interface} and {bridge_interface} without owning the bridge's zone; run `ufw --force enable && systemctl disable --now firewalld` to select the supported UFW path"
             ))),
             Self::None => {
                 allow_iptables_forward(wireguard_interface, bridge_interface, runner)?;
@@ -863,6 +863,11 @@ mod tests {
             .expect_err("firewalld needs a native scoped policy");
 
         assert!(error.as_str().contains("cannot safely express forwarding"));
+        assert!(
+            error
+                .as_str()
+                .contains("ufw --force enable && systemctl disable --now firewalld")
+        );
         assert!(runner.calls.is_empty());
     }
 
