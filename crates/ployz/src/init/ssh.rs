@@ -528,16 +528,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hostname_endpoint_is_resolved_before_remote_script_construction() {
-        let mut command = init(&["init", "root@localhost"]);
+    async fn ssh_ip_endpoint_is_resolved_before_remote_script_construction() {
+        let target: SshTarget = "root@203.0.113.7".parse().expect("target");
+        let mut command = init(&["init", target.as_str()]);
+        assert_eq!(command.wireguard_endpoint, None);
+
         resolve_command_endpoint(&mut command)
             .await
-            .expect("resolve localhost");
-        let endpoint = command.wireguard_endpoint.expect("resolved endpoint");
-        assert!(endpoint.ip().is_loopback());
+            .expect("resolve IP target");
+        let endpoint = "203.0.113.7:51820".parse().expect("endpoint");
+        assert_eq!(command.wireguard_endpoint, Some(endpoint));
+
+        let temp = tempfile::tempdir().expect("temp dir");
+        let key =
+            SshPeerKey::load_or_create(temp.path(), &target, "laptop".to_owned()).expect("key");
         assert_eq!(
-            endpoint.port(),
-            ployz_core::network::DEFAULT_WIREGUARD_LISTEN_PORT
+            key.remote_script(&command)
+                .matches("'--wireguard-endpoint' '203.0.113.7:51820'")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn single_hostname_resolution_selects_the_endpoint() {
+        let target: SshTarget = "root@machine.example".parse().expect("target");
+        let endpoint = "203.0.113.7:51820".parse().expect("endpoint");
+        assert_eq!(
+            choose_resolved_endpoint(target, vec![endpoint]).expect("single endpoint"),
+            endpoint
         );
     }
 
