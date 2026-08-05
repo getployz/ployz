@@ -25,7 +25,6 @@ const CORROSION_GOSSIP_PORT: u16 = 8_787;
 pub(super) enum CorrosionServiceChange {
     Enable,
     Restart,
-    Stop,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -375,10 +374,6 @@ fn corrosion_commands(
             "systemctl",
             vec!["restart".to_owned(), "ployz-corrosion.service".to_owned()],
         )],
-        (SupervisorBackend::Systemd, CorrosionServiceChange::Stop) => vec![(
-            "systemctl",
-            vec!["stop".to_owned(), "ployz-corrosion.service".to_owned()],
-        )],
         (SupervisorBackend::OpenRc, CorrosionServiceChange::Enable) => vec![(
             "rc-update",
             vec![
@@ -390,10 +385,6 @@ fn corrosion_commands(
         (SupervisorBackend::OpenRc, CorrosionServiceChange::Restart) => vec![(
             "rc-service",
             vec!["ployz-corrosion".to_owned(), "restart".to_owned()],
-        )],
-        (SupervisorBackend::OpenRc, CorrosionServiceChange::Stop) => vec![(
-            "rc-service",
-            vec!["ployz-corrosion".to_owned(), "stop".to_owned()],
         )],
     }
 }

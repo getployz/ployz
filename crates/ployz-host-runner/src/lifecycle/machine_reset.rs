@@ -2,19 +2,21 @@
 
 use std::fs;
 use std::path::Path;
+use std::time::Duration;
 
 use ployz_core::operation::FailureMessage;
 
 use crate::builtin_wireguard::DEFAULT_WIREGUARD_IFNAME;
 use crate::{
-    HostRunnerCommandRunner, PloyzdRole, SupervisorDirectories, SupervisorUnitTarget,
-    SystemHostRunnerCommandRunner,
+    HostRunnerCommandRunner, PloyzdRole, SupervisorBackend, SupervisorDirectories,
+    SupervisorUnitTarget, SystemHostRunnerCommandRunner,
 };
 
-use super::production::{CorrosionServiceChange, LinuxSubstrate};
+use super::production::LinuxSubstrate;
 
 const PLOYZ_STATE_DIRECTORY: &str = "/var/lib/ployz";
 const PRESERVED_STORAGE_DIRECTORIES: [&str; 2] = ["volumes", "zfs"];
+const CORROSION_STOP_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// Stops Ployz services and removes the local control-plane state that identifies
 /// this machine while preserving workload-volume storage.
@@ -36,6 +38,7 @@ pub fn reset_linux_machine(
     let mut profile = None;
     let directories = SupervisorDirectories::host_defaults();
     let mut substrate = LinuxSubstrate::new(state, runner, &mut profile, &directories);
+    let supervisor = substrate.supervisor()?;
     for role in [
         PloyzdRole::Keeper,
         PloyzdRole::Api,
@@ -47,9 +50,25 @@ pub fn reset_linux_machine(
             &SupervisorUnitTarget::PloyzdRole(role),
         )?;
     }
-    substrate.change_corrosion_service(CorrosionServiceChange::Stop)?;
+    drop(substrate);
+    stop_corrosion_service(supervisor, runner)?;
     remove_ployz_wireguard_interface(runner)?;
     remove_ployz_control_state(state)
+}
+
+fn stop_corrosion_service(
+    supervisor: SupervisorBackend,
+    runner: &mut impl HostRunnerCommandRunner,
+) -> Result<(), FailureMessage> {
+    let (program, args) = match supervisor {
+        SupervisorBackend::Systemd => ("systemctl", ["stop", "ployz-corrosion.service"]),
+        SupervisorBackend::OpenRc => ("rc-service", ["ployz-corrosion", "stop"]),
+    };
+    let output = runner.command_with_timeout(program, &args, CORROSION_STOP_TIMEOUT)?;
+    if output.success {
+        return Ok(());
+    }
+    Err(failure(output.failure))
 }
 
 fn remove_ployz_control_state(state: &Path) -> Result<(), FailureMessage> {
@@ -129,7 +148,9 @@ mod tests {
         linux: bool,
         uid: u32,
         wireguard_interface: WireguardInterface,
+        corrosion_stop_times_out: bool,
         calls: Vec<String>,
+        timeout_calls: Vec<(String, Duration)>,
     }
 
     impl RecordingRunner {
@@ -138,13 +159,13 @@ mod tests {
                 linux: true,
                 uid: 0,
                 wireguard_interface: WireguardInterface::Present,
+                corrosion_stop_times_out: false,
                 calls: Vec::new(),
+                timeout_calls: Vec::new(),
             }
         }
-    }
 
-    impl HostRunnerCommandRunner for RecordingRunner {
-        fn command(
+        fn respond(
             &mut self,
             program: &str,
             args: &[&str],
@@ -174,6 +195,36 @@ mod tests {
                 stdout_truncated: false,
                 failure,
             })
+        }
+    }
+
+    impl HostRunnerCommandRunner for RecordingRunner {
+        fn command(
+            &mut self,
+            program: &str,
+            args: &[&str],
+        ) -> Result<HostRunnerCommandOutput, FailureMessage> {
+            self.respond(program, args)
+        }
+
+        fn command_with_timeout(
+            &mut self,
+            program: &str,
+            args: &[&str],
+            timeout: Duration,
+        ) -> Result<HostRunnerCommandOutput, FailureMessage> {
+            self.timeout_calls
+                .push((format!("{program} {}", args.join(" ")), timeout));
+            if self.corrosion_stop_times_out
+                && program == "systemctl"
+                && args == ["stop", "ployz-corrosion.service"]
+            {
+                return Err(failure(format!(
+                    "systemctl stop ployz-corrosion.service timed out after {}s",
+                    timeout.as_secs()
+                )));
+            }
+            self.respond(program, args)
         }
 
         fn is_linux(&mut self) -> bool {
@@ -263,7 +314,9 @@ mod tests {
             linux: false,
             uid: 0,
             wireguard_interface: WireguardInterface::Present,
+            corrosion_stop_times_out: false,
             calls: Vec::new(),
+            timeout_calls: Vec::new(),
         };
         assert_eq!(
             reset_linux_machine(&state, &mut non_linux)
@@ -278,7 +331,9 @@ mod tests {
             linux: true,
             uid: 1_000,
             wireguard_interface: WireguardInterface::Present,
+            corrosion_stop_times_out: false,
             calls: Vec::new(),
+            timeout_calls: Vec::new(),
         };
         assert_eq!(
             reset_linux_machine(&state, &mut non_root)
@@ -330,5 +385,40 @@ mod tests {
             "Operation not permitted"
         );
         assert!(state.join("corrosion.db").exists());
+    }
+
+    #[test]
+    fn reset_preserves_control_state_when_corrosion_shutdown_reaches_its_bounded_timeout() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let state = directory.path().join("ployz");
+        fs::create_dir_all(&state).expect("Ployz state directory");
+        fs::write(state.join("corrosion.db"), "Corrosion rows").expect("Corrosion database");
+        let mut runner = RecordingRunner::root_linux();
+        runner.corrosion_stop_times_out = true;
+
+        assert_eq!(
+            reset_linux_machine(&state, &mut runner)
+                .expect_err("Corrosion timeout stops reset")
+                .to_string(),
+            "systemctl stop ployz-corrosion.service timed out after 90s"
+        );
+        assert!(state.join("corrosion.db").exists());
+        assert_eq!(
+            runner.timeout_calls,
+            [(
+                "systemctl stop ployz-corrosion.service".to_owned(),
+                CORROSION_STOP_TIMEOUT,
+            )]
+        );
+        assert_eq!(
+            runner.calls,
+            [
+                "cat /etc/os-release",
+                "systemctl stop ployzd-keeper.service",
+                "systemctl stop ployzd-api.service",
+                "systemctl stop ployzd-gateway.service",
+                "systemctl stop ployzd-dns.service",
+            ]
+        );
     }
 }
