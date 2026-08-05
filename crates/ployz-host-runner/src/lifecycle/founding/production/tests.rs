@@ -1,6 +1,7 @@
 use super::*;
 use crate::HostRunnerCommandOutput;
 use base64::Engine as _;
+use ployz_core::build::railpack_pins;
 use std::path::PathBuf;
 
 #[test]
@@ -784,7 +785,12 @@ fn fixture_artifacts() -> ReleaseArtifacts {
         ebpf_ctl: spec("ebpf-ctl", "/usr/local/bin/ployz-ebpf-ctl"),
         corrosion: spec("corrosion", "/usr/local/bin/corrosion"),
         corrosion_schema: spec("schema", "/usr/local/lib/ployz/corrosion-schema-v1.sql"),
-        railpack: spec("railpack", "/usr/local/bin/railpack"),
+        railpack: spec(
+            "railpack",
+            railpack_pins()
+                .expect("checked-in Railpack pins")
+                .install_path(),
+        ),
     }
 }
 

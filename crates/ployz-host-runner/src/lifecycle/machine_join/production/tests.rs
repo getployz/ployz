@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 
+use ployz_core::build::railpack_pins;
 use ployz_core::corrosion::StoredRow;
 use ployz_core::join::JoinStorageChoice;
 use ployz_core::machine::MachineLifecycle;
@@ -404,6 +405,9 @@ fn query_token_environment_and_artifact_contracts_are_exact() {
     );
     assert!(config.contains("authz.bearer-token = \"super-secret\""));
 
+    let railpack_install_path = railpack_pins()
+        .expect("checked-in Railpack pins")
+        .install_path();
     assert_eq!(
         [
             "/usr/local/bin/ployzd",
@@ -411,7 +415,7 @@ fn query_token_environment_and_artifact_contracts_are_exact() {
             "/usr/local/bin/ployz-ebpf-ctl",
             "/usr/local/bin/corrosion",
             "/usr/local/lib/ployz/corrosion-schema-v1.sql",
-            "/usr/local/bin/railpack",
+            railpack_install_path,
         ]
         .map(|path| artifact_kind(path).expect("known artifact")),
         [

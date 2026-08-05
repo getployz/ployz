@@ -1,6 +1,7 @@
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::str::FromStr;
 
+use ployz_core::build::railpack_pins;
 use ployz_core::corrosion::{
     AutomaticHostnameMode, ClusterDocument, CorrosionDocumentVersion, CorrosionTimestamp,
     MachineDocument, MachineStorageSelection, MachineStorageSelectionReason, MachineTransport,
@@ -113,11 +114,21 @@ fn install_artifact(name: &str, install_path: &str) -> InstallArtifactSpec {
 }
 
 fn required_install_artifacts() -> Vec<InstallArtifactSpec> {
-    JoinMachineSubstrate::REQUIRED_INSTALL_PATHS
-        .into_iter()
-        .enumerate()
-        .map(|(index, install_path)| install_artifact(&format!("artifact-{index}"), install_path))
-        .collect()
+    let railpack_install_path = railpack_pins()
+        .expect("checked-in Railpack pins")
+        .install_path();
+    [
+        "/usr/local/bin/ployzd",
+        "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
+        "/usr/local/bin/ployz-ebpf-ctl",
+        "/usr/local/bin/corrosion",
+        "/usr/local/lib/ployz/corrosion-schema-v1.sql",
+        railpack_install_path,
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, install_path)| install_artifact(&format!("artifact-{index}"), install_path))
+    .collect()
 }
 
 #[test]

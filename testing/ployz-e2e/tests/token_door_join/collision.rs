@@ -6,7 +6,7 @@ use bollard::Docker;
 use ployz_core::corrosion::{MachineDocument, MachineTransport, Principal};
 use ployz_core::ids::MachineRowId;
 use ployz_core::network::MachineEndpointSubnet;
-use ployz_e2e::dind::{DindMachine, exec_ok, require};
+use ployz_e2e::dind::{DindMachine, ExecOutcome, exec_in_container, require};
 use serde_json::json;
 use std::time::Instant;
 
@@ -50,19 +50,29 @@ pub(super) async fn force_collision_and_wait_for_higher_ulid_repair(
                     &joiner_row.document,
                     &repaired.document,
                 )?;
-                let docker_subnet = docker_network_subnet(store.docker, joiner).await?;
-                if docker_subnet == replacement {
-                    let winner = roster
-                        .get(&founder_row.id)
-                        .ok_or_else(|| "collision winner disappeared".to_owned())?;
-                    return require(
-                        machine_subnet(&winner.document)? == collided,
-                        "lower-ULID collision winner changed its subnet",
-                    );
+                match docker_network_subnet(store.docker, joiner).await? {
+                    DockerNetworkObservation::Present(docker_subnet)
+                        if docker_subnet == replacement =>
+                    {
+                        let winner = roster
+                            .get(&founder_row.id)
+                            .ok_or_else(|| "collision winner disappeared".to_owned())?;
+                        return require(
+                            machine_subnet(&winner.document)? == collided,
+                            "lower-ULID collision winner changed its subnet",
+                        );
+                    }
+                    DockerNetworkObservation::Present(docker_subnet) => {
+                        last = format!(
+                            "row repaired to {replacement}, but Docker network remains {docker_subnet}"
+                        );
+                    }
+                    DockerNetworkObservation::Absent => {
+                        last = format!(
+                            "row repaired to {replacement}, but Docker network is temporarily absent"
+                        );
+                    }
                 }
-                last = format!(
-                    "row repaired to {replacement}, but Docker network remains {docker_subnet}"
-                );
             } else {
                 last = "higher-ULID row still carries the duplicated subnet".to_owned();
             }
@@ -105,10 +115,19 @@ fn assert_only_local_subnet_was_repaired(
     )
 }
 
-async fn docker_network_subnet(docker: &Docker, machine: &DindMachine) -> Result<String, String> {
-    let outcome = exec_ok(
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DockerNetworkObservation {
+    Present(String),
+    Absent,
+}
+
+async fn docker_network_subnet(
+    docker: &Docker,
+    machine: &DindMachine,
+) -> Result<DockerNetworkObservation, String> {
+    let outcome = exec_in_container(
         docker,
-        machine,
+        &machine.container_id,
         &[
             "docker",
             "network",
@@ -118,6 +137,74 @@ async fn docker_network_subnet(docker: &Docker, machine: &DindMachine) -> Result
             "{{(index .IPAM.Config 0).Subnet}}",
         ],
     )
-    .await?;
-    Ok(outcome.stdout.trim().to_owned())
+    .await
+    .map_err(|error| error.to_string())?;
+    classify_docker_network_inspect(&outcome)
+}
+
+fn classify_docker_network_inspect(
+    outcome: &ExecOutcome,
+) -> Result<DockerNetworkObservation, String> {
+    if outcome.success() {
+        return Ok(DockerNetworkObservation::Present(
+            outcome.stdout.trim().to_owned(),
+        ));
+    }
+    if outcome.stderr.trim() == "Error response from daemon: network ployz not found" {
+        return Ok(DockerNetworkObservation::Absent);
+    }
+    Err(format!(
+        "Docker network inspect failed: exit {} stdout={:?} stderr={:?}",
+        outcome.exit_code,
+        outcome.stdout.trim(),
+        outcome.stderr.trim()
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exact_missing_network_is_a_transient_absent_observation() {
+        let outcome = ExecOutcome {
+            exit_code: 1,
+            stdout: String::new(),
+            stderr: "Error response from daemon: network ployz not found\n".to_owned(),
+        };
+
+        assert_eq!(
+            classify_docker_network_inspect(&outcome),
+            Ok(DockerNetworkObservation::Absent)
+        );
+    }
+
+    #[test]
+    fn successful_inspect_preserves_the_exact_observed_subnet() {
+        let outcome = ExecOutcome {
+            exit_code: 0,
+            stdout: "10.210.42.0/24\n".to_owned(),
+            stderr: String::new(),
+        };
+
+        assert_eq!(
+            classify_docker_network_inspect(&outcome),
+            Ok(DockerNetworkObservation::Present(
+                "10.210.42.0/24".to_owned()
+            ))
+        );
+    }
+
+    #[test]
+    fn every_other_inspect_failure_remains_fatal() {
+        let outcome = ExecOutcome {
+            exit_code: 1,
+            stdout: String::new(),
+            stderr: "Error response from daemon: permission denied\n".to_owned(),
+        };
+
+        let error = classify_docker_network_inspect(&outcome)
+            .expect_err("a non-transient Docker failure must remain fatal");
+        assert!(error.contains("permission denied"));
+    }
 }

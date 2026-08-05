@@ -1,4 +1,5 @@
 use bollard::Docker;
+use ployz_core::build::railpack_pins;
 use ployz_core::corrosion::derive_builtin_wireguard_member;
 use ployz_core::ids::ClusterId;
 use ployz_core::install::{
@@ -32,7 +33,7 @@ const DOOR_PRIVATE_KEY_PATH: &str = "/var/lib/ployz/door.key";
 const DOOR_CERTIFICATE_PATH: &str = "/var/lib/ployz/door.crt";
 const DOOR_FINGERPRINT_PATH: &str = "/var/lib/ployz/door.fingerprint";
 const JOIN_SUBSTRATE_PATH: &str = "/var/lib/ployz/join-substrate.json";
-const JOIN_SUBSTRATE_ARTIFACTS: [(&str, &str); 6] = [
+const FIXED_JOIN_SUBSTRATE_ARTIFACTS: [(&str, &str); 5] = [
     ("ployzd", "/usr/local/bin/ployzd"),
     ("ployz-ebpf-tc", "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"),
     ("ployz-ebpf-ctl", "/usr/local/bin/ployz-ebpf-ctl"),
@@ -41,7 +42,6 @@ const JOIN_SUBSTRATE_ARTIFACTS: [(&str, &str); 6] = [
         "corrosion-schema-v1.sql",
         "/usr/local/lib/ployz/corrosion-schema-v1.sql",
     ),
-    ("railpack", "/usr/local/bin/railpack"),
 ];
 
 const WAIT_BUDGET: Duration = Duration::from_secs(45);
@@ -342,8 +342,9 @@ async fn render_installed_join_substrate(
     docker: &Docker,
     machine: &DindMachine,
 ) -> Result<String, String> {
-    let mut digests = Vec::with_capacity(JOIN_SUBSTRATE_ARTIFACTS.len());
-    for (artifact, _) in JOIN_SUBSTRATE_ARTIFACTS {
+    let artifacts = join_substrate_artifacts()?;
+    let mut digests = Vec::with_capacity(artifacts.len());
+    for (artifact, _) in artifacts {
         let source = format!("/opt/ployz/artifacts/{artifact}");
         let outcome = exec_ok(docker, machine, &["sha256sum", &source]).await?;
         let Some(digest) = outcome.stdout.split_whitespace().next() else {
@@ -356,14 +357,15 @@ async fn render_installed_join_substrate(
 }
 
 fn join_substrate_from_digests(digests: &[String]) -> Result<JoinMachineSubstrate, String> {
-    if digests.len() != JOIN_SUBSTRATE_ARTIFACTS.len() {
+    let artifact_contract = join_substrate_artifacts()?;
+    if digests.len() != artifact_contract.len() {
         return Err(format!(
             "join substrate requires {} artifact digests, got {}",
-            JOIN_SUBSTRATE_ARTIFACTS.len(),
+            artifact_contract.len(),
             digests.len()
         ));
     }
-    let artifacts = JOIN_SUBSTRATE_ARTIFACTS
+    let artifacts = artifact_contract
         .into_iter()
         .zip(digests)
         .map(|((artifact, install_path), digest)| {
@@ -376,6 +378,13 @@ fn join_substrate_from_digests(digests: &[String]) -> Result<JoinMachineSubstrat
         artifacts,
     )
     .map_err(|error| error.to_string())
+}
+
+fn join_substrate_artifacts() -> Result<Vec<(&'static str, &'static str)>, String> {
+    let mut artifacts = FIXED_JOIN_SUBSTRATE_ARTIFACTS.to_vec();
+    let railpack = railpack_pins().map_err(|error| error.to_string())?;
+    artifacts.push(("railpack", railpack.install_path()));
+    Ok(artifacts)
 }
 
 fn fixture_install_artifact(
@@ -735,7 +744,9 @@ mod tests {
         assert!(door.private_key.contains("BEGIN PRIVATE KEY"));
         assert!(door.certificate.contains("BEGIN CERTIFICATE"));
         assert_eq!(door.fingerprint.trim().len(), 64);
-        let digests = (0..JOIN_SUBSTRATE_ARTIFACTS.len())
+        let digests = (0..join_substrate_artifacts()
+            .expect("checked-in Railpack pins")
+            .len())
             .map(|index| format!("{index:02x}").repeat(32))
             .collect::<Vec<_>>();
         join_substrate_from_digests(&digests).expect("schema-valid complete join substrate");

@@ -4,6 +4,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
+use crate::build::railpack_pins;
 use crate::install::{ExactPloyzVersion, InstallArtifactSpec};
 
 use super::JoinAcceptanceValidationError;
@@ -29,15 +30,6 @@ pub struct JoinMachineSubstrate {
 }
 
 impl JoinMachineSubstrate {
-    pub const REQUIRED_INSTALL_PATHS: [&'static str; 6] = [
-        "/usr/local/bin/ployzd",
-        "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
-        "/usr/local/bin/ployz-ebpf-ctl",
-        "/usr/local/bin/corrosion",
-        "/usr/local/lib/ployz/corrosion-schema-v1.sql",
-        "/usr/local/bin/railpack",
-    ];
-
     pub fn try_new(
         ployz_version: ExactPloyzVersion,
         corrosion_version: impl Into<String>,
@@ -72,10 +64,11 @@ impl JoinMachineSubstrate {
             return Err(JoinAcceptanceValidationError::MissingCorrosionVersion);
         }
 
+        let required_install_paths = required_install_paths()?;
         let mut destinations = BTreeSet::new();
         for artifact in &self.artifacts {
             let destination = artifact.install_path.as_str();
-            if !Self::REQUIRED_INSTALL_PATHS.contains(&destination) {
+            if !required_install_paths.contains(&destination) {
                 return Err(JoinAcceptanceValidationError::UnknownInstallArtifact {
                     install_path: destination.to_owned(),
                 });
@@ -86,7 +79,7 @@ impl JoinMachineSubstrate {
                 });
             }
         }
-        for required in Self::REQUIRED_INSTALL_PATHS {
+        for required in required_install_paths {
             if !destinations.contains(required) {
                 return Err(JoinAcceptanceValidationError::MissingInstallArtifact {
                     install_path: required.to_owned(),
@@ -95,6 +88,21 @@ impl JoinMachineSubstrate {
         }
         Ok(())
     }
+}
+
+fn required_install_paths() -> Result<[&'static str; 6], JoinAcceptanceValidationError> {
+    let railpack =
+        railpack_pins().map_err(|error| JoinAcceptanceValidationError::InvalidRailpackPins {
+            detail: error.to_string(),
+        })?;
+    Ok([
+        "/usr/local/bin/ployzd",
+        "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
+        "/usr/local/bin/ployz-ebpf-ctl",
+        "/usr/local/bin/corrosion",
+        "/usr/local/lib/ployz/corrosion-schema-v1.sql",
+        railpack.install_path(),
+    ])
 }
 
 impl TryFrom<JoinMachineSubstrateWire> for JoinMachineSubstrate {

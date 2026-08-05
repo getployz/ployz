@@ -4,18 +4,12 @@ use ployz::init::ssh::SshPeerKey;
 use ployz::mesh::context::{SSH_CONTEXT_HANDOFF_PREFIX, SshContextHandoff};
 use ployz_core::corrosion::{MachineDocument, MachineTransport, SqliteValue};
 use ployz_core::ids::{MachineRowId, TokenId};
-use ployz_core::join::{
-    JoinBlob, MachineEndpointSetReply, MachineEndpointSetRequest, TokenCreateRefusal,
-};
-use ployz_core::machine::MachineName;
-use ployz_core::{MACHINE_ENDPOINT_ROUTE_PREFIX, TOKEN_CREATE_ROUTE};
+use ployz_core::join::JoinBlob;
 use ployz_e2e::dind::{
-    DindMachine, ExecOutcome, RELEASE_MANIFEST, corrosion_query, env_value, exec_in_container,
-    exec_ok, require,
+    DindMachine, ExecOutcome, RELEASE_MANIFEST, corrosion_query, exec_in_container, exec_ok,
+    require,
 };
-use serde::Serialize;
-use serde::de::DeserializeOwned;
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::Path;
@@ -91,45 +85,34 @@ fn parse_handoff(stdout: &str) -> Result<SshContextHandoff, String> {
     SshContextHandoff::decode_handoff(line).map_err(|error| error.to_string())
 }
 
-pub(super) async fn founding_api_address(
-    docker: &Docker,
-    machine: &DindMachine,
-) -> Result<String, String> {
-    let env = exec_ok(docker, machine, &["cat", "/var/lib/ployz/ployzd.env"])
-        .await?
-        .stdout;
-    env_value(&env, "PLOYZ_API_LISTEN_ADDR")
-}
-
 pub(super) async fn assert_missing_endpoint_refuses_without_a_token(
-    docker: &Docker,
-    machine: &DindMachine,
-    api_address: &str,
-    corrosion_address: &str,
-    corrosion_token: &str,
+    store: CorrosionAccess<'_>,
+    cli: &Path,
+    home: &Path,
 ) -> Result<(), String> {
-    let refusal: TokenCreateRefusal = local_api_json(
-        docker,
-        machine,
-        api_address,
-        TOKEN_CREATE_ROUTE,
-        &json!({"ttl_seconds": 3600}),
-    )
-    .await?;
-    let TokenCreateRefusal::NoAdvertisedDoorEndpoint { repair_command } = refusal else {
-        return Err(format!(
-            "missing endpoint returned the wrong refusal: {refusal:?}"
-        ));
-    };
+    let refused = run_cli(
+        cli,
+        home,
+        ["token", "create", "--ttl", "1h"].map(str::to_owned),
+    )?;
     require(
-        repair_command == "ployz machine endpoint set <machine> <ip:wireguard-port>",
-        format!("token refusal named the wrong repair command: {repair_command}"),
+        !refused.status.success(),
+        "token create without an advertised door endpoint unexpectedly succeeded",
+    )?;
+    let expected = "cannot create a join token because no public door endpoint is advertised; run `ployz machine endpoint set <machine> <ip:wireguard-port>`\n";
+    require(
+        refused.stdout.is_empty() && refused.stderr == expected.as_bytes(),
+        format!(
+            "token create returned the wrong refusal: stdout={} stderr={}",
+            String::from_utf8_lossy(&refused.stdout),
+            String::from_utf8_lossy(&refused.stderr)
+        ),
     )?;
     let rows = corrosion_query(
-        docker,
-        machine,
-        corrosion_address,
-        corrosion_token,
+        store.docker,
+        store.machine,
+        store.address,
+        store.token,
         "SELECT COUNT(*) FROM tokens",
     )
     .await?;
@@ -139,69 +122,35 @@ pub(super) async fn assert_missing_endpoint_refuses_without_a_token(
     )
 }
 
-pub(super) async fn set_endpoint_on_local_public_api(
-    docker: &Docker,
-    machine: &DindMachine,
-    api_address: &str,
+pub(super) fn handoff_with_known_endpoint(
+    handoff: SshContextHandoff,
     endpoint: SocketAddr,
-) -> Result<MachineEndpointSetReply, String> {
-    let reply: MachineEndpointSetReply = local_api_json(
-        docker,
-        machine,
-        api_address,
-        MACHINE_ENDPOINT_ROUTE_PREFIX,
-        &MachineEndpointSetRequest {
-            machine_name: MachineName::try_new(FOUNDER_NAME).map_err(|error| error.to_string())?,
-            endpoint,
+) -> Result<SshContextHandoff, String> {
+    let SshContextHandoff {
+        cluster_id,
+        provider,
+        machine_transport,
+    } = handoff;
+    let machine_transport = match machine_transport {
+        MachineTransport::Wireguard {
+            pubkey,
+            addr_v6,
+            endpoint: _,
+            subnet_v4,
+        } => MachineTransport::Wireguard {
+            pubkey,
+            addr_v6,
+            endpoint: Some(endpoint),
+            subnet_v4,
         },
-    )
-    .await?;
-    require(
-        matches!(&reply.machine.transport, MachineTransport::Wireguard { endpoint: Some(found), .. } if *found == endpoint),
-        "endpoint-set reply did not carry the requested endpoint",
-    )?;
-    Ok(reply)
-}
-
-async fn local_api_json<Request, Reply>(
-    docker: &Docker,
-    machine: &DindMachine,
-    api_address: &str,
-    route: &str,
-    request: &Request,
-) -> Result<Reply, String>
-where
-    Request: Serialize + ?Sized,
-    Reply: DeserializeOwned,
-{
-    let body = serde_json::to_string(request).map_err(|error| error.to_string())?;
-    let url = format!("http://{api_address}{route}");
-    let outcome = exec_ok(
-        docker,
-        machine,
-        &[
-            "curl",
-            "--noproxy",
-            "*",
-            "--silent",
-            "--show-error",
-            "--max-time",
-            "5",
-            "--request",
-            "POST",
-            "--header",
-            "Content-Type: application/json",
-            "--data-binary",
-            &body,
-            &url,
-        ],
-    )
-    .await?;
-    serde_json::from_str(outcome.stdout.trim()).map_err(|error| {
-        format!(
-            "{route} returned invalid JSON ({error}): {}",
-            outcome.stdout
-        )
+        MachineTransport::Tailscale { .. } => {
+            return Err("founding handoff does not use builtin WireGuard".to_owned());
+        }
+    };
+    Ok(SshContextHandoff {
+        cluster_id,
+        provider,
+        machine_transport,
     })
 }
 
@@ -355,4 +304,30 @@ pub(super) async fn wait_for_command(
         tokio::time::sleep(WAIT_DELAY).await;
     }
     Err(format!("timed out waiting for {description}: {last}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn operator_handoff_uses_known_outer_endpoint_without_changing_mesh_identity() {
+        let handoff = SshContextHandoff::decode_handoff(&format!(
+            "{SSH_CONTEXT_HANDOFF_PREFIX}{{\"cluster_id\":\"01ARZ3NDEKTSV4RRFFQ69G5FAV\",\"provider\":\"builtin_wireguard\",\"machine_transport\":{{\"kind\":\"wireguard\",\"pubkey\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\",\"addr_v6\":\"fd00::10\",\"endpoint\":null,\"subnet_v4\":\"10.210.10.0/24\"}}}}"
+        ))
+        .expect("founding handoff");
+        let cluster_id = handoff.cluster_id.clone();
+        let endpoint = "192.0.2.10:51820".parse().expect("outer endpoint");
+
+        let dialable = handoff_with_known_endpoint(handoff, endpoint).expect("dialable handoff");
+
+        assert_eq!(dialable.cluster_id, cluster_id);
+        assert!(matches!(
+            dialable.machine_transport,
+            MachineTransport::Wireguard {
+                endpoint: Some(found),
+                ..
+            } if found == endpoint
+        ));
+    }
 }

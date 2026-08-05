@@ -15,12 +15,12 @@ use bollard::Docker;
 use collision::force_collision_and_wait_for_higher_ulid_repair;
 use fixture::{
     CorrosionAccess, assert_missing_endpoint_refuses_without_a_token, extract_join_blob,
-    extract_token_id, founding_api_address, machine_subnet, require_success, run_cli, run_founding,
-    set_endpoint_on_local_public_api, wait_for_machine_roster,
+    extract_token_id, handoff_with_known_endpoint, machine_subnet, require_success, run_cli,
+    run_founding, wait_for_machine_roster,
 };
 use ployz::commands::SshTarget;
 use ployz::init::ssh::{SshPeerKey, default_config_home};
-use ployz::mesh::context::{OperatorContextStore, SshContextHandoff};
+use ployz::mesh::context::OperatorContextStore;
 use ployz_core::network::DEFAULT_WIREGUARD_LISTEN_PORT;
 use ployz_e2e::dind::{
     DindCluster, DindClusterSpec, MachineSpec, artifact_dir, connect_docker, corrosion_access,
@@ -99,34 +99,22 @@ async fn exercise_token_door(docker: &Docker, cluster: &DindCluster) -> Result<(
         .map_err(|error| error.to_string())?;
 
     let initial_handoff = run_founding(docker, founder, &operator).await?;
-    let (corrosion_address, corrosion_token) = corrosion_access(docker, founder).await?;
-    let api_address = founding_api_address(docker, founder).await?;
-    assert_missing_endpoint_refuses_without_a_token(
-        docker,
-        founder,
-        &api_address,
-        &corrosion_address,
-        &corrosion_token,
-    )
-    .await?;
-
     let founder_endpoint = SocketAddr::new(founder.bridge_ip, DEFAULT_WIREGUARD_LISTEN_PORT);
-    // Normal SSH init infers this endpoint before it persists a laptop context.
-    // This hidden driver-peer fixture deliberately omits it to exercise the
-    // refusal, so it uses the same public HTTP mutation once to make that
-    // context dialable; the shipped CLI call below remains the user-path proof.
-    let endpoint_reply =
-        set_endpoint_on_local_public_api(docker, founder, &api_address, founder_endpoint).await?;
-    let handoff = SshContextHandoff {
-        cluster_id: initial_handoff.cluster_id,
-        provider: initial_handoff.provider,
-        machine_transport: endpoint_reply.machine.transport,
-    };
+    let handoff = handoff_with_known_endpoint(initial_handoff, founder_endpoint)?;
     OperatorContextStore::new(&config_home)
         .persist(&target, handoff, &operator)
         .map_err(|error| error.to_string())?;
 
     let cli = artifact_dir().join("ployz");
+    let (corrosion_address, corrosion_token) = corrosion_access(docker, founder).await?;
+    let store = CorrosionAccess {
+        docker,
+        machine: founder,
+        address: &corrosion_address,
+        token: &corrosion_token,
+    };
+    assert_missing_endpoint_refuses_without_a_token(store, &cli, temporary_home.path()).await?;
+
     let endpoint_set = run_cli(
         &cli,
         temporary_home.path(),
@@ -149,12 +137,6 @@ async fn exercise_token_door(docker: &Docker, cluster: &DindCluster) -> Result<(
     let created_stdout = String::from_utf8_lossy(&created.stdout);
     let blob = extract_join_blob(&created_stdout)?;
     let token_id = extract_token_id(&created_stdout)?;
-    let store = CorrosionAccess {
-        docker,
-        machine: founder,
-        address: &corrosion_address,
-        token: &corrosion_token,
-    };
     require(
         created_stdout.matches(blob.expose()).count() == 1,
         "token create printed the join blob more than once",
