@@ -37,6 +37,59 @@ const LENS_RECOVERY_MAX_BACKOFF: Duration = Duration::from_secs(1);
 pub(super) type HttpBody = BoxBody<Bytes, Infallible>;
 pub(super) type LensState = Result<LensSnapshot, ApiRefusal>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum BoundedBodyError {
+    TooLarge,
+    Deadline,
+    Read,
+}
+
+pub(super) async fn read_bounded_body<Payload>(
+    body: Payload,
+    limit: usize,
+    timeout: Duration,
+) -> Result<Vec<u8>, BoundedBodyError>
+where
+    Payload: hyper::body::Body<Data = Bytes> + Unpin,
+{
+    tokio::time::timeout(timeout, collect_bounded_body(body, limit))
+        .await
+        .map_err(|_| BoundedBodyError::Deadline)?
+}
+
+async fn collect_bounded_body<Payload>(
+    mut body: Payload,
+    limit: usize,
+) -> Result<Vec<u8>, BoundedBodyError>
+where
+    Payload: hyper::body::Body<Data = Bytes> + Unpin,
+{
+    let mut bytes = Vec::new();
+    while let Some(frame) = body.frame().await {
+        let frame = frame.map_err(|_| BoundedBodyError::Read)?;
+        let Ok(data) = frame.into_data() else {
+            continue;
+        };
+        append_bounded_body_chunk(&mut bytes, &data, limit)?;
+    }
+    Ok(bytes)
+}
+
+pub(super) fn append_bounded_body_chunk(
+    body: &mut Vec<u8>,
+    chunk: &[u8],
+    limit: usize,
+) -> Result<(), BoundedBodyError> {
+    let Some(total) = body.len().checked_add(chunk.len()) else {
+        return Err(BoundedBodyError::TooLarge);
+    };
+    if total > limit {
+        return Err(BoundedBodyError::TooLarge);
+    }
+    body.extend_from_slice(chunk);
+    Ok(())
+}
+
 pub(super) fn json_response(status: StatusCode, body: Vec<u8>) -> Response<HttpBody> {
     let mut response = Response::new(Full::new(Bytes::from(body)).boxed());
     *response.status_mut() = status;

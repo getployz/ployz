@@ -249,7 +249,7 @@ pub enum JoinDoorClientError {
     OverallTimedOut,
     #[error("every advertised join door failed: {attempts:?}")]
     AllEndpointsFailed { attempts: Vec<JoinDoorAttempt> },
-    #[error("join door refused admission: {refusal:?}")]
+    #[error("join door refused admission: {refusal}")]
     Refused { refusal: JoinDoorRefusal },
     #[error("join door accepted a different member kind than requested")]
     WrongAcceptanceKind,

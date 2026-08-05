@@ -1,5 +1,9 @@
 //! Bounded Corrosion reads and parameterized writes used by API mutations.
 
+mod error;
+
+pub(super) use error::MutationStoreError;
+
 use serde::Serialize;
 
 use ployz_core::corrosion::{
@@ -9,10 +13,7 @@ use ployz_core::corrosion::{
 };
 use ployz_core::ids::{ClusterId, MachineRowId, PeerId, TokenId};
 
-use crate::corrosion::{
-    CorrosionClient, CorrosionClientError, StoredRowCollectionError, StoredRowLimit,
-    collect_stored_rows,
-};
+use crate::corrosion::{CorrosionClient, StoredRowLimit, collect_stored_rows};
 
 const MAX_MUTATION_ROWS: usize = 10_000;
 
@@ -668,38 +669,6 @@ fn update_wireguard_endpoint_statement(
             SqliteParameter::Text(observed),
         ],
     )
-}
-
-#[derive(Debug, thiserror::Error)]
-pub(super) enum MutationStoreError {
-    #[error("local Corrosion request failed: {0}")]
-    Client(#[from] CorrosionClientError),
-    #[error("stored-row collection failed: {0}")]
-    StoredRows(#[from] StoredRowCollectionError),
-    #[error("accepted cluster row is missing")]
-    MissingCluster,
-    #[error("accepted cluster row is invalid or ambiguous")]
-    InvalidCluster,
-    #[error("accepted {table:?} row has an invalid id: {detail}")]
-    InvalidAcceptedId {
-        table: CorrosionTable,
-        detail: String,
-    },
-    #[error("{table:?} contains duplicate primary key {id}")]
-    DuplicatePrimaryKey { table: CorrosionTable, id: String },
-    #[error("could not encode {table:?} document: {detail}")]
-    Encode {
-        table: CorrosionTable,
-        detail: String,
-    },
-    #[error("unexpected {table:?} write result for {id}: {detail}")]
-    UnexpectedWriteResult {
-        table: CorrosionTable,
-        id: String,
-        detail: String,
-    },
-    #[error("machine {machine_id} changed while its endpoint mutation was being committed")]
-    ConcurrentMachineMutation { machine_id: MachineRowId },
 }
 
 #[cfg(test)]

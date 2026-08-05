@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 use defguard_wireguard_rs::key::Key;
 use ployz_core::ids::{ClusterId, MachineRowId};
 use ployz_core::join::{
-    JOIN_RESET_COMMAND, JoinDoorCertFingerprint, JoinMachineSubstrate, MachineJoinRequest,
+    JOIN_RESET_COMMAND, JoinArrival, JoinArrivalDisposition, JoinDoorCertFingerprint,
+    JoinMachineSubstrate, MachineJoinRequest, classify_join_arrival,
 };
 use ployz_core::network::WireGuardPublicKey;
 use serde::de::DeserializeOwned;
@@ -92,7 +93,12 @@ impl MachineJoinStateDirectory {
         requested: &JoinDoorCertFingerprint,
     ) -> Result<MachineJoinInspection, MachineJoinStateError> {
         if self.has_founding_evidence() {
-            return Ok(refused());
+            return Ok(classify_local_arrival(
+                requested,
+                JoinArrival::Founding,
+                None,
+                false,
+            ));
         }
         let identity = self.read_identity()?;
         let accepted = self.acceptance_path().exists();
@@ -105,17 +111,31 @@ impl MachineJoinStateDirectory {
             {
                 return Ok(refused());
             }
-            return Ok(MachineJoinInspection::Clean);
+            return Ok(classify_local_arrival(
+                requested,
+                JoinArrival::Clean,
+                None,
+                false,
+            ));
         };
-        if identity.door_fingerprint != *requested {
+        if complete && !accepted {
             return Ok(refused());
         }
-        match (accepted, complete) {
-            (false, false) => Ok(MachineJoinInspection::ReadyToRedeem { identity }),
-            (true, false) => Ok(MachineJoinInspection::ReadyToActivate { identity }),
-            (true, true) => Ok(MachineJoinInspection::NoOp { identity }),
-            (false, true) => Ok(refused()),
-        }
+        let arrival = if complete {
+            JoinArrival::Complete {
+                persisted_door_fingerprint: identity.door_fingerprint.clone(),
+            }
+        } else {
+            JoinArrival::Partial {
+                persisted_door_fingerprint: identity.door_fingerprint.clone(),
+            }
+        };
+        Ok(classify_local_arrival(
+            requested,
+            arrival,
+            Some(identity),
+            accepted,
+        ))
     }
 
     pub fn ensure_identity(
@@ -150,92 +170,55 @@ impl MachineJoinStateDirectory {
         &self,
         accepted: &impl Serialize,
     ) -> Result<(), MachineJoinStateError> {
-        let bytes = serde_json::to_vec(accepted)
-            .map_err(|error| state_error("encode machine join acceptance", error))?;
-        match std::fs::read(self.acceptance_path()) {
-            Ok(existing) if existing == bytes => return Ok(()),
-            Ok(_) => return Err(MachineJoinStateError::AcceptanceAlreadyPersisted),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(state_error("read machine join acceptance", error)),
-        }
-        write_durable_file(&self.0, ACCEPTANCE_FILE, FileMode::Secret0600, &bytes)
-            .map_err(|error| state_error("persist machine join acceptance", error))
+        self.persist_json(
+            ACCEPTANCE_FILE,
+            FileMode::Secret0600,
+            accepted,
+            MachineJoinStateError::AcceptanceAlreadyPersisted,
+            "machine join acceptance",
+        )
     }
 
     pub(crate) fn persist_request(
         &self,
         request: &MachineJoinRequest,
     ) -> Result<(), MachineJoinStateError> {
-        let bytes = serde_json::to_vec(request)
-            .map_err(|error| state_error("encode machine join request", error))?;
-        let path = self.0.join(REQUEST_FILE);
-        match std::fs::read(&path) {
-            Ok(existing) if existing == bytes => return Ok(()),
-            Ok(_) => return Err(MachineJoinStateError::RequestAlreadyPersisted),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(state_error("read machine join request", error)),
-        }
-        write_durable_file(&self.0, REQUEST_FILE, FileMode::Secret0600, &bytes)
-            .map_err(|error| state_error("persist machine join request", error))
+        self.persist_json(
+            REQUEST_FILE,
+            FileMode::Secret0600,
+            request,
+            MachineJoinStateError::RequestAlreadyPersisted,
+            "machine join request",
+        )
     }
 
     pub(crate) fn read_request(&self) -> Result<Option<MachineJoinRequest>, MachineJoinStateError> {
-        let bytes = match std::fs::read(self.0.join(REQUEST_FILE)) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(state_error("read machine join request", error)),
-        };
-        serde_json::from_slice(&bytes)
-            .map(Some)
-            .map_err(|error| state_error("decode machine join request", error))
+        self.read_optional_json(REQUEST_FILE, "machine join request")
     }
 
     pub(crate) fn persist_storage_inventory(
         &self,
         inventory: &impl Serialize,
     ) -> Result<(), MachineJoinStateError> {
-        let bytes = serde_json::to_vec(inventory)
-            .map_err(|error| state_error("encode machine join storage inventory", error))?;
-        let path = self.0.join(STORAGE_INVENTORY_FILE);
-        match std::fs::read(&path) {
-            Ok(existing) if existing == bytes => return Ok(()),
-            Ok(_) => return Err(MachineJoinStateError::StorageInventoryAlreadyPersisted),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(state_error("read machine join storage inventory", error)),
-        }
-        write_durable_file(
-            &self.0,
+        self.persist_json(
             STORAGE_INVENTORY_FILE,
             FileMode::Secret0600,
-            &bytes,
+            inventory,
+            MachineJoinStateError::StorageInventoryAlreadyPersisted,
+            "machine join storage inventory",
         )
-        .map_err(|error| state_error("persist machine join storage inventory", error))
     }
 
     pub(crate) fn read_storage_inventory<T: DeserializeOwned>(
         &self,
     ) -> Result<Option<T>, MachineJoinStateError> {
-        let bytes = match std::fs::read(self.0.join(STORAGE_INVENTORY_FILE)) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(state_error("read machine join storage inventory", error)),
-        };
-        serde_json::from_slice(&bytes)
-            .map(Some)
-            .map_err(|error| state_error("decode machine join storage inventory", error))
+        self.read_optional_json(STORAGE_INVENTORY_FILE, "machine join storage inventory")
     }
 
     pub(crate) fn read_acceptance<T: DeserializeOwned>(
         &self,
     ) -> Result<Option<T>, MachineJoinStateError> {
-        let bytes = match std::fs::read(self.acceptance_path()) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(state_error("read machine join acceptance", error)),
-        };
-        serde_json::from_slice(&bytes)
-            .map(Some)
-            .map_err(|error| state_error("decode machine join acceptance", error))
+        self.read_optional_json(ACCEPTANCE_FILE, "machine join acceptance")
     }
 
     /// Persists the accepted cluster identity after the full canonical acceptance.
@@ -266,17 +249,13 @@ impl MachineJoinStateDirectory {
         &self,
         substrate: &JoinMachineSubstrate,
     ) -> Result<(), MachineJoinStateError> {
-        let bytes = serde_json::to_vec(substrate)
-            .map_err(|error| state_error("encode join substrate", error))?;
-        let path = self.join_substrate_path();
-        match std::fs::read(&path) {
-            Ok(existing) if existing == bytes => return Ok(()),
-            Ok(_) => return Err(MachineJoinStateError::SubstrateAlreadyPersisted),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(state_error("read join substrate", error)),
-        }
-        write_durable_file(&self.0, JOIN_SUBSTRATE_FILE, FileMode::Plain, &bytes)
-            .map_err(|error| state_error("persist join substrate", error))
+        self.persist_json(
+            JOIN_SUBSTRATE_FILE,
+            FileMode::Plain,
+            substrate,
+            MachineJoinStateError::SubstrateAlreadyPersisted,
+            "join substrate",
+        )
     }
 
     #[must_use]
@@ -326,6 +305,41 @@ impl MachineJoinStateDirectory {
             .map_err(|error| state_error("persist machine join completion", error))
     }
 
+    fn persist_json(
+        &self,
+        file_name: &'static str,
+        mode: FileMode,
+        value: &impl Serialize,
+        conflict: MachineJoinStateError,
+        description: &'static str,
+    ) -> Result<(), MachineJoinStateError> {
+        let bytes = serde_json::to_vec(value)
+            .map_err(|error| state_error(&format!("encode {description}"), error))?;
+        match std::fs::read(self.0.join(file_name)) {
+            Ok(existing) if existing == bytes => return Ok(()),
+            Ok(_) => return Err(conflict),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(state_error(&format!("read {description}"), error)),
+        }
+        write_durable_file(&self.0, file_name, mode, &bytes)
+            .map_err(|error| state_error(&format!("persist {description}"), error))
+    }
+
+    fn read_optional_json<T: DeserializeOwned>(
+        &self,
+        file_name: &'static str,
+        description: &'static str,
+    ) -> Result<Option<T>, MachineJoinStateError> {
+        let bytes = match std::fs::read(self.0.join(file_name)) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(state_error(&format!("read {description}"), error)),
+        };
+        serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|error| state_error(&format!("decode {description}"), error))
+    }
+
     fn read_identity(&self) -> Result<Option<MachineJoinIdentity>, MachineJoinStateError> {
         let bytes = match std::fs::read(self.identity_path()) {
             Ok(bytes) => bytes,
@@ -370,6 +384,30 @@ impl MachineJoinStateDirectory {
 fn refused() -> MachineJoinInspection {
     MachineJoinInspection::Refused {
         refusal: MachineJoinLocalRefusal::ForeignState,
+    }
+}
+
+fn classify_local_arrival(
+    requested: &JoinDoorCertFingerprint,
+    arrival: JoinArrival,
+    identity: Option<MachineJoinIdentity>,
+    accepted: bool,
+) -> MachineJoinInspection {
+    let disposition = match classify_join_arrival(requested, arrival) {
+        Ok(disposition) => disposition,
+        Err(_) => return refused(),
+    };
+    match (disposition, identity) {
+        (JoinArrivalDisposition::Join, None) => MachineJoinInspection::Clean,
+        (JoinArrivalDisposition::Resume, Some(identity)) if accepted => {
+            MachineJoinInspection::ReadyToActivate { identity }
+        }
+        (JoinArrivalDisposition::Resume, Some(identity)) => {
+            MachineJoinInspection::ReadyToRedeem { identity }
+        }
+        (JoinArrivalDisposition::NoOp, Some(identity)) => MachineJoinInspection::NoOp { identity },
+        (JoinArrivalDisposition::Join, Some(_))
+        | (JoinArrivalDisposition::Resume | JoinArrivalDisposition::NoOp, None) => refused(),
     }
 }
 
@@ -486,6 +524,22 @@ pub enum MachineJoinMilestone {
 }
 
 impl MachineJoinMilestone {
+    pub const ORDERED: [Self; 13] = [
+        Self::Artifacts,
+        Self::Storage,
+        Self::Docker,
+        Self::DoorMaterial,
+        Self::Configuration,
+        Self::BootstrapWireguard,
+        Self::UnitsInstalled,
+        Self::CorrosionStarted,
+        Self::RosterConverged,
+        Self::KeeperStarted,
+        Self::ApiStarted,
+        Self::Ready,
+        Self::BootstrapCleaned,
+    ];
+
     const fn file_name(self) -> &'static str {
         match self {
             Self::Artifacts => "01-artifacts",

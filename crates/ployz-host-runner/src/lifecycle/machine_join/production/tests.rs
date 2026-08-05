@@ -1,6 +1,5 @@
 use std::collections::VecDeque;
 
-use ployz_core::build::railpack_pins;
 use ployz_core::corrosion::StoredRow;
 use ployz_core::join::JoinStorageChoice;
 use ployz_core::machine::MachineLifecycle;
@@ -147,7 +146,8 @@ fn join_docker_install_uses_the_detected_non_debian_profile() {
         );
         let mut profile = None;
 
-        ensure_join_docker(&state, &mut runner, &mut profile, &directories)
+        LinuxSubstrate::new(state.path(), &mut runner, &mut profile, &directories)
+            .ensure_docker()
             .expect("profile-specific Docker installation");
 
         assert!(
@@ -405,19 +405,8 @@ fn query_token_environment_and_artifact_contracts_are_exact() {
     );
     assert!(config.contains("authz.bearer-token = \"super-secret\""));
 
-    let railpack_install_path = railpack_pins()
-        .expect("checked-in Railpack pins")
-        .install_path();
     assert_eq!(
-        [
-            "/usr/local/bin/ployzd",
-            "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
-            "/usr/local/bin/ployz-ebpf-ctl",
-            "/usr/local/bin/corrosion",
-            "/usr/local/lib/ployz/corrosion-schema-v1.sql",
-            railpack_install_path,
-        ]
-        .map(|path| artifact_kind(path).expect("known artifact")),
+        ArtifactKind::ALL,
         [
             ArtifactKind::Ployzd,
             ArtifactKind::EbpfBytecode,

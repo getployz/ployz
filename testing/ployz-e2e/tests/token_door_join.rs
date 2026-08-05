@@ -138,8 +138,19 @@ async fn exercise_token_door(docker: &Docker, cluster: &DindCluster) -> Result<(
     let blob = extract_join_blob(&created_stdout)?;
     let token_id = extract_token_id(&created_stdout)?;
     require(
-        created_stdout.matches(blob.expose()).count() == 1,
-        "token create printed the join blob more than once",
+        created_stdout.matches(blob.expose()).count() == 3,
+        "token output must show the value and embed it in both paste-ready commands",
+    )?;
+    require(
+        created_stdout.contains(&format!("sudo ployz machine join '{}'", blob.expose())),
+        "machine join line is not independently paste-ready",
+    )?;
+    require(
+        created_stdout.contains(&format!(
+            "curl -fsSL https://ployz.sh | sh -s -- join '{}'",
+            blob.expose()
+        )),
+        "cloud-init line is not independently paste-ready",
     )?;
     assert_token_row_is_hash_only(store, &token_id, &blob).await?;
     let listed = run_cli(

@@ -320,24 +320,6 @@ pub(super) fn read_or_generate_secret(
     }
 }
 
-pub(super) fn artifact_kind(path: &str) -> Result<ArtifactKind, FailureMessage> {
-    let file_name = Path::new(path)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| failure("accepted artifact has no file name"))?;
-    match file_name {
-        "ployzd" => Ok(ArtifactKind::Ployzd),
-        "corrosion" => Ok(ArtifactKind::Corrosion),
-        "corrosion-schema-v1.sql" => Ok(ArtifactKind::CorrosionSchema),
-        "ployz-ebpf-tc" => Ok(ArtifactKind::EbpfBytecode),
-        "ployz-ebpf-ctl" => Ok(ArtifactKind::EbpfCtl),
-        "railpack" => Ok(ArtifactKind::Railpack),
-        _ => Err(failure(format!(
-            "accepted artifact install path has unknown file {file_name:?}"
-        ))),
-    }
-}
-
 fn corrosion_unit(
     backend: SupervisorBackend,
     config: &Path,

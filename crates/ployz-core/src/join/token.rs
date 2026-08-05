@@ -119,17 +119,13 @@ pub enum JoinTokenSecretError {
 }
 
 /// The one-way token value stored in the `tokens` row.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(type = "Brand<string, \"JoinTokenSecretHash\">"))]
 #[serde(transparent)]
 pub struct JoinTokenSecretHash(Sha256Hex);
 
 impl JoinTokenSecretHash {
-    pub fn try_new(value: impl Into<String>) -> Result<Self, crate::corrosion::Sha256HexError> {
-        Ok(Self(Sha256Hex::try_new(value)?))
-    }
-
     #[must_use]
     pub fn as_str(&self) -> &str {
         self.0.as_str()
@@ -138,12 +134,6 @@ impl JoinTokenSecretHash {
     #[must_use]
     pub fn into_sha256_hex(self) -> Sha256Hex {
         self.0
-    }
-
-    /// Compares a presented 256-bit secret without an early-exit byte comparison.
-    #[must_use]
-    pub fn matches_secret(&self, presented: &JoinTokenSecret) -> bool {
-        constant_time_digest_eq(self.as_str(), presented.sha256().as_str())
     }
 }
 
@@ -582,25 +572,13 @@ pub struct TokenCreateRequest {
 }
 
 /// Token metadata and the one value that can never be recovered from its row.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct TokenCreateReply {
     pub token_id: TokenId,
     pub blob: JoinBlob,
     pub created_at: CorrosionTimestamp,
     pub expires_at: CorrosionTimestamp,
-}
-
-impl fmt::Debug for TokenCreateReply {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("TokenCreateReply")
-            .field("token_id", &self.token_id)
-            .field("blob", &"[redacted]")
-            .field("created_at", &self.created_at)
-            .field("expires_at", &self.expires_at)
-            .finish()
-    }
 }
 
 /// A row/reply pair prepared without retaining the plaintext secret in the row.
@@ -753,21 +731,11 @@ pub fn set_machine_endpoint(
 }
 
 /// The secret proof sent inside the already fingerprint-pinned TLS request.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct JoinTokenProof {
     pub token_id: TokenId,
     pub secret: JoinTokenSecret,
-}
-
-impl fmt::Debug for JoinTokenProof {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("JoinTokenProof")
-            .field("token_id", &self.token_id)
-            .field("secret", &"[redacted]")
-            .finish()
-    }
 }
 
 impl JoinBlob {

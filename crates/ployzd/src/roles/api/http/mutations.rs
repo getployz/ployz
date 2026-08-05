@@ -2,9 +2,6 @@
 
 use std::time::Duration;
 
-use bytes::Bytes;
-use http_body_util::BodyExt;
-use hyper::body::Body;
 use hyper::{Response, StatusCode};
 use ployz_core::corrosion::Principal;
 use ployz_core::corrosion::{
@@ -24,7 +21,8 @@ use time::{Duration as TimeDuration, OffsetDateTime};
 
 use super::roster::corrosion_unavailable_refusal;
 use super::server::{
-    ApiService, HttpBody, corrosion_unavailable_response, json_response, refusal_response,
+    ApiService, BoundedBodyError, HttpBody, corrosion_unavailable_response, json_response,
+    read_bounded_body, refusal_response,
 };
 use super::store::{
     MutationStoreError, delete_token, insert_token, read_accepted_roster, read_machine, read_token,
@@ -285,38 +283,19 @@ async fn decode_request<Request>(body: hyper::body::Incoming) -> Result<Request,
 where
     Request: DeserializeOwned,
 {
-    let body = tokio::time::timeout(MUTATION_BODY_READ_TIMEOUT, collect_body(body))
+    let body = read_bounded_body(body, MAX_MUTATION_REQUEST_BYTES, MUTATION_BODY_READ_TIMEOUT)
         .await
-        .map_err(|_| simple_error(StatusCode::REQUEST_TIMEOUT, "request_timeout"))?
         .map_err(|error| match error {
-            BodyReadError::TooLarge => {
+            BoundedBodyError::TooLarge => {
                 simple_error(StatusCode::PAYLOAD_TOO_LARGE, "request_too_large")
             }
-            BodyReadError::Read => simple_error(StatusCode::BAD_REQUEST, "invalid_request"),
+            BoundedBodyError::Deadline => {
+                simple_error(StatusCode::REQUEST_TIMEOUT, "request_timeout")
+            }
+            BoundedBodyError::Read => simple_error(StatusCode::BAD_REQUEST, "invalid_request"),
         })?;
     serde_json::from_slice(&body)
         .map_err(|_| simple_error(StatusCode::BAD_REQUEST, "invalid_request"))
-}
-
-async fn collect_body<Payload>(mut body: Payload) -> Result<Vec<u8>, BodyReadError>
-where
-    Payload: Body<Data = Bytes> + Unpin,
-{
-    let mut bytes = Vec::new();
-    while let Some(frame) = body.frame().await {
-        let frame = frame.map_err(|_| BodyReadError::Read)?;
-        let Ok(data) = frame.into_data() else {
-            continue;
-        };
-        let Some(total) = bytes.len().checked_add(data.len()) else {
-            return Err(BodyReadError::TooLarge);
-        };
-        if total > MAX_MUTATION_REQUEST_BYTES {
-            return Err(BodyReadError::TooLarge);
-        }
-        bytes.extend_from_slice(&data);
-    }
-    Ok(bytes)
 }
 
 fn typed_response<Value>(status: StatusCode, value: &Value) -> Response<HttpBody>
@@ -339,12 +318,6 @@ fn simple_error(status: StatusCode, kind: &'static str) -> Response<HttpBody> {
 fn store_failure(action: &'static str, error: MutationStoreError) -> Response<HttpBody> {
     tracing::warn!(%action, error = %error, "API mutation could not reach durable Corrosion state");
     refusal_response(corrosion_unavailable_refusal())
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BodyReadError {
-    TooLarge,
-    Read,
 }
 
 #[cfg(test)]
