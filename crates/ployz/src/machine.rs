@@ -16,13 +16,11 @@ use ployz_core::join::{
 use ployz_core::machine::MachineName;
 use ployz_core::operation::FailureMessage;
 use ployz_core::{
-    LensCollection, LensSnapshot, MachineLensRow, MachineStatusLensRow, MachineUpgradeRefusal,
-    MachineUpgradeReply, MachineUpgradeRequest,
+    LensCollection, LensSnapshot, MachineLensRow, MachineRemoveRefusal, MachineRemoveReply,
+    MachineRemoveRequest, MachineStatusLensRow, MachineUpgradeRefusal, MachineUpgradeReply,
+    MachineUpgradeRequest,
 };
-use ployz_core::{
-    MACHINE_ENDPOINT_ROUTE_PREFIX, MACHINE_REMOVE_ROUTE, MACHINE_UPGRADE_ROUTE,
-    MachineRemoveRefusal, MachineRemoveReply, MachineRemoveRequest,
-};
+use ployz_core::{MACHINE_ENDPOINT_ROUTE_PREFIX, MACHINE_REMOVE_ROUTE, MACHINE_UPGRADE_ROUTE};
 use ployz_host_runner::lifecycle::machine_join::{
     MachineJoinFailure, MachineJoinOutcomeKind, run_linux_machine_join,
 };
@@ -1036,6 +1034,47 @@ mod tests {
     }
 
     #[test]
+    fn machine_removal_uses_the_typed_route_and_renders_terminal_outcomes() {
+        let machine_name = MachineName::try_new("edge-b").expect("machine name");
+        let machine_id = MachineRowId::try_new(MACHINE_A).expect("machine id");
+        let request = MachineRemoveRequest {
+            machine_name: machine_name.clone(),
+            machine_id: Some(machine_id.clone()),
+        };
+        assert_eq!(MACHINE_REMOVE_ROUTE, "/machines/remove");
+        assert_eq!(request.machine_name, machine_name);
+        assert_eq!(request.machine_id, Some(machine_id.clone()));
+        assert_eq!(
+            render_machine_removal(
+                &machine_name,
+                &MachineRemoveReply::Removed {
+                    machine_id: machine_id.clone(),
+                },
+            ),
+            format!("Removed machine edge-b ({MACHINE_A}).\n")
+        );
+        assert_eq!(
+            render_machine_removal(
+                &machine_name,
+                &MachineRemoveReply::AlreadyAbsent {
+                    machine_id: machine_id.clone(),
+                },
+            ),
+            format!("Machine edge-b ({MACHINE_A}) was already absent.\n")
+        );
+        assert!(machine_removal_reply_matches_requested_identity(
+            &MachineRemoveReply::AlreadyAbsent {
+                machine_id: machine_id.clone(),
+            },
+            Some(&machine_id),
+        ));
+        assert!(!machine_removal_reply_matches_requested_identity(
+            &MachineRemoveReply::AlreadyAbsent { machine_id },
+            None,
+        ));
+    }
+
+    #[test]
     fn upgrade_success_evidence_is_rendered_as_independent_lines() {
         let version = InstallArtifactVersion::try_new("0.1.0-alpha.7").expect("version");
 
@@ -1084,63 +1123,6 @@ mod tests {
     }
 
     #[test]
-    fn machine_removal_uses_the_typed_route_and_renders_terminal_outcomes() {
-        let machine_name = MachineName::try_new("edge-b").expect("machine name");
-        let machine_id = MachineRowId::try_new(MACHINE_A).expect("machine id");
-        let request = MachineRemoveRequest {
-            machine_name: machine_name.clone(),
-            machine_id: Some(machine_id.clone()),
-        };
-        assert_eq!(MACHINE_REMOVE_ROUTE, "/machines/remove");
-        assert_eq!(request.machine_name, machine_name);
-        assert_eq!(request.machine_id, Some(machine_id.clone()));
-        assert_eq!(
-            render_machine_removal(
-                &machine_name,
-                &MachineRemoveReply::Removed {
-                    machine_id: machine_id.clone(),
-                },
-            ),
-            format!("Removed machine edge-b ({MACHINE_A}).\n")
-        );
-        assert_eq!(
-            render_machine_removal(
-                &machine_name,
-                &MachineRemoveReply::AlreadyAbsent {
-                    machine_id: machine_id.clone(),
-                },
-            ),
-            format!("Machine edge-b ({MACHINE_A}) was already absent.\n")
-        );
-        assert!(machine_removal_reply_matches_requested_identity(
-            &MachineRemoveReply::AlreadyAbsent {
-                machine_id: machine_id.clone(),
-            },
-            Some(&machine_id),
-        ));
-        assert!(!machine_removal_reply_matches_requested_identity(
-            &MachineRemoveReply::AlreadyAbsent { machine_id },
-            None,
-        ));
-    }
-
-    #[test]
-    fn a_manual_artifact_never_counts_as_confirmed_without_a_release_version() {
-        let source = UpgradeSource::Manual(MachineUpgradeRequest {
-            version: InstallArtifactVersion::try_new("manual").expect("manual label"),
-            sha256: ployz_core::install::InstallSha256Digest::try_new("a".repeat(64))
-                .expect("sha256"),
-            url: ployz_core::MachineUpgradeUrl::try_new("https://releases.example/ployzd")
-                .expect("HTTPS URL"),
-        });
-
-        assert_eq!(
-            source.confirmation(),
-            UpgradeConfirmation::UnavailableForManualArtifact
-        );
-    }
-
-    #[test]
     fn machine_removal_refusals_tell_the_operator_how_to_continue() {
         let machine_name = MachineName::try_new("edge-b").expect("machine name");
         let lower = MachineRowId::try_new(MACHINE_A).expect("machine id");
@@ -1171,6 +1153,22 @@ mod tests {
             format!(
                 "machine edge-b does not match identity {MACHINE_A}; omit `--id` to resolve the name again, or retry with a matching identity"
             )
+        );
+    }
+
+    #[test]
+    fn a_manual_artifact_never_counts_as_confirmed_without_a_release_version() {
+        let source = UpgradeSource::Manual(MachineUpgradeRequest {
+            version: InstallArtifactVersion::try_new("manual").expect("manual label"),
+            sha256: ployz_core::install::InstallSha256Digest::try_new("a".repeat(64))
+                .expect("sha256"),
+            url: ployz_core::MachineUpgradeUrl::try_new("https://releases.example/ployzd")
+                .expect("HTTPS URL"),
+        });
+
+        assert_eq!(
+            source.confirmation(),
+            UpgradeConfirmation::UnavailableForManualArtifact
         );
     }
 

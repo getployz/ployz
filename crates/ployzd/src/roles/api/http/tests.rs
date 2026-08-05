@@ -520,6 +520,7 @@ async fn version_is_success_json_with_the_core_capability_catalog() {
             ApiFeature::Known(KnownApiFeature::Lenses),
             ApiFeature::Known(KnownApiFeature::JoinTokens),
             ApiFeature::Known(KnownApiFeature::MachineEndpoint),
+            ApiFeature::Known(KnownApiFeature::MachineRemove),
             ApiFeature::Known(KnownApiFeature::MachineUpgrade),
             ApiFeature::Known(KnownApiFeature::MachineRemove),
             ApiFeature::Known(KnownApiFeature::JoinDoor),
