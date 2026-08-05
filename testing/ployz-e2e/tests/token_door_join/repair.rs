@@ -258,6 +258,7 @@ async fn seed_machine_evidence(
         load: MachineLoadBand::Idle,
         observed_at: timestamp,
         mesh: None,
+        wireguard_handshakes: None,
     };
     let container = ContainerDocument {
         v: CorrosionDocumentVersion::V1,

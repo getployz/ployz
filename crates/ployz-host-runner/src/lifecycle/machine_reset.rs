@@ -37,20 +37,22 @@ pub fn reset_linux_machine(
 
     let mut profile = None;
     let directories = SupervisorDirectories::host_defaults();
-    let mut substrate = LinuxSubstrate::new(state, runner, &mut profile, &directories);
-    let supervisor = substrate.supervisor()?;
-    for role in [
-        PloyzdRole::Keeper,
-        PloyzdRole::Api,
-        PloyzdRole::Gateway,
-        PloyzdRole::Dns,
-    ] {
-        substrate.run_supervisor(
-            crate::SupervisorChange::Stop,
-            &SupervisorUnitTarget::PloyzdRole(role),
-        )?;
-    }
-    drop(substrate);
+    let supervisor = {
+        let mut substrate = LinuxSubstrate::new(state, runner, &mut profile, &directories);
+        let supervisor = substrate.supervisor()?;
+        for role in [
+            PloyzdRole::Keeper,
+            PloyzdRole::Api,
+            PloyzdRole::Gateway,
+            PloyzdRole::Dns,
+        ] {
+            substrate.run_supervisor(
+                crate::SupervisorChange::Stop,
+                &SupervisorUnitTarget::PloyzdRole(role),
+            )?;
+        }
+        supervisor
+    };
     stop_corrosion_service(supervisor, runner)?;
     remove_ployz_wireguard_interface(runner)?;
     remove_ployz_control_state(state)

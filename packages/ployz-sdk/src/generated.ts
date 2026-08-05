@@ -19,6 +19,10 @@ export const KNOWN_API_FEATURES = [
   "v2.machine_remove",
   "v2.join_door",
   "v2.diagnostics",
+  "v2.peer_remove",
+  "v2.namespace_remove",
+  "v2.service_remove",
+  "v2.route_remove",
 ] as const;
 
 export type ApiFeature = KnownApiFeature | (string & {});
@@ -398,21 +402,17 @@ export type DoctorForeignClusterRows = { cluster_id: string, rows: Array<DoctorF
 
 export type DoctorForeignRowEvidence = { table: CorrosionTable, key: string, authorship: DoctorForeignAuthorship, };
 
-export type DoctorInvalidMachineVersion = { machine: DoctorMachineIdentity, version: string, };
-
 export type DoctorMachineIdentity = { id: MachineRowId, name: MachineName, };
 
 export type DoctorMachineVersion = { machine: DoctorMachineIdentity, version: string, };
 
 export type DoctorNewestVersion = { version: string, machines: Array<DoctorMachineIdentity>, };
 
-export type DoctorShadowFinding = { repair_target: DoctorShadowRepairTarget, claim: NameClaim, winner_id: CorrosionUlid, loser_id: CorrosionUlid, };
-
-export type DoctorShadowRepairTarget = "machine" | "peer" | "namespace" | "service" | "route_binding";
+export type DoctorShadowFinding = { claim: NameClaim, winner_id: CorrosionUlid, loser_id: CorrosionUlid, };
 
 export type DoctorSkippedNewerVersion = { table: CorrosionTable, key: string, found: number, supported: number, };
 
-export type DoctorVersionReport = { newest?: DoctorNewestVersion, behind: Array<DoctorMachineVersion>, invalid: Array<DoctorInvalidMachineVersion>, };
+export type DoctorVersionReport = { newest?: DoctorNewestVersion, behind: Array<DoctorMachineVersion>, invalid: Array<DoctorMachineVersion>, };
 
 export type EbpfAttachmentStatus = { "status": "attached" } | { "status": "detached", message: string, } | { "status": "unknown", message: string, };
 
@@ -586,7 +586,7 @@ export type JoinTokenSecret = Brand<string, "JoinTokenSecret">;
 
 export type JoinTokenTtlSeconds = SafeInteger<"JoinTokenTtlSeconds">;
 
-export type KnownApiFeature = "v2.founding" | "v2.lenses" | "v2.join_tokens" | "v2.machine_endpoint" | "v2.machine_upgrade" | "v2.machine_remove" | "v2.join_door" | "v2.diagnostics";
+export type KnownApiFeature = "v2.founding" | "v2.lenses" | "v2.join_tokens" | "v2.machine_endpoint" | "v2.machine_upgrade" | "v2.machine_remove" | "v2.join_door" | "v2.diagnostics" | "v2.peer_remove" | "v2.namespace_remove" | "v2.service_remove" | "v2.route_remove";
 
 export type LensCollection = "machines" | "services" | "containers" | "machine_status" | "operations";
 
@@ -788,6 +788,8 @@ export type MeshProvider = "builtin_wireguard" | "tailscale";
 
 export type NameClaim = { "table": "machine", name: string, } | { "table": "peer", name: string, } | { "table": "namespace", name: string, } | { "table": "service", namespace_id: NamespaceRowId, name: string, } | { "table": "route_binding", hostname: RouteHostname, };
 
+export type NamedRemovalOutcome = "removed" | "already_absent";
+
 export type NamespaceDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, name: string, written_by: Principal, written_at: CorrosionTimestamp, };
 
 export type NamespaceId = Brand<string, "NamespaceId">;
@@ -799,6 +801,12 @@ export type NamespaceRemoveFailure = { "kind": "intent_read_failed", namespace_i
 export type NamespaceRemoveOperationState = { "state": "accepted" } | { "state": "running", stage: NamespaceRemoveRunningStage, } | { "state": "completed" } | { "state": "failed", failure: NamespaceRemoveFailure, } | { "state": "cancelled", reason: CancellationReason, } | { "state": "interrupted", evidence: OperationInterruptionEvidence, };
 
 export type NamespaceRemoveRequest = { operation_id: OperationId, namespace_id: NamespaceId, };
+
+export type NamespaceRemoveRowRefusal = { "kind": "not_found", name: string, } | { "kind": "ambiguous", name: string, namespace_ids: Array<NamespaceRowId>, } | { "kind": "name_mismatch", namespace_id: NamespaceRowId, requested: string, found: string, } | { "kind": "stored_row_unselectable", namespace_id: NamespaceRowId, } | { "kind": "concurrent_mutation", namespace_id: NamespaceRowId, };
+
+export type NamespaceRemoveRowReply = { namespace_id: NamespaceRowId, outcome: NamedRemovalOutcome, };
+
+export type NamespaceRemoveRowRequest = { name: string, namespace_id: NamespaceRowId | null, };
 
 export type NamespaceRemoveRunningStage = "removing_route_bindings" | "removing_serving_targets" | "removing_containers";
 
@@ -928,6 +936,12 @@ export type PeerJoinAccepted = { cluster: ClusterDocument, peer: AcceptedPeerRow
 
 export type PeerJoinRequest = { peer_id: PeerId, name: string, public_key: WireGuardPublicKey, endpoint: string | null, };
 
+export type PeerRemoveRefusal = { "kind": "not_found", name: string, } | { "kind": "ambiguous", name: string, peer_ids: Array<PeerId>, } | { "kind": "name_mismatch", peer_id: PeerId, requested: string, found: string, } | { "kind": "stored_row_unselectable", peer_id: PeerId, } | { "kind": "concurrent_mutation", peer_id: PeerId, };
+
+export type PeerRemoveReply = { peer_id: PeerId, outcome: NamedRemovalOutcome, };
+
+export type PeerRemoveRequest = { name: string, peer_id: PeerId | null, };
+
 export type PeerTransport = { "kind": "wireguard", pubkey: WireGuardPublicKey, addr_v6: string, endpoint: string | null, } | { "kind": "tailscale", ip: string, };
 
 export type PidsLimit = SafeInteger<"PidsLimit">;
@@ -990,6 +1004,12 @@ export type RouteCutoverFailureReason = { "reason": "gateway_unavailable", machi
 export type RouteHostname = Brand<string, "RouteHostname">;
 
 export type RoutePort = SafeInteger<"RoutePort">;
+
+export type RouteRemoveRefusal = { "kind": "not_found", hostname: RouteHostname, } | { "kind": "ambiguous", hostname: RouteHostname, route_ids: Array<RouteBindingRowId>, } | { "kind": "name_mismatch", route_id: RouteBindingRowId, requested: RouteHostname, found: RouteHostname, } | { "kind": "stored_row_unselectable", route_id: RouteBindingRowId, } | { "kind": "concurrent_mutation", route_id: RouteBindingRowId, };
+
+export type RouteRemoveReply = { route_id: RouteBindingRowId, outcome: NamedRemovalOutcome, };
+
+export type RouteRemoveRequest = { hostname: RouteHostname, route_id: RouteBindingRowId | null, };
 
 export type RouteTarget = { hostname: RouteHostname, };
 
@@ -1055,6 +1075,12 @@ export type ServiceMachineTestimony = { "status": "answered", machine_id: Machin
 
 export type ServiceMode = { "kind": "replicated", replicas: ReplicaCount, } | { "kind": "global" };
 
+export type ServiceRemoveRowRefusal = { "kind": "not_found", namespace_id: NamespaceRowId, name: string, } | { "kind": "ambiguous", namespace_id: NamespaceRowId, name: string, service_ids: Array<ServiceRowId>, } | { "kind": "identity_mismatch", service_id: ServiceRowId, requested_namespace_id: NamespaceRowId, requested_name: string, found_namespace_id: NamespaceRowId, found_name: string, } | { "kind": "stored_row_unselectable", service_id: ServiceRowId, } | { "kind": "concurrent_mutation", service_id: ServiceRowId, };
+
+export type ServiceRemoveRowReply = { service_id: ServiceRowId, outcome: NamedRemovalOutcome, };
+
+export type ServiceRemoveRowRequest = { namespace_id: NamespaceRowId, name: string, service_id: ServiceRowId | null, };
+
 export type ServiceReplicaCount = SafeInteger<"ServiceReplicaCount">;
 
 export type ServiceRestartError = { "error": "reserved_system_namespace", operation_id: OperationId, namespace_id: NamespaceId, } | { "error": "resource_busy", operation_id: OperationId, namespace_id: NamespaceId, owner_operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
@@ -1085,6 +1111,8 @@ export type StatusBarrier = "ready" | "catching_up" | "no_roster";
 
 export type StatusClusterSummary = { id: ClusterId, name: string, machine_count: number, };
 
+export type StatusDegradationReason = "corrosion_unavailable" | "invalid_corrosion_health_response";
+
 export type StatusDocument = { cluster?: StatusClusterSummary, answering_machine: StatusAnsweringMachine, sync: StatusSync, barrier: StatusBarrier, machines: Array<StatusMachineRow>, hints: Array<StatusHint>, };
 
 export type StatusHandshakeEvidence = { "state": "self_machine" } | { "state": "no_testimony" } | { "state": "never" } | { "state": "ago", seconds: number, freshness: HandshakeFreshness, };
@@ -1093,7 +1121,7 @@ export type StatusHint = "all_peer_handshakes_stale";
 
 export type StatusMachineRow = { id: MachineRowId, name: MachineName, address: string, handshake: StatusHandshakeEvidence, };
 
-export type StatusSync = { "state": "caught_up", p99_lag: number, } | { "state": "syncing", gaps: number, queue_size: number, p99_lag: number, } | { "state": "no_lag_sample" } | { "state": "degraded", message: string, };
+export type StatusSync = { "state": "caught_up", p99_lag: number, } | { "state": "syncing", gaps: number, queue_size: number, p99_lag: number, } | { "state": "no_lag_sample" } | { "state": "degraded", reason: StatusDegradationReason, };
 
 export type StepId = Brand<string, "StepId">;
 
