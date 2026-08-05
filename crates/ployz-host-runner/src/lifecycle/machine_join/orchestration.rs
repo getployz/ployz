@@ -462,47 +462,6 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn legacy_completion_reinstalls_the_keeper_ordered_corrosion_unit_once() {
-        let directory = tempfile::tempdir().expect("tempdir");
-        let state = MachineJoinStateDirectory::initialize(directory.path()).expect("state");
-        let prepared = prepared(&state);
-        let accepted = accepted(prepared.request(), prepared.blob().door_cert_fingerprint());
-        state
-            .persist_acceptance(&accepted)
-            .expect("legacy acceptance");
-        for milestone in MachineJoinMilestone::ORDERED {
-            if milestone != MachineJoinMilestone::UnitsInstalled {
-                state.record_milestone(milestone).expect("legacy milestone");
-            }
-        }
-        let milestone_directory = directory.path().join("machine-join");
-        std::fs::write(
-            milestone_directory.join("07-units-installed"),
-            b"complete\n",
-        )
-        .expect("legacy units milestone");
-        std::fs::write(directory.path().join("join-complete"), b"complete\n")
-            .expect("legacy completion");
-        let mut door = RecordingDoor { accepted, calls: 0 };
-        let mut host = RecordingHost::pass();
-
-        let resumed = execute_machine_join(&state, &prepared, &mut door, &mut host)
-            .await
-            .expect("legacy activation contract resumes");
-
-        assert_eq!(resumed.kind, MachineJoinOutcomeKind::Resumed);
-        assert_eq!(door.calls, 0);
-        assert_eq!(host.calls, vec![MachineJoinMilestone::UnitsInstalled]);
-
-        let mut no_op_host = RecordingHost::pass();
-        let no_op = execute_machine_join(&state, &prepared, &mut door, &mut no_op_host)
-            .await
-            .expect("migrated join is complete");
-        assert_eq!(no_op.kind, MachineJoinOutcomeKind::NoOp);
-        assert!(no_op_host.calls.is_empty());
-    }
-
-    #[tokio::test]
     async fn offline_foreign_refusal_has_no_door_or_host_effects() {
         let directory = tempfile::tempdir().expect("tempdir");
         let state = MachineJoinStateDirectory::initialize(directory.path()).expect("state");

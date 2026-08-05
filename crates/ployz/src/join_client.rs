@@ -19,7 +19,6 @@ use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, Server
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{CertificateError, DigitallySignedStruct, SignatureScheme};
 use serde::Serialize;
-use serde::de::DeserializeOwned;
 use sha2::{Digest as _, Sha256};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
@@ -57,7 +56,7 @@ impl JoinDoorClient {
         request: MachineJoinRequest,
     ) -> Result<ValidatedMachineJoinAccepted, JoinDoorClientError> {
         let reply = self
-            .request_admission_pinned(
+            .request_pinned(
                 blob.endpoints(),
                 blob.door_cert_fingerprint().decoded_bytes(),
                 &JoinAdmissionRequest {
@@ -87,7 +86,7 @@ impl JoinDoorClient {
         request: PeerJoinRequest,
     ) -> Result<ValidatedPeerJoinAccepted, JoinDoorClientError> {
         let reply = self
-            .request_admission_pinned(
+            .request_pinned(
                 blob.endpoints(),
                 blob.door_cert_fingerprint().decoded_bytes(),
                 &JoinAdmissionRequest {
@@ -113,76 +112,31 @@ impl JoinDoorClient {
         }
     }
 
-    async fn request_admission_pinned<RequestBody>(
+    async fn request_pinned(
         &self,
         endpoints: &[SocketAddr],
         fingerprint: [u8; 32],
-        request: &RequestBody,
-    ) -> Result<JoinAdmissionReply, JoinDoorClientError>
-    where
-        RequestBody: Serialize + ?Sized,
-    {
-        self.request_pinned_with(endpoints, fingerprint, request, |reply| {
-            matches!(
-                reply,
-                JoinAdmissionReply::Refused {
-                    refusal: JoinDoorRefusal::TokenNotFound { .. }
-                }
-            )
-        })
-        .await
-    }
-
-    #[cfg(test)]
-    async fn request_pinned<RequestBody, ResponseBody>(
-        &self,
-        endpoints: &[SocketAddr],
-        fingerprint: [u8; 32],
-        request: &RequestBody,
-    ) -> Result<ResponseBody, JoinDoorClientError>
-    where
-        RequestBody: Serialize + ?Sized,
-        ResponseBody: DeserializeOwned,
-    {
-        self.request_pinned_with(endpoints, fingerprint, request, |_| false)
-            .await
-    }
-
-    async fn request_pinned_with<RequestBody, ResponseBody>(
-        &self,
-        endpoints: &[SocketAddr],
-        fingerprint: [u8; 32],
-        request: &RequestBody,
-        should_defer_reply: impl Fn(&ResponseBody) -> bool,
-    ) -> Result<ResponseBody, JoinDoorClientError>
-    where
-        RequestBody: Serialize + ?Sized,
-        ResponseBody: DeserializeOwned,
-    {
+        request: &impl Serialize,
+    ) -> Result<JoinAdmissionReply, JoinDoorClientError> {
         if endpoints.is_empty() {
             return Err(JoinDoorClientError::NoAdvertisedEndpoints);
         }
         tokio::time::timeout(
             self.overall_timeout,
-            self.try_endpoints(endpoints, fingerprint, request, &should_defer_reply),
+            self.try_endpoints(endpoints, fingerprint, request),
         )
         .await
         .map_err(|_| JoinDoorClientError::OverallTimedOut)?
     }
 
-    async fn try_endpoints<RequestBody, ResponseBody>(
+    async fn try_endpoints(
         &self,
         endpoints: &[SocketAddr],
         fingerprint: [u8; 32],
-        request: &RequestBody,
-        should_defer_reply: &impl Fn(&ResponseBody) -> bool,
-    ) -> Result<ResponseBody, JoinDoorClientError>
-    where
-        RequestBody: Serialize + ?Sized,
-        ResponseBody: DeserializeOwned,
-    {
+        request: &impl Serialize,
+    ) -> Result<JoinAdmissionReply, JoinDoorClientError> {
         let mut attempts = Vec::with_capacity(endpoints.len());
-        let mut deferred_reply = None;
+        let mut token_not_found = None;
         for endpoint in endpoints {
             let result = tokio::time::timeout(
                 self.endpoint_timeout,
@@ -190,7 +144,11 @@ impl JoinDoorClient {
             )
             .await;
             match result {
-                Ok(Ok(reply)) if should_defer_reply(&reply) => deferred_reply = Some(reply),
+                Ok(Ok(
+                    reply @ JoinAdmissionReply::Refused {
+                        refusal: JoinDoorRefusal::TokenNotFound { .. },
+                    },
+                )) => token_not_found = Some(reply),
                 Ok(Ok(reply)) => return Ok(reply),
                 Ok(Err(failure)) => attempts.push(JoinDoorAttempt {
                     endpoint: *endpoint,
@@ -202,22 +160,15 @@ impl JoinDoorClient {
                 }),
             }
         }
-        if let Some(reply) = deferred_reply {
-            return Ok(reply);
-        }
-        Err(JoinDoorClientError::AllEndpointsFailed { attempts })
+        token_not_found.ok_or(JoinDoorClientError::AllEndpointsFailed { attempts })
     }
 
-    async fn try_endpoint<RequestBody, ResponseBody>(
+    async fn try_endpoint(
         &self,
         endpoint: SocketAddr,
         fingerprint: [u8; 32],
-        request: &RequestBody,
-    ) -> Result<ResponseBody, JoinDoorAttemptFailure>
-    where
-        RequestBody: Serialize + ?Sized,
-        ResponseBody: DeserializeOwned,
-    {
+        request: &impl Serialize,
+    ) -> Result<JoinAdmissionReply, JoinDoorAttemptFailure> {
         let tcp = TcpStream::connect(endpoint)
             .await
             .map_err(|error| JoinDoorAttemptFailure::Connect(error.to_string()))?;
@@ -410,7 +361,7 @@ mod tests {
     use rcgen::generate_simple_self_signed;
     use rustls::ServerConfig;
     use rustls::pki_types::PrivatePkcs8KeyDer;
-    use serde::{Deserialize, Serialize};
+    use serde::Serialize;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::net::TcpListener;
     use tokio_rustls::TlsAcceptor;
@@ -421,11 +372,6 @@ mod tests {
     struct SecretRequest<'a> {
         token: &'a str,
         kind: &'static str,
-    }
-
-    #[derive(Debug, Deserialize, PartialEq, Eq)]
-    struct TypedReply {
-        accepted_as: String,
     }
 
     struct DoorFixture {
@@ -439,10 +385,6 @@ mod tests {
     }
 
     async fn door_fixture_at(port: u16) -> DoorFixture {
-        door_fixture_on(std::net::Ipv4Addr::LOCALHOST, port).await
-    }
-
-    async fn door_fixture_on(ip: std::net::Ipv4Addr, port: u16) -> DoorFixture {
         let generated = generate_simple_self_signed(["door.ployz.internal".to_owned()])
             .expect("fixture certificate");
         let fingerprint: [u8; 32] = Sha256::digest(generated.cert.der()).into();
@@ -455,24 +397,11 @@ mod tests {
                 .with_single_cert(vec![generated.cert.der().clone()], private_key.into())
                 .expect("TLS server config");
         DoorFixture {
-            listener: TcpListener::bind((ip, port)).await.expect("bind door"),
+            listener: TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
+                .await
+                .expect("bind door"),
             acceptor: TlsAcceptor::from(Arc::new(config)),
             fingerprint,
-        }
-    }
-
-    fn machine_request() -> MachineJoinRequest {
-        MachineJoinRequest {
-            machine_id: MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAW").expect("machine id"),
-            name: MachineName::try_new("edge-a").expect("machine name"),
-            public_key: WireGuardPublicKey::try_new("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
-                .expect("public key"),
-            endpoint: None,
-            storage_choice: JoinStorageChoice::Automatic,
-            storage_facts: JoinStorageFacts {
-                imported_zfs_pool: false,
-                total_memory_bytes: 1024,
-            },
         }
     }
 
@@ -484,8 +413,16 @@ mod tests {
         let (tcp, _) = listener.accept().await.expect("accept TCP");
         let mut tls = acceptor.accept(tcp).await.expect("accept TLS");
         let _request = read_http_request(&mut tls).await;
+        write_join_reply(&mut tls, &reply).await;
+    }
+
+    async fn write_join_reply<Stream>(stream: &mut Stream, reply: &JoinAdmissionReply)
+    where
+        Stream: tokio::io::AsyncWrite + Unpin,
+    {
         let body = serde_json::to_vec(&reply).expect("reply JSON");
-        tls.write_all(
+        stream
+            .write_all(
             format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 body.len()
@@ -494,42 +431,21 @@ mod tests {
         )
         .await
         .expect("write reply head");
-        tls.write_all(&body).await.expect("write reply body");
+        stream.write_all(&body).await.expect("write reply body");
     }
 
     #[tokio::test]
     async fn lagged_token_not_found_door_does_not_mask_a_later_door() {
-        let first = door_fixture_on(
-            std::net::Ipv4Addr::new(127, 0, 0, 10),
-            ployz_core::join::JOIN_DOOR_PORT,
-        )
-        .await;
-        let second_listener = TcpListener::bind((
-            std::net::Ipv4Addr::new(127, 0, 0, 11),
-            ployz_core::join::JOIN_DOOR_PORT,
-        ))
-        .await
-        .expect("bind second door");
-        let endpoints = vec![
+        let first = door_fixture().await;
+        let second_listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind second door");
+        let endpoints = [
             first.listener.local_addr().expect("first address"),
             second_listener.local_addr().expect("second address"),
         ];
-        let fingerprint = JoinDoorCertFingerprint::try_new(
-            first
-                .fingerprint
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>(),
-        )
-        .expect("door fingerprint");
+        let fingerprint = first.fingerprint;
         let token_id = TokenId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("token id");
-        let blob = JoinBlob::try_new(
-            token_id.clone(),
-            JoinTokenSecret::try_from_bytes([0x5a; 32]),
-            fingerprint,
-            endpoints,
-        )
-        .expect("join blob");
         let second_acceptor = first.acceptor.clone();
         let first_task = tokio::spawn(serve_join_reply(
             first.listener,
@@ -548,13 +464,20 @@ mod tests {
             },
         ));
 
-        let error = JoinDoorClient::default()
-            .admit_machine(&blob, machine_request())
+        let reply = JoinDoorClient::default()
+            .request_pinned(
+                &endpoints,
+                fingerprint,
+                &SecretRequest {
+                    token: "pzjoin_example",
+                    kind: "machine",
+                },
+            )
             .await
-            .expect_err("second door refusal");
+            .expect("second door reply");
         assert!(matches!(
-            error,
-            JoinDoorClientError::Refused {
+            reply,
+            JoinAdmissionReply::Refused {
                 refusal: JoinDoorRefusal::NameConflict { .. }
             }
         ));
@@ -690,7 +613,7 @@ mod tests {
             MAX_MESH_API_RESPONSE_BYTES,
         );
         let error = client
-            .request_pinned::<_, TypedReply>(
+            .request_pinned(
                 &[endpoint],
                 [0_u8; 32],
                 &SecretRequest {
@@ -727,17 +650,13 @@ mod tests {
             let request = read_http_request(&mut tls).await;
             assert!(request.starts_with("POST /join HTTP/1.1\r\n"));
             assert!(request.ends_with("\r\n\r\n{\"token\":\"pzjoin_example\",\"kind\":\"peer\"}"));
-            let body = br#"{"accepted_as":"peer"}"#;
-            tls.write_all(
-                format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    body.len()
-                )
-                .as_bytes(),
+            write_join_reply(
+                &mut tls,
+                &JoinAdmissionReply::Refused {
+                    refusal: JoinDoorRefusal::IdentityConflict,
+                },
             )
-            .await
-            .expect("write head");
-            tls.write_all(body).await.expect("write body");
+            .await;
         });
         let client = JoinDoorClient::new(
             Duration::from_secs(1),
@@ -745,7 +664,7 @@ mod tests {
             MAX_MESH_API_RESPONSE_BYTES,
         );
         let reply = client
-            .request_pinned::<_, TypedReply>(
+            .request_pinned(
                 &[unavailable, good_endpoint],
                 fingerprint,
                 &SecretRequest {
@@ -755,12 +674,12 @@ mod tests {
             )
             .await
             .expect("fallback door answers");
-        assert_eq!(
+        assert!(matches!(
             reply,
-            TypedReply {
-                accepted_as: "peer".to_owned()
+            JoinAdmissionReply::Refused {
+                refusal: JoinDoorRefusal::IdentityConflict
             }
-        );
+        ));
         server.await.expect("door task");
     }
 
@@ -780,7 +699,7 @@ mod tests {
             MAX_MESH_API_RESPONSE_BYTES,
         );
         let error = client
-            .request_pinned::<_, TypedReply>(
+            .request_pinned(
                 &[endpoint],
                 [0_u8; 32],
                 &SecretRequest {
