@@ -22,6 +22,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   warm-linux-cache:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -57,6 +61,35 @@ jobs:
         run: |
           for path in /tmp/ployz-dind-{machine-target,ebpf-target,cargo-registry,cargo-git}; do
             [ ! -e "${path}" ] || sudo chown -R "$(id -u):$(id -g)" "${path}"
+          done
+
+  prune-linux-caches:
+    if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: warm-linux-cache
+    permissions:
+      actions: write
+      contents: read
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Retain newest Linux cache per architecture
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          for prefix in ployz-release-linux-amd64- ployz-release-linux-arm64-; do
+            gh api --method GET "/repos/${GH_REPO}/actions/caches" \
+              -f ref=refs/heads/main \
+              -f key="${prefix}" \
+              -f sort=created_at \
+              -f direction=desc \
+              -F per_page=100 \
+              --paginate \
+              --slurp |
+            jq -r '[.[].actions_caches[]][1:][].id' |
+            while IFS= read -r cache_id; do
+              gh api --method DELETE "/repos/${GH_REPO}/actions/caches/${cache_id}"
+            done
           done
 
   validate-release:
