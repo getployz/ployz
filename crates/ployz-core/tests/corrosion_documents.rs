@@ -4,16 +4,16 @@ use std::str::FromStr;
 
 use ployz_core::corrosion::{
     AcmeHttp01Document, AutomaticHostnameMode, CertHoldingDocument, ClusterDocument,
-    ContainerDocument, CorrosionDocument, CorrosionDocumentVersion, CorrosionExecutionFailureClass,
-    CorrosionOperation, CorrosionOperationFailure, CorrosionOperationState, CorrosionTable,
+    ContainerDocument, CorrosionBasicOperation, CorrosionDeployTargets, CorrosionDocument,
+    CorrosionDocumentVersion, CorrosionNamespaceName, CorrosionServiceName, CorrosionTable,
     CorrosionTimestamp, IngressMode, MachineDocument, MachineLoadBand, MachineStatusDocument,
     MachineStorageIneligibleReason, MachineStorageSelection, MachineStorageSelectionReason,
     MachineTransport, MeshProvider, NameClaim, NamedCorrosionDocument, NamespaceDocument,
     OperationDocument, OperationInitiator, OperatorWriteProvenance, PeerDocument, PeerTransport,
     RouteBindingDocument, ServiceDocument, ServicePlacement, ServiceReplicaCount, Sha256Hex,
-    StorageMode, TokenDocument,
+    StorageMode, TokenDocument, fingerprint_env_value,
 };
-use ployz_core::deploy::ImageReference;
+use ployz_core::deploy::{EnvValue, ImageReference};
 use ployz_core::ids::{
     ClusterId, CorrosionUlid, MachineId, MachineRowId, NamespaceId, NamespaceRowId, OperationId,
     OperationRowId, PeerId, RouteBindingRowId, ServiceId, ServiceRowId, TokenId,
@@ -27,6 +27,53 @@ use serde_json::{Value, json};
 
 const ULID_A: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const ULID_B: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
+
+#[test]
+fn corrosion_namespace_and_service_names_are_lowercase_dns_labels() {
+    assert_eq!(
+        CorrosionNamespaceName::try_new("production")
+            .expect("namespace name")
+            .as_str(),
+        "production"
+    );
+    assert_eq!(
+        CorrosionServiceName::try_new("web-2")
+            .expect("service name")
+            .as_str(),
+        "web-2"
+    );
+
+    for rejected in [
+        "",
+        "Production",
+        "-production",
+        "production-",
+        "production_web",
+        "pröduction",
+        "a234567890123456789012345678901234567890123456789012345678901234",
+    ] {
+        assert!(
+            CorrosionNamespaceName::try_new(rejected).is_err(),
+            "namespace accepted {rejected:?}"
+        );
+        assert!(
+            CorrosionServiceName::try_new(rejected).is_err(),
+            "service accepted {rejected:?}"
+        );
+    }
+}
+
+#[test]
+fn environment_fingerprint_hashes_the_json_encoded_value() {
+    let value = EnvValue::try_new("hello").expect("environment value");
+
+    assert_eq!(
+        fingerprint_env_value(&value)
+            .expect("environment fingerprint")
+            .as_str(),
+        "5aa762ae383fbb727af3c7a36d4940a5b8c40a989452d2304fc958ff3f354e7a"
+    );
+}
 
 #[test]
 fn corrosion_ulid_accepts_only_canonical_text_and_orders_by_value() {
@@ -237,7 +284,7 @@ fn every_corrosion_document_timestamp_serializes_in_canonical_utc() {
         (CorrosionTable::Tokens, &["created_at", "expires_at"][..]),
         (CorrosionTable::Services, &["deployed_at"]),
         (CorrosionTable::MachineStatus, &["observed_at"]),
-        (CorrosionTable::Operations, &["started_at", "completed_at"]),
+        (CorrosionTable::Operations, &["created_at"]),
         (CorrosionTable::CertHoldings, &["issued_at", "expires_at"]),
         (CorrosionTable::AcmeHttp01, &["created_at"]),
     ] {
@@ -353,30 +400,36 @@ fn named_documents_expose_scope_aware_claims() {
 
 #[test]
 fn every_corrosion_operation_variant_roundtrips_without_flattened_key_collisions() {
-    let variants = [
-        CorrosionOperation::Build {
+    let initiator = || OperationInitiator::Peer {
+        peer_id: PeerId::try_new(ULID_B).expect("peer id"),
+    };
+    let basic = |operation| {
+        OperationDocument::basic_created(
+            version(),
+            cluster_id(),
+            machine_id(),
+            initiator(),
+            operation,
+            timestamp("2026-08-04T10:00:00Z"),
+        )
+    };
+    let variants = vec![
+        basic(CorrosionBasicOperation::Build {
             service_id: service_id(),
-        },
-        CorrosionOperation::Deploy {
-            namespace_id: namespace_id(),
-            service_id: service_id(),
-        },
-        CorrosionOperation::MachineAdd {
+        }),
+        operation_document(),
+        basic(CorrosionBasicOperation::MachineAdd {
             target_machine_id: machine_id(),
-        },
-        CorrosionOperation::MachineRemove {
+        }),
+        basic(CorrosionBasicOperation::MachineRemove {
             target_machine_id: machine_id(),
-        },
-        CorrosionOperation::Recovery {
+        }),
+        basic(CorrosionBasicOperation::Recovery {
             target_machine_id: machine_id(),
-        },
+        }),
     ];
 
-    for operation in variants {
-        let document = OperationDocument {
-            operation,
-            ..operation_document()
-        };
+    for document in variants {
         let encoded = serde_json::to_string(&document).expect("operation document serializes");
         let decoded = serde_json::from_str::<OperationDocument>(&encoded)
             .expect("operation document round-trips");
@@ -544,7 +597,7 @@ fn namespace_document() -> NamespaceDocument {
         v: version(),
         cluster_id: cluster_id(),
         provenance: operator_provenance(),
-        name: "production".to_owned(),
+        name: CorrosionNamespaceName::try_new("production").expect("namespace name"),
     }
 }
 
@@ -554,7 +607,7 @@ fn service_document() -> ServiceDocument {
         cluster_id: cluster_id(),
         provenance: operator_provenance(),
         namespace_id: namespace_id(),
-        name: "api".to_owned(),
+        name: CorrosionServiceName::try_new("api").expect("service name"),
         image: ImageReference::try_new("ghcr.io/acme/api:2026-08-04").expect("image"),
         env_fingerprints: BTreeMap::from([(
             "DATABASE_URL".to_owned(),
@@ -616,26 +669,17 @@ fn machine_status_document() -> MachineStatusDocument {
 }
 
 fn operation_document() -> OperationDocument {
-    OperationDocument {
-        v: version(),
-        cluster_id: cluster_id(),
-        machine_id: machine_id(),
-        operation: CorrosionOperation::Deploy {
-            namespace_id: namespace_id(),
-            service_id: service_id(),
-        },
-        initiator: OperationInitiator::Peer {
+    OperationDocument::deploy_created(
+        version(),
+        cluster_id(),
+        machine_id(),
+        OperationInitiator::Peer {
             peer_id: PeerId::try_new(ULID_B).expect("peer id"),
         },
-        status: CorrosionOperationState::Failed {
-            started_at: timestamp("2026-08-04T10:00:00Z"),
-            completed_at: timestamp("2026-08-04T10:07:00Z"),
-            failure: CorrosionOperationFailure::Execution {
-                class: CorrosionExecutionFailureClass::HealthGateFailed,
-                message: "container did not become healthy".to_owned(),
-            },
-        },
-    }
+        namespace_id(),
+        CorrosionDeployTargets::try_new(vec![service_id()]).expect("deploy targets"),
+        timestamp("2026-08-04T10:00:00Z"),
+    )
 }
 
 fn cert_holding_document() -> CertHoldingDocument {

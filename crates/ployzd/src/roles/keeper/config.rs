@@ -13,7 +13,7 @@ use ployz_host_runner::builtin_wireguard::{
     BuiltinWireguardPorts, DEFAULT_PRIVATE_KEY_PATH, DEFAULT_WIREGUARD_IFNAME,
     DEFAULT_WIREGUARD_MTU,
 };
-use ployz_host_runner::{ArtifactStoreError, PloyzdArtifactStore};
+use ployz_host_runner::{ArtifactStoreError, CONTROL_SOCKET_PATH, PloyzdArtifactStore};
 
 use crate::corrosion::{BearerToken, CorrosionClientBounds, CorrosionClientConfig};
 
@@ -46,6 +46,7 @@ const HOST_FOLD_TIMEOUT_MS_ENV: &str = "PLOYZ_KEEPER_HOST_FOLD_TIMEOUT_MS";
 const SUPERVISOR_BACKEND_ENV: &str = "PLOYZ_SUPERVISOR_BACKEND";
 const UPGRADE_STATE_DIR_ENV: &str = "PLOYZ_UPGRADE_STATE_DIR";
 const UPGRADE_SOCKET_PATH_ENV: &str = "PLOYZ_UPGRADE_SOCKET_PATH";
+const CONTROL_SOCKET_PATH_ENV: &str = "PLOYZ_CONTROL_SOCKET_PATH";
 
 const DEFAULT_WIREGUARD_LISTEN_PORT: u16 = 51_820;
 const DEFAULT_CORROSION_GOSSIP_PORT: u16 = 8_787;
@@ -77,6 +78,7 @@ pub struct KeeperRoleConfig {
     retry_max: Duration,
     host_fold_timeout: Duration,
     upgrade: KeeperUpgradeConfig,
+    control_socket_path: PathBuf,
 }
 
 /// Validated machine-local inputs for Keeper's systemd-only upgrade handoff.
@@ -177,7 +179,7 @@ impl KeeperRoleConfig {
             host_command_timeout,
         )?;
 
-        Self::new(
+        let mut config = Self::new(
             corrosion,
             cluster_id,
             local_machine_id,
@@ -207,7 +209,10 @@ impl KeeperRoleConfig {
                 optional_path_environment(UPGRADE_SOCKET_PATH_ENV, DEFAULT_UPGRADE_SOCKET_PATH)?,
                 supervisor,
             ),
-        )
+        )?;
+        config.control_socket_path =
+            optional_path_environment(CONTROL_SOCKET_PATH_ENV, CONTROL_SOCKET_PATH)?;
+        Ok(config)
     }
 
     /// Builds Keeper configuration without touching the process environment.
@@ -243,6 +248,8 @@ impl KeeperRoleConfig {
             });
         }
         validate_absolute_path(UPGRADE_SOCKET_PATH_ENV, &upgrade.socket_path)?;
+        let control_socket_path = PathBuf::from(CONTROL_SOCKET_PATH);
+        validate_absolute_path(CONTROL_SOCKET_PATH_ENV, &control_socket_path)?;
 
         Ok(Self {
             corrosion,
@@ -255,6 +262,7 @@ impl KeeperRoleConfig {
             retry_max: timing.retry_max,
             host_fold_timeout: timing.host_fold_timeout,
             upgrade,
+            control_socket_path,
         })
     }
 
@@ -302,6 +310,10 @@ impl KeeperRoleConfig {
     #[must_use]
     pub fn upgrade_socket_path(&self) -> &std::path::Path {
         &self.upgrade.socket_path
+    }
+    #[must_use]
+    pub fn control_socket_path(&self) -> &std::path::Path {
+        &self.control_socket_path
     }
     #[must_use]
     pub const fn supervisor(&self) -> SupervisorBackend {

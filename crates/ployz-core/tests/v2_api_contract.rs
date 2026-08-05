@@ -1,18 +1,28 @@
+use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::str::FromStr;
 
 use ployz_core::corrosion::{
-    AcceptedRosterPrincipal, CorrosionDocumentVersion, CorrosionTimestamp, MachineLoadBand,
-    MachineStatusDocument, MachineTransport, OperationInitiator, OperatorWriteProvenance,
-    PeerTransport, Principal, SourcePrincipalResolutionError, resolve_source_principal,
+    AcceptedRosterPrincipal, CorrosionDocumentVersion, CorrosionNamespaceName, CorrosionTimestamp,
+    MachineLoadBand, MachineStatusDocument, MachineTransport, OperationInitiator,
+    OperatorWriteProvenance, PeerTransport, Principal, SourcePrincipalResolutionError,
+    resolve_source_principal,
 };
-use ployz_core::ids::{ClusterId, MachineRowId, PeerId};
+use ployz_core::deploy::{
+    ContainerRuntimeSpec, EnvName, EnvValue, ImageReference, ServiceEnvironment,
+};
+use ployz_core::ids::{ClusterId, MachineRowId, OperationRowId, PeerId, ServiceRowId, TokenId};
 use ployz_core::network::{MachineEndpointSubnet, WireGuardPublicKey};
 use ployz_core::{
-    API_MAJOR, ApiFeature, ApiRefusal, ApiVersion, FOUNDING_ROUTE, KnownApiFeature,
-    LENS_SNAPSHOT_EVENT, LENS_STATE_EVENT, LENS_TERMINAL_EVENT, LensCollection, LensSnapshot,
-    LensWatchEvent, MachineStatusLensRow, MachineStatusLensRowIdentityError, V2Method, V2Route,
-    VERSION_ROUTE, lens_route, lens_watch_route,
+    API_MAJOR, ApiFeature, ApiRefusal, ApiVersion, CorrosionLogsTailLines, FIRST_DEPLOY_ROUTE,
+    FOUNDING_ROUTE, FirstDeployRefusal, FirstDeployRequest, HandshakeObservation,
+    HandshakeObservationOutcome, KNOWN_API_FEATURES, KnownApiFeature, LENS_SNAPSHOT_EVENT,
+    LENS_STATE_EVENT, LENS_TERMINAL_EVENT, LensCollection, LensSnapshot, LensWatchEvent,
+    MachineStatusLensRow, MachineStatusLensRowIdentityError, NAMESPACE_CREATE_ROUTE,
+    NAMESPACE_REMOVE_ROUTE, OperationEvidence, OperationEvidenceEvent, OperationEvidenceSequence,
+    OperationWatchEvent, ServiceLogLine, ServiceLogStream, ServiceLogsFollowEvent,
+    ServiceLogsRefusal, V2Method, V2Route, VERSION_ROUTE, lens_route, lens_watch_route,
+    operation_route, operation_watch_route, service_logs_follow_route, service_logs_tail_route,
 };
 use serde_json::json;
 
@@ -23,6 +33,14 @@ const PEER_B: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAY";
 
 fn machine_id(value: &str) -> MachineRowId {
     MachineRowId::try_new(value).expect("fixture machine id")
+}
+
+fn operation_id(value: &str) -> OperationRowId {
+    OperationRowId::try_new(value).expect("fixture operation id")
+}
+
+fn service_id(value: &str) -> ServiceRowId {
+    ServiceRowId::try_new(value).expect("fixture service id")
 }
 
 fn peer_id(value: &str) -> PeerId {
@@ -180,6 +198,235 @@ fn duplicate_accepted_addresses_fail_closed_as_ambiguous() {
             candidate_count: 2,
         }
     );
+}
+
+#[test]
+fn operation_evidence_routes_are_row_id_based_and_have_no_list_alias() {
+    let operation_id = operation_id(MACHINE_A);
+    let service_id = service_id(MACHINE_B);
+    let peer = Principal::Peer {
+        peer_id: peer_id(PEER_A),
+    };
+    let machine = Principal::Machine {
+        machine_id: machine_id(MACHINE_A),
+    };
+    let token = Principal::ApiToken {
+        token_id: TokenId::try_new(PEER_B).expect("fixture token id"),
+    };
+
+    let routes = [
+        (
+            V2Route::NamespaceCreate,
+            NAMESPACE_CREATE_ROUTE.to_owned(),
+            V2Method::Post,
+            KnownApiFeature::NamespacePrimitives,
+            false,
+        ),
+        (
+            V2Route::NamespaceRemove,
+            NAMESPACE_REMOVE_ROUTE.to_owned(),
+            V2Method::Post,
+            KnownApiFeature::NamespacePrimitives,
+            false,
+        ),
+        (
+            V2Route::FirstDeploy,
+            FIRST_DEPLOY_ROUTE.to_owned(),
+            V2Method::Post,
+            KnownApiFeature::FirstDeploy,
+            false,
+        ),
+        (
+            V2Route::Operation(operation_id.clone()),
+            operation_route(&operation_id),
+            V2Method::Get,
+            KnownApiFeature::OperationEvidence,
+            true,
+        ),
+        (
+            V2Route::OperationWatch(operation_id.clone()),
+            operation_watch_route(&operation_id),
+            V2Method::Get,
+            KnownApiFeature::OperationEvidence,
+            true,
+        ),
+        (
+            V2Route::ServiceLogsTail(service_id.clone()),
+            service_logs_tail_route(&service_id),
+            V2Method::Post,
+            KnownApiFeature::Logs,
+            true,
+        ),
+        (
+            V2Route::ServiceLogsFollow(service_id.clone()),
+            service_logs_follow_route(&service_id),
+            V2Method::Post,
+            KnownApiFeature::Logs,
+            true,
+        ),
+    ];
+
+    for (route, path, method, feature, accepts_machine) in routes {
+        assert_eq!(route.path(), path);
+        assert_eq!(V2Route::parse(&path), Some(route.clone()));
+        assert_eq!(route.method(), method);
+        assert_eq!(route.feature(), feature);
+        assert!(route.accepts_principal(&peer));
+        assert_eq!(route.accepts_principal(&machine), accepts_machine);
+        assert!(!route.accepts_principal(&token));
+    }
+
+    assert_eq!(V2Route::parse("/operations"), None);
+    assert_eq!(V2Route::parse("/operations/not-a-row-id"), None);
+    assert_eq!(
+        V2Route::parse(&format!("{}/again", operation_watch_route(&operation_id))),
+        None
+    );
+    assert_eq!(V2Route::parse("/services/not-a-row-id/logs"), None);
+}
+
+#[test]
+fn four_additive_operation_spine_features_are_advertised() {
+    for feature in [
+        KnownApiFeature::NamespacePrimitives,
+        KnownApiFeature::FirstDeploy,
+        KnownApiFeature::OperationEvidence,
+        KnownApiFeature::Logs,
+    ] {
+        assert!(KNOWN_API_FEATURES.contains(&feature));
+    }
+}
+
+#[test]
+fn missing_namespace_refusal_names_the_resolving_primitive() {
+    let namespace_name =
+        CorrosionNamespaceName::try_new("payments").expect("fixture namespace name");
+    assert_eq!(
+        serde_json::to_value(FirstDeployRefusal::namespace_not_found(namespace_name))
+            .expect("refusal serializes"),
+        json!({
+            "kind": "namespace_not_found",
+            "namespace_name": "payments",
+            "create_command": "ployz namespace create payments"
+        })
+    );
+}
+
+#[test]
+fn first_deploy_runtime_debug_redacts_environment_values() {
+    let secret = "sentinel-secret-never-in-evidence";
+    let mut environment = BTreeMap::new();
+    environment.insert(
+        EnvName::try_new("TOKEN").expect("fixture env name"),
+        EnvValue::try_new(secret).expect("fixture env value"),
+    );
+    let mut runtime = ContainerRuntimeSpec::image_defaults();
+    runtime.environment = ServiceEnvironment::from(environment);
+    let request = FirstDeployRequest {
+        namespace_name: CorrosionNamespaceName::try_new("payments")
+            .expect("fixture namespace name"),
+        service_name: ployz_core::corrosion::CorrosionServiceName::try_new("api")
+            .expect("fixture service name"),
+        image: ImageReference::try_new("registry.example/api:latest")
+            .expect("fixture image reference"),
+        runtime,
+    };
+
+    assert!(!format!("{request:?}").contains(secret));
+    let serialized = serde_json::to_value(&request).expect("authenticated request serializes");
+    assert_eq!(
+        serialized
+            .pointer("/runtime/environment/TOKEN")
+            .and_then(serde_json::Value::as_str),
+        Some(secret)
+    );
+    assert!(
+        !serde_json::to_string(&OperationEvidence::PullingImage)
+            .expect("redaction-safe evidence serializes")
+            .contains(secret)
+    );
+}
+
+#[test]
+fn operation_events_require_positive_stable_sequences_and_fixed_timestamps() {
+    assert!(OperationEvidenceSequence::try_new(0).is_err());
+    assert_eq!(
+        serde_json::to_value(OperationEvidence::RowsCommitted)
+            .expect("rows-committed evidence serializes"),
+        json!({ "kind": "rows_committed" })
+    );
+    let event = OperationEvidenceEvent {
+        sequence: OperationEvidenceSequence::try_new(1).expect("positive sequence"),
+        timestamp: CorrosionTimestamp::try_new("2026-08-05T12:34:56Z").expect("fixture timestamp"),
+        evidence: OperationEvidence::Created,
+    };
+    let envelope = OperationWatchEvent::Evidence { event };
+    assert_eq!(envelope.event_name(), "evidence");
+    assert_eq!(
+        serde_json::to_value(&envelope).expect("event serializes"),
+        json!({
+            "kind": "evidence",
+            "event": {
+                "sequence": 1,
+                "timestamp": "2026-08-05T12:34:56.000000000Z",
+                "evidence": { "kind": "created" }
+            }
+        })
+    );
+    let encoded = serde_json::to_vec(&envelope).expect("event encodes");
+    assert_eq!(
+        serde_json::from_slice::<OperationWatchEvent>(&encoded).expect("event round-trips"),
+        envelope
+    );
+}
+
+#[test]
+fn dark_driver_refusal_carries_a_fixed_handshake_observation() {
+    let refusal = ServiceLogsRefusal::DriverDark {
+        machine_id: machine_id(MACHINE_A),
+        observation: HandshakeObservationOutcome::Observed {
+            observation: HandshakeObservation::Ago {
+                observed_at: CorrosionTimestamp::try_new("2026-08-05T12:34:56Z")
+                    .expect("fixture timestamp"),
+                age_seconds: 17,
+            },
+        },
+    };
+    assert_eq!(
+        serde_json::to_value(refusal).expect("refusal serializes"),
+        json!({
+            "kind": "driver_dark",
+            "machine_id": MACHINE_A,
+            "observation": {
+                "kind": "observed",
+                "observation": {
+                    "status": "ago",
+                    "observed_at": "2026-08-05T12:34:56.000000000Z",
+                    "age_seconds": 17
+                }
+            }
+        })
+    );
+}
+
+#[test]
+fn log_follow_gap_is_explicit_and_tail_counts_are_bounded() {
+    let line = ServiceLogsFollowEvent::Line {
+        log: ServiceLogLine {
+            stream: ServiceLogStream::Stdout,
+            line: "ready".to_owned(),
+        },
+    };
+    assert_eq!(line.event_name(), "line");
+    let gap = ServiceLogsFollowEvent::Gap;
+    assert_eq!(gap.event_name(), "gap");
+    assert_eq!(
+        serde_json::to_value(gap).expect("gap serializes"),
+        json!({ "kind": "gap" })
+    );
+    assert!(CorrosionLogsTailLines::try_new(0).is_err());
+    assert!(CorrosionLogsTailLines::try_new(CorrosionLogsTailLines::MAX).is_ok());
+    assert!(CorrosionLogsTailLines::try_new(CorrosionLogsTailLines::MAX + 1).is_err());
 }
 
 #[test]

@@ -268,7 +268,9 @@ fn additive_unknown_fields_do_not_hide_a_current_document() {
     );
 
     assert!(report.skipped.is_empty());
-    assert!(matches!(report.accepted.as_slice(), [accepted] if accepted.value.name == "alpha"));
+    assert!(
+        matches!(report.accepted.as_slice(), [accepted] if accepted.value.name.as_str() == "alpha")
+    );
 }
 
 #[test]
@@ -459,7 +461,7 @@ fn lowest_canonical_ulid_wins_and_the_duplicate_remains_visible() {
     assert!(report.skipped.is_empty());
     assert!(matches!(
         report.accepted.as_slice(),
-        [winner] if winner.id.as_str() == LOWER_ROW_ID && winner.value.name == "alpha"
+        [winner] if winner.id.as_str() == LOWER_ROW_ID && winner.value.name.as_str() == "alpha"
     ));
     assert!(matches!(
         report.shadows.as_slice(),

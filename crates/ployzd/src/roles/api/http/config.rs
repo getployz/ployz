@@ -10,7 +10,10 @@ use hmac::{Hmac, Mac};
 use ployz_core::MachineUpgradeSupervisor;
 use ployz_core::ids::{ClusterId, MachineRowId};
 use ployz_core::join::JOIN_DOOR_PORT;
-use ployz_host_runner::{ArtifactStoreError, PloyzdArtifactStore};
+use ployz_host_runner::{
+    API_EVIDENCE_DIRECTORY, API_UPGRADE_STAGING_DIRECTORY, ArtifactStoreError, CONTROL_SOCKET_PATH,
+    PloyzdArtifactStore,
+};
 use sha2::Sha256;
 
 use crate::corrosion::{BearerToken, CorrosionClientBounds, CorrosionClientConfig};
@@ -37,6 +40,7 @@ const BUILD_ENV: &str = "PLOYZ_BUILD";
 const BOOTSTRAP_SECRET_ENV: &str = "PLOYZ_API_BOOTSTRAP_SECRET";
 const UPGRADE_STATE_DIR_ENV: &str = "PLOYZ_UPGRADE_STATE_DIR";
 const UPGRADE_SOCKET_PATH_ENV: &str = "PLOYZ_UPGRADE_SOCKET_PATH";
+const CONTROL_SOCKET_PATH_ENV: &str = "PLOYZ_CONTROL_SOCKET_PATH";
 const SUPERVISOR_BACKEND_ENV: &str = "PLOYZ_SUPERVISOR_BACKEND";
 const MAX_BOOTSTRAP_SECRET_BYTES: usize = 4_096;
 const BOOTSTRAP_SECRET_DOMAIN: &[u8] = b"ployz-api-founding-v1";
@@ -73,6 +77,8 @@ struct ApiRoleDetails {
     build: String,
     mode: ApiRoleMode,
     upgrade: ApiUpgradeConfig,
+    evidence_directory: PathBuf,
+    keeper_control_socket_path: PathBuf,
 }
 
 impl JoinDoorConfig {
@@ -194,6 +200,8 @@ pub struct ApiRoleConfig {
     build: String,
     mode: ApiRoleMode,
     upgrade: ApiUpgradeConfig,
+    evidence_directory: PathBuf,
+    keeper_control_socket_path: PathBuf,
 }
 
 impl ApiRoleConfig {
@@ -275,11 +283,13 @@ impl ApiRoleConfig {
         let upgrade_socket_path =
             optional_path_environment(UPGRADE_SOCKET_PATH_ENV, DEFAULT_UPGRADE_SOCKET_PATH)?;
         let upgrade = ApiUpgradeConfig {
-            store: PloyzdArtifactStore::new(upgrade_state)
-                .map_err(ApiRoleConfigError::UpgradeStore)?,
+            store: api_upgrade_store(upgrade_state.clone())?,
             keeper_socket_path: upgrade_socket_path,
             supervisor: upgrade_supervisor_environment()?,
         };
+        let evidence_directory = upgrade_state.join(API_EVIDENCE_DIRECTORY);
+        let keeper_control_socket_path =
+            optional_path_environment(CONTROL_SOCKET_PATH_ENV, CONTROL_SOCKET_PATH)?;
 
         let mode = match env::var(BOOTSTRAP_SECRET_ENV) {
             Ok(value) => ApiRoleMode::Founding(BootstrapSecret::new(value.as_bytes())?),
@@ -310,6 +320,8 @@ impl ApiRoleConfig {
                 build,
                 mode,
                 upgrade,
+                evidence_directory,
+                keeper_control_socket_path,
             },
         )
     }
@@ -371,11 +383,14 @@ impl ApiRoleConfig {
                 build,
                 mode,
                 upgrade: ApiUpgradeConfig {
-                    store: PloyzdArtifactStore::new(PathBuf::from(DEFAULT_UPGRADE_STATE_DIR))
+                    store: api_upgrade_store(PathBuf::from(DEFAULT_UPGRADE_STATE_DIR))
                         .expect("fixed upgrade state directory is absolute"),
                     keeper_socket_path: PathBuf::from(DEFAULT_UPGRADE_SOCKET_PATH),
                     supervisor: MachineUpgradeSupervisor::Systemd,
                 },
+                evidence_directory: PathBuf::from(DEFAULT_UPGRADE_STATE_DIR)
+                    .join(API_EVIDENCE_DIRECTORY),
+                keeper_control_socket_path: PathBuf::from(CONTROL_SOCKET_PATH),
             },
         )
     }
@@ -392,6 +407,8 @@ impl ApiRoleConfig {
             build,
             mode,
             upgrade,
+            evidence_directory,
+            keeper_control_socket_path,
         } = details;
         if listen_addr.ip().is_unspecified() {
             return Err(ApiRoleConfigError::WildcardListenAddress { listen_addr });
@@ -400,6 +417,8 @@ impl ApiRoleConfig {
             return Err(ApiRoleConfigError::ZeroListenPort);
         }
         validate_absolute_path(API_JOIN_SUBSTRATE_PATH_ENV, &door.substrate_path)?;
+        validate_absolute_path(UPGRADE_STATE_DIR_ENV, &evidence_directory)?;
+        validate_absolute_path(CONTROL_SOCKET_PATH_ENV, &keeper_control_socket_path)?;
         if door.corrosion_gossip_port == 0 {
             return Err(ApiRoleConfigError::ZeroCorrosionGossipPort);
         }
@@ -414,6 +433,8 @@ impl ApiRoleConfig {
             build,
             mode,
             upgrade,
+            evidence_directory,
+            keeper_control_socket_path,
         })
     }
 
@@ -491,6 +512,21 @@ impl ApiRoleConfig {
     pub(super) const fn upgrade_supervisor(&self) -> MachineUpgradeSupervisor {
         self.upgrade.supervisor
     }
+
+    #[must_use]
+    pub(super) fn evidence_directory(&self) -> &Path {
+        &self.evidence_directory
+    }
+
+    #[must_use]
+    pub(super) fn keeper_control_socket_path(&self) -> &Path {
+        &self.keeper_control_socket_path
+    }
+}
+
+fn api_upgrade_store(state: PathBuf) -> Result<PloyzdArtifactStore, ApiRoleConfigError> {
+    PloyzdArtifactStore::new(state.join(API_UPGRADE_STAGING_DIRECTORY))
+        .map_err(ApiRoleConfigError::UpgradeStore)
 }
 
 /// Exact machine-local TLS material used by the public join door.
@@ -659,4 +695,21 @@ pub enum ApiRoleConfigError {
     UpgradeStore(#[source] ArtifactStoreError),
     #[error("PLOYZ_SUPERVISOR_BACKEND must be systemd or openrc, got {value:?}")]
     InvalidUpgradeSupervisor { value: String },
+}
+
+#[cfg(test)]
+mod upgrade_staging_tests {
+    use super::*;
+
+    #[test]
+    fn api_upgrade_store_is_confined_to_the_exported_staging_directory() {
+        let store = api_upgrade_store(PathBuf::from("/var/lib/ployz"))
+            .expect("absolute API upgrade staging store");
+
+        assert_eq!(
+            store.state(),
+            Path::new("/var/lib/ployz").join(API_UPGRADE_STAGING_DIRECTORY)
+        );
+        assert_ne!(store.state(), Path::new(DEFAULT_UPGRADE_STATE_DIR));
+    }
 }

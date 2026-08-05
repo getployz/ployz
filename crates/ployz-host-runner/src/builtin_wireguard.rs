@@ -37,6 +37,7 @@ pub use config::{
     BuiltinWireguardConfigError, BuiltinWireguardEbpfConfig, BuiltinWireguardHostConfig,
     BuiltinWireguardPorts,
 };
+pub use mesh_state::WireguardHandshakeEpoch;
 use mesh_state::*;
 use private_key::provision_private_key;
 
@@ -111,6 +112,24 @@ impl<R: HostRunnerCommandRunner> BuiltinWireguardHost<R> {
     #[must_use]
     pub fn with_runner(config: BuiltinWireguardHostConfig, runner: R) -> Self {
         Self { config, runner }
+    }
+
+    /// Reads one peer's latest-handshake epoch without changing mesh state.
+    pub fn observe_peer_handshake(
+        &mut self,
+        public_key: &WireGuardPublicKey,
+    ) -> Result<WireguardHandshakeEpoch, BuiltinWireguardHostError> {
+        let ifname = self.config.wg_ifname.clone();
+        let output = self
+            .run("wg", &["show", &ifname, "dump"])
+            .map_err(host_error)?;
+        if !output.success {
+            return Err(host_error(output.failure));
+        }
+        if output.stdout_truncated {
+            return Err(host_error("WireGuard peer observation was truncated"));
+        }
+        parse_wireguard_handshake_epoch(&output.stdout, public_key).map_err(host_error)
     }
 
     /// Creates the private key once with private permissions, or reads the
@@ -751,6 +770,44 @@ mod tests {
                     persistent_keepalive: None,
                 }
             )])
+        );
+    }
+
+    #[test]
+    fn wireguard_dump_exposes_latest_handshake_epoch_without_confusing_never_and_absent() {
+        let dump = format!(
+            "private\t{}\t51820\toff\n{}\t(none)\t(none)\tfd42::/112\t0\t0\t0\toff\n{}\t(none)\t(none)\tfd43::/112\t123\t0\t0\toff\n",
+            key(9).as_str(),
+            key(1).as_str(),
+            key(2).as_str(),
+        );
+
+        assert_eq!(
+            parse_wireguard_handshake_epoch(&dump, &key(1)).expect("never parses"),
+            WireguardHandshakeEpoch::Never
+        );
+        assert_eq!(
+            parse_wireguard_handshake_epoch(&dump, &key(2)).expect("epoch parses"),
+            WireguardHandshakeEpoch::Observed(std::num::NonZeroU64::new(123).expect("nonzero"))
+        );
+        assert_eq!(
+            parse_wireguard_handshake_epoch(&dump, &key(3)).expect("absence parses"),
+            WireguardHandshakeEpoch::PeerAbsent
+        );
+    }
+
+    #[test]
+    fn malformed_latest_handshake_epoch_is_rejected() {
+        let dump = format!(
+            "private\t{}\t51820\toff\n{}\t(none)\t(none)\tfd42::/112\tnot-an-epoch\t0\t0\toff\n",
+            key(9).as_str(),
+            key(1).as_str(),
+        );
+
+        assert!(
+            parse_wireguard_handshake_epoch(&dump, &key(1))
+                .expect_err("malformed epoch")
+                .contains("latest-handshake epoch")
         );
     }
 

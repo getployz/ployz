@@ -203,6 +203,7 @@ impl<'a, R: HostRunnerCommandRunner> LinuxSubstrate<'a, R> {
         &mut self,
         environment: &PloyzdRoleEnvironmentFile,
     ) -> Result<(), FailureMessage> {
+        self.install_api_privilege_substrate()?;
         let backend = self.supervisor()?;
         let artifact_store = PloyzdArtifactStore::new(self.state.to_path_buf()).map_err(failure)?;
         match backend.ployzd_upgrade_rollback() {
@@ -247,6 +248,20 @@ impl<'a, R: HostRunnerCommandRunner> LinuxSubstrate<'a, R> {
                     self.run_supervisor(SupervisorChange::Stop, &target)?;
                 }
             }
+        }
+        Ok(())
+    }
+
+    pub(super) fn install_api_privilege_substrate(&mut self) -> Result<(), FailureMessage> {
+        let package_family = self.profile()?.package_family();
+        let commands = crate::api_privilege_install_commands(self.state, package_family)?;
+        for command in commands {
+            let args = command
+                .args()
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            self.require(command.program(), &args)?;
         }
         Ok(())
     }

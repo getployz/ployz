@@ -5,5 +5,6 @@
 
 pub mod execution;
 pub mod http;
+pub(crate) mod keeper_control;
 pub mod lenses;
 pub mod runner;

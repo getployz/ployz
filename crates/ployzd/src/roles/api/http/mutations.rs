@@ -5,9 +5,10 @@ use std::time::Duration;
 use hyper::{Response, StatusCode};
 use ployz_core::corrosion::Principal;
 use ployz_core::corrosion::{
-    CorrosionDocumentVersion, CorrosionTimestamp, OperatorWriteProvenance, Sha256Hex, TokenDocument,
+    CorrosionDocumentVersion, CorrosionTimestamp, NamespaceDocument, OperatorWriteProvenance,
+    Sha256Hex, TokenDocument,
 };
-use ployz_core::ids::{MachineRowId, TokenId};
+use ployz_core::ids::{MachineRowId, NamespaceRowId, TokenId};
 use ployz_core::join::{
     MachineEndpointSetRefusal, MachineEndpointSetRequest, PreparedTokenCreation,
     TokenCreateRequest, TokenListRequest, TokenRevokeRefusal, TokenRevokeReply, TokenRevokeRequest,
@@ -15,14 +16,19 @@ use ployz_core::join::{
 };
 use ployz_core::machine::MachineName;
 use ployz_core::{
-    ApiRefusal, MachineRemoveRefusal, MachineRemoveReply, MachineRemoveRequest, V2Route,
-    select_machine_removal,
+    ApiRefusal, CorrosionNamespaceCreateRefusal, CorrosionNamespaceCreateReply,
+    CorrosionNamespaceCreateRequest, CorrosionNamespaceRemoveRefusal,
+    CorrosionNamespaceRemoveReply, CorrosionNamespaceRemoveRequest, MachineRemoveRefusal,
+    MachineRemoveReply, MachineRemoveRequest, V2Route, select_machine_removal,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use time::format_description::well_known::Rfc3339;
 use time::{Duration as TimeDuration, OffsetDateTime};
 
+use super::operation_store::{
+    NamespaceClaim, NamespaceDeleteOutcome, ObservedNamespace, OperationStore, OperationStoreError,
+};
 use super::roster::corrosion_unavailable_refusal;
 use super::server::{
     ApiService, BoundedBodyError, HttpBody, corrosion_unavailable_response, json_response,
@@ -82,13 +88,196 @@ pub(super) async fn handle_mutation(
             };
             machine_remove(service, request).await
         }
+        V2Route::NamespaceCreate => {
+            let request = match decode_request::<CorrosionNamespaceCreateRequest>(
+                request.into_body(),
+            )
+            .await
+            {
+                Ok(request) => request,
+                Err(response) => return response,
+            };
+            namespace_create(service, principal, request).await
+        }
+        V2Route::NamespaceRemove => {
+            let request = match decode_request::<CorrosionNamespaceRemoveRequest>(
+                request.into_body(),
+            )
+            .await
+            {
+                Ok(request) => request,
+                Err(response) => return response,
+            };
+            namespace_remove(service, request).await
+        }
         V2Route::Version
         | V2Route::Founding
         | V2Route::Join
         | V2Route::MachineUpgrade
+        | V2Route::FirstDeploy
+        | V2Route::Operation(_)
+        | V2Route::OperationWatch(_)
+        | V2Route::ServiceLogsTail(_)
+        | V2Route::ServiceLogsFollow(_)
         | V2Route::Lens(_)
         | V2Route::LensWatch(_) => refusal_response(ApiRefusal::UnsupportedRoute),
     }
+}
+
+async fn namespace_create(
+    service: &ApiService,
+    principal: Principal,
+    request: CorrosionNamespaceCreateRequest,
+) -> Response<HttpBody> {
+    let namespace_id = match NamespaceRowId::try_new(ulid::Ulid::new().to_string()) {
+        Ok(namespace_id) => namespace_id,
+        Err(error) => {
+            tracing::error!(error = %error, "generated invalid namespace ULID");
+            return corrosion_unavailable_response();
+        }
+    };
+    let written_at = match now_timestamp() {
+        Ok(written_at) => written_at,
+        Err(()) => return corrosion_unavailable_response(),
+    };
+    let document = NamespaceDocument {
+        v: CorrosionDocumentVersion::V1,
+        cluster_id: service.cluster_id.clone(),
+        provenance: OperatorWriteProvenance {
+            written_by: principal,
+            written_at,
+        },
+        name: request.namespace_name,
+    };
+    let store = OperationStore::new(service.corrosion.clone(), service.cluster_id.clone());
+    match store.create_namespace(&namespace_id, &document).await {
+        Ok(NamespaceClaim::Claimed { namespace_id }) => typed_response(
+            StatusCode::OK,
+            &CorrosionNamespaceCreateReply {
+                namespace_id,
+                document,
+            },
+        ),
+        Ok(NamespaceClaim::Lost { winner }) => typed_response(
+            StatusCode::CONFLICT,
+            &CorrosionNamespaceCreateRefusal::NameAlreadyClaimed {
+                namespace_name: document.name,
+                winner,
+            },
+        ),
+        Err(error) => operation_store_failure("create namespace", error),
+    }
+}
+
+async fn namespace_remove(
+    service: &ApiService,
+    request: CorrosionNamespaceRemoveRequest,
+) -> Response<HttpBody> {
+    let store = OperationStore::new(service.corrosion.clone(), service.cluster_id.clone());
+    let mut candidates = match store.namespaces_named(&request.namespace_name).await {
+        Ok(candidates) => candidates,
+        Err(error) => return operation_store_failure("resolve namespace removal", error),
+    };
+    if let Some(namespace_id) = &request.namespace_id
+        && !candidates
+            .iter()
+            .any(|candidate| &candidate.id == namespace_id)
+    {
+        match store.namespace(namespace_id).await {
+            Ok(Some(namespace)) if namespace.document.name == request.namespace_name => {
+                candidates.push(namespace);
+            }
+            Ok(Some(_)) => {
+                return namespace_remove_refusal_response(
+                    CorrosionNamespaceRemoveRefusal::IdMismatch {
+                        namespace_name: request.namespace_name,
+                        namespace_id: namespace_id.clone(),
+                    },
+                );
+            }
+            Ok(None) => {}
+            Err(error) => return operation_store_failure("resolve namespace identity", error),
+        }
+    }
+    let selected = match select_namespace_removal(&request, candidates) {
+        Ok(NamespaceRemovalSelection::Present(namespace)) => namespace,
+        Ok(NamespaceRemovalSelection::AlreadyAbsent(namespace_id)) => {
+            return typed_response(
+                StatusCode::OK,
+                &CorrosionNamespaceRemoveReply::AlreadyAbsent { namespace_id },
+            );
+        }
+        Err(refusal) => return namespace_remove_refusal_response(refusal),
+    };
+    let namespace_id = selected.id.clone();
+    match store.delete_namespace_if_empty(&selected).await {
+        Ok(NamespaceDeleteOutcome::Removed) => typed_response(
+            StatusCode::OK,
+            &CorrosionNamespaceRemoveReply::Removed { namespace_id },
+        ),
+        Ok(NamespaceDeleteOutcome::AlreadyAbsent) => typed_response(
+            StatusCode::OK,
+            &CorrosionNamespaceRemoveReply::AlreadyAbsent { namespace_id },
+        ),
+        Ok(NamespaceDeleteOutcome::Changed) => {
+            namespace_remove_refusal_response(CorrosionNamespaceRemoveRefusal::Changed {
+                namespace_id,
+            })
+        }
+        Ok(NamespaceDeleteOutcome::NotEmpty {
+            service_ids,
+            route_binding_count,
+        }) => namespace_remove_refusal_response(CorrosionNamespaceRemoveRefusal::NotEmpty {
+            namespace_id,
+            service_ids,
+            route_binding_count,
+        }),
+        Err(error) => operation_store_failure("remove namespace", error),
+    }
+}
+
+enum NamespaceRemovalSelection {
+    Present(ObservedNamespace),
+    AlreadyAbsent(NamespaceRowId),
+}
+
+fn select_namespace_removal(
+    request: &CorrosionNamespaceRemoveRequest,
+    mut candidates: Vec<ObservedNamespace>,
+) -> Result<NamespaceRemovalSelection, CorrosionNamespaceRemoveRefusal> {
+    candidates.sort_by(|left, right| left.id.cmp(&right.id));
+    let Some(namespace_id) = &request.namespace_id else {
+        return match candidates.as_slice() {
+            [] => Err(CorrosionNamespaceRemoveRefusal::NotFound {
+                namespace_name: request.namespace_name.clone(),
+            }),
+            [_] => Ok(NamespaceRemovalSelection::Present(candidates.remove(0))),
+            _ => Err(CorrosionNamespaceRemoveRefusal::Ambiguous {
+                namespace_name: request.namespace_name.clone(),
+                namespace_ids: candidates
+                    .into_iter()
+                    .map(|candidate| candidate.id)
+                    .collect(),
+            }),
+        };
+    };
+    if let Some(position) = candidates
+        .iter()
+        .position(|candidate| &candidate.id == namespace_id)
+    {
+        return Ok(NamespaceRemovalSelection::Present(
+            candidates.remove(position),
+        ));
+    }
+    if candidates.is_empty() {
+        return Ok(NamespaceRemovalSelection::AlreadyAbsent(
+            namespace_id.clone(),
+        ));
+    }
+    Err(CorrosionNamespaceRemoveRefusal::IdMismatch {
+        namespace_name: request.namespace_name.clone(),
+        namespace_id: namespace_id.clone(),
+    })
 }
 
 async fn token_create(
@@ -327,6 +516,19 @@ fn machine_remove_refusal_response(refusal: MachineRemoveRefusal) -> Response<Ht
     typed_response(status, &refusal)
 }
 
+fn namespace_remove_refusal_response(
+    refusal: CorrosionNamespaceRemoveRefusal,
+) -> Response<HttpBody> {
+    let status = match &refusal {
+        CorrosionNamespaceRemoveRefusal::NotFound { .. } => StatusCode::NOT_FOUND,
+        CorrosionNamespaceRemoveRefusal::Ambiguous { .. }
+        | CorrosionNamespaceRemoveRefusal::IdMismatch { .. }
+        | CorrosionNamespaceRemoveRefusal::NotEmpty { .. }
+        | CorrosionNamespaceRemoveRefusal::Changed { .. } => StatusCode::CONFLICT,
+    };
+    typed_response(status, &refusal)
+}
+
 fn token_times(ttl_seconds: u32) -> Result<(CorrosionTimestamp, CorrosionTimestamp), ()> {
     let now = OffsetDateTime::now_utc();
     let expires = now
@@ -391,9 +593,48 @@ fn store_failure(action: &'static str, error: MutationStoreError) -> Response<Ht
     refusal_response(corrosion_unavailable_refusal())
 }
 
+fn operation_store_failure(action: &'static str, error: OperationStoreError) -> Response<HttpBody> {
+    tracing::warn!(%action, error = %error, "API mutation could not reach durable Corrosion state");
+    refusal_response(corrosion_unavailable_refusal())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn namespace_id(value: &str) -> NamespaceRowId {
+        NamespaceRowId::try_new(value).expect("namespace id")
+    }
+
+    fn namespace_request(namespace_id: Option<NamespaceRowId>) -> CorrosionNamespaceRemoveRequest {
+        CorrosionNamespaceRemoveRequest {
+            namespace_name: ployz_core::corrosion::CorrosionNamespaceName::try_new("production")
+                .expect("namespace name"),
+            namespace_id,
+        }
+    }
+
+    fn observed_namespace(id: NamespaceRowId) -> ObservedNamespace {
+        let written_at = CorrosionTimestamp::try_new("2026-08-05T10:00:00Z").expect("timestamp");
+        ObservedNamespace {
+            id,
+            exact_document: "{}".to_owned(),
+            document: NamespaceDocument {
+                v: CorrosionDocumentVersion::V1,
+                cluster_id: ployz_core::ids::ClusterId::try_new("01J00000000000000000000001")
+                    .expect("cluster id"),
+                provenance: OperatorWriteProvenance {
+                    written_by: Principal::Peer {
+                        peer_id: ployz_core::ids::PeerId::try_new("01J00000000000000000000002")
+                            .expect("peer id"),
+                    },
+                    written_at,
+                },
+                name: ployz_core::corrosion::CorrosionNamespaceName::try_new("production")
+                    .expect("namespace name"),
+            },
+        }
+    }
 
     #[test]
     fn token_expiry_is_strictly_after_creation() {
@@ -489,5 +730,36 @@ mod tests {
             machine_removal_reply(&request, std::iter::empty(), true),
             Err(MachineRemoveRefusal::NotFound { machine_name })
         );
+    }
+
+    #[test]
+    fn namespace_remove_without_id_refuses_ambiguous_names_in_sorted_order() {
+        let first = namespace_id("01J00000000000000000000003");
+        let second = namespace_id("01J00000000000000000000004");
+        let result = select_namespace_removal(
+            &namespace_request(None),
+            vec![
+                observed_namespace(second.clone()),
+                observed_namespace(first.clone()),
+            ],
+        );
+        assert!(matches!(
+            result,
+            Err(CorrosionNamespaceRemoveRefusal::Ambiguous {
+                namespace_ids,
+                ..
+            }) if namespace_ids == vec![first, second]
+        ));
+    }
+
+    #[test]
+    fn namespace_remove_with_id_is_idempotent_after_the_row_is_absent() {
+        let namespace_id = namespace_id("01J00000000000000000000003");
+        let result =
+            select_namespace_removal(&namespace_request(Some(namespace_id.clone())), Vec::new());
+        assert!(matches!(
+            result,
+            Ok(NamespaceRemovalSelection::AlreadyAbsent(id)) if id == namespace_id
+        ));
     }
 }

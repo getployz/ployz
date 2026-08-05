@@ -516,6 +516,71 @@ fn ployzd_artifact_store_refuses_to_stage_unverified_bytes() {
     assert!(!store.current_path().exists());
 }
 
+#[test]
+fn root_store_adopts_only_exact_api_staged_candidate_metadata_and_bytes() {
+    let root = tempfile::tempdir().expect("artifact-store root");
+    let source = root.path().join("candidate-ployzd");
+    fs::write(&source, "new\n").expect("candidate writes");
+    let verified =
+        verify_artifact_file(&source, &digest(NEWLINE_NEW_SHA256)).expect("candidate verifies");
+    let version = ArtifactVersion::try_new("1.2.3").expect("version");
+    let staging = PloyzdArtifactStore::new(root.path().join("api/upgrade-staging"))
+        .expect("absolute staging directory");
+    let live = PloyzdArtifactStore::new(root.path().join("live")).expect("absolute live directory");
+
+    staging
+        .stage_upgrade_candidate(&verified, &version)
+        .expect("API candidate stages");
+    assert!(!live.artifacts_path().join(NEWLINE_NEW_SHA256).exists());
+
+    let adopted = live
+        .adopt_upgrade_candidate(&staging, &version, &digest(NEWLINE_NEW_SHA256))
+        .expect("Keeper adopts exact candidate");
+    assert_eq!(
+        adopted.staged_path,
+        live.artifacts_path().join(NEWLINE_NEW_SHA256)
+    );
+    assert_eq!(
+        fs::read(adopted.staged_path).expect("adopted bytes"),
+        b"new\n"
+    );
+
+    let other_version = ArtifactVersion::try_new("1.2.4").expect("other version");
+    assert!(matches!(
+        live.adopt_upgrade_candidate(&staging, &other_version, &digest(NEWLINE_NEW_SHA256),),
+        Err(ArtifactStoreError::CandidateMetadataMismatch { .. })
+    ));
+}
+
+#[test]
+fn root_store_reverifies_api_staged_candidate_before_adoption() {
+    let root = tempfile::tempdir().expect("artifact-store root");
+    let source = root.path().join("candidate-ployzd");
+    fs::write(&source, "new\n").expect("candidate writes");
+    let verified =
+        verify_artifact_file(&source, &digest(NEWLINE_NEW_SHA256)).expect("candidate verifies");
+    let version = ArtifactVersion::try_new("1.2.3").expect("version");
+    let staging = PloyzdArtifactStore::new(root.path().join("api/upgrade-staging"))
+        .expect("absolute staging directory");
+    let live = PloyzdArtifactStore::new(root.path().join("live")).expect("absolute live directory");
+    staging
+        .stage_upgrade_candidate(&verified, &version)
+        .expect("API candidate stages");
+    fs::write(
+        staging.artifacts_path().join(NEWLINE_NEW_SHA256),
+        b"tampered\n",
+    )
+    .expect("staged bytes can be corrupted for test");
+
+    assert!(matches!(
+        live.adopt_upgrade_candidate(&staging, &version, &digest(NEWLINE_NEW_SHA256)),
+        Err(ArtifactStoreError::Verification(
+            ArtifactVerificationError::DigestMismatch { .. }
+        ))
+    ));
+    assert!(!live.artifacts_path().join(NEWLINE_NEW_SHA256).exists());
+}
+
 fn digest(value: &str) -> Sha256Digest {
     Sha256Digest::try_new(value).expect("valid artifact digest")
 }

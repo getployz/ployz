@@ -20,6 +20,7 @@ scripts/build-dind-machine-image.sh full
 cargo test -p ployz-e2e --lib
 PLOYZ_DIND_E2E=1 cargo test -p ployz-e2e --test keeper_mesh "$@" -- --nocapture
 PLOYZ_DIND_E2E=1 cargo test -p ployz-e2e --test container_plane "$@" -- --nocapture
+PLOYZ_DIND_E2E=1 cargo test -p ployz-e2e --test operation_deploy "$@" -- --nocapture
 PLOYZ_DIND_E2E=1 cargo test -p ployz-e2e --test init_machine_one "$@" -- --nocapture
 PLOYZ_DIND_E2E=1 cargo test -p ployz-e2e --test laptop_dial "$@" -- --nocapture
 PLOYZ_DIND_E2E=1 cargo test -p ployz-e2e --test token_door_join "$@" -- --nocapture

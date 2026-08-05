@@ -17,10 +17,11 @@ use tokio::time::Instant;
 
 use crate::corrosion::CorrosionClient;
 
+use super::control::KeeperControlSocket;
 use super::provider::{BoundKeeperIdentity, KeeperMeshProvider, KeeperProviderError};
 use super::status::{LocalMachineStatusWriter, MachineStatusWriteError, now};
 use super::store::{KeeperCorrosion, KeeperStoreError};
-use super::upgrade::{KeeperUpgradeSocket, restart_systemd_role};
+use super::upgrade::{KeeperUpgradeSocket, migrate_api_privileges, restart_systemd_role};
 use super::{KeeperRoleConfig, KeeperRoleConfigError};
 
 const SUBNET_REPAIR_COURTESY_DELAY: Duration = Duration::from_secs(1);
@@ -38,8 +39,39 @@ pub async fn run_from_environment() -> Result<(), KeeperRoleRuntimeError> {
         config.cluster_id().clone(),
         config.local_machine_id().clone(),
     );
+    let control = KeeperControlSocket::bind(config.control_socket_path())
+        .await
+        .map_err(|error| KeeperRoleRuntimeError::ControlSocket {
+            detail: error.to_string(),
+        })?;
+    let (stop, _) = watch::channel(false);
+    let control_server = control.serve(provider.clone(), stop.subscribe());
+    tokio::pin!(control_server);
     if config.supervisor() == SupervisorBackend::OpenRc {
-        return run_keeper(config, provider, store, wait_for_process_shutdown()).await;
+        let keeper = run_keeper(
+            config,
+            provider,
+            store,
+            wait_for_process_or_upgrade_shutdown(stop.subscribe()),
+        );
+        tokio::pin!(keeper);
+        return tokio::select! {
+            result = &mut keeper => {
+                let _ = stop.send(true);
+                let _ = control_server.await;
+                result
+            }
+            result = &mut control_server => {
+                let _ = stop.send(true);
+                let _ = keeper.await;
+                match result {
+                    Ok(()) => Err(KeeperRoleRuntimeError::ControlSocketStopped),
+                    Err(error) => Err(KeeperRoleRuntimeError::ControlSocket {
+                        detail: error.to_string(),
+                    }),
+                }
+            }
+        };
     }
 
     let socket = KeeperUpgradeSocket::bind(config.upgrade_socket_path())
@@ -47,7 +79,6 @@ pub async fn run_from_environment() -> Result<(), KeeperRoleRuntimeError> {
         .map_err(|error| KeeperRoleRuntimeError::UpgradeSocket {
             detail: error.to_string(),
         })?;
-    let (stop, _) = watch::channel(false);
     let socket_store = config.upgrade_store().clone();
     let socket_timeout = config.host().command_timeout();
     let socket_shutdown = stop.subscribe();
@@ -65,14 +96,27 @@ pub async fn run_from_environment() -> Result<(), KeeperRoleRuntimeError> {
         result = &mut keeper => {
             let _ = stop.send(true);
             let _ = socket_server.await;
+            let _ = control_server.await;
             result
         }
         result = &mut socket_server => {
             let _ = stop.send(true);
             let _ = keeper.await;
+            let _ = control_server.await;
             match result {
                 Ok(()) => Err(KeeperRoleRuntimeError::UpgradeSocketStopped),
                 Err(error) => Err(KeeperRoleRuntimeError::UpgradeSocket {
+                    detail: error.to_string(),
+                }),
+            }
+        }
+        result = &mut control_server => {
+            let _ = stop.send(true);
+            let _ = keeper.await;
+            let _ = socket_server.await;
+            match result {
+                Ok(()) => Err(KeeperRoleRuntimeError::ControlSocketStopped),
+                Err(error) => Err(KeeperRoleRuntimeError::ControlSocket {
                     detail: error.to_string(),
                 }),
             }
@@ -245,6 +289,12 @@ async fn confirm_upgraded_keeper(config: &KeeperRoleConfig) -> Result<(), Keeper
             detail: "an armed upgrade requires systemd".to_owned(),
         });
     }
+    migrate_api_privileges(
+        config.upgrade_store().state().to_path_buf(),
+        config.host().command_timeout(),
+    )
+    .await
+    .map_err(|detail| KeeperRoleRuntimeError::UpgradeFirstConverge { detail })?;
     for role in [PloyzdRole::Api, PloyzdRole::Gateway, PloyzdRole::Dns] {
         restart_systemd_role(role, config.host().command_timeout())
             .await
@@ -651,6 +701,10 @@ pub enum KeeperRoleRuntimeError {
     UpgradeSocket { detail: String },
     #[error("Keeper upgrade socket stopped before Keeper shutdown")]
     UpgradeSocketStopped,
+    #[error("Keeper control socket failed: {detail}")]
+    ControlSocket { detail: String },
+    #[error("Keeper control socket stopped before Keeper shutdown")]
+    ControlSocketStopped,
 }
 
 impl KeeperRoleRuntimeError {

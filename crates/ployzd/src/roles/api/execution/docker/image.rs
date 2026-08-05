@@ -2,13 +2,18 @@ use std::time::Duration;
 
 use bollard::auth::DockerCredentials;
 use bollard::errors::Error as BollardError;
+use bollard::query_parameters::CreateImageOptionsBuilder;
+use futures_util::StreamExt;
 use ployz_core::deploy::{ImageReference, RegistryCredential};
 use ployz_core::image::OciDigest;
 
 use super::runner::DockerManagedContainerRunner;
-use crate::roles::api::runner::MachineRegistryImageResolveError;
+use crate::roles::api::runner::{
+    MachineRegistryImageResolveError, V2MachineImagePullError, V2MachineImageRunner,
+};
 
 const REGISTRY_RETRY_DELAYS: [Duration; 2] = [Duration::from_millis(250), Duration::from_secs(1)];
+const V2_IMAGE_PULL_TIMEOUT: Duration = Duration::from_secs(60);
 
 impl DockerManagedContainerRunner {
     pub(super) async fn resolve_registry_reference(
@@ -60,6 +65,75 @@ impl DockerManagedContainerRunner {
         OciDigest::try_new(digest).map_err(|error| MachineRegistryImageResolveError::ImagePull {
             message: error.to_string(),
         })
+    }
+}
+
+impl V2MachineImageRunner for DockerManagedContainerRunner {
+    async fn pull_v2_registry_image(
+        &self,
+        reference: &ImageReference,
+        credential: Option<&RegistryCredential>,
+        mut shutdown: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<(), V2MachineImagePullError> {
+        let Some(expected_digest) = reference.pinned_digest() else {
+            return Err(V2MachineImagePullError::ReferenceNotDigestPinned);
+        };
+        if *shutdown.borrow() {
+            return Err(V2MachineImagePullError::Cancelled);
+        }
+        let docker = self
+            .docker()
+            .await
+            .map_err(|_| V2MachineImagePullError::RuntimeUnavailable)?;
+        let pull = async {
+            let options = CreateImageOptionsBuilder::new()
+                .from_image(reference.as_str())
+                .build();
+            let mut stream =
+                docker.create_image(Some(options), None, docker_credentials(credential));
+            while let Some(progress) = stream.next().await {
+                progress.map_err(|_| V2MachineImagePullError::PullFailed)?;
+            }
+            let inspected = docker
+                .inspect_image(reference.as_str())
+                .await
+                .map_err(|_| V2MachineImagePullError::PullFailed)?;
+            if local_image_has_digest(inspected.repo_digests.as_deref(), &expected_digest) {
+                Ok(())
+            } else {
+                Err(V2MachineImagePullError::DigestMismatch {
+                    expected: expected_digest,
+                })
+            }
+        };
+        tokio::pin!(pull);
+        let deadline = tokio::time::sleep(V2_IMAGE_PULL_TIMEOUT);
+        tokio::pin!(deadline);
+        tokio::select! {
+            result = &mut pull => result,
+            () = wait_for_image_pull_shutdown(&mut shutdown) => {
+                Err(V2MachineImagePullError::Cancelled)
+            }
+            () = &mut deadline => Err(V2MachineImagePullError::TimedOut),
+        }
+    }
+}
+
+fn local_image_has_digest(repo_digests: Option<&[String]>, expected: &OciDigest) -> bool {
+    repo_digests.is_some_and(|repo_digests| {
+        repo_digests.iter().any(|reference| {
+            reference
+                .rsplit_once('@')
+                .is_some_and(|(_, digest)| digest == expected.as_str())
+        })
+    })
+}
+
+async fn wait_for_image_pull_shutdown(shutdown: &mut tokio::sync::watch::Receiver<bool>) {
+    loop {
+        if *shutdown.borrow() || shutdown.changed().await.is_err() {
+            return;
+        }
     }
 }
 
@@ -145,7 +219,117 @@ mod tests {
 
     use super::*;
     use crate::roles::api::execution::docker::test_support::{image, runner_with_responses};
-    use crate::roles::api::runner::{MachineContainerRunner, MachineRegistryImageResolveError};
+    use crate::roles::api::runner::{
+        MachineContainerRunner, MachineRegistryImageResolveError, V2MachineImagePullError,
+        V2MachineImageRunner,
+    };
+
+    fn open_shutdown() -> (
+        tokio::sync::watch::Sender<bool>,
+        tokio::sync::watch::Receiver<bool>,
+    ) {
+        tokio::sync::watch::channel(false)
+    }
+
+    #[tokio::test]
+    async fn v2_registry_pull_fetches_and_verifies_a_cold_exact_image() {
+        let digest = format!("sha256:{}", "d".repeat(64));
+        let reference = image(&format!("registry.example/acme/api@{digest}"));
+        let inspect = format!(r#"{{"RepoDigests":["registry.example/acme/api@{digest}"]}}"#);
+        let (runner, attempts, _socket_dir) = runner_with_responses(vec![
+            (200, r#"{"status":"Pull complete"}"#.to_owned()),
+            (200, inspect),
+        ])
+        .await;
+
+        let (_shutdown_send, shutdown_receive) = open_shutdown();
+        runner
+            .pull_v2_registry_image(&reference, None, shutdown_receive)
+            .await
+            .expect("exact pull succeeds");
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn v2_registry_pull_classifies_stream_failure_without_exposing_credentials() {
+        let digest = format!("sha256:{}", "e".repeat(64));
+        let reference = image(&format!("registry.example/acme/api@{digest}"));
+        let credential = RegistryCredential::try_identity_token("pull-secret").expect("credential");
+        let (runner, attempts, _socket_dir) = runner_with_responses(vec![(
+            200,
+            r#"{"errorDetail":{"message":"registry reflected pull-secret"}}"#.to_owned(),
+        )])
+        .await;
+
+        let (_shutdown_send, shutdown_receive) = open_shutdown();
+        let error = runner
+            .pull_v2_registry_image(&reference, Some(&credential), shutdown_receive)
+            .await
+            .expect_err("stream failure");
+
+        assert_eq!(error, V2MachineImagePullError::PullFailed);
+        assert!(!error.to_string().contains("pull-secret"));
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn v2_registry_pull_rejects_a_local_digest_mismatch() {
+        let expected =
+            OciDigest::try_new(format!("sha256:{}", "f".repeat(64))).expect("expected digest");
+        let observed = format!("sha256:{}", "a".repeat(64));
+        let reference = image(&format!("registry.example/acme/api@{}", expected.as_str()));
+        let inspect = format!(r#"{{"RepoDigests":["registry.example/acme/api@{observed}"]}}"#);
+        let (runner, attempts, _socket_dir) = runner_with_responses(vec![
+            (200, r#"{"status":"Pull complete"}"#.to_owned()),
+            (200, inspect),
+        ])
+        .await;
+
+        let (_shutdown_send, shutdown_receive) = open_shutdown();
+        let error = runner
+            .pull_v2_registry_image(&reference, None, shutdown_receive)
+            .await
+            .expect_err("digest mismatch");
+
+        assert_eq!(error, V2MachineImagePullError::DigestMismatch { expected });
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn v2_registry_pull_honors_cancellation_before_docker_io() {
+        let digest = format!("sha256:{}", "b".repeat(64));
+        let reference = image(&format!("registry.example/acme/api@{digest}"));
+        let (shutdown_send, shutdown_receive) = tokio::sync::watch::channel(false);
+        shutdown_send.send(true).expect("shutdown");
+        let (runner, attempts, _socket_dir) = runner_with_responses(Vec::new()).await;
+
+        let error = runner
+            .pull_v2_registry_image(&reference, None, shutdown_receive)
+            .await
+            .expect_err("cancelled pull");
+
+        assert_eq!(error, V2MachineImagePullError::Cancelled);
+        assert_eq!(attempts.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn v2_registry_pull_refuses_a_mutable_reference_without_docker_io() {
+        let (runner, attempts, _socket_dir) = runner_with_responses(Vec::new()).await;
+
+        let (_shutdown_send, shutdown_receive) = open_shutdown();
+        let error = runner
+            .pull_v2_registry_image(
+                &image("registry.example/acme/api:latest"),
+                None,
+                shutdown_receive,
+            )
+            .await
+            .expect_err("mutable reference");
+
+        assert_eq!(error, V2MachineImagePullError::ReferenceNotDigestPinned);
+        assert_eq!(attempts.load(Ordering::SeqCst), 0);
+    }
 
     #[tokio::test]
     async fn registry_resolution_retries_transient_server_failures() {

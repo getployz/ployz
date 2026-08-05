@@ -52,6 +52,26 @@ async fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Command::Namespace(command) => finish_output(ployz::namespace::execute(command).await),
+        Command::Deploy(command) => finish_output(ployz::deploy::execute(command).await),
+        Command::Ops(command) => finish_output(ployz::ops::execute(command).await),
+        Command::Logs(command) => finish_output(ployz::logs::execute(command).await),
+    }
+}
+
+fn finish_output<Error>(result: Result<String, Error>) -> ExitCode
+where
+    Error: std::fmt::Display,
+{
+    match result {
+        Ok(output) => {
+            print!("{output}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
     }
 }
 

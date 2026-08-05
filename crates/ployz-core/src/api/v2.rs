@@ -4,10 +4,14 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::corrosion::{
-    ClusterDocument, ContainerDocument, MachineDocument, MachineStatusDocument, OperationDocument,
-    Principal, ServiceDocument, SourcePrincipalResolutionError,
+    ClusterDocument, ContainerDocument, CorrosionNamespaceName, CorrosionServiceName,
+    CorrosionTimestamp, MachineDocument, MachineStatusDocument, NamespaceDocument,
+    OperationDocument, Principal, ServiceDocument, SourcePrincipalResolutionError,
 };
-use crate::ids::{ContainerId, MachineRowId, OperationRowId, ServiceRowId, TokenId};
+use crate::deploy::{ContainerRuntimeSpec, ImageReference};
+use crate::ids::{
+    ContainerId, MachineRowId, NamespaceRowId, OperationRowId, ServiceRowId, TokenId,
+};
 use crate::install::{InstallArtifactVersion, InstallSha256Digest};
 use crate::machine::MachineName;
 
@@ -37,6 +41,16 @@ pub const MACHINE_REMOVE_ROUTE: &str = "/machines/remove";
 pub const MACHINE_UPGRADE_ROUTE: &str = "/machines/upgrade";
 /// The only route exposed by the public TLS join door.
 pub const JOIN_ROUTE: &str = "/join";
+/// Stable endpoint for creating one namespace authority row.
+pub const NAMESPACE_CREATE_ROUTE: &str = "/namespaces/create";
+/// Stable endpoint for removing one empty namespace authority row.
+pub const NAMESPACE_REMOVE_ROUTE: &str = "/namespaces/remove";
+/// Stable endpoint for submitting the first service in an empty namespace.
+pub const FIRST_DEPLOY_ROUTE: &str = "/deploys/first";
+/// Stable prefix for one operation summary and its driver-local evidence.
+pub const OPERATIONS_ROUTE_PREFIX: &str = "/operations";
+/// Stable prefix for service log access.
+pub const SERVICE_LOGS_ROUTE_PREFIX: &str = "/services";
 
 /// A capability understood by this version of the public API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -56,6 +70,14 @@ pub enum KnownApiFeature {
     MachineUpgrade,
     #[serde(rename = "v2.join_door")]
     JoinDoor,
+    #[serde(rename = "v2.namespace_primitives")]
+    NamespacePrimitives,
+    #[serde(rename = "v2.first_deploy")]
+    FirstDeploy,
+    #[serde(rename = "v2.operation_evidence")]
+    OperationEvidence,
+    #[serde(rename = "v2.logs")]
+    Logs,
 }
 
 impl KnownApiFeature {
@@ -70,6 +92,10 @@ impl KnownApiFeature {
             Self::MachineRemove => "v2.machine_remove",
             Self::MachineUpgrade => "v2.machine_upgrade",
             Self::JoinDoor => "v2.join_door",
+            Self::NamespacePrimitives => "v2.namespace_primitives",
+            Self::FirstDeploy => "v2.first_deploy",
+            Self::OperationEvidence => "v2.operation_evidence",
+            Self::Logs => "v2.logs",
         }
     }
 }
@@ -83,6 +109,10 @@ pub const KNOWN_API_FEATURES: &[KnownApiFeature] = &[
     KnownApiFeature::MachineRemove,
     KnownApiFeature::MachineUpgrade,
     KnownApiFeature::JoinDoor,
+    KnownApiFeature::NamespacePrimitives,
+    KnownApiFeature::FirstDeploy,
+    KnownApiFeature::OperationEvidence,
+    KnownApiFeature::Logs,
 ];
 
 /// An advertised capability, including names added by a newer machine.
@@ -195,6 +225,456 @@ pub fn token_revoke_route(token_id: &TokenId) -> String {
     format!("{TOKEN_REVOKE_ROUTE_PREFIX}/{token_id}")
 }
 
+/// Builds the exact summary route for one operation row.
+#[must_use]
+pub fn operation_route(operation_id: &OperationRowId) -> String {
+    format!("{OPERATIONS_ROUTE_PREFIX}/{operation_id}")
+}
+
+/// Builds the full-replay-then-follow route for one operation's evidence.
+#[must_use]
+pub fn operation_watch_route(operation_id: &OperationRowId) -> String {
+    format!("{}/watch", operation_route(operation_id))
+}
+
+/// Builds the bounded log-tail route for one service row.
+#[must_use]
+pub fn service_logs_tail_route(service_id: &ServiceRowId) -> String {
+    format!("{SERVICE_LOGS_ROUTE_PREFIX}/{service_id}/logs")
+}
+
+/// Builds the lossy follow route for one service row's current container.
+#[must_use]
+pub fn service_logs_follow_route(service_id: &ServiceRowId) -> String {
+    format!("{}/follow", service_logs_tail_route(service_id))
+}
+
+/// Mesh-authenticated request to create one namespace authority row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct CorrosionNamespaceCreateRequest {
+    pub namespace_name: CorrosionNamespaceName,
+}
+
+/// The exact namespace row accepted by a synchronous create primitive.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct CorrosionNamespaceCreateReply {
+    pub namespace_id: NamespaceRowId,
+    pub document: NamespaceDocument,
+}
+
+/// A namespace create that cannot claim its human name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CorrosionNamespaceCreateRefusal {
+    NameAlreadyClaimed {
+        namespace_name: CorrosionNamespaceName,
+        winner: NamespaceRowId,
+    },
+}
+
+/// Mesh-authenticated selector for removing one exact empty namespace row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct CorrosionNamespaceRemoveRequest {
+    pub namespace_name: CorrosionNamespaceName,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace_id: Option<NamespaceRowId>,
+}
+
+/// The synchronous result of removing an exact namespace row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CorrosionNamespaceRemoveReply {
+    Removed { namespace_id: NamespaceRowId },
+    AlreadyAbsent { namespace_id: NamespaceRowId },
+}
+
+/// A namespace removal refusal; removal never performs workload cleanup.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CorrosionNamespaceRemoveRefusal {
+    NotFound {
+        namespace_name: CorrosionNamespaceName,
+    },
+    Ambiguous {
+        namespace_name: CorrosionNamespaceName,
+        namespace_ids: Vec<NamespaceRowId>,
+    },
+    IdMismatch {
+        namespace_name: CorrosionNamespaceName,
+        namespace_id: NamespaceRowId,
+    },
+    NotEmpty {
+        namespace_id: NamespaceRowId,
+        service_ids: Vec<ServiceRowId>,
+        route_binding_count: usize,
+    },
+    Changed {
+        namespace_id: NamespaceRowId,
+    },
+}
+
+/// The complete secret-bearing runtime input for the first service deploy.
+///
+/// Environment values are redacted by their Core value type and are never
+/// copied into durable operation evidence or Corrosion rows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct FirstDeployRequest {
+    pub namespace_name: CorrosionNamespaceName,
+    pub service_name: CorrosionServiceName,
+    pub image: ImageReference,
+    pub runtime: ContainerRuntimeSpec,
+}
+
+/// The operation handle returned after the driver durably accepts a deploy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct FirstDeployAccepted {
+    pub operation_id: OperationRowId,
+    pub driver_machine_id: MachineRowId,
+}
+
+/// A first deploy refusal produced before any operation or Docker effect.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum FirstDeployRefusal {
+    NamespaceNotFound {
+        namespace_name: CorrosionNamespaceName,
+        create_command: String,
+    },
+    NamespaceAmbiguous {
+        namespace_name: CorrosionNamespaceName,
+        namespace_ids: Vec<NamespaceRowId>,
+    },
+    NotFirstDeploy {
+        namespace_id: NamespaceRowId,
+    },
+    BridgeUnavailable,
+}
+
+impl FirstDeployRefusal {
+    /// Creates the fixed refusal that hands the operator to the namespace primitive.
+    #[must_use]
+    pub fn namespace_not_found(namespace_name: CorrosionNamespaceName) -> Self {
+        let create_command = format!("ployz namespace create {}", namespace_name.as_str());
+        Self::NamespaceNotFound {
+            namespace_name,
+            create_command,
+        }
+    }
+}
+
+/// One operation summary returned by its row id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct OperationLookupReply {
+    pub operation_id: OperationRowId,
+    pub operation: OperationDocument,
+}
+
+/// A typed refusal to resolve one operation summary row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum OperationLookupRefusal {
+    NotFound { operation_id: OperationRowId },
+}
+
+/// A positive, stable sequence in one operation's durable evidence file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts",
+    ts(type = "SafeInteger<\"OperationEvidenceSequence\">")
+)]
+#[serde(try_from = "u64", into = "u64")]
+pub struct OperationEvidenceSequence(u64);
+
+impl OperationEvidenceSequence {
+    pub fn try_new(value: u64) -> Result<Self, OperationEvidenceSequenceError> {
+        if value == 0 {
+            return Err(OperationEvidenceSequenceError);
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl TryFrom<u64> for OperationEvidenceSequence {
+    type Error = OperationEvidenceSequenceError;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<OperationEvidenceSequence> for u64 {
+    fn from(value: OperationEvidenceSequence) -> Self {
+        value.get()
+    }
+}
+
+/// Sequence zero cannot identify a durable operation event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("operation evidence sequence must be positive")]
+pub struct OperationEvidenceSequenceError;
+
+/// Typed, redaction-safe progress recorded in driver-local JSONL evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum OperationEvidence {
+    Created,
+    PullingImage,
+    ImageResolved,
+    ContainerCreated { container_id: ContainerId },
+    ContainerStarted { container_id: ContainerId },
+    PromotionPrepared,
+    RowsCommitted,
+    ClaimWon,
+    ClaimLost { winner: ServiceRowId },
+    Terminal { operation: Box<OperationDocument> },
+}
+
+/// One durable operation detail event. Sequences start at one for every attach.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct OperationEvidenceEvent {
+    pub sequence: OperationEvidenceSequence,
+    pub timestamp: CorrosionTimestamp,
+    pub evidence: OperationEvidence,
+}
+
+/// A fixed point-of-use WireGuard handshake observation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum HandshakeObservation {
+    Ago {
+        observed_at: CorrosionTimestamp,
+        age_seconds: u64,
+    },
+    Never {
+        observed_at: CorrosionTimestamp,
+    },
+}
+
+/// Why a point-of-use handshake observation could not be obtained.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum HandshakeObservationUnavailable {
+    OwnerNotRostered,
+    PeerAbsent,
+    UnsupportedProvider,
+    KeeperUnavailable,
+    KeeperTimedOut,
+    KeeperProtocol,
+}
+
+/// Either a real fixed observation or an explicit reason it is unavailable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum HandshakeObservationOutcome {
+    Observed {
+        observation: HandshakeObservation,
+    },
+    Unavailable {
+        reason: HandshakeObservationUnavailable,
+    },
+}
+
+/// A typed refusal to replay or follow one operation's driver-local detail.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum OperationWatchRefusal {
+    NotFound {
+        operation_id: OperationRowId,
+    },
+    OwnerNoLongerRostered {
+        operation: OperationLookupReply,
+        observation: HandshakeObservationOutcome,
+    },
+    DriverDark {
+        operation: OperationLookupReply,
+        observation: HandshakeObservationOutcome,
+    },
+    DetailUnavailable {
+        operation: OperationLookupReply,
+    },
+    ProxyLoop,
+}
+
+/// The public SSE envelope for full replay followed by live operation detail.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum OperationWatchEvent {
+    Evidence { event: OperationEvidenceEvent },
+    Terminal { refusal: Box<OperationWatchRefusal> },
+}
+
+impl OperationWatchEvent {
+    /// Returns the stable SSE event name for this envelope.
+    #[must_use]
+    pub const fn event_name(&self) -> &'static str {
+        match self {
+            Self::Evidence { .. } => "evidence",
+            Self::Terminal { .. } => "terminal",
+        }
+    }
+}
+
+/// A positive, bounded line count for one v2 log tail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "SafeInteger<\"CorrosionLogsTailLines\">"))]
+#[serde(try_from = "u16", into = "u16")]
+pub struct CorrosionLogsTailLines(u16);
+
+impl CorrosionLogsTailLines {
+    pub const MAX: u16 = 1_000;
+
+    pub fn try_new(value: u16) -> Result<Self, CorrosionLogsTailLinesError> {
+        if value == 0 || value > Self::MAX {
+            return Err(CorrosionLogsTailLinesError { value });
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u16 {
+        self.0
+    }
+}
+
+impl TryFrom<u16> for CorrosionLogsTailLines {
+    type Error = CorrosionLogsTailLinesError;
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<CorrosionLogsTailLines> for u16 {
+    fn from(value: CorrosionLogsTailLines) -> Self {
+        value.get()
+    }
+}
+
+/// A log tail line count outside the supported public bound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("v2 log tail lines must be between 1 and {max}, got {value}", max = CorrosionLogsTailLines::MAX)]
+pub struct CorrosionLogsTailLinesError {
+    pub value: u16,
+}
+
+/// A bounded service log request; the server applies its own fixed upper bound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct ServiceLogsRequest {
+    pub tail_lines: CorrosionLogsTailLines,
+}
+
+/// Docker's stable stdout/stderr distinction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceLogStream {
+    Stdout,
+    Stderr,
+}
+
+/// One complete log line from a managed container.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct ServiceLogLine {
+    pub stream: ServiceLogStream,
+    pub line: String,
+}
+
+/// A typed refusal before or during service log access.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ServiceLogsRefusal {
+    ServiceNotFound {
+        service_id: ServiceRowId,
+    },
+    NoActiveDeploy {
+        service_id: ServiceRowId,
+    },
+    ContainerNotFound {
+        service_id: ServiceRowId,
+    },
+    UnmanagedContainer {
+        container_id: ContainerId,
+    },
+    RemoteOwner {
+        machine_id: MachineRowId,
+    },
+    DriverDark {
+        machine_id: MachineRowId,
+        observation: HandshakeObservationOutcome,
+    },
+    RuntimeUnavailable {
+        machine_id: MachineRowId,
+    },
+}
+
+/// A bounded, non-streaming log tail.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct ServiceLogsTailReply {
+    pub lines: Vec<ServiceLogLine>,
+    pub truncated: bool,
+}
+
+/// A lossy log stream. Reconnect loss is always explicit as [`Self::Gap`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ServiceLogsFollowEvent {
+    Line { log: ServiceLogLine },
+    Gap,
+    Terminal { refusal: ServiceLogsRefusal },
+}
+
+impl ServiceLogsFollowEvent {
+    /// Returns the stable SSE event name for this log envelope.
+    #[must_use]
+    pub const fn event_name(&self) -> &'static str {
+        match self {
+            Self::Line { .. } => "line",
+            Self::Gap => "gap",
+            Self::Terminal { .. } => "terminal",
+        }
+    }
+}
+
 /// Mesh-authenticated request to fence one machine from the roster.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -300,6 +780,13 @@ pub enum V2Route {
     MachineRemove,
     MachineUpgrade,
     Join,
+    NamespaceCreate,
+    NamespaceRemove,
+    FirstDeploy,
+    Operation(OperationRowId),
+    OperationWatch(OperationRowId),
+    ServiceLogsTail(ServiceRowId),
+    ServiceLogsFollow(ServiceRowId),
     Lens(LensCollection),
     LensWatch(LensCollection),
 }
@@ -339,12 +826,56 @@ impl V2Route {
         if path == MACHINE_UPGRADE_ROUTE {
             return Some(Self::MachineUpgrade);
         }
+        if path == NAMESPACE_CREATE_ROUTE {
+            return Some(Self::NamespaceCreate);
+        }
+        if path == NAMESPACE_REMOVE_ROUTE {
+            return Some(Self::NamespaceRemove);
+        }
+        if path == FIRST_DEPLOY_ROUTE {
+            return Some(Self::FirstDeploy);
+        }
         if let Some(token_id) = path
             .strip_prefix(TOKEN_REVOKE_ROUTE_PREFIX)
             .and_then(|suffix| suffix.strip_prefix('/'))
             .and_then(|id| TokenId::try_new(id).ok())
         {
             return Some(Self::TokenRevoke(token_id));
+        }
+        if let Some(operation_path) = path
+            .strip_prefix(OPERATIONS_ROUTE_PREFIX)
+            .and_then(|suffix| suffix.strip_prefix('/'))
+        {
+            let mut segments = operation_path.split('/');
+            let operation_id = segments
+                .next()
+                .and_then(|id| OperationRowId::try_new(id).ok())?;
+            return match segments.next() {
+                None => Some(Self::Operation(operation_id)),
+                Some("watch") if segments.next().is_none() => {
+                    Some(Self::OperationWatch(operation_id))
+                }
+                Some(_) => None,
+            };
+        }
+        if let Some(service_path) = path
+            .strip_prefix(SERVICE_LOGS_ROUTE_PREFIX)
+            .and_then(|suffix| suffix.strip_prefix('/'))
+        {
+            let mut segments = service_path.split('/');
+            let service_id = segments
+                .next()
+                .and_then(|id| ServiceRowId::try_new(id).ok())?;
+            if segments.next() != Some("logs") {
+                return None;
+            }
+            return match segments.next() {
+                None => Some(Self::ServiceLogsTail(service_id)),
+                Some("follow") if segments.next().is_none() => {
+                    Some(Self::ServiceLogsFollow(service_id))
+                }
+                Some(_) => None,
+            };
         }
         let collection_path = path
             .strip_prefix(LENSES_ROUTE)
@@ -372,6 +903,13 @@ impl V2Route {
             Self::MachineRemove => MACHINE_REMOVE_ROUTE.to_owned(),
             Self::MachineUpgrade => MACHINE_UPGRADE_ROUTE.to_owned(),
             Self::Join => JOIN_ROUTE.to_owned(),
+            Self::NamespaceCreate => NAMESPACE_CREATE_ROUTE.to_owned(),
+            Self::NamespaceRemove => NAMESPACE_REMOVE_ROUTE.to_owned(),
+            Self::FirstDeploy => FIRST_DEPLOY_ROUTE.to_owned(),
+            Self::Operation(operation_id) => operation_route(operation_id),
+            Self::OperationWatch(operation_id) => operation_watch_route(operation_id),
+            Self::ServiceLogsTail(service_id) => service_logs_tail_route(service_id),
+            Self::ServiceLogsFollow(service_id) => service_logs_follow_route(service_id),
             Self::Lens(collection) => lens_route(*collection),
             Self::LensWatch(collection) => lens_watch_route(*collection),
         }
@@ -381,7 +919,11 @@ impl V2Route {
     #[must_use]
     pub const fn method(&self) -> V2Method {
         match self {
-            Self::Version | Self::Lens(_) | Self::LensWatch(_) => V2Method::Get,
+            Self::Version
+            | Self::Operation(_)
+            | Self::OperationWatch(_)
+            | Self::Lens(_)
+            | Self::LensWatch(_) => V2Method::Get,
             Self::Founding
             | Self::TokenCreate
             | Self::TokenList
@@ -389,7 +931,12 @@ impl V2Route {
             | Self::MachineEndpointSet
             | Self::MachineRemove
             | Self::MachineUpgrade
-            | Self::Join => V2Method::Post,
+            | Self::Join
+            | Self::NamespaceCreate
+            | Self::NamespaceRemove
+            | Self::FirstDeploy
+            | Self::ServiceLogsTail(_)
+            | Self::ServiceLogsFollow(_) => V2Method::Post,
         }
     }
 
@@ -406,6 +953,10 @@ impl V2Route {
             Self::MachineRemove => KnownApiFeature::MachineRemove,
             Self::MachineUpgrade => KnownApiFeature::MachineUpgrade,
             Self::Join => KnownApiFeature::JoinDoor,
+            Self::NamespaceCreate | Self::NamespaceRemove => KnownApiFeature::NamespacePrimitives,
+            Self::FirstDeploy => KnownApiFeature::FirstDeploy,
+            Self::Operation(_) | Self::OperationWatch(_) => KnownApiFeature::OperationEvidence,
+            Self::ServiceLogsTail(_) | Self::ServiceLogsFollow(_) => KnownApiFeature::Logs,
         }
     }
 
@@ -419,8 +970,18 @@ impl V2Route {
             | Self::TokenRevoke(_)
             | Self::MachineEndpointSet
             | Self::MachineRemove
-            | Self::MachineUpgrade => matches!(principal, Principal::Peer { .. }),
-            Self::Version | Self::Founding | Self::Lens(_) | Self::LensWatch(_) => {
+            | Self::MachineUpgrade
+            | Self::NamespaceCreate
+            | Self::NamespaceRemove
+            | Self::FirstDeploy => matches!(principal, Principal::Peer { .. }),
+            Self::Version
+            | Self::Founding
+            | Self::Operation(_)
+            | Self::OperationWatch(_)
+            | Self::ServiceLogsTail(_)
+            | Self::ServiceLogsFollow(_)
+            | Self::Lens(_)
+            | Self::LensWatch(_) => {
                 matches!(
                     principal,
                     Principal::Machine { .. } | Principal::Peer { .. }

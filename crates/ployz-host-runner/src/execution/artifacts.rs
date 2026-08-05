@@ -1,5 +1,6 @@
 //! Artifact targets installed by Host Runner.
 
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
 use std::fs::{self, File};
@@ -244,6 +245,15 @@ pub struct ContentAddressedArtifactFile {
     pub durability: ArtifactInstallDurability,
 }
 
+const MAX_UPGRADE_CANDIDATE_METADATA_BYTES: u64 = 4 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PloyzdUpgradeCandidateMetadata {
+    version: ArtifactVersion,
+    sha256: Sha256Digest,
+}
+
 /// The local, content-addressed executable store for `ployzd`.
 ///
 /// The store owns only machine-local artifact bytes and the stable links that
@@ -295,6 +305,100 @@ impl PloyzdArtifactStore {
     ) -> Result<ContentAddressedArtifactFile, ArtifactStoreError> {
         stage_verified_artifact_content_addressed(verified, &self.artifacts_path())
             .map_err(ArtifactStoreError::Stage)
+    }
+
+    fn candidate_metadata_path(&self, digest: &Sha256Digest) -> PathBuf {
+        self.state
+            .join("candidates")
+            .join(format!("{}.json", digest.as_str()))
+    }
+
+    /// Publishes verified API-owned candidate bytes and their exact requested
+    /// version without exposing either in the root-owned live artifact store.
+    pub fn stage_upgrade_candidate(
+        &self,
+        verified: &VerifiedArtifactFile,
+        version: &ArtifactVersion,
+    ) -> Result<ContentAddressedArtifactFile, ArtifactStoreError> {
+        let staged = self.stage(verified)?;
+        let metadata = PloyzdUpgradeCandidateMetadata {
+            version: version.clone(),
+            sha256: staged.digest.clone(),
+        };
+        let bytes = serde_json::to_vec(&metadata).map_err(|error| {
+            ArtifactStoreError::EncodeCandidateMetadata {
+                message: error.to_string(),
+            }
+        })?;
+        let metadata_path = self.candidate_metadata_path(&staged.digest);
+        let Some(directory) = metadata_path.parent() else {
+            unreachable!("candidate metadata path always has its candidates directory")
+        };
+        fs::create_dir_all(directory).map_err(|error| {
+            ArtifactStoreError::CreateCandidateMetadataDirectory {
+                path: directory.to_path_buf(),
+                message: error.to_string(),
+            }
+        })?;
+        let Some(file_name) = metadata_path.file_name().and_then(|name| name.to_str()) else {
+            unreachable!("sha256 candidate metadata names are UTF-8")
+        };
+        write_durable_file(directory, file_name, FileMode::Plain, &bytes).map_err(|error| {
+            ArtifactStoreError::WriteCandidateMetadata {
+                path: metadata_path,
+                message: error.to_string(),
+            }
+        })?;
+        Ok(staged)
+    }
+
+    /// Re-verifies an API-staged candidate and atomically adopts it into this
+    /// root-owned live store. The staging store never supplies link targets.
+    pub fn adopt_upgrade_candidate(
+        &self,
+        staging_store: &Self,
+        version: &ArtifactVersion,
+        expected: &Sha256Digest,
+    ) -> Result<ContentAddressedArtifactFile, ArtifactStoreError> {
+        let metadata_path = staging_store.candidate_metadata_path(expected);
+        let metadata_length = fs::metadata(&metadata_path)
+            .map_err(|error| ArtifactStoreError::ReadCandidateMetadata {
+                path: metadata_path.clone(),
+                message: error.to_string(),
+            })?
+            .len();
+        if metadata_length > MAX_UPGRADE_CANDIDATE_METADATA_BYTES {
+            return Err(ArtifactStoreError::CandidateMetadataTooLarge {
+                path: metadata_path,
+                limit: MAX_UPGRADE_CANDIDATE_METADATA_BYTES,
+            });
+        }
+        let bytes = fs::read(&metadata_path).map_err(|error| {
+            ArtifactStoreError::ReadCandidateMetadata {
+                path: metadata_path.clone(),
+                message: error.to_string(),
+            }
+        })?;
+        let metadata: PloyzdUpgradeCandidateMetadata =
+            serde_json::from_slice(&bytes).map_err(|error| {
+                ArtifactStoreError::InvalidCandidateMetadata {
+                    path: metadata_path.clone(),
+                    message: error.to_string(),
+                }
+            })?;
+        if metadata.version != *version || metadata.sha256 != *expected {
+            return Err(ArtifactStoreError::CandidateMetadataMismatch {
+                path: metadata_path,
+                expected_version: version.clone(),
+                actual_version: metadata.version,
+                expected_digest: expected.clone(),
+                actual_digest: metadata.sha256,
+            });
+        }
+        let staged_path = staging_store.artifacts_path().join(expected.as_str());
+        let verified = verify_artifact_file(&staged_path, expected)
+            .map_err(ArtifactStoreError::Verification)?;
+        self.stage(&verified)
     }
 
     /// Seeds `current` for a founding or joining machine without creating a
@@ -657,6 +761,33 @@ pub enum ArtifactStoreError {
     ReadPending { path: PathBuf, message: String },
     #[error("pending upgrade marker {} is invalid: {message}", path.display())]
     InvalidPending { path: PathBuf, message: String },
+    #[error("failed to encode ployzd upgrade candidate metadata: {message}")]
+    EncodeCandidateMetadata { message: String },
+    #[error("failed to create ployzd candidate metadata directory {}: {message}", path.display())]
+    CreateCandidateMetadataDirectory { path: PathBuf, message: String },
+    #[error("failed to write ployzd candidate metadata {}: {message}", path.display())]
+    WriteCandidateMetadata { path: PathBuf, message: String },
+    #[error("failed to read ployzd candidate metadata {}: {message}", path.display())]
+    ReadCandidateMetadata { path: PathBuf, message: String },
+    #[error("ployzd candidate metadata {} exceeds the {limit}-byte limit", path.display())]
+    CandidateMetadataTooLarge { path: PathBuf, limit: u64 },
+    #[error("ployzd candidate metadata {} is invalid: {message}", path.display())]
+    InvalidCandidateMetadata { path: PathBuf, message: String },
+    #[error(
+        "ployzd candidate metadata {} names version {} with digest {}, expected version {} with digest {}",
+        path.display(),
+        actual_version.as_str(),
+        actual_digest.as_str(),
+        expected_version.as_str(),
+        expected_digest.as_str()
+    )]
+    CandidateMetadataMismatch {
+        path: PathBuf,
+        expected_version: ArtifactVersion,
+        actual_version: ArtifactVersion,
+        expected_digest: Sha256Digest,
+        actual_digest: Sha256Digest,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -10,9 +10,9 @@ use ployz::commands::SshTarget;
 use ployz::init::ssh::SshPeerKey;
 use ployz::mesh::context::OperatorContextStore;
 use ployz_core::corrosion::{
-    AcmeHttp01Document, CertHoldingDocument, ContainerDocument, CorrosionDocumentVersion,
-    CorrosionOperation, CorrosionOperationState, CorrosionTimestamp, MachineLoadBand,
-    MachineStatusDocument, MachineTransport, OperationDocument, Principal,
+    AcmeHttp01Document, CertHoldingDocument, ContainerDocument, CorrosionBasicOperation,
+    CorrosionDocumentVersion, CorrosionTimestamp, MachineLoadBand, MachineStatusDocument,
+    MachineTransport, OperationDocument, Principal,
 };
 use ployz_core::ids::{NamespaceRowId, OperationRowId, ServiceRowId};
 use ployz_core::join::JoinBlob;
@@ -289,20 +289,18 @@ async fn seed_machine_evidence(
         key_authorization: "repair-proof".to_owned(),
         created_at: timestamp,
     };
-    let operation = OperationDocument {
-        v: CorrosionDocumentVersion::V1,
-        cluster_id: machine.document.cluster_id.clone(),
-        machine_id: machine.id.clone(),
-        operation: CorrosionOperation::MachineRemove {
-            target_machine_id: machine.id.clone(),
-        },
-        initiator: Principal::Machine {
+    let operation = OperationDocument::basic_created(
+        CorrosionDocumentVersion::V1,
+        machine.document.cluster_id.clone(),
+        machine.id.clone(),
+        Principal::Machine {
             machine_id: machine.id.clone(),
         },
-        status: CorrosionOperationState::Created {
-            created_at: timestamp,
+        CorrosionBasicOperation::MachineRemove {
+            target_machine_id: machine.id.clone(),
         },
-    };
+        timestamp,
+    );
     let status = serde_json::to_string(&status).map_err(|error| error.to_string())?;
     let container = serde_json::to_string(&container).map_err(|error| error.to_string())?;
     let cert = serde_json::to_string(&cert).map_err(|error| error.to_string())?;

@@ -1,14 +1,18 @@
 //! Command contracts for the local CLI and the machine-one bootstrap driver.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::net::SocketAddr;
 use std::str::FromStr;
 
 use clap::{Args, Parser, Subcommand};
 use ployz_core::MachineUpgradeUrl;
-use ployz_core::corrosion::{AutomaticHostnameMode, StorageMode};
+use ployz_core::corrosion::{
+    AutomaticHostnameMode, CorrosionNamespaceName, CorrosionServiceName, StorageMode,
+};
+use ployz_core::deploy::{EnvName, EnvValue, ImageReference, ServiceEnvironment};
 use ployz_core::founding::InitStorageChoice;
-use ployz_core::ids::{MachineRowId, PeerId};
+use ployz_core::ids::{MachineRowId, NamespaceRowId, OperationRowId, PeerId, ServiceRowId};
 use ployz_core::install::{ExactPloyzVersion, InstallSha256Digest};
 use ployz_core::join::{JoinBlob, JoinTokenTtlSeconds};
 use ployz_core::machine::MachineName;
@@ -22,6 +26,64 @@ pub enum Command {
     Init(Box<InitCommand>),
     Machine(MachineCommand),
     Token(TokenCommand),
+    Namespace(NamespaceCommand),
+    Deploy(DeployCommand),
+    Ops(OpsCommand),
+    Logs(LogsCommand),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NamespaceCommand {
+    Create(NamespaceCreateCommand),
+    Remove(NamespaceRemoveCommand),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamespaceCreateCommand {
+    pub namespace: CorrosionNamespaceName,
+    pub target: Option<SshTarget>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamespaceRemoveCommand {
+    pub namespace: CorrosionNamespaceName,
+    pub namespace_id: Option<NamespaceRowId>,
+    pub target: Option<SshTarget>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeployCommand {
+    pub namespace: CorrosionNamespaceName,
+    pub service: CorrosionServiceName,
+    pub image: ImageReference,
+    pub environment: ServiceEnvironment,
+    pub target: Option<SshTarget>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpsCommand {
+    List(OpsListCommand),
+    Watch(OpsWatchCommand),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpsListCommand {
+    pub target: Option<SshTarget>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpsWatchCommand {
+    pub operation_id: OperationRowId,
+    pub target: Option<SshTarget>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogsCommand {
+    pub service: CorrosionServiceName,
+    pub service_id: Option<ServiceRowId>,
+    pub tail_lines: ployz_core::CorrosionLogsTailLines,
+    pub follow: bool,
+    pub target: Option<SshTarget>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -305,6 +367,41 @@ pub fn parse_command(args: impl IntoIterator<Item = String>) -> Result<Command, 
                 target: args.target,
             }),
         })),
+        CommandCli::Namespace { command } => Ok(Command::Namespace(match command {
+            NamespaceCli::Create(args) => NamespaceCommand::Create(NamespaceCreateCommand {
+                namespace: CorrosionNamespaceName::try_new(args.namespace)
+                    .map_err(|error| clap_value_error(error.to_string()))?,
+                target: args.target,
+            }),
+            NamespaceCli::Remove(args) => NamespaceCommand::Remove(NamespaceRemoveCommand {
+                namespace: CorrosionNamespaceName::try_new(args.namespace)
+                    .map_err(|error| clap_value_error(error.to_string()))?,
+                namespace_id: args.namespace_id,
+                target: args.target,
+            }),
+        })),
+        CommandCli::Deploy(args) => args
+            .into_command()
+            .map(Command::Deploy)
+            .map_err(clap_value_error),
+        CommandCli::Ops { command } => Ok(Command::Ops(match command {
+            OpsCli::List(args) => OpsCommand::List(OpsListCommand {
+                target: args.target,
+            }),
+            OpsCli::Watch(args) => OpsCommand::Watch(OpsWatchCommand {
+                operation_id: args.operation_id,
+                target: args.target,
+            }),
+        })),
+        CommandCli::Logs(args) => Ok(Command::Logs(LogsCommand {
+            service: CorrosionServiceName::try_new(args.service)
+                .map_err(|error| clap_value_error(error.to_string()))?,
+            service_id: args.service_id,
+            tail_lines: ployz_core::CorrosionLogsTailLines::try_new(args.tail)
+                .map_err(|error| clap_value_error(error.to_string()))?,
+            follow: args.follow,
+            target: args.target,
+        })),
     }
 }
 
@@ -347,6 +444,123 @@ enum CommandCli {
         #[command(subcommand)]
         command: TokenCli,
     },
+    /// Create and remove namespaces.
+    Namespace {
+        #[command(subcommand)]
+        command: NamespaceCli,
+    },
+    /// Deploy the first service in an empty namespace.
+    Deploy(DeployArgs),
+    /// List operations or watch durable operation evidence.
+    Ops {
+        #[command(subcommand)]
+        command: OpsCli,
+    },
+    /// Tail or follow one service's current container logs.
+    Logs(LogsArgs),
+}
+
+#[derive(Debug, Subcommand)]
+enum NamespaceCli {
+    /// Create one namespace.
+    Create(NamespaceCreateArgs),
+    /// Remove one empty namespace.
+    #[command(name = "rm")]
+    Remove(NamespaceRemoveArgs),
+}
+
+#[derive(Debug, Args)]
+struct NamespaceCreateArgs {
+    namespace: String,
+    #[arg(long)]
+    target: Option<SshTarget>,
+}
+
+#[derive(Debug, Args)]
+struct NamespaceRemoveArgs {
+    namespace: String,
+    /// Select one exact row when this name is ambiguous.
+    #[arg(long = "id")]
+    namespace_id: Option<NamespaceRowId>,
+    #[arg(long)]
+    target: Option<SshTarget>,
+}
+
+#[derive(Debug, Args)]
+struct DeployArgs {
+    namespace: String,
+    service: String,
+    image: String,
+    /// Set an environment value as NAME=VALUE. Values are redacted from diagnostics.
+    #[arg(long = "env", value_name = "NAME=VALUE")]
+    environment: Vec<String>,
+    #[arg(long)]
+    target: Option<SshTarget>,
+}
+
+impl DeployArgs {
+    fn into_command(self) -> Result<DeployCommand, String> {
+        let mut environment = BTreeMap::new();
+        for assignment in self.environment {
+            let Some((name, value)) = assignment.split_once('=') else {
+                return Err("--env must be NAME=VALUE".to_owned());
+            };
+            let name = EnvName::try_new(name).map_err(|error| error.to_string())?;
+            let value = EnvValue::try_new(value).map_err(|error| error.to_string())?;
+            if environment.insert(name.clone(), value).is_some() {
+                return Err(format!(
+                    "environment variable {} was supplied more than once",
+                    name.as_str()
+                ));
+            }
+        }
+        Ok(DeployCommand {
+            namespace: CorrosionNamespaceName::try_new(self.namespace)
+                .map_err(|error| error.to_string())?,
+            service: CorrosionServiceName::try_new(self.service)
+                .map_err(|error| error.to_string())?,
+            image: ImageReference::try_new(self.image).map_err(|error| error.to_string())?,
+            environment: ServiceEnvironment::from(environment),
+            target: self.target,
+        })
+    }
+}
+
+#[derive(Debug, Subcommand)]
+enum OpsCli {
+    /// List converged operation summaries.
+    List(OpsListArgs),
+    /// Replay and follow one operation's durable evidence.
+    Watch(OpsWatchArgs),
+}
+
+#[derive(Debug, Args)]
+struct OpsListArgs {
+    #[arg(long)]
+    target: Option<SshTarget>,
+}
+
+#[derive(Debug, Args)]
+struct OpsWatchArgs {
+    operation_id: OperationRowId,
+    #[arg(long)]
+    target: Option<SshTarget>,
+}
+
+#[derive(Debug, Args)]
+struct LogsArgs {
+    service: String,
+    /// Select one exact service row when this name is ambiguous.
+    #[arg(long = "id")]
+    service_id: Option<ServiceRowId>,
+    /// Number of existing lines to print before following.
+    #[arg(long, default_value_t = 100)]
+    tail: u16,
+    /// Continue following new log lines.
+    #[arg(short = 'f', long)]
+    follow: bool,
+    #[arg(long)]
+    target: Option<SshTarget>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -940,6 +1154,85 @@ mod tests {
             "18446744073709551615d",
         ] {
             assert!(parse(&["token", "create", "--ttl", invalid]).is_err());
+        }
+    }
+
+    #[test]
+    fn v2_operation_commands_parse_typed_names_ids_and_redact_env_values() {
+        let namespace_id = NamespaceRowId::generate();
+        let operation_id = OperationRowId::generate();
+        let service_id = ServiceRowId::generate();
+        assert!(matches!(
+            parse(&["namespace", "create", "production"]).expect("namespace create"),
+            Command::Namespace(NamespaceCommand::Create(_))
+        ));
+        assert!(matches!(
+            parse(&[
+                "namespace",
+                "rm",
+                "production",
+                "--id",
+                namespace_id.as_str(),
+            ])
+            .expect("namespace remove"),
+            Command::Namespace(NamespaceCommand::Remove(NamespaceRemoveCommand {
+                namespace_id: Some(id),
+                ..
+            })) if id == namespace_id
+        ));
+        let deploy = parse(&[
+            "deploy",
+            "production",
+            "web",
+            "registry.example/web:latest",
+            "--env",
+            "API_TOKEN=sentinel-secret",
+        ])
+        .expect("deploy");
+        assert!(matches!(deploy, Command::Deploy(_)));
+        assert!(!format!("{deploy:?}").contains("sentinel-secret"));
+        assert!(matches!(
+            parse(&["ops", "list"]).expect("ops list"),
+            Command::Ops(OpsCommand::List(_))
+        ));
+        assert!(matches!(
+            parse(&["ops", "watch", operation_id.as_str()]).expect("ops watch"),
+            Command::Ops(OpsCommand::Watch(OpsWatchCommand { operation_id: id, .. }))
+                if id == operation_id
+        ));
+        assert!(matches!(
+            parse(&[
+                "logs",
+                "web",
+                "--id",
+                service_id.as_str(),
+                "--tail",
+                "250",
+                "--follow",
+            ])
+            .expect("logs"),
+            Command::Logs(LogsCommand { service_id: Some(id), follow: true, .. })
+                if id == service_id
+        ));
+    }
+
+    #[test]
+    fn v2_operation_commands_reject_invalid_names_env_and_tail_bounds() {
+        for args in [
+            vec!["namespace", "create", "Production"],
+            vec!["deploy", "production", "Web", "busybox:latest"],
+            vec![
+                "deploy",
+                "production",
+                "web",
+                "busybox:latest",
+                "--env",
+                "MISSING",
+            ],
+            vec!["logs", "web", "--tail", "0"],
+            vec!["logs", "web", "--tail", "1001"],
+        ] {
+            assert!(parse(&args).is_err(), "{args:?} must be rejected");
         }
     }
 

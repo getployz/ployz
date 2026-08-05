@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
+use super::InstalledRolePrivilege;
 use super::host_platform::SupervisorKind;
 use super::service::{
     PloyzdRole, SupervisorUnitFileError, SupervisorUnitSpec, SupervisorUnitTarget,
@@ -265,7 +266,7 @@ fn render_openrc(
 ) -> Result<RenderedSupervisorUnit, SupervisorUnitFileError> {
     let target = spec.target();
     let file_name = openrc_service_name(&target);
-    let (description, command, args, environment_file, dependencies) = match spec {
+    let (description, command, args, environment_file, dependencies, command_user) = match spec {
         SupervisorUnitSpec::PloyzdRole {
             role,
             artifact_store,
@@ -279,6 +280,8 @@ fn render_openrc(
                 PloyzdRole::Api => "need net docker",
                 PloyzdRole::Keeper | PloyzdRole::Gateway | PloyzdRole::Dns => "need net",
             },
+            InstalledRolePrivilege::for_role(*role)
+                .map(|privilege| format!("{}:{}", privilege.user(), privilege.primary_group())),
         ),
     };
     let command = shell_double_quote(&command.display().to_string())?;
@@ -290,6 +293,12 @@ fn render_openrc(
         command,
         command_args,
     );
+    if let Some(command_user) = command_user {
+        contents.push_str(&format!(
+            "\ncommand_user={}\n",
+            shell_double_quote(&command_user)?
+        ));
+    }
     if let Some(environment_file) = environment_file {
         let environment_file = shell_double_quote(&environment_file.display().to_string())?;
         contents.push_str(&format!(

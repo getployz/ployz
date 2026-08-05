@@ -22,8 +22,8 @@ pub(super) async fn resolve_peer_principal(
     cluster_id: &ClusterId,
     source: IpAddr,
 ) -> Result<Principal, ApiRefusal> {
-    let principals = read_accepted_roster(corrosion, cluster_id).await?;
-    resolve_source_principal(source, &principals).map_err(ApiRefusal::from)
+    let roster = read_accepted_roster(corrosion, cluster_id).await?;
+    resolve_source_principal(source, &roster.principals).map_err(ApiRefusal::from)
 }
 
 pub(super) async fn validate_listener_identity(
@@ -31,11 +31,21 @@ pub(super) async fn validate_listener_identity(
     cluster_id: &ClusterId,
     local_machine_id: &MachineRowId,
     listen_addr: SocketAddr,
-) -> Result<(), ApiListenerValidationError> {
-    let principal = resolve_peer_principal(corrosion, cluster_id, listen_addr.ip())
+) -> Result<MachineDocument, ApiListenerValidationError> {
+    let roster = read_accepted_roster(corrosion, cluster_id)
         .await
         .map_err(|refusal| ApiListenerValidationError::Refusal { refusal })?;
-    validate_listener_principal(local_machine_id, listen_addr, principal)
+    let principal = resolve_source_principal(listen_addr.ip(), &roster.principals)
+        .map_err(ApiRefusal::from)
+        .map_err(|refusal| ApiListenerValidationError::Refusal { refusal })?;
+    validate_listener_principal(local_machine_id, listen_addr, principal)?;
+    roster
+        .machines
+        .into_iter()
+        .find_map(|(machine_id, document)| (machine_id == *local_machine_id).then_some(document))
+        .ok_or(ApiListenerValidationError::Refusal {
+            refusal: ApiRefusal::InvalidCluster,
+        })
 }
 
 pub(super) fn validate_listener_principal(
@@ -69,10 +79,15 @@ pub(super) fn corrosion_unavailable_refusal() -> ApiRefusal {
     }
 }
 
+struct AcceptedRoster {
+    principals: Vec<AcceptedRosterPrincipal>,
+    machines: Vec<(MachineRowId, MachineDocument)>,
+}
+
 async fn read_accepted_roster(
     corrosion: &CorrosionClient,
     cluster_id: &ClusterId,
-) -> Result<Vec<AcceptedRosterPrincipal>, ApiRefusal> {
+) -> Result<AcceptedRoster, ApiRefusal> {
     let cluster = query_stored_rows(corrosion, cluster_statement(cluster_id));
     let machines = query_stored_rows(
         corrosion,
@@ -90,6 +105,7 @@ async fn read_accepted_roster(
     let machines = read_named_roster_rows::<MachineDocument>(&cluster, machine_rows);
     let peers = read_named_roster_rows::<PeerDocument>(&cluster, peer_rows);
     let mut principals = Vec::with_capacity(machines.accepted.len() + peers.accepted.len());
+    let mut accepted_machines = Vec::with_capacity(machines.accepted.len());
 
     for row in machines.accepted {
         let machine_id = MachineRowId::try_new(row.id.as_str().to_owned()).map_err(|error| {
@@ -97,9 +113,10 @@ async fn read_accepted_roster(
             ApiRefusal::InvalidCluster
         })?;
         principals.push(AcceptedRosterPrincipal::machine(
-            machine_id,
-            row.value.transport,
+            machine_id.clone(),
+            row.value.transport.clone(),
         ));
+        accepted_machines.push((machine_id, row.value));
     }
     for row in peers.accepted {
         let peer_id = PeerId::try_new(row.id.as_str().to_owned()).map_err(|error| {
@@ -108,7 +125,10 @@ async fn read_accepted_roster(
         })?;
         principals.push(AcceptedRosterPrincipal::peer(peer_id, row.value.transport));
     }
-    Ok(principals)
+    Ok(AcceptedRoster {
+        principals,
+        machines: accepted_machines,
+    })
 }
 
 fn accepted_cluster(

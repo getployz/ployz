@@ -34,6 +34,11 @@ fn openrc_api_service_keeps_environment_and_docker_dependencies() {
     assert!(rendered.contents().contains(". \"/etc/ployz/ployzd.env\""));
     assert!(rendered.contents().contains("need net docker"));
     assert!(rendered.contents().contains("command_args=\"api\""));
+    assert!(
+        rendered
+            .contents()
+            .contains("command_user=\"ployz-api:ployz-api\"")
+    );
     assert_eq!(
         SupervisorBackend::OpenRc.commands(
             SupervisorChange::InstallAndStart,
