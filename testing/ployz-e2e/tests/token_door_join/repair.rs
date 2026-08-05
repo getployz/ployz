@@ -32,46 +32,69 @@ const WORKLOAD_IMAGE: &str = "nginx:1.27-alpine";
 const FOREIGN_FINGERPRINT: &str =
     "0000000000000000000000000000000000000000000000000000000000000000";
 
+pub(super) struct RepairContext<'a> {
+    pub(super) docker: &'a Docker,
+    pub(super) store: CorrosionAccess<'a>,
+    pub(super) cli: &'a Path,
+    pub(super) home: &'a Path,
+    pub(super) founder: &'a DindMachine,
+    pub(super) joiner: &'a DindMachine,
+}
+
+pub(super) struct RefoundContext<'a> {
+    pub(super) docker: &'a Docker,
+    pub(super) cli: &'a Path,
+    pub(super) home: &'a Path,
+    pub(super) config_home: &'a Path,
+    pub(super) target: &'a SshTarget,
+    pub(super) operator: &'a SshPeerKey,
+    pub(super) founder: &'a DindMachine,
+    pub(super) joiner: &'a DindMachine,
+}
+
 /// Exercises the fence-first repair kit from the public CLI boundary.
 pub(super) async fn repair_contaminated_and_wiped_machine(
-    docker: &Docker,
-    store: CorrosionAccess<'_>,
-    cli: &Path,
-    home: &Path,
-    founder: &DindMachine,
-    joiner: &DindMachine,
+    context: RepairContext<'_>,
     initial_blob: &JoinBlob,
     initial_row: &RosterMachine,
 ) -> Result<RosterMachine, String> {
-    contaminate_join_identity(docker, joiner).await?;
-    assert_foreign_identity_refuses(docker, joiner, initial_blob).await?;
+    contaminate_join_identity(context.docker, context.joiner).await?;
+    assert_foreign_identity_refuses(context.docker, context.joiner, initial_blob).await?;
 
-    let preserved_operation = seed_machine_evidence(store, initial_row).await?;
-    start_workload(docker, joiner).await?;
-    remove_machine(cli, home, initial_row, false)?;
-    wait_for_removal(store, founder, initial_row, Some(&preserved_operation)).await?;
+    let preserved_operation = seed_machine_evidence(context.store, initial_row).await?;
+    start_workload(context.docker, context.joiner).await?;
+    remove_machine(context.cli, context.home, initial_row, false)?;
+    wait_for_removal(
+        context.store,
+        context.founder,
+        initial_row,
+        Some(&preserved_operation),
+    )
+    .await?;
 
-    reset_machine(docker, joiner).await?;
-    assert_workload_survived(docker, joiner).await?;
+    reset_machine(context.docker, context.joiner).await?;
+    assert_workload_survived(context.docker, context.joiner).await?;
 
-    let fresh_blob = create_join_blob(cli, home)?;
-    join_fresh_machine(docker, joiner, &fresh_blob).await?;
-    let rejoined = wait_for_machine_named(store, initial_row.document.name.as_str()).await?;
+    let fresh_blob = create_join_blob(context.cli, context.home)?;
+    join_fresh_machine(context.docker, context.joiner, &fresh_blob).await?;
+    let rejoined =
+        wait_for_machine_named(context.store, initial_row.document.name.as_str()).await?;
     require(
         rejoined.id != initial_row.id,
         "machine reset rejoined the fenced identity instead of minting a new one",
     )?;
 
-    wipe_ployz_state(docker, joiner).await?;
-    let rejected_blob = create_join_blob(cli, home)?;
-    assert_join_refuses_with_corpse(docker, joiner, &rejected_blob).await?;
+    wipe_ployz_state(context.docker, context.joiner).await?;
+    let rejected_blob = create_join_blob(context.cli, context.home)?;
+    assert_join_refuses_with_corpse(context.docker, context.joiner, &rejected_blob).await?;
 
-    remove_machine(cli, home, &rejoined, true)?;
-    wait_for_removal(store, founder, &rejoined, None).await?;
+    remove_machine(context.cli, context.home, &rejoined, true)?;
+    wait_for_removal(context.store, context.founder, &rejoined, None).await?;
 
-    let replacement_blob = create_join_blob(cli, home)?;
-    join_fresh_machine(docker, joiner, &replacement_blob).await?;
-    let replacement = wait_for_machine_named(store, rejoined.document.name.as_str()).await?;
+    let replacement_blob = create_join_blob(context.cli, context.home)?;
+    join_fresh_machine(context.docker, context.joiner, &replacement_blob).await?;
+    let replacement =
+        wait_for_machine_named(context.store, rejoined.document.name.as_str()).await?;
     require(
         replacement.id != rejoined.id,
         "wiped host rejoined its corpse identity instead of receiving a new one",
@@ -81,37 +104,30 @@ pub(super) async fn repair_contaminated_and_wiped_machine(
 
 /// Rebuilds the cluster from the documented reset, init, token, and join primitives.
 pub(super) async fn refound_cluster(
-    docker: &Docker,
-    cli: &Path,
-    home: &Path,
-    config_home: &Path,
-    target: &SshTarget,
-    operator: &SshPeerKey,
-    founder: &DindMachine,
-    joiner: &DindMachine,
+    context: RefoundContext<'_>,
     previous_joiner: &RosterMachine,
 ) -> Result<(), String> {
     let previous_cluster_id = previous_joiner.document.cluster_id.clone();
     let joiner_name = previous_joiner.document.name.as_str().to_owned();
 
-    reset_machine(docker, joiner).await?;
-    assert_workload_survived(docker, joiner).await?;
-    reset_machine(docker, founder).await?;
-    assert_workload_survived(docker, joiner).await?;
+    reset_machine(context.docker, context.joiner).await?;
+    assert_workload_survived(context.docker, context.joiner).await?;
+    reset_machine(context.docker, context.founder).await?;
+    assert_workload_survived(context.docker, context.joiner).await?;
 
-    install_local_release_channel(docker, founder).await?;
-    let handoff = run_founding(docker, founder, operator).await?;
+    install_local_release_channel(context.docker, context.founder).await?;
+    let handoff = run_founding(context.docker, context.founder, context.operator).await?;
     let founder_endpoint = SocketAddr::new(
-        founder.bridge_ip,
+        context.founder.bridge_ip,
         ployz_core::network::DEFAULT_WIREGUARD_LISTEN_PORT,
     );
     let handoff = handoff_with_known_endpoint(handoff, founder_endpoint)?;
-    OperatorContextStore::new(config_home)
-        .persist(target, handoff, operator)
+    OperatorContextStore::new(context.config_home)
+        .persist(context.target, handoff, context.operator)
         .map_err(|error| error.to_string())?;
     let endpoint_set = run_cli(
-        cli,
-        home,
+        context.cli,
+        context.home,
         [
             "machine".to_owned(),
             "endpoint".to_owned(),
@@ -122,13 +138,13 @@ pub(super) async fn refound_cluster(
     )?;
     require_success(&endpoint_set, "refounded machine endpoint set")?;
 
-    let blob = create_join_blob(cli, home)?;
-    join_fresh_machine(docker, joiner, &blob).await?;
+    let blob = create_join_blob(context.cli, context.home)?;
+    join_fresh_machine(context.docker, context.joiner, &blob).await?;
     let (corrosion_address, corrosion_token) =
-        ployz_e2e::dind::corrosion_access(docker, founder).await?;
+        ployz_e2e::dind::corrosion_access(context.docker, context.founder).await?;
     let store = CorrosionAccess {
-        docker,
-        machine: founder,
+        docker: context.docker,
+        machine: context.founder,
         address: &corrosion_address,
         token: &corrosion_token,
     };
@@ -146,7 +162,7 @@ pub(super) async fn refound_cluster(
             && founder_row.document.cluster_id != previous_cluster_id,
         "refound did not mint one new cluster identity for the rebuilt roster",
     )?;
-    assert_workload_survived(docker, joiner).await
+    assert_workload_survived(context.docker, context.joiner).await
 }
 
 async fn contaminate_join_identity(docker: &Docker, machine: &DindMachine) -> Result<(), String> {
@@ -359,7 +375,11 @@ async fn reset_machine(docker: &Docker, machine: &DindMachine) -> Result<(), Str
     let state = exec_in_container(
         docker,
         &machine.container_id,
-        &["test", "!", "-e", "/var/lib/ployz"],
+        &[
+            "sh",
+            "-c",
+            "test ! -e /var/lib/ployz/join-identity.json; test ! -e /var/lib/ployz/corrosion",
+        ],
     )
     .await
     .map_err(|error| error.to_string())?;
@@ -449,7 +469,7 @@ async fn wait_for_removal(
     let mut last = String::from("removal state was not queried");
     while Instant::now() < deadline {
         match removal_evidence_counts(store, machine).await {
-            Ok(counts) if counts == [0, 0, 0, 0, 0] => {
+            Ok([0, 0, 0, 0, 0]) => {
                 if let Some(operation_id) = preserved_operation {
                     let count = operation_count(store, operation_id).await?;
                     if count != 1 {
@@ -486,10 +506,16 @@ async fn evidence_counts(
     machine: &RosterMachine,
     operation_id: &OperationRowId,
 ) -> Result<[i64; 6], String> {
-    let removal = removal_evidence_counts(store, machine).await?;
+    let [machine, status, containers, cert_holdings, acme_http01] =
+        removal_evidence_counts(store, machine).await?;
     let operation = operation_count(store, operation_id).await?;
     Ok([
-        removal[0], removal[1], removal[2], removal[3], removal[4], operation,
+        machine,
+        status,
+        containers,
+        cert_holdings,
+        acme_http01,
+        operation,
     ])
 }
 
@@ -497,47 +523,37 @@ async fn removal_evidence_counts(
     store: CorrosionAccess<'_>,
     machine: &RosterMachine,
 ) -> Result<[i64; 5], String> {
-    let statements = [
-        format!(
-            "SELECT COUNT(*) FROM machines WHERE id = '{}'",
-            machine.id.as_str()
-        ),
-        format!(
-            "SELECT COUNT(*) FROM machine_status WHERE machine_id = '{}'",
-            machine.id.as_str()
-        ),
-        format!(
-            "SELECT COUNT(*) FROM containers WHERE machine_id = '{}'",
-            machine.id.as_str()
-        ),
-        format!(
-            "SELECT COUNT(*) FROM cert_holdings WHERE machine_id = '{}'",
-            machine.id.as_str()
-        ),
-        format!(
-            "SELECT COUNT(*) FROM acme_http01 WHERE machine_id = '{}'",
-            machine.id.as_str()
-        ),
-    ];
-    let mut counts = [0; 5];
-    for (index, statement) in statements.iter().enumerate() {
-        let rows = corrosion_query(
-            store.docker,
-            store.machine,
-            store.address,
-            store.token,
-            statement,
-        )
-        .await?;
-        let [row] = rows.as_slice() else {
-            return Err(format!("count query returned invalid rows: {rows:?}"));
-        };
-        let [ployz_core::corrosion::SqliteValue::Integer(count)] = row.as_slice() else {
-            return Err(format!("count query returned invalid row: {row:?}"));
-        };
-        counts[index] = *count;
-    }
-    Ok(counts)
+    let machine_id = machine.id.as_str();
+    let statement = format!(
+        "SELECT \
+         (SELECT COUNT(*) FROM machines WHERE id = '{machine_id}'), \
+         (SELECT COUNT(*) FROM machine_status WHERE machine_id = '{machine_id}'), \
+         (SELECT COUNT(*) FROM containers WHERE machine_id = '{machine_id}'), \
+         (SELECT COUNT(*) FROM cert_holdings WHERE machine_id = '{machine_id}'), \
+         (SELECT COUNT(*) FROM acme_http01 WHERE machine_id = '{machine_id}')"
+    );
+    let rows = corrosion_query(
+        store.docker,
+        store.machine,
+        store.address,
+        store.token,
+        &statement,
+    )
+    .await?;
+    let [row] = rows.as_slice() else {
+        return Err(format!("count query returned invalid rows: {rows:?}"));
+    };
+    let [
+        ployz_core::corrosion::SqliteValue::Integer(machine),
+        ployz_core::corrosion::SqliteValue::Integer(status),
+        ployz_core::corrosion::SqliteValue::Integer(containers),
+        ployz_core::corrosion::SqliteValue::Integer(cert_holdings),
+        ployz_core::corrosion::SqliteValue::Integer(acme_http01),
+    ] = row.as_slice()
+    else {
+        return Err(format!("count query returned invalid row: {row:?}"));
+    };
+    Ok([*machine, *status, *containers, *cert_holdings, *acme_http01])
 }
 
 async fn operation_count(
