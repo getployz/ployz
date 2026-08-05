@@ -14,8 +14,10 @@ use crate::{
 use super::production::{CorrosionServiceChange, LinuxSubstrate};
 
 const PLOYZ_STATE_DIRECTORY: &str = "/var/lib/ployz";
+const PRESERVED_STORAGE_DIRECTORIES: [&str; 2] = ["volumes", "zfs"];
 
-/// Stops Ployz services and removes the local state that identifies this machine.
+/// Stops Ployz services and removes the local control-plane state that identifies
+/// this machine while preserving workload-volume storage.
 pub fn run_linux_machine_reset() -> Result<(), FailureMessage> {
     let mut runner = SystemHostRunnerCommandRunner::default();
     reset_linux_machine(Path::new(PLOYZ_STATE_DIRECTORY), &mut runner)
@@ -47,21 +49,48 @@ pub fn reset_linux_machine(
     }
     substrate.change_corrosion_service(CorrosionServiceChange::Stop)?;
     remove_ployz_wireguard_interface(runner)?;
-    match fs::remove_dir_all(state) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(failure(error)),
+    remove_ployz_control_state(state)
+}
+
+fn remove_ployz_control_state(state: &Path) -> Result<(), FailureMessage> {
+    let entries = match fs::read_dir(state) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(failure(error)),
+    };
+    for entry in entries {
+        let entry = entry.map_err(failure)?;
+        if PRESERVED_STORAGE_DIRECTORIES.contains(&entry.file_name().to_string_lossy().as_ref()) {
+            continue;
+        }
+        let file_type = entry.file_type().map_err(failure)?;
+        let path = entry.path();
+        if file_type.is_dir() {
+            fs::remove_dir_all(path).map_err(failure)?;
+        } else {
+            fs::remove_file(path).map_err(failure)?;
+        }
     }
+    Ok(())
 }
 
 fn remove_ployz_wireguard_interface(
     runner: &mut impl HostRunnerCommandRunner,
 ) -> Result<(), FailureMessage> {
     let output = runner.command("ip", &["link", "delete", DEFAULT_WIREGUARD_IFNAME])?;
-    if output.success || output.exit_code == Some(1) {
+    if output.success || wireguard_interface_is_already_absent(&output) {
         return Ok(());
     }
     Err(failure(output.failure))
+}
+
+fn wireguard_interface_is_already_absent(output: &crate::HostRunnerCommandOutput) -> bool {
+    output.exit_code == Some(1)
+        && (output.failure.contains(&format!(
+            "Cannot find device \"{DEFAULT_WIREGUARD_IFNAME}\""
+        )) || output.failure.contains(&format!(
+            "Device \"{DEFAULT_WIREGUARD_IFNAME}\" does not exist"
+        )))
 }
 
 fn require_linux_root(runner: &mut impl HostRunnerCommandRunner) -> Result<(), FailureMessage> {
@@ -88,11 +117,18 @@ mod tests {
     use super::*;
     use crate::HostRunnerCommandOutput;
 
+    #[derive(Debug, Clone, Copy)]
+    enum WireguardInterface {
+        Present,
+        Absent,
+        DeletionFailed,
+    }
+
     #[derive(Debug)]
     struct RecordingRunner {
         linux: bool,
         uid: u32,
-        wireguard_interface_absent: bool,
+        wireguard_interface: WireguardInterface,
         calls: Vec<String>,
     }
 
@@ -101,7 +137,7 @@ mod tests {
             Self {
                 linux: true,
                 uid: 0,
-                wireguard_interface_absent: false,
+                wireguard_interface: WireguardInterface::Present,
                 calls: Vec::new(),
             }
         }
@@ -114,24 +150,29 @@ mod tests {
             args: &[&str],
         ) -> Result<HostRunnerCommandOutput, FailureMessage> {
             self.calls.push(format!("{program} {}", args.join(" ")));
-            let wireguard_interface_absent = self.wireguard_interface_absent
-                && program == "ip"
-                && args == ["link", "delete", DEFAULT_WIREGUARD_IFNAME];
+            let wireguard_interface_change =
+                program == "ip" && args == ["link", "delete", DEFAULT_WIREGUARD_IFNAME];
             let stdout = if program == "cat" && args == ["/etc/os-release"] {
                 "ID=ubuntu\nVERSION_ID=24.04\n".to_owned()
             } else {
                 String::new()
             };
+            let (success, exit_code, failure) =
+                match (wireguard_interface_change, self.wireguard_interface) {
+                    (true, WireguardInterface::Absent) => {
+                        (false, Some(1), "Cannot find device \"ployz0\"".to_owned())
+                    }
+                    (true, WireguardInterface::DeletionFailed) => {
+                        (false, Some(1), "Operation not permitted".to_owned())
+                    }
+                    _ => (true, Some(0), String::new()),
+                };
             Ok(HostRunnerCommandOutput {
-                success: !wireguard_interface_absent,
-                exit_code: Some(if wireguard_interface_absent { 1 } else { 0 }),
+                success,
+                exit_code,
                 stdout,
                 stdout_truncated: false,
-                failure: if wireguard_interface_absent {
-                    "Cannot find device \"ployz0\"".to_owned()
-                } else {
-                    String::new()
-                },
+                failure,
             })
         }
 
@@ -165,12 +206,16 @@ mod tests {
     }
 
     #[test]
-    fn root_linux_reset_stops_only_ployz_units_and_removes_ployz_state() {
+    fn root_linux_reset_stops_only_ployz_units_and_removes_control_state() {
         let directory = tempfile::tempdir().expect("tempdir");
         let state = directory.path().join("ployz");
         fs::create_dir_all(state.join("subscriptions")).expect("Ployz state directory");
         fs::write(state.join("corrosion.db"), "Corrosion rows").expect("Corrosion database");
         fs::write(state.join("subscriptions/active"), "subscription").expect("Ployz state");
+        fs::create_dir_all(state.join("volumes/workload")).expect("volume mount root");
+        fs::write(state.join("volumes/workload/data"), "volume data").expect("workload volume");
+        fs::create_dir_all(state.join("zfs")).expect("Ployz-owned pool backing directory");
+        fs::write(state.join("zfs/ployz.img"), "pool backing data").expect("pool backing file");
         let docker_owned = directory.path().join("docker");
         fs::create_dir_all(&docker_owned).expect("Docker directory");
         fs::write(docker_owned.join("container"), "workload").expect("Docker workload");
@@ -178,7 +223,17 @@ mod tests {
         let mut runner = RecordingRunner::root_linux();
         reset_linux_machine(&state, &mut runner).expect("reset succeeds");
 
-        assert!(!state.exists());
+        assert!(state.exists());
+        assert!(!state.join("corrosion.db").exists());
+        assert!(!state.join("subscriptions").exists());
+        assert_eq!(
+            fs::read_to_string(state.join("volumes/workload/data")).expect("Ployz volume remains"),
+            "volume data"
+        );
+        assert_eq!(
+            fs::read_to_string(state.join("zfs/ployz.img")).expect("Ployz pool backing remains"),
+            "pool backing data"
+        );
         assert_eq!(
             fs::read_to_string(docker_owned.join("container")).expect("Docker workload remains"),
             "workload"
@@ -207,7 +262,7 @@ mod tests {
         let mut non_linux = RecordingRunner {
             linux: false,
             uid: 0,
-            wireguard_interface_absent: false,
+            wireguard_interface: WireguardInterface::Present,
             calls: Vec::new(),
         };
         assert_eq!(
@@ -222,7 +277,7 @@ mod tests {
         let mut non_root = RecordingRunner {
             linux: true,
             uid: 1_000,
-            wireguard_interface_absent: false,
+            wireguard_interface: WireguardInterface::Present,
             calls: Vec::new(),
         };
         assert_eq!(
@@ -240,7 +295,7 @@ mod tests {
         let directory = tempfile::tempdir().expect("tempdir");
         let state = directory.path().join("ployz");
         let mut runner = RecordingRunner::root_linux();
-        runner.wireguard_interface_absent = true;
+        runner.wireguard_interface = WireguardInterface::Absent;
 
         reset_linux_machine(&state, &mut runner).expect("absent state is already reset");
 
@@ -257,5 +312,23 @@ mod tests {
                 "ip link delete ployz0",
             ]
         );
+    }
+
+    #[test]
+    fn reset_keeps_control_state_when_wireguard_interface_deletion_fails() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let state = directory.path().join("ployz");
+        fs::create_dir_all(&state).expect("Ployz state directory");
+        fs::write(state.join("corrosion.db"), "Corrosion rows").expect("Corrosion database");
+        let mut runner = RecordingRunner::root_linux();
+        runner.wireguard_interface = WireguardInterface::DeletionFailed;
+
+        assert_eq!(
+            reset_linux_machine(&state, &mut runner)
+                .expect_err("wireguard deletion failure stops reset")
+                .to_string(),
+            "Operation not permitted"
+        );
+        assert!(state.join("corrosion.db").exists());
     }
 }

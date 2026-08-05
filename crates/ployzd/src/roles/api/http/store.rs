@@ -21,6 +21,7 @@ const MAX_MUTATION_ROWS: usize = 10_000;
 pub(super) struct AcceptedRoster {
     pub(super) cluster: ClusterDocument,
     pub(super) machines: Vec<AcceptedMachine>,
+    pub(super) machine_removal_candidates: Vec<MachineRemovalCandidate>,
     pub(super) machine_skipped: Vec<SkippedRow>,
     pub(super) machine_shadows: Vec<ShadowConflict>,
     pub(super) peers: Vec<AcceptedPeer>,
@@ -29,6 +30,22 @@ pub(super) struct AcceptedRoster {
 }
 
 impl AcceptedRoster {
+    /// Returns whether an exact machine row id exists in this stored roster,
+    /// including entries the reader excluded from cluster truth.
+    pub(super) fn contains_stored_machine_id(&self, machine_id: &MachineRowId) -> bool {
+        let machine_id = machine_id.as_str();
+        self.machines
+            .iter()
+            .any(|machine| machine.id.as_str() == machine_id)
+            || self
+                .machine_skipped
+                .iter()
+                .any(|machine| machine.source.key == machine_id)
+            || self.machine_shadows.iter().any(|machine| {
+                machine.winner.id.as_str() == machine_id || machine.loser.id.as_str() == machine_id
+            })
+    }
+
     fn trace_reader_evidence(&self) {
         let machine_skipped = self.machine_skipped.len();
         let machine_shadows = self.machine_shadows.len();
@@ -58,6 +75,14 @@ pub(super) struct AcceptedMachine {
     pub(super) document: MachineDocument,
 }
 
+/// A valid machine row eligible for explicit removal, including a named row
+/// hidden by the reader's lowest-ULID presentation rule.
+#[derive(Debug, Clone)]
+pub(super) struct MachineRemovalCandidate {
+    pub(super) id: MachineRowId,
+    pub(super) name: ployz_core::machine::MachineName,
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct AcceptedPeer {
     pub(super) id: PeerId,
@@ -74,8 +99,9 @@ pub(super) async fn read_accepted_roster(
     let (cluster_rows, machine_rows, peer_rows) = tokio::try_join!(cluster, machines, peers)?;
 
     let cluster = one_cluster(cluster_id, cluster_rows)?;
-    let AcceptedNamedRows {
+    let AcceptedMachineRows {
         accepted: machines,
+        removal_candidates: machine_removal_candidates,
         skipped: machine_skipped,
         shadows: machine_shadows,
     } = accepted_machine_rows(read_named_roster_rows::<MachineDocument>(
@@ -90,6 +116,7 @@ pub(super) async fn read_accepted_roster(
     let roster = AcceptedRoster {
         cluster,
         machines,
+        machine_removal_candidates,
         machine_skipped,
         machine_shadows,
         peers,
@@ -107,9 +134,17 @@ struct AcceptedNamedRows<Row> {
     shadows: Vec<ShadowConflict>,
 }
 
+#[derive(Debug)]
+struct AcceptedMachineRows {
+    accepted: Vec<AcceptedMachine>,
+    removal_candidates: Vec<MachineRemovalCandidate>,
+    skipped: Vec<SkippedRow>,
+    shadows: Vec<ShadowConflict>,
+}
+
 fn accepted_machine_rows(
     report: NamedReadReport<MachineDocument>,
-) -> Result<AcceptedNamedRows<AcceptedMachine>, MutationStoreError> {
+) -> Result<AcceptedMachineRows, MutationStoreError> {
     let NamedReadReport {
         accepted,
         skipped,
@@ -131,8 +166,33 @@ fn accepted_machine_rows(
             })
         })
         .collect::<Result<Vec<_>, MutationStoreError>>()?;
-    Ok(AcceptedNamedRows {
+    let mut removal_candidates = accepted
+        .iter()
+        .map(|machine| MachineRemovalCandidate {
+            id: machine.id.clone(),
+            name: machine.document.name.clone(),
+        })
+        .collect::<Vec<_>>();
+    for shadow in &shadows {
+        let document = serde_json::from_str::<MachineDocument>(&shadow.loser.source.document)
+            .map_err(|error| MutationStoreError::InvalidAcceptedShadow {
+                table: CorrosionTable::Machines,
+                detail: error.to_string(),
+            })?;
+        let id = MachineRowId::try_new(shadow.loser.id.as_str().to_owned()).map_err(|error| {
+            MutationStoreError::InvalidAcceptedId {
+                table: CorrosionTable::Machines,
+                detail: error.to_string(),
+            }
+        })?;
+        removal_candidates.push(MachineRemovalCandidate {
+            id,
+            name: document.name,
+        });
+    }
+    Ok(AcceptedMachineRows {
         accepted,
+        removal_candidates,
         skipped,
         shadows,
     })
@@ -1016,6 +1076,13 @@ mod tests {
         };
         assert_eq!(accepted.id.as_str(), "01ARZ3NDEKTSV4RRFFQ69G5FAW");
         assert_eq!(accepted.stored_document, machine);
+        assert_eq!(
+            rows.removal_candidates
+                .iter()
+                .map(|candidate| candidate.id.as_str())
+                .collect::<Vec<_>>(),
+            ["01ARZ3NDEKTSV4RRFFQ69G5FAW", "01ARZ3NDEKTSV4RRFFQ69G5FAX"]
+        );
         let [_skipped] = rows.skipped.as_slice() else {
             panic!("expected one skipped machine, got {}", rows.skipped.len());
         };

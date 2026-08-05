@@ -266,21 +266,24 @@ async fn machine_remove(service: &ApiService, request: MachineRemoveRequest) -> 
         Ok(roster) => roster,
         Err(error) => return store_failure("read roster for machine removal", error),
     };
+    let requested_id_is_stored = request
+        .machine_id
+        .as_ref()
+        .is_some_and(|machine_id| roster.contains_stored_machine_id(machine_id));
     let reply = match machine_removal_reply(
         &request,
         roster
-            .machines
+            .machine_removal_candidates
             .into_iter()
-            .map(|machine| (machine.id, machine.document.name)),
+            .map(|machine| (machine.id, machine.name)),
+        requested_id_is_stored,
     ) {
         Ok(reply) => reply,
         Err(refusal) => return machine_remove_refusal_response(refusal),
     };
-    let machine_id = match &reply {
-        MachineRemoveReply::Removed { machine_id }
-        | MachineRemoveReply::AlreadyAbsent { machine_id } => machine_id,
-    };
-    if let Err(error) = remove_machine_and_sweep(&service.corrosion, machine_id).await {
+    if let MachineRemoveReply::Removed { machine_id } = &reply
+        && let Err(error) = remove_machine_and_sweep(&service.corrosion, machine_id).await
+    {
         return store_failure("fence machine and sweep testimony", error);
     }
     typed_response(StatusCode::OK, &reply)
@@ -289,10 +292,13 @@ async fn machine_remove(service: &ApiService, request: MachineRemoveRequest) -> 
 fn machine_removal_reply(
     request: &MachineRemoveRequest,
     accepted: impl IntoIterator<Item = (MachineRowId, MachineName)>,
+    requested_id_is_stored: bool,
 ) -> Result<MachineRemoveReply, MachineRemoveRefusal> {
     match select_machine_removal(request, accepted) {
         Ok(machine_id) => Ok(MachineRemoveReply::Removed { machine_id }),
-        Err(MachineRemoveRefusal::NotFound { .. }) if request.machine_id.is_some() => {
+        Err(MachineRemoveRefusal::NotFound { .. })
+            if request.machine_id.is_some() && !requested_id_is_stored =>
+        {
             let Some(machine_id) = request.machine_id.clone() else {
                 unreachable!("the retry guard requires a machine id")
             };
@@ -442,7 +448,7 @@ mod tests {
             machine_id: Some(machine_id.clone()),
         };
         assert_eq!(
-            machine_removal_reply(&request, std::iter::empty()),
+            machine_removal_reply(&request, std::iter::empty(), false),
             Ok(MachineRemoveReply::AlreadyAbsent { machine_id })
         );
     }
@@ -461,11 +467,27 @@ mod tests {
                     machine_id.clone(),
                     MachineName::try_new("edge-a").expect("accepted machine name"),
                 )],
+                true,
             ),
             Err(MachineRemoveRefusal::IdMismatch {
                 machine_name: MachineName::try_new("edge-b").expect("requested machine name"),
                 machine_id,
             })
+        );
+    }
+
+    #[test]
+    fn identity_qualified_removal_never_treats_a_stored_skipped_row_as_absent() {
+        let machine_name = MachineName::try_new("machine-one").expect("machine name");
+        let machine_id = MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("machine id");
+        let request = MachineRemoveRequest {
+            machine_name: machine_name.clone(),
+            machine_id: Some(machine_id),
+        };
+
+        assert_eq!(
+            machine_removal_reply(&request, std::iter::empty(), true),
+            Err(MachineRemoveRefusal::NotFound { machine_name })
         );
     }
 }
