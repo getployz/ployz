@@ -172,6 +172,16 @@ async fn reconcile_once(
                 ?evidence,
                 "Keeper refused a roster with mismatched WireGuard identities"
             );
+            let attempted_at = now().map_err(retry_status)?;
+            write_testimony(
+                store,
+                writer,
+                MeshConvergenceTestimony::KeyMismatch {
+                    attempted_at,
+                    mismatches,
+                },
+            )
+            .await?;
             Ok(ReconcileProgress::Settled)
         }
         BuiltinWireguardMeshOutcome::ReallocateLocalContainerSubnet { repair, evidence } => {

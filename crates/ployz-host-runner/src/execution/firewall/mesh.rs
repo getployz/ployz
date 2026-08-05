@@ -1,5 +1,5 @@
 use std::collections::BTreeSet;
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -12,6 +12,7 @@ use super::{
     unmanaged_firewall,
 };
 use crate::HostRunnerCommandRunner;
+use crate::execution::fsx::FileMode;
 
 const FIREWALLD_ACCEPT_PRIORITY: i16 = -100;
 const FIREWALLD_REJECT_PRIORITY: i16 = -90;
@@ -629,7 +630,7 @@ fn create_staged_file(
             "{prefix}-{}-{sequence}.{extension}",
             std::process::id()
         ));
-        match OpenOptions::new().write(true).create_new(true).open(&path) {
+        match FileMode::Secret0600.open_staged(&path) {
             Ok(file) => return Ok((path, file)),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => {
@@ -675,10 +676,64 @@ fn allow_iptables_forward(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt as _;
     use std::path::Path;
+    #[cfg(unix)]
+    use std::process::Command;
 
     use super::super::tests::{RecordingRunner, active, command_failure};
     use super::*;
+
+    #[cfg(unix)]
+    const STAGED_FILE_MODE_CHILD: &str = "PLOYZ_STAGED_FIREWALL_FILE_MODE_CHILD";
+
+    #[cfg(unix)]
+    #[test]
+    fn staged_firewall_files_are_created_0600_independent_of_umask() {
+        let current_exe = std::env::current_exe().expect("current test executable");
+        let output = Command::new("sh")
+            .args([
+                "-c",
+                concat!(
+                    "umask 000; exec \"$1\" --exact ",
+                    "execution::firewall::mesh::tests::staged_firewall_file_mode_child ",
+                    "--nocapture"
+                ),
+                "sh",
+            ])
+            .arg(current_exe)
+            .env(STAGED_FILE_MODE_CHILD, "1")
+            .output()
+            .expect("launch isolated staged-file mode test");
+
+        assert!(
+            output.status.success(),
+            "isolated staged-file mode test failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn staged_firewall_file_mode_child() {
+        if std::env::var_os(STAGED_FILE_MODE_CHILD).is_none() {
+            return;
+        }
+
+        let (path, file) =
+            create_staged_file("ployz-mode-test", "rules").expect("create staged firewall file");
+        drop(file);
+        let mode = fs::metadata(&path)
+            .expect("staged firewall file metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        fs::remove_file(path).expect("remove staged firewall file");
+
+        assert_eq!(mode, 0o600);
+    }
 
     #[test]
     fn atomic_filter_render_replaces_only_exact_owned_rules() {

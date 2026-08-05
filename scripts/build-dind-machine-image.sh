@@ -306,7 +306,7 @@ mv /target/release/railpack.source.tmp /target/release/railpack.source'
 
 stage_corrosion() {
   local platform corrosion_platform manifest_file pin_file release_tag archive_name archive_url archive_sha256
-  local embedded_version archive cache_dir actual_sha256 work_dir actual_version host_uid host_gid
+  local embedded_version archive cache_dir actual_sha256 work_dir host_uid host_gid
   local -a corrosion_pin
   platform="$(docker_platform "${PLOYZ_DIND_PLATFORM:-}")"
   case "${platform}" in
@@ -317,6 +317,8 @@ stage_corrosion() {
       exit 1
       ;;
   esac
+  ensure_builder_image
+  docker pull --platform "${platform}" "${MACHINE_BASE_IMAGE_SOURCE}"
 
   command -v python3 >/dev/null 2>&1 || {
     echo "python3 is required to read corrosion-release.json" >&2
@@ -367,11 +369,10 @@ stage_corrosion() {
 
   work_dir="$(mktemp -d "${TMPDIR:-/tmp}/ployz-dind-corrosion.XXXXXX")"
   tar -xzf "${archive}" -C "${work_dir}" corrosion
-  actual_version="$("${work_dir}/corrosion" --version)"
-  if [ "${actual_version}" != "${embedded_version}" ]; then
+  if ! verify_corrosion_embedded_version \
+    "${platform}" "${work_dir}" "${MACHINE_BASE_IMAGE_SOURCE}" "${embedded_version}"; then
     rm -rf "${work_dir}"
-    echo "Corrosion archive reports ${actual_version}, expected ${embedded_version}" >&2
-    exit 1
+    return 1
   fi
   mkdir -p "${TARGET_DIR}/release"
   host_uid="$(id -u)"
