@@ -34,6 +34,18 @@ pub const MACHINE_ENDPOINT_ROUTE_PREFIX: &str = "/machines/endpoint";
 pub const MACHINE_UPGRADE_ROUTE: &str = "/machines/upgrade";
 /// The only route exposed by the public TLS join door.
 pub const JOIN_ROUTE: &str = "/join";
+/// The stable endpoint for the cheap cluster diagnostics projection.
+pub const STATUS_ROUTE: &str = "/status";
+/// The stable endpoint for the read-only deep diagnostics projection.
+pub const DOCTOR_ROUTE: &str = "/doctor";
+/// Stable endpoint for removing one valid peer row.
+pub const PEER_REMOVE_ROUTE: &str = "/peers/remove";
+/// Stable endpoint for removing one valid namespace row.
+pub const NAMESPACE_REMOVE_ROW_ROUTE: &str = "/namespaces/remove";
+/// Stable endpoint for removing one valid service row.
+pub const SERVICE_REMOVE_ROW_ROUTE: &str = "/services/remove";
+/// Stable endpoint for removing one valid route-binding row.
+pub const ROUTE_REMOVE_ROUTE: &str = "/routes/remove";
 
 /// A capability understood by this version of the public API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -51,6 +63,16 @@ pub enum KnownApiFeature {
     MachineUpgrade,
     #[serde(rename = "v2.join_door")]
     JoinDoor,
+    #[serde(rename = "v2.diagnostics")]
+    Diagnostics,
+    #[serde(rename = "v2.peer_remove")]
+    PeerRemove,
+    #[serde(rename = "v2.namespace_remove")]
+    NamespaceRemove,
+    #[serde(rename = "v2.service_remove")]
+    ServiceRemove,
+    #[serde(rename = "v2.route_remove")]
+    RouteRemove,
 }
 
 impl KnownApiFeature {
@@ -64,6 +86,11 @@ impl KnownApiFeature {
             Self::MachineEndpoint => "v2.machine_endpoint",
             Self::MachineUpgrade => "v2.machine_upgrade",
             Self::JoinDoor => "v2.join_door",
+            Self::Diagnostics => "v2.diagnostics",
+            Self::PeerRemove => "v2.peer_remove",
+            Self::NamespaceRemove => "v2.namespace_remove",
+            Self::ServiceRemove => "v2.service_remove",
+            Self::RouteRemove => "v2.route_remove",
         }
     }
 }
@@ -76,6 +103,11 @@ pub const KNOWN_API_FEATURES: &[KnownApiFeature] = &[
     KnownApiFeature::MachineEndpoint,
     KnownApiFeature::MachineUpgrade,
     KnownApiFeature::JoinDoor,
+    KnownApiFeature::Diagnostics,
+    KnownApiFeature::PeerRemove,
+    KnownApiFeature::NamespaceRemove,
+    KnownApiFeature::ServiceRemove,
+    KnownApiFeature::RouteRemove,
 ];
 
 /// An advertised capability, including names added by a newer machine.
@@ -199,6 +231,12 @@ pub enum V2Route {
     MachineEndpointSet,
     MachineUpgrade,
     Join,
+    Status,
+    Doctor,
+    PeerRemove,
+    NamespaceRemove,
+    ServiceRemove,
+    RouteRemove,
     Lens(LensCollection),
     LensWatch(LensCollection),
 }
@@ -228,6 +266,24 @@ impl V2Route {
         }
         if path == JOIN_ROUTE {
             return Some(Self::Join);
+        }
+        if path == STATUS_ROUTE {
+            return Some(Self::Status);
+        }
+        if path == DOCTOR_ROUTE {
+            return Some(Self::Doctor);
+        }
+        if path == PEER_REMOVE_ROUTE {
+            return Some(Self::PeerRemove);
+        }
+        if path == NAMESPACE_REMOVE_ROW_ROUTE {
+            return Some(Self::NamespaceRemove);
+        }
+        if path == SERVICE_REMOVE_ROW_ROUTE {
+            return Some(Self::ServiceRemove);
+        }
+        if path == ROUTE_REMOVE_ROUTE {
+            return Some(Self::RouteRemove);
         }
         if path == MACHINE_ENDPOINT_ROUTE_PREFIX {
             return Some(Self::MachineEndpointSet);
@@ -267,6 +323,12 @@ impl V2Route {
             Self::MachineEndpointSet => MACHINE_ENDPOINT_ROUTE_PREFIX.to_owned(),
             Self::MachineUpgrade => MACHINE_UPGRADE_ROUTE.to_owned(),
             Self::Join => JOIN_ROUTE.to_owned(),
+            Self::Status => STATUS_ROUTE.to_owned(),
+            Self::Doctor => DOCTOR_ROUTE.to_owned(),
+            Self::PeerRemove => PEER_REMOVE_ROUTE.to_owned(),
+            Self::NamespaceRemove => NAMESPACE_REMOVE_ROW_ROUTE.to_owned(),
+            Self::ServiceRemove => SERVICE_REMOVE_ROW_ROUTE.to_owned(),
+            Self::RouteRemove => ROUTE_REMOVE_ROUTE.to_owned(),
             Self::Lens(collection) => lens_route(*collection),
             Self::LensWatch(collection) => lens_watch_route(*collection),
         }
@@ -276,13 +338,19 @@ impl V2Route {
     #[must_use]
     pub const fn method(&self) -> V2Method {
         match self {
-            Self::Version | Self::Lens(_) | Self::LensWatch(_) => V2Method::Get,
+            Self::Version | Self::Status | Self::Doctor | Self::Lens(_) | Self::LensWatch(_) => {
+                V2Method::Get
+            }
             Self::Founding
             | Self::TokenCreate
             | Self::TokenList
             | Self::TokenRevoke(_)
             | Self::MachineEndpointSet
             | Self::MachineUpgrade
+            | Self::PeerRemove
+            | Self::NamespaceRemove
+            | Self::ServiceRemove
+            | Self::RouteRemove
             | Self::Join => V2Method::Post,
         }
     }
@@ -299,6 +367,11 @@ impl V2Route {
             Self::MachineEndpointSet => KnownApiFeature::MachineEndpoint,
             Self::MachineUpgrade => KnownApiFeature::MachineUpgrade,
             Self::Join => KnownApiFeature::JoinDoor,
+            Self::Status | Self::Doctor => KnownApiFeature::Diagnostics,
+            Self::PeerRemove => KnownApiFeature::PeerRemove,
+            Self::NamespaceRemove => KnownApiFeature::NamespaceRemove,
+            Self::ServiceRemove => KnownApiFeature::ServiceRemove,
+            Self::RouteRemove => KnownApiFeature::RouteRemove,
         }
     }
 
@@ -312,7 +385,15 @@ impl V2Route {
             | Self::TokenRevoke(_)
             | Self::MachineEndpointSet
             | Self::MachineUpgrade => matches!(principal, Principal::Peer { .. }),
-            Self::Version | Self::Founding | Self::Lens(_) | Self::LensWatch(_) => {
+            Self::PeerRemove | Self::NamespaceRemove | Self::ServiceRemove | Self::RouteRemove => {
+                matches!(principal, Principal::Peer { .. })
+            }
+            Self::Version
+            | Self::Founding
+            | Self::Status
+            | Self::Doctor
+            | Self::Lens(_)
+            | Self::LensWatch(_) => {
                 matches!(
                     principal,
                     Principal::Machine { .. } | Principal::Peer { .. }

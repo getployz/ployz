@@ -461,6 +461,14 @@ impl ApiService {
         .await
         {
             Ok(principal) => principal,
+            Err(ApiRefusal::MissingCluster)
+                if matches!(
+                    parse_route(request.method(), request.uri().path()),
+                    Ok(V2Route::Status)
+                ) =>
+            {
+                return super::diagnostics::status_response(self).await;
+            }
             Err(refusal) => return refusal_response(refusal),
         };
         if founding_route_disabled(&self.mode, request.uri().path()) {
@@ -479,12 +487,18 @@ impl ApiService {
             V2Route::Version => version_response(&self.build),
             V2Route::Founding => unreachable!("founding routes are handled before roster auth"),
             V2Route::Join => refusal_response(ApiRefusal::UnsupportedRoute),
+            V2Route::Status => super::diagnostics::status_response(self).await,
+            V2Route::Doctor => super::diagnostics::doctor_response(self).await,
             V2Route::TokenCreate
             | V2Route::TokenList
             | V2Route::TokenRevoke(_)
             | V2Route::MachineEndpointSet => {
                 super::mutations::handle_mutation(self, route, principal, request).await
             }
+            V2Route::PeerRemove
+            | V2Route::NamespaceRemove
+            | V2Route::ServiceRemove
+            | V2Route::RouteRemove => super::removals::handle_removal(self, route, request).await,
             V2Route::MachineUpgrade => super::upgrade::handle_machine_upgrade(self, request).await,
             V2Route::Lens(collection) => self.snapshot_response(collection).await,
             V2Route::LensWatch(collection) => self.watch_response(collection, shutdown).await,

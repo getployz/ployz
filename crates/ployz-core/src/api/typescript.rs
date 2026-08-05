@@ -13,6 +13,12 @@ use super::v2::{
     MachineUpgradeRequest, MachineUpgradeSupervisor, MachineUpgradeUrl, OperationLensRow,
     ServiceLensRow,
 };
+use super::{
+    DoctorDocument, NamedRemovalOutcome, NamespaceRemoveRowRefusal, NamespaceRemoveRowReply,
+    NamespaceRemoveRowRequest, PeerRemoveRefusal, PeerRemoveReply, PeerRemoveRequest,
+    RouteRemoveRefusal, RouteRemoveReply, RouteRemoveRequest, ServiceRemoveRowRefusal,
+    ServiceRemoveRowReply, ServiceRemoveRowRequest, StatusDocument,
+};
 use crate::build::{BuildExecutorEvidence, BuildPlatformExecutorAssignment, BuildSource};
 use crate::corrosion::{
     AcmeHttp01Document, CertHoldingDocument, ClusterDocument, ContainerDocument, CorrosionTable,
@@ -148,6 +154,21 @@ fn collect_v2_contracts(declarations: &mut DeclarationCollector<'_>) {
     declarations.visit::<CorrosionRetryAfterSeconds>();
     declarations.visit::<ApiRefusal>();
     declarations.visit::<LensWatchEvent>();
+    declarations.visit::<StatusDocument>();
+    declarations.visit::<DoctorDocument>();
+    declarations.visit::<NamedRemovalOutcome>();
+    declarations.visit::<PeerRemoveRequest>();
+    declarations.visit::<PeerRemoveReply>();
+    declarations.visit::<PeerRemoveRefusal>();
+    declarations.visit::<NamespaceRemoveRowRequest>();
+    declarations.visit::<NamespaceRemoveRowReply>();
+    declarations.visit::<NamespaceRemoveRowRefusal>();
+    declarations.visit::<ServiceRemoveRowRequest>();
+    declarations.visit::<ServiceRemoveRowReply>();
+    declarations.visit::<ServiceRemoveRowRefusal>();
+    declarations.visit::<RouteRemoveRequest>();
+    declarations.visit::<RouteRemoveReply>();
+    declarations.visit::<RouteRemoveRefusal>();
     declarations.visit::<FoundingDriverEnrollment>();
     declarations.visit::<FoundingRequest>();
     declarations.visit::<FoundingRow>();
@@ -496,6 +517,7 @@ mod tests {
         assert!(generated.contains("export const KNOWN_API_FEATURES = ["));
         assert!(generated.contains("\"v2.founding\","));
         assert!(generated.contains("\"v2.lenses\","));
+        assert!(generated.contains("\"v2.diagnostics\","));
         assert!(generated.contains("export type ApiFeature = KnownApiFeature | (string & {});"));
         assert!(generated.contains("export type OperationInitiator = Principal;"));
         assert!(!generated.contains("export type AcceptedRosterPrincipal ="));
@@ -519,6 +541,21 @@ mod tests {
             "CorrosionRetryAfterSeconds",
             "ApiRefusal",
             "LensWatchEvent",
+            "StatusDocument",
+            "DoctorDocument",
+            "NamedRemovalOutcome",
+            "PeerRemoveRequest",
+            "PeerRemoveReply",
+            "PeerRemoveRefusal",
+            "NamespaceRemoveRowRequest",
+            "NamespaceRemoveRowReply",
+            "NamespaceRemoveRowRefusal",
+            "ServiceRemoveRowRequest",
+            "ServiceRemoveRowReply",
+            "ServiceRemoveRowRefusal",
+            "RouteRemoveRequest",
+            "RouteRemoveReply",
+            "RouteRemoveRefusal",
             "FoundingDriverEnrollment",
             "FoundingRequest",
             "FoundingRow",
@@ -532,6 +569,10 @@ mod tests {
                 "missing declaration for {name}"
             );
         }
+        assert!(generated.contains("export type ServiceRemoveRowRequest ="));
+        assert!(generated.contains(
+            "namespace_id: NamespaceRowId, name: string, service_id: ServiceRowId | null"
+        ));
         for local_only in [
             "InitStorageChoice",
             "InitStorageSelectionError",

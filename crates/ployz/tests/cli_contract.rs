@@ -12,9 +12,26 @@ fn bare_cli_and_help_advertise_init_and_local_commands() {
         assert!(stdout.contains("  init"));
         assert!(stdout.contains("  machine"));
         assert!(stdout.contains("  token"));
+        assert!(stdout.contains("  status"));
+        assert!(stdout.contains("  doctor"));
         for removed in ["deploy", "ops", "core", "host"] {
             assert!(!stdout.contains(&format!("  {removed}")));
         }
+    }
+}
+
+#[test]
+fn diagnostics_reachability_failures_are_nonzero_and_name_the_handoffs() {
+    for verb in ["status", "doctor"] {
+        let home = tempfile::tempdir().expect("temporary home");
+        let output = run(&[verb], Some(home.path()));
+
+        assert!(!output.status.success());
+        assert!(stdout(&output).is_empty());
+        let stderr = stderr(&output);
+        assert!(stderr.contains("cluster\tunreachable"));
+        assert!(stderr.contains("`ployz network status`"));
+        assert!(stderr.contains("re-join"));
     }
 }
 

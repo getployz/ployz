@@ -13,7 +13,7 @@ use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const PEER_NAME: &str = "dind laptop";
 const CLUSTER_NAME: &str = "dind-laptop-dial";
@@ -148,6 +148,7 @@ async fn exercise_laptop_dial(docker: &Docker, cluster: &DindCluster) -> Result<
             format!("machine ls attempt {attempt} omitted {MACHINE_NAME}: {stdout}"),
         )?;
     }
+    wait_for_ready_status(&cli, temporary_home.path(), &target).await?;
     let key_after = read_only_file(&single_file(&config_home.join("mesh/init-peers"))?)?;
     require(
         key_before == key_after,
@@ -236,6 +237,51 @@ fn run_machine_list(cli: &Path, home: &Path, target: &SshTarget) -> Result<Outpu
         .stdin(Stdio::null())
         .output()
         .map_err(|error| format!("could not run shipped CLI {}: {error}", cli.display()))
+}
+
+async fn wait_for_ready_status(cli: &Path, home: &Path, target: &SshTarget) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(45);
+    let mut last = String::from("status was not attempted");
+    while Instant::now() < deadline {
+        let output = Command::new(cli)
+            .args(["status", "--target", target.as_str()])
+            .env("HOME", home)
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|error| format!("could not run shipped CLI {}: {error}", cli.display()))?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if output.status.success() && status_is_ready_and_caught_up(&stdout) {
+            return Ok(());
+        }
+        last = format!(
+            "exit {:?} stdout={:?} stderr={:?}",
+            output.status.code(),
+            stdout.trim(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    Err(format!(
+        "shipped status did not report a ready, caught-up machine table in 45s: {last}"
+    ))
+}
+
+fn status_is_ready_and_caught_up(output: &str) -> bool {
+    let lines = output.lines().collect::<Vec<_>>();
+    lines
+        .iter()
+        .any(|line| line.starts_with(&format!("cluster\t{CLUSTER_NAME}\t")))
+        && lines
+            .iter()
+            .any(|line| line.starts_with("sync\tcaught up\t"))
+        && lines.contains(&"barrier\tready")
+        && lines.contains(&"NAME\tHANDSHAKE\tADDR")
+        && lines.iter().any(|line| {
+            matches!(
+                line.split('\t').collect::<Vec<_>>().as_slice(),
+                [name, "self", address] if *name == MACHINE_NAME && !address.is_empty()
+            )
+        })
 }
 
 fn assert_private_operator_state(config_home: &Path, target: &SshTarget) -> Result<(), String> {
@@ -402,5 +448,23 @@ mod tests {
             "SSH fixture is invalid: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    #[test]
+    fn status_output_reports_a_ready_caught_up_machine_table() {
+        let output = "cluster\tdind-laptop-dial\t01ARZ3NDEKTSV4RRFFQ69G5FAV\t1 machine\n\
+sync\tcaught up\tlag p99 0\t(as seen from machine-one)\n\
+barrier\tready\n\
+\n\
+NAME\tHANDSHAKE\tADDR\n\
+machine-one\tself\tfd12:3456:789a::1\n";
+
+        assert!(status_is_ready_and_caught_up(output));
+        assert!(!status_is_ready_and_caught_up(
+            &output.replace("sync\tcaught up", "sync\tno lag sample")
+        ));
+        assert!(!status_is_ready_and_caught_up(
+            &output.replace("NAME\tHANDSHAKE\tADDR", "NAME\tADDR")
+        ));
     }
 }

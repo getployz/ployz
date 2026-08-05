@@ -17,6 +17,7 @@ export const KNOWN_API_FEATURES = [
   "v2.machine_endpoint",
   "v2.machine_upgrade",
   "v2.join_door",
+  "v2.diagnostics",
 ] as const;
 
 export type ApiFeature = KnownApiFeature | (string & {});
@@ -242,6 +243,8 @@ export type CorrosionTable = "cluster" | "machines" | "peers" | "tokens" | "name
 
 export type CorrosionTimestamp = Brand<string, "CorrosionTimestamp">;
 
+export type CorrosionUlid = Brand<string, "CorrosionUlid">;
+
 export type DataplaneAdmissionPeer = { public_key: WireGuardPublicKey, endpoint_subnet: WireGuardPeerEndpointSubnet, };
 
 export type DataplaneProjectionAdmissionEvidence = { machine_id: MachineId, reason: DataplaneProjectionAdmissionFailure, };
@@ -386,6 +389,30 @@ export type DeployVolumeHandoffStopUncertain = { "reason": "runtime_unavailable"
 
 export type DockerfileStageName = string;
 
+export type DoctorDocument = { shadows: Array<DoctorShadowFinding>, skipped_newer_versions: Array<DoctorSkippedNewerVersion>, versions: DoctorVersionReport, foreign_clusters: Array<DoctorForeignClusterRows>, };
+
+export type DoctorForeignAuthorship = { "kind": "current_machine", machine: DoctorMachineIdentity, } | { "kind": "non_current_machine", machine_id: MachineRowId, } | { "kind": "peer", peer_id: PeerId, } | { "kind": "api_token", token_id: TokenId, } | { "kind": "unparseable" };
+
+export type DoctorForeignClusterRows = { cluster_id: string, rows: Array<DoctorForeignRowEvidence>, };
+
+export type DoctorForeignRowEvidence = { table: CorrosionTable, key: string, authorship: DoctorForeignAuthorship, };
+
+export type DoctorInvalidMachineVersion = { machine: DoctorMachineIdentity, version: string, };
+
+export type DoctorMachineIdentity = { id: MachineRowId, name: MachineName, };
+
+export type DoctorMachineVersion = { machine: DoctorMachineIdentity, version: string, };
+
+export type DoctorNewestVersion = { version: string, machines: Array<DoctorMachineIdentity>, };
+
+export type DoctorShadowFinding = { repair_target: DoctorShadowRepairTarget, claim: NameClaim, winner_id: CorrosionUlid, loser_id: CorrosionUlid, };
+
+export type DoctorShadowRepairTarget = "machine" | "peer" | "namespace" | "service" | "route_binding";
+
+export type DoctorSkippedNewerVersion = { table: CorrosionTable, key: string, found: number, supported: number, };
+
+export type DoctorVersionReport = { newest?: DoctorNewestVersion, behind: Array<DoctorMachineVersion>, invalid: Array<DoctorInvalidMachineVersion>, };
+
 export type EbpfAttachmentStatus = { "status": "attached" } | { "status": "detached", message: string, } | { "status": "unknown", message: string, };
 
 export type EbpfMeshDegradationReason = { "kind": "missing_bridge", ifname: string, } | { "kind": "host_effect", message: string, };
@@ -447,6 +474,8 @@ export type GitCredentialSecret = string;
 export type GitCredentialUsername = string;
 
 export type GitRepositoryUrl = string;
+
+export type HandshakeFreshness = "healthy" | "stale";
 
 export type HealthCheckFailure = { "reason": "probe_failed", machine_id: MachineId, container_id: ContainerId, message: FailureMessage, log_hint: OperatorHint, } | { "reason": "timed_out", timeout_seconds: number, };
 
@@ -556,7 +585,7 @@ export type JoinTokenSecret = Brand<string, "JoinTokenSecret">;
 
 export type JoinTokenTtlSeconds = SafeInteger<"JoinTokenTtlSeconds">;
 
-export type KnownApiFeature = "v2.founding" | "v2.lenses" | "v2.join_tokens" | "v2.machine_endpoint" | "v2.machine_upgrade" | "v2.join_door";
+export type KnownApiFeature = "v2.founding" | "v2.lenses" | "v2.join_tokens" | "v2.machine_endpoint" | "v2.machine_upgrade" | "v2.join_door" | "v2.diagnostics";
 
 export type LensCollection = "machines" | "services" | "containers" | "machine_status" | "operations";
 
@@ -661,7 +690,12 @@ export type MachineStatusDocument = { v: CorrosionDocumentVersion, cluster_id: C
  * `None` denotes an additive v1 status document without mesh testimony.
  * Keeper mesh status writes populate this field.
  */
-mesh?: MeshConvergenceTestimony | null, };
+mesh?: MeshConvergenceTestimony | null,
+/**
+ * `None` denotes a row written before live peer-handshake testimony existed.
+ * A current writer publishes `Some`, including an empty map on a one-machine roster.
+ */
+wireguard_handshakes?: { [key in MachineRowId]: WireGuardHandshakeEvidence } | null, };
 
 export type MachineStatusLensRow = { id: MachineRowId, document: MachineStatusDocument, };
 
@@ -1044,6 +1078,22 @@ export type ServingTargetEntry = { namespace_id: NamespaceId, service_id: Servic
 
 export type Sha256Hex = Brand<string, "Sha256Hex">;
 
+export type StatusAnsweringMachine = { "state": "known", id: MachineRowId, name: MachineName, } | { "state": "unknown", id: MachineRowId, };
+
+export type StatusBarrier = "ready" | "catching_up" | "no_roster";
+
+export type StatusClusterSummary = { id: ClusterId, name: string, machine_count: number, };
+
+export type StatusDocument = { cluster?: StatusClusterSummary, answering_machine: StatusAnsweringMachine, sync: StatusSync, barrier: StatusBarrier, machines: Array<StatusMachineRow>, hints: Array<StatusHint>, };
+
+export type StatusHandshakeEvidence = { "state": "self_machine" } | { "state": "no_testimony" } | { "state": "never" } | { "state": "ago", seconds: number, freshness: HandshakeFreshness, };
+
+export type StatusHint = "all_peer_handshakes_stale";
+
+export type StatusMachineRow = { id: MachineRowId, name: MachineName, address: string, handshake: StatusHandshakeEvidence, };
+
+export type StatusSync = { "state": "caught_up", p99_lag: number, } | { "state": "syncing", gaps: number, queue_size: number, p99_lag: number, } | { "state": "no_lag_sample" } | { "state": "degraded", message: string, };
+
 export type StepId = Brand<string, "StepId">;
 
 export type StopGracePeriod = SafeInteger<"StopGracePeriod">;
@@ -1145,6 +1195,8 @@ export type VolumeTestimony = { "status": "available", used_bytes: number, last_
 export type WireGuardConfiguredMtu = { "mode": "auto" } | { "mode": "fixed", mtu: number, };
 
 export type WireGuardDetectedMtu = { "status": "detected", mtu: number, } | { "status": "unavailable", message: string, };
+
+export type WireGuardHandshakeEvidence = { "state": "never" } | { "state": "at", unix_seconds: number, };
 
 export type WireGuardHandshakeStatus = { "status": "never" } | { "status": "ago", seconds: number, };
 

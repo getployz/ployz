@@ -11,6 +11,9 @@ use std::net::Ipv6Addr;
 mod support;
 use support::*;
 
+#[path = "keeper_mesh/diagnostics.rs"]
+mod diagnostics;
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_machine_keeper_converges_and_fences_builtin_mesh() {
     if !e2e_enabled() {
@@ -162,6 +165,9 @@ async fn exercise_keeper_mesh(docker: &Docker, cluster: &DindCluster) -> Result<
     assert_exact_route_map(docker, machine_b, [10, 210, 10, 0], 24).await?;
     assert_status_ownership(docker, machine_a).await?;
     assert_status_ownership(docker, machine_b).await?;
+    diagnostics::wait_for_absolute_handshake(docker, machine_b, MACHINE_B_ID, MACHINE_A_ID).await?;
+    diagnostics::wait_for_public_status_handshake(docker, machine_a, address_b, MACHINE_A_ID)
+        .await?;
 
     let delete_b = json!([["DELETE FROM machines WHERE id = ?", [MACHINE_B_ID]]]);
     corrosion_transaction(docker, machine_a, &delete_b).await?;

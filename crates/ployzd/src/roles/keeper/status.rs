@@ -1,11 +1,12 @@
 //! Machine-owned status observations and structurally local SQL writes.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
 use ployz_core::corrosion::{
     CorrosionDocumentVersion, CorrosionTimestamp, MachineLoadBand, MachineStatusDocument,
-    MeshConvergenceTestimony, SqliteParameter, Statement,
+    MeshConvergenceTestimony, SqliteParameter, Statement, WireGuardHandshakeEvidence,
 };
 use ployz_core::ids::{ClusterId, MachineRowId};
 use rustix::fs::statvfs;
@@ -39,13 +40,20 @@ impl LocalMachineStatusWriter {
     pub(super) fn statement(
         &self,
         mesh: MeshConvergenceTestimony,
+        wireguard_handshakes: Option<BTreeMap<MachineRowId, WireGuardHandshakeEvidence>>,
     ) -> Result<Statement, MachineStatusWriteError> {
-        self.statement_with_observation(mesh, SystemObservation::read()?, now()?)
+        self.statement_with_observation(
+            mesh,
+            wireguard_handshakes,
+            SystemObservation::read()?,
+            now()?,
+        )
     }
 
     fn statement_with_observation(
         &self,
         mesh: MeshConvergenceTestimony,
+        wireguard_handshakes: Option<BTreeMap<MachineRowId, WireGuardHandshakeEvidence>>,
         observation: SystemObservation,
         observed_at: CorrosionTimestamp,
     ) -> Result<Statement, MachineStatusWriteError> {
@@ -61,6 +69,7 @@ impl LocalMachineStatusWriter {
             load: observation.load,
             observed_at,
             mesh: Some(mesh),
+            wireguard_handshakes,
         };
         let encoded =
             serde_json::to_string(&document).map_err(|source| MachineStatusWriteError::Encode {
@@ -223,6 +232,7 @@ mod tests {
         let statement = writer
             .statement_with_observation(
                 testimony.clone(),
+                None,
                 SystemObservation {
                     free_disk_bytes: 11,
                     free_memory_bytes: 22,
@@ -249,6 +259,42 @@ mod tests {
         assert_eq!(decoded.machine_id.as_str(), key);
         assert_eq!(decoded.cluster_id.as_str(), CLUSTER);
         assert_eq!(decoded.mesh, Some(testimony));
+        assert_eq!(decoded.wireguard_handshakes, None);
+    }
+
+    #[test]
+    fn local_writer_serializes_an_observed_empty_handshake_map_as_an_object() {
+        let writer = LocalMachineStatusWriter::new(
+            ClusterId::try_new(CLUSTER).expect("cluster"),
+            MachineRowId::try_new(MACHINE).expect("machine"),
+            "0.2.0-beta.0".to_owned(),
+        );
+        let statement = writer
+            .statement_with_observation(
+                MeshConvergenceTestimony::NoRoster {
+                    attempted_at: timestamp(),
+                },
+                Some(BTreeMap::new()),
+                SystemObservation {
+                    free_disk_bytes: 11,
+                    free_memory_bytes: 22,
+                    load: MachineLoadBand::Normal,
+                },
+                timestamp(),
+            )
+            .expect("status statement");
+        let Statement::WithParams(_, params) = statement else {
+            panic!("status write must be parameterized");
+        };
+        let [_, SqliteParameter::Text(document)] = params.as_slice() else {
+            panic!("status write has one key and one document parameter");
+        };
+        let encoded: serde_json::Value = serde_json::from_str(document).expect("status JSON");
+
+        assert_eq!(
+            encoded.get("wireguard_handshakes"),
+            Some(&serde_json::json!({}))
+        );
     }
 
     #[test]

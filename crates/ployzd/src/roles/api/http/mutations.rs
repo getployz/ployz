@@ -75,6 +75,12 @@ pub(super) async fn handle_mutation(
         | V2Route::Founding
         | V2Route::Join
         | V2Route::MachineUpgrade
+        | V2Route::Status
+        | V2Route::Doctor
+        | V2Route::PeerRemove
+        | V2Route::NamespaceRemove
+        | V2Route::ServiceRemove
+        | V2Route::RouteRemove
         | V2Route::Lens(_)
         | V2Route::LensWatch(_) => refusal_response(ApiRefusal::UnsupportedRoute),
     }

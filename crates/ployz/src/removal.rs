@@ -1,0 +1,328 @@
+//! Execution and presentation for bounded named-row removals.
+
+use hyper::Method;
+use ployz_core::{
+    NAMESPACE_REMOVE_ROW_ROUTE, NamedRemovalOutcome, NamespaceRemoveRowRefusal,
+    NamespaceRemoveRowReply, NamespaceRemoveRowRequest, PEER_REMOVE_ROUTE, PeerRemoveRefusal,
+    PeerRemoveReply, PeerRemoveRequest, ROUTE_REMOVE_ROUTE, RouteRemoveRefusal, RouteRemoveReply,
+    RouteRemoveRequest, SERVICE_REMOVE_ROW_ROUTE, ServiceRemoveRowRefusal, ServiceRemoveRowReply,
+    ServiceRemoveRowRequest,
+};
+
+use crate::commands::{NamespaceCommand, PeerCommand, RouteCommand, ServiceCommand};
+use crate::mesh::http::JsonReply;
+use crate::remote::{OperatorRemote, OperatorRemoteError};
+
+pub async fn execute_peer(command: PeerCommand) -> Result<String, RemovalExecutionError> {
+    let PeerCommand::Remove(command) = command;
+    let remote = OperatorRemote::load(command.target.as_ref())?;
+    let reply = remote
+        .request_json_with_refusal::<_, PeerRemoveReply, PeerRemoveRefusal>(
+            Method::POST,
+            PEER_REMOVE_ROUTE,
+            Some(&PeerRemoveRequest {
+                name: command.name.clone(),
+                peer_id: command.peer_id,
+            }),
+        )
+        .await?;
+    match reply {
+        JsonReply::Success(reply) => Ok(render_success(
+            "peer",
+            &command.name,
+            reply.peer_id.as_str(),
+            reply.outcome,
+        )),
+        JsonReply::Refused(refusal) => Err(peer_refusal(refusal)),
+    }
+}
+
+pub async fn execute_namespace(command: NamespaceCommand) -> Result<String, RemovalExecutionError> {
+    let NamespaceCommand::Remove(command) = command;
+    let remote = OperatorRemote::load(command.target.as_ref())?;
+    let reply = remote
+        .request_json_with_refusal::<_, NamespaceRemoveRowReply, NamespaceRemoveRowRefusal>(
+            Method::POST,
+            NAMESPACE_REMOVE_ROW_ROUTE,
+            Some(&NamespaceRemoveRowRequest {
+                name: command.name.clone(),
+                namespace_id: command.namespace_id,
+            }),
+        )
+        .await?;
+    match reply {
+        JsonReply::Success(reply) => Ok(render_success(
+            "namespace",
+            &command.name,
+            reply.namespace_id.as_str(),
+            reply.outcome,
+        )),
+        JsonReply::Refused(refusal) => Err(namespace_refusal(refusal)),
+    }
+}
+
+pub async fn execute_service(command: ServiceCommand) -> Result<String, RemovalExecutionError> {
+    let ServiceCommand::Remove(command) = command;
+    let remote = OperatorRemote::load(command.target.as_ref())?;
+    let reply = remote
+        .request_json_with_refusal::<_, ServiceRemoveRowReply, ServiceRemoveRowRefusal>(
+            Method::POST,
+            SERVICE_REMOVE_ROW_ROUTE,
+            Some(&ServiceRemoveRowRequest {
+                namespace_id: command.namespace_id.clone(),
+                name: command.name.clone(),
+                service_id: command.service_id,
+            }),
+        )
+        .await?;
+    match reply {
+        JsonReply::Success(reply) => Ok(render_success(
+            "service",
+            &command.name,
+            reply.service_id.as_str(),
+            reply.outcome,
+        )),
+        JsonReply::Refused(refusal) => Err(service_refusal(refusal)),
+    }
+}
+
+pub async fn execute_route(command: RouteCommand) -> Result<String, RemovalExecutionError> {
+    let RouteCommand::Remove(command) = command;
+    let remote = OperatorRemote::load(command.target.as_ref())?;
+    let handle = command.hostname.as_str().to_owned();
+    let reply = remote
+        .request_json_with_refusal::<_, RouteRemoveReply, RouteRemoveRefusal>(
+            Method::POST,
+            ROUTE_REMOVE_ROUTE,
+            Some(&RouteRemoveRequest {
+                hostname: command.hostname,
+                route_id: command.route_id,
+            }),
+        )
+        .await?;
+    match reply {
+        JsonReply::Success(reply) => Ok(render_success(
+            "route",
+            &handle,
+            reply.route_id.as_str(),
+            reply.outcome,
+        )),
+        JsonReply::Refused(refusal) => Err(route_refusal(refusal)),
+    }
+}
+
+fn peer_refusal(refusal: PeerRemoveRefusal) -> RemovalExecutionError {
+    let message = match refusal {
+        PeerRemoveRefusal::NotFound { name } => format!("peer {name} does not exist"),
+        PeerRemoveRefusal::Ambiguous { name, peer_ids } => {
+            ambiguous_message("peer", &name, peer_ids.iter().map(|id| id.as_str()))
+        }
+        PeerRemoveRefusal::NameMismatch {
+            peer_id,
+            requested,
+            found,
+        } => format!(
+            "peer row {} is named {found}, not {requested}; no row was removed",
+            peer_id.as_str()
+        ),
+        PeerRemoveRefusal::StoredRowUnselectable { peer_id } => format!(
+            "peer row {} exists but this binary cannot safely select it; no row was removed",
+            peer_id.as_str()
+        ),
+        PeerRemoveRefusal::ConcurrentMutation { peer_id } => format!(
+            "peer row {} changed before removal; inspect it and retry",
+            peer_id.as_str()
+        ),
+    };
+    RemovalExecutionError::Refused { message }
+}
+
+fn namespace_refusal(refusal: NamespaceRemoveRowRefusal) -> RemovalExecutionError {
+    let message = match refusal {
+        NamespaceRemoveRowRefusal::NotFound { name } => {
+            format!("namespace {name} does not exist")
+        }
+        NamespaceRemoveRowRefusal::Ambiguous {
+            name,
+            namespace_ids,
+        } => ambiguous_message(
+            "namespace",
+            &name,
+            namespace_ids.iter().map(|id| id.as_str()),
+        ),
+        NamespaceRemoveRowRefusal::NameMismatch {
+            namespace_id,
+            requested,
+            found,
+        } => format!(
+            "namespace row {} is named {found}, not {requested}; no row was removed",
+            namespace_id.as_str()
+        ),
+        NamespaceRemoveRowRefusal::StoredRowUnselectable { namespace_id } => format!(
+            "namespace row {} exists but this binary cannot safely select it; no row was removed",
+            namespace_id.as_str()
+        ),
+        NamespaceRemoveRowRefusal::ConcurrentMutation { namespace_id } => format!(
+            "namespace row {} changed before removal; inspect it and retry",
+            namespace_id.as_str()
+        ),
+    };
+    RemovalExecutionError::Refused { message }
+}
+
+fn service_refusal(refusal: ServiceRemoveRowRefusal) -> RemovalExecutionError {
+    let message = match refusal {
+        ServiceRemoveRowRefusal::NotFound { namespace_id, name } => format!(
+            "service {name} does not exist in namespace row {}",
+            namespace_id.as_str()
+        ),
+        ServiceRemoveRowRefusal::Ambiguous {
+            namespace_id,
+            name,
+            service_ids,
+        } => service_ambiguous_message(&namespace_id, &name, &service_ids),
+        ServiceRemoveRowRefusal::IdentityMismatch {
+            service_id,
+            requested_namespace_id,
+            requested_name,
+            found_namespace_id,
+            found_name,
+        } => format!(
+            "service row {} is {}/{found_name}, not {}/{requested_name}; no row was removed",
+            service_id.as_str(),
+            found_namespace_id.as_str(),
+            requested_namespace_id.as_str()
+        ),
+        ServiceRemoveRowRefusal::StoredRowUnselectable { service_id } => format!(
+            "service row {} exists but this binary cannot safely select it; no row was removed",
+            service_id.as_str()
+        ),
+        ServiceRemoveRowRefusal::ConcurrentMutation { service_id } => format!(
+            "service row {} changed before removal; inspect it and retry",
+            service_id.as_str()
+        ),
+    };
+    RemovalExecutionError::Refused { message }
+}
+
+fn service_ambiguous_message(
+    namespace_id: &ployz_core::ids::NamespaceRowId,
+    name: &str,
+    service_ids: &[ployz_core::ids::ServiceRowId],
+) -> String {
+    let choices = service_ids
+        .iter()
+        .map(|id| {
+            format!(
+                "`ployz service rm {name} --namespace-id {} --id {}`",
+                namespace_id.as_str(),
+                id.as_str()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "service {name} in namespace row {} is ambiguous; choose an exact row: {choices}",
+        namespace_id.as_str()
+    )
+}
+
+fn route_refusal(refusal: RouteRemoveRefusal) -> RemovalExecutionError {
+    let message = match refusal {
+        RouteRemoveRefusal::NotFound { hostname } => {
+            format!("route {} does not exist", hostname.as_str())
+        }
+        RouteRemoveRefusal::Ambiguous {
+            hostname,
+            route_ids,
+        } => ambiguous_message(
+            "route",
+            hostname.as_str(),
+            route_ids.iter().map(|id| id.as_str()),
+        ),
+        RouteRemoveRefusal::NameMismatch {
+            route_id,
+            requested,
+            found,
+        } => format!(
+            "route row {} is for {}, not {}; no row was removed",
+            route_id.as_str(),
+            found.as_str(),
+            requested.as_str()
+        ),
+        RouteRemoveRefusal::StoredRowUnselectable { route_id } => format!(
+            "route row {} exists but this binary cannot safely select it; no row was removed",
+            route_id.as_str()
+        ),
+        RouteRemoveRefusal::ConcurrentMutation { route_id } => format!(
+            "route row {} changed before removal; inspect it and retry",
+            route_id.as_str()
+        ),
+    };
+    RemovalExecutionError::Refused { message }
+}
+
+fn ambiguous_message<'a>(
+    noun: &str,
+    handle: &str,
+    ids: impl IntoIterator<Item = &'a str>,
+) -> String {
+    let choices = ids
+        .into_iter()
+        .map(|id| format!("`ployz {noun} rm {handle} --id {id}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{noun} {handle} is ambiguous; choose an exact row: {choices}")
+}
+
+#[must_use]
+pub fn render_success(kind: &str, handle: &str, id: &str, outcome: NamedRemovalOutcome) -> String {
+    match outcome {
+        NamedRemovalOutcome::Removed => format!("removed {kind} {handle} ({id})\n"),
+        NamedRemovalOutcome::AlreadyAbsent => {
+            format!("{kind} {handle} ({id}) was already absent\n")
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum RemovalExecutionError {
+    #[error(transparent)]
+    Remote(#[from] OperatorRemoteError),
+    #[error("{message}")]
+    Refused { message: String },
+}
+
+#[cfg(test)]
+mod tests {
+    use ployz_core::ids::PeerId;
+
+    use super::*;
+
+    #[test]
+    fn success_copy_distinguishes_deletion_from_idempotent_retry() {
+        assert_eq!(
+            render_success("service", "web", "ROW", NamedRemovalOutcome::Removed),
+            "removed service web (ROW)\n"
+        );
+        assert_eq!(
+            render_success("service", "web", "ROW", NamedRemovalOutcome::AlreadyAbsent),
+            "service web (ROW) was already absent\n"
+        );
+    }
+
+    #[test]
+    fn ambiguity_names_every_copy_ready_exact_id_retry() {
+        let error = peer_refusal(PeerRemoveRefusal::Ambiguous {
+            name: "operator".to_owned(),
+            peer_ids: vec![
+                PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("id"),
+                PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAW").expect("id"),
+            ],
+        });
+        assert_eq!(
+            error.to_string(),
+            "peer operator is ambiguous; choose an exact row: `ployz peer rm operator --id 01ARZ3NDEKTSV4RRFFQ69G5FAV`, `ployz peer rm operator --id 01ARZ3NDEKTSV4RRFFQ69G5FAW`"
+        );
+    }
+}

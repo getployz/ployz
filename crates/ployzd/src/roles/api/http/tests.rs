@@ -411,6 +411,14 @@ fn every_exact_v2_route_accepts_only_its_declared_method() {
         Ok(V2Route::Join)
     );
     assert_eq!(
+        parse_route(&Method::GET, "/status").map_err(|error| error.refusal),
+        Ok(V2Route::Status)
+    );
+    assert_eq!(
+        parse_route(&Method::GET, "/doctor").map_err(|error| error.refusal),
+        Ok(V2Route::Doctor)
+    );
+    assert_eq!(
         parse_route(&Method::POST, "/version").map_err(|error| error.refusal),
         Err(ApiRefusal::UnsupportedMethod {
             method: "POST".to_owned(),
@@ -501,6 +509,7 @@ async fn version_is_success_json_with_the_core_capability_catalog() {
             ApiFeature::Known(KnownApiFeature::MachineEndpoint),
             ApiFeature::Known(KnownApiFeature::MachineUpgrade),
             ApiFeature::Known(KnownApiFeature::JoinDoor),
+            ApiFeature::Known(KnownApiFeature::Diagnostics),
         ]
     );
 }
