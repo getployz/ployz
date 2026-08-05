@@ -11,11 +11,11 @@ use ployz_core::ids::{ClusterId, CorrosionUlid, MachineRowId, PeerId, TokenId};
 use ployz_core::machine::{MachineLifecycle, MachineName};
 use ployz_core::network::{MachineEndpointSubnet, MachineEndpointSupernet, WireGuardPublicKey};
 use ployz_core::{
-    DOCTOR_ROUTE, DoctorForeignAuthorship, DoctorProjectionInput, DoctorRawRows,
+    DOCTOR_ROUTE, DoctorDocument, DoctorForeignAuthorship, DoctorProjectionInput, DoctorRawRows,
     HandshakeFreshness, KnownApiFeature, MachineLensRow, STATUS_ROUTE, StatusAnsweringMachine,
-    StatusBarrier, StatusCorrosionHealth, StatusDegradationReason, StatusHandshakeEvidence,
-    StatusHint, StatusProjectionInput, StatusSync, V2Method, V2Route, project_doctor,
-    project_status,
+    StatusBarrier, StatusCorrosionHealth, StatusDegradationReason, StatusDocument,
+    StatusHandshakeEvidence, StatusHint, StatusProjectionInput, StatusSync, V2Method, V2Route,
+    project_doctor, project_status,
 };
 use serde_json::json;
 
@@ -444,6 +444,11 @@ fn joining_and_no_roster_are_distinct_durable_barrier_states() {
         no_roster.answering_machine,
         StatusAnsweringMachine::Unknown { id: answering }
     );
+    let no_roster_json = serde_json::to_value(&no_roster).expect("no-roster status serializes");
+    assert!(no_roster_json.get("cluster").is_none());
+    let decoded: StatusDocument =
+        serde_json::from_value(no_roster_json).expect("status accepts an omitted cluster");
+    assert_eq!(decoded, no_roster);
 }
 
 #[test]
@@ -629,6 +634,23 @@ fn doctor_compares_valid_versions_semantically_and_retains_newer_row_evidence() 
     assert_eq!(newer.table.as_str(), "services");
     assert_eq!(newer.found, 2);
     assert_eq!(newer.supported, 1);
+}
+
+#[test]
+fn doctor_omits_newest_when_no_valid_machine_version_exists() {
+    let doctor = project_doctor(DoctorProjectionInput {
+        cluster: cluster(),
+        rows: DoctorRawRows::empty(),
+    });
+
+    let doctor_json = serde_json::to_value(&doctor).expect("doctor serializes");
+    let Some(versions_json) = doctor_json.get("versions") else {
+        panic!("doctor contains version evidence");
+    };
+    assert!(versions_json.get("newest").is_none());
+    let decoded: DoctorDocument =
+        serde_json::from_value(doctor_json).expect("doctor accepts an omitted newest");
+    assert_eq!(decoded, doctor);
 }
 
 #[test]

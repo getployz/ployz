@@ -41,6 +41,7 @@ pub struct StatusProjectionInput {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct StatusDocument {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub cluster: Option<StatusClusterSummary>,
     pub answering_machine: StatusAnsweringMachine,
@@ -416,6 +417,7 @@ pub struct DoctorMachineIdentity {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct DoctorVersionReport {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub newest: Option<DoctorNewestVersion>,
     pub behind: Vec<DoctorMachineVersion>,
