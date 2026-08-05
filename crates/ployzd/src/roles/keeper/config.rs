@@ -13,6 +13,7 @@ use ployz_host_runner::builtin_wireguard::{
     BuiltinWireguardPorts, DEFAULT_PRIVATE_KEY_PATH, DEFAULT_WIREGUARD_IFNAME,
     DEFAULT_WIREGUARD_MTU,
 };
+use ployz_host_runner::{ArtifactStoreError, PloyzdArtifactStore};
 
 use crate::corrosion::{BearerToken, CorrosionClientBounds, CorrosionClientConfig};
 
@@ -43,6 +44,8 @@ const RETRY_MAX_MS_ENV: &str = "PLOYZ_KEEPER_RETRY_MAX_MS";
 const HOST_COMMAND_TIMEOUT_MS_ENV: &str = "PLOYZ_KEEPER_HOST_COMMAND_TIMEOUT_MS";
 const HOST_FOLD_TIMEOUT_MS_ENV: &str = "PLOYZ_KEEPER_HOST_FOLD_TIMEOUT_MS";
 const SUPERVISOR_BACKEND_ENV: &str = "PLOYZ_SUPERVISOR_BACKEND";
+const UPGRADE_STATE_DIR_ENV: &str = "PLOYZ_UPGRADE_STATE_DIR";
+const UPGRADE_SOCKET_PATH_ENV: &str = "PLOYZ_UPGRADE_SOCKET_PATH";
 
 const DEFAULT_WIREGUARD_LISTEN_PORT: u16 = 51_820;
 const DEFAULT_CORROSION_GOSSIP_PORT: u16 = 8_787;
@@ -57,6 +60,8 @@ const DEFAULT_RETRY_MAX_MS: u64 = 10_000;
 const DEFAULT_HOST_COMMAND_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_HOST_FOLD_TIMEOUT_MS: u64 = 30_000;
 const DEFAULT_SUPERVISOR_BACKEND: &str = "systemd";
+const DEFAULT_UPGRADE_STATE_DIR: &str = "/var/lib/ployz";
+const DEFAULT_UPGRADE_SOCKET_PATH: &str = "/run/ployz/keeper-upgrade.sock";
 const MAX_DIAGNOSTIC_BYTES: usize = 512;
 
 /// Validated process-local inputs for one Keeper instance.
@@ -71,6 +76,30 @@ pub struct KeeperRoleConfig {
     retry_initial: Duration,
     retry_max: Duration,
     host_fold_timeout: Duration,
+    upgrade: KeeperUpgradeConfig,
+}
+
+/// Validated machine-local inputs for Keeper's systemd-only upgrade handoff.
+#[derive(Debug, Clone)]
+pub struct KeeperUpgradeConfig {
+    store: PloyzdArtifactStore,
+    socket_path: PathBuf,
+    supervisor: SupervisorBackend,
+}
+
+impl KeeperUpgradeConfig {
+    #[must_use]
+    pub const fn new(
+        store: PloyzdArtifactStore,
+        socket_path: PathBuf,
+        supervisor: SupervisorBackend,
+    ) -> Self {
+        Self {
+            store,
+            socket_path,
+            supervisor,
+        }
+    }
 }
 
 impl KeeperRoleConfig {
@@ -134,6 +163,7 @@ impl KeeperRoleConfig {
                 })?
                 .port(),
         )?;
+        let supervisor = supervisor_environment()?;
         let host = BuiltinWireguardHostConfig::try_new(
             PathBuf::from(optional_environment(
                 WIREGUARD_PRIVATE_KEY_PATH_ENV,
@@ -143,7 +173,7 @@ impl KeeperRoleConfig {
             ports,
             u16_environment(WIREGUARD_MTU_ENV, DEFAULT_WIREGUARD_MTU)?,
             ebpf,
-            supervisor_environment()?,
+            supervisor,
             host_command_timeout,
         )?;
 
@@ -168,6 +198,15 @@ impl KeeperRoleConfig {
                     DEFAULT_HOST_FOLD_TIMEOUT_MS,
                 )?,
             },
+            KeeperUpgradeConfig::new(
+                PloyzdArtifactStore::new(optional_path_environment(
+                    UPGRADE_STATE_DIR_ENV,
+                    DEFAULT_UPGRADE_STATE_DIR,
+                )?)
+                .map_err(KeeperRoleConfigError::UpgradeStore)?,
+                optional_path_environment(UPGRADE_SOCKET_PATH_ENV, DEFAULT_UPGRADE_SOCKET_PATH)?,
+                supervisor,
+            ),
         )
     }
 
@@ -179,6 +218,7 @@ impl KeeperRoleConfig {
         host: BuiltinWireguardHostConfig,
         corrosion_version: String,
         timing: KeeperTimingConfig,
+        upgrade: KeeperUpgradeConfig,
     ) -> Result<Self, KeeperRoleConfigError> {
         validate_diagnostic(CORROSION_VERSION_ENV, &corrosion_version)?;
         if timing.reconcile_interval.is_zero() {
@@ -202,6 +242,7 @@ impl KeeperRoleConfig {
                 name: HOST_FOLD_TIMEOUT_MS_ENV,
             });
         }
+        validate_absolute_path(UPGRADE_SOCKET_PATH_ENV, &upgrade.socket_path)?;
 
         Ok(Self {
             corrosion,
@@ -213,6 +254,7 @@ impl KeeperRoleConfig {
             retry_initial: timing.retry_initial,
             retry_max: timing.retry_max,
             host_fold_timeout: timing.host_fold_timeout,
+            upgrade,
         })
     }
 
@@ -252,6 +294,19 @@ impl KeeperRoleConfig {
     pub const fn host_fold_timeout(&self) -> Duration {
         self.host_fold_timeout
     }
+
+    #[must_use]
+    pub fn upgrade_store(&self) -> &PloyzdArtifactStore {
+        &self.upgrade.store
+    }
+    #[must_use]
+    pub fn upgrade_socket_path(&self) -> &std::path::Path {
+        &self.upgrade.socket_path
+    }
+    #[must_use]
+    pub const fn supervisor(&self) -> SupervisorBackend {
+        self.upgrade.supervisor
+    }
 }
 
 fn builtin_wireguard_ports(
@@ -287,6 +342,31 @@ fn optional_environment(
         Err(env::VarError::NotUnicode(_)) => {
             Err(KeeperRoleConfigError::NonUnicodeEnvironment { name })
         }
+    }
+}
+
+fn optional_path_environment(
+    name: &'static str,
+    default: &'static str,
+) -> Result<PathBuf, KeeperRoleConfigError> {
+    let path = PathBuf::from(optional_environment(name, default)?);
+    validate_absolute_path(name, &path)?;
+    Ok(path)
+}
+
+fn validate_absolute_path(
+    name: &'static str,
+    path: &std::path::Path,
+) -> Result<(), KeeperRoleConfigError> {
+    if path.as_os_str().is_empty() {
+        Err(KeeperRoleConfigError::EmptyPath { name })
+    } else if !path.is_absolute() {
+        Err(KeeperRoleConfigError::RelativePath {
+            name,
+            value: path.to_path_buf(),
+        })
+    } else {
+        Ok(())
     }
 }
 
@@ -375,6 +455,12 @@ pub enum KeeperRoleConfigError {
     HostConfiguration(#[from] BuiltinWireguardConfigError),
     #[error("PLOYZ_SUPERVISOR_BACKEND must be systemd or openrc, got {value:?}")]
     InvalidSupervisorBackend { value: String },
+    #[error("Keeper path from {name} must not be empty")]
+    EmptyPath { name: &'static str },
+    #[error("Keeper path from {name} must be absolute: {value:?}")]
+    RelativePath { name: &'static str, value: PathBuf },
+    #[error("invalid local upgrade artifact store: {0}")]
+    UpgradeStore(#[source] ArtifactStoreError),
 }
 
 #[cfg(test)]
