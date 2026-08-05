@@ -34,6 +34,7 @@ pub mod roles {
     }
     pub mod api;
     pub mod keeper;
+    pub(crate) mod upgrade;
 }
 pub mod dispatch;
 pub mod logging;

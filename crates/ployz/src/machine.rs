@@ -1,32 +1,571 @@
 //! Machine command execution, mesh HTTP, and human presentation.
 
-use ployz_core::MACHINE_ENDPOINT_ROUTE_PREFIX;
+use std::cmp::Ordering;
+use std::time::{Duration, Instant};
+
 use ployz_core::corrosion::MachineTransport;
 use ployz_core::founding::InitStorageChoice;
 use ployz_core::ids::{ClusterId, MachineRowId};
+use ployz_core::install::{ExactPloyzVersion, InstallArtifactVersion};
 use ployz_core::join::{
     JoinStorageChoice, MachineEndpointSetRefusal, MachineEndpointSetReply,
     MachineEndpointSetRequest,
 };
 use ployz_core::machine::MachineName;
-use ployz_core::{LensCollection, LensSnapshot};
+use ployz_core::{
+    LensCollection, LensSnapshot, MachineLensRow, MachineStatusLensRow, MachineUpgradeRefusal,
+    MachineUpgradeReply, MachineUpgradeRequest,
+};
+use ployz_core::{MACHINE_ENDPOINT_ROUTE_PREFIX, MACHINE_UPGRADE_ROUTE};
 use ployz_host_runner::lifecycle::machine_join::{
     MachineJoinFailure, MachineJoinOutcomeKind, run_linux_machine_join,
+};
+use ployz_host_runner::{
+    ReleaseManifest, ReleasePlatform, read_release_manifest_text, release_manifest_url_for_platform,
 };
 
 use crate::JoinDoorClient;
 use crate::commands::{
     MachineCommand, MachineEndpointSetCommand, MachineJoinCommand, MachineListCommand,
+    MachineUpgradeCommand, MachineUpgradeSelector, MachineUpgradeSource,
 };
 use crate::mesh::http::JsonReply;
-use crate::remote::{OperatorRemote, OperatorRemoteError};
+use crate::remote::{MachineRemoteTargetError, OperatorRemote, OperatorRemoteError};
+
+const DEFAULT_RELEASE_CHANNEL_URL: &str = "https://ployz.sh/channels/alpha.env";
+const UPGRADE_CONFIRM_TIMEOUT: Duration = Duration::from_secs(8);
+const UPGRADE_CONFIRM_RETRY: Duration = Duration::from_millis(500);
 
 pub async fn execute(command: MachineCommand) -> Result<String, MachineExecutionError> {
     match command {
         MachineCommand::List(command) => list(command).await,
         MachineCommand::EndpointSet(command) => endpoint_set(command).await,
+        MachineCommand::Upgrade(command) => upgrade(command).await,
         MachineCommand::Join(command) => join(command).await,
     }
+}
+
+async fn upgrade(command: MachineUpgradeCommand) -> Result<String, MachineExecutionError> {
+    let source = resolve_upgrade_source(&command.source).await?;
+    if matches!(command.selector, MachineUpgradeSelector::Outdated)
+        && matches!(source, UpgradeSource::Manual(_))
+    {
+        return Err(MachineExecutionError::ManualOutdatedSelector);
+    }
+
+    let remote = OperatorRemote::load(command.target.as_ref())?;
+    let machines_snapshot = remote.lens(LensCollection::Machines).await?;
+    validate_snapshot_cluster(&machines_snapshot, remote.cluster_id())?;
+    let statuses_snapshot = remote.lens(LensCollection::MachineStatus).await?;
+    let (machines, statuses) = upgrade_lenses(&machines_snapshot, &statuses_snapshot)?;
+    let target_version = source.version();
+    let selected = select_upgrade_machines(&command.selector, machines, statuses, target_version)?;
+    if selected.is_empty() {
+        return Ok(format!(
+            "No machines are behind {}.\n",
+            target_version.unwrap_or("the manually supplied artifact")
+        ));
+    }
+
+    let mut output = String::new();
+    let mut cached_artifacts = Vec::new();
+    for (confirmed, machine) in selected.into_iter().enumerate() {
+        let request =
+            resolve_machine_upgrade_request(&source, machine.status, &mut cached_artifacts).await?;
+        let name = machine.row.document.name.as_str();
+        let short_sha256 = &request.sha256.as_str()[..12];
+        println!(
+            "{name}  target {} ({short_sha256}...)",
+            request.version.as_str()
+        );
+
+        let direct = remote
+            .for_machine(machine.row)
+            .map_err(MachineExecutionError::Target)?;
+        let reply = direct
+            .request_json_with_refusal::<_, MachineUpgradeReply, MachineUpgradeRefusal>(
+                hyper::Method::POST,
+                MACHINE_UPGRADE_ROUTE,
+                Some(&request),
+            )
+            .await;
+        let reply = match reply {
+            Ok(JsonReply::Success(reply)) => reply,
+            Ok(JsonReply::Refused(refusal)) => {
+                return Err(upgrade_halted(
+                    name,
+                    confirmed,
+                    format_upgrade_refusal(&refusal),
+                ));
+            }
+            Err(error) => {
+                return Err(upgrade_halted(name, confirmed, error.to_string()));
+            }
+        };
+        if reply.version != request.version || reply.sha256 != request.sha256 {
+            return Err(upgrade_halted(
+                name,
+                confirmed,
+                "the API acknowledgement did not match the resolved artifact".to_owned(),
+            ));
+        }
+        output.push_str(&format!("{name}  staged, swap armed\n"));
+
+        match source.confirmation() {
+            UpgradeConfirmation::ReleaseVersion => {
+                if !confirm_upgrade(&direct, &machine.row.id, &request.version).await {
+                    return Err(upgrade_halted(
+                        name,
+                        confirmed,
+                        format!(
+                            "swap armed; not yet confirming {}. Check `ployz machine ls` and resume with `ployz machine upgrade --outdated`",
+                            request.version.as_str()
+                        ),
+                    ));
+                }
+                output.push_str(&format!("{name}  now {} ✓\n", request.version.as_str()));
+            }
+            UpgradeConfirmation::UnavailableForManualArtifact => {
+                return Err(upgrade_halted(
+                    name,
+                    confirmed,
+                    "swap armed; a manually supplied artifact has no release version to confirm. Check `ployz machine ls` before targeting another machine"
+                        .to_owned(),
+                ));
+            }
+        }
+    }
+    Ok(output)
+}
+
+fn upgrade_halted(machine: &str, confirmed: usize, reason: String) -> MachineExecutionError {
+    MachineExecutionError::UpgradeHalted {
+        machine: machine.to_owned(),
+        confirmed,
+        reason,
+    }
+}
+
+async fn confirm_upgrade(
+    remote: &OperatorRemote,
+    machine_id: &MachineRowId,
+    expected_version: &InstallArtifactVersion,
+) -> bool {
+    let deadline = Instant::now() + UPGRADE_CONFIRM_TIMEOUT;
+    loop {
+        if let Ok(snapshot) = remote.lens(LensCollection::MachineStatus).await
+            && matches!(
+                machine_status_for(snapshot_rows(&snapshot), machine_id),
+                Some(status) if same_release_version(&status.document.ployz_version, expected_version.as_str())
+            )
+        {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(UPGRADE_CONFIRM_RETRY).await;
+    }
+}
+
+fn snapshot_rows(snapshot: &LensSnapshot) -> &[MachineStatusLensRow] {
+    match snapshot {
+        LensSnapshot::MachineStatus { rows } => rows,
+        LensSnapshot::Machines { .. }
+        | LensSnapshot::Services { .. }
+        | LensSnapshot::Containers { .. }
+        | LensSnapshot::Operations { .. } => &[],
+    }
+}
+
+#[derive(Debug, Clone)]
+enum UpgradeSource {
+    Release {
+        version: ExactPloyzVersion,
+        manifest_base_url: String,
+    },
+    Manual(MachineUpgradeRequest),
+}
+
+impl UpgradeSource {
+    fn version(&self) -> Option<&str> {
+        match self {
+            Self::Release { version, .. } => Some(version.as_str()),
+            Self::Manual(_) => None,
+        }
+    }
+
+    const fn confirmation(&self) -> UpgradeConfirmation {
+        match self {
+            Self::Release { .. } => UpgradeConfirmation::ReleaseVersion,
+            Self::Manual(_) => UpgradeConfirmation::UnavailableForManualArtifact,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpgradeConfirmation {
+    ReleaseVersion,
+    UnavailableForManualArtifact,
+}
+
+async fn resolve_upgrade_source(
+    source: &MachineUpgradeSource,
+) -> Result<UpgradeSource, MachineExecutionError> {
+    match source {
+        MachineUpgradeSource::Channel => {
+            let contents = read_manifest_text(DEFAULT_RELEASE_CHANNEL_URL.to_owned()).await?;
+            let channel = parse_release_channel(&contents)?;
+            Ok(UpgradeSource::Release {
+                version: channel.version,
+                manifest_base_url: channel.release_base_url,
+            })
+        }
+        MachineUpgradeSource::Version(version) => Ok(UpgradeSource::Release {
+            version: version.clone(),
+            manifest_base_url: format!(
+                "https://github.com/getployz/ployz/releases/download/{}",
+                version.tag()
+            ),
+        }),
+        MachineUpgradeSource::Manual { url, sha256 } => {
+            Ok(UpgradeSource::Manual(MachineUpgradeRequest {
+                version: InstallArtifactVersion::try_new("manual")
+                    .expect("the fixed manual artifact label is nonempty"),
+                sha256: sha256.clone(),
+                url: url.clone(),
+            }))
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReleaseChannel {
+    version: ExactPloyzVersion,
+    release_base_url: String,
+}
+
+fn parse_release_channel(contents: &str) -> Result<ReleaseChannel, MachineExecutionError> {
+    let version = channel_value(contents, "PLOYZ_VERSION")?
+        .parse::<ExactPloyzVersion>()
+        .map_err(|error| MachineExecutionError::Release(error.to_string()))?;
+    let release_base_url = channel_value(contents, "PLOYZ_RELEASE_BASE_URL")?;
+    let release_base_url = release_base_url.trim_end_matches('/').to_owned();
+    ployz_core::MachineUpgradeUrl::try_new(release_base_url.clone())
+        .map_err(|error| MachineExecutionError::Release(error.to_string()))?;
+    Ok(ReleaseChannel {
+        version,
+        release_base_url,
+    })
+}
+
+fn channel_value(contents: &str, key: &str) -> Result<String, MachineExecutionError> {
+    contents
+        .lines()
+        .find_map(|line| line.strip_prefix(&format!("{key}=")).map(str::to_owned))
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| MachineExecutionError::Release(format!("release channel is missing {key}")))
+}
+
+async fn read_manifest_text(url: String) -> Result<String, MachineExecutionError> {
+    tokio::task::spawn_blocking(move || read_release_manifest_text(&url))
+        .await
+        .map_err(|error| {
+            MachineExecutionError::Release(format!("release manifest task failed: {error}"))
+        })?
+        .map_err(MachineExecutionError::Release)
+}
+
+struct UpgradeMachine<'a> {
+    row: &'a MachineLensRow,
+    status: &'a MachineStatusLensRow,
+}
+
+fn upgrade_lenses<'machines, 'statuses>(
+    machines: &'machines LensSnapshot,
+    statuses: &'statuses LensSnapshot,
+) -> Result<
+    (
+        &'machines [MachineLensRow],
+        &'statuses [MachineStatusLensRow],
+    ),
+    MachineExecutionError,
+> {
+    let LensSnapshot::Machines { rows, .. } = machines else {
+        return Err(MachineExecutionError::Snapshot(
+            MachineSnapshotError::WrongLens {
+                actual: snapshot_collection(machines),
+            },
+        ));
+    };
+    let LensSnapshot::MachineStatus { rows: status_rows } = statuses else {
+        return Err(MachineExecutionError::Snapshot(
+            MachineSnapshotError::WrongLens {
+                actual: snapshot_collection(statuses),
+            },
+        ));
+    };
+    Ok((rows, status_rows))
+}
+
+fn select_upgrade_machines<'a>(
+    selector: &MachineUpgradeSelector,
+    machines: &'a [MachineLensRow],
+    statuses: &'a [MachineStatusLensRow],
+    target_version: Option<&str>,
+) -> Result<Vec<UpgradeMachine<'a>>, MachineExecutionError> {
+    let mut selected = match selector {
+        MachineUpgradeSelector::Names(names) => names
+            .iter()
+            .map(|name| {
+                let Some(row) = machines.iter().find(|row| row.document.name == *name) else {
+                    return Err(MachineExecutionError::MachineNotFound {
+                        machine: name.as_str().to_owned(),
+                    });
+                };
+                let Some(status) = machine_status_for(statuses, &row.id) else {
+                    return Err(MachineExecutionError::MissingMachineStatus {
+                        machine: name.as_str().to_owned(),
+                    });
+                };
+                Ok(UpgradeMachine { row, status })
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        MachineUpgradeSelector::All => machines
+            .iter()
+            .map(|row| {
+                let Some(status) = machine_status_for(statuses, &row.id) else {
+                    return Err(MachineExecutionError::MissingMachineStatus {
+                        machine: row.document.name.as_str().to_owned(),
+                    });
+                };
+                Ok(UpgradeMachine { row, status })
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        MachineUpgradeSelector::Outdated => {
+            let target_version =
+                target_version.ok_or(MachineExecutionError::ManualOutdatedSelector)?;
+            machines
+                .iter()
+                .filter_map(|row| {
+                    let status = machine_status_for(statuses, &row.id)?;
+                    is_release_behind(&status.document.ployz_version, target_version)
+                        .then_some(UpgradeMachine { row, status })
+                })
+                .collect()
+        }
+    };
+    selected.sort_by(|left, right| {
+        left.row
+            .document
+            .name
+            .as_str()
+            .cmp(right.row.document.name.as_str())
+            .then_with(|| left.row.id.as_str().cmp(right.row.id.as_str()))
+    });
+    Ok(selected)
+}
+
+fn machine_status_for<'a>(
+    statuses: &'a [MachineStatusLensRow],
+    machine_id: &MachineRowId,
+) -> Option<&'a MachineStatusLensRow> {
+    statuses.iter().find(|status| status.id == *machine_id)
+}
+
+async fn resolve_machine_upgrade_request(
+    source: &UpgradeSource,
+    status: &MachineStatusLensRow,
+    cache: &mut Vec<(ReleasePlatform, MachineUpgradeRequest)>,
+) -> Result<MachineUpgradeRequest, MachineExecutionError> {
+    let UpgradeSource::Release {
+        version,
+        manifest_base_url,
+    } = source
+    else {
+        let UpgradeSource::Manual(request) = source else {
+            unreachable!("upgrade source has only release and manual variants");
+        };
+        return Ok(request.clone());
+    };
+    let platform = release_platform_for_architecture(&status.document.architecture)?;
+    if let Some((_, request)) = cache.iter().find(|(cached, _)| *cached == platform) {
+        return Ok(request.clone());
+    }
+    let manifest_url = if manifest_base_url.as_str()
+        == format!(
+            "https://github.com/getployz/ployz/releases/download/{}",
+            version.tag()
+        ) {
+        release_manifest_url_for_platform(version, platform.manifest_slug())
+    } else {
+        format!(
+            "{manifest_base_url}/ployz-release-{}.env",
+            platform.manifest_slug()
+        )
+    };
+    let contents = read_manifest_text(manifest_url).await?;
+    let manifest = ReleaseManifest::parse(&contents)
+        .map_err(|error| MachineExecutionError::Release(error.to_string()))?;
+    if manifest.platform() != platform || manifest.version() != version {
+        return Err(MachineExecutionError::Release(format!(
+            "release manifest does not match requested {} for {}",
+            version.tag(),
+            platform.manifest_slug()
+        )));
+    }
+    let artifact = manifest
+        .install_artifacts()
+        .map_err(MachineExecutionError::Release)?
+        .ployzd;
+    let request = MachineUpgradeRequest {
+        version: artifact.version,
+        sha256: artifact.sha256,
+        url: ployz_core::MachineUpgradeUrl::try_new(artifact.source.as_str().to_owned())
+            .map_err(|error| MachineExecutionError::Release(error.to_string()))?,
+    };
+    cache.push((platform, request.clone()));
+    Ok(request)
+}
+
+fn release_platform_for_architecture(
+    architecture: &str,
+) -> Result<ReleasePlatform, MachineExecutionError> {
+    match architecture {
+        "x86_64" | "amd64" => Ok(ReleasePlatform::LinuxAmd64),
+        "aarch64" | "arm64" => Ok(ReleasePlatform::LinuxArm64),
+        _ => Err(MachineExecutionError::UnsupportedArchitecture {
+            architecture: architecture.to_owned(),
+        }),
+    }
+}
+
+fn format_upgrade_refusal(refusal: &MachineUpgradeRefusal) -> String {
+    match refusal {
+        MachineUpgradeRefusal::UnsupportedSupervisor { supervisor } => {
+            format!("the target supervisor {supervisor:?} does not support keeper-first swaps")
+        }
+        MachineUpgradeRefusal::DownloadFailed { message }
+        | MachineUpgradeRefusal::StagingFailed { message }
+        | MachineUpgradeRefusal::KeeperRefused { message } => message.clone(),
+        MachineUpgradeRefusal::Sha256Mismatch { expected, got } => {
+            format!(
+                "SHA-256 mismatch: expected {}, got {}",
+                expected.as_str(),
+                got.as_str()
+            )
+        }
+    }
+}
+
+fn same_release_version(actual: &str, expected: &str) -> bool {
+    actual.trim_start_matches('v') == expected.trim_start_matches('v')
+}
+
+fn is_release_behind(actual: &str, target: &str) -> bool {
+    matches!(
+        comparable_release_version(actual)
+            .zip(comparable_release_version(target))
+            .map(|(actual, target)| actual.cmp(&target)),
+        Some(Ordering::Less)
+    )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ComparableReleaseVersion {
+    major: u64,
+    minor: u64,
+    patch: u64,
+    pre_release: Option<Vec<ReleasePreIdentifier>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ReleasePreIdentifier {
+    Numeric(u64),
+    Text(String),
+}
+
+impl Ord for ComparableReleaseVersion {
+    fn cmp(&self, other: &Self) -> Ordering {
+        (self.major, self.minor, self.patch)
+            .cmp(&(other.major, other.minor, other.patch))
+            .then_with(|| match (&self.pre_release, &other.pre_release) {
+                (None, None) => Ordering::Equal,
+                (None, Some(_)) => Ordering::Greater,
+                (Some(_), None) => Ordering::Less,
+                (Some(left), Some(right)) => compare_pre_release(left, right),
+            })
+    }
+}
+
+impl PartialOrd for ComparableReleaseVersion {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+fn compare_pre_release(left: &[ReleasePreIdentifier], right: &[ReleasePreIdentifier]) -> Ordering {
+    for (left, right) in left.iter().zip(right) {
+        let ordering = match (left, right) {
+            (ReleasePreIdentifier::Numeric(left), ReleasePreIdentifier::Numeric(right)) => {
+                left.cmp(right)
+            }
+            (ReleasePreIdentifier::Text(left), ReleasePreIdentifier::Text(right)) => {
+                left.cmp(right)
+            }
+            (ReleasePreIdentifier::Numeric(_), ReleasePreIdentifier::Text(_)) => Ordering::Less,
+            (ReleasePreIdentifier::Text(_), ReleasePreIdentifier::Numeric(_)) => Ordering::Greater,
+        };
+        if ordering != Ordering::Equal {
+            return ordering;
+        }
+    }
+    left.len().cmp(&right.len())
+}
+
+fn comparable_release_version(value: &str) -> Option<ComparableReleaseVersion> {
+    let value = value.trim_start_matches('v');
+    let value = value.split_once('+').map_or(value, |(value, _)| value);
+    let (core, pre_release) = value
+        .split_once('-')
+        .map_or((value, None), |(core, pre_release)| {
+            (core, Some(pre_release))
+        });
+    let mut parts = core.split('.');
+    let (Some(major), Some(minor), Some(patch), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return None;
+    };
+    let pre_release = match pre_release {
+        None => None,
+        Some("") => return None,
+        Some(pre_release) => Some(
+            pre_release
+                .split('.')
+                .map(|identifier| {
+                    if identifier.is_empty()
+                        || !identifier
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                    {
+                        return None;
+                    }
+                    identifier
+                        .parse::<u64>()
+                        .map(ReleasePreIdentifier::Numeric)
+                        .unwrap_or_else(|_| ReleasePreIdentifier::Text(identifier.to_owned()))
+                        .into()
+                })
+                .collect::<Option<Vec<_>>>()?,
+        ),
+    };
+    Some(ComparableReleaseVersion {
+        major: major.parse().ok()?,
+        minor: minor.parse().ok()?,
+        patch: patch.parse().ok()?,
+        pre_release,
+    })
 }
 
 async fn endpoint_set(command: MachineEndpointSetCommand) -> Result<String, MachineExecutionError> {
@@ -103,9 +642,31 @@ pub enum MachineExecutionError {
     #[error(transparent)]
     Remote(#[from] OperatorRemoteError),
     #[error(transparent)]
+    Target(#[from] MachineRemoteTargetError),
+    #[error(transparent)]
     Snapshot(#[from] MachineSnapshotError),
+    #[error("release resolution failed: {0}")]
+    Release(String),
     #[error("machine {machine} was not found")]
     MachineNotFound { machine: String },
+    #[error(
+        "machine {machine} has no reported machine status; run `ployz machine ls` to inspect mesh reachability before upgrading it"
+    )]
+    MissingMachineStatus { machine: String },
+    #[error(
+        "machine reported unsupported architecture {architecture:?}; Ployz upgrades support linux x86_64/amd64 and aarch64/arm64"
+    )]
+    UnsupportedArchitecture { architecture: String },
+    #[error(
+        "--outdated needs a released target version; use machine names or --all with --url and --sha256"
+    )]
+    ManualOutdatedSelector,
+    #[error("upgrade halted after {machine}; {confirmed} machine(s) confirmed. {reason}")]
+    UpgradeHalted {
+        machine: String,
+        confirmed: usize,
+        reason: String,
+    },
     #[error("machine {machine_id} does not use builtin WireGuard; its endpoint cannot be set")]
     EndpointProviderMismatch { machine_id: MachineRowId },
     #[error("machine {machine} endpoint must use a nonzero WireGuard port")]
@@ -309,6 +870,56 @@ mod tests {
         assert_eq!(MACHINE_ENDPOINT_ROUTE_PREFIX, "/machines/endpoint");
         assert_eq!(request.machine_name.as_str(), "edge-b");
         assert_eq!(request.endpoint.to_string(), "203.0.113.7:51820");
+    }
+
+    #[test]
+    fn channel_release_and_outdated_selection_use_exact_release_versions() {
+        let channel = parse_release_channel(
+            "PLOYZ_CHANNEL=alpha\nPLOYZ_VERSION=0.1.0-alpha.7\nPLOYZ_RELEASE_BASE_URL=https://releases.example/ployz/v0.1.0-alpha.7\n",
+        )
+        .expect("channel parses");
+        assert_eq!(channel.version.as_str(), "0.1.0-alpha.7");
+        assert_eq!(
+            channel.release_base_url,
+            "https://releases.example/ployz/v0.1.0-alpha.7"
+        );
+
+        assert!(is_release_behind("v0.1.0-alpha.6", "0.1.0-alpha.7"));
+        assert!(is_release_behind("0.0.9", "0.1.0-alpha.7"));
+        assert!(!is_release_behind("0.1.0", "0.1.0-alpha.7"));
+        assert!(!is_release_behind("not-a-version", "0.1.0-alpha.7"));
+    }
+
+    #[test]
+    fn release_platform_uses_the_machine_testimony_not_the_callers_host() {
+        assert_eq!(
+            release_platform_for_architecture("x86_64").expect("amd64"),
+            ReleasePlatform::LinuxAmd64
+        );
+        assert_eq!(
+            release_platform_for_architecture("arm64").expect("arm64"),
+            ReleasePlatform::LinuxArm64
+        );
+        assert!(matches!(
+            release_platform_for_architecture("riscv64"),
+            Err(MachineExecutionError::UnsupportedArchitecture { architecture }) if architecture == "riscv64"
+        ));
+    }
+
+    #[test]
+    fn a_manual_artifact_never_counts_as_confirmed_without_a_release_version() {
+        let source = UpgradeSource::Manual(MachineUpgradeRequest {
+            version: InstallArtifactVersion::try_new("manual").expect("manual label"),
+            sha256: ployz_core::install::InstallSha256Digest::try_new("a".repeat(64))
+                .expect("sha256"),
+            url: ployz_core::MachineUpgradeUrl::try_new("https://releases.example/ployzd")
+                .expect("HTTPS URL"),
+        });
+
+        assert_eq!(
+            source.confirmation(),
+            UpgradeConfirmation::UnavailableForManualArtifact
+        );
     }
 
     #[test]

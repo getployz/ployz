@@ -5,9 +5,11 @@ use std::net::SocketAddr;
 use std::str::FromStr;
 
 use clap::{Args, Parser, Subcommand};
+use ployz_core::MachineUpgradeUrl;
 use ployz_core::corrosion::{AutomaticHostnameMode, StorageMode};
 use ployz_core::founding::InitStorageChoice;
 use ployz_core::ids::PeerId;
+use ployz_core::install::{ExactPloyzVersion, InstallSha256Digest};
 use ployz_core::join::{JoinBlob, JoinTokenTtlSeconds};
 use ployz_core::machine::MachineName;
 use ployz_core::network::{DEFAULT_ENDPOINT_SUPERNET, MachineEndpointSupernet, WireGuardPublicKey};
@@ -26,6 +28,7 @@ pub enum Command {
 pub enum MachineCommand {
     List(MachineListCommand),
     EndpointSet(MachineEndpointSetCommand),
+    Upgrade(MachineUpgradeCommand),
     Join(MachineJoinCommand),
 }
 
@@ -39,6 +42,30 @@ pub struct MachineEndpointSetCommand {
     pub machine: MachineName,
     pub endpoint: SocketAddr,
     pub target: Option<SshTarget>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineUpgradeCommand {
+    pub selector: MachineUpgradeSelector,
+    pub source: MachineUpgradeSource,
+    pub target: Option<SshTarget>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineUpgradeSelector {
+    Names(Vec<MachineName>),
+    All,
+    Outdated,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineUpgradeSource {
+    Channel,
+    Version(ExactPloyzVersion),
+    Manual {
+        url: MachineUpgradeUrl,
+        sha256: InstallSha256Digest,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -237,6 +264,9 @@ pub fn parse_command(args: impl IntoIterator<Item = String>) -> Result<Command, 
                     })
                 }
             },
+            MachineCli::Upgrade(args) => {
+                MachineCommand::Upgrade(args.into_command().map_err(clap_value_error)?)
+            }
             MachineCli::Join(args) => MachineCommand::Join(MachineJoinCommand {
                 blob: args.blob,
                 storage: args
@@ -313,6 +343,8 @@ enum MachineCli {
         #[command(subcommand)]
         command: MachineEndpointCli,
     },
+    /// Stage and apply a verified ployzd binary on selected machines.
+    Upgrade(MachineUpgradeArgs),
     /// Join this Linux machine to a cluster through its public token door.
     Join(MachineJoinArgs),
 }
@@ -331,6 +363,102 @@ struct MachineEndpointSetArgs {
     /// Select the cluster founded through this SSH target.
     #[arg(long)]
     target: Option<SshTarget>,
+}
+
+#[derive(Debug, Args)]
+struct MachineUpgradeArgs {
+    /// Machines to upgrade by their roster names.
+    #[arg(value_name = "MACHINE", conflicts_with_all = ["all", "outdated"])]
+    machines: Vec<String>,
+    /// Upgrade every rostered machine, one at a time.
+    #[arg(long, conflicts_with = "outdated")]
+    all: bool,
+    /// Upgrade each machine whose reported version is behind the target.
+    #[arg(long)]
+    outdated: bool,
+    /// Use an exact released Ployz version, including an intentional downgrade.
+    #[arg(long, conflicts_with_all = ["url", "sha256"])]
+    version: Option<ExactPloyzVersion>,
+    /// Fetch a manually supplied HTTPS artifact URL from each target machine.
+    #[arg(long, requires = "sha256", conflicts_with = "version")]
+    url: Option<String>,
+    /// SHA-256 for --url; a manually supplied URL and digest are inseparable.
+    #[arg(long, requires = "url", conflicts_with = "version")]
+    sha256: Option<String>,
+    /// Select the cluster founded through this SSH target.
+    #[arg(long)]
+    target: Option<SshTarget>,
+}
+
+impl MachineUpgradeArgs {
+    fn into_command(self) -> Result<MachineUpgradeCommand, String> {
+        if let Some(duplicate) = self
+            .machines
+            .iter()
+            .enumerate()
+            .find_map(|(index, machine)| {
+                self.machines
+                    .iter()
+                    .take(index)
+                    .any(|prior| prior == machine)
+                    .then_some(machine.as_str())
+            })
+        {
+            return Err(format!(
+                "machine {duplicate} was selected more than once; list each machine once"
+            ));
+        }
+        let selector = match (self.machines.as_slice(), self.all, self.outdated) {
+            ([], false, false) => {
+                return Err(
+                    "choose machine names, --all, or --outdated; upgrading every machine requires --all"
+                        .to_owned(),
+                );
+            }
+            ([], true, false) => MachineUpgradeSelector::All,
+            ([], false, true) => MachineUpgradeSelector::Outdated,
+            ([_, ..], false, false) => MachineUpgradeSelector::Names(
+                self.machines
+                    .into_iter()
+                    .map(MachineName::try_new)
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|error| error.to_string())?,
+            ),
+            _ => {
+                return Err(
+                    "machine upgrade selectors are mutually exclusive: use names, --all, or --outdated"
+                        .to_owned(),
+                );
+            }
+        };
+        let source = match (self.version, self.url, self.sha256) {
+            (None, None, None) => MachineUpgradeSource::Channel,
+            (Some(version), None, None) => MachineUpgradeSource::Version(version),
+            (None, Some(url), Some(sha256)) => MachineUpgradeSource::Manual {
+                url: MachineUpgradeUrl::try_new(url).map_err(|error| error.to_string())?,
+                sha256: InstallSha256Digest::try_new(sha256).map_err(|error| error.to_string())?,
+            },
+            (None, Some(_), None) | (None, None, Some(_)) => {
+                return Err("--url and --sha256 must be provided together".to_owned());
+            }
+            (Some(_), Some(_), _) | (Some(_), _, Some(_)) => {
+                return Err("--version cannot be combined with --url or --sha256".to_owned());
+            }
+        };
+        if matches!(selector, MachineUpgradeSelector::Outdated)
+            && matches!(source, MachineUpgradeSource::Manual { .. })
+        {
+            return Err(
+                "--outdated needs a released target version; use machine names or --all with --url and --sha256"
+                    .to_owned(),
+            );
+        }
+        Ok(MachineUpgradeCommand {
+            selector,
+            source,
+            target: self.target,
+        })
+    }
 }
 
 #[derive(Debug, Args)]
@@ -622,6 +750,81 @@ mod tests {
             }))
         );
         assert!(parse(&["machine", "ls", "root@cluster.example"]).is_err());
+    }
+
+    #[test]
+    fn machine_upgrade_requires_one_selector_and_keeps_artifact_sources_distinct() {
+        let edge_a = MachineName::try_new("edge-a").expect("machine name");
+        let edge_b = MachineName::try_new("edge-b").expect("machine name");
+        assert_eq!(
+            parse(&["machine", "upgrade", "edge-a", "edge-b"]).expect("named upgrade parses"),
+            Command::Machine(MachineCommand::Upgrade(MachineUpgradeCommand {
+                selector: MachineUpgradeSelector::Names(vec![edge_a.clone(), edge_b]),
+                source: MachineUpgradeSource::Channel,
+                target: None,
+            }))
+        );
+        assert_eq!(
+            parse(&[
+                "machine",
+                "upgrade",
+                "--all",
+                "--version",
+                "v0.1.0-alpha.7",
+                "--target",
+                "root@cluster.example",
+            ])
+            .expect("versioned all upgrade parses"),
+            Command::Machine(MachineCommand::Upgrade(MachineUpgradeCommand {
+                selector: MachineUpgradeSelector::All,
+                source: MachineUpgradeSource::Version(
+                    "v0.1.0-alpha.7".parse().expect("exact release"),
+                ),
+                target: Some("root@cluster.example".parse().expect("SSH target")),
+            }))
+        );
+        for args in [
+            vec!["machine", "upgrade"],
+            vec!["machine", "upgrade", "edge-a", "--all"],
+            vec!["machine", "upgrade", "edge-a", "edge-a"],
+            vec!["machine", "upgrade", "--all", "--outdated"],
+            vec![
+                "machine",
+                "upgrade",
+                "--all",
+                "--url",
+                "https://releases.example/ployzd",
+            ],
+            vec![
+                "machine",
+                "upgrade",
+                "--all",
+                "--sha256",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ],
+            vec![
+                "machine",
+                "upgrade",
+                "--all",
+                "--version",
+                "v0.1.0",
+                "--url",
+                "https://releases.example/ployzd",
+                "--sha256",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ],
+            vec![
+                "machine",
+                "upgrade",
+                "--outdated",
+                "--url",
+                "https://releases.example/ployzd",
+                "--sha256",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ],
+        ] {
+            assert!(parse(&args).is_err(), "{args:?} must be refused");
+        }
     }
 
     #[test]

@@ -31,7 +31,7 @@ use sha2::{Digest, Sha256};
 use crate::{
     ArtifactKind, FileMode, HostPlatformProfile, HostRunnerCommandRunner, PloyzdRole,
     PloyzdRoleEnvironmentFile, PoolSelection, ReleaseArtifacts, SupervisorDirectories,
-    SystemHostRunnerCommandRunner, artifact_target, prepare_storage, write_durable_file,
+    SystemHostRunnerCommandRunner, prepare_storage, write_durable_file,
 };
 
 use crate::lifecycle::production::{

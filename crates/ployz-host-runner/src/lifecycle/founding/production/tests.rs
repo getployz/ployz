@@ -485,7 +485,16 @@ fn corrupt_cached_remote_artifact_is_redownloaded_reverified_and_installed() {
     assert_ne!(staged, &cached);
     assert!(!staged.exists());
     assert_eq!(fs::read(cached).expect("cached artifact"), payload);
-    for name in ["ployzd", "ebpf", "ebpf-ctl", "corrosion", "schema"] {
+    assert_eq!(
+        fs::read(state.path().join("artifacts").join(&digest)).expect("stored ployzd artifact"),
+        payload
+    );
+    assert_eq!(
+        fs::read_link(state.path().join("current")).expect("founding current link"),
+        PathBuf::from("artifacts").join(&digest)
+    );
+    assert!(!directory.path().join("installed/ployzd").exists());
+    for name in ["ebpf", "ebpf-ctl", "corrosion", "schema"] {
         assert_eq!(
             fs::read(directory.path().join("installed").join(name)).expect("installed artifact"),
             payload

@@ -333,6 +333,9 @@ async fn bind_api_listener(
         corrosion_gossip_port: config.corrosion_gossip_port(),
         build: config.build().to_owned(),
         mode: config.mode().clone(),
+        upgrade_store: config.upgrade_store().clone(),
+        keeper_upgrade_socket_path: config.keeper_upgrade_socket_path().to_path_buf(),
+        upgrade_supervisor: config.upgrade_supervisor(),
     };
     Ok((listener, runtime))
 }

@@ -74,6 +74,7 @@ pub(super) async fn handle_mutation(
         V2Route::Version
         | V2Route::Founding
         | V2Route::Join
+        | V2Route::MachineUpgrade
         | V2Route::Lens(_)
         | V2Route::LensWatch(_) => refusal_response(ApiRefusal::UnsupportedRoute),
     }
@@ -279,7 +280,9 @@ fn timestamp(value: OffsetDateTime) -> Result<CorrosionTimestamp, ()> {
     })
 }
 
-async fn decode_request<Request>(body: hyper::body::Incoming) -> Result<Request, Response<HttpBody>>
+pub(super) async fn decode_request<Request>(
+    body: hyper::body::Incoming,
+) -> Result<Request, Response<HttpBody>>
 where
     Request: DeserializeOwned,
 {
@@ -298,7 +301,7 @@ where
         .map_err(|_| simple_error(StatusCode::BAD_REQUEST, "invalid_request"))
 }
 
-fn typed_response<Value>(status: StatusCode, value: &Value) -> Response<HttpBody>
+pub(super) fn typed_response<Value>(status: StatusCode, value: &Value) -> Response<HttpBody>
 where
     Value: Serialize + ?Sized,
 {

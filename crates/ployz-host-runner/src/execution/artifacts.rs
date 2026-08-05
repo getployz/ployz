@@ -5,8 +5,9 @@ use std::fmt;
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::fsx::{FileMode, StagedFile, StagedFileError};
+use super::fsx::{FileMode, StagedFile, StagedFileError, write_durable_file};
 use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion,
     InstallContractError, InstallSha256Digest,
@@ -241,6 +242,390 @@ pub struct ContentAddressedArtifactFile {
     pub staged_path: PathBuf,
     pub digest: Sha256Digest,
     pub durability: ArtifactInstallDurability,
+}
+
+/// The local, content-addressed executable store for `ployzd`.
+///
+/// The store owns only machine-local artifact bytes and the stable links that
+/// supervisor units execute. Callers must supply a [`VerifiedArtifactFile`],
+/// so neither `current` nor `previous` can point at bytes that have not passed
+/// the expected SHA-256 check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PloyzdArtifactStore {
+    state: PathBuf,
+}
+
+impl PloyzdArtifactStore {
+    pub fn new(state: PathBuf) -> Result<Self, ArtifactStoreError> {
+        if !state.is_absolute() {
+            return Err(ArtifactStoreError::RelativeStateDirectory { path: state });
+        }
+        Ok(Self { state })
+    }
+
+    #[must_use]
+    pub fn state(&self) -> &Path {
+        &self.state
+    }
+
+    #[must_use]
+    pub fn artifacts_path(&self) -> PathBuf {
+        self.state.join("artifacts")
+    }
+
+    #[must_use]
+    pub fn current_path(&self) -> PathBuf {
+        self.state.join("current")
+    }
+
+    #[must_use]
+    pub fn previous_path(&self) -> PathBuf {
+        self.state.join("previous")
+    }
+
+    #[must_use]
+    pub fn pending_path(&self) -> PathBuf {
+        self.state.join("upgrade-pending")
+    }
+
+    /// Stages a verified binary under `<state>/artifacts/<sha256>`.
+    pub fn stage(
+        &self,
+        verified: &VerifiedArtifactFile,
+    ) -> Result<ContentAddressedArtifactFile, ArtifactStoreError> {
+        stage_verified_artifact_content_addressed(verified, &self.artifacts_path())
+            .map_err(ArtifactStoreError::Stage)
+    }
+
+    /// Seeds `current` for a founding or joining machine without creating a
+    /// rollback target. Repeating the same seed is safe; seeding over a
+    /// different current binary is refused so bootstrap cannot masquerade as
+    /// an upgrade.
+    pub fn seed_current(
+        &self,
+        verified: &VerifiedArtifactFile,
+    ) -> Result<ContentAddressedArtifactFile, ArtifactStoreError> {
+        let staged = self.stage(verified)?;
+        let current = self.current_path();
+        match self.read_verified_link(&current)? {
+            Some(current_digest) if current_digest == staged.digest => return Ok(staged),
+            Some(current_digest) => {
+                return Err(ArtifactStoreError::CurrentAlreadySeeded {
+                    current: current_digest,
+                    requested: staged.digest,
+                });
+            }
+            None => {}
+        }
+        if self.path_exists(&self.previous_path())? {
+            return Err(ArtifactStoreError::PreviousExistsWithoutCurrent {
+                path: self.previous_path(),
+            });
+        }
+        if self.path_exists(&self.pending_path())? {
+            return Err(ArtifactStoreError::PendingUpgradeExists {
+                path: self.pending_path(),
+            });
+        }
+
+        self.replace_link(&current, &artifact_link_target(&staged.digest))?;
+        Ok(staged)
+    }
+
+    /// Arms a keeper-first swap. The previous executable and durable pending
+    /// marker are committed before `current` changes, so a failed new Keeper
+    /// has an already-verified target for its systemd failure handler.
+    pub fn arm_staged(
+        &self,
+        expected: &Sha256Digest,
+    ) -> Result<ArmedPloyzdArtifact, ArtifactStoreError> {
+        let staged_path = self.artifacts_path().join(expected.as_str());
+        verify_artifact_file(&staged_path, expected).map_err(ArtifactStoreError::Verification)?;
+        let current = self
+            .read_verified_link(&self.current_path())?
+            .ok_or_else(|| ArtifactStoreError::CurrentMissing {
+                path: self.current_path(),
+            })?;
+        if current == *expected {
+            return Err(ArtifactStoreError::TargetAlreadyCurrent { digest: current });
+        }
+        if self.path_exists(&self.pending_path())? {
+            return Err(ArtifactStoreError::PendingUpgradeExists {
+                path: self.pending_path(),
+            });
+        }
+
+        self.replace_link(&self.previous_path(), &artifact_link_target(&current))?;
+        write_durable_file(
+            &self.state,
+            "upgrade-pending",
+            FileMode::Plain,
+            format!("{}\n", expected.as_str()).as_bytes(),
+        )
+        .map_err(|error| ArtifactStoreError::WritePending {
+            path: self.pending_path(),
+            message: error.to_string(),
+        })?;
+        self.replace_link(&self.current_path(), &artifact_link_target(expected))?;
+
+        Ok(ArmedPloyzdArtifact {
+            previous: current,
+            current: expected.clone(),
+            staged_path,
+        })
+    }
+
+    /// Returns the staged digest whose first-converge confirmation is still
+    /// pending. A malformed marker is refused rather than interpreted as an
+    /// upgrade target.
+    pub fn pending_upgrade(&self) -> Result<Option<Sha256Digest>, ArtifactStoreError> {
+        let contents = match fs::read_to_string(self.pending_path()) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(ArtifactStoreError::ReadPending {
+                    path: self.pending_path(),
+                    message: error.to_string(),
+                });
+            }
+        };
+        Sha256Digest::try_new(contents.trim().to_owned())
+            .map(Some)
+            .map_err(|error| ArtifactStoreError::InvalidPending {
+                path: self.pending_path(),
+                message: error.to_string(),
+            })
+    }
+
+    /// Marks the armed binary as healthy after Keeper reaches its first
+    /// converge point. `previous` remains available for the next arm.
+    pub fn confirm_armed(&self) -> Result<(), ArtifactStoreError> {
+        self.remove_pending_marker()
+    }
+
+    /// Reverts an armed swap locally. This is the same link shape used by the
+    /// systemd failure unit: `current` points at `previous`, and then the
+    /// pending marker is removed.
+    pub fn revert_armed(&self) -> Result<Sha256Digest, ArtifactStoreError> {
+        if !self.path_exists(&self.pending_path())? {
+            return Err(ArtifactStoreError::PendingUpgradeMissing {
+                path: self.pending_path(),
+            });
+        }
+        let previous = self
+            .read_verified_link(&self.previous_path())?
+            .ok_or_else(|| ArtifactStoreError::PreviousMissing {
+                path: self.previous_path(),
+            })?;
+        self.replace_link(&self.current_path(), &self.previous_path())?;
+        self.remove_pending_marker()?;
+        Ok(previous)
+    }
+
+    fn read_verified_link(&self, link: &Path) -> Result<Option<Sha256Digest>, ArtifactStoreError> {
+        let target = match fs::read_link(link) {
+            Ok(target) => target,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => {
+                return Err(ArtifactStoreError::LinkIsNotSymlink {
+                    path: link.to_path_buf(),
+                });
+            }
+            Err(error) => {
+                return Err(ArtifactStoreError::ReadLink {
+                    path: link.to_path_buf(),
+                    message: error.to_string(),
+                });
+            }
+        };
+        let digest = if let Some(digest) = parse_artifact_link_target(&target) {
+            digest
+        } else if link == self.current_path() && target == self.previous_path() {
+            return self.read_verified_link(&self.previous_path());
+        } else {
+            return Err(ArtifactStoreError::UnsafeLinkTarget {
+                path: link.to_path_buf(),
+                target,
+            });
+        };
+        let artifact = self.artifacts_path().join(digest.as_str());
+        verify_artifact_file(&artifact, &digest).map_err(ArtifactStoreError::Verification)?;
+        Ok(Some(digest))
+    }
+
+    fn replace_link(&self, link: &Path, target: &Path) -> Result<(), ArtifactStoreError> {
+        fs::create_dir_all(&self.state).map_err(|error| ArtifactStoreError::CreateState {
+            path: self.state.clone(),
+            message: error.to_string(),
+        })?;
+        let staged = staged_link_path(link)?;
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, &staged).map_err(|error| {
+            ArtifactStoreError::CreateLink {
+                link: staged.clone(),
+                target: target.to_path_buf(),
+                message: error.to_string(),
+            }
+        })?;
+        #[cfg(not(unix))]
+        {
+            let _ = (link, target, staged);
+            return Err(ArtifactStoreError::SymlinksUnsupported);
+        }
+        fs::rename(&staged, link).map_err(|error| ArtifactStoreError::PublishLink {
+            staged: staged.clone(),
+            link: link.to_path_buf(),
+            message: error.to_string(),
+        })?;
+        sync_directory(&self.state).map_err(|error| ArtifactStoreError::SyncState {
+            path: self.state.clone(),
+            message: error.to_string(),
+        })
+    }
+
+    fn remove_pending_marker(&self) -> Result<(), ArtifactStoreError> {
+        match fs::remove_file(self.pending_path()) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(ArtifactStoreError::RemovePending {
+                    path: self.pending_path(),
+                    message: error.to_string(),
+                });
+            }
+        }
+        sync_directory(&self.state).map_err(|error| ArtifactStoreError::SyncState {
+            path: self.state.clone(),
+            message: error.to_string(),
+        })
+    }
+
+    fn path_exists(&self, path: &Path) -> Result<bool, ArtifactStoreError> {
+        match fs::symlink_metadata(path) {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(ArtifactStoreError::InspectPath {
+                path: path.to_path_buf(),
+                message: error.to_string(),
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArmedPloyzdArtifact {
+    pub previous: Sha256Digest,
+    pub current: Sha256Digest,
+    pub staged_path: PathBuf,
+}
+
+fn artifact_link_target(digest: &Sha256Digest) -> PathBuf {
+    PathBuf::from("artifacts").join(digest.as_str())
+}
+
+fn parse_artifact_link_target(target: &Path) -> Option<Sha256Digest> {
+    let components = target.components().collect::<Vec<_>>();
+    let [directory, digest] = components.as_slice() else {
+        return None;
+    };
+    if directory.as_os_str() != "artifacts" {
+        return None;
+    }
+    Sha256Digest::try_new(digest.as_os_str().to_str()?.to_owned()).ok()
+}
+
+fn staged_link_path(link: &Path) -> Result<PathBuf, ArtifactStoreError> {
+    let file_name = link
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| ArtifactStoreError::InvalidLinkPath {
+            path: link.to_path_buf(),
+        })?;
+    let entropy = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| ArtifactStoreError::ClockWentBackwards {
+            message: error.to_string(),
+        })?
+        .as_nanos();
+    Ok(link.with_file_name(format!(
+        ".{file_name}.ployz-link-{}-{entropy}",
+        std::process::id()
+    )))
+}
+
+#[cfg(unix)]
+fn sync_directory(path: &Path) -> std::io::Result<()> {
+    File::open(path)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ArtifactStoreError {
+    #[error("ployzd artifact state directory {} must be absolute", path.display())]
+    RelativeStateDirectory { path: PathBuf },
+    #[error("failed to stage verified ployzd artifact: {0}")]
+    Stage(ArtifactInstallError),
+    #[error("failed to verify artifact-store content: {0}")]
+    Verification(ArtifactVerificationError),
+    #[error("failed to create ployzd artifact state directory {}: {message}", path.display())]
+    CreateState { path: PathBuf, message: String },
+    #[error("failed to inspect artifact-store path {}: {message}", path.display())]
+    InspectPath { path: PathBuf, message: String },
+    #[error("artifact-store link {} is not a symbolic link", path.display())]
+    LinkIsNotSymlink { path: PathBuf },
+    #[error("failed to read artifact-store link {}: {message}", path.display())]
+    ReadLink { path: PathBuf, message: String },
+    #[error("artifact-store link {} has unsafe target {}", path.display(), target.display())]
+    UnsafeLinkTarget { path: PathBuf, target: PathBuf },
+    #[error("artifact-store link path {} has no UTF-8 file name", path.display())]
+    InvalidLinkPath { path: PathBuf },
+    #[error("system clock moved backwards while creating artifact-store link: {message}")]
+    ClockWentBackwards { message: String },
+    #[error("failed to create artifact-store link {} -> {}: {message}", link.display(), target.display())]
+    CreateLink {
+        link: PathBuf,
+        target: PathBuf,
+        message: String,
+    },
+    #[error("failed to publish staged artifact-store link {} to {}: {message}", staged.display(), link.display())]
+    PublishLink {
+        staged: PathBuf,
+        link: PathBuf,
+        message: String,
+    },
+    #[error("failed to sync artifact-store state directory {}: {message}", path.display())]
+    SyncState { path: PathBuf, message: String },
+    #[error("symlinks are unsupported on this host")]
+    SymlinksUnsupported,
+    #[error("ployzd current artifact is absent at {}", path.display())]
+    CurrentMissing { path: PathBuf },
+    #[error("ployzd previous artifact is absent at {}", path.display())]
+    PreviousMissing { path: PathBuf },
+    #[error("ployzd current artifact is already {}", digest.as_str())]
+    TargetAlreadyCurrent { digest: Sha256Digest },
+    #[error("ployzd current artifact is already {}, not requested {}", current.as_str(), requested.as_str())]
+    CurrentAlreadySeeded {
+        current: Sha256Digest,
+        requested: Sha256Digest,
+    },
+    #[error("ployzd previous artifact exists without current at {}", path.display())]
+    PreviousExistsWithoutCurrent { path: PathBuf },
+    #[error("a ployzd upgrade is already pending at {}", path.display())]
+    PendingUpgradeExists { path: PathBuf },
+    #[error("no ployzd upgrade is pending at {}", path.display())]
+    PendingUpgradeMissing { path: PathBuf },
+    #[error("failed to write durable pending upgrade marker {}: {message}", path.display())]
+    WritePending { path: PathBuf, message: String },
+    #[error("failed to remove pending upgrade marker {}: {message}", path.display())]
+    RemovePending { path: PathBuf, message: String },
+    #[error("failed to read pending upgrade marker {}: {message}", path.display())]
+    ReadPending { path: PathBuf, message: String },
+    #[error("pending upgrade marker {} is invalid: {message}", path.display())]
+    InvalidPending { path: PathBuf, message: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
