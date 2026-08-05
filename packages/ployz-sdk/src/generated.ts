@@ -802,7 +802,7 @@ export type NamespaceRemoveOperationState = { "state": "accepted" } | { "state":
 
 export type NamespaceRemoveRequest = { operation_id: OperationId, namespace_id: NamespaceId, };
 
-export type NamespaceRemoveRowRefusal = { "kind": "not_found", name: string, } | { "kind": "ambiguous", name: string, namespace_ids: Array<NamespaceRowId>, } | { "kind": "name_mismatch", namespace_id: NamespaceRowId, requested: string, found: string, } | { "kind": "stored_row_unselectable", namespace_id: NamespaceRowId, } | { "kind": "concurrent_mutation", namespace_id: NamespaceRowId, };
+export type NamespaceRemoveRowRefusal = { "kind": "not_found", name: string, } | { "kind": "ambiguous", name: string, namespace_ids: Array<NamespaceRowId>, } | { "kind": "name_mismatch", namespace_id: NamespaceRowId, requested: string, found: string, } | { "kind": "id_mismatch", requested: NamespaceRowId, found: NamespaceRowId, name: string, } | { "kind": "stored_row_unselectable", namespace_id: NamespaceRowId, } | { "kind": "concurrent_mutation", namespace_id: NamespaceRowId, };
 
 export type NamespaceRemoveRowReply = { namespace_id: NamespaceRowId, outcome: NamedRemovalOutcome, };
 
@@ -936,7 +936,7 @@ export type PeerJoinAccepted = { cluster: ClusterDocument, peer: AcceptedPeerRow
 
 export type PeerJoinRequest = { peer_id: PeerId, name: string, public_key: WireGuardPublicKey, endpoint: string | null, };
 
-export type PeerRemoveRefusal = { "kind": "not_found", name: string, } | { "kind": "ambiguous", name: string, peer_ids: Array<PeerId>, } | { "kind": "name_mismatch", peer_id: PeerId, requested: string, found: string, } | { "kind": "stored_row_unselectable", peer_id: PeerId, } | { "kind": "concurrent_mutation", peer_id: PeerId, };
+export type PeerRemoveRefusal = { "kind": "not_found", name: string, } | { "kind": "ambiguous", name: string, peer_ids: Array<PeerId>, } | { "kind": "name_mismatch", peer_id: PeerId, requested: string, found: string, } | { "kind": "id_mismatch", requested: PeerId, found: PeerId, name: string, } | { "kind": "stored_row_unselectable", peer_id: PeerId, } | { "kind": "concurrent_mutation", peer_id: PeerId, };
 
 export type PeerRemoveReply = { peer_id: PeerId, outcome: NamedRemovalOutcome, };
 
@@ -1005,7 +1005,7 @@ export type RouteHostname = Brand<string, "RouteHostname">;
 
 export type RoutePort = SafeInteger<"RoutePort">;
 
-export type RouteRemoveRefusal = { "kind": "not_found", hostname: RouteHostname, } | { "kind": "ambiguous", hostname: RouteHostname, route_ids: Array<RouteBindingRowId>, } | { "kind": "name_mismatch", route_id: RouteBindingRowId, requested: RouteHostname, found: RouteHostname, } | { "kind": "stored_row_unselectable", route_id: RouteBindingRowId, } | { "kind": "concurrent_mutation", route_id: RouteBindingRowId, };
+export type RouteRemoveRefusal = { "kind": "not_found", hostname: RouteHostname, } | { "kind": "ambiguous", hostname: RouteHostname, route_ids: Array<RouteBindingRowId>, } | { "kind": "name_mismatch", route_id: RouteBindingRowId, requested: RouteHostname, found: RouteHostname, } | { "kind": "id_mismatch", requested: RouteBindingRowId, found: RouteBindingRowId, hostname: RouteHostname, } | { "kind": "stored_row_unselectable", route_id: RouteBindingRowId, } | { "kind": "concurrent_mutation", route_id: RouteBindingRowId, };
 
 export type RouteRemoveReply = { route_id: RouteBindingRowId, outcome: NamedRemovalOutcome, };
 
@@ -1075,7 +1075,7 @@ export type ServiceMachineTestimony = { "status": "answered", machine_id: Machin
 
 export type ServiceMode = { "kind": "replicated", replicas: ReplicaCount, } | { "kind": "global" };
 
-export type ServiceRemoveRowRefusal = { "kind": "not_found", namespace_id: NamespaceRowId, name: string, } | { "kind": "ambiguous", namespace_id: NamespaceRowId, name: string, service_ids: Array<ServiceRowId>, } | { "kind": "identity_mismatch", service_id: ServiceRowId, requested_namespace_id: NamespaceRowId, requested_name: string, found_namespace_id: NamespaceRowId, found_name: string, } | { "kind": "stored_row_unselectable", service_id: ServiceRowId, } | { "kind": "concurrent_mutation", service_id: ServiceRowId, };
+export type ServiceRemoveRowRefusal = { "kind": "not_found", namespace_id: NamespaceRowId, name: string, } | { "kind": "ambiguous", namespace_id: NamespaceRowId, name: string, service_ids: Array<ServiceRowId>, } | { "kind": "identity_mismatch", service_id: ServiceRowId, requested_namespace_id: NamespaceRowId, requested_name: string, found_namespace_id: NamespaceRowId, found_name: string, } | { "kind": "id_mismatch", requested: ServiceRowId, found: ServiceRowId, namespace_id: NamespaceRowId, name: string, } | { "kind": "stored_row_unselectable", service_id: ServiceRowId, } | { "kind": "concurrent_mutation", service_id: ServiceRowId, };
 
 export type ServiceRemoveRowReply = { service_id: ServiceRowId, outcome: NamedRemovalOutcome, };
 

@@ -12,6 +12,7 @@ use ployz_core::{
 };
 
 use crate::commands::DiagnosticsCommand;
+use crate::init::ssh::shell_quote;
 use crate::remote::{OperatorRemote, OperatorRemoteError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -374,10 +375,15 @@ pub fn render_doctor(document: &DoctorDocument) -> (String, bool) {
 fn shadow_repair_command(claim: &NameClaim, loser_id: &str) -> String {
     match claim {
         NameClaim::Machine { name } | NameClaim::Peer { name } | NameClaim::Namespace { name } => {
-            format!("ployz {} rm {name} --id {loser_id}", shadow_noun(claim))
+            format!(
+                "ployz {} rm {} --id {loser_id}",
+                shadow_noun(claim),
+                shell_quote(name)
+            )
         }
         NameClaim::Service { namespace_id, name } => format!(
-            "ployz service rm {name} --namespace-id {} --id {loser_id}",
+            "ployz service rm {} --namespace-id {} --id {loser_id}",
+            shell_quote(name),
             namespace_id.as_str()
         ),
         NameClaim::RouteBinding { hostname } => {
@@ -673,11 +679,11 @@ mod tests {
         let (output, has_findings) = render_doctor(&doctor_fixture());
 
         assert!(has_findings);
-        assert!(output.contains(&format!("ployz machine rm edge-a --id {ROW_LOSER}")));
-        assert!(output.contains(&format!("ployz peer rm laptop --id {ROW_LOSER}")));
-        assert!(output.contains(&format!("ployz namespace rm prod --id {ROW_LOSER}")));
+        assert!(output.contains(&format!("ployz machine rm 'edge-a' --id {ROW_LOSER}")));
+        assert!(output.contains(&format!("ployz peer rm 'laptop' --id {ROW_LOSER}")));
+        assert!(output.contains(&format!("ployz namespace rm 'prod' --id {ROW_LOSER}")));
         assert!(output.contains(&format!(
-            "ployz service rm web --namespace-id {ROW_WINNER} --id {ROW_LOSER}"
+            "ployz service rm 'web' --namespace-id {ROW_WINNER} --id {ROW_LOSER}"
         )));
         assert!(output.contains(&format!("ployz route rm web.example.com --id {ROW_LOSER}")));
         for command in [
@@ -704,6 +710,44 @@ mod tests {
     }
 
     #[test]
+    fn shadow_repairs_shell_quote_every_unconstrained_claim_handle() {
+        let handle = "dind laptop'; touch /tmp/not-run #";
+        let namespace_id =
+            ployz_core::ids::NamespaceRowId::try_new(ROW_WINNER).expect("namespace row id");
+        let quoted = shell_quote(handle);
+
+        for (claim, expected) in [
+            (
+                NameClaim::Machine {
+                    name: handle.to_owned(),
+                },
+                format!("ployz machine rm {quoted} --id {ROW_LOSER}"),
+            ),
+            (
+                NameClaim::Peer {
+                    name: handle.to_owned(),
+                },
+                format!("ployz peer rm {quoted} --id {ROW_LOSER}"),
+            ),
+            (
+                NameClaim::Namespace {
+                    name: handle.to_owned(),
+                },
+                format!("ployz namespace rm {quoted} --id {ROW_LOSER}"),
+            ),
+            (
+                NameClaim::Service {
+                    namespace_id,
+                    name: handle.to_owned(),
+                },
+                format!("ployz service rm {quoted} --namespace-id {ROW_WINNER} --id {ROW_LOSER}"),
+            ),
+        ] {
+            assert_eq!(shadow_repair_command(&claim, ROW_LOSER), expected);
+        }
+    }
+
+    #[test]
     fn foreign_current_machine_repair_disambiguates_a_same_name_shadow() {
         let document = doctor_fixture();
         assert!(document.shadows.iter().any(|shadow| {
@@ -713,7 +757,7 @@ mod tests {
         let (output, has_findings) = render_doctor(&document);
 
         assert!(has_findings);
-        assert!(output.contains(&format!("ployz machine rm edge-a --id {ROW_LOSER}")));
+        assert!(output.contains(&format!("ployz machine rm 'edge-a' --id {ROW_LOSER}")));
         assert!(output.contains(&format!("ployz machine rm edge-a --id {MACHINE_B}")));
     }
 

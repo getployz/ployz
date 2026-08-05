@@ -54,6 +54,11 @@ macro_rules! removal_contract {
                 requested: $handle,
                 found: $handle,
             },
+            IdMismatch {
+                requested: $id,
+                found: $id,
+                $handle_field: $handle,
+            },
             StoredRowUnselectable {
                 $id_field: $id,
             },
@@ -128,6 +133,12 @@ pub enum ServiceRemoveRowRefusal {
         found_namespace_id: NamespaceRowId,
         found_name: String,
     },
+    IdMismatch {
+        requested: ServiceRowId,
+        found: ServiceRowId,
+        namespace_id: NamespaceRowId,
+        name: String,
+    },
     StoredRowUnselectable {
         service_id: ServiceRowId,
     },
@@ -153,6 +164,7 @@ enum Selection<Id> {
     NotFound,
     Ambiguous(Vec<Id>),
     NameMismatch { id: Id, found: String },
+    IdMismatch { requested: Id, found: Id },
     StoredRowUnselectable { id: Id },
 }
 
@@ -180,14 +192,26 @@ where
             let stored = raw_rows
                 .iter()
                 .any(|row| row.key == id_string(requested_id));
-            return if stored {
-                Selection::StoredRowUnselectable {
+            if stored {
+                return Selection::StoredRowUnselectable {
                     id: requested_id.clone(),
-                }
-            } else {
-                Selection::AlreadyAbsent {
+                };
+            }
+            let mut candidates = accepted
+                .iter()
+                .filter(|row| name(&row.value) == requested_name)
+                .map(|row| parse_id(&row.source.key))
+                .collect::<Vec<_>>();
+            candidates.sort();
+            return match candidates.as_slice() {
+                [] => Selection::AlreadyAbsent {
                     id: requested_id.clone(),
-                }
+                },
+                [found] => Selection::IdMismatch {
+                    requested: requested_id.clone(),
+                    found: found.clone(),
+                },
+                [_, _, ..] => Selection::Ambiguous(candidates),
             };
         }
         let row = accepted
@@ -258,6 +282,11 @@ pub fn select_peer_removal(
             requested: request.name.clone(),
             found,
         }),
+        Selection::IdMismatch { requested, found } => Err(PeerRemoveRefusal::IdMismatch {
+            requested,
+            found,
+            name: request.name.clone(),
+        }),
         Selection::StoredRowUnselectable { id } => {
             Err(PeerRemoveRefusal::StoredRowUnselectable { peer_id: id })
         }
@@ -309,6 +338,11 @@ macro_rules! ordinary_selector {
                         .try_into()
                         .expect("accepted document handle remains valid"),
                 }),
+                Selection::IdMismatch { requested, found } => Err($refusal::IdMismatch {
+                    requested,
+                    found,
+                    $handle_field: request.$handle_field.clone(),
+                }),
                 Selection::StoredRowUnselectable { id } => {
                     Err($refusal::StoredRowUnselectable { $id_field: id })
                 }
@@ -328,22 +362,46 @@ pub fn select_service_removal(
     rows: Vec<StoredRow>,
     request: &ServiceRemoveRowRequest,
 ) -> Result<ServiceRemoveRowSelection, ServiceRemoveRowRefusal> {
-    let accepted = read_rows::<ServiceDocument>(cluster_id, rows.clone()).accepted;
+    let mut accepted = read_rows::<ServiceDocument>(cluster_id, rows.clone()).accepted;
     if let Some(requested_id) = request.service_id.as_ref() {
         let selected = accepted
-            .into_iter()
-            .find(|row| row.source.key == requested_id.as_str());
+            .iter()
+            .position(|row| row.source.key == requested_id.as_str());
         let Some(selected) = selected else {
-            return if rows.iter().any(|row| row.key == requested_id.as_str()) {
-                Err(ServiceRemoveRowRefusal::StoredRowUnselectable {
+            if rows.iter().any(|row| row.key == requested_id.as_str()) {
+                return Err(ServiceRemoveRowRefusal::StoredRowUnselectable {
                     service_id: requested_id.clone(),
+                });
+            }
+            let mut candidates = accepted
+                .iter()
+                .filter(|row| {
+                    row.value.namespace_id == request.namespace_id && row.value.name == request.name
                 })
-            } else {
-                Ok(ServiceRemoveRowSelection::AlreadyAbsent {
+                .map(|row| {
+                    ServiceRowId::try_new(&row.source.key)
+                        .expect("accepted service row ids are canonical")
+                })
+                .collect::<Vec<_>>();
+            candidates.sort();
+            return match candidates.as_slice() {
+                [] => Ok(ServiceRemoveRowSelection::AlreadyAbsent {
                     service_id: requested_id.clone(),
-                })
+                }),
+                [found] => Err(ServiceRemoveRowRefusal::IdMismatch {
+                    requested: requested_id.clone(),
+                    found: found.clone(),
+                    namespace_id: request.namespace_id.clone(),
+                    name: request.name.clone(),
+                }),
+                [_, _, ..] => Err(ServiceRemoveRowRefusal::Ambiguous {
+                    namespace_id: request.namespace_id.clone(),
+                    name: request.name.clone(),
+                    service_ids: candidates,
+                }),
             };
         };
+        let selected = accepted.swap_remove(selected);
         if selected.value.namespace_id != request.namespace_id
             || selected.value.name != request.name
         {
@@ -429,6 +487,11 @@ pub fn select_route_removal(
             route_id: id,
             requested: request.hostname.clone(),
             found: RouteHostname::try_new(found).expect("accepted route hostname remains valid"),
+        }),
+        Selection::IdMismatch { requested, found } => Err(RouteRemoveRefusal::IdMismatch {
+            requested,
+            found,
+            hostname: request.hostname.clone(),
         }),
         Selection::StoredRowUnselectable { id } => {
             Err(RouteRemoveRefusal::StoredRowUnselectable { route_id: id })

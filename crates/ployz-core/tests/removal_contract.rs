@@ -444,6 +444,252 @@ fn every_ordinary_table_selects_a_valid_shadow_by_id_and_fences_raw_id_retries()
 }
 
 #[test]
+fn qualified_missing_ids_refuse_handles_that_resolve_under_another_id() {
+    let cluster = cluster();
+    let cluster_id = ClusterId::try_new(CLUSTER).expect("cluster id");
+
+    assert_eq!(
+        select_peer_removal(
+            &cluster,
+            vec![row(ID_B, named_document("peers", "operator"))],
+            &PeerRemoveRequest {
+                name: "operator".to_owned(),
+                peer_id: Some(PeerId::try_new(ID_A).expect("requested id")),
+            },
+        ),
+        Err(PeerRemoveRefusal::IdMismatch {
+            requested: PeerId::try_new(ID_A).expect("requested id"),
+            found: PeerId::try_new(ID_B).expect("found id"),
+            name: "operator".to_owned(),
+        })
+    );
+
+    assert_eq!(
+        select_namespace_removal(
+            &cluster_id,
+            vec![row(ID_B, named_document("namespaces", "prod"))],
+            &NamespaceRemoveRowRequest {
+                name: "prod".to_owned(),
+                namespace_id: Some(NamespaceRowId::try_new(ID_A).expect("requested id")),
+            },
+        ),
+        Err(NamespaceRemoveRowRefusal::IdMismatch {
+            requested: NamespaceRowId::try_new(ID_A).expect("requested id"),
+            found: NamespaceRowId::try_new(ID_B).expect("found id"),
+            name: "prod".to_owned(),
+        })
+    );
+
+    let hostname = RouteHostname::try_new("web.example.com").expect("hostname");
+    assert_eq!(
+        select_route_removal(
+            &cluster_id,
+            vec![row(
+                ID_B,
+                named_document("route_bindings", hostname.as_str()),
+            )],
+            &RouteRemoveRequest {
+                hostname,
+                route_id: Some(RouteBindingRowId::try_new(ID_A).expect("requested id")),
+            },
+        ),
+        Err(RouteRemoveRefusal::IdMismatch {
+            requested: RouteBindingRowId::try_new(ID_A).expect("requested id"),
+            found: RouteBindingRowId::try_new(ID_B).expect("found id"),
+            hostname: RouteHostname::try_new("web.example.com").expect("hostname"),
+        })
+    );
+
+    assert_eq!(
+        select_service_removal(
+            &cluster_id,
+            vec![row(ID_B, service_document(CLUSTER, "web"))],
+            &ServiceRemoveRowRequest {
+                namespace_id: NamespaceRowId::try_new(CLUSTER).expect("namespace id"),
+                name: "web".to_owned(),
+                service_id: Some(ServiceRowId::try_new(ID_A).expect("requested id")),
+            },
+        ),
+        Err(ServiceRemoveRowRefusal::IdMismatch {
+            requested: ServiceRowId::try_new(ID_A).expect("requested id"),
+            found: ServiceRowId::try_new(ID_B).expect("found id"),
+            namespace_id: NamespaceRowId::try_new(CLUSTER).expect("namespace id"),
+            name: "web".to_owned(),
+        })
+    );
+}
+
+#[test]
+fn qualified_missing_ids_report_every_matching_handle_candidate() {
+    let cluster = cluster();
+    let cluster_id = ClusterId::try_new(CLUSTER).expect("cluster id");
+
+    assert_eq!(
+        select_peer_removal(
+            &cluster,
+            vec![
+                row(ID_C, named_document("peers", "operator")),
+                row(ID_B, named_document("peers", "operator")),
+            ],
+            &PeerRemoveRequest {
+                name: "operator".to_owned(),
+                peer_id: Some(PeerId::try_new(ID_A).expect("requested id")),
+            },
+        ),
+        Err(PeerRemoveRefusal::Ambiguous {
+            name: "operator".to_owned(),
+            peer_ids: vec![
+                PeerId::try_new(ID_B).expect("candidate id"),
+                PeerId::try_new(ID_C).expect("candidate id"),
+            ],
+        })
+    );
+
+    assert_eq!(
+        select_namespace_removal(
+            &cluster_id,
+            vec![
+                row(ID_C, named_document("namespaces", "prod")),
+                row(ID_B, named_document("namespaces", "prod")),
+            ],
+            &NamespaceRemoveRowRequest {
+                name: "prod".to_owned(),
+                namespace_id: Some(NamespaceRowId::try_new(ID_A).expect("requested id")),
+            },
+        ),
+        Err(NamespaceRemoveRowRefusal::Ambiguous {
+            name: "prod".to_owned(),
+            namespace_ids: vec![
+                NamespaceRowId::try_new(ID_B).expect("candidate id"),
+                NamespaceRowId::try_new(ID_C).expect("candidate id"),
+            ],
+        })
+    );
+
+    let hostname = RouteHostname::try_new("web.example.com").expect("hostname");
+    assert_eq!(
+        select_route_removal(
+            &cluster_id,
+            vec![
+                row(ID_C, named_document("route_bindings", hostname.as_str())),
+                row(ID_B, named_document("route_bindings", hostname.as_str())),
+            ],
+            &RouteRemoveRequest {
+                hostname: hostname.clone(),
+                route_id: Some(RouteBindingRowId::try_new(ID_A).expect("requested id")),
+            },
+        ),
+        Err(RouteRemoveRefusal::Ambiguous {
+            hostname,
+            route_ids: vec![
+                RouteBindingRowId::try_new(ID_B).expect("candidate id"),
+                RouteBindingRowId::try_new(ID_C).expect("candidate id"),
+            ],
+        })
+    );
+
+    assert_eq!(
+        select_service_removal(
+            &cluster_id,
+            vec![
+                row(ID_C, service_document(CLUSTER, "web")),
+                row(ID_B, service_document(CLUSTER, "web")),
+            ],
+            &ServiceRemoveRowRequest {
+                namespace_id: NamespaceRowId::try_new(CLUSTER).expect("namespace id"),
+                name: "web".to_owned(),
+                service_id: Some(ServiceRowId::try_new(ID_A).expect("requested id")),
+            },
+        ),
+        Err(ServiceRemoveRowRefusal::Ambiguous {
+            namespace_id: NamespaceRowId::try_new(CLUSTER).expect("namespace id"),
+            name: "web".to_owned(),
+            service_ids: vec![
+                ServiceRowId::try_new(ID_B).expect("candidate id"),
+                ServiceRowId::try_new(ID_C).expect("candidate id"),
+            ],
+        })
+    );
+}
+
+#[test]
+fn qualified_missing_ids_ignore_unselectable_evidence_under_other_ids() {
+    let cluster = cluster();
+    let cluster_id = ClusterId::try_new(CLUSTER).expect("cluster id");
+
+    assert_eq!(
+        select_peer_removal(
+            &cluster,
+            vec![row(
+                ID_B,
+                json!({"v": 2, "cluster_id": CLUSTER, "name": "operator"}),
+            )],
+            &PeerRemoveRequest {
+                name: "operator".to_owned(),
+                peer_id: Some(PeerId::try_new(ID_A).expect("requested id")),
+            },
+        ),
+        Ok(PeerRemoveSelection::AlreadyAbsent {
+            peer_id: PeerId::try_new(ID_A).expect("requested id"),
+        })
+    );
+
+    assert_eq!(
+        select_namespace_removal(
+            &cluster_id,
+            vec![row(
+                ID_B,
+                json!({"v": 2, "cluster_id": CLUSTER, "name": "prod"}),
+            )],
+            &NamespaceRemoveRowRequest {
+                name: "prod".to_owned(),
+                namespace_id: Some(NamespaceRowId::try_new(ID_A).expect("requested id")),
+            },
+        ),
+        Ok(NamespaceRemoveRowSelection::AlreadyAbsent {
+            namespace_id: NamespaceRowId::try_new(ID_A).expect("requested id"),
+        })
+    );
+
+    assert_eq!(
+        select_route_removal(
+            &cluster_id,
+            vec![row(ID_B, Value::String("malformed".to_owned()))],
+            &RouteRemoveRequest {
+                hostname: RouteHostname::try_new("web.example.com").expect("hostname"),
+                route_id: Some(RouteBindingRowId::try_new(ID_A).expect("requested id")),
+            },
+        ),
+        Ok(RouteRemoveSelection::AlreadyAbsent {
+            route_id: RouteBindingRowId::try_new(ID_A).expect("requested id"),
+        })
+    );
+
+    assert_eq!(
+        select_service_removal(
+            &cluster_id,
+            vec![row(
+                ID_B,
+                json!({
+                    "v": 1,
+                    "cluster_id": "01ARZ3NDEKTSV4RRFFQ69G5FAZ",
+                    "namespace_id": CLUSTER,
+                    "name": "web"
+                }),
+            )],
+            &ServiceRemoveRowRequest {
+                namespace_id: NamespaceRowId::try_new(CLUSTER).expect("namespace id"),
+                name: "web".to_owned(),
+                service_id: Some(ServiceRowId::try_new(ID_A).expect("requested id")),
+            },
+        ),
+        Ok(ServiceRemoveRowSelection::AlreadyAbsent {
+            service_id: ServiceRowId::try_new(ID_A).expect("requested id"),
+        })
+    );
+}
+
+#[test]
 fn service_selection_uses_namespace_and_name_as_one_identity() {
     let cluster_id = ClusterId::try_new(CLUSTER).expect("cluster id");
     let request = ServiceRemoveRowRequest {

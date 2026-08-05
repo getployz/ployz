@@ -252,6 +252,7 @@ fn peer_refusal_status(refusal: &PeerRemoveRefusal) -> StatusCode {
         PeerRemoveRefusal::NotFound { .. } => StatusCode::NOT_FOUND,
         PeerRemoveRefusal::Ambiguous { .. }
         | PeerRemoveRefusal::NameMismatch { .. }
+        | PeerRemoveRefusal::IdMismatch { .. }
         | PeerRemoveRefusal::StoredRowUnselectable { .. }
         | PeerRemoveRefusal::ConcurrentMutation { .. } => StatusCode::CONFLICT,
     }
@@ -262,6 +263,7 @@ fn namespace_refusal_status(refusal: &NamespaceRemoveRowRefusal) -> StatusCode {
         NamespaceRemoveRowRefusal::NotFound { .. } => StatusCode::NOT_FOUND,
         NamespaceRemoveRowRefusal::Ambiguous { .. }
         | NamespaceRemoveRowRefusal::NameMismatch { .. }
+        | NamespaceRemoveRowRefusal::IdMismatch { .. }
         | NamespaceRemoveRowRefusal::StoredRowUnselectable { .. }
         | NamespaceRemoveRowRefusal::ConcurrentMutation { .. } => StatusCode::CONFLICT,
     }
@@ -272,6 +274,7 @@ fn service_refusal_status(refusal: &ServiceRemoveRowRefusal) -> StatusCode {
         ServiceRemoveRowRefusal::NotFound { .. } => StatusCode::NOT_FOUND,
         ServiceRemoveRowRefusal::Ambiguous { .. }
         | ServiceRemoveRowRefusal::IdentityMismatch { .. }
+        | ServiceRemoveRowRefusal::IdMismatch { .. }
         | ServiceRemoveRowRefusal::StoredRowUnselectable { .. }
         | ServiceRemoveRowRefusal::ConcurrentMutation { .. } => StatusCode::CONFLICT,
     }
@@ -282,6 +285,7 @@ fn route_refusal_status(refusal: &RouteRemoveRefusal) -> StatusCode {
         RouteRemoveRefusal::NotFound { .. } => StatusCode::NOT_FOUND,
         RouteRemoveRefusal::Ambiguous { .. }
         | RouteRemoveRefusal::NameMismatch { .. }
+        | RouteRemoveRefusal::IdMismatch { .. }
         | RouteRemoveRefusal::StoredRowUnselectable { .. }
         | RouteRemoveRefusal::ConcurrentMutation { .. } => StatusCode::CONFLICT,
     }

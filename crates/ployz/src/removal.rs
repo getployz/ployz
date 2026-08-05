@@ -126,6 +126,17 @@ fn peer_refusal(refusal: PeerRemoveRefusal) -> RemovalExecutionError {
             "peer row {} is named {found}, not {requested}; no row was removed",
             peer_id.as_str()
         ),
+        PeerRemoveRefusal::IdMismatch {
+            requested,
+            found,
+            name,
+        } => format!(
+            "peer row {} is absent, but {name} is row {}; retry `ployz peer rm {} --id {}`",
+            requested.as_str(),
+            found.as_str(),
+            shell_quote(&name),
+            found.as_str()
+        ),
         PeerRemoveRefusal::StoredRowUnselectable { peer_id } => format!(
             "peer row {} exists but this binary cannot safely select it; no row was removed",
             peer_id.as_str()
@@ -158,6 +169,17 @@ fn namespace_refusal(refusal: NamespaceRemoveRowRefusal) -> RemovalExecutionErro
         } => format!(
             "namespace row {} is named {found}, not {requested}; no row was removed",
             namespace_id.as_str()
+        ),
+        NamespaceRemoveRowRefusal::IdMismatch {
+            requested,
+            found,
+            name,
+        } => format!(
+            "namespace row {} is absent, but {name} is row {}; retry `ployz namespace rm {} --id {}`",
+            requested.as_str(),
+            found.as_str(),
+            shell_quote(&name),
+            found.as_str()
         ),
         NamespaceRemoveRowRefusal::StoredRowUnselectable { namespace_id } => format!(
             "namespace row {} exists but this binary cannot safely select it; no row was removed",
@@ -193,6 +215,20 @@ fn service_refusal(refusal: ServiceRemoveRowRefusal) -> RemovalExecutionError {
             service_id.as_str(),
             found_namespace_id.as_str(),
             requested_namespace_id.as_str()
+        ),
+        ServiceRemoveRowRefusal::IdMismatch {
+            requested,
+            found,
+            namespace_id,
+            name,
+        } => format!(
+            "service row {} is absent, but {name} in namespace row {} is row {}; retry `ployz service rm {} --namespace-id {} --id {}`",
+            requested.as_str(),
+            namespace_id.as_str(),
+            found.as_str(),
+            shell_quote(&name),
+            namespace_id.as_str(),
+            found.as_str()
         ),
         ServiceRemoveRowRefusal::StoredRowUnselectable { service_id } => format!(
             "service row {} exists but this binary cannot safely select it; no row was removed",
@@ -251,6 +287,18 @@ fn route_refusal(refusal: RouteRemoveRefusal) -> RemovalExecutionError {
             route_id.as_str(),
             found.as_str(),
             requested.as_str()
+        ),
+        RouteRemoveRefusal::IdMismatch {
+            requested,
+            found,
+            hostname,
+        } => format!(
+            "route row {} is absent, but {} is row {}; retry `ployz route rm {} --id {}`",
+            requested.as_str(),
+            hostname.as_str(),
+            found.as_str(),
+            hostname.as_str(),
+            found.as_str()
         ),
         RouteRemoveRefusal::StoredRowUnselectable { route_id } => format!(
             "route row {} exists but this binary cannot safely select it; no row was removed",
@@ -339,6 +387,30 @@ mod tests {
             format!(
                 "peer {handle} is ambiguous; choose an exact row: `ployz peer rm {} --id {id}`",
                 shell_quote(handle)
+            )
+        );
+    }
+
+    #[test]
+    fn id_mismatch_names_the_copy_ready_exact_retry() {
+        let requested = PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("requested id");
+        let found = PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAW").expect("found id");
+        let name = "dind laptop'; touch /tmp/not-run #";
+
+        let error = peer_refusal(PeerRemoveRefusal::IdMismatch {
+            requested: requested.clone(),
+            found: found.clone(),
+            name: name.to_owned(),
+        });
+
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "peer row {} is absent, but {name} is row {}; retry `ployz peer rm {} --id {}`",
+                requested.as_str(),
+                found.as_str(),
+                shell_quote(name),
+                found.as_str()
             )
         );
     }
