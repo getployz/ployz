@@ -394,7 +394,7 @@ export type DeployVolumeHandoffStopUncertain = { "reason": "runtime_unavailable"
 
 export type DockerfileStageName = string;
 
-export type DoctorDocument = { shadows: Array<DoctorShadowFinding>, skipped_newer_versions: Array<DoctorSkippedNewerVersion>, versions: DoctorVersionReport, foreign_clusters: Array<DoctorForeignClusterRows>, };
+export type DoctorDocument = { shadows: Array<DoctorShadowFinding>, skipped_roster_rows: Array<DoctorSkippedRosterRow>, skipped_newer_versions: Array<DoctorSkippedNewerVersion>, versions: DoctorVersionReport, foreign_clusters: Array<DoctorForeignClusterRows>, };
 
 export type DoctorForeignAuthorship = { "kind": "current_machine", machine: DoctorMachineIdentity, } | { "kind": "non_current_machine", machine_id: MachineRowId, } | { "kind": "peer", peer_id: PeerId, } | { "kind": "api_token", token_id: TokenId, } | { "kind": "unparseable" };
 
@@ -406,11 +406,19 @@ export type DoctorMachineIdentity = { id: MachineRowId, name: MachineName, };
 
 export type DoctorMachineVersion = { machine: DoctorMachineIdentity, version: string, };
 
+export type DoctorMalformedRosterDocumentClass = { "kind": "missing_version" } | { "kind": "invalid_version" } | { "kind": "unsupported_version", found: number, } | { "kind": "invalid_payload" };
+
 export type DoctorNewestVersion = { version: string, machines: Array<DoctorMachineIdentity>, };
+
+export type DoctorRosterRowSkipReason = { "kind": "mesh_provider_mismatch", expected: MeshProvider, found: MeshProvider, } | { "kind": "malformed_document", class: DoctorMalformedRosterDocumentClass, } | { "kind": "invalid_row_id" };
+
+export type DoctorRosterTable = "machines" | "peers";
 
 export type DoctorShadowFinding = { claim: NameClaim, winner_id: CorrosionUlid, loser_id: CorrosionUlid, };
 
 export type DoctorSkippedNewerVersion = { table: CorrosionTable, key: string, found: number, supported: number, };
+
+export type DoctorSkippedRosterRow = { table: DoctorRosterTable, key: string, reason: DoctorRosterRowSkipReason, };
 
 export type DoctorVersionReport = { newest?: DoctorNewestVersion, behind: Array<DoctorMachineVersion>, invalid: Array<DoctorMachineVersion>, };
 

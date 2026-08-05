@@ -10,9 +10,10 @@ use super::MachineLensRow;
 use crate::corrosion::{
     AcmeHttp01Document, CORROSION_NO_P99_LAG_SAMPLE, CertHoldingDocument, ClusterDocument,
     ContainerDocument, CorrosionDocument, CorrosionHealthResponse, CorrosionTable, MachineDocument,
-    MachineStatusDocument, MachineTransport, NameClaim, NamespaceDocument, OperationDocument,
-    PeerDocument, Principal, RouteBindingDocument, ServiceDocument, ShadowConflict, StoredRow,
-    TokenDocument, WireGuardHandshakeEvidence, read_named_roster_rows, read_named_rows, read_rows,
+    MachineStatusDocument, MachineTransport, MalformedDocument, MeshProvider, NameClaim,
+    NamespaceDocument, OperationDocument, PeerDocument, Principal, RouteBindingDocument,
+    RowSkipReason, ServiceDocument, ShadowConflict, SkippedRow, StoredRow, TokenDocument,
+    WireGuardHandshakeEvidence, read_named_roster_rows, read_named_rows, read_rows,
 };
 use crate::ids::{ClusterId, CorrosionUlid, MachineRowId, PeerId, TokenId};
 use crate::machine::MachineName;
@@ -381,9 +382,55 @@ pub struct DoctorProjectionInput {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct DoctorDocument {
     pub shadows: Vec<DoctorShadowFinding>,
+    #[serde(default)]
+    pub skipped_roster_rows: Vec<DoctorSkippedRosterRow>,
     pub skipped_newer_versions: Vec<DoctorSkippedNewerVersion>,
     pub versions: DoctorVersionReport,
     pub foreign_clusters: Vec<DoctorForeignClusterRows>,
+}
+
+/// One machine or peer row excluded from the accepted roster by reader law.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct DoctorSkippedRosterRow {
+    pub table: DoctorRosterTable,
+    pub key: String,
+    pub reason: DoctorRosterRowSkipReason,
+}
+
+/// The two tables that can carry cluster roster rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum DoctorRosterTable {
+    Machines,
+    Peers,
+}
+
+/// A closed reason a same-cluster roster row did not enter the accepted roster.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DoctorRosterRowSkipReason {
+    MeshProviderMismatch {
+        expected: MeshProvider,
+        found: MeshProvider,
+    },
+    MalformedDocument {
+        class: DoctorMalformedRosterDocumentClass,
+    },
+    InvalidRowId,
+}
+
+/// A same-cluster malformed-document class with parser messages removed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DoctorMalformedRosterDocumentClass {
+    MissingVersion,
+    InvalidVersion,
+    UnsupportedVersion { found: u64 },
+    InvalidPayload,
 }
 
 /// A valid row hidden by the lowest-ULID name-claim law.
@@ -488,10 +535,21 @@ pub fn project_doctor(input: DoctorProjectionInput) -> DoctorDocument {
         })
         .collect::<BTreeMap<_, _>>();
 
-    let mut shadows = map_shadows(machine_report.shadows);
-    shadows.extend(map_shadows(
-        read_named_roster_rows::<PeerDocument>(&cluster, rows.peers.clone()).shadows,
+    let peer_report = read_named_roster_rows::<PeerDocument>(&cluster, rows.peers.clone());
+    let mut skipped_roster_rows =
+        map_roster_skips(DoctorRosterTable::Machines, machine_report.skipped);
+    skipped_roster_rows.extend(map_roster_skips(
+        DoctorRosterTable::Peers,
+        peer_report.skipped,
     ));
+    skipped_roster_rows.sort_by(|left, right| {
+        left.table
+            .cmp(&right.table)
+            .then_with(|| left.key.cmp(&right.key))
+    });
+
+    let mut shadows = map_shadows(machine_report.shadows);
+    shadows.extend(map_shadows(peer_report.shadows));
     shadows.extend(map_shadows(
         read_named_rows::<NamespaceDocument>(&cluster.cluster_id, rows.namespaces.clone()).shadows,
     ));
@@ -504,10 +562,65 @@ pub fn project_doctor(input: DoctorProjectionInput) -> DoctorDocument {
     ));
 
     DoctorDocument {
+        skipped_roster_rows,
         skipped_newer_versions: newer_version_evidence(&cluster.cluster_id, &rows),
         versions: project_versions(&cluster.cluster_id, &rows.machine_status, &current_machines),
         foreign_clusters: project_foreign_clusters(&cluster.cluster_id, &rows, &current_machines),
         shadows,
+    }
+}
+
+fn map_roster_skips(
+    table: DoctorRosterTable,
+    skipped: Vec<SkippedRow>,
+) -> Vec<DoctorSkippedRosterRow> {
+    skipped
+        .into_iter()
+        .filter_map(|skipped| {
+            let reason = match skipped.reason {
+                RowSkipReason::MeshProviderMismatch { expected, found } => {
+                    DoctorRosterRowSkipReason::MeshProviderMismatch { expected, found }
+                }
+                RowSkipReason::Malformed(malformed) => {
+                    DoctorRosterRowSkipReason::MalformedDocument {
+                        class: map_malformed_roster_document(malformed)?,
+                    }
+                }
+                RowSkipReason::InvalidRowId { error: _ } => DoctorRosterRowSkipReason::InvalidRowId,
+                RowSkipReason::Empty
+                | RowSkipReason::ForeignCluster { .. }
+                | RowSkipReason::NewerVersion { .. }
+                | RowSkipReason::InvalidRowKey { .. } => return None,
+            };
+            Some(DoctorSkippedRosterRow {
+                table,
+                key: skipped.source.key,
+                reason,
+            })
+        })
+        .collect()
+}
+
+fn map_malformed_roster_document(
+    malformed: MalformedDocument,
+) -> Option<DoctorMalformedRosterDocumentClass> {
+    match malformed {
+        MalformedDocument::MissingVersion => {
+            Some(DoctorMalformedRosterDocumentClass::MissingVersion)
+        }
+        MalformedDocument::InvalidVersion => {
+            Some(DoctorMalformedRosterDocumentClass::InvalidVersion)
+        }
+        MalformedDocument::UnsupportedVersion { found } => {
+            Some(DoctorMalformedRosterDocumentClass::UnsupportedVersion { found })
+        }
+        MalformedDocument::InvalidPayload { message: _ } => {
+            Some(DoctorMalformedRosterDocumentClass::InvalidPayload)
+        }
+        MalformedDocument::InvalidJson { message: _ }
+        | MalformedDocument::NotObject
+        | MalformedDocument::MissingClusterId
+        | MalformedDocument::InvalidClusterId => None,
     }
 }
 

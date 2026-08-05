@@ -6,7 +6,8 @@ use std::fmt::Write as _;
 use hyper::Method;
 use ployz_core::corrosion::NameClaim;
 use ployz_core::{
-    DOCTOR_ROUTE, DoctorDocument, DoctorForeignAuthorship, HandshakeFreshness, STATUS_ROUTE,
+    DOCTOR_ROUTE, DoctorDocument, DoctorForeignAuthorship, DoctorMalformedRosterDocumentClass,
+    DoctorRosterRowSkipReason, DoctorRosterTable, HandshakeFreshness, STATUS_ROUTE,
     StatusAnsweringMachine, StatusBarrier, StatusDegradationReason, StatusDocument,
     StatusHandshakeEvidence, StatusHint, StatusSync,
 };
@@ -220,6 +221,7 @@ fn render_handshake(handshake: &StatusHandshakeEvidence) -> String {
 pub fn render_doctor(document: &DoctorDocument) -> (String, bool) {
     let actionable_foreign_authors = actionable_foreign_authors(document);
     let has_findings = !document.shadows.is_empty()
+        || !document.skipped_roster_rows.is_empty()
         || !document.skipped_newer_versions.is_empty()
         || !document.versions.behind.is_empty()
         || !document.versions.invalid.is_empty()
@@ -250,6 +252,20 @@ pub fn render_doctor(document: &DoctorDocument) -> (String, bool) {
             output,
             "  remove the shadow:  {}",
             shadow_repair_command(&shadow.claim, shadow.loser_id.as_str())
+        )
+        .expect("writing to a String cannot fail");
+    }
+
+    for skipped in &document.skipped_roster_rows {
+        writeln!(
+            output,
+            "\n⚠ skipped roster row: {} {} ({})",
+            match skipped.table {
+                DoctorRosterTable::Machines => "machine",
+                DoctorRosterTable::Peers => "peer",
+            },
+            skipped.key,
+            render_roster_skip_reason(skipped.reason)
         )
         .expect("writing to a String cannot fail");
     }
@@ -311,10 +327,14 @@ pub fn render_doctor(document: &DoctorDocument) -> (String, bool) {
             .collect::<Vec<_>>();
         names.sort_unstable();
         names.dedup();
+        let names = names
+            .into_iter()
+            .map(shell_quote)
+            .collect::<Vec<_>>()
+            .join(" ");
         writeln!(
             output,
-            "  roll the lagging machines forward:  ployz machine upgrade {}",
-            names.join(" ")
+            "  roll the lagging machines forward:  ployz machine upgrade -- {names}"
         )
         .expect("writing to a String cannot fail");
     }
@@ -347,9 +367,9 @@ pub fn render_doctor(document: &DoctorDocument) -> (String, bool) {
         .expect("writing to a String cannot fail");
         writeln!(
             output,
-            "    ployz machine rm {} --id {}",
-            machine.name.as_str(),
-            machine.id.as_str()
+            "    ployz machine rm --id {} -- {}",
+            machine.id.as_str(),
+            shell_quote(machine.name.as_str())
         )
         .expect("writing to a String cannot fail");
         writeln!(
@@ -362,6 +382,21 @@ pub fn render_doctor(document: &DoctorDocument) -> (String, bool) {
     }
 
     (output, has_findings)
+}
+
+fn render_roster_skip_reason(reason: DoctorRosterRowSkipReason) -> &'static str {
+    match reason {
+        DoctorRosterRowSkipReason::MeshProviderMismatch { .. } => "mesh provider mismatch",
+        DoctorRosterRowSkipReason::MalformedDocument { class } => match class {
+            DoctorMalformedRosterDocumentClass::MissingVersion => "missing document version",
+            DoctorMalformedRosterDocumentClass::InvalidVersion => "invalid document version",
+            DoctorMalformedRosterDocumentClass::UnsupportedVersion { .. } => {
+                "unsupported document version"
+            }
+            DoctorMalformedRosterDocumentClass::InvalidPayload => "invalid document payload",
+        },
+        DoctorRosterRowSkipReason::InvalidRowId => "invalid row id",
+    }
 }
 
 fn shadow_repair_command(claim: &NameClaim, loser_id: &str) -> String {
@@ -459,7 +494,10 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::commands::{Command, MachineCommand, NamespaceCommand, PeerCommand, ServiceCommand};
+    use crate::commands::{
+        Command, MachineCommand, MachineUpgradeSelector, NamespaceCommand, PeerCommand,
+        ServiceCommand,
+    };
     use crate::remote::ContextSelectionError;
 
     const CLUSTER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -561,6 +599,13 @@ mod tests {
                     },
                     "winner_id": ROW_WINNER,
                     "loser_id": ROW_LOSER
+                }
+            ],
+            "skipped_roster_rows": [
+                {
+                    "table": "peers",
+                    "key": "unsafe-peer-row",
+                    "reason": { "kind": "invalid_row_id" }
                 }
             ],
             "skipped_newer_versions": [
@@ -697,6 +742,7 @@ mod tests {
         let (output, has_findings) = render_doctor(&doctor_fixture());
 
         assert!(has_findings);
+        assert!(output.contains("skipped roster row: peer unsafe-peer-row (invalid row id)"));
         assert!(output.contains(&format!("ployz machine rm --id {ROW_LOSER} -- 'edge-a'")));
         assert!(output.contains(&format!("ployz peer rm --id {ROW_LOSER} -- 'laptop'")));
         assert!(output.contains(&format!("ployz namespace rm --id {ROW_LOSER} -- 'prod'")));
@@ -723,9 +769,9 @@ mod tests {
             crate::commands::parse_command(command.into_iter().map(ToOwned::to_owned))
                 .expect("doctor repair command parses");
         }
-        assert!(output.contains("ployz machine upgrade edge-a"));
+        assert!(output.contains("ployz machine upgrade -- 'edge-a'"));
         let fence = output
-            .find(&format!("ployz machine rm edge-a --id {MACHINE_B}"))
+            .find(&format!("ployz machine rm --id {MACHINE_B} -- 'edge-a'"))
             .expect("fence repair");
         let reset = output
             .find("on edge-a:  sudo ployz machine reset")
@@ -733,7 +779,7 @@ mod tests {
         let rejoin = output.find("ployz token create").expect("rejoin repair");
         assert!(fence < reset && reset < rejoin);
         assert!(output.contains(&format!("authored by peer {PEER}; inert, no repair action")));
-        assert!(!output.contains(&format!("ployz machine rm {MACHINE_C}")));
+        assert!(!output.contains(&format!("ployz machine rm --id {MACHINE_C}")));
     }
 
     #[test]
@@ -867,7 +913,35 @@ mod tests {
 
         assert!(has_findings);
         assert!(output.contains(&format!("ployz machine rm --id {ROW_LOSER} -- 'edge-a'")));
-        assert!(output.contains(&format!("ployz machine rm edge-a --id {MACHINE_B}")));
+        assert!(output.contains(&format!("ployz machine rm --id {MACHINE_B} -- 'edge-a'")));
+    }
+
+    #[test]
+    fn foreign_machine_repair_parses_an_option_looking_exact_name() {
+        let mut document = doctor_fixture();
+        for foreign in &mut document.foreign_clusters {
+            for row in &mut foreign.rows {
+                if let DoctorForeignAuthorship::CurrentMachine { machine } = &mut row.authorship {
+                    machine.name = ployz_core::machine::MachineName::try_new("--help")
+                        .expect("option-looking machine name");
+                }
+            }
+        }
+
+        let (output, has_findings) = render_doctor(&document);
+
+        assert!(has_findings);
+        assert!(output.contains(&format!("ployz machine rm --id {MACHINE_B} -- '--help'")));
+        assert!(matches!(
+            crate::commands::parse_command(
+                ["machine", "rm", "--id", MACHINE_B, "--", "--help"]
+                    .into_iter()
+                    .map(ToOwned::to_owned),
+            ),
+            Ok(Command::Machine(MachineCommand::Remove(command)))
+                if command.machine.as_str() == "--help"
+                    && command.machine_id.as_ref().is_some_and(|id| id.as_str() == MACHINE_B)
+        ));
     }
 
     #[test]
@@ -915,11 +989,11 @@ mod tests {
                 },
                 "behind": [
                     {
-                        "machine": { "id": MACHINE_B, "name": "edge-a" },
+                        "machine": { "id": MACHINE_B, "name": "--all" },
                         "version": "0.1.0"
                     },
                     {
-                        "machine": { "id": MACHINE_C, "name": "edge-b" },
+                        "machine": { "id": MACHINE_C, "name": "--help" },
                         "version": "0.1.0"
                     }
                 ],
@@ -934,7 +1008,25 @@ mod tests {
         assert!(output.contains(&format!(
             "newer row version: services {ROW_LOSER} has v=2 (this binary supports v=1)"
         )));
-        assert!(output.contains("ployz machine upgrade edge-a edge-b"));
+        assert!(output.contains("ployz machine upgrade -- '--all' '--help'"));
+
+        let command = crate::commands::parse_command(
+            ["machine", "upgrade", "--", "--all", "--help"]
+                .into_iter()
+                .map(ToOwned::to_owned),
+        )
+        .expect("option-looking machine names parse after the separator");
+        let Command::Machine(MachineCommand::Upgrade(command)) = command else {
+            panic!("doctor upgrade repair parses as machine upgrade");
+        };
+        let MachineUpgradeSelector::Names(names) = command.selector else {
+            panic!("doctor upgrade repair selects exact machine names");
+        };
+        let [first, second] = names.as_slice() else {
+            panic!("doctor upgrade repair keeps both exact machine names");
+        };
+        assert_eq!(first.as_str(), "--all");
+        assert_eq!(second.as_str(), "--help");
     }
 
     #[test]

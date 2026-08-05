@@ -11,7 +11,8 @@ use ployz_core::ids::{ClusterId, CorrosionUlid, MachineRowId, PeerId, TokenId};
 use ployz_core::machine::{MachineLifecycle, MachineName};
 use ployz_core::network::{MachineEndpointSubnet, MachineEndpointSupernet, WireGuardPublicKey};
 use ployz_core::{
-    DOCTOR_ROUTE, DoctorDocument, DoctorForeignAuthorship, DoctorProjectionInput, DoctorRawRows,
+    DOCTOR_ROUTE, DoctorDocument, DoctorForeignAuthorship, DoctorMalformedRosterDocumentClass,
+    DoctorProjectionInput, DoctorRawRows, DoctorRosterRowSkipReason, DoctorRosterTable,
     HandshakeFreshness, KnownApiFeature, MachineLensRow, STATUS_ROUTE, StatusAnsweringMachine,
     StatusBarrier, StatusCorrosionHealth, StatusDegradationReason, StatusDocument,
     StatusHandshakeEvidence, StatusHint, StatusProjectionInput, StatusSync, V2Method, V2Route,
@@ -585,6 +586,140 @@ fn doctor_shadow_claims_alone_identify_each_repair_primitive() {
         shadow.winner_id == CorrosionUlid::try_new(winner).expect("winner id")
             && shadow.loser_id == CorrosionUlid::try_new(loser).expect("loser id")
     }));
+}
+
+#[test]
+fn doctor_projects_same_cluster_roster_skips_without_duplicating_other_evidence() {
+    let foreign_cluster = "01ARZ3NDEKTSV4RRFFQ69G5FAZ";
+    let mut machine_provider_mismatch = named_document("machines", "machine-provider");
+    *machine_provider_mismatch
+        .get_mut("transport")
+        .expect("machine fixture has transport") =
+        json!({"kind": "tailscale", "ip": "100.64.0.20", "subnet_v4": "10.210.20.0/24"});
+    let mut peer_provider_mismatch = named_document("peers", "peer-provider");
+    *peer_provider_mismatch
+        .get_mut("transport")
+        .expect("peer fixture has transport") = json!({"kind": "tailscale", "ip": "100.64.0.30"});
+    let mut malformed_machine = named_document("machines", "machine-malformed");
+    *malformed_machine
+        .get_mut("transport")
+        .expect("machine fixture has transport") = json!({"kind": "unknown"});
+    let mut malformed_peer = named_document("peers", "peer-malformed");
+    *malformed_peer
+        .get_mut("transport")
+        .expect("peer fixture has transport") = json!({"kind": "unknown"});
+
+    let mut rows = DoctorRawRows::empty();
+    rows.machines = vec![
+        row(MACHINE, machine_provider_mismatch),
+        row("01ARZ3NDEKTSV4RRFFQ69G5FAX", malformed_machine),
+        row(
+            "invalid-machine-id",
+            named_document("machines", "machine-id"),
+        ),
+        row(
+            "01ARZ3NDEKTSV4RRFFQ69G5FAY",
+            json!({"v": 2, "cluster_id": CLUSTER}),
+        ),
+        row(
+            "01ARZ3NDEKTSV4RRFFQ69G5FAT",
+            json!({"v": 1, "cluster_id": foreign_cluster}),
+        ),
+    ];
+    rows.peers = vec![
+        row(MACHINE, peer_provider_mismatch),
+        row("01ARZ3NDEKTSV4RRFFQ69G5FAX", malformed_peer),
+        row("invalid-peer-id", named_document("peers", "peer-id")),
+        row(
+            "01ARZ3NDEKTSV4RRFFQ69G5FAY",
+            json!({"v": 2, "cluster_id": CLUSTER}),
+        ),
+        row(
+            "01ARZ3NDEKTSV4RRFFQ69G5FAT",
+            json!({"v": 1, "cluster_id": foreign_cluster}),
+        ),
+    ];
+
+    let doctor = project_doctor(DoctorProjectionInput {
+        cluster: cluster(),
+        rows,
+    });
+
+    assert_eq!(
+        doctor.skipped_roster_rows,
+        vec![
+            ployz_core::DoctorSkippedRosterRow {
+                table: DoctorRosterTable::Machines,
+                key: MACHINE.to_owned(),
+                reason: DoctorRosterRowSkipReason::MeshProviderMismatch {
+                    expected: MeshProvider::BuiltinWireguard,
+                    found: MeshProvider::Tailscale,
+                },
+            },
+            ployz_core::DoctorSkippedRosterRow {
+                table: DoctorRosterTable::Machines,
+                key: "01ARZ3NDEKTSV4RRFFQ69G5FAX".to_owned(),
+                reason: DoctorRosterRowSkipReason::MalformedDocument {
+                    class: DoctorMalformedRosterDocumentClass::InvalidPayload,
+                },
+            },
+            ployz_core::DoctorSkippedRosterRow {
+                table: DoctorRosterTable::Machines,
+                key: "invalid-machine-id".to_owned(),
+                reason: DoctorRosterRowSkipReason::InvalidRowId,
+            },
+            ployz_core::DoctorSkippedRosterRow {
+                table: DoctorRosterTable::Peers,
+                key: MACHINE.to_owned(),
+                reason: DoctorRosterRowSkipReason::MeshProviderMismatch {
+                    expected: MeshProvider::BuiltinWireguard,
+                    found: MeshProvider::Tailscale,
+                },
+            },
+            ployz_core::DoctorSkippedRosterRow {
+                table: DoctorRosterTable::Peers,
+                key: "01ARZ3NDEKTSV4RRFFQ69G5FAX".to_owned(),
+                reason: DoctorRosterRowSkipReason::MalformedDocument {
+                    class: DoctorMalformedRosterDocumentClass::InvalidPayload,
+                },
+            },
+            ployz_core::DoctorSkippedRosterRow {
+                table: DoctorRosterTable::Peers,
+                key: "invalid-peer-id".to_owned(),
+                reason: DoctorRosterRowSkipReason::InvalidRowId,
+            },
+        ]
+    );
+    assert_eq!(doctor.skipped_newer_versions.len(), 2);
+    assert!(doctor.skipped_newer_versions.iter().all(|row| {
+        row.key == "01ARZ3NDEKTSV4RRFFQ69G5FAY"
+            && matches!(row.table, CorrosionTable::Machines | CorrosionTable::Peers)
+    }));
+    let [foreign] = doctor.foreign_clusters.as_slice() else {
+        panic!("expected one foreign-cluster group");
+    };
+    assert_eq!(foreign.cluster_id, foreign_cluster);
+    assert_eq!(foreign.rows.len(), 2);
+    assert!(doctor.skipped_roster_rows.iter().all(|row| {
+        row.key != "01ARZ3NDEKTSV4RRFFQ69G5FAY" && row.key != "01ARZ3NDEKTSV4RRFFQ69G5FAT"
+    }));
+    let Some(malformed_machine_reason) = doctor
+        .skipped_roster_rows
+        .iter()
+        .find(|row| {
+            row.table == DoctorRosterTable::Machines && row.key == "01ARZ3NDEKTSV4RRFFQ69G5FAX"
+        })
+        .map(|row| &row.reason)
+    else {
+        panic!("expected malformed machine evidence");
+    };
+    assert_eq!(
+        serde_json::to_value(malformed_machine_reason).expect("roster skip reason serializes"),
+        json!({
+            "kind": "malformed_document",
+            "class": {"kind": "invalid_payload"}
+        })
+    );
 }
 
 #[test]
