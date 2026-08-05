@@ -133,6 +133,7 @@ impl JoinDoorClient {
         .await
     }
 
+    #[cfg(test)]
     async fn request_pinned<RequestBody, ResponseBody>(
         &self,
         endpoints: &[SocketAddr],
