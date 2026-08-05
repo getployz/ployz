@@ -3,6 +3,9 @@
 use ployz_core::corrosion::{MachineStorageSelection, StorageMode};
 use ployz_core::founding::{FoundingRefusal, FoundingResult, PLAIN_STORAGE_FORFEIT};
 
+use crate::init::on_host::OnHostSuccess;
+use crate::mesh::context::{OperatorContextError, SshContextHandoff};
+
 #[must_use]
 pub fn success_summary(
     result: FoundingResult,
@@ -39,6 +42,22 @@ pub fn refusal_summary(refusal: &FoundingRefusal) -> String {
             repair_command.as_str()
         ),
     }
+}
+
+pub fn ssh_context_handoff(success: &OnHostSuccess) -> Result<String, OperatorContextError> {
+    SshContextHandoff {
+        cluster_id: success.cluster_id.clone(),
+        provider: success.provider,
+        machine_transport: success.machine_transport.clone(),
+    }
+    .encode_handoff()
+}
+
+#[must_use]
+pub fn context_handoff_unavailable(target: &str) -> String {
+    format!(
+        "The remote ployz is too old to save this laptop's cluster context. Upgrade ployz on {target}, then run:\n  ployz init {target}\n  ployz machine ls --target {target}"
+    )
 }
 
 #[cfg(test)]
@@ -113,6 +132,14 @@ mod tests {
         assert_eq!(
             output,
             "Init refused: cluster door TLS material is incomplete.\nRepair on the machine: ployz machine reset\n"
+        );
+    }
+
+    #[test]
+    fn release_skew_names_the_exact_recovery_pair() {
+        assert_eq!(
+            context_handoff_unavailable("root@machine.example"),
+            "The remote ployz is too old to save this laptop's cluster context. Upgrade ployz on root@machine.example, then run:\n  ployz init root@machine.example\n  ployz machine ls --target root@machine.example"
         );
     }
 }

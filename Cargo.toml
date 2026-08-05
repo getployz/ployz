@@ -21,12 +21,18 @@ license = "MIT"
 
 [workspace.dependencies]
 atomic-write-file = "0.3"
+bytes = "1"
 clap = { version = "4", features = ["derive"] }
 futures-util = "0.3"
 getifs = "0.6"
 getrandom = "0.3"
+gotatun = { version = "=0.7.0", default-features = false, features = ["device", "ring"] }
 hickory-proto = "0.26"
 hmac = "0.12"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+ipnetwork = "0.21"
 local-ip-address = "0.6"
 public-ip-address = { version = "0.4", default-features = false, features = ["blocking"] }
 defguard_wireguard_rs = "0.10"
@@ -42,6 +48,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sentry = { version = "0.48", default-features = false, features = ["backtrace", "reqwest", "rustls"] }
 sha2 = "0.10"
+smoltcp = { version = "=0.13.1", default-features = false, features = ["std", "medium-ip", "proto-ipv6", "socket-tcp"] }
 sysctl = "0.7"
 thiserror = "2"
 time = { version = "=0.3.47", features = ["formatting", "parsing"] }

@@ -17,10 +17,13 @@ workspace = true
 base64 = "0.22"
 bollard = { version = "0.21.0", default-features = false, features = ["pipe"] }
 futures-util.workspace = true
+ployz-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 uuid.workspace = true
 
 [dev-dependencies]
-ployz-core.workspace = true
-serde_json.workspace = true
+ployz = { path = "../../crates/ployz" }
+tempfile = "3"

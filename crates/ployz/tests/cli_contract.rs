@@ -10,7 +10,8 @@ fn bare_cli_and_help_advertise_init_and_local_commands() {
         let stdout = stdout(&output);
         assert!(stdout.contains("telemetry"));
         assert!(stdout.contains("  init"));
-        for removed in ["deploy", "machine", "ops", "core", "host"] {
+        assert!(stdout.contains("  machine"));
+        for removed in ["deploy", "ops", "core", "host"] {
             assert!(!stdout.contains(&format!("  {removed}")));
         }
     }

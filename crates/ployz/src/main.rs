@@ -32,6 +32,16 @@ async fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Command::Machine(command) => match ployz::machine::execute(command).await {
+            Ok(output) => {
+                print!("{output}");
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                ExitCode::FAILURE
+            }
+        },
     }
 }
 
