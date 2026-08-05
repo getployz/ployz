@@ -81,6 +81,10 @@ fn plan_replicated_service(
     }
 
     let existing_replica_count = steps.len();
+    let superseded = superseded_machines(&cleanup_candidates, &reused_containers(&steps));
+    for machine_id in &superseded {
+        placement_load.retire(machine_id);
+    }
     let run_machines = match &volume_placement.machine_id {
         Some(machine_id) => {
             let pinned = vec![machine_id.clone(); missing_replicas];
@@ -91,7 +95,7 @@ fn plan_replicated_service(
         }
         None => balanced_placements(
             &eligible_machines,
-            &cleanup_candidates,
+            &superseded,
             missing_replicas,
             placement_load,
         ),
@@ -179,6 +183,9 @@ fn plan_global_service(
                 )
         })
         .collect::<Vec<_>>();
+    for machine_id in &superseded_machines(&cleanup_candidates, &reused_containers(&steps)) {
+        placement_load.retire(machine_id);
+    }
     for step in &steps {
         match step {
             DeployPlanStep::RunContainer { machine_id, .. } => placement_load.record(machine_id),
@@ -371,24 +378,54 @@ fn normalize_existing_replicas(replicas: &mut Vec<ExistingServiceReplica>) {
     });
 }
 
-/// Machines for replicas the plan must create. A replica follows the container
-/// it supersedes, so an ordinary redeploy leaves a service on the machine it
+/// Container ids the plan keeps. A reused container is not superseded: its
+/// replica already exists, so it is neither retired from the projected count
+/// nor a predecessor a further replica may follow onto the same machine.
+fn reused_containers(steps: &[DeployPlanStep]) -> BTreeSet<ContainerId> {
+    steps
+        .iter()
+        .filter_map(|step| match step {
+            DeployPlanStep::UseExistingContainer { container_id, .. } => Some(container_id.clone()),
+            DeployPlanStep::RunContainer { .. } => None,
+        })
+        .collect()
+}
+
+/// Machines whose running containers this plan supersedes. They are counted in
+/// the observed load today and gone once the deploy completes, so the
+/// projection must lose them before it gains their replacements — otherwise a
+/// replacement reads as growth and pushes later services off a machine that is
+/// not actually getting busier.
+fn superseded_machines(
+    cleanup_candidates: &[ObservedCleanupCandidate],
+    reused_containers: &BTreeSet<ContainerId>,
+) -> Vec<MachineId> {
+    cleanup_candidates
+        .iter()
+        .filter(|candidate| {
+            candidate.state.is_running()
+                && !reused_containers.contains(&candidate.target.container_id)
+        })
+        .map(|candidate| candidate.target.machine_id.clone())
+        .collect()
+}
+
+/// Machines for replicas the plan must create. A replica follows a container it
+/// supersedes, so an ordinary redeploy leaves a service on the machine it
 /// already runs on and only Rebalance relocates a running service. A replica
-/// with no predecessor lands on the eligible machine carrying the fewest
-/// placed containers, so a namespace spreads instead of every service landing
-/// on whichever machine sorts first.
+/// with no predecessor lands on the eligible machine carrying the fewest placed
+/// containers, so a namespace spreads instead of every service landing on
+/// whichever machine sorts first.
 fn balanced_placements(
     eligible_machines: &[MachineId],
-    cleanup_candidates: &[ObservedCleanupCandidate],
+    superseded: &[MachineId],
     missing_replicas: usize,
     placement_load: &mut MachinePlacementLoad,
 ) -> Vec<MachineId> {
-    let mut predecessors = cleanup_candidates
+    let mut predecessors = superseded
         .iter()
-        .filter(|candidate| {
-            candidate.state.is_running() && eligible_machines.contains(&candidate.target.machine_id)
-        })
-        .map(|candidate| candidate.target.machine_id.clone())
+        .filter(|machine_id| eligible_machines.contains(machine_id))
+        .cloned()
         .collect::<Vec<_>>();
     predecessors.sort();
     let mut predecessors = predecessors.into_iter();
@@ -426,6 +463,10 @@ mod tests {
         MachineId::try_new(name).expect("machine id")
     }
 
+    fn container(machine_name: &str, service: &str) -> ContainerId {
+        ContainerId::try_new(format!("ctr_{machine_name}_{service}")).expect("container id")
+    }
+
     fn identity(service: &str) -> ManagedContainerIdentity {
         ManagedContainerIdentity {
             namespace_id: NamespaceId::try_new("default").expect("namespace id"),
@@ -446,12 +487,11 @@ mod tests {
         }
     }
 
-    fn predecessor(machine_name: &str, service: &str) -> ObservedCleanupCandidate {
+    fn candidate(machine_name: &str, service: &str) -> ObservedCleanupCandidate {
         ObservedCleanupCandidate {
             target: DeployCleanupContainer {
                 machine_id: machine(machine_name),
-                container_id: ContainerId::try_new(format!("ctr_{machine_name}_{service}"))
-                    .expect("container id"),
+                container_id: container(machine_name, service),
                 identity: identity(service),
             },
             state: running(),
@@ -464,8 +504,7 @@ mod tests {
     fn observation(machine_name: &str, service: &str) -> ManagedContainerObservation {
         ManagedContainerObservation {
             machine_id: machine(machine_name),
-            container_id: ContainerId::try_new(format!("ctr_{machine_name}_{service}"))
-                .expect("container id"),
+            container_id: container(machine_name, service),
             identity: identity(service),
             state: running(),
             health_status: None,
@@ -475,13 +514,17 @@ mod tests {
         }
     }
 
-    #[test]
-    fn single_replica_services_spread_instead_of_stacking_on_the_first_machine() {
-        let eligible = vec![
+    fn three_machines() -> Vec<MachineId> {
+        vec![
             machine("machine_a"),
             machine("machine_b"),
             machine("machine_c"),
-        ];
+        ]
+    }
+
+    #[test]
+    fn single_replica_services_spread_instead_of_stacking_on_the_first_machine() {
+        let eligible = three_machines();
         let mut load = MachinePlacementLoad::new(BTreeMap::new());
 
         let placed = (0..6)
@@ -509,34 +552,24 @@ mod tests {
 
     #[test]
     fn a_replica_follows_the_container_it_supersedes() {
-        let eligible = vec![
-            machine("machine_a"),
-            machine("machine_b"),
-            machine("machine_c"),
-        ];
+        let eligible = three_machines();
         // machine_a is the busiest, so balance alone would place elsewhere.
         let mut load = MachinePlacementLoad::new(BTreeMap::from([(machine("machine_a"), 9)]));
 
-        let placements =
-            balanced_placements(&eligible, &[predecessor("machine_a", "api")], 1, &mut load);
+        let placements = balanced_placements(&eligible, &[machine("machine_a")], 1, &mut load);
 
         assert_eq!(placements, vec![machine("machine_a")]);
     }
 
     #[test]
     fn replicas_beyond_their_predecessors_fall_back_to_the_least_loaded_machine() {
-        let eligible = vec![
-            machine("machine_a"),
-            machine("machine_b"),
-            machine("machine_c"),
-        ];
+        let eligible = three_machines();
         let mut load = MachinePlacementLoad::new(BTreeMap::from([
             (machine("machine_a"), 4),
             (machine("machine_b"), 1),
         ]));
 
-        let placements =
-            balanced_placements(&eligible, &[predecessor("machine_a", "api")], 3, &mut load);
+        let placements = balanced_placements(&eligible, &[machine("machine_a")], 3, &mut load);
 
         assert_eq!(
             placements,
@@ -553,14 +586,63 @@ mod tests {
         let eligible = vec![machine("machine_b")];
         let mut load = MachinePlacementLoad::new(BTreeMap::new());
 
-        let placements = balanced_placements(
-            &eligible,
-            &[predecessor("machine_draining", "api")],
-            1,
-            &mut load,
-        );
+        let placements =
+            balanced_placements(&eligible, &[machine("machine_draining")], 1, &mut load);
 
         assert_eq!(placements, vec![machine("machine_b")]);
+    }
+
+    #[test]
+    fn a_container_the_plan_reuses_is_not_superseded() {
+        let reused = BTreeSet::from([container("machine_b", "api")]);
+
+        assert_eq!(
+            superseded_machines(&[candidate("machine_b", "api")], &reused),
+            Vec::<MachineId>::new()
+        );
+        assert_eq!(
+            superseded_machines(&[candidate("machine_b", "api")], &BTreeSet::new()),
+            vec![machine("machine_b")]
+        );
+    }
+
+    #[test]
+    fn replacing_a_container_leaves_the_projected_count_unchanged() {
+        let eligible = vec![machine("machine_a"), machine("machine_b")];
+        // machine_a runs three services; every one of them is being replaced.
+        let mut load = MachinePlacementLoad::new(BTreeMap::from([(machine("machine_a"), 3)]));
+
+        for _ in 0..3 {
+            load.retire(&machine("machine_a"));
+            let placements = balanced_placements(&eligible, &[machine("machine_a")], 1, &mut load);
+            assert_eq!(placements, vec![machine("machine_a")]);
+        }
+
+        // Six new services then split evenly rather than all fleeing to machine_b.
+        let placed = (0..6)
+            .map(|_| {
+                let placements = balanced_placements(&eligible, &[], 1, &mut load);
+                let [machine_id] = placements.as_slice() else {
+                    panic!("one replica yields one placement");
+                };
+                machine_id.clone()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            placed
+                .iter()
+                .filter(|id| **id == machine("machine_a"))
+                .count(),
+            2
+        );
+        assert_eq!(
+            placed
+                .iter()
+                .filter(|id| **id == machine("machine_b"))
+                .count(),
+            4
+        );
     }
 
     #[test]

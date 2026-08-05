@@ -117,6 +117,15 @@ impl MachinePlacementLoad {
         *self.counts.entry(machine_id.clone()).or_insert(0) += 1;
     }
 
+    /// Drop a container the plan supersedes. Saturating, because the observed
+    /// load and the cleanup set are gathered separately and a container may be
+    /// named by one without appearing in the other.
+    fn retire(&mut self, machine_id: &MachineId) {
+        self.counts
+            .entry(machine_id.clone())
+            .and_modify(|count| *count = count.saturating_sub(1));
+    }
+
     /// The candidate carrying the fewest placed containers, breaking ties on
     /// machine id so a plan does not depend on candidate order.
     fn least_loaded(&self, candidates: &[MachineId]) -> Option<MachineId> {
