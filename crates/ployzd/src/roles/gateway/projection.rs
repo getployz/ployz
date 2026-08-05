@@ -42,7 +42,7 @@ pub struct GatewayProjectionInput {
     /// observed container an operation promoted: an offline machine's
     /// upstreams fail at dial time, which is the live and exact liveness
     /// answer — the projection never infers liveness from observation age
-    /// (ADR 0027, superseding ADR 0009's staleness filter).
+    /// (ADR 0040, superseding ADR 0009's staleness filter).
     pub observed_machines: Vec<MachineContainerObservationSnapshot>,
 }
 

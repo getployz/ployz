@@ -5,5 +5,6 @@ product architecture. [ADR 0040](../adr/0040-corrosion-replaces-the-core-and-nat
 supersedes it with Corrosion rows over HTTP/JSON/SSE on the WireGuard mesh.
 
 Current path ownership and dependency direction live in
-[`code-map.md`](code-map.md). Historical ADRs retain the decisions that led to
-the retired design; they are not implementation guidance for v2.
+[`code-map.md`](code-map.md). The surviving rationale is consolidated in ADR
+0040; deleted v1 records remain available in git history and are not
+implementation guidance for v2.

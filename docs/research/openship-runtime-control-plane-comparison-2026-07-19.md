@@ -203,7 +203,7 @@ Ployz sources:
 - [Runtime vision](../../VISION.md)
 - [Contributor code map](../architecture/code-map.md)
 - [NATS control-plane architecture](../architecture/nats-control-plane.md)
-- [Disposable core ADR](../adr/0016-the-core-is-disposable-not-replicated.md)
+- [Coreless v2 ADR](../adr/0040-corrosion-replaces-the-core-and-nats.md)
 - [Build Adapter types](../../crates/ployz-core/src/build.rs)
 - [Build placement and operation driver](../../crates/ployzd/src/control/operations/build/driver.rs)
 - [Machine build executor](../../crates/ployzd/src/roles/machine/execution/build/runner.rs)

@@ -688,7 +688,7 @@ export type MachineTestimony = { "status": "answered", endpoints: MachineEndpoin
 /**
  * When this machine last self-reported, as display evidence for the
  * operator. Never an input to behavior: liveness surfaces at the point
- * of use (ADR 0027).
+ * of use (ADR 0040).
  */
 last_observed_at_unix_seconds: number, } | { "status": "no_answer" };
 
