@@ -4,6 +4,8 @@ mod admission;
 mod collision;
 #[path = "token_door_join/fixture.rs"]
 mod fixture;
+#[path = "token_door_join/repair.rs"]
+mod repair;
 
 use admission::{
     admit_concurrent_machines_with_distinct_subnets, admit_roaming_peer_and_assert_no_subnet,
@@ -26,6 +28,7 @@ use ployz_e2e::dind::{
     DindCluster, DindClusterSpec, MachineSpec, artifact_dir, connect_docker, corrosion_access,
     e2e_enabled, install_local_release_channel, keep_requested, machine_image, require,
 };
+use repair::{refound_cluster, repair_contaminated_and_wiped_machine};
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -179,9 +182,34 @@ async fn exercise_token_door(docker: &Docker, cluster: &DindCluster) -> Result<(
     )?;
     wait_for_joined_reachability(docker, founder, &joiner_row.document).await?;
 
+    let repaired_joiner = repair_contaminated_and_wiped_machine(
+        docker,
+        store,
+        &cli,
+        temporary_home.path(),
+        founder,
+        joiner,
+        &blob,
+        joiner_row,
+    )
+    .await?;
+
     admit_roaming_peer_and_assert_no_subnet(store, &blob).await?;
     admit_concurrent_machines_with_distinct_subnets(&blob).await?;
     assert_revoked_and_expired_refusals(store, &cli, temporary_home.path(), blob, token_id).await?;
 
-    force_collision_and_wait_for_higher_ulid_repair(store, joiner, founder_row, joiner_row).await
+    force_collision_and_wait_for_higher_ulid_repair(store, joiner, founder_row, &repaired_joiner)
+        .await?;
+    refound_cluster(
+        docker,
+        &cli,
+        temporary_home.path(),
+        &config_home,
+        &target,
+        &operator,
+        founder,
+        joiner,
+        &repaired_joiner,
+    )
+    .await
 }

@@ -443,6 +443,17 @@ pub(super) async fn delete_token(
     Ok(())
 }
 
+/// Deletes the resolved roster row before every testimony row that identity
+/// authored. The fixed batch deliberately never touches operation evidence.
+pub(super) async fn remove_machine_and_sweep(
+    corrosion: &CorrosionClient,
+    machine_id: &MachineRowId,
+) -> Result<(), MutationStoreError> {
+    let statements = machine_removal_statements(machine_id);
+    corrosion.execute(&statements).await?;
+    Ok(())
+}
+
 pub(super) async fn delete_machine_if_matches(
     corrosion: &CorrosionClient,
     machine_id: &MachineRowId,
@@ -780,6 +791,41 @@ fn delete_token_statement(token_id: &TokenId) -> Statement {
     delete_statement(CorrosionTable::Tokens, token_id.as_str())
 }
 
+fn machine_removal_statements(machine_id: &MachineRowId) -> [Statement; 5] {
+    [
+        delete_statement(CorrosionTable::Machines, machine_id.as_str()),
+        delete_testimony_for_machine_statement(CorrosionTable::MachineStatus, machine_id),
+        delete_testimony_for_machine_statement(CorrosionTable::Containers, machine_id),
+        delete_testimony_for_machine_statement(CorrosionTable::CertHoldings, machine_id),
+        delete_testimony_for_machine_statement(CorrosionTable::AcmeHttp01, machine_id),
+    ]
+}
+
+fn delete_testimony_for_machine_statement(
+    table: CorrosionTable,
+    machine_id: &MachineRowId,
+) -> Statement {
+    match table {
+        CorrosionTable::MachineStatus
+        | CorrosionTable::Containers
+        | CorrosionTable::CertHoldings
+        | CorrosionTable::AcmeHttp01 => Statement::with_params(
+            format!("DELETE FROM {} WHERE machine_id = ?", table.as_str()),
+            vec![SqliteParameter::Text(machine_id.as_str().to_owned())],
+        ),
+        CorrosionTable::Cluster
+        | CorrosionTable::Machines
+        | CorrosionTable::Peers
+        | CorrosionTable::Tokens
+        | CorrosionTable::Namespaces
+        | CorrosionTable::Services
+        | CorrosionTable::RouteBindings
+        | CorrosionTable::Operations => {
+            unreachable!("only machine-authority testimony tables are removable")
+        }
+    }
+}
+
 fn conditional_delete_statement(table: CorrosionTable, id: &str, expected: String) -> Statement {
     Statement::with_params(
         format!(
@@ -985,6 +1031,46 @@ mod tests {
                 "SELECT id, document FROM tokens WHERE id = ?",
                 vec![SqliteParameter::Text("TOKEN".to_owned())],
             )
+        );
+    }
+
+    #[test]
+    fn machine_removal_is_one_parameterized_roster_first_testimony_batch() {
+        let machine_id = MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("machine id");
+        let statements = machine_removal_statements(&machine_id);
+        let parameter = SqliteParameter::Text(machine_id.as_str().to_owned());
+        assert_eq!(
+            statements,
+            [
+                Statement::with_params(
+                    "DELETE FROM machines WHERE id = ?",
+                    vec![parameter.clone()],
+                ),
+                Statement::with_params(
+                    "DELETE FROM machine_status WHERE machine_id = ?",
+                    vec![parameter.clone()],
+                ),
+                Statement::with_params(
+                    "DELETE FROM containers WHERE machine_id = ?",
+                    vec![parameter.clone()],
+                ),
+                Statement::with_params(
+                    "DELETE FROM cert_holdings WHERE machine_id = ?",
+                    vec![parameter.clone()],
+                ),
+                Statement::with_params(
+                    "DELETE FROM acme_http01 WHERE machine_id = ?",
+                    vec![parameter],
+                ),
+            ]
+        );
+        let operations_sentinel = Statement::with_params(
+            "DELETE FROM operations WHERE machine_id = ?",
+            vec![SqliteParameter::Text(machine_id.as_str().to_owned())],
+        );
+        assert!(
+            !statements.contains(&operations_sentinel),
+            "machine removal must preserve operation evidence"
         );
     }
 
