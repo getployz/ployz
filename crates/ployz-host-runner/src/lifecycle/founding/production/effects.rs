@@ -299,7 +299,8 @@ impl<R: HostRunnerCommandRunner> FoundingHostEffects for LinuxFoundingHostEffect
         let PeerTransport::Wireguard { pubkey, .. } = &document.transport else {
             return Err(failure("founding driver transport is not WireGuard"));
         };
-        for _ in 0..30 {
+        let deadline = Instant::now() + DRIVER_PEER_CONVERGENCE_TIMEOUT;
+        loop {
             let output = self.runner.command("wg", &["show", "ployz0", "peers"])?;
             if output.success
                 && output
@@ -309,11 +310,15 @@ impl<R: HostRunnerCommandRunner> FoundingHostEffects for LinuxFoundingHostEffect
             {
                 return Ok(());
             }
+            if Instant::now() >= deadline {
+                break;
+            }
             thread::sleep(Duration::from_secs(1));
         }
-        Err(failure(
-            "Keeper did not converge the founding driver peer within 30 seconds",
-        ))
+        Err(failure(format!(
+            "Keeper did not converge the founding driver peer within {} seconds",
+            DRIVER_PEER_CONVERGENCE_TIMEOUT.as_secs()
+        )))
     }
 
     fn remove_bootstrap_credential(&mut self) -> Result<(), FailureMessage> {

@@ -5,7 +5,7 @@ use std::fs;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use defguard_wireguard_rs::key::Key;
 use ployz_core::corrosion::{
@@ -60,6 +60,7 @@ const CORROSION_CONFIG_FILE: &str = "corrosion.toml";
 const CORROSION_TOKEN_FILE: &str = "corrosion-token";
 const API_PORT: u16 = 2_020;
 const CORROSION_API_PORT: u16 = 8_080;
+const DRIVER_PEER_CONVERGENCE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Public driver material carried into the initial peer row.
 #[derive(Debug, Clone, PartialEq, Eq)]
