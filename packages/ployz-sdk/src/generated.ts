@@ -15,6 +15,7 @@ export const KNOWN_API_FEATURES = [
   "v2.lenses",
   "v2.join_tokens",
   "v2.machine_endpoint",
+  "v2.machine_remove",
   "v2.join_door",
 ] as const;
 
@@ -555,7 +556,7 @@ export type JoinTokenSecret = Brand<string, "JoinTokenSecret">;
 
 export type JoinTokenTtlSeconds = SafeInteger<"JoinTokenTtlSeconds">;
 
-export type KnownApiFeature = "v2.founding" | "v2.lenses" | "v2.join_tokens" | "v2.machine_endpoint" | "v2.join_door";
+export type KnownApiFeature = "v2.founding" | "v2.lenses" | "v2.join_tokens" | "v2.machine_endpoint" | "v2.machine_remove" | "v2.join_door";
 
 export type LensCollection = "machines" | "services" | "containers" | "machine_status" | "operations";
 

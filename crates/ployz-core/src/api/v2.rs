@@ -7,6 +7,7 @@ use crate::corrosion::{
     Principal, ServiceDocument, SourcePrincipalResolutionError,
 };
 use crate::ids::{ContainerId, MachineRowId, OperationRowId, ServiceRowId, TokenId};
+use crate::machine::MachineName;
 
 /// The only supported major version of the v2 HTTP contract.
 pub const API_MAJOR: u16 = 1;
@@ -28,6 +29,8 @@ pub const TOKEN_LIST_ROUTE: &str = "/tokens/list";
 pub const TOKEN_REVOKE_ROUTE_PREFIX: &str = "/tokens/revoke";
 /// Stable prefix for changing one machine's advertised WireGuard endpoint.
 pub const MACHINE_ENDPOINT_ROUTE_PREFIX: &str = "/machines/endpoint";
+/// Stable endpoint for fencing one machine from the roster and sweeping its testimony.
+pub const MACHINE_REMOVE_ROUTE: &str = "/machines/remove";
 /// The only route exposed by the public TLS join door.
 pub const JOIN_ROUTE: &str = "/join";
 
@@ -43,6 +46,8 @@ pub enum KnownApiFeature {
     JoinTokens,
     #[serde(rename = "v2.machine_endpoint")]
     MachineEndpoint,
+    #[serde(rename = "v2.machine_remove")]
+    MachineRemove,
     #[serde(rename = "v2.join_door")]
     JoinDoor,
 }
@@ -56,6 +61,7 @@ impl KnownApiFeature {
             Self::Lenses => "v2.lenses",
             Self::JoinTokens => "v2.join_tokens",
             Self::MachineEndpoint => "v2.machine_endpoint",
+            Self::MachineRemove => "v2.machine_remove",
             Self::JoinDoor => "v2.join_door",
         }
     }
@@ -67,6 +73,7 @@ pub const KNOWN_API_FEATURES: &[KnownApiFeature] = &[
     KnownApiFeature::Lenses,
     KnownApiFeature::JoinTokens,
     KnownApiFeature::MachineEndpoint,
+    KnownApiFeature::MachineRemove,
     KnownApiFeature::JoinDoor,
 ];
 
@@ -180,6 +187,99 @@ pub fn token_revoke_route(token_id: &TokenId) -> String {
     format!("{TOKEN_REVOKE_ROUTE_PREFIX}/{token_id}")
 }
 
+/// Mesh-authenticated request to fence one machine from the roster.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct MachineRemoveRequest {
+    pub machine_name: MachineName,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine_id: Option<MachineRowId>,
+}
+
+/// The terminal outcome of a machine-removal fence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MachineRemoveReply {
+    Removed { machine_id: MachineRowId },
+    AlreadyAbsent { machine_id: MachineRowId },
+}
+
+/// A refusal to resolve a machine-removal selector against accepted roster rows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MachineRemoveRefusal {
+    NotFound {
+        machine_name: MachineName,
+    },
+    Ambiguous {
+        machine_name: MachineName,
+        machine_ids: Vec<MachineRowId>,
+    },
+    IdMismatch {
+        machine_name: MachineName,
+        machine_id: MachineRowId,
+    },
+}
+
+/// Resolves a removal selector only from roster rows already accepted by the
+/// reader law. The optional row id disambiguates a name collision without
+/// making raw or skipped rows selectable.
+pub fn select_machine_removal(
+    request: &MachineRemoveRequest,
+    accepted: impl IntoIterator<Item = (MachineRowId, MachineName)>,
+) -> Result<MachineRowId, MachineRemoveRefusal> {
+    let accepted = accepted.into_iter().collect::<Vec<_>>();
+    let requested_id_is_accepted = request.machine_id.as_ref().is_some_and(|machine_id| {
+        accepted
+            .iter()
+            .any(|(accepted_machine_id, _)| accepted_machine_id == machine_id)
+    });
+    let mut candidates = accepted
+        .into_iter()
+        .filter_map(|(machine_id, machine_name)| {
+            (machine_name == request.machine_name).then_some(machine_id)
+        })
+        .collect::<Vec<_>>();
+    candidates.sort();
+
+    let Some(expected_machine_id) = &request.machine_id else {
+        return match candidates.as_slice() {
+            [] => Err(MachineRemoveRefusal::NotFound {
+                machine_name: request.machine_name.clone(),
+            }),
+            [machine_id] => Ok(machine_id.clone()),
+            _ => Err(MachineRemoveRefusal::Ambiguous {
+                machine_name: request.machine_name.clone(),
+                machine_ids: candidates,
+            }),
+        };
+    };
+
+    if candidates
+        .iter()
+        .any(|machine_id| machine_id == expected_machine_id)
+    {
+        return Ok(expected_machine_id.clone());
+    }
+    if candidates.is_empty() {
+        if requested_id_is_accepted {
+            return Err(MachineRemoveRefusal::IdMismatch {
+                machine_name: request.machine_name.clone(),
+                machine_id: expected_machine_id.clone(),
+            });
+        }
+        return Err(MachineRemoveRefusal::NotFound {
+            machine_name: request.machine_name.clone(),
+        });
+    }
+    Err(MachineRemoveRefusal::IdMismatch {
+        machine_name: request.machine_name.clone(),
+        machine_id: expected_machine_id.clone(),
+    })
+}
+
 /// The exact public route shape, parsed without any daemon-local strings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum V2Route {
@@ -189,6 +289,7 @@ pub enum V2Route {
     TokenList,
     TokenRevoke(TokenId),
     MachineEndpointSet,
+    MachineRemove,
     Join,
     Lens(LensCollection),
     LensWatch(LensCollection),
@@ -223,6 +324,9 @@ impl V2Route {
         if path == MACHINE_ENDPOINT_ROUTE_PREFIX {
             return Some(Self::MachineEndpointSet);
         }
+        if path == MACHINE_REMOVE_ROUTE {
+            return Some(Self::MachineRemove);
+        }
         if let Some(token_id) = path
             .strip_prefix(TOKEN_REVOKE_ROUTE_PREFIX)
             .and_then(|suffix| suffix.strip_prefix('/'))
@@ -253,6 +357,7 @@ impl V2Route {
             Self::TokenList => TOKEN_LIST_ROUTE.to_owned(),
             Self::TokenRevoke(token_id) => token_revoke_route(token_id),
             Self::MachineEndpointSet => MACHINE_ENDPOINT_ROUTE_PREFIX.to_owned(),
+            Self::MachineRemove => MACHINE_REMOVE_ROUTE.to_owned(),
             Self::Join => JOIN_ROUTE.to_owned(),
             Self::Lens(collection) => lens_route(*collection),
             Self::LensWatch(collection) => lens_watch_route(*collection),
@@ -269,6 +374,7 @@ impl V2Route {
             | Self::TokenList
             | Self::TokenRevoke(_)
             | Self::MachineEndpointSet
+            | Self::MachineRemove
             | Self::Join => V2Method::Post,
         }
     }
@@ -283,6 +389,7 @@ impl V2Route {
                 KnownApiFeature::JoinTokens
             }
             Self::MachineEndpointSet => KnownApiFeature::MachineEndpoint,
+            Self::MachineRemove => KnownApiFeature::MachineRemove,
             Self::Join => KnownApiFeature::JoinDoor,
         }
     }
@@ -295,7 +402,8 @@ impl V2Route {
             Self::TokenCreate
             | Self::TokenList
             | Self::TokenRevoke(_)
-            | Self::MachineEndpointSet => matches!(principal, Principal::Peer { .. }),
+            | Self::MachineEndpointSet
+            | Self::MachineRemove => matches!(principal, Principal::Peer { .. }),
             Self::Version | Self::Founding | Self::Lens(_) | Self::LensWatch(_) => {
                 matches!(
                     principal,
@@ -538,5 +646,133 @@ impl LensWatchEvent {
             Self::State { .. } => LENS_STATE_EVENT,
             Self::Terminal { .. } => LENS_TERMINAL_EVENT,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+    use crate::ids::PeerId;
+
+    fn machine_id(value: &str) -> MachineRowId {
+        MachineRowId::try_new(value).expect("fixture machine id")
+    }
+
+    fn machine_name() -> MachineName {
+        MachineName::try_new("edge-a").expect("fixture machine name")
+    }
+
+    #[test]
+    fn machine_remove_has_one_exact_route_feature_method_and_principal_policy() {
+        let route = V2Route::MachineRemove;
+        assert_eq!(route.path(), MACHINE_REMOVE_ROUTE);
+        assert_eq!(V2Route::parse(MACHINE_REMOVE_ROUTE), Some(route.clone()));
+        assert_eq!(route.method(), V2Method::Post);
+        assert_eq!(route.feature(), KnownApiFeature::MachineRemove);
+        assert!(route.accepts_principal(&Principal::Peer {
+            peer_id: PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAY").expect("fixture peer id"),
+        }));
+        assert!(!route.accepts_principal(&Principal::Machine {
+            machine_id: machine_id("01ARZ3NDEKTSV4RRFFQ69G5FAV"),
+        }));
+        assert!(!route.accepts_principal(&Principal::ApiToken {
+            token_id: TokenId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAX").expect("fixture token id"),
+        }));
+    }
+
+    #[test]
+    fn machine_remove_contract_serializes_the_optional_id_and_typed_outcomes() {
+        let request = MachineRemoveRequest {
+            machine_name: machine_name(),
+            machine_id: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&request).expect("request serializes"),
+            json!({ "machine_name": "edge-a" })
+        );
+        let machine_id = machine_id("01ARZ3NDEKTSV4RRFFQ69G5FAV");
+        let reply = MachineRemoveReply::AlreadyAbsent {
+            machine_id: machine_id.clone(),
+        };
+        assert_eq!(
+            serde_json::to_value(reply).expect("reply serializes"),
+            json!({ "kind": "already_absent", "machine_id": machine_id.as_str() })
+        );
+        let refusal = MachineRemoveRefusal::IdMismatch {
+            machine_name: machine_name(),
+            machine_id: machine_id.clone(),
+        };
+        assert_eq!(
+            serde_json::from_value::<MachineRemoveRefusal>(
+                serde_json::to_value(&refusal).expect("refusal serializes"),
+            )
+            .expect("refusal deserializes"),
+            refusal
+        );
+    }
+
+    #[test]
+    fn machine_remove_selection_requires_an_unambiguous_accepted_roster_row() {
+        let lower = machine_id("01ARZ3NDEKTSV4RRFFQ69G5FAV");
+        let higher = machine_id("01ARZ3NDEKTSV4RRFFQ69G5FAW");
+        let request = MachineRemoveRequest {
+            machine_name: machine_name(),
+            machine_id: None,
+        };
+        assert_eq!(
+            select_machine_removal(
+                &request,
+                [
+                    (higher.clone(), machine_name()),
+                    (lower.clone(), machine_name()),
+                ],
+            ),
+            Err(MachineRemoveRefusal::Ambiguous {
+                machine_name: machine_name(),
+                machine_ids: vec![lower.clone(), higher.clone()],
+            })
+        );
+
+        let request = MachineRemoveRequest {
+            machine_name: machine_name(),
+            machine_id: Some(higher.clone()),
+        };
+        assert_eq!(
+            select_machine_removal(
+                &request,
+                [
+                    (lower.clone(), machine_name()),
+                    (higher.clone(), machine_name()),
+                ],
+            ),
+            Ok(higher.clone())
+        );
+
+        let missing = machine_id("01ARZ3NDEKTSV4RRFFQ69G5FAX");
+        let request = MachineRemoveRequest {
+            machine_name: machine_name(),
+            machine_id: Some(missing.clone()),
+        };
+        assert_eq!(
+            select_machine_removal(&request, [(lower, machine_name())]),
+            Err(MachineRemoveRefusal::IdMismatch {
+                machine_name: machine_name(),
+                machine_id: missing,
+            })
+        );
+
+        let request = MachineRemoveRequest {
+            machine_name: MachineName::try_new("edge-b").expect("fixture machine name"),
+            machine_id: Some(higher.clone()),
+        };
+        assert_eq!(
+            select_machine_removal(&request, [(higher.clone(), machine_name())]),
+            Err(MachineRemoveRefusal::IdMismatch {
+                machine_name: MachineName::try_new("edge-b").expect("fixture machine name"),
+                machine_id: higher,
+            })
+        );
     }
 }

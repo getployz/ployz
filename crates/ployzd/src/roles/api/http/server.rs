@@ -468,7 +468,8 @@ impl ApiService {
             V2Route::TokenCreate
             | V2Route::TokenList
             | V2Route::TokenRevoke(_)
-            | V2Route::MachineEndpointSet => {
+            | V2Route::MachineEndpointSet
+            | V2Route::MachineRemove => {
                 super::mutations::handle_mutation(self, route, principal, request).await
             }
             V2Route::Lens(collection) => self.snapshot_response(collection).await,
