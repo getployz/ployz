@@ -1,5 +1,8 @@
 #![cfg_attr(
-    not(all(target_os = "linux", target_arch = "x86_64")),
+    not(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    )),
     allow(dead_code, unused_imports)
 )]
 
@@ -40,15 +43,21 @@ const API_MACHINE_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB2";
 const API_BUILD: &str = "pinned-corrosion-api-version-test";
 const TOKEN: &str = "ployz-stock-corrosion-test";
 
-#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+#[cfg(not(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+)))]
 #[test]
 fn pinned_corrosion_archive_has_no_supported_asset_for_this_platform() {
     panic!(
-        "the pinned Corrosion integration test supports only linux/x86_64; add and pin an official asset before enabling this platform"
+        "the pinned Corrosion integration test supports only linux/x86_64 and linux/aarch64; add and pin an official asset before enabling this platform"
     );
 }
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 #[tokio::test]
 async fn pinned_corrosion_executes_schema_rows_queries_and_subscriptions() {
     let mut harness = StockCorrosion::start()
@@ -804,6 +813,7 @@ fn fixtures() -> Result<Vec<Fixture>, String> {
     ])
 }
 
+#[derive(Debug)]
 struct ReleasePin {
     release_tag: String,
     archive_name: String,
@@ -814,28 +824,156 @@ struct ReleasePin {
 
 impl ReleasePin {
     fn load(repo_root: &Path) -> Result<Self, String> {
-        let path = repo_root.join("corrosion-release.json");
-        let bytes = fs::read(&path).map_err(|error| format!("read {}: {error}", path.display()))?;
-        let manifest: Value =
-            serde_json::from_slice(&bytes).map_err(|error| format!("parse manifest: {error}"))?;
-        let text = |value: Option<&Value>, field: &str| {
-            value
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-                .ok_or_else(|| format!("release manifest field {field} is missing or not text"))
+        let platform = match (std::env::consts::OS, std::env::consts::ARCH) {
+            ("linux", "x86_64") => "linux-amd64",
+            ("linux", "aarch64") => "linux-arm64",
+            (os, arch) => {
+                return Err(format!(
+                    "unsupported Corrosion release platform {os}/{arch}"
+                ));
+            }
         };
-        let archive = manifest.get("archive");
+        Self::load_for_platform(
+            repo_root,
+            &repo_root.join("corrosion-release.json"),
+            platform,
+        )
+    }
+
+    fn load_for_platform(
+        repo_root: &Path,
+        manifest_path: &Path,
+        platform: &str,
+    ) -> Result<Self, String> {
+        let reader = repo_root.join("scripts/read-corrosion-release.py");
+        let output = Command::new("python3")
+            .arg(&reader)
+            .arg(manifest_path)
+            .arg(platform)
+            .output()
+            .map_err(|error| format!("run {}: {error}", reader.display()))?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
+        }
+        let stdout = String::from_utf8(output.stdout)
+            .map_err(|error| format!("Corrosion release reader output is not UTF-8: {error}"))?;
+        let fields = stdout.lines().collect::<Vec<_>>();
+        let [
+            release_tag,
+            archive_name,
+            archive_url,
+            archive_sha256,
+            embedded_version,
+        ] = fields.as_slice()
+        else {
+            return Err(
+                "Corrosion release reader did not yield exactly five pinned fields".to_owned(),
+            );
+        };
+        if fields.iter().any(|field| field.is_empty()) {
+            return Err("Corrosion release reader yielded an empty pinned field".to_owned());
+        }
         Ok(Self {
-            release_tag: text(manifest.get("release_tag"), "release_tag")?,
-            archive_name: text(archive.and_then(|value| value.get("name")), "archive.name")?,
-            archive_url: text(archive.and_then(|value| value.get("url")), "archive.url")?,
-            archive_sha256: text(
-                archive.and_then(|value| value.get("sha256")),
-                "archive.sha256",
-            )?,
-            embedded_version: text(manifest.get("embedded_version"), "embedded_version")?,
+            release_tag: (*release_tag).to_owned(),
+            archive_name: (*archive_name).to_owned(),
+            archive_url: (*archive_url).to_owned(),
+            archive_sha256: (*archive_sha256).to_owned(),
+            embedded_version: (*embedded_version).to_owned(),
         })
     }
+}
+
+#[test]
+fn corrosion_release_pin_parser_selects_both_supported_linux_assets() {
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let manifest_path = repo_root.join("corrosion-release.json");
+
+    let amd64 = ReleasePin::load_for_platform(&repo_root, &manifest_path, "linux-amd64")
+        .expect("amd64 pin is complete");
+    assert_eq!(
+        amd64.archive_name,
+        "corrosion-x86_64-unknown-linux-gnu.tar.gz"
+    );
+    assert_eq!(
+        amd64.archive_sha256,
+        "3504d7d1b4b53737457fc40f2353a400cf4df0c1217ec318924d7ee310876194"
+    );
+
+    let arm64 = ReleasePin::load_for_platform(&repo_root, &manifest_path, "linux-arm64")
+        .expect("arm64 pin is complete");
+    assert_eq!(
+        arm64.archive_name,
+        "corrosion-aarch64-unknown-linux-gnu.tar.gz"
+    );
+    assert_eq!(
+        arm64.archive_sha256,
+        "b00b5c6996dee89c36e51e1d4196602bb7e12bbb25abc9b68390e062bdd13be3"
+    );
+    assert_eq!(arm64.release_tag, "v1.0.0");
+    assert_eq!(arm64.embedded_version, "corrosion 0.2.0-beta.0");
+}
+
+#[test]
+fn corrosion_release_pin_parser_rejects_an_unsupported_platform() {
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let error = ReleasePin::load_for_platform(
+        &repo_root,
+        &repo_root.join("corrosion-release.json"),
+        "linux-riscv64",
+    )
+    .expect_err("unsupported platform is rejected before pin selection");
+    assert_eq!(
+        error,
+        "corrosion release manifest has no pin for linux-riscv64"
+    );
+}
+
+#[test]
+fn corrosion_release_pin_parser_rejects_noncanonical_archive_names() {
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let temp = TempDir::new().expect("temporary directory");
+    let manifest_path = temp.path().join("corrosion-release.json");
+    let source =
+        fs::read_to_string(repo_root.join("corrosion-release.json")).expect("manifest reads");
+    fs::write(
+        &manifest_path,
+        source.replace(
+            "corrosion-x86_64-unknown-linux-gnu.tar.gz",
+            "corrosion-linux-amd64.tar.gz",
+        ),
+    )
+    .expect("invalid manifest writes");
+
+    let error = ReleasePin::load_for_platform(&repo_root, &manifest_path, "linux-amd64")
+        .expect_err("noncanonical archive is rejected");
+    assert_eq!(
+        error,
+        "corrosion release manifest archive name for linux-amd64 is not canonical"
+    );
+}
+
+#[test]
+fn corrosion_release_pin_parser_rejects_schema_extensions() {
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let temp = TempDir::new().expect("temporary directory");
+    let manifest_path = temp.path().join("corrosion-release.json");
+    let mut manifest: Value = serde_json::from_slice(
+        &fs::read(repo_root.join("corrosion-release.json")).expect("manifest reads"),
+    )
+    .expect("manifest parses");
+    let Some(root) = manifest.as_object_mut() else {
+        panic!("release manifest has an object root")
+    };
+    root.insert("unexpected".to_owned(), json!(true));
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec(&manifest).expect("invalid manifest serializes"),
+    )
+    .expect("invalid manifest writes");
+
+    let error = ReleasePin::load_for_platform(&repo_root, &manifest_path, "linux-amd64")
+        .expect_err("schema extension is rejected");
+    assert_eq!(error, "corrosion release manifest root is invalid");
 }
 
 struct StockCorrosion {

@@ -129,6 +129,75 @@ fn release_asset_verifier_rejects_missing_railpack_asset() {
 
 #[cfg(unix)]
 #[test]
+fn release_asset_verifier_rejects_missing_corrosion_asset() {
+    let root = temp_dir("ployz-release-verify-missing-corrosion");
+    let assets_dir = root.join("assets");
+    fs::create_dir_all(&assets_dir).expect("assets dir can be created");
+    write_complete_release_assets(&assets_dir, "v0.0.2-alpha.1");
+    fs::remove_file(assets_dir.join("corrosion-linux-arm64"))
+        .expect("Corrosion asset can be removed");
+
+    let output = run_verifier(&[
+        "v0.0.2-alpha.1",
+        "--assets-dir",
+        assets_dir.to_str().expect("asset dir is utf8"),
+    ]);
+
+    assert!(!output.status.success());
+    assert_stderr_contains(&output, "references missing asset corrosion-linux-arm64");
+}
+
+#[cfg(unix)]
+#[test]
+fn release_asset_verifier_rejects_missing_corrosion_schema_asset() {
+    let root = temp_dir("ployz-release-verify-missing-corrosion-schema");
+    let assets_dir = root.join("assets");
+    fs::create_dir_all(&assets_dir).expect("assets dir can be created");
+    write_complete_release_assets(&assets_dir, "v0.0.2-alpha.1");
+    fs::remove_file(assets_dir.join("corrosion-schema-v1-linux-amd64.sql"))
+        .expect("Corrosion schema asset can be removed");
+
+    let output = run_verifier(&[
+        "v0.0.2-alpha.1",
+        "--assets-dir",
+        assets_dir.to_str().expect("asset dir is utf8"),
+    ]);
+
+    assert!(!output.status.success());
+    assert_stderr_contains(
+        &output,
+        "references missing asset corrosion-schema-v1-linux-amd64.sql",
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn release_asset_verifier_rejects_wrong_corrosion_embedded_version() {
+    let root = temp_dir("ployz-release-verify-corrosion-version");
+    let assets_dir = root.join("assets");
+    fs::create_dir_all(&assets_dir).expect("assets dir can be created");
+    write_complete_release_assets(&assets_dir, "v0.0.2-alpha.1");
+    replace_in_file(
+        &assets_dir.join("ployz-release-linux-amd64.env"),
+        "PLOYZ_CORROSION_EMBEDDED_VERSION=corrosion 0.2.0-beta.0",
+        "PLOYZ_CORROSION_EMBEDDED_VERSION=corrosion 1.0.0",
+    );
+
+    let output = run_verifier(&[
+        "v0.0.2-alpha.1",
+        "--assets-dir",
+        assets_dir.to_str().expect("asset dir is utf8"),
+    ]);
+
+    assert!(!output.status.success());
+    assert_stderr_contains(
+        &output,
+        "PLOYZ_CORROSION_EMBEDDED_VERSION=corrosion 1.0.0, expected corrosion 0.2.0-beta.0",
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn release_asset_verifier_rejects_an_unpinned_railpack_version() {
     let root = temp_dir("ployz-release-verify-railpack-version");
     let assets_dir = root.join("assets");
@@ -163,7 +232,14 @@ fn release_packager_stages_the_checksum_verified_native_railpack_helper() {
     fs::create_dir_all(&artifact_dir).expect("artifact dir can be created");
     fs::create_dir_all(&fixture_dir).expect("fixture dir can be created");
     fs::create_dir_all(&bin_dir).expect("bin dir can be created");
-    for artifact in ["ployz", "ployzd", "ployz-ebpf-ctl", "ployz-ebpf-tc"] {
+    for artifact in [
+        "ployz",
+        "ployzd",
+        "ployz-ebpf-ctl",
+        "ployz-ebpf-tc",
+        "corrosion",
+        "corrosion-schema-v1.sql",
+    ] {
         fs::write(artifact_dir.join(artifact), artifact).expect("artifact can be written");
     }
     fs::write(fixture_dir.join("railpack"), "railpack-amd64\n")
@@ -258,6 +334,13 @@ esac
     assert!(manifest.contains(
         "PLOYZ_RAILPACK_URL=https://github.com/getployz/ployz/releases/download/v0.0.2-alpha.1/railpack-linux-amd64\n"
     ));
+    assert!(manifest.contains("PLOYZ_CORROSION_EMBEDDED_VERSION=corrosion 0.2.0-beta.0\n"));
+    assert!(manifest.contains(
+        "PLOYZ_CORROSION_URL=https://github.com/getployz/ployz/releases/download/v0.0.2-alpha.1/corrosion-linux-amd64\n"
+    ));
+    assert!(manifest.contains(
+        "PLOYZ_CORROSION_SCHEMA_URL=https://github.com/getployz/ployz/releases/download/v0.0.2-alpha.1/corrosion-schema-v1-linux-amd64.sql\n"
+    ));
 }
 
 #[cfg(unix)]
@@ -266,7 +349,14 @@ fn release_packager_rejects_a_non_official_railpack_archive() {
     let root = temp_dir("ployz-release-package-wrong-railpack");
     let artifact_dir = root.join("artifacts");
     fs::create_dir_all(&artifact_dir).expect("artifact dir can be created");
-    for artifact in ["ployz", "ployzd", "ployz-ebpf-ctl", "ployz-ebpf-tc"] {
+    for artifact in [
+        "ployz",
+        "ployzd",
+        "ployz-ebpf-ctl",
+        "ployz-ebpf-tc",
+        "corrosion",
+        "corrosion-schema-v1.sql",
+    ] {
         fs::write(artifact_dir.join(artifact), artifact).expect("artifact can be written");
     }
 
@@ -450,6 +540,16 @@ fn release_asset_verifier_rejects_non_numeric_version_core() {
     );
 }
 
+#[test]
+fn public_installer_points_successful_cli_installs_to_init() {
+    let installer =
+        fs::read_to_string(repo_path("scripts/ployz.sh")).expect("public installer is readable");
+
+    assert!(installer.contains("default install next step: sudo ployz init"));
+    assert!(installer.contains("run: sudo ployz init"));
+    assert!(!installer.contains("sudo ployz host bootstrap"));
+}
+
 fn write_complete_release_assets(assets_dir: &Path, release_tag: &str) {
     let semver = release_tag
         .strip_prefix('v')
@@ -464,6 +564,11 @@ fn write_complete_release_assets(assets_dir: &Path, release_tag: &str) {
             ("PLOYZD", "ployzd-linux-amd64"),
             ("PLOYZ_EBPF_CTL", "ployz-ebpf-ctl-linux-amd64"),
             ("PLOYZ_EBPF_TC", "ployz-ebpf-tc-linux-amd64"),
+            ("PLOYZ_CORROSION", "corrosion-linux-amd64"),
+            (
+                "PLOYZ_CORROSION_SCHEMA",
+                "corrosion-schema-v1-linux-amd64.sql",
+            ),
             ("PLOYZ_RAILPACK", "railpack-linux-amd64"),
         ],
     );
@@ -477,6 +582,11 @@ fn write_complete_release_assets(assets_dir: &Path, release_tag: &str) {
             ("PLOYZD", "ployzd-linux-arm64"),
             ("PLOYZ_EBPF_CTL", "ployz-ebpf-ctl-linux-arm64"),
             ("PLOYZ_EBPF_TC", "ployz-ebpf-tc-linux-arm64"),
+            ("PLOYZ_CORROSION", "corrosion-linux-arm64"),
+            (
+                "PLOYZ_CORROSION_SCHEMA",
+                "corrosion-schema-v1-linux-arm64.sql",
+            ),
             ("PLOYZ_RAILPACK", "railpack-linux-arm64"),
         ],
     );
@@ -508,6 +618,7 @@ fn write_platform(
     );
     if platform.starts_with("linux-") {
         manifest.push_str("PLOYZ_RAILPACK_VERSION=v0.31.0\n");
+        manifest.push_str("PLOYZ_CORROSION_EMBEDDED_VERSION=corrosion 0.2.0-beta.0\n");
     }
     for (key, asset) in assets {
         fs::write(assets_dir.join(asset), "").expect("asset can be written");

@@ -13,6 +13,8 @@ use ployz_core::install::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArtifactKind {
+    Corrosion,
+    CorrosionSchema,
     EbpfBytecode,
     EbpfCtl,
     Ployzd,

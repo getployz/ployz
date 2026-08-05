@@ -12,6 +12,7 @@ pub mod build;
 pub mod certificate;
 pub mod corrosion;
 pub mod deploy;
+pub mod founding;
 pub mod ids;
 pub mod image;
 pub mod ingress;

@@ -46,7 +46,7 @@ jobs:
             /tmp/ployz-dind-ebpf-target
             /tmp/ployz-dind-cargo-registry
             /tmp/ployz-dind-cargo-git
-          key: ployz-release-${{ matrix.slug }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'crates/**/*.rs', 'ebpf/**/Cargo.lock', 'ebpf/**/Cargo.toml', 'ebpf/**/*.rs', 'scripts/build-dind-machine-image.sh', 'scripts/build-ebpf-bytecode.sh', 'scripts/lib.sh') }}
+          key: ployz-release-${{ matrix.slug }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'crates/**/*.rs', 'ebpf/**/Cargo.lock', 'ebpf/**/Cargo.toml', 'ebpf/**/*.rs', 'corrosion-release.json', 'docs/design/corrosion-schema-v1.sql', 'scripts/build-dind-machine-image.sh', 'scripts/build-ebpf-bytecode.sh', 'scripts/lib.sh') }}
           restore-keys: ployz-release-${{ matrix.slug }}-
       - name: Warm release build cache
         env:
@@ -159,7 +159,7 @@ jobs:
             /tmp/ployz-dind-ebpf-target
             /tmp/ployz-dind-cargo-registry
             /tmp/ployz-dind-cargo-git
-          key: ployz-release-${{ matrix.slug }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'crates/**/*.rs', 'ebpf/**/Cargo.lock', 'ebpf/**/Cargo.toml', 'ebpf/**/*.rs', 'config/railpack-pins.env', 'scripts/build-dind-machine-image.sh', 'scripts/build-ebpf-bytecode.sh', 'scripts/lib.sh') }}
+          key: ployz-release-${{ matrix.slug }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'crates/**/*.rs', 'ebpf/**/Cargo.lock', 'ebpf/**/Cargo.toml', 'ebpf/**/*.rs', 'config/railpack-pins.env', 'corrosion-release.json', 'docs/design/corrosion-schema-v1.sql', 'scripts/build-dind-machine-image.sh', 'scripts/build-ebpf-bytecode.sh', 'scripts/lib.sh') }}
           restore-keys: ployz-release-${{ matrix.slug }}-
       - name: Restore macOS build cache
         if: startsWith(matrix.platform, 'darwin/')

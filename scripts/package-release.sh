@@ -53,7 +53,20 @@ case "${platform_os}" in
       ployz
       ployz-ebpf-ctl
       ployz-ebpf-tc
+      corrosion
+      corrosion-schema-v1.sql
     )
+    command -v python3 >/dev/null 2>&1 || {
+      echo "python3 is required to read corrosion-release.json" >&2
+      exit 1
+    }
+    if ! corrosion_embedded_version="$(python3 \
+      "${ROOT_DIR}/scripts/read-corrosion-release.py" \
+      "${ROOT_DIR}/corrosion-release.json" \
+      "${platform_slug}" \
+      embedded_version)"; then
+      exit 1
+    fi
     : "${PLOYZ_RAILPACK_VERSION:?PLOYZ_RAILPACK_VERSION is required for Linux release manifests}"
     : "${PLOYZ_RAILPACK_ARCHIVE_URL:?PLOYZ_RAILPACK_ARCHIVE_URL is required for Linux release manifests}"
     : "${PLOYZ_RAILPACK_ARCHIVE_SHA256:?PLOYZ_RAILPACK_ARCHIVE_SHA256 is required for Linux release manifests}"
@@ -145,7 +158,15 @@ copy_asset() {
   local mode="$2"
   local asset="${name}-${platform_slug}"
 
-  install -m "${mode}" "${artifact_dir}/${name}" "${dist_dir}/${asset}"
+  copy_asset_as "${name}" "${asset}" "${mode}"
+}
+
+copy_asset_as() {
+  local source_name="$1"
+  local asset="$2"
+  local mode="$3"
+
+  install -m "${mode}" "${artifact_dir}/${source_name}" "${dist_dir}/${asset}"
   printf '%s\n' "${asset}"
 }
 
@@ -170,6 +191,8 @@ if [ "${platform_os}" = "linux" ]; then
   ployzd_asset="$(copy_asset ployzd 0755)"
   ebpf_ctl_asset="$(copy_asset ployz-ebpf-ctl 0755)"
   ebpf_tc_asset="$(copy_asset ployz-ebpf-tc 0644)"
+  corrosion_asset="$(copy_asset corrosion 0755)"
+  corrosion_schema_asset="$(copy_asset_as corrosion-schema-v1.sql "corrosion-schema-v1-${platform_slug}.sql" 0644)"
   work_dir="$(mktemp -d)"
   railpack_archive="${work_dir}/${railpack_archive_name}"
   curl --fail --location --silent --show-error "${PLOYZ_RAILPACK_ARCHIVE_URL}" --output "${railpack_archive}"
@@ -185,6 +208,8 @@ if [ "${platform_os}" = "linux" ]; then
     "${ployzd_asset}"
     "${ebpf_ctl_asset}"
     "${ebpf_tc_asset}"
+    "${corrosion_asset}"
+    "${corrosion_schema_asset}"
     "${railpack_asset}"
   )
 fi
@@ -200,6 +225,9 @@ fi
     write_manifest_pair PLOYZD "${ployzd_asset}"
     write_manifest_pair PLOYZ_EBPF_CTL "${ebpf_ctl_asset}"
     write_manifest_pair PLOYZ_EBPF_TC "${ebpf_tc_asset}"
+    printf 'PLOYZ_CORROSION_EMBEDDED_VERSION=%s\n' "${corrosion_embedded_version}"
+    write_manifest_pair PLOYZ_CORROSION "${corrosion_asset}"
+    write_manifest_pair PLOYZ_CORROSION_SCHEMA "${corrosion_schema_asset}"
     printf 'PLOYZ_RAILPACK_VERSION=%s\n' "${PLOYZ_RAILPACK_VERSION}"
     write_manifest_pair PLOYZ_RAILPACK "${railpack_asset}"
   fi

@@ -95,7 +95,7 @@ pub async fn capture_machine_evidence(
             &[
                 "sh",
                 "-c",
-                "curl --fail --silent --show-error -H 'Authorization: Bearer ployz-dind-corrosion' http://127.0.0.1:8080/v1/health",
+                "if [ -f /var/lib/ployz/ployzd.env ] && [ -f /var/lib/ployz/corrosion-token ]; then addr=$(sed -n 's/^PLOYZ_CORROSION_API_ADDR=//p' /var/lib/ployz/ployzd.env); token=$(cat /var/lib/ployz/corrosion-token); else addr=127.0.0.1:8080; token=ployz-dind-corrosion; fi; curl --noproxy '*' --fail --silent --show-error -H \"Authorization: Bearer ${token}\" \"http://${addr}/v1/health\"",
             ],
         ),
         (
@@ -103,7 +103,7 @@ pub async fn capture_machine_evidence(
             &[
                 "sh",
                 "-c",
-                "curl --fail --silent --show-error -H 'Authorization: Bearer ployz-dind-corrosion' -H 'Accept: application/json' -H 'Content-Type: application/json' --data '\"SELECT machine_id AS id, document FROM machine_status ORDER BY machine_id\"' http://127.0.0.1:8080/v1/queries",
+                "if [ -f /var/lib/ployz/ployzd.env ] && [ -f /var/lib/ployz/corrosion-token ]; then addr=$(sed -n 's/^PLOYZ_CORROSION_API_ADDR=//p' /var/lib/ployz/ployzd.env); token=$(cat /var/lib/ployz/corrosion-token); else addr=127.0.0.1:8080; token=ployz-dind-corrosion; fi; curl --noproxy '*' --fail --silent --show-error -H \"Authorization: Bearer ${token}\" -H 'Accept: application/json' -H 'Content-Type: application/json' --data '\"SELECT machine_id AS id, document FROM machine_status ORDER BY machine_id\"' \"http://${addr}/v1/queries\"",
             ],
         ),
         (

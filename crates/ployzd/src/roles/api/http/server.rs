@@ -16,17 +16,17 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Response, StatusCode};
 use hyper_util::rt::{TokioIo, TokioTimer};
-use ployz_core::ids::ClusterId;
+use ployz_core::ids::{ClusterId, MachineRowId};
 use ployz_core::{
-    ApiFeature, ApiRefusal, ApiVersion, KNOWN_API_FEATURES, LensCollection, LensSnapshot,
-    LensWatchEvent, V2Route,
+    ApiFeature, ApiRefusal, ApiVersion, FOUNDING_ROUTE, KNOWN_API_FEATURES, LensCollection,
+    LensSnapshot, LensWatchEvent, V2Method, V2Route,
 };
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{Mutex, OnceCell, mpsc, watch};
 use tokio::task::JoinSet;
 use tokio::time::{Instant, MissedTickBehavior};
 
-use super::config::{ApiRoleConfig, ApiRoleConfigError};
+use super::config::{ApiRoleConfig, ApiRoleConfigError, ApiRoleMode};
 use super::roster::{
     ApiListenerValidationError, corrosion_unavailable_refusal, resolve_peer_principal,
     validate_listener_identity,
@@ -47,7 +47,7 @@ const LENS_RECOVERY_MAX_BACKOFF: Duration = Duration::from_secs(1);
 pub(super) type HttpBody = BoxBody<Bytes, Infallible>;
 pub(super) type LensState = Result<LensSnapshot, ApiRefusal>;
 
-fn json_response(status: StatusCode, body: Vec<u8>) -> Response<HttpBody> {
+pub(super) fn json_response(status: StatusCode, body: Vec<u8>) -> Response<HttpBody> {
     let mut response = Response::new(Full::new(Bytes::from(body)).boxed());
     *response.status_mut() = status;
     response
@@ -96,6 +96,13 @@ pub(super) fn version_response(build: &str) -> Response<HttpBody> {
 }
 
 pub(super) fn refusal_response(refusal: ApiRefusal) -> Response<HttpBody> {
+    refusal_response_with_allow(refusal, Some(V2Method::Get))
+}
+
+pub(super) fn refusal_response_with_allow(
+    refusal: ApiRefusal,
+    allow: Option<V2Method>,
+) -> Response<HttpBody> {
     let status = refusal_status(&refusal);
     let retry_after = match &refusal {
         ApiRefusal::CorrosionUnavailable {
@@ -108,7 +115,6 @@ pub(super) fn refusal_response(refusal: ApiRefusal) -> Response<HttpBody> {
         | ApiRefusal::MissingCluster
         | ApiRefusal::InvalidCluster => None,
     };
-    let unsupported_method = matches!(&refusal, ApiRefusal::UnsupportedMethod { .. });
     let body = match serde_json::to_vec(&refusal) {
         Ok(body) => body,
         Err(error) => {
@@ -117,10 +123,16 @@ pub(super) fn refusal_response(refusal: ApiRefusal) -> Response<HttpBody> {
         }
     };
     let mut response = json_response(status, body);
-    if unsupported_method {
-        response
-            .headers_mut()
-            .insert(ALLOW, HeaderValue::from_static("GET"));
+    if matches!(&refusal, ApiRefusal::UnsupportedMethod { .. })
+        && let Some(method) = allow
+    {
+        response.headers_mut().insert(
+            ALLOW,
+            HeaderValue::from_static(match method {
+                V2Method::Get => "GET",
+                V2Method::Post => "POST",
+            }),
+        );
     }
     if let Some(retry_after) = retry_after
         && let Ok(value) = HeaderValue::from_str(&retry_after.get().to_string())
@@ -130,7 +142,7 @@ pub(super) fn refusal_response(refusal: ApiRefusal) -> Response<HttpBody> {
     response
 }
 
-fn corrosion_unavailable_response() -> Response<HttpBody> {
+pub(super) fn corrosion_unavailable_response() -> Response<HttpBody> {
     let refusal = corrosion_unavailable_refusal();
     let body = match serde_json::to_vec(&refusal) {
         Ok(body) => body,
@@ -171,13 +183,32 @@ pub(super) fn sse_event(event: &LensWatchEvent) -> Result<Bytes, serde_json::Err
     Ok(Bytes::from(frame))
 }
 
-pub(super) fn parse_get_route(method: &Method, path: &str) -> Result<V2Route, ApiRefusal> {
-    if method != Method::GET {
-        return Err(ApiRefusal::UnsupportedMethod {
-            method: method.as_str().to_owned(),
+pub(super) fn parse_route(method: &Method, path: &str) -> Result<V2Route, RouteRefusal> {
+    let Some(route) = V2Route::parse(path) else {
+        return Err(RouteRefusal {
+            refusal: ApiRefusal::UnsupportedRoute,
+            allow: None,
+        });
+    };
+    let expected = route.method();
+    let accepted = match expected {
+        V2Method::Get => method == Method::GET,
+        V2Method::Post => method == Method::POST,
+    };
+    if !accepted {
+        return Err(RouteRefusal {
+            refusal: ApiRefusal::UnsupportedMethod {
+                method: method.as_str().to_owned(),
+            },
+            allow: Some(expected),
         });
     }
-    V2Route::parse(path).ok_or(ApiRefusal::UnsupportedRoute)
+    Ok(route)
+}
+
+pub(super) struct RouteRefusal {
+    pub(super) refusal: ApiRefusal,
+    pub(super) allow: Option<V2Method>,
 }
 
 pub(super) fn source_from_peer<Body>(peer: SocketAddr, _request: &hyper::Request<Body>) -> IpAddr {
@@ -274,11 +305,16 @@ fn lens_engine_config(cluster_id: ClusterId) -> LensEngineConfig {
     LensEngineConfig::new(cluster_id, recovery)
 }
 
-struct ApiService {
-    corrosion: CorrosionClient,
-    cluster_id: ClusterId,
+pub(super) struct ApiService {
+    pub(super) corrosion: CorrosionClient,
+    pub(super) cluster_id: ClusterId,
+    pub(super) local_machine_id: MachineRowId,
+    pub(super) listen_addr: SocketAddr,
     build: String,
-    lenses: Arc<ApiLenses>,
+    pub(super) mode: ApiRoleMode,
+    lenses: OnceCell<Arc<ApiLenses>>,
+    lens_lifecycle: mpsc::UnboundedSender<LensCollection>,
+    pub(super) founding_lock: Mutex<()>,
 }
 
 impl ApiService {
@@ -288,6 +324,17 @@ impl ApiService {
         request: hyper::Request<hyper::body::Incoming>,
         shutdown: watch::Receiver<bool>,
     ) -> Response<HttpBody> {
+        if let Some(founding) =
+            parse_founding_route(&self.mode, request.method(), request.uri().path())
+        {
+            match founding {
+                Ok(()) => return super::founding::handle_founding(self, peer, request).await,
+                Err(error) => {
+                    return refusal_response_with_allow(error.refusal, error.allow);
+                }
+            }
+        }
+
         let _principal = match resolve_peer_principal(
             &self.corrosion,
             &self.cluster_id,
@@ -298,20 +345,40 @@ impl ApiService {
             Ok(principal) => principal,
             Err(refusal) => return refusal_response(refusal),
         };
-        let route = match parse_get_route(request.method(), request.uri().path()) {
+        if founding_route_disabled(&self.mode, request.uri().path()) {
+            return refusal_response(ApiRefusal::UnsupportedRoute);
+        }
+        let route = match parse_route(request.method(), request.uri().path()) {
             Ok(route) => route,
-            Err(refusal) => return refusal_response(refusal),
+            Err(error) => {
+                return refusal_response_with_allow(error.refusal, error.allow);
+            }
         };
-
         match route {
             V2Route::Version => version_response(&self.build),
+            V2Route::Founding => unreachable!("founding routes are handled before roster auth"),
             V2Route::Lens(collection) => self.snapshot_response(collection).await,
             V2Route::LensWatch(collection) => self.watch_response(collection, shutdown).await,
         }
     }
 
+    async fn start_lenses(&self) -> &Arc<ApiLenses> {
+        self.lenses
+            .get_or_init(|| async {
+                Arc::new(ApiLenses::start(
+                    self.corrosion.clone(),
+                    self.cluster_id.clone(),
+                    self.lens_lifecycle.clone(),
+                ))
+            })
+            .await
+    }
+
     async fn snapshot_response(&self, collection: LensCollection) -> Response<HttpBody> {
-        let mut updates = self.lenses.watch(collection).subscribe();
+        let Some(lenses) = self.lenses.get() else {
+            return refusal_response(corrosion_unavailable_refusal());
+        };
+        let mut updates = lenses.watch(collection).subscribe();
         let state =
             match tokio::time::timeout(LENS_INITIAL_WAIT, await_lens_state(&mut updates)).await {
                 Ok(Ok(state)) => state,
@@ -326,7 +393,10 @@ impl ApiService {
         collection: LensCollection,
         shutdown: watch::Receiver<bool>,
     ) -> Response<HttpBody> {
-        let mut updates = self.lenses.watch(collection).subscribe();
+        let Some(lenses) = self.lenses.get() else {
+            return refusal_response(corrosion_unavailable_refusal());
+        };
+        let mut updates = lenses.watch(collection).subscribe();
         let initial =
             match tokio::time::timeout(LENS_INITIAL_WAIT, await_lens_state(&mut updates)).await {
                 Ok(Ok(state)) => initial_watch_event(state),
@@ -335,6 +405,53 @@ impl ApiService {
             };
         sse_response(sse_watch_body(updates, initial, shutdown))
     }
+
+    async fn shutdown(self) {
+        let Some(lenses) = self.lenses.into_inner() else {
+            return;
+        };
+        match Arc::try_unwrap(lenses) {
+            Ok(lenses) => lenses.shutdown().await,
+            Err(_) => tracing::warn!("API lenses retained a connection reference during shutdown"),
+        }
+    }
+
+    pub(super) async fn start_founding_lenses_and_observe_machine(&self) -> bool {
+        let lenses = self.start_lenses().await;
+        machines_lens_contains(lenses, &self.local_machine_id).await
+    }
+}
+
+pub(super) fn parse_founding_route(
+    mode: &ApiRoleMode,
+    method: &Method,
+    path: &str,
+) -> Option<Result<(), RouteRefusal>> {
+    if path != FOUNDING_ROUTE {
+        return None;
+    }
+    if matches!(mode, ApiRoleMode::Ordinary) {
+        return None;
+    }
+    Some(parse_route(method, path).map(|route| {
+        if route != V2Route::Founding {
+            unreachable!("the exact founding path parses as the founding route");
+        }
+    }))
+}
+
+pub(super) fn founding_route_disabled(mode: &ApiRoleMode, path: &str) -> bool {
+    matches!(mode, ApiRoleMode::Ordinary) && path == FOUNDING_ROUTE
+}
+
+async fn machines_lens_contains(lenses: &ApiLenses, machine_id: &MachineRowId) -> bool {
+    let mut updates = lenses.watch(LensCollection::Machines).subscribe();
+    let state = tokio::time::timeout(LENS_INITIAL_WAIT, await_lens_state(&mut updates)).await;
+    matches!(
+        state,
+        Ok(Ok(Ok(LensSnapshot::Machines { rows, .. })))
+            if rows.iter().any(|row| &row.id == machine_id)
+    )
 }
 
 pub(super) fn lens_snapshot_response(
@@ -471,7 +588,6 @@ pub(super) fn fallback_terminal_sse_event() -> Bytes {
 pub struct ApiServer {
     listener: TcpListener,
     service: Arc<ApiService>,
-    lenses: Arc<ApiLenses>,
     lifecycle_failures: mpsc::UnboundedReceiver<LensCollection>,
 }
 
@@ -480,7 +596,18 @@ impl ApiServer {
     /// public collection.
     pub async fn bind(config: ApiRoleConfig) -> Result<Self, ApiServerError> {
         let listen_addr = config.listen_addr();
-        let (corrosion, cluster_id, build) = Self::validate_configuration(config).await?;
+        let corrosion = CorrosionClient::new(config.corrosion().clone())
+            .map_err(ApiServerError::CorrosionClientConfiguration)?;
+        if matches!(config.mode(), ApiRoleMode::Ordinary) {
+            validate_listener_identity(
+                &corrosion,
+                config.cluster_id(),
+                config.local_machine_id(),
+                config.listen_addr(),
+            )
+            .await
+            .map_err(ApiServerError::ListenerIdentity)?;
+        }
         let listener =
             TcpListener::bind(listen_addr)
                 .await
@@ -489,27 +616,13 @@ impl ApiServer {
                     source,
                 })?;
         Ok(Self::from_validated_listener(
-            listener, corrosion, cluster_id, build,
-        ))
-    }
-
-    async fn validate_configuration(
-        config: ApiRoleConfig,
-    ) -> Result<(CorrosionClient, ClusterId, String), ApiServerError> {
-        let corrosion = CorrosionClient::new(config.corrosion().clone())
-            .map_err(ApiServerError::CorrosionClientConfiguration)?;
-        validate_listener_identity(
-            &corrosion,
-            config.cluster_id(),
-            config.local_machine_id(),
-            config.listen_addr(),
-        )
-        .await
-        .map_err(ApiServerError::ListenerIdentity)?;
-        Ok((
+            listener,
             corrosion,
             config.cluster_id().clone(),
+            config.local_machine_id().clone(),
+            config.listen_addr(),
             config.build().to_owned(),
+            config.mode().clone(),
         ))
     }
 
@@ -517,24 +630,37 @@ impl ApiServer {
         listener: TcpListener,
         corrosion: CorrosionClient,
         cluster_id: ClusterId,
+        local_machine_id: MachineRowId,
+        listen_addr: SocketAddr,
         build: String,
+        mode: ApiRoleMode,
     ) -> Self {
         let (lifecycle_sender, lifecycle_failures) = mpsc::unbounded_channel();
-        let lenses = Arc::new(ApiLenses::start(
-            corrosion.clone(),
-            cluster_id.clone(),
-            lifecycle_sender,
-        ));
+        let lenses = OnceCell::new();
+        let ordinary_lenses = matches!(mode, ApiRoleMode::Ordinary).then(|| {
+            Arc::new(ApiLenses::start(
+                corrosion.clone(),
+                cluster_id.clone(),
+                lifecycle_sender.clone(),
+            ))
+        });
+        if ordinary_lenses.is_some_and(|ordinary_lenses| lenses.set(ordinary_lenses).is_err()) {
+            unreachable!("a new API lens cell is empty");
+        }
         let service = Arc::new(ApiService {
             corrosion,
             cluster_id,
+            local_machine_id,
+            listen_addr,
             build,
-            lenses: Arc::clone(&lenses),
+            mode,
+            lenses,
+            lens_lifecycle: lifecycle_sender,
+            founding_lock: Mutex::new(()),
         });
         Self {
             listener,
             service,
-            lenses,
             lifecycle_failures,
         }
     }
@@ -547,7 +673,6 @@ impl ApiServer {
         let Self {
             listener,
             service,
-            lenses,
             mut lifecycle_failures,
         } = self;
         let (shutdown_tx, _) = watch::channel(false);
@@ -596,10 +721,9 @@ impl ApiServer {
             connections.abort_all();
             drain_connections(&mut connections).await;
         }
-        drop(service);
-        match Arc::try_unwrap(lenses) {
-            Ok(lenses) => lenses.shutdown().await,
-            Err(_) => tracing::warn!("API lenses retained a connection reference during shutdown"),
+        match Arc::try_unwrap(service) {
+            Ok(service) => service.shutdown().await,
+            Err(_) => tracing::warn!("API service retained a connection reference during shutdown"),
         }
         serve_result
     }

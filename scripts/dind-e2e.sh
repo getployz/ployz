@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Build the x86_64 machine artifacts, test the role-neutral harness, then run
-# the gated two-machine Keeper mesh proof exactly once.
+# each gated v2 public-seam proof exactly once.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/lib.sh
@@ -19,3 +19,4 @@ export PLOYZ_DIND_PLATFORM="${platform}"
 scripts/build-dind-machine-image.sh full
 cargo test -p ployz-e2e --lib
 PLOYZ_DIND_E2E=1 cargo test -p ployz-e2e --test keeper_mesh "$@" -- --nocapture
+PLOYZ_DIND_E2E=1 cargo test -p ployz-e2e --test init_machine_one "$@" -- --nocapture

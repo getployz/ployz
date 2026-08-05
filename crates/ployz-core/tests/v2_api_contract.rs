@@ -9,10 +9,10 @@ use ployz_core::corrosion::{
 use ployz_core::ids::{ClusterId, MachineRowId, PeerId};
 use ployz_core::network::{MachineEndpointSubnet, WireGuardPublicKey};
 use ployz_core::{
-    API_MAJOR, ApiFeature, ApiRefusal, ApiVersion, KnownApiFeature, LENS_SNAPSHOT_EVENT,
-    LENS_STATE_EVENT, LENS_TERMINAL_EVENT, LensCollection, LensSnapshot, LensWatchEvent,
-    MachineStatusLensRow, MachineStatusLensRowIdentityError, V2Route, VERSION_ROUTE, lens_route,
-    lens_watch_route,
+    API_MAJOR, ApiFeature, ApiRefusal, ApiVersion, FOUNDING_ROUTE, KnownApiFeature,
+    LENS_SNAPSHOT_EVENT, LENS_STATE_EVENT, LENS_TERMINAL_EVENT, LensCollection, LensSnapshot,
+    LensWatchEvent, MachineStatusLensRow, MachineStatusLensRowIdentityError, V2Method, V2Route,
+    VERSION_ROUTE, lens_route, lens_watch_route,
 };
 use serde_json::json;
 
@@ -213,6 +213,19 @@ fn machine_status_lens_row_requires_its_machine_owned_key() {
 fn v2_routes_version_and_watch_envelopes_are_stable() {
     assert_eq!(API_MAJOR, 1);
     assert_eq!(VERSION_ROUTE, "/version");
+    assert_eq!(FOUNDING_ROUTE, "/founding");
+    assert_eq!(V2Route::parse(FOUNDING_ROUTE), Some(V2Route::Founding));
+    assert_eq!(V2Route::Founding.path(), FOUNDING_ROUTE);
+    assert_eq!(V2Route::Founding.method(), V2Method::Post);
+    assert_eq!(V2Route::Version.method(), V2Method::Get);
+    assert_eq!(
+        V2Route::Lens(LensCollection::Machines).method(),
+        V2Method::Get
+    );
+    assert_eq!(
+        V2Route::LensWatch(LensCollection::Machines).method(),
+        V2Method::Get
+    );
     assert_eq!(
         lens_route(LensCollection::MachineStatus),
         "/lenses/machine_status"
@@ -230,6 +243,7 @@ fn v2_routes_version_and_watch_envelopes_are_stable() {
     let version = ApiVersion::new(
         "0.1.0-alpha.9+abc",
         [
+            ApiFeature::from(KnownApiFeature::Founding),
             ApiFeature::from(KnownApiFeature::Lenses),
             ApiFeature::other("future.example"),
         ],
@@ -239,7 +253,7 @@ fn v2_routes_version_and_watch_envelopes_are_stable() {
         json!({
             "major": 1,
             "build": "0.1.0-alpha.9+abc",
-            "features": ["v2.lenses", "future.example"]
+            "features": ["v2.founding", "v2.lenses", "future.example"]
         })
     );
 
