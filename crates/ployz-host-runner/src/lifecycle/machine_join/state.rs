@@ -20,9 +20,7 @@ const IDENTITY_FILE: &str = "join-identity.json";
 const REQUEST_FILE: &str = "join-request.json";
 const STORAGE_INVENTORY_FILE: &str = "join-storage-inventory.json";
 const ACCEPTANCE_FILE: &str = "join-acceptance.json";
-// Completion proves the installed supervisor contract as well as admission.
-const COMPLETE_FILE: &str = "join-complete-v2";
-const LEGACY_COMPLETE_FILE: &str = "join-complete";
+const COMPLETE_FILE: &str = "join-complete";
 const LOCK_FILE: &str = ".join.lock";
 const MILESTONE_DIRECTORY: &str = "machine-join";
 pub const JOIN_SUBSTRATE_FILE: &str = "join-substrate.json";
@@ -105,11 +103,9 @@ impl MachineJoinStateDirectory {
         let identity = self.read_identity()?;
         let accepted = self.acceptance_path().exists();
         let complete = self.0.join(COMPLETE_FILE).exists();
-        let legacy_complete = self.0.join(LEGACY_COMPLETE_FILE).exists();
         let Some(identity) = identity else {
             if accepted
                 || complete
-                || legacy_complete
                 || self.0.join("cluster-id").exists()
                 || door_material_exists(&self.0)
             {
@@ -552,7 +548,7 @@ impl MachineJoinMilestone {
             Self::DoorMaterial => "04-door-material",
             Self::Configuration => "05-configuration",
             Self::BootstrapWireguard => "06-bootstrap-wireguard",
-            Self::UnitsInstalled => "07-units-installed-v2",
+            Self::UnitsInstalled => "07-units-installed",
             Self::CorrosionStarted => "08-corrosion-started",
             Self::RosterConverged => "09-roster-converged",
             Self::KeeperStarted => "10-keeper-started",

@@ -135,8 +135,8 @@ pub fn render_token_create(
 JOIN_BLOB='{blob}'\n\
 └────────────────────────────────────────────────────────────┘\n\
 \n\
-  join a machine:   sudo ployz machine join '{blob}'\n\
-  cloud-init:       curl -fsSL https://ployz.sh | sh -s -- join '{blob}'\n\
+  join a machine:   sudo ployz machine join \"$JOIN_BLOB\"\n\
+  cloud-init:       curl -fsSL https://ployz.sh | sh -s -- join \"$JOIN_BLOB\"\n\
 \n\
   token  {}   expires {expires_at} ({})\n",
         token_id.as_str(),
@@ -241,7 +241,7 @@ mod tests {
     }
 
     #[test]
-    fn create_is_show_once_and_both_follow_up_lines_are_paste_ready() {
+    fn create_is_show_once_and_follow_up_lines_reuse_the_variable() {
         let blob = "pzjoin_opaque-secret";
         let output = render_token_create(
             &token_id(TOKEN_A),
@@ -249,12 +249,10 @@ mod tests {
             "2026-08-06 14:00 UTC",
             24 * 60 * 60,
         );
-        assert_eq!(output.matches(blob).count(), 3);
+        assert_eq!(output.matches(blob).count(), 1);
         assert!(output.contains("JOIN_BLOB='pzjoin_opaque-secret'"));
-        assert!(output.contains("sudo ployz machine join 'pzjoin_opaque-secret'"));
-        assert!(
-            output.contains("curl -fsSL https://ployz.sh | sh -s -- join 'pzjoin_opaque-secret'")
-        );
+        assert!(output.contains("sudo ployz machine join \"$JOIN_BLOB\""));
+        assert!(output.contains("curl -fsSL https://ployz.sh | sh -s -- join \"$JOIN_BLOB\""));
         assert!(output.contains("expires 2026-08-06 14:00 UTC (24h)"));
     }
 
