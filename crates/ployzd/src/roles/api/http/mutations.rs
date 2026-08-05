@@ -316,10 +316,17 @@ async fn peer_remove(
         .peer_id
         .as_ref()
         .is_some_and(|peer_id| roster.contains_stored_peer_id(peer_id));
+    let candidates = if request.peer_id.is_some() && !requested_id_is_stored {
+        Vec::new()
+    } else {
+        match roster.peer_removal_candidates() {
+            Ok(candidates) => candidates,
+            Err(error) => return store_failure("derive peer-removal candidates", error),
+        }
+    };
     let reply = match peer_removal_reply(
         &request,
-        roster
-            .peer_removal_candidates
+        candidates
             .iter()
             .map(|peer| (peer.id.clone(), peer.name.clone())),
         requested_id_is_stored,
@@ -329,11 +336,7 @@ async fn peer_remove(
         Err(refusal) => return peer_remove_refusal_response(refusal),
     };
     if let PeerRemoveReply::Removed { peer_id } = &reply {
-        let Some(candidate) = roster
-            .peer_removal_candidates
-            .iter()
-            .find(|peer| peer.id == *peer_id)
-        else {
+        let Some(candidate) = candidates.iter().find(|peer| peer.id == *peer_id) else {
             return corrosion_unavailable_response();
         };
         if let Err(error) =
@@ -351,20 +354,19 @@ fn peer_removal_reply(
     requested_id_is_stored: bool,
     caller_peer_id: &PeerId,
 ) -> Result<PeerRemoveReply, PeerRemoveRefusal> {
+    if let Some(peer_id) = &request.peer_id
+        && !requested_id_is_stored
+    {
+        return Ok(PeerRemoveReply::AlreadyAbsent {
+            peer_id: peer_id.clone(),
+        });
+    }
     match select_peer_removal(request, accepted) {
         Ok(peer_id) if peer_id == *caller_peer_id => Err(PeerRemoveRefusal::SelfRemoval {
             peer_name: request.peer_name.clone(),
             peer_id,
         }),
         Ok(peer_id) => Ok(PeerRemoveReply::Removed { peer_id }),
-        Err(PeerRemoveRefusal::NotFound { .. })
-            if request.peer_id.is_some() && !requested_id_is_stored =>
-        {
-            let Some(peer_id) = request.peer_id.clone() else {
-                unreachable!("the retry guard requires a peer id")
-            };
-            Ok(PeerRemoveReply::AlreadyAbsent { peer_id })
-        }
         Err(refusal) => Err(refusal),
     }
 }
@@ -592,6 +594,27 @@ mod tests {
         assert_eq!(
             peer_removal_reply(&request, std::iter::empty(), false, &caller),
             Ok(PeerRemoveReply::AlreadyAbsent { peer_id })
+        );
+    }
+
+    #[test]
+    fn peer_removal_retry_is_absent_even_when_the_name_now_belongs_to_another_peer() {
+        let removed = PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("removed peer id");
+        let survivor = PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAW").expect("survivor peer id");
+        let caller = PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAX").expect("caller peer id");
+        let request = PeerRemoveRequest {
+            peer_name: "operator-laptop".to_owned(),
+            peer_id: Some(removed.clone()),
+        };
+
+        assert_eq!(
+            peer_removal_reply(
+                &request,
+                [(survivor, "operator-laptop".to_owned())],
+                false,
+                &caller,
+            ),
+            Ok(PeerRemoveReply::AlreadyAbsent { peer_id: removed })
         );
     }
 

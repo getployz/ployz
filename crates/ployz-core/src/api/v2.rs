@@ -244,54 +244,20 @@ pub fn select_machine_removal(
     request: &MachineRemoveRequest,
     accepted: impl IntoIterator<Item = (MachineRowId, MachineName)>,
 ) -> Result<MachineRowId, MachineRemoveRefusal> {
-    let accepted = accepted.into_iter().collect::<Vec<_>>();
-    let requested_id_is_accepted = request.machine_id.as_ref().is_some_and(|machine_id| {
-        accepted
-            .iter()
-            .any(|(accepted_machine_id, _)| accepted_machine_id == machine_id)
-    });
-    let mut candidates = accepted
-        .into_iter()
-        .filter_map(|(machine_id, machine_name)| {
-            (machine_name == request.machine_name).then_some(machine_id)
-        })
-        .collect::<Vec<_>>();
-    candidates.sort();
-
-    let Some(expected_machine_id) = &request.machine_id else {
-        return match candidates.as_slice() {
-            [] => Err(MachineRemoveRefusal::NotFound {
-                machine_name: request.machine_name.clone(),
-            }),
-            [machine_id] => Ok(machine_id.clone()),
-            _ => Err(MachineRemoveRefusal::Ambiguous {
-                machine_name: request.machine_name.clone(),
-                machine_ids: candidates,
-            }),
-        };
-    };
-
-    if candidates
-        .iter()
-        .any(|machine_id| machine_id == expected_machine_id)
-    {
-        return Ok(expected_machine_id.clone());
-    }
-    if candidates.is_empty() {
-        if requested_id_is_accepted {
-            return Err(MachineRemoveRefusal::IdMismatch {
-                machine_name: request.machine_name.clone(),
-                machine_id: expected_machine_id.clone(),
-            });
-        }
-        return Err(MachineRemoveRefusal::NotFound {
+    match select_removal(&request.machine_name, request.machine_id.as_ref(), accepted) {
+        RemovalSelection::Selected(machine_id) => Ok(machine_id),
+        RemovalSelection::NotFound => Err(MachineRemoveRefusal::NotFound {
             machine_name: request.machine_name.clone(),
-        });
+        }),
+        RemovalSelection::Ambiguous(machine_ids) => Err(MachineRemoveRefusal::Ambiguous {
+            machine_name: request.machine_name.clone(),
+            machine_ids,
+        }),
+        RemovalSelection::IdMismatch(machine_id) => Err(MachineRemoveRefusal::IdMismatch {
+            machine_name: request.machine_name.clone(),
+            machine_id,
+        }),
     }
-    Err(MachineRemoveRefusal::IdMismatch {
-        machine_name: request.machine_name.clone(),
-        machine_id: expected_machine_id.clone(),
-    })
 }
 
 /// Mesh-authenticated request to remove one operator peer from the roster.
@@ -338,43 +304,66 @@ pub fn select_peer_removal(
     request: &PeerRemoveRequest,
     accepted: impl IntoIterator<Item = (PeerId, String)>,
 ) -> Result<PeerId, PeerRemoveRefusal> {
+    match select_removal(&request.peer_name, request.peer_id.as_ref(), accepted) {
+        RemovalSelection::Selected(peer_id) => Ok(peer_id),
+        RemovalSelection::NotFound => Err(PeerRemoveRefusal::NotFound {
+            peer_name: request.peer_name.clone(),
+        }),
+        RemovalSelection::Ambiguous(peer_ids) => Err(PeerRemoveRefusal::Ambiguous {
+            peer_name: request.peer_name.clone(),
+            peer_ids,
+        }),
+        RemovalSelection::IdMismatch(peer_id) => Err(PeerRemoveRefusal::IdMismatch {
+            peer_name: request.peer_name.clone(),
+            peer_id,
+        }),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RemovalSelection<Id> {
+    Selected(Id),
+    NotFound,
+    Ambiguous(Vec<Id>),
+    IdMismatch(Id),
+}
+
+fn select_removal<Id, Name>(
+    requested_name: &Name,
+    requested_id: Option<&Id>,
+    accepted: impl IntoIterator<Item = (Id, Name)>,
+) -> RemovalSelection<Id>
+where
+    Id: Clone + Ord,
+    Name: PartialEq,
+{
     let accepted = accepted.into_iter().collect::<Vec<_>>();
-    let requested_id_is_accepted = request.peer_id.as_ref().is_some_and(|peer_id| {
+    let requested_id_is_accepted = requested_id.is_some_and(|requested_id| {
         accepted
             .iter()
-            .any(|(accepted_peer_id, _)| accepted_peer_id == peer_id)
+            .any(|(accepted_id, _)| accepted_id == requested_id)
     });
     let mut candidates = accepted
         .into_iter()
-        .filter_map(|(peer_id, peer_name)| (peer_name == request.peer_name).then_some(peer_id))
+        .filter_map(|(id, name)| (&name == requested_name).then_some(id))
         .collect::<Vec<_>>();
     candidates.sort();
 
-    let Some(expected_peer_id) = &request.peer_id else {
+    let Some(expected_id) = requested_id else {
         return match candidates.as_slice() {
-            [] => Err(PeerRemoveRefusal::NotFound {
-                peer_name: request.peer_name.clone(),
-            }),
-            [peer_id] => Ok(peer_id.clone()),
-            _ => Err(PeerRemoveRefusal::Ambiguous {
-                peer_name: request.peer_name.clone(),
-                peer_ids: candidates,
-            }),
+            [] => RemovalSelection::NotFound,
+            [id] => RemovalSelection::Selected(id.clone()),
+            _ => RemovalSelection::Ambiguous(candidates),
         };
     };
 
-    if candidates.iter().any(|peer_id| peer_id == expected_peer_id) {
-        return Ok(expected_peer_id.clone());
+    if candidates.iter().any(|id| id == expected_id) {
+        return RemovalSelection::Selected(expected_id.clone());
     }
     if candidates.is_empty() && !requested_id_is_accepted {
-        return Err(PeerRemoveRefusal::NotFound {
-            peer_name: request.peer_name.clone(),
-        });
+        return RemovalSelection::NotFound;
     }
-    Err(PeerRemoveRefusal::IdMismatch {
-        peer_name: request.peer_name.clone(),
-        peer_id: expected_peer_id.clone(),
-    })
+    RemovalSelection::IdMismatch(expected_id.clone())
 }
 
 /// The exact public route shape, parsed without any daemon-local strings.

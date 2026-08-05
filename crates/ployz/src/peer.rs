@@ -5,17 +5,11 @@ use std::fmt;
 use ployz_core::ids::PeerId;
 use ployz_core::{PEER_REMOVE_ROUTE, PeerRemoveRefusal, PeerRemoveReply, PeerRemoveRequest};
 
-use crate::commands::{PeerCommand, PeerRemoveCommand};
+use crate::commands::PeerRemoveCommand;
 use crate::mesh::http::JsonReply;
 use crate::remote::{OperatorRemote, OperatorRemoteError};
 
-pub async fn execute(command: PeerCommand) -> Result<String, PeerExecutionError> {
-    match command {
-        PeerCommand::Remove(command) => remove(command).await,
-    }
-}
-
-async fn remove(command: PeerRemoveCommand) -> Result<String, PeerExecutionError> {
+pub async fn execute(command: PeerRemoveCommand) -> Result<String, PeerExecutionError> {
     let remote = OperatorRemote::load(command.target.as_ref())?;
     let request = PeerRemoveRequest {
         peer_name: command.peer.clone(),

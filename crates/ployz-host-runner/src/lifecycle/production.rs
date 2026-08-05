@@ -596,11 +596,14 @@ mod dns_readiness_tests {
 
     fn readiness_response(response_code: ResponseCode, address: Ipv4Addr) -> Vec<u8> {
         let query = Message::from_vec(&dns_readiness_query()).expect("readiness query parses");
+        let [question] = query.queries.as_slice() else {
+            panic!("readiness query contains exactly one question");
+        };
         let mut response = Message::response(u16::from_be_bytes(DNS_READINESS_ID), OpCode::Query);
         response.metadata.response_code = response_code;
-        response.add_query(query.queries[0].clone());
+        response.add_query(question.clone());
         response.add_answer(Record::from_rdata(
-            query.queries[0].name.clone(),
+            question.name.clone(),
             5,
             RData::A(A::from(address)),
         ));
@@ -616,11 +619,11 @@ mod dns_readiness_tests {
             let (length, peer) = server.recv_from(&mut packet).expect("DNS query arrives");
             let query = Message::from_vec(packet.get(..length).expect("query length"))
                 .expect("readiness query parses");
+            let [question] = query.queries.as_slice() else {
+                panic!("readiness query contains exactly one question");
+            };
             assert_eq!(query.metadata.message_type, MessageType::Query);
-            assert_eq!(
-                query.queries[0].name.to_ascii(),
-                "readiness.ployz.internal."
-            );
+            assert_eq!(question.name.to_ascii(), "readiness.ployz.internal.");
             let response = readiness_response(
                 ResponseCode::NoError,
                 ployz_core::network::internal_dns::INTERNAL_DNS_READINESS_ADDRESS,

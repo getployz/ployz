@@ -25,7 +25,6 @@ pub(super) struct AcceptedRoster {
     pub(super) machine_skipped: Vec<SkippedRow>,
     pub(super) machine_shadows: Vec<ShadowConflict>,
     pub(super) peers: Vec<AcceptedPeer>,
-    pub(super) peer_removal_candidates: Vec<PeerRemovalCandidate>,
     pub(super) peer_skipped: Vec<SkippedRow>,
     pub(super) peer_shadows: Vec<ShadowConflict>,
 }
@@ -60,6 +59,41 @@ impl AcceptedRoster {
                 .peer_shadows
                 .iter()
                 .any(|peer| peer.winner.id.as_str() == peer_id || peer.loser.id.as_str() == peer_id)
+    }
+
+    /// Derives selectable peer rows from the canonical accepted and shadow
+    /// evidence without storing a parallel roster projection.
+    pub(super) fn peer_removal_candidates(
+        &self,
+    ) -> Result<Vec<PeerRemovalCandidate>, MutationStoreError> {
+        let mut candidates = self
+            .peers
+            .iter()
+            .map(|peer| PeerRemovalCandidate {
+                id: peer.id.clone(),
+                name: peer.document.name.clone(),
+                stored_document: peer.stored_document.clone(),
+            })
+            .collect::<Vec<_>>();
+        for shadow in &self.peer_shadows {
+            let document = serde_json::from_str::<PeerDocument>(&shadow.loser.source.document)
+                .map_err(|error| MutationStoreError::InvalidAcceptedShadow {
+                    table: CorrosionTable::Peers,
+                    detail: error.to_string(),
+                })?;
+            let id = PeerId::try_new(shadow.loser.id.as_str().to_owned()).map_err(|error| {
+                MutationStoreError::InvalidAcceptedId {
+                    table: CorrosionTable::Peers,
+                    detail: error.to_string(),
+                }
+            })?;
+            candidates.push(PeerRemovalCandidate {
+                id,
+                name: document.name,
+                stored_document: shadow.loser.source.document.clone(),
+            });
+        }
+        Ok(candidates)
     }
 
     fn trace_reader_evidence(&self) {
@@ -102,6 +136,7 @@ pub(super) struct MachineRemovalCandidate {
 #[derive(Debug, Clone)]
 pub(super) struct AcceptedPeer {
     pub(super) id: PeerId,
+    pub(super) stored_document: String,
     pub(super) document: PeerDocument,
 }
 
@@ -133,9 +168,8 @@ pub(super) async fn read_accepted_roster(
         &cluster,
         machine_rows,
     ))?;
-    let AcceptedPeerRows {
+    let AcceptedNamedRows {
         accepted: peers,
-        removal_candidates: peer_removal_candidates,
         skipped: peer_skipped,
         shadows: peer_shadows,
     } = accepted_peer_rows(read_named_roster_rows::<PeerDocument>(&cluster, peer_rows))?;
@@ -146,7 +180,6 @@ pub(super) async fn read_accepted_roster(
         machine_skipped,
         machine_shadows,
         peers,
-        peer_removal_candidates,
         peer_skipped,
         peer_shadows,
     };
@@ -155,9 +188,8 @@ pub(super) async fn read_accepted_roster(
 }
 
 #[derive(Debug)]
-struct AcceptedPeerRows {
-    accepted: Vec<AcceptedPeer>,
-    removal_candidates: Vec<PeerRemovalCandidate>,
+struct AcceptedNamedRows<Row> {
+    accepted: Vec<Row>,
     skipped: Vec<SkippedRow>,
     shadows: Vec<ShadowConflict>,
 }
@@ -228,7 +260,7 @@ fn accepted_machine_rows(
 
 fn accepted_peer_rows(
     report: NamedReadReport<PeerDocument>,
-) -> Result<AcceptedPeerRows, MutationStoreError> {
+) -> Result<AcceptedNamedRows<AcceptedPeer>, MutationStoreError> {
     let NamedReadReport {
         accepted,
         skipped,
@@ -237,47 +269,20 @@ fn accepted_peer_rows(
     let accepted = accepted
         .into_iter()
         .map(|row| {
-            let id = PeerId::try_new(row.id.as_str().to_owned()).map_err(|error| {
-                MutationStoreError::InvalidAcceptedId {
-                    table: CorrosionTable::Peers,
-                    detail: error.to_string(),
-                }
-            })?;
-            Ok((
-                AcceptedPeer {
-                    id: id.clone(),
-                    document: row.value.clone(),
-                },
-                PeerRemovalCandidate {
-                    id,
-                    name: row.value.name,
-                    stored_document: row.source.document,
-                },
-            ))
+            Ok(AcceptedPeer {
+                id: PeerId::try_new(row.id.as_str().to_owned()).map_err(|error| {
+                    MutationStoreError::InvalidAcceptedId {
+                        table: CorrosionTable::Peers,
+                        detail: error.to_string(),
+                    }
+                })?,
+                stored_document: row.source.document,
+                document: row.value,
+            })
         })
         .collect::<Result<Vec<_>, MutationStoreError>>()?;
-    let (accepted, mut removal_candidates) = accepted.into_iter().unzip::<_, _, Vec<_>, Vec<_>>();
-    for shadow in &shadows {
-        let document = serde_json::from_str::<PeerDocument>(&shadow.loser.source.document)
-            .map_err(|error| MutationStoreError::InvalidAcceptedShadow {
-                table: CorrosionTable::Peers,
-                detail: error.to_string(),
-            })?;
-        let id = PeerId::try_new(shadow.loser.id.as_str().to_owned()).map_err(|error| {
-            MutationStoreError::InvalidAcceptedId {
-                table: CorrosionTable::Peers,
-                detail: error.to_string(),
-            }
-        })?;
-        removal_candidates.push(PeerRemovalCandidate {
-            id,
-            name: document.name,
-            stored_document: shadow.loser.source.document.clone(),
-        });
-    }
-    Ok(AcceptedPeerRows {
+    Ok(AcceptedNamedRows {
         accepted,
-        removal_candidates,
         skipped,
         shadows,
     })
@@ -1237,6 +1242,80 @@ mod tests {
             panic!("expected one shadowed machine, got {}", rows.shadows.len());
         };
         assert_eq!(shadow.loser.id.as_str(), "01ARZ3NDEKTSV4RRFFQ69G5FAX");
+    }
+
+    #[test]
+    fn peer_removal_candidates_are_derived_from_canonical_roster_evidence() {
+        let cluster: ClusterDocument = serde_json::from_value(json!({
+            "v": 1,
+            "cluster_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "name": "acme-prod",
+            "storage_default": "plain",
+            "hostname_mode": { "mode": "disabled" },
+            "prefix": "10.210.0.0/16",
+            "provider": "builtin_wireguard",
+            "acme_directory_url": "https://acme.example/directory",
+            "acme_contact": null,
+            "written_by": {
+                "kind": "peer",
+                "peer_id": "01ARZ3NDEKTSV4RRFFQ69G5FAY"
+            },
+            "written_at": "2026-08-05T10:00:00Z"
+        }))
+        .expect("cluster document");
+        let peer = json!({
+            "v": 1,
+            "cluster_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "name": "operator-laptop",
+            "transport": {
+                "kind": "wireguard",
+                "pubkey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                "addr_v6": "fd00::30",
+                "endpoint": null
+            },
+            "written_by": {
+                "kind": "peer",
+                "peer_id": "01ARZ3NDEKTSV4RRFFQ69G5FAY"
+            },
+            "written_at": "2026-08-05T10:00:00Z"
+        })
+        .to_string();
+        let report = read_named_roster_rows::<PeerDocument>(
+            &cluster,
+            [
+                StoredRow::new("01ARZ3NDEKTSV4RRFFQ69G5FAW", peer.clone()),
+                StoredRow::new("01ARZ3NDEKTSV4RRFFQ69G5FAX", peer.clone()),
+                StoredRow::new("01ARZ3NDEKTSV4RRFFQ69G5FAZ", ""),
+            ],
+        );
+        let rows = accepted_peer_rows(report).expect("typed peer ids");
+        let roster = AcceptedRoster {
+            cluster,
+            machines: Vec::new(),
+            machine_removal_candidates: Vec::new(),
+            machine_skipped: Vec::new(),
+            machine_shadows: Vec::new(),
+            peers: rows.accepted,
+            peer_skipped: rows.skipped,
+            peer_shadows: rows.shadows,
+        };
+
+        let candidates = roster
+            .peer_removal_candidates()
+            .expect("accepted and shadow peers are selectable");
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| candidate.id.as_str())
+                .collect::<Vec<_>>(),
+            ["01ARZ3NDEKTSV4RRFFQ69G5FAW", "01ARZ3NDEKTSV4RRFFQ69G5FAX"]
+        );
+        assert!(
+            candidates
+                .iter()
+                .all(|candidate| candidate.stored_document == peer),
+            "each candidate keeps the exact stored document for the delete fence"
+        );
     }
 
     #[test]

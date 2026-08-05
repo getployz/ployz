@@ -21,13 +21,8 @@ pub enum Command {
     Telemetry(TelemetryCommand),
     Init(Box<InitCommand>),
     Machine(MachineCommand),
-    Peer(PeerCommand),
+    Peer(PeerRemoveCommand),
     Token(TokenCommand),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PeerCommand {
-    Remove(PeerRemoveCommand),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -305,11 +300,11 @@ pub fn parse_command(args: impl IntoIterator<Item = String>) -> Result<Command, 
             MachineCli::Reset => MachineCommand::Reset,
         })),
         CommandCli::Peer { command } => Ok(Command::Peer(match command {
-            PeerCli::Remove(args) => PeerCommand::Remove(PeerRemoveCommand {
+            PeerCli::Remove(args) => PeerRemoveCommand {
                 peer: args.peer,
                 peer_id: args.peer_id,
                 target: args.target,
-            }),
+            },
         })),
         CommandCli::Token { command } => Ok(Command::Token(match command {
             TokenCli::Create(args) => TokenCommand::Create(TokenCreateCommand {
@@ -865,11 +860,11 @@ mod tests {
         let peer_id = PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAY").expect("peer id");
         assert_eq!(
             parse(&["peer", "rm", "operator-laptop"]).expect("peer removal parses"),
-            Command::Peer(PeerCommand::Remove(PeerRemoveCommand {
+            Command::Peer(PeerRemoveCommand {
                 peer: "operator-laptop".to_owned(),
                 peer_id: None,
                 target: None,
-            }))
+            })
         );
         assert_eq!(
             parse(&[
@@ -882,11 +877,11 @@ mod tests {
                 "root@cluster.example",
             ])
             .expect("identity-qualified peer removal parses"),
-            Command::Peer(PeerCommand::Remove(PeerRemoveCommand {
+            Command::Peer(PeerRemoveCommand {
                 peer: "operator-laptop".to_owned(),
                 peer_id: Some(peer_id),
                 target: Some("root@cluster.example".parse().expect("SSH target")),
-            }))
+            })
         );
         assert!(parse(&["peer", "rm"]).is_err());
         assert!(parse(&["peer", "rm", "operator-laptop", "--id", "not-a-peer-id"]).is_err());
