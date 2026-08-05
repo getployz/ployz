@@ -1291,7 +1291,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_local_image_fails_create_without_network_acquisition() {
-        let network = r#"{"Driver":"bridge","Options":{"com.docker.network.bridge.name":"br-test","com.docker.network.driver.mtu":"1420"},"IPAM":{"Config":[{"Subnet":"10.42.7.0/24"}]}}"#;
+        let network = r#"{"Driver":"bridge","Labels":{"plz.managed":"true"},"Options":{"com.docker.network.bridge.name":"br-test","com.docker.network.driver.mtu":"1420"},"IPAM":{"Config":[{"Subnet":"10.42.7.0/24","Gateway":"10.42.7.1"}]}}"#;
         let (runner, attempts, _socket_dir) = runner_with_responses(vec![
             (200, network.to_owned()),
             (

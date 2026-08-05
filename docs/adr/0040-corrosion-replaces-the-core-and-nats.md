@@ -30,9 +30,10 @@ The consistency thesis this rests on — converged beats coordinated, with the
 LWW price stated and accepted — is `VISION.md` and
 `docs/architecture/backbone.md`, rewritten when the thesis was decided.
 
-This reverses ADR 0028's "corelessness considered and rejected" verdict
-deliberately, on that ADR's own terms. 0028 rejected a *hand-rolled*
-coreless design on authority, convergence, and evidence grounds, observing
+This reverses the previous "corelessness considered and rejected" verdict
+deliberately, on that design's own terms. The earlier hand-rolled
+coreless design was rejected on authority, convergence, and evidence grounds,
+observing
 that the reference coreless implementation "ships an entire external CRDT
 database to solve what this design would have hand-rolled." Shipping that
 database is exactly this decision: adopting Corrosion answers convergence
@@ -106,8 +107,9 @@ drafted land with the consolidated spec.
 ## Surviving, reread in v2 terms
 
 The product-behavior ADRs carry over with their nouns translated: 0002,
-0006, 0007, 0008, 0010, 0011, 0012, 0023, 0024, 0025, and 0032 as
-written; 0003 (operations are informational records) with operations as
+0006, 0007 (including strict Compose diagnostics), 0008 (including the
+one-time healthcheck gate), 0010, 0011, 0012, 0023, and 0024 as written;
+0003 (operations are informational records) with operations as
 summary rows plus driver-local detail; 0004 (deploys are namespace
 reconciliation attempts) with the namespace lock replaced by the deploy
 op row as an optimistic claim that narrows races without excluding them —

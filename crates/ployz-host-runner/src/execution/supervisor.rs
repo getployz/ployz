@@ -13,6 +13,14 @@ pub enum SupervisorBackend {
     OpenRc,
 }
 
+/// Whether this supervisor can recover a failed upgraded Keeper without
+/// executing the candidate again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PloyzdUpgradeRollback {
+    SystemdOnFailure,
+    Unsupported,
+}
+
 impl From<SupervisorKind> for SupervisorBackend {
     fn from(value: SupervisorKind) -> Self {
         match value {
@@ -78,6 +86,14 @@ impl RenderedSupervisorUnit {
 }
 
 impl SupervisorBackend {
+    #[must_use]
+    pub const fn ployzd_upgrade_rollback(self) -> PloyzdUpgradeRollback {
+        match self {
+            Self::Systemd => PloyzdUpgradeRollback::SystemdOnFailure,
+            Self::OpenRc => PloyzdUpgradeRollback::Unsupported,
+        }
+    }
+
     #[must_use]
     pub fn service_name(self, target: &SupervisorUnitTarget) -> String {
         match self {
@@ -252,11 +268,11 @@ fn render_openrc(
     let (description, command, args, environment_file, dependencies) = match spec {
         SupervisorUnitSpec::PloyzdRole {
             role,
-            artifact,
+            artifact_store,
             environment_file,
         } => (
             format!("Ployz {}", role.as_str()),
-            artifact.install_path(),
+            artifact_store.current_path(),
             (*role).argv(),
             Some(environment_file.path()),
             match role {

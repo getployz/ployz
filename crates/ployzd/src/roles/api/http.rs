@@ -14,6 +14,7 @@ mod roster;
 mod runtime;
 mod server;
 mod store;
+mod upgrade;
 
 pub use config::{
     ApiRoleConfig, ApiRoleConfigError, ApiRoleMode, BootstrapSecret, DoorListenAddress,

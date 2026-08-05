@@ -1,12 +1,18 @@
 use std::collections::VecDeque;
+use std::fs;
+use std::path::PathBuf;
 
 use ployz_core::corrosion::StoredRow;
+use ployz_core::install::{
+    AbsoluteInstallPath, InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion,
+    InstallSha256Digest,
+};
 use ployz_core::join::JoinStorageChoice;
 use ployz_core::machine::MachineLifecycle;
 
 use super::super::orchestration::tests::{accepted, join_blob, join_input};
 use super::*;
-use crate::HostRunnerCommandOutput;
+use crate::{ArtifactKind, HostRunnerCommandOutput};
 
 #[derive(Default)]
 struct RecordingRunner {
@@ -179,6 +185,52 @@ fn joined_corrosion_waits_for_keeper_owned_wireguard_on_boot() {
         systemd_unit.contains("After=network-online.target ployzd-keeper.service"),
         "{systemd_unit}"
     );
+}
+
+#[test]
+fn machine_join_seeds_current_and_renders_systemd_units_from_it() {
+    let (directory, state, _prepared, _accepted) = validated_fixture();
+    let source = directory.path().join("ployzd");
+    fs::write(&source, b"ployz\n").expect("artifact writes");
+    let artifact = InstallArtifactSpec {
+        version: InstallArtifactVersion::try_new("0.1.0").expect("version"),
+        source: InstallArtifactSource::try_new(source.display().to_string()).expect("source"),
+        sha256: InstallSha256Digest::try_new(
+            "2dcc3bb1142455239d3b3391d9569a8ce0fbdfb906cd0434329e5dd736592138",
+        )
+        .expect("digest"),
+        install_path: AbsoluteInstallPath::try_new("/usr/local/bin/ployzd").expect("path"),
+    };
+    let systemd = directory.path().join("systemd");
+    fs::create_dir_all(&systemd).expect("systemd directory");
+    let directories = SupervisorDirectories::new(systemd.clone(), directory.path().join("openrc"));
+    let mut runner = RecordingRunner::with_outputs(
+        std::iter::once(output("ID=ubuntu\n")).chain(std::iter::repeat_n(output(""), 8)),
+    );
+    let mut profile = None;
+    let mut substrate = LinuxSubstrate::new(state.path(), &mut runner, &mut profile, &directories);
+
+    substrate
+        .install_artifact(ArtifactKind::Ployzd, &artifact)
+        .expect("machine join seeds ployzd store");
+    let environment =
+        PloyzdRoleEnvironmentFile::new(state.path().join("ployzd.env")).expect("environment path");
+    substrate
+        .install_ployzd_units(&environment)
+        .expect("machine join writes role units");
+
+    assert_eq!(
+        fs::read_link(state.path().join("current")).expect("current link"),
+        PathBuf::from("artifacts")
+            .join("2dcc3bb1142455239d3b3391d9569a8ce0fbdfb906cd0434329e5dd736592138")
+    );
+    let keeper = fs::read_to_string(systemd.join("ployzd-keeper.service")).expect("keeper unit");
+    assert!(keeper.contains(&format!(
+        "ExecStart={}/current keeper",
+        state.path().display()
+    )));
+    assert!(systemd.join("ployzd-keeper-revert.service").exists());
+    assert!(!keeper.contains("/usr/local/bin/ployzd"));
 }
 
 #[test]

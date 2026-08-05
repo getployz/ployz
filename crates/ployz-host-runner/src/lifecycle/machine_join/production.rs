@@ -22,10 +22,9 @@ use crate::builtin_wireguard::{
     BuiltinWireguardJoinSeed, BuiltinWireguardPorts,
 };
 use crate::{
-    ArtifactKind, FileMode, HostPlatformProfile, HostRunnerCommandRunner, PloyzdRole,
-    PloyzdRoleEnvironmentFile, PoolSelection, SupervisorBackend, SupervisorChange,
-    SupervisorDirectories, SystemHostRunnerCommandRunner, artifact_target, prepare_storage,
-    write_durable_file,
+    FileMode, HostPlatformProfile, HostRunnerCommandRunner, PloyzdRole, PloyzdRoleEnvironmentFile,
+    PoolSelection, SupervisorBackend, SupervisorChange, SupervisorDirectories,
+    SystemHostRunnerCommandRunner, prepare_storage, write_durable_file,
 };
 
 use crate::lifecycle::production::{
@@ -673,21 +672,13 @@ impl LinuxMachineJoinHostEffects {
 
     fn ensure_units_installed_stopped(
         &mut self,
-        accepted: &ValidatedMachineJoinAccepted,
+        _accepted: &ValidatedMachineJoinAccepted,
     ) -> Result<(), FailureMessage> {
-        let ployzd = accepted
-            .accepted()
-            .substrate
-            .artifacts()
-            .iter()
-            .find(|artifact| artifact.install_path.as_str().ends_with("/ployzd"))
-            .ok_or_else(|| failure("accepted substrate has no ployzd artifact"))?;
-        let target = artifact_target(ArtifactKind::Ployzd, ployzd).map_err(failure)?;
         let environment =
             PloyzdRoleEnvironmentFile::new(self.state.path().join(ENV_FILE)).map_err(failure)?;
         let config = self.state.path().join(CORROSION_CONFIG_FILE);
         let mut substrate = self.substrate();
-        substrate.install_ployzd_units(&target, &environment)?;
+        substrate.install_ployzd_units(&environment)?;
         substrate.install_corrosion_unit(&config)?;
         substrate.change_corrosion_service(CorrosionServiceChange::Enable)
     }

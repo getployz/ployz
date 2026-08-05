@@ -9,16 +9,22 @@ use ployz_core::corrosion::{
     MeshComponentNotAttempted, MeshComponentReady, MeshConvergenceTestimony, MeshDegradation,
     MeshNotAttemptedReason, OperatorWriteProvenance, Principal, project_builtin_wireguard_mesh,
 };
+use ployz_core::roles::PloyzdRole;
+use ployz_host_runner::SupervisorBackend;
 use ployz_host_runner::builtin_wireguard::{EbpfDegradedReason, EbpfHostOutcome};
+use tokio::sync::watch;
+use tokio::time::Instant;
 
 use crate::corrosion::CorrosionClient;
 
 use super::provider::{BoundKeeperIdentity, KeeperMeshProvider, KeeperProviderError};
 use super::status::{LocalMachineStatusWriter, MachineStatusWriteError, now};
 use super::store::{KeeperCorrosion, KeeperStoreError};
+use super::upgrade::{KeeperUpgradeSocket, restart_systemd_role};
 use super::{KeeperRoleConfig, KeeperRoleConfigError};
 
 const SUBNET_REPAIR_COURTESY_DELAY: Duration = Duration::from_secs(1);
+const UPGRADE_FIRST_CONVERGE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Runs Keeper from the supervisor-owned environment until process shutdown.
 pub async fn run_from_environment() -> Result<(), KeeperRoleRuntimeError> {
@@ -32,7 +38,57 @@ pub async fn run_from_environment() -> Result<(), KeeperRoleRuntimeError> {
         config.cluster_id().clone(),
         config.local_machine_id().clone(),
     );
-    run_keeper(config, provider, store, wait_for_process_shutdown()).await
+    if config.supervisor() == SupervisorBackend::OpenRc {
+        return run_keeper(config, provider, store, wait_for_process_shutdown()).await;
+    }
+
+    let socket = KeeperUpgradeSocket::bind(config.upgrade_socket_path())
+        .await
+        .map_err(|error| KeeperRoleRuntimeError::UpgradeSocket {
+            detail: error.to_string(),
+        })?;
+    let (stop, _) = watch::channel(false);
+    let socket_store = config.upgrade_store().clone();
+    let socket_timeout = config.host().command_timeout();
+    let socket_shutdown = stop.subscribe();
+    let socket_server = socket.serve(socket_store, socket_timeout, socket_shutdown);
+    tokio::pin!(socket_server);
+    let keeper = run_keeper(
+        config,
+        provider,
+        store,
+        wait_for_process_or_upgrade_shutdown(stop.subscribe()),
+    );
+    tokio::pin!(keeper);
+
+    tokio::select! {
+        result = &mut keeper => {
+            let _ = stop.send(true);
+            let _ = socket_server.await;
+            result
+        }
+        result = &mut socket_server => {
+            let _ = stop.send(true);
+            let _ = keeper.await;
+            match result {
+                Ok(()) => Err(KeeperRoleRuntimeError::UpgradeSocketStopped),
+                Err(error) => Err(KeeperRoleRuntimeError::UpgradeSocket {
+                    detail: error.to_string(),
+                }),
+            }
+        }
+    }
+}
+
+async fn wait_for_process_or_upgrade_shutdown(mut stop: watch::Receiver<bool>) {
+    tokio::select! {
+        () = wait_for_process_shutdown() => {}
+        changed = stop.changed() => {
+            if let Err(error) = changed {
+                tracing::debug!(error = %error, "Keeper upgrade shutdown channel closed");
+            }
+        }
+    }
 }
 
 async fn run_keeper<Shutdown>(
@@ -44,12 +100,25 @@ async fn run_keeper<Shutdown>(
 where
     Shutdown: Future<Output = ()>,
 {
+    let mut pending_upgrade = config
+        .upgrade_store()
+        .pending_upgrade()
+        .map_err(KeeperRoleRuntimeError::UpgradeArtifactStore)?;
+    let upgrade_deadline = pending_upgrade
+        .as_ref()
+        .map(|_| Instant::now() + UPGRADE_FIRST_CONVERGE_TIMEOUT);
     // This happens before the first Corrosion request so the local sidecar can
     // bind its gossip socket to deterministic mesh identity.
-    let bound = provider
-        .bind_ip(config.cluster_id())
-        .await
-        .map_err(KeeperRoleRuntimeError::provider)?;
+    let bound =
+        provider
+            .bind_ip(config.cluster_id())
+            .await
+            .map_err(|error| match pending_upgrade.as_ref() {
+                Some(_) => KeeperRoleRuntimeError::UpgradeFirstConverge {
+                    detail: error.to_string(),
+                },
+                None => KeeperRoleRuntimeError::provider(error),
+            })?;
     tracing::info!(
         public_key = %bound.public_key.as_str(),
         bind_address = %bound.evidence.bind_address,
@@ -71,6 +140,13 @@ where
     let mut subscription_retry = RetryDelay::new(config.retry_initial(), config.retry_max());
     tokio::pin!(shutdown);
     loop {
+        if let Some(error) = first_converge_timeout(
+            pending_upgrade.is_some(),
+            upgrade_deadline,
+            "first convergence deadline elapsed",
+        ) {
+            return Err(error);
+        }
         match reconcile_once(
             &config,
             &provider,
@@ -81,12 +157,23 @@ where
         )
         .await
         {
-            Ok(ReconcileProgress::Settled) => retry.reset(),
+            Ok(ReconcileProgress::Settled) => {
+                if pending_upgrade.is_some() {
+                    confirm_upgraded_keeper(&config).await?;
+                    pending_upgrade = None;
+                }
+                retry.reset();
+            }
             Ok(ReconcileProgress::Requery) => {
                 retry.reset();
                 continue;
             }
             Err(ReconcileError::Retry { detail }) => {
+                if let Some(error) =
+                    first_converge_timeout(pending_upgrade.is_some(), upgrade_deadline, &detail)
+                {
+                    return Err(error);
+                }
                 let delay = retry.next();
                 tracing::warn!(error = %detail, ?delay, "Keeper convergence will retry");
                 tokio::select! {
@@ -95,7 +182,9 @@ where
                 }
                 continue;
             }
-            Err(ReconcileError::Fatal(error)) => return Err(error),
+            Err(ReconcileError::Fatal(error)) => {
+                return Err(first_converge_failure(pending_upgrade.is_some(), error));
+            }
         }
 
         tokio::select! {
@@ -121,6 +210,51 @@ where
             }
         }
     }
+}
+
+fn first_converge_failure(
+    upgrade_pending: bool,
+    error: KeeperRoleRuntimeError,
+) -> KeeperRoleRuntimeError {
+    if upgrade_pending {
+        KeeperRoleRuntimeError::UpgradeFirstConverge {
+            detail: error.to_string(),
+        }
+    } else {
+        error
+    }
+}
+
+fn first_converge_timeout(
+    upgrade_pending: bool,
+    deadline: Option<Instant>,
+    detail: &str,
+) -> Option<KeeperRoleRuntimeError> {
+    if upgrade_pending && deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        Some(KeeperRoleRuntimeError::UpgradeFirstConverge {
+            detail: detail.to_owned(),
+        })
+    } else {
+        None
+    }
+}
+
+async fn confirm_upgraded_keeper(config: &KeeperRoleConfig) -> Result<(), KeeperRoleRuntimeError> {
+    if config.supervisor() != SupervisorBackend::Systemd {
+        return Err(KeeperRoleRuntimeError::UpgradeFirstConverge {
+            detail: "an armed upgrade requires systemd".to_owned(),
+        });
+    }
+    for role in [PloyzdRole::Api, PloyzdRole::Gateway, PloyzdRole::Dns] {
+        restart_systemd_role(role, config.host().command_timeout())
+            .await
+            .map_err(|detail| KeeperRoleRuntimeError::UpgradeFirstConverge { detail })?;
+    }
+    config.upgrade_store().confirm_armed().map_err(|error| {
+        KeeperRoleRuntimeError::UpgradeFirstConverge {
+            detail: error.to_string(),
+        }
+    })
 }
 
 async fn reconcile_once(
@@ -509,6 +643,14 @@ pub enum KeeperRoleRuntimeError {
     SubnetAllocation(ployz_core::network::MachineEndpointSubnetAllocationError),
     #[error("Keeper runtime invariant failed: {0}")]
     Invariant(&'static str),
+    #[error("could not inspect local upgrade artifact state: {0}")]
+    UpgradeArtifactStore(ployz_host_runner::ArtifactStoreError),
+    #[error("upgraded Keeper did not reach its first converge point: {detail}")]
+    UpgradeFirstConverge { detail: String },
+    #[error("Keeper upgrade socket failed: {detail}")]
+    UpgradeSocket { detail: String },
+    #[error("Keeper upgrade socket stopped before Keeper shutdown")]
+    UpgradeSocketStopped,
 }
 
 impl KeeperRoleRuntimeError {
@@ -531,6 +673,27 @@ mod tests {
 
     const CLUSTER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
     const MACHINE: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
+
+    #[tokio::test(start_paused = true)]
+    async fn pending_upgrade_first_converge_timeout_requests_systemd_revert() {
+        let deadline = Instant::now() + UPGRADE_FIRST_CONVERGE_TIMEOUT;
+        tokio::time::advance(UPGRADE_FIRST_CONVERGE_TIMEOUT).await;
+
+        assert!(matches!(
+            first_converge_timeout(true, Some(deadline), "mesh convergence failed"),
+            Some(KeeperRoleRuntimeError::UpgradeFirstConverge { detail })
+                if detail == "mesh convergence failed"
+        ));
+    }
+
+    #[test]
+    fn pending_upgrade_fatal_first_converge_requests_systemd_revert() {
+        assert!(matches!(
+            first_converge_failure(true, KeeperRoleRuntimeError::Invariant("projection failed")),
+            KeeperRoleRuntimeError::UpgradeFirstConverge { detail }
+                if detail.contains("projection failed")
+        ));
+    }
 
     fn timestamp(value: &str) -> ployz_core::corrosion::CorrosionTimestamp {
         ployz_core::corrosion::CorrosionTimestamp::try_new(value).expect("timestamp")

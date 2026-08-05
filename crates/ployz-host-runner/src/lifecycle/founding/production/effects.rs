@@ -261,14 +261,12 @@ impl<R: HostRunnerCommandRunner> FoundingHostEffects for LinuxFoundingHostEffect
     }
 
     fn install_units_and_enable_ready_roles(&mut self) -> Result<(), FailureMessage> {
-        let ployzd =
-            artifact_target(ArtifactKind::Ployzd, &self.artifacts.ployzd).map_err(failure)?;
         let environment =
             PloyzdRoleEnvironmentFile::new(self.state.path().join(ENV_FILE)).map_err(failure)?;
         let corrosion_config = self.state.path().join(CORROSION_CONFIG_FILE);
         {
             let mut substrate = self.substrate();
-            substrate.install_ployzd_units(&ployzd, &environment)?;
+            substrate.install_ployzd_units(&environment)?;
             substrate.install_corrosion_unit(&corrosion_config)?;
             substrate.change_corrosion_service(CorrosionServiceChange::Enable)?;
         }

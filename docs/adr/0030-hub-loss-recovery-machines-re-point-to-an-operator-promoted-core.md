@@ -1,5 +1,0 @@
-# Hub-Loss Recovery: Machines Re-Point Themselves To An Operator-Promoted Core
-
-**Superseded by [ADR 0040](0040-corrosion-replaces-the-core-and-nats.md)** —
-its Superseded list holds the one-line disposition; full text in git
-history.

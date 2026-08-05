@@ -2,8 +2,9 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::execution::{
-    ArtifactInstallDurability, ArtifactInstallError, ArtifactKind, ArtifactSource, ArtifactTarget,
-    ArtifactVerificationError, ArtifactVersion, Sha256Digest,
+    ArtifactInstallDurability, ArtifactInstallError, ArtifactKind, ArtifactSource,
+    ArtifactStoreError, ArtifactTarget, ArtifactVerificationError, ArtifactVersion,
+    PloyzdArtifactStore, Sha256Digest, VerifiedArtifactFile,
     acquire_remote_artifact_content_addressed, install_verified_artifact,
     stage_verified_artifact_content_addressed, verify_artifact_file,
 };
@@ -376,6 +377,99 @@ fn install_commit_failure_preserves_existing_target() {
     assert!(staged_artifacts(&install_path).is_empty());
 }
 
+#[cfg(unix)]
+#[test]
+fn ployzd_artifact_store_seeds_arms_reverts_and_can_arm_again() {
+    let root = tempfile::tempdir().expect("artifact-store root");
+    let state = root.path().join("state");
+    let old_source = root.path().join("old-ployzd");
+    let candidate_source = root.path().join("candidate-ployzd");
+    fs::write(&old_source, "ployz\n").expect("old artifact writes");
+    fs::write(&candidate_source, "new\n").expect("candidate artifact writes");
+    let old = verify_artifact_file(&old_source, &digest(PLOYZ_NEWLINE_SHA256))
+        .expect("old artifact verifies");
+    let candidate = verify_artifact_file(&candidate_source, &digest(NEWLINE_NEW_SHA256))
+        .expect("candidate artifact verifies");
+    let store = PloyzdArtifactStore::new(state.clone()).expect("absolute state directory");
+
+    store.seed_current(&old).expect("initial seed");
+    assert_eq!(
+        fs::read_link(store.current_path()).expect("current link"),
+        PathBuf::from("artifacts").join(PLOYZ_NEWLINE_SHA256)
+    );
+    let staged = store.stage(&candidate).expect("candidate stages");
+    assert_eq!(
+        staged.staged_path,
+        state.join("artifacts").join(NEWLINE_NEW_SHA256)
+    );
+    assert_eq!(
+        fs::read_link(store.current_path()).expect("current stays old before arm"),
+        PathBuf::from("artifacts").join(PLOYZ_NEWLINE_SHA256)
+    );
+
+    let armed = store
+        .arm_staged(&digest(NEWLINE_NEW_SHA256))
+        .expect("verified candidate arms");
+    assert_eq!(armed.previous, digest(PLOYZ_NEWLINE_SHA256));
+    assert_eq!(armed.current, digest(NEWLINE_NEW_SHA256));
+    assert_eq!(
+        fs::read_link(store.previous_path()).expect("previous link"),
+        PathBuf::from("artifacts").join(PLOYZ_NEWLINE_SHA256)
+    );
+    assert_eq!(
+        fs::read_link(store.current_path()).expect("current link"),
+        PathBuf::from("artifacts").join(NEWLINE_NEW_SHA256)
+    );
+    assert_eq!(
+        store.pending_upgrade().expect("pending marker"),
+        Some(digest(NEWLINE_NEW_SHA256))
+    );
+
+    assert_eq!(
+        store.revert_armed().expect("local revert"),
+        digest(PLOYZ_NEWLINE_SHA256)
+    );
+    assert_eq!(
+        fs::read_link(store.current_path()).expect("current now points at previous"),
+        state.join("previous")
+    );
+    assert_eq!(
+        fs::read(store.current_path()).expect("reverted executable bytes"),
+        b"ployz\n"
+    );
+    assert_eq!(store.pending_upgrade().expect("marker clears"), None);
+
+    store
+        .arm_staged(&digest(NEWLINE_NEW_SHA256))
+        .expect("approved current-to-previous indirection can arm again");
+    store.confirm_armed().expect("first converge confirms arm");
+    assert_eq!(store.pending_upgrade().expect("marker clears"), None);
+}
+
+#[test]
+fn ployzd_artifact_store_refuses_to_stage_unverified_bytes() {
+    let root = tempfile::tempdir().expect("artifact-store root");
+    let source = root.path().join("candidate-ployzd");
+    fs::write(&source, "untrusted\n").expect("candidate writes");
+    let store =
+        PloyzdArtifactStore::new(root.path().join("state")).expect("absolute state directory");
+    let forged = VerifiedArtifactFile {
+        path: source,
+        digest: digest(PLOYZ_NEWLINE_SHA256),
+    };
+
+    assert!(matches!(
+        store.stage(&forged),
+        Err(ArtifactStoreError::Stage(
+            ArtifactInstallError::VerificationFailed(
+                ArtifactVerificationError::DigestMismatch { .. }
+            )
+        ))
+    ));
+    assert!(!store.artifacts_path().join(PLOYZ_NEWLINE_SHA256).exists());
+    assert!(!store.current_path().exists());
+}
+
 fn digest(value: &str) -> Sha256Digest {
     Sha256Digest::try_new(value).expect("valid artifact digest")
 }
@@ -421,4 +515,5 @@ fn staged_artifacts(install_path: &std::path::Path) -> Vec<PathBuf> {
 
 const PLOYZ_NEWLINE_SHA256: &str =
     "2dcc3bb1142455239d3b3391d9569a8ce0fbdfb906cd0434329e5dd736592138";
+const NEWLINE_NEW_SHA256: &str = "7aa7a5359173d05b63cfd682e3c38487f3cb4f7f1d60659fe59fab1505977d4c";
 const ALL_A_SHA256: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";

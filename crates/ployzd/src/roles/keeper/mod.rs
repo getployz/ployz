@@ -5,6 +5,7 @@ mod provider;
 mod runtime;
 mod status;
 mod store;
+mod upgrade;
 
 pub use config::{KeeperRoleConfig, KeeperRoleConfigError, KeeperTimingConfig};
 pub use runtime::{KeeperRoleRuntimeError, run_from_environment};

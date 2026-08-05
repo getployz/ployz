@@ -1,14 +1,8 @@
-use super::support;
-
 use std::path::PathBuf;
 
-use crate::execution::{ArtifactKind, ArtifactTarget};
 use crate::execution::{
-    PloyzdRole, PloyzdRoleEnvironmentFile, PloyzdRoleUnit, SupervisorUnitFileError, role_unit_name,
-};
-use support::artifacts::{
-    artifact_source as source, artifact_version as version, ployzd_artifact,
-    sha256_digest as digest,
+    PloyzdArtifactStore, PloyzdKeeperRevertUnit, PloyzdRole, PloyzdRoleEnvironmentFile,
+    PloyzdRoleUnit, SupervisorUnitFileError, role_unit_name,
 };
 
 #[test]
@@ -28,18 +22,31 @@ fn role_environment_file_requires_plain_systemd_token_path() {
 }
 
 #[test]
-fn role_units_render_the_supervised_ployzd_commands() {
+fn role_units_execute_the_stable_current_link() {
     let api = PloyzdRole::Api;
 
     assert_eq!(role_unit_name(&api), "ployzd-api.service");
 
     let api_unit =
-        PloyzdRoleUnit::new(api, &ployzd_artifact(), &role_env()).expect("API unit is valid");
+        PloyzdRoleUnit::new(api, &artifact_store(), &role_env()).expect("API unit is valid");
     assert_eq!(api_unit.unit_name(), "ployzd-api.service");
     assert_eq!(
         api_unit.render(),
-        "[Unit]\nDescription=Ployz api\nAfter=network-online.target docker.service sys-fs-bpf.mount\nWants=network-online.target docker.service\n\n[Service]\nType=exec\nEnvironmentFile=/etc/ployz/ployzd.env\nExecStart=/usr/local/bin/ployzd api\nTimeoutStopSec=10s\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n"
+        "[Unit]\nDescription=Ployz api\nAfter=network-online.target docker.service sys-fs-bpf.mount\nWants=network-online.target docker.service\n\n[Service]\nType=exec\nEnvironmentFile=/etc/ployz/ployzd.env\nExecStart=/var/lib/ployz/current api\nTimeoutStopSec=10s\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n"
     );
+}
+
+#[test]
+fn keeper_unit_arms_systemd_rollback_on_a_failed_new_binary() {
+    let rendered = PloyzdRoleUnit::new(PloyzdRole::Keeper, &artifact_store(), &role_env())
+        .expect("Keeper unit is valid")
+        .render();
+
+    assert!(rendered.contains("ExecStart=/var/lib/ployz/current keeper"));
+    assert!(rendered.contains("Restart=on-failure"));
+    assert!(rendered.contains("RestartPreventExitStatus=75"));
+    assert!(rendered.contains("OnFailure=ployzd-keeper-revert.service"));
+    assert!(!rendered.contains("Restart=always"));
 }
 
 #[test]
@@ -50,7 +57,7 @@ fn ployzd_role_units_limit_systemd_stop_to_ten_seconds() {
         PloyzdRole::Gateway,
         PloyzdRole::Dns,
     ] {
-        let rendered = PloyzdRoleUnit::new(role, &ployzd_artifact(), &role_env())
+        let rendered = PloyzdRoleUnit::new(role, &artifact_store(), &role_env())
             .expect("role unit is valid")
             .render();
 
@@ -60,7 +67,7 @@ fn ployzd_role_units_limit_systemd_stop_to_ten_seconds() {
 
 #[test]
 fn dns_unit_runs_as_a_dynamic_user_with_only_the_port_53_capability() {
-    let rendered = PloyzdRoleUnit::new(PloyzdRole::Dns, &ployzd_artifact(), &role_env())
+    let rendered = PloyzdRoleUnit::new(PloyzdRole::Dns, &artifact_store(), &role_env())
         .expect("DNS unit is valid")
         .render();
 
@@ -86,55 +93,51 @@ fn dns_unit_runs_as_a_dynamic_user_with_only_the_port_53_capability() {
 }
 
 #[test]
-fn role_units_quote_paths_that_need_systemd_escaping() {
-    let spaced_path_artifact = ArtifactTarget::new(
-        ArtifactKind::Ployzd,
-        version("0.1.0"),
-        source("https://example.invalid/ployzd"),
-        digest(PLOYZD_DIGEST),
-        PathBuf::from("/opt/Ployz Tools/ployzd"),
-    )
-    .expect("valid artifact install path");
-    let percent_path_artifact = ArtifactTarget::new(
-        ArtifactKind::Ployzd,
-        version("0.1.0"),
-        source("https://example.invalid/ployzd"),
-        digest(PLOYZD_DIGEST),
-        PathBuf::from("/opt/ployz%tools/ployzd"),
-    )
-    .expect("valid artifact install path");
-    let dollar_path_artifact = ArtifactTarget::new(
-        ArtifactKind::Ployzd,
-        version("0.1.0"),
-        source("https://example.invalid/ployzd"),
-        digest(PLOYZD_DIGEST),
-        PathBuf::from("/opt/ployz$tools/ployzd"),
-    )
-    .expect("valid artifact install path");
+fn keeper_revert_unit_uses_only_fixed_system_commands() {
+    let rendered = PloyzdKeeperRevertUnit::new(artifact_store())
+        .render()
+        .expect("revert unit renders");
 
     assert_eq!(
-        PloyzdRoleUnit::new(PloyzdRole::Gateway, &spaced_path_artifact, &role_env())
+        PloyzdKeeperRevertUnit::unit_name(),
+        "ployzd-keeper-revert.service"
+    );
+    assert!(rendered.contains("ConditionPathExists=/var/lib/ployz/upgrade-pending"));
+    assert!(
+        rendered
+            .contains("ExecStart=/usr/bin/ln -sfnT /var/lib/ployz/previous /var/lib/ployz/current")
+    );
+    assert!(rendered.contains("ExecStart=/usr/bin/rm /var/lib/ployz/upgrade-pending"));
+    for role in ["keeper", "api", "gateway", "dns"] {
+        assert!(
+            rendered.contains(&format!(
+                "ExecStart=/usr/bin/systemctl restart ployzd-{role}.service"
+            )),
+            "{rendered}"
+        );
+    }
+    assert!(!rendered.contains("ExecStart=/var/lib/ployz/current"));
+    assert!(!rendered.contains("artifacts/"));
+}
+
+#[test]
+fn role_units_quote_stable_paths_that_need_systemd_escaping() {
+    let store =
+        PloyzdArtifactStore::new(PathBuf::from("/opt/Ployz Tools")).expect("absolute state path");
+
+    assert_eq!(
+        PloyzdRoleUnit::new(PloyzdRole::Gateway, &store, &role_env())
             .expect("spaced path can be quoted")
             .render(),
-        "[Unit]\nDescription=Ployz gateway\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=exec\nEnvironmentFile=/etc/ployz/ployzd.env\nExecStart=\"/opt/Ployz Tools/ployzd\" gateway\nTimeoutStopSec=10s\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n"
+        "[Unit]\nDescription=Ployz gateway\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=exec\nEnvironmentFile=/etc/ployz/ployzd.env\nExecStart=\"/opt/Ployz Tools/current\" gateway\nTimeoutStopSec=10s\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n"
     );
-    assert_eq!(
-        PloyzdRoleUnit::new(PloyzdRole::Gateway, &percent_path_artifact, &role_env())
-            .expect("percent path can be escaped")
-            .render(),
-        "[Unit]\nDescription=Ployz gateway\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=exec\nEnvironmentFile=/etc/ployz/ployzd.env\nExecStart=/opt/ployz%%tools/ployzd gateway\nTimeoutStopSec=10s\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n"
-    );
-    assert_eq!(
-        PloyzdRoleUnit::new(PloyzdRole::Gateway, &dollar_path_artifact, &role_env())
-            .expect("dollar path can be escaped")
-            .render(),
-        "[Unit]\nDescription=Ployz gateway\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=exec\nEnvironmentFile=/etc/ployz/ployzd.env\nExecStart=\"/opt/ployz$$tools/ployzd\" gateway\nTimeoutStopSec=10s\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n"
-    );
+}
+
+fn artifact_store() -> PloyzdArtifactStore {
+    PloyzdArtifactStore::new(PathBuf::from("/var/lib/ployz")).expect("absolute state path")
 }
 
 fn role_env() -> PloyzdRoleEnvironmentFile {
     PloyzdRoleEnvironmentFile::new(PathBuf::from("/etc/ployz/ployzd.env"))
         .expect("valid role environment path")
 }
-
-const PLOYZD_DIGEST: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";

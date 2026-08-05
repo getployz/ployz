@@ -15,6 +15,7 @@ export const KNOWN_API_FEATURES = [
   "v2.lenses",
   "v2.join_tokens",
   "v2.machine_endpoint",
+  "v2.machine_upgrade",
   "v2.join_door",
 ] as const;
 
@@ -555,7 +556,7 @@ export type JoinTokenSecret = Brand<string, "JoinTokenSecret">;
 
 export type JoinTokenTtlSeconds = SafeInteger<"JoinTokenTtlSeconds">;
 
-export type KnownApiFeature = "v2.founding" | "v2.lenses" | "v2.join_tokens" | "v2.machine_endpoint" | "v2.join_door";
+export type KnownApiFeature = "v2.founding" | "v2.lenses" | "v2.join_tokens" | "v2.machine_endpoint" | "v2.machine_upgrade" | "v2.join_door";
 
 export type LensCollection = "machines" | "services" | "containers" | "machine_status" | "operations";
 
@@ -688,7 +689,7 @@ export type MachineTestimony = { "status": "answered", endpoints: MachineEndpoin
 /**
  * When this machine last self-reported, as display evidence for the
  * operator. Never an input to behavior: liveness surfaces at the point
- * of use (ADR 0027).
+ * of use (ADR 0040).
  */
 last_observed_at_unix_seconds: number, } | { "status": "no_answer" };
 
@@ -701,6 +702,16 @@ export type MachineUpdateFailure = { "kind": "machine_unavailable", machine_id: 
 export type MachineUpdateOperationState = { "state": "accepted" } | { "state": "running" } | { "state": "completed", reported: MachineSubstrateVersions, } | { "state": "failed", failure: MachineUpdateFailure, } | { "state": "cancelled", reason: CancellationReason, } | { "state": "interrupted", evidence: OperationInterruptionEvidence, };
 
 export type MachineUpdateRequest = { operation_id: OperationId, machine_id: MachineId, target_version: InstallArtifactVersion, };
+
+export type MachineUpgradeRefusal = { "kind": "unsupported_supervisor", supervisor: MachineUpgradeSupervisor, } | { "kind": "download_failed", message: string, } | { "kind": "sha256_mismatch", expected: InstallSha256Digest, got: InstallSha256Digest, } | { "kind": "staging_failed", message: string, } | { "kind": "keeper_refused", message: string, };
+
+export type MachineUpgradeReply = { version: InstallArtifactVersion, sha256: InstallSha256Digest, };
+
+export type MachineUpgradeRequest = { version: InstallArtifactVersion, sha256: InstallSha256Digest, url: MachineUpgradeUrl, };
+
+export type MachineUpgradeSupervisor = "systemd" | "open_rc";
+
+export type MachineUpgradeUrl = string;
 
 export type MachineUsabilityReason = { "kind": "platform_mismatch", supported: BuildPlatforms, reported: OciPlatform, } | { "kind": "draining" } | { "kind": "facts_unavailable" } | { "kind": "build_unavailable" } | { "kind": "storage_testimony_not_reported" } | { "kind": "storage_unprepared" } | { "kind": "storage_unavailable", reason: StorageUnavailableReason, } | { "kind": "storage_pool_mismatch", expected: ZfsPoolName, reported: ZfsPoolName, } | { "kind": "dataplane_unavailable", reason: DataplaneUnavailableReason, };
 

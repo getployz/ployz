@@ -4,7 +4,7 @@ First-draft spec from the wayfinder ticket [Decide: the row model — tables,
 ownership map, and the row-ownership law](https://github.com/getployz/ployz/issues/785).
 The companion DDL draft is [corrosion-schema-v1.sql](corrosion-schema-v1.sql).
 This governs the coreless v2 design; it replaces the intent-file / evidence-log
-storage rules of the incumbent NATS design.
+storage rules of the retired v1 design.
 
 Schema v1 is the first writable contract. No product path writes these v2
 documents yet, so required provenance, typed identifiers, transport separation,

@@ -1,17 +1,28 @@
-use super::support;
-
 use crate::execution::{
-    PloyzdRole, PloyzdRoleEnvironmentFile, SupervisorUnitSpec, SupervisorUnitTarget,
+    PloyzdArtifactStore, PloyzdRole, PloyzdRoleEnvironmentFile, SupervisorUnitSpec,
+    SupervisorUnitTarget,
 };
-use crate::execution::{SupervisorBackend, SupervisorChange};
-use support::artifacts::ployzd_artifact;
+use crate::execution::{PloyzdUpgradeRollback, SupervisorBackend, SupervisorChange};
+
+#[test]
+fn openrc_explicitly_does_not_claim_keeper_upgrade_rollback() {
+    assert_eq!(
+        SupervisorBackend::Systemd.ployzd_upgrade_rollback(),
+        PloyzdUpgradeRollback::SystemdOnFailure
+    );
+    assert_eq!(
+        SupervisorBackend::OpenRc.ployzd_upgrade_rollback(),
+        PloyzdUpgradeRollback::Unsupported
+    );
+}
 
 #[test]
 fn openrc_api_service_keeps_environment_and_docker_dependencies() {
     let role = PloyzdRole::Api;
     let spec = SupervisorUnitSpec::PloyzdRole {
         role,
-        artifact: ployzd_artifact(),
+        artifact_store: PloyzdArtifactStore::new("/var/lib/ployz".into())
+            .expect("absolute artifact-store state"),
         environment_file: PloyzdRoleEnvironmentFile::default_path(),
     };
 
