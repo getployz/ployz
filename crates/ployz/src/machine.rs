@@ -1,6 +1,7 @@
 //! Machine command execution, mesh HTTP, and human presentation.
 
 use std::cmp::Ordering;
+use std::fmt;
 use std::io::Write as _;
 use std::time::{Duration, Instant};
 
@@ -13,14 +14,17 @@ use ployz_core::join::{
     MachineEndpointSetRequest,
 };
 use ployz_core::machine::MachineName;
+use ployz_core::operation::FailureMessage;
 use ployz_core::{
-    LensCollection, LensSnapshot, MachineLensRow, MachineStatusLensRow, MachineUpgradeRefusal,
-    MachineUpgradeReply, MachineUpgradeRequest,
+    LensCollection, LensSnapshot, MachineLensRow, MachineRemoveRefusal, MachineRemoveReply,
+    MachineRemoveRequest, MachineStatusLensRow, MachineUpgradeRefusal, MachineUpgradeReply,
+    MachineUpgradeRequest,
 };
-use ployz_core::{MACHINE_ENDPOINT_ROUTE_PREFIX, MACHINE_UPGRADE_ROUTE};
+use ployz_core::{MACHINE_ENDPOINT_ROUTE_PREFIX, MACHINE_REMOVE_ROUTE, MACHINE_UPGRADE_ROUTE};
 use ployz_host_runner::lifecycle::machine_join::{
     MachineJoinFailure, MachineJoinOutcomeKind, run_linux_machine_join,
 };
+use ployz_host_runner::lifecycle::machine_reset::run_linux_machine_reset;
 use ployz_host_runner::{
     ReleaseManifest, ReleasePlatform, read_release_manifest_text, release_manifest_url_for_platform,
 };
@@ -28,7 +32,7 @@ use ployz_host_runner::{
 use crate::JoinDoorClient;
 use crate::commands::{
     MachineCommand, MachineEndpointSetCommand, MachineJoinCommand, MachineListCommand,
-    MachineUpgradeCommand, MachineUpgradeSelector, MachineUpgradeSource,
+    MachineRemoveCommand, MachineUpgradeCommand, MachineUpgradeSelector, MachineUpgradeSource,
 };
 use crate::mesh::http::JsonReply;
 use crate::remote::{MachineRemoteTargetError, OperatorRemote, OperatorRemoteError};
@@ -40,9 +44,11 @@ const UPGRADE_CONFIRM_RETRY: Duration = Duration::from_millis(500);
 pub async fn execute(command: MachineCommand) -> Result<String, MachineExecutionError> {
     match command {
         MachineCommand::List(command) => list(command).await,
+        MachineCommand::Remove(command) => remove(command).await,
         MachineCommand::EndpointSet(command) => endpoint_set(command).await,
         MachineCommand::Upgrade(command) => upgrade(command).await,
         MachineCommand::Join(command) => join(command).await,
+        MachineCommand::Reset => reset(),
     }
 }
 
@@ -650,6 +656,56 @@ async fn join(command: MachineJoinCommand) -> Result<String, MachineExecutionErr
     ))
 }
 
+async fn remove(command: MachineRemoveCommand) -> Result<String, MachineExecutionError> {
+    let remote = OperatorRemote::load(command.target.as_ref())?;
+    let request = MachineRemoveRequest {
+        machine_name: command.machine.clone(),
+        machine_id: command.machine_id.clone(),
+    };
+    let reply = remote
+        .request_json_with_refusal::<_, MachineRemoveReply, MachineRemoveRefusal>(
+            hyper::Method::POST,
+            MACHINE_REMOVE_ROUTE,
+            Some(&request),
+        )
+        .await?;
+    let reply = match reply {
+        JsonReply::Success(reply) => reply,
+        JsonReply::Refused(MachineRemoveRefusal::NotFound { machine_name }) => {
+            return Err(MachineExecutionError::MachineRemovalNotFound { machine_name });
+        }
+        JsonReply::Refused(MachineRemoveRefusal::Ambiguous {
+            machine_name,
+            machine_ids,
+        }) => {
+            return Err(MachineExecutionError::MachineRemovalAmbiguous(
+                MachineRemovalAmbiguity {
+                    machine_name,
+                    machine_ids,
+                },
+            ));
+        }
+        JsonReply::Refused(MachineRemoveRefusal::IdMismatch {
+            machine_name,
+            machine_id,
+        }) => {
+            return Err(MachineExecutionError::MachineRemovalIdMismatch {
+                machine_name,
+                machine_id,
+            });
+        }
+    };
+    if !machine_removal_reply_matches_requested_identity(&reply, command.machine_id.as_ref()) {
+        return Err(MachineExecutionError::MachineRemovalReplyMismatch);
+    }
+    Ok(render_machine_removal(&command.machine, &reply))
+}
+
+fn reset() -> Result<String, MachineExecutionError> {
+    run_linux_machine_reset().map_err(|message| MachineExecutionError::Reset { message })?;
+    Ok(render_machine_reset().to_owned())
+}
+
 async fn list(command: MachineListCommand) -> Result<String, MachineExecutionError> {
     let remote = OperatorRemote::load(command.target.as_ref())?;
     let snapshot = remote.lens(LensCollection::Machines).await?;
@@ -694,8 +750,27 @@ pub enum MachineExecutionError {
     EndpointPortZero { machine: String },
     #[error("cluster API endpoint-set reply did not match the requested machine and endpoint")]
     EndpointReplyMismatch,
+    #[error(
+        "machine {} is not in the roster; run `ployz machine ls` to inspect current machines",
+        machine_name.as_str()
+    )]
+    MachineRemovalNotFound { machine_name: MachineName },
+    #[error(transparent)]
+    MachineRemovalAmbiguous(#[from] MachineRemovalAmbiguity),
+    #[error(
+        "machine {} does not match identity {machine_id}; omit `--id` to resolve the name again, or retry with a matching identity",
+        machine_name.as_str()
+    )]
+    MachineRemovalIdMismatch {
+        machine_name: MachineName,
+        machine_id: MachineRowId,
+    },
+    #[error("cluster API machine-removal reply did not match the requested identity")]
+    MachineRemovalReplyMismatch,
     #[error(transparent)]
     Join(#[from] MachineJoinFailure),
+    #[error("{message}")]
+    Reset { message: FailureMessage },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -708,6 +783,34 @@ pub enum MachineSnapshotError {
         actual: ClusterId,
     },
 }
+
+/// The actionable choices returned when a roster name has multiple identities.
+#[derive(Debug)]
+pub struct MachineRemovalAmbiguity {
+    machine_name: MachineName,
+    machine_ids: Vec<MachineRowId>,
+}
+
+impl fmt::Display for MachineRemovalAmbiguity {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "machine {} is ambiguous; retry with one of:",
+            self.machine_name.as_str()
+        )?;
+        for machine_id in &self.machine_ids {
+            write!(
+                formatter,
+                "\n  ployz machine rm {} --id {}",
+                self.machine_name.as_str(),
+                machine_id.as_str()
+            )?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for MachineRemovalAmbiguity {}
 
 pub(crate) fn render_machines(snapshot: &LensSnapshot) -> Result<String, MachineSnapshotError> {
     let LensSnapshot::Machines { rows, .. } = snapshot else {
@@ -777,6 +880,38 @@ pub fn render_endpoint_set(machine: &MachineName, endpoint: std::net::SocketAddr
 }
 
 #[must_use]
+pub fn render_machine_removal(machine_name: &MachineName, reply: &MachineRemoveReply) -> String {
+    match reply {
+        MachineRemoveReply::Removed { machine_id } => format!(
+            "Removed machine {} ({}).\n",
+            machine_name.as_str(),
+            machine_id.as_str()
+        ),
+        MachineRemoveReply::AlreadyAbsent { machine_id } => format!(
+            "Machine {} ({}) was already absent.\n",
+            machine_name.as_str(),
+            machine_id.as_str()
+        ),
+    }
+}
+
+fn machine_removal_reply_matches_requested_identity(
+    reply: &MachineRemoveReply,
+    requested_machine_id: Option<&MachineRowId>,
+) -> bool {
+    match (reply, requested_machine_id) {
+        (MachineRemoveReply::Removed { .. }, None) => true,
+        (MachineRemoveReply::Removed { machine_id }, Some(requested_machine_id)) => {
+            machine_id == requested_machine_id
+        }
+        (MachineRemoveReply::AlreadyAbsent { machine_id }, Some(requested_machine_id)) => {
+            machine_id == requested_machine_id
+        }
+        (MachineRemoveReply::AlreadyAbsent { .. }, None) => false,
+    }
+}
+
+#[must_use]
 pub fn render_machine_join(
     outcome: MachineJoinOutcomeKind,
     machine_name: &MachineName,
@@ -792,6 +927,11 @@ pub fn render_machine_join(
         machine_name.as_str(),
         machine_id.as_str()
     )
+}
+
+#[must_use]
+pub const fn render_machine_reset() -> &'static str {
+    "Ployz state reset. Join with a fresh token.\n"
 }
 
 #[cfg(test)]
@@ -894,6 +1034,47 @@ mod tests {
     }
 
     #[test]
+    fn machine_removal_uses_the_typed_route_and_renders_terminal_outcomes() {
+        let machine_name = MachineName::try_new("edge-b").expect("machine name");
+        let machine_id = MachineRowId::try_new(MACHINE_A).expect("machine id");
+        let request = MachineRemoveRequest {
+            machine_name: machine_name.clone(),
+            machine_id: Some(machine_id.clone()),
+        };
+        assert_eq!(MACHINE_REMOVE_ROUTE, "/machines/remove");
+        assert_eq!(request.machine_name, machine_name);
+        assert_eq!(request.machine_id, Some(machine_id.clone()));
+        assert_eq!(
+            render_machine_removal(
+                &machine_name,
+                &MachineRemoveReply::Removed {
+                    machine_id: machine_id.clone(),
+                },
+            ),
+            format!("Removed machine edge-b ({MACHINE_A}).\n")
+        );
+        assert_eq!(
+            render_machine_removal(
+                &machine_name,
+                &MachineRemoveReply::AlreadyAbsent {
+                    machine_id: machine_id.clone(),
+                },
+            ),
+            format!("Machine edge-b ({MACHINE_A}) was already absent.\n")
+        );
+        assert!(machine_removal_reply_matches_requested_identity(
+            &MachineRemoveReply::AlreadyAbsent {
+                machine_id: machine_id.clone(),
+            },
+            Some(&machine_id),
+        ));
+        assert!(!machine_removal_reply_matches_requested_identity(
+            &MachineRemoveReply::AlreadyAbsent { machine_id },
+            None,
+        ));
+    }
+
+    #[test]
     fn upgrade_success_evidence_is_rendered_as_independent_lines() {
         let version = InstallArtifactVersion::try_new("0.1.0-alpha.7").expect("version");
 
@@ -942,6 +1123,40 @@ mod tests {
     }
 
     #[test]
+    fn machine_removal_refusals_tell_the_operator_how_to_continue() {
+        let machine_name = MachineName::try_new("edge-b").expect("machine name");
+        let lower = MachineRowId::try_new(MACHINE_A).expect("machine id");
+        let higher = MachineRowId::try_new(MACHINE_B).expect("machine id");
+        let ambiguity = MachineExecutionError::MachineRemovalAmbiguous(MachineRemovalAmbiguity {
+            machine_name: machine_name.clone(),
+            machine_ids: vec![lower.clone(), higher.clone()],
+        });
+        assert_eq!(
+            ambiguity.to_string(),
+            format!(
+                "machine edge-b is ambiguous; retry with one of:\n  ployz machine rm edge-b --id {MACHINE_A}\n  ployz machine rm edge-b --id {MACHINE_B}"
+            )
+        );
+        assert_eq!(
+            MachineExecutionError::MachineRemovalNotFound {
+                machine_name: machine_name.clone(),
+            }
+            .to_string(),
+            "machine edge-b is not in the roster; run `ployz machine ls` to inspect current machines"
+        );
+        assert_eq!(
+            MachineExecutionError::MachineRemovalIdMismatch {
+                machine_name,
+                machine_id: lower,
+            }
+            .to_string(),
+            format!(
+                "machine edge-b does not match identity {MACHINE_A}; omit `--id` to resolve the name again, or retry with a matching identity"
+            )
+        );
+    }
+
+    #[test]
     fn a_manual_artifact_never_counts_as_confirmed_without_a_release_version() {
         let source = UpgradeSource::Manual(MachineUpgradeRequest {
             version: InstallArtifactVersion::try_new("manual").expect("manual label"),
@@ -971,6 +1186,14 @@ mod tests {
                 format!("{expected} machine edge-b ({MACHINE_A}).\n")
             );
         }
+    }
+
+    #[test]
+    fn reset_confirmation_names_the_next_primitive() {
+        assert_eq!(
+            render_machine_reset(),
+            "Ployz state reset. Join with a fresh token.\n"
+        );
     }
 
     #[test]

@@ -21,6 +21,7 @@ const MAX_MUTATION_ROWS: usize = 10_000;
 pub(super) struct AcceptedRoster {
     pub(super) cluster: ClusterDocument,
     pub(super) machines: Vec<AcceptedMachine>,
+    pub(super) machine_removal_candidates: Vec<MachineRemovalCandidate>,
     pub(super) machine_skipped: Vec<SkippedRow>,
     pub(super) machine_shadows: Vec<ShadowConflict>,
     pub(super) peers: Vec<AcceptedPeer>,
@@ -29,6 +30,22 @@ pub(super) struct AcceptedRoster {
 }
 
 impl AcceptedRoster {
+    /// Returns whether an exact machine row id exists in this stored roster,
+    /// including entries the reader excluded from cluster truth.
+    pub(super) fn contains_stored_machine_id(&self, machine_id: &MachineRowId) -> bool {
+        let machine_id = machine_id.as_str();
+        self.machines
+            .iter()
+            .any(|machine| machine.id.as_str() == machine_id)
+            || self
+                .machine_skipped
+                .iter()
+                .any(|machine| machine.source.key == machine_id)
+            || self.machine_shadows.iter().any(|machine| {
+                machine.winner.id.as_str() == machine_id || machine.loser.id.as_str() == machine_id
+            })
+    }
+
     fn trace_reader_evidence(&self) {
         let machine_skipped = self.machine_skipped.len();
         let machine_shadows = self.machine_shadows.len();
@@ -58,6 +75,14 @@ pub(super) struct AcceptedMachine {
     pub(super) document: MachineDocument,
 }
 
+/// A valid machine row eligible for explicit removal, including a named row
+/// hidden by the reader's lowest-ULID presentation rule.
+#[derive(Debug, Clone)]
+pub(super) struct MachineRemovalCandidate {
+    pub(super) id: MachineRowId,
+    pub(super) name: ployz_core::machine::MachineName,
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct AcceptedPeer {
     pub(super) id: PeerId,
@@ -74,8 +99,9 @@ pub(super) async fn read_accepted_roster(
     let (cluster_rows, machine_rows, peer_rows) = tokio::try_join!(cluster, machines, peers)?;
 
     let cluster = one_cluster(cluster_id, cluster_rows)?;
-    let AcceptedNamedRows {
+    let AcceptedMachineRows {
         accepted: machines,
+        removal_candidates: machine_removal_candidates,
         skipped: machine_skipped,
         shadows: machine_shadows,
     } = accepted_machine_rows(read_named_roster_rows::<MachineDocument>(
@@ -90,6 +116,7 @@ pub(super) async fn read_accepted_roster(
     let roster = AcceptedRoster {
         cluster,
         machines,
+        machine_removal_candidates,
         machine_skipped,
         machine_shadows,
         peers,
@@ -107,9 +134,17 @@ struct AcceptedNamedRows<Row> {
     shadows: Vec<ShadowConflict>,
 }
 
+#[derive(Debug)]
+struct AcceptedMachineRows {
+    accepted: Vec<AcceptedMachine>,
+    removal_candidates: Vec<MachineRemovalCandidate>,
+    skipped: Vec<SkippedRow>,
+    shadows: Vec<ShadowConflict>,
+}
+
 fn accepted_machine_rows(
     report: NamedReadReport<MachineDocument>,
-) -> Result<AcceptedNamedRows<AcceptedMachine>, MutationStoreError> {
+) -> Result<AcceptedMachineRows, MutationStoreError> {
     let NamedReadReport {
         accepted,
         skipped,
@@ -131,8 +166,33 @@ fn accepted_machine_rows(
             })
         })
         .collect::<Result<Vec<_>, MutationStoreError>>()?;
-    Ok(AcceptedNamedRows {
+    let mut removal_candidates = accepted
+        .iter()
+        .map(|machine| MachineRemovalCandidate {
+            id: machine.id.clone(),
+            name: machine.document.name.clone(),
+        })
+        .collect::<Vec<_>>();
+    for shadow in &shadows {
+        let document = serde_json::from_str::<MachineDocument>(&shadow.loser.source.document)
+            .map_err(|error| MutationStoreError::InvalidAcceptedShadow {
+                table: CorrosionTable::Machines,
+                detail: error.to_string(),
+            })?;
+        let id = MachineRowId::try_new(shadow.loser.id.as_str().to_owned()).map_err(|error| {
+            MutationStoreError::InvalidAcceptedId {
+                table: CorrosionTable::Machines,
+                detail: error.to_string(),
+            }
+        })?;
+        removal_candidates.push(MachineRemovalCandidate {
+            id,
+            name: document.name,
+        });
+    }
+    Ok(AcceptedMachineRows {
         accepted,
+        removal_candidates,
         skipped,
         shadows,
     })
@@ -414,6 +474,17 @@ pub(super) async fn delete_token(
     Ok(())
 }
 
+/// Deletes the resolved roster row before every testimony row that identity
+/// authored. The fixed batch deliberately never touches operation evidence.
+pub(super) async fn remove_machine_and_sweep(
+    corrosion: &CorrosionClient,
+    machine_id: &MachineRowId,
+) -> Result<(), MutationStoreError> {
+    let statements = machine_removal_statements(machine_id);
+    corrosion.execute(&statements).await?;
+    Ok(())
+}
+
 pub(super) async fn delete_machine_if_matches(
     corrosion: &CorrosionClient,
     machine_id: &MachineRowId,
@@ -632,6 +703,41 @@ fn delete_token_statement(token_id: &TokenId) -> Statement {
     delete_statement(CorrosionTable::Tokens, token_id.as_str())
 }
 
+fn machine_removal_statements(machine_id: &MachineRowId) -> [Statement; 5] {
+    [
+        delete_statement(CorrosionTable::Machines, machine_id.as_str()),
+        delete_testimony_for_machine_statement(CorrosionTable::MachineStatus, machine_id),
+        delete_testimony_for_machine_statement(CorrosionTable::Containers, machine_id),
+        delete_testimony_for_machine_statement(CorrosionTable::CertHoldings, machine_id),
+        delete_testimony_for_machine_statement(CorrosionTable::AcmeHttp01, machine_id),
+    ]
+}
+
+fn delete_testimony_for_machine_statement(
+    table: CorrosionTable,
+    machine_id: &MachineRowId,
+) -> Statement {
+    match table {
+        CorrosionTable::MachineStatus
+        | CorrosionTable::Containers
+        | CorrosionTable::CertHoldings
+        | CorrosionTable::AcmeHttp01 => Statement::with_params(
+            format!("DELETE FROM {} WHERE machine_id = ?", table.as_str()),
+            vec![SqliteParameter::Text(machine_id.as_str().to_owned())],
+        ),
+        CorrosionTable::Cluster
+        | CorrosionTable::Machines
+        | CorrosionTable::Peers
+        | CorrosionTable::Tokens
+        | CorrosionTable::Namespaces
+        | CorrosionTable::Services
+        | CorrosionTable::RouteBindings
+        | CorrosionTable::Operations => {
+            unreachable!("only machine-authority testimony tables are removable")
+        }
+    }
+}
+
 fn conditional_delete_statement(table: CorrosionTable, id: &str, expected: String) -> Statement {
     Statement::with_params(
         format!(
@@ -725,6 +831,46 @@ mod tests {
                 "SELECT id, document FROM tokens WHERE id = ?",
                 vec![SqliteParameter::Text("TOKEN".to_owned())],
             )
+        );
+    }
+
+    #[test]
+    fn machine_removal_is_one_parameterized_roster_first_testimony_batch() {
+        let machine_id = MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("machine id");
+        let statements = machine_removal_statements(&machine_id);
+        let parameter = SqliteParameter::Text(machine_id.as_str().to_owned());
+        assert_eq!(
+            statements,
+            [
+                Statement::with_params(
+                    "DELETE FROM machines WHERE id = ?",
+                    vec![parameter.clone()],
+                ),
+                Statement::with_params(
+                    "DELETE FROM machine_status WHERE machine_id = ?",
+                    vec![parameter.clone()],
+                ),
+                Statement::with_params(
+                    "DELETE FROM containers WHERE machine_id = ?",
+                    vec![parameter.clone()],
+                ),
+                Statement::with_params(
+                    "DELETE FROM cert_holdings WHERE machine_id = ?",
+                    vec![parameter.clone()],
+                ),
+                Statement::with_params(
+                    "DELETE FROM acme_http01 WHERE machine_id = ?",
+                    vec![parameter],
+                ),
+            ]
+        );
+        let operations_sentinel = Statement::with_params(
+            "DELETE FROM operations WHERE machine_id = ?",
+            vec![SqliteParameter::Text(machine_id.as_str().to_owned())],
+        );
+        assert!(
+            !statements.contains(&operations_sentinel),
+            "machine removal must preserve operation evidence"
         );
     }
 
@@ -930,6 +1076,13 @@ mod tests {
         };
         assert_eq!(accepted.id.as_str(), "01ARZ3NDEKTSV4RRFFQ69G5FAW");
         assert_eq!(accepted.stored_document, machine);
+        assert_eq!(
+            rows.removal_candidates
+                .iter()
+                .map(|candidate| candidate.id.as_str())
+                .collect::<Vec<_>>(),
+            ["01ARZ3NDEKTSV4RRFFQ69G5FAW", "01ARZ3NDEKTSV4RRFFQ69G5FAX"]
+        );
         let [_skipped] = rows.skipped.as_slice() else {
             panic!("expected one skipped machine, got {}", rows.skipped.len());
         };

@@ -8,7 +8,7 @@ use clap::{Args, Parser, Subcommand};
 use ployz_core::MachineUpgradeUrl;
 use ployz_core::corrosion::{AutomaticHostnameMode, StorageMode};
 use ployz_core::founding::InitStorageChoice;
-use ployz_core::ids::PeerId;
+use ployz_core::ids::{MachineRowId, PeerId};
 use ployz_core::install::{ExactPloyzVersion, InstallSha256Digest};
 use ployz_core::join::{JoinBlob, JoinTokenTtlSeconds};
 use ployz_core::machine::MachineName;
@@ -27,13 +27,22 @@ pub enum Command {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MachineCommand {
     List(MachineListCommand),
+    Remove(MachineRemoveCommand),
     EndpointSet(MachineEndpointSetCommand),
     Upgrade(MachineUpgradeCommand),
     Join(MachineJoinCommand),
+    Reset,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MachineListCommand {
+    pub target: Option<SshTarget>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineRemoveCommand {
+    pub machine: MachineName,
+    pub machine_id: Option<MachineRowId>,
     pub target: Option<SshTarget>,
 }
 
@@ -254,6 +263,12 @@ pub fn parse_command(args: impl IntoIterator<Item = String>) -> Result<Command, 
             MachineCli::List(args) => MachineCommand::List(MachineListCommand {
                 target: args.target,
             }),
+            MachineCli::Remove(args) => MachineCommand::Remove(MachineRemoveCommand {
+                machine: MachineName::try_new(args.machine)
+                    .map_err(|error| clap_value_error(error.to_string()))?,
+                machine_id: args.machine_id,
+                target: args.target,
+            }),
             MachineCli::Endpoint { command } => match command {
                 MachineEndpointCli::Set(args) => {
                     MachineCommand::EndpointSet(MachineEndpointSetCommand {
@@ -274,6 +289,7 @@ pub fn parse_command(args: impl IntoIterator<Item = String>) -> Result<Command, 
                     .map_or(InitStorageChoice::Automatic, |value| value.0),
                 wireguard_endpoint: args.wireguard_endpoint,
             }),
+            MachineCli::Reset => MachineCommand::Reset,
         })),
         CommandCli::Token { command } => Ok(Command::Token(match command {
             TokenCli::Create(args) => TokenCommand::Create(TokenCreateCommand {
@@ -338,6 +354,9 @@ enum MachineCli {
     /// List current machines.
     #[command(name = "ls")]
     List(MachineListArgs),
+    /// Fence a machine from the roster and sweep its testimony.
+    #[command(name = "rm")]
+    Remove(MachineRemoveArgs),
     /// Manage a machine's public WireGuard endpoint.
     Endpoint {
         #[command(subcommand)]
@@ -347,6 +366,8 @@ enum MachineCli {
     Upgrade(MachineUpgradeArgs),
     /// Join this Linux machine to a cluster through its public token door.
     Join(MachineJoinArgs),
+    /// Remove this Linux machine's Ployz state so it can join afresh.
+    Reset,
 }
 
 #[derive(Debug, Subcommand)]
@@ -360,6 +381,17 @@ struct MachineEndpointSetArgs {
     machine: String,
     #[arg(value_parser = parse_nonzero_socket_addr)]
     endpoint: SocketAddr,
+    /// Select the cluster founded through this SSH target.
+    #[arg(long)]
+    target: Option<SshTarget>,
+}
+
+#[derive(Debug, Args)]
+struct MachineRemoveArgs {
+    machine: String,
+    /// Match one exact machine identity when the name is ambiguous.
+    #[arg(long = "id")]
+    machine_id: Option<MachineRowId>,
     /// Select the cluster founded through this SSH target.
     #[arg(long)]
     target: Option<SshTarget>,
@@ -753,6 +785,39 @@ mod tests {
     }
 
     #[test]
+    fn machine_remove_parses_name_and_optional_identity() {
+        let machine = MachineName::try_new("edge-b").expect("machine name");
+        let machine_id = MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("machine id");
+        assert_eq!(
+            parse(&["machine", "rm", "edge-b"]).expect("machine removal parses"),
+            Command::Machine(MachineCommand::Remove(MachineRemoveCommand {
+                machine: machine.clone(),
+                machine_id: None,
+                target: None,
+            }))
+        );
+        assert_eq!(
+            parse(&[
+                "machine",
+                "rm",
+                "edge-b",
+                "--id",
+                machine_id.as_str(),
+                "--target",
+                "root@cluster.example",
+            ])
+            .expect("identity-qualified machine removal parses"),
+            Command::Machine(MachineCommand::Remove(MachineRemoveCommand {
+                machine,
+                machine_id: Some(machine_id),
+                target: Some("root@cluster.example".parse().expect("SSH target")),
+            }))
+        );
+        assert!(parse(&["machine", "rm"]).is_err());
+        assert!(parse(&["machine", "rm", "edge-b", "--id", "not-a-machine-id"]).is_err());
+    }
+
+    #[test]
     fn machine_upgrade_requires_one_selector_and_keeps_artifact_sources_distinct() {
         let edge_a = MachineName::try_new("edge-a").expect("machine name");
         let edge_b = MachineName::try_new("edge-b").expect("machine name");
@@ -933,6 +998,21 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn machine_reset_is_on_host_only_and_has_no_force_form() {
+        assert_eq!(
+            parse(&["machine", "reset"]).expect("on-host reset parses"),
+            Command::Machine(MachineCommand::Reset)
+        );
+        for arguments in [
+            ["machine", "reset", "root@machine.example"].as_slice(),
+            ["machine", "reset", "--target", "root@machine.example"].as_slice(),
+            ["machine", "reset", "--force"].as_slice(),
+        ] {
+            assert!(parse(arguments).is_err(), "{arguments:?} must not parse");
+        }
     }
 
     #[test]

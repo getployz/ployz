@@ -154,10 +154,10 @@ heuristics. Four arrival states:
   Cloud's retry loop and flaky-SSH re-runs safe with zero special
   casing.
 - **`ployz machine reset`** is the teardown primitive `doctor`'s
-  re-init placeholder was waiting for: stop units, wipe
-  `/var/lib/ployz` and the Corrosion DB, leave Docker, volumes, and
-  workload images alone. Init never resets anything — no `--force`,
-  no auto-wipe under any flag.
+  re-init placeholder was waiting for: stop units and wipe control-plane
+  state and the Corrosion DB, while preserving workload-volume storage under
+  `/var/lib/ployz`, Docker, and workload images. Init never resets anything
+  — no `--force`, no auto-wipe under any flag.
 - The refusal is refusal everywhere: it prints the exact reset
   command to copy-paste, and Cloud surfaces it as a failed session
   state with the same named repair. No driver-side consent prompt

@@ -1,4 +1,4 @@
-//! Mesh-authenticated token and machine-endpoint mutations.
+//! Mesh-authenticated token and machine mutations.
 
 use std::time::Duration;
 
@@ -7,13 +7,17 @@ use ployz_core::corrosion::Principal;
 use ployz_core::corrosion::{
     CorrosionDocumentVersion, CorrosionTimestamp, OperatorWriteProvenance, Sha256Hex, TokenDocument,
 };
-use ployz_core::ids::TokenId;
+use ployz_core::ids::{MachineRowId, TokenId};
 use ployz_core::join::{
     MachineEndpointSetRefusal, MachineEndpointSetRequest, PreparedTokenCreation,
     TokenCreateRequest, TokenListRequest, TokenRevokeRefusal, TokenRevokeReply, TokenRevokeRequest,
     advertise_join_door_endpoints, set_machine_endpoint, token_list_reply,
 };
-use ployz_core::{ApiRefusal, V2Route};
+use ployz_core::machine::MachineName;
+use ployz_core::{
+    ApiRefusal, MachineRemoveRefusal, MachineRemoveReply, MachineRemoveRequest, V2Route,
+    select_machine_removal,
+};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use time::format_description::well_known::Rfc3339;
@@ -26,7 +30,7 @@ use super::server::{
 };
 use super::store::{
     MutationStoreError, delete_token, insert_token, read_accepted_roster, read_machine, read_token,
-    read_tokens, update_wireguard_endpoint_if_matches,
+    read_tokens, remove_machine_and_sweep, update_wireguard_endpoint_if_matches,
 };
 
 const MAX_MUTATION_REQUEST_BYTES: usize = 64 * 1024;
@@ -70,6 +74,13 @@ pub(super) async fn handle_mutation(
                     Err(response) => return response,
                 };
             machine_endpoint_set(service, principal, request).await
+        }
+        V2Route::MachineRemove => {
+            let request = match decode_request::<MachineRemoveRequest>(request.into_body()).await {
+                Ok(request) => request,
+                Err(response) => return response,
+            };
+            machine_remove(service, request).await
         }
         V2Route::Version
         | V2Route::Founding
@@ -250,11 +261,68 @@ async fn machine_endpoint_set(
     }
 }
 
+async fn machine_remove(service: &ApiService, request: MachineRemoveRequest) -> Response<HttpBody> {
+    let roster = match read_accepted_roster(&service.corrosion, &service.cluster_id).await {
+        Ok(roster) => roster,
+        Err(error) => return store_failure("read roster for machine removal", error),
+    };
+    let requested_id_is_stored = request
+        .machine_id
+        .as_ref()
+        .is_some_and(|machine_id| roster.contains_stored_machine_id(machine_id));
+    let reply = match machine_removal_reply(
+        &request,
+        roster
+            .machine_removal_candidates
+            .into_iter()
+            .map(|machine| (machine.id, machine.name)),
+        requested_id_is_stored,
+    ) {
+        Ok(reply) => reply,
+        Err(refusal) => return machine_remove_refusal_response(refusal),
+    };
+    if let MachineRemoveReply::Removed { machine_id } = &reply
+        && let Err(error) = remove_machine_and_sweep(&service.corrosion, machine_id).await
+    {
+        return store_failure("fence machine and sweep testimony", error);
+    }
+    typed_response(StatusCode::OK, &reply)
+}
+
+fn machine_removal_reply(
+    request: &MachineRemoveRequest,
+    accepted: impl IntoIterator<Item = (MachineRowId, MachineName)>,
+    requested_id_is_stored: bool,
+) -> Result<MachineRemoveReply, MachineRemoveRefusal> {
+    match select_machine_removal(request, accepted) {
+        Ok(machine_id) => Ok(MachineRemoveReply::Removed { machine_id }),
+        Err(MachineRemoveRefusal::NotFound { .. })
+            if request.machine_id.is_some() && !requested_id_is_stored =>
+        {
+            let Some(machine_id) = request.machine_id.clone() else {
+                unreachable!("the retry guard requires a machine id")
+            };
+            Ok(MachineRemoveReply::AlreadyAbsent { machine_id })
+        }
+        Err(refusal) => Err(refusal),
+    }
+}
+
 fn endpoint_refusal_response(refusal: MachineEndpointSetRefusal) -> Response<HttpBody> {
     let status = match &refusal {
         MachineEndpointSetRefusal::NotFound { .. } => StatusCode::NOT_FOUND,
         MachineEndpointSetRefusal::EndpointPortZero { .. } => StatusCode::BAD_REQUEST,
         MachineEndpointSetRefusal::ProviderDoesNotUseWireguard { .. } => StatusCode::CONFLICT,
+    };
+    typed_response(status, &refusal)
+}
+
+fn machine_remove_refusal_response(refusal: MachineRemoveRefusal) -> Response<HttpBody> {
+    let status = match &refusal {
+        MachineRemoveRefusal::NotFound { .. } => StatusCode::NOT_FOUND,
+        MachineRemoveRefusal::Ambiguous { .. } | MachineRemoveRefusal::IdMismatch { .. } => {
+            StatusCode::CONFLICT
+        }
     };
     typed_response(status, &refusal)
 }
@@ -325,8 +393,6 @@ fn store_failure(action: &'static str, error: MutationStoreError) -> Response<Ht
 
 #[cfg(test)]
 mod tests {
-    use ployz_core::machine::MachineName;
-
     use super::*;
 
     #[test]
@@ -341,5 +407,87 @@ mod tests {
             machine_name: MachineName::try_new("machine-one").expect("machine name"),
         });
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn machine_remove_refusals_have_stable_http_statuses() {
+        let machine_name = MachineName::try_new("machine-one").expect("machine name");
+        let machine_id = ployz_core::ids::MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV")
+            .expect("machine id");
+        assert_eq!(
+            machine_remove_refusal_response(MachineRemoveRefusal::NotFound {
+                machine_name: machine_name.clone(),
+            })
+            .status(),
+            StatusCode::NOT_FOUND
+        );
+        for refusal in [
+            MachineRemoveRefusal::Ambiguous {
+                machine_name: machine_name.clone(),
+                machine_ids: vec![machine_id.clone()],
+            },
+            MachineRemoveRefusal::IdMismatch {
+                machine_name,
+                machine_id,
+            },
+        ] {
+            assert_eq!(
+                machine_remove_refusal_response(refusal).status(),
+                StatusCode::CONFLICT
+            );
+        }
+    }
+
+    #[test]
+    fn identity_qualified_machine_removal_retry_is_explicitly_idempotent() {
+        let machine_name = MachineName::try_new("machine-one").expect("machine name");
+        let machine_id = ployz_core::ids::MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV")
+            .expect("machine id");
+        let request = MachineRemoveRequest {
+            machine_name,
+            machine_id: Some(machine_id.clone()),
+        };
+        assert_eq!(
+            machine_removal_reply(&request, std::iter::empty(), false),
+            Ok(MachineRemoveReply::AlreadyAbsent { machine_id })
+        );
+    }
+
+    #[test]
+    fn identity_qualified_retry_refuses_an_id_owned_by_a_differently_named_machine() {
+        let machine_id = MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("machine id");
+        let request = MachineRemoveRequest {
+            machine_name: MachineName::try_new("edge-b").expect("requested machine name"),
+            machine_id: Some(machine_id.clone()),
+        };
+        assert_eq!(
+            machine_removal_reply(
+                &request,
+                [(
+                    machine_id.clone(),
+                    MachineName::try_new("edge-a").expect("accepted machine name"),
+                )],
+                true,
+            ),
+            Err(MachineRemoveRefusal::IdMismatch {
+                machine_name: MachineName::try_new("edge-b").expect("requested machine name"),
+                machine_id,
+            })
+        );
+    }
+
+    #[test]
+    fn identity_qualified_removal_never_treats_a_stored_skipped_row_as_absent() {
+        let machine_name = MachineName::try_new("machine-one").expect("machine name");
+        let machine_id = MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("machine id");
+        let request = MachineRemoveRequest {
+            machine_name: machine_name.clone(),
+            machine_id: Some(machine_id),
+        };
+
+        assert_eq!(
+            machine_removal_reply(&request, std::iter::empty(), true),
+            Err(MachineRemoveRefusal::NotFound { machine_name })
+        );
     }
 }
