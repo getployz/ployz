@@ -100,6 +100,18 @@ fn validated_fixture() -> (
 }
 
 #[test]
+fn joined_corrosion_waits_for_keeper_owned_wireguard_on_boot() {
+    let (_, systemd_unit) = crate::lifecycle::production::corrosion_unit(
+        SupervisorBackend::Systemd,
+        Path::new("/var/lib/ployz/corrosion.toml"),
+    );
+    assert!(
+        systemd_unit.contains("After=network-online.target ployzd-keeper.service"),
+        "{systemd_unit}"
+    );
+}
+
+#[test]
 fn join_docker_install_uses_the_detected_non_debian_profile() {
     let cases = [
         (

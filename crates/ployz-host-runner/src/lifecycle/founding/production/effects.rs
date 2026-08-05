@@ -269,8 +269,7 @@ impl<R: HostRunnerCommandRunner> FoundingHostEffects for LinuxFoundingHostEffect
         {
             let mut substrate = self.substrate();
             substrate.install_ployzd_units(&ployzd, &environment)?;
-            substrate
-                .install_corrosion_unit(&corrosion_config, CorrosionUnitOrdering::AfterKeeper)?;
+            substrate.install_corrosion_unit(&corrosion_config)?;
             substrate.change_corrosion_service(CorrosionServiceChange::Enable)?;
         }
         Ok(())

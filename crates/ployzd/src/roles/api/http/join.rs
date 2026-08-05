@@ -203,11 +203,8 @@ async fn admit_machine(
     .await
     {
         Ok(TokenAuthorizedInsert::Inserted) => {}
-        Ok(TokenAuthorizedInsert::TokenMissing) => {
-            return Err(JoinDoorRefusal::TokenNotFound {
-                token_id: authority.token_id.clone(),
-            }
-            .into());
+        Ok(TokenAuthorizedInsert::TokenUnavailable) => {
+            return Err(token_unavailable_refusal(authority)?.into());
         }
         Err(write_error) => {
             let refreshed = read_accepted_roster(&service.corrosion, &service.cluster_id).await?;
@@ -482,11 +479,8 @@ async fn admit_peer(
     .await
     {
         Ok(TokenAuthorizedInsert::Inserted) => {}
-        Ok(TokenAuthorizedInsert::TokenMissing) => {
-            return Err(JoinDoorRefusal::TokenNotFound {
-                token_id: authority.token_id.clone(),
-            }
-            .into());
+        Ok(TokenAuthorizedInsert::TokenUnavailable) => {
+            return Err(token_unavailable_refusal(authority)?.into());
         }
         Err(write_error) => {
             let refreshed = read_accepted_roster(&service.corrosion, &service.cluster_id).await?;
@@ -793,6 +787,21 @@ fn name_conflict(name: &str) -> JoinDoorRefusal {
 
 fn invalid_admission(reason: JoinAdmissionValidationError) -> AdmissionError {
     JoinDoorRefusal::InvalidAdmission { reason }.into()
+}
+
+fn token_unavailable_refusal(
+    authority: &ValidatedTokenAuthority,
+) -> Result<JoinDoorRefusal, AdmissionError> {
+    if now_timestamp()? >= authority.document.expires_at {
+        Ok(JoinDoorRefusal::TokenExpired {
+            token_id: authority.token_id.clone(),
+            expires_at: authority.document.expires_at,
+        })
+    } else {
+        Ok(JoinDoorRefusal::TokenNotFound {
+            token_id: authority.token_id.clone(),
+        })
+    }
 }
 
 fn now_timestamp() -> Result<ployz_core::corrosion::CorrosionTimestamp, AdmissionError> {

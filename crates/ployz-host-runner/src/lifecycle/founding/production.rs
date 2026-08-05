@@ -35,9 +35,9 @@ use crate::{
 };
 
 use crate::lifecycle::production::{
-    CorrosionBootstrap, CorrosionConfig, CorrosionServiceChange, CorrosionUnitOrdering,
-    GeneratedSecretPersistence, LinuxSubstrate,
-    read_or_generate_secret as shared_read_or_generate_secret, render_corrosion_config,
+    CorrosionBootstrap, CorrosionConfig, CorrosionServiceChange, GeneratedSecretPersistence,
+    LinuxSubstrate, read_or_generate_secret as shared_read_or_generate_secret,
+    render_corrosion_config,
 };
 
 use super::{FoundingHostEffects, FoundingMilestone, FoundingStateDirectory};

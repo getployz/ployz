@@ -29,8 +29,8 @@ use crate::{
 };
 
 use crate::lifecycle::production::{
-    CorrosionBootstrap, CorrosionConfig, CorrosionServiceChange, CorrosionUnitOrdering,
-    GeneratedSecretPersistence, LinuxSubstrate, read_or_generate_secret,
+    CorrosionBootstrap, CorrosionConfig, CorrosionServiceChange, GeneratedSecretPersistence,
+    LinuxSubstrate, read_or_generate_secret,
     render_corrosion_config as render_shared_corrosion_config,
 };
 
@@ -688,7 +688,7 @@ impl LinuxMachineJoinHostEffects {
         let config = self.state.path().join(CORROSION_CONFIG_FILE);
         let mut substrate = self.substrate();
         substrate.install_ployzd_units(&target, &environment)?;
-        substrate.install_corrosion_unit(&config, CorrosionUnitOrdering::NetworkOnly)?;
+        substrate.install_corrosion_unit(&config)?;
         substrate.change_corrosion_service(CorrosionServiceChange::Enable)
     }
 

@@ -270,14 +270,15 @@ pub(super) async fn insert_token(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TokenAuthorizedInsert {
     Inserted,
-    TokenMissing,
+    TokenUnavailable,
 }
 
 /// Commits membership only while the exact token document validated by this
-/// API instance still exists in its machine-local Corrosion replica. A revoke
-/// committed on the same replica therefore orders before or after this write;
-/// other machines observe that delete according to Corrosion's replication
-/// convergence and do not gain a stronger cross-replica ordering guarantee.
+/// API instance still exists and remains unexpired at the SQLite commit point
+/// in its machine-local Corrosion replica. A revoke committed on the same
+/// replica therefore orders before or after this write; other machines observe
+/// that delete according to Corrosion's replication convergence and do not gain
+/// a stronger cross-replica ordering guarantee.
 pub(super) async fn insert_machine_if_token_matches(
     corrosion: &CorrosionClient,
     machine_id: &MachineRowId,
@@ -517,7 +518,7 @@ fn token_authorized_insert_statement(
 ) -> Statement {
     Statement::with_params(
         format!(
-            "INSERT INTO {} (id, document) SELECT ?, ? WHERE EXISTS (SELECT 1 FROM tokens WHERE id = ? AND document = ?)",
+            "INSERT INTO {} (id, document) SELECT ?, ? WHERE EXISTS (SELECT 1 FROM tokens WHERE id = ? AND document = ? AND julianday(json_extract(document, '$.expires_at')) > julianday('now'))",
             table.as_str()
         ),
         vec![
@@ -549,7 +550,7 @@ fn token_authorized_insert_outcome(
         });
     };
     match result.rows_affected {
-        0 => Ok(TokenAuthorizedInsert::TokenMissing),
+        0 => Ok(TokenAuthorizedInsert::TokenUnavailable),
         1 => Ok(TokenAuthorizedInsert::Inserted),
         rows_affected => Err(MutationStoreError::UnexpectedWriteResult {
             table,
@@ -789,7 +790,7 @@ mod tests {
     }
 
     #[test]
-    fn admission_paused_after_validation_cannot_commit_after_token_revoke() {
+    fn admission_paused_after_validation_cannot_commit_after_token_revoke_or_expiry() {
         let member_id = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
         let token_id = TokenId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAW").expect("token id");
         let member = r#"{"name":"edge-a"}"#.to_owned();
@@ -804,7 +805,7 @@ mod tests {
                 validated_token.clone(),
             ),
             Statement::with_params(
-                "INSERT INTO machines (id, document) SELECT ?, ? WHERE EXISTS (SELECT 1 FROM tokens WHERE id = ? AND document = ?)",
+                "INSERT INTO machines (id, document) SELECT ?, ? WHERE EXISTS (SELECT 1 FROM tokens WHERE id = ? AND document = ? AND julianday(json_extract(document, '$.expires_at')) > julianday('now'))",
                 vec![
                     SqliteParameter::Text(member_id.to_owned()),
                     SqliteParameter::Text(member),
@@ -830,7 +831,7 @@ mod tests {
                 &commit_after_revoke,
             )
             .expect("a zero-row conditional insert is a valid refusal"),
-            TokenAuthorizedInsert::TokenMissing,
+            TokenAuthorizedInsert::TokenUnavailable,
         );
     }
 
