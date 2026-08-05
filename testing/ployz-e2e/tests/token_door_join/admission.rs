@@ -2,6 +2,7 @@ use super::fixture::{
     CorrosionAccess, corrosion_transaction, extract_join_blob, extract_token_id, machine_subnet,
     require_success, run_cli, wait_for_command,
 };
+use super::{WAIT_BUDGET, WAIT_DELAY};
 use bollard::Docker;
 use ployz::JoinDoorClient;
 use ployz::init::ssh::SshPeerKey;
@@ -11,14 +12,17 @@ use ployz_core::corrosion::{
 use ployz_core::ids::{MachineRowId, TokenId};
 use ployz_core::join::{
     JoinBlob, JoinDoorCertFingerprint, JoinDoorRefusal, JoinStorageChoice, JoinStorageFacts,
-    MachineJoinRequest, PeerJoinRequest,
+    MachineJoinRequest, PeerJoinRequest, ValidatedPeerJoinAccepted,
 };
 use ployz_core::machine::MachineName;
 use ployz_core::network::DEFAULT_WIREGUARD_LISTEN_PORT;
 use ployz_e2e::dind::{DindMachine, ExecOutcome, corrosion_query, exec_in_container, require};
 use serde_json::json;
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::Path;
+use std::time::Instant;
+use tokio::task::JoinSet;
 
 pub(super) async fn assert_wrong_door_fingerprint_is_rejected(
     blob: &JoinBlob,
@@ -345,19 +349,177 @@ pub(super) async fn assert_revoked_and_expired_refusals(
         ],
     )?;
     require_success(&revoked, "token revoke")?;
-    let refused = JoinDoorClient::default()
-        .admit_peer(&revoked_blob, peer_request("revoked-proof")?)
-        .await
-        .expect_err("revoked token must be refused");
-    require(
-        matches!(
-            refused,
-            ployz::JoinDoorClientError::Refused {
-                refusal: JoinDoorRefusal::TokenNotFound { .. }
+    wait_for_revoked_token_refusals(&revoked_blob, peer_request("revoked-proof")?).await
+}
+
+struct RevokedDoorProbe {
+    endpoint: SocketAddr,
+    blob: JoinBlob,
+    last_observation: Option<RevokedDoorObservation>,
+}
+
+#[derive(Debug)]
+enum RevokedDoorObservation {
+    Accepted(String),
+    Refused(JoinDoorRefusal),
+    ClientError(ployz::JoinDoorClientError),
+    ProbeTaskError(tokio::task::JoinError),
+    SharedDeadlineElapsed,
+}
+
+impl RevokedDoorObservation {
+    fn describe(&self) -> String {
+        match self {
+            Self::Accepted(accepted) => format!("accepted: {accepted}"),
+            Self::Refused(refusal) => format!("refused: {refusal:?}"),
+            Self::ClientError(error) => format!("client error: {error:?}"),
+            Self::ProbeTaskError(error) => format!("probe task error: {error:?}"),
+            Self::SharedDeadlineElapsed => "shared deadline elapsed during request".to_owned(),
+        }
+    }
+}
+
+async fn wait_for_revoked_token_refusals(
+    revoked_blob: &JoinBlob,
+    request: PeerJoinRequest,
+) -> Result<(), String> {
+    if revoked_blob.endpoints().is_empty() {
+        return Err("revoked join blob advertised no join doors".to_owned());
+    }
+    let mut doors = Vec::with_capacity(revoked_blob.endpoints().len());
+    for endpoint in revoked_blob.endpoints() {
+        let blob = JoinBlob::try_new(
+            revoked_blob.token_id().clone(),
+            revoked_blob.secret().clone(),
+            revoked_blob.door_cert_fingerprint().clone(),
+            vec![*endpoint],
+        )
+        .map_err(|error| {
+            format!("could not isolate advertised join door {endpoint} for revocation: {error}")
+        })?;
+        doors.push(RevokedDoorProbe {
+            endpoint: *endpoint,
+            blob,
+            last_observation: None,
+        });
+    }
+
+    let deadline = Instant::now() + WAIT_BUDGET;
+    let timeout_deadline = tokio::time::Instant::from_std(deadline);
+    let client = JoinDoorClient::default();
+    loop {
+        if Instant::now() >= deadline {
+            break;
+        }
+        let mut round = JoinSet::new();
+        let mut task_doors = BTreeMap::new();
+        for (index, door) in doors.iter().enumerate() {
+            if door_converged(door) {
+                continue;
             }
-        ),
-        format!("revoked token returned the wrong refusal: {refused:?}"),
+            let blob = door.blob.clone();
+            let request = request.clone();
+            let task = round.spawn(async move {
+                tokio::time::timeout_at(timeout_deadline, client.admit_peer(&blob, request)).await
+            });
+            task_doors.insert(task.id(), index);
+        }
+
+        while let Some(result) = round.join_next_with_id().await {
+            match result {
+                Ok((task_id, result)) => {
+                    let Some(index) = task_doors.remove(&task_id) else {
+                        return Err(format!(
+                            "revocation probe completed with unknown task id {task_id}"
+                        ));
+                    };
+                    let Some(door) = doors.get_mut(index) else {
+                        return Err(format!(
+                            "revocation probe task {task_id} was assigned to missing door index {index}"
+                        ));
+                    };
+                    record_revocation_probe(door, result);
+                }
+                Err(error) => {
+                    let task_id = error.id();
+                    let Some(index) = task_doors.remove(&task_id) else {
+                        return Err(format!(
+                            "revocation probe failed with unknown task id {task_id}: {error:?}"
+                        ));
+                    };
+                    let Some(door) = doors.get_mut(index) else {
+                        return Err(format!(
+                            "failed revocation probe task {task_id} was assigned to missing door index {index}"
+                        ));
+                    };
+                    door.last_observation = Some(RevokedDoorObservation::ProbeTaskError(error));
+                }
+            }
+        }
+        if doors.iter().all(door_converged) {
+            return Ok(());
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        tokio::time::sleep(WAIT_DELAY.min(remaining)).await;
+    }
+
+    let observations = doors
+        .iter()
+        .map(|door| match &door.last_observation {
+            Some(observation) => format!("{}: {}", door.endpoint, observation.describe()),
+            None => format!("{}: not probed before shared deadline", door.endpoint),
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    Err(format!(
+        "revoked token did not converge to TokenNotFound at every advertised join door within {WAIT_BUDGET:?}: {observations}"
+    ))
+}
+
+fn door_converged(door: &RevokedDoorProbe) -> bool {
+    matches!(
+        &door.last_observation,
+        Some(RevokedDoorObservation::Refused(
+            JoinDoorRefusal::TokenNotFound { .. }
+        ))
     )
+}
+
+fn record_revocation_probe(
+    door: &mut RevokedDoorProbe,
+    result: Result<
+        Result<ValidatedPeerJoinAccepted, ployz::JoinDoorClientError>,
+        tokio::time::error::Elapsed,
+    >,
+) {
+    match result {
+        Ok(Ok(accepted)) => {
+            door.last_observation = Some(RevokedDoorObservation::Accepted(format!("{accepted:?}")));
+        }
+        Ok(Err(ployz::JoinDoorClientError::Refused {
+            refusal: JoinDoorRefusal::TokenNotFound { token_id },
+        })) => {
+            door.last_observation = Some(RevokedDoorObservation::Refused(
+                JoinDoorRefusal::TokenNotFound { token_id },
+            ));
+        }
+        Ok(Err(ployz::JoinDoorClientError::Refused { refusal })) => {
+            door.last_observation = Some(RevokedDoorObservation::Refused(refusal));
+        }
+        Ok(Err(error @ ployz::JoinDoorClientError::NoAdvertisedEndpoints))
+        | Ok(Err(error @ ployz::JoinDoorClientError::OverallTimedOut))
+        | Ok(Err(error @ ployz::JoinDoorClientError::AllEndpointsFailed { .. }))
+        | Ok(Err(error @ ployz::JoinDoorClientError::WrongAcceptanceKind))
+        | Ok(Err(error @ ployz::JoinDoorClientError::InvalidAcceptance(_))) => {
+            door.last_observation = Some(RevokedDoorObservation::ClientError(error));
+        }
+        Err(_) => {
+            door.last_observation = Some(RevokedDoorObservation::SharedDeadlineElapsed);
+        }
+    }
 }
 
 fn peer_request(name: &str) -> Result<PeerJoinRequest, String> {
