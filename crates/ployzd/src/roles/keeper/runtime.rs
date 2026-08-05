@@ -138,6 +138,12 @@ async fn reconcile_once(
             .as_ref()
             .and_then(last_success_from_status);
     }
+    let observed_local_machine_document = snapshot
+        .machines
+        .accepted
+        .iter()
+        .find(|row| row.source.key == config.local_machine_id().as_str())
+        .map(|row| row.source.document.clone());
     let cluster_prefix = snapshot.cluster.prefix.clone();
     let outcome = project_builtin_wireguard_mesh(
         &snapshot.cluster,
@@ -186,7 +192,12 @@ async fn reconcile_once(
         }
         BuiltinWireguardMeshOutcome::ReallocateLocalContainerSubnet { repair, evidence } => {
             tracing::warn!(machine_id = %repair.machine_id(), occupied_subnets = repair.occupied_subnets().len(), ?evidence, "Keeper must repair its lost local container subnet claim");
-            repair_local_subnet(store, cluster_prefix, repair).await?;
+            let Some(observed_document) = observed_local_machine_document else {
+                return Err(ReconcileError::Fatal(KeeperRoleRuntimeError::Invariant(
+                    "subnet repair did not retain the accepted local machine row evidence",
+                )));
+            };
+            repair_local_subnet(store, cluster_prefix, repair, &observed_document).await?;
             tokio::time::sleep(SUBNET_REPAIR_COURTESY_DELAY).await;
             let courtesy = store.read_roster().await.map_err(retry_store)?;
             let courtesy_outcome = project_builtin_wireguard_mesh(
@@ -316,6 +327,7 @@ async fn repair_local_subnet(
     store: &KeeperCorrosion,
     cluster_prefix: ployz_core::network::MachineEndpointSupernet,
     repair: BuiltinWireguardLocalSubnetReallocation,
+    observed_document: &str,
 ) -> Result<(), ReconcileError> {
     let (machine_id, mut machine, occupied_subnets) = repair.into_parts();
     let subnet = cluster_prefix
@@ -327,7 +339,7 @@ async fn repair_local_subnet(
     let previous = apply_local_subnet_repair(&machine_id, &mut machine, subnet.clone(), written_at)
         .map_err(|detail| ReconcileError::Fatal(KeeperRoleRuntimeError::Invariant(detail)))?;
     store
-        .rewrite_local_machine(&machine_id, &machine)
+        .rewrite_local_machine(&machine_id, observed_document, &machine)
         .await
         .map_err(retry_store)?;
     tracing::warn!(%machine_id, previous_subnet = ?previous, replacement_subnet = ?subnet, "Keeper rewrote its local machine row to repair the container subnet collision");
@@ -547,6 +559,21 @@ mod tests {
         assert_eq!(retry.next(), Duration::from_millis(5));
         retry.reset();
         assert_eq!(retry.next(), Duration::from_millis(2));
+    }
+
+    #[test]
+    fn stale_subnet_repair_evidence_is_visible_and_retryable() {
+        let machine_id = MachineRowId::try_new(MACHINE).expect("machine");
+
+        let error = retry_store(KeeperStoreError::StaleLocalMachineRepair {
+            machine_id: machine_id.clone(),
+        });
+
+        assert!(matches!(
+            error,
+            ReconcileError::Retry { detail }
+                if detail.contains(machine_id.as_str()) && detail.contains("became stale")
+        ));
     }
 
     #[test]

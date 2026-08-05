@@ -11,6 +11,7 @@ mod founding;
 mod join;
 mod mutations;
 mod roster;
+mod runtime;
 mod server;
 mod store;
 
@@ -19,7 +20,7 @@ pub use config::{
     DoorMaterialPaths,
 };
 pub use roster::ApiListenerValidationError;
-pub use server::{
+pub use runtime::{
     ApiRoleRuntimeError, ApiServer, ApiServerError, ApiServerServeError, run_from_environment,
 };
 

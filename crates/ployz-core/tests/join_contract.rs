@@ -27,7 +27,7 @@ use ployz_core::machine::{MachineLifecycle, MachineName};
 use ployz_core::network::{MachineEndpointSubnet, MachineEndpointSupernet, WireGuardPublicKey};
 use ployz_core::{
     JOIN_ROUTE, KnownApiFeature, MACHINE_ENDPOINT_ROUTE_PREFIX, TOKEN_CREATE_ROUTE,
-    TOKEN_LIST_ROUTE, TOKEN_REVOKE_ROUTE_PREFIX, V2Method, V2Route,
+    TOKEN_LIST_ROUTE, TOKEN_REVOKE_ROUTE_PREFIX, V2Method, V2Route, token_revoke_route,
 };
 
 const CLUSTER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -145,6 +145,7 @@ fn opaque_join_blob_round_trips_canonically_and_redacts_secrets() {
     );
     assert!(!format!("{secret:?}").contains(&secret.expose_base64()));
     assert!(!format!("{blob:?}").contains(&encoded));
+    assert_eq!(encoded.parse::<JoinBlob>().expect("FromStr blob"), blob);
 
     assert!(JoinBlob::try_parse("pzjoin_not+url/base64").is_err());
     assert!(JoinBlob::try_parse(&(encoded + "=")).is_err());
@@ -273,8 +274,10 @@ fn token_list_hides_expired_rows_unless_all_is_requested() {
         timestamp("2026-08-05T12:00:00Z"),
         rows(),
     );
-    assert_eq!(visible.tokens.len(), 1);
-    assert_eq!(visible.tokens[0].token_id, live);
+    let [visible_token] = visible.tokens.as_slice() else {
+        panic!("the live-token view must contain exactly one token")
+    };
+    assert_eq!(visible_token.token_id, live);
     assert_eq!(
         token_list_reply(
             TokenListRequest {
@@ -414,7 +417,7 @@ fn admission_derives_addresses_and_keeps_peer_rows_subnet_free() {
     };
     assert_eq!(
         *addr_v6,
-        derive_builtin_wireguard_member(&cluster.cluster_id, &pubkey)
+        derive_builtin_wireguard_member(&cluster.cluster_id, pubkey)
             .bind_address()
             .get()
     );
@@ -537,6 +540,40 @@ fn join_routes_are_centralized_and_token_principals_are_join_only() {
     assert!(!V2Route::TokenCreate.accepts_principal(&token_principal));
 }
 
+#[test]
+fn token_revoke_route_round_trips_the_typed_token_id() {
+    let token_id = TokenId::try_new(TOKEN).expect("token id");
+    let path = token_revoke_route(&token_id);
+
+    assert_eq!(path, format!("{TOKEN_REVOKE_ROUTE_PREFIX}/{TOKEN}"));
+    assert_eq!(
+        V2Route::parse(&path),
+        Some(V2Route::TokenRevoke(token_id.clone()))
+    );
+    assert_eq!(V2Route::TokenRevoke(token_id).path(), path);
+    assert_eq!(V2Route::parse(TOKEN_REVOKE_ROUTE_PREFIX), None);
+}
+
+#[test]
+fn operator_authority_routes_accept_peers_and_refuse_machines() {
+    let machine_principal = OperationInitiator::Machine {
+        machine_id: MachineRowId::try_new(MACHINE).expect("machine id"),
+    };
+    let peer_principal = OperationInitiator::Peer {
+        peer_id: PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAY").expect("peer id"),
+    };
+
+    for route in [
+        V2Route::TokenCreate,
+        V2Route::TokenList,
+        V2Route::TokenRevoke(TokenId::try_new(TOKEN).expect("token id")),
+        V2Route::MachineEndpointSet,
+    ] {
+        assert!(route.accepts_principal(&peer_principal));
+        assert!(!route.accepts_principal(&machine_principal));
+    }
+}
+
 // Keep the validated endpoint wrapper in this public-boundary test so callers
 // cannot accidentally construct an empty blob after token creation succeeds.
 #[test]
@@ -559,12 +596,29 @@ fn public_join_contracts_are_exported_to_typescript() {
     let generated = ployz_core::api_typescript();
     for contract in [
         "type TokenCreateRequest",
+        "type TokenCreateReply",
+        "type TokenCreateRefusal",
         "type TokenListReply",
+        "type TokenRevokeRequest",
+        "type TokenRevokeReply",
+        "type TokenRevokeRefusal",
         "type MachineEndpointSetRequest",
+        "type MachineEndpointSetReply",
+        "type MachineEndpointSetRefusal",
         "type JoinAdmissionRequest",
         "type JoinAdmissionReply",
         "type JoinMachineSubstrate",
     ] {
         assert!(generated.contains(contract), "missing {contract}");
+    }
+    for unused_wrapper in [
+        "type TokenCreateResponse",
+        "type TokenRevokeResponse",
+        "type MachineEndpointSetResponse",
+    ] {
+        assert!(
+            !generated.contains(unused_wrapper),
+            "unused response wrapper leaked into the public contract: {unused_wrapper}"
+        );
     }
 }

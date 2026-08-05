@@ -31,7 +31,6 @@ const WIREGUARD_INTERFACE_ENV: &str = "PLOYZ_WIREGUARD_INTERFACE";
 const WIREGUARD_LISTEN_PORT_ENV: &str = "PLOYZ_WIREGUARD_LISTEN_PORT";
 const CORROSION_GOSSIP_PORT_ENV: &str = "PLOYZ_CORROSION_GOSSIP_PORT";
 const API_LISTEN_ADDR_ENV: &str = "PLOYZ_API_LISTEN_ADDR";
-const JOIN_DOOR_PORT_ENV: &str = "PLOYZ_JOIN_DOOR_PORT";
 const WIREGUARD_MTU_ENV: &str = "PLOYZ_WIREGUARD_MTU";
 const BRIDGE_INTERFACE_ENV: &str = "PLOYZ_BRIDGE_INTERFACE";
 const EBPF_CTL_PATH_ENV: &str = "PLOYZ_EBPF_CTL_PATH";
@@ -124,7 +123,7 @@ impl KeeperRoleConfig {
                 DEFAULT_EBPF_PIN_PATH,
             )?),
         )?;
-        let ports = BuiltinWireguardPorts::try_new(
+        let ports = builtin_wireguard_ports(
             u16_environment(WIREGUARD_LISTEN_PORT_ENV, DEFAULT_WIREGUARD_LISTEN_PORT)?,
             u16_environment(CORROSION_GOSSIP_PORT_ENV, DEFAULT_CORROSION_GOSSIP_PORT)?,
             required_environment(API_LISTEN_ADDR_ENV)?
@@ -134,7 +133,6 @@ impl KeeperRoleConfig {
                     detail: error.to_string(),
                 })?
                 .port(),
-            join_door_port_environment()?,
         )?;
         let host = BuiltinWireguardHostConfig::try_new(
             PathBuf::from(optional_environment(
@@ -256,6 +254,14 @@ impl KeeperRoleConfig {
     }
 }
 
+fn builtin_wireguard_ports(
+    wireguard_listen: u16,
+    corrosion_gossip: u16,
+    api_http: u16,
+) -> Result<BuiltinWireguardPorts, BuiltinWireguardConfigError> {
+    BuiltinWireguardPorts::try_new(wireguard_listen, corrosion_gossip, api_http, JOIN_DOOR_PORT)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeeperTimingConfig {
     pub reconcile_interval: Duration,
@@ -286,17 +292,6 @@ fn optional_environment(
 
 fn u16_environment(name: &'static str, default: u16) -> Result<u16, KeeperRoleConfigError> {
     parsed_environment(name, default)
-}
-
-fn join_door_port_environment() -> Result<u16, KeeperRoleConfigError> {
-    let actual = u16_environment(JOIN_DOOR_PORT_ENV, JOIN_DOOR_PORT)?;
-    if actual != JOIN_DOOR_PORT {
-        return Err(KeeperRoleConfigError::UnexpectedJoinDoorPort {
-            expected: JOIN_DOOR_PORT,
-            actual,
-        });
-    }
-    Ok(actual)
 }
 
 fn duration_environment(
@@ -365,8 +360,6 @@ pub enum KeeperRoleConfigError {
     InvalidInteger { name: &'static str, detail: String },
     #[error("Keeper duration from {name} must be nonzero")]
     ZeroDuration { name: &'static str },
-    #[error("join door port must be the fixed Core port {expected}, got {actual}")]
-    UnexpectedJoinDoorPort { expected: u16, actual: u16 },
     #[error("Keeper retry maximum {maximum:?} is shorter than initial delay {initial:?}")]
     RetryCapBeforeInitial {
         initial: Duration,
@@ -382,4 +375,16 @@ pub enum KeeperRoleConfigError {
     HostConfiguration(#[from] BuiltinWireguardConfigError),
     #[error("PLOYZ_SUPERVISOR_BACKEND must be systemd or openrc, got {value:?}")]
     InvalidSupervisorBackend { value: String },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keeper_ports_take_the_join_door_port_from_core() {
+        let ports = builtin_wireguard_ports(51_820, 8_787, 2_020).expect("valid fixed ports");
+
+        assert!(format!("{ports:?}").contains(&format!("join_door_https: {JOIN_DOOR_PORT}")));
+    }
 }

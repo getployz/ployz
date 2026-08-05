@@ -13,6 +13,9 @@ export const API_MAJOR = 1 as const;
 export const KNOWN_API_FEATURES = [
   "v2.founding",
   "v2.lenses",
+  "v2.join_tokens",
+  "v2.machine_endpoint",
+  "v2.join_door",
 ] as const;
 
 export type ApiFeature = KnownApiFeature | (string & {});
@@ -21,7 +24,11 @@ export type OperationInitiator = Principal;
 
 export type AbsoluteInstallPath = string;
 
+export type AcceptedMachineRow = { machine_id: MachineRowId, document: MachineDocument, };
+
 export type AcceptedOperation = { operation_id: OperationId, start_sequence: EventSequence, };
+
+export type AcceptedPeerRow = { peer_id: PeerId, document: PeerDocument, };
 
 export type AcmeChallengeToken = Brand<string, "AcmeChallengeToken">;
 
@@ -219,6 +226,8 @@ export type ContainerRuntimeState = { "state": "running",
 ip?: string | null, health: ContainerHealth, started_at_unix_ms?: number | null, } | { "state": "exited" };
 
 export type ControlPlaneCommitScope = { "scope": "deploy_phase", namespace_revision_id: NamespaceRevisionId, phase: DeployPhaseNumber, } | { "scope": "service_entry", service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, } | { "scope": "namespace", namespace_revision_id: NamespaceRevisionId, } | { "scope": "volume_pin", namespace_id: NamespaceId, volume_name: VolumeName, };
+
+export type CorrosionBootstrapFacts = { seed_gossip_address: string, };
 
 export type CorrosionDocumentVersion = SafeInteger<"CorrosionDocumentVersion">;
 
@@ -506,13 +515,47 @@ export type InternalServiceName = Brand<string, "InternalServiceName">;
 
 export type IssuedJoinToken = { fingerprint: JoinTokenFingerprint, expires_at: JoinTokenExpiresAt, };
 
+export type JoinAdmissionAccepted = { "kind": "machine", accepted: MachineJoinAccepted, } | { "kind": "peer", accepted: PeerJoinAccepted, };
+
+export type JoinAdmissionReply = { "outcome": "accepted", admission: JoinAdmissionAccepted, } | { "outcome": "refused", refusal: JoinDoorRefusal, };
+
+export type JoinAdmissionRequest = { token: JoinTokenProof, member: JoinMemberRequest, };
+
+export type JoinAdmissionValidationError = { "kind": "unsupported_provider", found: MeshProvider, } | { "kind": "endpoint_subnet_outside_cluster_prefix", subnet: MachineEndpointSubnet, } | { "kind": "endpoint_port_zero" } | { "kind": "provenance_is_not_api_token" };
+
+export type JoinBlob = Brand<string, "JoinBlob">;
+
+export type JoinDoorCertFingerprint = Brand<string, "JoinDoorCertFingerprint">;
+
+export type JoinDoorCertificatePem = Brand<string, "JoinDoorCertificatePem">;
+
+export type JoinDoorMaterial = { certificate_pem: JoinDoorCertificatePem, private_key_pem: JoinDoorPrivateKeyPem, fingerprint: JoinDoorCertFingerprint, };
+
+export type JoinDoorPrivateKeyPem = Brand<string, "JoinDoorPrivateKeyPem">;
+
+export type JoinDoorRefusal = { "kind": "token_not_found", token_id: TokenId, } | { "kind": "token_expired", token_id: TokenId, expires_at: CorrosionTimestamp, } | { "kind": "token_secret_mismatch", token_id: TokenId, } | { "kind": "invalid_admission", reason: JoinAdmissionValidationError, } | { "kind": "name_conflict", name: string, } | { "kind": "identity_conflict" } | { "kind": "no_reachable_seed" } | { "kind": "endpoint_subnet_exhausted" };
+
+export type JoinMachineSubstrate = { ployz_version: ExactPloyzVersion, corrosion_version: string, artifacts: Array<InstallArtifactSpec>, };
+
+export type JoinMemberRequest = { "kind": "machine", request: MachineJoinRequest, } | { "kind": "peer", request: PeerJoinRequest, };
+
+export type JoinStorageChoice = { "kind": "automatic" } | { "kind": "flag", mode: StorageMode, };
+
+export type JoinStorageFacts = { imported_zfs_pool: boolean, total_memory_bytes: number, };
+
 export type JoinTokenExpiresAt = Brand<string, "JoinTokenExpiresAt">;
 
 export type JoinTokenFingerprint = Brand<string, "JoinTokenFingerprint">;
 
+export type JoinTokenProof = { token_id: TokenId, secret: JoinTokenSecret, };
+
 export type JoinTokenRedeemedAt = Brand<string, "JoinTokenRedeemedAt">;
 
-export type KnownApiFeature = "v2.founding" | "v2.lenses";
+export type JoinTokenSecret = Brand<string, "JoinTokenSecret">;
+
+export type JoinTokenTtlSeconds = SafeInteger<"JoinTokenTtlSeconds">;
+
+export type KnownApiFeature = "v2.founding" | "v2.lenses" | "v2.join_tokens" | "v2.machine_endpoint" | "v2.join_door";
 
 export type LensCollection = "machines" | "services" | "containers" | "machine_status" | "operations";
 
@@ -560,6 +603,12 @@ export type MachineDocument = { v: CorrosionDocumentVersion, cluster_id: Cluster
 
 export type MachineEndpointObservation = { machine_id: MachineId, control_endpoints: Array<string>, mesh_endpoints: Array<string>, };
 
+export type MachineEndpointSetRefusal = { "kind": "not_found", machine_name: MachineName, } | { "kind": "endpoint_port_zero", machine_name: MachineName, } | { "kind": "provider_does_not_use_wireguard", machine_id: MachineRowId, };
+
+export type MachineEndpointSetReply = { machine_id: MachineRowId, machine: MachineDocument, };
+
+export type MachineEndpointSetRequest = { machine_name: MachineName, endpoint: string, };
+
 export type MachineEndpointSubnet = string;
 
 export type MachineEndpointSupernet = string;
@@ -571,6 +620,10 @@ export type MachineId = Brand<string, "MachineId">;
 export type MachineInspectError = { "error": "no_such_machine", machine_id: MachineId, } | { "error": "unavailable", message: string, };
 
 export type MachineInspectRequest = { machine_id: MachineId, };
+
+export type MachineJoinAccepted = { cluster: ClusterDocument, machine: AcceptedMachineRow, seed: ReachableSeedMachine, door: JoinDoorMaterial, corrosion: CorrosionBootstrapFacts, substrate: JoinMachineSubstrate, };
+
+export type MachineJoinRequest = { machine_id: MachineRowId, name: MachineName, public_key: WireGuardPublicKey, endpoint: string | null, storage_choice: JoinStorageChoice, storage_facts: JoinStorageFacts, };
 
 export type MachineLensRow = { id: MachineRowId, document: MachineDocument, };
 
@@ -825,6 +878,10 @@ export type PeerDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId,
 
 export type PeerId = Brand<string, "PeerId">;
 
+export type PeerJoinAccepted = { cluster: ClusterDocument, peer: AcceptedPeerRow, seed: ReachableSeedMachine, corrosion: CorrosionBootstrapFacts, };
+
+export type PeerJoinRequest = { peer_id: PeerId, name: string, public_key: WireGuardPublicKey, endpoint: string | null, };
+
 export type PeerTransport = { "kind": "wireguard", pubkey: WireGuardPublicKey, addr_v6: string, endpoint: string | null, } | { "kind": "tailscale", ip: string, };
 
 export type PidsLimit = SafeInteger<"PidsLimit">;
@@ -849,6 +906,8 @@ export type PreStartHookStep = { machine_id: MachineId, };
 export type Principal = { "kind": "machine", machine_id: MachineRowId, } | { "kind": "peer", peer_id: PeerId, } | { "kind": "api_token", token_id: TokenId, };
 
 export type PushedImageReceipt = { index_digest: OciDigest, platforms: [OciPlatform, PlatformImage][], };
+
+export type ReachableSeedMachine = { machine_id: MachineRowId, transport: MachineTransport, };
 
 export type RegistryCredential = { "kind": "basic", username: RegistryCredentialUsername, password: RegistryCredentialSecret, } | { "kind": "identity_token", token: RegistryCredentialSecret, };
 
@@ -994,9 +1053,29 @@ export type SystemDeployRequest = { idempotency_key: OperationIdempotencyKey, re
 
 export type SystemDeployTarget = { origin?: DeployOrigin | null, services: Array<DeployServiceSpec>, };
 
+export type TokenCreateRefusal = { "kind": "no_advertised_door_endpoint", repair_command: string, } | { "kind": "too_many_advertised_door_endpoints", found: number, maximum: number, };
+
+export type TokenCreateReply = { token_id: TokenId, blob: JoinBlob, created_at: CorrosionTimestamp, expires_at: CorrosionTimestamp, };
+
+export type TokenCreateRequest = { ttl_seconds: JoinTokenTtlSeconds, };
+
 export type TokenDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, secret_sha256: Sha256Hex, created_at: CorrosionTimestamp, expires_at: CorrosionTimestamp, written_by: Principal, written_at: CorrosionTimestamp, };
 
 export type TokenId = Brand<string, "TokenId">;
+
+export type TokenListItem = { token_id: TokenId, created_at: CorrosionTimestamp, expires_at: CorrosionTimestamp, };
+
+export type TokenListReply = { tokens: Array<TokenListItem>, };
+
+export type TokenListRequest = { scope: TokenListScope, };
+
+export type TokenListScope = "live" | "all";
+
+export type TokenRevokeRefusal = { "kind": "not_found", token_id: TokenId, };
+
+export type TokenRevokeReply = { token_id: TokenId, };
+
+export type TokenRevokeRequest = { token_id: TokenId, };
 
 export type UnusableMachine = { machine_id: MachineId, reason: MachineUsabilityReason, };
 

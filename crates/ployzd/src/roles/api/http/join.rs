@@ -8,24 +8,23 @@ use http_body_util::BodyExt as _;
 use hyper::body::Body;
 use hyper::{Method, Response, StatusCode};
 use ployz_core::corrosion::{
-    CorrosionTable, MachineDocument, MachineTransport, MeshProvider, OperatorWriteProvenance,
-    PeerDocument, PeerTransport, Principal, RosterMemberId, derive_builtin_wireguard_member,
+    MachineDocument, MachineTransport, MeshProvider, OperatorWriteProvenance, PeerDocument,
+    PeerTransport, Principal, RosterMemberId, TokenDocument, derive_builtin_wireguard_member,
 };
-use ployz_core::ids::{MachineRowId, PeerId};
+use ployz_core::ids::{MachineRowId, PeerId, TokenId};
 use ployz_core::join::{
     AcceptedMachineRow, AcceptedPeerRow, CorrosionBootstrapFacts, JoinAcceptanceValidationError,
     JoinAdmissionAccepted, JoinAdmissionReply, JoinAdmissionRequest, JoinAdmissionValidationError,
     JoinAdmissionWrite, JoinDoorMaterial, JoinDoorRefusal, JoinMachineSubstrate, JoinMemberRequest,
-    JoinTokenSecret, MachineJoinAccepted, MachineJoinRequest, PeerJoinAccepted, PeerJoinRequest,
+    MachineJoinAccepted, MachineJoinRequest, PeerJoinAccepted, PeerJoinRequest,
     ReachableSeedMachine, classify_machine_admission, classify_peer_admission,
-    prepare_machine_admission, prepare_peer_admission,
+    prepare_machine_admission, prepare_peer_admission, validate_join_token,
 };
 use ployz_core::network::{
     MachineEndpointSubnet, MachineEndpointSubnetAllocationError, WireGuardPublicKey,
 };
 use ployz_core::{ApiRefusal, JOIN_ROUTE, V2Method};
 use serde::Serialize;
-use subtle::ConstantTimeEq as _;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
@@ -34,8 +33,10 @@ use super::server::{
     refusal_response_with_allow,
 };
 use super::store::{
-    AcceptedMachine, AcceptedPeer, AcceptedRoster, MutationStoreError, delete_document_if_matches,
-    insert_document, read_accepted_roster, read_machine, read_peer, read_token, replace_document,
+    AcceptedMachine, AcceptedPeer, AcceptedRoster, MutationStoreError, TokenAuthorizedInsert,
+    delete_machine_if_matches, delete_peer_if_matches, insert_machine_if_token_matches,
+    insert_peer_if_token_matches, read_accepted_roster, read_machine, read_peer, read_token,
+    replace_machine,
 };
 
 const MAX_JOIN_REQUEST_BYTES: usize = 64 * 1024;
@@ -94,29 +95,30 @@ async fn admit(
     request: JoinAdmissionRequest,
 ) -> Result<JoinAdmissionAccepted, AdmissionError> {
     let token_id = request.token.token_id.clone();
-    let Some(token) = read_token(&service.corrosion, &service.cluster_id, &token_id).await? else {
-        return Err(JoinDoorRefusal::TokenNotFound { token_id }.into());
-    };
+    let token = read_token(&service.corrosion, &service.cluster_id, &token_id).await?;
     let now = now_timestamp()?;
-    if now >= token.expires_at {
-        return Err(JoinDoorRefusal::TokenExpired {
-            token_id,
-            expires_at: token.expires_at,
-        }
-        .into());
-    }
-    if !token_secret_matches(&request.token.secret, token.secret_sha256.as_str()) {
-        return Err(JoinDoorRefusal::TokenSecretMismatch { token_id }.into());
-    }
-
-    let Some(door) = service.door_material.as_deref().cloned() else {
+    let principal = validate_join_token(
+        &request.token,
+        token.as_ref().map(|document| (&token_id, document)),
+        now,
+    )?;
+    let Some(token) = token else {
         return Err(AdmissionError::Invariant(
-            "join door material is unavailable",
+            "Core accepted a missing join-token row",
         ));
     };
-    let Some(substrate) = service.join_substrate.as_deref().cloned() else {
-        return Err(AdmissionError::Invariant("join substrate is unavailable"));
+    let authority = ValidatedTokenAuthority {
+        token_id: token_id.clone(),
+        document: token,
     };
+
+    let Some(admission) = service.join_door.admission() else {
+        return Err(AdmissionError::Invariant(
+            "join door runtime is unavailable",
+        ));
+    };
+    let door = admission.material.as_ref().clone();
+    let substrate = admission.substrate.as_ref().clone();
     let roster = read_accepted_roster(&service.corrosion, &service.cluster_id).await?;
     if roster.cluster.provider != MeshProvider::BuiltinWireguard {
         return Err(JoinDoorRefusal::InvalidAdmission {
@@ -126,15 +128,22 @@ async fn admit(
         }
         .into());
     }
-    let principal = Principal::ApiToken { token_id };
     match request.member {
         JoinMemberRequest::Machine { request } => {
-            admit_machine(service, roster, request, door, substrate, principal).await
+            admit_machine(
+                service, roster, request, door, substrate, principal, &authority,
+            )
+            .await
         }
         JoinMemberRequest::Peer { request } => {
-            admit_peer(service, roster, request, principal).await
+            admit_peer(service, roster, request, principal, &authority).await
         }
     }
+}
+
+struct ValidatedTokenAuthority {
+    token_id: TokenId,
+    document: TokenDocument,
 }
 
 async fn admit_machine(
@@ -144,6 +153,7 @@ async fn admit_machine(
     door: JoinDoorMaterial,
     substrate: JoinMachineSubstrate,
     principal: Principal,
+    authority: &ValidatedTokenAuthority,
 ) -> Result<JoinAdmissionAccepted, AdmissionError> {
     let cross_kind_peer_id = PeerId::try_new(request.machine_id.as_str().to_owned())
         .map_err(|_| AdmissionError::Invariant("machine id was not a canonical roster ULID"))?;
@@ -185,24 +195,34 @@ async fn admit_machine(
     .map_err(invalid_admission)?;
     let document = row.document;
 
-    if let Err(write_error) = insert_document(
+    match insert_machine_if_token_matches(
         &service.corrosion,
-        CorrosionTable::Machines,
-        request.machine_id.as_str(),
+        &request.machine_id,
         &document,
+        &authority.token_id,
+        &authority.document,
     )
     .await
     {
-        let refreshed = read_accepted_roster(&service.corrosion, &service.cluster_id).await?;
-        if let Some(existing) =
-            read_machine(&service.corrosion, &refreshed.cluster, &request.machine_id).await?
-        {
-            return reuse_machine(
-                service, refreshed, &request, existing, door, substrate, principal,
-            )
-            .await;
+        Ok(TokenAuthorizedInsert::Inserted) => {}
+        Ok(TokenAuthorizedInsert::TokenMissing) => {
+            return Err(JoinDoorRefusal::TokenNotFound {
+                token_id: authority.token_id.clone(),
+            }
+            .into());
         }
-        return Err(write_error.into());
+        Err(write_error) => {
+            let refreshed = read_accepted_roster(&service.corrosion, &service.cluster_id).await?;
+            if let Some(existing) =
+                read_machine(&service.corrosion, &refreshed.cluster, &request.machine_id).await?
+            {
+                return reuse_machine(
+                    service, refreshed, &request, existing, door, substrate, principal,
+                )
+                .await;
+            }
+            return Err(write_error.into());
+        }
     }
 
     settle_machine(
@@ -244,13 +264,7 @@ async fn settle_machine(
     } = settlement;
     for attempt in 0..MAX_SUBNET_ALLOCATION_ATTEMPTS {
         if matches!(pending_write, PendingMachineWrite::Replace) {
-            replace_document(
-                &service.corrosion,
-                CorrosionTable::Machines,
-                request.machine_id.as_str(),
-                &document,
-            )
-            .await?;
+            replace_machine(&service.corrosion, &request.machine_id, &document).await?;
         }
         tokio::time::sleep(ADMISSION_COURTESY_WAIT).await;
         let roster = read_accepted_roster(&service.corrosion, &service.cluster_id).await?;
@@ -392,13 +406,7 @@ async fn cleanup_machine(
     if matches!(origin, AdmissionRowOrigin::Reused) {
         return Ok(());
     }
-    delete_document_if_matches(
-        &service.corrosion,
-        CorrosionTable::Machines,
-        machine_id.as_str(),
-        expected,
-    )
-    .await?;
+    delete_machine_if_matches(&service.corrosion, machine_id, expected).await?;
     Ok(())
 }
 
@@ -419,6 +427,7 @@ async fn admit_peer(
     mut roster: AcceptedRoster,
     request: PeerJoinRequest,
     principal: Principal,
+    authority: &ValidatedTokenAuthority,
 ) -> Result<JoinAdmissionAccepted, AdmissionError> {
     let cross_kind_machine_id = MachineRowId::try_new(request.peer_id.as_str().to_owned())
         .map_err(|_| AdmissionError::Invariant("peer id was not a canonical roster ULID"))?;
@@ -454,21 +463,31 @@ async fn admit_peer(
     )
     .map_err(invalid_admission)?;
     let document = row.document;
-    if let Err(write_error) = insert_document(
+    match insert_peer_if_token_matches(
         &service.corrosion,
-        CorrosionTable::Peers,
-        request.peer_id.as_str(),
+        &request.peer_id,
         &document,
+        &authority.token_id,
+        &authority.document,
     )
     .await
     {
-        let refreshed = read_accepted_roster(&service.corrosion, &service.cluster_id).await?;
-        if let Some(existing) =
-            read_peer(&service.corrosion, &refreshed.cluster, &request.peer_id).await?
-        {
-            return reuse_peer(service, &refreshed, &request, existing);
+        Ok(TokenAuthorizedInsert::Inserted) => {}
+        Ok(TokenAuthorizedInsert::TokenMissing) => {
+            return Err(JoinDoorRefusal::TokenNotFound {
+                token_id: authority.token_id.clone(),
+            }
+            .into());
         }
-        return Err(write_error.into());
+        Err(write_error) => {
+            let refreshed = read_accepted_roster(&service.corrosion, &service.cluster_id).await?;
+            if let Some(existing) =
+                read_peer(&service.corrosion, &refreshed.cluster, &request.peer_id).await?
+            {
+                return reuse_peer(service, &refreshed, &request, existing);
+            }
+            return Err(write_error.into());
+        }
     }
 
     tokio::time::sleep(ADMISSION_COURTESY_WAIT).await;
@@ -559,13 +578,7 @@ async fn delete_created_peer(
     peer_id: &PeerId,
     expected: &PeerDocument,
 ) -> Result<(), AdmissionError> {
-    delete_document_if_matches(
-        &service.corrosion,
-        CorrosionTable::Peers,
-        peer_id.as_str(),
-        expected,
-    )
-    .await?;
+    delete_peer_if_matches(&service.corrosion, peer_id, expected).await?;
     Ok(())
 }
 
@@ -763,40 +776,6 @@ fn identity_winner(
         .min()
 }
 
-fn token_secret_matches(secret: &JoinTokenSecret, expected_hex: &str) -> bool {
-    let candidate = secret.sha256();
-    let Some(candidate) = decode_sha256(candidate.as_str()) else {
-        return false;
-    };
-    let Some(expected) = decode_sha256(expected_hex) else {
-        return false;
-    };
-    bool::from(candidate.ct_eq(&expected))
-}
-
-fn decode_sha256(value: &str) -> Option<[u8; 32]> {
-    let mut decoded = [0_u8; 32];
-    let mut chunks = value.as_bytes().chunks_exact(2);
-    if !chunks.remainder().is_empty() || chunks.len() != decoded.len() {
-        return None;
-    }
-    for (output, chunk) in decoded.iter_mut().zip(&mut chunks) {
-        let [high, low] = chunk else {
-            return None;
-        };
-        *output = (hex_nibble(*high)? << 4) | hex_nibble(*low)?;
-    }
-    Some(decoded)
-}
-
-const fn hex_nibble(value: u8) -> Option<u8> {
-    match value {
-        b'0'..=b'9' => Some(value - b'0'),
-        b'a'..=b'f' => Some(value - b'a' + 10),
-        _ => None,
-    }
-}
-
 fn name_conflict(name: &str) -> JoinDoorRefusal {
     JoinDoorRefusal::NameConflict {
         name: name.to_owned(),
@@ -915,31 +894,9 @@ mod tests {
     use http_body_util::BodyExt as _;
     use hyper::StatusCode;
     use ployz_core::ids::TokenId;
-    use ployz_core::join::{JoinAdmissionReply, JoinDoorRefusal, JoinTokenSecret};
+    use ployz_core::join::{JoinAdmissionReply, JoinDoorRefusal};
 
-    use super::{decode_sha256, lowest_machine_id_wins, token_secret_matches, typed_join_response};
-
-    #[test]
-    fn token_hash_comparison_uses_the_full_decoded_digest() {
-        let secret = JoinTokenSecret::try_from_bytes([7_u8; 32]);
-        let expected = secret.sha256();
-        assert!(token_secret_matches(&secret, expected.as_str()));
-
-        let mut different = expected.as_str().as_bytes().to_vec();
-        let Some(last) = different.last_mut() else {
-            panic!("a digest is nonempty");
-        };
-        *last = if *last == b'0' { b'1' } else { b'0' };
-        let different = String::from_utf8(different).expect("hex is UTF-8");
-        assert!(!token_secret_matches(&secret, &different));
-    }
-
-    #[test]
-    fn hash_decoder_accepts_only_canonical_lowercase_sha256() {
-        assert!(decode_sha256(&"00".repeat(32)).is_some());
-        assert!(decode_sha256(&"AA".repeat(32)).is_none());
-        assert!(decode_sha256("00").is_none());
-    }
+    use super::{lowest_machine_id_wins, typed_join_response};
 
     #[tokio::test]
     async fn typed_join_refusals_are_successful_http_replies() {

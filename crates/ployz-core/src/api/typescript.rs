@@ -30,9 +30,10 @@ use crate::install::{
     InstallArtifactSpec, InstallArtifactVersion, InstallSha256Digest, ReleasePlatformFailure,
 };
 use crate::join::{
-    JoinAdmissionReply, JoinAdmissionRequest, JoinMachineSubstrate, MachineEndpointSetRequest,
-    MachineEndpointSetResponse, TokenCreateRequest, TokenCreateResponse, TokenListReply,
-    TokenListRequest, TokenRevokeRequest, TokenRevokeResponse,
+    JoinAdmissionReply, JoinAdmissionRequest, JoinMachineSubstrate, MachineEndpointSetRefusal,
+    MachineEndpointSetReply, MachineEndpointSetRequest, TokenCreateRefusal, TokenCreateReply,
+    TokenCreateRequest, TokenListReply, TokenListRequest, TokenRevokeRefusal, TokenRevokeReply,
+    TokenRevokeRequest,
 };
 use crate::machine::roles::{GatewayRole, InstallRolePolicy};
 use crate::operation::{
@@ -153,13 +154,16 @@ fn collect_v2_contracts(declarations: &mut DeclarationCollector<'_>) {
     declarations.visit::<FoundingRepairCommand>();
     declarations.visit::<FoundingRefusal>();
     declarations.visit::<TokenCreateRequest>();
-    declarations.visit::<TokenCreateResponse>();
+    declarations.visit::<TokenCreateReply>();
+    declarations.visit::<TokenCreateRefusal>();
     declarations.visit::<TokenListRequest>();
     declarations.visit::<TokenListReply>();
     declarations.visit::<TokenRevokeRequest>();
-    declarations.visit::<TokenRevokeResponse>();
+    declarations.visit::<TokenRevokeReply>();
+    declarations.visit::<TokenRevokeRefusal>();
     declarations.visit::<MachineEndpointSetRequest>();
-    declarations.visit::<MachineEndpointSetResponse>();
+    declarations.visit::<MachineEndpointSetReply>();
+    declarations.visit::<MachineEndpointSetRefusal>();
     declarations.visit::<JoinAdmissionRequest>();
     declarations.visit::<JoinAdmissionReply>();
     declarations.visit::<JoinMachineSubstrate>();

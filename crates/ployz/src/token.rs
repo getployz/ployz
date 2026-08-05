@@ -6,7 +6,7 @@ use ployz_core::join::{
     TokenCreateRefusal, TokenCreateReply, TokenCreateRequest, TokenListReply, TokenListRequest,
     TokenListScope, TokenRevokeRefusal, TokenRevokeReply, TokenRevokeRequest,
 };
-use ployz_core::{TOKEN_CREATE_ROUTE, TOKEN_LIST_ROUTE, TOKEN_REVOKE_ROUTE_PREFIX};
+use ployz_core::{TOKEN_CREATE_ROUTE, TOKEN_LIST_ROUTE, token_revoke_route};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
@@ -82,7 +82,7 @@ async fn list(command: TokenListCommand) -> Result<String, TokenExecutionError> 
 
 async fn revoke(command: TokenRevokeCommand) -> Result<String, TokenExecutionError> {
     let remote = OperatorRemote::load(command.target.as_ref())?;
-    let route = format!("{TOKEN_REVOKE_ROUTE_PREFIX}/{}", command.token_id.as_str());
+    let route = token_revoke_route(&command.token_id);
     let reply = remote
         .request_json_with_refusal::<_, TokenRevokeReply, TokenRevokeRefusal>(
             Method::POST,

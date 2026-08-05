@@ -6,9 +6,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use ployz_core::corrosion::{
-    DesiredBuiltinWireguardLocal, MachineDocument, MachineTransport, QueryEvent, SqliteParameter,
-    SqliteValue, Statement, StorageMode, StoredRow, derive_builtin_wireguard_member,
-    read_named_roster_rows,
+    DesiredBuiltinWireguardLocal, MachineTransport, StorageMode, derive_builtin_wireguard_member,
 };
 use ployz_core::deploy::ZfsPoolName;
 use ployz_core::founding::MINIMUM_ZFS_MEMORY_BYTES;
@@ -24,11 +22,16 @@ use crate::builtin_wireguard::{
     BuiltinWireguardJoinSeed, BuiltinWireguardPorts,
 };
 use crate::{
-    ArtifactKind, ArtifactSourceView, FileMode, HostPlatformProfile, HostRunnerCommandRunner,
-    PloyzdRole, PloyzdRoleEnvironmentFile, PoolSelection, SupervisorBackend, SupervisorChange,
-    SupervisorDirectories, SupervisorUnitSpec, SystemHostRunnerCommandRunner,
-    acquire_remote_artifact_content_addressed, artifact_target, detect_host_platform,
-    install_verified_artifact, prepare_storage, verify_artifact_file, write_durable_file,
+    ArtifactKind, FileMode, HostPlatformProfile, HostRunnerCommandRunner, PloyzdRole,
+    PloyzdRoleEnvironmentFile, PoolSelection, SupervisorBackend, SupervisorChange,
+    SupervisorDirectories, SystemHostRunnerCommandRunner, artifact_target, prepare_storage,
+    write_durable_file,
+};
+
+use crate::lifecycle::production::{
+    CorrosionBootstrap, CorrosionConfig, CorrosionServiceChange, CorrosionUnitOrdering,
+    GeneratedSecretPersistence, LinuxSubstrate, artifact_kind, read_or_generate_secret,
+    render_corrosion_config as render_shared_corrosion_config,
 };
 
 use super::{
@@ -53,6 +56,10 @@ const WIREGUARD_PORT: u16 = 51_820;
 const CORROSION_QUERY_BODY_LIMIT: u64 = 64 * 1024;
 const CORROSION_CONVERGENCE_TIMEOUT: Duration = Duration::from_secs(30);
 const CORROSION_QUERY_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(1);
+
+mod query;
+
+use query::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -316,63 +323,21 @@ impl LinuxMachineJoinHostEffects {
         })
     }
 
-    fn profile(&mut self) -> Result<&HostPlatformProfile, FailureMessage> {
-        if self.profile.is_none() {
-            let release = self.runner.read_os_release()?;
-            self.profile = Some(detect_host_platform(&release).map_err(failure)?);
-        }
-        Ok(self.profile.as_ref().expect("profile was populated"))
+    fn substrate(&mut self) -> LinuxSubstrate<'_, SystemHostRunnerCommandRunner> {
+        LinuxSubstrate::new(
+            self.state.path(),
+            &mut self.runner,
+            &mut self.profile,
+            &self.supervisor_directories,
+        )
+    }
+
+    fn profile(&mut self) -> Result<HostPlatformProfile, FailureMessage> {
+        Ok(self.substrate().profile()?.clone())
     }
 
     fn supervisor(&mut self) -> Result<SupervisorBackend, FailureMessage> {
-        Ok(self.profile()?.supervisor().into())
-    }
-
-    fn require(&mut self, program: &str, args: &[&str]) -> Result<(), FailureMessage> {
-        let output = self.runner.command(program, args)?;
-        if output.success {
-            Ok(())
-        } else {
-            Err(failure(output.failure))
-        }
-    }
-
-    fn run_supervisor(
-        &mut self,
-        change: SupervisorChange,
-        target: crate::SupervisorUnitTarget,
-    ) -> Result<(), FailureMessage> {
-        let backend = self.supervisor()?;
-        for (program, args) in backend.commands(change, &target) {
-            let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
-            self.require(program, &refs)?;
-        }
-        Ok(())
-    }
-
-    fn install_artifact(
-        &mut self,
-        spec: &ployz_core::install::InstallArtifactSpec,
-    ) -> Result<(), FailureMessage> {
-        let kind = artifact_kind(spec.install_path.as_str())?;
-        let target = artifact_target(kind, spec).map_err(failure)?;
-        let verified = match target.source_view() {
-            ArtifactSourceView::LocalPath(path) => {
-                verify_artifact_file(path, &target.digest).map_err(failure)?
-            }
-            ArtifactSourceView::RemoteUrl(url) => {
-                let downloads = self.state.path().join("downloads");
-                acquire_remote_artifact_content_addressed(
-                    url,
-                    &target.digest,
-                    &downloads,
-                    |staged| self.runner.download(url, staged),
-                )
-                .map_err(failure)?
-            }
-        };
-        install_verified_artifact(&verified, &target).map_err(failure)?;
-        Ok(())
+        self.substrate().supervisor()
     }
 
     fn write_environment(
@@ -420,63 +385,23 @@ impl LinuxMachineJoinHostEffects {
         )
     }
 
-    fn install_corrosion_unit(&mut self) -> Result<(), FailureMessage> {
-        let backend = self.supervisor()?;
-        let config = self.state.path().join(CORROSION_CONFIG_FILE);
-        let (name, contents) = match backend {
-            SupervisorBackend::Systemd => (
-                "ployz-corrosion.service",
-                format!(
-                    "[Unit]\nDescription=Ployz Corrosion\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=exec\nExecStart=/usr/local/bin/corrosion --config {} agent\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n",
-                    config.display()
-                ),
-            ),
-            SupervisorBackend::OpenRc => (
-                "ployz-corrosion",
-                format!(
-                    "#!/sbin/openrc-run\nname=ployz-corrosion\nsupervisor=supervise-daemon\ncommand=/usr/local/bin/corrosion\ncommand_args=\"--config {} agent\"\nrespawn_delay=5\n\ndepend() {{ need net; }}\n",
-                    config.display()
-                ),
-            ),
-        };
-        write_durable_file(
-            self.supervisor_directories.directory(backend),
-            name,
-            FileMode::Executable0755,
-            contents.as_bytes(),
-        )?;
-        match backend {
-            SupervisorBackend::Systemd => {
-                self.require("systemctl", &["daemon-reload"])?;
-                self.require("systemctl", &["enable", "ployz-corrosion.service"])
-            }
-            SupervisorBackend::OpenRc => {
-                self.require("rc-update", &["add", "ployz-corrosion", "default"])
-            }
-        }
-    }
-
     fn wait_for_service(
         &mut self,
         target: crate::SupervisorUnitTarget,
         description: &str,
     ) -> Result<(), FailureMessage> {
-        let backend = self.supervisor()?;
-        for _ in 0..30 {
-            let mut healthy = true;
-            for (program, args) in backend.commands(SupervisorChange::IsActive, &target) {
-                let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
-                healthy &= self.runner.command(program, &refs)?.success;
-            }
-            if healthy {
-                return Ok(());
-            }
-            thread::sleep(Duration::from_secs(1));
-        }
-        Err(failure(format!(
-            "{description} did not become ready within 30 seconds"
-        )))
+        let crate::SupervisorUnitTarget::PloyzdRole(role) = target;
+        self.substrate().wait_for_role(role, description)
     }
+}
+
+fn ensure_join_docker(
+    state: &MachineJoinStateDirectory,
+    runner: &mut impl HostRunnerCommandRunner,
+    profile: &mut Option<HostPlatformProfile>,
+    supervisor_directories: &SupervisorDirectories,
+) -> Result<(), FailureMessage> {
+    LinuxSubstrate::new(state.path(), runner, profile, supervisor_directories).ensure_docker()
 }
 
 fn render_environment(
@@ -487,7 +412,7 @@ fn render_environment(
 ) -> String {
     let accepted = accepted.accepted();
     format!(
-        "PLOYZ_CORROSION_API_ADDR=127.0.0.1:{CORROSION_API_PORT}\nPLOYZ_CORROSION_BEARER_TOKEN={corrosion_token}\nPLOYZ_CLUSTER_ID={}\nPLOYZ_MACHINE_ID={}\nPLOYZ_API_LISTEN_ADDR=[{addr_v6}]:{API_PORT}\nPLOYZ_API_DOOR_LISTEN_ADDR=[::]:{JOIN_DOOR_PORT}\nPLOYZ_API_DOOR_PRIVATE_KEY_PATH={}\nPLOYZ_API_DOOR_CERTIFICATE_PATH={}\nPLOYZ_API_DOOR_FINGERPRINT_PATH={}\n{JOIN_SUBSTRATE_ENV}={}\nPLOYZ_JOIN_DOOR_PORT={JOIN_DOOR_PORT}\nPLOYZ_CORROSION_GOSSIP_PORT={CORROSION_GOSSIP_PORT}\nPLOYZ_BUILD={}\nPLOYZ_WIREGUARD_PRIVATE_KEY_PATH={}\nPLOYZ_CORROSION_VERSION={}\n",
+        "PLOYZ_CORROSION_API_ADDR=127.0.0.1:{CORROSION_API_PORT}\nPLOYZ_CORROSION_BEARER_TOKEN={corrosion_token}\nPLOYZ_CLUSTER_ID={}\nPLOYZ_MACHINE_ID={}\nPLOYZ_API_LISTEN_ADDR=[{addr_v6}]:{API_PORT}\nPLOYZ_API_DOOR_LISTEN_ADDR=[::]:{JOIN_DOOR_PORT}\nPLOYZ_API_DOOR_PRIVATE_KEY_PATH={}\nPLOYZ_API_DOOR_CERTIFICATE_PATH={}\nPLOYZ_API_DOOR_FINGERPRINT_PATH={}\n{JOIN_SUBSTRATE_ENV}={}\nPLOYZ_CORROSION_GOSSIP_PORT={CORROSION_GOSSIP_PORT}\nPLOYZ_BUILD={}\nPLOYZ_WIREGUARD_PRIVATE_KEY_PATH={}\nPLOYZ_CORROSION_VERSION={}\n",
         accepted.cluster.cluster_id,
         accepted.machine.machine_id,
         state.path().join(DOOR_KEY_FILE).display(),
@@ -507,25 +432,18 @@ fn render_corrosion_config(
     addr_v6: std::net::Ipv6Addr,
     corrosion_token: &str,
 ) -> String {
-    format!(
-        "[db]\npath = {db:?}\nschema_paths = [{schema:?}]\nsubscriptions_path = {subscriptions:?}\n\n[gossip]\naddr = {gossip:?}\nbootstrap = [{bootstrap:?}]\nplaintext = true\nmax_mtu = 1232\n\n[api]\naddr = {api:?}\nauthz.bearer-token = {token:?}\n\n[admin]\npath = {admin:?}\n",
-        db = state.path().join("corrosion.db").display().to_string(),
-        schema = schema_path,
-        subscriptions = state.path().join("subscriptions").display().to_string(),
-        gossip = format!("[{addr_v6}]:{CORROSION_GOSSIP_PORT}"),
-        bootstrap = accepted
-            .accepted()
-            .corrosion
-            .seed_gossip_address
-            .to_string(),
-        api = format!("127.0.0.1:{CORROSION_API_PORT}"),
-        token = corrosion_token,
-        admin = state
-            .path()
-            .join("corrosion-admin.sock")
-            .display()
-            .to_string(),
-    )
+    let seed = accepted
+        .accepted()
+        .corrosion
+        .seed_gossip_address
+        .to_string();
+    render_shared_corrosion_config(CorrosionConfig {
+        state: state.path(),
+        schema_path,
+        gossip_addr: addr_v6,
+        bootstrap: CorrosionBootstrap::Seed(&seed),
+        bearer_token: corrosion_token,
+    })
 }
 
 fn require_linux_root(runner: &mut impl HostRunnerCommandRunner) -> Result<(), FailureMessage> {
@@ -640,204 +558,14 @@ fn imported_zfs_pools(
     Ok(pools)
 }
 
-#[derive(Clone, PartialEq, Eq)]
-struct CorrosionBearerToken(String);
-
-impl std::fmt::Debug for CorrosionBearerToken {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("CorrosionBearerToken([REDACTED])")
-    }
-}
-
-impl CorrosionBearerToken {
-    fn from_file(path: &Path) -> Result<Self, FailureMessage> {
-        let value = match fs::read_to_string(path) {
-            Ok(value) => value,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Err(failure("durable Corrosion bearer token is absent"));
-            }
-            Err(error) => {
-                return Err(failure(format!(
-                    "could not read durable Corrosion bearer token: {error}"
-                )));
-            }
-        };
-        let value = value.trim();
-        if value.is_empty() {
-            return Err(failure("durable Corrosion bearer token is empty"));
-        }
-        Ok(Self(value.to_owned()))
-    }
-
-    fn authorization_header(&self) -> String {
-        format!("Bearer {}", self.0)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct CorrosionRosterQuery {
-    url: String,
-    body: String,
-}
-
-fn corrosion_roster_query(
-    accepted: &ValidatedMachineJoinAccepted,
-) -> Result<CorrosionRosterQuery, FailureMessage> {
-    let accepted = accepted.accepted();
-    let statement = Statement::with_params(
-        "SELECT id, document FROM machines WHERE id = ?1 OR name = ?2",
-        vec![
-            SqliteParameter::Text(accepted.machine.machine_id.as_str().to_owned()),
-            SqliteParameter::Text(accepted.machine.document.name.as_str().to_owned()),
-        ],
-    );
-    Ok(CorrosionRosterQuery {
-        url: format!("http://127.0.0.1:{CORROSION_API_PORT}/v1/queries"),
-        body: serde_json::to_string(&statement).map_err(failure)?,
-    })
-}
-
-fn query_corrosion_roster(
-    agent: &ureq::Agent,
-    query: &CorrosionRosterQuery,
-    token: &CorrosionBearerToken,
-) -> Result<Vec<StoredRow>, FailureMessage> {
-    let authorization = token.authorization_header();
-    let mut response = agent
-        .post(&query.url)
-        .header("Authorization", authorization)
-        .header("Accept", "application/x-ndjson")
-        .content_type("application/json")
-        .send(query.body.as_bytes())
-        .map_err(|error| failure(format!("local Corrosion query failed: {error}")))?;
-    let body = response
-        .body_mut()
-        .with_config()
-        .limit(CORROSION_QUERY_BODY_LIMIT)
-        .read_to_string()
-        .map_err(|error| failure(format!("local Corrosion response failed: {error}")))?;
-    decode_corrosion_rows(&body)
-}
-
-fn decode_corrosion_rows(body: &str) -> Result<Vec<StoredRow>, FailureMessage> {
-    if body.len() as u64 > CORROSION_QUERY_BODY_LIMIT {
-        return Err(failure("local Corrosion response exceeded 65536 bytes"));
-    }
-    let mut saw_columns = false;
-    let mut saw_end = false;
-    let mut rows = Vec::new();
-    for line in body.lines().filter(|line| !line.trim().is_empty()) {
-        if saw_end {
-            return Err(failure(
-                "local Corrosion response continued after end-of-query",
-            ));
-        }
-        let event: QueryEvent = serde_json::from_str(line)
-            .map_err(|error| failure(format!("invalid local Corrosion frame: {error}")))?;
-        match event {
-            QueryEvent::Columns(columns) if !saw_columns && columns == ["id", "document"] => {
-                saw_columns = true;
-            }
-            QueryEvent::Columns(_) if saw_columns => {
-                return Err(failure("local Corrosion response repeated columns"));
-            }
-            QueryEvent::Columns(_) => {
-                return Err(failure(
-                    "local Corrosion response columns were not id and document",
-                ));
-            }
-            QueryEvent::Row(_, _values) if !saw_columns => {
-                return Err(failure("local Corrosion row preceded columns"));
-            }
-            QueryEvent::Row(_, values) => {
-                let [SqliteValue::Text(key), SqliteValue::Text(document)] = values.as_slice()
-                else {
-                    return Err(failure(
-                        "local Corrosion row was not a text id and document pair",
-                    ));
-                };
-                rows.push(StoredRow::new(key.clone(), document.clone()));
-            }
-            QueryEvent::EndOfQuery(_end) if !saw_columns => {
-                return Err(failure("local Corrosion end-of-query preceded columns"));
-            }
-            QueryEvent::EndOfQuery(end) if end.change_id.is_some() => {
-                return Err(failure(
-                    "local Corrosion query end unexpectedly carried a change id",
-                ));
-            }
-            QueryEvent::EndOfQuery(_) => saw_end = true,
-            QueryEvent::Error(message) => {
-                return Err(failure(format!("local Corrosion query error: {message}")));
-            }
-        }
-    }
-    if !saw_end {
-        return Err(failure("local Corrosion response omitted end-of-query"));
-    }
-    Ok(rows)
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum RosterConvergenceDisposition {
-    Converged,
-    Missing,
-    Skipped,
-    Shadowed,
-    Divergent,
-}
-
-impl std::fmt::Display for RosterConvergenceDisposition {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Converged => formatter.write_str("converged"),
-            Self::Missing => formatter.write_str("accepted machine row is missing"),
-            Self::Skipped => formatter.write_str("accepted machine row is invalid locally"),
-            Self::Shadowed => formatter.write_str("accepted machine name is shadowed locally"),
-            Self::Divergent => formatter.write_str("accepted machine row differs locally"),
-        }
-    }
-}
-
-fn roster_convergence_disposition(
-    accepted: &ValidatedMachineJoinAccepted,
-    rows: Vec<StoredRow>,
-) -> RosterConvergenceDisposition {
-    let accepted = accepted.accepted();
-    let report = read_named_roster_rows::<MachineDocument>(&accepted.cluster, rows);
-    let winner = report
-        .accepted
-        .iter()
-        .find(|row| row.value.name == accepted.machine.document.name);
-    if let Some(winner) = winner {
-        if winner.source.key != accepted.machine.machine_id.as_str() {
-            return RosterConvergenceDisposition::Shadowed;
-        }
-        if winner.value == accepted.machine.document {
-            return RosterConvergenceDisposition::Converged;
-        }
-        return RosterConvergenceDisposition::Divergent;
-    }
-    if report
-        .skipped
-        .iter()
-        .any(|row| row.source.key == accepted.machine.machine_id.as_str())
-    {
-        RosterConvergenceDisposition::Skipped
-    } else if !report.shadows.is_empty() {
-        RosterConvergenceDisposition::Shadowed
-    } else {
-        RosterConvergenceDisposition::Missing
-    }
-}
-
 impl MachineJoinHostEffects for LinuxMachineJoinHostEffects {
     fn ensure_exact_artifacts(
         &mut self,
         accepted: &ValidatedMachineJoinAccepted,
     ) -> Result<(), FailureMessage> {
         for artifact in accepted.accepted().substrate.artifacts() {
-            self.install_artifact(artifact)?;
+            let kind = artifact_kind(artifact.install_path.as_str())?;
+            self.substrate().install_artifact(kind, artifact)?;
         }
         let output = self
             .runner
@@ -865,7 +593,7 @@ impl MachineJoinHostEffects for LinuxMachineJoinHostEffects {
                 fs::create_dir_all(volumes_path).map_err(failure)
             }
             SelectedStorageAction::Zfs { pool } => {
-                let profile = self.profile()?.clone();
+                let profile = self.profile()?;
                 prepare_storage(
                     &mut self.runner,
                     &profile,
@@ -883,17 +611,12 @@ impl MachineJoinHostEffects for LinuxMachineJoinHostEffects {
         &mut self,
         _accepted: &ValidatedMachineJoinAccepted,
     ) -> Result<(), FailureMessage> {
-        if !self.runner.docker_is_installed() {
-            let script = self.state.path().join("get-docker.sh");
-            self.runner.download("https://get.docker.com", &script)?;
-            self.require("sh", &[script.to_string_lossy().as_ref()])?;
-        }
-        let backend = self.supervisor()?;
-        for (program, args) in backend.docker_commands(SupervisorChange::InstallAndStart) {
-            let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
-            self.require(program, &refs)?;
-        }
-        self.runner.docker_info()
+        ensure_join_docker(
+            &self.state,
+            &mut self.runner,
+            &mut self.profile,
+            &self.supervisor_directories,
+        )
     }
 
     fn ensure_shared_door_material(
@@ -930,8 +653,10 @@ impl MachineJoinHostEffects for LinuxMachineJoinHostEffects {
         else {
             return Err(failure("accepted machine transport is not WireGuard"));
         };
-        let corrosion_token =
-            read_or_generate_secret(&self.state.path().join(CORROSION_TOKEN_FILE))?;
+        let corrosion_token = read_or_generate_secret(
+            &self.state.path().join(CORROSION_TOKEN_FILE),
+            GeneratedSecretPersistence::Durable,
+        )?;
         write_durable_file(
             self.state.path(),
             "cluster-id",
@@ -996,7 +721,6 @@ impl MachineJoinHostEffects for LinuxMachineJoinHostEffects {
         &mut self,
         accepted: &ValidatedMachineJoinAccepted,
     ) -> Result<(), FailureMessage> {
-        let backend = self.supervisor()?;
         let ployzd = accepted
             .accepted()
             .substrate
@@ -1007,48 +731,19 @@ impl MachineJoinHostEffects for LinuxMachineJoinHostEffects {
         let target = artifact_target(ArtifactKind::Ployzd, ployzd).map_err(failure)?;
         let environment =
             PloyzdRoleEnvironmentFile::new(self.state.path().join(ENV_FILE)).map_err(failure)?;
-        for role in [
-            PloyzdRole::Keeper,
-            PloyzdRole::Api,
-            PloyzdRole::Gateway,
-            PloyzdRole::Dns,
-        ] {
-            let spec = SupervisorUnitSpec::PloyzdRole {
-                role,
-                artifact: target.clone(),
-                environment_file: environment.clone(),
-            };
-            let rendered = backend.render(&spec).map_err(failure)?;
-            write_durable_file(
-                self.supervisor_directories.directory(backend),
-                rendered.file_name(),
-                FileMode::Executable0755,
-                rendered.contents().as_bytes(),
-            )?;
-            let change = match role {
-                PloyzdRole::Keeper | PloyzdRole::Api => SupervisorChange::Enable,
-                PloyzdRole::Gateway | PloyzdRole::Dns => SupervisorChange::Disable,
-            };
-            self.run_supervisor(change, spec.target())?;
-            if matches!(role, PloyzdRole::Gateway | PloyzdRole::Dns) {
-                self.run_supervisor(SupervisorChange::Stop, spec.target())?;
-            }
-        }
-        self.install_corrosion_unit()
+        let config = self.state.path().join(CORROSION_CONFIG_FILE);
+        let mut substrate = self.substrate();
+        substrate.install_ployzd_units(&target, &environment)?;
+        substrate.install_corrosion_unit(&config, CorrosionUnitOrdering::NetworkOnly)?;
+        substrate.change_corrosion_service(CorrosionServiceChange::Enable)
     }
 
     fn ensure_corrosion_started(
         &mut self,
         _accepted: &ValidatedMachineJoinAccepted,
     ) -> Result<(), FailureMessage> {
-        match self.supervisor()? {
-            SupervisorBackend::Systemd => {
-                self.require("systemctl", &["restart", "ployz-corrosion.service"])
-            }
-            SupervisorBackend::OpenRc => {
-                self.require("rc-service", &["ployz-corrosion", "restart"])
-            }
-        }
+        self.substrate()
+            .change_corrosion_service(CorrosionServiceChange::Restart)
     }
 
     fn await_roster_convergence(
@@ -1093,9 +788,9 @@ impl MachineJoinHostEffects for LinuxMachineJoinHostEffects {
         &mut self,
         _accepted: &ValidatedMachineJoinAccepted,
     ) -> Result<(), FailureMessage> {
-        self.run_supervisor(
+        self.substrate().run_supervisor(
             SupervisorChange::Restart,
-            crate::SupervisorUnitTarget::PloyzdRole(PloyzdRole::Keeper),
+            &crate::SupervisorUnitTarget::PloyzdRole(PloyzdRole::Keeper),
         )
     }
 
@@ -1103,9 +798,9 @@ impl MachineJoinHostEffects for LinuxMachineJoinHostEffects {
         &mut self,
         _accepted: &ValidatedMachineJoinAccepted,
     ) -> Result<(), FailureMessage> {
-        self.run_supervisor(
+        self.substrate().run_supervisor(
             SupervisorChange::Restart,
-            crate::SupervisorUnitTarget::PloyzdRole(PloyzdRole::Api),
+            &crate::SupervisorUnitTarget::PloyzdRole(PloyzdRole::Api),
         )
     }
 
@@ -1132,24 +827,6 @@ impl MachineJoinHostEffects for LinuxMachineJoinHostEffects {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(failure(error)),
         }
-    }
-}
-
-fn artifact_kind(path: &str) -> Result<ArtifactKind, FailureMessage> {
-    let file_name = Path::new(path)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| failure("accepted artifact has no file name"))?;
-    match file_name {
-        "ployzd" => Ok(ArtifactKind::Ployzd),
-        "corrosion" => Ok(ArtifactKind::Corrosion),
-        "corrosion-schema-v1.sql" => Ok(ArtifactKind::CorrosionSchema),
-        "ployz-ebpf-tc" => Ok(ArtifactKind::EbpfBytecode),
-        "ployz-ebpf-ctl" => Ok(ArtifactKind::EbpfCtl),
-        "railpack" => Ok(ArtifactKind::Railpack),
-        _ => Err(failure(format!(
-            "accepted artifact install path has unknown file {file_name:?}"
-        ))),
     }
 }
 
@@ -1183,31 +860,6 @@ fn wireguard_config(
     .map_err(failure)
 }
 
-fn read_or_generate_secret(path: &Path) -> Result<String, FailureMessage> {
-    match fs::read_to_string(path) {
-        Ok(secret) if !secret.trim().is_empty() => Ok(secret.trim().to_owned()),
-        Ok(_) => Err(failure(format!("secret file {} is empty", path.display()))),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let secret = defguard_wireguard_rs::key::Key::generate().to_string();
-            let parent = path
-                .parent()
-                .ok_or_else(|| failure("secret path has no parent"))?;
-            let file_name = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .ok_or_else(|| failure("secret path has no file name"))?;
-            write_durable_file(
-                parent,
-                file_name,
-                FileMode::Secret0600,
-                format!("{secret}\n").as_bytes(),
-            )?;
-            Ok(secret)
-        }
-        Err(error) => Err(failure(error)),
-    }
-}
-
 fn failure(error: impl std::fmt::Display) -> FailureMessage {
     FailureMessage::try_new(error.to_string()).unwrap_or_else(|_| {
         FailureMessage::try_new("machine join host effect failed").expect("constant is non-empty")
@@ -1215,363 +867,4 @@ fn failure(error: impl std::fmt::Display) -> FailureMessage {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::collections::VecDeque;
-
-    use ployz_core::join::JoinStorageChoice;
-    use ployz_core::machine::MachineLifecycle;
-
-    use super::super::orchestration::tests::{accepted, join_blob, join_input};
-    use super::*;
-    use crate::HostRunnerCommandOutput;
-
-    #[derive(Default)]
-    struct RecordingRunner {
-        outputs: VecDeque<HostRunnerCommandOutput>,
-        calls: Vec<String>,
-    }
-
-    impl RecordingRunner {
-        fn with_outputs(outputs: impl IntoIterator<Item = HostRunnerCommandOutput>) -> Self {
-            Self {
-                outputs: outputs.into_iter().collect(),
-                calls: Vec::new(),
-            }
-        }
-    }
-
-    impl HostRunnerCommandRunner for RecordingRunner {
-        fn command(
-            &mut self,
-            program: &str,
-            args: &[&str],
-        ) -> Result<HostRunnerCommandOutput, FailureMessage> {
-            self.calls.push(format!("{program} {}", args.join(" ")));
-            self.outputs
-                .pop_front()
-                .ok_or_else(|| failure("unexpected test command"))
-        }
-
-        fn is_linux(&mut self) -> bool {
-            true
-        }
-
-        fn current_uid(&mut self) -> Result<u32, FailureMessage> {
-            Ok(0)
-        }
-
-        fn download(&mut self, _url: &str, _destination: &Path) -> Result<(), FailureMessage> {
-            Err(failure("unexpected test download"))
-        }
-
-        fn docker_info(&mut self) -> Result<(), FailureMessage> {
-            Ok(())
-        }
-
-        fn docker_is_installed(&mut self) -> bool {
-            true
-        }
-
-        fn docker_uses_containerd_snapshotter(&mut self) -> Result<bool, FailureMessage> {
-            Ok(false)
-        }
-
-        fn docker_has_insecure_registry(&mut self, _cidr: &str) -> Result<bool, FailureMessage> {
-            Ok(false)
-        }
-    }
-
-    fn output(stdout: impl Into<String>) -> HostRunnerCommandOutput {
-        HostRunnerCommandOutput {
-            success: true,
-            exit_code: Some(0),
-            stdout: stdout.into(),
-            stdout_truncated: false,
-            failure: String::new(),
-        }
-    }
-
-    fn memory(gib: u64) -> HostRunnerCommandOutput {
-        output(format!("MemTotal: {} kB\n", gib * 1024 * 1024))
-    }
-
-    fn validated_fixture() -> (
-        tempfile::TempDir,
-        MachineJoinStateDirectory,
-        PreparedMachineJoin,
-        ValidatedMachineJoinAccepted,
-    ) {
-        let directory = tempfile::tempdir().expect("tempdir");
-        let state = MachineJoinStateDirectory::initialize(directory.path()).expect("state");
-        let prepared = super::super::prepare_machine_join(&state, join_blob(), join_input())
-            .expect("prepared");
-        let accepted = accepted(prepared.request(), prepared.blob().door_cert_fingerprint())
-            .try_validate(prepared.request(), prepared.blob().door_cert_fingerprint())
-            .expect("validated acceptance");
-        (directory, state, prepared, accepted)
-    }
-
-    #[test]
-    fn storage_inventory_applies_only_reachable_zfs_ambiguity() {
-        let mut plain = RecordingRunner::with_outputs([memory(4)]);
-        let plain_inventory = join_storage_inventory(
-            &mut plain,
-            JoinStorageChoice::Flag {
-                mode: StorageMode::Plain,
-            },
-        )
-        .expect("plain skips ZFS inventory");
-        assert!(matches!(
-            plain_inventory,
-            JoinStorageInventory::PlainRequested { .. }
-        ));
-        assert_eq!(plain.calls, ["cat /proc/meminfo"]);
-
-        let mut missing = RecordingRunner::with_outputs([memory(4), output("")]);
-        assert!(
-            join_storage_inventory(
-                &mut missing,
-                JoinStorageChoice::Flag {
-                    mode: StorageMode::Zfs,
-                },
-            )
-            .is_err()
-        );
-
-        let mut low_memory = RecordingRunner::with_outputs([memory(1), output("alpha\nbeta\n")]);
-        let automatic = join_storage_inventory(&mut low_memory, JoinStorageChoice::Automatic)
-            .expect("low-memory automatic selection must be plain");
-        assert!(automatic.facts().imported_zfs_pool);
-        assert_eq!(automatic.selected_pool(), None);
-
-        let mut ambiguous = RecordingRunner::with_outputs([memory(4), output("alpha\nbeta\n")]);
-        assert!(join_storage_inventory(&mut ambiguous, JoinStorageChoice::Automatic).is_err());
-    }
-
-    #[test]
-    fn persisted_storage_inventory_resumes_without_host_probes() {
-        let directory = tempfile::tempdir().expect("tempdir");
-        let state = MachineJoinStateDirectory::initialize(directory.path()).expect("state");
-        let lock = state.try_lock().expect("lock");
-        let mut first = RecordingRunner::with_outputs([
-            output("edge-a.example\n"),
-            memory(4),
-            output("tank\n"),
-        ]);
-        let prepared = prepare_linux_machine_join_locked(
-            &state,
-            &lock,
-            join_blob(),
-            JoinStorageChoice::Automatic,
-            None,
-            &mut first,
-        )
-        .expect("first preparation");
-        drop(lock);
-
-        let lock = state.try_lock().expect("resume lock");
-        let mut resumed = RecordingRunner::default();
-        let resumed_prepared = prepare_linux_machine_join_locked(
-            &state,
-            &lock,
-            join_blob(),
-            JoinStorageChoice::Flag {
-                mode: StorageMode::Plain,
-            },
-            None,
-            &mut resumed,
-        )
-        .expect("persisted request and inventory win");
-
-        assert_eq!(resumed_prepared.request(), prepared.request());
-        assert!(resumed.calls.is_empty());
-    }
-
-    #[test]
-    fn selected_storage_action_uses_plain_path_or_retained_zfs_pool() {
-        let directory = tempfile::tempdir().expect("tempdir");
-        let state = MachineJoinStateDirectory::initialize(directory.path()).expect("state");
-        assert_eq!(
-            selected_storage_action(&state, StorageMode::Plain).expect("plain action"),
-            SelectedStorageAction::Plain {
-                volumes_path: directory.path().join("volumes")
-            }
-        );
-
-        let inventory = JoinStorageInventory::ZfsSelected {
-            total_memory_bytes: 4 * 1024 * 1024 * 1024,
-            pool: ZfsPoolName::try_new("tank").expect("pool"),
-        };
-        state
-            .persist_storage_inventory(&inventory)
-            .expect("inventory");
-        assert_eq!(
-            selected_storage_action(&state, StorageMode::Zfs).expect("ZFS action"),
-            SelectedStorageAction::Zfs {
-                pool: ZfsPoolName::try_new("tank").expect("pool")
-            }
-        );
-    }
-
-    #[test]
-    fn corrosion_decoder_is_strict_and_bounded() {
-        let valid = concat!(
-            "{\"columns\":[\"id\",\"document\"]}\n",
-            "{\"row\":[1,[\"machine\",\"{}\"]]}\n",
-            "{\"eoq\":{\"time\":0.1}}\n"
-        );
-        assert_eq!(
-            decode_corrosion_rows(valid).expect("valid frames"),
-            [StoredRow::new("machine", "{}")]
-        );
-        for invalid in [
-            "{\"columns\":[\"document\",\"id\"]}\n{\"eoq\":{\"time\":0.1}}\n",
-            "{\"columns\":[\"id\",\"document\"]}\n{\"row\":[1,[1,\"{}\"]]}\n{\"eoq\":{\"time\":0.1}}\n",
-            "{\"columns\":[\"id\",\"document\"]}\n{\"error\":\"nope\"}\n",
-            "{\"columns\":[\"id\",\"document\"]}\n",
-            "{\"columns\":[\"id\",\"document\"]}\n{\"eoq\":{\"time\":0.1}}\n{\"eoq\":{\"time\":0.2}}\n",
-        ] {
-            assert!(
-                decode_corrosion_rows(invalid).is_err(),
-                "accepted {invalid}"
-            );
-        }
-        assert!(
-            decode_corrosion_rows(&"x".repeat(CORROSION_QUERY_BODY_LIMIT as usize + 1)).is_err()
-        );
-    }
-
-    #[test]
-    fn convergence_requires_exact_accepted_name_winner() {
-        let (_directory, _state, _prepared, accepted) = validated_fixture();
-        let expected = accepted.accepted().machine.clone();
-        let document = serde_json::to_string(&expected.document).expect("document");
-        assert_eq!(
-            roster_convergence_disposition(
-                &accepted,
-                vec![StoredRow::new(expected.machine_id.as_str(), document)]
-            ),
-            RosterConvergenceDisposition::Converged
-        );
-        assert_eq!(
-            roster_convergence_disposition(&accepted, Vec::new()),
-            RosterConvergenceDisposition::Missing
-        );
-
-        let mut divergent = expected.document.clone();
-        divergent.lifecycle = MachineLifecycle::Draining;
-        assert_eq!(
-            roster_convergence_disposition(
-                &accepted,
-                vec![StoredRow::new(
-                    expected.machine_id.as_str(),
-                    serde_json::to_string(&divergent).expect("document")
-                )]
-            ),
-            RosterConvergenceDisposition::Divergent
-        );
-        assert_eq!(
-            roster_convergence_disposition(
-                &accepted,
-                vec![StoredRow::new(
-                    "00000000000000000000000000",
-                    serde_json::to_string(&expected.document).expect("document")
-                )]
-            ),
-            RosterConvergenceDisposition::Shadowed
-        );
-
-        let mut foreign = expected.document;
-        foreign.cluster_id = ployz_core::ids::ClusterId::generate();
-        assert_eq!(
-            roster_convergence_disposition(
-                &accepted,
-                vec![StoredRow::new(
-                    expected.machine_id.as_str(),
-                    serde_json::to_string(&foreign).expect("document")
-                )]
-            ),
-            RosterConvergenceDisposition::Skipped
-        );
-    }
-
-    #[test]
-    fn query_token_environment_and_artifact_contracts_are_exact() {
-        let (directory, state, prepared, accepted) = validated_fixture();
-        let secret_path = directory.path().join(CORROSION_TOKEN_FILE);
-        fs::write(&secret_path, b"super-secret\n").expect("secret");
-        let token = CorrosionBearerToken::from_file(&secret_path).expect("token");
-        assert_eq!(format!("{token:?}"), "CorrosionBearerToken([REDACTED])");
-        assert!(!format!("{token:?}").contains("super-secret"));
-
-        let query = corrosion_roster_query(&accepted).expect("query");
-        assert_eq!(query.url, "http://127.0.0.1:8080/v1/queries");
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&query.body).expect("body"),
-            serde_json::json!([
-                "SELECT id, document FROM machines WHERE id = ?1 OR name = ?2",
-                [prepared.request().machine_id.as_str(), "edge-a"]
-            ])
-        );
-
-        let MachineTransport::Wireguard { addr_v6, .. } =
-            accepted.accepted().machine.document.transport
-        else {
-            panic!("fixture transport")
-        };
-        let environment = render_environment(&state, &accepted, addr_v6, "super-secret");
-        for line in [
-            format!(
-                "PLOYZ_API_DOOR_PRIVATE_KEY_PATH={}",
-                directory.path().join(DOOR_KEY_FILE).display()
-            ),
-            format!(
-                "PLOYZ_API_DOOR_CERTIFICATE_PATH={}",
-                directory.path().join(DOOR_CERTIFICATE_FILE).display()
-            ),
-            format!(
-                "PLOYZ_API_DOOR_FINGERPRINT_PATH={}",
-                directory.path().join(DOOR_FINGERPRINT_FILE).display()
-            ),
-            format!(
-                "{JOIN_SUBSTRATE_ENV}={}",
-                state.join_substrate_path().display()
-            ),
-            format!(
-                "PLOYZ_WIREGUARD_PRIVATE_KEY_PATH={}",
-                directory.path().join(WIREGUARD_KEY_FILE).display()
-            ),
-            "PLOYZ_CORROSION_VERSION=0.3.1".to_owned(),
-        ] {
-            assert!(environment.lines().any(|candidate| candidate == line));
-        }
-        let config = render_corrosion_config(
-            &state,
-            &accepted,
-            "/usr/local/lib/ployz/corrosion-schema-v1.sql",
-            addr_v6,
-            "super-secret",
-        );
-        assert!(config.contains("authz.bearer-token = \"super-secret\""));
-
-        assert_eq!(
-            [
-                "/usr/local/bin/ployzd",
-                "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
-                "/usr/local/bin/ployz-ebpf-ctl",
-                "/usr/local/bin/corrosion",
-                "/usr/local/lib/ployz/corrosion-schema-v1.sql",
-                "/usr/local/bin/railpack",
-            ]
-            .map(|path| artifact_kind(path).expect("known artifact")),
-            [
-                ArtifactKind::Ployzd,
-                ArtifactKind::EbpfBytecode,
-                ArtifactKind::EbpfCtl,
-                ArtifactKind::Corrosion,
-                ArtifactKind::CorrosionSchema,
-                ArtifactKind::Railpack,
-            ]
-        );
-    }
-}
+mod tests;

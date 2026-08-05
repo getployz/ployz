@@ -146,7 +146,7 @@ fn load_context(
         .iter()
         .map(|loaded| loaded.target().clone())
         .collect::<Vec<_>>();
-    let selected = select_context_index(&targets, None)?;
+    let selected = select_context_index(&targets)?;
     let Some(loaded) = contexts.into_iter().nth(selected) else {
         unreachable!("selected operator context index comes from the same collection")
     };
@@ -174,16 +174,8 @@ pub enum OperatorRemoteError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContextSelectionError {
     NotConfigured,
-    UnconfiguredTarget {
-        target: SshTarget,
-    },
-    Ambiguous {
-        targets: Vec<String>,
-    },
-    UnknownTarget {
-        target: String,
-        configured: Vec<String>,
-    },
+    UnconfiguredTarget { target: SshTarget },
+    Ambiguous { targets: Vec<String> },
 }
 
 impl fmt::Display for ContextSelectionError {
@@ -202,16 +194,6 @@ impl fmt::Display for ContextSelectionError {
                 }
                 Ok(())
             }
-            Self::UnknownTarget { target, configured } => {
-                write!(
-                    formatter,
-                    "no operator context is configured for {target}; configured targets:"
-                )?;
-                for target in configured {
-                    write!(formatter, "\n  {target}: add `--target {target}`")?;
-                }
-                Ok(())
-            }
         }
     }
 }
@@ -220,23 +202,13 @@ impl std::error::Error for ContextSelectionError {}
 
 pub(crate) fn select_context_index(
     configured: &[SshTarget],
-    requested: Option<&SshTarget>,
 ) -> Result<usize, ContextSelectionError> {
-    match requested {
-        Some(requested) => configured
-            .iter()
-            .position(|candidate| candidate == requested)
-            .ok_or_else(|| ContextSelectionError::UnknownTarget {
-                target: requested.as_str().to_owned(),
-                configured: sorted_target_names(configured),
-            }),
-        None => match configured {
-            [] => Err(ContextSelectionError::NotConfigured),
-            [_] => Ok(0),
-            [_, _, ..] => Err(ContextSelectionError::Ambiguous {
-                targets: sorted_target_names(configured),
-            }),
-        },
+    match configured {
+        [] => Err(ContextSelectionError::NotConfigured),
+        [_] => Ok(0),
+        [_, _, ..] => Err(ContextSelectionError::Ambiguous {
+            targets: sorted_target_names(configured),
+        }),
     }
 }
 
@@ -294,7 +266,7 @@ mod tests {
     #[test]
     fn context_selection_is_shared_copy_for_every_remote_command() {
         assert_eq!(
-            select_context_index(&[], None).expect_err("no context"),
+            select_context_index(&[]).expect_err("no context"),
             ContextSelectionError::NotConfigured
         );
         assert_eq!(
@@ -303,24 +275,14 @@ mod tests {
         );
 
         let one = vec![target("root@one.example")];
-        assert_eq!(select_context_index(&one, None).expect("one context"), 0);
+        assert_eq!(select_context_index(&one).expect("one context"), 0);
 
         let multiple = vec![target("root@z.example"), target("root@a.example")];
         assert_eq!(
-            select_context_index(&multiple, None)
+            select_context_index(&multiple)
                 .expect_err("selector required")
                 .to_string(),
             "multiple operator contexts are configured; choose one:\n  root@a.example: add `--target root@a.example`\n  root@z.example: add `--target root@z.example`"
-        );
-        assert_eq!(
-            select_context_index(&multiple, Some(&target("root@z.example"))).expect("exact target"),
-            0
-        );
-        assert_eq!(
-            select_context_index(&multiple, Some(&target("root@missing.example")))
-                .expect_err("unknown target")
-                .to_string(),
-            "no operator context is configured for root@missing.example; configured targets:\n  root@a.example: add `--target root@a.example`\n  root@z.example: add `--target root@z.example`"
         );
     }
 

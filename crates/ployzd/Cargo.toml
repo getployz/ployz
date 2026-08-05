@@ -30,7 +30,6 @@ reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-subtle = "2.6"
 sysctl.workspace = true
 tempfile = "3"
 thiserror.workspace = true

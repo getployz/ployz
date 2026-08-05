@@ -1,7 +1,6 @@
 //! Bounded TLS transport for the public, join-only door.
 
 use std::convert::Infallible;
-use std::future::pending;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
@@ -67,15 +66,6 @@ impl JoinDoorListener {
 
     pub(super) fn material(&self) -> Arc<JoinDoorMaterial> {
         Arc::clone(&self.material)
-    }
-}
-
-pub(super) async fn accept_join_connection(
-    door: &Option<JoinDoorListener>,
-) -> Result<(TcpStream, SocketAddr), std::io::Error> {
-    match door {
-        Some(door) => door.accept().await,
-        None => pending().await,
     }
 }
 

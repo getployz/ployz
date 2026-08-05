@@ -1,26 +1,7 @@
 use super::*;
 use crate::HostRunnerCommandOutput;
 use base64::Engine as _;
-
-#[test]
-fn founding_enables_only_implemented_roles() {
-    assert_eq!(
-        founding_role_disposition(PloyzdRole::Keeper),
-        FoundingRoleDisposition::Enabled
-    );
-    assert_eq!(
-        founding_role_disposition(PloyzdRole::Api),
-        FoundingRoleDisposition::Enabled
-    );
-    assert_eq!(
-        founding_role_disposition(PloyzdRole::Gateway),
-        FoundingRoleDisposition::DisabledAndInactive
-    );
-    assert_eq!(
-        founding_role_disposition(PloyzdRole::Dns),
-        FoundingRoleDisposition::DisabledAndInactive
-    );
-}
+use std::path::PathBuf;
 
 #[test]
 fn founding_environment_has_the_public_join_door_settings() {
@@ -50,13 +31,13 @@ fn founding_environment_has_the_public_join_door_settings() {
         "PLOYZ_API_DOOR_CERTIFICATE_PATH=/var/lib/ployz/door.crt",
         "PLOYZ_API_DOOR_FINGERPRINT_PATH=/var/lib/ployz/door.fingerprint",
         "PLOYZ_API_JOIN_SUBSTRATE_PATH=/var/lib/ployz/join-substrate.json",
-        "PLOYZ_JOIN_DOOR_PORT=2021",
     ] {
         assert!(
             environment.lines().any(|line| line == setting),
             "missing founding setting {setting:?} in {environment:?}"
         );
     }
+    assert!(!environment.contains("PLOYZ_JOIN_DOOR_PORT="));
 }
 
 #[test]

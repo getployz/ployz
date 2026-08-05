@@ -8,8 +8,7 @@ use hyper::body::Body;
 use hyper::{Response, StatusCode};
 use ployz_core::corrosion::Principal;
 use ployz_core::corrosion::{
-    CorrosionDocumentVersion, CorrosionTable, CorrosionTimestamp, OperatorWriteProvenance,
-    Sha256Hex, TokenDocument,
+    CorrosionDocumentVersion, CorrosionTimestamp, OperatorWriteProvenance, Sha256Hex, TokenDocument,
 };
 use ployz_core::ids::TokenId;
 use ployz_core::join::{
@@ -17,7 +16,7 @@ use ployz_core::join::{
     TokenCreateRequest, TokenListRequest, TokenRevokeRefusal, TokenRevokeReply, TokenRevokeRequest,
     advertise_join_door_endpoints, set_machine_endpoint, token_list_reply,
 };
-use ployz_core::{ApiRefusal, TOKEN_REVOKE_ROUTE_PREFIX, V2Route};
+use ployz_core::{ApiRefusal, V2Route};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use time::format_description::well_known::Rfc3339;
@@ -28,8 +27,8 @@ use super::server::{
     ApiService, HttpBody, corrosion_unavailable_response, json_response, refusal_response,
 };
 use super::store::{
-    MutationStoreError, delete_document, insert_document, read_accepted_roster, read_machine,
-    read_token, read_tokens, update_wireguard_endpoint,
+    MutationStoreError, delete_token, insert_token, read_accepted_roster, read_machine, read_token,
+    read_tokens, update_wireguard_endpoint,
 };
 
 const MAX_MUTATION_REQUEST_BYTES: usize = 64 * 1024;
@@ -56,11 +55,7 @@ pub(super) async fn handle_mutation(
             };
             token_list(service, request).await
         }
-        V2Route::TokenRevoke => {
-            let route_token_id = match token_id_from_revoke_path(request.uri().path()) {
-                Some(token_id) => token_id,
-                None => return simple_error(StatusCode::BAD_REQUEST, "invalid_request"),
-            };
+        V2Route::TokenRevoke(route_token_id) => {
             let request = match decode_request::<TokenRevokeRequest>(request.into_body()).await {
                 Ok(request) => request,
                 Err(response) => return response,
@@ -101,9 +96,10 @@ async fn token_create(
         Ok(endpoints) => endpoints,
         Err(refusal) => return typed_response(StatusCode::CONFLICT, &refusal),
     };
-    let Some(material) = &service.door_material else {
+    let Some(admission) = service.join_door.admission() else {
         return corrosion_unavailable_response();
     };
+    let material = &admission.material;
     let (created_at, expires_at) = match token_times(request.ttl_seconds.get()) {
         Ok(times) => times,
         Err(()) => return corrosion_unavailable_response(),
@@ -147,13 +143,8 @@ async fn token_create(
             return corrosion_unavailable_response();
         }
     };
-    if let Err(error) = insert_document(
-        &service.corrosion,
-        CorrosionTable::Tokens,
-        prepared.token_id.as_str(),
-        &prepared.document,
-    )
-    .await
+    if let Err(error) =
+        insert_token(&service.corrosion, &prepared.token_id, &prepared.document).await
     {
         return store_failure("write token", error);
     }
@@ -185,13 +176,7 @@ async fn token_revoke(service: &ApiService, request: TokenRevokeRequest) -> Resp
         }
         Err(error) => return store_failure("read token for revocation", error),
     }
-    if let Err(error) = delete_document(
-        &service.corrosion,
-        CorrosionTable::Tokens,
-        request.token_id.as_str(),
-    )
-    .await
-    {
+    if let Err(error) = delete_token(&service.corrosion, &request.token_id).await {
         return store_failure("revoke token", error);
     }
     typed_response(
@@ -271,12 +256,6 @@ fn endpoint_refusal_response(refusal: MachineEndpointSetRefusal) -> Response<Htt
         MachineEndpointSetRefusal::ProviderDoesNotUseWireguard { .. } => StatusCode::CONFLICT,
     };
     typed_response(status, &refusal)
-}
-
-fn token_id_from_revoke_path(path: &str) -> Option<TokenId> {
-    path.strip_prefix(TOKEN_REVOKE_ROUTE_PREFIX)
-        .and_then(|suffix| suffix.strip_prefix('/'))
-        .and_then(|id| TokenId::try_new(id).ok())
 }
 
 fn token_times(ttl_seconds: u32) -> Result<(CorrosionTimestamp, CorrosionTimestamp), ()> {
@@ -376,21 +355,6 @@ mod tests {
     fn token_expiry_is_strictly_after_creation() {
         let (created, expires) = token_times(60).expect("valid bounded token times");
         assert!(expires > created);
-    }
-
-    #[test]
-    fn revoke_path_extracts_only_one_canonical_token_id() {
-        let path = "/tokens/revoke/01ARZ3NDEKTSV4RRFFQ69G5FAV";
-        assert_eq!(
-            token_id_from_revoke_path(path)
-                .expect("canonical revoke path")
-                .as_str(),
-            "01ARZ3NDEKTSV4RRFFQ69G5FAV"
-        );
-        assert!(token_id_from_revoke_path("/tokens/revoke/not-an-id").is_none());
-        assert!(
-            token_id_from_revoke_path("/tokens/revoke/01ARZ3NDEKTSV4RRFFQ69G5FAV/extra").is_none()
-        );
     }
 
     #[test]

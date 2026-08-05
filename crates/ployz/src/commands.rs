@@ -43,7 +43,7 @@ pub struct MachineEndpointSetCommand {
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct MachineJoinCommand {
-    pub blob: JoinBlobArgument,
+    pub blob: JoinBlob,
     pub storage: InitStorageChoice,
     pub wireguard_endpoint: Option<SocketAddr>,
 }
@@ -56,37 +56,6 @@ impl fmt::Debug for MachineJoinCommand {
             .field("storage", &self.storage)
             .field("wireguard_endpoint", &self.wireguard_endpoint)
             .finish()
-    }
-}
-
-#[derive(Clone, PartialEq, Eq)]
-pub struct JoinBlobArgument(JoinBlob);
-
-impl JoinBlobArgument {
-    #[must_use]
-    pub const fn blob(&self) -> &JoinBlob {
-        &self.0
-    }
-
-    #[must_use]
-    pub fn into_blob(self) -> JoinBlob {
-        self.0
-    }
-}
-
-impl fmt::Debug for JoinBlobArgument {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("JoinBlobArgument([REDACTED])")
-    }
-}
-
-impl FromStr for JoinBlobArgument {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        JoinBlob::try_parse(value)
-            .map(Self)
-            .map_err(|error| error.to_string())
     }
 }
 
@@ -377,7 +346,7 @@ struct MachineEndpointSetArgs {
 
 #[derive(Debug, Args)]
 struct MachineJoinArgs {
-    blob: JoinBlobArgument,
+    blob: JoinBlob,
     /// Machine storage selection. Automatic applies the cluster default and host eligibility.
     #[arg(long)]
     storage: Option<StorageArg>,

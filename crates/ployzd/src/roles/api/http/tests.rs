@@ -2,10 +2,10 @@ use super::door::{JoinDoorBindError, load_listener_identity, tls_acceptor_from_p
 use super::founding::authorize_founding;
 use super::join::{JoinBodyError, append_join_body_chunk, validate_join_door_route};
 use super::roster::validate_listener_principal;
+use super::runtime::{ApiServerError, ApiServerServeError, await_server_stop, load_join_substrate};
 use super::server::{
-    ApiServerError, ApiServerServeError, HttpBody, await_lens_state, await_server_stop,
-    fallback_terminal_sse_event, founding_route_disabled, initial_watch_event,
-    lens_snapshot_response, load_join_substrate, parse_founding_route, parse_route,
+    HttpBody, await_lens_state, fallback_terminal_sse_event, founding_route_disabled,
+    initial_watch_event, lens_snapshot_response, parse_founding_route, parse_route,
     refusal_response, refusal_response_with_allow, source_from_peer, sse_data, sse_event,
     sse_keepalive, sse_watch_body, version_response,
 };
@@ -394,7 +394,9 @@ fn every_exact_v2_route_accepts_only_its_declared_method() {
     assert_eq!(
         parse_route(&Method::POST, "/tokens/revoke/01ARZ3NDEKTSV4RRFFQ69G5FAV")
             .map_err(|error| error.refusal),
-        Ok(V2Route::TokenRevoke)
+        Ok(V2Route::TokenRevoke(
+            ployz_core::ids::TokenId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("token id"),
+        ))
     );
     assert_eq!(
         parse_route(&Method::POST, "/machines/endpoint").map_err(|error| error.refusal),

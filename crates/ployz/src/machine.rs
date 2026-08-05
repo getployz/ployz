@@ -83,20 +83,10 @@ async fn join(command: MachineJoinCommand) -> Result<String, MachineExecutionErr
         InitStorageChoice::Flag { mode } => JoinStorageChoice::Flag { mode },
     };
     let mut door = JoinDoorClient::default();
-    let outcome = run_linux_machine_join(
-        blob.into_blob(),
-        storage_choice,
-        wireguard_endpoint,
-        &mut door,
-    )
-    .await?;
-    let presentation = match outcome.kind {
-        MachineJoinOutcomeKind::Joined => MachineJoinOutcome::Joined,
-        MachineJoinOutcomeKind::Resumed => MachineJoinOutcome::Resumed,
-        MachineJoinOutcomeKind::NoOp => MachineJoinOutcome::NoOp,
-    };
+    let outcome =
+        run_linux_machine_join(blob, storage_choice, wireguard_endpoint, &mut door).await?;
     Ok(render_machine_join(
-        presentation,
+        outcome.kind,
         &outcome.machine_name,
         &outcome.machine_id,
     ))
@@ -204,23 +194,16 @@ pub fn render_endpoint_set(machine: &MachineName, endpoint: std::net::SocketAddr
     format!("{} endpoint {}\n", machine.as_str(), endpoint)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MachineJoinOutcome {
-    Joined,
-    Resumed,
-    NoOp,
-}
-
 #[must_use]
 pub fn render_machine_join(
-    outcome: MachineJoinOutcome,
+    outcome: MachineJoinOutcomeKind,
     machine_name: &MachineName,
     machine_id: &MachineRowId,
 ) -> String {
     let verb = match outcome {
-        MachineJoinOutcome::Joined => "Joined",
-        MachineJoinOutcome::Resumed => "Resumed",
-        MachineJoinOutcome::NoOp => "No-op",
+        MachineJoinOutcomeKind::Joined => "Joined",
+        MachineJoinOutcomeKind::Resumed => "Resumed",
+        MachineJoinOutcomeKind::NoOp => "No-op",
     };
     format!(
         "{verb} machine {} ({}).\n",
@@ -333,9 +316,9 @@ mod tests {
         let machine_name = MachineName::try_new("edge-b").expect("machine name");
         let machine_id = MachineRowId::try_new(MACHINE_A).expect("machine id");
         for (outcome, expected) in [
-            (MachineJoinOutcome::Joined, "Joined"),
-            (MachineJoinOutcome::Resumed, "Resumed"),
-            (MachineJoinOutcome::NoOp, "No-op"),
+            (MachineJoinOutcomeKind::Joined, "Joined"),
+            (MachineJoinOutcomeKind::Resumed, "Resumed"),
+            (MachineJoinOutcomeKind::NoOp, "No-op"),
         ] {
             assert_eq!(
                 render_machine_join(outcome, &machine_name, &machine_id),

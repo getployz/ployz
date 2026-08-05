@@ -167,12 +167,7 @@ pub struct ApiRoleConfig {
     cluster_id: ClusterId,
     local_machine_id: MachineRowId,
     listen_addr: SocketAddr,
-    door_listen_addr: DoorListenAddress,
-    door_private_key_path: PathBuf,
-    door_certificate_path: PathBuf,
-    door_fingerprint_path: PathBuf,
-    join_substrate_path: PathBuf,
-    corrosion_gossip_port: u16,
+    door: JoinDoorConfig,
     build: String,
     mode: ApiRoleMode,
 }
@@ -340,33 +335,6 @@ impl ApiRoleConfig {
         )
     }
 
-    /// Builds configuration with explicit door material. This keeps tests and
-    /// embedding process wiring independent of process-global environment.
-    pub fn new_with_door(
-        corrosion: CorrosionClientConfig,
-        cluster_id: ClusterId,
-        local_machine_id: MachineRowId,
-        listen_addr: SocketAddr,
-        door_listen_addr: DoorListenAddress,
-        door_material: DoorMaterialPaths,
-        build: String,
-    ) -> Result<Self, ApiRoleConfigError> {
-        Self::new_with_mode_and_door(
-            corrosion,
-            cluster_id,
-            local_machine_id,
-            listen_addr,
-            JoinDoorConfig {
-                listen_addr: door_listen_addr,
-                material: door_material,
-                substrate_path: PathBuf::from(DEFAULT_JOIN_SUBSTRATE_PATH),
-                corrosion_gossip_port: DEFAULT_CORROSION_GOSSIP_PORT,
-            },
-            build,
-            ApiRoleMode::Ordinary,
-        )
-    }
-
     fn new_with_mode_and_door(
         corrosion: CorrosionClientConfig,
         cluster_id: ClusterId,
@@ -376,20 +344,14 @@ impl ApiRoleConfig {
         build: String,
         mode: ApiRoleMode,
     ) -> Result<Self, ApiRoleConfigError> {
-        let JoinDoorConfig {
-            listen_addr: door_listen_addr,
-            material: door_material,
-            substrate_path: join_substrate_path,
-            corrosion_gossip_port,
-        } = door;
         if listen_addr.ip().is_unspecified() {
             return Err(ApiRoleConfigError::WildcardListenAddress { listen_addr });
         }
         if listen_addr.port() == 0 {
             return Err(ApiRoleConfigError::ZeroListenPort);
         }
-        validate_absolute_path(API_JOIN_SUBSTRATE_PATH_ENV, &join_substrate_path)?;
-        if corrosion_gossip_port == 0 {
+        validate_absolute_path(API_JOIN_SUBSTRATE_PATH_ENV, &door.substrate_path)?;
+        if door.corrosion_gossip_port == 0 {
             return Err(ApiRoleConfigError::ZeroCorrosionGossipPort);
         }
         let build = validate_build_diagnostic(build)?;
@@ -399,12 +361,7 @@ impl ApiRoleConfig {
             cluster_id,
             local_machine_id,
             listen_addr,
-            door_listen_addr,
-            door_private_key_path: door_material.private_key,
-            door_certificate_path: door_material.certificate,
-            door_fingerprint_path: door_material.fingerprint,
-            join_substrate_path,
-            corrosion_gossip_port,
+            door,
             build,
             mode,
         })
@@ -432,32 +389,32 @@ impl ApiRoleConfig {
 
     #[must_use]
     pub const fn door_listen_addr(&self) -> DoorListenAddress {
-        self.door_listen_addr
+        self.door.listen_addr
     }
 
     #[must_use]
     pub fn door_private_key_path(&self) -> &Path {
-        &self.door_private_key_path
+        &self.door.material.private_key
     }
 
     #[must_use]
     pub fn door_certificate_path(&self) -> &Path {
-        &self.door_certificate_path
+        &self.door.material.certificate
     }
 
     #[must_use]
     pub fn door_fingerprint_path(&self) -> &Path {
-        &self.door_fingerprint_path
+        &self.door.material.fingerprint
     }
 
     #[must_use]
     pub fn join_substrate_path(&self) -> &Path {
-        &self.join_substrate_path
+        &self.door.substrate_path
     }
 
     #[must_use]
     pub const fn corrosion_gossip_port(&self) -> u16 {
-        self.corrosion_gossip_port
+        self.door.corrosion_gossip_port
     }
 
     #[must_use]

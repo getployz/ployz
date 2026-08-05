@@ -3,8 +3,9 @@
 use serde::Serialize;
 
 use ployz_core::corrosion::{
-    ClusterDocument, CorrosionTable, MachineDocument, OperatorWriteProvenance, PeerDocument,
-    SqliteParameter, Statement, StoredRow, TokenDocument, read_named_roster_rows, read_rows,
+    ClusterDocument, CorrosionTable, MachineDocument, NamedReadReport, OperatorWriteProvenance,
+    PeerDocument, ShadowConflict, SkippedRow, SqliteParameter, Statement, StoredRow, TokenDocument,
+    TransactionResponse, TransactionResult, read_named_roster_rows, read_rows,
 };
 use ployz_core::ids::{ClusterId, MachineRowId, PeerId, TokenId};
 
@@ -19,7 +20,34 @@ const MAX_MUTATION_ROWS: usize = 10_000;
 pub(super) struct AcceptedRoster {
     pub(super) cluster: ClusterDocument,
     pub(super) machines: Vec<AcceptedMachine>,
+    pub(super) machine_skipped: Vec<SkippedRow>,
+    pub(super) machine_shadows: Vec<ShadowConflict>,
     pub(super) peers: Vec<AcceptedPeer>,
+    pub(super) peer_skipped: Vec<SkippedRow>,
+    pub(super) peer_shadows: Vec<ShadowConflict>,
+}
+
+impl AcceptedRoster {
+    fn trace_reader_evidence(&self) {
+        let machine_skipped = self.machine_skipped.len();
+        let machine_shadows = self.machine_shadows.len();
+        let peer_skipped = self.peer_skipped.len();
+        let peer_shadows = self.peer_shadows.len();
+        if machine_skipped == 0 && machine_shadows == 0 && peer_skipped == 0 && peer_shadows == 0 {
+            return;
+        }
+        tracing::warn!(
+            machine_skipped,
+            machine_shadows,
+            peer_skipped,
+            peer_shadows,
+            machine_skipped_evidence = ?self.machine_skipped,
+            machine_shadow_evidence = ?self.machine_shadows,
+            peer_skipped_evidence = ?self.peer_skipped,
+            peer_shadow_evidence = ?self.peer_shadows,
+            "accepted roster excluded stored row evidence"
+        );
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -44,8 +72,48 @@ pub(super) async fn read_accepted_roster(
     let (cluster_rows, machine_rows, peer_rows) = tokio::try_join!(cluster, machines, peers)?;
 
     let cluster = one_cluster(cluster_id, cluster_rows)?;
-    let machines = read_named_roster_rows::<MachineDocument>(&cluster, machine_rows)
-        .accepted
+    let AcceptedNamedRows {
+        accepted: machines,
+        skipped: machine_skipped,
+        shadows: machine_shadows,
+    } = accepted_machine_rows(read_named_roster_rows::<MachineDocument>(
+        &cluster,
+        machine_rows,
+    ))?;
+    let AcceptedNamedRows {
+        accepted: peers,
+        skipped: peer_skipped,
+        shadows: peer_shadows,
+    } = accepted_peer_rows(read_named_roster_rows::<PeerDocument>(&cluster, peer_rows))?;
+    let roster = AcceptedRoster {
+        cluster,
+        machines,
+        machine_skipped,
+        machine_shadows,
+        peers,
+        peer_skipped,
+        peer_shadows,
+    };
+    roster.trace_reader_evidence();
+    Ok(roster)
+}
+
+#[derive(Debug)]
+struct AcceptedNamedRows<Row> {
+    accepted: Vec<Row>,
+    skipped: Vec<SkippedRow>,
+    shadows: Vec<ShadowConflict>,
+}
+
+fn accepted_machine_rows(
+    report: NamedReadReport<MachineDocument>,
+) -> Result<AcceptedNamedRows<AcceptedMachine>, MutationStoreError> {
+    let NamedReadReport {
+        accepted,
+        skipped,
+        shadows,
+    } = report;
+    let accepted = accepted
         .into_iter()
         .map(|row| {
             Ok(AcceptedMachine {
@@ -59,8 +127,22 @@ pub(super) async fn read_accepted_roster(
             })
         })
         .collect::<Result<Vec<_>, MutationStoreError>>()?;
-    let peers = read_named_roster_rows::<PeerDocument>(&cluster, peer_rows)
-        .accepted
+    Ok(AcceptedNamedRows {
+        accepted,
+        skipped,
+        shadows,
+    })
+}
+
+fn accepted_peer_rows(
+    report: NamedReadReport<PeerDocument>,
+) -> Result<AcceptedNamedRows<AcceptedPeer>, MutationStoreError> {
+    let NamedReadReport {
+        accepted,
+        skipped,
+        shadows,
+    } = report;
+    let accepted = accepted
         .into_iter()
         .map(|row| {
             Ok(AcceptedPeer {
@@ -74,10 +156,10 @@ pub(super) async fn read_accepted_roster(
             })
         })
         .collect::<Result<Vec<_>, MutationStoreError>>()?;
-    Ok(AcceptedRoster {
-        cluster,
-        machines,
-        peers,
+    Ok(AcceptedNamedRows {
+        accepted,
+        skipped,
+        shadows,
     })
 }
 
@@ -169,40 +251,98 @@ pub(super) async fn read_peer(
     Ok(peer)
 }
 
-pub(super) async fn insert_document<Document>(
+pub(super) async fn insert_token(
     corrosion: &CorrosionClient,
-    table: CorrosionTable,
-    id: &str,
-    document: &Document,
-) -> Result<(), MutationStoreError>
-where
-    Document: Serialize + ?Sized,
-{
-    let document = serde_json::to_string(document).map_err(|error| MutationStoreError::Encode {
-        table,
-        detail: error.to_string(),
-    })?;
+    token_id: &TokenId,
+    document: &TokenDocument,
+) -> Result<(), MutationStoreError> {
+    let document = encode_document(CorrosionTable::Tokens, document)?;
     corrosion
-        .execute(&[insert_statement(table, id, document)])
+        .execute(&[insert_token_statement(token_id, document)])
         .await?;
     Ok(())
 }
 
-pub(super) async fn replace_document<Document>(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TokenAuthorizedInsert {
+    Inserted,
+    TokenMissing,
+}
+
+/// Commits membership only while the exact token document validated by this
+/// API instance still exists in its machine-local Corrosion replica. A revoke
+/// committed on the same replica therefore orders before or after this write;
+/// other machines observe that delete according to Corrosion's replication
+/// convergence and do not gain a stronger cross-replica ordering guarantee.
+pub(super) async fn insert_machine_if_token_matches(
+    corrosion: &CorrosionClient,
+    machine_id: &MachineRowId,
+    document: &MachineDocument,
+    token_id: &TokenId,
+    validated_token: &TokenDocument,
+) -> Result<TokenAuthorizedInsert, MutationStoreError> {
+    insert_typed_document_if_token_matches(
+        corrosion,
+        CorrosionTable::Machines,
+        machine_id.as_str(),
+        document,
+        token_id,
+        validated_token,
+    )
+    .await
+}
+
+pub(super) async fn insert_peer_if_token_matches(
+    corrosion: &CorrosionClient,
+    peer_id: &PeerId,
+    document: &PeerDocument,
+    token_id: &TokenId,
+    validated_token: &TokenDocument,
+) -> Result<TokenAuthorizedInsert, MutationStoreError> {
+    insert_typed_document_if_token_matches(
+        corrosion,
+        CorrosionTable::Peers,
+        peer_id.as_str(),
+        document,
+        token_id,
+        validated_token,
+    )
+    .await
+}
+
+async fn insert_typed_document_if_token_matches<Document>(
     corrosion: &CorrosionClient,
     table: CorrosionTable,
     id: &str,
     document: &Document,
-) -> Result<(), MutationStoreError>
+    token_id: &TokenId,
+    validated_token: &TokenDocument,
+) -> Result<TokenAuthorizedInsert, MutationStoreError>
 where
     Document: Serialize + ?Sized,
 {
-    let document = serde_json::to_string(document).map_err(|error| MutationStoreError::Encode {
-        table,
-        detail: error.to_string(),
-    })?;
+    let document = encode_document(table, document)?;
+    let validated_token = encode_document(CorrosionTable::Tokens, validated_token)?;
+    let response = corrosion
+        .execute(&[token_authorized_insert_statement(
+            table,
+            id,
+            document,
+            token_id,
+            validated_token,
+        )])
+        .await?;
+    token_authorized_insert_outcome(table, id, &response)
+}
+
+pub(super) async fn replace_machine(
+    corrosion: &CorrosionClient,
+    machine_id: &MachineRowId,
+    document: &MachineDocument,
+) -> Result<(), MutationStoreError> {
+    let document = encode_document(CorrosionTable::Machines, document)?;
     corrosion
-        .execute(&[replace_statement(table, id, document)])
+        .execute(&[replace_machine_statement(machine_id, document)])
         .await?;
     Ok(())
 }
@@ -238,32 +378,51 @@ pub(super) async fn update_wireguard_endpoint(
     Ok(())
 }
 
-pub(super) async fn delete_document(
+pub(super) async fn delete_token(
     corrosion: &CorrosionClient,
-    table: CorrosionTable,
-    id: &str,
+    token_id: &TokenId,
 ) -> Result<(), MutationStoreError> {
-    corrosion.execute(&[delete_statement(table, id)]).await?;
+    corrosion
+        .execute(&[delete_token_statement(token_id)])
+        .await?;
     Ok(())
 }
 
-pub(super) async fn delete_document_if_matches<Document>(
+pub(super) async fn delete_machine_if_matches(
     corrosion: &CorrosionClient,
+    machine_id: &MachineRowId,
+    expected: &MachineDocument,
+) -> Result<(), MutationStoreError> {
+    let expected = encode_document(CorrosionTable::Machines, expected)?;
+    corrosion
+        .execute(&[delete_machine_if_matches_statement(machine_id, expected)])
+        .await?;
+    Ok(())
+}
+
+pub(super) async fn delete_peer_if_matches(
+    corrosion: &CorrosionClient,
+    peer_id: &PeerId,
+    expected: &PeerDocument,
+) -> Result<(), MutationStoreError> {
+    let expected = encode_document(CorrosionTable::Peers, expected)?;
+    corrosion
+        .execute(&[delete_peer_if_matches_statement(peer_id, expected)])
+        .await?;
+    Ok(())
+}
+
+fn encode_document<Document>(
     table: CorrosionTable,
-    id: &str,
-    expected: &Document,
-) -> Result<(), MutationStoreError>
+    document: &Document,
+) -> Result<String, MutationStoreError>
 where
     Document: Serialize + ?Sized,
 {
-    let expected = serde_json::to_string(expected).map_err(|error| MutationStoreError::Encode {
+    serde_json::to_string(document).map_err(|error| MutationStoreError::Encode {
         table,
         detail: error.to_string(),
-    })?;
-    corrosion
-        .execute(&[conditional_delete_statement(table, id, expected)])
-        .await?;
-    Ok(())
+    })
 }
 
 async fn query_rows(
@@ -320,6 +479,61 @@ fn insert_statement(table: CorrosionTable, id: &str, document: String) -> Statem
     )
 }
 
+fn insert_token_statement(token_id: &TokenId, document: String) -> Statement {
+    insert_statement(CorrosionTable::Tokens, token_id.as_str(), document)
+}
+
+fn token_authorized_insert_statement(
+    table: CorrosionTable,
+    id: &str,
+    document: String,
+    token_id: &TokenId,
+    validated_token: String,
+) -> Statement {
+    Statement::with_params(
+        format!(
+            "INSERT INTO {} (id, document) SELECT ?, ? WHERE EXISTS (SELECT 1 FROM tokens WHERE id = ? AND document = ?)",
+            table.as_str()
+        ),
+        vec![
+            SqliteParameter::Text(id.to_owned()),
+            SqliteParameter::Text(document),
+            SqliteParameter::Text(token_id.as_str().to_owned()),
+            SqliteParameter::Text(validated_token),
+        ],
+    )
+}
+
+fn token_authorized_insert_outcome(
+    table: CorrosionTable,
+    id: &str,
+    response: &TransactionResponse,
+) -> Result<TokenAuthorizedInsert, MutationStoreError> {
+    let [result] = response.results.as_slice() else {
+        return Err(MutationStoreError::UnexpectedWriteResult {
+            table,
+            id: id.to_owned(),
+            detail: format!("transaction returned {} results", response.results.len()),
+        });
+    };
+    let TransactionResult::Success(result) = result else {
+        return Err(MutationStoreError::UnexpectedWriteResult {
+            table,
+            id: id.to_owned(),
+            detail: "transaction retained a statement error".to_owned(),
+        });
+    };
+    match result.rows_affected {
+        0 => Ok(TokenAuthorizedInsert::TokenMissing),
+        1 => Ok(TokenAuthorizedInsert::Inserted),
+        rows_affected => Err(MutationStoreError::UnexpectedWriteResult {
+            table,
+            id: id.to_owned(),
+            detail: format!("conditional insert affected {rows_affected} rows"),
+        }),
+    }
+}
+
 fn replace_statement(table: CorrosionTable, id: &str, document: String) -> Statement {
     Statement::with_params(
         format!("UPDATE {} SET document = ? WHERE id = ?", table.as_str()),
@@ -330,11 +544,19 @@ fn replace_statement(table: CorrosionTable, id: &str, document: String) -> State
     )
 }
 
+fn replace_machine_statement(machine_id: &MachineRowId, document: String) -> Statement {
+    replace_statement(CorrosionTable::Machines, machine_id.as_str(), document)
+}
+
 fn delete_statement(table: CorrosionTable, id: &str) -> Statement {
     Statement::with_params(
         format!("DELETE FROM {} WHERE id = ?", table.as_str()),
         vec![SqliteParameter::Text(id.to_owned())],
     )
+}
+
+fn delete_token_statement(token_id: &TokenId) -> Statement {
+    delete_statement(CorrosionTable::Tokens, token_id.as_str())
 }
 
 fn conditional_delete_statement(table: CorrosionTable, id: &str, expected: String) -> Statement {
@@ -348,6 +570,14 @@ fn conditional_delete_statement(table: CorrosionTable, id: &str, expected: Strin
             SqliteParameter::Text(expected),
         ],
     )
+}
+
+fn delete_machine_if_matches_statement(machine_id: &MachineRowId, expected: String) -> Statement {
+    conditional_delete_statement(CorrosionTable::Machines, machine_id.as_str(), expected)
+}
+
+fn delete_peer_if_matches_statement(peer_id: &PeerId, expected: String) -> Statement {
+    conditional_delete_statement(CorrosionTable::Peers, peer_id.as_str(), expected)
 }
 
 fn update_wireguard_endpoint_statement(
@@ -389,10 +619,19 @@ pub(super) enum MutationStoreError {
         table: CorrosionTable,
         detail: String,
     },
+    #[error("unexpected {table:?} write result for {id}: {detail}")]
+    UnexpectedWriteResult {
+        table: CorrosionTable,
+        id: String,
+        detail: String,
+    },
 }
 
 #[cfg(test)]
 mod tests {
+    use ployz_core::corrosion::{TransactionResponse, TransactionResult, TransactionSuccess};
+    use serde_json::json;
+
     use super::*;
 
     #[test]
@@ -494,6 +733,143 @@ mod tests {
                     SqliteParameter::Text(admitted),
                 ],
             )
+        );
+    }
+
+    #[test]
+    fn admission_paused_after_validation_cannot_commit_after_token_revoke() {
+        let member_id = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+        let token_id = TokenId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAW").expect("token id");
+        let member = r#"{"name":"edge-a"}"#.to_owned();
+        let validated_token = r#"{"secret_sha256":"validated"}"#.to_owned();
+
+        assert_eq!(
+            token_authorized_insert_statement(
+                CorrosionTable::Machines,
+                member_id,
+                member.clone(),
+                &token_id,
+                validated_token.clone(),
+            ),
+            Statement::with_params(
+                "INSERT INTO machines (id, document) SELECT ?, ? WHERE EXISTS (SELECT 1 FROM tokens WHERE id = ? AND document = ?)",
+                vec![
+                    SqliteParameter::Text(member_id.to_owned()),
+                    SqliteParameter::Text(member),
+                    SqliteParameter::Text(token_id.as_str().to_owned()),
+                    SqliteParameter::Text(validated_token),
+                ],
+            )
+        );
+
+        let commit_after_revoke = TransactionResponse {
+            results: vec![TransactionResult::Success(TransactionSuccess {
+                rows_affected: 0,
+                time: 0.01,
+            })],
+            time: 0.01,
+            version: None,
+            actor_id: None,
+        };
+        assert_eq!(
+            token_authorized_insert_outcome(
+                CorrosionTable::Machines,
+                member_id,
+                &commit_after_revoke,
+            )
+            .expect("a zero-row conditional insert is a valid refusal"),
+            TokenAuthorizedInsert::TokenMissing,
+        );
+    }
+
+    #[test]
+    fn named_roster_evidence_survives_typed_machine_conversion() {
+        let cluster: ClusterDocument = serde_json::from_value(json!({
+            "v": 1,
+            "cluster_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "name": "acme-prod",
+            "storage_default": "plain",
+            "hostname_mode": { "mode": "disabled" },
+            "prefix": "10.210.0.0/16",
+            "provider": "builtin_wireguard",
+            "acme_directory_url": "https://acme.example/directory",
+            "acme_contact": null,
+            "written_by": {
+                "kind": "peer",
+                "peer_id": "01ARZ3NDEKTSV4RRFFQ69G5FAY"
+            },
+            "written_at": "2026-08-05T10:00:00Z"
+        }))
+        .expect("cluster document");
+        let machine = json!({
+            "v": 1,
+            "cluster_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "name": "edge-a",
+            "lifecycle": "active",
+            "transport": {
+                "kind": "wireguard",
+                "pubkey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                "addr_v6": "fd00::20",
+                "endpoint": null,
+                "subnet_v4": "10.210.20.0/24"
+            },
+            "storage": { "mode": "plain", "reason": { "kind": "default" } },
+            "written_by": {
+                "kind": "peer",
+                "peer_id": "01ARZ3NDEKTSV4RRFFQ69G5FAY"
+            },
+            "written_at": "2026-08-05T10:00:00Z"
+        })
+        .to_string();
+        let report = read_named_roster_rows::<MachineDocument>(
+            &cluster,
+            [
+                StoredRow::new("01ARZ3NDEKTSV4RRFFQ69G5FAW", machine.clone()),
+                StoredRow::new("01ARZ3NDEKTSV4RRFFQ69G5FAX", machine),
+                StoredRow::new("01ARZ3NDEKTSV4RRFFQ69G5FAZ", ""),
+            ],
+        );
+
+        let rows = accepted_machine_rows(report).expect("typed machine ids");
+
+        let [accepted] = rows.accepted.as_slice() else {
+            panic!("expected one accepted machine, got {}", rows.accepted.len());
+        };
+        assert_eq!(accepted.id.as_str(), "01ARZ3NDEKTSV4RRFFQ69G5FAW");
+        let [_skipped] = rows.skipped.as_slice() else {
+            panic!("expected one skipped machine, got {}", rows.skipped.len());
+        };
+        let [shadow] = rows.shadows.as_slice() else {
+            panic!("expected one shadowed machine, got {}", rows.shadows.len());
+        };
+        assert_eq!(shadow.loser.id.as_str(), "01ARZ3NDEKTSV4RRFFQ69G5FAX");
+    }
+
+    #[test]
+    fn table_specific_statement_builders_bind_typed_ids() {
+        let token_id = TokenId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("token id");
+        let machine_id = MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAW").expect("machine id");
+        let peer_id = PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAX").expect("peer id");
+
+        assert_eq!(
+            insert_token_statement(&token_id, "{}".to_owned()),
+            insert_statement(CorrosionTable::Tokens, token_id.as_str(), "{}".to_owned())
+        );
+        assert_eq!(
+            replace_machine_statement(&machine_id, "{}".to_owned()),
+            replace_statement(
+                CorrosionTable::Machines,
+                machine_id.as_str(),
+                "{}".to_owned()
+            )
+        );
+        assert_eq!(
+            delete_token_statement(&token_id),
+            delete_statement(CorrosionTable::Tokens, token_id.as_str())
+        );
+        assert_eq!(
+            delete_peer_if_matches_statement(&peer_id, "{}".to_owned()),
+            conditional_delete_statement(CorrosionTable::Peers, peer_id.as_str(), "{}".to_owned())
         );
     }
 }

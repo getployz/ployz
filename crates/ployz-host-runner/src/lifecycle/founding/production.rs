@@ -3,7 +3,7 @@
 use std::fmt;
 use std::fs;
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::thread;
 use std::time::Duration;
 
@@ -29,11 +29,15 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    ArtifactKind, ArtifactSourceView, FileMode, HostPlatformProfile, HostRunnerCommandRunner,
-    PloyzdRole, PloyzdRoleEnvironmentFile, PoolSelection, ReleaseArtifacts, SupervisorBackend,
-    SupervisorChange, SupervisorDirectories, SupervisorUnitSpec, SystemHostRunnerCommandRunner,
-    acquire_remote_artifact_content_addressed, artifact_target, detect_host_platform,
-    install_verified_artifact, prepare_storage, verify_artifact_file, write_durable_file,
+    ArtifactKind, FileMode, HostPlatformProfile, HostRunnerCommandRunner, PloyzdRole,
+    PloyzdRoleEnvironmentFile, PoolSelection, ReleaseArtifacts, SupervisorDirectories,
+    SystemHostRunnerCommandRunner, artifact_target, prepare_storage, write_durable_file,
+};
+
+use crate::lifecycle::production::{
+    CorrosionBootstrap, CorrosionConfig, CorrosionServiceChange, CorrosionUnitOrdering,
+    GeneratedSecretPersistence, LinuxSubstrate,
+    read_or_generate_secret as shared_read_or_generate_secret, render_corrosion_config,
 };
 
 use super::{FoundingHostEffects, FoundingMilestone, FoundingStateDirectory};
@@ -56,26 +60,6 @@ const CORROSION_CONFIG_FILE: &str = "corrosion.toml";
 const CORROSION_TOKEN_FILE: &str = "corrosion-token";
 const API_PORT: u16 = 2_020;
 const CORROSION_API_PORT: u16 = 8_080;
-const CORROSION_GOSSIP_PORT: u16 = 8_787;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FoundingRoleDisposition {
-    Enabled,
-    DisabledAndInactive,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CorrosionServiceChange {
-    Enable,
-    Restart,
-}
-
-const fn founding_role_disposition(role: PloyzdRole) -> FoundingRoleDisposition {
-    match role {
-        PloyzdRole::Keeper | PloyzdRole::Api => FoundingRoleDisposition::Enabled,
-        PloyzdRole::Gateway | PloyzdRole::Dns => FoundingRoleDisposition::DisabledAndInactive,
-    }
-}
 
 /// Public driver material carried into the initial peer row.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -354,9 +338,13 @@ pub fn prepare_linux_founding<R: HostRunnerCommandRunner>(
     }
     .try_validate()
     .map_err(preparation)?;
-    let bootstrap_credential = FoundingBootstrapCredential(read_or_generate_secret(
-        &state.path().join(BOOTSTRAP_CREDENTIAL_FILE),
-    )?);
+    let bootstrap_credential = FoundingBootstrapCredential(
+        shared_read_or_generate_secret(
+            &state.path().join(BOOTSTRAP_CREDENTIAL_FILE),
+            GeneratedSecretPersistence::InMemory,
+        )
+        .map_err(preparation)?,
+    );
     let _door_material = read_door_material_state(state)?;
     let effects = LinuxFoundingHostEffects {
         state: state.clone(),
@@ -365,7 +353,11 @@ pub fn prepare_linux_founding<R: HostRunnerCommandRunner>(
         corrosion_embedded_version,
         machine_seed: seed,
         bootstrap_credential: bootstrap_credential.clone(),
-        corrosion_token: read_or_generate_secret(&state.path().join(CORROSION_TOKEN_FILE))?,
+        corrosion_token: shared_read_or_generate_secret(
+            &state.path().join(CORROSION_TOKEN_FILE),
+            GeneratedSecretPersistence::InMemory,
+        )
+        .map_err(preparation)?,
         zfs_pool,
         runner,
         profile: None,
@@ -452,9 +444,13 @@ fn prepared_from_request<R: HostRunnerCommandRunner>(
 ) -> Result<PreparedLinuxFounding<R>, FoundingPreparationError> {
     let seed = read_machine_seed(state.path())?;
     validate_seed_matches_request(&seed, &request)?;
-    let bootstrap_credential = FoundingBootstrapCredential(read_or_generate_secret(
-        &state.path().join(BOOTSTRAP_CREDENTIAL_FILE),
-    )?);
+    let bootstrap_credential = FoundingBootstrapCredential(
+        shared_read_or_generate_secret(
+            &state.path().join(BOOTSTRAP_CREDENTIAL_FILE),
+            GeneratedSecretPersistence::InMemory,
+        )
+        .map_err(preparation)?,
+    );
     let _door_material = read_door_material_state(state)?;
     let effects = LinuxFoundingHostEffects {
         state: state.clone(),
@@ -463,7 +459,11 @@ fn prepared_from_request<R: HostRunnerCommandRunner>(
         corrosion_embedded_version,
         machine_seed: seed,
         bootstrap_credential: bootstrap_credential.clone(),
-        corrosion_token: read_or_generate_secret(&state.path().join(CORROSION_TOKEN_FILE))?,
+        corrosion_token: shared_read_or_generate_secret(
+            &state.path().join(CORROSION_TOKEN_FILE),
+            GeneratedSecretPersistence::InMemory,
+        )
+        .map_err(preparation)?,
         zfs_pool: read_required_zfs_pool(state.path(), request.request().machine.storage.mode)?,
         runner,
         profile: None,
@@ -509,20 +509,6 @@ fn validate_seed_matches_request(
         ));
     }
     Ok(())
-}
-
-fn read_or_generate_secret(path: &Path) -> Result<String, FoundingPreparationError> {
-    match fs::read_to_string(path) {
-        Ok(secret) if !secret.trim().is_empty() => Ok(secret.trim().to_owned()),
-        Ok(_) => Err(preparation(format!(
-            "secret file {} is empty",
-            path.display()
-        ))),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            Ok(Key::generate().to_string())
-        }
-        Err(error) => Err(preparation(error)),
-    }
 }
 
 fn read_door_material_state(
@@ -802,66 +788,6 @@ fn merge_docker_daemon_config(prefix: &MachineEndpointSupernet) -> Result<(), Fa
         FileMode::Plain,
         &bytes,
     )
-}
-
-fn install_corrosion_unit(
-    backend: SupervisorBackend,
-    directories: &SupervisorDirectories,
-    config: PathBuf,
-) -> Result<(), FailureMessage> {
-    let (name, contents) = match backend {
-        SupervisorBackend::Systemd => (
-            "ployz-corrosion.service",
-            format!(
-                "[Unit]\nDescription=Ployz Corrosion\nAfter=network-online.target ployzd-keeper.service\nWants=network-online.target\n\n[Service]\nType=exec\nExecStart=/usr/local/bin/corrosion --config {} agent\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n",
-                config.display()
-            ),
-        ),
-        SupervisorBackend::OpenRc => (
-            "ployz-corrosion",
-            format!(
-                "#!/sbin/openrc-run\nname=ployz-corrosion\nsupervisor=supervise-daemon\ncommand=/usr/local/bin/corrosion\ncommand_args=\"--config {} agent\"\nrespawn_delay=5\n\ndepend() {{ need net; after ployzd-keeper; }}\n",
-                config.display()
-            ),
-        ),
-    };
-    write_durable_file(
-        directories.directory(backend),
-        name,
-        FileMode::Executable0755,
-        contents.as_bytes(),
-    )
-}
-
-fn corrosion_commands(
-    backend: SupervisorBackend,
-    change: CorrosionServiceChange,
-) -> Vec<(&'static str, Vec<String>)> {
-    match (backend, change) {
-        (SupervisorBackend::Systemd, CorrosionServiceChange::Enable) => vec![
-            ("systemctl", vec!["daemon-reload".to_owned()]),
-            (
-                "systemctl",
-                vec!["enable".to_owned(), "ployz-corrosion.service".to_owned()],
-            ),
-        ],
-        (SupervisorBackend::Systemd, CorrosionServiceChange::Restart) => vec![(
-            "systemctl",
-            vec!["restart".to_owned(), "ployz-corrosion.service".to_owned()],
-        )],
-        (SupervisorBackend::OpenRc, CorrosionServiceChange::Enable) => vec![(
-            "rc-update",
-            vec![
-                "add".to_owned(),
-                "ployz-corrosion".to_owned(),
-                "default".to_owned(),
-            ],
-        )],
-        (SupervisorBackend::OpenRc, CorrosionServiceChange::Restart) => vec![(
-            "rc-service",
-            vec!["ployz-corrosion".to_owned(), "restart".to_owned()],
-        )],
-    }
 }
 
 fn failure(error: impl fmt::Display) -> FailureMessage {

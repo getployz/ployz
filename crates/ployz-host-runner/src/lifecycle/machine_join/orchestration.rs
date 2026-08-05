@@ -4,8 +4,8 @@ use std::future::Future;
 use std::net::SocketAddr;
 
 use ployz_core::join::{
-    JoinAcceptanceValidationError, JoinBlob, JoinDoorCertFingerprint, JoinStorageChoice,
-    JoinStorageFacts, MachineJoinAccepted, MachineJoinRequest, ValidatedMachineJoinAccepted,
+    JoinAcceptanceValidationError, JoinBlob, JoinStorageChoice, JoinStorageFacts,
+    MachineJoinAccepted, MachineJoinRequest, ValidatedMachineJoinAccepted,
 };
 use ployz_core::machine::MachineName;
 use ployz_core::operation::FailureMessage;
@@ -356,11 +356,6 @@ pub enum MachineJoinFailure {
     State(#[from] MachineJoinStateError),
 }
 
-#[must_use]
-pub fn pinned_door_fingerprint(prepared: &PreparedMachineJoin) -> &JoinDoorCertFingerprint {
-    prepared.blob.door_cert_fingerprint()
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     use std::net::SocketAddr;
@@ -377,9 +372,9 @@ pub(crate) mod tests {
         InstallArtifactVersion, InstallSha256Digest,
     };
     use ployz_core::join::{
-        AcceptedMachineRow, CorrosionBootstrapFacts, JOIN_DOOR_PORT, JoinDoorCertificatePem,
-        JoinDoorMaterial, JoinDoorPrivateKeyPem, JoinMachineSubstrate, JoinTokenSecret,
-        ReachableSeedMachine,
+        AcceptedMachineRow, CorrosionBootstrapFacts, JOIN_DOOR_PORT, JoinDoorCertFingerprint,
+        JoinDoorCertificatePem, JoinDoorMaterial, JoinDoorPrivateKeyPem, JoinMachineSubstrate,
+        JoinTokenSecret, ReachableSeedMachine,
     };
     use ployz_core::machine::MachineLifecycle;
     use ployz_core::network::{MachineEndpointSubnet, MachineEndpointSupernet, WireGuardPublicKey};

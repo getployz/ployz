@@ -181,13 +181,13 @@ pub fn token_revoke_route(token_id: &TokenId) -> String {
 }
 
 /// The exact public route shape, parsed without any daemon-local strings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum V2Route {
     Version,
     Founding,
     TokenCreate,
     TokenList,
-    TokenRevoke,
+    TokenRevoke(TokenId),
     MachineEndpointSet,
     Join,
     Lens(LensCollection),
@@ -223,13 +223,12 @@ impl V2Route {
         if path == MACHINE_ENDPOINT_ROUTE_PREFIX {
             return Some(Self::MachineEndpointSet);
         }
-        if path
+        if let Some(token_id) = path
             .strip_prefix(TOKEN_REVOKE_ROUTE_PREFIX)
             .and_then(|suffix| suffix.strip_prefix('/'))
             .and_then(|id| TokenId::try_new(id).ok())
-            .is_some()
         {
-            return Some(Self::TokenRevoke);
+            return Some(Self::TokenRevoke(token_id));
         }
         let collection_path = path
             .strip_prefix(LENSES_ROUTE)
@@ -246,29 +245,29 @@ impl V2Route {
 
     /// Builds this route's canonical path.
     #[must_use]
-    pub fn path(self) -> String {
+    pub fn path(&self) -> String {
         match self {
             Self::Version => VERSION_ROUTE.to_owned(),
             Self::Founding => FOUNDING_ROUTE.to_owned(),
             Self::TokenCreate => TOKEN_CREATE_ROUTE.to_owned(),
             Self::TokenList => TOKEN_LIST_ROUTE.to_owned(),
-            Self::TokenRevoke => TOKEN_REVOKE_ROUTE_PREFIX.to_owned(),
+            Self::TokenRevoke(token_id) => token_revoke_route(token_id),
             Self::MachineEndpointSet => MACHINE_ENDPOINT_ROUTE_PREFIX.to_owned(),
             Self::Join => JOIN_ROUTE.to_owned(),
-            Self::Lens(collection) => lens_route(collection),
-            Self::LensWatch(collection) => lens_watch_route(collection),
+            Self::Lens(collection) => lens_route(*collection),
+            Self::LensWatch(collection) => lens_watch_route(*collection),
         }
     }
 
     /// Returns the one HTTP method accepted by this route.
     #[must_use]
-    pub const fn method(self) -> V2Method {
+    pub const fn method(&self) -> V2Method {
         match self {
             Self::Version | Self::Lens(_) | Self::LensWatch(_) => V2Method::Get,
             Self::Founding
             | Self::TokenCreate
             | Self::TokenList
-            | Self::TokenRevoke
+            | Self::TokenRevoke(_)
             | Self::MachineEndpointSet
             | Self::Join => V2Method::Post,
         }
@@ -276,34 +275,34 @@ impl V2Route {
 
     /// Returns the capability that advertises this route.
     #[must_use]
-    pub const fn feature(self) -> KnownApiFeature {
+    pub const fn feature(&self) -> KnownApiFeature {
         match self {
             Self::Version | Self::Founding => KnownApiFeature::Founding,
             Self::Lens(_) | Self::LensWatch(_) => KnownApiFeature::Lenses,
-            Self::TokenCreate | Self::TokenList | Self::TokenRevoke => KnownApiFeature::JoinTokens,
+            Self::TokenCreate | Self::TokenList | Self::TokenRevoke(_) => {
+                KnownApiFeature::JoinTokens
+            }
             Self::MachineEndpointSet => KnownApiFeature::MachineEndpoint,
             Self::Join => KnownApiFeature::JoinDoor,
         }
     }
 
-    /// Enforces that API-token principals are honored only by the join door.
+    /// Enforces the authority assigned to each API surface.
     #[must_use]
-    pub const fn accepts_principal(self, principal: &Principal) -> bool {
-        matches!(
-            (self, principal),
-            (Self::Join, Principal::ApiToken { .. })
-                | (
-                    Self::Version
-                        | Self::Founding
-                        | Self::TokenCreate
-                        | Self::TokenList
-                        | Self::TokenRevoke
-                        | Self::MachineEndpointSet
-                        | Self::Lens(_)
-                        | Self::LensWatch(_),
+    pub const fn accepts_principal(&self, principal: &Principal) -> bool {
+        match self {
+            Self::Join => matches!(principal, Principal::ApiToken { .. }),
+            Self::TokenCreate
+            | Self::TokenList
+            | Self::TokenRevoke(_)
+            | Self::MachineEndpointSet => matches!(principal, Principal::Peer { .. }),
+            Self::Version | Self::Founding | Self::Lens(_) | Self::LensWatch(_) => {
+                matches!(
+                    principal,
                     Principal::Machine { .. } | Principal::Peer { .. }
                 )
-        )
+            }
+        }
     }
 }
 
