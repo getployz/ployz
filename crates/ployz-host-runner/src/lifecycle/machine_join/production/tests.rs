@@ -100,6 +100,76 @@ fn validated_fixture() -> (
 }
 
 #[test]
+fn endpoint_network_readiness_requires_the_accepted_gateway_exactly() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let state = MachineJoinStateDirectory::initialize(directory.path()).expect("state");
+    let mut runner = RecordingRunner::with_outputs([output("10.210.7.1\n")]);
+    let mut profile = Some(
+        crate::detect_host_platform("ID=ubuntu\nVERSION_ID=24.04\n").expect("systemd profile"),
+    );
+    let directories = SupervisorDirectories::new(
+        directory.path().join("systemd"),
+        directory.path().join("openrc"),
+    );
+
+    LinuxSubstrate::new(state.path(), &mut runner, &mut profile, &directories)
+        .await_endpoint_network_gateway("10.210.7.1".parse().expect("gateway"))
+        .expect("exact accepted gateway is ready");
+
+    assert_eq!(
+        runner.calls,
+        ["docker network inspect ployz --format {{(index .IPAM.Config 0).Gateway}}"]
+    );
+}
+
+#[test]
+fn dns_activation_is_systemd_only_and_enables_then_restarts_the_unit() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let state = MachineJoinStateDirectory::initialize(directory.path()).expect("state");
+    let directories = SupervisorDirectories::new(
+        directory.path().join("systemd"),
+        directory.path().join("openrc"),
+    );
+    let mut systemd_runner = RecordingRunner::with_outputs([output(""), output(""), output("")]);
+    let mut systemd_profile = Some(
+        crate::detect_host_platform("ID=ubuntu\nVERSION_ID=24.04\n").expect("systemd profile"),
+    );
+
+    LinuxSubstrate::new(
+        state.path(),
+        &mut systemd_runner,
+        &mut systemd_profile,
+        &directories,
+    )
+    .enable_and_start_dns()
+    .expect("systemd DNS activation succeeds");
+
+    assert_eq!(
+        systemd_runner.calls,
+        [
+            "systemctl daemon-reload",
+            "systemctl enable ployzd-dns.service",
+            "systemctl restart ployzd-dns.service",
+        ]
+    );
+
+    let mut openrc_runner = RecordingRunner::default();
+    let mut openrc_profile =
+        Some(crate::detect_host_platform("ID=alpine\nVERSION_ID=3.22\n").expect("OpenRC profile"));
+    let error = LinuxSubstrate::new(
+        state.path(),
+        &mut openrc_runner,
+        &mut openrc_profile,
+        &directories,
+    )
+    .enable_and_start_dns()
+    .expect_err("OpenRC cannot provide the DNS isolation contract");
+
+    assert!(error.as_str().contains("requires systemd"));
+    assert!(openrc_runner.calls.is_empty());
+}
+
+#[test]
 fn joined_corrosion_waits_for_keeper_owned_wireguard_on_boot() {
     let (_, systemd_unit) = crate::lifecycle::production::corrosion_unit(
         SupervisorBackend::Systemd,

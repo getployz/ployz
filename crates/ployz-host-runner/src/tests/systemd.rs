@@ -59,6 +59,33 @@ fn ployzd_role_units_limit_systemd_stop_to_ten_seconds() {
 }
 
 #[test]
+fn dns_unit_runs_as_a_dynamic_user_with_only_the_port_53_capability() {
+    let rendered = PloyzdRoleUnit::new(PloyzdRole::Dns, &ployzd_artifact(), &role_env())
+        .expect("DNS unit is valid")
+        .render();
+
+    for directive in [
+        "DynamicUser=yes",
+        "User=ployz-dns",
+        "AmbientCapabilities=CAP_NET_BIND_SERVICE",
+        "CapabilityBoundingSet=CAP_NET_BIND_SERVICE",
+        "NoNewPrivileges=yes",
+    ] {
+        assert!(
+            rendered.lines().any(|line| line == directive),
+            "missing {directive:?} in {rendered:?}"
+        );
+    }
+    assert_eq!(rendered.matches("CAP_NET_BIND_SERVICE").count(), 2);
+    assert!(
+        rendered.contains(
+            "After=network-online.target docker.service ployz-corrosion.service ployzd-api.service\nWants=network-online.target docker.service ployz-corrosion.service ployzd-api.service\n"
+        ),
+        "{rendered}"
+    );
+}
+
+#[test]
 fn role_units_quote_paths_that_need_systemd_escaping() {
     let spaced_path_artifact = ArtifactTarget::new(
         ArtifactKind::Ployzd,

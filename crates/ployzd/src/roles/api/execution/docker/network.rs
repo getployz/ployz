@@ -24,6 +24,9 @@ pub(super) fn endpoint_network_create_request(
     endpoint_bridge_ifname: &str,
     endpoint_mtu: u32,
 ) -> NetworkCreateRequest {
+    let gateway = MachineEndpointSubnet::try_new(endpoint_network_subnet)
+        .ok()
+        .map(|subnet| subnet.bridge_gateway_ipv4().to_string());
     NetworkCreateRequest {
         name: ENDPOINT_NETWORK_NAME.to_owned(),
         driver: Some("bridge".to_owned()),
@@ -38,6 +41,7 @@ pub(super) fn endpoint_network_create_request(
             driver: Some("default".to_owned()),
             config: Some(vec![IpamConfig {
                 subnet: Some(endpoint_network_subnet.to_owned()),
+                gateway,
                 ..Default::default()
             }]),
             ..Default::default()
@@ -758,13 +762,13 @@ mod tests {
                 .and_then(|options| { options.get(DRIVER_MTU_OPTION).cloned() }),
             Some("1420".to_owned())
         );
-        assert_eq!(
-            request
-                .ipam
-                .and_then(|ipam| ipam.config)
-                .and_then(|configs| configs.into_iter().next().and_then(|config| config.subnet)),
-            Some("10.42.7.0/24".to_owned())
-        );
+        let config = request
+            .ipam
+            .and_then(|ipam| ipam.config)
+            .and_then(|configs| configs.into_iter().next())
+            .expect("machine endpoint IPAM config");
+        assert_eq!(config.subnet, Some("10.42.7.0/24".to_owned()));
+        assert_eq!(config.gateway, Some("10.42.7.1".to_owned()));
     }
 
     #[test]

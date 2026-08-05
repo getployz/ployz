@@ -414,6 +414,9 @@ pub(crate) mod tests {
                 MachineJoinMilestone::RosterConverged,
                 MachineJoinMilestone::KeeperStarted,
                 MachineJoinMilestone::ApiStarted,
+                MachineJoinMilestone::EndpointNetworkReady,
+                MachineJoinMilestone::DnsStarted,
+                MachineJoinMilestone::DnsReady,
                 MachineJoinMilestone::Ready,
                 MachineJoinMilestone::BootstrapCleaned,
             ]

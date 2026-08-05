@@ -30,7 +30,7 @@ use crate::{
 
 use crate::lifecycle::production::{
     CorrosionBootstrap, CorrosionConfig, CorrosionServiceChange, GeneratedSecretPersistence,
-    LinuxSubstrate, read_or_generate_secret,
+    LinuxSubstrate, machine_endpoint_gateway, read_or_generate_secret,
     render_corrosion_config as render_shared_corrosion_config,
 };
 
@@ -758,6 +758,29 @@ impl LinuxMachineJoinHostEffects {
         )
     }
 
+    fn await_endpoint_network(
+        &mut self,
+        accepted: &ValidatedMachineJoinAccepted,
+    ) -> Result<(), FailureMessage> {
+        let gateway = accepted_endpoint_gateway(accepted);
+        self.substrate().await_endpoint_network_gateway(gateway)
+    }
+
+    fn ensure_dns_started(
+        &mut self,
+        _accepted: &ValidatedMachineJoinAccepted,
+    ) -> Result<(), FailureMessage> {
+        self.substrate().enable_and_start_dns()
+    }
+
+    fn await_dns_ready(
+        &mut self,
+        accepted: &ValidatedMachineJoinAccepted,
+    ) -> Result<(), FailureMessage> {
+        let gateway = accepted_endpoint_gateway(accepted);
+        self.substrate().await_dns_readiness(gateway)
+    }
+
     fn await_machine_ready(
         &mut self,
         _accepted: &ValidatedMachineJoinAccepted,
@@ -809,12 +832,21 @@ impl MachineJoinHostEffects for LinuxMachineJoinHostEffects {
             super::MachineJoinMilestone::RosterConverged => self.await_roster_convergence(accepted),
             super::MachineJoinMilestone::KeeperStarted => self.ensure_keeper_started(accepted),
             super::MachineJoinMilestone::ApiStarted => self.ensure_api_started(accepted),
+            super::MachineJoinMilestone::EndpointNetworkReady => {
+                self.await_endpoint_network(accepted)
+            }
+            super::MachineJoinMilestone::DnsStarted => self.ensure_dns_started(accepted),
+            super::MachineJoinMilestone::DnsReady => self.await_dns_ready(accepted),
             super::MachineJoinMilestone::Ready => self.await_machine_ready(accepted),
             super::MachineJoinMilestone::BootstrapCleaned => {
                 self.remove_temporary_bootstrap(accepted)
             }
         }
     }
+}
+
+fn accepted_endpoint_gateway(accepted: &ValidatedMachineJoinAccepted) -> std::net::Ipv4Addr {
+    machine_endpoint_gateway(&accepted.accepted().machine.document.transport)
 }
 
 fn wireguard_config(

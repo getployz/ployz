@@ -125,15 +125,26 @@ impl PloyzdRoleUnit {
                 "network-online.target docker.service sys-fs-bpf.mount",
                 "network-online.target docker.service",
             ),
-            PloyzdRole::Keeper | PloyzdRole::Gateway | PloyzdRole::Dns => {
+            PloyzdRole::Dns => (
+                "network-online.target docker.service ployz-corrosion.service ployzd-api.service",
+                "network-online.target docker.service ployz-corrosion.service ployzd-api.service",
+            ),
+            PloyzdRole::Keeper | PloyzdRole::Gateway => {
                 ("network-online.target", "network-online.target")
             }
         };
+        let role_security = match self.role {
+            PloyzdRole::Dns => {
+                "DynamicUser=yes\nUser=ployz-dns\nAmbientCapabilities=CAP_NET_BIND_SERVICE\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE\nNoNewPrivileges=yes\n"
+            }
+            PloyzdRole::Keeper | PloyzdRole::Api | PloyzdRole::Gateway => "",
+        };
         format!(
-            "[Unit]\nDescription=Ployz {}\nAfter={}\nWants={}\n\n[Service]\nType=exec\nEnvironmentFile={}\nExecStart={}\nTimeoutStopSec=10s\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n",
+            "[Unit]\nDescription=Ployz {}\nAfter={}\nWants={}\n\n[Service]\nType=exec\n{}EnvironmentFile={}\nExecStart={}\nTimeoutStopSec=10s\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n",
             self.role.as_str(),
             after,
             wants,
+            role_security,
             self.environment_file.path().display(),
             self.exec_start,
         )
