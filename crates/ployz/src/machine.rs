@@ -1,6 +1,7 @@
 //! Machine command execution, mesh HTTP, and human presentation.
 
 use std::cmp::Ordering;
+use std::io::Write as _;
 use std::time::{Duration, Instant};
 
 use ployz_core::corrosion::MachineTransport;
@@ -67,17 +68,16 @@ async fn upgrade(command: MachineUpgradeCommand) -> Result<String, MachineExecut
         ));
     }
 
-    let mut output = String::new();
     let mut cached_artifacts = Vec::new();
     for (confirmed, machine) in selected.into_iter().enumerate() {
         let request =
             resolve_machine_upgrade_request(&source, machine.status, &mut cached_artifacts).await?;
         let name = machine.row.document.name.as_str();
         let short_sha256 = &request.sha256.as_str()[..12];
-        println!(
-            "{name}  target {} ({short_sha256}...)",
+        emit_upgrade_progress(&format!(
+            "{name}  target {} ({short_sha256}...)\n",
             request.version.as_str()
-        );
+        ))?;
 
         let direct = remote
             .for_machine(machine.row)
@@ -109,7 +109,7 @@ async fn upgrade(command: MachineUpgradeCommand) -> Result<String, MachineExecut
                 "the API acknowledgement did not match the resolved artifact".to_owned(),
             ));
         }
-        output.push_str(&format!("{name}  staged, swap armed\n"));
+        emit_upgrade_progress(&render_upgrade_staged(name))?;
 
         match source.confirmation() {
             UpgradeConfirmation::ReleaseVersion => {
@@ -123,7 +123,7 @@ async fn upgrade(command: MachineUpgradeCommand) -> Result<String, MachineExecut
                         ),
                     ));
                 }
-                output.push_str(&format!("{name}  now {} ✓\n", request.version.as_str()));
+                emit_upgrade_progress(&render_upgrade_confirmed(name, &request.version))?;
             }
             UpgradeConfirmation::UnavailableForManualArtifact => {
                 return Err(upgrade_halted(
@@ -135,7 +135,26 @@ async fn upgrade(command: MachineUpgradeCommand) -> Result<String, MachineExecut
             }
         }
     }
-    Ok(output)
+    Ok(String::new())
+}
+
+fn emit_upgrade_progress(line: &str) -> Result<(), MachineExecutionError> {
+    let stdout = std::io::stdout();
+    let mut stdout = stdout.lock();
+    stdout
+        .write_all(line.as_bytes())
+        .map_err(MachineExecutionError::Output)?;
+    stdout.flush().map_err(MachineExecutionError::Output)
+}
+
+#[must_use]
+fn render_upgrade_staged(machine: &str) -> String {
+    format!("{machine}  staged, swap armed\n")
+}
+
+#[must_use]
+fn render_upgrade_confirmed(machine: &str, version: &InstallArtifactVersion) -> String {
+    format!("{machine}  now {} ✓\n", version.as_str())
 }
 
 fn upgrade_halted(machine: &str, confirmed: usize, reason: String) -> MachineExecutionError {
@@ -639,6 +658,8 @@ async fn list(command: MachineListCommand) -> Result<String, MachineExecutionErr
 }
 #[derive(Debug, thiserror::Error)]
 pub enum MachineExecutionError {
+    #[error("could not write upgrade progress: {0}")]
+    Output(#[source] std::io::Error),
     #[error(transparent)]
     Remote(#[from] OperatorRemoteError),
     #[error(transparent)]
@@ -870,6 +891,20 @@ mod tests {
         assert_eq!(MACHINE_ENDPOINT_ROUTE_PREFIX, "/machines/endpoint");
         assert_eq!(request.machine_name.as_str(), "edge-b");
         assert_eq!(request.endpoint.to_string(), "203.0.113.7:51820");
+    }
+
+    #[test]
+    fn upgrade_success_evidence_is_rendered_as_independent_lines() {
+        let version = InstallArtifactVersion::try_new("0.1.0-alpha.7").expect("version");
+
+        assert_eq!(
+            render_upgrade_staged("edge-a"),
+            "edge-a  staged, swap armed\n"
+        );
+        assert_eq!(
+            render_upgrade_confirmed("edge-a", &version),
+            "edge-a  now 0.1.0-alpha.7 ✓\n"
+        );
     }
 
     #[test]

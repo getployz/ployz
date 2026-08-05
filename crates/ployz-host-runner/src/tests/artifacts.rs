@@ -425,6 +425,11 @@ fn ployzd_artifact_store_seeds_arms_reverts_and_can_arm_again() {
         Some(digest(NEWLINE_NEW_SHA256))
     );
 
+    let retry = store
+        .arm_staged(&digest(NEWLINE_NEW_SHA256))
+        .expect("retrying the armed candidate succeeds");
+    assert_eq!(retry, armed);
+
     assert_eq!(
         store.revert_armed().expect("local revert"),
         digest(PLOYZ_NEWLINE_SHA256)
@@ -444,6 +449,47 @@ fn ployzd_artifact_store_seeds_arms_reverts_and_can_arm_again() {
         .expect("approved current-to-previous indirection can arm again");
     store.confirm_armed().expect("first converge confirms arm");
     assert_eq!(store.pending_upgrade().expect("marker clears"), None);
+}
+
+#[cfg(unix)]
+#[test]
+fn ployzd_artifact_store_retrying_the_partially_armed_candidate_completes_the_swap() {
+    let root = tempfile::tempdir().expect("artifact-store root");
+    let state = root.path().join("state");
+    let old_source = root.path().join("old-ployzd");
+    let candidate_source = root.path().join("candidate-ployzd");
+    fs::write(&old_source, "ployz\n").expect("old artifact writes");
+    fs::write(&candidate_source, "new\n").expect("candidate artifact writes");
+    let old = verify_artifact_file(&old_source, &digest(PLOYZ_NEWLINE_SHA256))
+        .expect("old artifact verifies");
+    let candidate = verify_artifact_file(&candidate_source, &digest(NEWLINE_NEW_SHA256))
+        .expect("candidate artifact verifies");
+    let store = PloyzdArtifactStore::new(state).expect("absolute state directory");
+
+    store.seed_current(&old).expect("initial seed");
+    store.stage(&candidate).expect("candidate stages");
+    std::os::unix::fs::symlink(
+        PathBuf::from("artifacts").join(PLOYZ_NEWLINE_SHA256),
+        store.previous_path(),
+    )
+    .expect("previous link writes");
+    fs::write(store.pending_path(), format!("{}\n", NEWLINE_NEW_SHA256))
+        .expect("pending marker writes");
+
+    let retry = store
+        .arm_staged(&digest(NEWLINE_NEW_SHA256))
+        .expect("retry completes the partial arm");
+
+    assert_eq!(retry.previous, digest(PLOYZ_NEWLINE_SHA256));
+    assert_eq!(retry.current, digest(NEWLINE_NEW_SHA256));
+    assert_eq!(
+        fs::read_link(store.current_path()).expect("current link"),
+        PathBuf::from("artifacts").join(NEWLINE_NEW_SHA256)
+    );
+    assert_eq!(
+        store.pending_upgrade().expect("pending marker"),
+        Some(digest(NEWLINE_NEW_SHA256))
+    );
 }
 
 #[test]
