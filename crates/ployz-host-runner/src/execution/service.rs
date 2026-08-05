@@ -86,6 +86,7 @@ impl PloyzdRoleEnvironmentFile {
 pub struct PloyzdRoleUnit {
     role: PloyzdRole,
     exec_start: String,
+    executable_access: String,
     environment_file: PloyzdRoleEnvironmentFile,
 }
 
@@ -95,11 +96,37 @@ impl PloyzdRoleUnit {
         artifact_store: &PloyzdArtifactStore,
         environment_file: &PloyzdRoleEnvironmentFile,
     ) -> Result<Self, SupervisorUnitFileError> {
-        let exec_start =
-            render_exec_start(&artifact_store.current_path(), [role.as_str().to_owned()])?;
+        let (exec_start, executable_access) = match role {
+            PloyzdRole::Dns => {
+                let source = artifact_store.current_path();
+                let Some(source) = source.to_str() else {
+                    return Err(SupervisorUnitFileError::UnsupportedExecToken {
+                        value: source.display().to_string(),
+                    });
+                };
+                if source.contains(':') {
+                    return Err(SupervisorUnitFileError::UnsupportedBindPath {
+                        value: source.to_owned(),
+                    });
+                }
+                let bind = render_exec_token(format!("{source}:/run/ployz-dns/ployzd"))?;
+                (
+                    render_exec_start(
+                        Path::new("/run/ployz-dns/ployzd"),
+                        [role.as_str().to_owned()],
+                    )?,
+                    format!("RuntimeDirectory=ployz-dns\nBindReadOnlyPaths={bind}\n"),
+                )
+            }
+            PloyzdRole::Keeper | PloyzdRole::Api | PloyzdRole::Gateway => (
+                render_exec_start(&artifact_store.current_path(), [role.as_str().to_owned()])?,
+                String::new(),
+            ),
+        };
         Ok(Self {
             role,
             exec_start,
+            executable_access,
             environment_file: environment_file.clone(),
         })
     }
@@ -151,12 +178,13 @@ impl PloyzdRoleUnit {
             }
         };
         format!(
-            "[Unit]\nDescription=Ployz {}\nAfter={}\nWants={}\n{}\n[Service]\nType=exec\n{}EnvironmentFile={}\nExecStart={}\nTimeoutStopSec=10s\n{}\n\n[Install]\nWantedBy=multi-user.target\n",
+            "[Unit]\nDescription=Ployz {}\nAfter={}\nWants={}\n{}\n[Service]\nType=exec\n{}{}EnvironmentFile={}\nExecStart={}\nTimeoutStopSec=10s\n{}\n\n[Install]\nWantedBy=multi-user.target\n",
             self.role.as_str(),
             after,
             wants,
             on_failure,
             role_security,
+            self.executable_access,
             self.environment_file.path().display(),
             self.exec_start,
             restart,
@@ -274,6 +302,8 @@ pub enum SupervisorUnitFileError {
     EmptyExecToken,
     #[error("systemd exec token {value:?} is unsupported")]
     UnsupportedExecToken { value: String },
+    #[error("systemd bind source path {value:?} cannot contain ':'")]
+    UnsupportedBindPath { value: String },
     #[error("systemd path is empty")]
     EmptyPath,
     #[error("systemd path {} must be absolute", value.display())]

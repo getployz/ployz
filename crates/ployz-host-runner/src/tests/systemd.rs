@@ -77,6 +77,9 @@ fn dns_unit_runs_as_a_dynamic_user_with_only_the_port_53_capability() {
         "AmbientCapabilities=CAP_NET_BIND_SERVICE",
         "CapabilityBoundingSet=CAP_NET_BIND_SERVICE",
         "NoNewPrivileges=yes",
+        "RuntimeDirectory=ployz-dns",
+        "BindReadOnlyPaths=/var/lib/ployz/current:/run/ployz-dns/ployzd",
+        "ExecStart=/run/ployz-dns/ployzd dns",
     ] {
         assert!(
             rendered.lines().any(|line| line == directive),
