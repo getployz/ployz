@@ -270,6 +270,8 @@ pub enum FoundingMilestone {
     DriverPeerConverged,
     DriverEnrolledReported,
     EndpointNetworkReady,
+    DnsStarted,
+    DnsReady,
     BootstrapReady,
     BootstrapCredentialRemoved,
     OrdinaryApiStarted,
@@ -280,6 +282,8 @@ pub enum FoundingMilestone {
 
 impl FoundingMilestone {
     const fn file_name(self) -> &'static str {
+        // These names are durable schema keys. New milestones append numeric
+        // identities even when their execution point precedes older steps.
         match self {
             Self::Artifacts => "01-artifacts",
             Self::Docker => "02-docker",
@@ -297,6 +301,8 @@ impl FoundingMilestone {
             Self::DriverPeerConverged => "15-driver-peer-converged",
             Self::DriverEnrolledReported => "16-driver-enrolled-reported",
             Self::EndpointNetworkReady => "17-endpoint-network-ready",
+            Self::DnsStarted => "24-dns-started",
+            Self::DnsReady => "25-dns-ready",
             Self::BootstrapReady => "18-bootstrap-ready",
             Self::BootstrapCredentialRemoved => "19-bootstrap-credential-removed",
             Self::OrdinaryApiStarted => "20-ordinary-api-started",

@@ -9,7 +9,6 @@ use std::time::Duration;
 use hickory_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
 use hickory_proto::rr::rdata::A;
 use hickory_proto::rr::{DNSClass, Name, RData, Record, RecordType};
-use ployz_core::network::INTERNAL_DNS_SUFFIX;
 use ployz_core::network::internal_dns::InternalServiceName;
 use tokio::net::UdpSocket;
 use tokio::sync::{broadcast, watch};
@@ -211,13 +210,12 @@ impl InternalDnsRecords {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = records;
     }
 
-    fn addresses(&self, name: &InternalServiceName) -> Vec<Ipv4Addr> {
+    fn addresses(&self, name: &InternalServiceName) -> Option<Vec<Ipv4Addr>> {
         self.records
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(name)
             .cloned()
-            .unwrap_or_default()
     }
 }
 
@@ -372,17 +370,15 @@ async fn response_for_request(
 ) -> Option<Vec<u8>> {
     let request = parse_request(&packet)?;
     let name = lookup_name(&request.query);
-    if name
-        .strip_suffix(INTERNAL_DNS_SUFFIX)
-        .is_some_and(|prefix| prefix.ends_with('.'))
+    let internal_name = InternalServiceName::try_new(&name).ok();
+    if let Some(addresses) = internal_name
+        .as_ref()
+        .and_then(|name| records.addresses(name))
     {
         let answers = if request.query.query_type == RecordType::A
             && request.query.query_class == DNSClass::IN
         {
-            InternalServiceName::try_new(&name)
-                .ok()
-                .map(|name| records.addresses(&name))
-                .unwrap_or_default()
+            addresses
         } else {
             Vec::new()
         };
@@ -404,6 +400,9 @@ async fn response_for_request(
 }
 
 async fn forward_to_upstream(upstream: SocketAddr, packet: &[u8]) -> Result<Vec<u8>, io::Error> {
+    let Some(request) = parse_request(packet) else {
+        return Err(invalid_dns_response("DNS request was malformed"));
+    };
     let local = match upstream.ip() {
         IpAddr::V4(_) => SocketAddr::from(([0, 0, 0, 0], 0)),
         IpAddr::V6(_) => SocketAddr::from(([0_u16; 8], 0)),
@@ -411,12 +410,27 @@ async fn forward_to_upstream(upstream: SocketAddr, packet: &[u8]) -> Result<Vec<
     let socket = UdpSocket::bind(local).await?;
     socket.connect(upstream).await?;
     socket.send(packet).await?;
-    let mut response = vec![0_u8; 4096];
-    let length = tokio::time::timeout(UPSTREAM_TIMEOUT, socket.recv(&mut response))
-        .await
-        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "DNS upstream timed out"))??;
-    response.truncate(length);
-    Ok(response)
+    tokio::time::timeout(UPSTREAM_TIMEOUT, async {
+        let mut response = vec![0_u8; 4096];
+        loop {
+            let length = socket.recv(&mut response).await?;
+            let Some(candidate) = response.get(..length) else {
+                continue;
+            };
+            let Ok(message) = Message::from_vec(candidate) else {
+                continue;
+            };
+            if message.metadata.id != request.id
+                || message.metadata.message_type != MessageType::Response
+                || message.queries.first() != Some(&request.query)
+            {
+                continue;
+            }
+            return Ok(candidate.to_vec());
+        }
+    })
+    .await
+    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "DNS upstream timed out"))?
 }
 
 fn upstream_from_resolv_conf(contents: &str, own_bind: IpAddr) -> Option<IpAddr> {
@@ -490,9 +504,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unknown_internal_name_returns_noerror_without_answers() {
+    async fn known_internal_name_without_endpoints_returns_noerror_without_answers() {
+        let records = InternalDnsRecords::default();
+        records.replace(BTreeMap::from([(
+            InternalServiceName::try_new("missing.default.internal").expect("internal name"),
+            Vec::new(),
+        )]));
         let response = response_for_request(
-            &InternalDnsRecords::default(),
+            &records,
             SocketAddr::from((Ipv4Addr::new(1, 1, 1, 1), DNS_PORT)),
             query_packet("missing.default.internal", TEST_QTYPE_A),
         )
@@ -500,6 +519,100 @@ mod tests {
         .expect("internal query has a response");
 
         assert_eq!(response_header(&response), (0x8500, 0));
+    }
+
+    #[tokio::test]
+    async fn cloud_internal_name_is_forwarded_when_it_is_not_a_projected_service() {
+        let upstream = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind upstream");
+        let upstream_addr = upstream.local_addr().expect("upstream address");
+        let upstream_task = tokio::spawn(async move {
+            let mut packet = [0_u8; 512];
+            let (length, peer) = upstream.recv_from(&mut packet).await.expect("query");
+            let request =
+                Message::from_vec(packet.get(..length).expect("length")).expect("DNS query");
+            let Some(query) = request.queries.first() else {
+                panic!("DNS query has a question");
+            };
+            let mut response = Message::response(request.metadata.id, OpCode::Query);
+            response.metadata.response_code = ResponseCode::NoError;
+            response.add_query(query.clone());
+            upstream
+                .send_to(&response.to_vec().expect("response"), peer)
+                .await
+                .expect("send");
+        });
+
+        let response = response_for_request(
+            &InternalDnsRecords::default(),
+            upstream_addr,
+            query_packet("metadata.compute.internal", TEST_QTYPE_A),
+        )
+        .await
+        .expect("forwarded response");
+
+        assert_eq!(response_header(&response), (0x8000, 0));
+        upstream_task.await.expect("upstream task");
+    }
+
+    #[tokio::test]
+    async fn upstream_mismatches_are_ignored_until_a_matching_response_arrives() {
+        let upstream = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind upstream");
+        let upstream_addr = upstream.local_addr().expect("upstream address");
+        let upstream_task = tokio::spawn(async move {
+            let mut packet = [0_u8; 512];
+            let (length, peer) = upstream.recv_from(&mut packet).await.expect("query");
+            let request =
+                Message::from_vec(packet.get(..length).expect("length")).expect("DNS query");
+            let Some(query) = request.queries.first() else {
+                panic!("DNS query has a question");
+            };
+
+            let mut wrong_id =
+                Message::response(request.metadata.id.wrapping_add(1), OpCode::Query);
+            wrong_id.add_query(query.clone());
+            upstream
+                .send_to(&wrong_id.to_vec().expect("wrong id"), peer)
+                .await
+                .expect("send");
+
+            let mut query_not_response = request.clone();
+            query_not_response.metadata.message_type = MessageType::Query;
+            upstream
+                .send_to(&query_not_response.to_vec().expect("query response"), peer)
+                .await
+                .expect("send");
+
+            let mut wrong_question = Message::response(request.metadata.id, OpCode::Query);
+            wrong_question.add_query(Query::query(
+                Name::from_ascii("other.example.").expect("name"),
+                RecordType::A,
+            ));
+            upstream
+                .send_to(&wrong_question.to_vec().expect("wrong question"), peer)
+                .await
+                .expect("send");
+
+            let mut valid = Message::response(request.metadata.id, OpCode::Query);
+            valid.add_query(query.clone());
+            upstream
+                .send_to(&valid.to_vec().expect("valid"), peer)
+                .await
+                .expect("send");
+        });
+
+        let request = query_packet("example.com", TEST_QTYPE_A);
+        let response = forward_to_upstream(upstream_addr, &request)
+            .await
+            .expect("matching response");
+
+        let parsed = Message::from_vec(&response).expect("response");
+        assert_eq!(parsed.metadata.id, 0x1234);
+        assert_eq!(parsed.metadata.message_type, MessageType::Response);
+        upstream_task.await.expect("upstream task");
     }
 
     #[tokio::test]

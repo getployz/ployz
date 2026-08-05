@@ -69,6 +69,8 @@ pub async fn capture_machine_evidence(
                 "ployz-keeper.service",
                 "-u",
                 "ployz-api.service",
+                "-u",
+                "ployzd-dns.service",
             ],
         ),
         (

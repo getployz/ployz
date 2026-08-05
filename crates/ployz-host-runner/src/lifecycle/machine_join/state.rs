@@ -519,12 +519,15 @@ pub enum MachineJoinMilestone {
     RosterConverged,
     KeeperStarted,
     ApiStarted,
+    EndpointNetworkReady,
+    DnsStarted,
+    DnsReady,
     Ready,
     BootstrapCleaned,
 }
 
 impl MachineJoinMilestone {
-    pub const ORDERED: [Self; 13] = [
+    pub const ORDERED: [Self; 16] = [
         Self::Artifacts,
         Self::Storage,
         Self::Docker,
@@ -536,11 +539,16 @@ impl MachineJoinMilestone {
         Self::RosterConverged,
         Self::KeeperStarted,
         Self::ApiStarted,
+        Self::EndpointNetworkReady,
+        Self::DnsStarted,
+        Self::DnsReady,
         Self::Ready,
         Self::BootstrapCleaned,
     ];
 
     const fn file_name(self) -> &'static str {
+        // These names are durable schema keys. New milestones append numeric
+        // identities even when their execution point precedes older steps.
         match self {
             Self::Artifacts => "01-artifacts",
             Self::Storage => "02-storage",
@@ -553,6 +561,9 @@ impl MachineJoinMilestone {
             Self::RosterConverged => "09-roster-converged",
             Self::KeeperStarted => "10-keeper-started",
             Self::ApiStarted => "11-api-started",
+            Self::EndpointNetworkReady => "14-endpoint-network-ready",
+            Self::DnsStarted => "15-dns-started",
+            Self::DnsReady => "16-dns-ready",
             Self::Ready => "12-ready",
             Self::BootstrapCleaned => "13-bootstrap-cleaned",
         }
