@@ -188,7 +188,7 @@ impl InternalServiceName {
         {
             return Err(InternalServiceNameError { name });
         }
-        Self::try_from_label_parts(service_id.as_str(), namespace_id.as_str(), name)
+        Self::try_new(name)
     }
 
     /// Parses an exact three-label internal service name.
@@ -203,7 +203,25 @@ impl InternalServiceName {
         if !suffix.eq_ignore_ascii_case(INTERNAL_DNS_SUFFIX) {
             return Err(InternalServiceNameError { name });
         }
-        Self::try_from_label_parts(service, namespace, name.clone())
+        if [service, namespace, suffix]
+            .iter()
+            .any(|label| label.len() > MAX_DNS_LABEL_LEN)
+        {
+            return Err(InternalServiceNameError { name });
+        }
+        let service_id = ServiceId::try_new(service.to_ascii_lowercase())
+            .map_err(|_| InternalServiceNameError { name: name.clone() })?;
+        let namespace_id = NamespaceId::try_new(namespace.to_ascii_lowercase())
+            .map_err(|_| InternalServiceNameError { name })?;
+        Ok(Self(
+            format!(
+                "{}.{}.{}",
+                service_id.as_str(),
+                namespace_id.as_str(),
+                INTERNAL_DNS_SUFFIX
+            )
+            .to_ascii_lowercase(),
+        ))
     }
 
     fn try_from_label_parts(
