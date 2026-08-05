@@ -10,9 +10,10 @@ use ployz_core::install::InstallArtifactSpec;
 use ployz_core::operation::FailureMessage;
 
 use crate::{
-    ArtifactKind, ArtifactSourceView, ArtifactTarget, DockerInstall, FileMode, HostPlatformProfile,
-    HostRunnerCommandRunner, PloyzdRole, PloyzdRoleEnvironmentFile, SupervisorBackend,
-    SupervisorChange, SupervisorDirectories, SupervisorUnitSpec, SupervisorUnitTarget,
+    ArtifactKind, ArtifactSourceView, DockerInstall, FileMode, HostPlatformProfile,
+    HostRunnerCommandRunner, PloyzdArtifactStore, PloyzdKeeperRevertUnit, PloyzdRole,
+    PloyzdRoleEnvironmentFile, PloyzdUpgradeRollback, SupervisorBackend, SupervisorChange,
+    SupervisorDirectories, SupervisorUnitSpec, SupervisorUnitTarget,
     acquire_remote_artifact_content_addressed, artifact_target, detect_host_platform,
     install_verified_artifact, verify_artifact_file, write_durable_file,
 };
@@ -127,7 +128,21 @@ impl<'a, R: HostRunnerCommandRunner> LinuxSubstrate<'a, R> {
                 .map_err(failure)?
             }
         };
-        install_verified_artifact(&verified, &target).map_err(failure)?;
+        match kind {
+            ArtifactKind::Ployzd => {
+                PloyzdArtifactStore::new(self.state.to_path_buf())
+                    .map_err(failure)?
+                    .seed_current(&verified)
+                    .map_err(failure)?;
+            }
+            ArtifactKind::EbpfBytecode
+            | ArtifactKind::EbpfCtl
+            | ArtifactKind::Corrosion
+            | ArtifactKind::CorrosionSchema
+            | ArtifactKind::Railpack => {
+                install_verified_artifact(&verified, &target).map_err(failure)?;
+            }
+        }
         Ok(())
     }
 
@@ -174,10 +189,24 @@ impl<'a, R: HostRunnerCommandRunner> LinuxSubstrate<'a, R> {
 
     pub(super) fn install_ployzd_units(
         &mut self,
-        ployzd: &ArtifactTarget,
         environment: &PloyzdRoleEnvironmentFile,
     ) -> Result<(), FailureMessage> {
         let backend = self.supervisor()?;
+        let artifact_store = PloyzdArtifactStore::new(self.state.to_path_buf()).map_err(failure)?;
+        match backend.ployzd_upgrade_rollback() {
+            PloyzdUpgradeRollback::SystemdOnFailure => {
+                let rendered = PloyzdKeeperRevertUnit::new(artifact_store.clone())
+                    .render()
+                    .map_err(failure)?;
+                write_durable_file(
+                    self.supervisor_directories.directory(backend),
+                    PloyzdKeeperRevertUnit::unit_name(),
+                    FileMode::Executable0755,
+                    rendered.as_bytes(),
+                )?;
+            }
+            PloyzdUpgradeRollback::Unsupported => {}
+        }
         for role in [
             PloyzdRole::Keeper,
             PloyzdRole::Api,
@@ -186,7 +215,7 @@ impl<'a, R: HostRunnerCommandRunner> LinuxSubstrate<'a, R> {
         ] {
             let spec = SupervisorUnitSpec::PloyzdRole {
                 role,
-                artifact: ployzd.clone(),
+                artifact_store: artifact_store.clone(),
                 environment_file: environment.clone(),
             };
             let rendered = backend.render(&spec).map_err(failure)?;

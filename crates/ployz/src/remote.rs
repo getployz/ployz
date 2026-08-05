@@ -1,10 +1,13 @@
 //! Shared operator-context selection and persistent mesh dialing.
 
 use std::fmt;
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 
+use ployz_core::MachineLensRow;
+use ployz_core::corrosion::{MachineTransport, derive_builtin_wireguard_member};
 use ployz_core::ids::ClusterId;
+use ployz_core::machine::MachineName;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -26,6 +29,25 @@ pub struct OperatorRemote {
     connector: MeshConnector,
     api_target: SocketAddr,
     cluster_id: ClusterId,
+    identity: OperatorMeshIdentity,
+}
+
+#[derive(Clone)]
+struct OperatorMeshIdentity {
+    private_key: [u8; 32],
+    source_address: Ipv6Addr,
+    founding_target: String,
+}
+
+impl fmt::Debug for OperatorMeshIdentity {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("OperatorMeshIdentity")
+            .field("private_key", &"[REDACTED]")
+            .field("source_address", &self.source_address)
+            .field("founding_target", &self.founding_target)
+            .finish()
+    }
 }
 
 impl OperatorRemote {
@@ -41,21 +63,21 @@ impl OperatorRemote {
     fn try_from_loaded(loaded: LoadedOperatorContext) -> Result<Self, OperatorRemoteError> {
         match loaded {
             LoadedOperatorContext::BuiltinWireguard(context) => {
-                let dial = BuiltinWireguardDial::new(
-                    context.private_key.bytes(),
-                    context.source_address,
+                let identity = OperatorMeshIdentity {
+                    private_key: context.private_key.bytes(),
+                    source_address: context.source_address,
+                    founding_target: context.target.as_str().to_owned(),
+                };
+                Ok(Self::from_wireguard_peer(
+                    identity,
+                    context.cluster_id,
                     BuiltinWireguardPeer {
                         public_key: context.machine_public_key,
                         endpoint: context.machine_endpoint,
                         allowed_subnet: context.machine_allowed_subnet,
                     },
-                    context.target.as_str(),
-                );
-                Ok(Self {
-                    connector: MeshConnector::builtin_wireguard(dial, MeshDialTimeouts::default()),
-                    api_target: SocketAddr::new(IpAddr::V6(context.machine_address), API_PORT),
-                    cluster_id: context.cluster_id,
-                })
+                    context.machine_address,
+                ))
             }
             LoadedOperatorContext::UnsupportedProvider(context) => {
                 Err(OperatorRemoteError::UnsupportedProvider {
@@ -63,6 +85,41 @@ impl OperatorRemote {
                 })
             }
         }
+    }
+
+    fn from_wireguard_peer(
+        identity: OperatorMeshIdentity,
+        cluster_id: ClusterId,
+        peer: BuiltinWireguardPeer,
+        machine_address: Ipv6Addr,
+    ) -> Self {
+        let dial = BuiltinWireguardDial::new(
+            identity.private_key,
+            identity.source_address,
+            peer,
+            identity.founding_target.clone(),
+        );
+        Self {
+            connector: MeshConnector::builtin_wireguard(dial, MeshDialTimeouts::default()),
+            api_target: SocketAddr::new(IpAddr::V6(machine_address), API_PORT),
+            cluster_id,
+            identity,
+        }
+    }
+
+    /// Creates a direct mesh client for one rostered machine.
+    pub fn for_machine(&self, machine: &MachineLensRow) -> Result<Self, MachineRemoteTargetError> {
+        let (peer, address) = direct_wireguard_target(
+            &self.cluster_id,
+            &machine.document.name,
+            &machine.document.transport,
+        )?;
+        Ok(Self::from_wireguard_peer(
+            self.identity.clone(),
+            self.cluster_id.clone(),
+            peer,
+            address,
+        ))
     }
 
     pub async fn connect(&self) -> Result<MeshStream, OperatorRemoteError> {
@@ -169,6 +226,51 @@ pub enum OperatorRemoteError {
     Connect(#[from] MeshConnectError),
     #[error(transparent)]
     Api(#[from] MeshApiClientError),
+}
+
+/// Why a rostered machine cannot be targeted through the shipped mesh client.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum MachineRemoteTargetError {
+    #[error(
+        "machine {machine} has no public WireGuard endpoint; record one with `ployz machine endpoint set {machine} <ip>:51820` before upgrading it"
+    )]
+    MissingWireguardEndpoint { machine: String },
+    #[error(
+        "machine {machine} does not use builtin WireGuard; direct upgrade targeting is unavailable"
+    )]
+    UnsupportedMeshProvider { machine: String },
+}
+
+fn direct_wireguard_target(
+    cluster_id: &ClusterId,
+    machine_name: &MachineName,
+    transport: &MachineTransport,
+) -> Result<(BuiltinWireguardPeer, Ipv6Addr), MachineRemoteTargetError> {
+    let MachineTransport::Wireguard {
+        pubkey,
+        addr_v6,
+        endpoint,
+        subnet_v4: _,
+    } = transport
+    else {
+        return Err(MachineRemoteTargetError::UnsupportedMeshProvider {
+            machine: machine_name.as_str().to_owned(),
+        });
+    };
+    let Some(endpoint) = endpoint else {
+        return Err(MachineRemoteTargetError::MissingWireguardEndpoint {
+            machine: machine_name.as_str().to_owned(),
+        });
+    };
+    let identity = derive_builtin_wireguard_member(cluster_id, pubkey);
+    Ok((
+        BuiltinWireguardPeer {
+            public_key: pubkey.decoded_bytes(),
+            endpoint: *endpoint,
+            allowed_subnet: identity.subnet(),
+        },
+        *addr_v6,
+    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -357,5 +459,29 @@ mod tests {
                 provider: UnsupportedMeshProvider::Tailscale
             }
         ));
+    }
+
+    #[test]
+    fn direct_machine_target_refuses_an_endpointless_wireguard_member() {
+        let cluster_id = ClusterId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("cluster id");
+        let machine = MachineName::try_new("edge-b").expect("machine name");
+        let public_key =
+            WireGuardPublicKey::try_new("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+                .expect("machine key");
+        let transport = MachineTransport::Wireguard {
+            addr_v6: derive_builtin_wireguard_member(&cluster_id, &public_key)
+                .bind_address()
+                .get(),
+            pubkey: public_key,
+            endpoint: None,
+            subnet_v4: MachineEndpointSubnet::try_new("10.210.0.0/24").expect("subnet"),
+        };
+
+        let error = direct_wireguard_target(&cluster_id, &machine, &transport)
+            .expect_err("endpointless members cannot be dialed directly");
+        assert_eq!(
+            error.to_string(),
+            "machine edge-b has no public WireGuard endpoint; record one with `ployz machine endpoint set edge-b <ip>:51820` before upgrading it"
+        );
     }
 }

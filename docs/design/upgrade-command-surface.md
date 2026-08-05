@@ -139,7 +139,7 @@ you would rerun. Self-healing UX, zero bespoke revert path.
 
 Keeper never paces, sequences, or coordinates (#784). The CLI is one caller
 (Cloud is the other, doing waves in a workflow); when the CLI upgrades many
-machines it is the sequencer.
+machines, the caller owns the pacing policy.
 
 `--all` / `--outdated` run **sequentially, halting on the first failure**:
 

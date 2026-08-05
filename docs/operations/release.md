@@ -217,9 +217,10 @@ curl -fsSL https://ployz.sh | sh -s -- --version v0.0.2-alpha.1
 sudo ployz host substrate-update --version v0.0.2-alpha.1
 ```
 
-Cloud Bootstrap Delivery installs Host Runner first, then runs
-`sudo ployz host bootstrap`. Noninteractive tokens are passed to Host Runner with
-`--cloud-token`; they are not passed to `ployz.sh`. Host Runner and substrate update
+Cloud Bootstrap Delivery installs Host Runner first, then runs the same
+`ployz init` primitive used by the local and SSH paths. Noninteractive tokens are
+passed to Host Runner with `--cloud-token`; they are not passed to `ployz.sh`.
+Host Runner and substrate update
 commands reject channels, version ranges, and `latest`. The public bootstrap
 installer targets Linux machines.
 

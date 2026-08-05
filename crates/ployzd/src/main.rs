@@ -46,6 +46,9 @@ impl MainError {
     const fn exit_code(&self) -> i32 {
         match self {
             Self::Role(_) => 2,
+            Self::Runtime(ployzd::dispatch::DaemonError::Keeper(
+                ployzd::roles::keeper::KeeperRoleRuntimeError::UpgradeFirstConverge { .. },
+            )) => 75,
             Self::Runtime(_) => 3,
         }
     }
@@ -55,5 +58,21 @@ impl MainError {
             Self::Role(_) => FailureClass::DaemonRole,
             Self::Runtime(_) => FailureClass::DaemonRuntime,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_first_converge_uses_the_systemd_revert_exit_status() {
+        let error = MainError::Runtime(ployzd::dispatch::DaemonError::Keeper(
+            ployzd::roles::keeper::KeeperRoleRuntimeError::UpgradeFirstConverge {
+                detail: "mesh convergence failed".to_owned(),
+            },
+        ));
+
+        assert_eq!(error.exit_code(), 75);
     }
 }

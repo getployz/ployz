@@ -12,11 +12,13 @@ use http_body_util::{BodyExt, Full, StreamBody, combinators::BoxBody};
 use hyper::body::Frame;
 use hyper::header::{ALLOW, CONTENT_TYPE, HeaderValue, RETRY_AFTER};
 use hyper::{Method, Response, StatusCode};
+use ployz_core::MachineUpgradeSupervisor;
 use ployz_core::ids::{ClusterId, MachineRowId};
 use ployz_core::{
     ApiFeature, ApiRefusal, ApiVersion, FOUNDING_ROUTE, KNOWN_API_FEATURES, LensCollection,
     LensSnapshot, LensWatchEvent, V2Method, V2Route,
 };
+use ployz_host_runner::PloyzdArtifactStore;
 use tokio::sync::{Mutex, OnceCell, mpsc, watch};
 use tokio::time::{Instant, MissedTickBehavior};
 
@@ -357,6 +359,9 @@ pub(super) struct ApiService {
     pub(super) corrosion_gossip_port: u16,
     build: String,
     pub(super) mode: ApiRoleMode,
+    pub(super) upgrade_store: PloyzdArtifactStore,
+    pub(super) keeper_upgrade_socket_path: std::path::PathBuf,
+    pub(super) upgrade_supervisor: MachineUpgradeSupervisor,
     lenses: OnceCell<Arc<ApiLenses>>,
     lens_lifecycle: mpsc::UnboundedSender<LensCollection>,
     pub(super) founding_lock: Mutex<()>,
@@ -370,6 +375,9 @@ pub(super) struct ApiServiceRuntime {
     pub(super) corrosion_gossip_port: u16,
     pub(super) build: String,
     pub(super) mode: ApiRoleMode,
+    pub(super) upgrade_store: PloyzdArtifactStore,
+    pub(super) keeper_upgrade_socket_path: std::path::PathBuf,
+    pub(super) upgrade_supervisor: MachineUpgradeSupervisor,
 }
 
 impl ApiService {
@@ -385,6 +393,9 @@ impl ApiService {
             corrosion_gossip_port,
             build,
             mode,
+            upgrade_store,
+            keeper_upgrade_socket_path,
+            upgrade_supervisor,
         } = runtime;
         let (lifecycle_sender, lifecycle_failures) = mpsc::unbounded_channel();
         let lenses = OnceCell::new();
@@ -407,6 +418,9 @@ impl ApiService {
             corrosion_gossip_port,
             build,
             mode,
+            upgrade_store,
+            keeper_upgrade_socket_path,
+            upgrade_supervisor,
             lenses,
             lens_lifecycle: lifecycle_sender,
             founding_lock: Mutex::new(()),
@@ -472,6 +486,7 @@ impl ApiService {
             | V2Route::MachineRemove => {
                 super::mutations::handle_mutation(self, route, principal, request).await
             }
+            V2Route::MachineUpgrade => super::upgrade::handle_machine_upgrade(self, request).await,
             V2Route::Lens(collection) => self.snapshot_response(collection).await,
             V2Route::LensWatch(collection) => self.watch_response(collection, shutdown).await,
         }

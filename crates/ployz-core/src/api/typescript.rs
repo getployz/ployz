@@ -9,7 +9,9 @@ use ts_rs::{Config, Dependency, TS, TypeVisitor};
 use super::v2::{
     API_MAJOR, ApiRefusal, ApiVersion, ContainerLensRow, CorrosionRetryAfterSeconds,
     KNOWN_API_FEATURES, KnownApiFeature, LensCollection, LensSnapshot, LensWatchEvent,
-    MachineLensRow, MachineStatusLensRow, OperationLensRow, ServiceLensRow,
+    MachineLensRow, MachineStatusLensRow, MachineUpgradeRefusal, MachineUpgradeReply,
+    MachineUpgradeRequest, MachineUpgradeSupervisor, MachineUpgradeUrl, OperationLensRow,
+    ServiceLensRow,
 };
 use crate::build::{BuildExecutorEvidence, BuildPlatformExecutorAssignment, BuildSource};
 use crate::corrosion::{
@@ -164,6 +166,11 @@ fn collect_v2_contracts(declarations: &mut DeclarationCollector<'_>) {
     declarations.visit::<MachineEndpointSetRequest>();
     declarations.visit::<MachineEndpointSetReply>();
     declarations.visit::<MachineEndpointSetRefusal>();
+    declarations.visit::<MachineUpgradeUrl>();
+    declarations.visit::<MachineUpgradeSupervisor>();
+    declarations.visit::<MachineUpgradeRequest>();
+    declarations.visit::<MachineUpgradeReply>();
+    declarations.visit::<MachineUpgradeRefusal>();
     declarations.visit::<JoinAdmissionRequest>();
     declarations.visit::<JoinAdmissionReply>();
     declarations.visit::<JoinMachineSubstrate>();

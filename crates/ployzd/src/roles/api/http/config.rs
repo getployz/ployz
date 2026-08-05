@@ -7,8 +7,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use hmac::{Hmac, Mac};
+use ployz_core::MachineUpgradeSupervisor;
 use ployz_core::ids::{ClusterId, MachineRowId};
 use ployz_core::join::JOIN_DOOR_PORT;
+use ployz_host_runner::{ArtifactStoreError, PloyzdArtifactStore};
 use sha2::Sha256;
 
 use crate::corrosion::{BearerToken, CorrosionClientBounds, CorrosionClientConfig};
@@ -33,6 +35,9 @@ const API_JOIN_SUBSTRATE_PATH_ENV: &str = "PLOYZ_API_JOIN_SUBSTRATE_PATH";
 const CORROSION_GOSSIP_PORT_ENV: &str = "PLOYZ_CORROSION_GOSSIP_PORT";
 const BUILD_ENV: &str = "PLOYZ_BUILD";
 const BOOTSTRAP_SECRET_ENV: &str = "PLOYZ_API_BOOTSTRAP_SECRET";
+const UPGRADE_STATE_DIR_ENV: &str = "PLOYZ_UPGRADE_STATE_DIR";
+const UPGRADE_SOCKET_PATH_ENV: &str = "PLOYZ_UPGRADE_SOCKET_PATH";
+const SUPERVISOR_BACKEND_ENV: &str = "PLOYZ_SUPERVISOR_BACKEND";
 const MAX_BOOTSTRAP_SECRET_BYTES: usize = 4_096;
 const BOOTSTRAP_SECRET_DOMAIN: &[u8] = b"ployz-api-founding-v1";
 
@@ -41,6 +46,9 @@ const DEFAULT_DOOR_CERTIFICATE_PATH: &str = "/var/lib/ployz/door.crt";
 const DEFAULT_DOOR_FINGERPRINT_PATH: &str = "/var/lib/ployz/door.fingerprint";
 const DEFAULT_JOIN_SUBSTRATE_PATH: &str = "/var/lib/ployz/join-substrate.json";
 const DEFAULT_CORROSION_GOSSIP_PORT: u16 = 8_787;
+const DEFAULT_UPGRADE_STATE_DIR: &str = "/var/lib/ployz";
+const DEFAULT_UPGRADE_SOCKET_PATH: &str = "/run/ployz/keeper-upgrade.sock";
+const DEFAULT_SUPERVISOR_BACKEND: &str = "systemd";
 
 type BootstrapMac = Hmac<Sha256>;
 
@@ -50,6 +58,21 @@ struct JoinDoorConfig {
     material: DoorMaterialPaths,
     substrate_path: PathBuf,
     corrosion_gossip_port: u16,
+}
+
+#[derive(Debug, Clone)]
+struct ApiUpgradeConfig {
+    store: PloyzdArtifactStore,
+    keeper_socket_path: PathBuf,
+    supervisor: MachineUpgradeSupervisor,
+}
+
+#[derive(Debug, Clone)]
+struct ApiRoleDetails {
+    door: JoinDoorConfig,
+    build: String,
+    mode: ApiRoleMode,
+    upgrade: ApiUpgradeConfig,
 }
 
 impl JoinDoorConfig {
@@ -170,6 +193,7 @@ pub struct ApiRoleConfig {
     door: JoinDoorConfig,
     build: String,
     mode: ApiRoleMode,
+    upgrade: ApiUpgradeConfig,
 }
 
 impl ApiRoleConfig {
@@ -246,6 +270,16 @@ impl ApiRoleConfig {
         let corrosion_gossip_port =
             optional_port_environment(CORROSION_GOSSIP_PORT_ENV, DEFAULT_CORROSION_GOSSIP_PORT)?;
         let build = validate_build_diagnostic(environment_value(BUILD_ENV)?)?;
+        let upgrade_state =
+            optional_path_environment(UPGRADE_STATE_DIR_ENV, DEFAULT_UPGRADE_STATE_DIR)?;
+        let upgrade_socket_path =
+            optional_path_environment(UPGRADE_SOCKET_PATH_ENV, DEFAULT_UPGRADE_SOCKET_PATH)?;
+        let upgrade = ApiUpgradeConfig {
+            store: PloyzdArtifactStore::new(upgrade_state)
+                .map_err(ApiRoleConfigError::UpgradeStore)?,
+            keeper_socket_path: upgrade_socket_path,
+            supervisor: upgrade_supervisor_environment()?,
+        };
 
         let mode = match env::var(BOOTSTRAP_SECRET_ENV) {
             Ok(value) => ApiRoleMode::Founding(BootstrapSecret::new(value.as_bytes())?),
@@ -257,23 +291,26 @@ impl ApiRoleConfig {
             }
         };
 
-        Self::new_with_mode_and_door(
+        Self::new_with_details(
             corrosion,
             cluster_id,
             local_machine_id,
             listen_addr,
-            JoinDoorConfig {
-                listen_addr: door_listen_addr,
-                material: DoorMaterialPaths::new(
-                    door_private_key_path,
-                    door_certificate_path,
-                    door_fingerprint_path,
-                )?,
-                substrate_path: join_substrate_path,
-                corrosion_gossip_port,
+            ApiRoleDetails {
+                door: JoinDoorConfig {
+                    listen_addr: door_listen_addr,
+                    material: DoorMaterialPaths::new(
+                        door_private_key_path,
+                        door_certificate_path,
+                        door_fingerprint_path,
+                    )?,
+                    substrate_path: join_substrate_path,
+                    corrosion_gossip_port,
+                },
+                build,
+                mode,
+                upgrade,
             },
-            build,
-            mode,
         )
     }
 
@@ -324,26 +361,38 @@ impl ApiRoleConfig {
         build: String,
         mode: ApiRoleMode,
     ) -> Result<Self, ApiRoleConfigError> {
-        Self::new_with_mode_and_door(
+        Self::new_with_details(
             corrosion,
             cluster_id,
             local_machine_id,
             listen_addr,
-            JoinDoorConfig::defaults(),
-            build,
-            mode,
+            ApiRoleDetails {
+                door: JoinDoorConfig::defaults(),
+                build,
+                mode,
+                upgrade: ApiUpgradeConfig {
+                    store: PloyzdArtifactStore::new(PathBuf::from(DEFAULT_UPGRADE_STATE_DIR))
+                        .expect("fixed upgrade state directory is absolute"),
+                    keeper_socket_path: PathBuf::from(DEFAULT_UPGRADE_SOCKET_PATH),
+                    supervisor: MachineUpgradeSupervisor::Systemd,
+                },
+            },
         )
     }
 
-    fn new_with_mode_and_door(
+    fn new_with_details(
         corrosion: CorrosionClientConfig,
         cluster_id: ClusterId,
         local_machine_id: MachineRowId,
         listen_addr: SocketAddr,
-        door: JoinDoorConfig,
-        build: String,
-        mode: ApiRoleMode,
+        details: ApiRoleDetails,
     ) -> Result<Self, ApiRoleConfigError> {
+        let ApiRoleDetails {
+            door,
+            build,
+            mode,
+            upgrade,
+        } = details;
         if listen_addr.ip().is_unspecified() {
             return Err(ApiRoleConfigError::WildcardListenAddress { listen_addr });
         }
@@ -364,6 +413,7 @@ impl ApiRoleConfig {
             door,
             build,
             mode,
+            upgrade,
         })
     }
 
@@ -426,6 +476,21 @@ impl ApiRoleConfig {
     pub const fn mode(&self) -> &ApiRoleMode {
         &self.mode
     }
+
+    #[must_use]
+    pub(super) fn upgrade_store(&self) -> &PloyzdArtifactStore {
+        &self.upgrade.store
+    }
+
+    #[must_use]
+    pub(super) fn keeper_upgrade_socket_path(&self) -> &Path {
+        &self.upgrade.keeper_socket_path
+    }
+
+    #[must_use]
+    pub(super) const fn upgrade_supervisor(&self) -> MachineUpgradeSupervisor {
+        self.upgrade.supervisor
+    }
 }
 
 /// Exact machine-local TLS material used by the public join door.
@@ -482,6 +547,23 @@ fn optional_path_environment(
     let path = PathBuf::from(value);
     validate_absolute_path(name, &path)?;
     Ok(path)
+}
+
+fn upgrade_supervisor_environment() -> Result<MachineUpgradeSupervisor, ApiRoleConfigError> {
+    let value = match env::var(SUPERVISOR_BACKEND_ENV) {
+        Ok(value) => value,
+        Err(env::VarError::NotPresent) => DEFAULT_SUPERVISOR_BACKEND.to_owned(),
+        Err(env::VarError::NotUnicode(_)) => {
+            return Err(ApiRoleConfigError::NonUnicodeEnvironment {
+                name: SUPERVISOR_BACKEND_ENV,
+            });
+        }
+    };
+    match value.as_str() {
+        "systemd" => Ok(MachineUpgradeSupervisor::Systemd),
+        "openrc" => Ok(MachineUpgradeSupervisor::OpenRc),
+        _ => Err(ApiRoleConfigError::InvalidUpgradeSupervisor { value }),
+    }
 }
 
 fn validate_absolute_path(name: &'static str, path: &Path) -> Result<(), ApiRoleConfigError> {
@@ -573,4 +655,8 @@ pub enum ApiRoleConfigError {
     BootstrapSecretTooLong { limit: usize },
     #[error("invalid local Corrosion configuration: {0}")]
     CorrosionConfig(#[source] crate::corrosion::CorrosionClientConfigError),
+    #[error("invalid local upgrade artifact store: {0}")]
+    UpgradeStore(#[source] ArtifactStoreError),
+    #[error("PLOYZ_SUPERVISOR_BACKEND must be systemd or openrc, got {value:?}")]
+    InvalidUpgradeSupervisor { value: String },
 }

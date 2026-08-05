@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::artifacts::ArtifactTarget;
+use super::artifacts::PloyzdArtifactStore;
 pub use ployz_core::roles::PloyzdRole;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,7 +23,7 @@ impl SupervisorUnitTarget {
 pub enum SupervisorUnitSpec {
     PloyzdRole {
         role: PloyzdRole,
-        artifact: ArtifactTarget,
+        artifact_store: PloyzdArtifactStore,
         environment_file: PloyzdRoleEnvironmentFile,
     },
 }
@@ -45,9 +45,9 @@ impl SupervisorUnitSpec {
         match self {
             Self::PloyzdRole {
                 role,
-                artifact,
+                artifact_store,
                 environment_file,
-            } => Ok(PloyzdRoleUnit::new(*role, artifact, environment_file)?.render()),
+            } => Ok(PloyzdRoleUnit::new(*role, artifact_store, environment_file)?.render()),
         }
     }
 }
@@ -92,10 +92,11 @@ pub struct PloyzdRoleUnit {
 impl PloyzdRoleUnit {
     pub fn new(
         role: PloyzdRole,
-        artifact: &ArtifactTarget,
+        artifact_store: &PloyzdArtifactStore,
         environment_file: &PloyzdRoleEnvironmentFile,
     ) -> Result<Self, SupervisorUnitFileError> {
-        let exec_start = render_exec_start(artifact.install_path(), [role.as_str().to_owned()])?;
+        let exec_start =
+            render_exec_start(&artifact_store.current_path(), [role.as_str().to_owned()])?;
         Ok(Self {
             role,
             exec_start,
@@ -129,14 +130,85 @@ impl PloyzdRoleUnit {
                 ("network-online.target", "network-online.target")
             }
         };
+        let on_failure = match self.role {
+            PloyzdRole::Keeper => "OnFailure=ployzd-keeper-revert.service",
+            PloyzdRole::Api | PloyzdRole::Gateway | PloyzdRole::Dns => "",
+        };
+        let restart = match self.role {
+            PloyzdRole::Keeper => "Restart=on-failure\nRestartPreventExitStatus=75\nRestartSec=5",
+            PloyzdRole::Api | PloyzdRole::Gateway | PloyzdRole::Dns => {
+                "Restart=always\nRestartSec=5"
+            }
+        };
         format!(
-            "[Unit]\nDescription=Ployz {}\nAfter={}\nWants={}\n\n[Service]\nType=exec\nEnvironmentFile={}\nExecStart={}\nTimeoutStopSec=10s\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n",
+            "[Unit]\nDescription=Ployz {}\nAfter={}\nWants={}\n{}\n[Service]\nType=exec\nEnvironmentFile={}\nExecStart={}\nTimeoutStopSec=10s\n{}\n\n[Install]\nWantedBy=multi-user.target\n",
             self.role.as_str(),
             after,
             wants,
+            on_failure,
             self.environment_file.path().display(),
             self.exec_start,
+            restart,
         )
+    }
+}
+
+/// The systemd-only emergency rollback handler for a failed upgraded Keeper.
+///
+/// It deliberately uses only fixed system utilities. In particular, it never
+/// executes `current` or a candidate artifact: its only job is restoring the
+/// stable link before restarting the role processes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PloyzdKeeperRevertUnit {
+    artifact_store: PloyzdArtifactStore,
+}
+
+impl PloyzdKeeperRevertUnit {
+    #[must_use]
+    pub fn new(artifact_store: PloyzdArtifactStore) -> Self {
+        Self { artifact_store }
+    }
+
+    #[must_use]
+    pub const fn unit_name() -> &'static str {
+        "ployzd-keeper-revert.service"
+    }
+
+    pub fn render(&self) -> Result<String, SupervisorUnitFileError> {
+        let previous = self.artifact_store.previous_path();
+        let current = self.artifact_store.current_path();
+        let pending = self.artifact_store.pending_path();
+        let link = render_exec_start(
+            Path::new("/usr/bin/ln"),
+            [
+                "-sfnT".to_owned(),
+                previous.display().to_string(),
+                current.display().to_string(),
+            ],
+        )?;
+        let remove = render_exec_start(Path::new("/usr/bin/rm"), [pending.display().to_string()])?;
+        let restarts = [
+            PloyzdRole::Keeper,
+            PloyzdRole::Api,
+            PloyzdRole::Gateway,
+            PloyzdRole::Dns,
+        ]
+        .map(|role| {
+            render_exec_start(
+                Path::new("/usr/bin/systemctl"),
+                ["restart".to_owned(), role_unit_name(&role)],
+            )
+        })
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?
+        .join("\nExecStart=");
+        Ok(format!(
+            "[Unit]\nDescription=Ployz Keeper upgrade revert\nConditionPathExists={}\n\n[Service]\nType=oneshot\nExecStart={}\nExecStart={}\nExecStart={}\n",
+            pending.display(),
+            link,
+            remove,
+            restarts,
+        ))
     }
 }
 

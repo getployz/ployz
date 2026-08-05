@@ -63,25 +63,8 @@ exists to prevent.
 
 ## Module Ownership
 
-The contributor code map is the canonical path-level ownership guide. At the
-crate level:
-
-- `ployz-core`: row types, HTTP DTOs, typed ids, operation states, and domain
-  policy shared by every surface; TypeScript derives and export bins live here
-  behind the `ts` feature.
-- `ployzd`: Keeper, API, Gateway, and DNS role-process wiring and implementation
-  behind one shipped daemon artifact.
-- `ployz`: feature-owned CLI command, HTTP/SSE client, execution, and
-  presentation modules.
-- `ployz-build-executor`: process-wiring-neutral Dockerfile and Railpack execution
-  mechanics, including workspace, toolchain, log, cleanup, and validated OCI-layout
-  production.
-- `ployz-host-runner`: privileged machine-local imperative effects and artifact
-  staging used by Keeper and explicit machine commands.
-- `ployz-telemetry`: process-neutral telemetry adapters for executable surfaces.
-- `ebpf/{common,control,program}`: shared contract, userspace controller, and
-  separately built eBPF program.
-- `testing/`: test-only support, external fakes, and black-box cluster E2E.
+The contributor code map is the canonical path-level ownership guide; read it
+for crate- and path-level boundaries.
 
 Keep dependencies flowing inward. Business logic must not import process wiring.
 Transport adapters must not import product orchestration convenience types.
