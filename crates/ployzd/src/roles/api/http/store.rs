@@ -53,6 +53,7 @@ impl AcceptedRoster {
 #[derive(Debug, Clone)]
 pub(super) struct AcceptedMachine {
     pub(super) id: MachineRowId,
+    pub(super) stored_document: String,
     pub(super) document: MachineDocument,
 }
 
@@ -116,6 +117,7 @@ fn accepted_machine_rows(
     let accepted = accepted
         .into_iter()
         .map(|row| {
+            let stored_document = row.source.document;
             Ok(AcceptedMachine {
                 id: MachineRowId::try_new(row.id.as_str().to_owned()).map_err(|error| {
                     MutationStoreError::InvalidAcceptedId {
@@ -123,6 +125,7 @@ fn accepted_machine_rows(
                         detail: error.to_string(),
                     }
                 })?,
+                stored_document,
                 document: row.value,
             })
         })
@@ -335,21 +338,33 @@ where
     token_authorized_insert_outcome(table, id, &response)
 }
 
-pub(super) async fn replace_machine(
-    corrosion: &CorrosionClient,
-    machine_id: &MachineRowId,
-    document: &MachineDocument,
-) -> Result<(), MutationStoreError> {
-    let document = encode_document(CorrosionTable::Machines, document)?;
-    corrosion
-        .execute(&[replace_machine_statement(machine_id, document)])
-        .await?;
-    Ok(())
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ConditionalMachineReplace {
+    Replaced,
+    Stale,
 }
 
-pub(super) async fn update_wireguard_endpoint(
+pub(super) async fn replace_machine_if_matches(
     corrosion: &CorrosionClient,
     machine_id: &MachineRowId,
+    observed: &str,
+    replacement: &MachineDocument,
+) -> Result<ConditionalMachineReplace, MutationStoreError> {
+    let replacement = encode_document(CorrosionTable::Machines, replacement)?;
+    let response = corrosion
+        .execute(&[replace_machine_if_matches_statement(
+            machine_id,
+            observed.to_owned(),
+            replacement,
+        )])
+        .await?;
+    conditional_machine_replace_outcome(machine_id, &response)
+}
+
+pub(super) async fn update_wireguard_endpoint_if_matches(
+    corrosion: &CorrosionClient,
+    machine_id: &MachineRowId,
+    observed: &str,
     endpoint: std::net::SocketAddr,
     provenance: &OperatorWriteProvenance,
 ) -> Result<(), MutationStoreError> {
@@ -370,12 +385,21 @@ pub(super) async fn update_wireguard_endpoint(
             detail: error.to_string(),
         }
     })?;
-    corrosion
+    let response = corrosion
         .execute(&[update_wireguard_endpoint_statement(
-            machine_id, endpoint, written_by, written_at,
+            machine_id,
+            observed.to_owned(),
+            endpoint,
+            written_by,
+            written_at,
         )])
         .await?;
-    Ok(())
+    match conditional_machine_replace_outcome(machine_id, &response)? {
+        ConditionalMachineReplace::Replaced => Ok(()),
+        ConditionalMachineReplace::Stale => Err(MutationStoreError::ConcurrentMachineMutation {
+            machine_id: machine_id.clone(),
+        }),
+    }
 }
 
 pub(super) async fn delete_token(
@@ -534,18 +558,65 @@ fn token_authorized_insert_outcome(
     }
 }
 
-fn replace_statement(table: CorrosionTable, id: &str, document: String) -> Statement {
+fn replace_if_matches_statement(
+    table: CorrosionTable,
+    id: &str,
+    observed: String,
+    replacement: String,
+) -> Statement {
     Statement::with_params(
-        format!("UPDATE {} SET document = ? WHERE id = ?", table.as_str()),
+        format!(
+            "UPDATE {} SET document = ? WHERE id = ? AND document = ?",
+            table.as_str()
+        ),
         vec![
-            SqliteParameter::Text(document),
+            SqliteParameter::Text(replacement),
             SqliteParameter::Text(id.to_owned()),
+            SqliteParameter::Text(observed),
         ],
     )
 }
 
-fn replace_machine_statement(machine_id: &MachineRowId, document: String) -> Statement {
-    replace_statement(CorrosionTable::Machines, machine_id.as_str(), document)
+fn replace_machine_if_matches_statement(
+    machine_id: &MachineRowId,
+    observed: String,
+    replacement: String,
+) -> Statement {
+    replace_if_matches_statement(
+        CorrosionTable::Machines,
+        machine_id.as_str(),
+        observed,
+        replacement,
+    )
+}
+
+fn conditional_machine_replace_outcome(
+    machine_id: &MachineRowId,
+    response: &TransactionResponse,
+) -> Result<ConditionalMachineReplace, MutationStoreError> {
+    let [result] = response.results.as_slice() else {
+        return Err(MutationStoreError::UnexpectedWriteResult {
+            table: CorrosionTable::Machines,
+            id: machine_id.as_str().to_owned(),
+            detail: format!("transaction returned {} results", response.results.len()),
+        });
+    };
+    let TransactionResult::Success(result) = result else {
+        return Err(MutationStoreError::UnexpectedWriteResult {
+            table: CorrosionTable::Machines,
+            id: machine_id.as_str().to_owned(),
+            detail: "transaction retained a statement error".to_owned(),
+        });
+    };
+    match result.rows_affected {
+        0 => Ok(ConditionalMachineReplace::Stale),
+        1 => Ok(ConditionalMachineReplace::Replaced),
+        rows_affected => Err(MutationStoreError::UnexpectedWriteResult {
+            table: CorrosionTable::Machines,
+            id: machine_id.as_str().to_owned(),
+            detail: format!("conditional replacement affected {rows_affected} rows"),
+        }),
+    }
 }
 
 fn delete_statement(table: CorrosionTable, id: &str) -> Statement {
@@ -582,17 +653,19 @@ fn delete_peer_if_matches_statement(peer_id: &PeerId, expected: String) -> State
 
 fn update_wireguard_endpoint_statement(
     machine_id: &MachineRowId,
+    observed: String,
     endpoint: String,
     written_by: String,
     written_at: String,
 ) -> Statement {
     Statement::with_params(
-        "UPDATE machines SET document = json_set(document, '$.transport.endpoint', json(?), '$.written_by', json(?), '$.written_at', json(?)) WHERE id = ?",
+        "UPDATE machines SET document = json_set(document, '$.transport.endpoint', json(?), '$.written_by', json(?), '$.written_at', json(?)) WHERE id = ? AND document = ?",
         vec![
             SqliteParameter::Text(endpoint),
             SqliteParameter::Text(written_by),
             SqliteParameter::Text(written_at),
             SqliteParameter::Text(machine_id.as_str().to_owned()),
+            SqliteParameter::Text(observed),
         ],
     )
 }
@@ -625,6 +698,8 @@ pub(super) enum MutationStoreError {
         id: String,
         detail: String,
     },
+    #[error("machine {machine_id} changed while its endpoint mutation was being committed")]
+    ConcurrentMachineMutation { machine_id: MachineRowId },
 }
 
 #[cfg(test)]
@@ -648,12 +723,18 @@ mod tests {
             )
         );
         assert_eq!(
-            replace_statement(CorrosionTable::Machines, id, "{}".to_owned()),
+            replace_if_matches_statement(
+                CorrosionTable::Machines,
+                id,
+                "{\"generation\":1}".to_owned(),
+                "{\"generation\":2}".to_owned(),
+            ),
             Statement::with_params(
-                "UPDATE machines SET document = ? WHERE id = ?",
+                "UPDATE machines SET document = ? WHERE id = ? AND document = ?",
                 vec![
-                    SqliteParameter::Text("{}".to_owned()),
+                    SqliteParameter::Text("{\"generation\":2}".to_owned()),
                     SqliteParameter::Text(id.to_owned()),
+                    SqliteParameter::Text("{\"generation\":1}".to_owned()),
                 ],
             )
         );
@@ -683,12 +764,13 @@ mod tests {
         assert_eq!(
             update_wireguard_endpoint_statement(
                 &machine_id,
+                "{\"generation\":1}".to_owned(),
                 "\"203.0.113.10:51820\"".to_owned(),
                 "{\"kind\":\"machine\",\"machine_id\":\"01ARZ3NDEKTSV4RRFFQ69G5FAV\"}".to_owned(),
                 "\"2026-08-05T09:00:00Z\"".to_owned(),
             ),
             Statement::with_params(
-                "UPDATE machines SET document = json_set(document, '$.transport.endpoint', json(?), '$.written_by', json(?), '$.written_at', json(?)) WHERE id = ?",
+                "UPDATE machines SET document = json_set(document, '$.transport.endpoint', json(?), '$.written_by', json(?), '$.written_at', json(?)) WHERE id = ? AND document = ?",
                 vec![
                     SqliteParameter::Text("\"203.0.113.10:51820\"".to_owned()),
                     SqliteParameter::Text(
@@ -697,6 +779,7 @@ mod tests {
                     ),
                     SqliteParameter::Text("\"2026-08-05T09:00:00Z\"".to_owned()),
                     SqliteParameter::Text(machine_id.as_str().to_owned()),
+                    SqliteParameter::Text("{\"generation\":1}".to_owned()),
                 ],
             )
         );
@@ -783,6 +866,46 @@ mod tests {
     }
 
     #[test]
+    fn subnet_replacement_is_fenced_by_the_exact_observed_machine() {
+        let machine_id = MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("machine id");
+        assert_eq!(
+            replace_machine_if_matches_statement(
+                &machine_id,
+                "{\"subnet\":\"old\"}".to_owned(),
+                "{\"subnet\":\"new\"}".to_owned(),
+            ),
+            Statement::with_params(
+                "UPDATE machines SET document = ? WHERE id = ? AND document = ?",
+                vec![
+                    SqliteParameter::Text("{\"subnet\":\"new\"}".to_owned()),
+                    SqliteParameter::Text(machine_id.as_str().to_owned()),
+                    SqliteParameter::Text("{\"subnet\":\"old\"}".to_owned()),
+                ],
+            )
+        );
+
+        for (rows_affected, expected) in [
+            (0, ConditionalMachineReplace::Stale),
+            (1, ConditionalMachineReplace::Replaced),
+        ] {
+            let response = TransactionResponse {
+                results: vec![TransactionResult::Success(TransactionSuccess {
+                    rows_affected,
+                    time: 0.01,
+                })],
+                time: 0.01,
+                version: None,
+                actor_id: None,
+            };
+            assert_eq!(
+                conditional_machine_replace_outcome(&machine_id, &response)
+                    .expect("zero and one row are valid convergence outcomes"),
+                expected,
+            );
+        }
+    }
+
+    #[test]
     fn named_roster_evidence_survives_typed_machine_conversion() {
         let cluster: ClusterDocument = serde_json::from_value(json!({
             "v": 1,
@@ -825,7 +948,7 @@ mod tests {
             &cluster,
             [
                 StoredRow::new("01ARZ3NDEKTSV4RRFFQ69G5FAW", machine.clone()),
-                StoredRow::new("01ARZ3NDEKTSV4RRFFQ69G5FAX", machine),
+                StoredRow::new("01ARZ3NDEKTSV4RRFFQ69G5FAX", machine.clone()),
                 StoredRow::new("01ARZ3NDEKTSV4RRFFQ69G5FAZ", ""),
             ],
         );
@@ -836,6 +959,7 @@ mod tests {
             panic!("expected one accepted machine, got {}", rows.accepted.len());
         };
         assert_eq!(accepted.id.as_str(), "01ARZ3NDEKTSV4RRFFQ69G5FAW");
+        assert_eq!(accepted.stored_document, machine);
         let [_skipped] = rows.skipped.as_slice() else {
             panic!("expected one skipped machine, got {}", rows.skipped.len());
         };
@@ -856,11 +980,16 @@ mod tests {
             insert_statement(CorrosionTable::Tokens, token_id.as_str(), "{}".to_owned())
         );
         assert_eq!(
-            replace_machine_statement(&machine_id, "{}".to_owned()),
-            replace_statement(
+            replace_machine_if_matches_statement(
+                &machine_id,
+                "{\"generation\":1}".to_owned(),
+                "{\"generation\":2}".to_owned(),
+            ),
+            replace_if_matches_statement(
                 CorrosionTable::Machines,
                 machine_id.as_str(),
-                "{}".to_owned()
+                "{\"generation\":1}".to_owned(),
+                "{\"generation\":2}".to_owned(),
             )
         );
         assert_eq!(

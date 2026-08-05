@@ -28,7 +28,7 @@ use super::server::{
 };
 use super::store::{
     MutationStoreError, delete_token, insert_token, read_accepted_roster, read_machine, read_token,
-    read_tokens, update_wireguard_endpoint,
+    read_tokens, update_wireguard_endpoint_if_matches,
 };
 
 const MAX_MUTATION_REQUEST_BYTES: usize = 64 * 1024;
@@ -208,6 +208,7 @@ async fn machine_endpoint_set(
             },
         );
     };
+    let observed = machine.stored_document;
     let reply = match set_machine_endpoint(machine.id, &request, machine.document) {
         Ok(reply) => reply,
         Err(refusal) => return endpoint_refusal_response(refusal),
@@ -221,9 +222,10 @@ async fn machine_endpoint_set(
         written_by: principal,
         written_at,
     };
-    if let Err(error) = update_wireguard_endpoint(
+    if let Err(error) = update_wireguard_endpoint_if_matches(
         &service.corrosion,
         &machine_id,
+        &observed,
         request.endpoint,
         &provenance,
     )

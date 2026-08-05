@@ -26,4 +26,5 @@ uuid.workspace = true
 
 [dev-dependencies]
 ployz = { path = "../../crates/ployz" }
+rcgen = { version = "0.14.8", features = ["crypto", "pem"] }
 tempfile = "3"

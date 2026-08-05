@@ -33,10 +33,10 @@ use super::server::{
     refusal_response_with_allow,
 };
 use super::store::{
-    AcceptedMachine, AcceptedPeer, AcceptedRoster, MutationStoreError, TokenAuthorizedInsert,
-    delete_machine_if_matches, delete_peer_if_matches, insert_machine_if_token_matches,
-    insert_peer_if_token_matches, read_accepted_roster, read_machine, read_peer, read_token,
-    replace_machine,
+    AcceptedMachine, AcceptedPeer, AcceptedRoster, ConditionalMachineReplace, MutationStoreError,
+    TokenAuthorizedInsert, delete_machine_if_matches, delete_peer_if_matches,
+    insert_machine_if_token_matches, insert_peer_if_token_matches, read_accepted_roster,
+    read_machine, read_peer, read_token, replace_machine_if_matches,
 };
 
 const MAX_JOIN_REQUEST_BYTES: usize = 64 * 1024;
@@ -263,8 +263,17 @@ async fn settle_machine(
         mut pending_write,
     } = settlement;
     for attempt in 0..MAX_SUBNET_ALLOCATION_ATTEMPTS {
-        if matches!(pending_write, PendingMachineWrite::Replace) {
-            replace_machine(&service.corrosion, &request.machine_id, &document).await?;
+        if let PendingMachineWrite::Replace { observed } = &pending_write {
+            match replace_machine_if_matches(
+                &service.corrosion,
+                &request.machine_id,
+                observed,
+                &document,
+            )
+            .await?
+            {
+                ConditionalMachineReplace::Replaced | ConditionalMachineReplace::Stale => {}
+            }
         }
         tokio::time::sleep(ADMISSION_COURTESY_WAIT).await;
         let roster = read_accepted_roster(&service.corrosion, &service.cluster_id).await?;
@@ -299,6 +308,7 @@ async fn settle_machine(
         }
         if attempt + 1 < MAX_SUBNET_ALLOCATION_ATTEMPTS {
             let replacement = allocate_subnet(&roster)?;
+            let observed = accepted.stored_document.clone();
             document = accepted.document;
             document.provenance = OperatorWriteProvenance {
                 written_by: principal.clone(),
@@ -308,7 +318,7 @@ async fn settle_machine(
                 unreachable!("new v1 machine admissions use WireGuard");
             };
             *subnet_v4 = replacement;
-            pending_write = PendingMachineWrite::Replace;
+            pending_write = PendingMachineWrite::Replace { observed };
         }
     }
 
@@ -356,6 +366,7 @@ async fn reuse_machine(
         return machine_acceptance(service, &roster, request, accepted, door, substrate);
     }
     let replacement = allocate_subnet(&roster)?;
+    let observed = accepted.stored_document;
     document.provenance = OperatorWriteProvenance {
         written_by: principal.clone(),
         written_at: now_timestamp()?,
@@ -373,7 +384,7 @@ async fn reuse_machine(
             substrate,
             principal,
             origin: AdmissionRowOrigin::Reused,
-            pending_write: PendingMachineWrite::Replace,
+            pending_write: PendingMachineWrite::Replace { observed },
         },
     )
     .await
@@ -416,10 +427,10 @@ enum AdmissionRowOrigin {
     Reused,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum PendingMachineWrite {
     None,
-    Replace,
+    Replace { observed: String },
 }
 
 async fn admit_peer(
