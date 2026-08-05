@@ -282,6 +282,8 @@ pub enum FoundingMilestone {
 
 impl FoundingMilestone {
     const fn file_name(self) -> &'static str {
+        // These names are durable schema keys. New milestones append numeric
+        // identities even when their execution point precedes older steps.
         match self {
             Self::Artifacts => "01-artifacts",
             Self::Docker => "02-docker",

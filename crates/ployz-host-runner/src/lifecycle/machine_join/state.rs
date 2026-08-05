@@ -547,6 +547,8 @@ impl MachineJoinMilestone {
     ];
 
     const fn file_name(self) -> &'static str {
+        // These names are durable schema keys. New milestones append numeric
+        // identities even when their execution point precedes older steps.
         match self {
             Self::Artifacts => "01-artifacts",
             Self::Storage => "02-storage",

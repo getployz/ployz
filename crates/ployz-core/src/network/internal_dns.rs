@@ -15,7 +15,6 @@ use crate::ids::{
 };
 use crate::intent::IntentSnapshot;
 use crate::machine::runtime::{ContainerRuntimeState, MachineFactsSnapshot};
-use crate::network::MachineEndpointSubnet;
 use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 
 const MAX_DNS_LABEL_LEN: usize = 63;
@@ -274,7 +273,6 @@ pub struct InternalDnsRowProjectionInput {
 /// rows. Replacing this value atomically prevents partial cross-table views.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InternalDnsRowProjection {
-    pub endpoint_subnet: MachineEndpointSubnet,
     pub bind: SocketAddr,
     pub records: BTreeMap<InternalServiceName, Vec<Ipv4Addr>>,
 }
@@ -399,11 +397,7 @@ pub fn project_internal_dns_rows(
     }
 
     let bind = SocketAddr::from((endpoint_subnet.bridge_gateway_ipv4(), 53));
-    Ok(InternalDnsRowProjection {
-        endpoint_subnet,
-        bind,
-        records,
-    })
+    Ok(InternalDnsRowProjection { bind, records })
 }
 
 /// Fully-qualified internal service names mapped to their running service

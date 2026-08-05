@@ -20,13 +20,10 @@ pub(super) const ENDPOINT_NETWORK_NAME: &str = "ployz";
 pub(super) const DRIVER_MTU_OPTION: &str = "com.docker.network.driver.mtu";
 
 pub(super) fn endpoint_network_create_request(
-    endpoint_network_subnet: &str,
+    endpoint_network_subnet: &MachineEndpointSubnet,
     endpoint_bridge_ifname: &str,
     endpoint_mtu: u32,
 ) -> NetworkCreateRequest {
-    let gateway = MachineEndpointSubnet::try_new(endpoint_network_subnet)
-        .ok()
-        .map(|subnet| subnet.bridge_gateway_ipv4().to_string());
     NetworkCreateRequest {
         name: ENDPOINT_NETWORK_NAME.to_owned(),
         driver: Some("bridge".to_owned()),
@@ -40,8 +37,8 @@ pub(super) fn endpoint_network_create_request(
         ipam: Some(Ipam {
             driver: Some("default".to_owned()),
             config: Some(vec![IpamConfig {
-                subnet: Some(endpoint_network_subnet.to_owned()),
-                gateway,
+                subnet: Some(endpoint_network_subnet.as_string()),
+                gateway: Some(endpoint_network_subnet.bridge_gateway_ipv4().to_string()),
                 ..Default::default()
             }]),
             ..Default::default()
@@ -56,7 +53,7 @@ pub(super) fn endpoint_network_create_request(
 
 pub(super) async fn ensure_endpoint_network(
     docker: &Docker,
-    endpoint_network_subnet: &str,
+    endpoint_network_subnet: &MachineEndpointSubnet,
     endpoint_bridge_ifname: &str,
     endpoint_mtu: u32,
 ) -> Result<(), MachineEndpointNetworkError> {
@@ -113,7 +110,7 @@ pub(super) async fn ensure_endpoint_network(
 
 pub(super) async fn converge_endpoint_network(
     docker: &Docker,
-    endpoint_network_subnet: &str,
+    endpoint_network_subnet: &MachineEndpointSubnet,
     endpoint_bridge_ifname: &str,
     endpoint_mtu: u32,
 ) -> Result<MachineEndpointNetworkConvergenceOutcome, MachineEndpointNetworkConvergenceError> {
@@ -351,7 +348,7 @@ async fn managed_endpoint_containers(
 
 async fn inspect_converged_network(
     docker: &Docker,
-    endpoint_network_subnet: &str,
+    endpoint_network_subnet: &MachineEndpointSubnet,
     endpoint_bridge_ifname: &str,
     endpoint_mtu: u32,
 ) -> Result<NetworkInspect, MachineEndpointNetworkConvergenceError> {
@@ -375,7 +372,7 @@ async fn inspect_converged_network(
 
 pub(super) async fn require_endpoint_network(
     docker: &Docker,
-    endpoint_network_subnet: &str,
+    endpoint_network_subnet: &MachineEndpointSubnet,
     endpoint_bridge_ifname: &str,
     endpoint_mtu: u32,
 ) -> Result<(), MachineContainerCreateError> {
@@ -415,7 +412,6 @@ fn required_endpoint_network_from_inspect(
 pub(super) async fn read_endpoint_network_status(
     docker: &Docker,
     expected: MachineEndpointSubnet,
-    endpoint_network_subnet: &str,
     endpoint_bridge_ifname: &str,
     endpoint_mtu: u32,
 ) -> EndpointBridgeStatus {
@@ -433,12 +429,7 @@ pub(super) async fn read_endpoint_network_status(
             };
         }
     };
-    match validate_endpoint_network(
-        &network,
-        endpoint_network_subnet,
-        endpoint_bridge_ifname,
-        endpoint_mtu,
-    ) {
+    match validate_endpoint_network(&network, &expected, endpoint_bridge_ifname, endpoint_mtu) {
         Ok(()) => EndpointBridgeStatus::Ready { subnet: expected },
         Err(MachineEndpointNetworkError::EndpointNetworkSubnetMismatch { expected, observed }) => {
             EndpointBridgeStatus::SubnetMismatch { expected, observed }
@@ -474,6 +465,15 @@ fn endpoint_network_subnet(network: &NetworkInspect) -> Option<&str> {
         .and_then(|config| config.subnet.as_deref())
 }
 
+fn endpoint_network_gateway(network: &NetworkInspect) -> Option<&str> {
+    network
+        .ipam
+        .as_ref()
+        .and_then(|ipam| ipam.config.as_ref())
+        .and_then(|configs| configs.first())
+        .and_then(|config| config.gateway.as_deref())
+}
+
 fn endpoint_network_bridge(network: &NetworkInspect) -> Option<&str> {
     network
         .options
@@ -484,34 +484,37 @@ fn endpoint_network_bridge(network: &NetworkInspect) -> Option<&str> {
 
 fn validate_endpoint_network(
     network: &NetworkInspect,
-    expected_subnet: &str,
+    expected_subnet: &MachineEndpointSubnet,
     expected_bridge: &str,
     expected_mtu: u32,
 ) -> Result<(), MachineEndpointNetworkError> {
-    if endpoint_network_subnet(network) != Some(expected_subnet) {
-        if let (Ok(expected), Some(Ok(observed))) = (
-            MachineEndpointSubnet::try_new(expected_subnet),
-            endpoint_network_subnet(network).map(MachineEndpointSubnet::try_new),
-        ) {
+    let expected_subnet_text = expected_subnet.as_string();
+    if endpoint_network_subnet(network) != Some(expected_subnet_text.as_str()) {
+        if let Some(Ok(observed)) =
+            endpoint_network_subnet(network).map(MachineEndpointSubnet::try_new)
+        {
             return Err(MachineEndpointNetworkError::EndpointNetworkSubnetMismatch {
-                expected,
+                expected: expected_subnet.clone(),
                 observed,
             });
         }
         return Err(MachineEndpointNetworkError::EnsureEndpointNetwork {
             message: format!(
-                "Docker network {ENDPOINT_NETWORK_NAME} has subnet {}, expected {expected_subnet}",
-                endpoint_network_subnet(network).unwrap_or("unset")
+                "Docker network {ENDPOINT_NETWORK_NAME} has subnet {}, expected {}",
+                endpoint_network_subnet(network).unwrap_or("unset"),
+                expected_subnet_text
             ),
         });
     }
+    let expected_gateway = expected_subnet.bridge_gateway_ipv4().to_string();
     if network.driver.as_deref() != Some("bridge")
         || endpoint_network_bridge(network) != Some(expected_bridge)
         || !endpoint_network_mtu_matches(network, expected_mtu)
+        || endpoint_network_gateway(network) != Some(expected_gateway.as_str())
     {
         return Err(MachineEndpointNetworkError::EnsureEndpointNetwork {
             message: format!(
-                "Docker network {ENDPOINT_NETWORK_NAME} does not match bridge {expected_bridge} and MTU {expected_mtu}"
+                "Docker network {ENDPOINT_NETWORK_NAME} does not match bridge {expected_bridge}, MTU {expected_mtu}, and gateway {expected_gateway}"
             ),
         });
     }
@@ -546,6 +549,10 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::UnixListener;
     use tokio::sync::Mutex;
+
+    fn subnet(value: &str) -> MachineEndpointSubnet {
+        MachineEndpointSubnet::try_new(value).expect("machine endpoint subnet")
+    }
 
     async fn docker_with_responses(
         responses: Vec<(u16, &'static str)>,
@@ -591,13 +598,14 @@ mod tests {
 
     #[tokio::test]
     async fn exact_managed_endpoint_network_is_an_idempotent_noop() {
-        let exact = r#"{"Driver":"bridge","Labels":{"plz.managed":"true"},"Options":{"com.docker.network.bridge.name":"br-ployz","com.docker.network.driver.mtu":"1420"},"IPAM":{"Config":[{"Subnet":"10.198.1.0/24"}]},"Containers":{}}"#;
+        let exact = r#"{"Driver":"bridge","Labels":{"plz.managed":"true"},"Options":{"com.docker.network.bridge.name":"br-ployz","com.docker.network.driver.mtu":"1420"},"IPAM":{"Config":[{"Subnet":"10.198.1.0/24","Gateway":"10.198.1.1"}]},"Containers":{}}"#;
         let (docker, requests, _socket_dir) =
             docker_with_responses(vec![(200, exact), (200, "[]")]).await;
 
-        let outcome = converge_endpoint_network(&docker, "10.198.1.0/24", "br-ployz", 1_420)
-            .await
-            .expect("exact endpoint network converges");
+        let outcome =
+            converge_endpoint_network(&docker, &subnet("10.198.1.0/24"), "br-ployz", 1_420)
+                .await
+                .expect("exact endpoint network converges");
 
         assert_eq!(outcome, MachineEndpointNetworkConvergenceOutcome::Unchanged);
         let requests = requests.lock().await;
@@ -613,7 +621,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_endpoint_network_is_created_for_the_accepted_subnet() {
-        let exact = r#"{"Driver":"bridge","Labels":{"plz.managed":"true"},"Options":{"com.docker.network.bridge.name":"br-ployz","com.docker.network.driver.mtu":"1420"},"IPAM":{"Config":[{"Subnet":"10.198.1.0/24"}]},"Containers":{}}"#;
+        let exact = r#"{"Driver":"bridge","Labels":{"plz.managed":"true"},"Options":{"com.docker.network.bridge.name":"br-ployz","com.docker.network.driver.mtu":"1420"},"IPAM":{"Config":[{"Subnet":"10.198.1.0/24","Gateway":"10.198.1.1"}]},"Containers":{}}"#;
         let (docker, requests, _socket_dir) = docker_with_responses(vec![
             (404, r#"{"message":"network ployz not found"}"#),
             (200, "[]"),
@@ -623,9 +631,10 @@ mod tests {
         ])
         .await;
 
-        let outcome = converge_endpoint_network(&docker, "10.198.1.0/24", "br-ployz", 1_420)
-            .await
-            .expect("missing endpoint network converges");
+        let outcome =
+            converge_endpoint_network(&docker, &subnet("10.198.1.0/24"), "br-ployz", 1_420)
+                .await
+                .expect("missing endpoint network converges");
 
         assert_eq!(outcome, MachineEndpointNetworkConvergenceOutcome::Created);
         let methods = requests
@@ -642,7 +651,7 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_endpoint_network_create_is_verified_and_accepted() {
-        let exact = r#"{"Driver":"bridge","Labels":{"plz.managed":"true"},"Options":{"com.docker.network.bridge.name":"br-ployz","com.docker.network.driver.mtu":"1420"},"IPAM":{"Config":[{"Subnet":"10.198.1.0/24"}]},"Containers":{}}"#;
+        let exact = r#"{"Driver":"bridge","Labels":{"plz.managed":"true"},"Options":{"com.docker.network.bridge.name":"br-ployz","com.docker.network.driver.mtu":"1420"},"IPAM":{"Config":[{"Subnet":"10.198.1.0/24","Gateway":"10.198.1.1"}]},"Containers":{}}"#;
         let (docker, requests, _socket_dir) = docker_with_responses(vec![
             (404, r#"{"message":"network ployz not found"}"#),
             (200, "[]"),
@@ -655,9 +664,10 @@ mod tests {
         ])
         .await;
 
-        let outcome = converge_endpoint_network(&docker, "10.198.1.0/24", "br-ployz", 1_420)
-            .await
-            .expect("concurrent endpoint network creation converges");
+        let outcome =
+            converge_endpoint_network(&docker, &subnet("10.198.1.0/24"), "br-ployz", 1_420)
+                .await
+                .expect("concurrent endpoint network creation converges");
 
         assert_eq!(outcome, MachineEndpointNetworkConvergenceOutcome::Created);
         assert_eq!(requests.lock().await.len(), 5);
@@ -665,10 +675,10 @@ mod tests {
 
     #[tokio::test]
     async fn subnet_drift_recreates_network_and_restores_managed_containers() {
-        let old = r#"{"Driver":"bridge","Labels":{"plz.managed":"true"},"Options":{"com.docker.network.bridge.name":"br-ployz","com.docker.network.driver.mtu":"1420"},"IPAM":{"Config":[{"Subnet":"10.198.1.0/24"}]},"Containers":{"running":{},"stopped":{}}}"#;
+        let old = r#"{"Driver":"bridge","Labels":{"plz.managed":"true"},"Options":{"com.docker.network.bridge.name":"br-ployz","com.docker.network.driver.mtu":"1420"},"IPAM":{"Config":[{"Subnet":"10.198.1.0/24","Gateway":"10.198.1.1"}]},"Containers":{"running":{},"stopped":{}}}"#;
         let managed = r#"[{"Id":"running","Labels":{"plz.managed":"true"},"State":"running"},{"Id":"stopped","Labels":{"plz.managed":"true"},"State":"exited"}]"#;
-        let after_restart = r#"{"Driver":"bridge","Labels":{"plz.managed":"true"},"Options":{"com.docker.network.bridge.name":"br-ployz","com.docker.network.driver.mtu":"1420"},"IPAM":{"Config":[{"Subnet":"10.198.2.0/24"}]},"Containers":{"running":{}}}"#;
-        let complete = r#"{"Driver":"bridge","Labels":{"plz.managed":"true"},"Options":{"com.docker.network.bridge.name":"br-ployz","com.docker.network.driver.mtu":"1420"},"IPAM":{"Config":[{"Subnet":"10.198.2.0/24"}]},"Containers":{"running":{},"stopped":{}}}"#;
+        let after_restart = r#"{"Driver":"bridge","Labels":{"plz.managed":"true"},"Options":{"com.docker.network.bridge.name":"br-ployz","com.docker.network.driver.mtu":"1420"},"IPAM":{"Config":[{"Subnet":"10.198.2.0/24","Gateway":"10.198.2.1"}]},"Containers":{"running":{}}}"#;
+        let complete = r#"{"Driver":"bridge","Labels":{"plz.managed":"true"},"Options":{"com.docker.network.bridge.name":"br-ployz","com.docker.network.driver.mtu":"1420"},"IPAM":{"Config":[{"Subnet":"10.198.2.0/24","Gateway":"10.198.2.1"}]},"Containers":{"running":{},"stopped":{}}}"#;
         let (docker, requests, _socket_dir) = docker_with_responses(vec![
             (200, old),
             (200, managed),
@@ -683,9 +693,10 @@ mod tests {
         ])
         .await;
 
-        let outcome = converge_endpoint_network(&docker, "10.198.2.0/24", "br-ployz", 1_420)
-            .await
-            .expect("subnet drift converges");
+        let outcome =
+            converge_endpoint_network(&docker, &subnet("10.198.2.0/24"), "br-ployz", 1_420)
+                .await
+                .expect("subnet drift converges");
 
         assert_eq!(
             outcome,
@@ -725,11 +736,11 @@ mod tests {
 
     #[tokio::test]
     async fn unmanaged_endpoint_attachment_blocks_network_recreation() {
-        let old = r#"{"Driver":"bridge","Labels":{"plz.managed":"true"},"Options":{"com.docker.network.bridge.name":"br-ployz","com.docker.network.driver.mtu":"1420"},"IPAM":{"Config":[{"Subnet":"10.198.1.0/24"}]},"Containers":{"foreign":{}}}"#;
+        let old = r#"{"Driver":"bridge","Labels":{"plz.managed":"true"},"Options":{"com.docker.network.bridge.name":"br-ployz","com.docker.network.driver.mtu":"1420"},"IPAM":{"Config":[{"Subnet":"10.198.1.0/24","Gateway":"10.198.1.1"}]},"Containers":{"foreign":{}}}"#;
         let (docker, requests, _socket_dir) =
             docker_with_responses(vec![(200, old), (200, "[]")]).await;
 
-        let error = converge_endpoint_network(&docker, "10.198.2.0/24", "br-ployz", 1_420)
+        let error = converge_endpoint_network(&docker, &subnet("10.198.2.0/24"), "br-ployz", 1_420)
             .await
             .expect_err("unmanaged endpoint blocks repair");
 
@@ -744,7 +755,7 @@ mod tests {
 
     #[test]
     fn endpoint_network_create_request_sets_machine_subnet() {
-        let request = endpoint_network_create_request("10.42.7.0/24", "br-ployz", 1420);
+        let request = endpoint_network_create_request(&subnet("10.42.7.0/24"), "br-ployz", 1420);
 
         assert_eq!(request.name, ENDPOINT_NETWORK_NAME);
         assert_eq!(request.driver, Some("bridge".to_owned()));
@@ -817,7 +828,7 @@ mod tests {
     }
 
     #[test]
-    fn endpoint_network_validation_requires_exact_subnet_bridge_and_mtu() {
+    fn endpoint_network_validation_requires_exact_subnet_gateway_bridge_and_mtu() {
         let exact = NetworkInspect {
             driver: Some("bridge".to_owned()),
             options: Some(HashMap::from([
@@ -830,6 +841,7 @@ mod tests {
             ipam: Some(Ipam {
                 config: Some(vec![IpamConfig {
                     subnet: Some("10.198.1.0/24".to_owned()),
+                    gateway: Some("10.198.1.1".to_owned()),
                     ..Default::default()
                 }]),
                 ..Default::default()
@@ -837,12 +849,26 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(validate_endpoint_network(&exact, "10.198.1.0/24", "br-ployz", 1420).is_ok());
+        let expected = subnet("10.198.1.0/24");
+        assert!(validate_endpoint_network(&exact, &expected, "br-ployz", 1420).is_ok());
         assert!(matches!(
-            validate_endpoint_network(&exact, "10.198.2.0/24", "br-ployz", 1420),
+            validate_endpoint_network(&exact, &subnet("10.198.2.0/24"), "br-ployz", 1420),
             Err(MachineEndpointNetworkError::EndpointNetworkSubnetMismatch { .. })
         ));
-        assert!(validate_endpoint_network(&exact, "10.198.1.0/24", "other-bridge", 1420).is_err());
-        assert!(validate_endpoint_network(&exact, "10.198.1.0/24", "br-ployz", 1400).is_err());
+        assert!(validate_endpoint_network(&exact, &expected, "other-bridge", 1420).is_err());
+        assert!(validate_endpoint_network(&exact, &expected, "br-ployz", 1400).is_err());
+
+        let mut wrong_gateway = exact;
+        let Some(ipam) = wrong_gateway.ipam.as_mut() else {
+            panic!("exact network has IPAM")
+        };
+        let Some(configs) = ipam.config.as_mut() else {
+            panic!("exact network has IPAM config")
+        };
+        let [config] = configs.as_mut_slice() else {
+            panic!("exact network has one IPAM config")
+        };
+        config.gateway = Some("10.198.1.2".to_owned());
+        assert!(validate_endpoint_network(&wrong_gateway, &expected, "br-ployz", 1420).is_err());
     }
 }

@@ -210,20 +210,12 @@ impl InternalDnsRecords {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = records;
     }
 
-    fn addresses(&self, name: &InternalServiceName) -> Vec<Ipv4Addr> {
+    fn addresses(&self, name: &InternalServiceName) -> Option<Vec<Ipv4Addr>> {
         self.records
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(name)
             .cloned()
-            .unwrap_or_default()
-    }
-
-    fn contains(&self, name: &InternalServiceName) -> bool {
-        self.records
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .contains_key(name)
     }
 }
 
@@ -379,16 +371,14 @@ async fn response_for_request(
     let request = parse_request(&packet)?;
     let name = lookup_name(&request.query);
     let internal_name = InternalServiceName::try_new(&name).ok();
-    if internal_name
+    if let Some(addresses) = internal_name
         .as_ref()
-        .is_some_and(|name| records.contains(name))
+        .and_then(|name| records.addresses(name))
     {
         let answers = if request.query.query_type == RecordType::A
             && request.query.query_class == DNSClass::IN
         {
-            internal_name
-                .map(|name| records.addresses(&name))
-                .unwrap_or_default()
+            addresses
         } else {
             Vec::new()
         };

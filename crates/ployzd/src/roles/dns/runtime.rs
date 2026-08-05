@@ -371,7 +371,6 @@ async fn wait_for_process_shutdown() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::network::MachineEndpointSubnet;
     use tokio::net::UdpSocket;
 
     fn service_name() -> InternalServiceName {
@@ -380,8 +379,6 @@ mod tests {
 
     fn projection(bind: SocketAddr, address: Ipv4Addr) -> InternalDnsRowProjection {
         InternalDnsRowProjection {
-            endpoint_subnet: MachineEndpointSubnet::try_new("127.0.0.0/24")
-                .expect("endpoint subnet"),
             bind,
             records: BTreeMap::from([(service_name(), vec![address])]),
         }
