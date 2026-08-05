@@ -22,8 +22,12 @@ pub mod certificate {
 pub mod corrosion;
 pub mod roles {
     pub mod dns {
+        mod config;
         pub mod internal;
+        mod runtime;
+        mod source;
         pub use internal::InternalResolverHealth;
+        pub use runtime::{DnsRoleRuntimeError, run_from_environment};
     }
     pub mod gateway {
         #[path = "source/certificate_store.rs"]

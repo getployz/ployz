@@ -286,6 +286,15 @@ impl<R: HostRunnerCommandRunner> FoundingHostEffects for LinuxFoundingHostEffect
         self.restart_role(PloyzdRole::Api)
     }
 
+    fn enable_and_start_dns(&mut self) -> Result<(), FailureMessage> {
+        self.substrate().enable_and_start_dns()
+    }
+
+    fn await_dns_readiness(&mut self) -> Result<(), FailureMessage> {
+        let gateway = machine_endpoint_gateway(&self.request.request().machine.transport);
+        self.substrate().await_dns_readiness(gateway)
+    }
+
     fn await_driver_peer_convergence(
         &mut self,
         driver: &FoundingDriverEnrollment,

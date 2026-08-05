@@ -1,11 +1,12 @@
 //! Shared Linux substrate mechanics composed by founding and join workflows.
 
 use std::fs;
-use std::net::Ipv6Addr;
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::path::Path;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use ployz_core::corrosion::MachineTransport;
 use ployz_core::install::InstallArtifactSpec;
 use ployz_core::operation::FailureMessage;
 
@@ -20,6 +21,18 @@ use crate::{
 
 const CORROSION_API_PORT: u16 = 8_080;
 const CORROSION_GOSSIP_PORT: u16 = 8_787;
+const DNS_PORT: u16 = 53;
+const DNS_READINESS_TIMEOUT: Duration = Duration::from_secs(30);
+const DNS_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(3);
+const DNS_READINESS_ID: [u8; 2] = [0x70, 0x6c];
+
+pub(super) fn machine_endpoint_gateway(transport: &MachineTransport) -> Ipv4Addr {
+    let subnet = match transport {
+        MachineTransport::Wireguard { subnet_v4, .. }
+        | MachineTransport::Tailscale { subnet_v4, .. } => subnet_v4,
+    };
+    subnet.bridge_gateway_ipv4()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum CorrosionServiceChange {
@@ -238,6 +251,67 @@ impl<'a, R: HostRunnerCommandRunner> LinuxSubstrate<'a, R> {
         Ok(())
     }
 
+    pub(super) fn enable_and_start_dns(&mut self) -> Result<(), FailureMessage> {
+        if self.supervisor()? != SupervisorBackend::Systemd {
+            return Err(failure(
+                "the DNS role requires systemd dynamic-user and capability isolation",
+            ));
+        }
+        let target = SupervisorUnitTarget::PloyzdRole(PloyzdRole::Dns);
+        self.run_supervisor(SupervisorChange::Enable, &target)?;
+        self.run_supervisor(SupervisorChange::Restart, &target)
+    }
+
+    pub(super) fn await_endpoint_network_gateway(
+        &mut self,
+        expected: Ipv4Addr,
+    ) -> Result<(), FailureMessage> {
+        let deadline = Instant::now() + DNS_READINESS_TIMEOUT;
+        let last = loop {
+            let observed = match self.runner.command(
+                "docker",
+                &[
+                    "network",
+                    "inspect",
+                    "ployz",
+                    "--format",
+                    "{{(index .IPAM.Config 0).Gateway}}",
+                ],
+            ) {
+                Ok(output)
+                    if output.success
+                        && !output.stdout_truncated
+                        && output.stdout.trim() == expected.to_string() =>
+                {
+                    return Ok(());
+                }
+                Ok(output) if output.stdout_truncated => {
+                    "Docker network inspection output was truncated".to_owned()
+                }
+                Ok(output) if output.success => {
+                    format!(
+                        "ployz network gateway was {:?}, expected {expected}",
+                        output.stdout.trim()
+                    )
+                }
+                Ok(output) => output.failure,
+                Err(error) => error.to_string(),
+            };
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break observed;
+            }
+            thread::sleep(Duration::from_secs(1).min(remaining));
+        };
+        Err(failure(format!(
+            "endpoint network did not expose gateway {expected} within 30 seconds: {last}"
+        )))
+    }
+
+    pub(super) fn await_dns_readiness(&mut self, gateway: Ipv4Addr) -> Result<(), FailureMessage> {
+        await_dns_readiness_at(SocketAddr::from((gateway, DNS_PORT)), DNS_READINESS_TIMEOUT)
+    }
+
     pub(super) fn install_corrosion_unit(&mut self, config: &Path) -> Result<(), FailureMessage> {
         let backend = self.supervisor()?;
         let (name, contents) = corrosion_unit(backend, config);
@@ -283,6 +357,121 @@ impl<'a, R: HostRunnerCommandRunner> LinuxSubstrate<'a, R> {
             "{description} did not become ready within 30 seconds"
         )))
     }
+}
+
+fn await_dns_readiness_at(resolver: SocketAddr, timeout: Duration) -> Result<(), FailureMessage> {
+    let deadline = Instant::now() + timeout;
+    let last = loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break "the DNS readiness deadline elapsed before a valid response".to_owned();
+        }
+        let observed = match probe_dns_once(resolver, DNS_ATTEMPT_TIMEOUT.min(remaining)) {
+            Ok(()) => return Ok(()),
+            Err(error) => error.to_string(),
+        };
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break observed;
+        }
+        thread::sleep(Duration::from_secs(1).min(remaining));
+    };
+    Err(failure(format!(
+        "DNS resolver at {resolver} did not become ready within {} seconds: {last}",
+        timeout.as_secs()
+    )))
+}
+
+fn probe_dns_once(resolver: SocketAddr, timeout: Duration) -> std::io::Result<()> {
+    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
+    socket.set_read_timeout(Some(timeout))?;
+    socket.set_write_timeout(Some(timeout))?;
+    socket.connect(resolver)?;
+    socket.send(&dns_readiness_query())?;
+    let mut response = [0_u8; 4_096];
+    let length = socket.recv(&mut response)?;
+    let Some(response) = response.get(..length) else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "DNS readiness response exceeded its receive buffer",
+        ));
+    };
+    validate_dns_readiness_response(response)
+}
+
+fn dns_readiness_query() -> Vec<u8> {
+    let [id_high, id_low] = DNS_READINESS_ID;
+    let mut query = vec![
+        id_high, id_low, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ];
+    for label in ["readiness", "invalid"] {
+        query.push(u8::try_from(label.len()).expect("readiness DNS labels fit in one byte"));
+        query.extend_from_slice(label.as_bytes());
+    }
+    query.extend_from_slice(&[0x00, 0x00, 0x01, 0x00, 0x01]);
+    query
+}
+
+fn validate_dns_readiness_response(response: &[u8]) -> std::io::Result<()> {
+    let [
+        id_high,
+        id_low,
+        flags_high,
+        _flags_low,
+        qd_high,
+        qd_low,
+        _answer_high,
+        _answer_low,
+        _authority_high,
+        _authority_low,
+        _additional_high,
+        _additional_low,
+        ..,
+    ] = response
+    else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "DNS readiness response was shorter than its header",
+        ));
+    };
+    if [*id_high, *id_low] != DNS_READINESS_ID {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "DNS readiness transaction id did not match",
+        ));
+    }
+    if flags_high & 0x80 == 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "DNS readiness packet was not a response",
+        ));
+    }
+    if [*qd_high, *qd_low] != [0x00, 0x01] {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "DNS readiness response did not retain the query",
+        ));
+    }
+    let expected = dns_readiness_query();
+    let Some(expected_question) = expected.get(12..) else {
+        unreachable!("the static DNS readiness query carries a header")
+    };
+    let Some(question_end) = 12_usize.checked_add(expected_question.len()) else {
+        unreachable!("the static DNS readiness question length fits usize")
+    };
+    let Some(actual_question) = response.get(12..question_end) else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "DNS readiness response did not retain the complete query",
+        ));
+    };
+    if actual_question != expected_question {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "DNS readiness response retained a different query",
+        ));
+    }
+    Ok(())
 }
 
 pub(super) fn render_corrosion_config(config: CorrosionConfig<'_>) -> String {
@@ -393,4 +582,75 @@ fn failure(error: impl std::fmt::Display) -> FailureMessage {
     FailureMessage::try_new(error.to_string()).unwrap_or_else(|_| {
         FailureMessage::try_new("Linux substrate effect failed").expect("constant is non-empty")
     })
+}
+
+#[cfg(test)]
+mod dns_readiness_tests {
+    use super::*;
+
+    #[test]
+    fn readiness_uses_a_real_udp_query_and_validates_the_response() {
+        let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("UDP server binds");
+        let address = server.local_addr().expect("UDP server address");
+        let responder = thread::spawn(move || {
+            let mut packet = [0_u8; 512];
+            let (length, peer) = server.recv_from(&mut packet).expect("DNS query arrives");
+            let response = packet
+                .get_mut(..length)
+                .expect("received DNS query length fits the buffer");
+            let [id_high, id_low, flags_high, flags_low, ..] = response else {
+                panic!("DNS query carries its header");
+            };
+            assert_eq!([*id_high, *id_low], DNS_READINESS_ID);
+            *flags_high |= 0x80;
+            *flags_low &= 0xf0;
+            server.send_to(response, peer).expect("DNS response sends");
+        });
+
+        await_dns_readiness_at(address, Duration::from_secs(2))
+            .expect("valid UDP DNS response proves readiness");
+        responder.join().expect("UDP responder exits");
+
+        let mut wrong_id = dns_readiness_query();
+        let [id_high, _, flags_high, ..] = wrong_id.as_mut_slice() else {
+            panic!("readiness query carries its header");
+        };
+        *id_high ^= 0xff;
+        *flags_high |= 0x80;
+        assert!(validate_dns_readiness_response(&wrong_id).is_err());
+
+        let mut wrong_question = dns_readiness_query();
+        let [_, _, flags_high, ..] = wrong_question.as_mut_slice() else {
+            panic!("readiness query carries its header");
+        };
+        *flags_high |= 0x80;
+        let Some(first_label_byte) = wrong_question.get_mut(13) else {
+            panic!("readiness query carries its first label");
+        };
+        *first_label_byte = b'x';
+        assert!(validate_dns_readiness_response(&wrong_question).is_err());
+
+        let mut negative = dns_readiness_query();
+        let [_, _, flags_high, flags_low, ..] = negative.as_mut_slice() else {
+            panic!("readiness query carries its header");
+        };
+        *flags_high |= 0x80;
+        *flags_low = 0x03;
+        validate_dns_readiness_response(&negative)
+            .expect("a matching negative answer still proves the resolver listener");
+    }
+
+    #[test]
+    fn tailscale_machine_uses_its_declared_endpoint_subnet_gateway() {
+        let transport = MachineTransport::Tailscale {
+            ip: "100.64.0.7".parse().expect("Tailscale address"),
+            subnet_v4: ployz_core::network::MachineEndpointSubnet::try_new("10.210.7.0/24")
+                .expect("endpoint subnet"),
+        };
+
+        assert_eq!(
+            machine_endpoint_gateway(&transport),
+            "10.210.7.1".parse::<Ipv4Addr>().expect("gateway")
+        );
+    }
 }

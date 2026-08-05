@@ -90,6 +90,8 @@ pub enum FoundingStep {
     AwaitDriverPeerConvergence,
     ReportDriverEnrolled,
     AwaitEndpointNetwork,
+    StartDns,
+    VerifyDnsReadiness,
     VerifyBootstrapReadiness,
     RemoveBootstrapCredential,
     RestartOrdinaryApi,
@@ -281,6 +283,18 @@ pub async fn found_machine_one_with_progress(
         control_plane.await_endpoint_network_ready(request),
     )
     .await?;
+    run_host_step(
+        state,
+        FoundingMilestone::DnsStarted,
+        FoundingStep::StartDns,
+        || host.enable_and_start_dns(),
+    )?;
+    run_host_step(
+        state,
+        FoundingMilestone::DnsReady,
+        FoundingStep::VerifyDnsReadiness,
+        || host.await_dns_readiness(),
+    )?;
     run_control_step(
         state,
         FoundingMilestone::BootstrapReady,
@@ -466,6 +480,12 @@ mod tests {
         fn start_api_with_bootstrap(&mut self) -> Result<(), FailureMessage> {
             self.record("bootstrap_api")
         }
+        fn enable_and_start_dns(&mut self) -> Result<(), FailureMessage> {
+            self.record("dns_started")
+        }
+        fn await_dns_readiness(&mut self) -> Result<(), FailureMessage> {
+            self.record("dns_ready")
+        }
         fn await_driver_peer_convergence(
             &mut self,
             _driver: &FoundingDriverEnrollment,
@@ -548,7 +568,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn founding_orders_host_and_control_boundaries_and_never_starts_unimplemented_roles() {
+    async fn founding_starts_dns_only_after_the_endpoint_network_is_ready() {
         let directory = tempfile::tempdir().expect("tempdir");
         let state = FoundingStateDirectory::open(directory.path()).expect("state directory");
         let request = request(CLUSTER);
@@ -575,6 +595,8 @@ mod tests {
                 "keeper",
                 "corrosion",
                 "bootstrap_api",
+                "dns_started",
+                "dns_ready",
                 "remove_bootstrap",
                 "ordinary_api",
             ]
@@ -653,10 +675,40 @@ mod tests {
                 "keeper",
                 "corrosion",
                 "bootstrap_api",
+                "dns_started",
+                "dns_ready",
                 "remove_bootstrap",
                 "ordinary_api",
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn dns_readiness_failure_resumes_at_the_udp_probe() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let state = FoundingStateDirectory::open(directory.path()).expect("state directory");
+        let request = request(CLUSTER);
+        let mut first_host = recording_host(Some("dns_ready"));
+        let mut first_control = recording_control(None);
+
+        let failure = found_machine_one(&state, &request, &mut first_host, &mut first_control)
+            .await
+            .expect_err("DNS readiness fails");
+
+        assert_eq!(failure.step(), Some(FoundingStep::VerifyDnsReadiness));
+        assert!(first_host.calls.ends_with(&["dns_started", "dns_ready"]));
+
+        let mut resumed_host = recording_host(None);
+        let mut resumed_control = recording_control(None);
+        found_machine_one(&state, &request, &mut resumed_host, &mut resumed_control)
+            .await
+            .expect("DNS readiness resumes");
+
+        assert_eq!(
+            resumed_host.calls,
+            ["dns_ready", "remove_bootstrap", "ordinary_api"]
+        );
+        assert_eq!(resumed_control.calls, ["bootstrap_ready", "ordinary_ready"]);
     }
 
     #[tokio::test]
