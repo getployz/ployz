@@ -39,7 +39,7 @@ pub(super) async fn wait_for_public_status_handshake(
         "authenticated API /status handshake age over WireGuard ULA",
         vec![
             "curl".to_owned(),
-            "--fail".to_owned(),
+            "--fail-with-body".to_owned(),
             "--silent".to_owned(),
             "--show-error".to_owned(),
             "--max-time".to_owned(),

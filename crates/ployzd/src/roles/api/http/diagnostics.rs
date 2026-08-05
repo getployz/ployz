@@ -37,7 +37,10 @@ pub(super) async fn status_response(service: &ApiService) -> Response<HttpBody> 
     };
     let inputs = match inputs {
         Ok(inputs) => inputs,
-        Err(error) => return refusal_response(error.refusal()),
+        Err(error) => {
+            tracing::warn!(error = %error, "could not read status diagnostics");
+            return refusal_response(error.refusal());
+        }
     };
     let now_unix_seconds = match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(duration) => duration.as_secs(),
@@ -59,7 +62,10 @@ pub(super) async fn status_response(service: &ApiService) -> Response<HttpBody> 
 pub(super) async fn doctor_response(service: &ApiService) -> Response<HttpBody> {
     let rows = match read_doctor_rows(&service.corrosion).await {
         Ok(rows) => rows,
-        Err(error) => return refusal_response(error.refusal()),
+        Err(error) => {
+            tracing::warn!(error = %error, "could not read doctor diagnostics");
+            return refusal_response(error.refusal());
+        }
     };
     let cluster = match accepted_cluster(&service.cluster_id, rows.cluster.clone()) {
         Ok(Some(cluster)) => cluster,
@@ -93,10 +99,7 @@ async fn read_status_inputs(
 ) -> Result<StatusInputs, DiagnosticsReadError> {
     let cluster_rows = query_rows(corrosion, select_cluster(cluster_id));
     let machine_rows = query_rows(corrosion, select_all(CorrosionTable::Machines));
-    let local_status_rows = query_rows(
-        corrosion,
-        select_by_id(CorrosionTable::MachineStatus, local_machine_id.as_str()),
-    );
+    let local_status_rows = query_rows(corrosion, select_local_machine_status(local_machine_id));
     let (cluster_rows, machine_rows, local_status_rows) =
         tokio::try_join!(cluster_rows, machine_rows, local_status_rows)?;
     let cluster = accepted_cluster(cluster_id, cluster_rows)?;
@@ -259,17 +262,41 @@ fn doctor_statements() -> [Statement; 12] {
 }
 
 fn select_cluster(cluster_id: &ClusterId) -> Statement {
-    select_by_id(CorrosionTable::Cluster, cluster_id.as_str())
+    Statement::with_params(
+        "SELECT id, document FROM cluster WHERE id = ?",
+        vec![ployz_core::corrosion::SqliteParameter::Text(
+            cluster_id.as_str().to_owned(),
+        )],
+    )
 }
 
 fn select_all(table: CorrosionTable) -> Statement {
-    Statement::simple(format!("SELECT id, document FROM {}", table.as_str()))
+    match table {
+        CorrosionTable::MachineStatus => {
+            Statement::simple("SELECT machine_id AS id, document FROM machine_status")
+        }
+        CorrosionTable::Cluster
+        | CorrosionTable::Machines
+        | CorrosionTable::Peers
+        | CorrosionTable::Tokens
+        | CorrosionTable::Namespaces
+        | CorrosionTable::Services
+        | CorrosionTable::RouteBindings
+        | CorrosionTable::Containers
+        | CorrosionTable::Operations
+        | CorrosionTable::CertHoldings
+        | CorrosionTable::AcmeHttp01 => {
+            Statement::simple(format!("SELECT id, document FROM {}", table.as_str()))
+        }
+    }
 }
 
-fn select_by_id(table: CorrosionTable, id: &str) -> Statement {
+fn select_local_machine_status(machine_id: &MachineRowId) -> Statement {
     Statement::with_params(
-        format!("SELECT id, document FROM {} WHERE id = ?", table.as_str()),
-        vec![ployz_core::corrosion::SqliteParameter::Text(id.to_owned())],
+        "SELECT machine_id AS id, document FROM machine_status WHERE machine_id = ?",
+        vec![ployz_core::corrosion::SqliteParameter::Text(
+            machine_id.as_str().to_owned(),
+        )],
     )
 }
 

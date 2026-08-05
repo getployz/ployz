@@ -250,7 +250,7 @@ async fn wait_for_ready_status(cli: &Path, home: &Path, target: &SshTarget) -> R
             .output()
             .map_err(|error| format!("could not run shipped CLI {}: {error}", cli.display()))?;
         let stdout = String::from_utf8_lossy(&output.stdout);
-        if output.status.success() && status_is_ready_and_caught_up(&stdout) {
+        if output.status.success() && status_has_ready_sync(&stdout) {
             return Ok(());
         }
         last = format!(
@@ -262,18 +262,18 @@ async fn wait_for_ready_status(cli: &Path, home: &Path, target: &SshTarget) -> R
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     Err(format!(
-        "shipped status did not report a ready, caught-up machine table in 45s: {last}"
+        "shipped status did not report a ready machine table with a settled sync state in 45s: {last}"
     ))
 }
 
-fn status_is_ready_and_caught_up(output: &str) -> bool {
+fn status_has_ready_sync(output: &str) -> bool {
     let lines = output.lines().collect::<Vec<_>>();
     lines
         .iter()
         .any(|line| line.starts_with(&format!("cluster\t{CLUSTER_NAME}\t")))
-        && lines
-            .iter()
-            .any(|line| line.starts_with("sync\tcaught up\t"))
+        && lines.iter().any(|line| {
+            line.starts_with("sync\tcaught up\t") || line.starts_with("sync\tno lag sample\t")
+        })
         && lines.contains(&"barrier\tready")
         && lines.contains(&"NAME\tHANDSHAKE\tADDR")
         && lines.iter().any(|line| {
@@ -451,7 +451,7 @@ mod tests {
     }
 
     #[test]
-    fn status_output_reports_a_ready_caught_up_machine_table() {
+    fn status_output_reports_a_ready_machine_table_with_settled_sync() {
         let output = "cluster\tdind-laptop-dial\t01ARZ3NDEKTSV4RRFFQ69G5FAV\t1 machine\n\
 sync\tcaught up\tlag p99 0\t(as seen from machine-one)\n\
 barrier\tready\n\
@@ -459,11 +459,14 @@ barrier\tready\n\
 NAME\tHANDSHAKE\tADDR\n\
 machine-one\tself\tfd12:3456:789a::1\n";
 
-        assert!(status_is_ready_and_caught_up(output));
-        assert!(!status_is_ready_and_caught_up(
+        assert!(status_has_ready_sync(output));
+        assert!(status_has_ready_sync(
             &output.replace("sync\tcaught up", "sync\tno lag sample")
         ));
-        assert!(!status_is_ready_and_caught_up(
+        assert!(!status_has_ready_sync(
+            &output.replace("sync\tcaught up\tlag p99 0", "sync\tsyncing\tgaps 1")
+        ));
+        assert!(!status_has_ready_sync(
             &output.replace("NAME\tHANDSHAKE\tADDR", "NAME\tADDR")
         ));
     }

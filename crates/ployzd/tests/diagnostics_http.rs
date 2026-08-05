@@ -127,12 +127,28 @@ async fn authenticated_doctor_performs_one_read_only_sweep_of_every_table() {
         panic!("doctor request did not perform its complete query sweep");
     };
     for table in CorrosionTable::ALL {
+        let expected = match table {
+            CorrosionTable::MachineStatus => {
+                "SELECT machine_id AS id, document FROM machine_status".to_owned()
+            }
+            CorrosionTable::Cluster
+            | CorrosionTable::Machines
+            | CorrosionTable::Peers
+            | CorrosionTable::Tokens
+            | CorrosionTable::Namespaces
+            | CorrosionTable::Services
+            | CorrosionTable::RouteBindings
+            | CorrosionTable::Containers
+            | CorrosionTable::Operations
+            | CorrosionTable::CertHoldings
+            | CorrosionTable::AcmeHttp01 => {
+                format!("SELECT id, document FROM {}", table.as_str())
+            }
+        };
         assert_eq!(
             doctor_queries
                 .iter()
-                .filter(|query| {
-                    **query == format!("SELECT id, document FROM {}", table.as_str())
-                })
+                .filter(|query| **query == expected)
                 .count(),
             1,
             "table {} is swept exactly once",
