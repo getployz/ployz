@@ -135,7 +135,10 @@ pub enum LinuxFoundingPreflight {
     NoOp {
         canonical_request: ValidatedFoundingRequest,
     },
-    Refused(FoundingRefusal),
+    Refused {
+        refusal: FoundingRefusal,
+        cluster_id: Option<ClusterId>,
+    },
 }
 
 /// Classifies local state without storage probes, downloads, or host mutation.
@@ -145,11 +148,26 @@ pub fn inspect_linux_founding(
 ) -> Result<LinuxFoundingPreflight, FoundingPreparationError> {
     require_linux_root(runner)?;
     let arrival = state.observe_arrival().map_err(preparation)?;
+    let cluster_id = match &arrival {
+        ployz_core::founding::FoundingArrival::Clean => None,
+        ployz_core::founding::FoundingArrival::Partial {
+            persisted_cluster_id,
+        }
+        | ployz_core::founding::FoundingArrival::Complete {
+            persisted_cluster_id,
+        }
+        | ployz_core::founding::FoundingArrival::Joined {
+            persisted_cluster_id,
+        } => Some(persisted_cluster_id.clone()),
+    };
     let request = read_persisted_request(state.path())?;
     match read_door_material_state(state) {
         Ok(DoorMaterialState::Complete(_) | DoorMaterialState::Incomplete) => {}
         Err(FoundingPreparationError::Refused(refusal)) => {
-            return Ok(LinuxFoundingPreflight::Refused(refusal));
+            return Ok(LinuxFoundingPreflight::Refused {
+                refusal,
+                cluster_id,
+            });
         }
         Err(error) => return Err(error),
     }
@@ -186,7 +204,10 @@ pub fn inspect_linux_founding(
                 },
             )
             .expect_err("joined arrival always refuses founding");
-            Ok(LinuxFoundingPreflight::Refused(refusal))
+            Ok(LinuxFoundingPreflight::Refused {
+                refusal,
+                cluster_id: Some(persisted_cluster_id),
+            })
         }
     }
 }

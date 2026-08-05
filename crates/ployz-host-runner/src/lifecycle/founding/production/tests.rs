@@ -500,6 +500,10 @@ fn published_partial_door_material_requires_explicit_machine_reset() {
     let directory = tempfile::tempdir().expect("tempdir");
     let state = FoundingStateDirectory::initialize(directory.path().join("state"))
         .expect("state initializes");
+    let cluster_id = ClusterId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("cluster id");
+    state
+        .persist_cluster_id_exclusive(&cluster_id)
+        .expect("persist cluster id");
     fs::write(state.path().join(DOOR_KEY_FILE), b"published partial key")
         .expect("write crash remnant");
     state
@@ -514,11 +518,12 @@ fn published_partial_door_material_requires_explicit_machine_reset() {
     );
     assert!(matches!(
         preflight,
-        Ok(LinuxFoundingPreflight::Refused(
-            FoundingRefusal::IncompleteDoorMaterial {
+        Ok(LinuxFoundingPreflight::Refused {
+            refusal: FoundingRefusal::IncompleteDoorMaterial {
                 repair_command: FoundingRepairCommand::ResetMachine,
-            }
-        ))
+            },
+            cluster_id: Some(found_cluster_id),
+        }) if found_cluster_id == cluster_id
     ));
     let result = try_prepare_plain_founding(
         &state,
