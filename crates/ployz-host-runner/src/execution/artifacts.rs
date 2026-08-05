@@ -1,6 +1,7 @@
 //! Artifact targets installed by Host Runner.
 
 use sha2::{Digest, Sha256};
+use std::fmt;
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -140,6 +141,55 @@ pub fn verify_artifact_file(
     Ok(VerifiedArtifactFile {
         path: path.to_path_buf(),
         digest: actual,
+    })
+}
+
+/// Acquires a remote artifact into `<store>/<sha256>` without exposing
+/// unverified bytes at the content-addressed path.
+pub fn acquire_remote_artifact_content_addressed<E: fmt::Display>(
+    source: &str,
+    expected: &Sha256Digest,
+    store: &Path,
+    download: impl FnOnce(&Path) -> Result<(), E>,
+) -> Result<VerifiedArtifactFile, ArtifactInstallError> {
+    if !store.is_absolute() {
+        return Err(ArtifactInstallError::RelativeContentStore {
+            path: store.to_path_buf(),
+        });
+    }
+    fs::create_dir_all(store).map_err(|error| ArtifactInstallError::CreateParentFailed {
+        path: store.to_path_buf(),
+        message: error.to_string(),
+    })?;
+    let cached = store.join(expected.as_str());
+    if cached
+        .try_exists()
+        .map_err(|error| ArtifactInstallError::InspectCachedFailed {
+            path: cached.clone(),
+            message: error.to_string(),
+        })?
+    {
+        match verify_artifact_file(&cached, expected) {
+            Ok(verified) => return Ok(verified),
+            Err(ArtifactVerificationError::DigestMismatch { .. }) => {}
+            Err(error @ ArtifactVerificationError::ReadFailed { .. }) => {
+                return Err(ArtifactInstallError::VerificationFailed(error));
+            }
+        }
+    }
+
+    let staged = create_empty_staged_artifact(store, expected.as_str(), "ployz-download")?;
+    download(staged.path()).map_err(|error| ArtifactInstallError::DownloadFailed {
+        source_url: source.to_owned(),
+        staged_path: staged.path().to_path_buf(),
+        message: error.to_string(),
+    })?;
+    let verified = verify_artifact_file(staged.path(), expected)
+        .map_err(ArtifactInstallError::VerificationFailed)?;
+    let published = stage_verified_artifact_content_addressed(&verified, store)?;
+    Ok(VerifiedArtifactFile {
+        path: published.staged_path,
+        digest: published.digest,
     })
 }
 
@@ -322,25 +372,32 @@ fn create_staged_artifact(
     file_name: &std::ffi::OsStr,
 ) -> Result<StagedFile, ArtifactInstallError> {
     let file_name = file_name.to_string_lossy();
-    let mut staged = StagedFile::create(parent, &file_name, "ployz-install", FileMode::Plain)
-        .map_err(|error| match error {
-            StagedFileError::ClockWentBackwards { message } => {
-                ArtifactInstallError::ClockWentBackwards { message }
-            }
-            StagedFileError::CreateFailed {
-                staged_path,
-                message,
-            } => ArtifactInstallError::CreateStagedFailed {
-                staged_path,
-                message,
-            },
-            StagedFileError::Exhausted { directory } => {
-                ArtifactInstallError::CreateStagedExhausted { parent: directory }
-            }
-        })?;
+    let mut staged = create_empty_staged_artifact(parent, &file_name, "ployz-install")?;
     let staged_path = staged.path().to_path_buf();
     copy_file_to_writer(source_path, &staged_path, staged.file())?;
     Ok(staged)
+}
+
+fn create_empty_staged_artifact(
+    parent: &Path,
+    file_name: &str,
+    purpose: &str,
+) -> Result<StagedFile, ArtifactInstallError> {
+    StagedFile::create(parent, file_name, purpose, FileMode::Plain).map_err(|error| match error {
+        StagedFileError::ClockWentBackwards { message } => {
+            ArtifactInstallError::ClockWentBackwards { message }
+        }
+        StagedFileError::CreateFailed {
+            staged_path,
+            message,
+        } => ArtifactInstallError::CreateStagedFailed {
+            staged_path,
+            message,
+        },
+        StagedFileError::Exhausted { directory } => {
+            ArtifactInstallError::CreateStagedExhausted { parent: directory }
+        }
+    })
 }
 
 fn copy_file_to_writer(
@@ -420,6 +477,17 @@ pub enum ArtifactInstallError {
     VerificationFailed(ArtifactVerificationError),
     #[error("content-addressed artifact store {} must be absolute", path.display())]
     RelativeContentStore { path: PathBuf },
+    #[error("failed to inspect cached artifact {}: {message}", path.display())]
+    InspectCachedFailed { path: PathBuf, message: String },
+    #[error(
+        "artifact download from {source_url} to {} failed: {message}",
+        staged_path.display()
+    )]
+    DownloadFailed {
+        source_url: String,
+        staged_path: PathBuf,
+        message: String,
+    },
     #[error(
         "verified artifact digest {} does not match install target {} for {}",
         verified.as_str(),

@@ -15,8 +15,8 @@ use ployz_core::corrosion::{
 };
 use ployz_core::deploy::ZfsPoolName;
 use ployz_core::founding::{
-    FoundingDriverEnrollment, FoundingRefusal, FoundingRequest, InitStorageChoice,
-    InitStorageFacts, InitStorageSelectionError, ValidatedFoundingRequest,
+    FoundingDriverEnrollment, FoundingRefusal, FoundingRepairCommand, FoundingRequest,
+    InitStorageChoice, InitStorageFacts, InitStorageSelectionError, ValidatedFoundingRequest,
     classify_founding_arrival, select_init_storage,
 };
 use ployz_core::ids::{ClusterId, MachineRowId, PeerId};
@@ -30,11 +30,11 @@ use crate::{
     ArtifactKind, ArtifactSourceView, FileMode, HostPlatformProfile, HostRunnerCommandRunner,
     PloyzdRole, PloyzdRoleEnvironmentFile, PoolSelection, ReleaseArtifacts, SupervisorBackend,
     SupervisorChange, SupervisorDirectories, SupervisorUnitSpec, SystemHostRunnerCommandRunner,
-    artifact_target, detect_host_platform, install_verified_artifact, prepare_storage,
-    verify_artifact_file, write_durable_file,
+    acquire_remote_artifact_content_addressed, artifact_target, detect_host_platform,
+    install_verified_artifact, prepare_storage, verify_artifact_file, write_durable_file,
 };
 
-use super::{FoundingHostEffects, FoundingStateDirectory};
+use super::{FoundingHostEffects, FoundingMilestone, FoundingStateDirectory};
 
 const MACHINE_SEED_FILE: &str = "machine-seed.json";
 const FOUNDING_REQUEST_FILE: &str = "founding-request.json";
@@ -135,7 +135,10 @@ pub enum LinuxFoundingPreflight {
     NoOp {
         canonical_request: ValidatedFoundingRequest,
     },
-    Refused(FoundingRefusal),
+    Refused {
+        refusal: FoundingRefusal,
+        cluster_id: Option<ClusterId>,
+    },
 }
 
 /// Classifies local state without storage probes, downloads, or host mutation.
@@ -145,7 +148,29 @@ pub fn inspect_linux_founding(
 ) -> Result<LinuxFoundingPreflight, FoundingPreparationError> {
     require_linux_root(runner)?;
     let arrival = state.observe_arrival().map_err(preparation)?;
+    let cluster_id = match &arrival {
+        ployz_core::founding::FoundingArrival::Clean => None,
+        ployz_core::founding::FoundingArrival::Partial {
+            persisted_cluster_id,
+        }
+        | ployz_core::founding::FoundingArrival::Complete {
+            persisted_cluster_id,
+        }
+        | ployz_core::founding::FoundingArrival::Joined {
+            persisted_cluster_id,
+        } => Some(persisted_cluster_id.clone()),
+    };
     let request = read_persisted_request(state.path())?;
+    match read_door_material_state(state) {
+        Ok(DoorMaterialState::Complete(_) | DoorMaterialState::Incomplete) => {}
+        Err(FoundingPreparationError::Refused(refusal)) => {
+            return Ok(LinuxFoundingPreflight::Refused {
+                refusal,
+                cluster_id,
+            });
+        }
+        Err(error) => return Err(error),
+    }
     match arrival {
         ployz_core::founding::FoundingArrival::Clean => Ok(LinuxFoundingPreflight::Clean),
         ployz_core::founding::FoundingArrival::Partial {
@@ -179,7 +204,10 @@ pub fn inspect_linux_founding(
                 },
             )
             .expect_err("joined arrival always refuses founding");
-            Ok(LinuxFoundingPreflight::Refused(refusal))
+            Ok(LinuxFoundingPreflight::Refused {
+                refusal,
+                cluster_id: Some(persisted_cluster_id),
+            })
         }
     }
 }
@@ -322,13 +350,13 @@ pub fn prepare_linux_founding<R: HostRunnerCommandRunner>(
     let bootstrap_credential = FoundingBootstrapCredential(read_or_generate_secret(
         &state.path().join(BOOTSTRAP_CREDENTIAL_FILE),
     )?);
+    let _door_material = read_door_material_state(state)?;
     let effects = LinuxFoundingHostEffects {
         state: state.clone(),
         request: request.clone(),
         artifacts,
         corrosion_embedded_version,
         machine_seed: seed,
-        door_material: read_or_generate_door_material(state.path())?,
         bootstrap_credential: bootstrap_credential.clone(),
         corrosion_token: read_or_generate_secret(&state.path().join(CORROSION_TOKEN_FILE))?,
         zfs_pool,
@@ -389,6 +417,11 @@ struct DoorMaterial {
     fingerprint: String,
 }
 
+enum DoorMaterialState {
+    Complete(DoorMaterial),
+    Incomplete,
+}
+
 fn read_persisted_request(
     state: &Path,
 ) -> Result<Option<ValidatedFoundingRequest>, FoundingPreparationError> {
@@ -415,13 +448,13 @@ fn prepared_from_request<R: HostRunnerCommandRunner>(
     let bootstrap_credential = FoundingBootstrapCredential(read_or_generate_secret(
         &state.path().join(BOOTSTRAP_CREDENTIAL_FILE),
     )?);
+    let _door_material = read_door_material_state(state)?;
     let effects = LinuxFoundingHostEffects {
         state: state.clone(),
         request: request.clone(),
         artifacts,
         corrosion_embedded_version,
         machine_seed: seed,
-        door_material: read_or_generate_door_material(state.path())?,
         bootstrap_credential: bootstrap_credential.clone(),
         corrosion_token: read_or_generate_secret(&state.path().join(CORROSION_TOKEN_FILE))?,
         zfs_pool: read_required_zfs_pool(state.path(), request.request().machine.storage.mode)?,
@@ -485,36 +518,52 @@ fn read_or_generate_secret(path: &Path) -> Result<String, FoundingPreparationErr
     }
 }
 
-fn read_or_generate_door_material(state: &Path) -> Result<DoorMaterial, FoundingPreparationError> {
-    let certificate = state.join(DOOR_CERTIFICATE_FILE);
-    let key = state.join(DOOR_KEY_FILE);
-    let fingerprint = state.join(DOOR_FINGERPRINT_FILE);
-    match (
-        fs::read_to_string(&certificate),
-        fs::read_to_string(&key),
-        fs::read_to_string(&fingerprint),
-    ) {
-        (Ok(certificate_pem), Ok(private_key_pem), Ok(fingerprint)) => Ok(DoorMaterial {
-            certificate_pem,
-            private_key_pem,
+fn read_door_material_state(
+    state: &FoundingStateDirectory,
+) -> Result<DoorMaterialState, FoundingPreparationError> {
+    let certificate = state.path().join(DOOR_CERTIFICATE_FILE);
+    let key = state.path().join(DOOR_KEY_FILE);
+    let fingerprint = state.path().join(DOOR_FINGERPRINT_FILE);
+    let certificate_result = fs::read_to_string(&certificate);
+    let key_result = fs::read_to_string(&key);
+    let fingerprint_result = fs::read_to_string(&fingerprint);
+    if let (Ok(certificate_pem), Ok(private_key_pem), Ok(fingerprint)) =
+        (&certificate_result, &key_result, &fingerprint_result)
+    {
+        return Ok(DoorMaterialState::Complete(DoorMaterial {
+            certificate_pem: certificate_pem.clone(),
+            private_key_pem: private_key_pem.clone(),
             fingerprint: fingerprint.trim().to_owned(),
-        }),
-        (Err(cert), Err(key), Err(fingerprint))
-            if cert.kind() == std::io::ErrorKind::NotFound
-                && key.kind() == std::io::ErrorKind::NotFound
-                && fingerprint.kind() == std::io::ErrorKind::NotFound =>
-        {
-            let rcgen::CertifiedKey { cert, signing_key } =
-                rcgen::generate_simple_self_signed(["door.ployz.internal".to_owned()])
-                    .map_err(preparation)?;
-            Ok(DoorMaterial {
-                fingerprint: format!("{:x}", Sha256::digest(cert.der())),
-                certificate_pem: cert.pem(),
-                private_key_pem: signing_key.serialize_pem(),
-            })
-        }
-        _ => Err(preparation("cluster door TLS material is incomplete")),
+        }));
     }
+    for result in [&certificate_result, &key_result, &fingerprint_result] {
+        if let Err(error) = result
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(preparation(error));
+        }
+    }
+    if state
+        .milestone_complete(FoundingMilestone::DoorMaterial)
+        .map_err(preparation)?
+    {
+        return Err(FoundingPreparationError::Refused(
+            FoundingRefusal::IncompleteDoorMaterial {
+                repair_command: FoundingRepairCommand::ResetMachine,
+            },
+        ));
+    }
+    Ok(DoorMaterialState::Incomplete)
+}
+
+fn generate_door_material() -> Result<DoorMaterial, FailureMessage> {
+    let rcgen::CertifiedKey { cert, signing_key } =
+        rcgen::generate_simple_self_signed(["door.ployz.internal".to_owned()]).map_err(failure)?;
+    Ok(DoorMaterial {
+        fingerprint: format!("{:x}", Sha256::digest(cert.der())),
+        certificate_pem: cert.pem(),
+        private_key_pem: signing_key.serialize_pem(),
+    })
 }
 
 fn read_or_generate_machine_seed(state: &Path) -> Result<MachineSeed, FoundingPreparationError> {
@@ -669,7 +718,6 @@ pub struct LinuxFoundingHostEffects<R = SystemHostRunnerCommandRunner> {
     artifacts: ReleaseArtifacts,
     corrosion_embedded_version: String,
     machine_seed: MachineSeed,
-    door_material: DoorMaterial,
     bootstrap_credential: FoundingBootstrapCredential,
     corrosion_token: String,
     zfs_pool: Option<ZfsPoolName>,

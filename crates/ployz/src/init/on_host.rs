@@ -57,8 +57,11 @@ pub async fn execute(command: InitCommand) -> Result<OnHostSuccess, OnHostInitEr
                 storage: request.machine.storage,
             });
         }
-        LinuxFoundingPreflight::Refused(refusal) => {
-            return report_preflight_refusal(&command.driver, refusal).await;
+        LinuxFoundingPreflight::Refused {
+            refusal,
+            cluster_id,
+        } => {
+            return report_preflight_refusal(&command.driver, cluster_id.as_ref(), refusal).await;
         }
         LinuxFoundingPreflight::Clean => None,
         LinuxFoundingPreflight::Resume { canonical_request } => canonical_request,
@@ -172,6 +175,9 @@ pub async fn execute(command: InitCommand) -> Result<OnHostSuccess, OnHostInitEr
                     FoundingFailure::Refused(FoundingRefusal::ForeignState {
                         repair_command,
                         ..
+                    })
+                    | FoundingFailure::Refused(FoundingRefusal::IncompleteDoorMaterial {
+                        repair_command,
                     }) => Some(repair_command.as_str().to_owned()),
                     FoundingFailure::Refused(FoundingRefusal::InvalidRequest { .. })
                     | FoundingFailure::State { .. }
@@ -201,23 +207,42 @@ pub async fn execute(command: InitCommand) -> Result<OnHostSuccess, OnHostInitEr
 
 async fn report_preflight_refusal(
     driver: &InitDriver,
+    cluster_id: Option<&ployz_core::ids::ClusterId>,
     refusal: FoundingRefusal,
 ) -> Result<OnHostSuccess, OnHostInitError> {
-    if let (
-        InitDriver::Cloud(token),
-        FoundingRefusal::ForeignState {
-            requested_cluster_id,
-            found_cluster_id,
-            repair_command,
-        },
-    ) = (driver, &refusal)
-    {
+    if let InitDriver::Cloud(token) = driver {
+        let failure = match (&refusal, cluster_id) {
+            (
+                FoundingRefusal::ForeignState {
+                    requested_cluster_id,
+                    found_cluster_id,
+                    repair_command,
+                },
+                _,
+            ) => Some((
+                requested_cluster_id.clone(),
+                format!("machine contains state from cluster {found_cluster_id}"),
+                repair_command,
+            )),
+            (FoundingRefusal::IncompleteDoorMaterial { repair_command }, Some(cluster_id)) => {
+                Some((
+                    cluster_id.clone(),
+                    "machine door material is incomplete".to_owned(),
+                    repair_command,
+                ))
+            }
+            (FoundingRefusal::InvalidRequest { .. }, _)
+            | (FoundingRefusal::IncompleteDoorMaterial { .. }, None) => None,
+        };
+        let Some((cluster_id, reason, repair_command)) = failure else {
+            return Err(OnHostInitError::Refused(refusal));
+        };
         let cloud = CloudEnvelope::decode(token)?;
         cloud
             .report(CloudProgress::Failed {
-                cluster_id: requested_cluster_id.clone(),
+                cluster_id,
                 machine_id: None,
-                reason: format!("machine contains state from cluster {found_cluster_id}"),
+                reason,
                 repair_command: Some(repair_command.as_str().to_owned()),
             })
             .await?;
@@ -536,6 +561,30 @@ mod tests {
             .expect("matching Cloud token resumes");
     }
 
+    #[test]
+    fn incomplete_door_preparation_is_preserved_as_a_typed_refusal() {
+        let refusal = FoundingRefusal::IncompleteDoorMaterial {
+            repair_command: ployz_core::founding::FoundingRepairCommand::ResetMachine,
+        };
+
+        assert!(matches!(
+            map_preparation(FoundingPreparationError::Refused(refusal.clone())),
+            OnHostInitError::Refused(found) if found == refusal
+        ));
+    }
+
+    #[tokio::test]
+    async fn incomplete_door_preflight_routes_through_the_typed_on_host_refusal() {
+        let refusal = FoundingRefusal::IncompleteDoorMaterial {
+            repair_command: ployz_core::founding::FoundingRepairCommand::ResetMachine,
+        };
+
+        assert!(matches!(
+            report_preflight_refusal(&InitDriver::OnHost, None, refusal.clone()).await,
+            Err(OnHostInitError::Refused(found)) if found == refusal
+        ));
+    }
+
     #[tokio::test]
     async fn ready_observer_sends_the_ready_progress_update() {
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
@@ -609,7 +658,7 @@ mod tests {
             found_cluster_id: found_cluster_id.clone(),
             repair_command: ployz_core::founding::FoundingRepairCommand::ResetMachine,
         };
-        let error = report_preflight_refusal(&InitDriver::Cloud(token), refusal.clone())
+        let error = report_preflight_refusal(&InitDriver::Cloud(token), None, refusal.clone())
             .await
             .expect_err("foreign state remains a refusal");
         assert!(matches!(error, OnHostInitError::Refused(found) if found == refusal));
@@ -622,6 +671,54 @@ mod tests {
         assert!(body.contains("\"state\":\"failed\""));
         assert!(body.contains(&format!("\"cluster_id\":\"{requested_cluster_id}\"")));
         assert!(body.contains(&found_cluster_id.to_string()));
+        assert!(body.contains("\"repair_command\":\"ployz machine reset\""));
+        assert!(!body.contains("machine_id"));
+        assert!(!body.contains("callback-secret"));
+    }
+
+    #[tokio::test]
+    async fn incomplete_door_cloud_preflight_reports_failed_before_returning_refusal() {
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("callback listener");
+        let address = listener.local_addr().expect("callback address");
+        let callback = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("callback accept");
+            let request = read_http_request(&mut stream).await;
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await
+                .expect("callback response");
+            request
+        });
+        let peer_id = PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAY").expect("peer id");
+        let public_key = WireGuardPublicKey::try_new(CLOUD_PUBLIC_KEY).expect("public key");
+        let token = cloud_token(
+            &format!("http://{address}/bootstrap"),
+            &peer_id,
+            &public_key,
+        );
+        let cluster_id = ClusterId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("cluster id");
+        let refusal = FoundingRefusal::IncompleteDoorMaterial {
+            repair_command: ployz_core::founding::FoundingRepairCommand::ResetMachine,
+        };
+        let error = report_preflight_refusal(
+            &InitDriver::Cloud(token),
+            Some(&cluster_id),
+            refusal.clone(),
+        )
+        .await
+        .expect_err("incomplete door material remains a refusal");
+        assert!(matches!(error, OnHostInitError::Refused(found) if found == refusal));
+
+        let request = callback.await.expect("callback task");
+        let (headers, body) = request.split_once("\r\n\r\n").expect("HTTP request body");
+        assert!(headers.contains(&format!(
+            "idempotency-key: ployz-init-{cluster_id}-preflight-failed"
+        )));
+        assert!(body.contains("\"state\":\"failed\""));
+        assert!(body.contains(&format!("\"cluster_id\":\"{cluster_id}\"")));
+        assert!(body.contains("door material is incomplete"));
         assert!(body.contains("\"repair_command\":\"ployz machine reset\""));
         assert!(!body.contains("machine_id"));
         assert!(!body.contains("callback-secret"));

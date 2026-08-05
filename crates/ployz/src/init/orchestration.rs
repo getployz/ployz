@@ -410,6 +410,7 @@ mod tests {
     struct RecordingHost {
         calls: Vec<&'static str>,
         fail_at: Option<&'static str>,
+        door_lock_state: Option<FoundingStateDirectory>,
     }
 
     impl RecordingHost {
@@ -433,6 +434,12 @@ mod tests {
             self.record("machine_material")
         }
         fn ensure_cluster_door_material(&mut self) -> Result<(), FailureMessage> {
+            if let Some(state) = &self.door_lock_state {
+                assert!(matches!(
+                    state.try_lock(),
+                    Err(FoundingStateError::InitInProgress)
+                ));
+            }
             self.record("door_material")
         }
         fn prepare_selected_storage(&mut self) -> Result<(), FailureMessage> {
@@ -587,6 +594,21 @@ mod tests {
                 persisted_cluster_id: cluster_id(CLUSTER),
             }
         );
+    }
+
+    #[tokio::test]
+    async fn door_material_effect_runs_while_the_founding_lock_is_held() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let state = FoundingStateDirectory::open(directory.path()).expect("state directory");
+        let mut host = recording_host(None);
+        host.door_lock_state = Some(state.clone());
+        let mut control = recording_control(None);
+
+        found_machine_one(&state, &request(CLUSTER), &mut host, &mut control)
+            .await
+            .expect("founding succeeds under one lock");
+
+        assert!(host.calls.contains(&"door_material"));
     }
 
     #[tokio::test]
@@ -754,6 +776,7 @@ mod tests {
         RecordingHost {
             calls: Vec::new(),
             fail_at,
+            door_lock_state: None,
         }
     }
 

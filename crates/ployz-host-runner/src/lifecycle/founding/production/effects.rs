@@ -24,19 +24,21 @@ impl<R: HostRunnerCommandRunner> LinuxFoundingHostEffects<R> {
         spec: &ployz_core::install::InstallArtifactSpec,
     ) -> Result<(), FailureMessage> {
         let target = artifact_target(kind, spec).map_err(failure)?;
-        let source = match target.source_view() {
-            ArtifactSourceView::LocalPath(path) => path.to_path_buf(),
+        let verified = match target.source_view() {
+            ArtifactSourceView::LocalPath(path) => {
+                verify_artifact_file(path, &target.digest).map_err(failure)?
+            }
             ArtifactSourceView::RemoteUrl(url) => {
                 let downloads = self.state.path().join("downloads");
-                fs::create_dir_all(&downloads).map_err(failure)?;
-                let download = downloads.join(spec.sha256.as_str());
-                if !download.exists() {
-                    self.runner.download(url, &download)?;
-                }
-                download
+                acquire_remote_artifact_content_addressed(
+                    url,
+                    &target.digest,
+                    &downloads,
+                    |staged| self.runner.download(url, staged),
+                )
+                .map_err(failure)?
             }
         };
-        let verified = verify_artifact_file(&source, &target.digest).map_err(failure)?;
         install_verified_artifact(&verified, &target).map_err(failure)?;
         Ok(())
     }
@@ -152,23 +154,40 @@ impl<R: HostRunnerCommandRunner> FoundingHostEffects for LinuxFoundingHostEffect
     }
 
     fn ensure_cluster_door_material(&mut self) -> Result<(), FailureMessage> {
+        let door_material = match read_door_material_state(&self.state).map_err(failure)? {
+            DoorMaterialState::Complete(door_material) => door_material,
+            DoorMaterialState::Incomplete => {
+                for path in [
+                    self.state.path().join(DOOR_KEY_FILE),
+                    self.state.path().join(DOOR_CERTIFICATE_FILE),
+                    self.state.path().join(DOOR_FINGERPRINT_FILE),
+                ] {
+                    match fs::remove_file(path) {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => return Err(failure(error)),
+                    }
+                }
+                generate_door_material()?
+            }
+        };
         write_durable_file(
             self.state.path(),
             DOOR_KEY_FILE,
             FileMode::Secret0600,
-            self.door_material.private_key_pem.as_bytes(),
+            door_material.private_key_pem.as_bytes(),
         )?;
         write_durable_file(
             self.state.path(),
             DOOR_CERTIFICATE_FILE,
             FileMode::Plain,
-            self.door_material.certificate_pem.as_bytes(),
+            door_material.certificate_pem.as_bytes(),
         )?;
         write_durable_file(
             self.state.path(),
             DOOR_FINGERPRINT_FILE,
             FileMode::Plain,
-            format!("{}\n", self.door_material.fingerprint).as_bytes(),
+            format!("{}\n", door_material.fingerprint).as_bytes(),
         )
     }
 

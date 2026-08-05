@@ -1,5 +1,6 @@
 use super::*;
 use crate::HostRunnerCommandOutput;
+use base64::Engine as _;
 
 #[test]
 fn founding_enables_only_implemented_roles() {
@@ -333,6 +334,223 @@ impl HostRunnerCommandRunner for RecordingRunner {
     }
 }
 
+#[derive(Debug)]
+struct DownloadRunner {
+    payload: Vec<u8>,
+    downloads: Vec<(String, PathBuf)>,
+}
+
+impl HostRunnerCommandRunner for DownloadRunner {
+    fn command(
+        &mut self,
+        program: &str,
+        _args: &[&str],
+    ) -> Result<HostRunnerCommandOutput, FailureMessage> {
+        match program {
+            "/usr/local/bin/corrosion" => Ok(output(true, "corrosion 0.2.0-beta.0\n")),
+            _ => Err(failure(format!("unexpected command {program}"))),
+        }
+    }
+
+    fn is_linux(&mut self) -> bool {
+        true
+    }
+
+    fn current_uid(&mut self) -> Result<u32, FailureMessage> {
+        Ok(0)
+    }
+
+    fn download(&mut self, url: &str, destination: &Path) -> Result<(), FailureMessage> {
+        self.downloads
+            .push((url.to_owned(), destination.to_path_buf()));
+        fs::write(destination, &self.payload).map_err(failure)
+    }
+
+    fn docker_info(&mut self) -> Result<(), FailureMessage> {
+        Ok(())
+    }
+
+    fn docker_is_installed(&mut self) -> bool {
+        true
+    }
+
+    fn docker_uses_containerd_snapshotter(&mut self) -> Result<bool, FailureMessage> {
+        Ok(true)
+    }
+
+    fn docker_has_insecure_registry(&mut self, _cidr: &str) -> Result<bool, FailureMessage> {
+        Ok(true)
+    }
+}
+
+#[test]
+fn corrupt_cached_remote_artifact_is_redownloaded_reverified_and_installed() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let state = FoundingStateDirectory::initialize(directory.path().join("state"))
+        .expect("state initializes");
+    let payload = b"verified ployzd artifact\n";
+    let digest = format!("{:x}", Sha256::digest(payload));
+    let artifacts = remote_artifacts(directory.path(), &digest);
+    let mut prepared = prepare_plain_founding(
+        &state,
+        artifacts,
+        DownloadRunner {
+            payload: payload.to_vec(),
+            downloads: Vec::new(),
+        },
+    );
+    let cached = state.path().join("downloads").join(&digest);
+    fs::create_dir_all(cached.parent().expect("cache has parent")).expect("create cache");
+    fs::write(&cached, b"partial").expect("write corrupt cached artifact");
+
+    prepared
+        .effects
+        .stage_exact_ployz_and_corrosion()
+        .expect("corrupt cache is repaired");
+
+    let [(url, staged)] = prepared.effects.runner.downloads.as_slice() else {
+        panic!("corrupt cache triggers one download");
+    };
+    assert_eq!(url, "https://releases.example/ployzd");
+    assert_ne!(staged, &cached);
+    assert!(!staged.exists());
+    assert_eq!(fs::read(cached).expect("cached artifact"), payload);
+    for name in ["ployzd", "ebpf", "ebpf-ctl", "corrosion", "schema"] {
+        assert_eq!(
+            fs::read(directory.path().join("installed").join(name)).expect("installed artifact"),
+            payload
+        );
+    }
+}
+
+#[test]
+fn every_unpublished_partial_door_material_subset_is_replaced_as_one_complete_set() {
+    const KEY: u8 = 0b001;
+    const CERTIFICATE: u8 = 0b010;
+    const FINGERPRINT: u8 = 0b100;
+
+    for present in 1_u8..0b111 {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let state = FoundingStateDirectory::initialize(directory.path().join("state"))
+            .expect("state initializes");
+        for (bit, file, contents) in [
+            (KEY, DOOR_KEY_FILE, "stale partial key"),
+            (CERTIFICATE, DOOR_CERTIFICATE_FILE, "stale partial cert"),
+            (
+                FINGERPRINT,
+                DOOR_FINGERPRINT_FILE,
+                "stale partial fingerprint",
+            ),
+        ] {
+            if present & bit != 0 {
+                fs::write(state.path().join(file), contents).expect("write crash remnant");
+            }
+        }
+        let mut prepared = prepare_plain_founding(
+            &state,
+            fixture_artifacts(),
+            RecordingRunner {
+                calls: Vec::new(),
+                allow_facts: false,
+            },
+        );
+
+        for (bit, file, contents) in [
+            (KEY, DOOR_KEY_FILE, "stale partial key"),
+            (CERTIFICATE, DOOR_CERTIFICATE_FILE, "stale partial cert"),
+            (
+                FINGERPRINT,
+                DOOR_FINGERPRINT_FILE,
+                "stale partial fingerprint",
+            ),
+        ] {
+            if present & bit == 0 {
+                assert!(!state.path().join(file).exists());
+            } else {
+                assert_eq!(
+                    fs::read_to_string(state.path().join(file)).expect("crash remnant survives"),
+                    contents,
+                    "subset {present:03b} preparation mutated {file}"
+                );
+            }
+        }
+        prepared
+            .effects
+            .ensure_cluster_door_material()
+            .expect("locked effect repairs and publishes replacement");
+        let certificate =
+            fs::read_to_string(state.path().join(DOOR_CERTIFICATE_FILE)).expect("certificate");
+        let private_key = fs::read_to_string(state.path().join(DOOR_KEY_FILE)).expect("key");
+        let fingerprint =
+            fs::read_to_string(state.path().join(DOOR_FINGERPRINT_FILE)).expect("fingerprint");
+        assert_eq!(
+            fingerprint.trim(),
+            format!("{:x}", Sha256::digest(pem_der(&certificate))),
+            "subset {present:03b} replacement fingerprint"
+        );
+
+        assert_ne!(certificate, "stale partial cert");
+        assert_ne!(private_key, "stale partial key");
+        assert_ne!(fingerprint, "stale partial fingerprint");
+    }
+}
+
+#[test]
+fn published_partial_door_material_requires_explicit_machine_reset() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let state = FoundingStateDirectory::initialize(directory.path().join("state"))
+        .expect("state initializes");
+    let cluster_id = ClusterId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("cluster id");
+    state
+        .persist_cluster_id_exclusive(&cluster_id)
+        .expect("persist cluster id");
+    fs::write(state.path().join(DOOR_KEY_FILE), b"published partial key")
+        .expect("write crash remnant");
+    state
+        .record_milestone(FoundingMilestone::DoorMaterial)
+        .expect("publish door milestone");
+    let preflight = inspect_linux_founding(
+        &state,
+        &mut RecordingRunner {
+            calls: Vec::new(),
+            allow_facts: false,
+        },
+    );
+    assert!(matches!(
+        preflight,
+        Ok(LinuxFoundingPreflight::Refused {
+            refusal: FoundingRefusal::IncompleteDoorMaterial {
+                repair_command: FoundingRepairCommand::ResetMachine,
+            },
+            cluster_id: Some(found_cluster_id),
+        }) if found_cluster_id == cluster_id
+    ));
+    let result = try_prepare_plain_founding(
+        &state,
+        fixture_artifacts(),
+        RecordingRunner {
+            calls: Vec::new(),
+            allow_facts: false,
+        },
+    );
+    let Err(error) = result else {
+        panic!("published partial material must not be regenerated");
+    };
+
+    assert!(matches!(
+        error,
+        FoundingPreparationError::Refused(FoundingRefusal::IncompleteDoorMaterial {
+            repair_command: FoundingRepairCommand::ResetMachine,
+        })
+    ));
+    assert_eq!(
+        fs::read(state.path().join(DOOR_KEY_FILE)).expect("partial key remains evidence"),
+        b"published partial key"
+    );
+    assert!(!state.path().join(DOOR_CERTIFICATE_FILE).exists());
+    assert!(!state.path().join(DOOR_FINGERPRINT_FILE).exists());
+}
+
 #[test]
 fn machine_material_persists_keys_without_mutating_keeper_owned_wireguard() {
     let directory = tempfile::tempdir().expect("tempdir");
@@ -394,6 +612,9 @@ fn persisted_request_and_secrets_are_reloaded_without_host_fact_probes() {
         .effects
         .ensure_cluster_door_material()
         .expect("door persists");
+    state
+        .record_milestone(FoundingMilestone::DoorMaterial)
+        .expect("complete door set can publish its milestone");
     write_durable_file(
         state.path(),
         BOOTSTRAP_CREDENTIAL_FILE,
@@ -414,9 +635,13 @@ fn persisted_request_and_secrets_are_reloaded_without_host_fact_probes() {
     let expected_request = serde_json::to_value(first.request.request()).expect("request wire");
     let expected_bootstrap = first.bootstrap_credential.clone();
     let expected_corrosion = first.effects.corrosion_token.clone();
-    let expected_door = first.effects.door_material.fingerprint.clone();
+    let expected_door = (
+        fs::read_to_string(state.path().join(DOOR_CERTIFICATE_FILE)).expect("certificate"),
+        fs::read_to_string(state.path().join(DOOR_KEY_FILE)).expect("key"),
+        fs::read_to_string(state.path().join(DOOR_FINGERPRINT_FILE)).expect("fingerprint"),
+    );
 
-    let second = prepare_linux_founding(
+    let mut second = prepare_linux_founding(
         &state,
         input("2026-08-05T12:00:00Z"),
         fixture_artifacts(),
@@ -434,7 +659,18 @@ fn persisted_request_and_secrets_are_reloaded_without_host_fact_probes() {
     );
     assert_eq!(second.bootstrap_credential, expected_bootstrap);
     assert_eq!(second.effects.corrosion_token, expected_corrosion);
-    assert_eq!(second.effects.door_material.fingerprint, expected_door);
+    second
+        .effects
+        .ensure_cluster_door_material()
+        .expect("complete door material is reused under the lock");
+    assert_eq!(
+        (
+            fs::read_to_string(state.path().join(DOOR_CERTIFICATE_FILE)).expect("certificate"),
+            fs::read_to_string(state.path().join(DOOR_KEY_FILE)).expect("key"),
+            fs::read_to_string(state.path().join(DOOR_FINGERPRINT_FILE)).expect("fingerprint"),
+        ),
+        expected_door
+    );
     assert_eq!(
         second.effects.zfs_pool.as_ref().map(ZfsPoolName::as_str),
         Some("tank")
@@ -481,6 +717,65 @@ fn fixture_artifacts() -> ReleaseArtifacts {
         corrosion_schema: spec("schema", "/usr/local/lib/ployz/corrosion-schema-v1.sql"),
         railpack: spec("railpack", "/usr/local/bin/railpack"),
     }
+}
+
+fn remote_artifacts(directory: &Path, digest: &str) -> ReleaseArtifacts {
+    let spec = |name: &str| ployz_core::install::InstallArtifactSpec {
+        version: ployz_core::install::InstallArtifactVersion::try_new("v1").expect("version"),
+        source: ployz_core::install::InstallArtifactSource::try_new(format!(
+            "https://releases.example/{name}"
+        ))
+        .expect("remote source"),
+        sha256: ployz_core::install::InstallSha256Digest::try_new(digest).expect("digest"),
+        install_path: ployz_core::install::AbsoluteInstallPath::try_new(
+            directory.join("installed").join(name).display().to_string(),
+        )
+        .expect("install path"),
+    };
+    ReleaseArtifacts {
+        ployzd: spec("ployzd"),
+        ebpf_bytecode: spec("ebpf"),
+        ebpf_ctl: spec("ebpf-ctl"),
+        corrosion: spec("corrosion"),
+        corrosion_schema: spec("schema"),
+        railpack: spec("railpack"),
+    }
+}
+
+fn prepare_plain_founding<R: HostRunnerCommandRunner>(
+    state: &FoundingStateDirectory,
+    artifacts: ReleaseArtifacts,
+    runner: R,
+) -> PreparedLinuxFounding<R> {
+    try_prepare_plain_founding(state, artifacts, runner).expect("plain preparation succeeds")
+}
+
+fn try_prepare_plain_founding<R: HostRunnerCommandRunner>(
+    state: &FoundingStateDirectory,
+    artifacts: ReleaseArtifacts,
+    runner: R,
+) -> Result<PreparedLinuxFounding<R>, FoundingPreparationError> {
+    let mut founding_input = input("2026-08-04T12:00:00Z");
+    founding_input.storage = InitStorageChoice::Flag {
+        mode: StorageMode::Plain,
+    };
+    prepare_linux_founding(
+        state,
+        founding_input,
+        artifacts,
+        "corrosion 0.2.0-beta.0".to_owned(),
+        runner,
+    )
+}
+
+fn pem_der(pem: &str) -> Vec<u8> {
+    let encoded = pem
+        .lines()
+        .filter(|line| !line.starts_with("-----"))
+        .collect::<String>();
+    base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .expect("valid certificate PEM")
 }
 
 fn output(success: bool, stdout: &str) -> HostRunnerCommandOutput {
