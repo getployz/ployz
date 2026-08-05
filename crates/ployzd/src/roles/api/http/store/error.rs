@@ -18,6 +18,11 @@ pub(in crate::roles::api::http) enum MutationStoreError {
         table: CorrosionTable,
         detail: String,
     },
+    #[error("accepted {table:?} shadow could not be decoded: {detail}")]
+    InvalidAcceptedShadow {
+        table: CorrosionTable,
+        detail: String,
+    },
     #[error("{table:?} contains duplicate primary key {id}")]
     DuplicatePrimaryKey { table: CorrosionTable, id: String },
     #[error("could not encode {table:?} document: {detail}")]

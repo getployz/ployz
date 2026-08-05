@@ -17,9 +17,9 @@ before beginning; the new cluster does not inherit prior intent.
 - Keep the operator machine available to run remote CLI commands and retain
   the deploy input required to declare namespaces and deploy services again.
 - Expect public ingress and internal DNS to be unavailable while gateway and
-  DNS roles are stopped. Docker containers, Docker volumes, and workload
-  images remain in place: `machine reset` never stops Docker or removes
-  Docker-owned data.
+  DNS roles are stopped. Docker containers, Docker volumes, Ployz-provisioned
+  volumes, and workload images remain in place: `machine reset` never stops
+  Docker or removes workload storage.
 
 ## Refound
 
@@ -29,9 +29,10 @@ before beginning; the new cluster does not inherit prior intent.
    sudo ployz machine reset
    ```
 
-   This stops Ployz and Corrosion and removes only their local state. Existing
-   workload containers continue to run, but Ployz no longer supplies their
-   gateway, DNS, or certificate machinery.
+   This stops Ployz and Corrosion and removes the local control-plane state,
+   while preserving workload-volume storage. Existing workload containers
+   continue to run, but Ployz no longer supplies their gateway, DNS, or
+   certificate machinery.
 
 2. Found the replacement cluster from the operator machine:
 
