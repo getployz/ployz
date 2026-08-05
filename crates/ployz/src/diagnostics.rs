@@ -676,6 +676,7 @@ mod tests {
         )));
         assert!(output.contains(&format!("ployz route rm web.example.com --id {ROW_LOSER}")));
         for command in [
+            format!("machine rm edge-a --id {ROW_LOSER}"),
             format!("peer rm laptop --id {ROW_LOSER}"),
             format!("namespace rm prod --id {ROW_LOSER}"),
             format!("service rm web --namespace-id {ROW_WINNER} --id {ROW_LOSER}"),

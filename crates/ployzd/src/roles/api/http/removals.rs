@@ -62,6 +62,7 @@ pub(super) async fn handle_removal(
         | V2Route::TokenRevoke(_)
         | V2Route::MachineEndpointSet
         | V2Route::MachineUpgrade
+        | V2Route::MachineRemove
         | V2Route::Join
         | V2Route::Status
         | V2Route::Doctor
