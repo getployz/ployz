@@ -30,6 +30,10 @@ pub fn refusal_summary(refusal: &FoundingRefusal) -> String {
         FoundingRefusal::InvalidRequest { reason } => {
             format!("Init refused: {reason}\n")
         }
+        FoundingRefusal::IncompleteDoorMaterial { repair_command } => format!(
+            "Init refused: cluster door TLS material is incomplete.\nRepair on the machine: {}\n",
+            repair_command.as_str()
+        ),
         FoundingRefusal::ForeignState { repair_command, .. } => format!(
             "Init refused: this machine belongs to another cluster.\nRepair on the machine: {}\n",
             repair_command.as_str()
@@ -98,5 +102,17 @@ mod tests {
             "Init refused: this machine belongs to another cluster.\nRepair on the machine: ployz machine reset\n"
         );
         assert!(!output.contains("--force"));
+    }
+
+    #[test]
+    fn incomplete_door_material_names_reset_without_silently_repairing() {
+        let output = refusal_summary(&FoundingRefusal::IncompleteDoorMaterial {
+            repair_command: FoundingRepairCommand::ResetMachine,
+        });
+
+        assert_eq!(
+            output,
+            "Init refused: cluster door TLS material is incomplete.\nRepair on the machine: ployz machine reset\n"
+        );
     }
 }

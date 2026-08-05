@@ -296,7 +296,6 @@ mod tests {
         assert!(script.starts_with(
             "curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 https://ployz.sh | sh && 'ployz' 'init'"
         ));
-        assert!(!script.contains("'sudo' 'ployz' 'init'"));
         assert!(script.contains("'--driver-peer-public-key'"));
         assert!(script.contains("'--wireguard-endpoint' '203.0.113.7:51820'"));
         assert!(script.contains("'Nick'\"'\"'s laptop'"));

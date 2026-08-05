@@ -400,7 +400,7 @@ export type FailureMessage = Brand<string, "FailureMessage">;
 
 export type FoundingDriverEnrollment = { "kind": "on_host" } | { "kind": "ssh", peer_id: PeerId, document: PeerDocument, } | { "kind": "cloud", peer_id: PeerId, document: PeerDocument, };
 
-export type FoundingRefusal = { "kind": "invalid_request", reason: FoundingValidationError, } | { "kind": "foreign_state", requested_cluster_id: ClusterId, found_cluster_id: ClusterId, repair_command: FoundingRepairCommand, };
+export type FoundingRefusal = { "kind": "invalid_request", reason: FoundingValidationError, } | { "kind": "incomplete_door_material", repair_command: FoundingRepairCommand, } | { "kind": "foreign_state", requested_cluster_id: ClusterId, found_cluster_id: ClusterId, repair_command: FoundingRepairCommand, };
 
 export type FoundingRepairCommand = "ployz machine reset";
 

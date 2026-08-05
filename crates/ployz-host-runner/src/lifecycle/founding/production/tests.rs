@@ -408,10 +408,12 @@ fn corrupt_cached_remote_artifact_is_redownloaded_reverified_and_installed() {
         .stage_exact_ployz_and_corrosion()
         .expect("corrupt cache is repaired");
 
-    assert_eq!(
-        prepared.effects.runner.downloads,
-        vec![("https://releases.example/ployzd".to_owned(), cached.clone())]
-    );
+    let [(url, staged)] = prepared.effects.runner.downloads.as_slice() else {
+        panic!("corrupt cache triggers one download");
+    };
+    assert_eq!(url, "https://releases.example/ployzd");
+    assert_ne!(staged, &cached);
+    assert!(!staged.exists());
     assert_eq!(fs::read(cached).expect("cached artifact"), payload);
     for name in ["ployzd", "ebpf", "ebpf-ctl", "corrosion", "schema"] {
         assert_eq!(
@@ -419,68 +421,6 @@ fn corrupt_cached_remote_artifact_is_redownloaded_reverified_and_installed() {
             payload
         );
     }
-}
-
-#[test]
-fn valid_cached_remote_artifact_is_reused_without_downloading() {
-    let directory = tempfile::tempdir().expect("tempdir");
-    let state = FoundingStateDirectory::initialize(directory.path().join("state"))
-        .expect("state initializes");
-    let payload = b"verified cached artifact\n";
-    let digest = format!("{:x}", Sha256::digest(payload));
-    let artifacts = remote_artifacts(directory.path(), &digest);
-    let mut prepared = prepare_plain_founding(
-        &state,
-        artifacts,
-        DownloadRunner {
-            payload: b"unexpected replacement".to_vec(),
-            downloads: Vec::new(),
-        },
-    );
-    let cached = state.path().join("downloads").join(&digest);
-    fs::create_dir_all(cached.parent().expect("cache has parent")).expect("create cache");
-    fs::write(&cached, payload).expect("write valid cached artifact");
-
-    prepared
-        .effects
-        .stage_exact_ployz_and_corrosion()
-        .expect("valid cache is reusable");
-
-    assert!(prepared.effects.runner.downloads.is_empty());
-    assert_eq!(fs::read(cached).expect("cached artifact"), payload);
-    assert_eq!(
-        fs::read(directory.path().join("installed/ployzd")).expect("installed artifact"),
-        payload
-    );
-}
-
-#[test]
-fn unreadable_cached_remote_artifact_is_not_removed_or_redownloaded() {
-    let directory = tempfile::tempdir().expect("tempdir");
-    let state = FoundingStateDirectory::initialize(directory.path().join("state"))
-        .expect("state initializes");
-    let payload = b"verified cached artifact\n";
-    let digest = format!("{:x}", Sha256::digest(payload));
-    let artifacts = remote_artifacts(directory.path(), &digest);
-    let mut prepared = prepare_plain_founding(
-        &state,
-        artifacts,
-        DownloadRunner {
-            payload: payload.to_vec(),
-            downloads: Vec::new(),
-        },
-    );
-    let cached = state.path().join("downloads").join(&digest);
-    fs::create_dir_all(&cached).expect("create unreadable cache entry");
-
-    let error = prepared
-        .effects
-        .stage_exact_ployz_and_corrosion()
-        .expect_err("non-digest cache read failure is preserved");
-
-    assert!(error.as_str().contains("failed to read artifact"));
-    assert!(prepared.effects.runner.downloads.is_empty());
-    assert!(cached.is_dir());
 }
 
 #[test]
@@ -515,60 +455,43 @@ fn every_unpublished_partial_door_material_subset_is_replaced_as_one_complete_se
             },
         );
 
-        for file in [DOOR_KEY_FILE, DOOR_CERTIFICATE_FILE, DOOR_FINGERPRINT_FILE] {
-            assert!(
-                !state.path().join(file).exists(),
-                "subset {present:03b} left crash remnant {file}"
-            );
-        }
-        assert!(
-            prepared
-                .effects
-                .door_material
-                .certificate_pem
-                .contains("BEGIN CERTIFICATE")
-        );
-        assert!(
-            prepared
-                .effects
-                .door_material
-                .private_key_pem
-                .contains("BEGIN PRIVATE KEY")
-        );
-        rcgen::KeyPair::from_pem(&prepared.effects.door_material.private_key_pem)
-            .expect("replacement key parses");
-        assert_eq!(
-            prepared.effects.door_material.fingerprint,
-            format!(
-                "{:x}",
-                Sha256::digest(pem_der(&prepared.effects.door_material.certificate_pem))
+        for (bit, file, contents) in [
+            (KEY, DOOR_KEY_FILE, "stale partial key"),
+            (CERTIFICATE, DOOR_CERTIFICATE_FILE, "stale partial cert"),
+            (
+                FINGERPRINT,
+                DOOR_FINGERPRINT_FILE,
+                "stale partial fingerprint",
             ),
-            "subset {present:03b} replacement fingerprint"
-        );
-
-        let expected_certificate = prepared.effects.door_material.certificate_pem.clone();
-        let expected_key = prepared.effects.door_material.private_key_pem.clone();
-        let expected_fingerprint = format!("{}\n", prepared.effects.door_material.fingerprint);
+        ] {
+            if present & bit == 0 {
+                assert!(!state.path().join(file).exists());
+            } else {
+                assert_eq!(
+                    fs::read_to_string(state.path().join(file)).expect("crash remnant survives"),
+                    contents,
+                    "subset {present:03b} preparation mutated {file}"
+                );
+            }
+        }
         prepared
             .effects
             .ensure_cluster_door_material()
-            .expect("replacement publishes durably");
+            .expect("locked effect repairs and publishes replacement");
+        let certificate =
+            fs::read_to_string(state.path().join(DOOR_CERTIFICATE_FILE)).expect("certificate");
+        let private_key = fs::read_to_string(state.path().join(DOOR_KEY_FILE)).expect("key");
+        let fingerprint =
+            fs::read_to_string(state.path().join(DOOR_FINGERPRINT_FILE)).expect("fingerprint");
+        assert_eq!(
+            fingerprint.trim(),
+            format!("{:x}", Sha256::digest(pem_der(&certificate))),
+            "subset {present:03b} replacement fingerprint"
+        );
 
-        assert_eq!(
-            fs::read_to_string(state.path().join(DOOR_CERTIFICATE_FILE)).expect("certificate"),
-            expected_certificate,
-            "subset {present:03b} certificate publication"
-        );
-        assert_eq!(
-            fs::read_to_string(state.path().join(DOOR_KEY_FILE)).expect("key"),
-            expected_key,
-            "subset {present:03b} key publication"
-        );
-        assert_eq!(
-            fs::read_to_string(state.path().join(DOOR_FINGERPRINT_FILE)).expect("fingerprint"),
-            expected_fingerprint,
-            "subset {present:03b} fingerprint publication"
-        );
+        assert_ne!(certificate, "stale partial cert");
+        assert_ne!(private_key, "stale partial key");
+        assert_ne!(fingerprint, "stale partial fingerprint");
     }
 }
 
@@ -582,6 +505,21 @@ fn published_partial_door_material_requires_explicit_machine_reset() {
     state
         .record_milestone(FoundingMilestone::DoorMaterial)
         .expect("publish door milestone");
+    let preflight = inspect_linux_founding(
+        &state,
+        &mut RecordingRunner {
+            calls: Vec::new(),
+            allow_facts: false,
+        },
+    );
+    assert!(matches!(
+        preflight,
+        Ok(LinuxFoundingPreflight::Refused(
+            FoundingRefusal::IncompleteDoorMaterial {
+                repair_command: FoundingRepairCommand::ResetMachine,
+            }
+        ))
+    ));
     let result = try_prepare_plain_founding(
         &state,
         fixture_artifacts(),
@@ -594,8 +532,12 @@ fn published_partial_door_material_requires_explicit_machine_reset() {
         panic!("published partial material must not be regenerated");
     };
 
-    assert!(error.to_string().contains("DoorMaterial milestone"));
-    assert!(error.to_string().contains("ployz machine reset"));
+    assert!(matches!(
+        error,
+        FoundingPreparationError::Refused(FoundingRefusal::IncompleteDoorMaterial {
+            repair_command: FoundingRepairCommand::ResetMachine,
+        })
+    ));
     assert_eq!(
         fs::read(state.path().join(DOOR_KEY_FILE)).expect("partial key remains evidence"),
         b"published partial key"
@@ -665,6 +607,9 @@ fn persisted_request_and_secrets_are_reloaded_without_host_fact_probes() {
         .effects
         .ensure_cluster_door_material()
         .expect("door persists");
+    state
+        .record_milestone(FoundingMilestone::DoorMaterial)
+        .expect("complete door set can publish its milestone");
     write_durable_file(
         state.path(),
         BOOTSTRAP_CREDENTIAL_FILE,
@@ -685,9 +630,13 @@ fn persisted_request_and_secrets_are_reloaded_without_host_fact_probes() {
     let expected_request = serde_json::to_value(first.request.request()).expect("request wire");
     let expected_bootstrap = first.bootstrap_credential.clone();
     let expected_corrosion = first.effects.corrosion_token.clone();
-    let expected_door = first.effects.door_material.fingerprint.clone();
+    let expected_door = (
+        fs::read_to_string(state.path().join(DOOR_CERTIFICATE_FILE)).expect("certificate"),
+        fs::read_to_string(state.path().join(DOOR_KEY_FILE)).expect("key"),
+        fs::read_to_string(state.path().join(DOOR_FINGERPRINT_FILE)).expect("fingerprint"),
+    );
 
-    let second = prepare_linux_founding(
+    let mut second = prepare_linux_founding(
         &state,
         input("2026-08-05T12:00:00Z"),
         fixture_artifacts(),
@@ -705,7 +654,18 @@ fn persisted_request_and_secrets_are_reloaded_without_host_fact_probes() {
     );
     assert_eq!(second.bootstrap_credential, expected_bootstrap);
     assert_eq!(second.effects.corrosion_token, expected_corrosion);
-    assert_eq!(second.effects.door_material.fingerprint, expected_door);
+    second
+        .effects
+        .ensure_cluster_door_material()
+        .expect("complete door material is reused under the lock");
+    assert_eq!(
+        (
+            fs::read_to_string(state.path().join(DOOR_CERTIFICATE_FILE)).expect("certificate"),
+            fs::read_to_string(state.path().join(DOOR_KEY_FILE)).expect("key"),
+            fs::read_to_string(state.path().join(DOOR_FINGERPRINT_FILE)).expect("fingerprint"),
+        ),
+        expected_door
+    );
     assert_eq!(
         second.effects.zfs_pool.as_ref().map(ZfsPoolName::as_str),
         Some("tank")

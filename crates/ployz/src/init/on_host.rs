@@ -172,6 +172,9 @@ pub async fn execute(command: InitCommand) -> Result<OnHostSuccess, OnHostInitEr
                     FoundingFailure::Refused(FoundingRefusal::ForeignState {
                         repair_command,
                         ..
+                    })
+                    | FoundingFailure::Refused(FoundingRefusal::IncompleteDoorMaterial {
+                        repair_command,
                     }) => Some(repair_command.as_str().to_owned()),
                     FoundingFailure::Refused(FoundingRefusal::InvalidRequest { .. })
                     | FoundingFailure::State { .. }
@@ -534,6 +537,30 @@ mod tests {
         );
         validate_resume_driver_enrollment(&canonical, &InitDriver::Cloud(token), Some(&envelope))
             .expect("matching Cloud token resumes");
+    }
+
+    #[test]
+    fn incomplete_door_preparation_is_preserved_as_a_typed_refusal() {
+        let refusal = FoundingRefusal::IncompleteDoorMaterial {
+            repair_command: ployz_core::founding::FoundingRepairCommand::ResetMachine,
+        };
+
+        assert!(matches!(
+            map_preparation(FoundingPreparationError::Refused(refusal.clone())),
+            OnHostInitError::Refused(found) if found == refusal
+        ));
+    }
+
+    #[tokio::test]
+    async fn incomplete_door_preflight_routes_through_the_typed_on_host_refusal() {
+        let refusal = FoundingRefusal::IncompleteDoorMaterial {
+            repair_command: ployz_core::founding::FoundingRepairCommand::ResetMachine,
+        };
+
+        assert!(matches!(
+            report_preflight_refusal(&InitDriver::OnHost, refusal.clone()).await,
+            Err(OnHostInitError::Refused(found)) if found == refusal
+        ));
     }
 
     #[tokio::test]

@@ -413,6 +413,9 @@ pub enum FoundingRefusal {
     InvalidRequest {
         reason: FoundingValidationError,
     },
+    IncompleteDoorMaterial {
+        repair_command: FoundingRepairCommand,
+    },
     ForeignState {
         requested_cluster_id: ClusterId,
         found_cluster_id: ClusterId,
@@ -533,6 +536,21 @@ mod tests {
                 },
             ),
             Err(InitStorageSelectionError::ZfsMemoryBelowMinimum)
+        );
+    }
+
+    #[test]
+    fn incomplete_door_material_refusal_names_only_the_reset_primitive() {
+        let refusal = FoundingRefusal::IncompleteDoorMaterial {
+            repair_command: FoundingRepairCommand::ResetMachine,
+        };
+
+        assert_eq!(
+            serde_json::to_value(refusal).expect("refusal serializes"),
+            serde_json::json!({
+                "kind": "incomplete_door_material",
+                "repair_command": FOUNDING_RESET_COMMAND,
+            })
         );
     }
 }

@@ -3,7 +3,8 @@ use std::path::PathBuf;
 
 use crate::execution::{
     ArtifactInstallDurability, ArtifactInstallError, ArtifactKind, ArtifactSource, ArtifactTarget,
-    ArtifactVerificationError, ArtifactVersion, Sha256Digest, install_verified_artifact,
+    ArtifactVerificationError, ArtifactVersion, Sha256Digest,
+    acquire_remote_artifact_content_addressed, install_verified_artifact,
     stage_verified_artifact_content_addressed, verify_artifact_file,
 };
 
@@ -189,6 +190,133 @@ fn content_addressed_staging_rejects_a_relative_store() {
             path: PathBuf::from("artifacts"),
         })
     );
+}
+
+#[test]
+fn remote_acquisition_publishes_only_verified_content_at_the_digest_path() {
+    let root = tempfile::tempdir().expect("artifact root");
+    let store = root.path().join("downloads");
+    let expected = digest(PLOYZ_NEWLINE_SHA256);
+    let final_path = store.join(PLOYZ_NEWLINE_SHA256);
+    let mut download_path = None;
+
+    let acquired = acquire_remote_artifact_content_addressed(
+        "https://example.invalid/ployzd",
+        &expected,
+        &store,
+        |staged| {
+            assert_ne!(staged, final_path);
+            assert!(!final_path.exists());
+            download_path = Some(staged.to_path_buf());
+            fs::write(staged, b"ployz\n").map_err(|error| error.to_string())
+        },
+    )
+    .expect("verified remote artifact publishes");
+
+    assert_eq!(acquired.path, final_path);
+    assert_eq!(
+        fs::read(&acquired.path).expect("published bytes"),
+        b"ployz\n"
+    );
+    assert!(!download_path.expect("download path recorded").exists());
+}
+
+#[test]
+fn remote_acquisition_reuses_a_valid_cache_without_downloading() {
+    let root = tempfile::tempdir().expect("artifact root");
+    let store = root.path().join("downloads");
+    let cached = store.join(PLOYZ_NEWLINE_SHA256);
+    fs::create_dir_all(&store).expect("download store");
+    fs::write(&cached, b"ployz\n").expect("valid cache");
+
+    let acquired = acquire_remote_artifact_content_addressed(
+        "https://example.invalid/ployzd",
+        &digest(PLOYZ_NEWLINE_SHA256),
+        &store,
+        |_| -> Result<(), String> { panic!("valid cache must skip download") },
+    )
+    .expect("valid cache is reusable");
+
+    assert_eq!(acquired.path, cached);
+}
+
+#[test]
+fn remote_acquisition_atomically_repairs_a_corrupt_cache() {
+    let root = tempfile::tempdir().expect("artifact root");
+    let store = root.path().join("downloads");
+    let cached = store.join(PLOYZ_NEWLINE_SHA256);
+    fs::create_dir_all(&store).expect("download store");
+    fs::write(&cached, b"corrupt\n").expect("corrupt cache");
+
+    acquire_remote_artifact_content_addressed(
+        "https://example.invalid/ployzd",
+        &digest(PLOYZ_NEWLINE_SHA256),
+        &store,
+        |staged| {
+            assert_ne!(staged, cached);
+            assert_eq!(fs::read(&cached).expect("old cache remains"), b"corrupt\n");
+            fs::write(staged, b"ployz\n").map_err(|error| error.to_string())
+        },
+    )
+    .expect("corrupt cache repairs");
+
+    assert_eq!(fs::read(cached).expect("repaired cache"), b"ployz\n");
+}
+
+#[test]
+fn remote_acquisition_preserves_non_digest_cache_read_failures() {
+    let root = tempfile::tempdir().expect("artifact root");
+    let store = root.path().join("downloads");
+    let cached = store.join(PLOYZ_NEWLINE_SHA256);
+    fs::create_dir_all(&cached).expect("cache path is unreadable as a file");
+
+    let error = acquire_remote_artifact_content_addressed(
+        "https://example.invalid/ployzd",
+        &digest(PLOYZ_NEWLINE_SHA256),
+        &store,
+        |_| -> Result<(), String> { panic!("read failure must skip download") },
+    )
+    .expect_err("non-digest read failure is preserved");
+
+    assert!(matches!(
+        error,
+        ArtifactInstallError::VerificationFailed(ArtifactVerificationError::ReadFailed {
+            path,
+            ..
+        }) if path == cached
+    ));
+    assert!(cached.is_dir());
+}
+
+#[test]
+fn failed_remote_download_retains_error_evidence_and_cleans_temporary_bytes() {
+    let root = tempfile::tempdir().expect("artifact root");
+    let store = root.path().join("downloads");
+    let cached = store.join(PLOYZ_NEWLINE_SHA256);
+    let mut download_path = None;
+
+    let error = acquire_remote_artifact_content_addressed(
+        "https://example.invalid/ployzd",
+        &digest(PLOYZ_NEWLINE_SHA256),
+        &store,
+        |staged| {
+            download_path = Some(staged.to_path_buf());
+            fs::write(staged, b"partial").expect("partial download evidence");
+            Err("connection reset")
+        },
+    )
+    .expect_err("failed download remains failed");
+
+    assert!(matches!(
+        error,
+        ArtifactInstallError::DownloadFailed {
+            source_url,
+            message,
+            ..
+        } if source_url == "https://example.invalid/ployzd" && message == "connection reset"
+    ));
+    assert!(!cached.exists());
+    assert!(!download_path.expect("download path recorded").exists());
 }
 
 #[test]
