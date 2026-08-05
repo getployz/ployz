@@ -491,7 +491,7 @@ pub struct DeployPreparationInput<'a> {
     /// Machines under drain intent: their running replicas do not count as
     /// existing capacity, so the plan replaces them elsewhere and the
     /// unselected containers fall through to cleanup. This is how drain
-    /// evacuates on the next deploy (ADR 0026). A separate list rather than
+    /// evacuates on the next deploy. A separate list rather than
     /// filtering by `eligible_machines`: replica reuse is reality-driven and
     /// deliberately independent of placement scope, so only explicit drain
     /// intent may disqualify observed capacity.

@@ -12,8 +12,7 @@ adapter; a self-hosted project's service network is one per-project Docker bridg
 on one daemon. OpenShip's advertised multi-server fan-out and private networking
 were roadmap items rather than implemented self-hosted cluster semantics at the
 comparison's pinned revision
-([comparison](openship-runtime-control-plane-comparison-2026-07-19.md#executive-conclusion),
-[runtime model](openship-runtime-control-plane-comparison-2026-07-19.md#runtime-and-target-model)).
+([README](../../README.md), [backbone](../architecture/backbone.md)).
 
 The most plausible paths are therefore:
 
@@ -105,17 +104,14 @@ effects, OpenResty route files, and a remote mutation journal. Existing workload
 and static routes survive loss of the API, but deploys, changes, observation, and
 API-owned schedules stop. The remote path also lacked the local path's
 post-activation readiness probe at the studied revision
-([control plane](openship-runtime-control-plane-comparison-2026-07-19.md#control-plane),
-[mutation semantics](openship-runtime-control-plane-comparison-2026-07-19.md#mutation-and-failure-semantics),
-[outage behavior](openship-runtime-control-plane-comparison-2026-07-19.md#control-plane-outage)).
+([OpenShip runtime model](https://github.com/oblien/openship/tree/main/apps/web/content/docs/architecture)).
 
 That model can select a remote **server**, but it does not yet define a cluster:
 there is no shared membership authority, cross-machine endpoint network,
 machine-to-machine identity, distributed DNS, placement testimony, or
 multi-gateway certificate distribution. The comparison explicitly records
 multi-node clusters, private networking, and load-balancing UI as future work
-([executive conclusion](openship-runtime-control-plane-comparison-2026-07-19.md#executive-conclusion),
-[side-by-side](openship-runtime-control-plane-comparison-2026-07-19.md#side-by-side)).
+([OpenShip runtime model](https://github.com/oblien/openship/tree/main/apps/web/content/docs/architecture)).
 
 ### Ployz
 
@@ -123,7 +119,7 @@ Ployz's accepted v2 direction is already a multi-server architecture: one
 `ployzd` binary and one pinned Corrosion sidecar per Linux machine; a pluggable
 WireGuard mesh; HTTP/JSON with SSE served by every machine; and no core,
 sequencer, NATS, quorum, or coordination point
-([vision](../../VISION.md#architecture-shape),
+([README](../../README.md),
 [ADR 0040](../adr/0040-corrosion-replaces-the-core-and-nats.md)). Every machine
 holds all cluster config, while config rows and machine testimony have distinct
 writer classes. Any reachable machine accepts commands, and losing one machine
@@ -131,13 +127,13 @@ does not block commanding the rest
 ([backbone](../architecture/backbone.md#thesis),
 [availability contract](../architecture/backbone.md#availability-contract)).
 
-The current Rust source tree is still the frozen incumbent NATS/Core
-implementation. The contributor map says it is converging to ADR 0040, and its
-runtime/state sections describe the incumbent rather than v2
-([code-map banner](../architecture/code-map.md),
-[v2 crate topology](../design/binary-crate-topology.md#the-deletion-list-sized)).
-Consequently Ployz v2 is a decided and substantially specified destination, not
-yet an integration-ready runtime that OpenShip could adopt unchanged.
+The current Rust source tree is the coreless v2 destination described above, but
+it is still integration-incomplete. The contributor map and crate-topology
+specification are the current implementation references
+([code map](../architecture/code-map.md),
+[v2 crate topology](../design/binary-crate-topology.md)). Consequently Ployz v2
+is a decided and substantially specified destination, not yet an
+integration-ready runtime that OpenShip could adopt unchanged.
 
 ## The networking shape OpenShip would otherwise have to build
 
@@ -188,8 +184,8 @@ It is most likely if the objective is the shortest route to a useful two-to-ten
 server product because OpenShip already owns servers, encrypted SSH credentials,
 deploy sequencing, routing adapters, and reconciliation after ambiguous SSH
 outcomes
-([runtime model](openship-runtime-control-plane-comparison-2026-07-19.md#runtime-and-target-model),
-[mutation semantics](openship-runtime-control-plane-comparison-2026-07-19.md#mutation-and-failure-semantics)).
+([deploy operations](../adr/0003-operations-are-informational-records-not-workflows.md),
+[deploy reconciliation](../adr/0004-deploys-are-namespace-reconciliation-attempts.md)).
 
 The architectural cost is cumulative. The central database must now own server
 membership, address allocation, placement, service endpoints, and gateway
@@ -242,7 +238,7 @@ cluster. Builds can remain OpenShip-owned initially if their result is an
 immutable image reference consumable by Ployz; build execution venue should stay
 separate from runtime placement, a distinction the prior comparison already
 identified
-([hosted-build implication](openship-runtime-control-plane-comparison-2026-07-19.md#implication-for-hosted-builders-and-railpack)).
+([SDK surface](../design/sdk-cloud-api-surface.md)).
 
 ## Path 3: make OpenShip itself converged and mesh-native
 
@@ -255,8 +251,8 @@ It is the least likely path because it conflicts with OpenShip's crisp current
 single-owner rule—local/server projects are canonical in the self-hosted
 database, cloud projects in SaaS—and replaces its adapter-driven central worker
 with distributed folds
-([state ownership](openship-runtime-control-plane-comparison-2026-07-19.md#state-ownership),
-[control plane](openship-runtime-control-plane-comparison-2026-07-19.md#control-plane)).
+([row rules](../architecture/backbone.md#row-rules),
+[code map](../architecture/code-map.md)).
 It would also need to adopt Ployz's row-writer discipline, optimistic uniqueness,
 schema rules, tombstone/reseed policy, and no-secrets-in-rows constraint rather
 than merely adding Corrosion as a database

@@ -1761,7 +1761,7 @@ fn deploy_route_validation_reuses_identical_automatic_binding() {
 fn namespace_revision_entry_id_pins_the_versioned_encoding() {
     // Golden pin: this digest covers the encoding version tag, service id,
     // and image reference. It must only change through a deliberate
-    // encoding version bump (ADR 0022) - an unintended change here means
+    // encoding version bump (ADR 0040) - an unintended change here means
     // every running container would be replaced after upgrade.
     let entry_id = service_spec("svc_api", "ghcr.io/acme/api:rev-1", 1, None)
         .namespace_revision_entry_id(&namespace_id("default"), &environment_revision_key());
@@ -1810,7 +1810,7 @@ fn namespace_revision_entry_id_differs_across_namespaces() {
     // Two namespaces deploying the same service name and image must never
     // share an entry identity: the id travels through labels and gateway
     // matching, where a collision would serve one namespace's traffic from
-    // another namespace's containers (ADR 0022).
+    // another namespace's containers (ADR 0040).
     let spec = service_spec("svc_api", "ghcr.io/acme/api:rev-1", 1, None);
 
     assert_ne!(
