@@ -23,7 +23,7 @@ use tokio::sync::{Mutex, OnceCell, mpsc, watch};
 use tokio::time::{Instant, MissedTickBehavior};
 
 use super::config::ApiRoleMode;
-use super::roster::{corrosion_unavailable_refusal, resolve_peer_principal};
+use super::roster::{PeerPrincipalError, corrosion_unavailable_refusal, resolve_peer_principal};
 use super::runtime::JoinDoorRuntime;
 use crate::corrosion::CorrosionClient;
 use crate::roles::api::lenses::{
@@ -453,6 +453,10 @@ impl ApiService {
             }
         }
 
+        let is_status_request = matches!(
+            parse_route(request.method(), request.uri().path()),
+            Ok(V2Route::Status)
+        );
         let principal = match resolve_peer_principal(
             &self.corrosion,
             &self.cluster_id,
@@ -461,15 +465,13 @@ impl ApiService {
         .await
         {
             Ok(principal) => principal,
-            Err(ApiRefusal::MissingCluster)
-                if matches!(
-                    parse_route(request.method(), request.uri().path()),
-                    Ok(V2Route::Status)
-                ) =>
-            {
+            Err(PeerPrincipalError::EmptyAcceptedRoster { .. }) if is_status_request => {
                 return super::diagnostics::status_response(self).await;
             }
-            Err(refusal) => return refusal_response(refusal),
+            Err(PeerPrincipalError::Refusal(ApiRefusal::MissingCluster)) if is_status_request => {
+                return super::diagnostics::status_response(self).await;
+            }
+            Err(error) => return refusal_response(error.into_refusal()),
         };
         if founding_route_disabled(&self.mode, request.uri().path()) {
             return refusal_response(ApiRefusal::UnsupportedRoute);

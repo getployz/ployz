@@ -352,8 +352,13 @@ pub fn render_doctor(document: &DoctorDocument) -> (String, bool) {
             machine.name.as_str()
         )
         .expect("writing to a String cannot fail");
-        writeln!(output, "    ployz machine rm {}", machine.name.as_str())
-            .expect("writing to a String cannot fail");
+        writeln!(
+            output,
+            "    ployz machine rm {} --id {}",
+            machine.name.as_str(),
+            machine.id.as_str()
+        )
+        .expect("writing to a String cannot fail");
         writeln!(
             output,
             "    on {}:  sudo ployz machine reset",
@@ -687,7 +692,7 @@ mod tests {
         }
         assert!(output.contains("ployz machine upgrade edge-a"));
         let fence = output
-            .find("ployz machine rm edge-a")
+            .find(&format!("ployz machine rm edge-a --id {MACHINE_B}"))
             .expect("fence repair");
         let reset = output
             .find("on edge-a:  sudo ployz machine reset")
@@ -696,6 +701,20 @@ mod tests {
         assert!(fence < reset && reset < rejoin);
         assert!(output.contains(&format!("authored by peer {PEER}; inert, no repair action")));
         assert!(!output.contains(&format!("ployz machine rm {MACHINE_C}")));
+    }
+
+    #[test]
+    fn foreign_current_machine_repair_disambiguates_a_same_name_shadow() {
+        let document = doctor_fixture();
+        assert!(document.shadows.iter().any(|shadow| {
+            matches!(&shadow.claim, NameClaim::Machine { name } if name == "edge-a")
+        }));
+
+        let (output, has_findings) = render_doctor(&document);
+
+        assert!(has_findings);
+        assert!(output.contains(&format!("ployz machine rm edge-a --id {ROW_LOSER}")));
+        assert!(output.contains(&format!("ployz machine rm edge-a --id {MACHINE_B}")));
     }
 
     #[test]

@@ -10,6 +10,7 @@ use ployz_core::{
 };
 
 use crate::commands::{NamespaceCommand, PeerCommand, RouteCommand, ServiceCommand};
+use crate::init::ssh::shell_quote;
 use crate::mesh::http::JsonReply;
 use crate::remote::{OperatorRemote, OperatorRemoteError};
 
@@ -210,11 +211,12 @@ fn service_ambiguous_message(
     name: &str,
     service_ids: &[ployz_core::ids::ServiceRowId],
 ) -> String {
+    let quoted_name = shell_quote(name);
     let choices = service_ids
         .iter()
         .map(|id| {
             format!(
-                "`ployz service rm {name} --namespace-id {} --id {}`",
+                "`ployz service rm {quoted_name} --namespace-id {} --id {}`",
                 namespace_id.as_str(),
                 id.as_str()
             )
@@ -267,9 +269,10 @@ fn ambiguous_message<'a>(
     handle: &str,
     ids: impl IntoIterator<Item = &'a str>,
 ) -> String {
+    let quoted_handle = shell_quote(handle);
     let choices = ids
         .into_iter()
-        .map(|id| format!("`ployz {noun} rm {handle} --id {id}`"))
+        .map(|id| format!("`ployz {noun} rm {quoted_handle} --id {id}`"))
         .collect::<Vec<_>>()
         .join(", ");
     format!("{noun} {handle} is ambiguous; choose an exact row: {choices}")
@@ -322,7 +325,21 @@ mod tests {
         });
         assert_eq!(
             error.to_string(),
-            "peer operator is ambiguous; choose an exact row: `ployz peer rm operator --id 01ARZ3NDEKTSV4RRFFQ69G5FAV`, `ployz peer rm operator --id 01ARZ3NDEKTSV4RRFFQ69G5FAW`"
+            "peer operator is ambiguous; choose an exact row: `ployz peer rm 'operator' --id 01ARZ3NDEKTSV4RRFFQ69G5FAV`, `ployz peer rm 'operator' --id 01ARZ3NDEKTSV4RRFFQ69G5FAW`"
+        );
+    }
+
+    #[test]
+    fn ambiguity_shell_quotes_whitespace_and_metacharacters_in_retry_handles() {
+        let handle = "dind laptop'; touch /tmp/not-run #";
+        let id = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+
+        assert_eq!(
+            ambiguous_message("peer", handle, [id]),
+            format!(
+                "peer {handle} is ambiguous; choose an exact row: `ployz peer rm {} --id {id}`",
+                shell_quote(handle)
+            )
         );
     }
 }

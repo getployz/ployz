@@ -66,6 +66,50 @@ async fn initial_empty_database_serves_only_get_status_as_no_roster() {
 }
 
 #[tokio::test]
+async fn accepted_cluster_with_empty_roster_serves_only_get_status_as_catching_up() {
+    let corrosion = FakeCorrosion::start(FakeMode::AcceptedClusterEmptyRoster).await;
+    let api = RunningApi::start(&corrosion).await;
+
+    let response = api.request(Method::GET, "/status").await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let status = response
+        .json::<StatusDocument>()
+        .await
+        .expect("status JSON");
+    assert_eq!(status.cluster.expect("accepted cluster").id, cluster_id());
+    assert_eq!(status.barrier, StatusBarrier::CatchingUp);
+    assert!(status.machines.is_empty());
+
+    for (method, path) in [(Method::POST, "/status"), (Method::GET, "/doctor")] {
+        let response = api.request(method, path).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(matches!(
+            response.json::<ApiRefusal>().await.expect("refusal JSON"),
+            ApiRefusal::UnknownSource { .. }
+        ));
+    }
+
+    api.stop().await;
+}
+
+#[tokio::test]
+async fn nonmatching_source_in_nonempty_roster_remains_forbidden_from_status() {
+    let corrosion = FakeCorrosion::start(FakeMode::NonMatchingRoster).await;
+    let api = RunningApi::start(&corrosion).await;
+
+    let response = api.request(Method::GET, "/status").await;
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(matches!(
+        response.json::<ApiRefusal>().await.expect("refusal JSON"),
+        ApiRefusal::UnknownSource { .. }
+    ));
+    assert_eq!(corrosion.health_requests.load(Ordering::SeqCst), 0);
+    api.stop().await;
+}
+
+#[tokio::test]
 async fn invalid_cluster_never_reaches_status_diagnostics() {
     let corrosion = FakeCorrosion::start(FakeMode::InvalidCluster).await;
     let api = RunningApi::start(&corrosion).await;
@@ -212,8 +256,10 @@ impl RunningApi {
 #[derive(Clone, Copy)]
 enum FakeMode {
     Empty,
+    AcceptedClusterEmptyRoster,
     InvalidCluster,
     InvalidHealth,
+    NonMatchingRoster,
     StableRoster,
 }
 
@@ -324,13 +370,20 @@ async fn fake_corrosion_response(
             vec![StoredRow::new(CLUSTER, "{}")]
         }
         FakeMode::InvalidCluster => Vec::new(),
-        FakeMode::InvalidHealth | FakeMode::StableRoster if sql.contains("FROM cluster") => {
+        FakeMode::AcceptedClusterEmptyRoster
+        | FakeMode::InvalidHealth
+        | FakeMode::NonMatchingRoster
+        | FakeMode::StableRoster
+            if sql.contains("FROM cluster") =>
+        {
             vec![StoredRow::new(
                 CLUSTER,
                 serde_json::to_string(&cluster_document()).expect("cluster document"),
             )]
         }
-        FakeMode::InvalidHealth | FakeMode::StableRoster if sql.contains("FROM machines") => {
+        FakeMode::InvalidHealth | FakeMode::NonMatchingRoster | FakeMode::StableRoster
+            if sql.contains("FROM machines") =>
+        {
             vec![StoredRow::new(
                 MACHINE,
                 serde_json::to_string(&machine_document()).expect("machine document"),
@@ -342,7 +395,14 @@ async fn fake_corrosion_response(
                 serde_json::to_string(&peer_document()).expect("peer document"),
             )]
         }
-        FakeMode::InvalidHealth | FakeMode::StableRoster => Vec::new(),
+        FakeMode::NonMatchingRoster if sql.contains("FROM peers") => vec![StoredRow::new(
+            PEER,
+            serde_json::to_string(&nonmatching_peer_document()).expect("peer document"),
+        )],
+        FakeMode::AcceptedClusterEmptyRoster
+        | FakeMode::InvalidHealth
+        | FakeMode::NonMatchingRoster
+        | FakeMode::StableRoster => Vec::new(),
     };
     Ok(json_response(StatusCode::OK, query_frames(&rows)))
 }
@@ -438,5 +498,14 @@ fn peer_document() -> PeerDocument {
         transport: PeerTransport::Tailscale {
             ip: Ipv4Addr::LOCALHOST,
         },
+    }
+}
+
+fn nonmatching_peer_document() -> PeerDocument {
+    PeerDocument {
+        transport: PeerTransport::Tailscale {
+            ip: Ipv4Addr::new(127, 0, 0, 3),
+        },
+        ..peer_document()
     }
 }
