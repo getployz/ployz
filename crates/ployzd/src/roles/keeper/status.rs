@@ -193,6 +193,8 @@ pub(super) enum MachineStatusWriteError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ployz_core::corrosion::BuiltinWireguardKeyMismatch;
+    use ployz_core::network::WireGuardPublicKey;
 
     const CLUSTER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
     const MACHINE: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
@@ -202,21 +204,29 @@ mod tests {
     }
 
     #[test]
-    fn local_writer_uses_one_identity_for_sql_and_document() {
+    fn local_writer_encodes_key_mismatch_upsert_with_one_identity() {
         let writer = LocalMachineStatusWriter::new(
             ClusterId::try_new(CLUSTER).expect("cluster"),
             MachineRowId::try_new(MACHINE).expect("machine"),
             "0.2.0-beta.0".to_owned(),
         );
+        let testimony = MeshConvergenceTestimony::KeyMismatch {
+            attempted_at: timestamp(),
+            mismatches: vec![BuiltinWireguardKeyMismatch::LocalPublicKey {
+                machine_id: MachineRowId::try_new(MACHINE).expect("machine"),
+                stored: WireGuardPublicKey::try_new("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+                    .expect("stored key"),
+                local: WireGuardPublicKey::try_new("AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=")
+                    .expect("local key"),
+            }],
+        };
         let statement = writer
             .statement_with_observation(
-                MeshConvergenceTestimony::NoRoster {
-                    attempted_at: timestamp(),
-                },
+                testimony.clone(),
                 SystemObservation {
                     free_disk_bytes: 11,
                     free_memory_bytes: 22,
-                    load: MachineLoadBand::Idle,
+                    load: MachineLoadBand::Normal,
                 },
                 timestamp(),
             )
@@ -224,7 +234,11 @@ mod tests {
         let Statement::WithParams(sql, params) = statement else {
             panic!("status write must be parameterized");
         };
-        assert!(sql.starts_with("INSERT INTO machine_status"));
+        assert_eq!(
+            sql,
+            "INSERT INTO machine_status (machine_id, document) VALUES (?, ?) \
+             ON CONFLICT(machine_id) DO UPDATE SET document = excluded.document"
+        );
         let [SqliteParameter::Text(key), SqliteParameter::Text(document)] = params.as_slice()
         else {
             panic!("status write has one key and one document parameter");
@@ -234,7 +248,7 @@ mod tests {
         assert_eq!(key, MACHINE);
         assert_eq!(decoded.machine_id.as_str(), key);
         assert_eq!(decoded.cluster_id.as_str(), CLUSTER);
-        assert!(decoded.mesh.is_some());
+        assert_eq!(decoded.mesh, Some(testimony));
     }
 
     #[test]

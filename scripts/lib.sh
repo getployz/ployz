@@ -44,6 +44,20 @@ sha256_stdin() {
   fi
 }
 
+verify_corrosion_embedded_version() {
+  local platform="$1" work_dir="$2" runtime_image="$3" expected_version="$4"
+  local actual_version
+  actual_version="$(docker run --rm \
+    --platform "${platform}" \
+    --volume "${work_dir}:/corrosion-input:ro" \
+    "${runtime_image}" \
+    /corrosion-input/corrosion --version)"
+  if [ "${actual_version}" != "${expected_version}" ]; then
+    echo "Corrosion archive reports ${actual_version}, expected ${expected_version}" >&2
+    return 1
+  fi
+}
+
 validate_release_semver() {
   local label="$1"
   local value="$2"
