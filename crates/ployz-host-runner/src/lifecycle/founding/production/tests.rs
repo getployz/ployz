@@ -1,5 +1,6 @@
 use super::*;
 use crate::HostRunnerCommandOutput;
+use base64::Engine as _;
 
 #[test]
 fn founding_enables_only_implemented_roles() {
@@ -333,6 +334,276 @@ impl HostRunnerCommandRunner for RecordingRunner {
     }
 }
 
+#[derive(Debug)]
+struct DownloadRunner {
+    payload: Vec<u8>,
+    downloads: Vec<(String, PathBuf)>,
+}
+
+impl HostRunnerCommandRunner for DownloadRunner {
+    fn command(
+        &mut self,
+        program: &str,
+        _args: &[&str],
+    ) -> Result<HostRunnerCommandOutput, FailureMessage> {
+        match program {
+            "/usr/local/bin/corrosion" => Ok(output(true, "corrosion 0.2.0-beta.0\n")),
+            _ => Err(failure(format!("unexpected command {program}"))),
+        }
+    }
+
+    fn is_linux(&mut self) -> bool {
+        true
+    }
+
+    fn current_uid(&mut self) -> Result<u32, FailureMessage> {
+        Ok(0)
+    }
+
+    fn download(&mut self, url: &str, destination: &Path) -> Result<(), FailureMessage> {
+        self.downloads
+            .push((url.to_owned(), destination.to_path_buf()));
+        fs::write(destination, &self.payload).map_err(failure)
+    }
+
+    fn docker_info(&mut self) -> Result<(), FailureMessage> {
+        Ok(())
+    }
+
+    fn docker_is_installed(&mut self) -> bool {
+        true
+    }
+
+    fn docker_uses_containerd_snapshotter(&mut self) -> Result<bool, FailureMessage> {
+        Ok(true)
+    }
+
+    fn docker_has_insecure_registry(&mut self, _cidr: &str) -> Result<bool, FailureMessage> {
+        Ok(true)
+    }
+}
+
+#[test]
+fn corrupt_cached_remote_artifact_is_redownloaded_reverified_and_installed() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let state = FoundingStateDirectory::initialize(directory.path().join("state"))
+        .expect("state initializes");
+    let payload = b"verified ployzd artifact\n";
+    let digest = format!("{:x}", Sha256::digest(payload));
+    let artifacts = remote_artifacts(directory.path(), &digest);
+    let mut prepared = prepare_plain_founding(
+        &state,
+        artifacts,
+        DownloadRunner {
+            payload: payload.to_vec(),
+            downloads: Vec::new(),
+        },
+    );
+    let cached = state.path().join("downloads").join(&digest);
+    fs::create_dir_all(cached.parent().expect("cache has parent")).expect("create cache");
+    fs::write(&cached, b"partial").expect("write corrupt cached artifact");
+
+    prepared
+        .effects
+        .stage_exact_ployz_and_corrosion()
+        .expect("corrupt cache is repaired");
+
+    assert_eq!(
+        prepared.effects.runner.downloads,
+        vec![("https://releases.example/ployzd".to_owned(), cached.clone())]
+    );
+    assert_eq!(fs::read(cached).expect("cached artifact"), payload);
+    for name in ["ployzd", "ebpf", "ebpf-ctl", "corrosion", "schema"] {
+        assert_eq!(
+            fs::read(directory.path().join("installed").join(name)).expect("installed artifact"),
+            payload
+        );
+    }
+}
+
+#[test]
+fn valid_cached_remote_artifact_is_reused_without_downloading() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let state = FoundingStateDirectory::initialize(directory.path().join("state"))
+        .expect("state initializes");
+    let payload = b"verified cached artifact\n";
+    let digest = format!("{:x}", Sha256::digest(payload));
+    let artifacts = remote_artifacts(directory.path(), &digest);
+    let mut prepared = prepare_plain_founding(
+        &state,
+        artifacts,
+        DownloadRunner {
+            payload: b"unexpected replacement".to_vec(),
+            downloads: Vec::new(),
+        },
+    );
+    let cached = state.path().join("downloads").join(&digest);
+    fs::create_dir_all(cached.parent().expect("cache has parent")).expect("create cache");
+    fs::write(&cached, payload).expect("write valid cached artifact");
+
+    prepared
+        .effects
+        .stage_exact_ployz_and_corrosion()
+        .expect("valid cache is reusable");
+
+    assert!(prepared.effects.runner.downloads.is_empty());
+    assert_eq!(fs::read(cached).expect("cached artifact"), payload);
+    assert_eq!(
+        fs::read(directory.path().join("installed/ployzd")).expect("installed artifact"),
+        payload
+    );
+}
+
+#[test]
+fn unreadable_cached_remote_artifact_is_not_removed_or_redownloaded() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let state = FoundingStateDirectory::initialize(directory.path().join("state"))
+        .expect("state initializes");
+    let payload = b"verified cached artifact\n";
+    let digest = format!("{:x}", Sha256::digest(payload));
+    let artifacts = remote_artifacts(directory.path(), &digest);
+    let mut prepared = prepare_plain_founding(
+        &state,
+        artifacts,
+        DownloadRunner {
+            payload: payload.to_vec(),
+            downloads: Vec::new(),
+        },
+    );
+    let cached = state.path().join("downloads").join(&digest);
+    fs::create_dir_all(&cached).expect("create unreadable cache entry");
+
+    let error = prepared
+        .effects
+        .stage_exact_ployz_and_corrosion()
+        .expect_err("non-digest cache read failure is preserved");
+
+    assert!(error.as_str().contains("failed to read artifact"));
+    assert!(prepared.effects.runner.downloads.is_empty());
+    assert!(cached.is_dir());
+}
+
+#[test]
+fn every_unpublished_partial_door_material_subset_is_replaced_as_one_complete_set() {
+    const KEY: u8 = 0b001;
+    const CERTIFICATE: u8 = 0b010;
+    const FINGERPRINT: u8 = 0b100;
+
+    for present in 1_u8..0b111 {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let state = FoundingStateDirectory::initialize(directory.path().join("state"))
+            .expect("state initializes");
+        for (bit, file, contents) in [
+            (KEY, DOOR_KEY_FILE, "stale partial key"),
+            (CERTIFICATE, DOOR_CERTIFICATE_FILE, "stale partial cert"),
+            (
+                FINGERPRINT,
+                DOOR_FINGERPRINT_FILE,
+                "stale partial fingerprint",
+            ),
+        ] {
+            if present & bit != 0 {
+                fs::write(state.path().join(file), contents).expect("write crash remnant");
+            }
+        }
+        let mut prepared = prepare_plain_founding(
+            &state,
+            fixture_artifacts(),
+            RecordingRunner {
+                calls: Vec::new(),
+                allow_facts: false,
+            },
+        );
+
+        for file in [DOOR_KEY_FILE, DOOR_CERTIFICATE_FILE, DOOR_FINGERPRINT_FILE] {
+            assert!(
+                !state.path().join(file).exists(),
+                "subset {present:03b} left crash remnant {file}"
+            );
+        }
+        assert!(
+            prepared
+                .effects
+                .door_material
+                .certificate_pem
+                .contains("BEGIN CERTIFICATE")
+        );
+        assert!(
+            prepared
+                .effects
+                .door_material
+                .private_key_pem
+                .contains("BEGIN PRIVATE KEY")
+        );
+        rcgen::KeyPair::from_pem(&prepared.effects.door_material.private_key_pem)
+            .expect("replacement key parses");
+        assert_eq!(
+            prepared.effects.door_material.fingerprint,
+            format!(
+                "{:x}",
+                Sha256::digest(pem_der(&prepared.effects.door_material.certificate_pem))
+            ),
+            "subset {present:03b} replacement fingerprint"
+        );
+
+        let expected_certificate = prepared.effects.door_material.certificate_pem.clone();
+        let expected_key = prepared.effects.door_material.private_key_pem.clone();
+        let expected_fingerprint = format!("{}\n", prepared.effects.door_material.fingerprint);
+        prepared
+            .effects
+            .ensure_cluster_door_material()
+            .expect("replacement publishes durably");
+
+        assert_eq!(
+            fs::read_to_string(state.path().join(DOOR_CERTIFICATE_FILE)).expect("certificate"),
+            expected_certificate,
+            "subset {present:03b} certificate publication"
+        );
+        assert_eq!(
+            fs::read_to_string(state.path().join(DOOR_KEY_FILE)).expect("key"),
+            expected_key,
+            "subset {present:03b} key publication"
+        );
+        assert_eq!(
+            fs::read_to_string(state.path().join(DOOR_FINGERPRINT_FILE)).expect("fingerprint"),
+            expected_fingerprint,
+            "subset {present:03b} fingerprint publication"
+        );
+    }
+}
+
+#[test]
+fn published_partial_door_material_requires_explicit_machine_reset() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let state = FoundingStateDirectory::initialize(directory.path().join("state"))
+        .expect("state initializes");
+    fs::write(state.path().join(DOOR_KEY_FILE), b"published partial key")
+        .expect("write crash remnant");
+    state
+        .record_milestone(FoundingMilestone::DoorMaterial)
+        .expect("publish door milestone");
+    let result = try_prepare_plain_founding(
+        &state,
+        fixture_artifacts(),
+        RecordingRunner {
+            calls: Vec::new(),
+            allow_facts: false,
+        },
+    );
+    let Err(error) = result else {
+        panic!("published partial material must not be regenerated");
+    };
+
+    assert!(error.to_string().contains("DoorMaterial milestone"));
+    assert!(error.to_string().contains("ployz machine reset"));
+    assert_eq!(
+        fs::read(state.path().join(DOOR_KEY_FILE)).expect("partial key remains evidence"),
+        b"published partial key"
+    );
+    assert!(!state.path().join(DOOR_CERTIFICATE_FILE).exists());
+    assert!(!state.path().join(DOOR_FINGERPRINT_FILE).exists());
+}
+
 #[test]
 fn machine_material_persists_keys_without_mutating_keeper_owned_wireguard() {
     let directory = tempfile::tempdir().expect("tempdir");
@@ -481,6 +752,65 @@ fn fixture_artifacts() -> ReleaseArtifacts {
         corrosion_schema: spec("schema", "/usr/local/lib/ployz/corrosion-schema-v1.sql"),
         railpack: spec("railpack", "/usr/local/bin/railpack"),
     }
+}
+
+fn remote_artifacts(directory: &Path, digest: &str) -> ReleaseArtifacts {
+    let spec = |name: &str| ployz_core::install::InstallArtifactSpec {
+        version: ployz_core::install::InstallArtifactVersion::try_new("v1").expect("version"),
+        source: ployz_core::install::InstallArtifactSource::try_new(format!(
+            "https://releases.example/{name}"
+        ))
+        .expect("remote source"),
+        sha256: ployz_core::install::InstallSha256Digest::try_new(digest).expect("digest"),
+        install_path: ployz_core::install::AbsoluteInstallPath::try_new(
+            directory.join("installed").join(name).display().to_string(),
+        )
+        .expect("install path"),
+    };
+    ReleaseArtifacts {
+        ployzd: spec("ployzd"),
+        ebpf_bytecode: spec("ebpf"),
+        ebpf_ctl: spec("ebpf-ctl"),
+        corrosion: spec("corrosion"),
+        corrosion_schema: spec("schema"),
+        railpack: spec("railpack"),
+    }
+}
+
+fn prepare_plain_founding<R: HostRunnerCommandRunner>(
+    state: &FoundingStateDirectory,
+    artifacts: ReleaseArtifacts,
+    runner: R,
+) -> PreparedLinuxFounding<R> {
+    try_prepare_plain_founding(state, artifacts, runner).expect("plain preparation succeeds")
+}
+
+fn try_prepare_plain_founding<R: HostRunnerCommandRunner>(
+    state: &FoundingStateDirectory,
+    artifacts: ReleaseArtifacts,
+    runner: R,
+) -> Result<PreparedLinuxFounding<R>, FoundingPreparationError> {
+    let mut founding_input = input("2026-08-04T12:00:00Z");
+    founding_input.storage = InitStorageChoice::Flag {
+        mode: StorageMode::Plain,
+    };
+    prepare_linux_founding(
+        state,
+        founding_input,
+        artifacts,
+        "corrosion 0.2.0-beta.0".to_owned(),
+        runner,
+    )
+}
+
+fn pem_der(pem: &str) -> Vec<u8> {
+    let encoded = pem
+        .lines()
+        .filter(|line| !line.starts_with("-----"))
+        .collect::<String>();
+    base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .expect("valid certificate PEM")
 }
 
 fn output(success: bool, stdout: &str) -> HostRunnerCommandOutput {

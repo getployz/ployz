@@ -99,7 +99,7 @@ impl SshPeerKey {
 
     #[must_use]
     pub fn remote_script(&self, command: &InitCommand) -> String {
-        let mut args = vec!["sudo".to_owned(), "ployz".to_owned(), "init".to_owned()];
+        let mut args = vec!["ployz".to_owned(), "init".to_owned()];
         args.extend([
             "--storage".to_owned(),
             render_storage(command.storage).to_owned(),
@@ -294,8 +294,9 @@ mod tests {
             "custom:apps.example.com",
         ]));
         assert!(script.starts_with(
-            "curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 https://ployz.sh | sh && 'sudo' 'ployz' 'init'"
+            "curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 https://ployz.sh | sh && 'ployz' 'init'"
         ));
+        assert!(!script.contains("'sudo' 'ployz' 'init'"));
         assert!(script.contains("'--driver-peer-public-key'"));
         assert!(script.contains("'--wireguard-endpoint' '203.0.113.7:51820'"));
         assert!(script.contains("'Nick'\"'\"'s laptop'"));

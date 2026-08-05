@@ -27,14 +27,14 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    ArtifactKind, ArtifactSourceView, FileMode, HostPlatformProfile, HostRunnerCommandRunner,
-    PloyzdRole, PloyzdRoleEnvironmentFile, PoolSelection, ReleaseArtifacts, SupervisorBackend,
-    SupervisorChange, SupervisorDirectories, SupervisorUnitSpec, SystemHostRunnerCommandRunner,
-    artifact_target, detect_host_platform, install_verified_artifact, prepare_storage,
-    verify_artifact_file, write_durable_file,
+    ArtifactKind, ArtifactSourceView, ArtifactVerificationError, FileMode, HostPlatformProfile,
+    HostRunnerCommandRunner, PloyzdRole, PloyzdRoleEnvironmentFile, PoolSelection,
+    ReleaseArtifacts, SupervisorBackend, SupervisorChange, SupervisorDirectories,
+    SupervisorUnitSpec, SystemHostRunnerCommandRunner, artifact_target, detect_host_platform,
+    install_verified_artifact, prepare_storage, verify_artifact_file, write_durable_file,
 };
 
-use super::{FoundingHostEffects, FoundingStateDirectory};
+use super::{FoundingHostEffects, FoundingMilestone, FoundingStateDirectory};
 
 const MACHINE_SEED_FILE: &str = "machine-seed.json";
 const FOUNDING_REQUEST_FILE: &str = "founding-request.json";
@@ -328,7 +328,7 @@ pub fn prepare_linux_founding<R: HostRunnerCommandRunner>(
         artifacts,
         corrosion_embedded_version,
         machine_seed: seed,
-        door_material: read_or_generate_door_material(state.path())?,
+        door_material: read_or_generate_door_material(state)?,
         bootstrap_credential: bootstrap_credential.clone(),
         corrosion_token: read_or_generate_secret(&state.path().join(CORROSION_TOKEN_FILE))?,
         zfs_pool,
@@ -421,7 +421,7 @@ fn prepared_from_request<R: HostRunnerCommandRunner>(
         artifacts,
         corrosion_embedded_version,
         machine_seed: seed,
-        door_material: read_or_generate_door_material(state.path())?,
+        door_material: read_or_generate_door_material(state)?,
         bootstrap_credential: bootstrap_credential.clone(),
         corrosion_token: read_or_generate_secret(&state.path().join(CORROSION_TOKEN_FILE))?,
         zfs_pool: read_required_zfs_pool(state.path(), request.request().machine.storage.mode)?,
@@ -485,36 +485,68 @@ fn read_or_generate_secret(path: &Path) -> Result<String, FoundingPreparationErr
     }
 }
 
-fn read_or_generate_door_material(state: &Path) -> Result<DoorMaterial, FoundingPreparationError> {
-    let certificate = state.join(DOOR_CERTIFICATE_FILE);
-    let key = state.join(DOOR_KEY_FILE);
-    let fingerprint = state.join(DOOR_FINGERPRINT_FILE);
-    match (
-        fs::read_to_string(&certificate),
-        fs::read_to_string(&key),
-        fs::read_to_string(&fingerprint),
-    ) {
-        (Ok(certificate_pem), Ok(private_key_pem), Ok(fingerprint)) => Ok(DoorMaterial {
-            certificate_pem,
-            private_key_pem,
+fn read_or_generate_door_material(
+    state: &FoundingStateDirectory,
+) -> Result<DoorMaterial, FoundingPreparationError> {
+    let certificate = state.path().join(DOOR_CERTIFICATE_FILE);
+    let key = state.path().join(DOOR_KEY_FILE);
+    let fingerprint = state.path().join(DOOR_FINGERPRINT_FILE);
+    let certificate_result = fs::read_to_string(&certificate);
+    let key_result = fs::read_to_string(&key);
+    let fingerprint_result = fs::read_to_string(&fingerprint);
+    if let (Ok(certificate_pem), Ok(private_key_pem), Ok(fingerprint)) =
+        (&certificate_result, &key_result, &fingerprint_result)
+    {
+        return Ok(DoorMaterial {
+            certificate_pem: certificate_pem.clone(),
+            private_key_pem: private_key_pem.clone(),
             fingerprint: fingerprint.trim().to_owned(),
-        }),
-        (Err(cert), Err(key), Err(fingerprint))
-            if cert.kind() == std::io::ErrorKind::NotFound
-                && key.kind() == std::io::ErrorKind::NotFound
-                && fingerprint.kind() == std::io::ErrorKind::NotFound =>
-        {
-            let rcgen::CertifiedKey { cert, signing_key } =
-                rcgen::generate_simple_self_signed(["door.ployz.internal".to_owned()])
-                    .map_err(preparation)?;
-            Ok(DoorMaterial {
-                fingerprint: format!("{:x}", Sha256::digest(cert.der())),
-                certificate_pem: cert.pem(),
-                private_key_pem: signing_key.serialize_pem(),
-            })
-        }
-        _ => Err(preparation("cluster door TLS material is incomplete")),
+        });
     }
+    for result in [&certificate_result, &key_result, &fingerprint_result] {
+        if let Err(error) = result
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(preparation(error));
+        }
+    }
+    let all_missing =
+        certificate_result.is_err() && key_result.is_err() && fingerprint_result.is_err();
+    if state
+        .milestone_complete(FoundingMilestone::DoorMaterial)
+        .map_err(preparation)?
+    {
+        return Err(preparation(
+            "cluster door TLS material is incomplete after the DoorMaterial milestone; run ployz machine reset before founding again",
+        ));
+    }
+    if !all_missing {
+        for (path, result) in [
+            (&certificate, &certificate_result),
+            (&key, &key_result),
+            (&fingerprint, &fingerprint_result),
+        ] {
+            if result.is_ok() {
+                match fs::remove_file(path) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(preparation(error)),
+                }
+            }
+        }
+    }
+    generate_door_material()
+}
+
+fn generate_door_material() -> Result<DoorMaterial, FoundingPreparationError> {
+    let rcgen::CertifiedKey { cert, signing_key } =
+        rcgen::generate_simple_self_signed(["door.ployz.internal".to_owned()])
+            .map_err(preparation)?;
+    Ok(DoorMaterial {
+        fingerprint: format!("{:x}", Sha256::digest(cert.der())),
+        certificate_pem: cert.pem(),
+        private_key_pem: signing_key.serialize_pem(),
+    })
 }
 
 fn read_or_generate_machine_seed(state: &Path) -> Result<MachineSeed, FoundingPreparationError> {

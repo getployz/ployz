@@ -24,19 +24,30 @@ impl<R: HostRunnerCommandRunner> LinuxFoundingHostEffects<R> {
         spec: &ployz_core::install::InstallArtifactSpec,
     ) -> Result<(), FailureMessage> {
         let target = artifact_target(kind, spec).map_err(failure)?;
-        let source = match target.source_view() {
-            ArtifactSourceView::LocalPath(path) => path.to_path_buf(),
+        let verified = match target.source_view() {
+            ArtifactSourceView::LocalPath(path) => {
+                verify_artifact_file(path, &target.digest).map_err(failure)?
+            }
             ArtifactSourceView::RemoteUrl(url) => {
                 let downloads = self.state.path().join("downloads");
                 fs::create_dir_all(&downloads).map_err(failure)?;
                 let download = downloads.join(spec.sha256.as_str());
-                if !download.exists() {
+                if !download.try_exists().map_err(failure)? {
                     self.runner.download(url, &download)?;
                 }
-                download
+                match verify_artifact_file(&download, &target.digest) {
+                    Ok(verified) => verified,
+                    Err(ArtifactVerificationError::DigestMismatch { .. }) => {
+                        fs::remove_file(&download).map_err(failure)?;
+                        self.runner.download(url, &download)?;
+                        verify_artifact_file(&download, &target.digest).map_err(failure)?
+                    }
+                    Err(error @ ArtifactVerificationError::ReadFailed { .. }) => {
+                        return Err(failure(error));
+                    }
+                }
             }
         };
-        let verified = verify_artifact_file(&source, &target.digest).map_err(failure)?;
         install_verified_artifact(&verified, &target).map_err(failure)?;
         Ok(())
     }
