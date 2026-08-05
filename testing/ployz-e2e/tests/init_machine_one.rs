@@ -233,6 +233,7 @@ async fn assert_runtime(
             "ployzd-keeper.service",
             "ployz-corrosion.service",
             "ployzd-api.service",
+            "ployzd-dns.service",
         ],
     )
     .await?;
@@ -248,44 +249,31 @@ async fn assert_runtime(
         &["test", "-f", "/etc/systemd/system/ployzd-dns.service"],
     )
     .await?;
-    let disabled = exec_in_container(
+    let gateway_disabled = exec_in_container(
         docker,
         &machine.container_id,
-        &[
-            "systemctl",
-            "is-enabled",
-            "ployzd-gateway.service",
-            "ployzd-dns.service",
-        ],
+        &["systemctl", "is-enabled", "ployzd-gateway.service"],
     )
     .await
     .map_err(|error| error.to_string())?;
     require(
-        !disabled.success()
-            && disabled
-                .stdout
-                .lines()
-                .filter(|line| line.trim() == "disabled")
-                .count()
-                == 2,
-        format!("unfinished gateway or DNS role was enabled: {disabled:?}"),
+        !gateway_disabled.success() && gateway_disabled.stdout.trim() == "disabled",
+        format!("unfinished gateway role was enabled: {gateway_disabled:?}"),
     )?;
     let inactive = exec_in_container(
         docker,
         &machine.container_id,
-        &[
-            "systemctl",
-            "is-active",
-            "ployzd-gateway.service",
-            "ployzd-dns.service",
-        ],
+        &["systemctl", "is-active", "ployzd-gateway.service"],
     )
     .await
     .map_err(|error| error.to_string())?;
-    require(
-        !inactive.success(),
-        "unfinished gateway or DNS role was started",
-    )?;
+    require(!inactive.success(), "unfinished gateway role was started")?;
+    exec_ok(
+        docker,
+        machine,
+        &["systemctl", "is-enabled", "ployzd-dns.service"],
+    )
+    .await?;
 
     let network = exec_ok(
         docker,

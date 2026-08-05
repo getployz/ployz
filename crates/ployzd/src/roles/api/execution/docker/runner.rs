@@ -90,7 +90,7 @@ impl DockerManagedContainerRunner {
             resolve_wireguard_mtu(self.endpoint_mtu_policy, &self.endpoint_wg_ifname).await;
         converge_endpoint_network(
             docker,
-            &expected_subnet.as_string(),
+            expected_subnet,
             &self.endpoint_bridge_ifname,
             endpoint_mtu,
         )
@@ -277,6 +277,10 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
     }
 
     async fn ensure_endpoint_network(&self) -> Result<(), MachineEndpointNetworkError> {
+        let endpoint_network_subnet = MachineEndpointSubnet::try_new(&self.endpoint_network_subnet)
+            .map_err(|error| MachineEndpointNetworkError::EnsureEndpointNetwork {
+                message: error.to_string(),
+            })?;
         let docker = self.docker().await.map_err(|error| {
             MachineEndpointNetworkError::EnsureEndpointNetwork {
                 message: error.to_string(),
@@ -286,7 +290,7 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
             resolve_wireguard_mtu(self.endpoint_mtu_policy, &self.endpoint_wg_ifname).await;
         ensure_endpoint_network(
             docker,
-            &self.endpoint_network_subnet,
+            &endpoint_network_subnet,
             &self.endpoint_bridge_ifname,
             endpoint_mtu,
         )
@@ -332,14 +336,8 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
         };
         let endpoint_mtu =
             resolve_wireguard_mtu(self.endpoint_mtu_policy, &self.endpoint_wg_ifname).await;
-        read_endpoint_network_status(
-            docker,
-            expected,
-            &self.endpoint_network_subnet,
-            &self.endpoint_bridge_ifname,
-            endpoint_mtu,
-        )
-        .await
+        read_endpoint_network_status(docker, expected, &self.endpoint_bridge_ifname, endpoint_mtu)
+            .await
     }
 
     async fn resolve_registry_image(
@@ -354,6 +352,10 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
         &self,
         command: CreateManagedContainer,
     ) -> Result<ContainerId, MachineContainerCreateError> {
+        let endpoint_network_subnet = MachineEndpointSubnet::try_new(&self.endpoint_network_subnet)
+            .map_err(|error| MachineContainerCreateError::EnsureEndpointNetwork {
+                message: error.to_string(),
+            })?;
         let docker = self
             .docker()
             .await
@@ -364,7 +366,7 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
             resolve_wireguard_mtu(self.endpoint_mtu_policy, &self.endpoint_wg_ifname).await;
         require_endpoint_network(
             docker,
-            &self.endpoint_network_subnet,
+            &endpoint_network_subnet,
             &self.endpoint_bridge_ifname,
             endpoint_mtu,
         )
@@ -1289,7 +1291,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_local_image_fails_create_without_network_acquisition() {
-        let network = r#"{"Driver":"bridge","Options":{"com.docker.network.bridge.name":"br-test","com.docker.network.driver.mtu":"1420"},"IPAM":{"Config":[{"Subnet":"10.42.7.0/24"}]}}"#;
+        let network = r#"{"Driver":"bridge","Labels":{"plz.managed":"true"},"Options":{"com.docker.network.bridge.name":"br-test","com.docker.network.driver.mtu":"1420"},"IPAM":{"Config":[{"Subnet":"10.42.7.0/24","Gateway":"10.42.7.1"}]}}"#;
         let (runner, attempts, _socket_dir) = runner_with_responses(vec![
             (200, network.to_owned()),
             (
