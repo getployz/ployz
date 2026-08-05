@@ -19,7 +19,6 @@ use super::token::JoinTokenProof;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
 pub struct MachineJoinRequest {
     pub machine_id: MachineRowId,
     pub name: MachineName,
@@ -32,7 +31,6 @@ pub struct MachineJoinRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
 pub struct PeerJoinRequest {
     pub peer_id: PeerId,
     pub name: String,
@@ -265,28 +263,40 @@ pub enum JoinAdmissionAccepted {
 }
 
 /// Every refusal returned by the public join door.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum JoinDoorRefusal {
-    TokenNotFound {
-        token_id: TokenId,
-    },
+    #[error("join token {token_id} does not exist or was revoked; run `ployz token create`")]
+    TokenNotFound { token_id: TokenId },
+    #[error("join token {token_id} expired at {expires_at}; run `ployz token create`")]
     TokenExpired {
         token_id: TokenId,
         expires_at: CorrosionTimestamp,
     },
-    TokenSecretMismatch {
-        token_id: TokenId,
-    },
+    #[error("join token {token_id} has the wrong secret; run `ployz token create`")]
+    TokenSecretMismatch { token_id: TokenId },
+    #[error(
+        "join admission is invalid ({reason}); correct the inputs and run `ployz machine join` again"
+    )]
     InvalidAdmission {
         reason: JoinAdmissionValidationError,
     },
-    NameConflict {
-        name: String,
-    },
+    #[error(
+        "machine name {name:?} is already claimed; run `ployz machine rm {name}` before joining again"
+    )]
+    NameConflict { name: String },
+    #[error(
+        "machine or peer identity is already claimed; run `ployz machine reset` before joining again"
+    )]
     IdentityConflict,
+    #[error(
+        "the accepting machine has no reachable seed endpoint; run `ployz machine endpoint set` on a current cluster peer"
+    )]
     NoReachableSeed,
+    #[error(
+        "the cluster endpoint subnet is exhausted; run `ployz machine rm` for an unused machine before joining again"
+    )]
     EndpointSubnetExhausted,
 }
 

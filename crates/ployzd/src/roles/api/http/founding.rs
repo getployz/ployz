@@ -3,9 +3,6 @@
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
-use bytes::Bytes;
-use http_body_util::BodyExt;
-use hyper::body::Body;
 use hyper::header::{AUTHORIZATION, HeaderValue};
 use hyper::{Response, StatusCode};
 use ployz_core::ApiRefusal;
@@ -32,6 +29,7 @@ use super::roster::corrosion_unavailable_refusal;
 use super::server::{
     ApiService, HttpBody, corrosion_unavailable_response, json_response, refusal_response,
 };
+use super::server::{BoundedBodyError, read_bounded_body};
 
 const MAX_FOUNDING_ROWS_PER_TABLE: usize = 1;
 const MAX_FOUNDING_REQUEST_BYTES: usize = 1024 * 1024;
@@ -156,42 +154,33 @@ pub(super) enum FoundingBodyError {
 
 async fn read_bounded_founding_body<Payload>(body: Payload) -> Result<Vec<u8>, FoundingBodyError>
 where
-    Payload: Body<Data = Bytes> + Unpin,
+    Payload: hyper::body::Body<Data = bytes::Bytes> + Unpin,
 {
-    tokio::time::timeout(FOUNDING_BODY_READ_TIMEOUT, collect_founding_body(body))
+    read_bounded_body(body, MAX_FOUNDING_REQUEST_BYTES, FOUNDING_BODY_READ_TIMEOUT)
         .await
-        .map_err(|_| FoundingBodyError::Deadline {
-            timeout: FOUNDING_BODY_READ_TIMEOUT,
-        })?
+        .map_err(|error| match error {
+            BoundedBodyError::TooLarge => FoundingBodyError::TooLarge,
+            BoundedBodyError::Deadline => FoundingBodyError::Deadline {
+                timeout: FOUNDING_BODY_READ_TIMEOUT,
+            },
+            BoundedBodyError::Read => FoundingBodyError::Read,
+        })
 }
 
-async fn collect_founding_body<Payload>(mut body: Payload) -> Result<Vec<u8>, FoundingBodyError>
-where
-    Payload: Body<Data = Bytes> + Unpin,
-{
-    let mut bytes = Vec::new();
-    while let Some(frame) = body.frame().await {
-        let frame = frame.map_err(|_| FoundingBodyError::Read)?;
-        let Ok(data) = frame.into_data() else {
-            continue;
-        };
-        append_founding_body_chunk(&mut bytes, &data)?;
-    }
-    Ok(bytes)
-}
-
+#[cfg(test)]
 pub(super) fn append_founding_body_chunk(
     body: &mut Vec<u8>,
     chunk: &[u8],
 ) -> Result<(), FoundingBodyError> {
-    let Some(total) = body.len().checked_add(chunk.len()) else {
-        return Err(FoundingBodyError::TooLarge);
-    };
-    if total > MAX_FOUNDING_REQUEST_BYTES {
-        return Err(FoundingBodyError::TooLarge);
-    }
-    body.extend_from_slice(chunk);
-    Ok(())
+    super::server::append_bounded_body_chunk(body, chunk, MAX_FOUNDING_REQUEST_BYTES).map_err(
+        |error| match error {
+            BoundedBodyError::TooLarge => FoundingBodyError::TooLarge,
+            BoundedBodyError::Deadline => FoundingBodyError::Deadline {
+                timeout: FOUNDING_BODY_READ_TIMEOUT,
+            },
+            BoundedBodyError::Read => FoundingBodyError::Read,
+        },
+    )
 }
 
 fn founding_http_error(status: StatusCode, kind: &'static str) -> Response<HttpBody> {
@@ -492,6 +481,7 @@ pub(super) enum FoundingEndpointNetworkError {
 mod tests {
     use std::convert::Infallible;
 
+    use bytes::Bytes;
     use futures_util::stream;
     use http_body_util::StreamBody;
     use hyper::body::Frame;

@@ -1,6 +1,5 @@
 use std::collections::VecDeque;
 
-use ployz_core::build::railpack_pins;
 use ployz_core::corrosion::StoredRow;
 use ployz_core::join::JoinStorageChoice;
 use ployz_core::machine::MachineLifecycle;
@@ -101,6 +100,18 @@ fn validated_fixture() -> (
 }
 
 #[test]
+fn joined_corrosion_waits_for_keeper_owned_wireguard_on_boot() {
+    let (_, systemd_unit) = crate::lifecycle::production::corrosion_unit(
+        SupervisorBackend::Systemd,
+        Path::new("/var/lib/ployz/corrosion.toml"),
+    );
+    assert!(
+        systemd_unit.contains("After=network-online.target ployzd-keeper.service"),
+        "{systemd_unit}"
+    );
+}
+
+#[test]
 fn join_docker_install_uses_the_detected_non_debian_profile() {
     let cases = [
         (
@@ -147,7 +158,8 @@ fn join_docker_install_uses_the_detected_non_debian_profile() {
         );
         let mut profile = None;
 
-        ensure_join_docker(&state, &mut runner, &mut profile, &directories)
+        LinuxSubstrate::new(state.path(), &mut runner, &mut profile, &directories)
+            .ensure_docker()
             .expect("profile-specific Docker installation");
 
         assert!(
@@ -405,19 +417,8 @@ fn query_token_environment_and_artifact_contracts_are_exact() {
     );
     assert!(config.contains("authz.bearer-token = \"super-secret\""));
 
-    let railpack_install_path = railpack_pins()
-        .expect("checked-in Railpack pins")
-        .install_path();
     assert_eq!(
-        [
-            "/usr/local/bin/ployzd",
-            "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
-            "/usr/local/bin/ployz-ebpf-ctl",
-            "/usr/local/bin/corrosion",
-            "/usr/local/lib/ployz/corrosion-schema-v1.sql",
-            railpack_install_path,
-        ]
-        .map(|path| artifact_kind(path).expect("known artifact")),
+        ArtifactKind::ALL,
         [
             ArtifactKind::Ployzd,
             ArtifactKind::EbpfBytecode,

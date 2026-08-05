@@ -15,14 +15,14 @@ use ployz_core::install::{
 };
 use ployz_core::join::{
     AdvertisedJoinDoorEndpoints, JOIN_DOOR_PORT, JOIN_RESET_COMMAND, JoinAcceptanceValidationError,
-    JoinArrival, JoinArrivalDisposition, JoinBlob, JoinDoorCertFingerprint, JoinDoorPrivateKeyPem,
-    JoinMachineSubstrate, JoinMemberRequest, JoinRepairCommand, JoinStorageChoice,
-    JoinStorageFacts, JoinTokenProof, JoinTokenSecret, JoinTokenTtlSeconds,
-    MACHINE_ENDPOINT_SET_COMMAND, MAX_JOIN_DOOR_ENDPOINTS, MachineEndpointSetRefusal,
-    MachineEndpointSetRequest, MachineJoinRequest, PeerJoinRequest, TokenCreateRefusal,
-    TokenListRequest, TokenListScope, advertise_join_door_endpoints, classify_join_arrival,
-    prepare_machine_admission, prepare_peer_admission, select_join_storage, set_machine_endpoint,
-    token_list_reply, validate_join_token,
+    JoinAdmissionValidationError, JoinArrival, JoinArrivalDisposition, JoinBlob,
+    JoinDoorCertFingerprint, JoinDoorPrivateKeyPem, JoinDoorRefusal, JoinMachineSubstrate,
+    JoinMemberRequest, JoinRepairCommand, JoinStorageChoice, JoinStorageFacts, JoinTokenProof,
+    JoinTokenSecret, JoinTokenTtlSeconds, MACHINE_ENDPOINT_SET_COMMAND, MAX_JOIN_DOOR_ENDPOINTS,
+    MachineEndpointSetRefusal, MachineEndpointSetRequest, MachineJoinRequest, PeerJoinRequest,
+    TokenCreateRefusal, TokenListRequest, TokenListScope, advertise_join_door_endpoints,
+    classify_join_arrival, prepare_machine_admission, prepare_peer_admission, select_join_storage,
+    set_machine_endpoint, token_list_reply, validate_join_token,
 };
 use ployz_core::machine::{MachineLifecycle, MachineName};
 use ployz_core::network::{MachineEndpointSubnet, MachineEndpointSupernet, WireGuardPublicKey};
@@ -392,6 +392,73 @@ fn machine_and_peer_admission_are_structurally_separate() {
     assert!(machine_json.to_string().contains("storage_facts"));
     assert!(!peer_json.to_string().contains("storage"));
     assert!(!peer_json.to_string().contains("subnet_v4"));
+}
+
+#[test]
+fn public_join_requests_tolerate_additive_fields() {
+    let mut machine = serde_json::to_value(MachineJoinRequest {
+        machine_id: MachineRowId::try_new(MACHINE).expect("machine id"),
+        name: MachineName::try_new("edge-a").expect("machine name"),
+        public_key: WireGuardPublicKey::try_new("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+            .expect("public key"),
+        endpoint: None,
+        storage_choice: JoinStorageChoice::Automatic,
+        storage_facts: JoinStorageFacts {
+            imported_zfs_pool: false,
+            total_memory_bytes: 1024,
+        },
+    })
+    .expect("machine request serializes");
+    machine
+        .as_object_mut()
+        .expect("machine request is an object")
+        .insert("future_machine_field".to_owned(), serde_json::json!(true));
+    serde_json::from_value::<MachineJoinRequest>(machine)
+        .expect("machine request ignores additive fields");
+
+    let mut peer = serde_json::to_value(PeerJoinRequest {
+        peer_id: PeerId::try_new(MACHINE).expect("peer id"),
+        name: "operator-laptop".to_owned(),
+        public_key: WireGuardPublicKey::try_new("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+            .expect("public key"),
+        endpoint: None,
+    })
+    .expect("peer request serializes");
+    peer.as_object_mut()
+        .expect("peer request is an object")
+        .insert("future_peer_field".to_owned(), serde_json::json!(true));
+    serde_json::from_value::<PeerJoinRequest>(peer).expect("peer request ignores additive fields");
+}
+
+#[test]
+fn every_join_door_refusal_names_a_repair_command() {
+    let token_id = TokenId::try_new(TOKEN).expect("token id");
+    let refusals = [
+        JoinDoorRefusal::TokenNotFound {
+            token_id: token_id.clone(),
+        },
+        JoinDoorRefusal::TokenExpired {
+            token_id: token_id.clone(),
+            expires_at: timestamp("2026-08-05T12:00:00Z"),
+        },
+        JoinDoorRefusal::TokenSecretMismatch { token_id },
+        JoinDoorRefusal::InvalidAdmission {
+            reason: JoinAdmissionValidationError::EndpointPortZero,
+        },
+        JoinDoorRefusal::NameConflict {
+            name: "edge-a".to_owned(),
+        },
+        JoinDoorRefusal::IdentityConflict,
+        JoinDoorRefusal::NoReachableSeed,
+        JoinDoorRefusal::EndpointSubnetExhausted,
+    ];
+
+    for refusal in refusals {
+        assert!(
+            refusal.to_string().contains("ployz "),
+            "refusal omitted its repair command: {refusal}"
+        );
+    }
 }
 
 #[test]

@@ -9,6 +9,43 @@ use crate::install::{ExactPloyzVersion, InstallArtifactSpec};
 
 use super::JoinAcceptanceValidationError;
 
+/// Compiler-checked identity for every artifact in the accepted machine substrate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JoinArtifactKind {
+    Ployzd,
+    EbpfBytecode,
+    EbpfCtl,
+    Corrosion,
+    CorrosionSchema,
+    Railpack,
+}
+
+impl JoinArtifactKind {
+    pub const ALL: [Self; 6] = [
+        Self::Ployzd,
+        Self::EbpfBytecode,
+        Self::EbpfCtl,
+        Self::Corrosion,
+        Self::CorrosionSchema,
+        Self::Railpack,
+    ];
+
+    fn install_path(self) -> Result<&'static str, JoinAcceptanceValidationError> {
+        match self {
+            Self::Ployzd => Ok("/usr/local/bin/ployzd"),
+            Self::EbpfBytecode => Ok("/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"),
+            Self::EbpfCtl => Ok("/usr/local/bin/ployz-ebpf-ctl"),
+            Self::Corrosion => Ok("/usr/local/bin/corrosion"),
+            Self::CorrosionSchema => Ok("/usr/local/lib/ployz/corrosion-schema-v1.sql"),
+            Self::Railpack => railpack_pins()
+                .map(|pins| pins.install_path())
+                .map_err(|error| JoinAcceptanceValidationError::InvalidRailpackPins {
+                    detail: error.to_string(),
+                }),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct JoinMachineSubstrateWire {
     ployz_version: ExactPloyzVersion,
@@ -59,6 +96,27 @@ impl JoinMachineSubstrate {
         &self.artifacts
     }
 
+    /// Returns every required artifact paired with its exhaustive semantic kind.
+    #[must_use]
+    pub fn artifacts_by_kind(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (JoinArtifactKind, &InstallArtifactSpec)> {
+        JoinArtifactKind::ALL.into_iter().map(|kind| {
+            let path = match kind.install_path() {
+                Ok(path) => path,
+                Err(_) => unreachable!("validated substrate retains checked-in Railpack pins"),
+            };
+            let Some(artifact) = self
+                .artifacts
+                .iter()
+                .find(|artifact| artifact.install_path.as_str() == path)
+            else {
+                unreachable!("validated substrate contains every required artifact")
+            };
+            (kind, artifact)
+        })
+    }
+
     pub(super) fn validate(&self) -> Result<(), JoinAcceptanceValidationError> {
         if self.corrosion_version.trim().is_empty() {
             return Err(JoinAcceptanceValidationError::MissingCorrosionVersion);
@@ -91,17 +149,13 @@ impl JoinMachineSubstrate {
 }
 
 fn required_install_paths() -> Result<[&'static str; 6], JoinAcceptanceValidationError> {
-    let railpack =
-        railpack_pins().map_err(|error| JoinAcceptanceValidationError::InvalidRailpackPins {
-            detail: error.to_string(),
-        })?;
     Ok([
-        "/usr/local/bin/ployzd",
-        "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
-        "/usr/local/bin/ployz-ebpf-ctl",
-        "/usr/local/bin/corrosion",
-        "/usr/local/lib/ployz/corrosion-schema-v1.sql",
-        railpack.install_path(),
+        JoinArtifactKind::Ployzd.install_path()?,
+        JoinArtifactKind::EbpfBytecode.install_path()?,
+        JoinArtifactKind::EbpfCtl.install_path()?,
+        JoinArtifactKind::Corrosion.install_path()?,
+        JoinArtifactKind::CorrosionSchema.install_path()?,
+        JoinArtifactKind::Railpack.install_path()?,
     ])
 }
 

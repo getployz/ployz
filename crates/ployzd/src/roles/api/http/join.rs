@@ -3,9 +3,6 @@
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
-use bytes::Bytes;
-use http_body_util::BodyExt as _;
-use hyper::body::Body;
 use hyper::{Method, Response, StatusCode};
 use ployz_core::corrosion::{
     MachineDocument, MachineTransport, MeshProvider, OperatorWriteProvenance, PeerDocument,
@@ -28,9 +25,10 @@ use serde::Serialize;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
+pub(super) use super::server::BoundedBodyError as JoinBodyError;
 use super::server::{
     ApiService, HttpBody, RouteRefusal, corrosion_unavailable_response, json_response,
-    refusal_response_with_allow,
+    read_bounded_body, refusal_response_with_allow,
 };
 use super::store::{
     AcceptedMachine, AcceptedPeer, AcceptedRoster, ConditionalMachineReplace, MutationStoreError,
@@ -205,11 +203,8 @@ async fn admit_machine(
     .await
     {
         Ok(TokenAuthorizedInsert::Inserted) => {}
-        Ok(TokenAuthorizedInsert::TokenMissing) => {
-            return Err(JoinDoorRefusal::TokenNotFound {
-                token_id: authority.token_id.clone(),
-            }
-            .into());
+        Ok(TokenAuthorizedInsert::TokenUnavailable) => {
+            return Err(token_unavailable_refusal(authority)?.into());
         }
         Err(write_error) => {
             let refreshed = read_accepted_roster(&service.corrosion, &service.cluster_id).await?;
@@ -484,11 +479,8 @@ async fn admit_peer(
     .await
     {
         Ok(TokenAuthorizedInsert::Inserted) => {}
-        Ok(TokenAuthorizedInsert::TokenMissing) => {
-            return Err(JoinDoorRefusal::TokenNotFound {
-                token_id: authority.token_id.clone(),
-            }
-            .into());
+        Ok(TokenAuthorizedInsert::TokenUnavailable) => {
+            return Err(token_unavailable_refusal(authority)?.into());
         }
         Err(write_error) => {
             let refreshed = read_accepted_roster(&service.corrosion, &service.cluster_id).await?;
@@ -797,6 +789,21 @@ fn invalid_admission(reason: JoinAdmissionValidationError) -> AdmissionError {
     JoinDoorRefusal::InvalidAdmission { reason }.into()
 }
 
+fn token_unavailable_refusal(
+    authority: &ValidatedTokenAuthority,
+) -> Result<JoinDoorRefusal, AdmissionError> {
+    if now_timestamp()? >= authority.document.expires_at {
+        Ok(JoinDoorRefusal::TokenExpired {
+            token_id: authority.token_id.clone(),
+            expires_at: authority.document.expires_at,
+        })
+    } else {
+        Ok(JoinDoorRefusal::TokenNotFound {
+            token_id: authority.token_id.clone(),
+        })
+    }
+}
+
 fn now_timestamp() -> Result<ployz_core::corrosion::CorrosionTimestamp, AdmissionError> {
     let value = OffsetDateTime::now_utc()
         .format(&Rfc3339)
@@ -851,53 +858,20 @@ pub(super) fn validate_join_door_route(method: &Method, path: &str) -> Result<()
     Ok(())
 }
 
-async fn read_bounded_join_body<Payload>(body: Payload) -> Result<Vec<u8>, JoinBodyError>
-where
-    Payload: Body<Data = Bytes> + Unpin,
-{
-    tokio::time::timeout(JOIN_BODY_READ_TIMEOUT, collect_join_body(body))
-        .await
-        .map_err(|_| JoinBodyError::Deadline)?
+async fn read_bounded_join_body(body: hyper::body::Incoming) -> Result<Vec<u8>, JoinBodyError> {
+    read_bounded_body(body, MAX_JOIN_REQUEST_BYTES, JOIN_BODY_READ_TIMEOUT).await
 }
 
-async fn collect_join_body<Payload>(mut body: Payload) -> Result<Vec<u8>, JoinBodyError>
-where
-    Payload: Body<Data = Bytes> + Unpin,
-{
-    let mut bytes = Vec::new();
-    while let Some(frame) = body.frame().await {
-        let frame = frame.map_err(|_| JoinBodyError::Read)?;
-        let Ok(data) = frame.into_data() else {
-            continue;
-        };
-        append_join_body_chunk(&mut bytes, &data)?;
-    }
-    Ok(bytes)
-}
-
+#[cfg(test)]
 pub(super) fn append_join_body_chunk(
     body: &mut Vec<u8>,
     chunk: &[u8],
 ) -> Result<(), JoinBodyError> {
-    let Some(total) = body.len().checked_add(chunk.len()) else {
-        return Err(JoinBodyError::TooLarge);
-    };
-    if total > MAX_JOIN_REQUEST_BYTES {
-        return Err(JoinBodyError::TooLarge);
-    }
-    body.extend_from_slice(chunk);
-    Ok(())
+    super::server::append_bounded_body_chunk(body, chunk, MAX_JOIN_REQUEST_BYTES)
 }
 
 fn join_http_error(status: StatusCode, kind: &'static str) -> Response<HttpBody> {
     json_response(status, format!("{{\"kind\":\"{kind}\"}}").into_bytes())
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum JoinBodyError {
-    TooLarge,
-    Deadline,
-    Read,
 }
 
 #[cfg(test)]

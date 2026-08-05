@@ -41,22 +41,11 @@ pub struct MachineEndpointSetCommand {
     pub target: Option<SshTarget>,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MachineJoinCommand {
     pub blob: JoinBlob,
     pub storage: InitStorageChoice,
     pub wireguard_endpoint: Option<SocketAddr>,
-}
-
-impl fmt::Debug for MachineJoinCommand {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("MachineJoinCommand")
-            .field("blob", &self.blob)
-            .field("storage", &self.storage)
-            .field("wireguard_endpoint", &self.wireguard_endpoint)
-            .finish()
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

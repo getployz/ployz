@@ -29,8 +29,8 @@ use crate::{
 };
 
 use crate::lifecycle::production::{
-    CorrosionBootstrap, CorrosionConfig, CorrosionServiceChange, CorrosionUnitOrdering,
-    GeneratedSecretPersistence, LinuxSubstrate, artifact_kind, read_or_generate_secret,
+    CorrosionBootstrap, CorrosionConfig, CorrosionServiceChange, GeneratedSecretPersistence,
+    LinuxSubstrate, read_or_generate_secret,
     render_corrosion_config as render_shared_corrosion_config,
 };
 
@@ -197,27 +197,6 @@ pub async fn run_linux_machine_join(
     execute_linux_machine_join_locked(&state, &lock, &prepared, door).await
 }
 
-/// Performs bounded machine-local probes and durably prepares canonical join admission.
-///
-/// A persisted request wins on resume, so changing CLI flags cannot rewrite an
-/// admission that may already have been presented to the door.
-pub fn prepare_linux_machine_join(
-    state: &MachineJoinStateDirectory,
-    blob: JoinBlob,
-    storage_choice: JoinStorageChoice,
-    endpoint: Option<std::net::SocketAddr>,
-) -> Result<PreparedMachineJoin, MachineJoinFailure> {
-    let lock = state.try_lock()?;
-    prepare_linux_machine_join_locked(
-        state,
-        &lock,
-        blob,
-        storage_choice,
-        endpoint,
-        &mut SystemHostRunnerCommandRunner::default(),
-    )
-}
-
 fn prepare_linux_machine_join_locked(
     state: &MachineJoinStateDirectory,
     lock: &MachineJoinLock,
@@ -280,16 +259,6 @@ fn host_preflight(message: impl std::fmt::Display) -> MachineJoinFailure {
     MachineJoinFailure::HostPreflight {
         message: failure(message),
     }
-}
-
-/// Runs the complete on-host workflow; callers provide only pinned door redemption.
-pub async fn execute_linux_machine_join(
-    state: &MachineJoinStateDirectory,
-    prepared: &PreparedMachineJoin,
-    door: &mut impl MachineJoinDoor,
-) -> Result<MachineJoinOutcome, MachineJoinFailure> {
-    let lock = state.try_lock()?;
-    execute_linux_machine_join_locked(state, &lock, prepared, door).await
 }
 
 async fn execute_linux_machine_join_locked(
@@ -393,15 +362,6 @@ impl LinuxMachineJoinHostEffects {
         let crate::SupervisorUnitTarget::PloyzdRole(role) = target;
         self.substrate().wait_for_role(role, description)
     }
-}
-
-fn ensure_join_docker(
-    state: &MachineJoinStateDirectory,
-    runner: &mut impl HostRunnerCommandRunner,
-    profile: &mut Option<HostPlatformProfile>,
-    supervisor_directories: &SupervisorDirectories,
-) -> Result<(), FailureMessage> {
-    LinuxSubstrate::new(state.path(), runner, profile, supervisor_directories).ensure_docker()
 }
 
 fn render_environment(
@@ -558,13 +518,12 @@ fn imported_zfs_pools(
     Ok(pools)
 }
 
-impl MachineJoinHostEffects for LinuxMachineJoinHostEffects {
+impl LinuxMachineJoinHostEffects {
     fn ensure_exact_artifacts(
         &mut self,
         accepted: &ValidatedMachineJoinAccepted,
     ) -> Result<(), FailureMessage> {
-        for artifact in accepted.accepted().substrate.artifacts() {
-            let kind = artifact_kind(artifact.install_path.as_str())?;
+        for (kind, artifact) in accepted.accepted().substrate.artifacts_by_kind() {
             self.substrate().install_artifact(kind, artifact)?;
         }
         let output = self
@@ -611,12 +570,7 @@ impl MachineJoinHostEffects for LinuxMachineJoinHostEffects {
         &mut self,
         _accepted: &ValidatedMachineJoinAccepted,
     ) -> Result<(), FailureMessage> {
-        ensure_join_docker(
-            &self.state,
-            &mut self.runner,
-            &mut self.profile,
-            &self.supervisor_directories,
-        )
+        self.substrate().ensure_docker()
     }
 
     fn ensure_shared_door_material(
@@ -734,7 +688,7 @@ impl MachineJoinHostEffects for LinuxMachineJoinHostEffects {
         let config = self.state.path().join(CORROSION_CONFIG_FILE);
         let mut substrate = self.substrate();
         substrate.install_ployzd_units(&target, &environment)?;
-        substrate.install_corrosion_unit(&config, CorrosionUnitOrdering::NetworkOnly)?;
+        substrate.install_corrosion_unit(&config)?;
         substrate.change_corrosion_service(CorrosionServiceChange::Enable)
     }
 
@@ -826,6 +780,39 @@ impl MachineJoinHostEffects for LinuxMachineJoinHostEffects {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(failure(error)),
+        }
+    }
+}
+
+impl MachineJoinHostEffects for LinuxMachineJoinHostEffects {
+    fn apply_milestone(
+        &mut self,
+        milestone: super::MachineJoinMilestone,
+        identity: &MachineJoinIdentity,
+        accepted: &ValidatedMachineJoinAccepted,
+    ) -> Result<(), FailureMessage> {
+        match milestone {
+            super::MachineJoinMilestone::Artifacts => self.ensure_exact_artifacts(accepted),
+            super::MachineJoinMilestone::Storage => self.ensure_selected_storage(accepted),
+            super::MachineJoinMilestone::Docker => self.ensure_docker(accepted),
+            super::MachineJoinMilestone::DoorMaterial => self.ensure_shared_door_material(accepted),
+            super::MachineJoinMilestone::Configuration => self.ensure_configuration(accepted),
+            super::MachineJoinMilestone::BootstrapWireguard => {
+                self.ensure_temporary_seed_wireguard(identity, accepted)
+            }
+            super::MachineJoinMilestone::UnitsInstalled => {
+                self.ensure_units_installed_stopped(accepted)
+            }
+            super::MachineJoinMilestone::CorrosionStarted => {
+                self.ensure_corrosion_started(accepted)
+            }
+            super::MachineJoinMilestone::RosterConverged => self.await_roster_convergence(accepted),
+            super::MachineJoinMilestone::KeeperStarted => self.ensure_keeper_started(accepted),
+            super::MachineJoinMilestone::ApiStarted => self.ensure_api_started(accepted),
+            super::MachineJoinMilestone::Ready => self.await_machine_ready(accepted),
+            super::MachineJoinMilestone::BootstrapCleaned => {
+                self.remove_temporary_bootstrap(accepted)
+            }
         }
     }
 }

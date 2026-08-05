@@ -11,16 +11,7 @@ use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion,
     InstallContractError, InstallSha256Digest,
 };
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ArtifactKind {
-    Corrosion,
-    CorrosionSchema,
-    EbpfBytecode,
-    EbpfCtl,
-    Ployzd,
-    Railpack,
-}
+pub use ployz_core::join::JoinArtifactKind as ArtifactKind;
 
 pub type ArtifactVersion = InstallArtifactVersion;
 pub type ArtifactSource = InstallArtifactSource;

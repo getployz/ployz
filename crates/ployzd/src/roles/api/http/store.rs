@@ -1,5 +1,9 @@
 //! Bounded Corrosion reads and parameterized writes used by API mutations.
 
+mod error;
+
+pub(super) use error::MutationStoreError;
+
 use serde::Serialize;
 
 use ployz_core::corrosion::{
@@ -9,10 +13,7 @@ use ployz_core::corrosion::{
 };
 use ployz_core::ids::{ClusterId, MachineRowId, PeerId, TokenId};
 
-use crate::corrosion::{
-    CorrosionClient, CorrosionClientError, StoredRowCollectionError, StoredRowLimit,
-    collect_stored_rows,
-};
+use crate::corrosion::{CorrosionClient, StoredRowLimit, collect_stored_rows};
 
 const MAX_MUTATION_ROWS: usize = 10_000;
 
@@ -269,14 +270,15 @@ pub(super) async fn insert_token(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TokenAuthorizedInsert {
     Inserted,
-    TokenMissing,
+    TokenUnavailable,
 }
 
 /// Commits membership only while the exact token document validated by this
-/// API instance still exists in its machine-local Corrosion replica. A revoke
-/// committed on the same replica therefore orders before or after this write;
-/// other machines observe that delete according to Corrosion's replication
-/// convergence and do not gain a stronger cross-replica ordering guarantee.
+/// API instance still exists and remains unexpired at the SQLite commit point
+/// in its machine-local Corrosion replica. A revoke committed on the same
+/// replica therefore orders before or after this write; other machines observe
+/// that delete according to Corrosion's replication convergence and do not gain
+/// a stronger cross-replica ordering guarantee.
 pub(super) async fn insert_machine_if_token_matches(
     corrosion: &CorrosionClient,
     machine_id: &MachineRowId,
@@ -516,7 +518,7 @@ fn token_authorized_insert_statement(
 ) -> Statement {
     Statement::with_params(
         format!(
-            "INSERT INTO {} (id, document) SELECT ?, ? WHERE EXISTS (SELECT 1 FROM tokens WHERE id = ? AND document = ?)",
+            "INSERT INTO {} (id, document) SELECT ?, ? WHERE EXISTS (SELECT 1 FROM tokens WHERE id = ? AND document = ? AND julianday(json_extract(document, '$.expires_at')) > julianday('now'))",
             table.as_str()
         ),
         vec![
@@ -548,7 +550,7 @@ fn token_authorized_insert_outcome(
         });
     };
     match result.rows_affected {
-        0 => Ok(TokenAuthorizedInsert::TokenMissing),
+        0 => Ok(TokenAuthorizedInsert::TokenUnavailable),
         1 => Ok(TokenAuthorizedInsert::Inserted),
         rows_affected => Err(MutationStoreError::UnexpectedWriteResult {
             table,
@@ -670,38 +672,6 @@ fn update_wireguard_endpoint_statement(
     )
 }
 
-#[derive(Debug, thiserror::Error)]
-pub(super) enum MutationStoreError {
-    #[error("local Corrosion request failed: {0}")]
-    Client(#[from] CorrosionClientError),
-    #[error("stored-row collection failed: {0}")]
-    StoredRows(#[from] StoredRowCollectionError),
-    #[error("accepted cluster row is missing")]
-    MissingCluster,
-    #[error("accepted cluster row is invalid or ambiguous")]
-    InvalidCluster,
-    #[error("accepted {table:?} row has an invalid id: {detail}")]
-    InvalidAcceptedId {
-        table: CorrosionTable,
-        detail: String,
-    },
-    #[error("{table:?} contains duplicate primary key {id}")]
-    DuplicatePrimaryKey { table: CorrosionTable, id: String },
-    #[error("could not encode {table:?} document: {detail}")]
-    Encode {
-        table: CorrosionTable,
-        detail: String,
-    },
-    #[error("unexpected {table:?} write result for {id}: {detail}")]
-    UnexpectedWriteResult {
-        table: CorrosionTable,
-        id: String,
-        detail: String,
-    },
-    #[error("machine {machine_id} changed while its endpoint mutation was being committed")]
-    ConcurrentMachineMutation { machine_id: MachineRowId },
-}
-
 #[cfg(test)]
 mod tests {
     use ployz_core::corrosion::{TransactionResponse, TransactionResult, TransactionSuccess};
@@ -820,7 +790,7 @@ mod tests {
     }
 
     #[test]
-    fn admission_paused_after_validation_cannot_commit_after_token_revoke() {
+    fn admission_paused_after_validation_cannot_commit_after_token_revoke_or_expiry() {
         let member_id = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
         let token_id = TokenId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAW").expect("token id");
         let member = r#"{"name":"edge-a"}"#.to_owned();
@@ -835,7 +805,7 @@ mod tests {
                 validated_token.clone(),
             ),
             Statement::with_params(
-                "INSERT INTO machines (id, document) SELECT ?, ? WHERE EXISTS (SELECT 1 FROM tokens WHERE id = ? AND document = ?)",
+                "INSERT INTO machines (id, document) SELECT ?, ? WHERE EXISTS (SELECT 1 FROM tokens WHERE id = ? AND document = ? AND julianday(json_extract(document, '$.expires_at')) > julianday('now'))",
                 vec![
                     SqliteParameter::Text(member_id.to_owned()),
                     SqliteParameter::Text(member),
@@ -861,7 +831,7 @@ mod tests {
                 &commit_after_revoke,
             )
             .expect("a zero-row conditional insert is a valid refusal"),
-            TokenAuthorizedInsert::TokenMissing,
+            TokenAuthorizedInsert::TokenUnavailable,
         );
     }
 

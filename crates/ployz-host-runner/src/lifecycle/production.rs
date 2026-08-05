@@ -27,12 +27,6 @@ pub(super) enum CorrosionServiceChange {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum CorrosionUnitOrdering {
-    NetworkOnly,
-    AfterKeeper,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum CorrosionBootstrap<'a> {
     Founder,
     Seed(&'a str),
@@ -215,13 +209,9 @@ impl<'a, R: HostRunnerCommandRunner> LinuxSubstrate<'a, R> {
         Ok(())
     }
 
-    pub(super) fn install_corrosion_unit(
-        &mut self,
-        config: &Path,
-        ordering: CorrosionUnitOrdering,
-    ) -> Result<(), FailureMessage> {
+    pub(super) fn install_corrosion_unit(&mut self, config: &Path) -> Result<(), FailureMessage> {
         let backend = self.supervisor()?;
-        let (name, contents) = corrosion_unit(backend, config, ordering);
+        let (name, contents) = corrosion_unit(backend, config);
         write_durable_file(
             self.supervisor_directories.directory(backend),
             name,
@@ -320,52 +310,16 @@ pub(super) fn read_or_generate_secret(
     }
 }
 
-pub(super) fn artifact_kind(path: &str) -> Result<ArtifactKind, FailureMessage> {
-    let file_name = Path::new(path)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| failure("accepted artifact has no file name"))?;
-    match file_name {
-        "ployzd" => Ok(ArtifactKind::Ployzd),
-        "corrosion" => Ok(ArtifactKind::Corrosion),
-        "corrosion-schema-v1.sql" => Ok(ArtifactKind::CorrosionSchema),
-        "ployz-ebpf-tc" => Ok(ArtifactKind::EbpfBytecode),
-        "ployz-ebpf-ctl" => Ok(ArtifactKind::EbpfCtl),
-        "railpack" => Ok(ArtifactKind::Railpack),
-        _ => Err(failure(format!(
-            "accepted artifact install path has unknown file {file_name:?}"
-        ))),
-    }
-}
-
-fn corrosion_unit(
-    backend: SupervisorBackend,
-    config: &Path,
-    ordering: CorrosionUnitOrdering,
-) -> (&'static str, String) {
-    match (backend, ordering) {
-        (SupervisorBackend::Systemd, CorrosionUnitOrdering::NetworkOnly) => (
-            "ployz-corrosion.service",
-            format!(
-                "[Unit]\nDescription=Ployz Corrosion\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=exec\nExecStart=/usr/local/bin/corrosion --config {} agent\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n",
-                config.display()
-            ),
-        ),
-        (SupervisorBackend::Systemd, CorrosionUnitOrdering::AfterKeeper) => (
+pub(super) fn corrosion_unit(backend: SupervisorBackend, config: &Path) -> (&'static str, String) {
+    match backend {
+        SupervisorBackend::Systemd => (
             "ployz-corrosion.service",
             format!(
                 "[Unit]\nDescription=Ployz Corrosion\nAfter=network-online.target ployzd-keeper.service\nWants=network-online.target\n\n[Service]\nType=exec\nExecStart=/usr/local/bin/corrosion --config {} agent\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n",
                 config.display()
             ),
         ),
-        (SupervisorBackend::OpenRc, CorrosionUnitOrdering::NetworkOnly) => (
-            "ployz-corrosion",
-            format!(
-                "#!/sbin/openrc-run\nname=ployz-corrosion\nsupervisor=supervise-daemon\ncommand=/usr/local/bin/corrosion\ncommand_args=\"--config {} agent\"\nrespawn_delay=5\n\ndepend() {{ need net; }}\n",
-                config.display()
-            ),
-        ),
-        (SupervisorBackend::OpenRc, CorrosionUnitOrdering::AfterKeeper) => (
+        SupervisorBackend::OpenRc => (
             "ployz-corrosion",
             format!(
                 "#!/sbin/openrc-run\nname=ployz-corrosion\nsupervisor=supervise-daemon\ncommand=/usr/local/bin/corrosion\ncommand_args=\"--config {} agent\"\nrespawn_delay=5\n\ndepend() {{ need net; after ployzd-keeper; }}\n",

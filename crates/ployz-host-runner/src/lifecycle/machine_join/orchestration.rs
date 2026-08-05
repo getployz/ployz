@@ -130,57 +130,10 @@ pub trait MachineJoinDoor {
 /// `PLOYZ_API_JOIN_SUBSTRATE_PATH`; this is how a joined machine can serve the
 /// same door contract to later members.
 pub trait MachineJoinHostEffects {
-    fn ensure_exact_artifacts(
+    fn apply_milestone(
         &mut self,
-        accepted: &ValidatedMachineJoinAccepted,
-    ) -> Result<(), FailureMessage>;
-    fn ensure_selected_storage(
-        &mut self,
-        accepted: &ValidatedMachineJoinAccepted,
-    ) -> Result<(), FailureMessage>;
-    fn ensure_docker(
-        &mut self,
-        accepted: &ValidatedMachineJoinAccepted,
-    ) -> Result<(), FailureMessage>;
-    fn ensure_shared_door_material(
-        &mut self,
-        accepted: &ValidatedMachineJoinAccepted,
-    ) -> Result<(), FailureMessage>;
-    fn ensure_configuration(
-        &mut self,
-        accepted: &ValidatedMachineJoinAccepted,
-    ) -> Result<(), FailureMessage>;
-    fn ensure_temporary_seed_wireguard(
-        &mut self,
+        milestone: MachineJoinMilestone,
         identity: &MachineJoinIdentity,
-        accepted: &ValidatedMachineJoinAccepted,
-    ) -> Result<(), FailureMessage>;
-    fn ensure_units_installed_stopped(
-        &mut self,
-        accepted: &ValidatedMachineJoinAccepted,
-    ) -> Result<(), FailureMessage>;
-    fn ensure_corrosion_started(
-        &mut self,
-        accepted: &ValidatedMachineJoinAccepted,
-    ) -> Result<(), FailureMessage>;
-    fn await_roster_convergence(
-        &mut self,
-        accepted: &ValidatedMachineJoinAccepted,
-    ) -> Result<(), FailureMessage>;
-    fn ensure_keeper_started(
-        &mut self,
-        accepted: &ValidatedMachineJoinAccepted,
-    ) -> Result<(), FailureMessage>;
-    fn ensure_api_started(
-        &mut self,
-        accepted: &ValidatedMachineJoinAccepted,
-    ) -> Result<(), FailureMessage>;
-    fn await_machine_ready(
-        &mut self,
-        accepted: &ValidatedMachineJoinAccepted,
-    ) -> Result<(), FailureMessage>;
-    fn remove_temporary_bootstrap(
-        &mut self,
         accepted: &ValidatedMachineJoinAccepted,
     ) -> Result<(), FailureMessage>;
 }
@@ -272,48 +225,17 @@ fn apply_activation(
     accepted: &ValidatedMachineJoinAccepted,
     host: &mut impl MachineJoinHostEffects,
 ) -> Result<(), MachineJoinFailure> {
-    ensure_step(state, MachineJoinMilestone::Artifacts, || {
-        host.ensure_exact_artifacts(accepted)
-    })?;
-    ensure_step(state, MachineJoinMilestone::Storage, || {
-        host.ensure_selected_storage(accepted)
-    })?;
-    ensure_step(state, MachineJoinMilestone::Docker, || {
-        host.ensure_docker(accepted)
-    })?;
-    ensure_step(state, MachineJoinMilestone::DoorMaterial, || {
-        host.ensure_shared_door_material(accepted)
-    })?;
-    ensure_step(state, MachineJoinMilestone::Configuration, || {
-        state
-            .persist_join_substrate(&accepted.accepted().substrate)
-            .map_err(|error| failure(error.to_string()))?;
-        host.ensure_configuration(accepted)
-    })?;
-    ensure_step(state, MachineJoinMilestone::BootstrapWireguard, || {
-        host.ensure_temporary_seed_wireguard(identity, accepted)
-    })?;
-    ensure_step(state, MachineJoinMilestone::UnitsInstalled, || {
-        host.ensure_units_installed_stopped(accepted)
-    })?;
-    ensure_step(state, MachineJoinMilestone::CorrosionStarted, || {
-        host.ensure_corrosion_started(accepted)
-    })?;
-    ensure_step(state, MachineJoinMilestone::RosterConverged, || {
-        host.await_roster_convergence(accepted)
-    })?;
-    ensure_step(state, MachineJoinMilestone::KeeperStarted, || {
-        host.ensure_keeper_started(accepted)
-    })?;
-    ensure_step(state, MachineJoinMilestone::ApiStarted, || {
-        host.ensure_api_started(accepted)
-    })?;
-    ensure_step(state, MachineJoinMilestone::Ready, || {
-        host.await_machine_ready(accepted)
-    })?;
-    ensure_step(state, MachineJoinMilestone::BootstrapCleaned, || {
-        host.remove_temporary_bootstrap(accepted)
-    })
+    for milestone in MachineJoinMilestone::ORDERED {
+        ensure_step(state, milestone, || {
+            if milestone == MachineJoinMilestone::Configuration {
+                state
+                    .persist_join_substrate(&accepted.accepted().substrate)
+                    .map_err(|error| failure(error.to_string()))?;
+            }
+            host.apply_milestone(milestone, identity, accepted)
+        })?;
+    }
+    Ok(())
 }
 
 fn failure(message: impl Into<String>) -> FailureMessage {
@@ -433,96 +355,13 @@ pub(crate) mod tests {
     }
 
     impl MachineJoinHostEffects for RecordingHost {
-        fn ensure_exact_artifacts(
+        fn apply_milestone(
             &mut self,
-            _accepted: &ValidatedMachineJoinAccepted,
-        ) -> Result<(), FailureMessage> {
-            self.call(MachineJoinMilestone::Artifacts)
-        }
-
-        fn ensure_docker(
-            &mut self,
-            _accepted: &ValidatedMachineJoinAccepted,
-        ) -> Result<(), FailureMessage> {
-            self.call(MachineJoinMilestone::Docker)
-        }
-
-        fn ensure_selected_storage(
-            &mut self,
-            _accepted: &ValidatedMachineJoinAccepted,
-        ) -> Result<(), FailureMessage> {
-            self.call(MachineJoinMilestone::Storage)
-        }
-
-        fn ensure_shared_door_material(
-            &mut self,
-            _accepted: &ValidatedMachineJoinAccepted,
-        ) -> Result<(), FailureMessage> {
-            self.call(MachineJoinMilestone::DoorMaterial)
-        }
-
-        fn ensure_configuration(
-            &mut self,
-            _accepted: &ValidatedMachineJoinAccepted,
-        ) -> Result<(), FailureMessage> {
-            self.call(MachineJoinMilestone::Configuration)
-        }
-
-        fn ensure_temporary_seed_wireguard(
-            &mut self,
+            milestone: MachineJoinMilestone,
             _identity: &MachineJoinIdentity,
             _accepted: &ValidatedMachineJoinAccepted,
         ) -> Result<(), FailureMessage> {
-            self.call(MachineJoinMilestone::BootstrapWireguard)
-        }
-
-        fn ensure_units_installed_stopped(
-            &mut self,
-            _accepted: &ValidatedMachineJoinAccepted,
-        ) -> Result<(), FailureMessage> {
-            self.call(MachineJoinMilestone::UnitsInstalled)
-        }
-
-        fn ensure_corrosion_started(
-            &mut self,
-            _accepted: &ValidatedMachineJoinAccepted,
-        ) -> Result<(), FailureMessage> {
-            self.call(MachineJoinMilestone::CorrosionStarted)
-        }
-
-        fn await_roster_convergence(
-            &mut self,
-            _accepted: &ValidatedMachineJoinAccepted,
-        ) -> Result<(), FailureMessage> {
-            self.call(MachineJoinMilestone::RosterConverged)
-        }
-
-        fn ensure_keeper_started(
-            &mut self,
-            _accepted: &ValidatedMachineJoinAccepted,
-        ) -> Result<(), FailureMessage> {
-            self.call(MachineJoinMilestone::KeeperStarted)
-        }
-
-        fn ensure_api_started(
-            &mut self,
-            _accepted: &ValidatedMachineJoinAccepted,
-        ) -> Result<(), FailureMessage> {
-            self.call(MachineJoinMilestone::ApiStarted)
-        }
-
-        fn await_machine_ready(
-            &mut self,
-            _accepted: &ValidatedMachineJoinAccepted,
-        ) -> Result<(), FailureMessage> {
-            self.call(MachineJoinMilestone::Ready)
-        }
-
-        fn remove_temporary_bootstrap(
-            &mut self,
-            _accepted: &ValidatedMachineJoinAccepted,
-        ) -> Result<(), FailureMessage> {
-            self.call(MachineJoinMilestone::BootstrapCleaned)
+            self.call(milestone)
         }
     }
 
@@ -620,6 +459,47 @@ pub(crate) mod tests {
         assert!(!host.calls.contains(&MachineJoinMilestone::Artifacts));
         assert!(!host.calls.contains(&MachineJoinMilestone::Storage));
         assert!(!host.calls.contains(&MachineJoinMilestone::Docker));
+    }
+
+    #[tokio::test]
+    async fn legacy_completion_reinstalls_the_keeper_ordered_corrosion_unit_once() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let state = MachineJoinStateDirectory::initialize(directory.path()).expect("state");
+        let prepared = prepared(&state);
+        let accepted = accepted(prepared.request(), prepared.blob().door_cert_fingerprint());
+        state
+            .persist_acceptance(&accepted)
+            .expect("legacy acceptance");
+        for milestone in MachineJoinMilestone::ORDERED {
+            if milestone != MachineJoinMilestone::UnitsInstalled {
+                state.record_milestone(milestone).expect("legacy milestone");
+            }
+        }
+        let milestone_directory = directory.path().join("machine-join");
+        std::fs::write(
+            milestone_directory.join("07-units-installed"),
+            b"complete\n",
+        )
+        .expect("legacy units milestone");
+        std::fs::write(directory.path().join("join-complete"), b"complete\n")
+            .expect("legacy completion");
+        let mut door = RecordingDoor { accepted, calls: 0 };
+        let mut host = RecordingHost::pass();
+
+        let resumed = execute_machine_join(&state, &prepared, &mut door, &mut host)
+            .await
+            .expect("legacy activation contract resumes");
+
+        assert_eq!(resumed.kind, MachineJoinOutcomeKind::Resumed);
+        assert_eq!(door.calls, 0);
+        assert_eq!(host.calls, vec![MachineJoinMilestone::UnitsInstalled]);
+
+        let mut no_op_host = RecordingHost::pass();
+        let no_op = execute_machine_join(&state, &prepared, &mut door, &mut no_op_host)
+            .await
+            .expect("migrated join is complete");
+        assert_eq!(no_op.kind, MachineJoinOutcomeKind::NoOp);
+        assert!(no_op_host.calls.is_empty());
     }
 
     #[tokio::test]
