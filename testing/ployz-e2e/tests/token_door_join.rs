@@ -28,7 +28,9 @@ use ployz_e2e::dind::{
     DindCluster, DindClusterSpec, MachineSpec, artifact_dir, connect_docker, corrosion_access,
     e2e_enabled, install_local_release_channel, keep_requested, machine_image, require,
 };
-use repair::{refound_cluster, repair_contaminated_and_wiped_machine};
+use repair::{
+    RefoundContext, RepairContext, refound_cluster, repair_contaminated_and_wiped_machine,
+};
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -183,12 +185,14 @@ async fn exercise_token_door(docker: &Docker, cluster: &DindCluster) -> Result<(
     wait_for_joined_reachability(docker, founder, &joiner_row.document).await?;
 
     let repaired_joiner = repair_contaminated_and_wiped_machine(
-        docker,
-        store,
-        &cli,
-        temporary_home.path(),
-        founder,
-        joiner,
+        RepairContext {
+            docker,
+            store,
+            cli: &cli,
+            home: temporary_home.path(),
+            founder,
+            joiner,
+        },
         &blob,
         joiner_row,
     )
@@ -201,14 +205,16 @@ async fn exercise_token_door(docker: &Docker, cluster: &DindCluster) -> Result<(
     force_collision_and_wait_for_higher_ulid_repair(store, joiner, founder_row, &repaired_joiner)
         .await?;
     refound_cluster(
-        docker,
-        &cli,
-        temporary_home.path(),
-        &config_home,
-        &target,
-        &operator,
-        founder,
-        joiner,
+        RefoundContext {
+            docker,
+            cli: &cli,
+            home: temporary_home.path(),
+            config_home: &config_home,
+            target: &target,
+            operator: &operator,
+            founder,
+            joiner,
+        },
         &repaired_joiner,
     )
     .await
