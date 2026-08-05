@@ -257,7 +257,17 @@ impl OperatorContextStore {
         target: &SshTarget,
     ) -> Result<LoadedOperatorContext, OperatorContextError> {
         let path = context_path(&self.config_home, target);
-        let bytes = read_regular_private_file(&path)?;
+        let bytes = match read_regular_private_file(&path) {
+            Ok(bytes) => bytes,
+            Err(OperatorContextError::Filesystem(error))
+                if error.kind() == std::io::ErrorKind::NotFound =>
+            {
+                return Err(OperatorContextError::MissingContext {
+                    target: target.clone(),
+                });
+            }
+            Err(error) => return Err(error),
+        };
         let context: OperatorContext = serde_json::from_slice(&bytes)
             .map_err(|error| OperatorContextError::InvalidDocument(error.to_string()))?;
         let peer_key = self.load_peer(target)?;
@@ -594,6 +604,8 @@ fn hex(bytes: &[u8]) -> String {
 pub enum OperatorContextError {
     #[error("operator context filesystem failed: {0}")]
     Filesystem(std::io::Error),
+    #[error("operator context for {target} is not configured")]
+    MissingContext { target: SshTarget },
     #[error("operator context document is invalid: {0}")]
     InvalidDocument(String),
     #[error("SSH context handoff prefix is missing")]

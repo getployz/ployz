@@ -108,7 +108,6 @@ async fn list(command: MachineListCommand) -> Result<String, MachineExecutionErr
     validate_snapshot_cluster(&snapshot, remote.cluster_id())?;
     render_machines(&snapshot).map_err(MachineExecutionError::from)
 }
-
 #[derive(Debug, thiserror::Error)]
 pub enum MachineExecutionError {
     #[error(transparent)]

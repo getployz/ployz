@@ -33,22 +33,8 @@ impl OperatorRemote {
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .ok_or(OperatorRemoteError::MissingHome)?;
-        let contexts = OperatorContextStore::new(default_config_home(&home)).load_all()?;
-        Self::select(contexts, target)
-    }
-
-    fn select(
-        contexts: Vec<LoadedOperatorContext>,
-        requested: Option<&SshTarget>,
-    ) -> Result<Self, OperatorRemoteError> {
-        let targets = contexts
-            .iter()
-            .map(|loaded| loaded.target().clone())
-            .collect::<Vec<_>>();
-        let selected = select_context_index(&targets, requested)?;
-        let Some(loaded) = contexts.into_iter().nth(selected) else {
-            unreachable!("selected operator context index comes from the same collection")
-        };
+        let store = OperatorContextStore::new(default_config_home(&home));
+        let loaded = load_context(&store, target)?;
         Self::try_from_loaded(loaded)
     }
 
@@ -138,6 +124,35 @@ impl OperatorRemote {
     }
 }
 
+fn load_context(
+    store: &OperatorContextStore,
+    requested: Option<&SshTarget>,
+) -> Result<LoadedOperatorContext, OperatorRemoteError> {
+    if let Some(target) = requested {
+        return match store.load_target(target) {
+            Ok(context) => Ok(context),
+            Err(OperatorContextError::MissingContext { .. }) => {
+                Err(ContextSelectionError::UnconfiguredTarget {
+                    target: target.clone(),
+                }
+                .into())
+            }
+            Err(error) => Err(error.into()),
+        };
+    }
+
+    let contexts = store.load_all()?;
+    let targets = contexts
+        .iter()
+        .map(|loaded| loaded.target().clone())
+        .collect::<Vec<_>>();
+    let selected = select_context_index(&targets, None)?;
+    let Some(loaded) = contexts.into_iter().nth(selected) else {
+        unreachable!("selected operator context index comes from the same collection")
+    };
+    Ok(loaded)
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum OperatorRemoteError {
     #[error("HOME is not set; cannot load operator contexts")]
@@ -159,6 +174,9 @@ pub enum OperatorRemoteError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContextSelectionError {
     NotConfigured,
+    UnconfiguredTarget {
+        target: SshTarget,
+    },
     Ambiguous {
         targets: Vec<String>,
     },
@@ -173,6 +191,10 @@ impl fmt::Display for ContextSelectionError {
         match self {
             Self::NotConfigured => formatter
                 .write_str("no operator context is configured; run `ployz init root@<host>` first"),
+            Self::UnconfiguredTarget { target } => write!(
+                formatter,
+                "no operator context is configured for {target}; run `ployz init {target}` first"
+            ),
             Self::Ambiguous { targets } => {
                 formatter.write_str("multiple operator contexts are configured; choose one:")?;
                 for target in targets {
@@ -229,10 +251,44 @@ fn sorted_target_names(targets: &[SshTarget]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
+    use ployz_core::corrosion::{MachineTransport, MeshProvider, derive_builtin_wireguard_member};
+    use ployz_core::network::{MachineEndpointSubnet, WireGuardPublicKey};
+
     use super::*;
+    use crate::mesh::context::{SshContextHandoff, SshPeerKey, context_path, key_path};
 
     fn target(value: &str) -> SshTarget {
         value.parse().expect("valid SSH target")
+    }
+
+    fn persist_context(store: &OperatorContextStore, home: &std::path::Path, target: &SshTarget) {
+        let key = SshPeerKey::generate("laptop".to_owned()).expect("peer key");
+        key.persist_new(home, target).expect("persist peer key");
+        let cluster_id = ClusterId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("cluster id");
+        let machine_key =
+            WireGuardPublicKey::try_new("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+                .expect("machine key");
+        store
+            .persist(
+                target,
+                SshContextHandoff {
+                    machine_transport: MachineTransport::Wireguard {
+                        addr_v6: derive_builtin_wireguard_member(&cluster_id, &machine_key)
+                            .bind_address()
+                            .get(),
+                        pubkey: machine_key,
+                        endpoint: Some("203.0.113.7:51820".parse().expect("endpoint")),
+                        subnet_v4: MachineEndpointSubnet::try_new("10.210.0.0/24")
+                            .expect("machine subnet"),
+                    },
+                    cluster_id,
+                    provider: MeshProvider::BuiltinWireguard,
+                },
+                &key,
+            )
+            .expect("persist context");
     }
 
     #[test]
@@ -266,6 +322,60 @@ mod tests {
                 .to_string(),
             "no operator context is configured for root@missing.example; configured targets:\n  root@a.example: add `--target root@a.example`\n  root@z.example: add `--target root@z.example`"
         );
+    }
+
+    #[test]
+    fn explicit_target_does_not_load_an_unrelated_invalid_context() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let store = OperatorContextStore::new(temporary.path());
+        let good = target("root@good.example");
+        persist_context(&store, temporary.path(), &good);
+
+        let bad = target("root@bad.example");
+        fs::write(context_path(temporary.path(), &bad), b"{")
+            .expect("write invalid unrelated context");
+
+        let loaded = load_context(&store, Some(&good)).expect("load requested context");
+        assert_eq!(loaded.target(), &good);
+        assert!(matches!(
+            store.load_all(),
+            Err(OperatorContextError::InvalidDocument(_))
+        ));
+    }
+
+    #[test]
+    fn missing_explicit_target_names_the_init_command_without_scanning() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let store = OperatorContextStore::new(temporary.path());
+        let requested = target("root@missing.example");
+
+        let error = load_context(&store, Some(&requested)).expect_err("missing target");
+        assert!(matches!(
+            &error,
+            OperatorRemoteError::Selection(ContextSelectionError::UnconfiguredTarget {
+                target,
+            }) if target.as_str() == "root@missing.example"
+        ));
+        assert_eq!(
+            error.to_string(),
+            "no operator context is configured for root@missing.example; run `ployz init root@missing.example` first"
+        );
+    }
+
+    #[test]
+    fn missing_peer_key_remains_a_context_filesystem_error() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let store = OperatorContextStore::new(temporary.path());
+        let requested = target("root@incomplete.example");
+        persist_context(&store, temporary.path(), &requested);
+        fs::remove_file(key_path(temporary.path(), &requested)).expect("remove peer key");
+
+        let error = load_context(&store, Some(&requested)).expect_err("missing peer key");
+        assert!(matches!(
+            error,
+            OperatorRemoteError::Context(OperatorContextError::Filesystem(error))
+                if error.kind() == std::io::ErrorKind::NotFound
+        ));
     }
 
     #[test]
