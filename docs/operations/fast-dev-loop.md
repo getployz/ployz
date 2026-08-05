@@ -26,18 +26,9 @@ each host in parallel and runs:
 
 Host Runner owns substrate install paths, verification, and restarts. The script
 also replaces `/usr/local/bin/ployz` before running the staged update. Updating
-existing hosts does not promote the cluster's machine join release template;
-use the same bundle passed to `ployz init` when adding machines.
-
-Before a hub-loss promotion test, run this on the intended promotion candidate
-after it has been connected long enough to receive an intent drumbeat:
-
-```sh
-ployz host core-promote --check
-```
-
-It fails fast if `core-seeds.key`, `ca-recovery.key`, or
-`intent-mirror.json` is missing or the mirror cannot be parsed.
+existing hosts does not change the machine-join release template; use the same
+bundle passed to `ployz init` when adding machines. Recovery is reinstall or
+rejoin from the converged Corrosion rows.
 
 Useful knobs:
 
