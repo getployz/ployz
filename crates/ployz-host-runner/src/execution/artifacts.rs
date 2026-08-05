@@ -346,10 +346,41 @@ impl PloyzdArtifactStore {
             .ok_or_else(|| ArtifactStoreError::CurrentMissing {
                 path: self.current_path(),
             })?;
+        let pending = self.pending_upgrade()?;
         if current == *expected {
+            if pending.as_ref() == Some(expected) {
+                let previous =
+                    self.read_verified_link(&self.previous_path())?
+                        .ok_or_else(|| ArtifactStoreError::PreviousMissing {
+                            path: self.previous_path(),
+                        })?;
+                return Ok(ArmedPloyzdArtifact {
+                    previous,
+                    current,
+                    staged_path,
+                });
+            }
             return Err(ArtifactStoreError::TargetAlreadyCurrent { digest: current });
         }
-        if self.path_exists(&self.pending_path())? {
+        if pending.as_ref() == Some(expected) {
+            let previous = self
+                .read_verified_link(&self.previous_path())?
+                .ok_or_else(|| ArtifactStoreError::PreviousMissing {
+                    path: self.previous_path(),
+                })?;
+            if previous != current {
+                return Err(ArtifactStoreError::PendingUpgradeExists {
+                    path: self.pending_path(),
+                });
+            }
+            self.replace_link(&self.current_path(), &artifact_link_target(expected))?;
+            return Ok(ArmedPloyzdArtifact {
+                previous,
+                current: expected.clone(),
+                staged_path,
+            });
+        }
+        if pending.is_some() {
             return Err(ArtifactStoreError::PendingUpgradeExists {
                 path: self.pending_path(),
             });
