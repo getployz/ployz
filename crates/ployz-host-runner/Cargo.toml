@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 atomic-write-file.workspace = true
 defguard_wireguard_rs.workspace = true
+hickory-proto.workspace = true
 ipnet = "2"
 ployz-core.workspace = true
 rcgen = { version = "0.14.8", features = ["crypto", "pem"] }

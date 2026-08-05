@@ -21,7 +21,20 @@ pub enum Command {
     Telemetry(TelemetryCommand),
     Init(Box<InitCommand>),
     Machine(MachineCommand),
+    Peer(PeerCommand),
     Token(TokenCommand),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PeerCommand {
+    Remove(PeerRemoveCommand),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerRemoveCommand {
+    pub peer: String,
+    pub peer_id: Option<PeerId>,
+    pub target: Option<SshTarget>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -291,6 +304,13 @@ pub fn parse_command(args: impl IntoIterator<Item = String>) -> Result<Command, 
             }),
             MachineCli::Reset => MachineCommand::Reset,
         })),
+        CommandCli::Peer { command } => Ok(Command::Peer(match command {
+            PeerCli::Remove(args) => PeerCommand::Remove(PeerRemoveCommand {
+                peer: args.peer,
+                peer_id: args.peer_id,
+                target: args.target,
+            }),
+        })),
         CommandCli::Token { command } => Ok(Command::Token(match command {
             TokenCli::Create(args) => TokenCommand::Create(TokenCreateCommand {
                 ttl: parse_ttl(&args.ttl).map_err(clap_value_error)?,
@@ -342,6 +362,11 @@ enum CommandCli {
         #[command(subcommand)]
         command: MachineCli,
     },
+    /// Manage accepted operator peers.
+    Peer {
+        #[command(subcommand)]
+        command: PeerCli,
+    },
     /// Mint, inspect, and revoke join tokens.
     Token {
         #[command(subcommand)]
@@ -368,6 +393,24 @@ enum MachineCli {
     Join(MachineJoinArgs),
     /// Remove this Linux machine's Ployz state so it can join afresh.
     Reset,
+}
+
+#[derive(Debug, Subcommand)]
+enum PeerCli {
+    /// Remove an operator peer from the accepted roster.
+    #[command(name = "rm")]
+    Remove(PeerRemoveArgs),
+}
+
+#[derive(Debug, Args)]
+struct PeerRemoveArgs {
+    peer: String,
+    /// Match one exact peer identity when the name is ambiguous.
+    #[arg(long = "id")]
+    peer_id: Option<PeerId>,
+    /// Select the cluster founded through this SSH target.
+    #[arg(long)]
+    target: Option<SshTarget>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -815,6 +858,38 @@ mod tests {
         );
         assert!(parse(&["machine", "rm"]).is_err());
         assert!(parse(&["machine", "rm", "edge-b", "--id", "not-a-machine-id"]).is_err());
+    }
+
+    #[test]
+    fn peer_remove_parses_name_and_optional_identity() {
+        let peer_id = PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAY").expect("peer id");
+        assert_eq!(
+            parse(&["peer", "rm", "operator-laptop"]).expect("peer removal parses"),
+            Command::Peer(PeerCommand::Remove(PeerRemoveCommand {
+                peer: "operator-laptop".to_owned(),
+                peer_id: None,
+                target: None,
+            }))
+        );
+        assert_eq!(
+            parse(&[
+                "peer",
+                "rm",
+                "operator-laptop",
+                "--id",
+                peer_id.as_str(),
+                "--target",
+                "root@cluster.example",
+            ])
+            .expect("identity-qualified peer removal parses"),
+            Command::Peer(PeerCommand::Remove(PeerRemoveCommand {
+                peer: "operator-laptop".to_owned(),
+                peer_id: Some(peer_id),
+                target: Some("root@cluster.example".parse().expect("SSH target")),
+            }))
+        );
+        assert!(parse(&["peer", "rm"]).is_err());
+        assert!(parse(&["peer", "rm", "operator-laptop", "--id", "not-a-peer-id"]).is_err());
     }
 
     #[test]

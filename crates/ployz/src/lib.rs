@@ -7,6 +7,7 @@ pub mod init;
 pub mod join_client;
 pub mod machine;
 pub mod mesh;
+pub mod peer;
 pub mod remote;
 pub mod token;
 

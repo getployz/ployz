@@ -14,8 +14,8 @@ use ployz_core::machine::runtime::{
 use ployz_core::machine::{InstallRolePolicy, MachineLifecycle};
 use ployz_core::network::MachineEndpointSubnet;
 use ployz_core::network::internal_dns::{
-    InternalDnsRowProjectionError, InternalDnsRowProjectionInput, InternalServiceName,
-    internal_dns_records, project_internal_dns_rows,
+    INTERNAL_DNS_READINESS_NAME, InternalDnsRowProjectionError, InternalDnsRowProjectionInput,
+    InternalDnsSearchDomain, InternalServiceName, internal_dns_records, project_internal_dns_rows,
 };
 use ployz_test_support::fixtures::serving_target_entry;
 use ployz_test_support::ids::{machine_id, operation_id};
@@ -54,6 +54,39 @@ fn corrosion_rows_project_local_bind_and_cluster_wide_active_service_records() {
             ),
             (empty_name, Vec::new()),
         ])
+    );
+}
+
+#[test]
+fn corrosion_rows_cannot_project_the_reserved_readiness_record() {
+    let mut input = projection_input();
+    const READINESS_NAMESPACE: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB7";
+    const READINESS_SERVICE: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB8";
+    input
+        .namespace_rows
+        .push(namespace_row(READINESS_NAMESPACE, "ployz"));
+    input.service_rows.push(service_row(
+        READINESS_SERVICE,
+        READINESS_NAMESPACE,
+        "readiness",
+        ACTIVE_DEPLOY,
+    ));
+    input.container_rows.push(container_row(
+        "container-readiness",
+        LOCAL_MACHINE,
+        READINESS_SERVICE,
+        READINESS_NAMESPACE,
+        "10.210.20.53",
+        ACTIVE_DEPLOY,
+    ));
+
+    let projection = project_internal_dns_rows(input).expect("row projection");
+
+    assert!(
+        projection
+            .records
+            .keys()
+            .all(|name| name.as_str() != INTERNAL_DNS_READINESS_NAME)
     );
 }
 
@@ -114,6 +147,15 @@ fn internal_service_name_from_labels_rejects_non_dns_labels() {
     assert!(InternalServiceName::try_from_labels("api", "prod-").is_err());
     assert!(InternalServiceName::try_from_labels("Api", "prod").is_err());
     assert!(InternalServiceName::try_from_labels("api", "Prod").is_err());
+}
+
+#[test]
+fn internal_dns_search_domain_uses_the_human_namespace_label() {
+    let domain = InternalDnsSearchDomain::try_from_namespace_label("prod-east")
+        .expect("human namespace label");
+
+    assert_eq!(domain.as_str(), "prod-east.internal");
+    assert!(InternalDnsSearchDomain::try_from_namespace_label("Prod-East").is_err());
 }
 
 #[test]

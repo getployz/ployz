@@ -3332,6 +3332,7 @@ dependencies = [
  "atomic-write-file",
  "base64",
  "defguard_wireguard_rs",
+ "hickory-proto",
  "ipnet",
  "ployz-core",
  "rcgen",

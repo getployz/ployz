@@ -7,7 +7,7 @@ use crate::corrosion::{
     ClusterDocument, ContainerDocument, MachineDocument, MachineStatusDocument, OperationDocument,
     Principal, ServiceDocument, SourcePrincipalResolutionError,
 };
-use crate::ids::{ContainerId, MachineRowId, OperationRowId, ServiceRowId, TokenId};
+use crate::ids::{ContainerId, MachineRowId, OperationRowId, PeerId, ServiceRowId, TokenId};
 use crate::install::{InstallArtifactVersion, InstallSha256Digest};
 use crate::machine::MachineName;
 
@@ -33,6 +33,8 @@ pub const TOKEN_REVOKE_ROUTE_PREFIX: &str = "/tokens/revoke";
 pub const MACHINE_ENDPOINT_ROUTE_PREFIX: &str = "/machines/endpoint";
 /// Stable endpoint for fencing one machine from the roster and sweeping its testimony.
 pub const MACHINE_REMOVE_ROUTE: &str = "/machines/remove";
+/// Stable endpoint for removing one operator peer from the roster.
+pub const PEER_REMOVE_ROUTE: &str = "/peers/remove";
 /// Stable endpoint for a caller-paced upgrade of the answering machine.
 pub const MACHINE_UPGRADE_ROUTE: &str = "/machines/upgrade";
 /// The only route exposed by the public TLS join door.
@@ -52,6 +54,8 @@ pub enum KnownApiFeature {
     MachineEndpoint,
     #[serde(rename = "v2.machine_remove")]
     MachineRemove,
+    #[serde(rename = "v2.peer_remove")]
+    PeerRemove,
     #[serde(rename = "v2.machine_upgrade")]
     MachineUpgrade,
     #[serde(rename = "v2.join_door")]
@@ -68,6 +72,7 @@ impl KnownApiFeature {
             Self::JoinTokens => "v2.join_tokens",
             Self::MachineEndpoint => "v2.machine_endpoint",
             Self::MachineRemove => "v2.machine_remove",
+            Self::PeerRemove => "v2.peer_remove",
             Self::MachineUpgrade => "v2.machine_upgrade",
             Self::JoinDoor => "v2.join_door",
         }
@@ -81,6 +86,7 @@ pub const KNOWN_API_FEATURES: &[KnownApiFeature] = &[
     KnownApiFeature::JoinTokens,
     KnownApiFeature::MachineEndpoint,
     KnownApiFeature::MachineRemove,
+    KnownApiFeature::PeerRemove,
     KnownApiFeature::MachineUpgrade,
     KnownApiFeature::JoinDoor,
 ];
@@ -288,6 +294,89 @@ pub fn select_machine_removal(
     })
 }
 
+/// Mesh-authenticated request to remove one operator peer from the roster.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct PeerRemoveRequest {
+    pub peer_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_id: Option<PeerId>,
+}
+
+/// The terminal outcome of an operator-peer removal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PeerRemoveReply {
+    Removed { peer_id: PeerId },
+    AlreadyAbsent { peer_id: PeerId },
+}
+
+/// A refusal to resolve or authorize an operator-peer removal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PeerRemoveRefusal {
+    #[error("peer {peer_name} is not in the accepted roster")]
+    NotFound { peer_name: String },
+    #[error("peer {peer_name} is ambiguous across identities {peer_ids:?}")]
+    Ambiguous {
+        peer_name: String,
+        peer_ids: Vec<PeerId>,
+    },
+    #[error("peer {peer_name} does not match identity {peer_id}")]
+    IdMismatch { peer_name: String, peer_id: PeerId },
+    #[error(
+        "peer {peer_name} ({peer_id}) is the authenticated caller; run `ployz peer rm {peer_name} --id {peer_id} --target <context>` from another accepted operator context"
+    )]
+    SelfRemoval { peer_name: String, peer_id: PeerId },
+}
+
+/// Resolves a peer-removal selector only from roster rows accepted by the
+/// reader law. The optional row id makes retries and name conflicts explicit.
+pub fn select_peer_removal(
+    request: &PeerRemoveRequest,
+    accepted: impl IntoIterator<Item = (PeerId, String)>,
+) -> Result<PeerId, PeerRemoveRefusal> {
+    let accepted = accepted.into_iter().collect::<Vec<_>>();
+    let requested_id_is_accepted = request.peer_id.as_ref().is_some_and(|peer_id| {
+        accepted
+            .iter()
+            .any(|(accepted_peer_id, _)| accepted_peer_id == peer_id)
+    });
+    let mut candidates = accepted
+        .into_iter()
+        .filter_map(|(peer_id, peer_name)| (peer_name == request.peer_name).then_some(peer_id))
+        .collect::<Vec<_>>();
+    candidates.sort();
+
+    let Some(expected_peer_id) = &request.peer_id else {
+        return match candidates.as_slice() {
+            [] => Err(PeerRemoveRefusal::NotFound {
+                peer_name: request.peer_name.clone(),
+            }),
+            [peer_id] => Ok(peer_id.clone()),
+            _ => Err(PeerRemoveRefusal::Ambiguous {
+                peer_name: request.peer_name.clone(),
+                peer_ids: candidates,
+            }),
+        };
+    };
+
+    if candidates.iter().any(|peer_id| peer_id == expected_peer_id) {
+        return Ok(expected_peer_id.clone());
+    }
+    if candidates.is_empty() && !requested_id_is_accepted {
+        return Err(PeerRemoveRefusal::NotFound {
+            peer_name: request.peer_name.clone(),
+        });
+    }
+    Err(PeerRemoveRefusal::IdMismatch {
+        peer_name: request.peer_name.clone(),
+        peer_id: expected_peer_id.clone(),
+    })
+}
+
 /// The exact public route shape, parsed without any daemon-local strings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum V2Route {
@@ -298,6 +387,7 @@ pub enum V2Route {
     TokenRevoke(TokenId),
     MachineEndpointSet,
     MachineRemove,
+    PeerRemove,
     MachineUpgrade,
     Join,
     Lens(LensCollection),
@@ -336,6 +426,9 @@ impl V2Route {
         if path == MACHINE_REMOVE_ROUTE {
             return Some(Self::MachineRemove);
         }
+        if path == PEER_REMOVE_ROUTE {
+            return Some(Self::PeerRemove);
+        }
         if path == MACHINE_UPGRADE_ROUTE {
             return Some(Self::MachineUpgrade);
         }
@@ -370,6 +463,7 @@ impl V2Route {
             Self::TokenRevoke(token_id) => token_revoke_route(token_id),
             Self::MachineEndpointSet => MACHINE_ENDPOINT_ROUTE_PREFIX.to_owned(),
             Self::MachineRemove => MACHINE_REMOVE_ROUTE.to_owned(),
+            Self::PeerRemove => PEER_REMOVE_ROUTE.to_owned(),
             Self::MachineUpgrade => MACHINE_UPGRADE_ROUTE.to_owned(),
             Self::Join => JOIN_ROUTE.to_owned(),
             Self::Lens(collection) => lens_route(*collection),
@@ -388,6 +482,7 @@ impl V2Route {
             | Self::TokenRevoke(_)
             | Self::MachineEndpointSet
             | Self::MachineRemove
+            | Self::PeerRemove
             | Self::MachineUpgrade
             | Self::Join => V2Method::Post,
         }
@@ -404,6 +499,7 @@ impl V2Route {
             }
             Self::MachineEndpointSet => KnownApiFeature::MachineEndpoint,
             Self::MachineRemove => KnownApiFeature::MachineRemove,
+            Self::PeerRemove => KnownApiFeature::PeerRemove,
             Self::MachineUpgrade => KnownApiFeature::MachineUpgrade,
             Self::Join => KnownApiFeature::JoinDoor,
         }
@@ -419,6 +515,7 @@ impl V2Route {
             | Self::TokenRevoke(_)
             | Self::MachineEndpointSet
             | Self::MachineRemove
+            | Self::PeerRemove
             | Self::MachineUpgrade => matches!(principal, Principal::Peer { .. }),
             Self::Version | Self::Founding | Self::Lens(_) | Self::LensWatch(_) => {
                 matches!(
@@ -761,230 +858,5 @@ impl LensWatchEvent {
 }
 
 #[cfg(test)]
-mod tests {
-    use serde_json::json;
-
-    use super::*;
-    use crate::ids::PeerId;
-
-    fn machine_id(value: &str) -> MachineRowId {
-        MachineRowId::try_new(value).expect("fixture machine id")
-    }
-
-    fn machine_name() -> MachineName {
-        MachineName::try_new("edge-a").expect("fixture machine name")
-    }
-
-    #[test]
-    fn machine_remove_has_one_exact_route_feature_method_and_principal_policy() {
-        let route = V2Route::MachineRemove;
-        assert_eq!(route.path(), MACHINE_REMOVE_ROUTE);
-        assert_eq!(V2Route::parse(MACHINE_REMOVE_ROUTE), Some(route.clone()));
-        assert_eq!(route.method(), V2Method::Post);
-        assert_eq!(route.feature(), KnownApiFeature::MachineRemove);
-        assert!(route.accepts_principal(&Principal::Peer {
-            peer_id: PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAY").expect("fixture peer id"),
-        }));
-        assert!(!route.accepts_principal(&Principal::Machine {
-            machine_id: machine_id("01ARZ3NDEKTSV4RRFFQ69G5FAV"),
-        }));
-        assert!(!route.accepts_principal(&Principal::ApiToken {
-            token_id: TokenId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAX").expect("fixture token id"),
-        }));
-    }
-
-    #[test]
-    fn machine_remove_contract_serializes_the_optional_id_and_typed_outcomes() {
-        let request = MachineRemoveRequest {
-            machine_name: machine_name(),
-            machine_id: None,
-        };
-        assert_eq!(
-            serde_json::to_value(&request).expect("request serializes"),
-            json!({ "machine_name": "edge-a" })
-        );
-        let machine_id = machine_id("01ARZ3NDEKTSV4RRFFQ69G5FAV");
-        let reply = MachineRemoveReply::AlreadyAbsent {
-            machine_id: machine_id.clone(),
-        };
-        assert_eq!(
-            serde_json::to_value(reply).expect("reply serializes"),
-            json!({ "kind": "already_absent", "machine_id": machine_id.as_str() })
-        );
-        let refusal = MachineRemoveRefusal::IdMismatch {
-            machine_name: machine_name(),
-            machine_id: machine_id.clone(),
-        };
-        assert_eq!(
-            serde_json::from_value::<MachineRemoveRefusal>(
-                serde_json::to_value(&refusal).expect("refusal serializes"),
-            )
-            .expect("refusal deserializes"),
-            refusal
-        );
-    }
-
-    #[test]
-    fn machine_remove_selection_requires_an_unambiguous_accepted_roster_row() {
-        let lower = machine_id("01ARZ3NDEKTSV4RRFFQ69G5FAV");
-        let higher = machine_id("01ARZ3NDEKTSV4RRFFQ69G5FAW");
-        let request = MachineRemoveRequest {
-            machine_name: machine_name(),
-            machine_id: None,
-        };
-        assert_eq!(
-            select_machine_removal(
-                &request,
-                [
-                    (higher.clone(), machine_name()),
-                    (lower.clone(), machine_name()),
-                ],
-            ),
-            Err(MachineRemoveRefusal::Ambiguous {
-                machine_name: machine_name(),
-                machine_ids: vec![lower.clone(), higher.clone()],
-            })
-        );
-
-        let request = MachineRemoveRequest {
-            machine_name: machine_name(),
-            machine_id: Some(higher.clone()),
-        };
-        assert_eq!(
-            select_machine_removal(
-                &request,
-                [
-                    (lower.clone(), machine_name()),
-                    (higher.clone(), machine_name()),
-                ],
-            ),
-            Ok(higher.clone())
-        );
-
-        let missing = machine_id("01ARZ3NDEKTSV4RRFFQ69G5FAX");
-        let request = MachineRemoveRequest {
-            machine_name: machine_name(),
-            machine_id: Some(missing.clone()),
-        };
-        assert_eq!(
-            select_machine_removal(&request, [(lower, machine_name())]),
-            Err(MachineRemoveRefusal::IdMismatch {
-                machine_name: machine_name(),
-                machine_id: missing,
-            })
-        );
-
-        let request = MachineRemoveRequest {
-            machine_name: MachineName::try_new("edge-b").expect("fixture machine name"),
-            machine_id: Some(higher.clone()),
-        };
-        assert_eq!(
-            select_machine_removal(&request, [(higher.clone(), machine_name())]),
-            Err(MachineRemoveRefusal::IdMismatch {
-                machine_name: MachineName::try_new("edge-b").expect("fixture machine name"),
-                machine_id: higher,
-            })
-        );
-    }
-
-    fn request_json(url: &str) -> serde_json::Value {
-        serde_json::json!({
-            "version": "v0.1.0-alpha.7",
-            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "url": url,
-        })
-    }
-
-    #[test]
-    fn machine_upgrade_route_is_post_advertised_and_peer_only() {
-        let route = V2Route::parse(MACHINE_UPGRADE_ROUTE).expect("machine upgrade route");
-
-        assert_eq!(route, V2Route::MachineUpgrade);
-        assert_eq!(route.path(), MACHINE_UPGRADE_ROUTE);
-        assert_eq!(route.method(), V2Method::Post);
-        assert_eq!(route.feature(), KnownApiFeature::MachineUpgrade);
-        assert!(KNOWN_API_FEATURES.contains(&KnownApiFeature::MachineUpgrade));
-        assert!(route.accepts_principal(&Principal::Peer {
-            peer_id: PeerId::generate(),
-        }));
-        assert!(!route.accepts_principal(&Principal::Machine {
-            machine_id: MachineRowId::generate(),
-        }));
-        assert!(!route.accepts_principal(&Principal::ApiToken {
-            token_id: TokenId::generate(),
-        }));
-        assert_eq!(V2Route::parse("/machines/upgrade/next"), None);
-    }
-
-    #[test]
-    fn machine_upgrade_request_accepts_only_host_addressed_https_urls() {
-        let request = request_json("https://releases.example.test/ployzd?signature=abc");
-        let decoded: MachineUpgradeRequest =
-            serde_json::from_value(request.clone()).expect("valid upgrade request");
-
-        assert_eq!(
-            decoded.url.as_str(),
-            "https://releases.example.test/ployzd?signature=abc"
-        );
-        assert_eq!(
-            serde_json::to_value(decoded).expect("request serializes"),
-            request
-        );
-
-        for url in [
-            "http://releases.example.test/ployzd",
-            "/var/lib/ployz/ployzd",
-            "https:///",
-            "ployzd",
-        ] {
-            assert!(
-                serde_json::from_value::<MachineUpgradeRequest>(request_json(url)).is_err(),
-                "{url:?} must not be accepted as an upgrade URL"
-            );
-        }
-
-        let mut unknown_field = request_json("https://releases.example.test/ployzd");
-        unknown_field
-            .as_object_mut()
-            .expect("request object")
-            .insert("install_path".to_owned(), serde_json::json!("/tmp/ployzd"));
-        assert!(serde_json::from_value::<MachineUpgradeRequest>(unknown_field).is_err());
-    }
-
-    #[test]
-    fn machine_upgrade_reply_and_refusals_have_strict_typed_wire_shapes() {
-        let sha256 = InstallSha256Digest::try_new("a".repeat(64)).expect("sha256");
-        let reply = MachineUpgradeReply {
-            version: InstallArtifactVersion::try_new("v0.1.0-alpha.7").expect("version"),
-            sha256: sha256.clone(),
-        };
-        assert_eq!(
-            serde_json::to_value(reply).expect("reply serializes"),
-            serde_json::json!({
-                "version": "v0.1.0-alpha.7",
-                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            })
-        );
-
-        let mismatch = MachineUpgradeRefusal::Sha256Mismatch {
-            expected: sha256,
-            got: InstallSha256Digest::try_new("b".repeat(64)).expect("sha256"),
-        };
-        assert_eq!(
-            serde_json::to_value(mismatch).expect("refusal serializes"),
-            serde_json::json!({
-                "kind": "sha256_mismatch",
-                "expected": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                "got": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            })
-        );
-
-        let unsupported = MachineUpgradeRefusal::UnsupportedSupervisor {
-            supervisor: MachineUpgradeSupervisor::OpenRc,
-        };
-        assert_eq!(
-            serde_json::to_value(unsupported).expect("refusal serializes"),
-            serde_json::json!({"kind": "unsupported_supervisor", "supervisor": "open_rc"})
-        );
-    }
-}
+#[path = "v2_tests.rs"]
+mod tests;

@@ -445,8 +445,11 @@ fn every_join_door_refusal_names_a_repair_command() {
         JoinDoorRefusal::InvalidAdmission {
             reason: JoinAdmissionValidationError::EndpointPortZero,
         },
-        JoinDoorRefusal::NameConflict {
+        JoinDoorRefusal::MachineNameConflict {
             name: "edge-a".to_owned(),
+        },
+        JoinDoorRefusal::PeerNameConflict {
+            name: "operator-laptop".to_owned(),
         },
         JoinDoorRefusal::IdentityConflict,
         JoinDoorRefusal::NoReachableSeed,
@@ -459,6 +462,29 @@ fn every_join_door_refusal_names_a_repair_command() {
             "refusal omitted its repair command: {refusal}"
         );
     }
+
+    assert_eq!(
+        JoinDoorRefusal::MachineNameConflict {
+            name: "edge-a".to_owned(),
+        }
+        .to_string(),
+        "machine name \"edge-a\" is already claimed; run `ployz machine rm edge-a` before joining again"
+    );
+    assert_eq!(
+        serde_json::to_value(JoinDoorRefusal::MachineNameConflict {
+            name: "edge-a".to_owned(),
+        })
+        .expect("machine name conflict serializes"),
+        serde_json::json!({"kind":"name_conflict","name":"edge-a"}),
+        "the existing machine-conflict wire tag remains compatible"
+    );
+    assert_eq!(
+        JoinDoorRefusal::PeerNameConflict {
+            name: "operator-laptop".to_owned(),
+        }
+        .to_string(),
+        "peer name \"operator-laptop\" is already claimed; run `ployz peer rm operator-laptop` before joining again"
+    );
 }
 
 #[test]

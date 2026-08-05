@@ -25,6 +25,7 @@ pub(super) struct AcceptedRoster {
     pub(super) machine_skipped: Vec<SkippedRow>,
     pub(super) machine_shadows: Vec<ShadowConflict>,
     pub(super) peers: Vec<AcceptedPeer>,
+    pub(super) peer_removal_candidates: Vec<PeerRemovalCandidate>,
     pub(super) peer_skipped: Vec<SkippedRow>,
     pub(super) peer_shadows: Vec<ShadowConflict>,
 }
@@ -44,6 +45,21 @@ impl AcceptedRoster {
             || self.machine_shadows.iter().any(|machine| {
                 machine.winner.id.as_str() == machine_id || machine.loser.id.as_str() == machine_id
             })
+    }
+
+    /// Returns whether an exact peer row id exists in this stored roster,
+    /// including entries the reader excluded from cluster truth.
+    pub(super) fn contains_stored_peer_id(&self, peer_id: &PeerId) -> bool {
+        let peer_id = peer_id.as_str();
+        self.peers.iter().any(|peer| peer.id.as_str() == peer_id)
+            || self
+                .peer_skipped
+                .iter()
+                .any(|peer| peer.source.key == peer_id)
+            || self
+                .peer_shadows
+                .iter()
+                .any(|peer| peer.winner.id.as_str() == peer_id || peer.loser.id.as_str() == peer_id)
     }
 
     fn trace_reader_evidence(&self) {
@@ -89,6 +105,15 @@ pub(super) struct AcceptedPeer {
     pub(super) document: PeerDocument,
 }
 
+/// A valid peer row eligible for explicit removal, including a named row
+/// hidden by the reader's lowest-ULID presentation rule.
+#[derive(Debug, Clone)]
+pub(super) struct PeerRemovalCandidate {
+    pub(super) id: PeerId,
+    pub(super) name: String,
+    pub(super) stored_document: String,
+}
+
 pub(super) async fn read_accepted_roster(
     corrosion: &CorrosionClient,
     cluster_id: &ClusterId,
@@ -108,8 +133,9 @@ pub(super) async fn read_accepted_roster(
         &cluster,
         machine_rows,
     ))?;
-    let AcceptedNamedRows {
+    let AcceptedPeerRows {
         accepted: peers,
+        removal_candidates: peer_removal_candidates,
         skipped: peer_skipped,
         shadows: peer_shadows,
     } = accepted_peer_rows(read_named_roster_rows::<PeerDocument>(&cluster, peer_rows))?;
@@ -120,6 +146,7 @@ pub(super) async fn read_accepted_roster(
         machine_skipped,
         machine_shadows,
         peers,
+        peer_removal_candidates,
         peer_skipped,
         peer_shadows,
     };
@@ -128,8 +155,9 @@ pub(super) async fn read_accepted_roster(
 }
 
 #[derive(Debug)]
-struct AcceptedNamedRows<Row> {
-    accepted: Vec<Row>,
+struct AcceptedPeerRows {
+    accepted: Vec<AcceptedPeer>,
+    removal_candidates: Vec<PeerRemovalCandidate>,
     skipped: Vec<SkippedRow>,
     shadows: Vec<ShadowConflict>,
 }
@@ -200,7 +228,7 @@ fn accepted_machine_rows(
 
 fn accepted_peer_rows(
     report: NamedReadReport<PeerDocument>,
-) -> Result<AcceptedNamedRows<AcceptedPeer>, MutationStoreError> {
+) -> Result<AcceptedPeerRows, MutationStoreError> {
     let NamedReadReport {
         accepted,
         skipped,
@@ -209,19 +237,47 @@ fn accepted_peer_rows(
     let accepted = accepted
         .into_iter()
         .map(|row| {
-            Ok(AcceptedPeer {
-                id: PeerId::try_new(row.id.as_str().to_owned()).map_err(|error| {
-                    MutationStoreError::InvalidAcceptedId {
-                        table: CorrosionTable::Peers,
-                        detail: error.to_string(),
-                    }
-                })?,
-                document: row.value,
-            })
+            let id = PeerId::try_new(row.id.as_str().to_owned()).map_err(|error| {
+                MutationStoreError::InvalidAcceptedId {
+                    table: CorrosionTable::Peers,
+                    detail: error.to_string(),
+                }
+            })?;
+            Ok((
+                AcceptedPeer {
+                    id: id.clone(),
+                    document: row.value.clone(),
+                },
+                PeerRemovalCandidate {
+                    id,
+                    name: row.value.name,
+                    stored_document: row.source.document,
+                },
+            ))
         })
         .collect::<Result<Vec<_>, MutationStoreError>>()?;
-    Ok(AcceptedNamedRows {
+    let (accepted, mut removal_candidates) = accepted.into_iter().unzip::<_, _, Vec<_>, Vec<_>>();
+    for shadow in &shadows {
+        let document = serde_json::from_str::<PeerDocument>(&shadow.loser.source.document)
+            .map_err(|error| MutationStoreError::InvalidAcceptedShadow {
+                table: CorrosionTable::Peers,
+                detail: error.to_string(),
+            })?;
+        let id = PeerId::try_new(shadow.loser.id.as_str().to_owned()).map_err(|error| {
+            MutationStoreError::InvalidAcceptedId {
+                table: CorrosionTable::Peers,
+                detail: error.to_string(),
+            }
+        })?;
+        removal_candidates.push(PeerRemovalCandidate {
+            id,
+            name: document.name,
+            stored_document: shadow.loser.source.document.clone(),
+        });
+    }
+    Ok(AcceptedPeerRows {
         accepted,
+        removal_candidates,
         skipped,
         shadows,
     })
@@ -509,6 +565,27 @@ pub(super) async fn delete_peer_if_matches(
     Ok(())
 }
 
+/// Deletes exactly the peer document resolved by the accepted roster read.
+/// A concurrent row change is reported instead of deleting newer truth.
+pub(super) async fn remove_peer_if_matches(
+    corrosion: &CorrosionClient,
+    peer_id: &PeerId,
+    expected: &str,
+) -> Result<(), MutationStoreError> {
+    let response = corrosion
+        .execute(&[delete_peer_if_matches_statement(
+            peer_id,
+            expected.to_owned(),
+        )])
+        .await?;
+    match conditional_delete_outcome(CorrosionTable::Peers, peer_id.as_str(), &response)? {
+        ConditionalDelete::Deleted => Ok(()),
+        ConditionalDelete::Stale => Err(MutationStoreError::ConcurrentPeerMutation {
+            peer_id: peer_id.clone(),
+        }),
+    }
+}
+
 fn encode_document<Document>(
     table: CorrosionTable,
     document: &Document,
@@ -688,6 +765,42 @@ fn conditional_machine_replace_outcome(
             table: CorrosionTable::Machines,
             id: machine_id.as_str().to_owned(),
             detail: format!("conditional replacement affected {rows_affected} rows"),
+        }),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConditionalDelete {
+    Deleted,
+    Stale,
+}
+
+fn conditional_delete_outcome(
+    table: CorrosionTable,
+    id: &str,
+    response: &TransactionResponse,
+) -> Result<ConditionalDelete, MutationStoreError> {
+    let [result] = response.results.as_slice() else {
+        return Err(MutationStoreError::UnexpectedWriteResult {
+            table,
+            id: id.to_owned(),
+            detail: format!("transaction returned {} results", response.results.len()),
+        });
+    };
+    let TransactionResult::Success(result) = result else {
+        return Err(MutationStoreError::UnexpectedWriteResult {
+            table,
+            id: id.to_owned(),
+            detail: "transaction retained a statement error".to_owned(),
+        });
+    };
+    match result.rows_affected {
+        0 => Ok(ConditionalDelete::Stale),
+        1 => Ok(ConditionalDelete::Deleted),
+        rows_affected => Err(MutationStoreError::UnexpectedWriteResult {
+            table,
+            id: id.to_owned(),
+            detail: format!("conditional delete affected {rows_affected} rows"),
         }),
     }
 }
@@ -933,6 +1046,40 @@ mod tests {
                 ],
             )
         );
+    }
+
+    #[test]
+    fn peer_removal_reports_a_stale_exact_document_fence() {
+        let peer_id = PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("peer id");
+        assert_eq!(
+            delete_peer_if_matches_statement(&peer_id, r#"{"name":"observed"}"#.to_owned()),
+            Statement::with_params(
+                "DELETE FROM peers WHERE id = ? AND document = ?",
+                vec![
+                    SqliteParameter::Text(peer_id.as_str().to_owned()),
+                    SqliteParameter::Text(r#"{"name":"observed"}"#.to_owned()),
+                ],
+            )
+        );
+        for (rows_affected, expected) in [
+            (0, ConditionalDelete::Stale),
+            (1, ConditionalDelete::Deleted),
+        ] {
+            let response = TransactionResponse {
+                results: vec![TransactionResult::Success(TransactionSuccess {
+                    rows_affected,
+                    time: 0.01,
+                })],
+                time: 0.01,
+                version: None,
+                actor_id: None,
+            };
+            assert_eq!(
+                conditional_delete_outcome(CorrosionTable::Peers, peer_id.as_str(), &response)
+                    .expect("bounded conditional delete result"),
+                expected,
+            );
+        }
     }
 
     #[test]

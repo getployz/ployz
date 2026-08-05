@@ -416,6 +416,18 @@ fn every_exact_v2_route_accepts_only_its_declared_method() {
     );
     assert_eq!(error.allow, Some(ployz_core::V2Method::Post));
     assert_eq!(
+        parse_route(&Method::POST, "/peers/remove").map_err(|error| error.refusal),
+        Ok(V2Route::PeerRemove)
+    );
+    let error = parse_route(&Method::GET, "/peers/remove").expect_err("peer removal requires POST");
+    assert_eq!(
+        error.refusal,
+        ApiRefusal::UnsupportedMethod {
+            method: "GET".to_owned(),
+        }
+    );
+    assert_eq!(error.allow, Some(ployz_core::V2Method::Post));
+    assert_eq!(
         parse_route(&Method::POST, "/machines/upgrade").map_err(|error| error.refusal),
         Ok(V2Route::MachineUpgrade)
     );
@@ -513,6 +525,7 @@ async fn version_is_success_json_with_the_core_capability_catalog() {
             ApiFeature::Known(KnownApiFeature::JoinTokens),
             ApiFeature::Known(KnownApiFeature::MachineEndpoint),
             ApiFeature::Known(KnownApiFeature::MachineRemove),
+            ApiFeature::Known(KnownApiFeature::PeerRemove),
             ApiFeature::Known(KnownApiFeature::MachineUpgrade),
             ApiFeature::Known(KnownApiFeature::JoinDoor),
         ]

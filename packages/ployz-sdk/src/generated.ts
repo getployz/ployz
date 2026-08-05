@@ -16,6 +16,7 @@ export const KNOWN_API_FEATURES = [
   "v2.join_tokens",
   "v2.machine_endpoint",
   "v2.machine_remove",
+  "v2.peer_remove",
   "v2.machine_upgrade",
   "v2.join_door",
 ] as const;
@@ -535,7 +536,7 @@ export type JoinDoorMaterial = { certificate_pem: JoinDoorCertificatePem, privat
 
 export type JoinDoorPrivateKeyPem = Brand<string, "JoinDoorPrivateKeyPem">;
 
-export type JoinDoorRefusal = { "kind": "token_not_found", token_id: TokenId, } | { "kind": "token_expired", token_id: TokenId, expires_at: CorrosionTimestamp, } | { "kind": "token_secret_mismatch", token_id: TokenId, } | { "kind": "invalid_admission", reason: JoinAdmissionValidationError, } | { "kind": "name_conflict", name: string, } | { "kind": "identity_conflict" } | { "kind": "no_reachable_seed" } | { "kind": "endpoint_subnet_exhausted" };
+export type JoinDoorRefusal = { "kind": "token_not_found", token_id: TokenId, } | { "kind": "token_expired", token_id: TokenId, expires_at: CorrosionTimestamp, } | { "kind": "token_secret_mismatch", token_id: TokenId, } | { "kind": "invalid_admission", reason: JoinAdmissionValidationError, } | { "kind": "name_conflict", name: string, } | { "kind": "peer_name_conflict", name: string, } | { "kind": "identity_conflict" } | { "kind": "no_reachable_seed" } | { "kind": "endpoint_subnet_exhausted" };
 
 export type JoinMachineSubstrate = { ployz_version: ExactPloyzVersion, corrosion_version: string, artifacts: Array<InstallArtifactSpec>, };
 
@@ -557,7 +558,7 @@ export type JoinTokenSecret = Brand<string, "JoinTokenSecret">;
 
 export type JoinTokenTtlSeconds = SafeInteger<"JoinTokenTtlSeconds">;
 
-export type KnownApiFeature = "v2.founding" | "v2.lenses" | "v2.join_tokens" | "v2.machine_endpoint" | "v2.machine_remove" | "v2.machine_upgrade" | "v2.join_door";
+export type KnownApiFeature = "v2.founding" | "v2.lenses" | "v2.join_tokens" | "v2.machine_endpoint" | "v2.machine_remove" | "v2.peer_remove" | "v2.machine_upgrade" | "v2.join_door";
 
 export type LensCollection = "machines" | "services" | "containers" | "machine_status" | "operations";
 
@@ -652,6 +653,12 @@ export type MachineName = Brand<string, "MachineName">;
 export type MachineReadinessCheck = { "state": "confirmed" } | { "state": "missing", reason: FailureMessage, };
 
 export type MachineReadinessEvidence = { heartbeat: MachineReadinessCheck, machine_inspect: MachineReadinessCheck, };
+
+export type MachineRemoveRefusal = { "kind": "not_found", machine_name: MachineName, } | { "kind": "ambiguous", machine_name: MachineName, machine_ids: Array<MachineRowId>, } | { "kind": "id_mismatch", machine_name: MachineName, machine_id: MachineRowId, };
+
+export type MachineRemoveReply = { "kind": "removed", machine_id: MachineRowId, } | { "kind": "already_absent", machine_id: MachineRowId, };
+
+export type MachineRemoveRequest = { machine_name: MachineName, machine_id?: MachineRowId | null, };
 
 export type MachineRowId = Brand<string, "MachineRowId">;
 
@@ -893,6 +900,12 @@ export type PeerId = Brand<string, "PeerId">;
 export type PeerJoinAccepted = { cluster: ClusterDocument, peer: AcceptedPeerRow, seed: ReachableSeedMachine, corrosion: CorrosionBootstrapFacts, };
 
 export type PeerJoinRequest = { peer_id: PeerId, name: string, public_key: WireGuardPublicKey, endpoint: string | null, };
+
+export type PeerRemoveRefusal = { "kind": "not_found", peer_name: string, } | { "kind": "ambiguous", peer_name: string, peer_ids: Array<PeerId>, } | { "kind": "id_mismatch", peer_name: string, peer_id: PeerId, } | { "kind": "self_removal", peer_name: string, peer_id: PeerId, };
+
+export type PeerRemoveReply = { "kind": "removed", peer_id: PeerId, } | { "kind": "already_absent", peer_id: PeerId, };
+
+export type PeerRemoveRequest = { peer_name: string, peer_id?: PeerId | null, };
 
 export type PeerTransport = { "kind": "wireguard", pubkey: WireGuardPublicKey, addr_v6: string, endpoint: string | null, } | { "kind": "tailscale", ip: string, };
 

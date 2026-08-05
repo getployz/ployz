@@ -9,9 +9,10 @@ use ts_rs::{Config, Dependency, TS, TypeVisitor};
 use super::v2::{
     API_MAJOR, ApiRefusal, ApiVersion, ContainerLensRow, CorrosionRetryAfterSeconds,
     KNOWN_API_FEATURES, KnownApiFeature, LensCollection, LensSnapshot, LensWatchEvent,
-    MachineLensRow, MachineStatusLensRow, MachineUpgradeRefusal, MachineUpgradeReply,
-    MachineUpgradeRequest, MachineUpgradeSupervisor, MachineUpgradeUrl, OperationLensRow,
-    ServiceLensRow,
+    MachineLensRow, MachineRemoveRefusal, MachineRemoveReply, MachineRemoveRequest,
+    MachineStatusLensRow, MachineUpgradeRefusal, MachineUpgradeReply, MachineUpgradeRequest,
+    MachineUpgradeSupervisor, MachineUpgradeUrl, OperationLensRow, PeerRemoveRefusal,
+    PeerRemoveReply, PeerRemoveRequest, ServiceLensRow,
 };
 use crate::build::{BuildExecutorEvidence, BuildPlatformExecutorAssignment, BuildSource};
 use crate::corrosion::{
@@ -166,11 +167,17 @@ fn collect_v2_contracts(declarations: &mut DeclarationCollector<'_>) {
     declarations.visit::<MachineEndpointSetRequest>();
     declarations.visit::<MachineEndpointSetReply>();
     declarations.visit::<MachineEndpointSetRefusal>();
+    declarations.visit::<MachineRemoveRequest>();
+    declarations.visit::<MachineRemoveReply>();
+    declarations.visit::<MachineRemoveRefusal>();
     declarations.visit::<MachineUpgradeUrl>();
     declarations.visit::<MachineUpgradeSupervisor>();
     declarations.visit::<MachineUpgradeRequest>();
     declarations.visit::<MachineUpgradeReply>();
     declarations.visit::<MachineUpgradeRefusal>();
+    declarations.visit::<PeerRemoveRequest>();
+    declarations.visit::<PeerRemoveReply>();
+    declarations.visit::<PeerRemoveRefusal>();
     declarations.visit::<JoinAdmissionRequest>();
     declarations.visit::<JoinAdmissionReply>();
     declarations.visit::<JoinMachineSubstrate>();
@@ -496,6 +503,8 @@ mod tests {
         assert!(generated.contains("export const KNOWN_API_FEATURES = ["));
         assert!(generated.contains("\"v2.founding\","));
         assert!(generated.contains("\"v2.lenses\","));
+        assert!(generated.contains("\"v2.machine_remove\","));
+        assert!(generated.contains("\"v2.peer_remove\","));
         assert!(generated.contains("export type ApiFeature = KnownApiFeature | (string & {});"));
         assert!(generated.contains("export type OperationInitiator = Principal;"));
         assert!(!generated.contains("export type AcceptedRosterPrincipal ="));
@@ -526,6 +535,12 @@ mod tests {
             "FoundingResult",
             "FoundingRepairCommand",
             "FoundingRefusal",
+            "MachineRemoveRequest",
+            "MachineRemoveReply",
+            "MachineRemoveRefusal",
+            "PeerRemoveRequest",
+            "PeerRemoveReply",
+            "PeerRemoveRefusal",
         ] {
             assert!(
                 generated.contains(&format!("export type {name} =")),

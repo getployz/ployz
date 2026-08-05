@@ -42,6 +42,16 @@ async fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Command::Peer(command) => match ployz::peer::execute(command).await {
+            Ok(output) => {
+                print!("{output}");
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                ExitCode::FAILURE
+            }
+        },
         Command::Token(command) => match ployz::token::execute(command).await {
             Ok(output) => {
                 print!("{output}");

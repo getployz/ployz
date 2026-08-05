@@ -483,7 +483,8 @@ impl ApiService {
             | V2Route::TokenList
             | V2Route::TokenRevoke(_)
             | V2Route::MachineEndpointSet
-            | V2Route::MachineRemove => {
+            | V2Route::MachineRemove
+            | V2Route::PeerRemove => {
                 super::mutations::handle_mutation(self, route, principal, request).await
             }
             V2Route::MachineUpgrade => super::upgrade::handle_machine_upgrade(self, request).await,

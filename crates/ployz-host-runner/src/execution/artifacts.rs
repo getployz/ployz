@@ -341,12 +341,21 @@ impl PloyzdArtifactStore {
     ) -> Result<ArmedPloyzdArtifact, ArtifactStoreError> {
         let staged_path = self.artifacts_path().join(expected.as_str());
         verify_artifact_file(&staged_path, expected).map_err(ArtifactStoreError::Verification)?;
-        let current = self
-            .read_verified_link(&self.current_path())?
-            .ok_or_else(|| ArtifactStoreError::CurrentMissing {
+        let current_link = self.read_current_verified_link()?.ok_or_else(|| {
+            ArtifactStoreError::CurrentMissing {
                 path: self.current_path(),
-            })?;
+            }
+        })?;
+        let current = current_link.digest().clone();
         let pending = self.pending_upgrade()?;
+        if let CurrentArtifactLink::RevertedToPrevious(current) = current_link
+            && let Some(pending) = pending.as_ref()
+        {
+            return Err(ArtifactStoreError::InterruptedRollback {
+                current,
+                pending: pending.clone(),
+            });
+        }
         if current == *expected {
             if pending.as_ref() == Some(expected) {
                 let previous =
@@ -484,6 +493,42 @@ impl PloyzdArtifactStore {
         Ok(Some(digest))
     }
 
+    fn read_current_verified_link(
+        &self,
+    ) -> Result<Option<CurrentArtifactLink>, ArtifactStoreError> {
+        let current_path = self.current_path();
+        let target = match fs::read_link(&current_path) {
+            Ok(target) => target,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => {
+                return Err(ArtifactStoreError::LinkIsNotSymlink { path: current_path });
+            }
+            Err(error) => {
+                return Err(ArtifactStoreError::ReadLink {
+                    path: current_path,
+                    message: error.to_string(),
+                });
+            }
+        };
+        if let Some(digest) = parse_artifact_link_target(&target) {
+            let artifact = self.artifacts_path().join(digest.as_str());
+            verify_artifact_file(&artifact, &digest).map_err(ArtifactStoreError::Verification)?;
+            return Ok(Some(CurrentArtifactLink::DirectArtifact(digest)));
+        }
+        if target == self.previous_path() {
+            let digest = self
+                .read_verified_link(&self.previous_path())?
+                .ok_or_else(|| ArtifactStoreError::PreviousMissing {
+                    path: self.previous_path(),
+                })?;
+            return Ok(Some(CurrentArtifactLink::RevertedToPrevious(digest)));
+        }
+        Err(ArtifactStoreError::UnsafeLinkTarget {
+            path: current_path,
+            target,
+        })
+    }
+
     fn replace_link(&self, link: &Path, target: &Path) -> Result<(), ArtifactStoreError> {
         fs::create_dir_all(&self.state).map_err(|error| ArtifactStoreError::CreateState {
             path: self.state.clone(),
@@ -548,6 +593,20 @@ pub struct ArmedPloyzdArtifact {
     pub previous: Sha256Digest,
     pub current: Sha256Digest,
     pub staged_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CurrentArtifactLink {
+    DirectArtifact(Sha256Digest),
+    RevertedToPrevious(Sha256Digest),
+}
+
+impl CurrentArtifactLink {
+    fn digest(&self) -> &Sha256Digest {
+        match self {
+            Self::DirectArtifact(digest) | Self::RevertedToPrevious(digest) => digest,
+        }
+    }
 }
 
 fn artifact_link_target(digest: &Sha256Digest) -> PathBuf {
@@ -647,6 +706,15 @@ pub enum ArtifactStoreError {
     PreviousExistsWithoutCurrent { path: PathBuf },
     #[error("a ployzd upgrade is already pending at {}", path.display())]
     PendingUpgradeExists { path: PathBuf },
+    #[error(
+        "ployzd rollback to {} was interrupted while upgrade {} remained pending",
+        current.as_str(),
+        pending.as_str()
+    )]
+    InterruptedRollback {
+        current: Sha256Digest,
+        pending: Sha256Digest,
+    },
     #[error("no ployzd upgrade is pending at {}", path.display())]
     PendingUpgradeMissing { path: PathBuf },
     #[error("failed to write durable pending upgrade marker {}: {message}", path.display())]
