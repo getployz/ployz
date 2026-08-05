@@ -2,7 +2,7 @@
 
 use super::cluster::DindRunId;
 use super::docker_api_error;
-use super::exec::exec_in_container;
+use super::exec::{exec_in_container, write_file_in_container};
 use super::{ARTIFACTS_MOUNT_PATH, DindError, MANAGED_LABEL, MANAGED_LABEL_VALUE, RUN_LABEL};
 use bollard::Docker;
 use bollard::models::{ContainerCreateBody, HostConfig, HostConfigCgroupnsModeEnum};
@@ -17,6 +17,8 @@ const READINESS_INITIAL_DELAY: Duration = Duration::from_millis(250);
 const READINESS_MAX_DELAY: Duration = Duration::from_secs(2);
 const BRIDGE_IP_BUDGET: Duration = Duration::from_secs(10);
 const BRIDGE_IP_DELAY: Duration = Duration::from_millis(250);
+const BPFFS_PATH: &str = "/sys/fs/bpf";
+const BPFFS_TYPE: &str = "bpf_fs";
 
 /// Request for one role-neutral machine container.
 #[derive(Debug, Clone)]
@@ -30,6 +32,9 @@ pub struct DindMachine {
     pub name: String,
     pub container_id: String,
     pub bridge_ip: IpAddr,
+    /// The outer machine container's cgroup-v2 scope. This is the semantic
+    /// machine root for root-cgroup eBPF attachment in the DinD harness.
+    pub cgroup_root: String,
 }
 
 pub(super) async fn provision_machine(
@@ -52,12 +57,203 @@ pub(super) async fn provision_machine(
         .await
         .map_err(docker_api_error("start machine container"))?;
     wait_for_machine_ready(docker, &name, &created.id).await?;
+    ensure_bpffs_mounted(docker, &created.id, &name).await?;
     let bridge_ip = wait_for_bridge_ip(docker, &created.id, network_name, &name).await?;
+    let cgroup_root = machine_cgroup_root(docker, &created.id, &name).await?;
+    install_isolation_root_drop_in(docker, &created.id, &cgroup_root).await?;
     Ok(DindMachine {
         name,
         container_id: created.id,
         bridge_ip,
+        cgroup_root,
     })
+}
+
+async fn ensure_bpffs_mounted(
+    docker: &Docker,
+    container_id: &str,
+    name: &str,
+) -> Result<(), DindError> {
+    let observed = bpffs_type(docker, container_id, name).await?;
+    if observed == BPFFS_TYPE {
+        return Ok(());
+    }
+    let outcome = exec_in_container(
+        docker,
+        container_id,
+        &["mount", "-t", "bpf", "bpf", BPFFS_PATH],
+    )
+    .await?;
+    if !outcome.success() {
+        return Err(DindError::BpffsUnavailable {
+            machine: name.to_owned(),
+            detail: format!(
+                "mounting {BPFFS_PATH} over {observed:?} exited {}: {}",
+                outcome.exit_code,
+                outcome.stderr.trim()
+            ),
+        });
+    }
+    let mounted = bpffs_type(docker, container_id, name).await?;
+    if mounted != BPFFS_TYPE {
+        return Err(DindError::BpffsUnavailable {
+            machine: name.to_owned(),
+            detail: format!(
+                "mount command succeeded but {BPFFS_PATH} has filesystem type {mounted:?}"
+            ),
+        });
+    }
+    Ok(())
+}
+
+async fn bpffs_type(docker: &Docker, container_id: &str, name: &str) -> Result<String, DindError> {
+    let outcome = exec_in_container(
+        docker,
+        container_id,
+        &["stat", "-f", "-c", "%T", BPFFS_PATH],
+    )
+    .await?;
+    if !outcome.success() {
+        return Err(DindError::BpffsUnavailable {
+            machine: name.to_owned(),
+            detail: format!(
+                "inspecting {BPFFS_PATH} exited {}: {}",
+                outcome.exit_code,
+                outcome.stderr.trim()
+            ),
+        });
+    }
+    let filesystem_type = outcome.stdout.trim();
+    if filesystem_type.is_empty() || filesystem_type.lines().count() != 1 {
+        return Err(DindError::BpffsUnavailable {
+            machine: name.to_owned(),
+            detail: format!(
+                "inspecting {BPFFS_PATH} returned malformed filesystem type {:?}",
+                outcome.stdout
+            ),
+        });
+    }
+    Ok(filesystem_type.to_owned())
+}
+
+async fn install_isolation_root_drop_in(
+    docker: &Docker,
+    container_id: &str,
+    cgroup_root: &str,
+) -> Result<(), DindError> {
+    let contents = format!("[Service]\nEnvironment=PLOYZ_ISOLATION_CGROUP_ROOT={cgroup_root}\n");
+    write_file_in_container(
+        docker,
+        container_id,
+        "/etc/systemd/system/ployzd-keeper.service.d/10-dind-isolation-root.conf",
+        &contents,
+        "0644",
+    )
+    .await
+}
+
+async fn machine_cgroup_root(
+    docker: &Docker,
+    container_id: &str,
+    name: &str,
+) -> Result<String, DindError> {
+    let outcome = exec_in_container(docker, container_id, &["cat", "/proc/1/cgroup"]).await?;
+    if !outcome.success() {
+        return Err(DindError::MachineCgroupUnavailable {
+            machine: name.to_owned(),
+            detail: format!(
+                "reading /proc/1/cgroup exited {}: {}",
+                outcome.exit_code,
+                outcome.stderr.trim()
+            ),
+        });
+    }
+    let root = parse_machine_cgroup_root(&outcome.stdout).map_err(|detail| {
+        DindError::MachineCgroupUnavailable {
+            machine: name.to_owned(),
+            detail,
+        }
+    })?;
+    let controllers = format!("{root}/cgroup.controllers");
+    let outcome = exec_in_container(docker, container_id, &["test", "-f", &controllers]).await?;
+    if !outcome.success() {
+        return Err(DindError::MachineCgroupUnavailable {
+            machine: name.to_owned(),
+            detail: format!("{controllers} is not a cgroup-v2 controller file"),
+        });
+    }
+    Ok(root)
+}
+
+fn parse_machine_cgroup_root(contents: &str) -> Result<String, String> {
+    let matches = contents
+        .lines()
+        .filter_map(|line| line.strip_prefix("0::"))
+        .collect::<Vec<_>>();
+    let [pid_one_path] = matches.as_slice() else {
+        return Err(format!(
+            "expected exactly one cgroup-v2 PID 1 entry, got {matches:?}"
+        ));
+    };
+    let Some(scope) = pid_one_path.strip_suffix("/init.scope") else {
+        return Err(format!(
+            "PID 1 cgroup path {pid_one_path:?} does not end in /init.scope"
+        ));
+    };
+    if scope.is_empty() || scope == "/" {
+        return Err("PID 1 cgroup resolved to the host root".to_owned());
+    }
+    Ok(format!("/sys/fs/cgroup{scope}"))
+}
+
+/// Verifies that a running Keeper received this DinD machine's isolated root.
+pub async fn assert_keeper_isolation_root(
+    docker: &Docker,
+    machine: &DindMachine,
+    unit: &str,
+) -> Result<(), String> {
+    if machine.cgroup_root == "/sys/fs/cgroup" {
+        return Err(format!(
+            "{} Keeper assertion refused the unified host cgroup root",
+            machine.name
+        ));
+    }
+    let outcome = exec_in_container(
+        docker,
+        &machine.container_id,
+        &[
+            "systemctl",
+            "show",
+            unit,
+            "--property",
+            "Environment",
+            "--value",
+        ],
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    if !outcome.success() {
+        return Err(format!(
+            "{} could not inspect {unit} environment: exit {} stderr={:?}",
+            machine.name,
+            outcome.exit_code,
+            outcome.stderr.trim()
+        ));
+    }
+    let expected = format!("PLOYZ_ISOLATION_CGROUP_ROOT={}", machine.cgroup_root);
+    if outcome
+        .stdout
+        .split_ascii_whitespace()
+        .any(|value| value == expected)
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} {unit} did not receive {expected:?}: {:?}",
+            machine.name,
+            outcome.stdout.trim()
+        ))
+    }
 }
 
 fn machine_create_body(
@@ -202,6 +398,9 @@ async fn wait_for_bridge_ip(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dind::{
+        DindCluster, DindClusterSpec, artifact_dir, connect_docker, e2e_enabled, machine_image,
+    };
 
     #[test]
     fn machine_body_is_role_neutral_and_publishes_no_ports() {
@@ -221,5 +420,64 @@ mod tests {
                 .port_bindings
                 .is_none()
         );
+    }
+
+    #[test]
+    fn machine_root_is_the_parent_of_pid_one_init_scope() {
+        assert_eq!(
+            parse_machine_cgroup_root("0::/system.slice/docker-abc.scope/init.scope\n",),
+            Ok("/sys/fs/cgroup/system.slice/docker-abc.scope".to_owned())
+        );
+    }
+
+    #[test]
+    fn machine_root_rejects_non_unified_or_unsafe_pid_one_paths() {
+        for contents in [
+            "1:name=systemd:/system.slice/docker-abc.scope/init.scope\n",
+            "0::/system.slice/docker-abc.scope\n",
+            "0::/init.scope\n",
+            "0::/a/init.scope\n0::/b/init.scope\n",
+        ] {
+            assert!(parse_machine_cgroup_root(contents).is_err(), "{contents:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn provisioned_machine_mounts_bpffs() {
+        if !e2e_enabled() {
+            return;
+        }
+        let docker = connect_docker().expect("connect to Docker");
+        let cluster = DindCluster::provision(
+            &docker,
+            DindClusterSpec {
+                artifact_dir: artifact_dir(),
+                machines: vec![MachineSpec {
+                    image: machine_image(),
+                }],
+            },
+        )
+        .await
+        .expect("provision one DinD machine");
+        let [machine] = cluster.machines() else {
+            panic!("one-machine fixture returned the wrong machine count");
+        };
+        let outcome = exec_in_container(
+            &docker,
+            &machine.container_id,
+            &["stat", "-f", "-c", "%T", "/sys/fs/bpf"],
+        )
+        .await
+        .expect("inspect /sys/fs/bpf filesystem type");
+        let result = if outcome.success() && outcome.stdout.trim() == "bpf_fs" {
+            Ok(())
+        } else {
+            Err(format!(
+                "/sys/fs/bpf is not bpffs: exit={} stdout={:?} stderr={:?}",
+                outcome.exit_code, outcome.stdout, outcome.stderr
+            ))
+        };
+        cluster.teardown().await.expect("tear down DinD machine");
+        result.expect("provisioned machine mounts private bpffs");
     }
 }

@@ -13,5 +13,8 @@ validation = ["dep:object"]
 [dependencies]
 object = { version = "0.37.3", default-features = false, features = ["read"], optional = true }
 
+[dev-dependencies]
+object = { version = "0.37.3", default-features = false, features = ["write"] }
+
 [lib]
 path = "src/lib.rs"

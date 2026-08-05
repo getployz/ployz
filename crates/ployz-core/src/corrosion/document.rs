@@ -713,6 +713,39 @@ pub struct MachineStatusDocument {
     /// Keeper mesh status writes populate this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mesh: Option<MeshConvergenceTestimony>,
+    /// `None` denotes a status document written before isolation testimony.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_isolation: Option<ContainerIsolationTestimony>,
+}
+
+/// Independent host prerequisites for the cgroup isolation wall.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ContainerIsolationDegradationReason {
+    MissingControlProgram { path: String },
+    MissingBytecode { path: String },
+    MissingBpffs { path: String },
+    MissingCgroupV2 { path: String },
+    DesiredSetTooLarge { desired: usize, capacity: usize },
+    HostEffect { message: String },
+}
+
+/// Keeper's durable testimony for the independently converged isolation wall.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ContainerIsolationTestimony {
+    Converged {
+        attempted_at: CorrosionTimestamp,
+        last_successful_converge: CorrosionTimestamp,
+        entries: usize,
+    },
+    Degraded {
+        attempted_at: CorrosionTimestamp,
+        last_successful_converge: Option<CorrosionTimestamp>,
+        reason: ContainerIsolationDegradationReason,
+    },
 }
 
 /// Current successful evidence for one independently converged host component.

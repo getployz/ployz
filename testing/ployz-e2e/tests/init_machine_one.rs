@@ -3,9 +3,9 @@ use ployz_core::corrosion::SqliteValue;
 use ployz_core::{API_MAJOR, ApiRefusal, LensCollection, LensSnapshot, lens_route};
 use ployz_e2e::dind::{
     ARTIFACT_ROOT, DindCluster, DindClusterSpec, DindMachine, ExecOutcome, MachineSpec,
-    RELEASE_MANIFEST, artifact_dir, connect_docker, corrosion_query, e2e_enabled, env_value,
-    exec_in_container, exec_ok, install_local_release_channel, keep_requested, machine_image,
-    render_release_manifest, require, write_release_manifest,
+    RELEASE_MANIFEST, artifact_dir, assert_keeper_isolation_root, connect_docker, corrosion_query,
+    e2e_enabled, env_value, exec_in_container, exec_ok, install_local_release_channel,
+    keep_requested, machine_image, render_release_manifest, require, write_release_manifest,
 };
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -237,6 +237,7 @@ async fn assert_runtime(
         ],
     )
     .await?;
+    assert_keeper_isolation_root(docker, machine, "ployzd-keeper.service").await?;
     exec_ok(
         docker,
         machine,

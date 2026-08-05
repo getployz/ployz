@@ -6,6 +6,7 @@
 //! control-plane transport and does not own cluster truth.
 
 pub mod builtin_wireguard;
+pub mod container_isolation;
 mod execution;
 pub mod lifecycle;
 mod release_manifest;

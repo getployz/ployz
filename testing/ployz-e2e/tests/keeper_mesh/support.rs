@@ -230,9 +230,17 @@ pub async fn install_keeper_unit(
     docker: &Docker,
     machine: &DindMachine,
     machine_id: &str,
+    bridge_ifname: &str,
 ) -> Result<(), String> {
+    if machine.cgroup_root == "/sys/fs/cgroup" {
+        return Err(format!(
+            "{} Keeper fixture refused the unified host cgroup root",
+            machine.name
+        ));
+    }
     let unit = format!(
-        "[Unit]\nDescription=Ployz Keeper mesh test\nAfter=network.target\n\n[Service]\nType=simple\nEnvironment=PLOYZ_CLUSTER_ID={CLUSTER_ID}\nEnvironment=PLOYZ_MACHINE_ID={machine_id}\nEnvironment=PLOYZ_CORROSION_API_ADDR=127.0.0.1:{CORROSION_API_PORT}\nEnvironment=PLOYZ_CORROSION_BEARER_TOKEN={CORROSION_TOKEN}\nEnvironment=PLOYZ_CORROSION_GOSSIP_PORT={CORROSION_GOSSIP_PORT}\nEnvironment=PLOYZ_API_LISTEN_ADDR=[::]:{API_PORT}\nEnvironment=PLOYZ_WIREGUARD_PRIVATE_KEY_PATH=/var/lib/ployz/wireguard.key\nEnvironment=PLOYZ_WIREGUARD_INTERFACE={WIREGUARD_INTERFACE}\nEnvironment=PLOYZ_WIREGUARD_LISTEN_PORT={WIREGUARD_PORT}\nEnvironment=PLOYZ_BRIDGE_INTERFACE={TEST_BRIDGE_INTERFACE}\nEnvironment=PLOYZ_EBPF_CTL_PATH=/opt/ployz/artifacts/ployz-ebpf-ctl\nEnvironment=PLOYZ_EBPF_BYTECODE_PATH=/opt/ployz/artifacts/ployz-ebpf-tc\nEnvironment=PLOYZ_EBPF_PIN_PATH=/sys/fs/bpf/ployz\nEnvironment=PLOYZ_CORROSION_VERSION={CORROSION_VERSION}\nEnvironment=PLOYZ_SUPERVISOR_BACKEND=systemd\nEnvironment=PLOYZ_KEEPER_HOST_COMMAND_TIMEOUT_MS=5000\nEnvironment=PLOYZ_KEEPER_HOST_FOLD_TIMEOUT_MS=15000\nEnvironment=PLOYZ_KEEPER_RECONCILE_INTERVAL_MS=250\nEnvironment=PLOYZ_KEEPER_RETRY_INITIAL_MS=100\nEnvironment=PLOYZ_KEEPER_RETRY_MAX_MS=1000\nEnvironment=PLOYZ_LOG=debug\nExecStart=/opt/ployz/artifacts/ployzd keeper\nRestart=on-failure\nRestartSec=100ms\n\n[Install]\nWantedBy=multi-user.target\n"
+        "[Unit]\nDescription=Ployz Keeper mesh test\nAfter=network.target\n\n[Service]\nType=simple\nEnvironment=PLOYZ_CLUSTER_ID={CLUSTER_ID}\nEnvironment=PLOYZ_MACHINE_ID={machine_id}\nEnvironment=PLOYZ_CORROSION_API_ADDR=127.0.0.1:{CORROSION_API_PORT}\nEnvironment=PLOYZ_CORROSION_BEARER_TOKEN={CORROSION_TOKEN}\nEnvironment=PLOYZ_CORROSION_GOSSIP_PORT={CORROSION_GOSSIP_PORT}\nEnvironment=PLOYZ_API_LISTEN_ADDR=[::]:{API_PORT}\nEnvironment=PLOYZ_WIREGUARD_PRIVATE_KEY_PATH=/var/lib/ployz/wireguard.key\nEnvironment=PLOYZ_WIREGUARD_INTERFACE={WIREGUARD_INTERFACE}\nEnvironment=PLOYZ_WIREGUARD_LISTEN_PORT={WIREGUARD_PORT}\nEnvironment=PLOYZ_BRIDGE_INTERFACE={bridge_ifname}\nEnvironment=PLOYZ_EBPF_CTL_PATH=/opt/ployz/artifacts/ployz-ebpf-ctl\nEnvironment=PLOYZ_EBPF_BYTECODE_PATH=/opt/ployz/artifacts/ployz-ebpf-tc\nEnvironment=PLOYZ_EBPF_PIN_PATH=/sys/fs/bpf/ployz\nEnvironment=PLOYZ_ISOLATION_CGROUP_ROOT={}\nEnvironment=PLOYZ_CORROSION_VERSION={CORROSION_VERSION}\nEnvironment=PLOYZ_SUPERVISOR_BACKEND=systemd\nEnvironment=PLOYZ_KEEPER_HOST_COMMAND_TIMEOUT_MS=5000\nEnvironment=PLOYZ_KEEPER_HOST_FOLD_TIMEOUT_MS=15000\nEnvironment=PLOYZ_KEEPER_RECONCILE_INTERVAL_MS=250\nEnvironment=PLOYZ_KEEPER_RETRY_INITIAL_MS=100\nEnvironment=PLOYZ_KEEPER_RETRY_MAX_MS=1000\nEnvironment=PLOYZ_LOG=debug\nExecStart=/opt/ployz/artifacts/ployzd keeper\nRestart=on-failure\nRestartSec=100ms\n\n[Install]\nWantedBy=multi-user.target\n",
+        machine.cgroup_root
     );
     write_file_in_container(
         docker,
@@ -641,12 +649,14 @@ mod tests {
             name: "bad-outer-network".to_owned(),
             container_id: "container".to_owned(),
             bridge_ip: IpAddr::V6(Ipv6Addr::LOCALHOST),
+            cgroup_root: "/sys/fs/cgroup/test-bad".to_owned(),
         };
         assert!(endpoint(&machine).is_err());
         let machine = DindMachine {
             name: "outer-network".to_owned(),
             container_id: "container".to_owned(),
             bridge_ip: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)),
+            cgroup_root: "/sys/fs/cgroup/test-good".to_owned(),
         };
         assert_eq!(
             endpoint(&machine).expect("IPv4 endpoint"),

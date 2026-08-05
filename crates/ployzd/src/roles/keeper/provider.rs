@@ -10,6 +10,7 @@ use ployz_host_runner::builtin_wireguard::{
     BuiltinWireguardHost, BuiltinWireguardHostError, BuiltinWireguardHostOutcome,
     WireguardLocalBinding,
 };
+use ployz_host_runner::container_isolation::{ContainerIsolationHost, ContainerIsolationHostError};
 use ployz_host_runner::{
     HostRunnerCommandOutput, HostRunnerCommandRunner, SystemHostRunnerCommandRunner,
 };
@@ -24,6 +25,7 @@ use std::time::Duration;
 #[derive(Clone)]
 pub(super) struct KeeperMeshProvider {
     host: Arc<Mutex<BuiltinWireguardHost<CancellableHostRunner>>>,
+    isolation_host: Arc<Mutex<ContainerIsolationHost<CancellableHostRunner>>>,
     fold_timeout: Duration,
     cancelled: Arc<AtomicBool>,
 }
@@ -38,10 +40,62 @@ impl KeeperMeshProvider {
         Self {
             host: Arc::new(Mutex::new(BuiltinWireguardHost::with_runner(
                 config.host().clone(),
+                CancellableHostRunner {
+                    inner: SystemHostRunnerCommandRunner::new(config.host().command_timeout()),
+                    cancelled: Arc::clone(&cancelled),
+                },
+            ))),
+            isolation_host: Arc::new(Mutex::new(ContainerIsolationHost::with_runner(
+                config.isolation_host().clone(),
                 runner,
             ))),
             fold_timeout: config.host_fold_timeout(),
             cancelled,
+        }
+    }
+
+    pub(super) async fn converge_isolation(
+        &self,
+        desired: &ployz_core::corrosion::DesiredContainerIsolation,
+    ) -> Result<(), KeeperProviderError> {
+        let desired = desired.clone();
+        let host = Arc::clone(&self.isolation_host);
+        self.run_isolation_blocking("converge container isolation", move || {
+            let mut host = host.lock().map_err(|_| KeeperProviderError::Poisoned)?;
+            host.converge(&desired)
+                .map_err(KeeperProviderError::Isolation)
+        })
+        .await
+    }
+
+    async fn run_isolation_blocking<Output, Run>(
+        &self,
+        operation: &'static str,
+        run: Run,
+    ) -> Result<Output, KeeperProviderError>
+    where
+        Output: Send + 'static,
+        Run: FnOnce() -> Result<Output, KeeperProviderError> + Send + 'static,
+    {
+        let (send, mut receive) = tokio::sync::oneshot::channel();
+        std::thread::Builder::new()
+            .name("ployz-keeper-isolation-fold".to_owned())
+            .spawn(move || {
+                let _ = send.send(run());
+            })
+            .map_err(|source| KeeperProviderError::Task {
+                operation,
+                detail: source.to_string(),
+            })?;
+        tokio::select! {
+            result = &mut receive => result.map_err(|source| KeeperProviderError::Task {
+                operation,
+                detail: source.to_string(),
+            })?,
+            () = tokio::time::sleep(self.fold_timeout) => {
+                self.cancelled.store(true, Ordering::Release);
+                Err(KeeperProviderError::TimedOut { operation, timeout: self.fold_timeout })
+            }
         }
     }
 
@@ -248,6 +302,8 @@ pub(super) struct BoundKeeperIdentity {
 pub(super) enum KeeperProviderError {
     #[error(transparent)]
     Host(#[from] BuiltinWireguardHostError),
+    #[error(transparent)]
+    Isolation(#[from] ContainerIsolationHostError),
     #[error("Keeper mesh provider state was poisoned")]
     Poisoned,
     #[error("Keeper host operation {operation} timed out after {timeout:?}")]
@@ -269,6 +325,7 @@ mod tests {
     use ployz_host_runner::builtin_wireguard::{
         BuiltinWireguardEbpfConfig, BuiltinWireguardHostConfig, BuiltinWireguardPorts,
     };
+    use ployz_host_runner::container_isolation::ContainerIsolationHostConfig;
 
     fn provider_for_timeout_test(timeout: Duration) -> KeeperMeshProvider {
         let ebpf = BuiltinWireguardEbpfConfig::try_new(
@@ -297,6 +354,21 @@ mod tests {
             host: Arc::new(Mutex::new(BuiltinWireguardHost::with_runner(
                 host_config,
                 runner,
+            ))),
+            isolation_host: Arc::new(Mutex::new(ContainerIsolationHost::with_runner(
+                ContainerIsolationHostConfig::try_new(
+                    "/usr/local/bin/ployz-ebpf-ctl".into(),
+                    "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".into(),
+                    "/sys/fs/bpf/ployz".into(),
+                    "/sys/fs/cgroup".into(),
+                    "/run/ployz/container-isolation.rows".into(),
+                    Duration::from_millis(20),
+                )
+                .expect("isolation config"),
+                CancellableHostRunner {
+                    inner: SystemHostRunnerCommandRunner::new(Duration::from_millis(20)),
+                    cancelled: Arc::clone(&cancelled),
+                },
             ))),
             fold_timeout: timeout,
             cancelled,
