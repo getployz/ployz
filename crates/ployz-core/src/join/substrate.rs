@@ -97,6 +97,7 @@ impl JoinMachineSubstrate {
     }
 
     /// Returns every required artifact paired with its exhaustive semantic kind.
+    #[must_use]
     pub fn artifacts_by_kind(
         &self,
     ) -> impl ExactSizeIterator<Item = (JoinArtifactKind, &InstallArtifactSpec)> {
