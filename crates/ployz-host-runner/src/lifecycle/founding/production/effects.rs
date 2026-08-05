@@ -47,13 +47,41 @@ impl<R: HostRunnerCommandRunner> LinuxFoundingHostEffects<R> {
         Ok(self.profile()?.supervisor().into())
     }
 
-    fn env_contents(&self, include_bootstrap: bool) -> Result<Vec<u8>, FailureMessage> {
+    fn join_substrate(&self) -> Result<JoinMachineSubstrate, FailureMessage> {
+        let ployz_version =
+            ExactPloyzVersion::try_new(self.artifacts.ployzd.version.as_str()).map_err(failure)?;
+        JoinMachineSubstrate::try_new(
+            ployz_version,
+            self.corrosion_embedded_version.clone(),
+            vec![
+                self.artifacts.ployzd.clone(),
+                self.artifacts.ebpf_bytecode.clone(),
+                self.artifacts.ebpf_ctl.clone(),
+                self.artifacts.corrosion.clone(),
+                self.artifacts.corrosion_schema.clone(),
+                self.artifacts.railpack.clone(),
+            ],
+        )
+        .map_err(failure)
+    }
+
+    pub(super) fn persist_join_substrate(&self) -> Result<(), FailureMessage> {
+        let bytes = serde_json::to_vec_pretty(&self.join_substrate()?).map_err(failure)?;
+        write_durable_file(
+            self.state.path(),
+            JOIN_SUBSTRATE_FILE,
+            FileMode::Secret0600,
+            &bytes,
+        )
+    }
+
+    pub(super) fn env_contents(&self, include_bootstrap: bool) -> Result<Vec<u8>, FailureMessage> {
         let request = self.request.request();
         let MachineTransport::Wireguard { addr_v6, .. } = &request.machine.transport else {
             return Err(failure("founding machine transport is not WireGuard"));
         };
         let mut env = format!(
-            "PLOYZ_CORROSION_API_ADDR=127.0.0.1:{CORROSION_API_PORT}\nPLOYZ_CORROSION_BEARER_TOKEN={}\nPLOYZ_CLUSTER_ID={}\nPLOYZ_MACHINE_ID={}\nPLOYZ_API_LISTEN_ADDR=[{addr_v6}]:{API_PORT}\nPLOYZ_BUILD={}\nPLOYZ_WIREGUARD_PRIVATE_KEY_PATH={}/{}\nPLOYZ_CORROSION_VERSION={}\n",
+            "PLOYZ_CORROSION_API_ADDR=127.0.0.1:{CORROSION_API_PORT}\nPLOYZ_CORROSION_BEARER_TOKEN={}\nPLOYZ_CLUSTER_ID={}\nPLOYZ_MACHINE_ID={}\nPLOYZ_API_LISTEN_ADDR=[{addr_v6}]:{API_PORT}\nPLOYZ_API_DOOR_LISTEN_ADDR=[::]:{JOIN_DOOR_PORT}\nPLOYZ_API_DOOR_PRIVATE_KEY_PATH={DOOR_PRIVATE_KEY_PATH}\nPLOYZ_API_DOOR_CERTIFICATE_PATH={DOOR_CERTIFICATE_PATH}\nPLOYZ_API_DOOR_FINGERPRINT_PATH={DOOR_FINGERPRINT_PATH}\nPLOYZ_API_JOIN_SUBSTRATE_PATH={JOIN_SUBSTRATE_PATH}\nPLOYZ_JOIN_DOOR_PORT={JOIN_DOOR_PORT}\nPLOYZ_BUILD={}\nPLOYZ_WIREGUARD_PRIVATE_KEY_PATH={}/{}\nPLOYZ_CORROSION_VERSION={}\n",
             self.corrosion_token,
             request.cluster_id,
             request.machine_id,
@@ -221,6 +249,7 @@ impl<R: HostRunnerCommandRunner> FoundingHostEffects for LinuxFoundingHostEffect
         let MachineTransport::Wireguard { addr_v6, .. } = &request.machine.transport else {
             return Err(failure("founding machine transport is not WireGuard"));
         };
+        self.persist_join_substrate()?;
         write_durable_file(
             self.state.path(),
             CORROSION_TOKEN_FILE,

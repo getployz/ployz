@@ -20,6 +20,8 @@ use ployz_core::founding::{
     classify_founding_arrival, select_init_storage,
 };
 use ployz_core::ids::{ClusterId, MachineRowId, PeerId};
+use ployz_core::install::ExactPloyzVersion;
+use ployz_core::join::{JOIN_DOOR_PORT, JoinMachineSubstrate};
 use ployz_core::machine::{MachineLifecycle, MachineName};
 use ployz_core::network::{MachineEndpointSupernet, WireGuardPublicKey};
 use ployz_core::operation::FailureMessage;
@@ -43,6 +45,11 @@ const WIREGUARD_KEY_FILE: &str = "wireguard.key";
 const DOOR_KEY_FILE: &str = "door.key";
 const DOOR_CERTIFICATE_FILE: &str = "door.crt";
 const DOOR_FINGERPRINT_FILE: &str = "door.fingerprint";
+const DOOR_PRIVATE_KEY_PATH: &str = "/var/lib/ployz/door.key";
+const DOOR_CERTIFICATE_PATH: &str = "/var/lib/ployz/door.crt";
+const DOOR_FINGERPRINT_PATH: &str = "/var/lib/ployz/door.fingerprint";
+const JOIN_SUBSTRATE_FILE: &str = "join-substrate.json";
+const JOIN_SUBSTRATE_PATH: &str = "/var/lib/ployz/join-substrate.json";
 const BOOTSTRAP_CREDENTIAL_FILE: &str = "bootstrap-credential";
 const ENV_FILE: &str = "ployzd.env";
 const CORROSION_CONFIG_FILE: &str = "corrosion.toml";

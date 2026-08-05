@@ -68,6 +68,63 @@ pub enum MachineEndpointNetworkError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineEndpointNetworkConvergenceOutcome {
+    Unchanged,
+    Created,
+    Recreated {
+        reattached_containers: usize,
+        restarted_containers: usize,
+    },
+    RecoveredAttachments {
+        reattached_containers: usize,
+        restarted_containers: usize,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum MachineEndpointNetworkConvergenceError {
+    #[error("could not inspect the local Docker endpoint network: {message}")]
+    Inspect { message: String },
+    #[error("the local Docker endpoint network is not owned by Ployz")]
+    UnmanagedNetwork,
+    #[error("could not list local Ployz-managed containers: {message}")]
+    ListManagedContainers { message: String },
+    #[error("Docker returned a Ployz-managed container without an id")]
+    ManagedContainerMissingId,
+    #[error("the Ployz endpoint network has unmanaged attached containers: {container_ids:?}")]
+    UnmanagedAttachments { container_ids: Vec<String> },
+    #[error(
+        "could not disconnect container {container_id} from the old Ployz endpoint network: {message}"
+    )]
+    Disconnect {
+        container_id: String,
+        message: String,
+    },
+    #[error("could not remove the old Ployz endpoint network: {message}")]
+    Remove { message: String },
+    #[error("could not create the Ployz endpoint network: {message}")]
+    Create { message: String },
+    #[error("could not restart container {container_id} after endpoint-network repair: {message}")]
+    Restart {
+        container_id: String,
+        message: String,
+    },
+    #[error(
+        "could not attach container {container_id} to the repaired Ployz endpoint network: {message}"
+    )]
+    Connect {
+        container_id: String,
+        message: String,
+    },
+    #[error("could not verify the repaired Ployz endpoint network: {message}")]
+    Verify { message: String },
+    #[error(
+        "the repaired Ployz endpoint network is still missing managed containers: {container_ids:?}"
+    )]
+    MissingAttachments { container_ids: Vec<String> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MachineRegistryImageResolveError {
     ImagePull { message: String },
 }

@@ -18,6 +18,7 @@ pub mod image;
 pub mod ingress;
 pub mod install;
 pub mod intent;
+pub mod join;
 pub mod machine;
 pub mod namespace;
 pub mod network;

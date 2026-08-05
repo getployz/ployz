@@ -13,7 +13,9 @@ use std::time::Duration;
 
 use defguard_wireguard_rs::key::Key;
 use ipnet::{IpNet, Ipv6Net};
-use ployz_core::corrosion::{DesiredBuiltinWireguardLocal, DesiredBuiltinWireguardMesh};
+use ployz_core::corrosion::{
+    BuiltinWireguardMemberSubnet, DesiredBuiltinWireguardLocal, DesiredBuiltinWireguardMesh,
+};
 pub use ployz_core::network::DEFAULT_WIREGUARD_LISTEN_PORT;
 use ployz_core::network::{MachineEndpointSubnet, WireGuardPublicKey};
 use thiserror::Error;
@@ -46,7 +48,7 @@ pub const DEFAULT_WIREGUARD_MTU: u16 = 1_420;
 pub enum BuiltinWireguardHostError {
     #[error("built-in WireGuard host effect failed: {message}")]
     HostEffect { message: String },
-    #[error("built-in WireGuard UDP port is blocked by unmanaged firewall {backend:?}")]
+    #[error("required built-in WireGuard ports are blocked by unmanaged firewall {backend:?}")]
     UnmanagedFirewall { backend: String },
 }
 
@@ -59,6 +61,15 @@ pub struct BuiltinWireguardHostOutcome {
 pub struct WireguardLocalBinding {
     pub public_key: WireGuardPublicKey,
     pub bind_address: Ipv6Net,
+}
+
+/// The single reachable roster machine used before a joiner's Corrosion store has synced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuiltinWireguardJoinSeed {
+    pub public_key: WireGuardPublicKey,
+    pub subnet_v6: BuiltinWireguardMemberSubnet,
+    pub endpoint: std::net::SocketAddr,
+    pub subnet_v4: MachineEndpointSubnet,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,6 +136,31 @@ impl<R: HostRunnerCommandRunner> BuiltinWireguardHost<R> {
         local: &DesiredBuiltinWireguardLocal,
     ) -> Result<WireguardLocalBinding, BuiltinWireguardHostError> {
         self.bind_local_effects(local, CorrosionGossipPhase::Bootstrap)
+    }
+
+    /// Makes one accepted seed reachable before Corrosion can supply the full roster.
+    /// Keeper replaces this bootstrap projection with the ordinary roster projection.
+    pub fn bootstrap_join_seed(
+        &mut self,
+        local: &DesiredBuiltinWireguardLocal,
+        seed: &BuiltinWireguardJoinSeed,
+    ) -> Result<WireguardLocalBinding, BuiltinWireguardHostError> {
+        let sources = BTreeSet::from([local.subnet_v6.network(), seed.subnet_v6.network()]);
+        let binding = self.bind_local_effects(local, CorrosionGossipPhase::Desired(&sources))?;
+        let desired = DesiredPeer {
+            public_key: seed.public_key.clone(),
+            endpoint: Some(seed.endpoint),
+            allowed_ips: BTreeSet::from([
+                IpNet::V6(seed.subnet_v6.network()),
+                seed.subnet_v4.ipnet(),
+            ]),
+        };
+        let observed_peers = self.read_observed_peers().map_err(host_error)?;
+        let observed_routes = self.read_observed_routes().map_err(host_error)?;
+        let actions = convergence_plan(&observed_peers, &observed_routes, &[desired]);
+        self.apply_convergence_actions(&actions)
+            .map_err(host_error)?;
+        Ok(binding)
     }
 
     fn bind_local_effects(
@@ -283,23 +319,31 @@ impl<R: HostRunnerCommandRunner> BuiltinWireguardHost<R> {
         if let FirewallBackend::Unmanaged(name) = backend {
             return Err(FirewallEffectError::Unmanaged(name));
         }
-        backend
-            .open_with(
-                AssignedHostPort::udp(self.config.ports.listen.get()),
-                &mut self.runner,
-            )
-            .and_then(|()| {
-                if admit_control_plane {
-                    backend.allow_control_plane_http_with(
-                        &self.config.wg_ifname,
-                        self.config.ports.api_http.get(),
-                        &mut self.runner,
-                    )
-                } else {
-                    Ok(())
-                }
-            })
+        self.ensure_required_firewall_ports(&backend, admit_control_plane)
             .map_err(|error| FirewallEffectError::Host(error.as_str().to_owned()))
+    }
+
+    fn ensure_required_firewall_ports(
+        &mut self,
+        backend: &FirewallBackend,
+        admit_control_plane: bool,
+    ) -> Result<(), ployz_core::operation::FailureMessage> {
+        backend.open_with(
+            AssignedHostPort::udp(self.config.ports.listen.get()),
+            &mut self.runner,
+        )?;
+        backend.open_with(
+            AssignedHostPort::tcp(self.config.ports.join_door_https.get()),
+            &mut self.runner,
+        )?;
+        if admit_control_plane {
+            backend.allow_control_plane_http_with(
+                &self.config.wg_ifname,
+                self.config.ports.api_http.get(),
+                &mut self.runner,
+            )?;
+        }
+        Ok(())
     }
 
     fn ensure_corrosion_firewall(
@@ -858,16 +902,20 @@ mod tests {
     #[test]
     fn config_rejects_unbounded_or_kernel_invalid_values() {
         assert_eq!(
-            BuiltinWireguardPorts::try_new(0, 8_787, 2_020),
+            BuiltinWireguardPorts::try_new(0, 8_787, 2_020, 2_021),
             Err(BuiltinWireguardConfigError::ZeroListenPort)
         );
         assert_eq!(
-            BuiltinWireguardPorts::try_new(51_820, 0, 2_020),
+            BuiltinWireguardPorts::try_new(51_820, 0, 2_020, 2_021),
             Err(BuiltinWireguardConfigError::ZeroCorrosionGossipPort)
         );
         assert_eq!(
-            BuiltinWireguardPorts::try_new(51_820, 8_787, 0),
+            BuiltinWireguardPorts::try_new(51_820, 8_787, 0, 2_021),
             Err(BuiltinWireguardConfigError::ZeroApiHttpPort)
+        );
+        assert_eq!(
+            BuiltinWireguardPorts::try_new(51_820, 8_787, 2_020, 0),
+            Err(BuiltinWireguardConfigError::ZeroJoinDoorHttpsPort)
         );
         let ebpf = || {
             BuiltinWireguardEbpfConfig::try_new(
@@ -894,7 +942,7 @@ mod tests {
             BuiltinWireguardHostConfig::try_new(
                 PathBuf::from("relative-key"),
                 "ployz0".to_owned(),
-                BuiltinWireguardPorts::try_new(51_820, 8_787, 2_020).expect("ports"),
+                BuiltinWireguardPorts::try_new(51_820, 8_787, 2_020, 2_021).expect("ports"),
                 1_420,
                 ebpf(),
                 SupervisorBackend::Systemd,
@@ -908,7 +956,7 @@ mod tests {
         let invalid_ifname = BuiltinWireguardHostConfig::try_new(
             PathBuf::from("/key"),
             "interface-name-is-too-long".to_owned(),
-            BuiltinWireguardPorts::try_new(51_820, 8_787, 2_020).expect("ports"),
+            BuiltinWireguardPorts::try_new(51_820, 8_787, 2_020, 2_021).expect("ports"),
             1_420,
             ebpf(),
             SupervisorBackend::Systemd,
@@ -923,7 +971,7 @@ mod tests {
             BuiltinWireguardHostConfig::try_new(
                 PathBuf::from("/key"),
                 "ployz0".to_owned(),
-                BuiltinWireguardPorts::try_new(51_820, 8_787, 2_020).expect("ports"),
+                BuiltinWireguardPorts::try_new(51_820, 8_787, 2_020, 2_021).expect("ports"),
                 1_420,
                 ebpf(),
                 SupervisorBackend::Systemd,
@@ -935,7 +983,7 @@ mod tests {
             BuiltinWireguardHostConfig::try_new(
                 PathBuf::from("/key"),
                 "ployz0".to_owned(),
-                BuiltinWireguardPorts::try_new(51_820, 8_787, 2_020).expect("ports"),
+                BuiltinWireguardPorts::try_new(51_820, 8_787, 2_020, 2_021).expect("ports"),
                 1_420,
                 ebpf(),
                 SupervisorBackend::Systemd,

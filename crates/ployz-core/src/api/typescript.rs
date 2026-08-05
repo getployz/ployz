@@ -29,6 +29,11 @@ use crate::install::{
     AbsoluteInstallPath, ExactPloyzVersion, HostPortAssurance, InstallArtifactSource,
     InstallArtifactSpec, InstallArtifactVersion, InstallSha256Digest, ReleasePlatformFailure,
 };
+use crate::join::{
+    JoinAdmissionReply, JoinAdmissionRequest, JoinMachineSubstrate, MachineEndpointSetRequest,
+    MachineEndpointSetResponse, TokenCreateRequest, TokenCreateResponse, TokenListReply,
+    TokenListRequest, TokenRevokeRequest, TokenRevokeResponse,
+};
 use crate::machine::roles::{GatewayRole, InstallRolePolicy};
 use crate::operation::{
     EventSequence, MAX_OPERATION_EVENT_REPLAY_LIMIT, OperationEventReplayLimit,
@@ -147,6 +152,17 @@ fn collect_v2_contracts(declarations: &mut DeclarationCollector<'_>) {
     declarations.visit::<FoundingResult>();
     declarations.visit::<FoundingRepairCommand>();
     declarations.visit::<FoundingRefusal>();
+    declarations.visit::<TokenCreateRequest>();
+    declarations.visit::<TokenCreateResponse>();
+    declarations.visit::<TokenListRequest>();
+    declarations.visit::<TokenListReply>();
+    declarations.visit::<TokenRevokeRequest>();
+    declarations.visit::<TokenRevokeResponse>();
+    declarations.visit::<MachineEndpointSetRequest>();
+    declarations.visit::<MachineEndpointSetResponse>();
+    declarations.visit::<JoinAdmissionRequest>();
+    declarations.visit::<JoinAdmissionReply>();
+    declarations.visit::<JoinMachineSubstrate>();
 }
 
 struct DeclarationCollector<'a> {

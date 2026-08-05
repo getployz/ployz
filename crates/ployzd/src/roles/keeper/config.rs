@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use ployz_core::ids::{ClusterId, MachineRowId};
+use ployz_core::join::JOIN_DOOR_PORT;
 use ployz_host_runner::SupervisorBackend;
 use ployz_host_runner::builtin_wireguard::{
     BuiltinWireguardConfigError, BuiltinWireguardEbpfConfig, BuiltinWireguardHostConfig,
@@ -30,6 +31,7 @@ const WIREGUARD_INTERFACE_ENV: &str = "PLOYZ_WIREGUARD_INTERFACE";
 const WIREGUARD_LISTEN_PORT_ENV: &str = "PLOYZ_WIREGUARD_LISTEN_PORT";
 const CORROSION_GOSSIP_PORT_ENV: &str = "PLOYZ_CORROSION_GOSSIP_PORT";
 const API_LISTEN_ADDR_ENV: &str = "PLOYZ_API_LISTEN_ADDR";
+const JOIN_DOOR_PORT_ENV: &str = "PLOYZ_JOIN_DOOR_PORT";
 const WIREGUARD_MTU_ENV: &str = "PLOYZ_WIREGUARD_MTU";
 const BRIDGE_INTERFACE_ENV: &str = "PLOYZ_BRIDGE_INTERFACE";
 const EBPF_CTL_PATH_ENV: &str = "PLOYZ_EBPF_CTL_PATH";
@@ -132,6 +134,7 @@ impl KeeperRoleConfig {
                     detail: error.to_string(),
                 })?
                 .port(),
+            join_door_port_environment()?,
         )?;
         let host = BuiltinWireguardHostConfig::try_new(
             PathBuf::from(optional_environment(
@@ -285,6 +288,17 @@ fn u16_environment(name: &'static str, default: u16) -> Result<u16, KeeperRoleCo
     parsed_environment(name, default)
 }
 
+fn join_door_port_environment() -> Result<u16, KeeperRoleConfigError> {
+    let actual = u16_environment(JOIN_DOOR_PORT_ENV, JOIN_DOOR_PORT)?;
+    if actual != JOIN_DOOR_PORT {
+        return Err(KeeperRoleConfigError::UnexpectedJoinDoorPort {
+            expected: JOIN_DOOR_PORT,
+            actual,
+        });
+    }
+    Ok(actual)
+}
+
 fn duration_environment(
     name: &'static str,
     default_ms: u64,
@@ -351,6 +365,8 @@ pub enum KeeperRoleConfigError {
     InvalidInteger { name: &'static str, detail: String },
     #[error("Keeper duration from {name} must be nonzero")]
     ZeroDuration { name: &'static str },
+    #[error("join door port must be the fixed Core port {expected}, got {actual}")]
+    UnexpectedJoinDoorPort { expected: u16, actual: u16 },
     #[error("Keeper retry maximum {maximum:?} is shorter than initial delay {initial:?}")]
     RetryCapBeforeInitial {
         initial: Duration,

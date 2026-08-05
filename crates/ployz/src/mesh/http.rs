@@ -3,13 +3,15 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use http_body_util::{BodyExt as _, Empty, LengthLimitError, Limited};
+use http_body_util::{BodyExt as _, Full, LengthLimitError, Limited};
 use hyper::body::Body as _;
 use hyper::client::conn::http1;
 use hyper::header::{CONNECTION, CONTENT_TYPE, HOST};
 use hyper::{Method, Request, StatusCode};
 use hyper_util::rt::TokioIo;
 use ployz_core::{ApiRefusal, LensCollection, LensSnapshot, lens_route};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 pub const DEFAULT_MESH_API_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -38,32 +40,103 @@ impl MeshApiClient {
     where
         Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
+        let snapshot = self
+            .request_json::<Stream, (), LensSnapshot>(
+                stream,
+                Method::GET,
+                &lens_route(collection),
+                None,
+            )
+            .await?;
+        let actual = snapshot_collection(&snapshot);
+        if actual != collection {
+            return Err(MeshApiClientError::WrongLens {
+                expected: collection,
+                actual,
+            });
+        }
+        Ok(snapshot)
+    }
+
+    /// Sends one bounded HTTP/JSON exchange over an already-connected stream.
+    pub async fn request_json<Stream, RequestBody, ResponseBody>(
+        &self,
+        stream: Stream,
+        method: Method,
+        route: &str,
+        body: Option<&RequestBody>,
+    ) -> Result<ResponseBody, MeshApiClientError>
+    where
+        Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        RequestBody: Serialize + ?Sized,
+        ResponseBody: DeserializeOwned,
+    {
+        match self
+            .request_json_with_refusal::<Stream, RequestBody, ResponseBody, ApiRefusal>(
+                stream, method, route, body,
+            )
+            .await?
+        {
+            JsonReply::Success(reply) => Ok(reply),
+            JsonReply::Refused(refusal) => Err(MeshApiClientError::Refused { refusal }),
+        }
+    }
+
+    /// Sends one bounded exchange while preserving an endpoint-specific refusal union.
+    pub async fn request_json_with_refusal<Stream, RequestBody, ResponseBody, Refusal>(
+        &self,
+        stream: Stream,
+        method: Method,
+        route: &str,
+        body: Option<&RequestBody>,
+    ) -> Result<JsonReply<ResponseBody, Refusal>, MeshApiClientError>
+    where
+        Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        RequestBody: Serialize + ?Sized,
+        ResponseBody: DeserializeOwned,
+        Refusal: DeserializeOwned,
+    {
         tokio::time::timeout(
             self.request_timeout,
-            self.lens_without_deadline(stream, collection),
+            self.request_json_without_deadline(stream, method, route, body),
         )
         .await
         .map_err(|_| MeshApiClientError::TimedOut)?
     }
 
-    async fn lens_without_deadline<Stream>(
+    async fn request_json_without_deadline<Stream, RequestBody, ResponseBody, Refusal>(
         &self,
         stream: Stream,
-        collection: LensCollection,
-    ) -> Result<LensSnapshot, MeshApiClientError>
+        method: Method,
+        route: &str,
+        body: Option<&RequestBody>,
+    ) -> Result<JsonReply<ResponseBody, Refusal>, MeshApiClientError>
     where
         Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        RequestBody: Serialize + ?Sized,
+        ResponseBody: DeserializeOwned,
+        Refusal: DeserializeOwned,
     {
+        let request_body = body
+            .map(serde_json::to_vec)
+            .transpose()
+            .map_err(MeshApiClientError::EncodeJson)?
+            .map_or_else(Bytes::new, Bytes::from);
+        let has_body = !request_body.is_empty();
         let (mut sender, connection) = http1::handshake(TokioIo::new(stream))
             .await
             .map_err(MeshApiClientError::Handshake)?;
         let _connection_task = AbortConnectionTask(tokio::spawn(connection));
-        let request = Request::builder()
-            .method(Method::GET)
-            .uri(lens_route(collection))
+        let mut builder = Request::builder()
+            .method(method)
+            .uri(route)
             .header(HOST, "ployz.mesh")
-            .header(CONNECTION, "close")
-            .body(Empty::<Bytes>::new())
+            .header(CONNECTION, "close");
+        if has_body {
+            builder = builder.header(CONTENT_TYPE, "application/json");
+        }
+        let request = builder
+            .body(Full::new(request_body))
             .map_err(MeshApiClientError::InvalidRequest)?;
         let response = sender
             .send_request(request)
@@ -83,24 +156,26 @@ impl MeshApiClient {
             .map_err(|error| map_body_error(error, self.max_response_bytes))?;
         let body = collected.to_bytes();
 
-        if status != StatusCode::OK {
+        if !status.is_success() {
+            if let Ok(refusal) = serde_json::from_slice::<Refusal>(&body) {
+                return Ok(JsonReply::Refused(refusal));
+            }
             return match serde_json::from_slice::<ApiRefusal>(&body) {
                 Ok(refusal) => Err(MeshApiClientError::Refused { refusal }),
                 Err(_) => Err(MeshApiClientError::UnexpectedStatus { status }),
             };
         }
 
-        let snapshot: LensSnapshot =
-            serde_json::from_slice(&body).map_err(MeshApiClientError::InvalidJson)?;
-        let actual = snapshot_collection(&snapshot);
-        if actual != collection {
-            return Err(MeshApiClientError::WrongLens {
-                expected: collection,
-                actual,
-            });
-        }
-        Ok(snapshot)
+        serde_json::from_slice(&body)
+            .map_err(MeshApiClientError::InvalidJson)
+            .map(JsonReply::Success)
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JsonReply<Success, Refusal> {
+    Success(Success),
+    Refused(Refusal),
 }
 
 impl Default for MeshApiClient {
@@ -166,6 +241,8 @@ pub enum MeshApiClientError {
     Handshake(hyper::Error),
     #[error("cluster API request could not be built: {0}")]
     InvalidRequest(hyper::http::Error),
+    #[error("cluster API request body could not be encoded as JSON: {0}")]
+    EncodeJson(serde_json::Error),
     #[error("cluster API request failed: {0}")]
     Request(hyper::Error),
     #[error("cluster API response exceeded {limit} bytes")]
@@ -192,9 +269,99 @@ pub enum MeshApiClientError {
 
 #[cfg(test)]
 mod tests {
+    use serde::{Deserialize, Serialize};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     use super::*;
+
+    #[derive(Debug, PartialEq, Eq, Serialize)]
+    struct ExampleRequest {
+        name: &'static str,
+    }
+
+    #[derive(Debug, PartialEq, Eq, Deserialize)]
+    struct ExampleReply {
+        accepted: bool,
+    }
+
+    #[derive(Debug, PartialEq, Eq, Deserialize)]
+    #[serde(tag = "kind", rename_all = "snake_case")]
+    enum ExampleRefusal {
+        Conflict { repair_command: String },
+    }
+
+    #[tokio::test]
+    async fn sends_and_decodes_typed_json_over_an_arbitrarily_chunked_stream() {
+        let (stream, mut server) = tokio::io::duplex(4096);
+        let server_task = tokio::spawn(async move {
+            let request = read_request_with_body(&mut server).await;
+            assert!(request.starts_with("POST /v2/example HTTP/1.1\r\n"));
+            assert!(
+                request
+                    .to_ascii_lowercase()
+                    .contains("content-type: application/json\r\n")
+            );
+            assert!(request.ends_with("\r\n\r\n{\"name\":\"ares\"}"));
+
+            for chunk in [
+                &b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"[..],
+                &b"Content-Length: 17\r\nConnection: close\r\n\r\n"[..],
+                &b"{\"accepted\":true}"[..],
+            ] {
+                server.write_all(chunk).await.expect("write response chunk");
+                tokio::task::yield_now().await;
+            }
+        });
+
+        let actual: ExampleReply = MeshApiClient::default()
+            .request_json(
+                stream,
+                Method::POST,
+                "/v2/example",
+                Some(&ExampleRequest { name: "ares" }),
+            )
+            .await
+            .expect("typed response");
+        assert_eq!(actual, ExampleReply { accepted: true });
+        server_task.await.expect("server task");
+    }
+
+    #[tokio::test]
+    async fn preserves_an_endpoint_specific_refusal_union() {
+        let (stream, mut server) = tokio::io::duplex(4096);
+        let server_task = tokio::spawn(async move {
+            let _request = read_request_with_body(&mut server).await;
+            let body = br#"{"kind":"conflict","repair_command":"ployz machine reset"}"#;
+            server
+                .write_all(
+                    format!(
+                        "HTTP/1.1 409 Conflict\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .expect("write response head");
+            server.write_all(body).await.expect("write response body");
+        });
+
+        let actual = MeshApiClient::default()
+            .request_json_with_refusal::<_, _, ExampleReply, ExampleRefusal>(
+                stream,
+                Method::POST,
+                "/v2/example",
+                Some(&ExampleRequest { name: "ares" }),
+            )
+            .await
+            .expect("typed exchange");
+        assert_eq!(
+            actual,
+            JsonReply::Refused(ExampleRefusal::Conflict {
+                repair_command: "ployz machine reset".to_owned(),
+            })
+        );
+        server_task.await.expect("server task");
+    }
 
     #[tokio::test]
     async fn requests_the_canonical_lens_route_over_an_arbitrary_stream() {
@@ -413,5 +580,41 @@ mod tests {
                 .to_ascii_lowercase()
                 .contains("host: ployz.mesh\r\n")
         );
+    }
+
+    async fn read_request_with_body<Stream>(stream: &mut Stream) -> String
+    where
+        Stream: tokio::io::AsyncRead + Unpin,
+    {
+        let mut request = Vec::new();
+        let header_end = loop {
+            let mut byte = [0];
+            stream.read_exact(&mut byte).await.expect("read request");
+            request.push(byte[0]);
+            if request.ends_with(b"\r\n\r\n") {
+                break request.len();
+            }
+        };
+        let headers = String::from_utf8(
+            request
+                .get(..header_end)
+                .expect("header boundary comes from the request length")
+                .to_vec(),
+        )
+        .expect("request headers");
+        let content_length = headers
+            .lines()
+            .find_map(|line| {
+                line.to_ascii_lowercase()
+                    .strip_prefix("content-length: ")
+                    .and_then(|value| value.parse::<usize>().ok())
+            })
+            .expect("content length");
+        request.resize(header_end + content_length, 0);
+        let body = request
+            .get_mut(header_end..)
+            .expect("resized request contains the declared body range");
+        stream.read_exact(body).await.expect("read request body");
+        String::from_utf8(request).expect("request text")
     }
 }

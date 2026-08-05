@@ -323,29 +323,36 @@ async fn repair_local_subnet(
         .map_err(|source| {
             ReconcileError::Fatal(KeeperRoleRuntimeError::SubnetAllocation(source))
         })?;
-    let previous = match &mut machine.transport {
-        MachineTransport::Wireguard { subnet_v4, .. } => {
-            std::mem::replace(subnet_v4, subnet.clone())
-        }
-        MachineTransport::Tailscale { .. } => {
-            return Err(ReconcileError::Fatal(KeeperRoleRuntimeError::Invariant(
-                "builtin WireGuard subnet repair carried a Tailscale machine",
-            )));
-        }
-    };
     let written_at = now().map_err(retry_status)?;
-    machine.provenance = OperatorWriteProvenance {
-        written_by: Principal::Machine {
-            machine_id: machine_id.clone(),
-        },
-        written_at,
-    };
+    let previous = apply_local_subnet_repair(&machine_id, &mut machine, subnet.clone(), written_at)
+        .map_err(|detail| ReconcileError::Fatal(KeeperRoleRuntimeError::Invariant(detail)))?;
     store
         .rewrite_local_machine(&machine_id, &machine)
         .await
         .map_err(retry_store)?;
     tracing::warn!(%machine_id, previous_subnet = ?previous, replacement_subnet = ?subnet, "Keeper rewrote its local machine row to repair the container subnet collision");
     Ok(())
+}
+
+fn apply_local_subnet_repair(
+    machine_id: &ployz_core::ids::MachineRowId,
+    machine: &mut ployz_core::corrosion::MachineDocument,
+    subnet: ployz_core::network::MachineEndpointSubnet,
+    written_at: ployz_core::corrosion::CorrosionTimestamp,
+) -> Result<ployz_core::network::MachineEndpointSubnet, &'static str> {
+    let previous = match &mut machine.transport {
+        MachineTransport::Wireguard { subnet_v4, .. } => std::mem::replace(subnet_v4, subnet),
+        MachineTransport::Tailscale { .. } => {
+            return Err("builtin WireGuard subnet repair carried a Tailscale machine");
+        }
+    };
+    machine.provenance = OperatorWriteProvenance {
+        written_by: Principal::Machine {
+            machine_id: machine_id.clone(),
+        },
+        written_at,
+    };
+    Ok(previous)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -503,9 +510,12 @@ impl KeeperRoleRuntimeError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::corrosion::{DesiredBuiltinWireguardLocal, MachineStatusDocument};
+    use ployz_core::corrosion::{
+        DesiredBuiltinWireguardLocal, MachineDocument, MachineStatusDocument,
+    };
     use ployz_core::ids::{ClusterId, MachineRowId};
-    use ployz_core::network::WireGuardPublicKey;
+    use ployz_core::network::{MachineEndpointSubnet, WireGuardPublicKey};
+    use serde_json::json;
 
     const CLUSTER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
     const MACHINE: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
@@ -537,6 +547,74 @@ mod tests {
         assert_eq!(retry.next(), Duration::from_millis(5));
         retry.reset();
         assert_eq!(retry.next(), Duration::from_millis(2));
+    }
+
+    #[test]
+    fn local_subnet_repair_changes_only_subnet_and_required_provenance() {
+        let machine_id = MachineRowId::try_new(MACHINE).expect("machine");
+        let mut machine = serde_json::from_value::<MachineDocument>(json!({
+            "v": 1,
+            "cluster_id": CLUSTER,
+            "written_by": { "kind": "peer", "peer_id": "01ARZ3NDEKTSV4RRFFQ69G5FAY" },
+            "written_at": "2026-08-05T10:00:00Z",
+            "name": "machine-one",
+            "lifecycle": "active",
+            "transport": {
+                "kind": "wireguard",
+                "pubkey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                "addr_v6": "fd00::1",
+                "endpoint": "192.0.2.1:51820",
+                "subnet_v4": "10.210.1.0/24"
+            },
+            "storage": { "mode": "plain", "reason": { "kind": "default" } }
+        }))
+        .expect("machine fixture");
+        let before = machine.clone();
+        let replacement = MachineEndpointSubnet::try_new("10.210.2.0/24").expect("subnet");
+        let written_at = timestamp("2026-08-05T10:01:00Z");
+
+        let previous =
+            apply_local_subnet_repair(&machine_id, &mut machine, replacement.clone(), written_at)
+                .expect("builtin repair");
+
+        assert_eq!(
+            previous,
+            MachineEndpointSubnet::try_new("10.210.1.0/24").expect("subnet")
+        );
+        assert_eq!(machine.v, before.v);
+        assert_eq!(machine.cluster_id, before.cluster_id);
+        assert_eq!(machine.name, before.name);
+        assert_eq!(machine.lifecycle, before.lifecycle);
+        assert_eq!(machine.storage, before.storage);
+        let MachineTransport::Wireguard {
+            pubkey: before_key,
+            addr_v6: before_addr,
+            endpoint: before_endpoint,
+            ..
+        } = before.transport
+        else {
+            panic!("fixture is builtin WireGuard")
+        };
+        let MachineTransport::Wireguard {
+            pubkey,
+            addr_v6,
+            endpoint,
+            subnet_v4,
+        } = machine.transport
+        else {
+            panic!("repair preserves builtin WireGuard")
+        };
+        assert_eq!(pubkey, before_key);
+        assert_eq!(addr_v6, before_addr);
+        assert_eq!(endpoint, before_endpoint);
+        assert_eq!(subnet_v4, replacement);
+        assert_eq!(
+            machine.provenance,
+            OperatorWriteProvenance {
+                written_by: Principal::Machine { machine_id },
+                written_at,
+            }
+        );
     }
 
     #[test]

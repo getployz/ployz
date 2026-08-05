@@ -4,5 +4,10 @@
 
 pub mod commands;
 pub mod init;
+pub mod join_client;
 pub mod machine;
 pub mod mesh;
+pub mod remote;
+pub mod token;
+
+pub use join_client::{JoinDoorClient, JoinDoorClientError};

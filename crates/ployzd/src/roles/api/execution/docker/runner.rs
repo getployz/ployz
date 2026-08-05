@@ -1,14 +1,15 @@
 use super::labels::{self, MANAGED_LABEL, ManagedContainerLabelError};
 use super::network::{
-    ENDPOINT_NETWORK_NAME, ensure_endpoint_network, is_docker_object_missing,
-    read_endpoint_network_status, require_endpoint_network,
+    ENDPOINT_NETWORK_NAME, converge_endpoint_network, ensure_endpoint_network,
+    is_docker_object_missing, read_endpoint_network_status, require_endpoint_network,
 };
 use crate::network_mtu::{WireGuardMtuPolicy, resolve_wireguard_mtu};
 use crate::roles::api::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
     MachineContainerCreateError, MachineContainerListError, MachineContainerRemoveError,
     MachineContainerRestartError, MachineContainerRunner, MachineContainerStartError,
-    MachineContainerStopError, MachineContainerWaitError, MachineEndpointNetworkError,
+    MachineContainerStopError, MachineContainerWaitError, MachineEndpointNetworkConvergenceError,
+    MachineEndpointNetworkConvergenceOutcome, MachineEndpointNetworkError,
     MachineImageRemovalRunner, MachineLogQuery, MachineLogReader, MachineLogReaderError,
     MachineLogTail, MachineLogTimestamps, MachineRegistryImageResolveError,
     MachineVolumeRemoveError,
@@ -75,6 +76,27 @@ enum DockerHandle {
 }
 
 impl DockerManagedContainerRunner {
+    pub(crate) async fn converge_endpoint_network(
+        &self,
+        expected_subnet: &MachineEndpointSubnet,
+    ) -> Result<MachineEndpointNetworkConvergenceOutcome, MachineEndpointNetworkConvergenceError>
+    {
+        let docker = self.docker().await.map_err(|error| {
+            MachineEndpointNetworkConvergenceError::Inspect {
+                message: error.to_string(),
+            }
+        })?;
+        let endpoint_mtu =
+            resolve_wireguard_mtu(self.endpoint_mtu_policy, &self.endpoint_wg_ifname).await;
+        converge_endpoint_network(
+            docker,
+            &expected_subnet.as_string(),
+            &self.endpoint_bridge_ifname,
+            endpoint_mtu,
+        )
+        .await
+    }
+
     pub(crate) async fn remove_image(
         &self,
         image_identity: &OciDigest,

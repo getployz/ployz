@@ -4,9 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::corrosion::{
     ClusterDocument, ContainerDocument, MachineDocument, MachineStatusDocument, OperationDocument,
-    ServiceDocument, SourcePrincipalResolutionError,
+    Principal, ServiceDocument, SourcePrincipalResolutionError,
 };
-use crate::ids::{ContainerId, MachineRowId, OperationRowId, ServiceRowId};
+use crate::ids::{ContainerId, MachineRowId, OperationRowId, ServiceRowId, TokenId};
 
 /// The only supported major version of the v2 HTTP contract.
 pub const API_MAJOR: u16 = 1;
@@ -20,6 +20,17 @@ pub const LENSES_ROUTE: &str = "/lenses";
 /// The stable endpoint for writing machine one's initial authority rows.
 pub const FOUNDING_ROUTE: &str = "/founding";
 
+/// Stable endpoint for minting a show-once join token.
+pub const TOKEN_CREATE_ROUTE: &str = "/tokens/create";
+/// Stable endpoint for listing join-token metadata.
+pub const TOKEN_LIST_ROUTE: &str = "/tokens/list";
+/// Stable prefix for deleting one join-token row by id.
+pub const TOKEN_REVOKE_ROUTE_PREFIX: &str = "/tokens/revoke";
+/// Stable prefix for changing one machine's advertised WireGuard endpoint.
+pub const MACHINE_ENDPOINT_ROUTE_PREFIX: &str = "/machines/endpoint";
+/// The only route exposed by the public TLS join door.
+pub const JOIN_ROUTE: &str = "/join";
+
 /// A capability understood by this version of the public API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -28,6 +39,12 @@ pub enum KnownApiFeature {
     Founding,
     #[serde(rename = "v2.lenses")]
     Lenses,
+    #[serde(rename = "v2.join_tokens")]
+    JoinTokens,
+    #[serde(rename = "v2.machine_endpoint")]
+    MachineEndpoint,
+    #[serde(rename = "v2.join_door")]
+    JoinDoor,
 }
 
 impl KnownApiFeature {
@@ -37,13 +54,21 @@ impl KnownApiFeature {
         match self {
             Self::Founding => "v2.founding",
             Self::Lenses => "v2.lenses",
+            Self::JoinTokens => "v2.join_tokens",
+            Self::MachineEndpoint => "v2.machine_endpoint",
+            Self::JoinDoor => "v2.join_door",
         }
     }
 }
 
 /// Every capability this version of Core knows how to name.
-pub const KNOWN_API_FEATURES: &[KnownApiFeature] =
-    &[KnownApiFeature::Founding, KnownApiFeature::Lenses];
+pub const KNOWN_API_FEATURES: &[KnownApiFeature] = &[
+    KnownApiFeature::Founding,
+    KnownApiFeature::Lenses,
+    KnownApiFeature::JoinTokens,
+    KnownApiFeature::MachineEndpoint,
+    KnownApiFeature::JoinDoor,
+];
 
 /// An advertised capability, including names added by a newer machine.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -149,11 +174,22 @@ pub fn lens_watch_route(collection: LensCollection) -> String {
     format!("{}/watch", lens_route(collection))
 }
 
+/// Builds the exact token-row deletion route for one canonical id.
+#[must_use]
+pub fn token_revoke_route(token_id: &TokenId) -> String {
+    format!("{TOKEN_REVOKE_ROUTE_PREFIX}/{token_id}")
+}
+
 /// The exact public route shape, parsed without any daemon-local strings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum V2Route {
     Version,
     Founding,
+    TokenCreate,
+    TokenList,
+    TokenRevoke,
+    MachineEndpointSet,
+    Join,
     Lens(LensCollection),
     LensWatch(LensCollection),
 }
@@ -175,7 +211,26 @@ impl V2Route {
         if path == FOUNDING_ROUTE {
             return Some(Self::Founding);
         }
-
+        if path == TOKEN_CREATE_ROUTE {
+            return Some(Self::TokenCreate);
+        }
+        if path == TOKEN_LIST_ROUTE {
+            return Some(Self::TokenList);
+        }
+        if path == JOIN_ROUTE {
+            return Some(Self::Join);
+        }
+        if path == MACHINE_ENDPOINT_ROUTE_PREFIX {
+            return Some(Self::MachineEndpointSet);
+        }
+        if path
+            .strip_prefix(TOKEN_REVOKE_ROUTE_PREFIX)
+            .and_then(|suffix| suffix.strip_prefix('/'))
+            .and_then(|id| TokenId::try_new(id).ok())
+            .is_some()
+        {
+            return Some(Self::TokenRevoke);
+        }
         let collection_path = path
             .strip_prefix(LENSES_ROUTE)
             .and_then(|path| path.strip_prefix('/'))?;
@@ -195,6 +250,11 @@ impl V2Route {
         match self {
             Self::Version => VERSION_ROUTE.to_owned(),
             Self::Founding => FOUNDING_ROUTE.to_owned(),
+            Self::TokenCreate => TOKEN_CREATE_ROUTE.to_owned(),
+            Self::TokenList => TOKEN_LIST_ROUTE.to_owned(),
+            Self::TokenRevoke => TOKEN_REVOKE_ROUTE_PREFIX.to_owned(),
+            Self::MachineEndpointSet => MACHINE_ENDPOINT_ROUTE_PREFIX.to_owned(),
+            Self::Join => JOIN_ROUTE.to_owned(),
             Self::Lens(collection) => lens_route(collection),
             Self::LensWatch(collection) => lens_watch_route(collection),
         }
@@ -205,8 +265,45 @@ impl V2Route {
     pub const fn method(self) -> V2Method {
         match self {
             Self::Version | Self::Lens(_) | Self::LensWatch(_) => V2Method::Get,
-            Self::Founding => V2Method::Post,
+            Self::Founding
+            | Self::TokenCreate
+            | Self::TokenList
+            | Self::TokenRevoke
+            | Self::MachineEndpointSet
+            | Self::Join => V2Method::Post,
         }
+    }
+
+    /// Returns the capability that advertises this route.
+    #[must_use]
+    pub const fn feature(self) -> KnownApiFeature {
+        match self {
+            Self::Version | Self::Founding => KnownApiFeature::Founding,
+            Self::Lens(_) | Self::LensWatch(_) => KnownApiFeature::Lenses,
+            Self::TokenCreate | Self::TokenList | Self::TokenRevoke => KnownApiFeature::JoinTokens,
+            Self::MachineEndpointSet => KnownApiFeature::MachineEndpoint,
+            Self::Join => KnownApiFeature::JoinDoor,
+        }
+    }
+
+    /// Enforces that API-token principals are honored only by the join door.
+    #[must_use]
+    pub const fn accepts_principal(self, principal: &Principal) -> bool {
+        matches!(
+            (self, principal),
+            (Self::Join, Principal::ApiToken { .. })
+                | (
+                    Self::Version
+                        | Self::Founding
+                        | Self::TokenCreate
+                        | Self::TokenList
+                        | Self::TokenRevoke
+                        | Self::MachineEndpointSet
+                        | Self::Lens(_)
+                        | Self::LensWatch(_),
+                    Principal::Machine { .. } | Principal::Peer { .. }
+                )
+        )
     }
 }
 
