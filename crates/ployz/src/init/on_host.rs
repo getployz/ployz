@@ -46,15 +46,23 @@ pub async fn execute(command: InitCommand) -> Result<OnHostSuccess, OnHostInitEr
         return Err(OnHostInitError::RootRequired);
     }
 
+    let cloud = match &command.driver {
+        InitDriver::Cloud(token) => Some(CloudEnvelope::decode(token)?),
+        InitDriver::OnHost | InitDriver::SshTarget(_) | InitDriver::SshPeer(_) => None,
+    };
     let state = open_or_initialize_state()?;
     let canonical_resume = match inspect_linux_founding(&state, &mut runner)? {
         LinuxFoundingPreflight::NoOp { canonical_request } => {
+            validate_resume_driver(&canonical_request, &command.driver, cloud.as_ref())?;
             let request = canonical_request.request();
             return Ok(OnHostSuccess {
                 result: FoundingResult::NoOp,
                 cluster_name: request.cluster.name.clone(),
                 machine_name: request.machine.name.as_str().to_owned(),
                 storage: request.machine.storage,
+                cluster_id: request.cluster_id.clone(),
+                provider: request.cluster.provider,
+                machine_transport: request.machine.transport.clone(),
             });
         }
         LinuxFoundingPreflight::Refused {
@@ -65,10 +73,6 @@ pub async fn execute(command: InitCommand) -> Result<OnHostSuccess, OnHostInitEr
         }
         LinuxFoundingPreflight::Clean => None,
         LinuxFoundingPreflight::Resume { canonical_request } => canonical_request,
-    };
-    let cloud = match &command.driver {
-        InitDriver::Cloud(token) => Some(CloudEnvelope::decode(token)?),
-        InitDriver::OnHost | InitDriver::SshTarget(_) | InitDriver::SshPeer(_) => None,
     };
     if let Some(canonical) = canonical_resume.as_ref() {
         validate_resume_driver(canonical, &command.driver, cloud.as_ref())?;
@@ -143,6 +147,8 @@ pub async fn execute(command: InitCommand) -> Result<OnHostSuccess, OnHostInitEr
     let storage = request.machine.storage;
     let output_cluster_name = request.cluster.name.clone();
     let output_machine_name = request.machine.name.as_str().to_owned();
+    let output_provider = request.cluster.provider;
+    let output_machine_transport = request.machine.transport.clone();
     let founding = if let Some(cloud) = &cloud {
         let mut progress = CloudProgressReporter {
             envelope: cloud,
@@ -202,6 +208,9 @@ pub async fn execute(command: InitCommand) -> Result<OnHostSuccess, OnHostInitEr
         cluster_name: output_cluster_name,
         machine_name: output_machine_name,
         storage,
+        cluster_id,
+        provider: output_provider,
+        machine_transport: output_machine_transport,
     })
 }
 
@@ -455,6 +464,9 @@ pub struct OnHostSuccess {
     pub cluster_name: String,
     pub machine_name: String,
     pub storage: ployz_core::corrosion::MachineStorageSelection,
+    pub cluster_id: ployz_core::ids::ClusterId,
+    pub provider: ployz_core::corrosion::MeshProvider,
+    pub machine_transport: ployz_core::corrosion::MachineTransport,
 }
 
 #[derive(Debug, thiserror::Error)]

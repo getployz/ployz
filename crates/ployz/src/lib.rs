@@ -4,3 +4,5 @@
 
 pub mod commands;
 pub mod init;
+pub mod machine;
+pub mod mesh;

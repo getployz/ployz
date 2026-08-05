@@ -3,12 +3,17 @@
 mod cluster;
 mod evidence;
 mod exec;
+mod founding;
 mod machine;
 
 pub use cluster::{DindCluster, DindClusterSpec, DindRunId, sweep_managed_resources};
 pub use evidence::{capture_machine_evidence, evidence_dir};
 pub use exec::{
     ExecOutcome, exec_in_container, read_file_from_container, shell_quote, write_file_in_container,
+};
+pub use founding::{
+    ARTIFACT_ROOT, RELEASE_MANIFEST, corrosion_access, corrosion_query, env_value, exec_ok,
+    install_local_release_channel, render_release_manifest, require, write_release_manifest,
 };
 pub use machine::{DindMachine, MachineSpec};
 

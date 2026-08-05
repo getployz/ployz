@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use crate::commands::{InitCommand, InitDriver};
 use crate::init::orchestration::FoundingFailure;
+use crate::mesh::context::OperatorContextStore;
 
 pub mod cloud;
 pub mod http;
@@ -19,6 +20,7 @@ pub async fn execute(mut command: InitCommand) -> Result<(), InitExecutionError>
     interactive::resolve_answers(&mut command, terminal, &mut interactive::TerminalPrompt)?;
     match command.driver.clone() {
         InitDriver::SshTarget(target) => {
+            ssh::resolve_command_endpoint(&mut command).await?;
             let home = std::env::var_os("HOME")
                 .map(PathBuf::from)
                 .ok_or(InitExecutionError::MissingHome)?;
@@ -34,10 +36,13 @@ pub async fn execute(mut command: InitCommand) -> Result<(), InitExecutionError>
                 &target,
                 peer_name,
             )?;
-            key.run(&target, &command)?;
+            let handoff = key.run(&target, &command)?;
+            OperatorContextStore::new(ssh::default_config_home(&home))
+                .persist(&target, handoff, &key)?;
             Ok(())
         }
         InitDriver::OnHost | InitDriver::Cloud(_) | InitDriver::SshPeer(_) => {
+            let emit_ssh_handoff = matches!(&command.driver, InitDriver::SshPeer(_));
             match on_host::execute(command).await {
                 Ok(success) => {
                     print!(
@@ -49,6 +54,9 @@ pub async fn execute(mut command: InitCommand) -> Result<(), InitExecutionError>
                             &success.storage,
                         )
                     );
+                    if emit_ssh_handoff {
+                        print!("{}", presentation::ssh_context_handoff(&success)?);
+                    }
                     Ok(())
                 }
                 Err(on_host::OnHostInitError::Founding(FoundingFailure::Refused(refusal))) => Err(
@@ -71,6 +79,8 @@ pub enum InitExecutionError {
     MissingHome,
     #[error(transparent)]
     Ssh(#[from] ssh::SshInitError),
+    #[error(transparent)]
+    Context(#[from] crate::mesh::context::OperatorContextError),
     #[error("{0}")]
     Refused(String),
     #[error(transparent)]

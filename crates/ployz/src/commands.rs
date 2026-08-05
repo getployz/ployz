@@ -10,11 +10,23 @@ use ployz_core::founding::InitStorageChoice;
 use ployz_core::ids::PeerId;
 use ployz_core::network::{DEFAULT_ENDPOINT_SUPERNET, MachineEndpointSupernet, WireGuardPublicKey};
 use ployz_core::operation::RouteHostname;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     Telemetry(TelemetryCommand),
     Init(Box<InitCommand>),
+    Machine(MachineCommand),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineCommand {
+    List(MachineListCommand),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineListCommand {
+    pub target: Option<SshTarget>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,6 +129,31 @@ impl FromStr for SshTarget {
     }
 }
 
+impl fmt::Display for SshTarget {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl Serialize for SshTarget {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for SshTarget {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        value.parse().map_err(serde::de::Error::custom)
+    }
+}
+
 /// Public peer material carried across the already-authenticated SSH channel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DriverPeerArgs {
@@ -142,6 +179,11 @@ pub fn parse_command(args: impl IntoIterator<Item = String>) -> Result<Command, 
             .map(Box::new)
             .map(Command::Init)
             .map_err(clap_value_error),
+        CommandCli::Machine { command } => Ok(Command::Machine(match command {
+            MachineCli::List(args) => MachineCommand::List(MachineListCommand {
+                target: args.target,
+            }),
+        })),
     }
 }
 
@@ -174,6 +216,25 @@ enum CommandCli {
         #[command(subcommand)]
         command: TelemetryCli,
     },
+    /// Inspect and manage cluster machines.
+    Machine {
+        #[command(subcommand)]
+        command: MachineCli,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum MachineCli {
+    /// List current machines.
+    #[command(name = "ls")]
+    List(MachineListArgs),
+}
+
+#[derive(Debug, Args)]
+struct MachineListArgs {
+    /// Select the cluster founded through this SSH target.
+    #[arg(long)]
+    target: Option<SshTarget>,
 }
 
 #[derive(Debug, Args)]
@@ -362,6 +423,22 @@ mod tests {
     }
 
     #[test]
+    fn machine_list_parses_with_optional_explicit_target() {
+        assert_eq!(
+            parse(&["machine", "ls"]).expect("machine list parses"),
+            Command::Machine(MachineCommand::List(MachineListCommand { target: None }))
+        );
+        assert_eq!(
+            parse(&["machine", "ls", "--target", "root@cluster.example"])
+                .expect("targeted machine list parses"),
+            Command::Machine(MachineCommand::List(MachineListCommand {
+                target: Some("root@cluster.example".parse().expect("SSH target")),
+            }))
+        );
+        assert!(parse(&["machine", "ls", "root@cluster.example"]).is_err());
+    }
+
+    #[test]
     fn init_defaults_are_working_and_noninteractive() {
         let Command::Init(command) = parse(&["init", "root@203.0.113.7"]).expect("init parses")
         else {
@@ -502,6 +579,20 @@ mod tests {
         }
         let hostname: SshTarget = "root@machine.example".parse().expect("hostname target");
         assert_eq!(hostname.inferred_wireguard_endpoint(), None);
+    }
+
+    #[test]
+    fn ssh_target_json_is_the_validated_cli_wire_string() {
+        let target: SshTarget = "root@machine.example".parse().expect("target");
+        assert_eq!(
+            serde_json::to_string(&target).expect("target JSON"),
+            "\"root@machine.example\""
+        );
+        assert_eq!(
+            serde_json::from_str::<SshTarget>("\"root@machine.example\"").expect("decoded target"),
+            target
+        );
+        assert!(serde_json::from_str::<SshTarget>("\"machine.example\"").is_err());
     }
 
     #[test]
