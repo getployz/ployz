@@ -13,6 +13,7 @@ pub struct BuiltinWireguardPorts {
     pub(super) listen: NonZeroU16,
     pub(super) corrosion_gossip: NonZeroU16,
     pub(super) api_http: NonZeroU16,
+    pub(super) join_door_https: NonZeroU16,
 }
 
 impl BuiltinWireguardPorts {
@@ -20,6 +21,7 @@ impl BuiltinWireguardPorts {
         listen: u16,
         corrosion_gossip: u16,
         api_http: u16,
+        join_door_https: u16,
     ) -> Result<Self, BuiltinWireguardConfigError> {
         let Some(listen) = NonZeroU16::new(listen) else {
             return Err(BuiltinWireguardConfigError::ZeroListenPort);
@@ -30,10 +32,14 @@ impl BuiltinWireguardPorts {
         let Some(api_http) = NonZeroU16::new(api_http) else {
             return Err(BuiltinWireguardConfigError::ZeroApiHttpPort);
         };
+        let Some(join_door_https) = NonZeroU16::new(join_door_https) else {
+            return Err(BuiltinWireguardConfigError::ZeroJoinDoorHttpsPort);
+        };
         Ok(Self {
             listen,
             corrosion_gossip,
             api_http,
+            join_door_https,
         })
     }
 }
@@ -133,6 +139,8 @@ pub enum BuiltinWireguardConfigError {
     ZeroCorrosionGossipPort,
     #[error("API HTTP port must not be zero")]
     ZeroApiHttpPort,
+    #[error("join door HTTPS port must not be zero")]
+    ZeroJoinDoorHttpsPort,
     #[error("WireGuard MTU must be between 1280 and 9000, got {mtu}")]
     InvalidMtu { mtu: u16 },
     #[error("host command timeout must not be zero")]

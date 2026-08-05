@@ -1,25 +1,95 @@
 use super::*;
 use crate::HostRunnerCommandOutput;
 use base64::Engine as _;
+use ployz_core::build::railpack_pins;
+use std::path::PathBuf;
 
 #[test]
-fn founding_enables_only_implemented_roles() {
-    assert_eq!(
-        founding_role_disposition(PloyzdRole::Keeper),
-        FoundingRoleDisposition::Enabled
+fn founding_environment_has_the_public_join_door_settings() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let state = FoundingStateDirectory::initialize(directory.path().join("state"))
+        .expect("state initializes");
+    let prepared = prepare_plain_founding(
+        &state,
+        fixture_artifacts(),
+        RecordingRunner {
+            calls: Vec::new(),
+            allow_facts: true,
+        },
     );
-    assert_eq!(
-        founding_role_disposition(PloyzdRole::Api),
-        FoundingRoleDisposition::Enabled
+
+    let environment = String::from_utf8(
+        prepared
+            .effects
+            .env_contents(false)
+            .expect("environment renders"),
+    )
+    .expect("environment is UTF-8");
+
+    for setting in [
+        "PLOYZ_API_DOOR_LISTEN_ADDR=[::]:2021",
+        "PLOYZ_API_DOOR_PRIVATE_KEY_PATH=/var/lib/ployz/door.key",
+        "PLOYZ_API_DOOR_CERTIFICATE_PATH=/var/lib/ployz/door.crt",
+        "PLOYZ_API_DOOR_FINGERPRINT_PATH=/var/lib/ployz/door.fingerprint",
+        "PLOYZ_API_JOIN_SUBSTRATE_PATH=/var/lib/ployz/join-substrate.json",
+    ] {
+        assert!(
+            environment.lines().any(|line| line == setting),
+            "missing founding setting {setting:?} in {environment:?}"
+        );
+    }
+    assert!(!environment.contains("PLOYZ_JOIN_DOOR_PORT="));
+}
+
+#[test]
+fn founding_persists_the_complete_join_substrate_contract() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let state = FoundingStateDirectory::initialize(directory.path().join("state"))
+        .expect("state initializes");
+    let artifacts = fixture_artifacts();
+    let expected_artifacts = vec![
+        artifacts.ployzd.clone(),
+        artifacts.ebpf_bytecode.clone(),
+        artifacts.ebpf_ctl.clone(),
+        artifacts.corrosion.clone(),
+        artifacts.corrosion_schema.clone(),
+        artifacts.railpack.clone(),
+    ];
+    let prepared = prepare_plain_founding(
+        &state,
+        artifacts,
+        RecordingRunner {
+            calls: Vec::new(),
+            allow_facts: true,
+        },
     );
-    assert_eq!(
-        founding_role_disposition(PloyzdRole::Gateway),
-        FoundingRoleDisposition::DisabledAndInactive
-    );
-    assert_eq!(
-        founding_role_disposition(PloyzdRole::Dns),
-        FoundingRoleDisposition::DisabledAndInactive
-    );
+
+    prepared
+        .effects
+        .persist_join_substrate()
+        .expect("join substrate persists");
+
+    let path = state.path().join(JOIN_SUBSTRATE_FILE);
+    let substrate: ployz_core::join::JoinMachineSubstrate =
+        serde_json::from_slice(&fs::read(&path).expect("join substrate bytes"))
+            .expect("Core join substrate round-trips");
+    assert_eq!(substrate.ployz_version().as_str(), "1");
+    assert_eq!(substrate.corrosion_version(), "corrosion 0.2.0-beta.0");
+    assert_eq!(substrate.artifacts(), expected_artifacts);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        assert_eq!(
+            fs::metadata(path)
+                .expect("join substrate metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
 }
 
 #[derive(Debug)]
@@ -715,7 +785,12 @@ fn fixture_artifacts() -> ReleaseArtifacts {
         ebpf_ctl: spec("ebpf-ctl", "/usr/local/bin/ployz-ebpf-ctl"),
         corrosion: spec("corrosion", "/usr/local/bin/corrosion"),
         corrosion_schema: spec("schema", "/usr/local/lib/ployz/corrosion-schema-v1.sql"),
-        railpack: spec("railpack", "/usr/local/bin/railpack"),
+        railpack: spec(
+            "railpack",
+            railpack_pins()
+                .expect("checked-in Railpack pins")
+                .install_path(),
+        ),
     }
 }
 

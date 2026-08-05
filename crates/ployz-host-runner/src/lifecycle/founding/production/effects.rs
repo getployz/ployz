@@ -1,21 +1,17 @@
 use super::*;
 
 impl<R: HostRunnerCommandRunner> LinuxFoundingHostEffects<R> {
-    fn profile(&mut self) -> Result<&HostPlatformProfile, FailureMessage> {
-        if self.profile.is_none() {
-            let release = self.runner.read_os_release()?;
-            self.profile = Some(detect_host_platform(&release).map_err(failure)?);
-        }
-        Ok(self.profile.as_ref().expect("profile was populated"))
+    fn substrate(&mut self) -> LinuxSubstrate<'_, R> {
+        LinuxSubstrate::new(
+            self.state.path(),
+            &mut self.runner,
+            &mut self.profile,
+            &self.supervisor_directories,
+        )
     }
 
-    fn require(&mut self, program: &str, args: &[&str]) -> Result<(), FailureMessage> {
-        let output = self.runner.command(program, args)?;
-        if output.success {
-            Ok(())
-        } else {
-            Err(failure(output.failure))
-        }
+    fn profile(&mut self) -> Result<HostPlatformProfile, FailureMessage> {
+        Ok(self.substrate().profile()?.clone())
     }
 
     fn install_artifact(
@@ -23,37 +19,44 @@ impl<R: HostRunnerCommandRunner> LinuxFoundingHostEffects<R> {
         kind: ArtifactKind,
         spec: &ployz_core::install::InstallArtifactSpec,
     ) -> Result<(), FailureMessage> {
-        let target = artifact_target(kind, spec).map_err(failure)?;
-        let verified = match target.source_view() {
-            ArtifactSourceView::LocalPath(path) => {
-                verify_artifact_file(path, &target.digest).map_err(failure)?
-            }
-            ArtifactSourceView::RemoteUrl(url) => {
-                let downloads = self.state.path().join("downloads");
-                acquire_remote_artifact_content_addressed(
-                    url,
-                    &target.digest,
-                    &downloads,
-                    |staged| self.runner.download(url, staged),
-                )
-                .map_err(failure)?
-            }
-        };
-        install_verified_artifact(&verified, &target).map_err(failure)?;
-        Ok(())
+        self.substrate().install_artifact(kind, spec)
     }
 
-    fn supervisor_backend(&mut self) -> Result<SupervisorBackend, FailureMessage> {
-        Ok(self.profile()?.supervisor().into())
+    fn join_substrate(&self) -> Result<JoinMachineSubstrate, FailureMessage> {
+        let ployz_version =
+            ExactPloyzVersion::try_new(self.artifacts.ployzd.version.as_str()).map_err(failure)?;
+        JoinMachineSubstrate::try_new(
+            ployz_version,
+            self.corrosion_embedded_version.clone(),
+            vec![
+                self.artifacts.ployzd.clone(),
+                self.artifacts.ebpf_bytecode.clone(),
+                self.artifacts.ebpf_ctl.clone(),
+                self.artifacts.corrosion.clone(),
+                self.artifacts.corrosion_schema.clone(),
+                self.artifacts.railpack.clone(),
+            ],
+        )
+        .map_err(failure)
     }
 
-    fn env_contents(&self, include_bootstrap: bool) -> Result<Vec<u8>, FailureMessage> {
+    pub(super) fn persist_join_substrate(&self) -> Result<(), FailureMessage> {
+        let bytes = serde_json::to_vec_pretty(&self.join_substrate()?).map_err(failure)?;
+        write_durable_file(
+            self.state.path(),
+            JOIN_SUBSTRATE_FILE,
+            FileMode::Secret0600,
+            &bytes,
+        )
+    }
+
+    pub(super) fn env_contents(&self, include_bootstrap: bool) -> Result<Vec<u8>, FailureMessage> {
         let request = self.request.request();
         let MachineTransport::Wireguard { addr_v6, .. } = &request.machine.transport else {
             return Err(failure("founding machine transport is not WireGuard"));
         };
         let mut env = format!(
-            "PLOYZ_CORROSION_API_ADDR=127.0.0.1:{CORROSION_API_PORT}\nPLOYZ_CORROSION_BEARER_TOKEN={}\nPLOYZ_CLUSTER_ID={}\nPLOYZ_MACHINE_ID={}\nPLOYZ_API_LISTEN_ADDR=[{addr_v6}]:{API_PORT}\nPLOYZ_BUILD={}\nPLOYZ_WIREGUARD_PRIVATE_KEY_PATH={}/{}\nPLOYZ_CORROSION_VERSION={}\n",
+            "PLOYZ_CORROSION_API_ADDR=127.0.0.1:{CORROSION_API_PORT}\nPLOYZ_CORROSION_BEARER_TOKEN={}\nPLOYZ_CLUSTER_ID={}\nPLOYZ_MACHINE_ID={}\nPLOYZ_API_LISTEN_ADDR=[{addr_v6}]:{API_PORT}\nPLOYZ_API_DOOR_LISTEN_ADDR=[::]:{JOIN_DOOR_PORT}\nPLOYZ_API_DOOR_PRIVATE_KEY_PATH={DOOR_PRIVATE_KEY_PATH}\nPLOYZ_API_DOOR_CERTIFICATE_PATH={DOOR_CERTIFICATE_PATH}\nPLOYZ_API_DOOR_FINGERPRINT_PATH={DOOR_FINGERPRINT_PATH}\nPLOYZ_API_JOIN_SUBSTRATE_PATH={JOIN_SUBSTRATE_PATH}\nPLOYZ_BUILD={}\nPLOYZ_WIREGUARD_PRIVATE_KEY_PATH={}/{}\nPLOYZ_CORROSION_VERSION={}\n",
             self.corrosion_token,
             request.cluster_id,
             request.machine_id,
@@ -103,38 +106,7 @@ impl<R: HostRunnerCommandRunner> FoundingHostEffects for LinuxFoundingHostEffect
     }
 
     fn ensure_docker(&mut self) -> Result<(), FailureMessage> {
-        if !self.runner.docker_is_installed() {
-            let install = self.profile()?.docker_install();
-            match install {
-                crate::DockerInstall::GetDocker => {
-                    let script = self.state.path().join("get-docker.sh");
-                    self.runner.download("https://get.docker.com", &script)?;
-                    self.require("sh", &[script.to_string_lossy().as_ref()])?;
-                }
-                crate::DockerInstall::AlpinePackages => {
-                    self.require("apk", &["add", "docker"])?;
-                }
-                crate::DockerInstall::ArchPackages => {
-                    self.require("pacman", &["--noconfirm", "-S", "docker"])?;
-                }
-                crate::DockerInstall::SusePackages => {
-                    self.require("zypper", &["--non-interactive", "install", "docker"])?;
-                }
-                crate::DockerInstall::AmazonPackages => {
-                    self.require("dnf", &["install", "-y", "docker"])?;
-                }
-                crate::DockerInstall::RhelRepositoryFile
-                | crate::DockerInstall::CentosRepositoryFile => {
-                    self.require("dnf", &["install", "-y", "docker-ce"])?;
-                }
-            }
-        }
-        let backend = self.supervisor_backend()?;
-        for (program, args) in backend.docker_commands(SupervisorChange::InstallAndStart) {
-            let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
-            self.require(program, &refs)?;
-        }
-        self.runner.docker_info()
+        self.substrate().ensure_docker()
     }
 
     fn ensure_machine_identity_and_wireguard(&mut self) -> Result<(), FailureMessage> {
@@ -202,7 +174,7 @@ impl<R: HostRunnerCommandRunner> FoundingHostEffects for LinuxFoundingHostEffect
                         "ZFS founding request has no retained pool selection",
                     ));
                 };
-                let profile = self.profile()?.clone();
+                let profile = self.profile()?;
                 prepare_storage(
                     &mut self.runner,
                     &profile,
@@ -221,6 +193,7 @@ impl<R: HostRunnerCommandRunner> FoundingHostEffects for LinuxFoundingHostEffect
         let MachineTransport::Wireguard { addr_v6, .. } = &request.machine.transport else {
             return Err(failure("founding machine transport is not WireGuard"));
         };
+        self.persist_join_substrate()?;
         write_durable_file(
             self.state.path(),
             CORROSION_TOKEN_FILE,
@@ -235,21 +208,13 @@ impl<R: HostRunnerCommandRunner> FoundingHostEffects for LinuxFoundingHostEffect
         )?;
         let subscriptions = self.state.path().join("subscriptions");
         fs::create_dir_all(&subscriptions).map_err(failure)?;
-        let corrosion = format!(
-            "[db]\npath = {db:?}\nschema_paths = [{schema:?}]\nsubscriptions_path = {subscriptions:?}\n\n[gossip]\naddr = {gossip:?}\nbootstrap = []\nplaintext = true\nmax_mtu = 1232\n\n[api]\naddr = {api:?}\nauthz.bearer-token = {token:?}\n\n[admin]\npath = {admin:?}\n",
-            db = self.state.path().join("corrosion.db").display().to_string(),
-            schema = self.artifacts.corrosion_schema.install_path.as_str(),
-            subscriptions = subscriptions.display().to_string(),
-            gossip = format!("[{addr_v6}]:{CORROSION_GOSSIP_PORT}"),
-            api = format!("127.0.0.1:{CORROSION_API_PORT}"),
-            token = self.corrosion_token,
-            admin = self
-                .state
-                .path()
-                .join("corrosion-admin.sock")
-                .display()
-                .to_string(),
-        );
+        let corrosion = render_corrosion_config(CorrosionConfig {
+            state: self.state.path(),
+            schema_path: self.artifacts.corrosion_schema.install_path.as_str(),
+            gossip_addr: *addr_v6,
+            bootstrap: CorrosionBootstrap::Founder,
+            bearer_token: &self.corrosion_token,
+        });
         write_durable_file(
             self.state.path(),
             CORROSION_CONFIG_FILE,
@@ -292,60 +257,21 @@ impl<R: HostRunnerCommandRunner> FoundingHostEffects for LinuxFoundingHostEffect
     }
 
     fn restart_and_verify_docker_configuration(&mut self) -> Result<(), FailureMessage> {
-        let backend = self.supervisor_backend()?;
-        for (program, args) in backend.docker_commands(SupervisorChange::Restart) {
-            let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
-            self.require(program, &refs)?;
-        }
-        self.runner.docker_info()
+        self.substrate().restart_docker_and_verify()
     }
 
     fn install_units_and_enable_ready_roles(&mut self) -> Result<(), FailureMessage> {
-        let backend = self.supervisor_backend()?;
         let ployzd =
             artifact_target(ArtifactKind::Ployzd, &self.artifacts.ployzd).map_err(failure)?;
         let environment =
             PloyzdRoleEnvironmentFile::new(self.state.path().join(ENV_FILE)).map_err(failure)?;
-        for role in [
-            PloyzdRole::Keeper,
-            PloyzdRole::Api,
-            PloyzdRole::Gateway,
-            PloyzdRole::Dns,
-        ] {
-            let spec = SupervisorUnitSpec::PloyzdRole {
-                role,
-                artifact: ployzd.clone(),
-                environment_file: environment.clone(),
-            };
-            let rendered = backend.render(&spec).map_err(failure)?;
-            write_durable_file(
-                self.supervisor_directories.directory(backend),
-                rendered.file_name(),
-                FileMode::Executable0755,
-                rendered.contents().as_bytes(),
-            )?;
-            let target = spec.target();
-            let changes: &[SupervisorChange] = match founding_role_disposition(role) {
-                FoundingRoleDisposition::Enabled => &[SupervisorChange::Enable],
-                FoundingRoleDisposition::DisabledAndInactive => {
-                    &[SupervisorChange::Disable, SupervisorChange::Stop]
-                }
-            };
-            for change in changes {
-                for (program, args) in backend.commands(*change, &target) {
-                    let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
-                    self.require(program, &refs)?;
-                }
-            }
-        }
-        install_corrosion_unit(
-            backend,
-            &self.supervisor_directories,
-            self.state.path().join(CORROSION_CONFIG_FILE),
-        )?;
-        for (program, args) in corrosion_commands(backend, CorrosionServiceChange::Enable) {
-            let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
-            self.require(program, &refs)?;
+        let corrosion_config = self.state.path().join(CORROSION_CONFIG_FILE);
+        {
+            let mut substrate = self.substrate();
+            substrate.install_ployzd_units(&ployzd, &environment)?;
+            substrate
+                .install_corrosion_unit(&corrosion_config, CorrosionUnitOrdering::AfterKeeper)?;
+            substrate.change_corrosion_service(CorrosionServiceChange::Enable)?;
         }
         Ok(())
     }
@@ -355,12 +281,8 @@ impl<R: HostRunnerCommandRunner> FoundingHostEffects for LinuxFoundingHostEffect
     }
 
     fn start_corrosion(&mut self) -> Result<(), FailureMessage> {
-        let backend = self.supervisor_backend()?;
-        for (program, args) in corrosion_commands(backend, CorrosionServiceChange::Restart) {
-            let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
-            self.require(program, &refs)?;
-        }
-        Ok(())
+        self.substrate()
+            .change_corrosion_service(CorrosionServiceChange::Restart)
     }
 
     fn start_api_with_bootstrap(&mut self) -> Result<(), FailureMessage> {
@@ -377,7 +299,8 @@ impl<R: HostRunnerCommandRunner> FoundingHostEffects for LinuxFoundingHostEffect
         let PeerTransport::Wireguard { pubkey, .. } = &document.transport else {
             return Err(failure("founding driver transport is not WireGuard"));
         };
-        for _ in 0..30 {
+        let deadline = Instant::now() + DRIVER_PEER_CONVERGENCE_TIMEOUT;
+        loop {
             let output = self.runner.command("wg", &["show", "ployz0", "peers"])?;
             if output.success
                 && output
@@ -387,11 +310,15 @@ impl<R: HostRunnerCommandRunner> FoundingHostEffects for LinuxFoundingHostEffect
             {
                 return Ok(());
             }
+            if Instant::now() >= deadline {
+                break;
+            }
             thread::sleep(Duration::from_secs(1));
         }
-        Err(failure(
-            "Keeper did not converge the founding driver peer within 30 seconds",
-        ))
+        Err(failure(format!(
+            "Keeper did not converge the founding driver peer within {} seconds",
+            DRIVER_PEER_CONVERGENCE_TIMEOUT.as_secs()
+        )))
     }
 
     fn remove_bootstrap_credential(&mut self) -> Result<(), FailureMessage> {
@@ -415,12 +342,8 @@ impl<R: HostRunnerCommandRunner> FoundingHostEffects for LinuxFoundingHostEffect
 
 impl<R: HostRunnerCommandRunner> LinuxFoundingHostEffects<R> {
     fn restart_role(&mut self, role: PloyzdRole) -> Result<(), FailureMessage> {
-        let backend = self.supervisor_backend()?;
         let target = crate::SupervisorUnitTarget::PloyzdRole(role);
-        for (program, args) in backend.commands(SupervisorChange::Restart, &target) {
-            let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
-            self.require(program, &refs)?;
-        }
-        Ok(())
+        self.substrate()
+            .run_supervisor(crate::SupervisorChange::Restart, &target)
     }
 }

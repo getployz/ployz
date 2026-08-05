@@ -2,7 +2,8 @@
 
 use ployz_core::corrosion::{
     ClusterDocument, MachineDocument, MachineStatusDocument, NamedReadReport, PeerDocument,
-    Principal, SqliteParameter, Statement, StoredRow, read_named_roster_rows, read_rows,
+    Principal, SqliteParameter, Statement, StoredRow, TransactionResponse, TransactionResult,
+    read_named_roster_rows, read_rows,
 };
 use ployz_core::ids::{ClusterId, MachineRowId};
 
@@ -88,6 +89,7 @@ impl KeeperCorrosion {
     pub(super) async fn rewrite_local_machine(
         &self,
         machine_id: &MachineRowId,
+        observed_document: &str,
         document: &MachineDocument,
     ) -> Result<(), KeeperStoreError> {
         if machine_id != &self.local_machine_id
@@ -104,14 +106,55 @@ impl KeeperCorrosion {
                 detail: source.to_string(),
             }
         })?;
-        self.execute(Statement::with_params(
-            "UPDATE machines SET document = ? WHERE id = ?",
-            vec![
-                SqliteParameter::Text(encoded),
-                SqliteParameter::Text(self.local_machine_id.as_str().to_owned()),
-            ],
-        ))
-        .await
+        let response = self
+            .client
+            .execute(&[local_machine_repair_statement(
+                &self.local_machine_id,
+                observed_document,
+                encoded,
+            )])
+            .await?;
+        require_local_machine_repair(&self.local_machine_id, &response)
+    }
+}
+
+fn local_machine_repair_statement(
+    machine_id: &MachineRowId,
+    observed_document: &str,
+    replacement_document: String,
+) -> Statement {
+    Statement::with_params(
+        "UPDATE machines SET document = ? WHERE id = ? AND document = ?",
+        vec![
+            SqliteParameter::Text(replacement_document),
+            SqliteParameter::Text(machine_id.as_str().to_owned()),
+            SqliteParameter::Text(observed_document.to_owned()),
+        ],
+    )
+}
+
+fn require_local_machine_repair(
+    machine_id: &MachineRowId,
+    response: &TransactionResponse,
+) -> Result<(), KeeperStoreError> {
+    match response.results.as_slice() {
+        [TransactionResult::Success(success)] if success.rows_affected == 1 => Ok(()),
+        [TransactionResult::Success(success)] if success.rows_affected == 0 => {
+            Err(KeeperStoreError::StaleLocalMachineRepair {
+                machine_id: machine_id.clone(),
+            })
+        }
+        [TransactionResult::Success(success)] => {
+            Err(KeeperStoreError::UnexpectedLocalMachineRepairCount {
+                machine_id: machine_id.clone(),
+                rows_affected: success.rows_affected,
+            })
+        }
+        [TransactionResult::Error(_)] | [] | [_, _, ..] => {
+            Err(KeeperStoreError::UnexpectedLocalMachineRepairResult {
+                machine_id: machine_id.clone(),
+            })
+        }
     }
 }
 
@@ -211,6 +254,19 @@ pub(super) enum KeeperStoreError {
     InvalidLocalMachineRepairOwnership,
     #[error("Keeper could not encode its repaired local machine row: {detail}")]
     EncodeLocalMachineRepair { detail: String },
+    #[error(
+        "Keeper subnet repair evidence for local machine {machine_id} became stale before the write"
+    )]
+    StaleLocalMachineRepair { machine_id: MachineRowId },
+    #[error(
+        "Keeper subnet repair for local machine {machine_id} changed an unexpected {rows_affected} rows"
+    )]
+    UnexpectedLocalMachineRepairCount {
+        machine_id: MachineRowId,
+        rows_affected: usize,
+    },
+    #[error("Keeper subnet repair for local machine {machine_id} returned an unexpected result")]
+    UnexpectedLocalMachineRepairResult { machine_id: MachineRowId },
 }
 
 #[cfg(test)]
@@ -239,5 +295,48 @@ mod tests {
                 )],
             )
         );
+    }
+
+    #[test]
+    fn local_machine_repair_is_fenced_by_the_exact_observed_document() {
+        let machine_id = MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAW").expect("machine id");
+        let observed = r#"{"lifecycle":"active","endpoint":"192.0.2.1:51820"}"#;
+        let replacement =
+            r#"{"lifecycle":"active","endpoint":"192.0.2.1:51820","subnet":"10.210.2.0/24"}"#;
+
+        assert_eq!(
+            local_machine_repair_statement(&machine_id, observed, replacement.to_owned()),
+            Statement::with_params(
+                "UPDATE machines SET document = ? WHERE id = ? AND document = ?",
+                vec![
+                    SqliteParameter::Text(replacement.to_owned()),
+                    SqliteParameter::Text(machine_id.as_str().to_owned()),
+                    SqliteParameter::Text(observed.to_owned()),
+                ],
+            )
+        );
+    }
+
+    #[test]
+    fn changed_machine_row_is_not_reported_as_repaired() {
+        let machine_id = MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAW").expect("machine id");
+        let response = TransactionResponse {
+            results: vec![TransactionResult::Success(
+                ployz_core::corrosion::TransactionSuccess {
+                    rows_affected: 0,
+                    time: 0.01,
+                },
+            )],
+            time: 0.02,
+            version: None,
+            actor_id: None,
+        };
+
+        assert!(matches!(
+            require_local_machine_repair(&machine_id, &response),
+            Err(KeeperStoreError::StaleLocalMachineRepair {
+                machine_id: stale_machine_id,
+            }) if stale_machine_id == machine_id
+        ));
     }
 }

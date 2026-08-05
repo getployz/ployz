@@ -8,6 +8,8 @@ use clap::{Args, Parser, Subcommand};
 use ployz_core::corrosion::{AutomaticHostnameMode, StorageMode};
 use ployz_core::founding::InitStorageChoice;
 use ployz_core::ids::PeerId;
+use ployz_core::join::{JoinBlob, JoinTokenTtlSeconds};
+use ployz_core::machine::MachineName;
 use ployz_core::network::{DEFAULT_ENDPOINT_SUPERNET, MachineEndpointSupernet, WireGuardPublicKey};
 use ployz_core::operation::RouteHostname;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -17,15 +19,68 @@ pub enum Command {
     Telemetry(TelemetryCommand),
     Init(Box<InitCommand>),
     Machine(MachineCommand),
+    Token(TokenCommand),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MachineCommand {
     List(MachineListCommand),
+    EndpointSet(MachineEndpointSetCommand),
+    Join(MachineJoinCommand),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MachineListCommand {
+    pub target: Option<SshTarget>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineEndpointSetCommand {
+    pub machine: MachineName,
+    pub endpoint: SocketAddr,
+    pub target: Option<SshTarget>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct MachineJoinCommand {
+    pub blob: JoinBlob,
+    pub storage: InitStorageChoice,
+    pub wireguard_endpoint: Option<SocketAddr>,
+}
+
+impl fmt::Debug for MachineJoinCommand {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MachineJoinCommand")
+            .field("blob", &self.blob)
+            .field("storage", &self.storage)
+            .field("wireguard_endpoint", &self.wireguard_endpoint)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TokenCommand {
+    Create(TokenCreateCommand),
+    List(TokenListCommand),
+    Revoke(TokenRevokeCommand),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TokenCreateCommand {
+    pub ttl: JoinTokenTtlSeconds,
+    pub target: Option<SshTarget>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TokenListCommand {
+    pub include_expired: bool,
+    pub target: Option<SshTarget>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TokenRevokeCommand {
+    pub token_id: ployz_core::ids::TokenId,
     pub target: Option<SshTarget>,
 }
 
@@ -183,6 +238,37 @@ pub fn parse_command(args: impl IntoIterator<Item = String>) -> Result<Command, 
             MachineCli::List(args) => MachineCommand::List(MachineListCommand {
                 target: args.target,
             }),
+            MachineCli::Endpoint { command } => match command {
+                MachineEndpointCli::Set(args) => {
+                    MachineCommand::EndpointSet(MachineEndpointSetCommand {
+                        machine: MachineName::try_new(args.machine)
+                            .map_err(|error| clap_value_error(error.to_string()))?,
+                        endpoint: args.endpoint,
+                        target: args.target,
+                    })
+                }
+            },
+            MachineCli::Join(args) => MachineCommand::Join(MachineJoinCommand {
+                blob: args.blob,
+                storage: args
+                    .storage
+                    .map_or(InitStorageChoice::Automatic, |value| value.0),
+                wireguard_endpoint: args.wireguard_endpoint,
+            }),
+        })),
+        CommandCli::Token { command } => Ok(Command::Token(match command {
+            TokenCli::Create(args) => TokenCommand::Create(TokenCreateCommand {
+                ttl: parse_ttl(&args.ttl).map_err(clap_value_error)?,
+                target: args.target,
+            }),
+            TokenCli::List(args) => TokenCommand::List(TokenListCommand {
+                include_expired: args.all,
+                target: args.target,
+            }),
+            TokenCli::Revoke(args) => TokenCommand::Revoke(TokenRevokeCommand {
+                token_id: args.token_id,
+                target: args.target,
+            }),
         })),
     }
 }
@@ -221,6 +307,11 @@ enum CommandCli {
         #[command(subcommand)]
         command: MachineCli,
     },
+    /// Mint, inspect, and revoke join tokens.
+    Token {
+        #[command(subcommand)]
+        command: TokenCli,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -228,6 +319,78 @@ enum MachineCli {
     /// List current machines.
     #[command(name = "ls")]
     List(MachineListArgs),
+    /// Manage a machine's public WireGuard endpoint.
+    Endpoint {
+        #[command(subcommand)]
+        command: MachineEndpointCli,
+    },
+    /// Join this Linux machine to a cluster through its public token door.
+    Join(MachineJoinArgs),
+}
+
+#[derive(Debug, Subcommand)]
+enum MachineEndpointCli {
+    /// Record the endpoint token creation will publish in join blobs.
+    Set(MachineEndpointSetArgs),
+}
+
+#[derive(Debug, Args)]
+struct MachineEndpointSetArgs {
+    machine: String,
+    #[arg(value_parser = parse_nonzero_socket_addr)]
+    endpoint: SocketAddr,
+    /// Select the cluster founded through this SSH target.
+    #[arg(long)]
+    target: Option<SshTarget>,
+}
+
+#[derive(Debug, Args)]
+struct MachineJoinArgs {
+    blob: JoinBlob,
+    /// Machine storage selection. Automatic applies the cluster default and host eligibility.
+    #[arg(long)]
+    storage: Option<StorageArg>,
+    /// Public WireGuard endpoint. Omit for a roaming/NAT'd machine.
+    #[arg(long, value_parser = parse_nonzero_socket_addr)]
+    wireguard_endpoint: Option<SocketAddr>,
+}
+
+#[derive(Debug, Subcommand)]
+enum TokenCli {
+    /// Mint a show-once join credential.
+    Create(TokenCreateArgs),
+    /// List live join tokens.
+    List(TokenListArgs),
+    /// Revoke a join token by deleting its row.
+    Revoke(TokenRevokeArgs),
+}
+
+#[derive(Debug, Args)]
+struct TokenCreateArgs {
+    /// Token lifetime, expressed as whole seconds, minutes, hours, or days.
+    #[arg(long, default_value = "24h")]
+    ttl: String,
+    /// Select the cluster founded through this SSH target.
+    #[arg(long)]
+    target: Option<SshTarget>,
+}
+
+#[derive(Debug, Args)]
+struct TokenListArgs {
+    /// Include expired tokens.
+    #[arg(long)]
+    all: bool,
+    /// Select the cluster founded through this SSH target.
+    #[arg(long)]
+    target: Option<SshTarget>,
+}
+
+#[derive(Debug, Args)]
+struct TokenRevokeArgs {
+    token_id: ployz_core::ids::TokenId,
+    /// Select the cluster founded through this SSH target.
+    #[arg(long)]
+    target: Option<SshTarget>,
 }
 
 #[derive(Debug, Args)]
@@ -393,6 +556,40 @@ fn parse_wireguard_public_key(value: &str) -> Result<WireGuardPublicKey, String>
     WireGuardPublicKey::try_new(value).map_err(|error| error.to_string())
 }
 
+fn parse_nonzero_socket_addr(value: &str) -> Result<SocketAddr, String> {
+    let endpoint = value
+        .parse::<SocketAddr>()
+        .map_err(|error| error.to_string())?;
+    if endpoint.port() == 0 {
+        return Err("endpoint port must not be zero".to_owned());
+    }
+    Ok(endpoint)
+}
+
+fn parse_ttl(value: &str) -> Result<JoinTokenTtlSeconds, String> {
+    let Some((digits, suffix)) = value.split_at_checked(value.len().saturating_sub(1)) else {
+        return Err("TTL must be a positive whole duration such as 24h".to_owned());
+    };
+    let amount = digits
+        .parse::<u64>()
+        .map_err(|_| "TTL must be a positive whole duration such as 24h".to_owned())?;
+    if amount == 0 {
+        return Err("TTL must be greater than zero".to_owned());
+    }
+    let multiplier = match suffix {
+        "s" => 1,
+        "m" => 60,
+        "h" => 60 * 60,
+        "d" => 24 * 60 * 60,
+        _ => return Err("TTL unit must be s, m, h, or d".to_owned()),
+    };
+    let seconds = amount
+        .checked_mul(multiplier)
+        .ok_or_else(|| "TTL is too large".to_owned())?;
+    let seconds = u32::try_from(seconds).map_err(|_| "TTL is too large".to_owned())?;
+    JoinTokenTtlSeconds::try_new(seconds).map_err(|error| error.to_string())
+}
+
 #[derive(Debug, Subcommand)]
 enum TelemetryCli {
     /// Enable telemetry.
@@ -436,6 +633,114 @@ mod tests {
             }))
         );
         assert!(parse(&["machine", "ls", "root@cluster.example"]).is_err());
+    }
+
+    #[test]
+    fn token_commands_parse_the_locked_surface() {
+        assert_eq!(
+            parse(&["token", "create"]).expect("default token create parses"),
+            Command::Token(TokenCommand::Create(TokenCreateCommand {
+                ttl: JoinTokenTtlSeconds::default_v1(),
+                target: None,
+            }))
+        );
+        assert_eq!(
+            parse(&[
+                "token",
+                "create",
+                "--ttl",
+                "15m",
+                "--target",
+                "root@cluster.example",
+            ])
+            .expect("explicit token create parses"),
+            Command::Token(TokenCommand::Create(TokenCreateCommand {
+                ttl: JoinTokenTtlSeconds::try_new(15 * 60).expect("TTL"),
+                target: Some("root@cluster.example".parse().expect("SSH target")),
+            }))
+        );
+        assert_eq!(
+            parse(&["token", "list", "--all"]).expect("token list parses"),
+            Command::Token(TokenCommand::List(TokenListCommand {
+                include_expired: true,
+                target: None,
+            }))
+        );
+        let token_id = ployz_core::ids::TokenId::generate();
+        assert_eq!(
+            parse(&["token", "revoke", token_id.as_str()]).expect("token revoke parses"),
+            Command::Token(TokenCommand::Revoke(TokenRevokeCommand {
+                token_id,
+                target: None,
+            }))
+        );
+        for invalid in [
+            "0h",
+            "59s",
+            "31d",
+            "1.5h",
+            "forever",
+            "18446744073709551615d",
+        ] {
+            assert!(parse(&["token", "create", "--ttl", invalid]).is_err());
+        }
+    }
+
+    #[test]
+    fn endpoint_set_and_on_host_join_parse_without_secret_debug_leaks() {
+        let endpoint = "203.0.113.7:51820".parse().expect("endpoint");
+        let machine = MachineName::try_new("edge-b").expect("machine name");
+        assert_eq!(
+            parse(&["machine", "endpoint", "set", "edge-b", "203.0.113.7:51820",])
+                .expect("endpoint set parses"),
+            Command::Machine(MachineCommand::EndpointSet(MachineEndpointSetCommand {
+                machine,
+                endpoint,
+                target: None,
+            }))
+        );
+
+        let blob = JoinBlob::try_new(
+            ployz_core::ids::TokenId::generate(),
+            ployz_core::join::JoinTokenSecret::try_from_bytes([0x5a; 32]),
+            ployz_core::join::JoinDoorCertFingerprint::try_new("11".repeat(32))
+                .expect("fingerprint"),
+            vec!["203.0.113.7:2021".parse().expect("door endpoint")],
+        )
+        .expect("join blob");
+        let opaque = blob.expose().to_owned();
+        let parsed = parse(&[
+            "machine",
+            "join",
+            &opaque,
+            "--storage",
+            "plain",
+            "--wireguard-endpoint",
+            "203.0.113.8:51820",
+        ])
+        .expect("machine join parses");
+        assert!(matches!(
+            parsed,
+            Command::Machine(MachineCommand::Join(MachineJoinCommand {
+                storage: InitStorageChoice::Flag {
+                    mode: StorageMode::Plain
+                },
+                ..
+            }))
+        ));
+        assert!(!format!("{parsed:?}").contains(&opaque));
+        assert!(parse(&["machine", "join", "not-a-join-blob"]).is_err());
+        assert!(parse(&["machine", "endpoint", "set", "edge-b", "203.0.113.7:0",]).is_err());
+        assert!(
+            parse(&[
+                "machine",
+                "join",
+                &opaque,
+                "--wireguard-endpoint",
+                "203.0.113.8:0",
+            ])
+            .is_err()
+        );
     }
 
     #[test]

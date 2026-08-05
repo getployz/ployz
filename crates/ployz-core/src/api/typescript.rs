@@ -29,6 +29,12 @@ use crate::install::{
     AbsoluteInstallPath, ExactPloyzVersion, HostPortAssurance, InstallArtifactSource,
     InstallArtifactSpec, InstallArtifactVersion, InstallSha256Digest, ReleasePlatformFailure,
 };
+use crate::join::{
+    JoinAdmissionReply, JoinAdmissionRequest, JoinMachineSubstrate, MachineEndpointSetRefusal,
+    MachineEndpointSetReply, MachineEndpointSetRequest, TokenCreateRefusal, TokenCreateReply,
+    TokenCreateRequest, TokenListReply, TokenListRequest, TokenRevokeRefusal, TokenRevokeReply,
+    TokenRevokeRequest,
+};
 use crate::machine::roles::{GatewayRole, InstallRolePolicy};
 use crate::operation::{
     EventSequence, MAX_OPERATION_EVENT_REPLAY_LIMIT, OperationEventReplayLimit,
@@ -147,6 +153,20 @@ fn collect_v2_contracts(declarations: &mut DeclarationCollector<'_>) {
     declarations.visit::<FoundingResult>();
     declarations.visit::<FoundingRepairCommand>();
     declarations.visit::<FoundingRefusal>();
+    declarations.visit::<TokenCreateRequest>();
+    declarations.visit::<TokenCreateReply>();
+    declarations.visit::<TokenCreateRefusal>();
+    declarations.visit::<TokenListRequest>();
+    declarations.visit::<TokenListReply>();
+    declarations.visit::<TokenRevokeRequest>();
+    declarations.visit::<TokenRevokeReply>();
+    declarations.visit::<TokenRevokeRefusal>();
+    declarations.visit::<MachineEndpointSetRequest>();
+    declarations.visit::<MachineEndpointSetReply>();
+    declarations.visit::<MachineEndpointSetRefusal>();
+    declarations.visit::<JoinAdmissionRequest>();
+    declarations.visit::<JoinAdmissionReply>();
+    declarations.visit::<JoinMachineSubstrate>();
 }
 
 struct DeclarationCollector<'a> {

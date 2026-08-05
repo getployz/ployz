@@ -1,205 +1,119 @@
 //! Machine command execution, mesh HTTP, and human presentation.
 
-use std::fmt;
-use std::net::{IpAddr, SocketAddr};
-use std::path::PathBuf;
-
+use ployz_core::MACHINE_ENDPOINT_ROUTE_PREFIX;
 use ployz_core::corrosion::MachineTransport;
-use ployz_core::ids::ClusterId;
+use ployz_core::founding::InitStorageChoice;
+use ployz_core::ids::{ClusterId, MachineRowId};
+use ployz_core::join::{
+    JoinStorageChoice, MachineEndpointSetRefusal, MachineEndpointSetReply,
+    MachineEndpointSetRequest,
+};
+use ployz_core::machine::MachineName;
 use ployz_core::{LensCollection, LensSnapshot};
-
-use crate::commands::{MachineCommand, MachineListCommand, SshTarget};
-use crate::init::ssh::default_config_home;
-use crate::mesh::context::{
-    LoadedOperatorContext, OperatorContextError, OperatorContextStore, UnsupportedMeshProvider,
-};
-use crate::mesh::http::{MeshApiClient, MeshApiClientError};
-use crate::mesh::{
-    BuiltinWireguardDial, BuiltinWireguardPeer, MeshConnectError, MeshConnector, MeshDialTimeouts,
+use ployz_host_runner::lifecycle::machine_join::{
+    MachineJoinFailure, MachineJoinOutcomeKind, run_linux_machine_join,
 };
 
-const API_PORT: u16 = 2_020;
+use crate::JoinDoorClient;
+use crate::commands::{
+    MachineCommand, MachineEndpointSetCommand, MachineJoinCommand, MachineListCommand,
+};
+use crate::mesh::http::JsonReply;
+use crate::remote::{OperatorRemote, OperatorRemoteError};
 
 pub async fn execute(command: MachineCommand) -> Result<String, MachineExecutionError> {
     match command {
         MachineCommand::List(command) => list(command).await,
+        MachineCommand::EndpointSet(command) => endpoint_set(command).await,
+        MachineCommand::Join(command) => join(command).await,
     }
+}
+
+async fn endpoint_set(command: MachineEndpointSetCommand) -> Result<String, MachineExecutionError> {
+    let remote = OperatorRemote::load(command.target.as_ref())?;
+    let request = MachineEndpointSetRequest {
+        machine_name: command.machine.clone(),
+        endpoint: command.endpoint,
+    };
+    let reply = remote
+        .request_json_with_refusal::<_, MachineEndpointSetReply, MachineEndpointSetRefusal>(
+            hyper::Method::POST,
+            MACHINE_ENDPOINT_ROUTE_PREFIX,
+            Some(&request),
+        )
+        .await?;
+    let reply = match reply {
+        JsonReply::Success(reply) => reply,
+        JsonReply::Refused(MachineEndpointSetRefusal::NotFound { machine_name }) => {
+            return Err(MachineExecutionError::MachineNotFound {
+                machine: machine_name.as_str().to_owned(),
+            });
+        }
+        JsonReply::Refused(MachineEndpointSetRefusal::ProviderDoesNotUseWireguard {
+            machine_id,
+        }) => return Err(MachineExecutionError::EndpointProviderMismatch { machine_id }),
+        JsonReply::Refused(MachineEndpointSetRefusal::EndpointPortZero { machine_name }) => {
+            return Err(MachineExecutionError::EndpointPortZero {
+                machine: machine_name.as_str().to_owned(),
+            });
+        }
+    };
+    if reply.machine.name != command.machine
+        || !matches!(
+            &reply.machine.transport,
+            MachineTransport::Wireguard {
+                endpoint: Some(endpoint),
+                ..
+            } if *endpoint == command.endpoint
+        )
+    {
+        return Err(MachineExecutionError::EndpointReplyMismatch);
+    }
+    Ok(render_endpoint_set(&command.machine, command.endpoint))
+}
+
+async fn join(command: MachineJoinCommand) -> Result<String, MachineExecutionError> {
+    let MachineJoinCommand {
+        blob,
+        storage,
+        wireguard_endpoint,
+    } = command;
+    let storage_choice = match storage {
+        InitStorageChoice::Automatic => JoinStorageChoice::Automatic,
+        InitStorageChoice::Flag { mode } => JoinStorageChoice::Flag { mode },
+    };
+    let mut door = JoinDoorClient::default();
+    let outcome =
+        run_linux_machine_join(blob, storage_choice, wireguard_endpoint, &mut door).await?;
+    Ok(render_machine_join(
+        outcome.kind,
+        &outcome.machine_name,
+        &outcome.machine_id,
+    ))
 }
 
 async fn list(command: MachineListCommand) -> Result<String, MachineExecutionError> {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or(MachineExecutionError::MissingHome)?;
-    let store = OperatorContextStore::new(default_config_home(&home));
-    let loaded = load_context(&store, command.target.as_ref())?;
-    let (connector, api_target) = connector_for_context(&loaded)?;
-    let stream = connector.connect(api_target).await?;
-    let snapshot = MeshApiClient::default()
-        .lens(stream, LensCollection::Machines)
-        .await?;
-    validate_snapshot_cluster(&snapshot, loaded.cluster_id())?;
+    let remote = OperatorRemote::load(command.target.as_ref())?;
+    let snapshot = remote.lens(LensCollection::Machines).await?;
+    validate_snapshot_cluster(&snapshot, remote.cluster_id())?;
     render_machines(&snapshot).map_err(MachineExecutionError::from)
 }
-
-fn load_context(
-    store: &OperatorContextStore,
-    requested: Option<&SshTarget>,
-) -> Result<LoadedOperatorContext, MachineExecutionError> {
-    if let Some(target) = requested {
-        return match store.load_target(target) {
-            Ok(context) => Ok(context),
-            Err(OperatorContextError::MissingContext { .. }) => {
-                Err(ContextSelectionError::UnconfiguredTarget {
-                    target: target.clone(),
-                }
-                .into())
-            }
-            Err(error) => Err(error.into()),
-        };
-    }
-
-    let contexts = store.load_all()?;
-    let targets = contexts
-        .iter()
-        .map(|loaded| loaded.target().clone())
-        .collect::<Vec<_>>();
-    let selected = select_context_index(&targets, None)?;
-    let Some(loaded) = contexts.into_iter().nth(selected) else {
-        unreachable!("selected operator context index comes from the same collection")
-    };
-    Ok(loaded)
-}
-
-fn connector_for_context(
-    loaded: &LoadedOperatorContext,
-) -> Result<(MeshConnector, SocketAddr), MachineExecutionError> {
-    match loaded {
-        LoadedOperatorContext::BuiltinWireguard(context) => {
-            let dial = BuiltinWireguardDial::new(
-                context.private_key.bytes(),
-                context.source_address,
-                BuiltinWireguardPeer {
-                    public_key: context.machine_public_key,
-                    endpoint: context.machine_endpoint,
-                    allowed_subnet: context.machine_allowed_subnet,
-                },
-                context.target.as_str(),
-            );
-            Ok((
-                MeshConnector::builtin_wireguard(dial, MeshDialTimeouts::default()),
-                SocketAddr::new(IpAddr::V6(context.machine_address), API_PORT),
-            ))
-        }
-        LoadedOperatorContext::UnsupportedProvider(context) => {
-            Err(MachineExecutionError::UnsupportedProvider {
-                provider: context.provider,
-            })
-        }
-    }
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum MachineExecutionError {
-    #[error("HOME is not set; cannot load operator contexts")]
-    MissingHome,
     #[error(transparent)]
-    Context(#[from] OperatorContextError),
-    #[error(transparent)]
-    Selection(#[from] ContextSelectionError),
-    #[error(
-        "mesh provider {provider:?} is not shipped; builtin WireGuard is the only supported provider"
-    )]
-    UnsupportedProvider { provider: UnsupportedMeshProvider },
-    #[error(transparent)]
-    Connect(#[from] MeshConnectError),
-    #[error(transparent)]
-    Api(#[from] MeshApiClientError),
+    Remote(#[from] OperatorRemoteError),
     #[error(transparent)]
     Snapshot(#[from] MachineSnapshotError),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ContextSelectionError {
-    NotConfigured,
-    UnconfiguredTarget {
-        target: SshTarget,
-    },
-    Ambiguous {
-        targets: Vec<String>,
-    },
-    UnknownTarget {
-        target: String,
-        configured: Vec<String>,
-    },
-}
-
-impl fmt::Display for ContextSelectionError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NotConfigured => formatter
-                .write_str("no operator context is configured; run `ployz init root@<host>` first"),
-            Self::UnconfiguredTarget { target } => write!(
-                formatter,
-                "no operator context is configured for {target}; run `ployz init {target}` first"
-            ),
-            Self::Ambiguous { targets } => {
-                formatter.write_str("multiple operator contexts are configured; choose one:")?;
-                for target in targets {
-                    write!(
-                        formatter,
-                        "\n  {target}: ployz machine ls --target {target}"
-                    )?;
-                }
-                Ok(())
-            }
-            Self::UnknownTarget { target, configured } => {
-                write!(
-                    formatter,
-                    "no operator context is configured for {target}; configured targets:"
-                )?;
-                for target in configured {
-                    write!(
-                        formatter,
-                        "\n  {target}: ployz machine ls --target {target}"
-                    )?;
-                }
-                Ok(())
-            }
-        }
-    }
-}
-
-impl std::error::Error for ContextSelectionError {}
-
-pub(crate) fn select_context_index(
-    configured: &[SshTarget],
-    requested: Option<&SshTarget>,
-) -> Result<usize, ContextSelectionError> {
-    match requested {
-        Some(requested) => configured
-            .iter()
-            .position(|candidate| candidate == requested)
-            .ok_or_else(|| ContextSelectionError::UnknownTarget {
-                target: requested.as_str().to_owned(),
-                configured: sorted_target_names(configured),
-            }),
-        None => match configured {
-            [] => Err(ContextSelectionError::NotConfigured),
-            [_] => Ok(0),
-            [_, _, ..] => Err(ContextSelectionError::Ambiguous {
-                targets: sorted_target_names(configured),
-            }),
-        },
-    }
-}
-
-fn sorted_target_names(targets: &[SshTarget]) -> Vec<String> {
-    let mut targets = targets
-        .iter()
-        .map(|target| target.as_str().to_owned())
-        .collect::<Vec<_>>();
-    targets.sort();
-    targets
+    #[error("machine {machine} was not found")]
+    MachineNotFound { machine: String },
+    #[error("machine {machine_id} does not use builtin WireGuard; its endpoint cannot be set")]
+    EndpointProviderMismatch { machine_id: MachineRowId },
+    #[error("machine {machine} endpoint must use a nonzero WireGuard port")]
+    EndpointPortZero { machine: String },
+    #[error("cluster API endpoint-set reply did not match the requested machine and endpoint")]
+    EndpointReplyMismatch,
+    #[error(transparent)]
+    Join(#[from] MachineJoinFailure),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -275,53 +189,39 @@ const fn snapshot_collection(snapshot: &LensSnapshot) -> LensCollection {
     }
 }
 
+#[must_use]
+pub fn render_endpoint_set(machine: &MachineName, endpoint: std::net::SocketAddr) -> String {
+    format!("{} endpoint {}\n", machine.as_str(), endpoint)
+}
+
+#[must_use]
+pub fn render_machine_join(
+    outcome: MachineJoinOutcomeKind,
+    machine_name: &MachineName,
+    machine_id: &MachineRowId,
+) -> String {
+    let verb = match outcome {
+        MachineJoinOutcomeKind::Joined => "Joined",
+        MachineJoinOutcomeKind::Resumed => "Resumed",
+        MachineJoinOutcomeKind::NoOp => "No-op",
+    };
+    format!(
+        "{verb} machine {} ({}).\n",
+        machine_name.as_str(),
+        machine_id.as_str()
+    )
+}
+
 #[cfg(test)]
 mod tests {
-    use std::fs;
-
-    use ployz_core::corrosion::{MeshProvider, derive_builtin_wireguard_member};
-    use ployz_core::network::{MachineEndpointSubnet, WireGuardPublicKey};
     use serde_json::json;
 
     use super::*;
-    use crate::mesh::context::{SshContextHandoff, SshPeerKey, context_path, key_path};
 
     const CLUSTER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
     const MACHINE_A: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
     const MACHINE_B: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
     const PEER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAY";
-
-    fn target(value: &str) -> SshTarget {
-        value.parse().expect("valid SSH target")
-    }
-
-    fn persist_context(store: &OperatorContextStore, home: &std::path::Path, target: &SshTarget) {
-        let key = SshPeerKey::generate("laptop".to_owned()).expect("peer key");
-        key.persist_new(home, target).expect("persist peer key");
-        let cluster_id = ClusterId::try_new(CLUSTER).expect("cluster id");
-        let machine_key =
-            WireGuardPublicKey::try_new("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
-                .expect("machine key");
-        store
-            .persist(
-                target,
-                SshContextHandoff {
-                    machine_transport: MachineTransport::Wireguard {
-                        addr_v6: derive_builtin_wireguard_member(&cluster_id, &machine_key)
-                            .bind_address()
-                            .get(),
-                        pubkey: machine_key,
-                        endpoint: Some("203.0.113.7:51820".parse().expect("endpoint")),
-                        subnet_v4: MachineEndpointSubnet::try_new("10.210.0.0/24")
-                            .expect("machine subnet"),
-                    },
-                    cluster_id,
-                    provider: MeshProvider::BuiltinWireguard,
-                },
-                &key,
-            )
-            .expect("persist context");
-    }
 
     fn machines_snapshot() -> LensSnapshot {
         serde_json::from_value(json!({
@@ -382,98 +282,49 @@ mod tests {
     }
 
     #[test]
-    fn context_selection_has_exact_zero_one_multiple_and_unknown_copy() {
-        assert_eq!(
-            select_context_index(&[], None).expect_err("no context"),
-            ContextSelectionError::NotConfigured
-        );
-        assert_eq!(
-            ContextSelectionError::NotConfigured.to_string(),
-            "no operator context is configured; run `ployz init root@<host>` first"
-        );
-
-        let one = vec![target("root@one.example")];
-        assert_eq!(select_context_index(&one, None).expect("one context"), 0);
-
-        let multiple = vec![target("root@z.example"), target("root@a.example")];
-        let ambiguous = select_context_index(&multiple, None).expect_err("selector required");
-        assert_eq!(
-            ambiguous.to_string(),
-            "multiple operator contexts are configured; choose one:\n  root@a.example: ployz machine ls --target root@a.example\n  root@z.example: ployz machine ls --target root@z.example"
-        );
-        assert_eq!(
-            select_context_index(&multiple, Some(&target("root@z.example"))).expect("exact target"),
-            0
-        );
-
-        let unknown = select_context_index(&multiple, Some(&target("root@missing.example")))
-            .expect_err("unknown target");
-        assert_eq!(
-            unknown.to_string(),
-            "no operator context is configured for root@missing.example; configured targets:\n  root@a.example: ployz machine ls --target root@a.example\n  root@z.example: ployz machine ls --target root@z.example"
-        );
-    }
-
-    #[test]
-    fn explicit_target_does_not_load_an_unrelated_invalid_context() {
-        let temporary = tempfile::tempdir().expect("temporary directory");
-        let store = OperatorContextStore::new(temporary.path());
-        let good = target("root@good.example");
-        persist_context(&store, temporary.path(), &good);
-
-        let bad = target("root@bad.example");
-        fs::write(context_path(temporary.path(), &bad), b"{")
-            .expect("write invalid unrelated context");
-
-        let loaded = load_context(&store, Some(&good)).expect("load requested context");
-        assert_eq!(loaded.target(), &good);
-        assert!(matches!(
-            store.load_all(),
-            Err(OperatorContextError::InvalidDocument(_))
-        ));
-    }
-
-    #[test]
-    fn missing_explicit_target_names_the_init_command_without_scanning() {
-        let temporary = tempfile::tempdir().expect("temporary directory");
-        let store = OperatorContextStore::new(temporary.path());
-        let requested = target("root@missing.example");
-
-        let error = load_context(&store, Some(&requested)).expect_err("missing target");
-        assert!(matches!(
-            &error,
-            MachineExecutionError::Selection(ContextSelectionError::UnconfiguredTarget {
-                target,
-            }) if target.as_str() == "root@missing.example"
-        ));
-        assert_eq!(
-            error.to_string(),
-            "no operator context is configured for root@missing.example; run `ployz init root@missing.example` first"
-        );
-    }
-
-    #[test]
-    fn missing_peer_key_remains_a_context_filesystem_error() {
-        let temporary = tempfile::tempdir().expect("temporary directory");
-        let store = OperatorContextStore::new(temporary.path());
-        let requested = target("root@incomplete.example");
-        persist_context(&store, temporary.path(), &requested);
-        fs::remove_file(key_path(temporary.path(), &requested)).expect("remove peer key");
-
-        let error = load_context(&store, Some(&requested)).expect_err("missing peer key");
-        assert!(matches!(
-            error,
-            MachineExecutionError::Context(OperatorContextError::Filesystem(error))
-                if error.kind() == std::io::ErrorKind::NotFound
-        ));
-    }
-
-    #[test]
     fn machines_render_as_stable_human_first_table() {
         assert_eq!(
             render_machines(&machines_snapshot()).expect("machine table"),
             "NAME\tCONTROL ADDRESS\nalpha\tfd00::20\nzeta\t100.64.0.20\n"
         );
+    }
+
+    #[test]
+    fn endpoint_set_confirmation_is_terse() {
+        assert_eq!(
+            render_endpoint_set(
+                &MachineName::try_new("edge-b").expect("machine name"),
+                "203.0.113.7:51820".parse().expect("endpoint"),
+            ),
+            "edge-b endpoint 203.0.113.7:51820\n"
+        );
+    }
+
+    #[test]
+    fn endpoint_set_client_uses_the_typed_machine_route() {
+        let request = MachineEndpointSetRequest {
+            machine_name: MachineName::try_new("edge-b").expect("machine name"),
+            endpoint: "203.0.113.7:51820".parse().expect("endpoint"),
+        };
+        assert_eq!(MACHINE_ENDPOINT_ROUTE_PREFIX, "/machines/endpoint");
+        assert_eq!(request.machine_name.as_str(), "edge-b");
+        assert_eq!(request.endpoint.to_string(), "203.0.113.7:51820");
+    }
+
+    #[test]
+    fn join_outcomes_name_the_accepted_machine_identity() {
+        let machine_name = MachineName::try_new("edge-b").expect("machine name");
+        let machine_id = MachineRowId::try_new(MACHINE_A).expect("machine id");
+        for (outcome, expected) in [
+            (MachineJoinOutcomeKind::Joined, "Joined"),
+            (MachineJoinOutcomeKind::Resumed, "Resumed"),
+            (MachineJoinOutcomeKind::NoOp, "No-op"),
+        ] {
+            assert_eq!(
+                render_machine_join(outcome, &machine_name, &machine_id),
+                format!("{expected} machine edge-b ({MACHINE_A}).\n")
+            );
+        }
     }
 
     #[test]
@@ -490,43 +341,22 @@ mod tests {
     fn udp_timeout_presents_the_documented_ssh_fallback_without_running_it() {
         let endpoint = "203.0.113.7:51820".parse().expect("UDP endpoint");
         let api_target = "[fd00::20]:2020".parse().expect("API target");
-        let error = MachineExecutionError::Connect(MeshConnectError::UdpDialTimedOut {
-            endpoint,
-            target: api_target,
-            founding_target: "root@machine.example".into(),
-            docs_anchor: crate::mesh::UDP_BLOCKED_DOCS_ANCHOR,
-            ssh_fallback: crate::mesh::render_ssh_fallback_command(
-                "root@machine.example",
-                api_target,
-            )
-            .into(),
-        });
-        assert_eq!(
-            error.to_string(),
-            "WireGuard dial to [fd00::20]:2020 through UDP endpoint 203.0.113.7:51820 timed out; UDP may be blocked. Fallback: ssh -N -L 127.0.0.1:2020:[fd00::20]:2020 root@machine.example. See docs/operations/cli-mesh-access.md#udp-blocked-networks"
-        );
-    }
-
-    #[test]
-    fn unsupported_context_refuses_before_attempting_a_connection() {
-        let loaded = LoadedOperatorContext::UnsupportedProvider(
-            crate::mesh::context::UnsupportedOperatorContext {
-                target: target("root@machine.example"),
-                cluster_id: ClusterId::try_new(CLUSTER).expect("cluster id"),
-                provider: UnsupportedMeshProvider::Tailscale,
+        let error = MachineExecutionError::Remote(OperatorRemoteError::Connect(
+            crate::mesh::MeshConnectError::UdpDialTimedOut {
+                endpoint,
+                target: api_target,
+                founding_target: "root@machine.example".into(),
+                docs_anchor: crate::mesh::UDP_BLOCKED_DOCS_ANCHOR,
+                ssh_fallback: crate::mesh::render_ssh_fallback_command(
+                    "root@machine.example",
+                    api_target,
+                )
+                .into(),
             },
-        );
-
-        let error = connector_for_context(&loaded).expect_err("unsupported provider");
-        assert!(matches!(
-            error,
-            MachineExecutionError::UnsupportedProvider {
-                provider: UnsupportedMeshProvider::Tailscale
-            }
         ));
         assert_eq!(
             error.to_string(),
-            "mesh provider Tailscale is not shipped; builtin WireGuard is the only supported provider"
+            "WireGuard dial to [fd00::20]:2020 through UDP endpoint 203.0.113.7:51820 timed out; UDP may be blocked. Fallback: ssh -N -L 127.0.0.1:2020:[fd00::20]:2020 root@machine.example. See docs/operations/cli-mesh-access.md#udp-blocked-networks"
         );
     }
 }

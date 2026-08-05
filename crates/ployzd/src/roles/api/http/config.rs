@@ -3,10 +3,12 @@
 use std::env;
 use std::fmt;
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use hmac::{Hmac, Mac};
 use ployz_core::ids::{ClusterId, MachineRowId};
+use ployz_core::join::JOIN_DOOR_PORT;
 use sha2::Sha256;
 
 use crate::corrosion::{BearerToken, CorrosionClientBounds, CorrosionClientConfig};
@@ -23,12 +25,77 @@ const CORROSION_BEARER_TOKEN_ENV: &str = "PLOYZ_CORROSION_BEARER_TOKEN";
 const CLUSTER_ID_ENV: &str = "PLOYZ_CLUSTER_ID";
 const MACHINE_ID_ENV: &str = "PLOYZ_MACHINE_ID";
 const API_LISTEN_ADDR_ENV: &str = "PLOYZ_API_LISTEN_ADDR";
+const API_DOOR_LISTEN_ADDR_ENV: &str = "PLOYZ_API_DOOR_LISTEN_ADDR";
+const API_DOOR_PRIVATE_KEY_PATH_ENV: &str = "PLOYZ_API_DOOR_PRIVATE_KEY_PATH";
+const API_DOOR_CERTIFICATE_PATH_ENV: &str = "PLOYZ_API_DOOR_CERTIFICATE_PATH";
+const API_DOOR_FINGERPRINT_PATH_ENV: &str = "PLOYZ_API_DOOR_FINGERPRINT_PATH";
+const API_JOIN_SUBSTRATE_PATH_ENV: &str = "PLOYZ_API_JOIN_SUBSTRATE_PATH";
+const CORROSION_GOSSIP_PORT_ENV: &str = "PLOYZ_CORROSION_GOSSIP_PORT";
 const BUILD_ENV: &str = "PLOYZ_BUILD";
 const BOOTSTRAP_SECRET_ENV: &str = "PLOYZ_API_BOOTSTRAP_SECRET";
 const MAX_BOOTSTRAP_SECRET_BYTES: usize = 4_096;
 const BOOTSTRAP_SECRET_DOMAIN: &[u8] = b"ployz-api-founding-v1";
 
+const DEFAULT_DOOR_PRIVATE_KEY_PATH: &str = "/var/lib/ployz/door.key";
+const DEFAULT_DOOR_CERTIFICATE_PATH: &str = "/var/lib/ployz/door.crt";
+const DEFAULT_DOOR_FINGERPRINT_PATH: &str = "/var/lib/ployz/door.fingerprint";
+const DEFAULT_JOIN_SUBSTRATE_PATH: &str = "/var/lib/ployz/join-substrate.json";
+const DEFAULT_CORROSION_GOSSIP_PORT: u16 = 8_787;
+
 type BootstrapMac = Hmac<Sha256>;
+
+#[derive(Debug, Clone)]
+struct JoinDoorConfig {
+    listen_addr: DoorListenAddress,
+    material: DoorMaterialPaths,
+    substrate_path: PathBuf,
+    corrosion_gossip_port: u16,
+}
+
+impl JoinDoorConfig {
+    fn defaults() -> Self {
+        Self {
+            listen_addr: DoorListenAddress::default(),
+            material: DoorMaterialPaths::defaults(),
+            substrate_path: PathBuf::from(DEFAULT_JOIN_SUBSTRATE_PATH),
+            corrosion_gossip_port: DEFAULT_CORROSION_GOSSIP_PORT,
+        }
+    }
+}
+
+/// The public join door listener. Unlike the mesh API listener, the door is
+/// intentionally allowed to bind a wildcard address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DoorListenAddress(SocketAddr);
+
+impl DoorListenAddress {
+    pub fn try_new(address: SocketAddr) -> Result<Self, ApiRoleConfigError> {
+        if address.port() == 0 {
+            return Err(ApiRoleConfigError::ZeroDoorListenPort);
+        }
+        if address.port() != JOIN_DOOR_PORT {
+            return Err(ApiRoleConfigError::UnexpectedDoorListenPort {
+                expected: JOIN_DOOR_PORT,
+                actual: address.port(),
+            });
+        }
+        Ok(Self(address))
+    }
+
+    #[must_use]
+    pub const fn get(self) -> SocketAddr {
+        self.0
+    }
+}
+
+impl Default for DoorListenAddress {
+    fn default() -> Self {
+        Self(SocketAddr::new(
+            std::net::Ipv6Addr::UNSPECIFIED.into(),
+            JOIN_DOOR_PORT,
+        ))
+    }
+}
 
 /// The API startup authority mode.
 #[derive(Clone)]
@@ -100,6 +167,7 @@ pub struct ApiRoleConfig {
     cluster_id: ClusterId,
     local_machine_id: MachineRowId,
     listen_addr: SocketAddr,
+    door: JoinDoorConfig,
     build: String,
     mode: ApiRoleMode,
 }
@@ -145,6 +213,38 @@ impl ApiRoleConfig {
                 name: API_LISTEN_ADDR_ENV,
                 detail: error.to_string(),
             })?;
+        let door_listen_addr = match env::var(API_DOOR_LISTEN_ADDR_ENV) {
+            Ok(value) => {
+                DoorListenAddress::try_new(value.parse::<SocketAddr>().map_err(|error| {
+                    ApiRoleConfigError::InvalidSocketAddress {
+                        name: API_DOOR_LISTEN_ADDR_ENV,
+                        detail: error.to_string(),
+                    }
+                })?)?
+            }
+            Err(env::VarError::NotPresent) => DoorListenAddress::default(),
+            Err(env::VarError::NotUnicode(_)) => {
+                return Err(ApiRoleConfigError::NonUnicodeEnvironment {
+                    name: API_DOOR_LISTEN_ADDR_ENV,
+                });
+            }
+        };
+        let door_private_key_path = optional_path_environment(
+            API_DOOR_PRIVATE_KEY_PATH_ENV,
+            DEFAULT_DOOR_PRIVATE_KEY_PATH,
+        )?;
+        let door_certificate_path = optional_path_environment(
+            API_DOOR_CERTIFICATE_PATH_ENV,
+            DEFAULT_DOOR_CERTIFICATE_PATH,
+        )?;
+        let door_fingerprint_path = optional_path_environment(
+            API_DOOR_FINGERPRINT_PATH_ENV,
+            DEFAULT_DOOR_FINGERPRINT_PATH,
+        )?;
+        let join_substrate_path =
+            optional_path_environment(API_JOIN_SUBSTRATE_PATH_ENV, DEFAULT_JOIN_SUBSTRATE_PATH)?;
+        let corrosion_gossip_port =
+            optional_port_environment(CORROSION_GOSSIP_PORT_ENV, DEFAULT_CORROSION_GOSSIP_PORT)?;
         let build = validate_build_diagnostic(environment_value(BUILD_ENV)?)?;
 
         let mode = match env::var(BOOTSTRAP_SECRET_ENV) {
@@ -157,11 +257,21 @@ impl ApiRoleConfig {
             }
         };
 
-        Self::new_with_mode(
+        Self::new_with_mode_and_door(
             corrosion,
             cluster_id,
             local_machine_id,
             listen_addr,
+            JoinDoorConfig {
+                listen_addr: door_listen_addr,
+                material: DoorMaterialPaths::new(
+                    door_private_key_path,
+                    door_certificate_path,
+                    door_fingerprint_path,
+                )?,
+                substrate_path: join_substrate_path,
+                corrosion_gossip_port,
+            },
             build,
             mode,
         )
@@ -214,11 +324,35 @@ impl ApiRoleConfig {
         build: String,
         mode: ApiRoleMode,
     ) -> Result<Self, ApiRoleConfigError> {
+        Self::new_with_mode_and_door(
+            corrosion,
+            cluster_id,
+            local_machine_id,
+            listen_addr,
+            JoinDoorConfig::defaults(),
+            build,
+            mode,
+        )
+    }
+
+    fn new_with_mode_and_door(
+        corrosion: CorrosionClientConfig,
+        cluster_id: ClusterId,
+        local_machine_id: MachineRowId,
+        listen_addr: SocketAddr,
+        door: JoinDoorConfig,
+        build: String,
+        mode: ApiRoleMode,
+    ) -> Result<Self, ApiRoleConfigError> {
         if listen_addr.ip().is_unspecified() {
             return Err(ApiRoleConfigError::WildcardListenAddress { listen_addr });
         }
         if listen_addr.port() == 0 {
             return Err(ApiRoleConfigError::ZeroListenPort);
+        }
+        validate_absolute_path(API_JOIN_SUBSTRATE_PATH_ENV, &door.substrate_path)?;
+        if door.corrosion_gossip_port == 0 {
+            return Err(ApiRoleConfigError::ZeroCorrosionGossipPort);
         }
         let build = validate_build_diagnostic(build)?;
 
@@ -227,6 +361,7 @@ impl ApiRoleConfig {
             cluster_id,
             local_machine_id,
             listen_addr,
+            door,
             build,
             mode,
         })
@@ -253,6 +388,36 @@ impl ApiRoleConfig {
     }
 
     #[must_use]
+    pub const fn door_listen_addr(&self) -> DoorListenAddress {
+        self.door.listen_addr
+    }
+
+    #[must_use]
+    pub fn door_private_key_path(&self) -> &Path {
+        &self.door.material.private_key
+    }
+
+    #[must_use]
+    pub fn door_certificate_path(&self) -> &Path {
+        &self.door.material.certificate
+    }
+
+    #[must_use]
+    pub fn door_fingerprint_path(&self) -> &Path {
+        &self.door.material.fingerprint
+    }
+
+    #[must_use]
+    pub fn join_substrate_path(&self) -> &Path {
+        &self.door.substrate_path
+    }
+
+    #[must_use]
+    pub const fn corrosion_gossip_port(&self) -> u16 {
+        self.door.corrosion_gossip_port
+    }
+
+    #[must_use]
     pub fn build(&self) -> &str {
         &self.build
     }
@@ -263,11 +428,93 @@ impl ApiRoleConfig {
     }
 }
 
+/// Exact machine-local TLS material used by the public join door.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DoorMaterialPaths {
+    private_key: PathBuf,
+    certificate: PathBuf,
+    fingerprint: PathBuf,
+}
+
+impl DoorMaterialPaths {
+    pub fn new(
+        private_key: PathBuf,
+        certificate: PathBuf,
+        fingerprint: PathBuf,
+    ) -> Result<Self, ApiRoleConfigError> {
+        validate_absolute_path(API_DOOR_PRIVATE_KEY_PATH_ENV, &private_key)?;
+        validate_absolute_path(API_DOOR_CERTIFICATE_PATH_ENV, &certificate)?;
+        validate_absolute_path(API_DOOR_FINGERPRINT_PATH_ENV, &fingerprint)?;
+        Ok(Self {
+            private_key,
+            certificate,
+            fingerprint,
+        })
+    }
+
+    fn defaults() -> Self {
+        Self {
+            private_key: PathBuf::from(DEFAULT_DOOR_PRIVATE_KEY_PATH),
+            certificate: PathBuf::from(DEFAULT_DOOR_CERTIFICATE_PATH),
+            fingerprint: PathBuf::from(DEFAULT_DOOR_FINGERPRINT_PATH),
+        }
+    }
+}
+
 fn environment_value(name: &'static str) -> Result<String, ApiRoleConfigError> {
     env::var(name).map_err(|error| match error {
         env::VarError::NotPresent => ApiRoleConfigError::MissingEnvironment { name },
         env::VarError::NotUnicode(_) => ApiRoleConfigError::NonUnicodeEnvironment { name },
     })
+}
+
+fn optional_path_environment(
+    name: &'static str,
+    default: &'static str,
+) -> Result<PathBuf, ApiRoleConfigError> {
+    let value = match env::var(name) {
+        Ok(value) => value,
+        Err(env::VarError::NotPresent) => default.to_owned(),
+        Err(env::VarError::NotUnicode(_)) => {
+            return Err(ApiRoleConfigError::NonUnicodeEnvironment { name });
+        }
+    };
+    let path = PathBuf::from(value);
+    validate_absolute_path(name, &path)?;
+    Ok(path)
+}
+
+fn validate_absolute_path(name: &'static str, path: &Path) -> Result<(), ApiRoleConfigError> {
+    if path.as_os_str().is_empty() {
+        Err(ApiRoleConfigError::EmptyPath { name })
+    } else if !path.is_absolute() {
+        Err(ApiRoleConfigError::RelativePath {
+            name,
+            value: path.to_path_buf(),
+        })
+    } else {
+        Ok(())
+    }
+}
+
+fn optional_port_environment(name: &'static str, default: u16) -> Result<u16, ApiRoleConfigError> {
+    let value = match env::var(name) {
+        Ok(value) => value,
+        Err(env::VarError::NotPresent) => return Ok(default),
+        Err(env::VarError::NotUnicode(_)) => {
+            return Err(ApiRoleConfigError::NonUnicodeEnvironment { name });
+        }
+    };
+    let port = value
+        .parse::<u16>()
+        .map_err(|error| ApiRoleConfigError::InvalidPort {
+            name,
+            detail: error.to_string(),
+        })?;
+    if port == 0 {
+        return Err(ApiRoleConfigError::ZeroCorrosionGossipPort);
+    }
+    Ok(port)
 }
 
 fn validate_build_diagnostic(value: String) -> Result<String, ApiRoleConfigError> {
@@ -298,6 +545,18 @@ pub enum ApiRoleConfigError {
     WildcardListenAddress { listen_addr: SocketAddr },
     #[error("API listener port must be nonzero")]
     ZeroListenPort,
+    #[error("join door listener port must be nonzero")]
+    ZeroDoorListenPort,
+    #[error("join door listener must use fixed port {expected}, got {actual}")]
+    UnexpectedDoorListenPort { expected: u16, actual: u16 },
+    #[error("API role path from {name} must not be empty")]
+    EmptyPath { name: &'static str },
+    #[error("API role path from {name} must be absolute: {value:?}")]
+    RelativePath { name: &'static str, value: PathBuf },
+    #[error("API role port from {name} is invalid: {detail}")]
+    InvalidPort { name: &'static str, detail: String },
+    #[error("Corrosion gossip port must not be zero")]
+    ZeroCorrosionGossipPort,
     #[error("PLOYZ_CLUSTER_ID is invalid: {detail}")]
     InvalidClusterId { detail: String },
     #[error("PLOYZ_MACHINE_ID is invalid: {detail}")]

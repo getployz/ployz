@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use ployz_core::ids::{ClusterId, MachineRowId};
+use ployz_core::join::JOIN_DOOR_PORT;
 use ployz_host_runner::SupervisorBackend;
 use ployz_host_runner::builtin_wireguard::{
     BuiltinWireguardConfigError, BuiltinWireguardEbpfConfig, BuiltinWireguardHostConfig,
@@ -122,7 +123,7 @@ impl KeeperRoleConfig {
                 DEFAULT_EBPF_PIN_PATH,
             )?),
         )?;
-        let ports = BuiltinWireguardPorts::try_new(
+        let ports = builtin_wireguard_ports(
             u16_environment(WIREGUARD_LISTEN_PORT_ENV, DEFAULT_WIREGUARD_LISTEN_PORT)?,
             u16_environment(CORROSION_GOSSIP_PORT_ENV, DEFAULT_CORROSION_GOSSIP_PORT)?,
             required_environment(API_LISTEN_ADDR_ENV)?
@@ -253,6 +254,14 @@ impl KeeperRoleConfig {
     }
 }
 
+fn builtin_wireguard_ports(
+    wireguard_listen: u16,
+    corrosion_gossip: u16,
+    api_http: u16,
+) -> Result<BuiltinWireguardPorts, BuiltinWireguardConfigError> {
+    BuiltinWireguardPorts::try_new(wireguard_listen, corrosion_gossip, api_http, JOIN_DOOR_PORT)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeeperTimingConfig {
     pub reconcile_interval: Duration,
@@ -366,4 +375,16 @@ pub enum KeeperRoleConfigError {
     HostConfiguration(#[from] BuiltinWireguardConfigError),
     #[error("PLOYZ_SUPERVISOR_BACKEND must be systemd or openrc, got {value:?}")]
     InvalidSupervisorBackend { value: String },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keeper_ports_take_the_join_door_port_from_core() {
+        let ports = builtin_wireguard_ports(51_820, 8_787, 2_020).expect("valid fixed ports");
+
+        assert!(format!("{ports:?}").contains(&format!("join_door_https: {JOIN_DOOR_PORT}")));
+    }
 }

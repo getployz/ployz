@@ -281,7 +281,7 @@ mod tests {
         let host_config = BuiltinWireguardHostConfig::try_new(
             "/etc/ployz/wireguard.key".into(),
             "ployz0".to_owned(),
-            BuiltinWireguardPorts::try_new(51_820, 8_787, 2_020).expect("ports"),
+            BuiltinWireguardPorts::try_new(51_820, 8_787, 2_020, 2_021).expect("ports"),
             1_420,
             ebpf,
             SupervisorBackend::Systemd,

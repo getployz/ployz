@@ -5,13 +5,22 @@
 //! environment file rather than an API credential supplied by callers.
 
 mod config;
+mod door;
+mod endpoint_network;
 mod founding;
+mod join;
+mod mutations;
 mod roster;
+mod runtime;
 mod server;
+mod store;
 
-pub use config::{ApiRoleConfig, ApiRoleConfigError, ApiRoleMode, BootstrapSecret};
+pub use config::{
+    ApiRoleConfig, ApiRoleConfigError, ApiRoleMode, BootstrapSecret, DoorListenAddress,
+    DoorMaterialPaths,
+};
 pub use roster::ApiListenerValidationError;
-pub use server::{
+pub use runtime::{
     ApiRoleRuntimeError, ApiServer, ApiServerError, ApiServerServeError, run_from_environment,
 };
 

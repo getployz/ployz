@@ -11,6 +11,7 @@ fn bare_cli_and_help_advertise_init_and_local_commands() {
         assert!(stdout.contains("telemetry"));
         assert!(stdout.contains("  init"));
         assert!(stdout.contains("  machine"));
+        assert!(stdout.contains("  token"));
         for removed in ["deploy", "ops", "core", "host"] {
             assert!(!stdout.contains(&format!("  {removed}")));
         }

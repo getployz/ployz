@@ -1,14 +1,17 @@
+use super::door::{JoinDoorBindError, load_listener_identity, tls_acceptor_from_pem};
 use super::founding::authorize_founding;
+use super::join::{JoinBodyError, append_join_body_chunk, validate_join_door_route};
 use super::roster::validate_listener_principal;
+use super::runtime::{ApiServerError, ApiServerServeError, await_server_stop, load_join_substrate};
 use super::server::{
-    ApiServerServeError, HttpBody, await_lens_state, await_server_stop,
-    fallback_terminal_sse_event, founding_route_disabled, initial_watch_event,
-    lens_snapshot_response, parse_founding_route, parse_route, refusal_response,
-    refusal_response_with_allow, source_from_peer, sse_data, sse_event, sse_keepalive,
-    sse_watch_body, version_response,
+    HttpBody, await_lens_state, fallback_terminal_sse_event, founding_route_disabled,
+    initial_watch_event, lens_snapshot_response, parse_founding_route, parse_route,
+    refusal_response, refusal_response_with_allow, source_from_peer, sse_data, sse_event,
+    sse_keepalive, sse_watch_body, version_response,
 };
 use super::{
     ApiListenerValidationError, ApiRoleConfig, ApiRoleConfigError, ApiRoleMode, BootstrapSecret,
+    DoorListenAddress,
 };
 use crate::corrosion::{BearerToken, CorrosionClientBounds, CorrosionClientConfig};
 use bytes::Bytes;
@@ -183,6 +186,116 @@ fn production_configuration_rejects_ipv6_wildcard_listener() {
 }
 
 #[test]
+fn join_door_configuration_accepts_the_dual_stack_wildcard() {
+    let address = format!("[::]:{}", ployz_core::join::JOIN_DOOR_PORT)
+        .parse()
+        .expect("valid socket address");
+
+    let door = DoorListenAddress::try_new(address).expect("public door may bind wildcard");
+
+    assert_eq!(door.get(), address);
+    assert_eq!(DoorListenAddress::default(), door);
+}
+
+#[test]
+fn join_door_configuration_rejects_a_nonstandard_port() {
+    let address = "[::]:9876".parse().expect("valid socket address");
+
+    let error = DoorListenAddress::try_new(address).expect_err("door port is fixed");
+
+    assert!(matches!(
+        error,
+        ApiRoleConfigError::UnexpectedDoorListenPort {
+            expected: ployz_core::join::JOIN_DOOR_PORT,
+            actual: 9876,
+        }
+    ));
+}
+
+#[test]
+fn join_door_tls_acceptor_requires_a_matching_certificate_and_private_key() {
+    let rcgen::CertifiedKey { cert, signing_key } =
+        rcgen::generate_simple_self_signed(["join.invalid".to_owned()])
+            .expect("fixture certificate");
+
+    tls_acceptor_from_pem(
+        std::path::Path::new("/door.crt"),
+        cert.pem().as_bytes(),
+        std::path::Path::new("/door.key"),
+        signing_key.serialize_pem().as_bytes(),
+    )
+    .expect("matching door material is valid");
+
+    let error = tls_acceptor_from_pem(
+        std::path::Path::new("/door.crt"),
+        cert.pem().as_bytes(),
+        std::path::Path::new("/door.key"),
+        b"not a key",
+    )
+    .err()
+    .expect("invalid private key is rejected");
+    assert!(matches!(error, JoinDoorBindError::ParsePrivateKey { .. }));
+}
+
+#[tokio::test]
+async fn join_door_loads_one_tls_identity_and_verifies_its_persisted_fingerprint() {
+    let rcgen::CertifiedKey { cert, signing_key } =
+        rcgen::generate_simple_self_signed(["join.invalid".to_owned()])
+            .expect("fixture certificate");
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let certificate_path = directory.path().join("door.crt");
+    let private_key_path = directory.path().join("door.key");
+    let fingerprint_path = directory.path().join("door.fingerprint");
+    let fingerprint =
+        ployz_core::join::JoinDoorCertFingerprint::for_certificate_der(cert.der().as_ref());
+    tokio::fs::write(&certificate_path, cert.pem())
+        .await
+        .expect("certificate fixture");
+    tokio::fs::write(&private_key_path, signing_key.serialize_pem())
+        .await
+        .expect("private-key fixture");
+    tokio::fs::write(&fingerprint_path, fingerprint.as_str())
+        .await
+        .expect("fingerprint fixture");
+
+    let (_, material) =
+        load_listener_identity(&private_key_path, &certificate_path, &fingerprint_path)
+            .await
+            .expect("one matching listener identity");
+    assert_eq!(material.fingerprint, fingerprint);
+    assert_eq!(material.certificate_pem.as_str(), cert.pem());
+
+    tokio::fs::write(&fingerprint_path, "00".repeat(32))
+        .await
+        .expect("mismatching fingerprint fixture");
+    assert!(matches!(
+        load_listener_identity(&private_key_path, &certificate_path, &fingerprint_path,).await,
+        Err(JoinDoorBindError::FingerprintMismatch { .. })
+    ));
+}
+
+#[tokio::test]
+async fn join_substrate_startup_read_is_schema_validated_and_size_bounded() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let path = directory.path().join("join-substrate.json");
+    tokio::fs::write(&path, b"{}")
+        .await
+        .expect("invalid substrate fixture");
+    assert!(matches!(
+        load_join_substrate(&path).await,
+        Err(ApiServerError::JoinSubstrateInvalid { .. })
+    ));
+
+    tokio::fs::write(&path, vec![b'x'; 1024 * 1024 + 1])
+        .await
+        .expect("oversized substrate fixture");
+    assert!(matches!(
+        load_join_substrate(&path).await,
+        Err(ApiServerError::JoinSubstrateTooLarge { .. })
+    ));
+}
+
+#[test]
 fn production_configuration_rejects_an_unassigned_listener_port() {
     let listen_addr: SocketAddr = "[fd00::10]:0".parse().expect("valid socket address");
 
@@ -212,6 +325,29 @@ fn production_configuration_preserves_a_concrete_listener() {
     .expect("concrete listener is valid before roster validation");
 
     assert_eq!(config.listen_addr(), listen_addr);
+    assert_eq!(
+        config.door_listen_addr().get(),
+        format!("[::]:{}", ployz_core::join::JOIN_DOOR_PORT)
+            .parse()
+            .expect("default door address")
+    );
+    assert_eq!(
+        config.door_private_key_path(),
+        std::path::Path::new("/var/lib/ployz/door.key")
+    );
+    assert_eq!(
+        config.door_certificate_path(),
+        std::path::Path::new("/var/lib/ployz/door.crt")
+    );
+    assert_eq!(
+        config.door_fingerprint_path(),
+        std::path::Path::new("/var/lib/ployz/door.fingerprint")
+    );
+    assert_eq!(
+        config.join_substrate_path(),
+        std::path::Path::new("/var/lib/ployz/join-substrate.json")
+    );
+    assert_eq!(config.corrosion_gossip_port(), 8787);
     assert_eq!(config.build(), "build-123");
     assert!(matches!(config.mode(), ApiRoleMode::Ordinary));
 }
@@ -248,6 +384,29 @@ fn every_exact_v2_route_accepts_only_its_declared_method() {
         Ok(V2Route::Founding)
     );
     assert_eq!(
+        parse_route(&Method::POST, "/tokens/create").map_err(|error| error.refusal),
+        Ok(V2Route::TokenCreate)
+    );
+    assert_eq!(
+        parse_route(&Method::POST, "/tokens/list").map_err(|error| error.refusal),
+        Ok(V2Route::TokenList)
+    );
+    assert_eq!(
+        parse_route(&Method::POST, "/tokens/revoke/01ARZ3NDEKTSV4RRFFQ69G5FAV")
+            .map_err(|error| error.refusal),
+        Ok(V2Route::TokenRevoke(
+            ployz_core::ids::TokenId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("token id"),
+        ))
+    );
+    assert_eq!(
+        parse_route(&Method::POST, "/machines/endpoint").map_err(|error| error.refusal),
+        Ok(V2Route::MachineEndpointSet)
+    );
+    assert_eq!(
+        parse_route(&Method::POST, "/join").map_err(|error| error.refusal),
+        Ok(V2Route::Join)
+    );
+    assert_eq!(
         parse_route(&Method::POST, "/version").map_err(|error| error.refusal),
         Err(ApiRefusal::UnsupportedMethod {
             method: "POST".to_owned(),
@@ -264,6 +423,35 @@ fn every_exact_v2_route_accepts_only_its_declared_method() {
     assert_eq!(
         parse_route(&Method::GET, "/lenses/services/extra").map_err(|error| error.refusal),
         Err(ApiRefusal::UnsupportedRoute)
+    );
+}
+
+#[test]
+fn public_door_exposes_only_post_join() {
+    assert!(validate_join_door_route(&Method::POST, "/join").is_ok());
+
+    let method = validate_join_door_route(&Method::GET, "/join").expect_err("join is POST only");
+    assert!(matches!(
+        method.refusal,
+        ApiRefusal::UnsupportedMethod { ref method } if method == "GET"
+    ));
+    assert_eq!(method.allow, Some(ployz_core::V2Method::Post));
+
+    for path in ["/version", "/tokens/list", "/lenses/machines", "/founding"] {
+        let error = validate_join_door_route(&Method::POST, path)
+            .expect_err("ordinary API route must be hidden at the door");
+        assert_eq!(error.refusal, ApiRefusal::UnsupportedRoute);
+        assert_eq!(error.allow, None);
+    }
+}
+
+#[test]
+fn public_door_request_body_has_a_hard_size_bound() {
+    let mut body = vec![0_u8; 64 * 1024 - 1];
+    append_join_body_chunk(&mut body, &[1]).expect("exact limit is accepted");
+    assert_eq!(
+        append_join_body_chunk(&mut body, &[2]),
+        Err(JoinBodyError::TooLarge)
     );
 }
 
@@ -305,6 +493,9 @@ async fn version_is_success_json_with_the_core_capability_catalog() {
         vec![
             ApiFeature::Known(KnownApiFeature::Founding),
             ApiFeature::Known(KnownApiFeature::Lenses),
+            ApiFeature::Known(KnownApiFeature::JoinTokens),
+            ApiFeature::Known(KnownApiFeature::MachineEndpoint),
+            ApiFeature::Known(KnownApiFeature::JoinDoor),
         ]
     );
 }

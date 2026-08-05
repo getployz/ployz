@@ -1,7 +1,6 @@
 //! HTTP/1, JSON, and SSE serving for the API role.
 
 use std::convert::Infallible;
-use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
 use std::num::NonZeroU32;
 use std::sync::Arc;
@@ -12,25 +11,18 @@ use futures_util::stream;
 use http_body_util::{BodyExt, Full, StreamBody, combinators::BoxBody};
 use hyper::body::Frame;
 use hyper::header::{ALLOW, CONTENT_TYPE, HeaderValue, RETRY_AFTER};
-use hyper::server::conn::http1;
-use hyper::service::service_fn;
 use hyper::{Method, Response, StatusCode};
-use hyper_util::rt::{TokioIo, TokioTimer};
 use ployz_core::ids::{ClusterId, MachineRowId};
 use ployz_core::{
     ApiFeature, ApiRefusal, ApiVersion, FOUNDING_ROUTE, KNOWN_API_FEATURES, LensCollection,
     LensSnapshot, LensWatchEvent, V2Method, V2Route,
 };
-use tokio::net::TcpListener;
 use tokio::sync::{Mutex, OnceCell, mpsc, watch};
-use tokio::task::JoinSet;
 use tokio::time::{Instant, MissedTickBehavior};
 
-use super::config::{ApiRoleConfig, ApiRoleConfigError, ApiRoleMode};
-use super::roster::{
-    ApiListenerValidationError, corrosion_unavailable_refusal, resolve_peer_principal,
-    validate_listener_identity,
-};
+use super::config::ApiRoleMode;
+use super::roster::{corrosion_unavailable_refusal, resolve_peer_principal};
+use super::runtime::JoinDoorRuntime;
 use crate::corrosion::CorrosionClient;
 use crate::roles::api::lenses::{
     LensEngineConfig, LensRecoveryPolicy, LensWatch, start_lens_with_lifecycle,
@@ -38,8 +30,6 @@ use crate::roles::api::lenses::{
 
 const LENS_INITIAL_WAIT: Duration = Duration::from_secs(15);
 const SSE_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
-const SERVER_SHUTDOWN_GRACE: Duration = Duration::from_secs(8);
-const HTTP_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(30);
 const LENS_RECOVERY_MAX_ATTEMPTS: u32 = 5;
 const LENS_RECOVERY_INITIAL_BACKOFF: Duration = Duration::from_millis(100);
 const LENS_RECOVERY_MAX_BACKOFF: Duration = Duration::from_secs(1);
@@ -215,7 +205,7 @@ pub(super) fn source_from_peer<Body>(peer: SocketAddr, _request: &hyper::Request
     peer.ip()
 }
 
-struct ApiLenses {
+pub(super) struct ApiLenses {
     machines: LensWatch,
     services: LensWatch,
     containers: LensWatch,
@@ -264,7 +254,7 @@ impl ApiLenses {
         }
     }
 
-    fn watch(&self, collection: LensCollection) -> &LensWatch {
+    pub(super) fn watch(&self, collection: LensCollection) -> &LensWatch {
         match collection {
             LensCollection::Machines => &self.machines,
             LensCollection::Services => &self.services,
@@ -310,6 +300,8 @@ pub(super) struct ApiService {
     pub(super) cluster_id: ClusterId,
     pub(super) local_machine_id: MachineRowId,
     pub(super) listen_addr: SocketAddr,
+    pub(super) join_door: Arc<JoinDoorRuntime>,
+    pub(super) corrosion_gossip_port: u16,
     build: String,
     pub(super) mode: ApiRoleMode,
     lenses: OnceCell<Arc<ApiLenses>>,
@@ -317,8 +309,67 @@ pub(super) struct ApiService {
     pub(super) founding_lock: Mutex<()>,
 }
 
+pub(super) struct ApiServiceRuntime {
+    pub(super) corrosion: CorrosionClient,
+    pub(super) cluster_id: ClusterId,
+    pub(super) local_machine_id: MachineRowId,
+    pub(super) listen_addr: SocketAddr,
+    pub(super) corrosion_gossip_port: u16,
+    pub(super) build: String,
+    pub(super) mode: ApiRoleMode,
+}
+
 impl ApiService {
-    async fn handle(
+    pub(super) fn new(
+        runtime: ApiServiceRuntime,
+        join_door: Arc<JoinDoorRuntime>,
+    ) -> (Arc<Self>, mpsc::UnboundedReceiver<LensCollection>) {
+        let ApiServiceRuntime {
+            corrosion,
+            cluster_id,
+            local_machine_id,
+            listen_addr,
+            corrosion_gossip_port,
+            build,
+            mode,
+        } = runtime;
+        let (lifecycle_sender, lifecycle_failures) = mpsc::unbounded_channel();
+        let lenses = OnceCell::new();
+        let ordinary_lenses = matches!(mode, ApiRoleMode::Ordinary).then(|| {
+            Arc::new(ApiLenses::start(
+                corrosion.clone(),
+                cluster_id.clone(),
+                lifecycle_sender.clone(),
+            ))
+        });
+        if ordinary_lenses.is_some_and(|ordinary_lenses| lenses.set(ordinary_lenses).is_err()) {
+            unreachable!("a new API lens cell is empty");
+        }
+        let service = Arc::new(Self {
+            corrosion,
+            cluster_id,
+            local_machine_id,
+            listen_addr,
+            join_door,
+            corrosion_gossip_port,
+            build,
+            mode,
+            lenses,
+            lens_lifecycle: lifecycle_sender,
+            founding_lock: Mutex::new(()),
+        });
+        (service, lifecycle_failures)
+    }
+
+    pub(super) async fn handle_join_door(
+        &self,
+        peer: SocketAddr,
+        request: hyper::Request<hyper::body::Incoming>,
+    ) -> Response<HttpBody> {
+        super::join::handle_join(self, peer, request).await
+    }
+
+    pub(super) async fn handle(
         &self,
         peer: SocketAddr,
         request: hyper::Request<hyper::body::Incoming>,
@@ -335,7 +386,7 @@ impl ApiService {
             }
         }
 
-        let _principal = match resolve_peer_principal(
+        let principal = match resolve_peer_principal(
             &self.corrosion,
             &self.cluster_id,
             source_from_peer(peer, &request),
@@ -354,9 +405,19 @@ impl ApiService {
                 return refusal_response_with_allow(error.refusal, error.allow);
             }
         };
+        if !route.accepts_principal(&principal) {
+            return refusal_response(ApiRefusal::UnsupportedRoute);
+        }
         match route {
             V2Route::Version => version_response(&self.build),
             V2Route::Founding => unreachable!("founding routes are handled before roster auth"),
+            V2Route::Join => refusal_response(ApiRefusal::UnsupportedRoute),
+            V2Route::TokenCreate
+            | V2Route::TokenList
+            | V2Route::TokenRevoke(_)
+            | V2Route::MachineEndpointSet => {
+                super::mutations::handle_mutation(self, route, principal, request).await
+            }
             V2Route::Lens(collection) => self.snapshot_response(collection).await,
             V2Route::LensWatch(collection) => self.watch_response(collection, shutdown).await,
         }
@@ -406,7 +467,7 @@ impl ApiService {
         sse_response(sse_watch_body(updates, initial, shutdown))
     }
 
-    async fn shutdown(self) {
+    pub(super) async fn shutdown(self) {
         let Some(lenses) = self.lenses.into_inner() else {
             return;
         };
@@ -419,6 +480,10 @@ impl ApiService {
     pub(super) async fn start_founding_lenses_and_observe_machine(&self) -> bool {
         let lenses = self.start_lenses().await;
         machines_lens_contains(lenses, &self.local_machine_id).await
+    }
+
+    pub(super) fn lenses(&self) -> Option<&Arc<ApiLenses>> {
+        self.lenses.get()
     }
 }
 
@@ -582,300 +647,4 @@ pub(super) fn fallback_terminal_sse_event() -> Bytes {
     Bytes::from_static(
         b"event: terminal\ndata: {\"kind\":\"terminal\",\"refusal\":{\"kind\":\"corrosion_unavailable\",\"retry_after_seconds\":1}}\n\n",
     )
-}
-
-/// A bound public API listener and its owned lens tasks.
-pub struct ApiServer {
-    listener: TcpListener,
-    service: Arc<ApiService>,
-    lifecycle_failures: mpsc::UnboundedReceiver<LensCollection>,
-}
-
-impl ApiServer {
-    /// Validates the configured mesh listener and starts one local lens per
-    /// public collection.
-    pub async fn bind(config: ApiRoleConfig) -> Result<Self, ApiServerError> {
-        let listen_addr = config.listen_addr();
-        let corrosion = CorrosionClient::new(config.corrosion().clone())
-            .map_err(ApiServerError::CorrosionClientConfiguration)?;
-        if matches!(config.mode(), ApiRoleMode::Ordinary) {
-            validate_listener_identity(
-                &corrosion,
-                config.cluster_id(),
-                config.local_machine_id(),
-                config.listen_addr(),
-            )
-            .await
-            .map_err(ApiServerError::ListenerIdentity)?;
-        }
-        let listener =
-            TcpListener::bind(listen_addr)
-                .await
-                .map_err(|source| ApiServerError::Bind {
-                    listen_addr,
-                    source,
-                })?;
-        Ok(Self::from_validated_listener(
-            listener,
-            corrosion,
-            config.cluster_id().clone(),
-            config.local_machine_id().clone(),
-            config.listen_addr(),
-            config.build().to_owned(),
-            config.mode().clone(),
-        ))
-    }
-
-    fn from_validated_listener(
-        listener: TcpListener,
-        corrosion: CorrosionClient,
-        cluster_id: ClusterId,
-        local_machine_id: MachineRowId,
-        listen_addr: SocketAddr,
-        build: String,
-        mode: ApiRoleMode,
-    ) -> Self {
-        let (lifecycle_sender, lifecycle_failures) = mpsc::unbounded_channel();
-        let lenses = OnceCell::new();
-        let ordinary_lenses = matches!(mode, ApiRoleMode::Ordinary).then(|| {
-            Arc::new(ApiLenses::start(
-                corrosion.clone(),
-                cluster_id.clone(),
-                lifecycle_sender.clone(),
-            ))
-        });
-        if ordinary_lenses.is_some_and(|ordinary_lenses| lenses.set(ordinary_lenses).is_err()) {
-            unreachable!("a new API lens cell is empty");
-        }
-        let service = Arc::new(ApiService {
-            corrosion,
-            cluster_id,
-            local_machine_id,
-            listen_addr,
-            build,
-            mode,
-            lenses,
-            lens_lifecycle: lifecycle_sender,
-            founding_lock: Mutex::new(()),
-        });
-        Self {
-            listener,
-            service,
-            lifecycle_failures,
-        }
-    }
-
-    /// Serves accepted TCP peers until the caller requests controlled shutdown.
-    pub async fn serve<Shutdown>(self, shutdown: Shutdown) -> Result<(), ApiServerServeError>
-    where
-        Shutdown: Future<Output = ()> + Send,
-    {
-        let Self {
-            listener,
-            service,
-            mut lifecycle_failures,
-        } = self;
-        let (shutdown_tx, _) = watch::channel(false);
-        let mut connections = JoinSet::new();
-        let stop = await_server_stop(shutdown, &mut lifecycle_failures);
-        tokio::pin!(stop);
-
-        let serve_result = loop {
-            tokio::select! {
-                biased;
-                result = &mut stop => {
-                    if let Err(error) = result {
-                        tracing::error!(
-                            collection = error.collection().as_str(),
-                            "API lens recovery budget exhausted; stopping API role for supervisor restart"
-                        );
-                    }
-                    let _ = shutdown_tx.send(true);
-                    break result;
-                }
-                accepted = listener.accept() => match accepted {
-                    Ok((stream, peer)) => {
-                        let service = Arc::clone(&service);
-                        let shutdown = shutdown_tx.subscribe();
-                        connections.spawn(async move {
-                            serve_connection(stream, peer, service, shutdown).await;
-                        });
-                    }
-                    Err(error) => {
-                        tracing::warn!(error = %error, "API listener accept failed");
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                    }
-                },
-                Some(result) = connections.join_next(), if !connections.is_empty() => {
-                    if let Err(error) = result {
-                        tracing::warn!(error = %error, "API connection task failed");
-                    }
-                }
-            }
-        };
-
-        if tokio::time::timeout(SERVER_SHUTDOWN_GRACE, drain_connections(&mut connections))
-            .await
-            .is_err()
-        {
-            connections.abort_all();
-            drain_connections(&mut connections).await;
-        }
-        match Arc::try_unwrap(service) {
-            Ok(service) => service.shutdown().await,
-            Err(_) => tracing::warn!("API service retained a connection reference during shutdown"),
-        }
-        serve_result
-    }
-}
-
-pub(super) async fn await_lens_lifecycle_failure(
-    lifecycle_failures: &mut mpsc::UnboundedReceiver<LensCollection>,
-) -> Option<ApiServerServeError> {
-    lifecycle_failures
-        .recv()
-        .await
-        .map(|collection| ApiServerServeError::LensRecoveryExhausted { collection })
-}
-
-pub(super) async fn await_server_stop<Shutdown>(
-    shutdown: Shutdown,
-    lifecycle_failures: &mut mpsc::UnboundedReceiver<LensCollection>,
-) -> Result<(), ApiServerServeError>
-where
-    Shutdown: Future<Output = ()>,
-{
-    tokio::pin!(shutdown);
-    tokio::select! {
-        biased;
-        () = &mut shutdown => Ok(()),
-        Some(error) = await_lens_lifecycle_failure(lifecycle_failures) => Err(error),
-    }
-}
-
-async fn drain_connections(connections: &mut JoinSet<()>) {
-    while let Some(result) = connections.join_next().await {
-        if let Err(error) = result {
-            tracing::warn!(error = %error, "API connection task failed during shutdown");
-        }
-    }
-}
-
-async fn serve_connection(
-    stream: tokio::net::TcpStream,
-    peer: SocketAddr,
-    service: Arc<ApiService>,
-    mut shutdown: watch::Receiver<bool>,
-) {
-    let service_for_requests = Arc::clone(&service);
-    let shutdown_for_requests = shutdown.clone();
-    let mut builder = http1::Builder::new();
-    builder
-        .timer(TokioTimer::new())
-        .header_read_timeout(HTTP_HEADER_READ_TIMEOUT);
-    let connection = builder.serve_connection(
-        TokioIo::new(stream),
-        service_fn(move |request| {
-            let service = Arc::clone(&service_for_requests);
-            let shutdown = shutdown_for_requests.clone();
-            async move { Ok::<_, Infallible>(service.handle(peer, request, shutdown).await) }
-        }),
-    );
-    tokio::pin!(connection);
-    tokio::select! {
-        result = &mut connection => log_connection_result(result),
-        changed = shutdown.changed() => {
-            if changed.is_ok() && *shutdown.borrow() {
-                connection.as_mut().graceful_shutdown();
-                log_connection_result(connection.await);
-            }
-        }
-    }
-}
-
-fn log_connection_result(result: Result<(), hyper::Error>) {
-    if let Err(error) = result {
-        tracing::debug!(error = %error, "API HTTP/1 connection ended");
-    }
-}
-
-/// Runs the API role using its supervisor-loaded environment file.
-pub async fn run_from_environment() -> Result<(), ApiRoleRuntimeError> {
-    let config = ApiRoleConfig::from_environment().map_err(ApiRoleRuntimeError::Configuration)?;
-    let server = ApiServer::bind(config)
-        .await
-        .map_err(ApiRoleRuntimeError::Server)?;
-    server
-        .serve(wait_for_process_shutdown())
-        .await
-        .map_err(ApiRoleRuntimeError::Serve)
-}
-
-async fn wait_for_process_shutdown() {
-    #[cfg(unix)]
-    {
-        let terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate());
-        let interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt());
-        match (terminate, interrupt) {
-            (Ok(mut terminate), Ok(mut interrupt)) => {
-                tokio::select! {
-                    _ = terminate.recv() => {}
-                    _ = interrupt.recv() => {}
-                }
-            }
-            (Err(error), _) | (_, Err(error)) => {
-                tracing::warn!(error = %error, "could not install API shutdown signal handler");
-                if let Err(error) = tokio::signal::ctrl_c().await {
-                    tracing::warn!(error = %error, "could not wait for API shutdown signal");
-                }
-            }
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        if let Err(error) = tokio::signal::ctrl_c().await {
-            tracing::warn!(error = %error, "could not wait for API shutdown signal");
-        }
-    }
-}
-
-/// A bounded API role startup failure.
-#[derive(Debug, thiserror::Error)]
-pub enum ApiServerError {
-    #[error("could not build the local Corrosion client: {0}")]
-    CorrosionClientConfiguration(crate::corrosion::CorrosionClientConfigError),
-    #[error(transparent)]
-    ListenerIdentity(ApiListenerValidationError),
-    #[error("could not bind API listener {listen_addr}: {source}")]
-    Bind {
-        listen_addr: SocketAddr,
-        #[source]
-        source: std::io::Error,
-    },
-}
-
-/// A bounded API role serving failure that requires supervisor restart.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum ApiServerServeError {
-    #[error("API lens {collection:?} exhausted its Corrosion recovery budget")]
-    LensRecoveryExhausted { collection: LensCollection },
-}
-
-impl ApiServerServeError {
-    const fn collection(self) -> LensCollection {
-        match self {
-            Self::LensRecoveryExhausted { collection } => collection,
-        }
-    }
-}
-
-/// A bounded API role process failure.
-#[derive(Debug, thiserror::Error)]
-pub enum ApiRoleRuntimeError {
-    #[error(transparent)]
-    Configuration(ApiRoleConfigError),
-    #[error(transparent)]
-    Server(ApiServerError),
-    #[error(transparent)]
-    Serve(ApiServerServeError),
 }

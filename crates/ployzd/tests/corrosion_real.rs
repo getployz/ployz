@@ -311,7 +311,7 @@ async fn exercise_api_version(harness: &StockCorrosion) -> Result<(), String> {
         API_BUILD.to_owned(),
     )
     .map_err(|error| error.to_string())?;
-    let server = ApiServer::bind(config)
+    let server = ApiServer::bind_without_join_door_for_integration_test(config)
         .await
         .map_err(|error| format!("bind API server: {error}"))?;
     let (shutdown_tx, shutdown_rx) = oneshot::channel();

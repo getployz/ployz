@@ -1,11 +1,18 @@
 use bollard::Docker;
+use ployz_core::build::railpack_pins;
 use ployz_core::corrosion::derive_builtin_wireguard_member;
 use ployz_core::ids::ClusterId;
+use ployz_core::install::{
+    AbsoluteInstallPath, ExactPloyzVersion, InstallArtifactSource, InstallArtifactSpec,
+    InstallArtifactVersion, InstallSha256Digest,
+};
+use ployz_core::join::{JoinDoorCertFingerprint, JoinMachineSubstrate};
 use ployz_core::network::WireGuardPublicKey;
 use ployz_e2e::dind::{DindMachine, ExecOutcome, exec_in_container, write_file_in_container};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv6Addr};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 pub const CLUSTER_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -21,6 +28,21 @@ pub const WIREGUARD_INTERFACE: &str = "ployz0";
 pub const TEST_BRIDGE_INTERFACE: &str = "ployz-test0";
 pub const PLOYZ_BUILD: &str = "keeper-mesh-dind";
 pub const CORROSION_VERSION: &str = "0.2.0-beta.0";
+
+const DOOR_PRIVATE_KEY_PATH: &str = "/var/lib/ployz/door.key";
+const DOOR_CERTIFICATE_PATH: &str = "/var/lib/ployz/door.crt";
+const DOOR_FINGERPRINT_PATH: &str = "/var/lib/ployz/door.fingerprint";
+const JOIN_SUBSTRATE_PATH: &str = "/var/lib/ployz/join-substrate.json";
+const FIXED_JOIN_SUBSTRATE_ARTIFACTS: [(&str, &str); 5] = [
+    ("ployzd", "/usr/local/bin/ployzd"),
+    ("ployz-ebpf-tc", "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"),
+    ("ployz-ebpf-ctl", "/usr/local/bin/ployz-ebpf-ctl"),
+    ("corrosion", "/usr/local/bin/corrosion"),
+    (
+        "corrosion-schema-v1.sql",
+        "/usr/local/lib/ployz/corrosion-schema-v1.sql",
+    ),
+];
 
 const WAIT_BUDGET: Duration = Duration::from_secs(45);
 const WAIT_DELAY: Duration = Duration::from_millis(250);
@@ -259,6 +281,18 @@ pub async fn install_api_unit(
     machine_id: &str,
     own_address: Ipv6Addr,
 ) -> Result<(), String> {
+    let door = join_door_fixture()?;
+    let substrate = render_installed_join_substrate(docker, machine).await?;
+    for (path, contents, mode) in [
+        (DOOR_PRIVATE_KEY_PATH, door.private_key.as_str(), "0600"),
+        (DOOR_CERTIFICATE_PATH, door.certificate.as_str(), "0644"),
+        (DOOR_FINGERPRINT_PATH, door.fingerprint.as_str(), "0644"),
+        (JOIN_SUBSTRATE_PATH, substrate.as_str(), "0600"),
+    ] {
+        write_file_in_container(docker, &machine.container_id, path, contents, mode)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
     let unit = render_api_unit(machine_id, own_address);
     write_file_in_container(
         docker,
@@ -273,8 +307,104 @@ pub async fn install_api_unit(
 
 fn render_api_unit(machine_id: &str, own_address: Ipv6Addr) -> String {
     format!(
-        "[Unit]\nDescription=Ployz API mesh test\nAfter=corrosion.service ployz-keeper.service\n\n[Service]\nType=simple\nEnvironment=PLOYZ_CORROSION_API_ADDR=127.0.0.1:{CORROSION_API_PORT}\nEnvironment=PLOYZ_CORROSION_BEARER_TOKEN={CORROSION_TOKEN}\nEnvironment=PLOYZ_CLUSTER_ID={CLUSTER_ID}\nEnvironment=PLOYZ_MACHINE_ID={machine_id}\nEnvironment=PLOYZ_API_LISTEN_ADDR=[{own_address}]:{API_PORT}\nEnvironment=PLOYZ_BUILD={PLOYZ_BUILD}\nEnvironment=PLOYZ_LOG=debug\nExecStart=/opt/ployz/artifacts/ployzd api\nRestart=on-failure\nRestartSec=250ms\n\n[Install]\nWantedBy=multi-user.target\n"
+        "[Unit]\nDescription=Ployz API mesh test\nAfter=corrosion.service ployz-keeper.service\n\n[Service]\nType=simple\nEnvironment=PLOYZ_CORROSION_API_ADDR=127.0.0.1:{CORROSION_API_PORT}\nEnvironment=PLOYZ_CORROSION_BEARER_TOKEN={CORROSION_TOKEN}\nEnvironment=PLOYZ_CLUSTER_ID={CLUSTER_ID}\nEnvironment=PLOYZ_MACHINE_ID={machine_id}\nEnvironment=PLOYZ_API_LISTEN_ADDR=[{own_address}]:{API_PORT}\nEnvironment=PLOYZ_API_DOOR_PRIVATE_KEY_PATH={DOOR_PRIVATE_KEY_PATH}\nEnvironment=PLOYZ_API_DOOR_CERTIFICATE_PATH={DOOR_CERTIFICATE_PATH}\nEnvironment=PLOYZ_API_DOOR_FINGERPRINT_PATH={DOOR_FINGERPRINT_PATH}\nEnvironment=PLOYZ_API_JOIN_SUBSTRATE_PATH={JOIN_SUBSTRATE_PATH}\nEnvironment=PLOYZ_BUILD={PLOYZ_BUILD}\nEnvironment=PLOYZ_LOG=debug\nExecStart=/opt/ployz/artifacts/ployzd api\nRestart=on-failure\nRestartSec=250ms\n\n[Install]\nWantedBy=multi-user.target\n"
     )
+}
+
+struct JoinDoorFixture {
+    private_key: String,
+    certificate: String,
+    fingerprint: String,
+}
+
+static JOIN_DOOR_FIXTURE: OnceLock<Result<JoinDoorFixture, String>> = OnceLock::new();
+
+fn join_door_fixture() -> Result<&'static JoinDoorFixture, String> {
+    match JOIN_DOOR_FIXTURE.get_or_init(build_join_door_fixture) {
+        Ok(fixture) => Ok(fixture),
+        Err(error) => Err(error.clone()),
+    }
+}
+
+fn build_join_door_fixture() -> Result<JoinDoorFixture, String> {
+    let rcgen::CertifiedKey { cert, signing_key } =
+        rcgen::generate_simple_self_signed(["door.ployz.internal".to_owned()])
+            .map_err(|error| error.to_string())?;
+    let fingerprint = JoinDoorCertFingerprint::for_certificate_der(cert.der().as_ref());
+    Ok(JoinDoorFixture {
+        private_key: signing_key.serialize_pem(),
+        certificate: cert.pem(),
+        fingerprint: format!("{}\n", fingerprint.as_str()),
+    })
+}
+
+async fn render_installed_join_substrate(
+    docker: &Docker,
+    machine: &DindMachine,
+) -> Result<String, String> {
+    let artifacts = join_substrate_artifacts()?;
+    let mut digests = Vec::with_capacity(artifacts.len());
+    for (artifact, _) in artifacts {
+        let source = format!("/opt/ployz/artifacts/{artifact}");
+        let outcome = exec_ok(docker, machine, &["sha256sum", &source]).await?;
+        let Some(digest) = outcome.stdout.split_whitespace().next() else {
+            return Err(format!("sha256sum returned no digest for {source}"));
+        };
+        digests.push(digest.to_owned());
+    }
+    let substrate = join_substrate_from_digests(&digests)?;
+    serde_json::to_string_pretty(&substrate).map_err(|error| error.to_string())
+}
+
+fn join_substrate_from_digests(digests: &[String]) -> Result<JoinMachineSubstrate, String> {
+    let artifact_contract = join_substrate_artifacts()?;
+    if digests.len() != artifact_contract.len() {
+        return Err(format!(
+            "join substrate requires {} artifact digests, got {}",
+            artifact_contract.len(),
+            digests.len()
+        ));
+    }
+    let artifacts = artifact_contract
+        .into_iter()
+        .zip(digests)
+        .map(|((artifact, install_path), digest)| {
+            fixture_install_artifact(artifact, install_path, digest)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    JoinMachineSubstrate::try_new(
+        ExactPloyzVersion::try_new(env!("CARGO_PKG_VERSION")).map_err(|error| error.to_string())?,
+        CORROSION_VERSION,
+        artifacts,
+    )
+    .map_err(|error| error.to_string())
+}
+
+fn join_substrate_artifacts() -> Result<Vec<(&'static str, &'static str)>, String> {
+    let mut artifacts = FIXED_JOIN_SUBSTRATE_ARTIFACTS.to_vec();
+    let railpack = railpack_pins().map_err(|error| error.to_string())?;
+    artifacts.push(("railpack", railpack.install_path()));
+    Ok(artifacts)
+}
+
+fn fixture_install_artifact(
+    artifact: &str,
+    install_path: &str,
+    digest: &str,
+) -> Result<InstallArtifactSpec, String> {
+    let version = match artifact {
+        "corrosion" | "corrosion-schema-v1.sql" => CORROSION_VERSION,
+        "railpack" => "0.31.0",
+        _ => env!("CARGO_PKG_VERSION"),
+    };
+    Ok(InstallArtifactSpec {
+        version: InstallArtifactVersion::try_new(version).map_err(|error| error.to_string())?,
+        source: InstallArtifactSource::try_new(format!("/opt/ployz/artifacts/{artifact}"))
+            .map_err(|error| error.to_string())?,
+        sha256: InstallSha256Digest::try_new(digest).map_err(|error| error.to_string())?,
+        install_path: AbsoluteInstallPath::try_new(install_path)
+            .map_err(|error| error.to_string())?,
+    })
 }
 
 pub async fn start_unit(docker: &Docker, machine: &DindMachine, unit: &str) -> Result<(), String> {
@@ -593,5 +723,32 @@ mod tests {
 
         assert!(unit.contains("Environment=PLOYZ_API_LISTEN_ADDR=[fd12:3456:789a::42]:2020"));
         assert!(!unit.contains("PLOYZ_API_LISTEN_ADDR=[::]:"));
+    }
+
+    #[test]
+    fn api_fixture_declares_every_complete_join_door_input() {
+        let address = "fd12:3456:789a::42".parse().expect("ULA");
+
+        let unit = render_api_unit(MACHINE_A_ID, address);
+
+        for expected in [
+            "Environment=PLOYZ_API_DOOR_PRIVATE_KEY_PATH=/var/lib/ployz/door.key",
+            "Environment=PLOYZ_API_DOOR_CERTIFICATE_PATH=/var/lib/ployz/door.crt",
+            "Environment=PLOYZ_API_DOOR_FINGERPRINT_PATH=/var/lib/ployz/door.fingerprint",
+            "Environment=PLOYZ_API_JOIN_SUBSTRATE_PATH=/var/lib/ployz/join-substrate.json",
+        ] {
+            assert!(unit.contains(expected), "missing {expected:?} from {unit}");
+        }
+
+        let door = join_door_fixture().expect("complete join-door fixture");
+        assert!(door.private_key.contains("BEGIN PRIVATE KEY"));
+        assert!(door.certificate.contains("BEGIN CERTIFICATE"));
+        assert_eq!(door.fingerprint.trim().len(), 64);
+        let digests = (0..join_substrate_artifacts()
+            .expect("checked-in Railpack pins")
+            .len())
+            .map(|index| format!("{index:02x}").repeat(32))
+            .collect::<Vec<_>>();
+        join_substrate_from_digests(&digests).expect("schema-valid complete join substrate");
     }
 }
