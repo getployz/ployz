@@ -107,6 +107,14 @@ impl TestFixture {
                 subnet_v6: local.subnet(),
                 bind_address: local.bind_address(),
             },
+            local_container_subnet: ployz_core::network::MachineEndpointSubnet::try_new(
+                "10.210.1.0/24",
+            )
+            .expect("local subnet"),
+            cluster_container_prefix: ployz_core::network::MachineEndpointSupernet::try_new(
+                "10.210.0.0/16",
+            )
+            .expect("cluster prefix"),
             machine_peers: Vec::new(),
             roaming_peers: vec![DesiredBuiltinWireguardRoamingPeer {
                 peer_id: PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAX").expect("peer id"),

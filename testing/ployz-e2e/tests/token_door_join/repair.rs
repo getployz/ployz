@@ -258,6 +258,7 @@ async fn seed_machine_evidence(
         load: MachineLoadBand::Idle,
         observed_at: timestamp,
         mesh: None,
+        container_isolation: None,
         wireguard_handshakes: None,
     };
     let container = ContainerDocument {

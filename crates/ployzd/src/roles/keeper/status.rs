@@ -5,8 +5,9 @@ use std::fs;
 use std::path::Path;
 
 use ployz_core::corrosion::{
-    CorrosionDocumentVersion, CorrosionTimestamp, MachineLoadBand, MachineStatusDocument,
-    MeshConvergenceTestimony, SqliteParameter, Statement, WireGuardHandshakeEvidence,
+    ContainerIsolationTestimony, CorrosionDocumentVersion, CorrosionTimestamp, MachineLoadBand,
+    MachineStatusDocument, MeshConvergenceTestimony, SqliteParameter, Statement,
+    WireGuardHandshakeEvidence,
 };
 use ployz_core::ids::{ClusterId, MachineRowId};
 use rustix::fs::statvfs;
@@ -39,11 +40,13 @@ impl LocalMachineStatusWriter {
 
     pub(super) fn statement(
         &self,
-        mesh: MeshConvergenceTestimony,
+        mesh: Option<MeshConvergenceTestimony>,
+        container_isolation: Option<ContainerIsolationTestimony>,
         wireguard_handshakes: Option<BTreeMap<MachineRowId, WireGuardHandshakeEvidence>>,
     ) -> Result<Statement, MachineStatusWriteError> {
         self.statement_with_observation(
             mesh,
+            container_isolation,
             wireguard_handshakes,
             SystemObservation::read()?,
             now()?,
@@ -52,7 +55,8 @@ impl LocalMachineStatusWriter {
 
     fn statement_with_observation(
         &self,
-        mesh: MeshConvergenceTestimony,
+        mesh: Option<MeshConvergenceTestimony>,
+        container_isolation: Option<ContainerIsolationTestimony>,
         wireguard_handshakes: Option<BTreeMap<MachineRowId, WireGuardHandshakeEvidence>>,
         observation: SystemObservation,
         observed_at: CorrosionTimestamp,
@@ -68,7 +72,8 @@ impl LocalMachineStatusWriter {
             free_memory_bytes: observation.free_memory_bytes,
             load: observation.load,
             observed_at,
-            mesh: Some(mesh),
+            mesh,
+            container_isolation,
             wireguard_handshakes,
         };
         let encoded =
@@ -231,7 +236,8 @@ mod tests {
         };
         let statement = writer
             .statement_with_observation(
-                testimony.clone(),
+                Some(testimony.clone()),
+                None,
                 None,
                 SystemObservation {
                     free_disk_bytes: 11,
@@ -259,7 +265,45 @@ mod tests {
         assert_eq!(decoded.machine_id.as_str(), key);
         assert_eq!(decoded.cluster_id.as_str(), CLUSTER);
         assert_eq!(decoded.mesh, Some(testimony));
+        assert_eq!(decoded.container_isolation, None);
         assert_eq!(decoded.wireguard_handshakes, None);
+    }
+
+    #[test]
+    fn local_writer_composes_both_testimony_families_in_one_upsert() {
+        let writer = LocalMachineStatusWriter::new(
+            ClusterId::try_new(CLUSTER).expect("cluster"),
+            MachineRowId::try_new(MACHINE).expect("machine"),
+            "0.2.0-beta.0".to_owned(),
+        );
+        let isolation = ContainerIsolationTestimony::Converged {
+            attempted_at: timestamp(),
+            last_successful_converge: timestamp(),
+            entries: 2,
+        };
+        let statement = writer
+            .statement_with_observation(
+                None,
+                Some(isolation.clone()),
+                None,
+                SystemObservation {
+                    free_disk_bytes: 11,
+                    free_memory_bytes: 22,
+                    load: MachineLoadBand::Normal,
+                },
+                timestamp(),
+            )
+            .expect("status statement");
+        let Statement::WithParams(_, params) = statement else {
+            panic!("status write must be parameterized");
+        };
+        let [_, SqliteParameter::Text(document)] = params.as_slice() else {
+            panic!("status write has key and document parameters");
+        };
+        let decoded: MachineStatusDocument =
+            serde_json::from_str(document).expect("status document");
+        assert_eq!(decoded.mesh, None);
+        assert_eq!(decoded.container_isolation, Some(isolation));
     }
 
     #[test]
@@ -271,9 +315,10 @@ mod tests {
         );
         let statement = writer
             .statement_with_observation(
-                MeshConvergenceTestimony::NoRoster {
+                Some(MeshConvergenceTestimony::NoRoster {
                     attempted_at: timestamp(),
-                },
+                }),
+                None,
                 Some(BTreeMap::new()),
                 SystemObservation {
                     free_disk_bytes: 11,

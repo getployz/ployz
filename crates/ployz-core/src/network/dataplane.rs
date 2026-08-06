@@ -305,6 +305,11 @@ impl MachineEndpointSupernet {
         };
         self.0.contains(&subnet.network()) && self.0.contains(&subnet.broadcast())
     }
+
+    #[must_use]
+    pub fn contains_ipv4(&self, address: Ipv4Addr) -> bool {
+        self.0.contains(&address)
+    }
 }
 
 impl fmt::Debug for MachineEndpointSupernet {

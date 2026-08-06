@@ -16,7 +16,10 @@ use ployz_core::join::{
 };
 use ployz_core::machine::MachineName;
 use ployz_core::network::DEFAULT_WIREGUARD_LISTEN_PORT;
-use ployz_e2e::dind::{DindMachine, ExecOutcome, corrosion_query, exec_in_container, require};
+use ployz_e2e::dind::{
+    DindMachine, ExecOutcome, assert_keeper_isolation_root, corrosion_query, exec_in_container,
+    require,
+};
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
@@ -178,7 +181,8 @@ pub(super) async fn join_fresh_machine(
         ExecOutcome::success,
         "joined substrate services",
     )
-    .await
+    .await?;
+    assert_keeper_isolation_root(docker, machine, "ployzd-keeper.service").await
 }
 
 pub(super) async fn wait_for_joined_reachability(

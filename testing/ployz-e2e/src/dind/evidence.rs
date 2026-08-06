@@ -26,7 +26,7 @@ pub async fn capture_machine_evidence(
         message: source.to_string(),
     })?;
 
-    let captures: [(&str, &[&str]); 20] = [
+    let captures: [(&str, &[&str]); 25] = [
         (
             "journal.txt",
             &["journalctl", "--no-pager", "--lines", "2000"],
@@ -113,7 +113,7 @@ pub async fn capture_machine_evidence(
             &[
                 "sh",
                 "-c",
-                "find /sys/fs/bpf/ployz -maxdepth 2 -printf '%y %p\\n' 2>&1",
+                "find /sys/fs/bpf/ployz /sys/fs/bpf/ployz-isolation -maxdepth 2 -printf '%y %p\\n' 2>&1",
             ],
         ),
         (
@@ -122,6 +122,39 @@ pub async fn capture_machine_evidence(
                 "sh",
                 "-c",
                 "/opt/ployz/artifacts/ployz-ebpf-ctl status ployz-test0 2>&1",
+            ],
+        ),
+        (
+            "ebpf-status-br-ployz.txt",
+            &[
+                "sh",
+                "-c",
+                "/opt/ployz/artifacts/ployz-ebpf-ctl status br-ployz 2>&1",
+            ],
+        ),
+        ("pid1-cgroup.txt", &["cat", "/proc/1/cgroup"]),
+        (
+            "isolation-cgroup.txt",
+            &[
+                "sh",
+                "-c",
+                "scope=$(sed -n 's/^0::\\(.*\\)\\/init\\.scope$/\\1/p' /proc/1/cgroup); bpftool cgroup show \"/sys/fs/cgroup${scope}\" 2>&1",
+            ],
+        ),
+        (
+            "isolation-status.txt",
+            &[
+                "sh",
+                "-c",
+                "/opt/ployz/artifacts/ployz-ebpf-ctl --pin-path /sys/fs/bpf/ployz isolation status 2>&1",
+            ],
+        ),
+        (
+            "isolation-namespaces.txt",
+            &[
+                "sh",
+                "-c",
+                "bpftool -j map dump pinned /sys/fs/bpf/ployz-isolation/namespaces 2>&1",
             ],
         ),
         (

@@ -4,9 +4,10 @@ use ployz::init::ssh::{SshPeerKey, default_config_home};
 use ployz::mesh::context::{LoadedOperatorContext, OperatorContextStore, context_path};
 use ployz_core::corrosion::{PeerDocument, PeerTransport, SqliteValue};
 use ployz_e2e::dind::{
-    DindCluster, DindClusterSpec, DindMachine, MachineSpec, artifact_dir, connect_docker,
-    corrosion_access, corrosion_query, e2e_enabled, exec_ok, install_local_release_channel,
-    keep_requested, machine_image, require, write_file_in_container,
+    DindCluster, DindClusterSpec, DindMachine, MachineSpec, artifact_dir,
+    assert_keeper_isolation_root, connect_docker, corrosion_access, corrosion_query, e2e_enabled,
+    exec_ok, install_local_release_channel, keep_requested, machine_image, require,
+    write_file_in_container,
 };
 use std::fs;
 use std::net::{IpAddr, SocketAddr, TcpStream};
@@ -100,6 +101,7 @@ async fn exercise_laptop_dial(docker: &Docker, cluster: &DindCluster) -> Result<
         init_stdout.contains("Found") && init_stdout.contains(MACHINE_NAME),
         format!("shipped SSH init omitted the remote founding summary: {init_stdout}"),
     )?;
+    assert_keeper_isolation_root(docker, machine, "ployzd-keeper.service").await?;
 
     let contexts = OperatorContextStore::new(&config_home);
     let loaded = contexts

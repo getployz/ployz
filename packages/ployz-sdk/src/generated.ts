@@ -208,6 +208,10 @@ export type ContainerHealthcheckTest = "inherit" | "disable" | { "exec": Contain
 
 export type ContainerId = Brand<string, "ContainerId">;
 
+export type ContainerIsolationDegradationReason = { "kind": "missing_control_program", path: string, } | { "kind": "missing_bytecode", path: string, } | { "kind": "missing_bpffs", path: string, } | { "kind": "missing_cgroup_v2", path: string, } | { "kind": "desired_set_too_large", desired: number, capacity: number, } | { "kind": "host_effect", message: string, };
+
+export type ContainerIsolationTestimony = { "state": "converged", attempted_at: CorrosionTimestamp, last_successful_converge: CorrosionTimestamp, entries: number, } | { "state": "degraded", attempted_at: CorrosionTimestamp, last_successful_converge: CorrosionTimestamp | null, reason: ContainerIsolationDegradationReason, };
+
 export type ContainerLensRow = {
 /**
  * The Docker-owned container row key.
@@ -700,6 +704,10 @@ export type MachineStatusDocument = { v: CorrosionDocumentVersion, cluster_id: C
  * Keeper mesh status writes populate this field.
  */
 mesh?: MeshConvergenceTestimony | null,
+/**
+ * `None` denotes a status document written before isolation testimony.
+ */
+container_isolation?: ContainerIsolationTestimony | null,
 /**
  * `None` denotes a row written before live peer-handshake testimony existed.
  * A current writer publishes `Some`, including an empty map on a one-machine roster.

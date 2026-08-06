@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use ipnet::Ipv6Net;
+use ployz_core::network::{MachineEndpointSubnet, MachineEndpointSupernet};
 use ployz_core::operation::FailureMessage;
 
 use super::{
@@ -20,7 +21,154 @@ const FIREWALLD_ZONE: &str = "ployz";
 const FIREWALLD_ZONE_DESCRIPTION: &str = "Managed by Ployz built-in WireGuard";
 const UFW_CORROSION_MARKER: &str = "ployz-corrosion-gossip";
 const UFW_API_MARKER: &str = "ployz-api-http";
+const CONTAINER_NAT_CHAIN: &str = "PLOYZ-CONTAINER-NAT";
 static RESTORE_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn converge_container_nat_with(
+    local_subnet: &MachineEndpointSubnet,
+    cluster_prefix: &MachineEndpointSupernet,
+    runner: &mut impl HostRunnerCommandRunner,
+) -> Result<(), FailureMessage> {
+    let output = runner.command("iptables-save", &["-t", "nat"])?;
+    if !output.success {
+        return Err(failure_message(output.failure));
+    }
+    if output.stdout_truncated {
+        return Err(failure_message("iptables nat observation was truncated"));
+    }
+    let observation = observe_container_nat(&output.stdout)?;
+    let local_subnet = local_subnet.as_string();
+    let cluster_prefix = cluster_prefix.as_string();
+    if observation.is_current(&local_subnet, &cluster_prefix) {
+        return Ok(());
+    }
+    let rules = render_container_nat_restore(&observation, &local_subnet, &cluster_prefix);
+    restore_ipv4_nat(&rules, runner)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ContainerNatObservation {
+    chain_declared: bool,
+    postrouting_rules: Vec<String>,
+    owned_jumps: Vec<String>,
+    chain_rules: Vec<String>,
+}
+
+impl ContainerNatObservation {
+    fn is_current(&self, local_subnet: &str, cluster_prefix: &str) -> bool {
+        let jump = format!("-A POSTROUTING -j {CONTAINER_NAT_CHAIN}");
+        self.chain_declared
+            && self.owned_jumps == [jump.as_str()]
+            && self.postrouting_rules.first() == Some(&jump)
+            && self.chain_rules
+                == [
+                    format!(
+                        "-A {CONTAINER_NAT_CHAIN} -s {local_subnet} -d {cluster_prefix} -j ACCEPT"
+                    ),
+                    format!("-A {CONTAINER_NAT_CHAIN} -j RETURN"),
+                ]
+    }
+}
+
+fn observe_container_nat(input: &str) -> Result<ContainerNatObservation, FailureMessage> {
+    let chain_prefix = format!(":{CONTAINER_NAT_CHAIN} ");
+    let mut chain_declared = false;
+    let mut postrouting_rules = Vec::new();
+    let mut owned_jumps = Vec::new();
+    let mut chain_rules = Vec::new();
+    for line in input.lines() {
+        if line.starts_with(&chain_prefix) {
+            if chain_declared {
+                return Err(failure_message(format!(
+                    "iptables nat observation declared {CONTAINER_NAT_CHAIN} more than once"
+                )));
+            }
+            chain_declared = true;
+            continue;
+        }
+        let fields = line.split_ascii_whitespace().collect::<Vec<_>>();
+        let ["-A", source, rest @ ..] = fields.as_slice() else {
+            continue;
+        };
+        if *source == "POSTROUTING" {
+            postrouting_rules.push(line.to_owned());
+        }
+        if *source == CONTAINER_NAT_CHAIN {
+            chain_rules.push(line.to_owned());
+        }
+        let references_owned_chain = rest.windows(2).any(|pair| {
+            matches!(
+                pair,
+                ["-j" | "--jump" | "-g" | "--goto", target]
+                    if *target == CONTAINER_NAT_CHAIN
+            )
+        }) || rest.iter().any(|field| {
+            ["--jump=", "--goto="]
+                .iter()
+                .any(|prefix| field.strip_prefix(prefix) == Some(CONTAINER_NAT_CHAIN))
+        });
+        if !references_owned_chain {
+            continue;
+        }
+        if fields == ["-A", "POSTROUTING", "-j", CONTAINER_NAT_CHAIN] {
+            owned_jumps.push(line.to_owned());
+        } else {
+            return Err(failure_message(format!(
+                "iptables chain {CONTAINER_NAT_CHAIN} has a foreign reference: {line}"
+            )));
+        }
+    }
+    Ok(ContainerNatObservation {
+        chain_declared,
+        postrouting_rules,
+        owned_jumps,
+        chain_rules,
+    })
+}
+
+fn render_container_nat_restore(
+    observation: &ContainerNatObservation,
+    local_subnet: &str,
+    cluster_prefix: &str,
+) -> String {
+    let mut lines = vec!["*nat".to_owned(), format!(":{CONTAINER_NAT_CHAIN} - [0:0]")];
+    lines.extend(
+        observation
+            .owned_jumps
+            .iter()
+            .map(|line| line.replacen("-A POSTROUTING", "-D POSTROUTING", 1)),
+    );
+    lines.push(format!("-I POSTROUTING 1 -j {CONTAINER_NAT_CHAIN}"));
+    lines.push(format!(
+        "-A {CONTAINER_NAT_CHAIN} -s {local_subnet} -d {cluster_prefix} -j ACCEPT"
+    ));
+    lines.push(format!("-A {CONTAINER_NAT_CHAIN} -j RETURN"));
+    lines.push("COMMIT".to_owned());
+    format!("{}\n", lines.join("\n"))
+}
+
+fn restore_ipv4_nat(
+    rules: &str,
+    runner: &mut impl HostRunnerCommandRunner,
+) -> Result<(), FailureMessage> {
+    let (path, mut file) = create_staged_file("ployz-container-nat", "rules")?;
+    let result = file
+        .write_all(rules.as_bytes())
+        .and_then(|()| file.sync_all())
+        .map_err(|error| failure_message(format!("write staged iptables nat rules: {error}")))
+        .and_then(|()| {
+            let path = path.to_string_lossy();
+            require_success(
+                runner,
+                "iptables-restore",
+                &["--noflush", "--wait", "5", &path],
+            )
+        });
+    drop(file);
+    let cleanup = fs::remove_file(&path)
+        .map_err(|error| failure_message(format!("remove staged iptables nat rules: {error}")));
+    result.and(cleanup)
+}
 
 impl FirewallBackend {
     /// Allows traffic decapsulated by a managed mesh interface to reach
@@ -687,6 +835,171 @@ mod tests {
 
     #[cfg(unix)]
     const STAGED_FILE_MODE_CHILD: &str = "PLOYZ_STAGED_FIREWALL_FILE_MODE_CHILD";
+
+    fn endpoint_subnet(value: &str) -> MachineEndpointSubnet {
+        MachineEndpointSubnet::try_new(value).expect("endpoint subnet")
+    }
+
+    fn endpoint_supernet(value: &str) -> MachineEndpointSupernet {
+        MachineEndpointSupernet::try_new(value).expect("endpoint supernet")
+    }
+
+    fn current_container_nat() -> String {
+        concat!(
+            "*nat\n",
+            ":POSTROUTING ACCEPT [0:0]\n",
+            ":PLOYZ-CONTAINER-NAT - [0:0]\n",
+            "-A POSTROUTING -j PLOYZ-CONTAINER-NAT\n",
+            "-A POSTROUTING -s 10.210.1.0/24 ! -o br-ployz -j MASQUERADE\n",
+            "-A PLOYZ-CONTAINER-NAT -s 10.210.1.0/24 -d 10.210.0.0/16 -j ACCEPT\n",
+            "-A PLOYZ-CONTAINER-NAT -j RETURN\n",
+            "COMMIT\n",
+        )
+        .to_owned()
+    }
+
+    #[test]
+    fn current_container_nat_is_an_observe_only_no_op() {
+        let mut runner = RecordingRunner::with_outputs([active(&current_container_nat())]);
+
+        converge_container_nat_with(
+            &endpoint_subnet("10.210.1.0/24"),
+            &endpoint_supernet("10.210.0.0/16"),
+            &mut runner,
+        )
+        .expect("current NAT");
+
+        assert_eq!(runner.calls, ["iptables-save -t nat"]);
+    }
+
+    #[test]
+    fn absent_container_nat_is_installed_atomically() {
+        let mut runner = RecordingRunner::with_outputs([
+            active("*nat\n:POSTROUTING ACCEPT [0:0]\nCOMMIT\n"),
+            active(""),
+        ]);
+
+        converge_container_nat_with(
+            &endpoint_subnet("10.210.1.0/24"),
+            &endpoint_supernet("10.210.0.0/16"),
+            &mut runner,
+        )
+        .expect("install NAT");
+
+        let [_, restore] = runner.calls.as_slice() else {
+            panic!("install must observe then restore: {:?}", runner.calls);
+        };
+        assert!(
+            restore.starts_with("iptables-restore --noflush --wait 5 /tmp/ployz-container-nat-")
+        );
+    }
+
+    #[test]
+    fn stale_and_duplicate_owned_nat_rules_are_replaced() {
+        let observation = observe_container_nat(concat!(
+            "*nat\n",
+            ":POSTROUTING ACCEPT [0:0]\n",
+            ":PLOYZ-CONTAINER-NAT - [0:0]\n",
+            "-A POSTROUTING -s 10.210.1.0/24 ! -o br-ployz -j MASQUERADE\n",
+            "-A POSTROUTING -j PLOYZ-CONTAINER-NAT\n",
+            "-A POSTROUTING -j PLOYZ-CONTAINER-NAT\n",
+            "-A PLOYZ-CONTAINER-NAT -s 10.99.0.0/24 -d 10.99.0.0/16 -j ACCEPT\n",
+            "COMMIT\n",
+        ))
+        .expect("owned drift");
+
+        let rendered = render_container_nat_restore(&observation, "10.210.1.0/24", "10.210.0.0/16");
+
+        assert_eq!(
+            rendered,
+            concat!(
+                "*nat\n",
+                ":PLOYZ-CONTAINER-NAT - [0:0]\n",
+                "-D POSTROUTING -j PLOYZ-CONTAINER-NAT\n",
+                "-D POSTROUTING -j PLOYZ-CONTAINER-NAT\n",
+                "-I POSTROUTING 1 -j PLOYZ-CONTAINER-NAT\n",
+                "-A PLOYZ-CONTAINER-NAT -s 10.210.1.0/24 -d 10.210.0.0/16 -j ACCEPT\n",
+                "-A PLOYZ-CONTAINER-NAT -j RETURN\n",
+                "COMMIT\n",
+            )
+        );
+    }
+
+    #[test]
+    fn foreign_container_nat_reference_is_refused_before_mutation() {
+        let error = observe_container_nat(concat!(
+            "*nat\n",
+            ":PLOYZ-CONTAINER-NAT - [0:0]\n",
+            "-A OUTPUT -j PLOYZ-CONTAINER-NAT\n",
+            "COMMIT\n",
+        ))
+        .expect_err("foreign reference");
+
+        assert!(error.as_str().contains("foreign reference"));
+    }
+
+    #[test]
+    fn foreign_container_nat_goto_reference_is_refused_before_mutation() {
+        let error = observe_container_nat(concat!(
+            "*nat\n",
+            ":PLOYZ-CONTAINER-NAT - [0:0]\n",
+            "-A OUTPUT --goto PLOYZ-CONTAINER-NAT\n",
+            "COMMIT\n",
+        ))
+        .expect_err("foreign goto reference");
+
+        assert!(error.as_str().contains("foreign reference"));
+    }
+
+    #[test]
+    fn foreign_container_nat_long_reference_is_refused_before_mutation() {
+        let error = observe_container_nat(concat!(
+            "*nat\n",
+            ":PLOYZ-CONTAINER-NAT - [0:0]\n",
+            "-A OUTPUT --jump=PLOYZ-CONTAINER-NAT\n",
+            "COMMIT\n",
+        ))
+        .expect_err("foreign long reference");
+
+        assert!(error.as_str().contains("foreign reference"));
+    }
+
+    #[test]
+    fn container_nat_return_leaves_outside_traffic_for_docker_masquerade() {
+        let observation =
+            observe_container_nat("*nat\n:POSTROUTING ACCEPT [0:0]\nCOMMIT\n").expect("empty NAT");
+
+        let rendered = render_container_nat_restore(&observation, "10.210.1.0/24", "10.210.0.0/16");
+
+        assert!(rendered.contains(
+            "-A PLOYZ-CONTAINER-NAT -s 10.210.1.0/24 -d 10.210.0.0/16 -j ACCEPT\n-A PLOYZ-CONTAINER-NAT -j RETURN\n"
+        ));
+    }
+
+    #[test]
+    fn container_nat_observation_and_restore_failures_remain_visible() {
+        let mut observation_failure =
+            RecordingRunner::with_outputs([command_failure("nat observation failed")]);
+        let observed = converge_container_nat_with(
+            &endpoint_subnet("10.210.1.0/24"),
+            &endpoint_supernet("10.210.0.0/16"),
+            &mut observation_failure,
+        )
+        .expect_err("observation failure");
+        assert_eq!(observed.as_str(), "nat observation failed");
+
+        let mut restore_failure = RecordingRunner::with_outputs([
+            active("*nat\n:POSTROUTING ACCEPT [0:0]\nCOMMIT\n"),
+            command_failure("nat restore failed"),
+        ]);
+        let restored = converge_container_nat_with(
+            &endpoint_subnet("10.210.1.0/24"),
+            &endpoint_supernet("10.210.0.0/16"),
+            &mut restore_failure,
+        )
+        .expect_err("restore failure");
+        assert_eq!(restored.as_str(), "nat restore failed");
+    }
 
     #[cfg(unix)]
     #[test]
