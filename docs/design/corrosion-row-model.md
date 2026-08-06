@@ -76,8 +76,14 @@ runner, the CLI is in one operator's hand.
   at admission, a token's hash. Mutation of identity = delete + new row
   with a new ULID. Route Binding Identity holds: detach + recreate is a
   new identity even for the same hostname.
-- An operation's terminal write is final (at most three writes per op:
-  created, optional running, terminal).
+- An operation's terminal write is final (at most three summary-state writes
+  per op: created, optional running, terminal). Heartbeat refreshes are
+  excluded from that count: the executing machine — the row's one writer —
+  may rewrite the document's top-level `heartbeat_at` between summary-state
+  writes so readers can judge driver liveness. The heartbeat mutator refuses
+  terminal documents and can change no other field, so terminal stays final.
+  `operations.heartbeat_at` and `containers.deploy` ride as generated columns
+  in the DDL.
 
 ## Uniqueness without a coordinator: optimistic claims
 

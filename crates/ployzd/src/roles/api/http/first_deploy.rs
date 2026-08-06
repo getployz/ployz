@@ -14,7 +14,7 @@ use ployz_core::corrosion::{
 };
 use ployz_core::ids::{ClusterId, ContainerId, MachineRowId, OperationRowId, ServiceRowId};
 use ployz_core::network::EndpointBridgeStatus;
-use ployz_core::{FirstDeployAccepted, FirstDeployRefusal, FirstDeployRequest};
+use ployz_core::{DeployAccepted, DeployRefusal, DeployRequest};
 use ployz_core::{OperationEvidence, deploy::ImageReference};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tokio::sync::watch;
@@ -167,7 +167,7 @@ pub(super) trait FirstDeployRuntime: Send + Sync {
     ) -> Result<(), String>;
     async fn create_container(
         &self,
-        request: &FirstDeployRequest,
+        request: &DeployRequest,
         resolved_image: &ImageReference,
         namespace: &ResolvedFirstDeployNamespace,
         identity: V2ManagedContainerIdentity,
@@ -217,7 +217,7 @@ where
 
     async fn create_container(
         &self,
-        request: &FirstDeployRequest,
+        request: &DeployRequest,
         resolved_image: &ImageReference,
         namespace: &ResolvedFirstDeployNamespace,
         identity: V2ManagedContainerIdentity,
@@ -369,27 +369,27 @@ impl FirstDeployDriver {
 
     pub(super) async fn admit(
         &self,
-        request: FirstDeployRequest,
+        request: DeployRequest,
         initiator: OperationInitiator,
-    ) -> Result<Result<AcceptedFirstDeploy, FirstDeployRefusal>, FirstDeployDriverError> {
+    ) -> Result<Result<AcceptedFirstDeploy, DeployRefusal>, FirstDeployDriverError> {
         let namespace = match self
             .store
             .resolve_empty_namespace(&request.namespace_name)
             .await?
         {
             FirstDeployNamespaceResolution::Missing => {
-                return Ok(Err(FirstDeployRefusal::namespace_not_found(
+                return Ok(Err(DeployRefusal::namespace_not_found(
                     request.namespace_name,
                 )));
             }
             FirstDeployNamespaceResolution::Ambiguous { namespace_ids } => {
-                return Ok(Err(FirstDeployRefusal::NamespaceAmbiguous {
+                return Ok(Err(DeployRefusal::NamespaceAmbiguous {
                     namespace_name: request.namespace_name,
                     namespace_ids,
                 }));
             }
             FirstDeployNamespaceResolution::NotFirst { namespace_id } => {
-                return Ok(Err(FirstDeployRefusal::NotFirstDeploy { namespace_id }));
+                return Ok(Err(DeployRefusal::NotFirstDeploy { namespace_id }));
             }
             FirstDeployNamespaceResolution::Ready(namespace) => namespace,
         };
@@ -397,7 +397,7 @@ impl FirstDeployDriver {
             .await
             .unwrap_or(false)
         {
-            return Ok(Err(FirstDeployRefusal::BridgeUnavailable));
+            return Ok(Err(DeployRefusal::BridgeUnavailable));
         }
 
         let operation_id = OperationRowId::generate();
@@ -428,7 +428,7 @@ impl FirstDeployDriver {
             return Err(FirstDeployDriverError::Operation(error));
         }
         Ok(Ok(AcceptedFirstDeploy {
-            reply: FirstDeployAccepted {
+            reply: DeployAccepted {
                 operation_id: operation_id.clone(),
                 driver_machine_id: self.machine_id.clone(),
             },
@@ -676,7 +676,7 @@ fn promotion_uncertain(state: PromotionFinalizerState) -> PromotionFinalizerDeci
 }
 
 pub(super) struct AcceptedFirstDeploy {
-    pub(super) reply: FirstDeployAccepted,
+    pub(super) reply: DeployAccepted,
     pub(super) task: FirstDeployTask,
 }
 
@@ -696,7 +696,7 @@ pub(super) struct FirstDeployTask {
     driver: FirstDeployDriver,
     operation_id: OperationRowId,
     service_id: ServiceRowId,
-    request: FirstDeployRequest,
+    request: DeployRequest,
     initiator: OperationInitiator,
     namespace: ResolvedFirstDeployNamespace,
     log: OperationEvidenceLog,
@@ -1302,7 +1302,7 @@ mod tests {
 
         async fn create_container(
             &self,
-            _request: &ployz_core::FirstDeployRequest,
+            _request: &ployz_core::DeployRequest,
             _resolved_image: &ImageReference,
             _namespace: &ResolvedFirstDeployNamespace,
             _identity: ployz_core::corrosion::V2ManagedContainerIdentity,
@@ -1409,7 +1409,7 @@ mod tests {
         }
     }
 
-    fn request() -> ployz_core::FirstDeployRequest {
+    fn request() -> ployz_core::DeployRequest {
         let mut environment = BTreeMap::new();
         environment.insert(
             EnvName::try_new("DATABASE_PASSWORD").expect("env name"),
@@ -1417,11 +1417,12 @@ mod tests {
         );
         let mut runtime = ContainerRuntimeSpec::image_defaults();
         runtime.environment = environment.into();
-        ployz_core::FirstDeployRequest {
+        ployz_core::DeployRequest {
             namespace_name: CorrosionNamespaceName::try_new("production").expect("namespace name"),
             service_name: CorrosionServiceName::try_new("api").expect("service name"),
             image: ImageReference::try_new("nginx:1.27-alpine").expect("image"),
             runtime,
+            health_gate: ployz_core::HealthGatePolicy::Enforce,
         }
     }
 
@@ -1483,7 +1484,7 @@ mod tests {
         };
         assert_eq!(
             refusal,
-            ployz_core::FirstDeployRefusal::namespace_not_found(
+            ployz_core::DeployRefusal::namespace_not_found(
                 CorrosionNamespaceName::try_new("production").expect("name")
             )
         );
@@ -1503,7 +1504,7 @@ mod tests {
         let Err(refusal) = admission else {
             panic!("unavailable bridge must refuse");
         };
-        assert_eq!(refusal, ployz_core::FirstDeployRefusal::BridgeUnavailable);
+        assert_eq!(refusal, ployz_core::DeployRefusal::BridgeUnavailable);
         assert_eq!(fixture.operations.writes.load(Ordering::SeqCst), 0);
         assert_eq!(fixture.runtime.created.load(Ordering::SeqCst), 0);
     }

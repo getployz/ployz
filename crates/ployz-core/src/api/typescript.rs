@@ -11,7 +11,7 @@ use super::v2::{
     CorrosionNamespaceCreateRefusal, CorrosionNamespaceCreateReply,
     CorrosionNamespaceCreateRequest, CorrosionNamespaceRemoveRefusal,
     CorrosionNamespaceRemoveReply, CorrosionNamespaceRemoveRequest, CorrosionRetryAfterSeconds,
-    FirstDeployAccepted, FirstDeployRefusal, FirstDeployRequest, HandshakeObservation,
+    DeployAccepted, DeployRefusal, DeployRequest, HandshakeObservation,
     HandshakeObservationOutcome, HandshakeObservationUnavailable, KNOWN_API_FEATURES,
     KnownApiFeature, LensCollection, LensSnapshot, LensWatchEvent, MachineLensRow,
     MachineRemoveRefusal, MachineRemoveReply, MachineRemoveRequest, MachineStatusLensRow,
@@ -208,9 +208,9 @@ fn collect_v2_contracts(declarations: &mut DeclarationCollector<'_>) {
     declarations.visit::<CorrosionNamespaceRemoveRequest>();
     declarations.visit::<CorrosionNamespaceRemoveReply>();
     declarations.visit::<CorrosionNamespaceRemoveRefusal>();
-    declarations.visit::<FirstDeployRequest>();
-    declarations.visit::<FirstDeployAccepted>();
-    declarations.visit::<FirstDeployRefusal>();
+    declarations.visit::<DeployRequest>();
+    declarations.visit::<DeployAccepted>();
+    declarations.visit::<DeployRefusal>();
     declarations.visit::<OperationLookupReply>();
     declarations.visit::<OperationLookupRefusal>();
     declarations.visit::<OperationEvidenceSequence>();
@@ -551,7 +551,7 @@ mod tests {
         assert!(generated.contains("\"v2.founding\","));
         assert!(generated.contains("\"v2.lenses\","));
         assert!(generated.contains("\"v2.namespace_primitives\","));
-        assert!(generated.contains("\"v2.first_deploy\","));
+        assert!(generated.contains("\"v2.deploy\","));
         assert!(generated.contains("\"v2.operation_evidence\","));
         assert!(generated.contains("\"v2.logs\","));
         assert!(generated.contains("\"v2.machine_remove\","));
@@ -605,9 +605,9 @@ mod tests {
             "CorrosionNamespaceRemoveRequest",
             "CorrosionNamespaceRemoveReply",
             "CorrosionNamespaceRemoveRefusal",
-            "FirstDeployRequest",
-            "FirstDeployAccepted",
-            "FirstDeployRefusal",
+            "DeployRequest",
+            "DeployAccepted",
+            "DeployRefusal",
             "OperationLookupReply",
             "OperationLookupRefusal",
             "OperationEvidenceSequence",

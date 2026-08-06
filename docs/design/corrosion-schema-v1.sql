@@ -122,11 +122,13 @@ CREATE TABLE containers (
     document TEXT NOT NULL DEFAULT '{}',
     machine_id TEXT GENERATED ALWAYS AS (json_extract(document, '$.machine_id')) VIRTUAL,
     service_id TEXT GENERATED ALWAYS AS (json_extract(document, '$.service_id')) VIRTUAL,
-    namespace_id TEXT GENERATED ALWAYS AS (json_extract(document, '$.namespace_id')) VIRTUAL
+    namespace_id TEXT GENERATED ALWAYS AS (json_extract(document, '$.namespace_id')) VIRTUAL,
+    deploy TEXT GENERATED ALWAYS AS (json_extract(document, '$.deploy')) VIRTUAL
 );
 CREATE INDEX containers_machine_id ON containers (machine_id);
 CREATE INDEX containers_service_id ON containers (service_id);
 CREATE INDEX containers_namespace_id ON containers (namespace_id);
+CREATE INDEX containers_deploy ON containers (deploy);
 
 -- Slow-changing per-machine testimony: versions, arch, capacity. One row
 -- per machine, PK = MachineRowId. Never liveness — liveness is WG
@@ -138,19 +140,22 @@ CREATE TABLE machine_status (
 
 -- Operation summaries (evidence ticket #783): one row per OperationRowId, at
 -- most three
--- writes — created, optional running, terminal. Written only by the
--- executing machine; the terminal write is final. Detail is driver-local
--- JSONL, never rows.
+-- summary-state writes — created, optional running, terminal. Written only
+-- by the executing machine; the terminal write is final. Heartbeat refreshes
+-- rewrite only the document's top-level heartbeat_at between those writes
+-- and never touch a terminal row. Detail is driver-local JSONL, never rows.
 CREATE TABLE operations (
     id TEXT NOT NULL PRIMARY KEY,
     document TEXT NOT NULL DEFAULT '{}',
     kind TEXT GENERATED ALWAYS AS (json_extract(document, '$.kind')) VIRTUAL,
     state TEXT GENERATED ALWAYS AS (json_extract(document, '$.state')) VIRTUAL,
-    machine_id TEXT GENERATED ALWAYS AS (json_extract(document, '$.machine_id')) VIRTUAL
+    machine_id TEXT GENERATED ALWAYS AS (json_extract(document, '$.machine_id')) VIRTUAL,
+    heartbeat_at TEXT GENERATED ALWAYS AS (json_extract(document, '$.heartbeat_at')) VIRTUAL
 );
 CREATE INDEX operations_kind ON operations (kind);
 CREATE INDEX operations_state ON operations (state);
 CREATE INDEX operations_machine_id ON operations (machine_id);
+CREATE INDEX operations_heartbeat_at ON operations (heartbeat_at);
 
 -- Cert possession testimony (unified-cert ticket #792): one row per
 -- (gateway, hostname), written only by that gateway when it issues or

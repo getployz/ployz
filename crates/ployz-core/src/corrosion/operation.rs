@@ -301,6 +301,9 @@ pub enum CorrosionDeployFailure {
         service_id: ServiceRowId,
         winner: ServiceRowId,
     },
+    SupersededByOperation {
+        winner: OperationRowId,
+    },
     Interrupted,
 }
 
@@ -708,6 +711,7 @@ impl OperationDocument {
                 service_ids,
                 state: CorrosionDeployState::Created { created_at },
             },
+            Some(created_at),
         )
     }
 
@@ -744,7 +748,14 @@ impl OperationDocument {
                 }
             }
         };
-        Self::from_parts(v, cluster_id, machine_id, initiator, operation)
+        Self::from_parts(
+            v,
+            cluster_id,
+            machine_id,
+            initiator,
+            operation,
+            Some(created_at),
+        )
     }
 
     #[must_use]
@@ -836,6 +847,7 @@ impl OperationDocument {
                 error,
             });
         }
+        let heartbeat_at = original.heartbeat_at();
         Ok(Self::from_parts(
             original.v,
             original.cluster_id.clone(),
@@ -846,6 +858,7 @@ impl OperationDocument {
                 service_ids,
                 state: next_state,
             },
+            heartbeat_at,
         ))
     }
 
@@ -943,12 +956,67 @@ impl OperationDocument {
             CorrosionOperation::Deploy { .. } => unreachable!("deploy rejected above"),
         };
 
+        let heartbeat_at = original.heartbeat_at();
         Ok(Self::from_parts(
             original.v,
             original.cluster_id.clone(),
             original.machine_id.clone(),
             original.initiator.clone(),
             operation,
+            heartbeat_at,
+        ))
+    }
+
+    /// Whether this summary has reached a final state that no write may follow.
+    #[must_use]
+    pub fn is_terminal(&self) -> bool {
+        match self.operation() {
+            CorrosionOperation::Deploy { state, .. } => {
+                matches!(state, CorrosionDeployState::Terminal { .. })
+            }
+            CorrosionOperation::Build { state, .. }
+            | CorrosionOperation::MachineAdd { state, .. }
+            | CorrosionOperation::MachineRemove { state, .. }
+            | CorrosionOperation::Recovery { state, .. } => matches!(
+                state,
+                CorrosionOperationState::Succeeded { .. } | CorrosionOperationState::Failed { .. }
+            ),
+        }
+    }
+
+    /// The creation instant carried by every state of every operation kind.
+    #[must_use]
+    pub fn created_at(&self) -> CorrosionTimestamp {
+        match self.operation() {
+            CorrosionOperation::Deploy { state, .. } => state.created_at(),
+            CorrosionOperation::Build { state, .. }
+            | CorrosionOperation::MachineAdd { state, .. }
+            | CorrosionOperation::MachineRemove { state, .. }
+            | CorrosionOperation::Recovery { state, .. } => state.created_at(),
+        }
+    }
+
+    /// Returns a copy with only `heartbeat_at` advanced to `now`.
+    ///
+    /// The operation kind, state, and outcome are carried over untouched, so
+    /// this write can never race a state transition into a different truth.
+    /// A terminal summary is final and refuses the refresh.
+    pub fn refresh_heartbeat(
+        self,
+        now: CorrosionTimestamp,
+    ) -> Result<Self, CorrosionOperationTransitionError> {
+        if self.is_terminal() {
+            return Err(CorrosionOperationTransitionError::TerminalFinal {
+                document: Box::new(self),
+            });
+        }
+        Ok(Self::from_parts(
+            self.v,
+            self.cluster_id.clone(),
+            self.machine_id.clone(),
+            self.initiator.clone(),
+            self.operation().clone(),
+            Some(now),
         ))
     }
 }
@@ -956,6 +1024,145 @@ impl OperationDocument {
 impl CorrosionOperationState {
     const fn is_running(&self) -> bool {
         matches!(self, Self::Running { .. })
+    }
+
+    fn created_at(&self) -> CorrosionTimestamp {
+        match self {
+            Self::Created { created_at }
+            | Self::Running { created_at, .. }
+            | Self::Succeeded { created_at, .. }
+            | Self::Failed { created_at, .. } => *created_at,
+        }
+    }
+}
+
+/// The cadence at which a live deploy driver rewrites its heartbeat.
+pub const DEPLOY_HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// The heartbeat age at which a deploy op stops blocking rival claims.
+pub const DEPLOY_CLAIM_STALE_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Whether a deploy driver's heartbeat is fresh enough to hold its claim.
+///
+/// Liveness is meaningful only for non-terminal summaries; a terminal
+/// summary's claim is settled by its outcome, not its heartbeat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeployLiveness {
+    Live,
+    Stale,
+}
+
+impl OperationDocument {
+    /// Judges heartbeat freshness against [`DEPLOY_CLAIM_STALE_AFTER`],
+    /// falling back to the state's `created_at` for rows without a heartbeat.
+    #[must_use]
+    pub fn deploy_liveness(&self, now: CorrosionTimestamp) -> DeployLiveness {
+        let beat = self.heartbeat_at().unwrap_or_else(|| self.created_at());
+        if now.saturating_since(beat) < DEPLOY_CLAIM_STALE_AFTER {
+            DeployLiveness::Live
+        } else {
+            DeployLiveness::Stale
+        }
+    }
+
+    /// A non-terminal summary whose driver heartbeat has gone stale.
+    #[must_use]
+    pub fn is_stalled(&self, now: CorrosionTimestamp) -> bool {
+        !self.is_terminal() && matches!(self.deploy_liveness(now), DeployLiveness::Stale)
+    }
+}
+
+/// The admission-time adjudication of one service's optimistic op-row claim.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeployClaim {
+    Won,
+    Lost { winner: OperationRowId },
+}
+
+/// Adjudicates the op-row claim among one service's non-terminal deploy ops.
+///
+/// The lowest ULID among live candidates wins. Terminal, non-deploy, and
+/// stale candidates never block, so only a live rival below `my_operation_id`
+/// can turn the claim into a loss.
+#[must_use]
+pub fn adjudicate_deploy_claim(
+    my_operation_id: &OperationRowId,
+    candidates: &[(OperationRowId, OperationDocument)],
+    now: CorrosionTimestamp,
+) -> DeployClaim {
+    let winner = candidates
+        .iter()
+        .filter(|(id, document)| {
+            id < my_operation_id
+                && document.deploy_state().is_some()
+                && !document.is_terminal()
+                && matches!(document.deploy_liveness(now), DeployLiveness::Live)
+        })
+        .map(|(id, _)| id)
+        .min();
+    match winner {
+        Some(winner) => DeployClaim::Lost {
+            winner: winner.clone(),
+        },
+        None => DeployClaim::Won,
+    }
+}
+
+/// A phase-boundary check for newer deploy ops that may own the service now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeployTakeover {
+    Clear,
+    TakenOver { winner: OperationRowId },
+}
+
+/// Checks whether any deploy op newer than `my_operation_id` has taken over.
+///
+/// A newer op is harmless only when it terminally recorded itself superseded
+/// by `my_operation_id`: losers mutate nothing. Any other newer op — running,
+/// failed, interrupted, or stalled — may already have swept this op's
+/// containers, so staleness never clears a takeover.
+#[must_use]
+pub fn check_deploy_takeover(
+    my_operation_id: &OperationRowId,
+    newer: &[(OperationRowId, OperationDocument)],
+) -> DeployTakeover {
+    let winner = newer
+        .iter()
+        .filter(|(id, document)| {
+            id > my_operation_id && !is_terminal_superseded_by(document, my_operation_id)
+        })
+        .map(|(id, _)| id)
+        .min();
+    match winner {
+        Some(winner) => DeployTakeover::TakenOver {
+            winner: winner.clone(),
+        },
+        None => DeployTakeover::Clear,
+    }
+}
+
+fn is_terminal_superseded_by(document: &OperationDocument, winner: &OperationRowId) -> bool {
+    let Some(CorrosionDeployState::Terminal { outcome, .. }) = document.deploy_state() else {
+        return false;
+    };
+    match outcome {
+        CorrosionDeployOutcome::Failed { failure, .. } => match failure {
+            CorrosionDeployFailure::SupersededByOperation { winner: recorded } => {
+                recorded == winner
+            }
+            CorrosionDeployFailure::BridgeUnavailable { .. }
+            | CorrosionDeployFailure::ServiceFailed { .. }
+            | CorrosionDeployFailure::NamespaceChanged { .. }
+            | CorrosionDeployFailure::EvidenceLost { .. }
+            | CorrosionDeployFailure::Promotion { .. }
+            | CorrosionDeployFailure::Superseded { .. }
+            | CorrosionDeployFailure::Interrupted => false,
+        },
+        CorrosionDeployOutcome::Completed { .. }
+        | CorrosionDeployOutcome::CompletedWithWarnings { .. }
+        | CorrosionDeployOutcome::PartiallyCompleted { .. }
+        | CorrosionDeployOutcome::PartiallyCompletedWithWarnings { .. }
+        | CorrosionDeployOutcome::Cancelled { .. } => false,
     }
 }
 

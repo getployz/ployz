@@ -10,7 +10,7 @@ use crate::roles::api::runner::{
     ExistingManagedContainerState, ExistingV2ManagedContainer, MachineContainerCreateError,
     MachineContainerListError, MachineContainerRemoveError, MachineContainerRestartError,
     MachineContainerRunner, MachineContainerStartError, MachineContainerStopError,
-    MachineContainerWaitError, MachineEndpointNetworkConvergenceError,
+    MachineContainerStopOutcome, MachineContainerWaitError, MachineEndpointNetworkConvergenceError,
     MachineEndpointNetworkConvergenceOutcome, MachineEndpointNetworkError,
     MachineImageRemovalRunner, MachineLogQuery, MachineLogReader, MachineLogReaderError,
     MachineLogTail, MachineLogTimestamps, MachineRegistryImageResolveError,
@@ -37,7 +37,7 @@ use ployz_core::deploy::{
     ContainerEntrypoint, ContainerHealthcheck, ContainerHealthcheckTest, ContainerRestartPolicy,
     ContainerRuntimeSpec, ImageReference, RegistryCredential, VolumeName,
 };
-use ployz_core::ids::{ContainerId, NamespaceId, SubjectTokenError};
+use ployz_core::ids::{ContainerId, NamespaceId, NamespaceRowId, SubjectTokenError};
 use ployz_core::image::OciDigest;
 use ployz_core::intent::{VolumeKind, VolumePinState};
 use ployz_core::machine::VolumeEnsureFailure;
@@ -521,10 +521,7 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
         &self,
         container_id: &ContainerId,
         expected_identity: &ManagedContainerIdentity,
-    ) -> Result<crate::roles::api::runner::MachineContainerStopOutcome, MachineContainerStopError>
-    {
-        use crate::roles::api::runner::MachineContainerStopOutcome;
-
+    ) -> Result<MachineContainerStopOutcome, MachineContainerStopError> {
         let docker = self
             .docker()
             .await
@@ -727,6 +724,139 @@ impl V2MachineContainerRunner for DockerManagedContainerRunner {
                 container_id: container_id.clone(),
                 message: error.to_string(),
             })
+    }
+
+    async fn stop_v2_managed_container(
+        &self,
+        container_id: &ContainerId,
+        expected_identity: &V2ManagedContainerIdentity,
+    ) -> Result<MachineContainerStopOutcome, MachineContainerStopError> {
+        let docker = self
+            .docker()
+            .await
+            .map_err(|error| MachineContainerStopError::Stop {
+                container_id: container_id.clone(),
+                message: error.to_string(),
+            })?;
+        let inspect = match docker
+            .inspect_container(container_id.as_str(), None::<InspectContainerOptions>)
+            .await
+        {
+            Ok(inspect) => inspect,
+            Err(error) if is_docker_object_missing(&error) => {
+                return Ok(MachineContainerStopOutcome::Missing);
+            }
+            Err(error) => {
+                return Err(MachineContainerStopError::Stop {
+                    container_id: container_id.clone(),
+                    message: error.to_string(),
+                });
+            }
+        };
+        let labels = inspect
+            .config
+            .and_then(|config| config.labels)
+            .ok_or_else(|| MachineContainerStopError::Stop {
+                container_id: container_id.clone(),
+                message: "Docker inspect omitted container labels".to_owned(),
+            })?;
+        let observed_identity = v2_labels::parse(&btree_from_hashmap(labels)).map_err(|error| {
+            MachineContainerStopError::Stop {
+                container_id: container_id.clone(),
+                message: format!(
+                    "container labels did not contain a valid v2 row identity: {error:?}"
+                ),
+            }
+        })?;
+        if observed_identity != *expected_identity {
+            return Err(MachineContainerStopError::Stop {
+                container_id: container_id.clone(),
+                message: format!(
+                    "container identity did not match stop target: expected {:?}, found {:?}",
+                    expected_identity, observed_identity
+                ),
+            });
+        }
+        let running = inspect
+            .state
+            .and_then(|state| state.running)
+            .ok_or_else(|| MachineContainerStopError::Stop {
+                container_id: container_id.clone(),
+                message: "Docker inspect omitted container running state".to_owned(),
+            })?;
+        if !running {
+            return Ok(MachineContainerStopOutcome::AlreadyStopped);
+        }
+        // No timeout override: Docker honors the container's configured
+        // StopTimeout from creation.
+        let options = StopContainerOptionsBuilder::new().build();
+        match docker
+            .stop_container(container_id.as_str(), Some(options))
+            .await
+        {
+            Ok(()) => Ok(MachineContainerStopOutcome::StoppedRunning),
+            Err(error) if is_docker_object_missing(&error) => {
+                Ok(MachineContainerStopOutcome::Missing)
+            }
+            Err(BollardError::DockerResponseServerError {
+                status_code: 304, ..
+            }) => Ok(MachineContainerStopOutcome::AlreadyStopped),
+            Err(error) => Err(MachineContainerStopError::Stop {
+                container_id: container_id.clone(),
+                message: error.to_string(),
+            }),
+        }
+    }
+
+    async fn remove_v2_managed_container(
+        &self,
+        container_id: &ContainerId,
+        expected_identity: &V2ManagedContainerIdentity,
+    ) -> Result<(), MachineContainerRemoveError> {
+        let existing = self
+            .existing_v2_managed_containers()
+            .await
+            .map_err(|error| match error {
+                MachineContainerListError::ListExisting { message } => {
+                    MachineContainerRemoveError::ListExisting { message }
+                }
+            })?
+            .into_iter()
+            .find(|container| container.container_id == *container_id);
+        let Some(existing) = existing else {
+            return Ok(());
+        };
+        if existing.identity != *expected_identity {
+            return Err(MachineContainerRemoveError::Remove {
+                container_id: container_id.clone(),
+                message: format!(
+                    "container identity did not match cleanup target: expected {:?}, found {:?}",
+                    expected_identity, existing.identity
+                ),
+            });
+        }
+
+        let docker = self
+            .docker()
+            .await
+            .map_err(|error| MachineContainerRemoveError::Remove {
+                container_id: container_id.clone(),
+                message: error.to_string(),
+            })?;
+        // Volumes are never removed with their container: a superseded
+        // incumbent's data must survive for the successor to mount.
+        let options = RemoveContainerOptionsBuilder::new().force(true).build();
+        match docker
+            .remove_container(container_id.as_str(), Some(options))
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(error) if is_docker_object_missing(&error) => Ok(()),
+            Err(error) => Err(MachineContainerRemoveError::Remove {
+                container_id: container_id.clone(),
+                message: error.to_string(),
+            }),
+        }
     }
 }
 
@@ -1385,6 +1515,25 @@ fn named_volume_names_from_mounts(
     mounts: &[MountPoint],
     namespace_id: &NamespaceId,
 ) -> Result<BTreeSet<VolumeName>, String> {
+    collect_named_volume_names(mounts, |name| {
+        VolumeName::try_from_stable_storage_name(name, namespace_id)
+            .map_err(|error| format!("invalid Docker named-volume identity `{name}`: {error}"))
+    })
+}
+
+fn v2_named_volume_names_from_mounts(
+    mounts: &[MountPoint],
+    namespace_id: &NamespaceRowId,
+) -> Result<BTreeSet<VolumeName>, String> {
+    collect_named_volume_names(mounts, |name| {
+        v2_volume_name_from_storage_name(name, namespace_id)
+    })
+}
+
+fn collect_named_volume_names(
+    mounts: &[MountPoint],
+    parse: impl Fn(&str) -> Result<VolumeName, String>,
+) -> Result<BTreeSet<VolumeName>, String> {
     let mut names = BTreeSet::new();
     for mount in mounts {
         let Some(kind) = mount.typ.as_deref() else {
@@ -1396,11 +1545,36 @@ fn named_volume_names_from_mounts(
         let Some(name) = mount.name.as_deref().filter(|name| !name.is_empty()) else {
             return Err("Docker inspect named-volume mount omitted its name".to_owned());
         };
-        let volume_name = VolumeName::try_from_stable_storage_name(name, namespace_id)
-            .map_err(|error| format!("invalid Docker named-volume identity `{name}`: {error}"))?;
-        names.insert(volume_name);
+        names.insert(parse(name)?);
     }
     Ok(names)
+}
+
+/// Storage identity of a row-scoped v2 named volume on the local Docker host.
+fn v2_volume_storage_name(namespace_id: &NamespaceRowId, volume_name: &VolumeName) -> String {
+    let namespace = namespace_id.as_str();
+    format!(
+        "ployz-v2-n{}-{namespace}-v{}-{}",
+        namespace.len(),
+        volume_name.as_str().len(),
+        volume_name.as_str()
+    )
+}
+
+/// Decodes a v2 storage name back to its volume name, accepting only names
+/// that re-render byte-for-byte for the expected namespace row.
+fn v2_volume_name_from_storage_name(
+    storage_name: &str,
+    namespace_id: &NamespaceRowId,
+) -> Result<VolumeName, String> {
+    let namespace = namespace_id.as_str();
+    let prefix = format!("ployz-v2-n{}-{namespace}-v", namespace.len());
+    let volume_name = storage_name
+        .strip_prefix(prefix.as_str())
+        .and_then(|rest| rest.split_once('-'))
+        .and_then(|(_, name)| VolumeName::try_new(name).ok())
+        .filter(|name| v2_volume_storage_name(namespace_id, name) == storage_name);
+    volume_name.ok_or_else(|| format!("invalid v2 Docker named-volume identity `{storage_name}`"))
 }
 
 fn parse_docker_started_at(started_at: &str) -> Result<u64, String> {
@@ -1537,13 +1711,7 @@ impl DockerCreateIdentity {
         match self {
             Self::Incumbent(identity) => volume_name.stable_storage_name(&identity.namespace_id),
             Self::CorrosionV2 { identity, .. } => {
-                let namespace = identity.namespace_id.as_str();
-                format!(
-                    "ployz-v2-n{}-{namespace}-v{}-{}",
-                    namespace.len(),
-                    volume_name.as_str().len(),
-                    volume_name.as_str()
-                )
+                v2_volume_storage_name(&identity.namespace_id, volume_name)
             }
         }
     }
@@ -1767,6 +1935,12 @@ fn existing_v2_container_from_summary(
         .and_then(docker_health_status);
     let identity = v2_labels::parse(&btree_from_hashmap(labels))
         .map_err(DockerManagedContainerSummaryError::InvalidV2Labels)?;
+    let mounts = summary
+        .mounts
+        .as_deref()
+        .ok_or(DockerManagedContainerSummaryError::MissingMounts)?;
+    let named_volume_names = v2_named_volume_names_from_mounts(mounts, &identity.namespace_id)
+        .map_err(DockerManagedContainerSummaryError::InvalidNamedVolumeMounts)?;
 
     Ok(ExistingV2ManagedContainer {
         container_id: ContainerId::try_new(id)
@@ -1776,6 +1950,7 @@ fn existing_v2_container_from_summary(
         health_status: health_status.or_else(|| summary.status.as_deref().and_then(status_health)),
         resolved_image_identity: summary.image_id,
         created_at_unix_seconds: summary.created,
+        named_volume_names,
     })
 }
 
@@ -1849,6 +2024,10 @@ enum DockerManagedContainerSummaryError {
     InvalidLabels(ManagedContainerLabelError),
     #[error("managed Docker container has invalid v2 labels: {0:?}")]
     InvalidV2Labels(V2ManagedContainerLabelError),
+    #[error("managed Docker container is missing mounts")]
+    MissingMounts,
+    #[error("managed Docker container has invalid named-volume mounts: {0}")]
+    InvalidNamedVolumeMounts(String),
 }
 
 fn hashmap_from_btree(map: BTreeMap<String, String>) -> HashMap<String, String> {
@@ -1863,7 +2042,7 @@ fn btree_from_hashmap(map: HashMap<String, String>) -> BTreeMap<String, String> 
 mod tests {
     use super::*;
     use crate::roles::api::execution::docker::test_support::{
-        TEST_ENDPOINT_SUBNET, image, runner_with_responses,
+        TEST_ENDPOINT_SUBNET, image, recording_runner_with_responses, runner_with_responses,
     };
     use ployz_core::deploy::{
         ContainerCommand, ContainerEntrypoint, ContainerHealthcheck, ContainerHealthcheckTest,
@@ -2403,6 +2582,111 @@ mod tests {
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
     }
 
+    fn v2_labels_json() -> String {
+        serde_json::to_string(&v2_labels::render(&v2_managed_identity()))
+            .expect("v2 labels serialize")
+    }
+
+    #[tokio::test]
+    async fn v2_stop_defers_to_the_containers_configured_stop_timeout() {
+        let inspect = format!(
+            r#"{{"Id":"0123456789abcdef","Config":{{"Labels":{}}},"State":{{"Running":true}}}}"#,
+            v2_labels_json()
+        );
+        let (runner, requests, _socket_dir) =
+            recording_runner_with_responses(vec![(200, inspect), (204, String::new())]).await;
+
+        let outcome = runner
+            .stop_v2_managed_container(&container_id("0123456789abcdef"), &v2_managed_identity())
+            .await
+            .expect("v2 stop succeeds");
+
+        assert_eq!(outcome, MachineContainerStopOutcome::StoppedRunning);
+        let requests = requests.lock().expect("recorded Docker requests");
+        let [inspect_request, stop_request] = requests.as_slice() else {
+            panic!("expected inspect then stop, got {requests:?}");
+        };
+        assert!(
+            inspect_request.contains("/containers/0123456789abcdef/json"),
+            "{inspect_request}"
+        );
+        let stop_line = stop_request.lines().next().expect("stop request line");
+        assert!(stop_line.starts_with("POST "), "{stop_line}");
+        assert!(
+            stop_line.contains("/containers/0123456789abcdef/stop"),
+            "{stop_line}"
+        );
+        assert!(
+            !stop_line.contains("t="),
+            "stop must carry no timeout override so Docker honors the \
+             container's configured StopTimeout: {stop_line}"
+        );
+    }
+
+    #[tokio::test]
+    async fn v2_stop_reports_an_already_stopped_container_without_a_stop_call() {
+        let inspect = format!(
+            r#"{{"Id":"0123456789abcdef","Config":{{"Labels":{}}},"State":{{"Running":false}}}}"#,
+            v2_labels_json()
+        );
+        let (runner, requests, _socket_dir) =
+            recording_runner_with_responses(vec![(200, inspect)]).await;
+
+        let outcome = runner
+            .stop_v2_managed_container(&container_id("0123456789abcdef"), &v2_managed_identity())
+            .await
+            .expect("v2 stop succeeds");
+
+        assert_eq!(outcome, MachineContainerStopOutcome::AlreadyStopped);
+        let requests = requests.lock().expect("recorded Docker requests");
+        assert_eq!(requests.len(), 1, "{requests:?}");
+    }
+
+    #[tokio::test]
+    async fn v2_remove_forces_removal_but_never_removes_volumes() {
+        let list = format!(
+            r#"[{{"Id":"0123456789abcdef","Labels":{},"State":"exited","Mounts":[]}}]"#,
+            v2_labels_json()
+        );
+        let (runner, requests, _socket_dir) =
+            recording_runner_with_responses(vec![(200, list), (204, String::new())]).await;
+
+        runner
+            .remove_v2_managed_container(&container_id("0123456789abcdef"), &v2_managed_identity())
+            .await
+            .expect("v2 remove succeeds");
+
+        let requests = requests.lock().expect("recorded Docker requests");
+        let [_list_request, remove_request] = requests.as_slice() else {
+            panic!("expected list then remove, got {requests:?}");
+        };
+        assert!(remove_request.starts_with("DELETE "), "{remove_request}");
+        assert!(remove_request.contains("v=false"), "{remove_request}");
+        assert!(remove_request.contains("force=true"), "{remove_request}");
+    }
+
+    #[tokio::test]
+    async fn v2_remove_of_a_mismatched_identity_refuses_without_a_delete_call() {
+        let list = format!(
+            r#"[{{"Id":"0123456789abcdef","Labels":{},"State":"exited","Mounts":[]}}]"#,
+            v2_labels_json()
+        );
+        let (runner, requests, _socket_dir) =
+            recording_runner_with_responses(vec![(200, list)]).await;
+        let mut wrong = v2_managed_identity();
+        wrong.operation_id = ployz_core::ids::OperationRowId::try_new("01K00000000000000000000009")
+            .expect("operation row");
+
+        let error = runner
+            .remove_v2_managed_container(&container_id("0123456789abcdef"), &wrong)
+            .await
+            .expect_err("mismatched identity refuses removal");
+
+        assert!(matches!(error, MachineContainerRemoveError::Remove { .. }));
+        let requests = requests.lock().expect("recorded Docker requests");
+        assert_eq!(requests.len(), 1, "{requests:?}");
+    }
+
     #[tokio::test]
     async fn missing_local_image_fails_create_without_network_acquisition() {
         let network = r#"{"Driver":"bridge","Labels":{"plz.managed":"true"},"Options":{"com.docker.network.bridge.name":"br-test","com.docker.network.driver.mtu":"1420"},"IPAM":{"Config":[{"Subnet":"10.42.7.0/24","Gateway":"10.42.7.1"}]}}"#;
@@ -2739,6 +3023,7 @@ mod tests {
             state: Some(ContainerSummaryStateEnum::CREATED),
             image_id: Some("sha256:resolved".to_owned()),
             created: Some(42),
+            mounts: Some(Vec::new()),
             ..Default::default()
         };
 
@@ -2751,7 +3036,101 @@ mod tests {
                 health_status: None,
                 resolved_image_identity: Some("sha256:resolved".to_owned()),
                 created_at_unix_seconds: Some(42),
+                named_volume_names: BTreeSet::new(),
             }
+        );
+    }
+
+    #[test]
+    fn v2_summary_maps_mounts_to_named_volumes_and_surfaces_running_state() {
+        let identity = v2_managed_identity();
+        let data = VolumeName::try_new("data").expect("volume");
+        let logs = VolumeName::try_new("logs").expect("volume");
+        let summary = ContainerSummary {
+            id: Some("0123456789abcdef".to_owned()),
+            labels: Some(hashmap_from_btree(v2_labels::render(&identity))),
+            state: Some(ContainerSummaryStateEnum::RUNNING),
+            mounts: Some(vec![
+                MountPoint {
+                    typ: Some("volume".to_owned()),
+                    name: Some(v2_volume_storage_name(&identity.namespace_id, &logs)),
+                    ..Default::default()
+                },
+                MountPoint {
+                    typ: Some("bind".to_owned()),
+                    name: Some("host-path".to_owned()),
+                    ..Default::default()
+                },
+                MountPoint {
+                    typ: Some("volume".to_owned()),
+                    name: Some(v2_volume_storage_name(&identity.namespace_id, &data)),
+                    ..Default::default()
+                },
+            ]),
+            ..Default::default()
+        };
+
+        let existing = existing_v2_container_from_summary(summary).expect("summary parses");
+
+        assert_eq!(existing.named_volume_names, BTreeSet::from([data, logs]));
+        assert!(matches!(
+            existing.state,
+            ExistingManagedContainerState::Running { .. }
+        ));
+    }
+
+    #[test]
+    fn v2_summary_without_mounts_is_not_empty_volume_testimony() {
+        let summary = ContainerSummary {
+            id: Some("0123456789abcdef".to_owned()),
+            labels: Some(hashmap_from_btree(
+                v2_labels::render(&v2_managed_identity()),
+            )),
+            state: Some(ContainerSummaryStateEnum::RUNNING),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            existing_v2_container_from_summary(summary),
+            Err(DockerManagedContainerSummaryError::MissingMounts)
+        );
+    }
+
+    #[test]
+    fn v2_named_volume_testimony_rejects_legacy_and_cross_namespace_storage_names() {
+        let identity = v2_managed_identity();
+        let volume = VolumeName::try_new("data").expect("volume");
+        let other_namespace =
+            ployz_core::ids::NamespaceRowId::try_new("01K00000000000000000000009")
+                .expect("namespace row");
+
+        for storage_name in [
+            "data".to_owned(),
+            volume.stable_storage_name(&namespace_id("default")),
+            v2_volume_storage_name(&other_namespace, &volume),
+        ] {
+            let error = v2_named_volume_names_from_mounts(
+                &[MountPoint {
+                    typ: Some("volume".to_owned()),
+                    name: Some(storage_name.clone()),
+                    ..Default::default()
+                }],
+                &identity.namespace_id,
+            )
+            .expect_err("invalid physical identity must fail testimony");
+            assert!(error.contains(&storage_name), "{error}");
+        }
+    }
+
+    #[test]
+    fn v2_volume_storage_names_round_trip_only_for_their_namespace_row() {
+        let identity = v2_managed_identity();
+        let volume = VolumeName::try_new("pg-data").expect("volume");
+        let storage_name = v2_volume_storage_name(&identity.namespace_id, &volume);
+
+        assert_eq!(
+            v2_volume_name_from_storage_name(&storage_name, &identity.namespace_id),
+            Ok(volume)
         );
     }
 

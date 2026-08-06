@@ -113,6 +113,13 @@ impl CorrosionTimestamp {
         Ok(Self(parsed.to_offset(UtcOffset::UTC)))
     }
 
+    /// The non-negative duration from `earlier` to this instant; zero when
+    /// this instant does not follow it.
+    #[must_use]
+    pub fn saturating_since(self, earlier: Self) -> std::time::Duration {
+        std::time::Duration::try_from(self.0 - earlier.0).unwrap_or(std::time::Duration::ZERO)
+    }
+
     fn canonical_string(self) -> String {
         let timestamp = self.0;
         format!(
@@ -895,6 +902,11 @@ pub struct OperationDocument {
     #[cfg_attr(feature = "ts", ts(flatten))]
     operation: CorrosionOperation,
     pub initiator: OperationInitiator,
+    /// The driver's latest liveness beat. `None` denotes a row written before
+    /// heartbeats existed; readers fall back to the state's `created_at`.
+    /// Mutation goes through [`Self::refresh_heartbeat`] only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    heartbeat_at: Option<CorrosionTimestamp>,
 }
 
 impl OperationDocument {
@@ -904,6 +916,7 @@ impl OperationDocument {
         machine_id: MachineRowId,
         initiator: OperationInitiator,
         operation: CorrosionOperation,
+        heartbeat_at: Option<CorrosionTimestamp>,
     ) -> Self {
         Self {
             v,
@@ -911,12 +924,18 @@ impl OperationDocument {
             machine_id,
             operation,
             initiator,
+            heartbeat_at,
         }
     }
 
     #[must_use]
     pub fn operation(&self) -> &CorrosionOperation {
         &self.operation
+    }
+
+    #[must_use]
+    pub fn heartbeat_at(&self) -> Option<CorrosionTimestamp> {
+        self.heartbeat_at
     }
 }
 
@@ -928,6 +947,8 @@ struct OperationDocumentRepresentation {
     #[serde(flatten)]
     operation: CorrosionOperation,
     initiator: OperationInitiator,
+    #[serde(default)]
+    heartbeat_at: Option<CorrosionTimestamp>,
 }
 
 impl<'de> Deserialize<'de> for OperationDocument {
@@ -943,6 +964,7 @@ impl<'de> Deserialize<'de> for OperationDocument {
             representation.machine_id,
             representation.initiator,
             representation.operation,
+            representation.heartbeat_at,
         ))
     }
 }

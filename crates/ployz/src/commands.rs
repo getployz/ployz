@@ -6,7 +6,6 @@ use std::net::SocketAddr;
 use std::str::FromStr;
 
 use clap::{Args, Parser, Subcommand};
-use ployz_core::MachineUpgradeUrl;
 use ployz_core::corrosion::{
     AutomaticHostnameMode, CorrosionNamespaceName, CorrosionServiceName, StorageMode,
 };
@@ -20,6 +19,7 @@ use ployz_core::join::{JoinBlob, JoinTokenTtlSeconds};
 use ployz_core::machine::MachineName;
 use ployz_core::network::{DEFAULT_ENDPOINT_SUPERNET, MachineEndpointSupernet, WireGuardPublicKey};
 use ployz_core::operation::RouteHostname;
+use ployz_core::{HealthGatePolicy, MachineUpgradeUrl};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,6 +76,7 @@ pub struct DeployCommand {
     pub service: CorrosionServiceName,
     pub image: ImageReference,
     pub environment: ServiceEnvironment,
+    pub health_gate: HealthGatePolicy,
     pub target: Option<SshTarget>,
 }
 
@@ -607,6 +608,9 @@ struct DeployArgs {
     /// Set an environment value as NAME=VALUE. Values are redacted from diagnostics.
     #[arg(long = "env", value_name = "NAME=VALUE")]
     environment: Vec<String>,
+    /// Emergency skip: deploy without waiting for the container to prove healthy.
+    #[arg(long = "no-health-gate")]
+    no_health_gate: bool,
     #[arg(long)]
     target: Option<SshTarget>,
 }
@@ -634,6 +638,11 @@ impl DeployArgs {
                 .map_err(|error| error.to_string())?,
             image: ImageReference::try_new(self.image).map_err(|error| error.to_string())?,
             environment: ServiceEnvironment::from(environment),
+            health_gate: if self.no_health_gate {
+                HealthGatePolicy::Skip
+            } else {
+                HealthGatePolicy::Enforce
+            },
             target: self.target,
         })
     }
@@ -1393,8 +1402,28 @@ mod tests {
             "API_TOKEN=sentinel-secret",
         ])
         .expect("deploy");
-        assert!(matches!(deploy, Command::Deploy(_)));
+        assert!(matches!(
+            &deploy,
+            Command::Deploy(DeployCommand {
+                health_gate: HealthGatePolicy::Enforce,
+                ..
+            })
+        ));
         assert!(!format!("{deploy:?}").contains("sentinel-secret"));
+        assert!(matches!(
+            parse(&[
+                "deploy",
+                "production",
+                "web",
+                "registry.example/web:latest",
+                "--no-health-gate",
+            ])
+            .expect("deploy without health gate"),
+            Command::Deploy(DeployCommand {
+                health_gate: HealthGatePolicy::Skip,
+                ..
+            })
+        ));
         assert!(matches!(
             parse(&["ops", "list"]).expect("ops list"),
             Command::Ops(OpsCommand::List(_))

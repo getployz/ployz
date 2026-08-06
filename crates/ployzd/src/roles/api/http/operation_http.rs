@@ -23,10 +23,9 @@ use ployz_core::corrosion::{
 };
 use ployz_core::ids::{MachineRowId, OperationRowId};
 use ployz_core::{
-    FirstDeployRefusal, FirstDeployRequest, HandshakeObservationOutcome,
-    HandshakeObservationUnavailable, LensCollection, LensSnapshot, OperationEvidence,
-    OperationLookupRefusal, OperationLookupReply, OperationWatchEvent, OperationWatchRefusal,
-    operation_watch_route,
+    DeployRefusal, DeployRequest, HandshakeObservationOutcome, HandshakeObservationUnavailable,
+    LensCollection, LensSnapshot, OperationEvidence, OperationLookupRefusal, OperationLookupReply,
+    OperationWatchEvent, OperationWatchRefusal, operation_watch_route,
 };
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tokio::sync::{Mutex, mpsc, watch};
@@ -204,7 +203,7 @@ impl OperationRuntime {
     pub(super) async fn spawn_first_deploy(
         &self,
         accepted: AcceptedFirstDeploy,
-    ) -> Result<ployz_core::FirstDeployAccepted, FirstDeployAdmissionError> {
+    ) -> Result<ployz_core::DeployAccepted, FirstDeployAdmissionError> {
         let reply = accepted.reply.clone();
         let operation_id = reply.operation_id.clone();
         self.register_live_log(operation_id.clone(), accepted.operation_log())
@@ -442,11 +441,10 @@ pub(super) async fn handle_first_deploy(
     let Some(driver) = service.first_deploy.as_ref() else {
         return super::server::refusal_response(ployz_core::ApiRefusal::UnsupportedRoute);
     };
-    let request: FirstDeployRequest =
-        match super::mutations::decode_request(request.into_body()).await {
-            Ok(request) => request,
-            Err(response) => return response,
-        };
+    let request: DeployRequest = match super::mutations::decode_request(request.into_body()).await {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
     match driver.admit(request, principal).await {
         Ok(Ok(accepted)) => match service.operations.spawn_first_deploy(accepted).await {
             Ok(reply) => super::mutations::typed_response(StatusCode::ACCEPTED, &reply),
@@ -457,10 +455,11 @@ pub(super) async fn handle_first_deploy(
         },
         Ok(Err(refusal)) => {
             let status = match refusal {
-                FirstDeployRefusal::NamespaceNotFound { .. } => StatusCode::NOT_FOUND,
-                FirstDeployRefusal::NamespaceAmbiguous { .. }
-                | FirstDeployRefusal::NotFirstDeploy { .. } => StatusCode::CONFLICT,
-                FirstDeployRefusal::BridgeUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+                DeployRefusal::NamespaceNotFound { .. } => StatusCode::NOT_FOUND,
+                DeployRefusal::NamespaceAmbiguous { .. } | DeployRefusal::NotFirstDeploy { .. } => {
+                    StatusCode::CONFLICT
+                }
+                DeployRefusal::BridgeUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             };
             super::mutations::typed_response(status, &refusal)
         }

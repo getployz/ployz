@@ -4,7 +4,7 @@ use std::io::Write as _;
 
 use hyper::Method;
 use ployz_core::deploy::ContainerRuntimeSpec;
-use ployz_core::{FIRST_DEPLOY_ROUTE, FirstDeployAccepted, FirstDeployRefusal, FirstDeployRequest};
+use ployz_core::{DEPLOY_ROUTE, DeployAccepted, DeployRefusal, DeployRequest};
 
 use crate::commands::{DeployCommand, OpsWatchCommand};
 use crate::mesh::http::JsonReply;
@@ -13,18 +13,11 @@ use crate::remote::{OperatorRemote, OperatorRemoteError};
 
 pub async fn execute(command: DeployCommand) -> Result<String, DeployExecutionError> {
     let remote = OperatorRemote::load(command.target.as_ref())?;
-    let mut runtime = ContainerRuntimeSpec::image_defaults();
-    runtime.environment = command.environment;
     let reply = remote
-        .request_json_with_refusal::<_, FirstDeployAccepted, FirstDeployRefusal>(
+        .request_json_with_refusal::<_, DeployAccepted, DeployRefusal>(
             Method::POST,
-            FIRST_DEPLOY_ROUTE,
-            Some(&FirstDeployRequest {
-                namespace_name: command.namespace,
-                service_name: command.service,
-                image: command.image,
-                runtime,
-            }),
+            DEPLOY_ROUTE,
+            Some(&deploy_request(&command)),
         )
         .await?;
     let accepted = match reply {
@@ -50,6 +43,18 @@ pub async fn execute(command: DeployCommand) -> Result<String, DeployExecutionEr
     )
     .await?;
     Ok(String::new())
+}
+
+fn deploy_request(command: &DeployCommand) -> DeployRequest {
+    let mut runtime = ContainerRuntimeSpec::image_defaults();
+    runtime.environment = command.environment.clone();
+    DeployRequest {
+        namespace_name: command.namespace.clone(),
+        service_name: command.service.clone(),
+        image: command.image.clone(),
+        runtime,
+        health_gate: command.health_gate,
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -80,17 +85,17 @@ pub enum DeployExecutionError {
     BridgeUnavailable,
 }
 
-impl From<FirstDeployRefusal> for DeployExecutionError {
-    fn from(refusal: FirstDeployRefusal) -> Self {
+impl From<DeployRefusal> for DeployExecutionError {
+    fn from(refusal: DeployRefusal) -> Self {
         match refusal {
-            FirstDeployRefusal::NamespaceNotFound {
+            DeployRefusal::NamespaceNotFound {
                 namespace_name,
                 create_command,
             } => Self::NamespaceNotFound {
                 namespace_name: namespace_name.as_str().to_owned(),
                 create_command,
             },
-            FirstDeployRefusal::NamespaceAmbiguous {
+            DeployRefusal::NamespaceAmbiguous {
                 namespace_name,
                 namespace_ids,
             } => Self::NamespaceAmbiguous {
@@ -101,10 +106,49 @@ impl From<FirstDeployRefusal> for DeployExecutionError {
                     .collect::<Vec<_>>()
                     .join(", "),
             },
-            FirstDeployRefusal::NotFirstDeploy { namespace_id } => Self::NotFirstDeploy {
+            DeployRefusal::NotFirstDeploy { namespace_id } => Self::NotFirstDeploy {
                 namespace_id: namespace_id.to_string(),
             },
-            FirstDeployRefusal::BridgeUnavailable => Self::BridgeUnavailable,
+            DeployRefusal::BridgeUnavailable => Self::BridgeUnavailable,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use ployz_core::HealthGatePolicy;
+    use ployz_core::corrosion::{CorrosionNamespaceName, CorrosionServiceName};
+    use ployz_core::deploy::{ImageReference, ServiceEnvironment};
+
+    use super::*;
+
+    fn command(health_gate: HealthGatePolicy) -> DeployCommand {
+        DeployCommand {
+            namespace: CorrosionNamespaceName::try_new("production").expect("namespace name"),
+            service: CorrosionServiceName::try_new("web").expect("service name"),
+            image: ImageReference::try_new("registry.example/web:latest").expect("image"),
+            environment: ServiceEnvironment::from(BTreeMap::new()),
+            health_gate,
+            target: None,
+        }
+    }
+
+    #[test]
+    fn deploy_request_carries_the_commanded_health_gate_policy() {
+        for (policy, expected) in [
+            (HealthGatePolicy::Enforce, "enforce"),
+            (HealthGatePolicy::Skip, "skip"),
+        ] {
+            let body = serde_json::to_value(deploy_request(&command(policy)))
+                .expect("deploy request serializes");
+            assert_eq!(body.get("health_gate"), Some(&serde_json::json!(expected)));
+            assert_eq!(
+                body.get("namespace_name"),
+                Some(&serde_json::json!("production"))
+            );
+            assert_eq!(body.get("service_name"), Some(&serde_json::json!("web")));
         }
     }
 }

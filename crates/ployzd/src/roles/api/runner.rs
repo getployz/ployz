@@ -66,6 +66,10 @@ pub struct ExistingV2ManagedContainer {
     pub health_status: Option<ManagedContainerHealthStatus>,
     pub resolved_image_identity: Option<String>,
     pub created_at_unix_seconds: Option<i64>,
+    /// Named Docker volumes the container mounts, recovered from the
+    /// listing's mount points. A serving incumbent's set gates whether a
+    /// volume service may cut over.
+    pub named_volume_names: BTreeSet<VolumeName>,
 }
 
 /// Complete Docker input for one Corrosion-owned service container.
@@ -409,10 +413,31 @@ pub trait V2MachineContainerRunner {
         command: CreateV2ManagedContainer,
     ) -> impl Future<Output = Result<ContainerId, MachineContainerCreateError>> + Send;
 
+    /// Starts an existing container by its Docker id — a just-created
+    /// container or a stopped incumbent being restarted after a failed
+    /// cutover gate.
     fn start_v2_managed_container(
         &self,
         container_id: &ContainerId,
     ) -> impl Future<Output = Result<(), MachineContainerStartError>> + Send;
+
+    /// Stops the container, deferring to its configured stop timeout.
+    /// Refuses when the container's recovered row identity does not match
+    /// `expected_identity`.
+    fn stop_v2_managed_container(
+        &self,
+        container_id: &ContainerId,
+        expected_identity: &V2ManagedContainerIdentity,
+    ) -> impl Future<Output = Result<MachineContainerStopOutcome, MachineContainerStopError>> + Send;
+
+    /// Removes the container without removing its volumes. Refuses when the
+    /// container's recovered row identity does not match `expected_identity`;
+    /// an already-absent container is a success.
+    fn remove_v2_managed_container(
+        &self,
+        container_id: &ContainerId,
+        expected_identity: &V2ManagedContainerIdentity,
+    ) -> impl Future<Output = Result<(), MachineContainerRemoveError>> + Send;
 }
 
 /// Exact-pinned image acquisition owned by the v2 operation driver.

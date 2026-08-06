@@ -670,14 +670,22 @@ impl LoadedEvidence {
             .find_map(|event| match &event.evidence {
                 OperationEvidence::Terminal { operation } => Some((**operation).clone()),
                 OperationEvidence::Created
+                | OperationEvidence::OpClaimWon
+                | OperationEvidence::OpClaimLost { .. }
+                | OperationEvidence::DebrisSwept { .. }
                 | OperationEvidence::PullingImage
                 | OperationEvidence::ImageResolved
                 | OperationEvidence::ContainerCreated { .. }
                 | OperationEvidence::ContainerStarted { .. }
+                | OperationEvidence::HealthGateSkipped
+                | OperationEvidence::IncumbentStopped { .. }
+                | OperationEvidence::IncumbentRestarted { .. }
                 | OperationEvidence::PromotionPrepared
                 | OperationEvidence::RowsCommitted
                 | OperationEvidence::ClaimWon
-                | OperationEvidence::ClaimLost { .. } => None,
+                | OperationEvidence::ClaimLost { .. }
+                | OperationEvidence::Drained
+                | OperationEvidence::IncumbentRemoved { .. } => None,
             });
         let promotion = self.prepared.clone().and_then(|prepared| match self.phase {
             EvidencePhase::PromotionPrepared => {
@@ -699,12 +707,20 @@ impl LoadedEvidence {
                     })
                 }
                 OperationEvidence::Created
+                | OperationEvidence::OpClaimWon
+                | OperationEvidence::OpClaimLost { .. }
+                | OperationEvidence::DebrisSwept { .. }
                 | OperationEvidence::PullingImage
                 | OperationEvidence::ImageResolved
                 | OperationEvidence::ContainerCreated { .. }
                 | OperationEvidence::ContainerStarted { .. }
+                | OperationEvidence::HealthGateSkipped
+                | OperationEvidence::IncumbentStopped { .. }
+                | OperationEvidence::IncumbentRestarted { .. }
                 | OperationEvidence::PromotionPrepared
                 | OperationEvidence::RowsCommitted
+                | OperationEvidence::Drained
+                | OperationEvidence::IncumbentRemoved { .. }
                 | OperationEvidence::Terminal { .. } => None,
             }),
             EvidencePhase::Created | EvidencePhase::Executing | EvidencePhase::Terminal => None,
@@ -724,11 +740,21 @@ fn advance_phase(
     match (phase, evidence) {
         (
             EvidencePhase::Created | EvidencePhase::Executing,
-            OperationEvidence::PullingImage
+            OperationEvidence::OpClaimWon
+            | OperationEvidence::OpClaimLost { .. }
+            | OperationEvidence::DebrisSwept { .. }
+            | OperationEvidence::PullingImage
             | OperationEvidence::ImageResolved
             | OperationEvidence::ContainerCreated { .. }
-            | OperationEvidence::ContainerStarted { .. },
+            | OperationEvidence::ContainerStarted { .. }
+            | OperationEvidence::HealthGateSkipped
+            | OperationEvidence::IncumbentStopped { .. }
+            | OperationEvidence::IncumbentRestarted { .. },
         ) => Ok(EvidencePhase::Executing),
+        (
+            EvidencePhase::RowsCommitted | EvidencePhase::ClaimDecided,
+            OperationEvidence::Drained | OperationEvidence::IncumbentRemoved { .. },
+        ) => Ok(phase),
         (
             EvidencePhase::Created | EvidencePhase::Executing,
             OperationEvidence::PromotionPrepared,
@@ -756,14 +782,22 @@ fn advance_phase(
             | EvidencePhase::ClaimDecided
             | EvidencePhase::Terminal,
             OperationEvidence::Created
+            | OperationEvidence::OpClaimWon
+            | OperationEvidence::OpClaimLost { .. }
+            | OperationEvidence::DebrisSwept { .. }
             | OperationEvidence::PullingImage
             | OperationEvidence::ImageResolved
             | OperationEvidence::ContainerCreated { .. }
             | OperationEvidence::ContainerStarted { .. }
+            | OperationEvidence::HealthGateSkipped
+            | OperationEvidence::IncumbentStopped { .. }
+            | OperationEvidence::IncumbentRestarted { .. }
             | OperationEvidence::PromotionPrepared
             | OperationEvidence::RowsCommitted
             | OperationEvidence::ClaimWon
             | OperationEvidence::ClaimLost { .. }
+            | OperationEvidence::Drained
+            | OperationEvidence::IncumbentRemoved { .. }
             | OperationEvidence::Terminal { .. },
         ) => Err(OperationEvidenceError::InvalidEventOrder { line }),
     }

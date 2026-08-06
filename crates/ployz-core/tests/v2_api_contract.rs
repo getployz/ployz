@@ -14,15 +14,16 @@ use ployz_core::deploy::{
 use ployz_core::ids::{ClusterId, MachineRowId, OperationRowId, PeerId, ServiceRowId, TokenId};
 use ployz_core::network::{MachineEndpointSubnet, WireGuardPublicKey};
 use ployz_core::{
-    API_MAJOR, ApiFeature, ApiRefusal, ApiVersion, CorrosionLogsTailLines, FIRST_DEPLOY_ROUTE,
-    FOUNDING_ROUTE, FirstDeployRefusal, FirstDeployRequest, HandshakeObservation,
-    HandshakeObservationOutcome, KNOWN_API_FEATURES, KnownApiFeature, LENS_SNAPSHOT_EVENT,
-    LENS_STATE_EVENT, LENS_TERMINAL_EVENT, LensCollection, LensSnapshot, LensWatchEvent,
-    MachineStatusLensRow, MachineStatusLensRowIdentityError, NAMESPACE_CREATE_ROUTE,
-    NAMESPACE_REMOVE_ROUTE, OperationEvidence, OperationEvidenceEvent, OperationEvidenceSequence,
-    OperationWatchEvent, ServiceLogLine, ServiceLogStream, ServiceLogsFollowEvent,
-    ServiceLogsRefusal, V2Method, V2Route, VERSION_ROUTE, lens_route, lens_watch_route,
-    operation_route, operation_watch_route, service_logs_follow_route, service_logs_tail_route,
+    API_MAJOR, ApiFeature, ApiRefusal, ApiVersion, CorrosionLogsTailLines, DEPLOY_ROUTE,
+    DeployRefusal, DeployRequest, FOUNDING_ROUTE, HandshakeObservation,
+    HandshakeObservationOutcome, HealthGatePolicy, KNOWN_API_FEATURES, KnownApiFeature,
+    LENS_SNAPSHOT_EVENT, LENS_STATE_EVENT, LENS_TERMINAL_EVENT, LensCollection, LensSnapshot,
+    LensWatchEvent, MachineStatusLensRow, MachineStatusLensRowIdentityError,
+    NAMESPACE_CREATE_ROUTE, NAMESPACE_REMOVE_ROUTE, OperationEvidence, OperationEvidenceEvent,
+    OperationEvidenceSequence, OperationWatchEvent, ServiceLogLine, ServiceLogStream,
+    ServiceLogsFollowEvent, ServiceLogsRefusal, V2Method, V2Route, VERSION_ROUTE, lens_route,
+    lens_watch_route, operation_route, operation_watch_route, service_logs_follow_route,
+    service_logs_tail_route,
 };
 use serde_json::json;
 
@@ -230,10 +231,10 @@ fn operation_evidence_routes_are_row_id_based_and_have_no_list_alias() {
             false,
         ),
         (
-            V2Route::FirstDeploy,
-            FIRST_DEPLOY_ROUTE.to_owned(),
+            V2Route::Deploy,
+            DEPLOY_ROUTE.to_owned(),
             V2Method::Post,
-            KnownApiFeature::FirstDeploy,
+            KnownApiFeature::Deploy,
             false,
         ),
         (
@@ -289,7 +290,7 @@ fn operation_evidence_routes_are_row_id_based_and_have_no_list_alias() {
 fn four_additive_operation_spine_features_are_advertised() {
     for feature in [
         KnownApiFeature::NamespacePrimitives,
-        KnownApiFeature::FirstDeploy,
+        KnownApiFeature::Deploy,
         KnownApiFeature::OperationEvidence,
         KnownApiFeature::Logs,
     ] {
@@ -302,7 +303,7 @@ fn missing_namespace_refusal_names_the_resolving_primitive() {
     let namespace_name =
         CorrosionNamespaceName::try_new("payments").expect("fixture namespace name");
     assert_eq!(
-        serde_json::to_value(FirstDeployRefusal::namespace_not_found(namespace_name))
+        serde_json::to_value(DeployRefusal::namespace_not_found(namespace_name))
             .expect("refusal serializes"),
         json!({
             "kind": "namespace_not_found",
@@ -322,7 +323,7 @@ fn first_deploy_runtime_debug_redacts_environment_values() {
     );
     let mut runtime = ContainerRuntimeSpec::image_defaults();
     runtime.environment = ServiceEnvironment::from(environment);
-    let request = FirstDeployRequest {
+    let request = DeployRequest {
         namespace_name: CorrosionNamespaceName::try_new("payments")
             .expect("fixture namespace name"),
         service_name: ployz_core::corrosion::CorrosionServiceName::try_new("api")
@@ -330,6 +331,7 @@ fn first_deploy_runtime_debug_redacts_environment_values() {
         image: ImageReference::try_new("registry.example/api:latest")
             .expect("fixture image reference"),
         runtime,
+        health_gate: HealthGatePolicy::Enforce,
     };
 
     assert!(!format!("{request:?}").contains(secret));
@@ -524,4 +526,85 @@ fn v2_routes_version_and_watch_envelopes_are_stable() {
         LensWatchEvent::terminal(ApiRefusal::MissingCluster).event_name(),
         LENS_TERMINAL_EVENT
     );
+}
+
+#[test]
+fn deploy_route_and_feature_use_the_generalized_wire_names() {
+    assert_eq!(DEPLOY_ROUTE, "/deploy");
+    assert_eq!(V2Route::parse(DEPLOY_ROUTE), Some(V2Route::Deploy));
+    assert_eq!(V2Route::Deploy.feature(), KnownApiFeature::Deploy);
+    assert_eq!(
+        serde_json::to_value(KnownApiFeature::Deploy).expect("feature serializes"),
+        json!("v2.deploy")
+    );
+}
+
+#[test]
+fn deploy_request_health_gate_defaults_to_enforce_and_skip_is_explicit() {
+    let request: DeployRequest = serde_json::from_value(json!({
+        "namespace_name": "payments",
+        "service_name": "api",
+        "image": "registry.example/api:latest",
+        "runtime": serde_json::to_value(ContainerRuntimeSpec::image_defaults())
+            .expect("runtime serializes"),
+    }))
+    .expect("request without health_gate deserializes");
+    assert_eq!(request.health_gate, HealthGatePolicy::Enforce);
+
+    assert_eq!(
+        serde_json::to_value(HealthGatePolicy::Skip).expect("policy serializes"),
+        json!("skip")
+    );
+}
+
+#[test]
+fn blue_green_evidence_variants_have_closed_wire_shapes() {
+    let container_id = ployz_core::ids::ContainerId::try_new("c0ffee").expect("container id");
+    let winner = operation_id(MACHINE_B);
+    for (evidence, expected) in [
+        (
+            OperationEvidence::OpClaimWon,
+            json!({ "kind": "op_claim_won" }),
+        ),
+        (
+            OperationEvidence::OpClaimLost {
+                winner: winner.clone(),
+            },
+            json!({ "kind": "op_claim_lost", "winner": MACHINE_B }),
+        ),
+        (
+            OperationEvidence::DebrisSwept {
+                removed: vec![container_id.clone()],
+            },
+            json!({ "kind": "debris_swept", "removed": ["c0ffee"] }),
+        ),
+        (
+            OperationEvidence::IncumbentStopped {
+                container_id: container_id.clone(),
+            },
+            json!({ "kind": "incumbent_stopped", "container_id": "c0ffee" }),
+        ),
+        (
+            OperationEvidence::IncumbentRestarted {
+                container_id: container_id.clone(),
+            },
+            json!({ "kind": "incumbent_restarted", "container_id": "c0ffee" }),
+        ),
+        (
+            OperationEvidence::IncumbentRemoved { container_id },
+            json!({ "kind": "incumbent_removed", "container_id": "c0ffee" }),
+        ),
+        (OperationEvidence::Drained, json!({ "kind": "drained" })),
+        (
+            OperationEvidence::HealthGateSkipped,
+            json!({ "kind": "health_gate_skipped" }),
+        ),
+    ] {
+        let serialized = serde_json::to_value(&evidence).expect("evidence serializes");
+        assert_eq!(serialized, expected);
+        assert_eq!(
+            serde_json::from_value::<OperationEvidence>(serialized).expect("evidence round-trips"),
+            evidence
+        );
+    }
 }

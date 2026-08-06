@@ -524,7 +524,7 @@ impl ApiService {
             V2Route::OperationWatch(operation_id) => {
                 super::operation_http::handle_watch(self, operation_id, &principal, shutdown).await
             }
-            V2Route::FirstDeploy => {
+            V2Route::Deploy => {
                 super::operation_http::handle_first_deploy(self, principal, request).await
             }
             V2Route::ServiceLogsTail(service_id) => {
