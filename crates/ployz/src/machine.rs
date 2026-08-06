@@ -2,7 +2,7 @@
 
 use std::cmp::Ordering;
 use std::fmt;
-use std::io::Write as _;
+use std::future::Future;
 use std::time::{Duration, Instant};
 
 use ployz_core::corrosion::MachineTransport;
@@ -75,12 +75,13 @@ async fn upgrade(command: MachineUpgradeCommand) -> Result<String, MachineExecut
     }
 
     let mut cached_artifacts = Vec::new();
+    let mut progress = UpgradeProgress::new(std::io::stdout());
     for (confirmed, machine) in selected.into_iter().enumerate() {
         let request =
             resolve_machine_upgrade_request(&source, machine.status, &mut cached_artifacts).await?;
         let name = machine.row.document.name.as_str();
         let short_sha256 = &request.sha256.as_str()[..12];
-        emit_upgrade_progress(&format!(
+        progress.before_mutation(&format!(
             "{name}  target {} ({short_sha256}...)\n",
             request.version.as_str()
         ))?;
@@ -115,23 +116,15 @@ async fn upgrade(command: MachineUpgradeCommand) -> Result<String, MachineExecut
                 "the API acknowledgement did not match the resolved artifact".to_owned(),
             ));
         }
-        emit_upgrade_progress(&render_upgrade_staged(name))?;
-
         match source.confirmation() {
             UpgradeConfirmation::ReleaseVersion => {
-                if !confirm_upgrade(&direct, &machine.row.id, &request.version).await {
-                    return Err(upgrade_halted(
-                        name,
-                        confirmed,
-                        format!(
-                            "swap armed; not yet confirming {}. Check `ployz machine ls` and resume with `ployz machine upgrade --outdated`",
-                            request.version.as_str()
-                        ),
-                    ));
-                }
-                emit_upgrade_progress(&render_upgrade_confirmed(name, &request.version))?;
+                complete_release_upgrade(&mut progress, name, &request.version, confirmed, || {
+                    confirm_upgrade(&direct, &machine.row.id, &request.version)
+                })
+                .await?;
             }
             UpgradeConfirmation::UnavailableForManualArtifact => {
+                progress.after_mutation(&render_upgrade_staged(name));
                 return Err(upgrade_halted(
                     name,
                     confirmed,
@@ -144,13 +137,82 @@ async fn upgrade(command: MachineUpgradeCommand) -> Result<String, MachineExecut
     Ok(String::new())
 }
 
-fn emit_upgrade_progress(line: &str) -> Result<(), MachineExecutionError> {
-    let stdout = std::io::stdout();
-    let mut stdout = stdout.lock();
-    stdout
-        .write_all(line.as_bytes())
-        .map_err(MachineExecutionError::Output)?;
-    stdout.flush().map_err(MachineExecutionError::Output)
+struct UpgradeProgress<W> {
+    writer: W,
+    deferred_output: Option<std::io::Error>,
+}
+
+impl<W: std::io::Write> UpgradeProgress<W> {
+    fn new(writer: W) -> Self {
+        Self {
+            writer,
+            deferred_output: None,
+        }
+    }
+
+    fn before_mutation(&mut self, line: &str) -> Result<(), MachineExecutionError> {
+        self.write_line(line).map_err(MachineExecutionError::Output)
+    }
+
+    fn after_mutation(&mut self, line: &str) {
+        if let Err(error) = self.write_line(line)
+            && self.deferred_output.is_none()
+        {
+            self.deferred_output = Some(error);
+        }
+    }
+
+    fn after_confirmation(
+        &mut self,
+        machine: &str,
+        confirmed: usize,
+        line: &str,
+    ) -> Result<(), MachineExecutionError> {
+        self.after_mutation(line);
+        let Some(source) = self.deferred_output.take() else {
+            return Ok(());
+        };
+        Err(MachineExecutionError::UpgradeOutput {
+            machine: machine.to_owned(),
+            confirmed,
+            source,
+        })
+    }
+
+    fn write_line(&mut self, line: &str) -> std::io::Result<()> {
+        self.writer.write_all(line.as_bytes())?;
+        self.writer.flush()
+    }
+}
+
+async fn complete_release_upgrade<W, Confirm, Confirmation>(
+    progress: &mut UpgradeProgress<W>,
+    machine: &str,
+    version: &InstallArtifactVersion,
+    previously_confirmed: usize,
+    confirm: Confirm,
+) -> Result<(), MachineExecutionError>
+where
+    W: std::io::Write,
+    Confirm: FnOnce() -> Confirmation,
+    Confirmation: Future<Output = bool>,
+{
+    progress.after_mutation(&render_upgrade_staged(machine));
+    if !confirm().await {
+        return Err(upgrade_halted(
+            machine,
+            previously_confirmed,
+            format!(
+                "swap armed; not yet confirming {}. Check `ployz machine ls` and resume with `ployz machine upgrade --outdated`",
+                version.as_str()
+            ),
+        ));
+    }
+    progress.after_confirmation(
+        machine,
+        previously_confirmed + 1,
+        &render_upgrade_confirmed(machine, version),
+    )
 }
 
 #[must_use]
@@ -716,6 +778,15 @@ async fn list(command: MachineListCommand) -> Result<String, MachineExecutionErr
 pub enum MachineExecutionError {
     #[error("could not write upgrade progress: {0}")]
     Output(#[source] std::io::Error),
+    #[error(
+        "could not write upgrade progress after {machine}; {confirmed} machine(s) confirmed: {source}"
+    )]
+    UpgradeOutput {
+        machine: String,
+        confirmed: usize,
+        #[source]
+        source: std::io::Error,
+    },
     #[error(transparent)]
     Remote(#[from] OperatorRemoteError),
     #[error(transparent)]
@@ -936,6 +1007,8 @@ pub const fn render_machine_reset() -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
     use serde_json::json;
 
     use super::*;
@@ -1086,6 +1159,66 @@ mod tests {
             render_upgrade_confirmed("edge-a", &version),
             "edge-a  now 0.1.0-alpha.7 ✓\n"
         );
+    }
+
+    struct FailedUpgradeProgress;
+
+    impl std::io::Write for FailedUpgradeProgress {
+        fn write(&mut self, _buffer: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "progress sink closed",
+            ))
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "progress sink closed",
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn accepted_upgrade_output_failure_still_confirms_before_stopping() {
+        let version = InstallArtifactVersion::try_new("0.1.0-alpha.7").expect("version");
+        let confirmation_attempted = Cell::new(false);
+        let mut progress = UpgradeProgress::new(FailedUpgradeProgress);
+
+        let result = complete_release_upgrade(&mut progress, "edge-a", &version, 0, || async {
+            confirmation_attempted.set(true);
+            true
+        })
+        .await;
+
+        assert!(confirmation_attempted.get());
+        assert!(matches!(
+            result,
+            Err(MachineExecutionError::UpgradeOutput {
+                machine,
+                confirmed: 1,
+                source,
+            }) if machine == "edge-a" && source.kind() == std::io::ErrorKind::BrokenPipe
+        ));
+    }
+
+    #[tokio::test]
+    async fn confirmation_failure_takes_priority_over_deferred_output_failure() {
+        let version = InstallArtifactVersion::try_new("0.1.0-alpha.7").expect("version");
+        let mut progress = UpgradeProgress::new(FailedUpgradeProgress);
+
+        let result =
+            complete_release_upgrade(&mut progress, "edge-a", &version, 2, || async { false })
+                .await;
+
+        assert!(matches!(
+            result,
+            Err(MachineExecutionError::UpgradeHalted {
+                machine,
+                confirmed: 2,
+                ..
+            }) if machine == "edge-a"
+        ));
     }
 
     #[test]

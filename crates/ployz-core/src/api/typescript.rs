@@ -14,10 +14,11 @@ use super::v2::{
     FirstDeployAccepted, FirstDeployRefusal, FirstDeployRequest, HandshakeObservation,
     HandshakeObservationOutcome, HandshakeObservationUnavailable, KNOWN_API_FEATURES,
     KnownApiFeature, LensCollection, LensSnapshot, LensWatchEvent, MachineLensRow,
-    MachineStatusLensRow, MachineUpgradeRefusal, MachineUpgradeReply, MachineUpgradeRequest,
-    MachineUpgradeSupervisor, MachineUpgradeUrl, OperationEvidence, OperationEvidenceEvent,
-    OperationEvidenceSequence, OperationLensRow, OperationLookupRefusal, OperationLookupReply,
-    OperationWatchEvent, OperationWatchRefusal, ServiceLensRow, ServiceLogLine, ServiceLogStream,
+    MachineRemoveRefusal, MachineRemoveReply, MachineRemoveRequest, MachineStatusLensRow,
+    MachineUpgradeRefusal, MachineUpgradeReply, MachineUpgradeRequest, MachineUpgradeSupervisor,
+    MachineUpgradeUrl, OperationEvidence, OperationEvidenceEvent, OperationEvidenceSequence,
+    OperationLensRow, OperationLookupRefusal, OperationLookupReply, OperationWatchEvent,
+    OperationWatchRefusal, ServiceLensRow, ServiceLogLine, ServiceLogStream,
     ServiceLogsFollowEvent, ServiceLogsRefusal, ServiceLogsRequest, ServiceLogsTailReply,
 };
 use super::{
@@ -190,6 +191,9 @@ fn collect_v2_contracts(declarations: &mut DeclarationCollector<'_>) {
     declarations.visit::<MachineEndpointSetRequest>();
     declarations.visit::<MachineEndpointSetReply>();
     declarations.visit::<MachineEndpointSetRefusal>();
+    declarations.visit::<MachineRemoveRequest>();
+    declarations.visit::<MachineRemoveReply>();
+    declarations.visit::<MachineRemoveRefusal>();
     declarations.visit::<MachineUpgradeUrl>();
     declarations.visit::<MachineUpgradeSupervisor>();
     declarations.visit::<MachineUpgradeRequest>();
@@ -550,6 +554,8 @@ mod tests {
         assert!(generated.contains("\"v2.first_deploy\","));
         assert!(generated.contains("\"v2.operation_evidence\","));
         assert!(generated.contains("\"v2.logs\","));
+        assert!(generated.contains("\"v2.machine_remove\","));
+        assert!(generated.contains("\"v2.peer_remove\","));
         assert!(generated.contains("\"v2.diagnostics\","));
         assert!(generated.contains("export type ApiFeature = KnownApiFeature | (string & {});"));
         assert!(generated.contains("export type OperationInitiator = Principal;"));
@@ -619,6 +625,12 @@ mod tests {
             "ServiceLogsRefusal",
             "ServiceLogsTailReply",
             "ServiceLogsFollowEvent",
+            "MachineRemoveRequest",
+            "MachineRemoveReply",
+            "MachineRemoveRefusal",
+            "PeerRemoveRequest",
+            "PeerRemoveReply",
+            "PeerRemoveRefusal",
         ] {
             assert!(
                 generated.contains(&format!("export type {name} =")),

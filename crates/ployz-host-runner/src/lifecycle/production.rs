@@ -6,8 +6,16 @@ use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use hickory_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
+#[cfg(test)]
+use hickory_proto::rr::Record;
+use hickory_proto::rr::rdata::A;
+use hickory_proto::rr::{DNSClass, Name, RData, RecordType};
 use ployz_core::corrosion::MachineTransport;
 use ployz_core::install::InstallArtifactSpec;
+use ployz_core::network::internal_dns::{
+    INTERNAL_DNS_READINESS_ADDRESS, INTERNAL_DNS_READINESS_NAME,
+};
 use ployz_core::operation::FailureMessage;
 
 use crate::{
@@ -415,78 +423,76 @@ fn probe_dns_once(resolver: SocketAddr, timeout: Duration) -> std::io::Result<()
 }
 
 fn dns_readiness_query() -> Vec<u8> {
-    let [id_high, id_low] = DNS_READINESS_ID;
-    let mut query = vec![
-        id_high, id_low, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    ];
-    for label in ["readiness", "invalid"] {
-        query.push(u8::try_from(label.len()).expect("readiness DNS labels fit in one byte"));
-        query.extend_from_slice(label.as_bytes());
-    }
-    query.extend_from_slice(&[0x00, 0x00, 0x01, 0x00, 0x01]);
+    let name = readiness_dns_name();
+    let mut query = Message::new(
+        u16::from_be_bytes(DNS_READINESS_ID),
+        MessageType::Query,
+        OpCode::Query,
+    );
+    query.metadata.recursion_desired = true;
+    query.add_query(Query::query(name, RecordType::A));
     query
+        .to_vec()
+        .expect("the static DNS readiness query is encodable")
 }
 
 fn validate_dns_readiness_response(response: &[u8]) -> std::io::Result<()> {
-    let [
-        id_high,
-        id_low,
-        flags_high,
-        _flags_low,
-        qd_high,
-        qd_low,
-        _answer_high,
-        _answer_low,
-        _authority_high,
-        _authority_low,
-        _additional_high,
-        _additional_low,
-        ..,
-    ] = response
-    else {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "DNS readiness response was shorter than its header",
-        ));
-    };
-    if [*id_high, *id_low] != DNS_READINESS_ID {
+    let message = Message::from_vec(response)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()))?;
+    if message.metadata.id != u16::from_be_bytes(DNS_READINESS_ID) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "DNS readiness transaction id did not match",
         ));
     }
-    if flags_high & 0x80 == 0 {
+    if message.metadata.message_type != MessageType::Response {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "DNS readiness packet was not a response",
         ));
     }
-    if [*qd_high, *qd_low] != [0x00, 0x01] {
+    if message.metadata.response_code != ResponseCode::NoError {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            "DNS readiness response did not retain the query",
+            "DNS readiness response was not successful",
         ));
     }
-    let expected = dns_readiness_query();
-    let Some(expected_question) = expected.get(12..) else {
-        unreachable!("the static DNS readiness query carries a header")
-    };
-    let Some(question_end) = 12_usize.checked_add(expected_question.len()) else {
-        unreachable!("the static DNS readiness question length fits usize")
-    };
-    let Some(actual_question) = response.get(12..question_end) else {
+    let expected_name = readiness_dns_name();
+    let [query] = message.queries.as_slice() else {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            "DNS readiness response did not retain the complete query",
+            "DNS readiness response did not retain exactly one query",
         ));
     };
-    if actual_question != expected_question {
+    if query.name != expected_name
+        || query.query_type != RecordType::A
+        || query.query_class != DNSClass::IN
+    {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "DNS readiness response retained a different query",
         ));
     }
+    let contains_readiness_answer = message.answers.iter().any(|record| {
+        record.name == expected_name
+            && record.dns_class == DNSClass::IN
+            && matches!(
+                record.data,
+                RData::A(address) if address == A::from(INTERNAL_DNS_READINESS_ADDRESS)
+            )
+    });
+    if !contains_readiness_answer {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "DNS readiness response did not contain the reserved A answer",
+        ));
+    }
     Ok(())
+}
+
+fn readiness_dns_name() -> Name {
+    Name::from_ascii(format!("{INTERNAL_DNS_READINESS_NAME}."))
+        .expect("the static DNS readiness name is valid")
 }
 
 pub(super) fn render_corrosion_config(config: CorrosionConfig<'_>) -> String {
@@ -603,6 +609,22 @@ fn failure(error: impl std::fmt::Display) -> FailureMessage {
 mod dns_readiness_tests {
     use super::*;
 
+    fn readiness_response(response_code: ResponseCode, address: Ipv4Addr) -> Vec<u8> {
+        let query = Message::from_vec(&dns_readiness_query()).expect("readiness query parses");
+        let [question] = query.queries.as_slice() else {
+            panic!("readiness query contains exactly one question");
+        };
+        let mut response = Message::response(u16::from_be_bytes(DNS_READINESS_ID), OpCode::Query);
+        response.metadata.response_code = response_code;
+        response.add_query(question.clone());
+        response.add_answer(Record::from_rdata(
+            question.name.clone(),
+            5,
+            RData::A(A::from(address)),
+        ));
+        response.to_vec().expect("readiness response encodes")
+    }
+
     #[test]
     fn readiness_uses_a_real_udp_query_and_validates_the_response() {
         let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("UDP server binds");
@@ -610,16 +632,22 @@ mod dns_readiness_tests {
         let responder = thread::spawn(move || {
             let mut packet = [0_u8; 512];
             let (length, peer) = server.recv_from(&mut packet).expect("DNS query arrives");
-            let response = packet
-                .get_mut(..length)
-                .expect("received DNS query length fits the buffer");
-            let [id_high, id_low, flags_high, flags_low, ..] = response else {
-                panic!("DNS query carries its header");
+            let query = Message::from_vec(packet.get(..length).expect("query length"))
+                .expect("readiness query parses");
+            let [question] = query.queries.as_slice() else {
+                panic!("readiness query contains exactly one question");
             };
-            assert_eq!([*id_high, *id_low], DNS_READINESS_ID);
-            *flags_high |= 0x80;
-            *flags_low &= 0xf0;
-            server.send_to(response, peer).expect("DNS response sends");
+            assert_eq!(query.metadata.message_type, MessageType::Query);
+            assert_eq!(question.name.to_ascii(), "readiness.ployz.internal.");
+            let response = readiness_response(
+                ResponseCode::NoError,
+                ployz_core::network::internal_dns::INTERNAL_DNS_READINESS_ADDRESS,
+            );
+            assert!(
+                response.windows(2).any(|window| window == [0xc0, 0x0c]),
+                "Hickory compresses the repeated answer name"
+            );
+            server.send_to(&response, peer).expect("DNS response sends");
         });
 
         await_dns_readiness_at(address, Duration::from_secs(2))
@@ -645,14 +673,14 @@ mod dns_readiness_tests {
         *first_label_byte = b'x';
         assert!(validate_dns_readiness_response(&wrong_question).is_err());
 
-        let mut negative = dns_readiness_query();
-        let [_, _, flags_high, flags_low, ..] = negative.as_mut_slice() else {
-            panic!("readiness query carries its header");
-        };
-        *flags_high |= 0x80;
-        *flags_low = 0x03;
-        validate_dns_readiness_response(&negative)
-            .expect("a matching negative answer still proves the resolver listener");
+        let negative = readiness_response(
+            ResponseCode::NXDomain,
+            ployz_core::network::internal_dns::INTERNAL_DNS_READINESS_ADDRESS,
+        );
+        assert!(validate_dns_readiness_response(&negative).is_err());
+
+        let wrong_address = readiness_response(ResponseCode::NoError, Ipv4Addr::new(192, 0, 2, 54));
+        assert!(validate_dns_readiness_response(&wrong_address).is_err());
     }
 
     #[test]

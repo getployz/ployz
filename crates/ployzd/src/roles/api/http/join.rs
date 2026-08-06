@@ -175,7 +175,7 @@ async fn admit_machine(
         .iter()
         .any(|machine| machine.document.name == request.name)
     {
-        return Err(name_conflict(request.name.as_str()).into());
+        return Err(machine_name_conflict(request.name.as_str()).into());
     }
     if roster_has_identity(&roster, &request.public_key, None, None) {
         return Err(JoinDoorRefusal::IdentityConflict.into());
@@ -279,7 +279,7 @@ async fn settle_machine(
             .cloned()
         else {
             cleanup_machine(service, &request.machine_id, &document, origin).await?;
-            return Err(name_conflict(request.name.as_str()).into());
+            return Err(machine_name_conflict(request.name.as_str()).into());
         };
         if let Err(error) = ensure_machine_matches(&roster, request, &accepted) {
             cleanup_machine(service, &request.machine_id, &document, origin).await?;
@@ -349,7 +349,7 @@ async fn reuse_machine(
         .find(|machine| machine.id == request.machine_id)
         .cloned()
     else {
-        return Err(name_conflict(request.name.as_str()).into());
+        return Err(machine_name_conflict(request.name.as_str()).into());
     };
     let own_id = RosterMemberId::Machine {
         machine_id: request.machine_id.clone(),
@@ -453,7 +453,7 @@ async fn admit_peer(
         .iter()
         .any(|peer| peer.document.name == request.name)
     {
-        return Err(name_conflict(&request.name).into());
+        return Err(peer_name_conflict(&request.name).into());
     }
     if roster_has_identity(&roster, &request.public_key, None, None) {
         return Err(JoinDoorRefusal::IdentityConflict.into());
@@ -502,7 +502,7 @@ async fn admit_peer(
         .cloned()
     else {
         delete_created_peer(service, &request.peer_id, &document).await?;
-        return Err(name_conflict(&request.name).into());
+        return Err(peer_name_conflict(&request.name).into());
     };
     if let Err(error) = ensure_peer_matches(&roster, &request, &accepted) {
         delete_created_peer(service, &request.peer_id, &document).await?;
@@ -547,7 +547,7 @@ fn reuse_peer(
         .find(|peer| peer.id == request.peer_id)
         .cloned()
     else {
-        return Err(name_conflict(&request.name).into());
+        return Err(peer_name_conflict(&request.name).into());
     };
     let own_id = RosterMemberId::Peer {
         peer_id: request.peer_id.clone(),
@@ -779,8 +779,14 @@ fn identity_winner(
         .min()
 }
 
-fn name_conflict(name: &str) -> JoinDoorRefusal {
-    JoinDoorRefusal::NameConflict {
+fn machine_name_conflict(name: &str) -> JoinDoorRefusal {
+    JoinDoorRefusal::MachineNameConflict {
+        name: name.to_owned(),
+    }
+}
+
+fn peer_name_conflict(name: &str) -> JoinDoorRefusal {
+    JoinDoorRefusal::PeerNameConflict {
         name: name.to_owned(),
     }
 }

@@ -32,7 +32,7 @@ use bollard::query_parameters::{
     RestartContainerOptions, StopContainerOptionsBuilder,
 };
 use futures_util::{Stream, StreamExt};
-use ployz_core::corrosion::{CorrosionNamespaceName, V2ManagedContainerIdentity};
+use ployz_core::corrosion::V2ManagedContainerIdentity;
 use ployz_core::deploy::{
     ContainerEntrypoint, ContainerHealthcheck, ContainerHealthcheckTest, ContainerRestartPolicy,
     ContainerRuntimeSpec, ImageReference, RegistryCredential, VolumeName,
@@ -44,8 +44,9 @@ use ployz_core::machine::VolumeEnsureFailure;
 use ployz_core::machine::runtime::{
     ContainerHealth, ManagedContainerHealthStatus, ManagedContainerIdentity,
 };
+use ployz_core::network::internal_dns::InternalDnsSearchDomain;
 use ployz_core::network::{
-    EndpointBridgeStatus, INTERNAL_DNS_SUFFIX, MachineEndpointSubnet, endpoint_bridge_gateway_ipv4,
+    EndpointBridgeStatus, MachineEndpointSubnet, endpoint_bridge_gateway_ipv4,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::IpAddr;
@@ -1486,12 +1487,14 @@ fn create_body(
         image,
         runtime,
         provisioned_volumes: _,
+        dns_search_domain,
         identity,
     } = command;
     create_body_for_identity(
         image,
         runtime,
         DockerCreateIdentity::Incumbent(identity),
+        dns_search_domain,
         endpoint_network_subnet,
     )
 }
@@ -1503,16 +1506,14 @@ fn create_v2_body(
     let CreateV2ManagedContainer {
         image,
         runtime,
-        namespace_name,
+        dns_search_domain,
         identity,
     } = command;
     create_body_for_identity(
         image,
         runtime,
-        DockerCreateIdentity::CorrosionV2 {
-            identity,
-            namespace_name,
-        },
+        DockerCreateIdentity::CorrosionV2 { identity },
+        dns_search_domain,
         endpoint_network_subnet,
     )
 }
@@ -1521,7 +1522,6 @@ enum DockerCreateIdentity {
     Incumbent(ManagedContainerIdentity),
     CorrosionV2 {
         identity: V2ManagedContainerIdentity,
-        namespace_name: CorrosionNamespaceName,
     },
 }
 
@@ -1530,13 +1530,6 @@ impl DockerCreateIdentity {
         match self {
             Self::Incumbent(identity) => labels::render(identity),
             Self::CorrosionV2 { identity, .. } => v2_labels::render(identity),
-        }
-    }
-
-    fn namespace_search_label(&self) -> &str {
-        match self {
-            Self::Incumbent(identity) => identity.namespace_id.as_str(),
-            Self::CorrosionV2 { namespace_name, .. } => namespace_name.as_str(),
         }
     }
 
@@ -1560,6 +1553,7 @@ fn create_body_for_identity(
     image: ImageReference,
     runtime: ContainerRuntimeSpec,
     identity: DockerCreateIdentity,
+    dns_search_domain: InternalDnsSearchDomain,
     endpoint_network_subnet: &str,
 ) -> ContainerCreateBody {
     let image = image.as_str().to_owned();
@@ -1596,14 +1590,7 @@ fn create_body_for_identity(
     // configuration is the upgrade path.
     let dns = endpoint_bridge_gateway_ipv4(endpoint_network_subnet)
         .map(|gateway| vec![gateway.to_string()]);
-    let dns_search = Some(vec![
-        format!(
-            "{}.{}",
-            identity.namespace_search_label(),
-            INTERNAL_DNS_SUFFIX
-        )
-        .to_ascii_lowercase(),
-    ]);
+    let dns_search = Some(vec![dns_search_domain.as_str().to_owned()]);
     ContainerCreateBody {
         image: Some(image),
         env,
@@ -2309,6 +2296,7 @@ mod tests {
                 image: image("ghcr.io/acme/api:rev-2"),
                 runtime: ContainerRuntimeSpec::image_defaults(),
                 provisioned_volumes: Vec::new(),
+                dns_search_domain: dns_search_domain("default"),
                 identity: managed_identity(),
             },
             TEST_ENDPOINT_SUBNET,
@@ -2327,8 +2315,7 @@ mod tests {
             CreateV2ManagedContainer {
                 image: image("ghcr.io/acme/api:rev-2"),
                 runtime: ContainerRuntimeSpec::image_defaults(),
-                namespace_name: CorrosionNamespaceName::try_new("production")
-                    .expect("namespace name"),
+                dns_search_domain: dns_search_domain("production"),
                 identity: v2_managed_identity(),
             },
             TEST_ENDPOINT_SUBNET,
@@ -2358,8 +2345,7 @@ mod tests {
             CreateV2ManagedContainer {
                 image: image("ghcr.io/acme/api:rev-2"),
                 runtime,
-                namespace_name: CorrosionNamespaceName::try_new("production")
-                    .expect("namespace name"),
+                dns_search_domain: dns_search_domain("production"),
                 identity: v2_managed_identity(),
             },
             TEST_ENDPOINT_SUBNET,
@@ -2394,8 +2380,7 @@ mod tests {
             .create_v2_managed_container(CreateV2ManagedContainer {
                 image: image("ghcr.io/acme/api:rev-2"),
                 runtime: ContainerRuntimeSpec::image_defaults(),
-                namespace_name: CorrosionNamespaceName::try_new("production")
-                    .expect("namespace name"),
+                dns_search_domain: dns_search_domain("production"),
                 identity: v2_managed_identity(),
             })
             .await
@@ -2438,6 +2423,7 @@ mod tests {
                 image: image("registry.example/api:missing"),
                 runtime: ContainerRuntimeSpec::image_defaults(),
                 provisioned_volumes: Vec::new(),
+                dns_search_domain: dns_search_domain("default"),
                 identity: managed_identity(),
             })
             .await
@@ -2455,6 +2441,7 @@ mod tests {
                 image: image("ghcr.io/acme/api:rev-2"),
                 runtime: runtime_spec(),
                 provisioned_volumes: Vec::new(),
+                dns_search_domain: dns_search_domain("default"),
                 identity: managed_identity(),
             },
             TEST_ENDPOINT_SUBNET,
@@ -2470,20 +2457,23 @@ mod tests {
     }
 
     #[test]
-    fn create_body_sets_machine_local_dns_and_namespace_search_domain() {
+    fn create_body_uses_the_human_namespace_label_for_the_dns_search_domain() {
+        let identity = managed_identity();
+        assert_eq!(identity.namespace_id.as_str(), "default");
         let body = create_body(
             CreateManagedContainer {
                 image: image("ghcr.io/acme/api:rev-2"),
                 runtime: ContainerRuntimeSpec::image_defaults(),
                 provisioned_volumes: Vec::new(),
-                identity: managed_identity(),
+                dns_search_domain: dns_search_domain("prod"),
+                identity,
             },
             TEST_ENDPOINT_SUBNET,
         );
         let host = body.host_config.expect("host config exists");
 
         assert_eq!(host.dns, Some(vec!["10.42.7.1".to_owned()]));
-        assert_eq!(host.dns_search, Some(vec!["default.internal".to_owned()]));
+        assert_eq!(host.dns_search, Some(vec!["prod.internal".to_owned()]));
         assert_eq!(host.dns_options, Some(vec!["ndots:1".to_owned()]));
     }
 
@@ -2514,6 +2504,7 @@ mod tests {
                 image: image("ghcr.io/acme/api:rev-2"),
                 runtime,
                 provisioned_volumes: Vec::new(),
+                dns_search_domain: dns_search_domain("default"),
                 identity: managed_identity(),
             },
             TEST_ENDPOINT_SUBNET,
@@ -2547,6 +2538,7 @@ mod tests {
                 image: image("ghcr.io/acme/api:rev-2"),
                 runtime,
                 provisioned_volumes: Vec::new(),
+                dns_search_domain: dns_search_domain("default"),
                 identity: managed_identity(),
             },
             TEST_ENDPOINT_SUBNET,
@@ -2562,6 +2554,7 @@ mod tests {
                 image: image("ghcr.io/acme/api:rev-2"),
                 runtime: ContainerRuntimeSpec::image_defaults(),
                 provisioned_volumes: Vec::new(),
+                dns_search_domain: dns_search_domain("default"),
                 identity: managed_identity(),
             },
             TEST_ENDPOINT_SUBNET,
@@ -2583,6 +2576,7 @@ mod tests {
                 image: image("ghcr.io/acme/api:rev-2"),
                 runtime,
                 provisioned_volumes: Vec::new(),
+                dns_search_domain: dns_search_domain("default"),
                 identity: managed_identity(),
             },
             TEST_ENDPOINT_SUBNET,
@@ -2673,6 +2667,7 @@ mod tests {
                 image: image("ghcr.io/acme/api:rev-2"),
                 runtime: ContainerRuntimeSpec::image_defaults(),
                 provisioned_volumes: Vec::new(),
+                dns_search_domain: dns_search_domain("default"),
                 identity: managed_identity(),
             },
             TEST_ENDPOINT_SUBNET,
@@ -3053,6 +3048,15 @@ mod tests {
             operation_id: ployz_core::ids::OperationRowId::try_new("01K00000000000000000000003")
                 .expect("operation row"),
         }
+    }
+
+    fn dns_search_domain(
+        namespace: &str,
+    ) -> ployz_core::network::internal_dns::InternalDnsSearchDomain {
+        ployz_core::network::internal_dns::InternalDnsSearchDomain::try_from_namespace_label(
+            namespace,
+        )
+        .expect("valid human namespace label")
     }
 
     fn namespace_id(value: &str) -> ployz_core::ids::NamespaceId {

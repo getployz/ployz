@@ -492,6 +492,56 @@ fn ployzd_artifact_store_retrying_the_partially_armed_candidate_completes_the_sw
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn ployzd_artifact_store_refuses_to_rearm_an_interrupted_rollback() {
+    let root = tempfile::tempdir().expect("artifact-store root");
+    let state = root.path().join("state");
+    let old_source = root.path().join("old-ployzd");
+    let candidate_source = root.path().join("candidate-ployzd");
+    fs::write(&old_source, "ployz\n").expect("old artifact writes");
+    fs::write(&candidate_source, "new\n").expect("candidate artifact writes");
+    let old = verify_artifact_file(&old_source, &digest(PLOYZ_NEWLINE_SHA256))
+        .expect("old artifact verifies");
+    let candidate = verify_artifact_file(&candidate_source, &digest(NEWLINE_NEW_SHA256))
+        .expect("candidate artifact verifies");
+    let store = PloyzdArtifactStore::new(state.clone()).expect("absolute state directory");
+
+    store.seed_current(&old).expect("initial seed");
+    store.stage(&candidate).expect("candidate stages");
+    store
+        .arm_staged(&digest(NEWLINE_NEW_SHA256))
+        .expect("candidate arms");
+    fs::remove_file(store.current_path()).expect("armed current link removes");
+    std::os::unix::fs::symlink(store.previous_path(), store.current_path())
+        .expect("failure handler points current at previous");
+
+    let current_before = fs::read_link(store.current_path()).expect("current link");
+    let previous_before = fs::read_link(store.previous_path()).expect("previous link");
+    let pending_before = fs::read(store.pending_path()).expect("pending marker");
+
+    assert!(matches!(
+        store.arm_staged(&digest(NEWLINE_NEW_SHA256)),
+        Err(ArtifactStoreError::InterruptedRollback {
+            current,
+            pending,
+        }) if current == digest(PLOYZ_NEWLINE_SHA256)
+            && pending == digest(NEWLINE_NEW_SHA256)
+    ));
+    assert_eq!(
+        fs::read_link(store.current_path()).expect("current link remains"),
+        current_before
+    );
+    assert_eq!(
+        fs::read_link(store.previous_path()).expect("previous link remains"),
+        previous_before
+    );
+    assert_eq!(
+        fs::read(store.pending_path()).expect("pending marker remains"),
+        pending_before
+    );
+}
+
 #[test]
 fn ployzd_artifact_store_refuses_to_stage_unverified_bytes() {
     let root = tempfile::tempdir().expect("artifact-store root");

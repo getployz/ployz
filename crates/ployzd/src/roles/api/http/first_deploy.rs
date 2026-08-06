@@ -222,10 +222,16 @@ where
         namespace: &ResolvedFirstDeployNamespace,
         identity: V2ManagedContainerIdentity,
     ) -> Result<ContainerId, String> {
+        let namespace_name = namespace.document.name.clone();
+        let dns_search_domain =
+            ployz_core::network::internal_dns::InternalDnsSearchDomain::try_from_namespace_label(
+                namespace_name.as_str(),
+            )
+            .map_err(|error| bounded_diagnostic(error.to_string()))?;
         self.create_v2_managed_container(CreateV2ManagedContainer {
             image: resolved_image.clone(),
             runtime: request.runtime.clone(),
-            namespace_name: namespace.document.name.clone(),
+            dns_search_domain,
             identity,
         })
         .await

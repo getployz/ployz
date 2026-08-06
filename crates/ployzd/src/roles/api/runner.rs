@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::future::Future;
 
-use ployz_core::corrosion::{CorrosionNamespaceName, V2ManagedContainerIdentity};
+use ployz_core::corrosion::V2ManagedContainerIdentity;
 use ployz_core::deploy::{ContainerRuntimeSpec, ImageReference, RegistryCredential, VolumeName};
 use ployz_core::ids::ContainerId;
 use ployz_core::image::OciDigest;
@@ -11,6 +11,7 @@ use ployz_core::machine::{VolumeEnsureFailure, VolumeUsageFacts};
 use std::net::IpAddr;
 
 use ployz_core::machine::runtime::{ManagedContainerHealthStatus, ManagedContainerIdentity};
+use ployz_core::network::internal_dns::InternalDnsSearchDomain;
 use ployz_core::network::{EndpointBridgeStatus, MachineEndpointSubnet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +50,7 @@ pub struct CreateManagedContainer {
     pub image: ImageReference,
     pub runtime: ContainerRuntimeSpec,
     pub provisioned_volumes: Vec<VolumeName>,
+    pub dns_search_domain: InternalDnsSearchDomain,
     pub identity: ManagedContainerIdentity,
 }
 
@@ -71,7 +73,7 @@ pub struct ExistingV2ManagedContainer {
 pub struct CreateV2ManagedContainer {
     pub image: ImageReference,
     pub runtime: ContainerRuntimeSpec,
-    pub namespace_name: CorrosionNamespaceName,
+    pub dns_search_domain: InternalDnsSearchDomain,
     pub identity: V2ManagedContainerIdentity,
 }
 
