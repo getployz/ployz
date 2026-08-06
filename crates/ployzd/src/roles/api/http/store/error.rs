@@ -1,5 +1,5 @@
 use ployz_core::corrosion::CorrosionTable;
-use ployz_core::ids::{MachineRowId, PeerId};
+use ployz_core::ids::MachineRowId;
 
 use crate::corrosion::{CorrosionClientError, StoredRowCollectionError};
 
@@ -38,6 +38,4 @@ pub(in crate::roles::api::http) enum MutationStoreError {
     },
     #[error("machine {machine_id} changed while its endpoint mutation was being committed")]
     ConcurrentMachineMutation { machine_id: MachineRowId },
-    #[error("peer {peer_id} changed while its removal was being committed")]
-    ConcurrentPeerMutation { peer_id: PeerId },
 }

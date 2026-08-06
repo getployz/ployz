@@ -5,7 +5,8 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
-#[cfg(target_os = "linux")]
+mod isolation;
+
 const DEFAULT_PIN_PATH: &str = ployz_ebpf_common::DEFAULT_PIN_PATH;
 fn main() -> ExitCode {
     match run(std::env::args().skip(1).collect()) {
@@ -56,6 +57,17 @@ fn run(args: Vec<String>) -> Result<EbpfCtlOutcome, String> {
                 route_replace_all_ifname(&ifname, &subnets, pin_path)
             }
         },
+        EbpfCtlCommand::Isolation { action } => match action {
+            IsolationCommand::EnsureAttached {
+                bytecode,
+                prefix,
+                cgroup_root,
+            } => isolation_ensure_attached(&bytecode, prefix, &cgroup_root, pin_path),
+            IsolationCommand::ReplaceAll { rows_file } => {
+                isolation_replace_all(&rows_file, pin_path)
+            }
+            IsolationCommand::Status => return isolation_status(pin_path),
+        },
     }
     .map(|()| EbpfCtlOutcome::Completed)
 }
@@ -94,6 +106,10 @@ enum EbpfCtlCommand {
         #[command(subcommand)]
         action: RouteCommand,
     },
+    Isolation {
+        #[command(subcommand)]
+        action: IsolationCommand,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -103,6 +119,20 @@ enum RouteCommand {
         #[arg(value_parser = parse_ipv4_subnet)]
         subnets: Vec<ipnet::Ipv4Net>,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum IsolationCommand {
+    EnsureAttached {
+        bytecode: PathBuf,
+        #[arg(value_parser = parse_isolation_prefix)]
+        prefix: ipnet::Ipv4Net,
+        cgroup_root: PathBuf,
+    },
+    ReplaceAll {
+        rows_file: PathBuf,
+    },
+    Status,
 }
 
 fn validate_bytecode(path: &Path) -> Result<(), String> {
@@ -134,6 +164,71 @@ fn parse_ipv4_subnet(value: &str) -> Result<ipnet::Ipv4Net, String> {
     value
         .parse()
         .map_err(|error| format!("invalid IPv4 subnet {value:?}: {error}"))
+}
+
+fn parse_isolation_prefix(value: &str) -> Result<ipnet::Ipv4Net, String> {
+    let prefix = parse_ipv4_subnet(value)?;
+    if u32::from(prefix.prefix_len()) != ployz_ebpf_common::ISOLATION_PREFIX_LEN {
+        return Err(format!(
+            "isolation prefix must be /{}: {value}",
+            ployz_ebpf_common::ISOLATION_PREFIX_LEN
+        ));
+    }
+    Ok(prefix)
+}
+
+fn isolation_pin_path(pin_path: Option<&str>) -> Result<PathBuf, String> {
+    isolation::sibling_pin_path(pin_path.unwrap_or(DEFAULT_PIN_PATH))
+}
+
+#[cfg(target_os = "linux")]
+fn isolation_ensure_attached(
+    bytecode: &Path,
+    prefix: ipnet::Ipv4Net,
+    cgroup_root: &Path,
+    pin_path: Option<&str>,
+) -> Result<(), String> {
+    isolation::linux::ensure_attached(
+        bytecode,
+        prefix,
+        cgroup_root,
+        &isolation_pin_path(pin_path)?,
+    )
+}
+
+#[cfg(not(target_os = "linux"))]
+fn isolation_ensure_attached(
+    _bytecode: &Path,
+    _prefix: ipnet::Ipv4Net,
+    _cgroup_root: &Path,
+    _pin_path: Option<&str>,
+) -> Result<(), String> {
+    Err("isolation ensure-attached requires Linux".to_owned())
+}
+
+#[cfg(target_os = "linux")]
+fn isolation_replace_all(rows_file: &Path, pin_path: Option<&str>) -> Result<(), String> {
+    isolation::linux::replace_all(rows_file, &isolation_pin_path(pin_path)?)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn isolation_replace_all(_rows_file: &Path, _pin_path: Option<&str>) -> Result<(), String> {
+    Err("isolation replace-all requires Linux".to_owned())
+}
+
+#[cfg(target_os = "linux")]
+fn isolation_status(pin_path: Option<&str>) -> Result<EbpfCtlOutcome, String> {
+    match isolation::linux::status(&isolation_pin_path(pin_path)?)? {
+        isolation::IsolationStatus::Complete => Ok(EbpfCtlOutcome::Completed),
+        isolation::IsolationStatus::Detached { message } => {
+            Ok(EbpfCtlOutcome::Detached { message })
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn isolation_status(_pin_path: Option<&str>) -> Result<EbpfCtlOutcome, String> {
+    Err("isolation status requires Linux".to_owned())
 }
 
 #[cfg(target_os = "linux")]
@@ -572,9 +667,25 @@ mod linux {
         attach_type: TcAttachType,
         program: &str,
     ) -> Result<(), String> {
-        match aya::programs::tc::qdisc_detach_program(bridge, attach_type, program) {
+        normalize_tc_detach_result(
+            aya::programs::tc::qdisc_detach_program(bridge, attach_type, program),
+            bridge,
+            program,
+        )
+    }
+
+    pub(super) fn normalize_tc_detach_result(
+        result: Result<(), aya::programs::TcError>,
+        bridge: &str,
+        program: &str,
+    ) -> Result<(), String> {
+        match result {
             Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(aya::programs::TcError::IoError(error))
+                if error.kind() == std::io::ErrorKind::NotFound =>
+            {
+                Ok(())
+            }
             Err(error) => Err(format!("detach {program} from {bridge}: {error}")),
         }
     }
@@ -830,5 +941,34 @@ mod tests {
     #[test]
     fn tc_filter_status_rejects_malformed_json() {
         assert!(tc_filter_has_program(b"not-json", "ployz_ingress").is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn classic_detach_treats_a_missing_owned_filter_as_already_detached() {
+        let result = linux::normalize_tc_detach_result(
+            Err(aya::programs::TcError::IoError(std::io::Error::from(
+                std::io::ErrorKind::NotFound,
+            ))),
+            "br-ployz",
+            "ployz_ingress",
+        );
+
+        assert_eq!(result, Ok(()));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn classic_detach_preserves_other_io_failures() {
+        let result = linux::normalize_tc_detach_result(
+            Err(aya::programs::TcError::IoError(std::io::Error::from(
+                std::io::ErrorKind::PermissionDenied,
+            ))),
+            "br-ployz",
+            "ployz_ingress",
+        );
+
+        let error = result.expect_err("permission failures remain visible");
+        assert!(error.contains("detach ployz_ingress from br-ployz"));
     }
 }

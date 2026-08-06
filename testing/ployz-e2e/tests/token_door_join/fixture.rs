@@ -6,8 +6,8 @@ use ployz_core::corrosion::{MachineDocument, MachineTransport, SqliteValue};
 use ployz_core::ids::{MachineRowId, TokenId};
 use ployz_core::join::JoinBlob;
 use ployz_e2e::dind::{
-    DindMachine, ExecOutcome, RELEASE_MANIFEST, corrosion_query, exec_in_container, exec_ok,
-    require,
+    DindMachine, ExecOutcome, RELEASE_MANIFEST, assert_keeper_isolation_root, corrosion_query,
+    exec_in_container, exec_ok, require,
 };
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -66,6 +66,7 @@ pub(super) async fn run_founding(
         outcome.success(),
         format!("founding command failed: {outcome:?}"),
     )?;
+    assert_keeper_isolation_root(docker, machine, "ployzd-keeper.service").await?;
     parse_handoff(&outcome.stdout)
 }
 

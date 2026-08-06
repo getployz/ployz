@@ -7,7 +7,7 @@ use ployz_core::corrosion::Principal;
 use ployz_core::corrosion::{
     CorrosionDocumentVersion, CorrosionTimestamp, OperatorWriteProvenance, Sha256Hex, TokenDocument,
 };
-use ployz_core::ids::{MachineRowId, PeerId, TokenId};
+use ployz_core::ids::{MachineRowId, TokenId};
 use ployz_core::join::{
     MachineEndpointSetRefusal, MachineEndpointSetRequest, PreparedTokenCreation,
     TokenCreateRequest, TokenListRequest, TokenRevokeRefusal, TokenRevokeReply, TokenRevokeRequest,
@@ -15,8 +15,8 @@ use ployz_core::join::{
 };
 use ployz_core::machine::MachineName;
 use ployz_core::{
-    ApiRefusal, MachineRemoveRefusal, MachineRemoveReply, MachineRemoveRequest, PeerRemoveRefusal,
-    PeerRemoveReply, PeerRemoveRequest, V2Route, select_machine_removal, select_peer_removal,
+    ApiRefusal, MachineRemoveRefusal, MachineRemoveReply, MachineRemoveRequest, V2Route,
+    select_machine_removal,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -30,8 +30,7 @@ use super::server::{
 };
 use super::store::{
     MutationStoreError, delete_token, insert_token, read_accepted_roster, read_machine, read_token,
-    read_tokens, remove_machine_and_sweep, remove_peer_if_matches,
-    update_wireguard_endpoint_if_matches,
+    read_tokens, remove_machine_and_sweep, update_wireguard_endpoint_if_matches,
 };
 
 const MAX_MUTATION_REQUEST_BYTES: usize = 64 * 1024;
@@ -83,17 +82,16 @@ pub(super) async fn handle_mutation(
             };
             machine_remove(service, request).await
         }
-        V2Route::PeerRemove => {
-            let request = match decode_request::<PeerRemoveRequest>(request.into_body()).await {
-                Ok(request) => request,
-                Err(response) => return response,
-            };
-            peer_remove(service, principal, request).await
-        }
         V2Route::Version
         | V2Route::Founding
         | V2Route::Join
         | V2Route::MachineUpgrade
+        | V2Route::Status
+        | V2Route::Doctor
+        | V2Route::PeerRemove
+        | V2Route::NamespaceRemove
+        | V2Route::ServiceRemove
+        | V2Route::RouteRemove
         | V2Route::Lens(_)
         | V2Route::LensWatch(_) => refusal_response(ApiRefusal::UnsupportedRoute),
     }
@@ -297,80 +295,6 @@ async fn machine_remove(service: &ApiService, request: MachineRemoveRequest) -> 
     typed_response(StatusCode::OK, &reply)
 }
 
-async fn peer_remove(
-    service: &ApiService,
-    principal: Principal,
-    request: PeerRemoveRequest,
-) -> Response<HttpBody> {
-    let Principal::Peer {
-        peer_id: caller_peer_id,
-    } = principal
-    else {
-        return refusal_response(ApiRefusal::UnsupportedRoute);
-    };
-    let roster = match read_accepted_roster(&service.corrosion, &service.cluster_id).await {
-        Ok(roster) => roster,
-        Err(error) => return store_failure("read roster for peer removal", error),
-    };
-    let requested_id_is_stored = request
-        .peer_id
-        .as_ref()
-        .is_some_and(|peer_id| roster.contains_stored_peer_id(peer_id));
-    let candidates = if request.peer_id.is_some() && !requested_id_is_stored {
-        Vec::new()
-    } else {
-        match roster.peer_removal_candidates() {
-            Ok(candidates) => candidates,
-            Err(error) => return store_failure("derive peer-removal candidates", error),
-        }
-    };
-    let reply = match peer_removal_reply(
-        &request,
-        candidates
-            .iter()
-            .map(|peer| (peer.id.clone(), peer.name.clone())),
-        requested_id_is_stored,
-        &caller_peer_id,
-    ) {
-        Ok(reply) => reply,
-        Err(refusal) => return peer_remove_refusal_response(refusal),
-    };
-    if let PeerRemoveReply::Removed { peer_id } = &reply {
-        let Some(candidate) = candidates.iter().find(|peer| peer.id == *peer_id) else {
-            return corrosion_unavailable_response();
-        };
-        if let Err(error) =
-            remove_peer_if_matches(&service.corrosion, peer_id, &candidate.stored_document).await
-        {
-            return store_failure("remove peer", error);
-        }
-    }
-    typed_response(StatusCode::OK, &reply)
-}
-
-fn peer_removal_reply(
-    request: &PeerRemoveRequest,
-    accepted: impl IntoIterator<Item = (PeerId, String)>,
-    requested_id_is_stored: bool,
-    caller_peer_id: &PeerId,
-) -> Result<PeerRemoveReply, PeerRemoveRefusal> {
-    if let Some(peer_id) = &request.peer_id
-        && !requested_id_is_stored
-    {
-        return Ok(PeerRemoveReply::AlreadyAbsent {
-            peer_id: peer_id.clone(),
-        });
-    }
-    match select_peer_removal(request, accepted) {
-        Ok(peer_id) if peer_id == *caller_peer_id => Err(PeerRemoveRefusal::SelfRemoval {
-            peer_name: request.peer_name.clone(),
-            peer_id,
-        }),
-        Ok(peer_id) => Ok(PeerRemoveReply::Removed { peer_id }),
-        Err(refusal) => Err(refusal),
-    }
-}
-
 fn machine_removal_reply(
     request: &MachineRemoveRequest,
     accepted: impl IntoIterator<Item = (MachineRowId, MachineName)>,
@@ -405,16 +329,6 @@ fn machine_remove_refusal_response(refusal: MachineRemoveRefusal) -> Response<Ht
         MachineRemoveRefusal::Ambiguous { .. } | MachineRemoveRefusal::IdMismatch { .. } => {
             StatusCode::CONFLICT
         }
-    };
-    typed_response(status, &refusal)
-}
-
-fn peer_remove_refusal_response(refusal: PeerRemoveRefusal) -> Response<HttpBody> {
-    let status = match &refusal {
-        PeerRemoveRefusal::NotFound { .. } => StatusCode::NOT_FOUND,
-        PeerRemoveRefusal::Ambiguous { .. }
-        | PeerRemoveRefusal::IdMismatch { .. }
-        | PeerRemoveRefusal::SelfRemoval { .. } => StatusCode::CONFLICT,
     };
     typed_response(status, &refusal)
 }
@@ -581,92 +495,5 @@ mod tests {
             machine_removal_reply(&request, std::iter::empty(), true),
             Err(MachineRemoveRefusal::NotFound { machine_name })
         );
-    }
-
-    #[test]
-    fn identity_qualified_peer_removal_retry_is_explicitly_idempotent() {
-        let peer_id = PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("peer id");
-        let caller = PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAW").expect("caller peer id");
-        let request = PeerRemoveRequest {
-            peer_name: "operator-laptop".to_owned(),
-            peer_id: Some(peer_id.clone()),
-        };
-        assert_eq!(
-            peer_removal_reply(&request, std::iter::empty(), false, &caller),
-            Ok(PeerRemoveReply::AlreadyAbsent { peer_id })
-        );
-    }
-
-    #[test]
-    fn peer_removal_retry_is_absent_even_when_the_name_now_belongs_to_another_peer() {
-        let removed = PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("removed peer id");
-        let survivor = PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAW").expect("survivor peer id");
-        let caller = PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAX").expect("caller peer id");
-        let request = PeerRemoveRequest {
-            peer_name: "operator-laptop".to_owned(),
-            peer_id: Some(removed.clone()),
-        };
-
-        assert_eq!(
-            peer_removal_reply(
-                &request,
-                [(survivor, "operator-laptop".to_owned())],
-                false,
-                &caller,
-            ),
-            Ok(PeerRemoveReply::AlreadyAbsent { peer_id: removed })
-        );
-    }
-
-    #[test]
-    fn peer_removal_refuses_the_authenticated_caller_before_mutation() {
-        let caller = PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("caller peer id");
-        let request = PeerRemoveRequest {
-            peer_name: "operator-laptop".to_owned(),
-            peer_id: Some(caller.clone()),
-        };
-        assert_eq!(
-            peer_removal_reply(
-                &request,
-                [(caller.clone(), "operator-laptop".to_owned())],
-                true,
-                &caller,
-            ),
-            Err(PeerRemoveRefusal::SelfRemoval {
-                peer_name: "operator-laptop".to_owned(),
-                peer_id: caller,
-            })
-        );
-    }
-
-    #[test]
-    fn peer_remove_refusals_have_stable_http_statuses() {
-        let peer_id = PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("peer id");
-        assert_eq!(
-            peer_remove_refusal_response(PeerRemoveRefusal::NotFound {
-                peer_name: "operator-laptop".to_owned(),
-            })
-            .status(),
-            StatusCode::NOT_FOUND
-        );
-        for refusal in [
-            PeerRemoveRefusal::Ambiguous {
-                peer_name: "operator-laptop".to_owned(),
-                peer_ids: vec![peer_id.clone()],
-            },
-            PeerRemoveRefusal::IdMismatch {
-                peer_name: "operator-laptop".to_owned(),
-                peer_id: peer_id.clone(),
-            },
-            PeerRemoveRefusal::SelfRemoval {
-                peer_name: "operator-laptop".to_owned(),
-                peer_id,
-            },
-        ] {
-            assert_eq!(
-                peer_remove_refusal_response(refusal).status(),
-                StatusCode::CONFLICT
-            );
-        }
     }
 }

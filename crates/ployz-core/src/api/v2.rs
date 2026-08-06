@@ -7,7 +7,7 @@ use crate::corrosion::{
     ClusterDocument, ContainerDocument, MachineDocument, MachineStatusDocument, OperationDocument,
     Principal, ServiceDocument, SourcePrincipalResolutionError,
 };
-use crate::ids::{ContainerId, MachineRowId, OperationRowId, PeerId, ServiceRowId, TokenId};
+use crate::ids::{ContainerId, MachineRowId, OperationRowId, ServiceRowId, TokenId};
 use crate::install::{InstallArtifactVersion, InstallSha256Digest};
 use crate::machine::MachineName;
 
@@ -31,14 +31,24 @@ pub const TOKEN_LIST_ROUTE: &str = "/tokens/list";
 pub const TOKEN_REVOKE_ROUTE_PREFIX: &str = "/tokens/revoke";
 /// Stable prefix for changing one machine's advertised WireGuard endpoint.
 pub const MACHINE_ENDPOINT_ROUTE_PREFIX: &str = "/machines/endpoint";
-/// Stable endpoint for fencing one machine from the roster and sweeping its testimony.
-pub const MACHINE_REMOVE_ROUTE: &str = "/machines/remove";
-/// Stable endpoint for removing one operator peer from the roster.
-pub const PEER_REMOVE_ROUTE: &str = "/peers/remove";
 /// Stable endpoint for a caller-paced upgrade of the answering machine.
 pub const MACHINE_UPGRADE_ROUTE: &str = "/machines/upgrade";
+/// Stable endpoint for fencing one machine from the roster and sweeping its testimony.
+pub const MACHINE_REMOVE_ROUTE: &str = "/machines/remove";
 /// The only route exposed by the public TLS join door.
 pub const JOIN_ROUTE: &str = "/join";
+/// The stable endpoint for the cheap cluster diagnostics projection.
+pub const STATUS_ROUTE: &str = "/status";
+/// The stable endpoint for the read-only deep diagnostics projection.
+pub const DOCTOR_ROUTE: &str = "/doctor";
+/// Stable endpoint for removing one valid peer row.
+pub const PEER_REMOVE_ROUTE: &str = "/peers/remove";
+/// Stable endpoint for removing one valid namespace row.
+pub const NAMESPACE_REMOVE_ROW_ROUTE: &str = "/namespaces/remove";
+/// Stable endpoint for removing one valid service row.
+pub const SERVICE_REMOVE_ROW_ROUTE: &str = "/services/remove";
+/// Stable endpoint for removing one valid route-binding row.
+pub const ROUTE_REMOVE_ROUTE: &str = "/routes/remove";
 
 /// A capability understood by this version of the public API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -52,14 +62,22 @@ pub enum KnownApiFeature {
     JoinTokens,
     #[serde(rename = "v2.machine_endpoint")]
     MachineEndpoint,
-    #[serde(rename = "v2.machine_remove")]
-    MachineRemove,
-    #[serde(rename = "v2.peer_remove")]
-    PeerRemove,
     #[serde(rename = "v2.machine_upgrade")]
     MachineUpgrade,
+    #[serde(rename = "v2.machine_remove")]
+    MachineRemove,
     #[serde(rename = "v2.join_door")]
     JoinDoor,
+    #[serde(rename = "v2.diagnostics")]
+    Diagnostics,
+    #[serde(rename = "v2.peer_remove")]
+    PeerRemove,
+    #[serde(rename = "v2.namespace_remove")]
+    NamespaceRemove,
+    #[serde(rename = "v2.service_remove")]
+    ServiceRemove,
+    #[serde(rename = "v2.route_remove")]
+    RouteRemove,
 }
 
 impl KnownApiFeature {
@@ -71,10 +89,14 @@ impl KnownApiFeature {
             Self::Lenses => "v2.lenses",
             Self::JoinTokens => "v2.join_tokens",
             Self::MachineEndpoint => "v2.machine_endpoint",
-            Self::MachineRemove => "v2.machine_remove",
-            Self::PeerRemove => "v2.peer_remove",
             Self::MachineUpgrade => "v2.machine_upgrade",
+            Self::MachineRemove => "v2.machine_remove",
             Self::JoinDoor => "v2.join_door",
+            Self::Diagnostics => "v2.diagnostics",
+            Self::PeerRemove => "v2.peer_remove",
+            Self::NamespaceRemove => "v2.namespace_remove",
+            Self::ServiceRemove => "v2.service_remove",
+            Self::RouteRemove => "v2.route_remove",
         }
     }
 }
@@ -85,10 +107,14 @@ pub const KNOWN_API_FEATURES: &[KnownApiFeature] = &[
     KnownApiFeature::Lenses,
     KnownApiFeature::JoinTokens,
     KnownApiFeature::MachineEndpoint,
-    KnownApiFeature::MachineRemove,
-    KnownApiFeature::PeerRemove,
     KnownApiFeature::MachineUpgrade,
+    KnownApiFeature::MachineRemove,
     KnownApiFeature::JoinDoor,
+    KnownApiFeature::Diagnostics,
+    KnownApiFeature::PeerRemove,
+    KnownApiFeature::NamespaceRemove,
+    KnownApiFeature::ServiceRemove,
+    KnownApiFeature::RouteRemove,
 ];
 
 /// An advertised capability, including names added by a newer machine.
@@ -260,66 +286,6 @@ pub fn select_machine_removal(
     }
 }
 
-/// Mesh-authenticated request to remove one operator peer from the roster.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct PeerRemoveRequest {
-    pub peer_name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub peer_id: Option<PeerId>,
-}
-
-/// The terminal outcome of an operator-peer removal.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum PeerRemoveReply {
-    Removed { peer_id: PeerId },
-    AlreadyAbsent { peer_id: PeerId },
-}
-
-/// A refusal to resolve or authorize an operator-peer removal.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum PeerRemoveRefusal {
-    #[error("peer {peer_name} is not in the accepted roster")]
-    NotFound { peer_name: String },
-    #[error("peer {peer_name} is ambiguous across identities {peer_ids:?}")]
-    Ambiguous {
-        peer_name: String,
-        peer_ids: Vec<PeerId>,
-    },
-    #[error("peer {peer_name} does not match identity {peer_id}")]
-    IdMismatch { peer_name: String, peer_id: PeerId },
-    #[error(
-        "peer {peer_name} ({peer_id}) is the authenticated caller; run `ployz peer rm {peer_name} --id {peer_id} --target <context>` from another accepted operator context"
-    )]
-    SelfRemoval { peer_name: String, peer_id: PeerId },
-}
-
-/// Resolves a peer-removal selector only from roster rows accepted by the
-/// reader law. The optional row id makes retries and name conflicts explicit.
-pub fn select_peer_removal(
-    request: &PeerRemoveRequest,
-    accepted: impl IntoIterator<Item = (PeerId, String)>,
-) -> Result<PeerId, PeerRemoveRefusal> {
-    match select_removal(&request.peer_name, request.peer_id.as_ref(), accepted) {
-        RemovalSelection::Selected(peer_id) => Ok(peer_id),
-        RemovalSelection::NotFound => Err(PeerRemoveRefusal::NotFound {
-            peer_name: request.peer_name.clone(),
-        }),
-        RemovalSelection::Ambiguous(peer_ids) => Err(PeerRemoveRefusal::Ambiguous {
-            peer_name: request.peer_name.clone(),
-            peer_ids,
-        }),
-        RemovalSelection::IdMismatch(peer_id) => Err(PeerRemoveRefusal::IdMismatch {
-            peer_name: request.peer_name.clone(),
-            peer_id,
-        }),
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RemovalSelection<Id> {
     Selected(Id),
@@ -375,10 +341,15 @@ pub enum V2Route {
     TokenList,
     TokenRevoke(TokenId),
     MachineEndpointSet,
-    MachineRemove,
-    PeerRemove,
     MachineUpgrade,
+    MachineRemove,
     Join,
+    Status,
+    Doctor,
+    PeerRemove,
+    NamespaceRemove,
+    ServiceRemove,
+    RouteRemove,
     Lens(LensCollection),
     LensWatch(LensCollection),
 }
@@ -409,17 +380,32 @@ impl V2Route {
         if path == JOIN_ROUTE {
             return Some(Self::Join);
         }
-        if path == MACHINE_ENDPOINT_ROUTE_PREFIX {
-            return Some(Self::MachineEndpointSet);
+        if path == STATUS_ROUTE {
+            return Some(Self::Status);
         }
-        if path == MACHINE_REMOVE_ROUTE {
-            return Some(Self::MachineRemove);
+        if path == DOCTOR_ROUTE {
+            return Some(Self::Doctor);
         }
         if path == PEER_REMOVE_ROUTE {
             return Some(Self::PeerRemove);
         }
+        if path == NAMESPACE_REMOVE_ROW_ROUTE {
+            return Some(Self::NamespaceRemove);
+        }
+        if path == SERVICE_REMOVE_ROW_ROUTE {
+            return Some(Self::ServiceRemove);
+        }
+        if path == ROUTE_REMOVE_ROUTE {
+            return Some(Self::RouteRemove);
+        }
+        if path == MACHINE_ENDPOINT_ROUTE_PREFIX {
+            return Some(Self::MachineEndpointSet);
+        }
         if path == MACHINE_UPGRADE_ROUTE {
             return Some(Self::MachineUpgrade);
+        }
+        if path == MACHINE_REMOVE_ROUTE {
+            return Some(Self::MachineRemove);
         }
         if let Some(token_id) = path
             .strip_prefix(TOKEN_REVOKE_ROUTE_PREFIX)
@@ -451,10 +437,15 @@ impl V2Route {
             Self::TokenList => TOKEN_LIST_ROUTE.to_owned(),
             Self::TokenRevoke(token_id) => token_revoke_route(token_id),
             Self::MachineEndpointSet => MACHINE_ENDPOINT_ROUTE_PREFIX.to_owned(),
-            Self::MachineRemove => MACHINE_REMOVE_ROUTE.to_owned(),
-            Self::PeerRemove => PEER_REMOVE_ROUTE.to_owned(),
             Self::MachineUpgrade => MACHINE_UPGRADE_ROUTE.to_owned(),
+            Self::MachineRemove => MACHINE_REMOVE_ROUTE.to_owned(),
             Self::Join => JOIN_ROUTE.to_owned(),
+            Self::Status => STATUS_ROUTE.to_owned(),
+            Self::Doctor => DOCTOR_ROUTE.to_owned(),
+            Self::PeerRemove => PEER_REMOVE_ROUTE.to_owned(),
+            Self::NamespaceRemove => NAMESPACE_REMOVE_ROW_ROUTE.to_owned(),
+            Self::ServiceRemove => SERVICE_REMOVE_ROW_ROUTE.to_owned(),
+            Self::RouteRemove => ROUTE_REMOVE_ROUTE.to_owned(),
             Self::Lens(collection) => lens_route(*collection),
             Self::LensWatch(collection) => lens_watch_route(*collection),
         }
@@ -464,15 +455,20 @@ impl V2Route {
     #[must_use]
     pub const fn method(&self) -> V2Method {
         match self {
-            Self::Version | Self::Lens(_) | Self::LensWatch(_) => V2Method::Get,
+            Self::Version | Self::Status | Self::Doctor | Self::Lens(_) | Self::LensWatch(_) => {
+                V2Method::Get
+            }
             Self::Founding
             | Self::TokenCreate
             | Self::TokenList
             | Self::TokenRevoke(_)
             | Self::MachineEndpointSet
+            | Self::MachineUpgrade
             | Self::MachineRemove
             | Self::PeerRemove
-            | Self::MachineUpgrade
+            | Self::NamespaceRemove
+            | Self::ServiceRemove
+            | Self::RouteRemove
             | Self::Join => V2Method::Post,
         }
     }
@@ -487,10 +483,14 @@ impl V2Route {
                 KnownApiFeature::JoinTokens
             }
             Self::MachineEndpointSet => KnownApiFeature::MachineEndpoint,
-            Self::MachineRemove => KnownApiFeature::MachineRemove,
-            Self::PeerRemove => KnownApiFeature::PeerRemove,
             Self::MachineUpgrade => KnownApiFeature::MachineUpgrade,
+            Self::MachineRemove => KnownApiFeature::MachineRemove,
             Self::Join => KnownApiFeature::JoinDoor,
+            Self::Status | Self::Doctor => KnownApiFeature::Diagnostics,
+            Self::PeerRemove => KnownApiFeature::PeerRemove,
+            Self::NamespaceRemove => KnownApiFeature::NamespaceRemove,
+            Self::ServiceRemove => KnownApiFeature::ServiceRemove,
+            Self::RouteRemove => KnownApiFeature::RouteRemove,
         }
     }
 
@@ -503,10 +503,20 @@ impl V2Route {
             | Self::TokenList
             | Self::TokenRevoke(_)
             | Self::MachineEndpointSet
+            | Self::MachineUpgrade
             | Self::MachineRemove
             | Self::PeerRemove
-            | Self::MachineUpgrade => matches!(principal, Principal::Peer { .. }),
-            Self::Version | Self::Founding | Self::Lens(_) | Self::LensWatch(_) => {
+            | Self::NamespaceRemove
+            | Self::ServiceRemove
+            | Self::RouteRemove => {
+                matches!(principal, Principal::Peer { .. })
+            }
+            Self::Version
+            | Self::Founding
+            | Self::Status
+            | Self::Doctor
+            | Self::Lens(_)
+            | Self::LensWatch(_) => {
                 matches!(
                     principal,
                     Principal::Machine { .. } | Principal::Peer { .. }

@@ -5,11 +5,13 @@
 //! environment file rather than an API credential supplied by callers.
 
 mod config;
+mod diagnostics;
 mod door;
 mod endpoint_network;
 mod founding;
 mod join;
 mod mutations;
+mod removals;
 mod roster;
 mod runtime;
 mod server;

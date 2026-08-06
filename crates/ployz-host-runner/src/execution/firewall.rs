@@ -15,6 +15,7 @@ mod nft;
 mod port;
 
 pub use detection::detect_firewall_backend;
+pub(crate) use mesh::converge_container_nat_with;
 pub use port::{AssignedHostPort, HostPortProtocol};
 
 #[derive(Debug, Clone, PartialEq, Eq)]

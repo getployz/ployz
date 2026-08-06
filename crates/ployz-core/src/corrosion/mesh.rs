@@ -14,7 +14,7 @@ use super::{
     NamedReadReport, PeerDocument, PeerTransport, ShadowConflict, SkippedRow,
 };
 use crate::ids::{ClusterId, MachineRowId, PeerId};
-use crate::network::{MachineEndpointSubnet, WireGuardPublicKey};
+use crate::network::{MachineEndpointSubnet, MachineEndpointSupernet, WireGuardPublicKey};
 
 /// v1 product ceiling, kept equal to the shipped eBPF route-map capacity.
 pub const MAX_BUILTIN_WIREGUARD_MEMBERS: usize = 256;
@@ -300,6 +300,8 @@ pub struct DesiredBuiltinWireguardRoamingPeer {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesiredBuiltinWireguardMesh {
     pub local: DesiredBuiltinWireguardLocal,
+    pub local_container_subnet: MachineEndpointSubnet,
+    pub cluster_container_prefix: MachineEndpointSupernet,
     pub machine_peers: Vec<DesiredBuiltinWireguardMachinePeer>,
     pub roaming_peers: Vec<DesiredBuiltinWireguardRoamingPeer>,
     pub ebpf_routes: Vec<MachineEndpointSubnet>,
@@ -575,6 +577,7 @@ pub fn project_builtin_wireguard_mesh(
             },
         );
     }
+    let local_container_subnet = local_subnet.clone();
     let local_identity = derive_builtin_wireguard_member(&cluster.cluster_id, local_public_key);
     let local = DesiredBuiltinWireguardLocal {
         public_key: local_public_key.clone(),
@@ -630,6 +633,8 @@ pub fn project_builtin_wireguard_mesh(
     Ok(BuiltinWireguardMeshOutcome::Desired(
         DesiredBuiltinWireguardMesh {
             local,
+            local_container_subnet,
+            cluster_container_prefix: cluster.prefix.clone(),
             machine_peers,
             roaming_peers,
             ebpf_routes,

@@ -21,9 +21,16 @@ pub(super) async fn resolve_peer_principal(
     corrosion: &CorrosionClient,
     cluster_id: &ClusterId,
     source: IpAddr,
-) -> Result<Principal, ApiRefusal> {
-    let principals = read_accepted_roster(corrosion, cluster_id).await?;
-    resolve_source_principal(source, &principals).map_err(ApiRefusal::from)
+) -> Result<Principal, PeerPrincipalError> {
+    let principals = read_accepted_roster(corrosion, cluster_id)
+        .await
+        .map_err(PeerPrincipalError::Refusal)?;
+    if principals.is_empty() {
+        return Err(PeerPrincipalError::EmptyAcceptedRoster { source });
+    }
+    resolve_source_principal(source, &principals)
+        .map_err(ApiRefusal::from)
+        .map_err(PeerPrincipalError::Refusal)
 }
 
 pub(super) async fn validate_listener_identity(
@@ -34,8 +41,25 @@ pub(super) async fn validate_listener_identity(
 ) -> Result<(), ApiListenerValidationError> {
     let principal = resolve_peer_principal(corrosion, cluster_id, listen_addr.ip())
         .await
-        .map_err(|refusal| ApiListenerValidationError::Refusal { refusal })?;
+        .map_err(|error| ApiListenerValidationError::Refusal {
+            refusal: error.into_refusal(),
+        })?;
     validate_listener_principal(local_machine_id, listen_addr, principal)
+}
+
+#[derive(Debug)]
+pub(super) enum PeerPrincipalError {
+    EmptyAcceptedRoster { source: IpAddr },
+    Refusal(ApiRefusal),
+}
+
+impl PeerPrincipalError {
+    pub(super) fn into_refusal(self) -> ApiRefusal {
+        match self {
+            Self::EmptyAcceptedRoster { source } => ApiRefusal::UnknownSource { source },
+            Self::Refusal(refusal) => refusal,
+        }
+    }
 }
 
 pub(super) fn validate_listener_principal(

@@ -612,6 +612,8 @@ fn machine_status_document() -> MachineStatusDocument {
         load: MachineLoadBand::Idle,
         observed_at: timestamp("2026-08-04T10:06:00Z"),
         mesh: None,
+        container_isolation: None,
+        wireguard_handshakes: None,
     }
 }
 
