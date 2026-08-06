@@ -6,13 +6,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::net::Ipv4Addr;
 #[cfg(test)]
 use std::path::PathBuf;
 #[cfg(test)]
 use std::time::Duration;
 
 use defguard_wireguard_rs::key::Key;
-use ipnet::{IpNet, Ipv6Net};
+use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 use ployz_core::corrosion::{
     BuiltinWireguardMemberSubnet, DesiredBuiltinWireguardLocal, DesiredBuiltinWireguardMesh,
 };
@@ -22,6 +23,7 @@ use thiserror::Error;
 
 #[cfg(test)]
 use crate::SupervisorBackend;
+use crate::execution::firewall::converge_container_nat_with;
 use crate::{
     AssignedHostPort, FirewallBackend, HostRunnerCommandOutput, HostRunnerCommandRunner,
     SystemHostRunnerCommandRunner, detect_firewall_backend,
@@ -30,7 +32,10 @@ use crate::{
 mod config;
 #[cfg(test)]
 mod firewall_tests;
+#[cfg(test)]
+mod handshake_tests;
 mod mesh_state;
+mod outcome;
 mod private_key;
 
 pub use config::{
@@ -39,6 +44,11 @@ pub use config::{
 };
 pub use mesh_state::WireguardHandshakeEpoch;
 use mesh_state::*;
+pub use outcome::{
+    BuiltinWireguardHostOutcome, BuiltinWireguardLatestHandshake, EbpfDegradedReason,
+    EbpfHostOutcome,
+};
+use outcome::{EbpfEffectError, ebpf_outcome};
 use private_key::provision_private_key;
 
 pub const DEFAULT_PRIVATE_KEY_PATH: &str = "/etc/ployz/wireguard.key";
@@ -51,11 +61,6 @@ pub enum BuiltinWireguardHostError {
     HostEffect { message: String },
     #[error("required built-in WireGuard ports are blocked by unmanaged firewall {backend:?}")]
     UnmanagedFirewall { backend: String },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BuiltinWireguardHostOutcome {
-    pub ebpf: EbpfHostOutcome,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,18 +78,6 @@ pub struct BuiltinWireguardJoinSeed {
     pub subnet_v4: MachineEndpointSubnet,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum EbpfHostOutcome {
-    Ready { route_count: usize },
-    Degraded { reason: EbpfDegradedReason },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum EbpfDegradedReason {
-    MissingBridge { ifname: String },
-    HostEffect { message: String },
-}
-
 /// The local-effect module. `R` is the existing Host Runner OS seam; all
 /// production subprocesses use the bounded system implementation.
 #[derive(Debug)]
@@ -97,6 +90,16 @@ pub struct BuiltinWireguardHost<R = SystemHostRunnerCommandRunner> {
 enum CorrosionGossipPhase<'a> {
     Bootstrap,
     Desired(&'a BTreeSet<Ipv6Net>),
+    Fenced,
+}
+
+#[derive(Clone, Copy)]
+enum ContainerNatPhase<'a> {
+    Desired {
+        local_subnet: &'a MachineEndpointSubnet,
+        cluster_prefix: &'a ployz_core::network::MachineEndpointSupernet,
+        bridge_ready: bool,
+    },
     Fenced,
 }
 
@@ -176,7 +179,7 @@ impl<R: HostRunnerCommandRunner> BuiltinWireguardHost<R> {
         };
         let observed_peers = self.read_observed_peers().map_err(host_error)?;
         let observed_routes = self.read_observed_routes().map_err(host_error)?;
-        let actions = convergence_plan(&observed_peers, &observed_routes, &[desired]);
+        let actions = convergence_plan(&observed_peers, &observed_routes, &[desired], None);
         self.apply_convergence_actions(&actions)
             .map_err(host_error)?;
         Ok(binding)
@@ -280,14 +283,25 @@ impl<R: HostRunnerCommandRunner> BuiltinWireguardHost<R> {
             &desired.local,
             CorrosionGossipPhase::Desired(&machine_sources),
         )?;
-        let peers = render_desired_peers(desired);
-        let observed_peers = self.read_observed_peers().map_err(host_error)?;
-        let observed_routes = self.read_observed_routes().map_err(host_error)?;
-        let actions = convergence_plan(&observed_peers, &observed_routes, &peers);
-        self.apply_convergence_actions(&actions)
+        let preferred_source = self
+            .observe_bridge_gateway(&desired.local_container_subnet)
             .map_err(host_error)?;
-        let ebpf = self.converge_ebpf(&desired.ebpf_routes);
-        Ok(BuiltinWireguardHostOutcome { ebpf })
+        let peers = render_desired_peers(desired);
+        let latest_handshakes = self
+            .converge_peers_and_collect_handshakes(&peers, preferred_source)
+            .map_err(host_error)?;
+        let ebpf = self.converge_ebpf(
+            &desired.ebpf_routes,
+            ContainerNatPhase::Desired {
+                local_subnet: &desired.local_container_subnet,
+                cluster_prefix: &desired.cluster_container_prefix,
+                bridge_ready: preferred_source.is_some(),
+            },
+        );
+        Ok(BuiltinWireguardHostOutcome {
+            ebpf,
+            latest_handshakes,
+        })
     }
 
     /// Explicitly removes every peer and owned route while retaining the local
@@ -298,13 +312,39 @@ impl<R: HostRunnerCommandRunner> BuiltinWireguardHost<R> {
         local: &DesiredBuiltinWireguardLocal,
     ) -> Result<BuiltinWireguardHostOutcome, BuiltinWireguardHostError> {
         self.bind_local_effects(local, CorrosionGossipPhase::Fenced)?;
-        let observed_peers = self.read_observed_peers().map_err(host_error)?;
-        let observed_routes = self.read_observed_routes().map_err(host_error)?;
-        let actions = convergence_plan(&observed_peers, &observed_routes, &[]);
-        self.apply_convergence_actions(&actions)
+        let latest_handshakes = self
+            .converge_peers_and_collect_handshakes(&[], None)
             .map_err(host_error)?;
-        let ebpf = self.converge_ebpf(&[]);
-        Ok(BuiltinWireguardHostOutcome { ebpf })
+        let ebpf = self.converge_ebpf(&[], ContainerNatPhase::Fenced);
+        Ok(BuiltinWireguardHostOutcome {
+            ebpf,
+            latest_handshakes,
+        })
+    }
+
+    fn converge_peers_and_collect_handshakes(
+        &mut self,
+        desired_peers: &[DesiredPeer],
+        ipv4_preferred_source: Option<Ipv4Addr>,
+    ) -> Result<BTreeMap<WireGuardPublicKey, BuiltinWireguardLatestHandshake>, String> {
+        let observed_peers = self.read_observed_peers()?;
+        let observed_routes = self.read_observed_routes()?;
+        let actions = convergence_plan(
+            &observed_peers,
+            &observed_routes,
+            desired_peers,
+            ipv4_preferred_source,
+        );
+        self.apply_convergence_actions(&actions)?;
+        let observed_peers = if actions.is_empty() {
+            observed_peers
+        } else {
+            self.read_observed_peers()?
+        };
+        Ok(observed_peers
+            .into_iter()
+            .map(|(public_key, peer)| (public_key, peer.latest_handshake))
+            .collect())
     }
 
     fn ensure_ipv6_sysctls_before_interface(&mut self) -> Result<(), String> {
@@ -470,9 +510,9 @@ impl<R: HostRunnerCommandRunner> BuiltinWireguardHost<R> {
         parse_wireguard_dump(&output.stdout)
     }
 
-    fn read_observed_routes(&mut self) -> Result<BTreeSet<IpNet>, String> {
+    fn read_observed_routes(&mut self) -> Result<BTreeMap<IpNet, ObservedRoute>, String> {
         let ifname = self.config.wg_ifname.clone();
-        let mut routes = BTreeSet::new();
+        let mut routes = BTreeMap::new();
         for family in ["-4", "-6"] {
             let args = owned_route_observation_args(family, &ifname);
             let output = self.run("ip", &args)?;
@@ -484,9 +524,44 @@ impl<R: HostRunnerCommandRunner> BuiltinWireguardHost<R> {
                     "WireGuard {family} route observation was truncated"
                 ));
             }
-            routes.extend(parse_owned_routes(&output.stdout)?);
+            for (destination, route) in parse_owned_routes(&output.stdout)? {
+                if routes.insert(destination, route).is_some() {
+                    return Err(format!(
+                        "WireGuard owned route {destination} appeared more than once"
+                    ));
+                }
+            }
         }
         Ok(routes)
+    }
+
+    fn observe_bridge_gateway(
+        &mut self,
+        local_subnet: &MachineEndpointSubnet,
+    ) -> Result<Option<Ipv4Addr>, String> {
+        let bridge = self.config.ebpf.bridge_ifname.clone();
+        let link = self.run("ip", &["link", "show", "dev", &bridge])?;
+        if !link.success {
+            return Ok(None);
+        }
+        let output = self.run(
+            "ip",
+            &[
+                "-o", "-4", "address", "show", "dev", &bridge, "scope", "global",
+            ],
+        )?;
+        if !output.success {
+            return Err(output.failure);
+        }
+        if output.stdout_truncated {
+            return Err("endpoint bridge IPv4 address observation was truncated".to_owned());
+        }
+        let gateway = local_subnet.bridge_gateway_ipv4();
+        let gateway_cidr =
+            Ipv4Net::new(gateway, 24).expect("an endpoint bridge gateway always uses a /24");
+        Ok(parse_interface_ipv4_addresses(&output.stdout)?
+            .contains(&gateway_cidr)
+            .then_some(gateway))
     }
 
     fn apply_convergence_actions(&mut self, actions: &[ConvergenceAction]) -> Result<(), String> {
@@ -514,18 +589,27 @@ impl<R: HostRunnerCommandRunner> BuiltinWireguardHost<R> {
         self.require("wg", &refs).map(|_| ())
     }
 
-    fn replace_route(&mut self, route: IpNet) -> Result<(), String> {
-        let family = route_family(route);
-        let route = route.to_string();
+    fn replace_route(&mut self, route: DesiredRoute) -> Result<(), String> {
+        let family = route_family(route.destination);
+        let destination = route.destination.to_string();
         let ifname = self.config.wg_ifname.clone();
-        self.require(
-            "ip",
-            &[
-                family, "route", "replace", &route, "dev", &ifname, "proto", "boot", "scope",
-                "link",
-            ],
-        )
-        .map(|_| ())
+        let mut args = vec![
+            family.to_owned(),
+            "route".to_owned(),
+            "replace".to_owned(),
+            destination,
+            "dev".to_owned(),
+            ifname,
+            "proto".to_owned(),
+            "boot".to_owned(),
+            "scope".to_owned(),
+            "link".to_owned(),
+        ];
+        if let Some(source) = route.preferred_source {
+            args.extend(["src".to_owned(), source.to_string()]);
+        }
+        let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+        self.require("ip", &refs).map(|_| ())
     }
 
     fn remove_route(&mut self, route: IpNet) -> Result<(), String> {
@@ -547,20 +631,34 @@ impl<R: HostRunnerCommandRunner> BuiltinWireguardHost<R> {
         }
     }
 
-    fn converge_ebpf(&mut self, routes: &[MachineEndpointSubnet]) -> EbpfHostOutcome {
-        let result = self.try_converge_ebpf(routes);
+    fn converge_ebpf(
+        &mut self,
+        routes: &[MachineEndpointSubnet],
+        container_nat: ContainerNatPhase<'_>,
+    ) -> EbpfHostOutcome {
+        let result = self.try_converge_ebpf(routes, container_nat);
         ebpf_outcome(routes.len(), &self.config.ebpf.bridge_ifname, result)
     }
 
     fn try_converge_ebpf(
         &mut self,
         routes: &[MachineEndpointSubnet],
+        container_nat: ContainerNatPhase<'_>,
     ) -> Result<(), EbpfEffectError> {
         let bridge = self.config.ebpf.bridge_ifname.clone();
         let bridge_output = self
             .run("ip", &["link", "show", "dev", &bridge])
             .map_err(EbpfEffectError::HostEffect)?;
         if !bridge_output.success {
+            return Err(EbpfEffectError::MissingBridge);
+        }
+        if matches!(
+            container_nat,
+            ContainerNatPhase::Desired {
+                bridge_ready: false,
+                ..
+            }
+        ) {
             return Err(EbpfEffectError::MissingBridge);
         }
         for (description, path) in [
@@ -598,6 +696,15 @@ impl<R: HostRunnerCommandRunner> BuiltinWireguardHost<R> {
         let attach_refs = attach_args.iter().map(String::as_str).collect::<Vec<_>>();
         self.require(&ctl, &attach_refs)
             .map_err(EbpfEffectError::HostEffect)?;
+        if let ContainerNatPhase::Desired {
+            local_subnet,
+            cluster_prefix,
+            bridge_ready: true,
+        } = container_nat
+        {
+            converge_container_nat_with(local_subnet, cluster_prefix, &mut self.runner)
+                .map_err(|error| EbpfEffectError::HostEffect(error.as_str().to_owned()))?;
+        }
         self.ensure_forwarding_firewall(&bridge, &ifname)
             .map_err(EbpfEffectError::HostEffect)?;
         let mut route_args = vec!["route".to_owned(), "replace-all-ifname".to_owned(), ifname];
@@ -648,33 +755,9 @@ impl<R: HostRunnerCommandRunner> BuiltinWireguardHost<R> {
 }
 
 #[derive(Debug)]
-enum EbpfEffectError {
-    MissingBridge,
-    HostEffect(String),
-}
-
-#[derive(Debug)]
 enum FirewallEffectError {
     Host(String),
     Unmanaged(String),
-}
-
-fn ebpf_outcome(
-    route_count: usize,
-    bridge_ifname: &str,
-    result: Result<(), EbpfEffectError>,
-) -> EbpfHostOutcome {
-    match result {
-        Ok(()) => EbpfHostOutcome::Ready { route_count },
-        Err(EbpfEffectError::MissingBridge) => EbpfHostOutcome::Degraded {
-            reason: EbpfDegradedReason::MissingBridge {
-                ifname: bridge_ifname.to_owned(),
-            },
-        },
-        Err(EbpfEffectError::HostEffect(message)) => EbpfHostOutcome::Degraded {
-            reason: EbpfDegradedReason::HostEffect { message },
-        },
-    }
 }
 
 fn host_error(message: impl Into<String>) -> BuiltinWireguardHostError {
@@ -694,6 +777,8 @@ fn firewall_host_error(error: FirewallEffectError) -> BuiltinWireguardHostError 
 
 #[cfg(test)]
 mod tests {
+    use crate::execution::firewall::tests::{RecordingRunner, active};
+
     use super::*;
 
     fn key(byte: u8) -> WireGuardPublicKey {
@@ -720,6 +805,7 @@ mod tests {
             endpoint: Some("192.0.2.1:51820".parse().expect("endpoint")),
             allowed_ips: endpointless.allowed_ips.clone(),
             persistent_keepalive: Some(PERSISTENT_KEEPALIVE_SECONDS),
+            latest_handshake: BuiltinWireguardLatestHandshake::Never,
         };
         assert!(peer_matches(&observed_endpoint, &endpointless));
 
@@ -768,6 +854,7 @@ mod tests {
                     endpoint: None,
                     allowed_ips: BTreeSet::from(["fd42::/112".parse().expect("CIDR")]),
                     persistent_keepalive: None,
+                    latest_handshake: BuiltinWireguardLatestHandshake::Never,
                 }
             )])
         );
@@ -828,6 +915,16 @@ mod tests {
     }
 
     #[test]
+    fn bridge_address_observation_preserves_the_ipv4_prefix() {
+        let output = "8: br-ployz    inet 10.210.1.1/24 brd 10.210.1.255 scope global br-ployz\n";
+
+        assert_eq!(
+            parse_interface_ipv4_addresses(output).expect("address parses"),
+            BTreeSet::from(["10.210.1.1/24".parse().expect("address")])
+        );
+    }
+
+    #[test]
     fn owned_route_observation_does_not_filter_by_ipv6_scope() {
         assert_eq!(
             owned_route_observation_args("-6", "ployz0"),
@@ -846,11 +943,19 @@ mod tests {
                 endpoint: None,
                 allowed_ips: BTreeSet::from(["fd01::/112".parse().expect("CIDR")]),
                 persistent_keepalive: None,
+                latest_handshake: BuiltinWireguardLatestHandshake::Never,
             },
         )]);
-        let observed_routes = BTreeSet::from(["fd01::/112".parse().expect("CIDR")]);
+        let observed_destination = "fd01::/112".parse().expect("CIDR");
+        let observed_routes = BTreeMap::from([(
+            observed_destination,
+            ObservedRoute {
+                destination: observed_destination,
+                preferred_source: None,
+            },
+        )]);
 
-        let actions = convergence_plan(&observed_peers, &observed_routes, &[desired]);
+        let actions = convergence_plan(&observed_peers, &observed_routes, &[desired], None);
 
         let [
             ConvergenceAction::UpsertPeer(_),
@@ -873,13 +978,30 @@ mod tests {
                 endpoint: None,
                 allowed_ips: desired.allowed_ips.clone(),
                 persistent_keepalive: None,
+                latest_handshake: BuiltinWireguardLatestHandshake::Never,
             },
         )]);
         let stale = "10.42.9.0/24".parse().expect("CIDR");
-        let observed_routes = BTreeSet::from(["fd02::/112".parse().expect("CIDR"), stale]);
+        let desired_destination = "fd02::/112".parse().expect("CIDR");
+        let observed_routes = BTreeMap::from([
+            (
+                desired_destination,
+                ObservedRoute {
+                    destination: desired_destination,
+                    preferred_source: None,
+                },
+            ),
+            (
+                stale,
+                ObservedRoute {
+                    destination: stale,
+                    preferred_source: None,
+                },
+            ),
+        ]);
 
         assert_eq!(
-            convergence_plan(&observed_peers, &observed_routes, &[desired]),
+            convergence_plan(&observed_peers, &observed_routes, &[desired], None),
             [ConvergenceAction::RemoveRoute(stale)]
         );
     }
@@ -892,12 +1014,20 @@ mod tests {
                 endpoint: None,
                 allowed_ips: BTreeSet::new(),
                 persistent_keepalive: None,
+                latest_handshake: BuiltinWireguardLatestHandshake::Never,
             },
         )]);
         let route = "fd01::/112".parse().expect("CIDR");
 
+        let observed_routes = BTreeMap::from([(
+            route,
+            ObservedRoute {
+                destination: route,
+                preferred_source: None,
+            },
+        )]);
         assert_eq!(
-            convergence_plan(&observed_peers, &BTreeSet::from([route]), &[]),
+            convergence_plan(&observed_peers, &observed_routes, &[], None),
             [
                 ConvergenceAction::RemovePeer(key(1)),
                 ConvergenceAction::RemoveRoute(route),
@@ -907,13 +1037,215 @@ mod tests {
 
     #[test]
     fn single_machine_plan_has_no_peer_or_route_actions() {
-        assert!(convergence_plan(&BTreeMap::new(), &BTreeSet::new(), &[]).is_empty());
+        assert!(convergence_plan(&BTreeMap::new(), &BTreeMap::new(), &[], None).is_empty());
+    }
+
+    #[test]
+    fn source_less_ipv4_route_is_accepted_before_the_bridge_exists() {
+        let destination = "10.210.2.0/24".parse().expect("CIDR");
+        let routes = parse_owned_routes("10.210.2.0/24 dev ployz0 proto boot scope link\n")
+            .expect("route observation");
+
+        assert_eq!(
+            routes,
+            BTreeMap::from([(
+                destination,
+                ObservedRoute {
+                    destination,
+                    preferred_source: None,
+                },
+            )])
+        );
+    }
+
+    #[test]
+    fn bridge_preferred_source_upgrades_an_existing_source_less_route_once() {
+        let desired = desired_peer(2, None, &["10.210.2.0/24"]);
+        let destination = "10.210.2.0/24".parse().expect("CIDR");
+        let observed_routes = BTreeMap::from([(
+            destination,
+            ObservedRoute {
+                destination,
+                preferred_source: None,
+            },
+        )]);
+        let source = "10.210.1.1".parse().expect("source");
+
+        assert_eq!(
+            convergence_plan(&BTreeMap::new(), &observed_routes, &[desired], Some(source)),
+            [
+                ConvergenceAction::UpsertPeer(desired_peer(2, None, &["10.210.2.0/24"])),
+                ConvergenceAction::ReplaceRoute(DesiredRoute {
+                    destination,
+                    preferred_source: Some(source),
+                }),
+            ]
+        );
+    }
+
+    #[test]
+    fn route_with_the_bridge_preferred_source_is_a_no_op() {
+        let desired = desired_peer(2, None, &["10.210.2.0/24"]);
+        let observed_peers = BTreeMap::from([(
+            desired.public_key.clone(),
+            ObservedPeer {
+                endpoint: None,
+                allowed_ips: desired.allowed_ips.clone(),
+                persistent_keepalive: None,
+                latest_handshake: BuiltinWireguardLatestHandshake::Never,
+            },
+        )]);
+        let source = "10.210.1.1".parse().expect("source");
+        let observed_routes =
+            parse_owned_routes("10.210.2.0/24 dev ployz0 proto boot scope link src 10.210.1.1\n")
+                .expect("route observation");
+
+        assert!(
+            convergence_plan(&observed_peers, &observed_routes, &[desired], Some(source),)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn ipv4_route_replace_renders_the_bridge_gateway_as_preferred_source() {
+        let ebpf = BuiltinWireguardEbpfConfig::try_new(
+            "br-ployz".to_owned(),
+            "/ctl".into(),
+            "/bytecode".into(),
+            "/pin".into(),
+        )
+        .expect("eBPF config");
+        let config = BuiltinWireguardHostConfig::try_new(
+            "/key".into(),
+            "ployz0".to_owned(),
+            BuiltinWireguardPorts::try_new(51_820, 8_787, 2_020, 2_021).expect("ports"),
+            1_420,
+            ebpf,
+            SupervisorBackend::Systemd,
+            Duration::from_secs(5),
+        )
+        .expect("host config");
+        let mut host =
+            BuiltinWireguardHost::with_runner(config, RecordingRunner::with_outputs([active("")]));
+
+        host.replace_route(DesiredRoute {
+            destination: "10.210.2.0/24".parse().expect("destination"),
+            preferred_source: Some("10.210.1.1".parse().expect("source")),
+        })
+        .expect("replace route");
+
+        assert_eq!(
+            host.runner.calls,
+            ["ip -4 route replace 10.210.2.0/24 dev ployz0 proto boot scope link src 10.210.1.1"]
+        );
+    }
+
+    #[test]
+    fn tc_attachment_precedes_nat_and_route_map_convergence() {
+        fn exited(
+            code: i32,
+        ) -> Result<HostRunnerCommandOutput, ployz_core::operation::FailureMessage> {
+            Ok(HostRunnerCommandOutput {
+                success: false,
+                exit_code: Some(code),
+                stdout: String::new(),
+                stdout_truncated: false,
+                failure: format!("exit {code}"),
+            })
+        }
+
+        let directory = tempfile::tempdir().expect("tempdir");
+        let ctl = directory.path().join("ployz-ebpf-ctl");
+        let bytecode = directory.path().join("ployz-ebpf-tc");
+        fs::write(&ctl, []).expect("control fixture");
+        fs::write(&bytecode, []).expect("bytecode fixture");
+        let ebpf = BuiltinWireguardEbpfConfig::try_new(
+            "br-ployz".to_owned(),
+            ctl,
+            bytecode,
+            directory.path().join("pins"),
+        )
+        .expect("eBPF config");
+        let config = BuiltinWireguardHostConfig::try_new(
+            "/key".into(),
+            "ployz0".to_owned(),
+            BuiltinWireguardPorts::try_new(51_820, 8_787, 2_020, 2_021).expect("ports"),
+            1_420,
+            ebpf,
+            SupervisorBackend::Systemd,
+            Duration::from_secs(5),
+        )
+        .expect("host config");
+        let nat = concat!(
+            "*nat\n",
+            ":POSTROUTING ACCEPT [0:0]\n",
+            ":PLOYZ-CONTAINER-NAT - [0:0]\n",
+            "-A POSTROUTING -j PLOYZ-CONTAINER-NAT\n",
+            "-A PLOYZ-CONTAINER-NAT -s 10.210.1.0/24 -d 10.210.0.0/16 -j ACCEPT\n",
+            "-A PLOYZ-CONTAINER-NAT -j RETURN\n",
+            "COMMIT\n",
+        );
+        let mut host = BuiltinWireguardHost::with_runner(
+            config,
+            RecordingRunner::with_outputs([
+                active(""),
+                active(""),
+                active(""),
+                active(""),
+                active(nat),
+                exited(3),
+                exited(3),
+                exited(3),
+                exited(127),
+                exited(3),
+                exited(3),
+                exited(127),
+                active(""),
+                active(""),
+                active(""),
+                active(""),
+            ]),
+        );
+        let local_subnet = MachineEndpointSubnet::try_new("10.210.1.0/24").expect("subnet");
+        let cluster_prefix =
+            ployz_core::network::MachineEndpointSupernet::try_new("10.210.0.0/16").expect("prefix");
+
+        host.try_converge_ebpf(
+            &[],
+            ContainerNatPhase::Desired {
+                local_subnet: &local_subnet,
+                cluster_prefix: &cluster_prefix,
+                bridge_ready: true,
+            },
+        )
+        .expect("eBPF convergence");
+
+        let attach = host
+            .runner
+            .calls
+            .iter()
+            .position(|call| call.contains("ensure-attached"));
+        let nat = host
+            .runner
+            .calls
+            .iter()
+            .position(|call| call.starts_with("iptables-save"));
+        let routes = host
+            .runner
+            .calls
+            .iter()
+            .position(|call| call.contains("route replace-all-ifname"));
+        assert!(matches!(
+            (attach, nat, routes),
+            (Some(attach), Some(nat), Some(routes)) if attach < nat && nat < routes
+        ));
     }
 
     #[test]
     fn missing_bridge_degrades_ebpf() {
         let outcome = BuiltinWireguardHostOutcome {
             ebpf: ebpf_outcome(1, "br-ployz", Err(EbpfEffectError::MissingBridge)),
+            latest_handshakes: BTreeMap::new(),
         };
         assert_eq!(
             outcome.ebpf,

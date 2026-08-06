@@ -19,7 +19,10 @@ use ployz_core::corrosion::{
     SqliteValue, Statement, TokenDocument, read_named_rows,
 };
 use ployz_core::ids::{ClusterId, CorrosionUlid, MachineRowId};
-use ployz_core::{API_MAJOR, ApiFeature, ApiVersion, KnownApiFeature};
+use ployz_core::{
+    API_MAJOR, ApiFeature, ApiVersion, DoctorDocument, KnownApiFeature, StatusBarrier,
+    StatusDocument,
+};
 use ployzd::corrosion::{
     BearerToken, CorrosionClient, CorrosionClientBounds, CorrosionClientConfig, NameClaimOutcome,
     QueryStreamEvent, SubscriptionStream, SubscriptionStreamEvent,
@@ -324,9 +327,11 @@ async fn exercise_api_version(harness: &StockCorrosion) -> Result<(), String> {
             .expect("API server stops cleanly after controlled shutdown");
     });
 
-    let response = get_version_from_loopback(listen_addr).await;
+    let version_response = get_from_loopback(listen_addr, "/version").await;
+    let status_response = get_from_loopback(listen_addr, "/status").await;
+    let doctor_response = get_from_loopback(listen_addr, "/doctor").await;
     let shutdown = shutdown_api_server(shutdown_tx, server_task).await;
-    let (status, body) = response?;
+    let (status, body) = version_response?;
     shutdown?;
 
     if status != 200 {
@@ -355,6 +360,26 @@ async fn exercise_api_version(harness: &StockCorrosion) -> Result<(), String> {
             version.features
         ));
     }
+
+    let (status, body) = status_response?;
+    if status != 200 {
+        return Err(format!("GET /status returned HTTP {status}: {body}"));
+    }
+    let status = serde_json::from_str::<StatusDocument>(&body)
+        .map_err(|error| format!("decode typed /status response: {error}: {body}"))?;
+    if status.barrier != StatusBarrier::Ready {
+        return Err(format!(
+            "/status barrier was {:?}, expected ready",
+            status.barrier
+        ));
+    }
+
+    let (status, body) = doctor_response?;
+    if status != 200 {
+        return Err(format!("GET /doctor returned HTTP {status}: {body}"));
+    }
+    serde_json::from_str::<DoctorDocument>(&body)
+        .map_err(|error| format!("decode typed /doctor response: {error}: {body}"))?;
 
     Ok(())
 }
@@ -413,7 +438,7 @@ async fn insert_api_loopback_roster(
     Ok((cluster_id, machine_id))
 }
 
-async fn get_version_from_loopback(destination: SocketAddr) -> Result<(u16, String), String> {
+async fn get_from_loopback(destination: SocketAddr, path: &str) -> Result<(u16, String), String> {
     let socket =
         TcpSocket::new_v4().map_err(|error| format!("create API client socket: {error}"))?;
     socket
@@ -424,7 +449,7 @@ async fn get_version_from_loopback(destination: SocketAddr) -> Result<(u16, Stri
         .map_err(|_| "connect to API server timed out".to_owned())?
         .map_err(|error| format!("connect to API server: {error}"))?;
     let request =
-        format!("GET /version HTTP/1.1\r\nHost: {destination}\r\nConnection: close\r\n\r\n");
+        format!("GET {path} HTTP/1.1\r\nHost: {destination}\r\nConnection: close\r\n\r\n");
     tokio::time::timeout(Duration::from_secs(2), stream.write_all(request.as_bytes()))
         .await
         .map_err(|_| "write API request timed out".to_owned())?

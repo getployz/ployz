@@ -15,7 +15,7 @@ pub use founding::{
     ARTIFACT_ROOT, RELEASE_MANIFEST, corrosion_access, corrosion_query, env_value, exec_ok,
     install_local_release_channel, render_release_manifest, require, write_release_manifest,
 };
-pub use machine::{DindMachine, MachineSpec};
+pub use machine::{DindMachine, MachineSpec, assert_keeper_isolation_root};
 
 use bollard::Docker;
 use std::env;
@@ -80,6 +80,10 @@ pub enum DindError {
     },
     #[error("machine {machine} has no bridge IP: {detail}")]
     BridgeIpUnavailable { machine: String, detail: String },
+    #[error("machine {machine} has no isolated cgroup-v2 root: {detail}")]
+    MachineCgroupUnavailable { machine: String, detail: String },
+    #[error("machine {machine} has no usable bpffs mount: {detail}")]
+    BpffsUnavailable { machine: String, detail: String },
     #[error("exec in {container} timed out: {command}")]
     ExecTimeout { container: String, command: String },
     #[error("exec in {container} unexpectedly started detached")]

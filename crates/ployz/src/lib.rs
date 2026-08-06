@@ -4,6 +4,7 @@
 
 pub mod commands;
 pub mod deploy;
+pub mod diagnostics;
 pub mod init;
 pub mod join_client;
 pub mod logs;
@@ -12,6 +13,7 @@ pub mod mesh;
 pub mod namespace;
 pub mod ops;
 pub mod remote;
+pub mod removal;
 pub mod token;
 
 pub use join_client::{JoinDoorClient, JoinDoorClientError};

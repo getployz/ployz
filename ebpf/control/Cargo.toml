@@ -14,9 +14,10 @@ clap.workspace = true
 ipnet = "2"
 ployz-ebpf-common = { path = "../common", features = ["validation"] }
 serde_json.workspace = true
+ulid.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-aya = "0.13"
+aya = "0.14"
 libc = "0.2"
 
 [[bin]]

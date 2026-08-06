@@ -1,10 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::num::NonZeroU64;
 
-use ipnet::{IpNet, Ipv6Net};
+use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 use ployz_core::corrosion::{DesiredBuiltinWireguardMesh, DesiredMachineContainerRoute};
 use ployz_core::network::WireGuardPublicKey;
+
+use super::BuiltinWireguardLatestHandshake;
 
 pub(super) const PERSISTENT_KEEPALIVE_SECONDS: u16 = 25;
 
@@ -96,7 +98,7 @@ pub(super) fn parse_wireguard_dump(
                 _preshared_key,
                 endpoint,
                 allowed_ips,
-                _handshake,
+                handshake,
                 _rx,
                 _tx,
                 keepalive,
@@ -133,12 +135,14 @@ pub(super) fn parse_wireguard_dump(
                     format!("parse observed WireGuard keepalive {value:?}: {error}")
                 })?),
             };
+            let latest_handshake = BuiltinWireguardLatestHandshake::parse_dump_field(handshake)?;
             Ok((
                 public_key,
                 ObservedPeer {
                     endpoint,
                     allowed_ips,
                     persistent_keepalive,
+                    latest_handshake,
                 },
             ))
         })
@@ -187,18 +191,50 @@ pub(super) fn parse_wireguard_handshake_epoch(
     Ok(WireguardHandshakeEpoch::PeerAbsent)
 }
 
-pub(super) fn parse_owned_routes(output: &str) -> Result<BTreeSet<IpNet>, String> {
+pub(super) fn parse_owned_routes(output: &str) -> Result<BTreeMap<IpNet, ObservedRoute>, String> {
     output
         .lines()
         .filter(|line| !line.trim().is_empty())
         .map(|line| {
-            let route = line
-                .split_ascii_whitespace()
-                .next()
+            let fields = line.split_ascii_whitespace().collect::<Vec<_>>();
+            let route_field = fields
+                .first()
                 .expect("nonempty route row has a first field");
-            route
+            let route = route_field
                 .parse::<IpNet>()
-                .map_err(|error| format!("parse owned WireGuard route {route:?}: {error}"))
+                .map_err(|error| format!("parse owned WireGuard route {route_field:?}: {error}"))?;
+            let source_fields = fields
+                .iter()
+                .enumerate()
+                .filter(|(_, field)| **field == "src")
+                .collect::<Vec<_>>();
+            let preferred_source = match (route, source_fields.as_slice()) {
+                (IpNet::V4(_), []) => None,
+                (IpNet::V4(_), [(index, _)]) => Some(
+                    fields
+                        .get(index + 1)
+                        .ok_or_else(|| {
+                            format!("owned WireGuard route had no value after src: {line:?}")
+                        })?
+                        .parse::<Ipv4Addr>()
+                        .map_err(|error| {
+                            format!("parse owned WireGuard route source in {line:?}: {error}")
+                        })?,
+                ),
+                (IpNet::V4(_), [_, _, ..]) => {
+                    return Err(format!(
+                        "owned WireGuard route had more than one src field: {line:?}"
+                    ));
+                }
+                (IpNet::V6(_), _) => None,
+            };
+            Ok((
+                route,
+                ObservedRoute {
+                    destination: route,
+                    preferred_source,
+                },
+            ))
         })
         .collect()
 }
@@ -224,6 +260,27 @@ pub(super) fn parse_interface_ipv6_addresses(output: &str) -> Result<BTreeSet<Ip
         .collect()
 }
 
+pub(super) fn parse_interface_ipv4_addresses(output: &str) -> Result<BTreeSet<Ipv4Net>, String> {
+    output
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            let fields = line.split_ascii_whitespace().collect::<Vec<_>>();
+            let Some(address) = fields.windows(2).find_map(|pair| match pair {
+                ["inet", address] => Some(*address),
+                [_, _] | [] | [_] | [_, _, ..] => None,
+            }) else {
+                return Err(format!(
+                    "endpoint bridge IPv4 address row had no inet field: {line:?}"
+                ));
+            };
+            address
+                .parse::<Ipv4Net>()
+                .map_err(|error| format!("parse endpoint bridge IPv4 address {address:?}: {error}"))
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct DesiredPeer {
     pub(super) public_key: WireGuardPublicKey,
@@ -236,6 +293,19 @@ pub(super) struct ObservedPeer {
     pub(super) endpoint: Option<SocketAddr>,
     pub(super) allowed_ips: BTreeSet<IpNet>,
     pub(super) persistent_keepalive: Option<u16>,
+    pub(super) latest_handshake: BuiltinWireguardLatestHandshake,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct DesiredRoute {
+    pub(super) destination: IpNet,
+    pub(super) preferred_source: Option<Ipv4Addr>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ObservedRoute {
+    pub(super) destination: IpNet,
+    pub(super) preferred_source: Option<Ipv4Addr>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -248,15 +318,16 @@ pub enum WireguardHandshakeEpoch {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ConvergenceAction {
     UpsertPeer(DesiredPeer),
-    ReplaceRoute(IpNet),
+    ReplaceRoute(DesiredRoute),
     RemovePeer(WireGuardPublicKey),
     RemoveRoute(IpNet),
 }
 
 pub(super) fn convergence_plan(
     observed_peers: &BTreeMap<WireGuardPublicKey, ObservedPeer>,
-    observed_routes: &BTreeSet<IpNet>,
+    observed_routes: &BTreeMap<IpNet, ObservedRoute>,
     desired_peers: &[DesiredPeer],
+    ipv4_preferred_source: Option<Ipv4Addr>,
 ) -> Vec<ConvergenceAction> {
     let desired_by_key = desired_peers
         .iter()
@@ -265,7 +336,20 @@ pub(super) fn convergence_plan(
     let desired_routes = desired_peers
         .iter()
         .flat_map(|peer| peer.allowed_ips.iter().copied())
-        .collect::<BTreeSet<_>>();
+        .map(|destination| {
+            let preferred_source = match destination {
+                IpNet::V4(_) => ipv4_preferred_source,
+                IpNet::V6(_) => None,
+            };
+            (
+                destination,
+                DesiredRoute {
+                    destination,
+                    preferred_source,
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
     let mut actions = Vec::new();
     actions.extend(desired_peers.iter().filter_map(|desired| {
         let matches = observed_peers
@@ -273,12 +357,15 @@ pub(super) fn convergence_plan(
             .is_some_and(|observed| peer_matches(observed, desired));
         (!matches).then(|| ConvergenceAction::UpsertPeer(desired.clone()))
     }));
-    actions.extend(
-        desired_routes
-            .difference(observed_routes)
-            .copied()
-            .map(ConvergenceAction::ReplaceRoute),
-    );
+    actions.extend(desired_routes.values().filter_map(|desired| {
+        let current = observed_routes.get(&desired.destination);
+        (current
+            != Some(&ObservedRoute {
+                destination: desired.destination,
+                preferred_source: desired.preferred_source,
+            }))
+        .then_some(ConvergenceAction::ReplaceRoute(*desired))
+    }));
     actions.extend(
         observed_peers
             .keys()
@@ -288,7 +375,8 @@ pub(super) fn convergence_plan(
     );
     actions.extend(
         observed_routes
-            .difference(&desired_routes)
+            .keys()
+            .filter(|destination| !desired_routes.contains_key(*destination))
             .copied()
             .map(ConvergenceAction::RemoveRoute),
     );
@@ -338,6 +426,14 @@ mod tests {
                 subnet_v6: local.subnet(),
                 bind_address: local.bind_address(),
             },
+            local_container_subnet: ployz_core::network::MachineEndpointSubnet::try_new(
+                "10.210.1.0/24",
+            )
+            .expect("local subnet"),
+            cluster_container_prefix: ployz_core::network::MachineEndpointSupernet::try_new(
+                "10.210.0.0/16",
+            )
+            .expect("cluster prefix"),
             machine_peers: vec![DesiredBuiltinWireguardMachinePeer {
                 machine_id: MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAW").expect("machine"),
                 public_key: machine_key,

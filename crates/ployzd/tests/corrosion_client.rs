@@ -12,14 +12,82 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{HeaderMap, Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use ployz_core::corrosion::{ChangeId, SqliteParameter, SqliteValue, Statement};
+use ployz_core::corrosion::{
+    ChangeId, CorrosionHealthResponse, SqliteParameter, SqliteValue, Statement,
+};
 use ployzd::corrosion::{
     BearerToken, CorrosionClient, CorrosionClientBounds, CorrosionClientConfig,
-    CorrosionClientError, QueryStreamEvent, SubscriptionStreamEvent,
+    CorrosionClientError, CorrosionHealthReadError, QueryStreamEvent, SubscriptionStreamEvent,
 };
 use tokio::net::TcpListener;
 
 const QUERY_ID: &str = "ba247cbc-2a7f-486b-873c-8a9620e72182";
+
+#[tokio::test]
+async fn health_uses_the_authenticated_v1_endpoint_and_decodes_success() {
+    let server = FakeServer::start(vec![ResponseSpec::json(
+        StatusCode::OK,
+        r#"{"response":{"gaps":0,"members":3,"p99_lag":0.125,"queue_size":0}}"#,
+    )])
+    .await;
+    let client = client(server.addr(), Duration::from_secs(1), 1024);
+
+    assert_eq!(
+        client.health().await,
+        Ok(CorrosionHealthResponse::Response {
+            gaps: 0,
+            members: 3,
+            p99_lag: 0.125,
+            queue_size: 0,
+        })
+    );
+    let requests = server.requests();
+    let [request] = requests.as_slice() else {
+        panic!("expected one request, got {}", requests.len());
+    };
+    assert_eq!(request.method, Method::GET);
+    assert_eq!(request.path_and_query, "/v1/health");
+    assert_eq!(
+        request.headers.get(AUTHORIZATION).expect("authorization"),
+        "Bearer test-token"
+    );
+}
+
+#[tokio::test]
+async fn health_preserves_the_exact_cold_start_503_as_a_reply() {
+    let server = FakeServer::start(vec![ResponseSpec::json(
+        StatusCode::SERVICE_UNAVAILABLE,
+        r#"{"error":"no p99 lag information available"}"#,
+    )])
+    .await;
+    let client = client(server.addr(), Duration::from_secs(1), 1024);
+
+    assert_eq!(
+        client.health().await,
+        Ok(CorrosionHealthResponse::Error(
+            "no p99 lag information available".to_owned()
+        ))
+    );
+}
+
+#[tokio::test]
+async fn health_normalizes_noncanonical_responses_without_exposing_the_body() {
+    let server = FakeServer::start(vec![ResponseSpec::json(
+        StatusCode::SERVICE_UNAVAILABLE,
+        r#"{"error":"database unavailable: bearer test-token"}"#,
+    )])
+    .await;
+    let client = client(server.addr(), Duration::from_secs(1), 1024);
+
+    let error = client
+        .health()
+        .await
+        .expect_err("noncanonical health response is invalid");
+
+    assert_eq!(error, CorrosionHealthReadError::InvalidResponse);
+    assert!(!format!("{error:?}").contains("test-token"));
+    assert!(!error.to_string().contains("test-token"));
+}
 
 #[tokio::test]
 async fn execute_sends_auth_path_and_statement_body() {

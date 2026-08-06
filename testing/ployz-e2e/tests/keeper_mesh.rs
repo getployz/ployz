@@ -1,8 +1,9 @@
 use bollard::Docker;
 use ployz_core::network::WireGuardPublicKey;
 use ployz_e2e::dind::{
-    DindCluster, DindClusterSpec, DindMachine, MachineSpec, artifact_dir, connect_docker,
-    e2e_enabled, keep_requested, machine_image, shell_quote,
+    DindCluster, DindClusterSpec, DindMachine, MachineSpec, artifact_dir,
+    assert_keeper_isolation_root, connect_docker, e2e_enabled, keep_requested, machine_image,
+    shell_quote,
 };
 use serde_json::{Value, json};
 use std::net::Ipv6Addr;
@@ -10,6 +11,9 @@ use std::net::Ipv6Addr;
 #[path = "keeper_mesh/support.rs"]
 mod support;
 use support::*;
+
+#[path = "keeper_mesh/diagnostics.rs"]
+mod diagnostics;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_machine_keeper_converges_and_fences_builtin_mesh() {
@@ -66,10 +70,12 @@ async fn exercise_keeper_mesh(docker: &Docker, cluster: &DindCluster) -> Result<
     activate_default_deny_firewall(docker, machine_a).await?;
     activate_default_deny_firewall(docker, machine_b).await?;
 
-    install_keeper_unit(docker, machine_a, MACHINE_A_ID).await?;
-    install_keeper_unit(docker, machine_b, MACHINE_B_ID).await?;
+    install_keeper_unit(docker, machine_a, MACHINE_A_ID, TEST_BRIDGE_INTERFACE).await?;
+    install_keeper_unit(docker, machine_b, MACHINE_B_ID, TEST_BRIDGE_INTERFACE).await?;
     start_unit(docker, machine_a, "ployz-keeper.service").await?;
     start_unit(docker, machine_b, "ployz-keeper.service").await?;
+    assert_keeper_isolation_root(docker, machine_a, "ployz-keeper.service").await?;
+    assert_keeper_isolation_root(docker, machine_b, "ployz-keeper.service").await?;
 
     let public_key_a = wait_for_public_key(docker, machine_a).await?;
     let public_key_b = wait_for_public_key(docker, machine_b).await?;
@@ -142,8 +148,8 @@ async fn exercise_keeper_mesh(docker: &Docker, cluster: &DindCluster) -> Result<
     corrosion_transaction(docker, machine_a, &probe_namespace_transaction()?).await?;
     wait_for_corrosion_row(docker, machine_b, "namespaces", PROBE_NAMESPACE_ID).await?;
 
-    create_test_bridge(docker, machine_a).await?;
-    create_test_bridge(docker, machine_b).await?;
+    create_test_bridge(docker, machine_a, "10.210.10.1/24").await?;
+    create_test_bridge(docker, machine_b, "10.210.20.1/24").await?;
     wait_for_mesh_status(
         docker,
         machine_a,
@@ -162,6 +168,9 @@ async fn exercise_keeper_mesh(docker: &Docker, cluster: &DindCluster) -> Result<
     assert_exact_route_map(docker, machine_b, [10, 210, 10, 0], 24).await?;
     assert_status_ownership(docker, machine_a).await?;
     assert_status_ownership(docker, machine_b).await?;
+    diagnostics::wait_for_absolute_handshake(docker, machine_b, MACHINE_B_ID, MACHINE_A_ID).await?;
+    diagnostics::wait_for_public_status_handshake(docker, machine_a, address_b, MACHINE_A_ID)
+        .await?;
 
     let delete_b = json!([["DELETE FROM machines WHERE id = ?", [MACHINE_B_ID]]]);
     corrosion_transaction(docker, machine_a, &delete_b).await?;
@@ -501,23 +510,25 @@ fn probe_namespace_transaction() -> Result<Value, String> {
     ]]))
 }
 
-async fn create_test_bridge(docker: &Docker, machine: &DindMachine) -> Result<(), String> {
-    exec_ok(
-        docker,
-        machine,
-        &[
-            "sh",
-            "-c",
-            &format!(
-                "ip link show {} >/dev/null 2>&1 || ip link add {} type bridge; ip link set {} up",
-                shell_quote(TEST_BRIDGE_INTERFACE),
-                shell_quote(TEST_BRIDGE_INTERFACE),
-                shell_quote(TEST_BRIDGE_INTERFACE)
-            ),
-        ],
-    )
-    .await?;
+async fn create_test_bridge(
+    docker: &Docker,
+    machine: &DindMachine,
+    gateway_cidr: &str,
+) -> Result<(), String> {
+    let command = test_bridge_command(TEST_BRIDGE_INTERFACE, gateway_cidr);
+    exec_ok(docker, machine, &["sh", "-c", &command]).await?;
     Ok(())
+}
+
+fn test_bridge_command(interface: &str, gateway_cidr: &str) -> String {
+    format!(
+        "ip link show {} >/dev/null 2>&1 || ip link add {} type bridge; ip address replace {} dev {}; ip link set {} up",
+        shell_quote(interface),
+        shell_quote(interface),
+        shell_quote(gateway_cidr),
+        shell_quote(interface),
+        shell_quote(interface)
+    )
 }
 
 async fn assert_exact_route_map(
@@ -779,6 +790,15 @@ fn bpftool_byte_decoder_accepts_raw_json_forms() {
     assert_eq!(
         decode_route_value(Some(&json!({"ifindex": 7}))).expect("typed value"),
         7
+    );
+}
+
+#[test]
+fn synthetic_bridge_carries_the_machine_endpoint_gateway() {
+    let command = test_bridge_command(TEST_BRIDGE_INTERFACE, "10.210.10.1/24");
+    assert!(
+        command.contains("ip address replace '10.210.10.1/24' dev 'ployz-test0'"),
+        "{command}"
     );
 }
 

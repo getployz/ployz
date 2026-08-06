@@ -12,7 +12,9 @@ use ployz_core::corrosion::{
 };
 use ployz_core::deploy::{EnvName, EnvValue, ImageReference, ServiceEnvironment};
 use ployz_core::founding::InitStorageChoice;
-use ployz_core::ids::{MachineRowId, NamespaceRowId, OperationRowId, PeerId, ServiceRowId};
+use ployz_core::ids::{
+    MachineRowId, NamespaceRowId, OperationRowId, PeerId, RouteBindingRowId, ServiceRowId,
+};
 use ployz_core::install::{ExactPloyzVersion, InstallSha256Digest};
 use ployz_core::join::{JoinBlob, JoinTokenTtlSeconds};
 use ployz_core::machine::MachineName;
@@ -30,6 +32,23 @@ pub enum Command {
     Deploy(DeployCommand),
     Ops(OpsCommand),
     Logs(LogsCommand),
+    Peer(PeerCommand),
+    Service(ServiceCommand),
+    Route(RouteCommand),
+    Status(DiagnosticsCommand),
+    Doctor(DiagnosticsCommand),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PeerCommand {
+    Remove(PeerRemoveCommand),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerRemoveCommand {
+    pub name: String,
+    pub peer_id: Option<PeerId>,
+    pub target: Option<SshTarget>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,6 +102,36 @@ pub struct LogsCommand {
     pub service_id: Option<ServiceRowId>,
     pub tail_lines: ployz_core::CorrosionLogsTailLines,
     pub follow: bool,
+    pub target: Option<SshTarget>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServiceCommand {
+    Remove(ServiceRemoveCommand),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceRemoveCommand {
+    pub namespace_id: NamespaceRowId,
+    pub name: String,
+    pub service_id: Option<ServiceRowId>,
+    pub target: Option<SshTarget>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RouteCommand {
+    Remove(RouteRemoveCommand),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouteRemoveCommand {
+    pub hostname: RouteHostname,
+    pub route_id: Option<RouteBindingRowId>,
+    pub target: Option<SshTarget>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiagnosticsCommand {
     pub target: Option<SshTarget>,
 }
 
@@ -402,6 +451,35 @@ pub fn parse_command(args: impl IntoIterator<Item = String>) -> Result<Command, 
             follow: args.follow,
             target: args.target,
         })),
+        CommandCli::Peer { command } => Ok(Command::Peer(match command {
+            PeerCli::Remove(args) => PeerCommand::Remove(PeerRemoveCommand {
+                name: args.name,
+                peer_id: args.id,
+                target: args.target,
+            }),
+        })),
+        CommandCli::Service { command } => Ok(Command::Service(match command {
+            ServiceCli::Remove(args) => ServiceCommand::Remove(ServiceRemoveCommand {
+                namespace_id: args.namespace_id,
+                name: args.name,
+                service_id: args.id,
+                target: args.target,
+            }),
+        })),
+        CommandCli::Route { command } => Ok(Command::Route(match command {
+            RouteCli::Remove(args) => RouteCommand::Remove(RouteRemoveCommand {
+                hostname: RouteHostname::try_new(args.hostname)
+                    .map_err(|error| clap_value_error(error.to_string()))?,
+                route_id: args.id,
+                target: args.target,
+            }),
+        })),
+        CommandCli::Status(args) => Ok(Command::Status(DiagnosticsCommand {
+            target: args.target,
+        })),
+        CommandCli::Doctor(args) => Ok(Command::Doctor(DiagnosticsCommand {
+            target: args.target,
+        })),
     }
 }
 
@@ -444,6 +522,11 @@ enum CommandCli {
         #[command(subcommand)]
         command: TokenCli,
     },
+    /// Manage operator peers.
+    Peer {
+        #[command(subcommand)]
+        command: PeerCli,
+    },
     /// Create and remove namespaces.
     Namespace {
         #[command(subcommand)]
@@ -458,6 +541,36 @@ enum CommandCli {
     },
     /// Tail or follow one service's current container logs.
     Logs(LogsArgs),
+    /// Manage services.
+    Service {
+        #[command(subcommand)]
+        command: ServiceCli,
+    },
+    /// Manage route bindings.
+    Route {
+        #[command(subcommand)]
+        command: RouteCli,
+    },
+    /// Show a cheap cluster-health summary.
+    Status(DiagnosticsArgs),
+    /// Sweep replicated state for actionable anomalies.
+    Doctor(DiagnosticsArgs),
+}
+
+#[derive(Debug, Subcommand)]
+enum PeerCli {
+    /// Remove one peer row, refusing ambiguous names unless an id is supplied.
+    #[command(name = "rm")]
+    Remove(PeerRemoveArgs),
+}
+
+#[derive(Debug, Args)]
+struct PeerRemoveArgs {
+    name: String,
+    #[arg(long)]
+    id: Option<PeerId>,
+    #[arg(long)]
+    target: Option<SshTarget>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -540,6 +653,41 @@ struct OpsListArgs {
     target: Option<SshTarget>,
 }
 
+#[derive(Debug, Subcommand)]
+enum ServiceCli {
+    /// Remove one service row, refusing ambiguous names unless an id is supplied.
+    #[command(name = "rm")]
+    Remove(ServiceRemoveArgs),
+}
+
+#[derive(Debug, Args)]
+struct ServiceRemoveArgs {
+    name: String,
+    /// Namespace row that owns this service identity.
+    #[arg(long)]
+    namespace_id: NamespaceRowId,
+    #[arg(long)]
+    id: Option<ServiceRowId>,
+    #[arg(long)]
+    target: Option<SshTarget>,
+}
+
+#[derive(Debug, Subcommand)]
+enum RouteCli {
+    /// Remove one route-binding row, refusing ambiguous hostnames unless an id is supplied.
+    #[command(name = "rm")]
+    Remove(RouteRemoveArgs),
+}
+
+#[derive(Debug, Args)]
+struct RouteRemoveArgs {
+    hostname: String,
+    #[arg(long)]
+    id: Option<RouteBindingRowId>,
+    #[arg(long)]
+    target: Option<SshTarget>,
+}
+
 #[derive(Debug, Args)]
 struct OpsWatchArgs {
     operation_id: OperationRowId,
@@ -559,6 +707,13 @@ struct LogsArgs {
     /// Continue following new log lines.
     #[arg(short = 'f', long)]
     follow: bool,
+    #[arg(long)]
+    target: Option<SshTarget>,
+}
+
+#[derive(Debug, Args)]
+struct DiagnosticsArgs {
+    /// Select the cluster founded through this SSH target.
     #[arg(long)]
     target: Option<SshTarget>,
 }
@@ -983,6 +1138,55 @@ mod tests {
     }
 
     #[test]
+    fn parses_each_named_remove_with_optional_exact_row_id() {
+        let id = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+        assert_eq!(
+            parse(&["peer", "rm", "operator", "--id", id]).expect("peer remove parses"),
+            Command::Peer(PeerCommand::Remove(PeerRemoveCommand {
+                name: "operator".to_owned(),
+                peer_id: Some(PeerId::try_new(id).expect("peer id")),
+                target: None,
+            }))
+        );
+        assert_eq!(
+            parse(&["namespace", "rm", "prod", "--id", id]).expect("namespace remove parses"),
+            Command::Namespace(NamespaceCommand::Remove(NamespaceRemoveCommand {
+                namespace: CorrosionNamespaceName::try_new("prod").expect("namespace name"),
+                namespace_id: Some(NamespaceRowId::try_new(id).expect("namespace id")),
+                target: None,
+            }))
+        );
+        assert_eq!(
+            parse(&["service", "rm", "web", "--namespace-id", id, "--id", id,])
+                .expect("service remove parses"),
+            Command::Service(ServiceCommand::Remove(ServiceRemoveCommand {
+                namespace_id: NamespaceRowId::try_new(id).expect("namespace id"),
+                name: "web".to_owned(),
+                service_id: Some(ServiceRowId::try_new(id).expect("service id")),
+                target: None,
+            }))
+        );
+        assert_eq!(
+            parse(&["route", "rm", "WEB.EXAMPLE.COM", "--id", id]).expect("route remove parses"),
+            Command::Route(RouteCommand::Remove(RouteRemoveCommand {
+                hostname: RouteHostname::try_new("web.example.com").expect("hostname"),
+                route_id: Some(RouteBindingRowId::try_new(id).expect("route id")),
+                target: None,
+            }))
+        );
+        assert!(matches!(
+            parse(&["service", "rm", "web", "--namespace-id", id])
+                .expect("unqualified remove parses"),
+            Command::Service(ServiceCommand::Remove(ServiceRemoveCommand {
+                namespace_id,
+                service_id: None,
+                ..
+            })) if namespace_id.as_str() == id
+        ));
+        assert!(parse(&["service", "rm", "web"]).is_err());
+    }
+
+    #[test]
     fn machine_list_parses_with_optional_explicit_target() {
         assert_eq!(
             parse(&["machine", "ls"]).expect("machine list parses"),
@@ -1234,6 +1438,21 @@ mod tests {
         ] {
             assert!(parse(&args).is_err(), "{args:?} must be rejected");
         }
+    }
+
+    #[test]
+    fn diagnostics_commands_parse_with_the_shared_target_selector() {
+        assert_eq!(
+            parse(&["status"]).expect("status parses"),
+            Command::Status(DiagnosticsCommand { target: None })
+        );
+        assert_eq!(
+            parse(&["doctor", "--target", "root@cluster.example"]).expect("targeted doctor parses"),
+            Command::Doctor(DiagnosticsCommand {
+                target: Some("root@cluster.example".parse().expect("SSH target")),
+            })
+        );
+        assert!(parse(&["doctor", "--fix"]).is_err());
     }
 
     #[test]

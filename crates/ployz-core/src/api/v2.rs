@@ -35,10 +35,10 @@ pub const TOKEN_LIST_ROUTE: &str = "/tokens/list";
 pub const TOKEN_REVOKE_ROUTE_PREFIX: &str = "/tokens/revoke";
 /// Stable prefix for changing one machine's advertised WireGuard endpoint.
 pub const MACHINE_ENDPOINT_ROUTE_PREFIX: &str = "/machines/endpoint";
-/// Stable endpoint for fencing one machine from the roster and sweeping its testimony.
-pub const MACHINE_REMOVE_ROUTE: &str = "/machines/remove";
 /// Stable endpoint for a caller-paced upgrade of the answering machine.
 pub const MACHINE_UPGRADE_ROUTE: &str = "/machines/upgrade";
+/// Stable endpoint for fencing one machine from the roster and sweeping its testimony.
+pub const MACHINE_REMOVE_ROUTE: &str = "/machines/remove";
 /// The only route exposed by the public TLS join door.
 pub const JOIN_ROUTE: &str = "/join";
 /// Stable endpoint for creating one namespace authority row.
@@ -51,6 +51,16 @@ pub const FIRST_DEPLOY_ROUTE: &str = "/deploys/first";
 pub const OPERATIONS_ROUTE_PREFIX: &str = "/operations";
 /// Stable prefix for service log access.
 pub const SERVICE_LOGS_ROUTE_PREFIX: &str = "/services";
+/// The stable endpoint for the cheap cluster diagnostics projection.
+pub const STATUS_ROUTE: &str = "/status";
+/// The stable endpoint for the read-only deep diagnostics projection.
+pub const DOCTOR_ROUTE: &str = "/doctor";
+/// Stable endpoint for removing one valid peer row.
+pub const PEER_REMOVE_ROUTE: &str = "/peers/remove";
+/// Stable endpoint for removing one valid service row.
+pub const SERVICE_REMOVE_ROW_ROUTE: &str = "/services/remove";
+/// Stable endpoint for removing one valid route-binding row.
+pub const ROUTE_REMOVE_ROUTE: &str = "/routes/remove";
 
 /// A capability understood by this version of the public API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -64,10 +74,10 @@ pub enum KnownApiFeature {
     JoinTokens,
     #[serde(rename = "v2.machine_endpoint")]
     MachineEndpoint,
-    #[serde(rename = "v2.machine_remove")]
-    MachineRemove,
     #[serde(rename = "v2.machine_upgrade")]
     MachineUpgrade,
+    #[serde(rename = "v2.machine_remove")]
+    MachineRemove,
     #[serde(rename = "v2.join_door")]
     JoinDoor,
     #[serde(rename = "v2.namespace_primitives")]
@@ -78,6 +88,14 @@ pub enum KnownApiFeature {
     OperationEvidence,
     #[serde(rename = "v2.logs")]
     Logs,
+    #[serde(rename = "v2.diagnostics")]
+    Diagnostics,
+    #[serde(rename = "v2.peer_remove")]
+    PeerRemove,
+    #[serde(rename = "v2.service_remove")]
+    ServiceRemove,
+    #[serde(rename = "v2.route_remove")]
+    RouteRemove,
 }
 
 impl KnownApiFeature {
@@ -89,13 +107,17 @@ impl KnownApiFeature {
             Self::Lenses => "v2.lenses",
             Self::JoinTokens => "v2.join_tokens",
             Self::MachineEndpoint => "v2.machine_endpoint",
-            Self::MachineRemove => "v2.machine_remove",
             Self::MachineUpgrade => "v2.machine_upgrade",
+            Self::MachineRemove => "v2.machine_remove",
             Self::JoinDoor => "v2.join_door",
             Self::NamespacePrimitives => "v2.namespace_primitives",
             Self::FirstDeploy => "v2.first_deploy",
             Self::OperationEvidence => "v2.operation_evidence",
             Self::Logs => "v2.logs",
+            Self::Diagnostics => "v2.diagnostics",
+            Self::PeerRemove => "v2.peer_remove",
+            Self::ServiceRemove => "v2.service_remove",
+            Self::RouteRemove => "v2.route_remove",
         }
     }
 }
@@ -106,13 +128,17 @@ pub const KNOWN_API_FEATURES: &[KnownApiFeature] = &[
     KnownApiFeature::Lenses,
     KnownApiFeature::JoinTokens,
     KnownApiFeature::MachineEndpoint,
-    KnownApiFeature::MachineRemove,
     KnownApiFeature::MachineUpgrade,
+    KnownApiFeature::MachineRemove,
     KnownApiFeature::JoinDoor,
     KnownApiFeature::NamespacePrimitives,
     KnownApiFeature::FirstDeploy,
     KnownApiFeature::OperationEvidence,
     KnownApiFeature::Logs,
+    KnownApiFeature::Diagnostics,
+    KnownApiFeature::PeerRemove,
+    KnownApiFeature::ServiceRemove,
+    KnownApiFeature::RouteRemove,
 ];
 
 /// An advertised capability, including names added by a newer machine.
@@ -777,8 +803,8 @@ pub enum V2Route {
     TokenList,
     TokenRevoke(TokenId),
     MachineEndpointSet,
-    MachineRemove,
     MachineUpgrade,
+    MachineRemove,
     Join,
     NamespaceCreate,
     NamespaceRemove,
@@ -787,6 +813,11 @@ pub enum V2Route {
     OperationWatch(OperationRowId),
     ServiceLogsTail(ServiceRowId),
     ServiceLogsFollow(ServiceRowId),
+    Status,
+    Doctor,
+    PeerRemove,
+    ServiceRemove,
+    RouteRemove,
     Lens(LensCollection),
     LensWatch(LensCollection),
 }
@@ -817,11 +848,23 @@ impl V2Route {
         if path == JOIN_ROUTE {
             return Some(Self::Join);
         }
+        if path == STATUS_ROUTE {
+            return Some(Self::Status);
+        }
+        if path == DOCTOR_ROUTE {
+            return Some(Self::Doctor);
+        }
+        if path == PEER_REMOVE_ROUTE {
+            return Some(Self::PeerRemove);
+        }
+        if path == SERVICE_REMOVE_ROW_ROUTE {
+            return Some(Self::ServiceRemove);
+        }
+        if path == ROUTE_REMOVE_ROUTE {
+            return Some(Self::RouteRemove);
+        }
         if path == MACHINE_ENDPOINT_ROUTE_PREFIX {
             return Some(Self::MachineEndpointSet);
-        }
-        if path == MACHINE_REMOVE_ROUTE {
-            return Some(Self::MachineRemove);
         }
         if path == MACHINE_UPGRADE_ROUTE {
             return Some(Self::MachineUpgrade);
@@ -834,6 +877,9 @@ impl V2Route {
         }
         if path == FIRST_DEPLOY_ROUTE {
             return Some(Self::FirstDeploy);
+        }
+        if path == MACHINE_REMOVE_ROUTE {
+            return Some(Self::MachineRemove);
         }
         if let Some(token_id) = path
             .strip_prefix(TOKEN_REVOKE_ROUTE_PREFIX)
@@ -900,8 +946,8 @@ impl V2Route {
             Self::TokenList => TOKEN_LIST_ROUTE.to_owned(),
             Self::TokenRevoke(token_id) => token_revoke_route(token_id),
             Self::MachineEndpointSet => MACHINE_ENDPOINT_ROUTE_PREFIX.to_owned(),
-            Self::MachineRemove => MACHINE_REMOVE_ROUTE.to_owned(),
             Self::MachineUpgrade => MACHINE_UPGRADE_ROUTE.to_owned(),
+            Self::MachineRemove => MACHINE_REMOVE_ROUTE.to_owned(),
             Self::Join => JOIN_ROUTE.to_owned(),
             Self::NamespaceCreate => NAMESPACE_CREATE_ROUTE.to_owned(),
             Self::NamespaceRemove => NAMESPACE_REMOVE_ROUTE.to_owned(),
@@ -910,6 +956,11 @@ impl V2Route {
             Self::OperationWatch(operation_id) => operation_watch_route(operation_id),
             Self::ServiceLogsTail(service_id) => service_logs_tail_route(service_id),
             Self::ServiceLogsFollow(service_id) => service_logs_follow_route(service_id),
+            Self::Status => STATUS_ROUTE.to_owned(),
+            Self::Doctor => DOCTOR_ROUTE.to_owned(),
+            Self::PeerRemove => PEER_REMOVE_ROUTE.to_owned(),
+            Self::ServiceRemove => SERVICE_REMOVE_ROW_ROUTE.to_owned(),
+            Self::RouteRemove => ROUTE_REMOVE_ROUTE.to_owned(),
             Self::Lens(collection) => lens_route(*collection),
             Self::LensWatch(collection) => lens_watch_route(*collection),
         }
@@ -922,6 +973,8 @@ impl V2Route {
             Self::Version
             | Self::Operation(_)
             | Self::OperationWatch(_)
+            | Self::Status
+            | Self::Doctor
             | Self::Lens(_)
             | Self::LensWatch(_) => V2Method::Get,
             Self::Founding
@@ -929,14 +982,17 @@ impl V2Route {
             | Self::TokenList
             | Self::TokenRevoke(_)
             | Self::MachineEndpointSet
-            | Self::MachineRemove
             | Self::MachineUpgrade
             | Self::Join
             | Self::NamespaceCreate
             | Self::NamespaceRemove
             | Self::FirstDeploy
             | Self::ServiceLogsTail(_)
-            | Self::ServiceLogsFollow(_) => V2Method::Post,
+            | Self::ServiceLogsFollow(_)
+            | Self::MachineRemove
+            | Self::PeerRemove
+            | Self::ServiceRemove
+            | Self::RouteRemove => V2Method::Post,
         }
     }
 
@@ -950,13 +1006,17 @@ impl V2Route {
                 KnownApiFeature::JoinTokens
             }
             Self::MachineEndpointSet => KnownApiFeature::MachineEndpoint,
-            Self::MachineRemove => KnownApiFeature::MachineRemove,
             Self::MachineUpgrade => KnownApiFeature::MachineUpgrade,
+            Self::MachineRemove => KnownApiFeature::MachineRemove,
             Self::Join => KnownApiFeature::JoinDoor,
             Self::NamespaceCreate | Self::NamespaceRemove => KnownApiFeature::NamespacePrimitives,
             Self::FirstDeploy => KnownApiFeature::FirstDeploy,
             Self::Operation(_) | Self::OperationWatch(_) => KnownApiFeature::OperationEvidence,
             Self::ServiceLogsTail(_) | Self::ServiceLogsFollow(_) => KnownApiFeature::Logs,
+            Self::Status | Self::Doctor => KnownApiFeature::Diagnostics,
+            Self::PeerRemove => KnownApiFeature::PeerRemove,
+            Self::ServiceRemove => KnownApiFeature::ServiceRemove,
+            Self::RouteRemove => KnownApiFeature::RouteRemove,
         }
     }
 
@@ -969,17 +1029,22 @@ impl V2Route {
             | Self::TokenList
             | Self::TokenRevoke(_)
             | Self::MachineEndpointSet
-            | Self::MachineRemove
             | Self::MachineUpgrade
+            | Self::MachineRemove
             | Self::NamespaceCreate
             | Self::NamespaceRemove
-            | Self::FirstDeploy => matches!(principal, Principal::Peer { .. }),
+            | Self::FirstDeploy
+            | Self::PeerRemove
+            | Self::ServiceRemove
+            | Self::RouteRemove => matches!(principal, Principal::Peer { .. }),
             Self::Version
             | Self::Founding
             | Self::Operation(_)
             | Self::OperationWatch(_)
             | Self::ServiceLogsTail(_)
             | Self::ServiceLogsFollow(_)
+            | Self::Status
+            | Self::Doctor
             | Self::Lens(_)
             | Self::LensWatch(_) => {
                 matches!(
@@ -1328,6 +1393,107 @@ mod tests {
     use super::*;
     use crate::ids::PeerId;
 
+    fn request_json(url: &str) -> serde_json::Value {
+        serde_json::json!({
+            "version": "v0.1.0-alpha.7",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "url": url,
+        })
+    }
+
+    #[test]
+    fn machine_upgrade_route_is_post_advertised_and_peer_only() {
+        let route = V2Route::parse(MACHINE_UPGRADE_ROUTE).expect("machine upgrade route");
+
+        assert_eq!(route, V2Route::MachineUpgrade);
+        assert_eq!(route.path(), MACHINE_UPGRADE_ROUTE);
+        assert_eq!(route.method(), V2Method::Post);
+        assert_eq!(route.feature(), KnownApiFeature::MachineUpgrade);
+        assert!(KNOWN_API_FEATURES.contains(&KnownApiFeature::MachineUpgrade));
+        assert!(route.accepts_principal(&Principal::Peer {
+            peer_id: PeerId::generate(),
+        }));
+        assert!(!route.accepts_principal(&Principal::Machine {
+            machine_id: MachineRowId::generate(),
+        }));
+        assert!(!route.accepts_principal(&Principal::ApiToken {
+            token_id: TokenId::generate(),
+        }));
+        assert_eq!(V2Route::parse("/machines/upgrade/next"), None);
+    }
+
+    #[test]
+    fn machine_upgrade_request_accepts_only_host_addressed_https_urls() {
+        let request = request_json("https://releases.example.test/ployzd?signature=abc");
+        let decoded: MachineUpgradeRequest =
+            serde_json::from_value(request.clone()).expect("valid upgrade request");
+
+        assert_eq!(
+            decoded.url.as_str(),
+            "https://releases.example.test/ployzd?signature=abc"
+        );
+        assert_eq!(
+            serde_json::to_value(decoded).expect("request serializes"),
+            request
+        );
+
+        for url in [
+            "http://releases.example.test/ployzd",
+            "/var/lib/ployz/ployzd",
+            "https:///",
+            "ployzd",
+        ] {
+            assert!(
+                serde_json::from_value::<MachineUpgradeRequest>(request_json(url)).is_err(),
+                "{url:?} must not be accepted as an upgrade URL"
+            );
+        }
+
+        let mut unknown_field = request_json("https://releases.example.test/ployzd");
+        unknown_field
+            .as_object_mut()
+            .expect("request object")
+            .insert("install_path".to_owned(), serde_json::json!("/tmp/ployzd"));
+        assert!(serde_json::from_value::<MachineUpgradeRequest>(unknown_field).is_err());
+    }
+
+    #[test]
+    fn machine_upgrade_reply_and_refusals_have_strict_typed_wire_shapes() {
+        let sha256 = InstallSha256Digest::try_new("a".repeat(64)).expect("sha256");
+        let reply = MachineUpgradeReply {
+            version: InstallArtifactVersion::try_new("v0.1.0-alpha.7").expect("version"),
+            sha256: sha256.clone(),
+        };
+        assert_eq!(
+            serde_json::to_value(reply).expect("reply serializes"),
+            serde_json::json!({
+                "version": "v0.1.0-alpha.7",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            })
+        );
+
+        let mismatch = MachineUpgradeRefusal::Sha256Mismatch {
+            expected: sha256,
+            got: InstallSha256Digest::try_new("b".repeat(64)).expect("sha256"),
+        };
+        assert_eq!(
+            serde_json::to_value(mismatch).expect("refusal serializes"),
+            serde_json::json!({
+                "kind": "sha256_mismatch",
+                "expected": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "got": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            })
+        );
+
+        let unsupported = MachineUpgradeRefusal::UnsupportedSupervisor {
+            supervisor: MachineUpgradeSupervisor::OpenRc,
+        };
+        assert_eq!(
+            serde_json::to_value(unsupported).expect("refusal serializes"),
+            serde_json::json!({"kind": "unsupported_supervisor", "supervisor": "open_rc"})
+        );
+    }
+
     fn machine_id(value: &str) -> MachineRowId {
         MachineRowId::try_new(value).expect("fixture machine id")
     }
@@ -1445,107 +1611,6 @@ mod tests {
                 machine_name: MachineName::try_new("edge-b").expect("fixture machine name"),
                 machine_id: higher,
             })
-        );
-    }
-
-    fn request_json(url: &str) -> serde_json::Value {
-        serde_json::json!({
-            "version": "v0.1.0-alpha.7",
-            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "url": url,
-        })
-    }
-
-    #[test]
-    fn machine_upgrade_route_is_post_advertised_and_peer_only() {
-        let route = V2Route::parse(MACHINE_UPGRADE_ROUTE).expect("machine upgrade route");
-
-        assert_eq!(route, V2Route::MachineUpgrade);
-        assert_eq!(route.path(), MACHINE_UPGRADE_ROUTE);
-        assert_eq!(route.method(), V2Method::Post);
-        assert_eq!(route.feature(), KnownApiFeature::MachineUpgrade);
-        assert!(KNOWN_API_FEATURES.contains(&KnownApiFeature::MachineUpgrade));
-        assert!(route.accepts_principal(&Principal::Peer {
-            peer_id: PeerId::generate(),
-        }));
-        assert!(!route.accepts_principal(&Principal::Machine {
-            machine_id: MachineRowId::generate(),
-        }));
-        assert!(!route.accepts_principal(&Principal::ApiToken {
-            token_id: TokenId::generate(),
-        }));
-        assert_eq!(V2Route::parse("/machines/upgrade/next"), None);
-    }
-
-    #[test]
-    fn machine_upgrade_request_accepts_only_host_addressed_https_urls() {
-        let request = request_json("https://releases.example.test/ployzd?signature=abc");
-        let decoded: MachineUpgradeRequest =
-            serde_json::from_value(request.clone()).expect("valid upgrade request");
-
-        assert_eq!(
-            decoded.url.as_str(),
-            "https://releases.example.test/ployzd?signature=abc"
-        );
-        assert_eq!(
-            serde_json::to_value(decoded).expect("request serializes"),
-            request
-        );
-
-        for url in [
-            "http://releases.example.test/ployzd",
-            "/var/lib/ployz/ployzd",
-            "https:///",
-            "ployzd",
-        ] {
-            assert!(
-                serde_json::from_value::<MachineUpgradeRequest>(request_json(url)).is_err(),
-                "{url:?} must not be accepted as an upgrade URL"
-            );
-        }
-
-        let mut unknown_field = request_json("https://releases.example.test/ployzd");
-        unknown_field
-            .as_object_mut()
-            .expect("request object")
-            .insert("install_path".to_owned(), serde_json::json!("/tmp/ployzd"));
-        assert!(serde_json::from_value::<MachineUpgradeRequest>(unknown_field).is_err());
-    }
-
-    #[test]
-    fn machine_upgrade_reply_and_refusals_have_strict_typed_wire_shapes() {
-        let sha256 = InstallSha256Digest::try_new("a".repeat(64)).expect("sha256");
-        let reply = MachineUpgradeReply {
-            version: InstallArtifactVersion::try_new("v0.1.0-alpha.7").expect("version"),
-            sha256: sha256.clone(),
-        };
-        assert_eq!(
-            serde_json::to_value(reply).expect("reply serializes"),
-            serde_json::json!({
-                "version": "v0.1.0-alpha.7",
-                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            })
-        );
-
-        let mismatch = MachineUpgradeRefusal::Sha256Mismatch {
-            expected: sha256,
-            got: InstallSha256Digest::try_new("b".repeat(64)).expect("sha256"),
-        };
-        assert_eq!(
-            serde_json::to_value(mismatch).expect("refusal serializes"),
-            serde_json::json!({
-                "kind": "sha256_mismatch",
-                "expected": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                "got": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            })
-        );
-
-        let unsupported = MachineUpgradeRefusal::UnsupportedSupervisor {
-            supervisor: MachineUpgradeSupervisor::OpenRc,
-        };
-        assert_eq!(
-            serde_json::to_value(unsupported).expect("refusal serializes"),
-            serde_json::json!({"kind": "unsupported_supervisor", "supervisor": "open_rc"})
         );
     }
 }

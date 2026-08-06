@@ -13,6 +13,10 @@ use ployz_host_runner::builtin_wireguard::{
     BuiltinWireguardPorts, DEFAULT_PRIVATE_KEY_PATH, DEFAULT_WIREGUARD_IFNAME,
     DEFAULT_WIREGUARD_MTU,
 };
+use ployz_host_runner::container_isolation::{
+    ContainerIsolationConfigError, ContainerIsolationHostConfig, DEFAULT_ISOLATION_CGROUP_ROOT,
+    DEFAULT_ISOLATION_ROWS_PATH,
+};
 use ployz_host_runner::{ArtifactStoreError, CONTROL_SOCKET_PATH, PloyzdArtifactStore};
 
 use crate::corrosion::{BearerToken, CorrosionClientBounds, CorrosionClientConfig};
@@ -37,6 +41,7 @@ const BRIDGE_INTERFACE_ENV: &str = "PLOYZ_BRIDGE_INTERFACE";
 const EBPF_CTL_PATH_ENV: &str = "PLOYZ_EBPF_CTL_PATH";
 const EBPF_BYTECODE_PATH_ENV: &str = "PLOYZ_EBPF_BYTECODE_PATH";
 const EBPF_PIN_PATH_ENV: &str = "PLOYZ_EBPF_PIN_PATH";
+const ISOLATION_CGROUP_ROOT_ENV: &str = "PLOYZ_ISOLATION_CGROUP_ROOT";
 const CORROSION_VERSION_ENV: &str = "PLOYZ_CORROSION_VERSION";
 const RECONCILE_INTERVAL_MS_ENV: &str = "PLOYZ_KEEPER_RECONCILE_INTERVAL_MS";
 const RETRY_INITIAL_MS_ENV: &str = "PLOYZ_KEEPER_RETRY_INITIAL_MS";
@@ -72,6 +77,7 @@ pub struct KeeperRoleConfig {
     cluster_id: ClusterId,
     local_machine_id: MachineRowId,
     host: BuiltinWireguardHostConfig,
+    isolation_host: ContainerIsolationHostConfig,
     corrosion_version: String,
     reconcile_interval: Duration,
     retry_initial: Duration,
@@ -139,6 +145,10 @@ impl KeeperRoleConfig {
             })?;
         let host_command_timeout =
             duration_environment(HOST_COMMAND_TIMEOUT_MS_ENV, DEFAULT_HOST_COMMAND_TIMEOUT_MS)?;
+        let ebpf_pin_path = PathBuf::from(optional_environment(
+            EBPF_PIN_PATH_ENV,
+            DEFAULT_EBPF_PIN_PATH,
+        )?);
         let ebpf = BuiltinWireguardEbpfConfig::try_new(
             optional_environment(BRIDGE_INTERFACE_ENV, DEFAULT_BRIDGE_INTERFACE)?,
             PathBuf::from(optional_environment(
@@ -149,10 +159,21 @@ impl KeeperRoleConfig {
                 EBPF_BYTECODE_PATH_ENV,
                 DEFAULT_EBPF_BYTECODE_PATH,
             )?),
+            ebpf_pin_path.clone(),
+        )?;
+        let isolation_host = ContainerIsolationHostConfig::try_new(
             PathBuf::from(optional_environment(
-                EBPF_PIN_PATH_ENV,
-                DEFAULT_EBPF_PIN_PATH,
+                EBPF_CTL_PATH_ENV,
+                DEFAULT_EBPF_CTL_PATH,
             )?),
+            PathBuf::from(optional_environment(
+                EBPF_BYTECODE_PATH_ENV,
+                DEFAULT_EBPF_BYTECODE_PATH,
+            )?),
+            ebpf_pin_path,
+            optional_path_environment(ISOLATION_CGROUP_ROOT_ENV, DEFAULT_ISOLATION_CGROUP_ROOT)?,
+            PathBuf::from(DEFAULT_ISOLATION_ROWS_PATH),
+            host_command_timeout,
         )?;
         let ports = builtin_wireguard_ports(
             u16_environment(WIREGUARD_LISTEN_PORT_ENV, DEFAULT_WIREGUARD_LISTEN_PORT)?,
@@ -183,7 +204,10 @@ impl KeeperRoleConfig {
             corrosion,
             cluster_id,
             local_machine_id,
-            host,
+            KeeperHostConfig {
+                mesh: host,
+                isolation: isolation_host,
+            },
             optional_environment(CORROSION_VERSION_ENV, DEFAULT_CORROSION_VERSION)?,
             KeeperTimingConfig {
                 reconcile_interval: duration_environment(
@@ -220,11 +244,15 @@ impl KeeperRoleConfig {
         corrosion: CorrosionClientConfig,
         cluster_id: ClusterId,
         local_machine_id: MachineRowId,
-        host: BuiltinWireguardHostConfig,
+        hosts: KeeperHostConfig,
         corrosion_version: String,
         timing: KeeperTimingConfig,
         upgrade: KeeperUpgradeConfig,
     ) -> Result<Self, KeeperRoleConfigError> {
+        let KeeperHostConfig {
+            mesh: host,
+            isolation: isolation_host,
+        } = hosts;
         validate_diagnostic(CORROSION_VERSION_ENV, &corrosion_version)?;
         if timing.reconcile_interval.is_zero() {
             return Err(KeeperRoleConfigError::ZeroDuration {
@@ -256,6 +284,7 @@ impl KeeperRoleConfig {
             cluster_id,
             local_machine_id,
             host,
+            isolation_host,
             corrosion_version,
             reconcile_interval: timing.reconcile_interval,
             retry_initial: timing.retry_initial,
@@ -281,6 +310,10 @@ impl KeeperRoleConfig {
     #[must_use]
     pub fn host(&self) -> &BuiltinWireguardHostConfig {
         &self.host
+    }
+    #[must_use]
+    pub fn isolation_host(&self) -> &ContainerIsolationHostConfig {
+        &self.isolation_host
     }
     #[must_use]
     pub fn corrosion_version(&self) -> &str {
@@ -335,6 +368,12 @@ pub struct KeeperTimingConfig {
     pub retry_initial: Duration,
     pub retry_max: Duration,
     pub host_fold_timeout: Duration,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeeperHostConfig {
+    pub mesh: BuiltinWireguardHostConfig,
+    pub isolation: ContainerIsolationHostConfig,
 }
 
 fn required_environment(name: &'static str) -> Result<String, KeeperRoleConfigError> {
@@ -465,6 +504,8 @@ pub enum KeeperRoleConfigError {
     CorrosionConfig(#[source] crate::corrosion::CorrosionClientConfigError),
     #[error("invalid builtin WireGuard host configuration: {0}")]
     HostConfiguration(#[from] BuiltinWireguardConfigError),
+    #[error("invalid container isolation host configuration: {0}")]
+    IsolationHostConfiguration(#[from] ContainerIsolationConfigError),
     #[error("PLOYZ_SUPERVISOR_BACKEND must be systemd or openrc, got {value:?}")]
     InvalidSupervisorBackend { value: String },
     #[error("Keeper path from {name} must not be empty")]
@@ -484,5 +525,20 @@ mod tests {
         let ports = builtin_wireguard_ports(51_820, 8_787, 2_020).expect("valid fixed ports");
 
         assert!(format!("{ports:?}").contains(&format!("join_door_https: {JOIN_DOOR_PORT}")));
+    }
+
+    #[test]
+    fn isolation_cgroup_root_default_is_absolute_and_relative_values_are_rejected() {
+        assert!(std::path::Path::new(DEFAULT_ISOLATION_CGROUP_ROOT).is_absolute());
+        assert!(matches!(
+            validate_absolute_path(
+                ISOLATION_CGROUP_ROOT_ENV,
+                std::path::Path::new("sys/fs/cgroup")
+            ),
+            Err(KeeperRoleConfigError::RelativePath {
+                name: ISOLATION_CGROUP_ROOT_ENV,
+                ..
+            })
+        ));
     }
 }

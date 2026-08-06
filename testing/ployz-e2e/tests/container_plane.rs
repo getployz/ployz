@@ -1,12 +1,14 @@
 use bollard::Docker;
 use ployz_core::network::WireGuardPublicKey;
 use ployz_e2e::dind::{
-    DindCluster, DindClusterSpec, DindMachine, MachineSpec, artifact_dir, connect_docker,
-    e2e_enabled, exec_in_container, keep_requested, machine_image, write_file_in_container,
+    DindCluster, DindClusterSpec, DindMachine, MachineSpec, artifact_dir,
+    assert_keeper_isolation_root, connect_docker, e2e_enabled, exec_in_container, keep_requested,
+    machine_image, write_file_in_container,
 };
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::net::Ipv6Addr;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[allow(dead_code)]
 #[path = "keeper_mesh/support.rs"]
@@ -14,13 +16,18 @@ mod mesh_support;
 use mesh_support::*;
 
 const NAMESPACE_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB4";
+const OTHER_NAMESPACE_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB9";
 const SERVICE_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB5";
 const ACTIVE_DEPLOY_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB6";
 const INACTIVE_DEPLOY_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB7";
 const STALE_PROBE_NAMESPACE_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB8";
 const ACTIVE_IP_A: &str = "10.210.10.10";
 const ACTIVE_IP_B: &str = "10.210.20.10";
-const INACTIVE_IP: &str = "10.210.10.11";
+const SAME_NAMESPACE_IP_A: &str = "10.210.10.11";
+const SAME_NAMESPACE_IP_B: &str = "10.210.20.11";
+const OTHER_NAMESPACE_IP_A: &str = "10.210.10.12";
+const OTHER_NAMESPACE_IP_B: &str = "10.210.20.12";
+const FRESH_REMOTE_IP: &str = "10.210.20.13";
 const ORIGINAL_SUBNET_A: &str = "10.210.10.0/24";
 const ORIGINAL_SUBNET_B: &str = "10.210.20.0/24";
 const REPLACEMENT_SUBNET_A: &str = "10.210.30.0/24";
@@ -30,6 +37,17 @@ const FORWARDED_PUBLIC_NAME: &str = "outside.example";
 const FORWARDED_IP: &str = "203.0.113.53";
 const DNS_QUERY_PATH: &str = "/usr/local/bin/ployz-test-dns-query";
 const UPSTREAM_PATH: &str = "/usr/local/bin/ployz-test-dns-upstream";
+const OUTSIDE_SERVER_PATH: &str = "/usr/local/bin/ployz-test-outside-server";
+const OUTSIDE_SERVER_PORT: u16 = 18_080;
+const POLICY_CONVERGENCE_BUDGET: Duration = Duration::from_secs(5);
+
+const PROD_A: &str = "isolation-prod-a";
+const PROD_A_PEER: &str = "isolation-prod-a-peer";
+const OTHER_A: &str = "isolation-other-a";
+const PROD_B: &str = "isolation-prod-b";
+const PROD_B_PEER: &str = "isolation-prod-b-peer";
+const OTHER_B: &str = "isolation-other-b";
+const FRESH_B: &str = "isolation-fresh-b";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_machine_container_plane_converges_network_and_service_dns() {
@@ -106,6 +124,19 @@ async fn exercise_container_plane(docker: &Docker, cluster: &DindCluster) -> Res
     assert_dns_hardening(docker, machine_a).await?;
     assert_dns_hardening(docker, machine_b).await?;
 
+    wait_for_isolation_ready(docker, machine_a).await?;
+    wait_for_isolation_ready(docker, machine_b).await?;
+    let attachments_before_a = isolation_attachments(docker, machine_a).await?;
+    let attachments_before_b = isolation_attachments(docker, machine_b).await?;
+    let tc_before_a = tc_program_ids(docker, machine_a).await?;
+    let tc_before_b = tc_program_ids(docker, machine_b).await?;
+
+    install_outside_server(docker, machine_b).await?;
+    start_isolation_workloads(docker, machine_a, machine_b).await?;
+    assert_inner_container_has_no_direct_attach(docker, machine_a, PROD_A).await?;
+    assert_inner_container_has_no_direct_attach(docker, machine_b, PROD_B).await?;
+    assert_inner_container_has_no_direct_attach(docker, machine_b, FRESH_B).await?;
+
     corrosion_transaction(docker, machine_a, &service_rows_transaction()?).await?;
     wait_for_corrosion_row(docker, machine_b, "containers", "active-container-b").await?;
     let expected = [ACTIVE_IP_A, ACTIVE_IP_B];
@@ -144,6 +175,14 @@ async fn exercise_container_plane(docker: &Docker, cluster: &DindCluster) -> Res
     )
     .await?;
 
+    exercise_namespace_isolation(docker, machine_a, machine_b).await?;
+    remove_isolation_workload(docker, machine_b, FRESH_B).await?;
+    wait_for_corrosion_row_absent(docker, machine_a, "containers", FRESH_B).await?;
+    remove_isolation_containers(docker, machine_a, &[PROD_A, PROD_A_PEER, OTHER_A]).await?;
+    remove_isolation_containers(docker, machine_b, &[PROD_B, PROD_B_PEER, OTHER_B]).await?;
+    assert_stable_attachments(docker, machine_a, &attachments_before_a, &tc_before_a).await?;
+    assert_stable_attachments(docker, machine_b, &attachments_before_b, &tc_before_b).await?;
+
     make_machine_dark(docker, machine_a, machine_b, mesh.address_b).await?;
     corrosion_transaction(docker, machine_a, &stale_probe_transaction()?).await?;
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -163,6 +202,7 @@ async fn exercise_container_plane(docker: &Docker, cluster: &DindCluster) -> Res
     wait_for_exact_endpoint_network(docker, machine_a, REPLACEMENT_SUBNET_A).await?;
     wait_for_container_restart(docker, machine_a, &started_before).await?;
     wait_for_dns_answers(docker, machine_a, "10.210.30.1", INTERNAL_NAME, &expected).await?;
+    assert_stable_attachments(docker, machine_a, &attachments_before_a, &tc_before_a).await?;
     Ok(())
 }
 
@@ -179,10 +219,12 @@ async fn start_two_machine_mesh(
 ) -> Result<MeshFixture, String> {
     enable_and_assert_ipv6(docker, machine_a).await?;
     enable_and_assert_ipv6(docker, machine_b).await?;
-    install_keeper_unit(docker, machine_a, MACHINE_A_ID).await?;
-    install_keeper_unit(docker, machine_b, MACHINE_B_ID).await?;
+    install_keeper_unit(docker, machine_a, MACHINE_A_ID, "br-ployz").await?;
+    install_keeper_unit(docker, machine_b, MACHINE_B_ID, "br-ployz").await?;
     start_unit(docker, machine_a, "ployz-keeper.service").await?;
     start_unit(docker, machine_b, "ployz-keeper.service").await?;
+    assert_keeper_isolation_root(docker, machine_a, "ployz-keeper.service").await?;
+    assert_keeper_isolation_root(docker, machine_b, "ployz-keeper.service").await?;
 
     let public_key_a = wait_for_public_key(docker, machine_a).await?;
     let public_key_b = wait_for_public_key(docker, machine_b).await?;
@@ -325,13 +367,47 @@ fn service_rows_transaction() -> Result<Value, String> {
         "written_by": {"kind": "machine", "machine_id": MACHINE_A_ID},
         "written_at": "2026-08-05T10:01:00.000000000Z"
     });
-    let active_a = container_document(MACHINE_A_ID, ACTIVE_IP_A, ACTIVE_DEPLOY_ID);
-    let active_b = container_document(MACHINE_B_ID, ACTIVE_IP_B, ACTIVE_DEPLOY_ID);
-    let inactive = container_document(MACHINE_A_ID, INACTIVE_IP, INACTIVE_DEPLOY_ID);
+    let other_namespace = json!({
+        "v": 1,
+        "cluster_id": CLUSTER_ID,
+        "name": "staging",
+        "written_by": {"kind": "machine", "machine_id": MACHINE_A_ID},
+        "written_at": "2026-08-05T10:01:00.000000000Z"
+    });
+    let active_a = container_document(MACHINE_A_ID, NAMESPACE_ID, ACTIVE_IP_A, ACTIVE_DEPLOY_ID);
+    let active_b = container_document(MACHINE_B_ID, NAMESPACE_ID, ACTIVE_IP_B, ACTIVE_DEPLOY_ID);
+    let prod_a_peer = container_document(
+        MACHINE_A_ID,
+        NAMESPACE_ID,
+        SAME_NAMESPACE_IP_A,
+        INACTIVE_DEPLOY_ID,
+    );
+    let prod_b_peer = container_document(
+        MACHINE_B_ID,
+        NAMESPACE_ID,
+        SAME_NAMESPACE_IP_B,
+        INACTIVE_DEPLOY_ID,
+    );
+    let other_a = container_document(
+        MACHINE_A_ID,
+        OTHER_NAMESPACE_ID,
+        OTHER_NAMESPACE_IP_A,
+        INACTIVE_DEPLOY_ID,
+    );
+    let other_b = container_document(
+        MACHINE_B_ID,
+        OTHER_NAMESPACE_ID,
+        OTHER_NAMESPACE_IP_B,
+        INACTIVE_DEPLOY_ID,
+    );
     Ok(json!([
         [
             "INSERT INTO namespaces (id, document) VALUES (?, ?)",
             [NAMESPACE_ID, encode_document(&namespace)?]
+        ],
+        [
+            "INSERT INTO namespaces (id, document) VALUES (?, ?)",
+            [OTHER_NAMESPACE_ID, encode_document(&other_namespace)?]
         ],
         [
             "INSERT INTO services (id, document) VALUES (?, ?)",
@@ -347,18 +423,30 @@ fn service_rows_transaction() -> Result<Value, String> {
         ],
         [
             "INSERT INTO containers (id, document) VALUES (?, ?)",
-            ["inactive-container", encode_document(&inactive)?]
+            [PROD_A_PEER, encode_document(&prod_a_peer)?]
+        ],
+        [
+            "INSERT INTO containers (id, document) VALUES (?, ?)",
+            [PROD_B_PEER, encode_document(&prod_b_peer)?]
+        ],
+        [
+            "INSERT INTO containers (id, document) VALUES (?, ?)",
+            [OTHER_A, encode_document(&other_a)?]
+        ],
+        [
+            "INSERT INTO containers (id, document) VALUES (?, ?)",
+            [OTHER_B, encode_document(&other_b)?]
         ]
     ]))
 }
 
-fn container_document(machine_id: &str, ip: &str, deploy: &str) -> Value {
+fn container_document(machine_id: &str, namespace_id: &str, ip: &str, deploy: &str) -> Value {
     json!({
         "v": 1,
         "cluster_id": CLUSTER_ID,
         "machine_id": machine_id,
         "service_id": SERVICE_ID,
-        "namespace_id": NAMESPACE_ID,
+        "namespace_id": namespace_id,
         "ip": ip,
         "deploy": deploy
     })
@@ -400,6 +488,765 @@ fn replace_machine_subnet_transaction(
 
 fn encode_document(document: &Value) -> Result<String, String> {
     serde_json::to_string(document).map_err(|error| error.to_string())
+}
+
+async fn wait_for_isolation_ready(docker: &Docker, machine: &DindMachine) -> Result<(), String> {
+    wait_for_command(
+        docker,
+        machine,
+        "root-cgroup namespace isolation",
+        vec![
+            "/opt/ployz/artifacts/ployz-ebpf-ctl".to_owned(),
+            "--pin-path".to_owned(),
+            "/sys/fs/bpf/ployz".to_owned(),
+            "isolation".to_owned(),
+            "status".to_owned(),
+        ],
+        |outcome| outcome.success(),
+    )
+    .await?;
+    exec_ok(
+        docker,
+        machine,
+        &[
+            "test",
+            "-e",
+            "/sys/fs/bpf/ployz-isolation/config",
+            "-a",
+            "-e",
+            "/sys/fs/bpf/ployz-isolation/namespaces",
+            "-a",
+            "-e",
+            "/sys/fs/bpf/ployz-isolation/ingress",
+            "-a",
+            "-e",
+            "/sys/fs/bpf/ployz-isolation/egress",
+            "-a",
+            "-e",
+            "/sys/fs/bpf/ployz-isolation/ingress-link",
+            "-a",
+            "-e",
+            "/sys/fs/bpf/ployz-isolation/egress-link",
+        ],
+    )
+    .await?;
+    Ok(())
+}
+
+async fn isolation_attachments(
+    docker: &Docker,
+    machine: &DindMachine,
+) -> Result<BTreeMap<String, u64>, String> {
+    let outcome = exec_ok(
+        docker,
+        machine,
+        &["bpftool", "cgroup", "show", &machine.cgroup_root],
+    )
+    .await?;
+    let attachments = parse_isolation_attachments(&machine.name, &outcome.stdout)?;
+    let pinned = pinned_isolation_programs(docker, machine).await?;
+    if attachments != pinned {
+        return Err(format!(
+            "{} root cgroup isolation attachments did not match their pinned programs: root={attachments:?} pinned={pinned:?}",
+            machine.name
+        ));
+    }
+    Ok(attachments)
+}
+
+fn parse_isolation_attachments(
+    machine_name: &str,
+    output: &str,
+) -> Result<BTreeMap<String, u64>, String> {
+    let mut attachments = BTreeMap::new();
+    for line in output
+        .lines()
+        .skip(1)
+        .filter(|line| !line.trim().is_empty())
+    {
+        let fields = line.split_ascii_whitespace().collect::<Vec<_>>();
+        let [id, attach_type, flags, ..] = fields.as_slice() else {
+            return Err(format!(
+                "{machine_name} returned malformed bpftool cgroup row {line:?}"
+            ));
+        };
+        if !matches!(*attach_type, "cgroup_inet_ingress" | "cgroup_inet_egress") {
+            continue;
+        }
+        if *flags != "multi" {
+            return Err(format!(
+                "{machine_name} root cgroup isolation attachment has unexpected flags: {line:?}"
+            ));
+        }
+        let id = id
+            .parse::<u64>()
+            .map_err(|error| format!("parse bpftool program id {id:?}: {error}"))?;
+        if attachments.insert((*attach_type).to_owned(), id).is_some() {
+            return Err(format!(
+                "{machine_name} root cgroup has duplicate {attach_type} attachments"
+            ));
+        }
+    }
+    let expected = ["cgroup_inet_egress", "cgroup_inet_ingress"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if attachments.keys().cloned().collect::<Vec<_>>() != expected {
+        return Err(format!(
+            "{machine_name} root cgroup did not have the exact isolation pair: {attachments:?}"
+        ));
+    }
+    Ok(attachments)
+}
+
+#[test]
+fn isolation_attachment_parser_preserves_unrelated_root_programs() {
+    let output = concat!(
+        "ID       AttachType      AttachFlags     Name\n",
+        "106566   cgroup_device   multi\n",
+        "106567   cgroup_inet_ingress multi ployz_cgroup_in\n",
+        "106568   cgroup_inet_egress multi ployz_cgroup_eg\n",
+    );
+
+    assert_eq!(
+        parse_isolation_attachments("machine-1", output).expect("isolation pair"),
+        BTreeMap::from([
+            ("cgroup_inet_egress".to_owned(), 106568),
+            ("cgroup_inet_ingress".to_owned(), 106567),
+        ])
+    );
+}
+
+#[test]
+fn child_cgroup_attachment_check_ignores_unrelated_program_types() {
+    let unrelated = json!([{
+        "attach_type": "cgroup_device",
+        "id": 106566,
+        "name": "sd_devices"
+    }]);
+    let isolation = json!([{
+        "attach_type": "cgroup_inet_ingress",
+        "id": 106567,
+        "name": "ployz_cgroup_in"
+    }]);
+
+    assert!(!has_direct_isolation_attachment(&unrelated).expect("valid evidence"));
+    assert!(has_direct_isolation_attachment(&isolation).expect("valid evidence"));
+}
+
+async fn pinned_isolation_programs(
+    docker: &Docker,
+    machine: &DindMachine,
+) -> Result<BTreeMap<String, u64>, String> {
+    let mut programs = BTreeMap::new();
+    for (pin, attach_type, expected_kernel_name) in [
+        ("ingress", "cgroup_inet_ingress", "ployz_cgroup_in"),
+        ("egress", "cgroup_inet_egress", "ployz_cgroup_eg"),
+    ] {
+        let path = format!("/sys/fs/bpf/ployz-isolation/{pin}");
+        let outcome = exec_ok(
+            docker,
+            machine,
+            &["bpftool", "-j", "prog", "show", "pinned", &path],
+        )
+        .await?;
+        let value: Value = serde_json::from_str(&outcome.stdout)
+            .map_err(|error| format!("decode {path} bpftool JSON: {error}"))?;
+        let id = value
+            .get("id")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| format!("{path} bpftool output omitted id: {value}"))?;
+        let name = value
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("{path} bpftool output omitted program name: {value}"))?;
+        if name != expected_kernel_name {
+            return Err(format!(
+                "{path} pinned unexpected program {name:?}, expected {expected_kernel_name:?}"
+            ));
+        }
+        programs.insert(attach_type.to_owned(), id);
+    }
+    Ok(programs)
+}
+
+async fn tc_program_ids(docker: &Docker, machine: &DindMachine) -> Result<[u64; 2], String> {
+    let mut ids = Vec::with_capacity(2);
+    for pin in ["ingress", "egress"] {
+        let path = format!("/sys/fs/bpf/ployz/{pin}");
+        let outcome = exec_ok(
+            docker,
+            machine,
+            &["bpftool", "-j", "prog", "show", "pinned", &path],
+        )
+        .await?;
+        let value: Value = serde_json::from_str(&outcome.stdout)
+            .map_err(|error| format!("decode {path} bpftool JSON: {error}"))?;
+        let id = value
+            .get("id")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| format!("{path} bpftool output omitted id: {value}"))?;
+        ids.push(id);
+    }
+    <[u64; 2]>::try_from(ids).map_err(|ids| format!("expected two tc programs, got {ids:?}"))
+}
+
+async fn assert_stable_attachments(
+    docker: &Docker,
+    machine: &DindMachine,
+    expected_isolation: &BTreeMap<String, u64>,
+    expected_tc: &[u64; 2],
+) -> Result<(), String> {
+    wait_for_isolation_ready(docker, machine).await?;
+    let actual_isolation = isolation_attachments(docker, machine).await?;
+    if &actual_isolation != expected_isolation {
+        return Err(format!(
+            "{} isolation programs changed across workload churn: before={expected_isolation:?} after={actual_isolation:?}",
+            machine.name
+        ));
+    }
+    let actual_tc = tc_program_ids(docker, machine).await?;
+    if &actual_tc != expected_tc {
+        return Err(format!(
+            "{} tc routing programs changed across isolation churn: before={expected_tc:?} after={actual_tc:?}",
+            machine.name
+        ));
+    }
+    Ok(())
+}
+
+async fn start_isolation_workloads(
+    docker: &Docker,
+    machine_a: &DindMachine,
+    machine_b: &DindMachine,
+) -> Result<(), String> {
+    for (machine, workloads) in [
+        (
+            machine_a,
+            [
+                (PROD_A, ACTIVE_IP_A, "10.210.10.1"),
+                (PROD_A_PEER, SAME_NAMESPACE_IP_A, "10.210.10.1"),
+                (OTHER_A, OTHER_NAMESPACE_IP_A, "10.210.10.1"),
+            ],
+        ),
+        (
+            machine_b,
+            [
+                (PROD_B, ACTIVE_IP_B, "10.210.20.1"),
+                (PROD_B_PEER, SAME_NAMESPACE_IP_B, "10.210.20.1"),
+                (OTHER_B, OTHER_NAMESPACE_IP_B, "10.210.20.1"),
+            ],
+        ),
+    ] {
+        for (name, ip, dns) in workloads {
+            start_nginx(docker, machine, name, ip, dns).await?;
+        }
+    }
+    start_nginx(docker, machine_b, FRESH_B, FRESH_REMOTE_IP, "10.210.20.1").await
+}
+
+async fn start_nginx(
+    docker: &Docker,
+    machine: &DindMachine,
+    name: &str,
+    ip: &str,
+    dns: &str,
+) -> Result<(), String> {
+    exec_ok(
+        docker,
+        machine,
+        &[
+            "docker",
+            "run",
+            "--detach",
+            "--name",
+            name,
+            "--network",
+            "ployz",
+            "--ip",
+            ip,
+            "--dns",
+            dns,
+            "--dns-search",
+            "production.internal",
+            "nginx:1.27-alpine",
+        ],
+    )
+    .await?;
+    wait_for_command(
+        docker,
+        machine,
+        "ready fixed-IP nginx workload",
+        vec![
+            "curl".to_owned(),
+            "--fail".to_owned(),
+            "--silent".to_owned(),
+            "--show-error".to_owned(),
+            "--max-time".to_owned(),
+            "2".to_owned(),
+            format!("http://{ip}/"),
+        ],
+        |outcome| outcome.success(),
+    )
+    .await
+}
+
+async fn assert_inner_container_has_no_direct_attach(
+    docker: &Docker,
+    machine: &DindMachine,
+    container: &str,
+) -> Result<(), String> {
+    let command = format!(
+        "pid=$(docker inspect --format '{{{{.State.Pid}}}}' {container}); cat /proc/$pid/cgroup"
+    );
+    let outcome = exec_ok(docker, machine, &["sh", "-c", &command]).await?;
+    let matches = outcome
+        .stdout
+        .lines()
+        .filter_map(|line| line.strip_prefix("0::"))
+        .collect::<Vec<_>>();
+    let [path] = matches.as_slice() else {
+        return Err(format!(
+            "{} {container} had invalid cgroup evidence {matches:?}",
+            machine.name
+        ));
+    };
+    let child = format!("/sys/fs/cgroup{path}");
+    if !child.starts_with(&format!("{}/", machine.cgroup_root)) {
+        return Err(format!(
+            "{} {container} cgroup {child} is not below {}",
+            machine.name, machine.cgroup_root
+        ));
+    }
+    exec_ok(
+        docker,
+        machine,
+        &["test", "-f", &format!("{child}/cgroup.controllers")],
+    )
+    .await?;
+    let outcome = exec_ok(
+        docker,
+        machine,
+        &["bpftool", "-j", "cgroup", "show", &child],
+    )
+    .await?;
+    let value: Value = serde_json::from_str(&outcome.stdout)
+        .map_err(|error| format!("decode child cgroup bpftool JSON: {error}"))?;
+    if has_direct_isolation_attachment(&value)? {
+        Err(format!(
+            "{} {container} had a direct isolation attachment: {value}",
+            machine.name
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn has_direct_isolation_attachment(value: &Value) -> Result<bool, String> {
+    let Some(attachments) = value.as_array() else {
+        return Err(format!(
+            "child cgroup bpftool evidence was not an array: {value}"
+        ));
+    };
+    for attachment in attachments {
+        let Some(attach_type) = attachment.get("attach_type").and_then(Value::as_str) else {
+            return Err(format!(
+                "child cgroup bpftool attachment omitted attach_type: {attachment}"
+            ));
+        };
+        if matches!(attach_type, "cgroup_inet_ingress" | "cgroup_inet_egress") {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+async fn install_outside_server(docker: &Docker, machine: &DindMachine) -> Result<(), String> {
+    write_file_in_container(
+        docker,
+        &machine.container_id,
+        OUTSIDE_SERVER_PATH,
+        OUTSIDE_SERVER_SCRIPT,
+        "0755",
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    let unit = format!(
+        "[Unit]\nDescription=Controlled outside-prefix HTTP server\n\n[Service]\nType=simple\nExecStart={OUTSIDE_SERVER_PATH}\nRestart=on-failure\n\n[Install]\nWantedBy=multi-user.target\n"
+    );
+    write_file_in_container(
+        docker,
+        &machine.container_id,
+        "/etc/systemd/system/ployz-test-outside.service",
+        &unit,
+        "0644",
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    start_unit(docker, machine, "ployz-test-outside.service").await?;
+    wait_for_command(
+        docker,
+        machine,
+        "controlled outside-prefix HTTP server",
+        vec![
+            "curl".to_owned(),
+            "--fail".to_owned(),
+            "--silent".to_owned(),
+            "--max-time".to_owned(),
+            "2".to_owned(),
+            format!("http://127.0.0.1:{OUTSIDE_SERVER_PORT}/"),
+        ],
+        |outcome| outcome.success(),
+    )
+    .await
+}
+
+async fn exercise_namespace_isolation(
+    docker: &Docker,
+    machine_a: &DindMachine,
+    machine_b: &DindMachine,
+) -> Result<(), String> {
+    for id in [
+        "active-container-a",
+        "active-container-b",
+        PROD_A_PEER,
+        PROD_B_PEER,
+        OTHER_A,
+        OTHER_B,
+    ] {
+        wait_for_corrosion_row(docker, machine_a, "containers", id).await?;
+        wait_for_corrosion_row(docker, machine_b, "containers", id).await?;
+    }
+    assert_corrosion_row_absent_now(docker, machine_a, "containers", FRESH_B).await?;
+    assert_corrosion_row_absent_now(docker, machine_b, "containers", FRESH_B).await?;
+
+    for (machine, source, destination) in [
+        (machine_a, PROD_A, SAME_NAMESPACE_IP_A),
+        (machine_a, PROD_A_PEER, ACTIVE_IP_A),
+        (machine_b, PROD_B, SAME_NAMESPACE_IP_B),
+        (machine_b, PROD_B_PEER, ACTIVE_IP_B),
+        (machine_a, PROD_A, ACTIVE_IP_B),
+        (machine_b, PROD_B, ACTIVE_IP_A),
+    ] {
+        wait_for_container_http(docker, machine, source, destination).await?;
+    }
+
+    for (machine, source, destination) in [
+        (machine_a, PROD_A, OTHER_NAMESPACE_IP_A),
+        (machine_a, OTHER_A, ACTIVE_IP_A),
+        (machine_b, PROD_B, OTHER_NAMESPACE_IP_B),
+        (machine_b, OTHER_B, ACTIVE_IP_B),
+        (machine_a, PROD_A, OTHER_NAMESPACE_IP_B),
+        (machine_b, OTHER_B, ACTIVE_IP_A),
+        (machine_b, PROD_B, OTHER_NAMESPACE_IP_A),
+        (machine_a, OTHER_A, ACTIVE_IP_B),
+    ] {
+        assert_container_http_blocked(docker, machine, source, destination).await?;
+    }
+
+    let remote_container_probe = "remote-container-source";
+    assert_container_http(
+        docker,
+        machine_a,
+        PROD_A,
+        ACTIVE_IP_B,
+        remote_container_probe,
+    )
+    .await?;
+    assert_nginx_source(
+        docker,
+        machine_b,
+        PROD_B,
+        remote_container_probe,
+        ACTIVE_IP_A,
+    )
+    .await?;
+
+    let host_local_probe = "host-local-source";
+    assert_host_http(docker, machine_a, OTHER_NAMESPACE_IP_A, host_local_probe).await?;
+    assert_nginx_source(docker, machine_a, OTHER_A, host_local_probe, "10.210.10.1").await?;
+
+    let host_remote_probe = "host-remote-source";
+    assert_host_http(docker, machine_a, OTHER_NAMESPACE_IP_B, host_remote_probe).await?;
+    assert_nginx_source(docker, machine_b, OTHER_B, host_remote_probe, "10.210.10.1").await?;
+
+    assert_container_dns(docker, machine_a, PROD_A, "10.210.10.1").await?;
+    assert_container_dns(docker, machine_b, FRESH_B, "10.210.20.1").await?;
+
+    let gateway_to_unknown_probe = "gateway-to-unknown";
+    assert_host_http(docker, machine_b, FRESH_REMOTE_IP, gateway_to_unknown_probe).await?;
+    assert_nginx_source(
+        docker,
+        machine_b,
+        FRESH_B,
+        gateway_to_unknown_probe,
+        "10.210.20.1",
+    )
+    .await?;
+
+    assert_container_http_blocked(docker, machine_a, PROD_A, FRESH_REMOTE_IP).await?;
+    assert_container_http_blocked(docker, machine_b, FRESH_B, ACTIVE_IP_A).await?;
+
+    let outside = exec_ok(
+        docker,
+        machine_a,
+        &[
+            "docker",
+            "exec",
+            PROD_A,
+            "wget",
+            "-q",
+            "-T",
+            "2",
+            "-t",
+            "1",
+            "-O",
+            "-",
+            &format!("http://{}:{OUTSIDE_SERVER_PORT}/", machine_b.bridge_ip),
+        ],
+    )
+    .await?;
+    if outside.stdout.trim() != machine_a.bridge_ip.to_string() {
+        return Err(format!(
+            "outside-prefix egress from {PROD_A} arrived as {:?}, expected outer-machine masquerade {}",
+            outside.stdout.trim(),
+            machine_a.bridge_ip
+        ));
+    }
+
+    let fresh = container_document(
+        MACHINE_B_ID,
+        NAMESPACE_ID,
+        FRESH_REMOTE_IP,
+        INACTIVE_DEPLOY_ID,
+    );
+    let transaction = json!([[
+        "INSERT INTO containers (id, document) VALUES (?, ?)",
+        [FRESH_B, encode_document(&fresh)?]
+    ]]);
+    let started = Instant::now();
+    corrosion_transaction(docker, machine_b, &transaction).await?;
+    let deadline = started + POLICY_CONVERGENCE_BUDGET;
+    wait_for_corrosion_row_before(docker, machine_a, "containers", FRESH_B, deadline).await?;
+    wait_for_container_http_before(docker, machine_a, PROD_A, FRESH_REMOTE_IP, deadline).await?;
+    wait_for_container_http_before(docker, machine_b, FRESH_B, ACTIVE_IP_A, deadline).await?;
+    if started.elapsed() > POLICY_CONVERGENCE_BUDGET {
+        return Err(format!(
+            "fresh namespace policy took {:?}, over {:?}",
+            started.elapsed(),
+            POLICY_CONVERGENCE_BUDGET
+        ));
+    }
+    Ok(())
+}
+
+async fn wait_for_container_http(
+    docker: &Docker,
+    machine: &DindMachine,
+    source: &str,
+    destination: &str,
+) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(45);
+    wait_for_container_http_before(docker, machine, source, destination, deadline).await
+}
+
+async fn wait_for_container_http_before(
+    docker: &Docker,
+    machine: &DindMachine,
+    source: &str,
+    destination: &str,
+    deadline: Instant,
+) -> Result<(), String> {
+    let command = container_http_command(source, destination, "allowed");
+    let refs = command.iter().map(String::as_str).collect::<Vec<_>>();
+    let mut last = String::from("probe was not attempted");
+    while Instant::now() < deadline {
+        match exec_in_container(docker, &machine.container_id, &refs).await {
+            Ok(outcome) if outcome.success() => return Ok(()),
+            Ok(outcome) => last = render_failure(&outcome),
+            Err(error) => last = error.to_string(),
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Err(format!(
+        "{} {source} could not reach {destination} before the policy deadline: {last}",
+        machine.name
+    ))
+}
+
+async fn assert_container_http(
+    docker: &Docker,
+    machine: &DindMachine,
+    source: &str,
+    destination: &str,
+    probe: &str,
+) -> Result<(), String> {
+    let command = container_http_command(source, destination, probe);
+    let refs = command.iter().map(String::as_str).collect::<Vec<_>>();
+    exec_ok(docker, machine, &refs).await.map(|_| ())
+}
+
+async fn assert_container_http_blocked(
+    docker: &Docker,
+    machine: &DindMachine,
+    source: &str,
+    destination: &str,
+) -> Result<(), String> {
+    let command = container_http_command(source, destination, "must-be-blocked");
+    let refs = command.iter().map(String::as_str).collect::<Vec<_>>();
+    let outcome = exec_in_container(docker, &machine.container_id, &refs)
+        .await
+        .map_err(|error| error.to_string())?;
+    if outcome.success() {
+        Err(format!(
+            "{} allowed forbidden HTTP traffic from {source} to {destination}",
+            machine.name
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn container_http_command(source: &str, destination: &str, probe: &str) -> Vec<String> {
+    vec![
+        "docker".to_owned(),
+        "exec".to_owned(),
+        source.to_owned(),
+        "wget".to_owned(),
+        "-q".to_owned(),
+        "-T".to_owned(),
+        "2".to_owned(),
+        "-t".to_owned(),
+        "1".to_owned(),
+        "-O".to_owned(),
+        "-".to_owned(),
+        format!("http://{destination}/?probe={probe}"),
+    ]
+}
+
+async fn assert_host_http(
+    docker: &Docker,
+    machine: &DindMachine,
+    destination: &str,
+    probe: &str,
+) -> Result<(), String> {
+    exec_ok(
+        docker,
+        machine,
+        &[
+            "curl",
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--max-time",
+            "2",
+            &format!("http://{destination}/?probe={probe}"),
+        ],
+    )
+    .await
+    .map(|_| ())
+}
+
+async fn assert_nginx_source(
+    docker: &Docker,
+    machine: &DindMachine,
+    container: &str,
+    probe: &str,
+    expected_source: &str,
+) -> Result<(), String> {
+    let expected_probe = format!("GET /?probe={probe} ");
+    let expected_source = expected_source.to_owned();
+    wait_for_command(
+        docker,
+        machine,
+        "nginx source-address evidence",
+        vec!["docker".to_owned(), "logs".to_owned(), container.to_owned()],
+        move |outcome| {
+            outcome.success()
+                && outcome.stdout.lines().any(|line| {
+                    line.contains(&expected_probe)
+                        && line.split_ascii_whitespace().next() == Some(expected_source.as_str())
+                })
+        },
+    )
+    .await
+}
+
+async fn assert_container_dns(
+    docker: &Docker,
+    machine: &DindMachine,
+    container: &str,
+    resolver: &str,
+) -> Result<(), String> {
+    let outcome = exec_ok(
+        docker,
+        machine,
+        &[
+            "docker",
+            "exec",
+            container,
+            "nslookup",
+            INTERNAL_NAME,
+            resolver,
+        ],
+    )
+    .await?;
+    if outcome.stdout.contains(ACTIVE_IP_A) && outcome.stdout.contains(ACTIVE_IP_B) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} {container} DNS through {resolver} omitted cluster answers: {:?}",
+            machine.name, outcome.stdout
+        ))
+    }
+}
+
+async fn wait_for_corrosion_row_before(
+    docker: &Docker,
+    machine: &DindMachine,
+    table: &str,
+    id: &str,
+    deadline: Instant,
+) -> Result<(), String> {
+    let statement = json!([format!("SELECT id FROM {table} WHERE id = ?"), [id]]);
+    let command = corrosion_curl_command("v1/queries", &statement);
+    let refs = command.iter().map(String::as_str).collect::<Vec<_>>();
+    let mut last = String::from("query was not attempted");
+    while Instant::now() < deadline {
+        match exec_in_container(docker, &machine.container_id, &refs).await {
+            Ok(outcome) if outcome.success() && outcome.stdout.contains(id) => return Ok(()),
+            Ok(outcome) => last = render_failure(&outcome),
+            Err(error) => last = error.to_string(),
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Err(format!(
+        "{} did not gossip {table}/{id} before the policy deadline: {last}",
+        machine.name
+    ))
+}
+
+async fn remove_isolation_workload(
+    docker: &Docker,
+    machine: &DindMachine,
+    container: &str,
+) -> Result<(), String> {
+    let transaction = json!([["DELETE FROM containers WHERE id = ?", [container]]]);
+    corrosion_transaction(docker, machine, &transaction).await?;
+    exec_ok(docker, machine, &["docker", "rm", "--force", container])
+        .await
+        .map(|_| ())
+}
+
+async fn remove_isolation_containers(
+    docker: &Docker,
+    machine: &DindMachine,
+    containers: &[&str],
+) -> Result<(), String> {
+    for container in containers {
+        exec_ok(docker, machine, &["docker", "rm", "--force", container]).await?;
+    }
+    Ok(())
 }
 
 async fn wait_for_peer_ping(
@@ -803,4 +1650,22 @@ while True:
     response += query[12:]
     response += b"\xc0\x0c" + struct.pack("!HHIH", 1, 1, 5, 4) + answer_ip
     sock.sendto(response, peer)
+"#;
+
+const OUTSIDE_SERVER_SCRIPT: &str = r#"#!/usr/bin/python3
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = (self.client_address[0] + "\n").encode("ascii")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, _format, *_args):
+        pass
+
+ThreadingHTTPServer(("0.0.0.0", 18080), Handler).serve_forever()
 "#;

@@ -5,6 +5,7 @@
 //! environment file rather than an API credential supplied by callers.
 
 mod config;
+mod diagnostics;
 mod door;
 mod endpoint_network;
 mod first_deploy;
@@ -18,6 +19,7 @@ mod operation_lifecycle;
 mod operation_proxy;
 mod operation_store;
 mod promotion_store;
+mod removals;
 mod roster;
 mod runtime;
 mod server;

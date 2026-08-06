@@ -154,6 +154,7 @@ async fn handle_request(
                 }
                 Err(
                     error @ (KeeperProviderError::Host(_)
+                    | KeeperProviderError::Isolation(_)
                     | KeeperProviderError::Poisoned
                     | KeeperProviderError::Task { .. }),
                 ) => {

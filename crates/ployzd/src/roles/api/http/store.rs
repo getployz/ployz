@@ -7,9 +7,10 @@ pub(super) use error::MutationStoreError;
 use serde::Serialize;
 
 use ployz_core::corrosion::{
-    ClusterDocument, CorrosionTable, MachineDocument, NamedReadReport, OperatorWriteProvenance,
-    PeerDocument, ShadowConflict, SkippedRow, SqliteParameter, Statement, StoredRow, TokenDocument,
-    TransactionResponse, TransactionResult, read_named_roster_rows, read_rows,
+    AcceptedRow, ClusterDocument, CorrosionTable, MachineDocument, NamedReadReport,
+    OperatorWriteProvenance, PeerDocument, ShadowConflict, SkippedRow, SqliteParameter, Statement,
+    StoredRow, TokenDocument, TransactionResponse, TransactionResult, read_named_roster_rows,
+    read_rows,
 };
 use ployz_core::ids::{ClusterId, MachineRowId, PeerId, TokenId};
 
@@ -125,6 +126,34 @@ pub(super) async fn read_accepted_roster(
     };
     roster.trace_reader_evidence();
     Ok(roster)
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct AcceptedCluster {
+    pub(super) document: ClusterDocument,
+    pub(super) stored_document: String,
+}
+
+pub(super) async fn read_cluster(
+    corrosion: &CorrosionClient,
+    cluster_id: &ClusterId,
+) -> Result<AcceptedCluster, MutationStoreError> {
+    let row = one_cluster_row(
+        cluster_id,
+        query_rows(corrosion, select_cluster(cluster_id)).await?,
+    )?;
+    Ok(AcceptedCluster {
+        stored_document: row.source.document,
+        document: row.value,
+    })
+}
+
+pub(super) async fn read_named_removal_rows(
+    corrosion: &CorrosionClient,
+    table: CorrosionTable,
+) -> Result<Vec<StoredRow>, MutationStoreError> {
+    ensure_named_removal_table(table, "")?;
+    query_rows(corrosion, select_all(table)).await
 }
 
 #[derive(Debug)]
@@ -509,6 +538,118 @@ pub(super) async fn delete_peer_if_matches(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ConditionalNamedDelete {
+    Deleted,
+    ConcurrentMutation,
+}
+
+pub(super) async fn delete_named_if_matches(
+    corrosion: &CorrosionClient,
+    table: CorrosionTable,
+    id: &str,
+    expected: String,
+) -> Result<ConditionalNamedDelete, MutationStoreError> {
+    ensure_exact_row_removal_table(table, id)?;
+    let response = corrosion
+        .execute(&[conditional_delete_statement(table, id, expected)])
+        .await?;
+    conditional_named_delete_outcome(table, id, &response)
+}
+
+pub(super) async fn delete_peer_if_cluster_and_row_match(
+    corrosion: &CorrosionClient,
+    cluster_id: &ClusterId,
+    expected_cluster: String,
+    peer_id: &PeerId,
+    expected_peer: String,
+) -> Result<ConditionalNamedDelete, MutationStoreError> {
+    let response = corrosion
+        .execute(&[delete_peer_if_cluster_and_row_match_statement(
+            cluster_id,
+            expected_cluster,
+            peer_id,
+            expected_peer,
+        )])
+        .await?;
+    conditional_named_delete_outcome(CorrosionTable::Peers, peer_id.as_str(), &response)
+}
+
+fn conditional_named_delete_outcome(
+    table: CorrosionTable,
+    id: &str,
+    response: &TransactionResponse,
+) -> Result<ConditionalNamedDelete, MutationStoreError> {
+    let [result] = response.results.as_slice() else {
+        return Err(MutationStoreError::UnexpectedWriteResult {
+            table,
+            id: id.to_owned(),
+            detail: format!("transaction returned {} results", response.results.len()),
+        });
+    };
+    let TransactionResult::Success(result) = result else {
+        return Err(MutationStoreError::UnexpectedWriteResult {
+            table,
+            id: id.to_owned(),
+            detail: "transaction retained a statement error".to_owned(),
+        });
+    };
+    match result.rows_affected {
+        0 => Ok(ConditionalNamedDelete::ConcurrentMutation),
+        1 => Ok(ConditionalNamedDelete::Deleted),
+        rows_affected => Err(MutationStoreError::UnexpectedWriteResult {
+            table,
+            id: id.to_owned(),
+            detail: format!("conditional delete affected {rows_affected} rows"),
+        }),
+    }
+}
+
+fn ensure_named_removal_table(table: CorrosionTable, id: &str) -> Result<(), MutationStoreError> {
+    match table {
+        CorrosionTable::Peers
+        | CorrosionTable::Namespaces
+        | CorrosionTable::Services
+        | CorrosionTable::RouteBindings => Ok(()),
+        CorrosionTable::Cluster
+        | CorrosionTable::Machines
+        | CorrosionTable::Tokens
+        | CorrosionTable::Containers
+        | CorrosionTable::MachineStatus
+        | CorrosionTable::Operations
+        | CorrosionTable::CertHoldings
+        | CorrosionTable::AcmeHttp01 => Err(MutationStoreError::UnexpectedWriteResult {
+            table,
+            id: id.to_owned(),
+            detail: "table is not a named-removal target".to_owned(),
+        }),
+    }
+}
+
+fn ensure_exact_row_removal_table(
+    table: CorrosionTable,
+    id: &str,
+) -> Result<(), MutationStoreError> {
+    match table {
+        CorrosionTable::Namespaces | CorrosionTable::Services | CorrosionTable::RouteBindings => {
+            Ok(())
+        }
+        CorrosionTable::Cluster
+        | CorrosionTable::Machines
+        | CorrosionTable::Peers
+        | CorrosionTable::Tokens
+        | CorrosionTable::Containers
+        | CorrosionTable::MachineStatus
+        | CorrosionTable::Operations
+        | CorrosionTable::CertHoldings
+        | CorrosionTable::AcmeHttp01 => Err(MutationStoreError::UnexpectedWriteResult {
+            table,
+            id: id.to_owned(),
+            detail: "table requires a different deletion fence".to_owned(),
+        }),
+    }
+}
+
 fn encode_document<Document>(
     table: CorrosionTable,
     document: &Document,
@@ -536,6 +677,13 @@ fn one_cluster(
     cluster_id: &ClusterId,
     rows: Vec<StoredRow>,
 ) -> Result<ClusterDocument, MutationStoreError> {
+    Ok(one_cluster_row(cluster_id, rows)?.value)
+}
+
+fn one_cluster_row(
+    cluster_id: &ClusterId,
+    rows: Vec<StoredRow>,
+) -> Result<AcceptedRow<ClusterDocument>, MutationStoreError> {
     let mut accepted = read_rows::<ClusterDocument>(cluster_id, rows)
         .accepted
         .into_iter();
@@ -545,7 +693,7 @@ fn one_cluster(
     if accepted.next().is_some() || row.source.key != cluster_id.as_str() {
         return Err(MutationStoreError::InvalidCluster);
     }
-    Ok(row.value)
+    Ok(row)
 }
 
 fn select_cluster(cluster_id: &ClusterId) -> Statement {
@@ -751,6 +899,23 @@ fn conditional_delete_statement(table: CorrosionTable, id: &str, expected: Strin
     )
 }
 
+fn delete_peer_if_cluster_and_row_match_statement(
+    cluster_id: &ClusterId,
+    expected_cluster: String,
+    peer_id: &PeerId,
+    expected_peer: String,
+) -> Statement {
+    Statement::with_params(
+        "DELETE FROM peers WHERE id = ? AND document = ? AND EXISTS (SELECT 1 FROM cluster WHERE id = ? AND document = ?)",
+        vec![
+            SqliteParameter::Text(peer_id.as_str().to_owned()),
+            SqliteParameter::Text(expected_peer),
+            SqliteParameter::Text(cluster_id.as_str().to_owned()),
+            SqliteParameter::Text(expected_cluster),
+        ],
+    )
+}
+
 fn delete_machine_if_matches_statement(machine_id: &MachineRowId, expected: String) -> Statement {
     conditional_delete_statement(CorrosionTable::Machines, machine_id.as_str(), expected)
 }
@@ -821,6 +986,101 @@ mod tests {
                 vec![SqliteParameter::Text(id.to_owned())],
             )
         );
+    }
+
+    #[test]
+    fn named_removals_bind_exact_table_rows_and_peer_cluster_provider_fence() {
+        let id = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+        let document = "{\"v\":1}";
+        for table in [
+            CorrosionTable::Peers,
+            CorrosionTable::Namespaces,
+            CorrosionTable::Services,
+            CorrosionTable::RouteBindings,
+        ] {
+            ensure_named_removal_table(table, id).expect("named table is removable");
+        }
+        for table in [
+            CorrosionTable::Namespaces,
+            CorrosionTable::Services,
+            CorrosionTable::RouteBindings,
+        ] {
+            ensure_exact_row_removal_table(table, id).expect("ordinary named table is removable");
+            assert_eq!(
+                conditional_delete_statement(table, id, document.to_owned()),
+                Statement::with_params(
+                    format!(
+                        "DELETE FROM {} WHERE id = ? AND document = ?",
+                        table.as_str()
+                    ),
+                    vec![
+                        SqliteParameter::Text(id.to_owned()),
+                        SqliteParameter::Text(document.to_owned()),
+                    ],
+                )
+            );
+        }
+
+        let cluster_id = ClusterId::try_new(id).expect("cluster id");
+        let peer_id = PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAW").expect("peer id");
+        assert_eq!(
+            delete_peer_if_cluster_and_row_match_statement(
+                &cluster_id,
+                "{\"provider\":\"builtin_wireguard\"}".to_owned(),
+                &peer_id,
+                document.to_owned(),
+            ),
+            Statement::with_params(
+                "DELETE FROM peers WHERE id = ? AND document = ? AND EXISTS (SELECT 1 FROM cluster WHERE id = ? AND document = ?)",
+                vec![
+                    SqliteParameter::Text(peer_id.as_str().to_owned()),
+                    SqliteParameter::Text(document.to_owned()),
+                    SqliteParameter::Text(cluster_id.as_str().to_owned()),
+                    SqliteParameter::Text("{\"provider\":\"builtin_wireguard\"}".to_owned()),
+                ],
+            )
+        );
+        assert!(matches!(
+            ensure_exact_row_removal_table(CorrosionTable::Peers, peer_id.as_str()),
+            Err(MutationStoreError::UnexpectedWriteResult { .. })
+        ));
+        let changed_cluster_or_peer = TransactionResponse {
+            results: vec![TransactionResult::Success(TransactionSuccess {
+                rows_affected: 0,
+                time: 0.01,
+            })],
+            time: 0.01,
+            version: None,
+            actor_id: None,
+        };
+        assert_eq!(
+            conditional_named_delete_outcome(
+                CorrosionTable::Peers,
+                peer_id.as_str(),
+                &changed_cluster_or_peer,
+            )
+            .expect("a changed cluster or peer is a typed concurrent mutation"),
+            ConditionalNamedDelete::ConcurrentMutation
+        );
+
+        for table in [
+            CorrosionTable::Cluster,
+            CorrosionTable::Machines,
+            CorrosionTable::Tokens,
+            CorrosionTable::Containers,
+            CorrosionTable::MachineStatus,
+            CorrosionTable::Operations,
+            CorrosionTable::CertHoldings,
+            CorrosionTable::AcmeHttp01,
+        ] {
+            assert!(matches!(
+                ensure_named_removal_table(table, id),
+                Err(MutationStoreError::UnexpectedWriteResult {
+                    table: found,
+                    ..
+                }) if found == table
+            ));
+        }
     }
 
     #[test]

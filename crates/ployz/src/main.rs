@@ -56,6 +56,24 @@ async fn main() -> ExitCode {
         Command::Deploy(command) => finish_output(ployz::deploy::execute(command).await),
         Command::Ops(command) => finish_output(ployz::ops::execute(command).await),
         Command::Logs(command) => finish_output(ployz::logs::execute(command).await),
+        Command::Peer(command) => emit_removal(ployz::removal::execute_peer(command).await),
+        Command::Service(command) => emit_removal(ployz::removal::execute_service(command).await),
+        Command::Route(command) => emit_removal(ployz::removal::execute_route(command).await),
+        Command::Status(command) => emit_diagnostics(ployz::diagnostics::status(command).await),
+        Command::Doctor(command) => emit_diagnostics(ployz::diagnostics::doctor(command).await),
+    }
+}
+
+fn emit_removal(result: Result<String, ployz::removal::RemovalExecutionError>) -> ExitCode {
+    match result {
+        Ok(output) => {
+            print!("{output}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -72,6 +90,19 @@ where
             eprintln!("{error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+fn emit_diagnostics(outcome: ployz::diagnostics::DiagnosticsOutcome) -> ExitCode {
+    if outcome.is_unreachable() {
+        eprint!("{}", outcome.output());
+    } else {
+        print!("{}", outcome.output());
+    }
+    if outcome.is_success() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
     }
 }
 
