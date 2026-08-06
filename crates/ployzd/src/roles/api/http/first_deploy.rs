@@ -542,14 +542,20 @@ impl FirstDeployDriver {
                     state = next;
                 }
                 PromotionFinalizerDecision::AppendRowsCommitted { state: next } => {
-                    log.append(self.clock.now()?, OperationEvidence::RowsCommitted)
-                        .await?;
+                    log.append(
+                        self.clock.now().map_err(FirstDeployDriverError::Clock)?,
+                        OperationEvidence::RowsCommitted,
+                    )
+                    .await?;
                     state = next;
                     attempts = 0;
                 }
                 PromotionFinalizerDecision::AppendClaimWon { state: next } => {
-                    log.append(self.clock.now()?, OperationEvidence::ClaimWon)
-                        .await?;
+                    log.append(
+                        self.clock.now().map_err(FirstDeployDriverError::Clock)?,
+                        OperationEvidence::ClaimWon,
+                    )
+                    .await?;
                     state = next;
                     attempts = 0;
                 }
@@ -557,8 +563,11 @@ impl FirstDeployDriver {
                     state: next,
                     winner,
                 } => {
-                    log.append(self.clock.now()?, OperationEvidence::ClaimLost { winner })
-                        .await?;
+                    log.append(
+                        self.clock.now().map_err(FirstDeployDriverError::Clock)?,
+                        OperationEvidence::ClaimLost { winner },
+                    )
+                    .await?;
                     state = next;
                     attempts = 0;
                 }
@@ -599,7 +608,7 @@ impl FirstDeployDriver {
         log: &OperationEvidenceLog,
         outcome: CorrosionDeployOutcome,
     ) -> Result<(), FirstDeployDriverError> {
-        let completed_at = self.clock.now()?;
+        let completed_at = self.clock.now().map_err(FirstDeployDriverError::Clock)?;
         let terminal = self
             .operations
             .prepare_terminal(operation_id, completed_at, outcome)
@@ -692,7 +701,11 @@ impl FirstDeployTask {
         &self,
         mut shutdown: watch::Receiver<bool>,
     ) -> Result<(), FirstDeployDriverError> {
-        let started_at = self.driver.clock.now()?;
+        let started_at = self
+            .driver
+            .clock
+            .now()
+            .map_err(FirstDeployDriverError::Clock)?;
         self.driver
             .operations
             .mark_running(&self.operation_id, started_at)
@@ -743,7 +756,13 @@ impl FirstDeployTask {
             EffectResult::Shutdown => return self.interrupted().await,
         }
         self.log
-            .append(self.driver.clock.now()?, OperationEvidence::ImageResolved)
+            .append(
+                self.driver
+                    .clock
+                    .now()
+                    .map_err(FirstDeployDriverError::Clock)?,
+                OperationEvidence::ImageResolved,
+            )
             .await?;
         let identity = V2ManagedContainerIdentity {
             namespace_id: self.namespace.id.clone(),
@@ -774,7 +793,10 @@ impl FirstDeployTask {
         };
         self.log
             .append(
-                self.driver.clock.now()?,
+                self.driver
+                    .clock
+                    .now()
+                    .map_err(FirstDeployDriverError::Clock)?,
                 OperationEvidence::ContainerCreated {
                     container_id: container_id.clone(),
                 },
@@ -799,7 +821,10 @@ impl FirstDeployTask {
         }
         self.log
             .append(
-                self.driver.clock.now()?,
+                self.driver
+                    .clock
+                    .now()
+                    .map_err(FirstDeployDriverError::Clock)?,
                 OperationEvidence::ContainerStarted {
                     container_id: container_id.clone(),
                 },
@@ -829,7 +854,13 @@ impl FirstDeployTask {
         };
         let prepared = self.prepared_promotion(container_id, ip, image)?;
         self.log
-            .append_promotion_prepared(self.driver.clock.now()?, prepared.clone())
+            .append_promotion_prepared(
+                self.driver
+                    .clock
+                    .now()
+                    .map_err(FirstDeployDriverError::Clock)?,
+                prepared.clone(),
+            )
             .await?;
         self.driver
             .finish_promotion(
@@ -865,7 +896,11 @@ impl FirstDeployTask {
         ip: Ipv4Addr,
         resolved_image: ImageReference,
     ) -> Result<PreparedPromotion, FirstDeployDriverError> {
-        let deployed_at = self.driver.clock.now()?;
+        let deployed_at = self
+            .driver
+            .clock
+            .now()
+            .map_err(FirstDeployDriverError::Clock)?;
         let env_fingerprints = self
             .request
             .runtime
@@ -1044,12 +1079,6 @@ pub(super) enum FirstDeployDriverError {
     Clock(String),
     #[error("first deploy invariant failed: {0}")]
     Invariant(String),
-}
-
-impl From<String> for FirstDeployDriverError {
-    fn from(error: String) -> Self {
-        Self::Clock(error)
-    }
 }
 
 #[cfg(test)]
