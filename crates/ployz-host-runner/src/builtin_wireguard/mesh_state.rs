@@ -5,6 +5,8 @@ use ipnet::{IpNet, Ipv6Net};
 use ployz_core::corrosion::{DesiredBuiltinWireguardMesh, DesiredMachineContainerRoute};
 use ployz_core::network::WireGuardPublicKey;
 
+use super::BuiltinWireguardLatestHandshake;
+
 pub(super) const PERSISTENT_KEEPALIVE_SECONDS: u16 = 25;
 
 pub(super) fn render_desired_peers(desired: &DesiredBuiltinWireguardMesh) -> Vec<DesiredPeer> {
@@ -95,7 +97,7 @@ pub(super) fn parse_wireguard_dump(
                 _preshared_key,
                 endpoint,
                 allowed_ips,
-                _handshake,
+                handshake,
                 _rx,
                 _tx,
                 keepalive,
@@ -132,12 +134,14 @@ pub(super) fn parse_wireguard_dump(
                     format!("parse observed WireGuard keepalive {value:?}: {error}")
                 })?),
             };
+            let latest_handshake = BuiltinWireguardLatestHandshake::parse_dump_field(handshake)?;
             Ok((
                 public_key,
                 ObservedPeer {
                     endpoint,
                     allowed_ips,
                     persistent_keepalive,
+                    latest_handshake,
                 },
             ))
         })
@@ -193,6 +197,7 @@ pub(super) struct ObservedPeer {
     pub(super) endpoint: Option<SocketAddr>,
     pub(super) allowed_ips: BTreeSet<IpNet>,
     pub(super) persistent_keepalive: Option<u16>,
+    pub(super) latest_handshake: BuiltinWireguardLatestHandshake,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -3277,6 +3277,7 @@ dependencies = [
  "hmac",
  "ipnet",
  "ployz-test-support",
+ "semver",
  "serde",
  "serde_json",
  "sha2",

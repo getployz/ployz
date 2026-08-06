@@ -197,6 +197,7 @@ fn machine_status_lens_row_requires_its_machine_owned_key() {
         observed_at: CorrosionTimestamp::try_new("2026-08-04T10:00:00Z")
             .expect("fixture timestamp"),
         mesh: None,
+        wireguard_handshakes: None,
     };
 
     assert!(MachineStatusLensRow::try_new(machine_id(MACHINE_A), document.clone()).is_ok());

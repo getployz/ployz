@@ -23,7 +23,7 @@ use tokio::sync::{Mutex, OnceCell, mpsc, watch};
 use tokio::time::{Instant, MissedTickBehavior};
 
 use super::config::ApiRoleMode;
-use super::roster::{corrosion_unavailable_refusal, resolve_peer_principal};
+use super::roster::{PeerPrincipalError, corrosion_unavailable_refusal, resolve_peer_principal};
 use super::runtime::JoinDoorRuntime;
 use crate::corrosion::CorrosionClient;
 use crate::roles::api::lenses::{
@@ -453,6 +453,10 @@ impl ApiService {
             }
         }
 
+        let is_status_request = matches!(
+            parse_route(request.method(), request.uri().path()),
+            Ok(V2Route::Status)
+        );
         let principal = match resolve_peer_principal(
             &self.corrosion,
             &self.cluster_id,
@@ -461,7 +465,13 @@ impl ApiService {
         .await
         {
             Ok(principal) => principal,
-            Err(refusal) => return refusal_response(refusal),
+            Err(PeerPrincipalError::EmptyAcceptedRoster { .. }) if is_status_request => {
+                return super::diagnostics::status_response(self).await;
+            }
+            Err(PeerPrincipalError::Refusal(ApiRefusal::MissingCluster)) if is_status_request => {
+                return super::diagnostics::status_response(self).await;
+            }
+            Err(error) => return refusal_response(error.into_refusal()),
         };
         if founding_route_disabled(&self.mode, request.uri().path()) {
             return refusal_response(ApiRefusal::UnsupportedRoute);
@@ -479,6 +489,8 @@ impl ApiService {
             V2Route::Version => version_response(&self.build),
             V2Route::Founding => unreachable!("founding routes are handled before roster auth"),
             V2Route::Join => refusal_response(ApiRefusal::UnsupportedRoute),
+            V2Route::Status => super::diagnostics::status_response(self).await,
+            V2Route::Doctor => super::diagnostics::doctor_response(self).await,
             V2Route::TokenCreate
             | V2Route::TokenList
             | V2Route::TokenRevoke(_)
@@ -486,6 +498,10 @@ impl ApiService {
             | V2Route::MachineRemove => {
                 super::mutations::handle_mutation(self, route, principal, request).await
             }
+            V2Route::PeerRemove
+            | V2Route::NamespaceRemove
+            | V2Route::ServiceRemove
+            | V2Route::RouteRemove => super::removals::handle_removal(self, route, request).await,
             V2Route::MachineUpgrade => super::upgrade::handle_machine_upgrade(self, request).await,
             V2Route::Lens(collection) => self.snapshot_response(collection).await,
             V2Route::LensWatch(collection) => self.watch_response(collection, shutdown).await,

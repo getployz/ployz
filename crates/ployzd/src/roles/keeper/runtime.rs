@@ -1,17 +1,23 @@
 //! Keeper lifecycle and bounded roster reconciliation.
 
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::time::Duration;
 
 use ployz_core::corrosion::{
     BuiltinWireguardLocalSubnetReallocation, BuiltinWireguardMeshOutcome,
-    EbpfMeshDegradationReason, EbpfMeshDegraded, MachineTransport, MeshComponentDegraded,
-    MeshComponentNotAttempted, MeshComponentReady, MeshConvergenceTestimony, MeshDegradation,
-    MeshNotAttemptedReason, OperatorWriteProvenance, Principal, project_builtin_wireguard_mesh,
+    DesiredBuiltinWireguardMachinePeer, EbpfMeshDegradationReason, EbpfMeshDegraded,
+    MachineTransport, MeshComponentDegraded, MeshComponentNotAttempted, MeshComponentReady,
+    MeshConvergenceTestimony, MeshDegradation, MeshNotAttemptedReason, OperatorWriteProvenance,
+    Principal, WireGuardHandshakeEvidence, project_builtin_wireguard_mesh,
 };
+use ployz_core::ids::MachineRowId;
+use ployz_core::network::WireGuardPublicKey;
 use ployz_core::roles::PloyzdRole;
 use ployz_host_runner::SupervisorBackend;
-use ployz_host_runner::builtin_wireguard::{EbpfDegradedReason, EbpfHostOutcome};
+use ployz_host_runner::builtin_wireguard::{
+    BuiltinWireguardLatestHandshake, EbpfDegradedReason, EbpfHostOutcome,
+};
 use tokio::sync::watch;
 use tokio::time::Instant;
 
@@ -320,6 +326,7 @@ async fn reconcile_once(
                     attempted_at,
                     mismatches,
                 },
+                None,
             )
             .await?;
             Ok(ReconcileProgress::Settled)
@@ -386,6 +393,10 @@ async fn reconcile_once(
             let attempted_at = now().map_err(retry_status)?;
             match provider.converge_peers(&desired).await {
                 Ok(host) => {
+                    let handshakes = Some(map_machine_handshakes(
+                        &desired.machine_peers,
+                        &host.latest_handshakes,
+                    ));
                     let testimony = match host.ebpf {
                         EbpfHostOutcome::Ready { .. } => {
                             *last_successful_converge = Some(attempted_at);
@@ -427,7 +438,7 @@ async fn reconcile_once(
                             }
                         }
                     };
-                    write_testimony(store, writer, testimony).await?;
+                    write_testimony(store, writer, testimony, handshakes).await?;
                     Ok(ReconcileProgress::Settled)
                 }
                 Err(error) => {
@@ -449,7 +460,7 @@ async fn reconcile_once(
                             },
                         },
                     };
-                    write_testimony(store, writer, testimony).await?;
+                    write_testimony(store, writer, testimony, None).await?;
                     Err(provider_failure(error))
                 }
             }
@@ -535,12 +546,35 @@ fn map_ebpf_degradation(reason: EbpfDegradedReason) -> EbpfMeshDegradationReason
     }
 }
 
+fn map_machine_handshakes(
+    machine_peers: &[DesiredBuiltinWireguardMachinePeer],
+    observed: &BTreeMap<WireGuardPublicKey, BuiltinWireguardLatestHandshake>,
+) -> BTreeMap<MachineRowId, WireGuardHandshakeEvidence> {
+    machine_peers
+        .iter()
+        .filter_map(|peer| {
+            let evidence = match observed.get(&peer.public_key)? {
+                BuiltinWireguardLatestHandshake::Never => WireGuardHandshakeEvidence::Never,
+                BuiltinWireguardLatestHandshake::AtUnixSeconds { unix_seconds } => {
+                    WireGuardHandshakeEvidence::At {
+                        unix_seconds: *unix_seconds,
+                    }
+                }
+            };
+            Some((peer.machine_id.clone(), evidence))
+        })
+        .collect()
+}
+
 async fn write_testimony(
     store: &KeeperCorrosion,
     writer: &LocalMachineStatusWriter,
     testimony: MeshConvergenceTestimony,
+    wireguard_handshakes: Option<BTreeMap<MachineRowId, WireGuardHandshakeEvidence>>,
 ) -> Result<(), ReconcileError> {
-    let statement = writer.statement(testimony).map_err(retry_status)?;
+    let statement = writer
+        .statement(testimony, wireguard_handshakes)
+        .map_err(retry_status)?;
     store.execute(statement).await.map_err(retry_store)
 }
 
@@ -665,7 +699,8 @@ impl KeeperRoleRuntimeError {
 mod tests {
     use super::*;
     use ployz_core::corrosion::{
-        DesiredBuiltinWireguardLocal, MachineDocument, MachineStatusDocument,
+        DesiredBuiltinWireguardLocal, DesiredBuiltinWireguardMachinePeer,
+        DesiredMachineContainerRoute, MachineDocument, MachineStatusDocument,
     };
     use ployz_core::ids::{ClusterId, MachineRowId};
     use ployz_core::network::{MachineEndpointSubnet, WireGuardPublicKey};
@@ -711,6 +746,97 @@ mod tests {
             subnet_v6: identity.subnet(),
             bind_address: identity.bind_address(),
         }
+    }
+
+    #[test]
+    fn handshake_testimony_names_only_current_machine_peers() {
+        let machine_id = MachineRowId::try_new(MACHINE).expect("machine");
+        let never_machine_id =
+            MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAX").expect("never machine");
+        let machine_key =
+            WireGuardPublicKey::try_new("AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=")
+                .expect("machine key");
+        let never_machine_key =
+            WireGuardPublicKey::try_new("AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=")
+                .expect("never machine key");
+        let roaming_key =
+            WireGuardPublicKey::try_new("AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=")
+                .expect("roaming key");
+        let cluster_id = ClusterId::try_new(CLUSTER).expect("cluster");
+        let identity =
+            ployz_core::corrosion::derive_builtin_wireguard_member(&cluster_id, &machine_key);
+        let never_identity =
+            ployz_core::corrosion::derive_builtin_wireguard_member(&cluster_id, &never_machine_key);
+        let machine_peers = vec![
+            DesiredBuiltinWireguardMachinePeer {
+                machine_id: machine_id.clone(),
+                public_key: machine_key.clone(),
+                subnet_v6: identity.subnet(),
+                endpoint: None,
+                container_route: DesiredMachineContainerRoute::Claimed {
+                    subnet: MachineEndpointSubnet::try_new("10.210.2.0/24").expect("subnet"),
+                },
+            },
+            DesiredBuiltinWireguardMachinePeer {
+                machine_id: never_machine_id.clone(),
+                public_key: never_machine_key.clone(),
+                subnet_v6: never_identity.subnet(),
+                endpoint: None,
+                container_route: DesiredMachineContainerRoute::Claimed {
+                    subnet: MachineEndpointSubnet::try_new("10.210.3.0/24").expect("subnet"),
+                },
+            },
+        ];
+        let observed = std::collections::BTreeMap::from([
+            (
+                machine_key,
+                ployz_host_runner::builtin_wireguard::BuiltinWireguardLatestHandshake::AtUnixSeconds {
+                    unix_seconds: 1_754_390_400,
+                },
+            ),
+            (
+                never_machine_key,
+                ployz_host_runner::builtin_wireguard::BuiltinWireguardLatestHandshake::Never,
+            ),
+            (
+                roaming_key,
+                ployz_host_runner::builtin_wireguard::BuiltinWireguardLatestHandshake::AtUnixSeconds {
+                    unix_seconds: 1_754_390_399,
+                },
+            ),
+        ]);
+
+        assert_eq!(
+            map_machine_handshakes(&machine_peers, &observed),
+            std::collections::BTreeMap::from([
+                (
+                    machine_id,
+                    ployz_core::corrosion::WireGuardHandshakeEvidence::At {
+                        unix_seconds: 1_754_390_400,
+                    },
+                ),
+                (
+                    never_machine_id,
+                    ployz_core::corrosion::WireGuardHandshakeEvidence::Never,
+                ),
+            ])
+        );
+    }
+
+    #[test]
+    fn successful_single_machine_roster_publishes_an_empty_handshake_map() {
+        let roaming_key =
+            WireGuardPublicKey::try_new("AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=")
+                .expect("roaming key");
+        let observed = std::collections::BTreeMap::from([(
+            roaming_key,
+            ployz_host_runner::builtin_wireguard::BuiltinWireguardLatestHandshake::AtUnixSeconds {
+                unix_seconds: 1_754_390_399,
+            },
+        )]);
+
+        let handshakes = Some(map_machine_handshakes(&[], &observed));
+        assert_eq!(handshakes, Some(std::collections::BTreeMap::new()));
     }
 
     #[test]
@@ -850,6 +976,7 @@ mod tests {
                     },
                 },
             }),
+            wireguard_handshakes: None,
         };
 
         assert_eq!(

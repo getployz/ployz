@@ -13,11 +13,16 @@ use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use tokio::io::AsyncReadExt as _;
 
 const PEER_NAME: &str = "dind laptop";
 const CLUSTER_NAME: &str = "dind-laptop-dial";
 const MACHINE_NAME: &str = "machine-one";
+const STATUS_READY_TIMEOUT: Duration = Duration::from_secs(45);
+const STATUS_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(10);
+const STATUS_RETRY_DELAY: Duration = Duration::from_millis(250);
+const COMMAND_OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unprivileged_cli_reuses_one_peer_to_list_machines_over_userspace_wireguard() {
@@ -148,6 +153,7 @@ async fn exercise_laptop_dial(docker: &Docker, cluster: &DindCluster) -> Result<
             format!("machine ls attempt {attempt} omitted {MACHINE_NAME}: {stdout}"),
         )?;
     }
+    wait_for_ready_status(&cli, temporary_home.path(), &target).await?;
     let key_after = read_only_file(&single_file(&config_home.join("mesh/init-peers"))?)?;
     require(
         key_before == key_after,
@@ -236,6 +242,160 @@ fn run_machine_list(cli: &Path, home: &Path, target: &SshTarget) -> Result<Outpu
         .stdin(Stdio::null())
         .output()
         .map_err(|error| format!("could not run shipped CLI {}: {error}", cli.display()))
+}
+
+async fn wait_for_ready_status(cli: &Path, home: &Path, target: &SshTarget) -> Result<(), String> {
+    let deadline = Instant::now() + STATUS_READY_TIMEOUT;
+    let mut last = String::from("status was not attempted");
+    while Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let attempt_timeout = remaining.min(STATUS_ATTEMPT_TIMEOUT);
+        let mut command = tokio::process::Command::new(cli);
+        command
+            .args(["status", "--target", target.as_str()])
+            .env("HOME", home);
+        let attempt = run_bounded_command(command, attempt_timeout)
+            .await
+            .map_err(|error| format!("could not run shipped CLI {}: {error}", cli.display()))?;
+        let output = attempt.output;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if !attempt.timed_out && output.status.success() && status_has_ready_sync(&stdout) {
+            return Ok(());
+        }
+        last = format!(
+            "{}exit {:?} stdout={:?} stderr={:?}",
+            if attempt.timed_out {
+                format!("timed out after {attempt_timeout:?}; ")
+            } else {
+                String::new()
+            },
+            output.status.code(),
+            stdout.trim(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if !remaining.is_zero() {
+            tokio::time::sleep(remaining.min(STATUS_RETRY_DELAY)).await;
+        }
+    }
+    Err(format!(
+        "shipped status did not report a ready machine table with a settled sync state in 45s: {last}"
+    ))
+}
+
+struct BoundedCommandOutput {
+    output: Output,
+    timed_out: bool,
+}
+
+async fn run_bounded_command(
+    mut command: tokio::process::Command,
+    timeout: Duration,
+) -> Result<BoundedCommandOutput, String> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("could not spawn bounded command: {error}"))?;
+    let Some(mut stdout) = child.stdout.take() else {
+        let _ = child.kill().await;
+        return Err("bounded command did not expose stdout".to_owned());
+    };
+    let Some(mut stderr) = child.stderr.take() else {
+        let _ = child.kill().await;
+        return Err("bounded command did not expose stderr".to_owned());
+    };
+    let mut stdout_reader = tokio::spawn(async move {
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).await.map(|_| bytes)
+    });
+    let mut stderr_reader = tokio::spawn(async move {
+        let mut bytes = Vec::new();
+        stderr.read_to_end(&mut bytes).await.map(|_| bytes)
+    });
+
+    let (status, timed_out) = match tokio::time::timeout(timeout, child.wait()).await {
+        Ok(Ok(status)) => (status, false),
+        Ok(Err(error)) => {
+            let _ = child.kill().await;
+            stdout_reader.abort();
+            stderr_reader.abort();
+            return Err(format!("could not wait for bounded command: {error}"));
+        }
+        Err(_) => {
+            let kill_error = child
+                .start_kill()
+                .err()
+                .filter(|error| error.kind() != std::io::ErrorKind::InvalidInput);
+            let status = match child.wait().await {
+                Ok(status) => status,
+                Err(error) => {
+                    stdout_reader.abort();
+                    stderr_reader.abort();
+                    return Err(format!("could not reap timed-out command: {error}"));
+                }
+            };
+            if let Some(error) = kill_error {
+                stdout_reader.abort();
+                stderr_reader.abort();
+                return Err(format!("could not terminate timed-out command: {error}"));
+            }
+            (status, true)
+        }
+    };
+    let (stdout, stderr) = tokio::join!(
+        finish_output_reader(&mut stdout_reader, "stdout"),
+        finish_output_reader(&mut stderr_reader, "stderr")
+    );
+    Ok(BoundedCommandOutput {
+        output: Output {
+            status,
+            stdout: stdout?,
+            stderr: stderr?,
+        },
+        timed_out,
+    })
+}
+
+async fn finish_output_reader(
+    reader: &mut tokio::task::JoinHandle<std::io::Result<Vec<u8>>>,
+    stream: &str,
+) -> Result<Vec<u8>, String> {
+    match tokio::time::timeout(COMMAND_OUTPUT_DRAIN_TIMEOUT, &mut *reader).await {
+        Ok(Ok(Ok(bytes))) => Ok(bytes),
+        Ok(Ok(Err(error))) => Err(format!("could not read bounded {stream}: {error}")),
+        Ok(Err(error)) => Err(format!("bounded {stream} reader failed: {error}")),
+        Err(_) => {
+            reader.abort();
+            Err(format!(
+                "bounded {stream} did not close within {COMMAND_OUTPUT_DRAIN_TIMEOUT:?}"
+            ))
+        }
+    }
+}
+
+fn status_has_ready_sync(output: &str) -> bool {
+    let lines = output.lines().collect::<Vec<_>>();
+    lines
+        .iter()
+        .any(|line| line.starts_with(&format!("cluster\t{CLUSTER_NAME}\t")))
+        && lines.iter().any(|line| {
+            line.starts_with("sync\tcaught up\t") || line.starts_with("sync\tno lag sample\t")
+        })
+        && lines.contains(&"barrier\tready")
+        && lines.contains(&"NAME\tHANDSHAKE\tADDR")
+        && lines.iter().any(|line| {
+            matches!(
+                line.split('\t').collect::<Vec<_>>().as_slice(),
+                [name, "self", address] if *name == MACHINE_NAME && !address.is_empty()
+            )
+        })
 }
 
 fn assert_private_operator_state(config_home: &Path, target: &SshTarget) -> Result<(), String> {
@@ -402,5 +562,56 @@ mod tests {
             "SSH fixture is invalid: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    #[test]
+    fn status_output_reports_a_ready_machine_table_with_settled_sync() {
+        let output = "cluster\tdind-laptop-dial\t01ARZ3NDEKTSV4RRFFQ69G5FAV\t1 machine\n\
+sync\tcaught up\tlag p99 0\t(as seen from machine-one)\n\
+barrier\tready\n\
+\n\
+NAME\tHANDSHAKE\tADDR\n\
+machine-one\tself\tfd12:3456:789a::1\n";
+
+        assert!(status_has_ready_sync(output));
+        assert!(status_has_ready_sync(
+            &output.replace("sync\tcaught up", "sync\tno lag sample")
+        ));
+        assert!(!status_has_ready_sync(
+            &output.replace("sync\tcaught up\tlag p99 0", "sync\tsyncing\tgaps 1")
+        ));
+        assert!(!status_has_ready_sync(
+            &output.replace("NAME\tHANDSHAKE\tADDR", "NAME\tADDR")
+        ));
+    }
+
+    #[tokio::test]
+    async fn bounded_command_timeout_kills_reaps_and_preserves_output() {
+        let directory = tempfile::tempdir().expect("temporary PID directory");
+        let pid_path = directory.path().join("hung-child.pid");
+        let mut command = tokio::process::Command::new("sh");
+        command
+            .arg("-c")
+            .arg(
+                "printf child-stdout; printf child-stderr >&2; printf %s $$ > \"$PLOYZ_TEST_PID\"; while :; do :; done",
+            )
+            .env("PLOYZ_TEST_PID", &pid_path);
+
+        let outcome = run_bounded_command(command, Duration::from_millis(100))
+            .await
+            .expect("bounded child outcome");
+
+        assert!(outcome.timed_out);
+        assert_eq!(outcome.output.stdout, b"child-stdout");
+        assert_eq!(outcome.output.stderr, b"child-stderr");
+        let pid = fs::read_to_string(&pid_path).expect("hung child PID");
+        let still_exists = Command::new("kill")
+            .args(["-0", pid.trim()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("probe child PID")
+            .success();
+        assert!(!still_exists, "timed-out child {pid:?} was not reaped");
     }
 }
