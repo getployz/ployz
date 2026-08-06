@@ -3,8 +3,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::corrosion::{
-    AcceptedRow, ClusterDocument, NamespaceDocument, PeerDocument, RouteBindingDocument,
-    ServiceDocument, StoredRow, read_roster_rows, read_rows,
+    AcceptedRow, ClusterDocument, PeerDocument, RouteBindingDocument, ServiceDocument, StoredRow,
+    read_roster_rows, read_rows,
 };
 use crate::ids::{NamespaceRowId, PeerId, RouteBindingRowId, ServiceRowId};
 use crate::operation::RouteHostname;
@@ -84,12 +84,6 @@ removal_contract! {
     request: PeerRemoveRequest, reply: PeerRemoveReply, refusal: PeerRemoveRefusal,
     selection: PeerRemoveSelection, id: PeerId, id_field: peer_id,
     handle_field: name, handle: String, candidates: peer_ids
-}
-removal_contract! {
-    request: NamespaceRemoveRowRequest, reply: NamespaceRemoveRowReply,
-    refusal: NamespaceRemoveRowRefusal, selection: NamespaceRemoveRowSelection,
-    id: NamespaceRowId, id_field: namespace_id, handle_field: name, handle: String,
-    candidates: namespace_ids
 }
 removal_contract! {
     request: RouteRemoveRequest, reply: RouteRemoveReply, refusal: RouteRemoveRefusal,
@@ -293,70 +287,6 @@ pub fn select_peer_removal(
     }
 }
 
-macro_rules! ordinary_selector {
-    (
-        function: $function:ident, document: $document:ty, request: $request:ty,
-        selection: $selection:ident, refusal: $refusal:ident, id: $id:ty,
-        id_field: $id_field:ident, handle_field: $handle_field:ident,
-        candidates: $candidates:ident, name: $name:expr
-    ) => {
-        pub fn $function(
-            cluster_id: &crate::ids::ClusterId,
-            rows: Vec<StoredRow>,
-            request: &$request,
-        ) -> Result<$selection, $refusal> {
-            let accepted = read_rows::<$document>(cluster_id, rows.clone()).accepted;
-            let requested_name = request.$handle_field.to_string();
-            match select_named(
-                &rows,
-                accepted,
-                &requested_name,
-                request.$id_field.as_ref(),
-                |id| <$id>::try_new(id).expect("accepted row ids are canonical"),
-                <$id>::as_str,
-                $name,
-            ) {
-                Selection::Delete {
-                    id,
-                    stored_document,
-                } => Ok($selection::Delete {
-                    $id_field: id,
-                    stored_document,
-                }),
-                Selection::AlreadyAbsent { id } => Ok($selection::AlreadyAbsent { $id_field: id }),
-                Selection::NotFound => Err($refusal::NotFound {
-                    $handle_field: request.$handle_field.clone(),
-                }),
-                Selection::Ambiguous($candidates) => Err($refusal::Ambiguous {
-                    $handle_field: request.$handle_field.clone(),
-                    $candidates,
-                }),
-                Selection::NameMismatch { id, found } => Err($refusal::NameMismatch {
-                    $id_field: id,
-                    requested: request.$handle_field.clone(),
-                    found: found
-                        .try_into()
-                        .expect("accepted document handle remains valid"),
-                }),
-                Selection::IdMismatch { requested, found } => Err($refusal::IdMismatch {
-                    requested,
-                    found,
-                    $handle_field: request.$handle_field.clone(),
-                }),
-                Selection::StoredRowUnselectable { id } => {
-                    Err($refusal::StoredRowUnselectable { $id_field: id })
-                }
-            }
-        }
-    };
-}
-
-ordinary_selector! {
-    function: select_namespace_removal, document: NamespaceDocument,
-    request: NamespaceRemoveRowRequest, selection: NamespaceRemoveRowSelection,
-    refusal: NamespaceRemoveRowRefusal, id: NamespaceRowId, id_field: namespace_id,
-    handle_field: name, candidates: namespace_ids, name: |document: &NamespaceDocument| document.name.clone()
-}
 pub fn select_service_removal(
     cluster_id: &crate::ids::ClusterId,
     rows: Vec<StoredRow>,
@@ -376,7 +306,8 @@ pub fn select_service_removal(
             let mut candidates = accepted
                 .iter()
                 .filter(|row| {
-                    row.value.namespace_id == request.namespace_id && row.value.name == request.name
+                    row.value.namespace_id == request.namespace_id
+                        && row.value.name.as_str() == request.name
                 })
                 .map(|row| {
                     ServiceRowId::try_new(&row.source.key)
@@ -403,14 +334,14 @@ pub fn select_service_removal(
         };
         let selected = accepted.swap_remove(selected);
         if selected.value.namespace_id != request.namespace_id
-            || selected.value.name != request.name
+            || selected.value.name.as_str() != request.name
         {
             return Err(ServiceRemoveRowRefusal::IdentityMismatch {
                 service_id: requested_id.clone(),
                 requested_namespace_id: request.namespace_id.clone(),
                 requested_name: request.name.clone(),
                 found_namespace_id: selected.value.namespace_id,
-                found_name: selected.value.name,
+                found_name: selected.value.name.as_str().to_owned(),
             });
         }
         return Ok(ServiceRemoveRowSelection::Delete {
@@ -422,7 +353,8 @@ pub fn select_service_removal(
     let mut candidates = accepted
         .into_iter()
         .filter(|row| {
-            row.value.namespace_id == request.namespace_id && row.value.name == request.name
+            row.value.namespace_id == request.namespace_id
+                && row.value.name.as_str() == request.name
         })
         .map(|row| {
             (

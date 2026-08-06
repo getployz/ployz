@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use ployz_core::install::InstallSha256Digest;
+use ployz_core::install::{InstallArtifactVersion, InstallSha256Digest};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
@@ -19,7 +19,10 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum UpgradeRequest {
-    Arm { sha256: InstallSha256Digest },
+    Arm {
+        version: InstallArtifactVersion,
+        sha256: InstallSha256Digest,
+    },
     Commit,
 }
 
@@ -156,7 +159,9 @@ mod tests {
         let socket = directory.path().join("keeper.sock");
         let listener = tokio::net::UnixListener::bind(&socket).expect("socket listener");
         let digest = InstallSha256Digest::try_new("a".repeat(64)).expect("sha256");
+        let version = InstallArtifactVersion::try_new("1.2.3").expect("version");
         let expected = UpgradeRequest::Arm {
+            version: version.clone(),
             sha256: digest.clone(),
         };
         let server = tokio::spawn(async move {
@@ -168,9 +173,15 @@ mod tests {
         });
 
         assert_eq!(
-            request(&socket, &UpgradeRequest::Arm { sha256: digest })
-                .await
-                .expect("round trip"),
+            request(
+                &socket,
+                &UpgradeRequest::Arm {
+                    version,
+                    sha256: digest,
+                },
+            )
+            .await
+            .expect("round trip"),
             UpgradeResponse::Armed
         );
         server.await.expect("server task");

@@ -2,6 +2,7 @@
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -10,7 +11,7 @@ use std::num::NonZeroU16;
 use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, UtcOffset};
 
-use crate::deploy::ImageReference;
+use crate::deploy::{EnvValue, ImageReference};
 use crate::ids::{ClusterId, MachineRowId, NamespaceRowId, OperationRowId, ServiceRowId};
 use crate::ingress::RouteBindingOrigin;
 use crate::machine::{MachineLifecycle, MachineName};
@@ -18,6 +19,7 @@ use crate::network::{MachineEndpointSubnet, MachineEndpointSupernet, WireGuardPu
 use crate::operation::{RouteHostname, RoutePort};
 
 use super::mesh::{BuiltinWireguardKeyMismatch, BuiltinWireguardMemberAddress};
+use super::operation::{CorrosionOperation, validate_operation_document};
 use super::principal::OperationInitiator;
 
 /// A table in the additive Corrosion schema.
@@ -264,6 +266,114 @@ pub enum Sha256HexError {
     InvalidCharacter { value: String },
 }
 
+/// Computes the row-safe identity of an environment value's JSON representation.
+pub fn fingerprint_env_value(value: &EnvValue) -> Result<Sha256Hex, serde_json::Error> {
+    let encoded = serde_json::to_vec(value)?;
+    Ok(Sha256Hex(format!("{:x}", Sha256::digest(encoded))))
+}
+
+macro_rules! corrosion_dns_label {
+    (
+        $(#[$meta:meta])*
+        pub struct $name:ident;
+        error: $error:ident;
+        brand: $brand:literal;
+    ) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+        #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+        #[cfg_attr(feature = "ts", ts(type = $brand))]
+        #[serde(try_from = "String", into = "String")]
+        pub struct $name(String);
+
+        impl $name {
+            pub const MAX_BYTES: usize = 63;
+
+            pub fn try_new(value: impl Into<String>) -> Result<Self, $error> {
+                let value = value.into();
+                if value.is_empty() {
+                    return Err($error::Empty);
+                }
+                if value.len() > Self::MAX_BYTES {
+                    return Err($error::TooLong {
+                        value,
+                        maximum: Self::MAX_BYTES,
+                    });
+                }
+                if value.starts_with('-') || value.ends_with('-') {
+                    return Err($error::EdgeHyphen { value });
+                }
+                if !value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+                {
+                    return Err($error::InvalidCharacter { value });
+                }
+                Ok(Self(value))
+            }
+
+            #[must_use]
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+        }
+
+        impl TryFrom<String> for $name {
+            type Error = $error;
+
+            fn try_from(value: String) -> Result<Self, Self::Error> {
+                Self::try_new(value)
+            }
+        }
+
+        impl From<$name> for String {
+            fn from(value: $name) -> Self {
+                value.0
+            }
+        }
+
+        impl std::ops::Deref for $name {
+            type Target = str;
+
+            fn deref(&self) -> &Self::Target {
+                self.as_str()
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str(self.as_str())
+            }
+        }
+
+        #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+        pub enum $error {
+            #[error("DNS label is empty")]
+            Empty,
+            #[error("DNS label exceeds {maximum} bytes: {value}")]
+            TooLong { value: String, maximum: usize },
+            #[error("DNS label cannot begin or end with '-': {value}")]
+            EdgeHyphen { value: String },
+            #[error("DNS label must contain only lowercase ASCII letters, digits, or '-': {value}")]
+            InvalidCharacter { value: String },
+        }
+    };
+}
+
+corrosion_dns_label! {
+    /// A namespace handle valid as one label beneath `.internal`.
+    pub struct CorrosionNamespaceName;
+    error: CorrosionNamespaceNameError;
+    brand: "Brand<string, \"CorrosionNamespaceName\">";
+}
+
+corrosion_dns_label! {
+    /// A service handle valid as one label beneath its namespace.
+    pub struct CorrosionServiceName;
+    error: CorrosionServiceNameError;
+    brand: "Brand<string, \"CorrosionServiceName\">";
+}
+
 /// Cluster-wide storage default selected during init.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -499,99 +609,12 @@ pub enum MachineLoadBand {
     Hot,
 }
 
-/// Operation kind and its typed target.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum CorrosionOperation {
-    Build {
-        service_id: ServiceRowId,
-    },
-    Deploy {
-        namespace_id: NamespaceRowId,
-        service_id: ServiceRowId,
-    },
-    MachineAdd {
-        target_machine_id: MachineRowId,
-    },
-    MachineRemove {
-        target_machine_id: MachineRowId,
-    },
-    Recovery {
-        target_machine_id: MachineRowId,
-    },
-}
-
 /// The operator principal and instant responsible for one authority-row write.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct OperatorWriteProvenance {
     pub written_by: OperationInitiator,
     pub written_at: CorrosionTimestamp,
-}
-
-/// A terminal operation failure class with useful public evidence.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum CorrosionOperationFailure {
-    Precondition {
-        message: String,
-    },
-    MachineUnavailable {
-        machine_id: MachineRowId,
-        message: String,
-    },
-    Timeout {
-        stage: String,
-        message: String,
-    },
-    Execution {
-        class: CorrosionExecutionFailureClass,
-        message: String,
-    },
-    Interrupted {
-        message: String,
-    },
-    Superseded {
-        winner: OperationRowId,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(rename_all = "snake_case")]
-pub enum CorrosionExecutionFailureClass {
-    BuildFailed,
-    ImagePullFailed,
-    ContainerStartFailed,
-    HealthGateFailed,
-    StorageFailed,
-    NetworkFailed,
-    Internal,
-}
-
-/// Created, running, or final operation summary state.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(tag = "state", rename_all = "snake_case")]
-pub enum CorrosionOperationState {
-    Created {
-        created_at: CorrosionTimestamp,
-    },
-    Running {
-        started_at: CorrosionTimestamp,
-        heartbeat_at: CorrosionTimestamp,
-    },
-    Succeeded {
-        started_at: CorrosionTimestamp,
-        completed_at: CorrosionTimestamp,
-    },
-    Failed {
-        started_at: CorrosionTimestamp,
-        completed_at: CorrosionTimestamp,
-        failure: CorrosionOperationFailure,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -658,7 +681,7 @@ pub struct NamespaceDocument {
     #[serde(flatten)]
     #[cfg_attr(feature = "ts", ts(flatten))]
     pub provenance: OperatorWriteProvenance,
-    pub name: String,
+    pub name: CorrosionNamespaceName,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -670,7 +693,7 @@ pub struct ServiceDocument {
     #[cfg_attr(feature = "ts", ts(flatten))]
     pub provenance: OperatorWriteProvenance,
     pub namespace_id: NamespaceRowId,
-    pub name: String,
+    pub name: CorrosionServiceName,
     pub image: ImageReference,
     pub env_fingerprints: BTreeMap<String, Sha256Hex>,
     #[serde(flatten)]
@@ -862,7 +885,7 @@ pub enum MeshConvergenceTestimony {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct OperationDocument {
     pub v: CorrosionDocumentVersion,
@@ -870,11 +893,58 @@ pub struct OperationDocument {
     pub machine_id: MachineRowId,
     #[serde(flatten)]
     #[cfg_attr(feature = "ts", ts(flatten))]
-    pub operation: CorrosionOperation,
+    operation: CorrosionOperation,
     pub initiator: OperationInitiator,
+}
+
+impl OperationDocument {
+    pub(super) fn from_parts(
+        v: CorrosionDocumentVersion,
+        cluster_id: ClusterId,
+        machine_id: MachineRowId,
+        initiator: OperationInitiator,
+        operation: CorrosionOperation,
+    ) -> Self {
+        Self {
+            v,
+            cluster_id,
+            machine_id,
+            operation,
+            initiator,
+        }
+    }
+
+    #[must_use]
+    pub fn operation(&self) -> &CorrosionOperation {
+        &self.operation
+    }
+}
+
+#[derive(Deserialize)]
+struct OperationDocumentRepresentation {
+    v: CorrosionDocumentVersion,
+    cluster_id: ClusterId,
+    machine_id: MachineRowId,
     #[serde(flatten)]
-    #[cfg_attr(feature = "ts", ts(flatten))]
-    pub status: CorrosionOperationState,
+    operation: CorrosionOperation,
+    initiator: OperationInitiator,
+}
+
+impl<'de> Deserialize<'de> for OperationDocument {
+    fn deserialize<Deserializer>(deserializer: Deserializer) -> Result<Self, Deserializer::Error>
+    where
+        Deserializer: serde::Deserializer<'de>,
+    {
+        let representation = OperationDocumentRepresentation::deserialize(deserializer)?;
+        validate_operation_document(&representation.operation).map_err(serde::de::Error::custom)?;
+        Ok(Self::from_parts(
+            representation.v,
+            representation.cluster_id,
+            representation.machine_id,
+            representation.initiator,
+            representation.operation,
+        ))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -988,7 +1058,7 @@ impl NamedCorrosionDocument for PeerDocument {
 impl NamedCorrosionDocument for NamespaceDocument {
     fn name_claim(&self) -> NameClaim {
         NameClaim::Namespace {
-            name: self.name.clone(),
+            name: self.name.as_str().to_owned(),
         }
     }
 }
@@ -997,7 +1067,7 @@ impl NamedCorrosionDocument for ServiceDocument {
     fn name_claim(&self) -> NameClaim {
         NameClaim::Service {
             namespace_id: self.namespace_id.clone(),
-            name: self.name.clone(),
+            name: self.name.as_str().to_owned(),
         }
     }
 }

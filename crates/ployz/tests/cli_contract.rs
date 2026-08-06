@@ -2,7 +2,7 @@ use std::fs;
 use std::process::{Command, Output};
 
 #[test]
-fn bare_cli_and_help_advertise_init_and_local_commands() {
+fn bare_cli_and_help_advertise_v2_operator_commands() {
     for args in [Vec::new(), vec!["--help"]] {
         let output = run(&args, None);
 
@@ -12,9 +12,13 @@ fn bare_cli_and_help_advertise_init_and_local_commands() {
         assert!(stdout.contains("  init"));
         assert!(stdout.contains("  machine"));
         assert!(stdout.contains("  token"));
+        assert!(stdout.contains("  namespace"));
+        assert!(stdout.contains("  deploy"));
+        assert!(stdout.contains("  ops"));
+        assert!(stdout.contains("  logs"));
         assert!(stdout.contains("  status"));
         assert!(stdout.contains("  doctor"));
-        for removed in ["deploy", "ops", "core", "host"] {
+        for removed in ["core", "host"] {
             assert!(!stdout.contains(&format!("  {removed}")));
         }
     }
@@ -46,11 +50,11 @@ fn version_is_available_without_creating_configuration() {
 }
 
 #[test]
-fn transport_command_is_a_usage_error_without_a_client() {
+fn transport_command_requires_its_typed_arguments() {
     let output = run(&["deploy"], None);
 
     assert!(!output.status.success());
-    assert!(stderr(&output).contains("unrecognized subcommand 'deploy'"));
+    assert!(stderr(&output).contains("required arguments were not provided"));
 }
 
 #[test]

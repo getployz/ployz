@@ -3,12 +3,11 @@
 use hyper::{Response, StatusCode};
 use ployz_core::corrosion::CorrosionTable;
 use ployz_core::{
-    NamedRemovalOutcome, NamespaceRemoveRowRefusal, NamespaceRemoveRowReply,
-    NamespaceRemoveRowRequest, NamespaceRemoveRowSelection, PeerRemoveRefusal, PeerRemoveReply,
-    PeerRemoveRequest, PeerRemoveSelection, RouteRemoveRefusal, RouteRemoveReply,
-    RouteRemoveRequest, RouteRemoveSelection, ServiceRemoveRowRefusal, ServiceRemoveRowReply,
-    ServiceRemoveRowRequest, ServiceRemoveRowSelection, V2Route, select_namespace_removal,
-    select_peer_removal, select_route_removal, select_service_removal,
+    NamedRemovalOutcome, PeerRemoveRefusal, PeerRemoveReply, PeerRemoveRequest,
+    PeerRemoveSelection, RouteRemoveRefusal, RouteRemoveReply, RouteRemoveRequest,
+    RouteRemoveSelection, ServiceRemoveRowRefusal, ServiceRemoveRowReply, ServiceRemoveRowRequest,
+    ServiceRemoveRowSelection, V2Route, select_peer_removal, select_route_removal,
+    select_service_removal,
 };
 
 use super::mutations::{decode_request, typed_response};
@@ -31,14 +30,6 @@ pub(super) async fn handle_removal(
                 Err(response) => return response,
             };
             remove_peer(service, request).await
-        }
-        V2Route::NamespaceRemove => {
-            let request =
-                match decode_request::<NamespaceRemoveRowRequest>(request.into_body()).await {
-                    Ok(request) => request,
-                    Err(response) => return response,
-                };
-            remove_namespace(service, request).await
         }
         V2Route::ServiceRemove => {
             let request = match decode_request::<ServiceRemoveRowRequest>(request.into_body()).await
@@ -67,6 +58,13 @@ pub(super) async fn handle_removal(
         | V2Route::Status
         | V2Route::Doctor
         | V2Route::Lens(_)
+        | V2Route::NamespaceCreate
+        | V2Route::NamespaceRemove
+        | V2Route::FirstDeploy
+        | V2Route::Operation(_)
+        | V2Route::OperationWatch(_)
+        | V2Route::ServiceLogsTail(_)
+        | V2Route::ServiceLogsFollow(_)
         | V2Route::LensWatch(_) => refusal_response(ployz_core::ApiRefusal::UnsupportedRoute),
     }
 }
@@ -114,50 +112,6 @@ async fn remove_peer(service: &ApiService, request: PeerRemoveRequest) -> Respon
             Err(error) => store_failure("delete peer", error),
         },
         Err(refusal) => typed_response(peer_refusal_status(&refusal), &refusal),
-    }
-}
-
-async fn remove_namespace(
-    service: &ApiService,
-    request: NamespaceRemoveRowRequest,
-) -> Response<HttpBody> {
-    let rows = match read_named_removal_rows(&service.corrosion, CorrosionTable::Namespaces).await {
-        Ok(rows) => rows,
-        Err(error) => return store_failure("read namespaces for removal", error),
-    };
-    match select_namespace_removal(&service.cluster_id, rows, &request) {
-        Ok(NamespaceRemoveRowSelection::AlreadyAbsent { namespace_id }) => typed_response(
-            StatusCode::OK,
-            &NamespaceRemoveRowReply {
-                namespace_id,
-                outcome: NamedRemovalOutcome::AlreadyAbsent,
-            },
-        ),
-        Ok(NamespaceRemoveRowSelection::Delete {
-            namespace_id,
-            stored_document,
-        }) => match delete_named_if_matches(
-            &service.corrosion,
-            CorrosionTable::Namespaces,
-            namespace_id.as_str(),
-            stored_document,
-        )
-        .await
-        {
-            Ok(ConditionalNamedDelete::Deleted) => typed_response(
-                StatusCode::OK,
-                &NamespaceRemoveRowReply {
-                    namespace_id,
-                    outcome: NamedRemovalOutcome::Removed,
-                },
-            ),
-            Ok(ConditionalNamedDelete::ConcurrentMutation) => typed_response(
-                StatusCode::CONFLICT,
-                &NamespaceRemoveRowRefusal::ConcurrentMutation { namespace_id },
-            ),
-            Err(error) => store_failure("delete namespace", error),
-        },
-        Err(refusal) => typed_response(namespace_refusal_status(&refusal), &refusal),
     }
 }
 
@@ -255,17 +209,6 @@ fn peer_refusal_status(refusal: &PeerRemoveRefusal) -> StatusCode {
         | PeerRemoveRefusal::IdMismatch { .. }
         | PeerRemoveRefusal::StoredRowUnselectable { .. }
         | PeerRemoveRefusal::ConcurrentMutation { .. } => StatusCode::CONFLICT,
-    }
-}
-
-fn namespace_refusal_status(refusal: &NamespaceRemoveRowRefusal) -> StatusCode {
-    match refusal {
-        NamespaceRemoveRowRefusal::NotFound { .. } => StatusCode::NOT_FOUND,
-        NamespaceRemoveRowRefusal::Ambiguous { .. }
-        | NamespaceRemoveRowRefusal::NameMismatch { .. }
-        | NamespaceRemoveRowRefusal::IdMismatch { .. }
-        | NamespaceRemoveRowRefusal::StoredRowUnselectable { .. }
-        | NamespaceRemoveRowRefusal::ConcurrentMutation { .. } => StatusCode::CONFLICT,
     }
 }
 

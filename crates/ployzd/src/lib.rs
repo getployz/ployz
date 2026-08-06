@@ -37,6 +37,7 @@ pub mod roles {
         pub mod route_table;
     }
     pub mod api;
+    pub(crate) mod handshake_control;
     pub mod keeper;
     pub(crate) mod upgrade;
 }

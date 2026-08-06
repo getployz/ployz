@@ -1,0 +1,883 @@
+use std::collections::BTreeMap;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Output, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use bollard::Docker;
+use ployz::commands::SshTarget;
+use ployz::init::ssh::{SshPeerKey, default_config_home};
+use ployz::mesh::context::{OperatorContextStore, SSH_CONTEXT_HANDOFF_PREFIX, SshContextHandoff};
+use ployz_core::corrosion::{
+    MachineDocument, MachineTransport, ServiceDocument, Sha256Hex, SqliteValue,
+};
+use ployz_core::ids::{MachineRowId, OperationRowId};
+use ployz_core::join::JoinBlob;
+use ployz_core::network::DEFAULT_WIREGUARD_LISTEN_PORT;
+use ployz_core::{LensCollection, LensSnapshot, lens_route};
+use ployz_e2e::dind::{
+    DindMachine, RELEASE_MANIFEST, artifact_dir, corrosion_access, corrosion_query,
+    exec_in_container, exec_ok, install_local_release_channel, require,
+};
+
+const CLUSTER_NAME: &str = "dind-operation-deploy";
+const FOUNDER_NAME: &str = "machine-one";
+const WAIT_BUDGET: Duration = Duration::from_secs(60);
+const WAIT_DELAY: Duration = Duration::from_millis(250);
+const CLI_BUDGET: Duration = Duration::from_secs(180);
+const REGISTRY_PORT: u16 = 5_000;
+const DNS_QUERY_PROGRAM: &str = r#"
+import ipaddress
+import socket
+import struct
+import sys
+
+resolver, name = sys.argv[1:]
+labels = name.rstrip(".").split(".")
+question = b"".join(bytes([len(label)]) + label.encode("ascii") for label in labels) + b"\0"
+query = struct.pack("!HHHHHH", 0x8150, 0x0100, 1, 0, 0, 0) + question + struct.pack("!HH", 1, 1)
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+sock.settimeout(3)
+sock.sendto(query, (resolver, 53))
+response = sock.recv(4096)
+transaction_id, flags, questions, answers, _, _ = struct.unpack("!HHHHHH", response[:12])
+if transaction_id != 0x8150 or not flags & 0x8000 or flags & 0x000f or questions != 1:
+    raise SystemExit("unsuccessful DNS response")
+offset = 12
+while response[offset] != 0:
+    offset += response[offset] + 1
+offset += 5
+addresses = []
+for _ in range(answers):
+    if response[offset] & 0xc0 == 0xc0:
+        offset += 2
+    else:
+        while response[offset] != 0:
+            offset += response[offset] + 1
+        offset += 1
+    kind, dns_class, _, length = struct.unpack("!HHIH", response[offset:offset + 10])
+    offset += 10
+    data = response[offset:offset + length]
+    offset += length
+    if kind == 1 and dns_class == 1 and length == 4:
+        addresses.append(str(ipaddress.ip_address(data)))
+for address in sorted(set(addresses), key=ipaddress.ip_address):
+    print(address)
+"#;
+
+pub(super) struct OperatorFixture {
+    _temporary_home: tempfile::TempDir,
+    home: PathBuf,
+    cli: PathBuf,
+    founder_target: SshTarget,
+    joiner_target: SshTarget,
+    pub(super) joiner_api_address: String,
+    pub(super) joiner_dns_address: Ipv4Addr,
+}
+
+pub(super) struct PublicDeployRows {
+    service: ServiceDocument,
+    pub(super) container_ip: Ipv4Addr,
+    encoded: String,
+}
+
+pub(super) async fn found_and_join(
+    docker: &Docker,
+    founder: &DindMachine,
+    joiner: &DindMachine,
+) -> Result<OperatorFixture, String> {
+    install_local_release_channel(docker, founder).await?;
+    let temporary_home = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let home = temporary_home.path().to_path_buf();
+    let config_home = default_config_home(&home);
+    let founder_target: SshTarget = format!("root@{}", founder.bridge_ip).parse()?;
+    let joiner_target: SshTarget = format!("root@{}", joiner.bridge_ip).parse()?;
+    let operator = SshPeerKey::generate("dind operation operator".to_owned())
+        .map_err(|error| error.to_string())?;
+    let store = OperatorContextStore::new(&config_home);
+    store
+        .persist_peer_new(&founder_target, &operator)
+        .map_err(|error| error.to_string())?;
+
+    let handoff = run_founding(docker, founder, &operator).await?;
+    store
+        .persist(&founder_target, handoff.clone(), &operator)
+        .map_err(|error| error.to_string())?;
+    let cli = artifact_dir().join("ployz");
+    let token = create_join_token(&cli, &home, &founder_target)?;
+    join_machine(docker, joiner, &token).await?;
+
+    let (corrosion_address, corrosion_token) = corrosion_access(docker, founder).await?;
+    let roster = wait_for_roster(docker, founder, &corrosion_address, &corrosion_token, 2).await?;
+    let joiner_document = roster
+        .values()
+        .find(|document| document.name.as_str() != FOUNDER_NAME)
+        .ok_or_else(|| "joined roster omitted the fresh machine".to_owned())?;
+    store
+        .persist_peer_new(&joiner_target, &operator)
+        .map_err(|error| error.to_string())?;
+    store
+        .persist(
+            &joiner_target,
+            SshContextHandoff {
+                cluster_id: handoff.cluster_id,
+                provider: handoff.provider,
+                machine_transport: joiner_document.transport.clone(),
+            },
+            &operator,
+        )
+        .map_err(|error| error.to_string())?;
+    let (joiner_api_address, joiner_dns_address) = match &joiner_document.transport {
+        MachineTransport::Wireguard {
+            addr_v6, subnet_v4, ..
+        } => (format!("[{addr_v6}]:2020"), subnet_v4.bridge_gateway_ipv4()),
+        MachineTransport::Tailscale { .. } => {
+            return Err("operation-deploy proof requires builtin WireGuard".to_owned());
+        }
+    };
+    wait_for_cli_output(
+        &cli,
+        &home,
+        &["machine", "ls", "--target", joiner_target.as_str()],
+        |output| {
+            output.status.success()
+                && output
+                    .stdout
+                    .windows(FOUNDER_NAME.len())
+                    .any(|window| window == FOUNDER_NAME.as_bytes())
+        },
+        "joined machine API through its persisted operator context",
+    )?;
+
+    Ok(OperatorFixture {
+        _temporary_home: temporary_home,
+        home,
+        cli,
+        founder_target,
+        joiner_target,
+        joiner_api_address,
+        joiner_dns_address,
+    })
+}
+
+pub(super) async fn start_mutable_registry(
+    docker: &Docker,
+    founder: &DindMachine,
+    joiner: &DindMachine,
+) -> Result<String, String> {
+    let IpAddr::V4(registry_ip) = founder.bridge_ip else {
+        return Err("operation-deploy registry requires an IPv4 DinD bridge".to_owned());
+    };
+    let registry = format!("{registry_ip}:{REGISTRY_PORT}");
+    for machine in [founder, joiner] {
+        configure_insecure_registry(docker, machine, &registry).await?;
+    }
+    wait_for_inner_command(
+        docker,
+        founder,
+        &["docker", "image", "inspect", "registry:2.8.3"],
+        "preloaded registry image",
+    )
+    .await?;
+    wait_for_inner_command(
+        docker,
+        founder,
+        &["docker", "image", "inspect", "nginx:1.27-alpine"],
+        "preloaded HTTP image",
+    )
+    .await?;
+    exec_ok(
+        docker,
+        founder,
+        &[
+            "docker",
+            "run",
+            "--detach",
+            "--name",
+            "ployz-operation-registry",
+            "--publish",
+            &format!("{REGISTRY_PORT}:{REGISTRY_PORT}"),
+            "registry:2.8.3",
+        ],
+    )
+    .await?;
+    wait_for_registry(docker, joiner, &registry).await?;
+
+    let image = format!("{registry}/operation-http:latest");
+    exec_ok(
+        docker,
+        founder,
+        &[
+            "docker",
+            "create",
+            "--name",
+            "ployz-operation-http-source",
+            "nginx:1.27-alpine",
+        ],
+    )
+    .await?;
+    exec_ok(
+        docker,
+        founder,
+        &["docker", "commit", "ployz-operation-http-source", &image],
+    )
+    .await?;
+    exec_ok(
+        docker,
+        founder,
+        &["docker", "rm", "ployz-operation-http-source"],
+    )
+    .await?;
+    exec_ok(docker, founder, &["docker", "push", &image]).await?;
+    exec_ok(docker, founder, &["docker", "image", "rm", &image]).await?;
+    Ok(image)
+}
+
+pub(super) fn create_namespace_and_deploy(
+    operator: &OperatorFixture,
+    namespace: &str,
+    service: &str,
+    image: &str,
+    secret_name: &str,
+    secret_value: &str,
+) -> Result<OperationRowId, String> {
+    let created = run_cli_bounded(
+        &operator.cli,
+        &operator.home,
+        &[
+            "namespace",
+            "create",
+            namespace,
+            "--target",
+            operator.founder_target.as_str(),
+        ],
+    )?;
+    require_success(&created, "namespace create")?;
+
+    let environment = format!("{secret_name}={secret_value}");
+    let deployed = run_cli_bounded(
+        &operator.cli,
+        &operator.home,
+        &[
+            "deploy",
+            namespace,
+            service,
+            image,
+            "--env",
+            &environment,
+            "--target",
+            operator.founder_target.as_str(),
+        ],
+    )?;
+    require_success(&deployed, "first deploy")?;
+    let stdout = String::from_utf8_lossy(&deployed.stdout);
+    require(
+        !stdout.contains(secret_value)
+            && !String::from_utf8_lossy(&deployed.stderr).contains(secret_value),
+        "deploy output exposed the environment value",
+    )?;
+    let operation_id = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("accepted operation "))
+        .and_then(|line| line.split_whitespace().next())
+        .ok_or_else(|| format!("deploy output omitted its operation id: {stdout}"))?;
+    OperationRowId::try_new(operation_id).map_err(|error| error.to_string())
+}
+
+pub(super) fn assert_cluster_wide_operation_replay(
+    operator: &OperatorFixture,
+    operation_id: &OperationRowId,
+    secret_value: &str,
+) -> Result<(), String> {
+    for target in [&operator.founder_target, &operator.joiner_target] {
+        wait_for_cli_output(
+            &operator.cli,
+            &operator.home,
+            &["ops", "list", "--target", target.as_str()],
+            |output| {
+                output.status.success()
+                    && String::from_utf8_lossy(&output.stdout).contains(operation_id.as_str())
+                    && String::from_utf8_lossy(&output.stdout).contains("completed")
+            },
+            &format!("terminal operation through {target}"),
+        )?;
+    }
+
+    let mut replays = Vec::new();
+    for _ in 0..2 {
+        let replay = run_cli_bounded(
+            &operator.cli,
+            &operator.home,
+            &[
+                "ops",
+                "watch",
+                operation_id.as_str(),
+                "--target",
+                operator.joiner_target.as_str(),
+            ],
+        )?;
+        require_success(&replay, "operation replay through joined machine")?;
+        let stdout = String::from_utf8(replay.stdout).map_err(|error| error.to_string())?;
+        let sequences = evidence_sequences(&stdout)?;
+        let expected = (1..=u64::try_from(sequences.len()).map_err(|error| error.to_string())?)
+            .collect::<Vec<_>>();
+        require(
+            sequences == expected
+                && stdout.contains("terminal deploy completed")
+                && !stdout.contains(secret_value),
+            format!("operation replay was not complete and duplicate-free: {stdout}"),
+        )?;
+        replays.push(stdout);
+    }
+    require(
+        matches!(replays.as_slice(), [first, second] if first == second),
+        "two full operation replays returned different durable evidence",
+    )
+}
+
+pub(super) async fn wait_for_public_deploy_rows(
+    docker: &Docker,
+    requester: &DindMachine,
+    api_address: &str,
+    service_name: &str,
+    operation_id: &OperationRowId,
+) -> Result<PublicDeployRows, String> {
+    let deadline = Instant::now() + WAIT_BUDGET;
+    let mut last = String::from("public lenses were not queried");
+    while Instant::now() < deadline {
+        let services = public_lens(docker, requester, api_address, LensCollection::Services).await;
+        let containers =
+            public_lens(docker, requester, api_address, LensCollection::Containers).await;
+        let operations =
+            public_lens(docker, requester, api_address, LensCollection::Operations).await;
+        match (services, containers, operations) {
+            (
+                Ok(LensSnapshot::Services { rows: service_rows }),
+                Ok(LensSnapshot::Containers {
+                    rows: container_rows,
+                }),
+                Ok(LensSnapshot::Operations {
+                    rows: operation_rows,
+                }),
+            ) => {
+                let service = service_rows.iter().find(|row| {
+                    row.document.name.as_str() == service_name
+                        && &row.document.operation_id == operation_id
+                });
+                if let Some(service) = service {
+                    let container = container_rows.iter().find(|row| {
+                        row.document.service_id == service.id
+                            && &row.document.deploy == operation_id
+                    });
+                    let operation = operation_rows.iter().find(|row| &row.id == operation_id);
+                    if let (Some(container), Some(_operation)) = (container, operation) {
+                        let service = service.document.clone();
+                        let container_ip = container.document.ip;
+                        let machines =
+                            public_lens(docker, requester, api_address, LensCollection::Machines)
+                                .await?;
+                        let machine_status = public_lens(
+                            docker,
+                            requester,
+                            api_address,
+                            LensCollection::MachineStatus,
+                        )
+                        .await?;
+                        let encoded = serde_json::to_string(&(
+                            &service_rows,
+                            &container_rows,
+                            &operation_rows,
+                            &machines,
+                            &machine_status,
+                        ))
+                        .map_err(|error| error.to_string())?;
+                        return Ok(PublicDeployRows {
+                            service,
+                            container_ip,
+                            encoded,
+                        });
+                    }
+                }
+                last = "joined API lenses had not converged the service and container".to_owned();
+            }
+            (Ok(services), Ok(containers), Ok(operations)) => {
+                last = format!(
+                    "public API returned the wrong lenses: services={services:?} containers={containers:?} operations={operations:?}"
+                )
+            }
+            (Err(error), _, _) => last = error,
+            (_, Err(error), _) => last = error,
+            (_, _, Err(error)) => last = error,
+        }
+        tokio::time::sleep(WAIT_DELAY).await;
+    }
+    Err(format!("public deploy rows did not converge: {last}"))
+}
+
+pub(super) async fn assert_driver_local_evidence_is_secret_free(
+    docker: &Docker,
+    driver: &DindMachine,
+    operation_id: &OperationRowId,
+    secret_value: &str,
+) -> Result<(), String> {
+    let path = format!("/var/lib/ployz/api/evidence/{operation_id}.jsonl");
+    let evidence = exec_ok(docker, driver, &["cat", &path]).await?;
+    require(
+        !evidence.stdout.contains(secret_value) && !evidence.stderr.contains(secret_value),
+        format!("driver-local operation evidence exposed an environment value at {path}"),
+    )
+}
+
+pub(super) fn assert_public_rows_are_digest_pinned_and_secret_free(
+    rows: &PublicDeployRows,
+    requested_image: &str,
+    secret_name: &str,
+    secret_value: &str,
+    expected_fingerprint: &Sha256Hex,
+) -> Result<(), String> {
+    require(
+        rows.service.image.as_str() != requested_image
+            && rows.service.image.as_str().contains("@sha256:"),
+        format!(
+            "service row did not replace mutable image {requested_image} with a digest pin: {}",
+            rows.service.image.as_str()
+        ),
+    )?;
+    require(
+        !rows.encoded.contains(secret_value)
+            && rows.service.env_fingerprints.len() == 1
+            && rows.service.env_fingerprints.get(secret_name) == Some(expected_fingerprint),
+        format!(
+            "public rows retained an environment value or the wrong fingerprint: {}",
+            rows.encoded
+        ),
+    )
+}
+
+pub(super) async fn assert_dns_and_http(
+    docker: &Docker,
+    dns_client: &DindMachine,
+    service_driver: &DindMachine,
+    resolver: Ipv4Addr,
+    service: &str,
+    namespace: &str,
+    container_ip: Ipv4Addr,
+) -> Result<(), String> {
+    let hostname = format!("{service}.{namespace}.internal");
+    let deadline = Instant::now() + WAIT_BUDGET;
+    let mut last = String::from("DNS was not queried");
+    let mut resolved = false;
+    while Instant::now() < deadline {
+        match exec_in_container(
+            docker,
+            &dns_client.container_id,
+            &[
+                "python3",
+                "-c",
+                DNS_QUERY_PROGRAM,
+                &resolver.to_string(),
+                &hostname,
+            ],
+        )
+        .await
+        {
+            Ok(outcome)
+                if outcome.success()
+                    && outcome
+                        .stdout
+                        .lines()
+                        .any(|line| line.trim() == container_ip.to_string()) =>
+            {
+                resolved = true;
+                break;
+            }
+            Ok(outcome) => last = format!("{outcome:?}"),
+            Err(error) => last = error.to_string(),
+        }
+        tokio::time::sleep(WAIT_DELAY).await;
+    }
+    require(
+        resolved,
+        format!("{hostname} did not resolve to {container_ip}: {last}"),
+    )?;
+    let resolved = format!("{hostname}:80:{container_ip}");
+    let url = format!("http://{hostname}/");
+    let response = exec_ok(
+        docker,
+        service_driver,
+        &[
+            "curl",
+            "--noproxy",
+            "*",
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--max-time",
+            "5",
+            "--resolve",
+            &resolved,
+            &url,
+        ],
+    )
+    .await?;
+    require(
+        response.stdout.contains("Welcome to nginx"),
+        format!("driver machine did not reach the deployed HTTP service: {response:?}"),
+    )
+}
+
+async fn run_founding(
+    docker: &Docker,
+    machine: &DindMachine,
+    operator: &SshPeerKey,
+) -> Result<SshContextHandoff, String> {
+    let endpoint = SocketAddr::new(machine.bridge_ip, DEFAULT_WIREGUARD_LISTEN_PORT);
+    let manifest = format!("file://{RELEASE_MANIFEST}");
+    let command = [
+        "env".to_owned(),
+        format!("PLOYZ_RELEASE_MANIFEST_URL={manifest}"),
+        "/opt/ployz/artifacts/ployz".to_owned(),
+        "init".to_owned(),
+        "--storage".to_owned(),
+        "plain".to_owned(),
+        "--container-network".to_owned(),
+        "10.210.0.0/16".to_owned(),
+        "--service-urls".to_owned(),
+        "disabled".to_owned(),
+        "--cluster-name".to_owned(),
+        CLUSTER_NAME.to_owned(),
+        "--machine-name".to_owned(),
+        FOUNDER_NAME.to_owned(),
+        "--wireguard-endpoint".to_owned(),
+        endpoint.to_string(),
+        "--driver-peer-id".to_owned(),
+        operator.peer_id.to_string(),
+        "--driver-peer-name".to_owned(),
+        operator.peer_name.clone(),
+        "--driver-peer-public-key".to_owned(),
+        operator.public_key.as_str().to_owned(),
+    ];
+    let refs = command.iter().map(String::as_str).collect::<Vec<_>>();
+    let outcome = exec_in_container(docker, &machine.container_id, &refs)
+        .await
+        .map_err(|error| error.to_string())?;
+    require(
+        outcome.success(),
+        format!("founding command failed: {outcome:?}"),
+    )?;
+    parse_handoff(&outcome.stdout)
+}
+
+fn parse_handoff(stdout: &str) -> Result<SshContextHandoff, String> {
+    let mut handoffs = stdout
+        .lines()
+        .filter(|line| line.starts_with(SSH_CONTEXT_HANDOFF_PREFIX));
+    let Some(line) = handoffs.next() else {
+        return Err(format!("founding output omitted context handoff: {stdout}"));
+    };
+    require(
+        handoffs.next().is_none(),
+        "founding emitted more than one context handoff",
+    )?;
+    SshContextHandoff::decode_handoff(line).map_err(|error| error.to_string())
+}
+
+fn create_join_token(cli: &Path, home: &Path, target: &SshTarget) -> Result<JoinBlob, String> {
+    let output = run_cli_bounded(
+        cli,
+        home,
+        &[
+            "token",
+            "create",
+            "--ttl",
+            "1h",
+            "--target",
+            target.as_str(),
+        ],
+    )?;
+    require_success(&output, "join token create")?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let blob = stdout
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("JOIN_BLOB='")
+                .and_then(|value| value.strip_suffix('\''))
+        })
+        .ok_or_else(|| format!("token output omitted JOIN_BLOB: {stdout}"))?;
+    JoinBlob::try_parse(blob).map_err(|error| error.to_string())
+}
+
+async fn join_machine(
+    docker: &Docker,
+    machine: &DindMachine,
+    blob: &JoinBlob,
+) -> Result<(), String> {
+    let endpoint = SocketAddr::new(machine.bridge_ip, DEFAULT_WIREGUARD_LISTEN_PORT);
+    let outcome = exec_in_container(
+        docker,
+        &machine.container_id,
+        &[
+            "/opt/ployz/artifacts/ployz",
+            "machine",
+            "join",
+            blob.expose(),
+            "--storage",
+            "plain",
+            "--wireguard-endpoint",
+            &endpoint.to_string(),
+        ],
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    require(
+        outcome.success() && outcome.stdout.contains("Joined machine"),
+        format!("fresh machine join failed: {outcome:?}"),
+    )?;
+    wait_for_inner_command(
+        docker,
+        machine,
+        &[
+            "systemctl",
+            "is-active",
+            "ployz-corrosion.service",
+            "ployzd-keeper.service",
+            "ployzd-api.service",
+            "ployzd-dns.service",
+        ],
+        "joined machine services",
+    )
+    .await
+}
+
+async fn wait_for_roster(
+    docker: &Docker,
+    machine: &DindMachine,
+    address: &str,
+    token: &str,
+    minimum: usize,
+) -> Result<BTreeMap<MachineRowId, MachineDocument>, String> {
+    let deadline = Instant::now() + WAIT_BUDGET;
+    let mut last = String::from("roster was not queried");
+    while Instant::now() < deadline {
+        match corrosion_query(
+            docker,
+            machine,
+            address,
+            token,
+            "SELECT id, document FROM machines",
+        )
+        .await
+        {
+            Ok(rows) => match parse_roster(rows) {
+                Ok(roster) if roster.len() >= minimum => return Ok(roster),
+                Ok(roster) => last = format!("only {} roster rows", roster.len()),
+                Err(error) => last = error,
+            },
+            Err(error) => last = error,
+        }
+        tokio::time::sleep(WAIT_DELAY).await;
+    }
+    Err(format!("machine roster did not converge: {last}"))
+}
+
+fn parse_roster(
+    rows: Vec<Vec<SqliteValue>>,
+) -> Result<BTreeMap<MachineRowId, MachineDocument>, String> {
+    let mut roster = BTreeMap::new();
+    for row in rows {
+        let [SqliteValue::Text(id), SqliteValue::Text(document)] = row.as_slice() else {
+            return Err(format!("machine query returned an invalid row: {row:?}"));
+        };
+        let id = MachineRowId::try_new(id.clone()).map_err(|error| error.to_string())?;
+        let document = serde_json::from_str(document)
+            .map_err(|error| format!("machine row was invalid: {error}"))?;
+        roster.insert(id, document);
+    }
+    Ok(roster)
+}
+
+async fn configure_insecure_registry(
+    docker: &Docker,
+    machine: &DindMachine,
+    registry: &str,
+) -> Result<(), String> {
+    let program = "import json,sys; p='/etc/docker/daemon.json'; d=json.load(open(p)); r=d.setdefault('insecure-registries', []); x=sys.argv[1]; r.append(x) if x not in r else None; open(p, 'w').write(json.dumps(d, indent=2)+'\\n')";
+    exec_ok(docker, machine, &["python3", "-c", program, registry]).await?;
+    exec_ok(docker, machine, &["systemctl", "restart", "docker.service"]).await?;
+    wait_for_inner_command(
+        docker,
+        machine,
+        &["docker", "info"],
+        "Docker after registry configuration",
+    )
+    .await
+}
+
+async fn wait_for_registry(
+    docker: &Docker,
+    machine: &DindMachine,
+    registry: &str,
+) -> Result<(), String> {
+    let url = format!("http://{registry}/v2/");
+    wait_for_inner_command(
+        docker,
+        machine,
+        &[
+            "curl",
+            "--noproxy",
+            "*",
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--max-time",
+            "3",
+            &url,
+        ],
+        "run-scoped registry from the joined machine",
+    )
+    .await
+}
+
+async fn public_lens(
+    docker: &Docker,
+    requester: &DindMachine,
+    api_address: &str,
+    collection: LensCollection,
+) -> Result<LensSnapshot, String> {
+    let url = format!("http://{api_address}{}", lens_route(collection));
+    let outcome = exec_ok(
+        docker,
+        requester,
+        &[
+            "curl",
+            "--noproxy",
+            "*",
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--max-time",
+            "3",
+            &url,
+        ],
+    )
+    .await?;
+    serde_json::from_str(outcome.stdout.trim())
+        .map_err(|error| format!("public lens returned invalid JSON: {error}"))
+}
+
+async fn wait_for_inner_command(
+    docker: &Docker,
+    machine: &DindMachine,
+    command: &[&str],
+    description: &str,
+) -> Result<(), String> {
+    let deadline = Instant::now() + WAIT_BUDGET;
+    let mut last = String::from("command was not attempted");
+    while Instant::now() < deadline {
+        match exec_in_container(docker, &machine.container_id, command).await {
+            Ok(outcome) if outcome.success() => return Ok(()),
+            Ok(outcome) => last = format!("{outcome:?}"),
+            Err(error) => last = error.to_string(),
+        }
+        tokio::time::sleep(WAIT_DELAY).await;
+    }
+    Err(format!("timed out waiting for {description}: {last}"))
+}
+
+fn evidence_sequences(output: &str) -> Result<Vec<u64>, String> {
+    output
+        .lines()
+        .map(|line| {
+            let Some((sequence, _)) = line.split_once('\t') else {
+                return Err(format!(
+                    "operation evidence line omitted its sequence: {line:?}"
+                ));
+            };
+            sequence
+                .parse::<u64>()
+                .map_err(|error| format!("invalid evidence sequence {sequence:?}: {error}"))
+        })
+        .collect()
+}
+
+fn wait_for_cli_output(
+    cli: &Path,
+    home: &Path,
+    args: &[&str],
+    predicate: impl Fn(&Output) -> bool,
+    description: &str,
+) -> Result<Output, String> {
+    let deadline = Instant::now() + WAIT_BUDGET;
+    let mut last = String::from("CLI was not run");
+    while Instant::now() < deadline {
+        match run_cli_bounded(cli, home, args) {
+            Ok(output) if predicate(&output) => return Ok(output),
+            Ok(output) => {
+                last = format!(
+                    "status={} stdout={} stderr={}",
+                    output.status,
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                )
+            }
+            Err(error) => last = error,
+        }
+        thread::sleep(WAIT_DELAY);
+    }
+    Err(format!("timed out waiting for {description}: {last}"))
+}
+
+fn run_cli_bounded(cli: &Path, home: &Path, args: &[&str]) -> Result<Output, String> {
+    let child = spawn_cli(cli, home, args)?;
+    wait_for_child(child, CLI_BUDGET)
+}
+
+fn spawn_cli(cli: &Path, home: &Path, args: &[&str]) -> Result<Child, String> {
+    Command::new(cli)
+        .args(args)
+        .env("HOME", home)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("could not run shipped CLI {}: {error}", cli.display()))
+}
+
+fn wait_for_child(mut child: Child, budget: Duration) -> Result<Output, String> {
+    let deadline = Instant::now() + budget;
+    loop {
+        if child
+            .try_wait()
+            .map_err(|error| format!("could not poll shipped CLI: {error}"))?
+            .is_some()
+        {
+            return child
+                .wait_with_output()
+                .map_err(|error| format!("could not collect shipped CLI output: {error}"));
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let output = child
+                .wait_with_output()
+                .map_err(|error| format!("could not collect timed-out CLI output: {error}"))?;
+            return Err(format!(
+                "shipped CLI exceeded {budget:?}: stdout={} stderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn require_success(output: &Output, operation: &str) -> Result<(), String> {
+    require(
+        output.status.success(),
+        format!(
+            "{operation} failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ),
+    )
+}

@@ -2,14 +2,13 @@
 
 use hyper::Method;
 use ployz_core::{
-    NAMESPACE_REMOVE_ROW_ROUTE, NamedRemovalOutcome, NamespaceRemoveRowRefusal,
-    NamespaceRemoveRowReply, NamespaceRemoveRowRequest, PEER_REMOVE_ROUTE, PeerRemoveRefusal,
-    PeerRemoveReply, PeerRemoveRequest, ROUTE_REMOVE_ROUTE, RouteRemoveRefusal, RouteRemoveReply,
-    RouteRemoveRequest, SERVICE_REMOVE_ROW_ROUTE, ServiceRemoveRowRefusal, ServiceRemoveRowReply,
+    NamedRemovalOutcome, PEER_REMOVE_ROUTE, PeerRemoveRefusal, PeerRemoveReply, PeerRemoveRequest,
+    ROUTE_REMOVE_ROUTE, RouteRemoveRefusal, RouteRemoveReply, RouteRemoveRequest,
+    SERVICE_REMOVE_ROW_ROUTE, ServiceRemoveRowRefusal, ServiceRemoveRowReply,
     ServiceRemoveRowRequest,
 };
 
-use crate::commands::{NamespaceCommand, PeerCommand, RouteCommand, ServiceCommand};
+use crate::commands::{PeerCommand, RouteCommand, ServiceCommand};
 use crate::init::ssh::shell_quote;
 use crate::mesh::http::JsonReply;
 use crate::remote::{OperatorRemote, OperatorRemoteError};
@@ -35,30 +34,6 @@ pub async fn execute_peer(command: PeerCommand) -> Result<String, RemovalExecuti
             reply.outcome,
         )),
         JsonReply::Refused(refusal) => Err(peer_refusal(refusal)),
-    }
-}
-
-pub async fn execute_namespace(command: NamespaceCommand) -> Result<String, RemovalExecutionError> {
-    let NamespaceCommand::Remove(command) = command;
-    let remote = OperatorRemote::load(command.target.as_ref())?;
-    let reply = remote
-        .request_json_with_refusal::<_, NamespaceRemoveRowReply, NamespaceRemoveRowRefusal>(
-            Method::POST,
-            NAMESPACE_REMOVE_ROW_ROUTE,
-            Some(&NamespaceRemoveRowRequest {
-                name: command.name.clone(),
-                namespace_id: command.namespace_id,
-            }),
-        )
-        .await?;
-    match reply {
-        JsonReply::Success(reply) => Ok(render_success(
-            "namespace",
-            &command.name,
-            reply.namespace_id.as_str(),
-            reply.outcome,
-        )),
-        JsonReply::Refused(refusal) => Err(namespace_refusal(refusal)),
     }
 }
 
@@ -144,50 +119,6 @@ fn peer_refusal(refusal: PeerRemoveRefusal) -> RemovalExecutionError {
         PeerRemoveRefusal::ConcurrentMutation { peer_id } => format!(
             "peer row {} changed before removal; inspect it and retry",
             peer_id.as_str()
-        ),
-    };
-    RemovalExecutionError::Refused { message }
-}
-
-fn namespace_refusal(refusal: NamespaceRemoveRowRefusal) -> RemovalExecutionError {
-    let message = match refusal {
-        NamespaceRemoveRowRefusal::NotFound { name } => {
-            format!("namespace {name} does not exist")
-        }
-        NamespaceRemoveRowRefusal::Ambiguous {
-            name,
-            namespace_ids,
-        } => ambiguous_message(
-            "namespace",
-            &name,
-            namespace_ids.iter().map(|id| id.as_str()),
-        ),
-        NamespaceRemoveRowRefusal::NameMismatch {
-            namespace_id,
-            requested,
-            found,
-        } => format!(
-            "namespace row {} is named {found}, not {requested}; no row was removed",
-            namespace_id.as_str()
-        ),
-        NamespaceRemoveRowRefusal::IdMismatch {
-            requested,
-            found,
-            name,
-        } => format!(
-            "namespace row {} is absent, but {name} is row {}; retry `ployz namespace rm {} --id {}`",
-            requested.as_str(),
-            found.as_str(),
-            shell_quote(&name),
-            found.as_str()
-        ),
-        NamespaceRemoveRowRefusal::StoredRowUnselectable { namespace_id } => format!(
-            "namespace row {} exists but this binary cannot safely select it; no row was removed",
-            namespace_id.as_str()
-        ),
-        NamespaceRemoveRowRefusal::ConcurrentMutation { namespace_id } => format!(
-            "namespace row {} changed before removal; inspect it and retry",
-            namespace_id.as_str()
         ),
     };
     RemovalExecutionError::Refused { message }

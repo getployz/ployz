@@ -11,6 +11,7 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioIo, TokioTimer};
 use ployz_core::LensCollection;
+use ployz_core::corrosion::MachineTransport;
 use ployz_core::join::{JoinDoorMaterial, JoinMachineSubstrate};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Semaphore, mpsc, watch};
@@ -151,11 +152,15 @@ impl ApiServer {
         let (shutdown_tx, _) = watch::channel(false);
         let (endpoint_failure_tx, mut endpoint_failures) = mpsc::unbounded_channel();
         let endpoint_task = service.lenses().map(|lenses| {
+            let Some(runner) = service.container_runner.clone() else {
+                unreachable!("ordinary API service has a roster-backed container runner")
+            };
             let updates = lenses.watch(LensCollection::Machines).subscribe();
             let local_machine_id = service.local_machine_id.clone();
             let shutdown = shutdown_tx.subscribe();
             tokio::spawn(async move {
-                if let Err(error) = endpoint_network::run(updates, local_machine_id, shutdown).await
+                if let Err(error) =
+                    endpoint_network::run(updates, local_machine_id, runner, shutdown).await
                 {
                     let _ = endpoint_failure_tx.send(error);
                 }
@@ -270,6 +275,7 @@ impl ApiServer {
             }
         };
 
+        service.shutdown_operations().await;
         if tokio::time::timeout(SERVER_SHUTDOWN_GRACE, drain_connections(&mut connections))
             .await
             .is_err()
@@ -309,22 +315,67 @@ async fn bind_api_listener(
     let listen_addr = config.listen_addr();
     let corrosion = CorrosionClient::new(config.corrosion().clone())
         .map_err(ApiServerError::CorrosionClientConfiguration)?;
-    if matches!(config.mode(), ApiRoleMode::Ordinary) {
-        validate_listener_identity(
-            &corrosion,
-            config.cluster_id(),
-            config.local_machine_id(),
-            listen_addr,
+    let local_machine = if matches!(config.mode(), ApiRoleMode::Ordinary) {
+        Some(
+            validate_listener_identity(
+                &corrosion,
+                config.cluster_id(),
+                config.local_machine_id(),
+                listen_addr,
+            )
+            .await
+            .map_err(ApiServerError::ListenerIdentity)?,
         )
-        .await
-        .map_err(ApiServerError::ListenerIdentity)?;
-    }
+    } else {
+        None
+    };
     let listener = TcpListener::bind(listen_addr)
         .await
         .map_err(|source| ApiServerError::Bind {
             listen_addr,
             source,
         })?;
+    let container_runner = local_machine.as_ref().map(|machine| {
+        let subnet = match &machine.transport {
+            MachineTransport::Wireguard { subnet_v4, .. }
+            | MachineTransport::Tailscale { subnet_v4, .. } => subnet_v4,
+        };
+        Arc::new(endpoint_network::runner_for_subnet(subnet))
+    });
+    let mut operations = super::operation_http::OperationRuntime::new(
+        corrosion.clone(),
+        config.cluster_id().clone(),
+        config.evidence_directory().to_path_buf(),
+        config.keeper_control_socket_path().to_path_buf(),
+    )
+    .map_err(ApiServerError::OperationHttpClient)?;
+    let first_deploy = if let Some(runner) = container_runner.as_ref() {
+        let driver = super::first_deploy::FirstDeployDriver::new(
+            config.cluster_id().clone(),
+            config.local_machine_id().clone(),
+            operations.evidence_directory(),
+            Arc::new(
+                super::promotion_store::CorrosionPreparedPromotionStore::new(
+                    corrosion.clone(),
+                    config.cluster_id().clone(),
+                ),
+            ),
+            Arc::new(operations.store()),
+            Arc::clone(runner) as Arc<dyn super::first_deploy::FirstDeployRuntime>,
+            Arc::new(super::first_deploy::SystemFirstDeployClock),
+        );
+        operations = operations.with_promotion_resumer(Arc::new(driver.clone()));
+        Some(driver)
+    } else {
+        None
+    };
+    let operations = Arc::new(operations);
+    if matches!(config.mode(), ApiRoleMode::Ordinary) {
+        operations
+            .recover_startup(config.local_machine_id())
+            .await
+            .map_err(|error| ApiServerError::OperationStartup(error.to_string()))?;
+    }
     let runtime = ApiServiceRuntime {
         corrosion,
         cluster_id: config.cluster_id().clone(),
@@ -336,6 +387,9 @@ async fn bind_api_listener(
         upgrade_store: config.upgrade_store().clone(),
         keeper_upgrade_socket_path: config.keeper_upgrade_socket_path().to_path_buf(),
         upgrade_supervisor: config.upgrade_supervisor(),
+        operations,
+        first_deploy,
+        container_runner,
     };
     Ok((listener, runtime))
 }
@@ -512,6 +566,10 @@ async fn wait_for_process_shutdown() {
 pub enum ApiServerError {
     #[error("could not build the local Corrosion client: {0}")]
     CorrosionClientConfiguration(crate::corrosion::CorrosionClientConfigError),
+    #[error("could not build the operation owner HTTP client: {0}")]
+    OperationHttpClient(reqwest::Error),
+    #[error("operation startup recovery failed: {0}")]
+    OperationStartup(String),
     #[error(transparent)]
     ListenerIdentity(ApiListenerValidationError),
     #[error(transparent)]

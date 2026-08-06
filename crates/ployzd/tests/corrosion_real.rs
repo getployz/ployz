@@ -785,20 +785,14 @@ fn fixtures() -> Result<Vec<Fixture>, String> {
                 "machine_id": machine_id,
                 "kind": "deploy",
                 "namespace_id": namespace_id,
-                "service_id": service_id,
+                "service_ids": [service_id],
                 "initiator": {"kind": "peer", "peer_id": ROW_ID},
-                "state": "failed",
-                "started_at": "2026-08-04T10:00:00Z",
-                "completed_at": "2026-08-04T10:07:00Z",
-                "failure": {
-                    "kind": "execution",
-                    "class": "health_gate_failed",
-                    "message": "container did not become healthy"
-                }
+                "state": "created",
+                "created_at": "2026-08-04T10:00:00Z"
             }),
             vec![
                 column("kind", "deploy"),
-                column("state", "failed"),
+                column("state", "created"),
                 column("machine_id", machine_id),
             ],
         )?,

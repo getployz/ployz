@@ -7,7 +7,10 @@ use std::time::Duration;
 use std::os::unix::fs::FileTypeExt;
 
 use ployz_core::roles::PloyzdRole;
-use ployz_host_runner::{PloyzdArtifactStore, role_unit_name};
+use ployz_host_runner::{
+    API_UPGRADE_STAGING_DIRECTORY, PloyzdArtifactStore, SupervisorDirectories,
+    SystemHostRunnerCommandRunner, migrate_existing_systemd_api_privileges, role_unit_name,
+};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::watch;
 
@@ -151,12 +154,26 @@ async fn handle_request(
     command_timeout: Duration,
 ) -> UpgradeResponse {
     match request {
-        UpgradeRequest::Arm { sha256 } => match store.arm_staged(&sha256) {
-            Ok(_) => UpgradeResponse::Armed,
-            Err(error) => UpgradeResponse::Refused {
-                message: error.to_string(),
-            },
-        },
+        UpgradeRequest::Arm { version, sha256 } => {
+            let staging_store =
+                match PloyzdArtifactStore::new(store.state().join(API_UPGRADE_STAGING_DIRECTORY)) {
+                    Ok(store) => store,
+                    Err(error) => {
+                        return UpgradeResponse::Refused {
+                            message: error.to_string(),
+                        };
+                    }
+                };
+            match store
+                .adopt_upgrade_candidate(&staging_store, &version, &sha256)
+                .and_then(|_| store.arm_staged(&sha256))
+            {
+                Ok(_) => UpgradeResponse::Armed,
+                Err(error) => UpgradeResponse::Refused {
+                    message: error.to_string(),
+                },
+            }
+        }
         UpgradeRequest::Commit => match store.pending_upgrade() {
             Ok(Some(_)) => match restart_systemd_role(PloyzdRole::Keeper, command_timeout).await {
                 Ok(()) => UpgradeResponse::Committed,
@@ -196,6 +213,24 @@ pub(super) async fn restart_systemd_role(
     }
 }
 
+pub(super) async fn migrate_api_privileges(
+    state: PathBuf,
+    command_timeout: Duration,
+) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let mut runner = SystemHostRunnerCommandRunner::new(command_timeout);
+        migrate_existing_systemd_api_privileges(
+            &state,
+            &SupervisorDirectories::host_defaults(),
+            &mut runner,
+        )
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("API privilege migration task failed: {error}"))?
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub(super) enum KeeperUpgradeSocketError {
     #[error("Keeper upgrade socket path {path} has no parent directory")]
@@ -218,10 +253,66 @@ pub(super) enum KeeperUpgradeSocketError {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
+    use ployz_core::install::{InstallArtifactVersion, InstallSha256Digest};
+    use ployz_host_runner::verify_artifact_file;
+
     use super::*;
 
     #[test]
     fn keeper_restart_uses_the_systemd_role_unit() {
         assert_eq!(role_unit_name(&PloyzdRole::Keeper), "ployzd-keeper.service");
+    }
+
+    #[tokio::test]
+    async fn arm_request_reverifies_and_adopts_api_staging_before_arming_live_store() {
+        let root = tempfile::tempdir().expect("upgrade root");
+        let state = root.path().join("state");
+        let live = PloyzdArtifactStore::new(state.clone()).expect("live store");
+        let old_source = root.path().join("old");
+        let candidate_source = root.path().join("candidate");
+        fs::write(&old_source, b"old\n").expect("old bytes");
+        fs::write(&candidate_source, b"new\n").expect("candidate bytes");
+        let old_digest = InstallSha256Digest::try_new(
+            "01d09d19c2139a46aebfb577780d123d7396e97201bc7ead210a2ebff8239dee",
+        )
+        .expect("old digest");
+        let candidate_digest = InstallSha256Digest::try_new(
+            "7aa7a5359173d05b63cfd682e3c38487f3cb4f7f1d60659fe59fab1505977d4c",
+        )
+        .expect("candidate digest");
+        let old = verify_artifact_file(&old_source, &old_digest).expect("old verifies");
+        live.seed_current(&old).expect("live current seeds");
+        let candidate =
+            verify_artifact_file(&candidate_source, &candidate_digest).expect("candidate verifies");
+        let staging = PloyzdArtifactStore::new(state.join(API_UPGRADE_STAGING_DIRECTORY))
+            .expect("staging store");
+        let version = InstallArtifactVersion::try_new("1.2.3").expect("version");
+        staging
+            .stage_upgrade_candidate(&candidate, &version)
+            .expect("API candidate stages");
+
+        assert_eq!(
+            handle_request(
+                UpgradeRequest::Arm {
+                    version,
+                    sha256: candidate_digest.clone(),
+                },
+                &live,
+                Duration::from_secs(1),
+            )
+            .await,
+            UpgradeResponse::Armed
+        );
+        assert!(
+            live.artifacts_path()
+                .join(candidate_digest.as_str())
+                .exists()
+        );
+        assert_eq!(
+            live.pending_upgrade().expect("pending marker"),
+            Some(candidate_digest)
+        );
     }
 }

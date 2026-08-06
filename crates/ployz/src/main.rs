@@ -52,10 +52,11 @@ async fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Command::Namespace(command) => finish_output(ployz::namespace::execute(command).await),
+        Command::Deploy(command) => finish_output(ployz::deploy::execute(command).await),
+        Command::Ops(command) => finish_output(ployz::ops::execute(command).await),
+        Command::Logs(command) => finish_output(ployz::logs::execute(command).await),
         Command::Peer(command) => emit_removal(ployz::removal::execute_peer(command).await),
-        Command::Namespace(command) => {
-            emit_removal(ployz::removal::execute_namespace(command).await)
-        }
         Command::Service(command) => emit_removal(ployz::removal::execute_service(command).await),
         Command::Route(command) => emit_removal(ployz::removal::execute_route(command).await),
         Command::Status(command) => emit_diagnostics(ployz::diagnostics::status(command).await),
@@ -64,6 +65,22 @@ async fn main() -> ExitCode {
 }
 
 fn emit_removal(result: Result<String, ployz::removal::RemovalExecutionError>) -> ExitCode {
+    match result {
+        Ok(output) => {
+            print!("{output}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn finish_output<Error>(result: Result<String, Error>) -> ExitCode
+where
+    Error: std::fmt::Display,
+{
     match result {
         Ok(output) => {
             print!("{output}");

@@ -1,6 +1,7 @@
 //! Root-owned convergence from accepted roster rows to machine substrate.
 
 mod config;
+mod control;
 mod provider;
 mod runtime;
 mod status;

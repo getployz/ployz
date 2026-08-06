@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::{Ipv4Addr, SocketAddr};
+use std::num::NonZeroU64;
 
 use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 use ployz_core::corrosion::{DesiredBuiltinWireguardMesh, DesiredMachineContainerRoute};
@@ -148,6 +149,48 @@ pub(super) fn parse_wireguard_dump(
         .collect()
 }
 
+pub(super) fn parse_wireguard_handshake_epoch(
+    dump: &str,
+    wanted: &WireGuardPublicKey,
+) -> Result<WireguardHandshakeEpoch, String> {
+    let mut lines = dump.lines();
+    let Some(_interface) = lines.next() else {
+        return Err("WireGuard dump had no interface row".to_owned());
+    };
+    for (index, line) in lines.enumerate() {
+        let fields = line.split('\t').collect::<Vec<_>>();
+        let [
+            public_key,
+            _preshared_key,
+            _endpoint,
+            _allowed_ips,
+            handshake,
+            _rx,
+            _tx,
+            _keepalive,
+        ] = fields.as_slice()
+        else {
+            return Err(format!(
+                "WireGuard dump peer row {} had {} fields, expected 8",
+                index + 2,
+                fields.len()
+            ));
+        };
+        let public_key = WireGuardPublicKey::try_new(*public_key)
+            .map_err(|error| format!("parse observed WireGuard public key: {error}"))?;
+        let epoch = handshake.parse::<u64>().map_err(|error| {
+            format!("parse observed WireGuard latest-handshake epoch {handshake:?}: {error}")
+        })?;
+        if &public_key == wanted {
+            return Ok(match NonZeroU64::new(epoch) {
+                Some(value) => WireguardHandshakeEpoch::Observed(value),
+                None => WireguardHandshakeEpoch::Never,
+            });
+        }
+    }
+    Ok(WireguardHandshakeEpoch::PeerAbsent)
+}
+
 pub(super) fn parse_owned_routes(output: &str) -> Result<BTreeMap<IpNet, ObservedRoute>, String> {
     output
         .lines()
@@ -263,6 +306,13 @@ pub(super) struct DesiredRoute {
 pub(super) struct ObservedRoute {
     pub(super) destination: IpNet,
     pub(super) preferred_source: Option<Ipv4Addr>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WireguardHandshakeEpoch {
+    PeerAbsent,
+    Never,
+    Observed(NonZeroU64),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

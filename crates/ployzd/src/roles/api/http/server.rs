@@ -101,7 +101,7 @@ pub(super) fn json_response(status: StatusCode, body: Vec<u8>) -> Response<HttpB
     response
 }
 
-fn sse_response(body: HttpBody) -> Response<HttpBody> {
+pub(super) fn sse_response(body: HttpBody) -> Response<HttpBody> {
     let mut response = Response::new(body);
     response.headers_mut().insert(
         CONTENT_TYPE,
@@ -362,6 +362,10 @@ pub(super) struct ApiService {
     pub(super) upgrade_store: PloyzdArtifactStore,
     pub(super) keeper_upgrade_socket_path: std::path::PathBuf,
     pub(super) upgrade_supervisor: MachineUpgradeSupervisor,
+    pub(super) operations: Arc<super::operation_http::OperationRuntime>,
+    pub(super) first_deploy: Option<super::first_deploy::FirstDeployDriver>,
+    pub(super) container_runner:
+        Option<Arc<crate::roles::api::execution::docker::runner::DockerManagedContainerRunner>>,
     lenses: OnceCell<Arc<ApiLenses>>,
     lens_lifecycle: mpsc::UnboundedSender<LensCollection>,
     pub(super) founding_lock: Mutex<()>,
@@ -378,6 +382,10 @@ pub(super) struct ApiServiceRuntime {
     pub(super) upgrade_store: PloyzdArtifactStore,
     pub(super) keeper_upgrade_socket_path: std::path::PathBuf,
     pub(super) upgrade_supervisor: MachineUpgradeSupervisor,
+    pub(super) operations: Arc<super::operation_http::OperationRuntime>,
+    pub(super) first_deploy: Option<super::first_deploy::FirstDeployDriver>,
+    pub(super) container_runner:
+        Option<Arc<crate::roles::api::execution::docker::runner::DockerManagedContainerRunner>>,
 }
 
 impl ApiService {
@@ -396,6 +404,9 @@ impl ApiService {
             upgrade_store,
             keeper_upgrade_socket_path,
             upgrade_supervisor,
+            operations,
+            first_deploy,
+            container_runner,
         } = runtime;
         let (lifecycle_sender, lifecycle_failures) = mpsc::unbounded_channel();
         let lenses = OnceCell::new();
@@ -421,6 +432,9 @@ impl ApiService {
             upgrade_store,
             keeper_upgrade_socket_path,
             upgrade_supervisor,
+            operations,
+            first_deploy,
+            container_runner,
             lenses,
             lens_lifecycle: lifecycle_sender,
             founding_lock: Mutex::new(()),
@@ -495,14 +509,30 @@ impl ApiService {
             | V2Route::TokenList
             | V2Route::TokenRevoke(_)
             | V2Route::MachineEndpointSet
-            | V2Route::MachineRemove => {
+            | V2Route::MachineRemove
+            | V2Route::NamespaceCreate
+            | V2Route::NamespaceRemove => {
                 super::mutations::handle_mutation(self, route, principal, request).await
             }
-            V2Route::PeerRemove
-            | V2Route::NamespaceRemove
-            | V2Route::ServiceRemove
-            | V2Route::RouteRemove => super::removals::handle_removal(self, route, request).await,
+            V2Route::PeerRemove | V2Route::ServiceRemove | V2Route::RouteRemove => {
+                super::removals::handle_removal(self, route, request).await
+            }
             V2Route::MachineUpgrade => super::upgrade::handle_machine_upgrade(self, request).await,
+            V2Route::Operation(operation_id) => {
+                super::operation_http::handle_lookup(self, operation_id).await
+            }
+            V2Route::OperationWatch(operation_id) => {
+                super::operation_http::handle_watch(self, operation_id, &principal, shutdown).await
+            }
+            V2Route::FirstDeploy => {
+                super::operation_http::handle_first_deploy(self, principal, request).await
+            }
+            V2Route::ServiceLogsTail(service_id) => {
+                super::service_logs::handle_tail(self, service_id, request, shutdown).await
+            }
+            V2Route::ServiceLogsFollow(service_id) => {
+                super::service_logs::handle_follow(self, service_id, request, shutdown).await
+            }
             V2Route::Lens(collection) => self.snapshot_response(collection).await,
             V2Route::LensWatch(collection) => self.watch_response(collection, shutdown).await,
         }
@@ -560,6 +590,11 @@ impl ApiService {
             Ok(lenses) => lenses.shutdown().await,
             Err(_) => tracing::warn!("API lenses retained a connection reference during shutdown"),
         }
+    }
+
+    pub(super) async fn shutdown_operations(&self) {
+        let outcome = self.operations.shutdown().await;
+        tracing::info!(?outcome, "operation task shutdown finished");
     }
 
     pub(super) async fn start_founding_lenses_and_observe_machine(&self) -> bool {

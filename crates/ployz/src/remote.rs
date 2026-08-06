@@ -3,6 +3,7 @@
 use std::fmt;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
+use std::time::Duration;
 
 use ployz_core::MachineLensRow;
 use ployz_core::corrosion::{MachineTransport, derive_builtin_wireguard_member};
@@ -16,7 +17,7 @@ use crate::init::ssh::default_config_home;
 use crate::mesh::context::{
     LoadedOperatorContext, OperatorContextError, OperatorContextStore, UnsupportedMeshProvider,
 };
-use crate::mesh::http::{JsonReply, MeshApiClient, MeshApiClientError};
+use crate::mesh::http::{JsonReply, MeshApiClient, MeshApiClientError, SseReply};
 use crate::mesh::{
     BuiltinWireguardDial, BuiltinWireguardPeer, MeshConnectError, MeshConnector, MeshDialTimeouts,
     MeshStream,
@@ -160,6 +161,26 @@ impl OperatorRemote {
         let stream = self.connect().await?;
         MeshApiClient::default()
             .request_json_with_refusal(stream, method, route, body)
+            .await
+            .map_err(OperatorRemoteError::Api)
+    }
+
+    pub async fn request_sse_with_refusal<RequestBody, Event, Refusal>(
+        &self,
+        method: hyper::Method,
+        route: &str,
+        body: Option<&RequestBody>,
+        idle_timeout: Duration,
+        max_frame_bytes: usize,
+    ) -> Result<SseReply<Event, Refusal>, OperatorRemoteError>
+    where
+        RequestBody: Serialize + ?Sized,
+        Event: DeserializeOwned,
+        Refusal: DeserializeOwned,
+    {
+        let stream = self.connect().await?;
+        MeshApiClient::default()
+            .request_sse_with_refusal(stream, method, route, body, idle_timeout, max_frame_bytes)
             .await
             .map_err(OperatorRemoteError::Api)
     }

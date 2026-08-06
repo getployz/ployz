@@ -3,18 +3,22 @@ use super::network::{
     ENDPOINT_NETWORK_NAME, converge_endpoint_network, ensure_endpoint_network,
     is_docker_object_missing, read_endpoint_network_status, require_endpoint_network,
 };
+use super::v2_labels::{self, V2ManagedContainerLabelError};
 use crate::network_mtu::{WireGuardMtuPolicy, resolve_wireguard_mtu};
 use crate::roles::api::runner::{
-    CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
-    MachineContainerCreateError, MachineContainerListError, MachineContainerRemoveError,
-    MachineContainerRestartError, MachineContainerRunner, MachineContainerStartError,
-    MachineContainerStopError, MachineContainerWaitError, MachineEndpointNetworkConvergenceError,
+    CreateManagedContainer, CreateV2ManagedContainer, ExistingManagedContainer,
+    ExistingManagedContainerState, ExistingV2ManagedContainer, MachineContainerCreateError,
+    MachineContainerListError, MachineContainerRemoveError, MachineContainerRestartError,
+    MachineContainerRunner, MachineContainerStartError, MachineContainerStopError,
+    MachineContainerWaitError, MachineEndpointNetworkConvergenceError,
     MachineEndpointNetworkConvergenceOutcome, MachineEndpointNetworkError,
     MachineImageRemovalRunner, MachineLogQuery, MachineLogReader, MachineLogReaderError,
     MachineLogTail, MachineLogTimestamps, MachineRegistryImageResolveError,
-    MachineVolumeRemoveError,
+    MachineVolumeRemoveError, RuntimeLogBatch, RuntimeLogFollow, RuntimeLogLine, RuntimeLogStream,
+    V2MachineContainerRunner, V2MachineLogReadError, V2MachineLogReader,
 };
 use bollard::Docker;
+use bollard::container::LogOutput;
 use bollard::errors::Error as BollardError;
 use bollard::models::{
     ContainerCreateBody, ContainerInspectResponse, ContainerSummary,
@@ -27,10 +31,11 @@ use bollard::query_parameters::{
     RemoveContainerOptionsBuilder, RemoveImageOptionsBuilder, RemoveVolumeOptionsBuilder,
     RestartContainerOptions, StopContainerOptionsBuilder,
 };
-use futures_util::StreamExt;
+use futures_util::{Stream, StreamExt};
+use ployz_core::corrosion::V2ManagedContainerIdentity;
 use ployz_core::deploy::{
     ContainerEntrypoint, ContainerHealthcheck, ContainerHealthcheckTest, ContainerRestartPolicy,
-    ImageReference, RegistryCredential, VolumeName,
+    ContainerRuntimeSpec, ImageReference, RegistryCredential, VolumeName,
 };
 use ployz_core::ids::{ContainerId, NamespaceId, SubjectTokenError};
 use ployz_core::image::OciDigest;
@@ -39,12 +44,14 @@ use ployz_core::machine::VolumeEnsureFailure;
 use ployz_core::machine::runtime::{
     ContainerHealth, ManagedContainerHealthStatus, ManagedContainerIdentity,
 };
+use ployz_core::network::internal_dns::InternalDnsSearchDomain;
 use ployz_core::network::{
     EndpointBridgeStatus, MachineEndpointSubnet, endpoint_bridge_gateway_ipv4,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::IpAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
@@ -55,6 +62,8 @@ use super::provisioned_volume::local_bind_volume_request;
 const DEFAULT_LOG_TAIL_LINES: u16 = 200;
 const MAX_LOG_TAIL_LINES: u16 = 1_000;
 const MAX_LOG_TAIL_BYTES: usize = 64 * 1024;
+const V2_LOG_READ_TIMEOUT: Duration = Duration::from_secs(10);
+const V2_LOG_FOLLOW_CHANNEL_LINES: usize = 32;
 
 #[derive(Debug, Clone)]
 pub struct DockerManagedContainerRunner {
@@ -235,6 +244,7 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
 
         let mut containers = summaries
             .into_iter()
+            .filter(|summary| !summary_has_v2_identity_schema(summary))
             .map(existing_container_from_summary)
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| MachineContainerListError::ListExisting {
@@ -641,6 +651,85 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
     }
 }
 
+impl V2MachineContainerRunner for DockerManagedContainerRunner {
+    async fn existing_v2_managed_containers(
+        &self,
+    ) -> Result<Vec<ExistingV2ManagedContainer>, MachineContainerListError> {
+        let docker =
+            self.docker()
+                .await
+                .map_err(|error| MachineContainerListError::ListExisting {
+                    message: error.to_string(),
+                })?;
+        docker
+            .list_containers(Some(v2_managed_container_list_options()))
+            .await
+            .map_err(|error| MachineContainerListError::ListExisting {
+                message: error.to_string(),
+            })?
+            .into_iter()
+            .map(existing_v2_container_from_summary)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| MachineContainerListError::ListExisting {
+                message: error.to_string(),
+            })
+    }
+
+    async fn create_v2_managed_container(
+        &self,
+        command: CreateV2ManagedContainer,
+    ) -> Result<ContainerId, MachineContainerCreateError> {
+        let endpoint_network_subnet = MachineEndpointSubnet::try_new(&self.endpoint_network_subnet)
+            .map_err(|error| MachineContainerCreateError::EnsureEndpointNetwork {
+                message: error.to_string(),
+            })?;
+        let docker = self
+            .docker()
+            .await
+            .map_err(|error| MachineContainerCreateError::Create {
+                message: error.to_string(),
+            })?;
+        let endpoint_mtu =
+            resolve_wireguard_mtu(self.endpoint_mtu_policy, &self.endpoint_wg_ifname).await;
+        require_endpoint_network(
+            docker,
+            &endpoint_network_subnet,
+            &self.endpoint_bridge_ifname,
+            endpoint_mtu,
+        )
+        .await?;
+        let response = docker
+            .create_container(None, create_v2_body(command, &self.endpoint_network_subnet))
+            .await
+            .map_err(|error| MachineContainerCreateError::Create {
+                message: error.to_string(),
+            })?;
+        ContainerId::try_new(response.id).map_err(|error| MachineContainerCreateError::Create {
+            message: error.to_string(),
+        })
+    }
+
+    async fn start_v2_managed_container(
+        &self,
+        container_id: &ContainerId,
+    ) -> Result<(), MachineContainerStartError> {
+        let docker = self
+            .docker()
+            .await
+            .map_err(|error| MachineContainerStartError::Start {
+                container_id: container_id.clone(),
+                message: error.to_string(),
+            })?;
+        docker
+            .start_container(container_id.as_str(), None)
+            .await
+            .map_err(|error| MachineContainerStartError::Start {
+                container_id: container_id.clone(),
+                message: error.to_string(),
+            })
+    }
+}
+
 impl MachineLogReader for DockerManagedContainerRunner {
     async fn tail_container_logs(
         &self,
@@ -698,6 +787,506 @@ impl MachineLogReader for DockerManagedContainerRunner {
             truncated,
         })
     }
+}
+
+impl V2MachineLogReader for DockerManagedContainerRunner {
+    async fn tail_v2_container_logs(
+        &self,
+        container_id: &ContainerId,
+        tail_lines: u16,
+        shutdown: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<RuntimeLogBatch, V2MachineLogReadError> {
+        let docker = self
+            .docker()
+            .await
+            .map_err(|_| V2MachineLogReadError::RuntimeUnavailable)?;
+        let requested_lines = tail_lines.min(MAX_LOG_TAIL_LINES);
+        let stream = docker.logs(
+            container_id.as_str(),
+            Some(v2_logs_options(requested_lines, V2LogAttachMode::Tail)),
+        );
+        collect_v2_log_stream(
+            stream,
+            container_id,
+            usize::from(requested_lines),
+            MAX_LOG_TAIL_BYTES,
+            V2_LOG_READ_TIMEOUT,
+            shutdown,
+        )
+        .await
+    }
+
+    async fn open_v2_container_log_follow(
+        &self,
+        container_id: &ContainerId,
+        tail_lines: u16,
+        shutdown: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<RuntimeLogFollow, V2MachineLogReadError> {
+        if *shutdown.borrow() {
+            return Err(V2MachineLogReadError::Cancelled);
+        }
+        let docker = self
+            .docker()
+            .await
+            .map_err(|_| V2MachineLogReadError::RuntimeUnavailable)?
+            .clone();
+        let container_id = container_id.clone();
+        let (sender, receiver) = tokio::sync::mpsc::channel(V2_LOG_FOLLOW_CHANNEL_LINES);
+        tokio::spawn(run_v2_log_follow(
+            docker,
+            container_id,
+            tail_lines.min(MAX_LOG_TAIL_LINES),
+            sender,
+            shutdown,
+        ));
+        Ok(RuntimeLogFollow::new(receiver))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum V2LogAttachMode {
+    Tail,
+    Follow,
+}
+
+async fn collect_v2_log_stream<LogStream>(
+    stream: LogStream,
+    container_id: &ContainerId,
+    max_lines: usize,
+    max_bytes: usize,
+    deadline: Duration,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+) -> Result<RuntimeLogBatch, V2MachineLogReadError>
+where
+    LogStream: Stream<Item = Result<LogOutput, BollardError>> + Send,
+{
+    if *shutdown.borrow() {
+        return Err(V2MachineLogReadError::Cancelled);
+    }
+    let mut collector = CompleteLogLineCollector::new(max_lines, max_bytes);
+    let deadline = tokio::time::sleep(deadline);
+    tokio::pin!(deadline);
+    tokio::pin!(stream);
+    loop {
+        tokio::select! {
+            () = &mut deadline => {
+                return Err(V2MachineLogReadError::TimedOut);
+            }
+            () = wait_for_log_shutdown(&mut shutdown) => {
+                return Err(V2MachineLogReadError::Cancelled);
+            }
+            item = stream.next() => {
+                let Some(item) = item else {
+                    return Ok(collector.finish_eof());
+                };
+                match item {
+                    Ok(output) => {
+                        if !collector.push(output)? {
+                            return Ok(collector.finish_interrupted());
+                        }
+                    }
+                    Err(error) => return Err(classify_v2_log_error(container_id, &error)),
+                }
+            }
+        }
+    }
+}
+
+async fn run_v2_log_follow(
+    docker: Docker,
+    container_id: ContainerId,
+    tail_lines: u16,
+    sender: tokio::sync::mpsc::Sender<Result<RuntimeLogLine, V2MachineLogReadError>>,
+    shutdown: tokio::sync::watch::Receiver<bool>,
+) {
+    let stream = docker.logs(
+        container_id.as_str(),
+        Some(v2_logs_options(tail_lines, V2LogAttachMode::Follow)),
+    );
+    run_v2_log_follow_stream(stream, container_id, sender, shutdown).await;
+}
+
+async fn run_v2_log_follow_stream<LogStream>(
+    stream: LogStream,
+    container_id: ContainerId,
+    sender: tokio::sync::mpsc::Sender<Result<RuntimeLogLine, V2MachineLogReadError>>,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+) where
+    LogStream: Stream<Item = Result<LogOutput, BollardError>> + Send,
+{
+    tokio::pin!(stream);
+    let mut framer = FollowLogLineFramer::new(MAX_LOG_TAIL_BYTES);
+    loop {
+        tokio::select! {
+            () = sender.closed() => return,
+            () = wait_for_log_shutdown(&mut shutdown) => {
+                let _ = sender.try_send(Err(V2MachineLogReadError::Cancelled));
+                return;
+            }
+            item = stream.next() => {
+                let Some(item) = item else {
+                    for line in framer.finish_eof() {
+                        if !send_v2_follow_item(&sender, Ok(line), &mut shutdown).await {
+                            return;
+                        }
+                    }
+                    return;
+                };
+                match item {
+                    Ok(output) => {
+                        if !frame_and_send_v2_follow_output(
+                            &mut framer,
+                            output,
+                            &sender,
+                            &mut shutdown,
+                        )
+                        .await
+                        {
+                            return;
+                        }
+                    }
+                    Err(error) => {
+                        let error = classify_v2_log_error(&container_id, &error);
+                        let _ = send_v2_follow_item(&sender, Err(error), &mut shutdown).await;
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn frame_and_send_v2_follow_output(
+    framer: &mut FollowLogLineFramer,
+    output: LogOutput,
+    sender: &tokio::sync::mpsc::Sender<Result<RuntimeLogLine, V2MachineLogReadError>>,
+    shutdown: &mut tokio::sync::watch::Receiver<bool>,
+) -> bool {
+    let (stream, message) = match output {
+        LogOutput::StdOut { message } => (RuntimeLogStream::Stdout, message),
+        LogOutput::StdErr { message } => (RuntimeLogStream::Stderr, message),
+        LogOutput::StdIn { .. } | LogOutput::Console { .. } => {
+            let _ =
+                send_v2_follow_item(sender, Err(V2MachineLogReadError::ReadFailed), shutdown).await;
+            return false;
+        }
+    };
+    for segment in message.split_inclusive(|byte| *byte == b'\n') {
+        let line = match framer.push_segment(stream, segment) {
+            Ok(line) => line,
+            Err(error) => {
+                let _ = send_v2_follow_item(sender, Err(error), shutdown).await;
+                return false;
+            }
+        };
+        if let Some(line) = line
+            && !send_v2_follow_item(sender, Ok(line), shutdown).await
+        {
+            return false;
+        }
+    }
+    true
+}
+
+async fn send_v2_follow_item(
+    sender: &tokio::sync::mpsc::Sender<Result<RuntimeLogLine, V2MachineLogReadError>>,
+    item: Result<RuntimeLogLine, V2MachineLogReadError>,
+    shutdown: &mut tokio::sync::watch::Receiver<bool>,
+) -> bool {
+    tokio::select! {
+        result = sender.send(item) => result.is_ok(),
+        () = wait_for_log_shutdown(shutdown) => false,
+    }
+}
+
+async fn wait_for_log_shutdown(shutdown: &mut tokio::sync::watch::Receiver<bool>) {
+    loop {
+        if *shutdown.borrow() || shutdown.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
+fn classify_v2_log_error(
+    container_id: &ContainerId,
+    error: &BollardError,
+) -> V2MachineLogReadError {
+    if is_docker_object_missing(error) {
+        V2MachineLogReadError::NotFound {
+            container_id: container_id.clone(),
+        }
+    } else {
+        V2MachineLogReadError::ReadFailed
+    }
+}
+
+#[derive(Debug)]
+struct FollowLogLineFramer {
+    stdout: PendingLogLine,
+    stderr: PendingLogLine,
+    max_pending_bytes: usize,
+    next_pending_order: u64,
+}
+
+impl FollowLogLineFramer {
+    fn new(max_pending_bytes: usize) -> Self {
+        Self {
+            stdout: PendingLogLine::new(),
+            stderr: PendingLogLine::new(),
+            max_pending_bytes,
+            next_pending_order: 0,
+        }
+    }
+
+    fn push_segment(
+        &mut self,
+        stream: RuntimeLogStream,
+        segment: &[u8],
+    ) -> Result<Option<RuntimeLogLine>, V2MachineLogReadError> {
+        let complete = segment.last() == Some(&b'\n');
+        let content = if complete {
+            segment
+                .get(..segment.len().saturating_sub(1))
+                .expect("newline-delimited segment has a bounded prefix")
+        } else {
+            segment
+        };
+        let pending_bytes = self
+            .stdout
+            .bytes
+            .len()
+            .saturating_add(self.stderr.bytes.len());
+        let Some(next_pending_bytes) = pending_bytes.checked_add(content.len()) else {
+            return Err(V2MachineLogReadError::ReadFailed);
+        };
+        if next_pending_bytes > self.max_pending_bytes {
+            return Err(V2MachineLogReadError::ReadFailed);
+        }
+        self.mark_pending(stream);
+        self.pending_mut(stream).bytes.extend_from_slice(content);
+        if !complete {
+            return Ok(None);
+        }
+        let pending = self.take_pending(stream);
+        Ok(Some(RuntimeLogLine {
+            stream,
+            line: render_log_line(pending.bytes),
+        }))
+    }
+
+    fn finish_eof(mut self) -> Vec<RuntimeLogLine> {
+        let mut pending = [
+            (RuntimeLogStream::Stdout, self.stdout.order),
+            (RuntimeLogStream::Stderr, self.stderr.order),
+        ];
+        pending.sort_by_key(|(_, order)| *order);
+        pending
+            .into_iter()
+            .filter_map(|(stream, order)| {
+                if order.is_none() || self.pending(stream).bytes.is_empty() {
+                    return None;
+                }
+                let pending = self.take_pending(stream);
+                Some(RuntimeLogLine {
+                    stream,
+                    line: render_log_line(pending.bytes),
+                })
+            })
+            .collect()
+    }
+
+    fn mark_pending(&mut self, stream: RuntimeLogStream) {
+        if self.pending(stream).order.is_none() {
+            let order = self.next_pending_order;
+            self.next_pending_order = self.next_pending_order.saturating_add(1);
+            self.pending_mut(stream).order = Some(order);
+        }
+    }
+
+    fn pending(&self, stream: RuntimeLogStream) -> &PendingLogLine {
+        match stream {
+            RuntimeLogStream::Stdout => &self.stdout,
+            RuntimeLogStream::Stderr => &self.stderr,
+        }
+    }
+
+    fn pending_mut(&mut self, stream: RuntimeLogStream) -> &mut PendingLogLine {
+        match stream {
+            RuntimeLogStream::Stdout => &mut self.stdout,
+            RuntimeLogStream::Stderr => &mut self.stderr,
+        }
+    }
+
+    fn take_pending(&mut self, stream: RuntimeLogStream) -> PendingLogLine {
+        match stream {
+            RuntimeLogStream::Stdout => std::mem::replace(&mut self.stdout, PendingLogLine::new()),
+            RuntimeLogStream::Stderr => std::mem::replace(&mut self.stderr, PendingLogLine::new()),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct CompleteLogLineCollector {
+    lines: Vec<RuntimeLogLine>,
+    stdout: PendingLogLine,
+    stderr: PendingLogLine,
+    retained_bytes: usize,
+    max_lines: usize,
+    max_bytes: usize,
+    next_pending_order: u64,
+    truncated: bool,
+}
+
+impl CompleteLogLineCollector {
+    fn new(max_lines: usize, max_bytes: usize) -> Self {
+        Self {
+            lines: Vec::new(),
+            stdout: PendingLogLine::new(),
+            stderr: PendingLogLine::new(),
+            retained_bytes: 0,
+            max_lines,
+            max_bytes,
+            next_pending_order: 0,
+            truncated: false,
+        }
+    }
+
+    fn push(&mut self, output: LogOutput) -> Result<bool, V2MachineLogReadError> {
+        let (stream, message) = match output {
+            LogOutput::StdOut { message } => (RuntimeLogStream::Stdout, message),
+            LogOutput::StdErr { message } => (RuntimeLogStream::Stderr, message),
+            LogOutput::StdIn { .. } | LogOutput::Console { .. } => {
+                return Err(V2MachineLogReadError::ReadFailed);
+            }
+        };
+        for segment in message.split_inclusive(|byte| *byte == b'\n') {
+            let complete = segment.last() == Some(&b'\n');
+            let content = if complete {
+                segment
+                    .get(..segment.len().saturating_sub(1))
+                    .expect("newline-delimited segment has a bounded prefix")
+            } else {
+                segment
+            };
+            if !self.append(stream, content) {
+                return Ok(false);
+            }
+            if complete && !self.complete(stream) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    fn append(&mut self, stream: RuntimeLogStream, bytes: &[u8]) -> bool {
+        if bytes.is_empty() {
+            self.mark_pending(stream);
+            return true;
+        }
+        let Some(next_size) = self.retained_bytes.checked_add(bytes.len()) else {
+            self.truncated = true;
+            return false;
+        };
+        if next_size > self.max_bytes {
+            self.truncated = true;
+            return false;
+        }
+        self.mark_pending(stream);
+        self.pending_mut(stream).bytes.extend_from_slice(bytes);
+        self.retained_bytes = next_size;
+        true
+    }
+
+    fn mark_pending(&mut self, stream: RuntimeLogStream) {
+        if self.pending(stream).order.is_none() {
+            let order = self.next_pending_order;
+            self.next_pending_order = self.next_pending_order.saturating_add(1);
+            self.pending_mut(stream).order = Some(order);
+        }
+    }
+
+    fn complete(&mut self, stream: RuntimeLogStream) -> bool {
+        if self.lines.len() >= self.max_lines {
+            self.truncated = true;
+            return false;
+        }
+        let pending = self.take_pending(stream);
+        self.lines.push(RuntimeLogLine {
+            stream,
+            line: render_log_line(pending.bytes),
+        });
+        true
+    }
+
+    fn finish_eof(mut self) -> RuntimeLogBatch {
+        let mut pending = [
+            (RuntimeLogStream::Stdout, self.stdout.order),
+            (RuntimeLogStream::Stderr, self.stderr.order),
+        ];
+        pending.sort_by_key(|(_, order)| *order);
+        for (stream, order) in pending {
+            if order.is_some() && !self.pending(stream).bytes.is_empty() && !self.complete(stream) {
+                break;
+            }
+        }
+        RuntimeLogBatch {
+            lines: self.lines,
+            truncated: self.truncated,
+        }
+    }
+
+    fn finish_interrupted(mut self) -> RuntimeLogBatch {
+        if !self.stdout.bytes.is_empty() || !self.stderr.bytes.is_empty() {
+            self.truncated = true;
+        }
+        RuntimeLogBatch {
+            lines: self.lines,
+            truncated: self.truncated,
+        }
+    }
+
+    fn pending(&self, stream: RuntimeLogStream) -> &PendingLogLine {
+        match stream {
+            RuntimeLogStream::Stdout => &self.stdout,
+            RuntimeLogStream::Stderr => &self.stderr,
+        }
+    }
+
+    fn pending_mut(&mut self, stream: RuntimeLogStream) -> &mut PendingLogLine {
+        match stream {
+            RuntimeLogStream::Stdout => &mut self.stdout,
+            RuntimeLogStream::Stderr => &mut self.stderr,
+        }
+    }
+
+    fn take_pending(&mut self, stream: RuntimeLogStream) -> PendingLogLine {
+        match stream {
+            RuntimeLogStream::Stdout => std::mem::replace(&mut self.stdout, PendingLogLine::new()),
+            RuntimeLogStream::Stderr => std::mem::replace(&mut self.stderr, PendingLogLine::new()),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct PendingLogLine {
+    bytes: Vec<u8>,
+    order: Option<u64>,
+}
+
+impl PendingLogLine {
+    const fn new() -> Self {
+        Self {
+            bytes: Vec::new(),
+            order: None,
+        }
+    }
+}
+
+fn render_log_line(mut bytes: Vec<u8>) -> String {
+    if bytes.last() == Some(&b'\r') {
+        bytes.pop();
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 fn docker_container_state(
@@ -835,6 +1424,21 @@ fn managed_container_list_options() -> bollard::query_parameters::ListContainers
         .build()
 }
 
+fn v2_managed_container_list_options() -> bollard::query_parameters::ListContainersOptions {
+    let filters = HashMap::from([(
+        "label".to_owned(),
+        vec![format!(
+            "{}={}",
+            v2_labels::IDENTITY_SCHEMA_LABEL,
+            v2_labels::V2_IDENTITY_SCHEMA
+        )],
+    )]);
+    ListContainersOptionsBuilder::new()
+        .all(true)
+        .filters(&filters)
+        .build()
+}
+
 fn logs_options(
     tail_lines: u16,
     since_unix_seconds: Option<u64>,
@@ -853,6 +1457,20 @@ fn logs_options(
     options.build()
 }
 
+fn v2_logs_options(
+    tail_lines: u16,
+    attach: V2LogAttachMode,
+) -> bollard::query_parameters::LogsOptions {
+    let tail = tail_lines.to_string();
+    LogsOptionsBuilder::default()
+        .follow(matches!(attach, V2LogAttachMode::Follow))
+        .stdout(true)
+        .stderr(true)
+        .timestamps(false)
+        .tail(&tail)
+        .build()
+}
+
 const fn capped_tail_lines(tail_lines: Option<u16>) -> u16 {
     match tail_lines {
         Some(lines) if lines > MAX_LOG_TAIL_LINES => MAX_LOG_TAIL_LINES,
@@ -865,8 +1483,80 @@ fn create_body(
     command: CreateManagedContainer,
     endpoint_network_subnet: &str,
 ) -> ContainerCreateBody {
-    let image = command.image.as_str().to_owned();
-    let runtime = command.runtime;
+    let CreateManagedContainer {
+        image,
+        runtime,
+        provisioned_volumes: _,
+        dns_search_domain,
+        identity,
+    } = command;
+    create_body_for_identity(
+        image,
+        runtime,
+        DockerCreateIdentity::Incumbent(identity),
+        dns_search_domain,
+        endpoint_network_subnet,
+    )
+}
+
+fn create_v2_body(
+    command: CreateV2ManagedContainer,
+    endpoint_network_subnet: &str,
+) -> ContainerCreateBody {
+    let CreateV2ManagedContainer {
+        image,
+        runtime,
+        dns_search_domain,
+        identity,
+    } = command;
+    create_body_for_identity(
+        image,
+        runtime,
+        DockerCreateIdentity::CorrosionV2 { identity },
+        dns_search_domain,
+        endpoint_network_subnet,
+    )
+}
+
+enum DockerCreateIdentity {
+    Incumbent(ManagedContainerIdentity),
+    CorrosionV2 {
+        identity: V2ManagedContainerIdentity,
+    },
+}
+
+impl DockerCreateIdentity {
+    fn labels(&self) -> BTreeMap<String, String> {
+        match self {
+            Self::Incumbent(identity) => labels::render(identity),
+            Self::CorrosionV2 { identity, .. } => v2_labels::render(identity),
+        }
+    }
+
+    fn volume_storage_name(&self, volume_name: &VolumeName) -> String {
+        match self {
+            Self::Incumbent(identity) => volume_name.stable_storage_name(&identity.namespace_id),
+            Self::CorrosionV2 { identity, .. } => {
+                let namespace = identity.namespace_id.as_str();
+                format!(
+                    "ployz-v2-n{}-{namespace}-v{}-{}",
+                    namespace.len(),
+                    volume_name.as_str().len(),
+                    volume_name.as_str()
+                )
+            }
+        }
+    }
+}
+
+fn create_body_for_identity(
+    image: ImageReference,
+    runtime: ContainerRuntimeSpec,
+    identity: DockerCreateIdentity,
+    dns_search_domain: InternalDnsSearchDomain,
+    endpoint_network_subnet: &str,
+) -> ContainerCreateBody {
+    let image = image.as_str().to_owned();
     let env = if runtime.environment.is_empty() {
         None
     } else {
@@ -900,7 +1590,7 @@ fn create_body(
     // configuration is the upgrade path.
     let dns = endpoint_bridge_gateway_ipv4(endpoint_network_subnet)
         .map(|gateway| vec![gateway.to_string()]);
-    let dns_search = Some(vec![command.dns_search_domain.as_str().to_owned()]);
+    let dns_search = Some(vec![dns_search_domain.as_str().to_owned()]);
     ContainerCreateBody {
         image: Some(image),
         env,
@@ -908,10 +1598,10 @@ fn create_body(
         entrypoint,
         healthcheck,
         stop_timeout: Some(i64::from(runtime.stop_grace_period.as_seconds())),
-        labels: Some(hashmap_from_btree(labels::render(&command.identity))),
+        labels: Some(hashmap_from_btree(identity.labels())),
         host_config: Some(HostConfig {
             network_mode: Some(ENDPOINT_NETWORK_NAME.to_owned()),
-            mounts: docker_volume_mounts(&command.identity.namespace_id, &runtime.volume_mounts),
+            mounts: docker_volume_mounts(&identity, &runtime.volume_mounts),
             restart_policy,
             cap_add,
             cap_drop,
@@ -936,7 +1626,7 @@ fn create_body(
 }
 
 fn docker_volume_mounts(
-    namespace_id: &ployz_core::ids::NamespaceId,
+    identity: &DockerCreateIdentity,
     mounts: &[ployz_core::deploy::ServiceVolumeMount],
 ) -> Option<Vec<Mount>> {
     if mounts.is_empty() {
@@ -947,7 +1637,7 @@ fn docker_volume_mounts(
             .iter()
             .map(|mount| Mount {
                 target: Some(mount.target.as_str().to_owned()),
-                source: Some(mount.volume_name.stable_storage_name(namespace_id)),
+                source: Some(identity.volume_storage_name(&mount.volume_name)),
                 typ: Some(MountType::VOLUME),
                 read_only: None,
                 consistency: None,
@@ -1050,6 +1740,45 @@ fn existing_container_from_summary(
     })
 }
 
+fn summary_has_v2_identity_schema(summary: &ContainerSummary) -> bool {
+    summary.labels.as_ref().is_some_and(|labels| {
+        labels
+            .get(v2_labels::IDENTITY_SCHEMA_LABEL)
+            .map(String::as_str)
+            == Some(v2_labels::V2_IDENTITY_SCHEMA)
+    })
+}
+
+fn existing_v2_container_from_summary(
+    summary: ContainerSummary,
+) -> Result<ExistingV2ManagedContainer, DockerManagedContainerSummaryError> {
+    let id = summary
+        .id
+        .ok_or(DockerManagedContainerSummaryError::MissingId)?;
+    let labels = summary
+        .labels
+        .ok_or(DockerManagedContainerSummaryError::MissingLabels)?;
+    let state = summary
+        .state
+        .ok_or(DockerManagedContainerSummaryError::MissingState)?;
+    let health_status = summary
+        .health
+        .and_then(|health| health.status)
+        .and_then(docker_health_status);
+    let identity = v2_labels::parse(&btree_from_hashmap(labels))
+        .map_err(DockerManagedContainerSummaryError::InvalidV2Labels)?;
+
+    Ok(ExistingV2ManagedContainer {
+        container_id: ContainerId::try_new(id)
+            .map_err(DockerManagedContainerSummaryError::InvalidContainerId)?,
+        identity,
+        state: docker_container_state(state, summary.network_settings)?,
+        health_status: health_status.or_else(|| summary.status.as_deref().and_then(status_health)),
+        resolved_image_identity: summary.image_id,
+        created_at_unix_seconds: summary.created,
+    })
+}
+
 fn docker_health_status(
     status: ContainerSummaryHealthStatusEnum,
 ) -> Option<ManagedContainerHealthStatus> {
@@ -1118,6 +1847,8 @@ enum DockerManagedContainerSummaryError {
     InvalidContainerId(SubjectTokenError),
     #[error("managed Docker container has invalid labels: {0:?}")]
     InvalidLabels(ManagedContainerLabelError),
+    #[error("managed Docker container has invalid v2 labels: {0:?}")]
+    InvalidV2Labels(V2ManagedContainerLabelError),
 }
 
 fn hashmap_from_btree(map: BTreeMap<String, String>) -> HashMap<String, String> {
@@ -1149,6 +1880,287 @@ mod tests {
     use std::sync::atomic::Ordering;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::UnixListener;
+
+    fn log_container_id() -> ContainerId {
+        ContainerId::try_new("log-container").expect("container id")
+    }
+
+    fn open_shutdown() -> (
+        tokio::sync::watch::Sender<bool>,
+        tokio::sync::watch::Receiver<bool>,
+    ) {
+        tokio::sync::watch::channel(false)
+    }
+
+    #[tokio::test]
+    async fn v2_log_reader_preserves_streams_and_assembles_complete_lines() {
+        let stream = futures_util::stream::iter([
+            Ok(LogOutput::StdOut {
+                message: bytes::Bytes::from_static(b"hel"),
+            }),
+            Ok(LogOutput::StdErr {
+                message: bytes::Bytes::from_static(b"warning\r\n"),
+            }),
+            Ok(LogOutput::StdOut {
+                message: bytes::Bytes::from_static(b"lo\nlast"),
+            }),
+        ]);
+
+        let (_shutdown_send, shutdown_receive) = open_shutdown();
+        let batch = collect_v2_log_stream(
+            stream,
+            &log_container_id(),
+            10,
+            1_024,
+            Duration::from_secs(1),
+            shutdown_receive,
+        )
+        .await
+        .expect("log read");
+
+        assert_eq!(
+            batch,
+            RuntimeLogBatch {
+                lines: vec![
+                    RuntimeLogLine {
+                        stream: RuntimeLogStream::Stderr,
+                        line: "warning".to_owned(),
+                    },
+                    RuntimeLogLine {
+                        stream: RuntimeLogStream::Stdout,
+                        line: "hello".to_owned(),
+                    },
+                    RuntimeLogLine {
+                        stream: RuntimeLogStream::Stdout,
+                        line: "last".to_owned(),
+                    },
+                ],
+                truncated: false,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn v2_log_reader_caps_complete_lines_and_raw_bytes() {
+        let lines = futures_util::stream::iter([Ok(LogOutput::StdOut {
+            message: bytes::Bytes::from_static(b"one\ntwo\nthree\n"),
+        })]);
+        let (_line_shutdown_send, line_shutdown_receive) = open_shutdown();
+        let line_capped = collect_v2_log_stream(
+            lines,
+            &log_container_id(),
+            2,
+            1_024,
+            Duration::from_secs(1),
+            line_shutdown_receive,
+        )
+        .await
+        .expect("line-capped read");
+        assert_eq!(
+            line_capped
+                .lines
+                .iter()
+                .map(|line| line.line.as_str())
+                .collect::<Vec<_>>(),
+            ["one", "two"]
+        );
+        assert!(line_capped.truncated);
+
+        let bytes = futures_util::stream::iter([Ok(LogOutput::StdOut {
+            message: bytes::Bytes::from_static(b"1234\n5\n"),
+        })]);
+        let (_byte_shutdown_send, byte_shutdown_receive) = open_shutdown();
+        let byte_capped = collect_v2_log_stream(
+            bytes,
+            &log_container_id(),
+            10,
+            4,
+            Duration::from_secs(1),
+            byte_shutdown_receive,
+        )
+        .await
+        .expect("byte-capped read");
+        assert_eq!(byte_capped.lines.len(), 1);
+        assert_eq!(byte_capped.lines.first().expect("first line").line, "1234");
+        assert!(byte_capped.truncated);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn v2_log_follow_emits_lines_immediately_and_stops_when_the_receiver_drops() {
+        let follow_stream = futures_util::stream::iter([
+            Ok(LogOutput::StdOut {
+                message: bytes::Bytes::from_static(b"rea"),
+            }),
+            Ok(LogOutput::StdErr {
+                message: bytes::Bytes::from_static(b"warning\r\n"),
+            }),
+            Ok(LogOutput::StdOut {
+                message: bytes::Bytes::from_static(b"dy\n"),
+            }),
+        ])
+        .chain(futures_util::stream::pending());
+        let (follow_shutdown_send, follow_shutdown_receive) = open_shutdown();
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let task = tokio::spawn(async move {
+            run_v2_log_follow_stream(
+                follow_stream,
+                log_container_id(),
+                sender,
+                follow_shutdown_receive,
+            )
+            .await
+        });
+        let _follow_shutdown_send = follow_shutdown_send;
+        let mut follow = RuntimeLogFollow::new(receiver);
+        assert_eq!(
+            follow.next_line().await.expect("stderr line"),
+            Some(RuntimeLogLine {
+                stream: RuntimeLogStream::Stderr,
+                line: "warning".to_owned(),
+            })
+        );
+        assert_eq!(
+            follow.next_line().await.expect("stdout line"),
+            Some(RuntimeLogLine {
+                stream: RuntimeLogStream::Stdout,
+                line: "ready".to_owned(),
+            })
+        );
+        drop(follow);
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("reader task observes receiver drop")
+            .expect("reader task");
+    }
+
+    #[tokio::test]
+    async fn v2_log_follow_distinguishes_stream_failure_from_clean_eof() {
+        let error_stream =
+            futures_util::stream::iter([Err(BollardError::DockerResponseServerError {
+                status_code: 404,
+                message: "secret-bearing daemon detail".to_owned(),
+            })]);
+        let (error_shutdown_send, error_shutdown_receive) = open_shutdown();
+        let (error_sender, error_receiver) = tokio::sync::mpsc::channel(1);
+        let error_task = tokio::spawn(run_v2_log_follow_stream(
+            error_stream,
+            log_container_id(),
+            error_sender,
+            error_shutdown_receive,
+        ));
+        let _error_shutdown_send = error_shutdown_send;
+        let mut error_follow = RuntimeLogFollow::new(error_receiver);
+        assert_eq!(
+            error_follow.next_line().await,
+            Err(V2MachineLogReadError::NotFound {
+                container_id: log_container_id(),
+            })
+        );
+        error_task.await.expect("error reader task");
+
+        let eof_stream = futures_util::stream::iter([Ok(LogOutput::StdOut {
+            message: bytes::Bytes::from_static(b"last line"),
+        })]);
+        let (eof_shutdown_send, eof_shutdown_receive) = open_shutdown();
+        let (eof_sender, eof_receiver) = tokio::sync::mpsc::channel(1);
+        let eof_task = tokio::spawn(run_v2_log_follow_stream(
+            eof_stream,
+            log_container_id(),
+            eof_sender,
+            eof_shutdown_receive,
+        ));
+        let _eof_shutdown_send = eof_shutdown_send;
+        let mut eof_follow = RuntimeLogFollow::new(eof_receiver);
+        assert_eq!(
+            eof_follow.next_line().await.expect("final line"),
+            Some(RuntimeLogLine {
+                stream: RuntimeLogStream::Stdout,
+                line: "last line".to_owned(),
+            })
+        );
+        assert_eq!(eof_follow.next_line().await.expect("clean EOF"), None);
+        eof_task.await.expect("EOF reader task");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn v2_log_tail_deadline_is_typed() {
+        let (tail_shutdown_send, tail_shutdown_receive) = open_shutdown();
+        let tail = tokio::spawn(async move {
+            collect_v2_log_stream(
+                futures_util::stream::pending(),
+                &log_container_id(),
+                10,
+                1_024,
+                Duration::from_secs(1),
+                tail_shutdown_receive,
+            )
+            .await
+        });
+        let _tail_shutdown_send = tail_shutdown_send;
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert_eq!(
+            tail.await.expect("tail task"),
+            Err(V2MachineLogReadError::TimedOut)
+        );
+    }
+
+    #[tokio::test]
+    async fn v2_log_reader_classifies_cancellation_not_found_and_unknown_streams() {
+        let (shutdown_send, shutdown_receive) = tokio::sync::watch::channel(false);
+        shutdown_send.send(true).expect("shutdown");
+        assert_eq!(
+            collect_v2_log_stream(
+                futures_util::stream::pending(),
+                &log_container_id(),
+                10,
+                1_024,
+                Duration::from_secs(1),
+                shutdown_receive,
+            )
+            .await,
+            Err(V2MachineLogReadError::Cancelled)
+        );
+
+        let not_found = BollardError::DockerResponseServerError {
+            status_code: 404,
+            message: "secret-bearing daemon detail".to_owned(),
+        };
+        assert_eq!(
+            classify_v2_log_error(&log_container_id(), &not_found),
+            V2MachineLogReadError::NotFound {
+                container_id: log_container_id(),
+            }
+        );
+        let read_failure = BollardError::DockerResponseServerError {
+            status_code: 500,
+            message: "secret-bearing daemon detail".to_owned(),
+        };
+        let classified = classify_v2_log_error(&log_container_id(), &read_failure);
+        assert_eq!(classified, V2MachineLogReadError::ReadFailed);
+        assert!(
+            !classified
+                .to_string()
+                .contains("secret-bearing daemon detail")
+        );
+        assert_eq!(
+            CompleteLogLineCollector::new(10, 1_024).push(LogOutput::Console {
+                message: bytes::Bytes::from_static(b"ambiguous"),
+            }),
+            Err(V2MachineLogReadError::ReadFailed)
+        );
+    }
+
+    #[test]
+    fn v2_log_options_separate_tail_from_follow() {
+        let tail = v2_logs_options(17, V2LogAttachMode::Tail);
+        assert!(!tail.follow);
+        assert_eq!(tail.tail.as_str(), "17");
+
+        let follow = v2_logs_options(17, V2LogAttachMode::Follow);
+        assert!(follow.follow);
+        assert_eq!(follow.tail.as_str(), "17");
+    }
 
     #[test]
     fn image_reclamation_never_forces_removal_of_an_in_use_image() {
@@ -1264,6 +2276,20 @@ mod tests {
     }
 
     #[test]
+    fn v2_list_options_filter_to_the_row_identity_schema() {
+        let options = v2_managed_container_list_options();
+
+        assert!(options.all);
+        assert_eq!(
+            options.filters,
+            Some(HashMap::from([(
+                "label".to_owned(),
+                vec!["plz.identity_schema=corrosion_v2".to_owned()]
+            )]))
+        );
+    }
+
+    #[test]
     fn create_body_preserves_image_and_labels() {
         let body = create_body(
             CreateManagedContainer {
@@ -1281,6 +2307,100 @@ mod tests {
             body.labels,
             Some(hashmap_from_btree(labels::render(&managed_identity())))
         );
+    }
+
+    #[test]
+    fn v2_create_body_uses_only_row_identity_labels_and_human_dns_namespace() {
+        let body = create_v2_body(
+            CreateV2ManagedContainer {
+                image: image("ghcr.io/acme/api:rev-2"),
+                runtime: ContainerRuntimeSpec::image_defaults(),
+                dns_search_domain: dns_search_domain("production"),
+                identity: v2_managed_identity(),
+            },
+            TEST_ENDPOINT_SUBNET,
+        );
+
+        assert_eq!(body.image, Some("ghcr.io/acme/api:rev-2".to_owned()));
+        assert_eq!(
+            body.labels,
+            Some(hashmap_from_btree(
+                v2_labels::render(&v2_managed_identity())
+            ))
+        );
+        assert_eq!(
+            body.host_config.and_then(|config| config.dns_search),
+            Some(vec!["production.internal".to_owned()])
+        );
+    }
+
+    #[test]
+    fn v2_create_body_preserves_runtime_and_uses_row_scoped_volume_names() {
+        let mut runtime = runtime_spec();
+        runtime.volume_mounts = vec![ServiceVolumeMount {
+            volume_name: VolumeName::try_new("data").expect("volume"),
+            target: ContainerMountPath::try_new("/srv/data").expect("mount path"),
+        }];
+        let body = create_v2_body(
+            CreateV2ManagedContainer {
+                image: image("ghcr.io/acme/api:rev-2"),
+                runtime,
+                dns_search_domain: dns_search_domain("production"),
+                identity: v2_managed_identity(),
+            },
+            TEST_ENDPOINT_SUBNET,
+        );
+
+        assert_eq!(
+            body.env,
+            Some(vec!["ALPHA=1".to_owned(), "BETA=two".to_owned()])
+        );
+        assert_eq!(body.cmd, Some(vec!["serve".to_owned(), "api".to_owned()]));
+        let host = body.host_config.expect("host config");
+        let mounts = host.mounts.expect("mounts");
+        let [mount] = mounts.as_slice() else {
+            panic!("one mount expected");
+        };
+        assert_eq!(
+            mount.source.as_deref(),
+            Some("ployz-v2-n26-01K00000000000000000000001-v4-data")
+        );
+    }
+
+    #[tokio::test]
+    async fn v2_create_requires_the_endpoint_network_and_returns_the_docker_id() {
+        let network = r#"{"Driver":"bridge","Labels":{"plz.managed":"true"},"Options":{"com.docker.network.bridge.name":"br-test","com.docker.network.driver.mtu":"1420"},"IPAM":{"Config":[{"Subnet":"10.42.7.0/24","Gateway":"10.42.7.1"}]}}"#;
+        let (runner, attempts, _socket_dir) = runner_with_responses(vec![
+            (200, network.to_owned()),
+            (201, r#"{"Id":"0123456789abcdef","Warnings":[]}"#.to_owned()),
+        ])
+        .await;
+
+        let created = runner
+            .create_v2_managed_container(CreateV2ManagedContainer {
+                image: image("ghcr.io/acme/api:rev-2"),
+                runtime: ContainerRuntimeSpec::image_defaults(),
+                dns_search_domain: dns_search_domain("production"),
+                identity: v2_managed_identity(),
+            })
+            .await
+            .expect("v2 create succeeds");
+
+        assert_eq!(created, container_id("0123456789abcdef"));
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn v2_container_ids_are_directly_startable() {
+        let (runner, attempts, _socket_dir) =
+            runner_with_responses(vec![(204, String::new())]).await;
+
+        runner
+            .start_v2_managed_container(&container_id("0123456789abcdef"))
+            .await
+            .expect("v2 start succeeds");
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -1610,6 +2730,44 @@ mod tests {
     }
 
     #[test]
+    fn v2_summary_recovers_the_row_only_identity() {
+        let summary = ContainerSummary {
+            id: Some("0123456789abcdef".to_owned()),
+            labels: Some(hashmap_from_btree(
+                v2_labels::render(&v2_managed_identity()),
+            )),
+            state: Some(ContainerSummaryStateEnum::CREATED),
+            image_id: Some("sha256:resolved".to_owned()),
+            created: Some(42),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            existing_v2_container_from_summary(summary).expect("summary parses"),
+            ExistingV2ManagedContainer {
+                container_id: container_id("0123456789abcdef"),
+                identity: v2_managed_identity(),
+                state: ExistingManagedContainerState::StartableStopped,
+                health_status: None,
+                resolved_image_identity: Some("sha256:resolved".to_owned()),
+                created_at_unix_seconds: Some(42),
+            }
+        );
+    }
+
+    #[test]
+    fn legacy_recovery_recognizes_v2_summaries_before_legacy_parsing() {
+        let summary = ContainerSummary {
+            labels: Some(hashmap_from_btree(
+                v2_labels::render(&v2_managed_identity()),
+            )),
+            ..Default::default()
+        };
+
+        assert!(summary_has_v2_identity_schema(&summary));
+    }
+
+    #[test]
     fn inspect_mounts_expose_only_sorted_deduplicated_named_volumes() {
         let namespace_id = namespace_id("default");
         let a_data = VolumeName::try_new("a-data").expect("volume");
@@ -1878,6 +3036,17 @@ mod tests {
             operation_id: operation_id("op_123"),
             step_id: step_id("run_1"),
             kind: ManagedContainerKind::Service,
+        }
+    }
+
+    fn v2_managed_identity() -> V2ManagedContainerIdentity {
+        V2ManagedContainerIdentity {
+            namespace_id: ployz_core::ids::NamespaceRowId::try_new("01K00000000000000000000001")
+                .expect("namespace row"),
+            service_id: ployz_core::ids::ServiceRowId::try_new("01K00000000000000000000002")
+                .expect("service row"),
+            operation_id: ployz_core::ids::OperationRowId::try_new("01K00000000000000000000003")
+                .expect("operation row"),
         }
     }
 

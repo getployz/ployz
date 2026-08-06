@@ -1,6 +1,7 @@
 //! Machine-local endpoint-network convergence driven by the accepted machines lens.
 
 use std::future::Future;
+use std::sync::Arc;
 use std::time::Duration;
 
 use ployz_core::LensSnapshot;
@@ -27,18 +28,23 @@ const WIREGUARD_IFNAME: &str = "ployz0";
 pub(super) async fn run(
     updates: watch::Receiver<Option<LensState>>,
     local_machine_id: MachineRowId,
+    runner: Arc<DockerManagedContainerRunner>,
     shutdown: watch::Receiver<bool>,
 ) -> Result<(), EndpointNetworkFoldError> {
-    run_with(updates, local_machine_id, shutdown, |subnet| async move {
-        let runner = DockerManagedContainerRunner::lazy_local_defaults(
-            subnet.as_string(),
-            ENDPOINT_BRIDGE_IFNAME.to_owned(),
-            WIREGUARD_IFNAME.to_owned(),
-            WireGuardMtuPolicy::Auto,
-        );
-        runner.converge_endpoint_network(&subnet).await
+    run_with(updates, local_machine_id, shutdown, move |subnet| {
+        let runner = Arc::clone(&runner);
+        async move { runner.converge_endpoint_network(&subnet).await }
     })
     .await
+}
+
+pub(super) fn runner_for_subnet(subnet: &MachineEndpointSubnet) -> DockerManagedContainerRunner {
+    DockerManagedContainerRunner::lazy_local_defaults(
+        subnet.as_string(),
+        ENDPOINT_BRIDGE_IFNAME.to_owned(),
+        WIREGUARD_IFNAME.to_owned(),
+        WireGuardMtuPolicy::Auto,
+    )
 }
 
 async fn run_with<Converge, ConvergeFuture>(

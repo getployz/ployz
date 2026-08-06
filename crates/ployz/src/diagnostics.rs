@@ -786,7 +786,9 @@ mod tests {
     fn shadow_repairs_survive_option_looking_and_metacharacter_handles() {
         let machine_handle = "edge-a";
         let peer_handle = "--help";
-        let namespace_handle = "--target";
+        // A parsed namespace document carries a validated DNS label, so an
+        // option-looking handle is unrepresentable here; peers keep that case.
+        let namespace_handle = "prod-blue";
         let service_handle = "dind laptop'; touch /tmp/not-run #";
         let namespace_id =
             ployz_core::ids::NamespaceRowId::try_new(ROW_WINNER).expect("namespace row id");
@@ -863,7 +865,7 @@ mod tests {
                 .map(ToOwned::to_owned),
             ),
             Ok(Command::Namespace(NamespaceCommand::Remove(command)))
-                if command.name == namespace_handle
+                if command.namespace.as_str() == namespace_handle
                     && command.namespace_id.as_ref().is_some_and(|id| id.as_str() == ROW_LOSER)
         ));
 

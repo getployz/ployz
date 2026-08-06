@@ -1,14 +1,15 @@
 //! Keeper's closed provider seam over privileged Host Runner effects.
 
 use ployz_core::corrosion::{
-    DesiredBuiltinWireguardLocal, DesiredBuiltinWireguardMesh, derive_builtin_wireguard_member,
+    CorrosionTimestamp, DesiredBuiltinWireguardLocal, DesiredBuiltinWireguardMesh,
+    derive_builtin_wireguard_member,
 };
 use ployz_core::ids::ClusterId;
 use ployz_core::network::WireGuardPublicKey;
 use ployz_core::operation::FailureMessage;
 use ployz_host_runner::builtin_wireguard::{
     BuiltinWireguardHost, BuiltinWireguardHostError, BuiltinWireguardHostOutcome,
-    WireguardLocalBinding,
+    WireguardHandshakeEpoch, WireguardLocalBinding,
 };
 use ployz_host_runner::container_isolation::{ContainerIsolationHost, ContainerIsolationHostError};
 use ployz_host_runner::{
@@ -20,6 +21,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use time::OffsetDateTime;
 
 /// An async-safe owner for bounded, blocking host effects.
 #[derive(Clone)]
@@ -99,6 +101,42 @@ impl KeeperMeshProvider {
         }
     }
 
+    #[cfg(test)]
+    pub(super) fn for_test(
+        host_config: ployz_host_runner::builtin_wireguard::BuiltinWireguardHostConfig,
+        fold_timeout: Duration,
+    ) -> Self {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let command_timeout = host_config.command_timeout();
+        let runner = CancellableHostRunner {
+            inner: SystemHostRunnerCommandRunner::new(command_timeout),
+            cancelled: Arc::clone(&cancelled),
+        };
+        Self {
+            host: Arc::new(Mutex::new(BuiltinWireguardHost::with_runner(
+                host_config,
+                runner,
+            ))),
+            isolation_host: Arc::new(Mutex::new(ContainerIsolationHost::with_runner(
+                ployz_host_runner::container_isolation::ContainerIsolationHostConfig::try_new(
+                    "/usr/local/bin/ployz-ebpf-ctl".into(),
+                    "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".into(),
+                    "/sys/fs/bpf/ployz".into(),
+                    "/sys/fs/cgroup".into(),
+                    "/run/ployz/container-isolation.rows".into(),
+                    command_timeout,
+                )
+                .expect("isolation config"),
+                CancellableHostRunner {
+                    inner: SystemHostRunnerCommandRunner::new(command_timeout),
+                    cancelled: Arc::clone(&cancelled),
+                },
+            ))),
+            fold_timeout,
+            cancelled,
+        }
+    }
+
     /// Supplies local identity material for future admission workflows.
     pub(super) async fn provision_join(&self) -> Result<WireGuardPublicKey, KeeperProviderError> {
         self.run_blocking("provision local WireGuard identity", |host| {
@@ -151,6 +189,18 @@ impl KeeperMeshProvider {
         .await
     }
 
+    /// Captures one point-in-time latest-handshake observation from the kernel.
+    pub(super) async fn observe_handshake(
+        &self,
+        public_key: WireGuardPublicKey,
+    ) -> Result<KeeperHandshakeObservation, KeeperProviderError> {
+        self.run_blocking("observe WireGuard handshake", move |host| {
+            let epoch = host.observe_peer_handshake(&public_key)?;
+            fixed_handshake_observation(epoch, OffsetDateTime::now_utc())
+        })
+        .await
+    }
+
     async fn run_blocking<Output, Run>(
         &self,
         operation: &'static str,
@@ -193,6 +243,45 @@ impl KeeperMeshProvider {
             }
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum KeeperHandshakeObservation {
+    Observed {
+        observed_at: CorrosionTimestamp,
+        age_seconds: Option<u64>,
+    },
+    PeerAbsent,
+}
+
+fn fixed_handshake_observation(
+    epoch: WireguardHandshakeEpoch,
+    observed_at: OffsetDateTime,
+) -> Result<KeeperHandshakeObservation, KeeperProviderError> {
+    let handshake_epoch = match epoch {
+        WireguardHandshakeEpoch::PeerAbsent => {
+            return Ok(KeeperHandshakeObservation::PeerAbsent);
+        }
+        WireguardHandshakeEpoch::Never => None,
+        WireguardHandshakeEpoch::Observed(value) => Some(value.get()),
+    };
+    let observed_epoch = u64::try_from(observed_at.unix_timestamp()).unwrap_or(0);
+    let value = observed_at
+        .format(&time::format_description::well_known::Rfc3339)
+        .map_err(|error| KeeperProviderError::Task {
+            operation: "capture WireGuard handshake timestamp",
+            detail: error.to_string(),
+        })?;
+    let observed_at =
+        CorrosionTimestamp::try_new(value).map_err(|error| KeeperProviderError::Task {
+            operation: "capture WireGuard handshake timestamp",
+            detail: error.to_string(),
+        })?;
+    let age_seconds = handshake_epoch.map(|value| observed_epoch.saturating_sub(value));
+    Ok(KeeperHandshakeObservation::Observed {
+        observed_at,
+        age_seconds,
+    })
 }
 
 #[derive(Debug)]
@@ -325,7 +414,6 @@ mod tests {
     use ployz_host_runner::builtin_wireguard::{
         BuiltinWireguardEbpfConfig, BuiltinWireguardHostConfig, BuiltinWireguardPorts,
     };
-    use ployz_host_runner::container_isolation::ContainerIsolationHostConfig;
 
     fn provider_for_timeout_test(timeout: Duration) -> KeeperMeshProvider {
         let ebpf = BuiltinWireguardEbpfConfig::try_new(
@@ -345,34 +433,7 @@ mod tests {
             Duration::from_millis(20),
         )
         .expect("host config");
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let runner = CancellableHostRunner {
-            inner: SystemHostRunnerCommandRunner::new(Duration::from_millis(20)),
-            cancelled: Arc::clone(&cancelled),
-        };
-        KeeperMeshProvider {
-            host: Arc::new(Mutex::new(BuiltinWireguardHost::with_runner(
-                host_config,
-                runner,
-            ))),
-            isolation_host: Arc::new(Mutex::new(ContainerIsolationHost::with_runner(
-                ContainerIsolationHostConfig::try_new(
-                    "/usr/local/bin/ployz-ebpf-ctl".into(),
-                    "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".into(),
-                    "/sys/fs/bpf/ployz".into(),
-                    "/sys/fs/cgroup".into(),
-                    "/run/ployz/container-isolation.rows".into(),
-                    Duration::from_millis(20),
-                )
-                .expect("isolation config"),
-                CancellableHostRunner {
-                    inner: SystemHostRunnerCommandRunner::new(Duration::from_millis(20)),
-                    cancelled: Arc::clone(&cancelled),
-                },
-            ))),
-            fold_timeout: timeout,
-            cancelled,
-        }
+        KeeperMeshProvider::for_test(host_config, timeout)
     }
 
     #[tokio::test]
@@ -390,6 +451,51 @@ mod tests {
         assert!(
             started.elapsed() < Duration::from_millis(100),
             "the outer timeout must not wait for a blocking fold that ignores cancellation"
+        );
+    }
+
+    #[test]
+    fn observed_never_has_one_fixed_timestamp_and_no_age() {
+        let now = OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("timestamp");
+
+        assert_eq!(
+            fixed_handshake_observation(WireguardHandshakeEpoch::Never, now).expect("observation"),
+            KeeperHandshakeObservation::Observed {
+                observed_at: CorrosionTimestamp::try_new("2027-01-15T08:00:00Z")
+                    .expect("timestamp"),
+                age_seconds: None,
+            }
+        );
+    }
+
+    #[test]
+    fn handshake_age_saturates_at_one_captured_timestamp() {
+        let now = OffsetDateTime::from_unix_timestamp(100).expect("timestamp");
+
+        assert_eq!(
+            fixed_handshake_observation(
+                WireguardHandshakeEpoch::Observed(
+                    std::num::NonZeroU64::new(150).expect("nonzero"),
+                ),
+                now,
+            )
+            .expect("observation"),
+            KeeperHandshakeObservation::Observed {
+                observed_at: CorrosionTimestamp::try_new("1970-01-01T00:01:40Z")
+                    .expect("timestamp"),
+                age_seconds: Some(0),
+            }
+        );
+    }
+
+    #[test]
+    fn absent_peer_remains_distinct_from_observed_never() {
+        let now = OffsetDateTime::from_unix_timestamp(100).expect("timestamp");
+
+        assert_eq!(
+            fixed_handshake_observation(WireguardHandshakeEpoch::PeerAbsent, now)
+                .expect("observation"),
+            KeeperHandshakeObservation::PeerAbsent
         );
     }
 }

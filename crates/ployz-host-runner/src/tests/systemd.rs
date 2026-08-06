@@ -32,7 +32,7 @@ fn role_units_execute_the_stable_current_link() {
     assert_eq!(api_unit.unit_name(), "ployzd-api.service");
     assert_eq!(
         api_unit.render(),
-        "[Unit]\nDescription=Ployz api\nAfter=network-online.target docker.service sys-fs-bpf.mount\nWants=network-online.target docker.service\n\n[Service]\nType=exec\nEnvironmentFile=/etc/ployz/ployzd.env\nExecStart=/var/lib/ployz/current api\nTimeoutStopSec=10s\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n"
+        "[Unit]\nDescription=Ployz api\nAfter=network-online.target docker.service sys-fs-bpf.mount\nWants=network-online.target docker.service\n\n[Service]\nType=exec\nUser=ployz-api\nGroup=ployz-api\nSupplementaryGroups=docker ployz-control\nNoNewPrivileges=yes\nEnvironmentFile=/etc/ployz/ployzd.env\nExecStart=/var/lib/ployz/current api\nTimeoutStopSec=10s\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n"
     );
 }
 
@@ -47,6 +47,8 @@ fn keeper_unit_arms_systemd_rollback_on_a_failed_new_binary() {
     assert!(rendered.contains("RestartPreventExitStatus=75"));
     assert!(rendered.contains("OnFailure=ployzd-keeper-revert.service"));
     assert!(!rendered.contains("Restart=always"));
+    assert!(rendered.lines().any(|line| line == "Group=ployz-control"));
+    assert!(rendered.lines().any(|line| line == "User=root"));
 }
 
 #[test]

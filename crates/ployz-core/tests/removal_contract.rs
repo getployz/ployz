@@ -6,12 +6,11 @@ use ployz_core::ids::{ClusterId, NamespaceRowId, PeerId, RouteBindingRowId, Serv
 use ployz_core::network::MachineEndpointSupernet;
 use ployz_core::operation::RouteHostname;
 use ployz_core::{
-    KnownApiFeature, NAMESPACE_REMOVE_ROW_ROUTE, NamespaceRemoveRowRefusal,
-    NamespaceRemoveRowRequest, NamespaceRemoveRowSelection, PEER_REMOVE_ROUTE, PeerRemoveRefusal,
-    PeerRemoveRequest, PeerRemoveSelection, ROUTE_REMOVE_ROUTE, RouteRemoveRefusal,
-    RouteRemoveRequest, RouteRemoveSelection, SERVICE_REMOVE_ROW_ROUTE, ServiceRemoveRowRefusal,
-    ServiceRemoveRowRequest, ServiceRemoveRowSelection, V2Method, V2Route,
-    select_namespace_removal, select_peer_removal, select_route_removal, select_service_removal,
+    KnownApiFeature, PEER_REMOVE_ROUTE, PeerRemoveRefusal, PeerRemoveRequest, PeerRemoveSelection,
+    ROUTE_REMOVE_ROUTE, RouteRemoveRefusal, RouteRemoveRequest, RouteRemoveSelection,
+    SERVICE_REMOVE_ROW_ROUTE, ServiceRemoveRowRefusal, ServiceRemoveRowRequest,
+    ServiceRemoveRowSelection, V2Method, V2Route, select_peer_removal, select_route_removal,
+    select_service_removal,
 };
 use serde_json::{Value, json};
 
@@ -111,11 +110,6 @@ fn every_named_removal_route_is_post_peer_only_and_distinctly_advertised() {
             PEER_REMOVE_ROUTE,
             V2Route::PeerRemove,
             KnownApiFeature::PeerRemove,
-        ),
-        (
-            NAMESPACE_REMOVE_ROW_ROUTE,
-            V2Route::NamespaceRemove,
-            KnownApiFeature::NamespaceRemove,
         ),
         (
             SERVICE_REMOVE_ROW_ROUTE,
@@ -224,14 +218,6 @@ fn qualified_removal_distinguishes_absence_mismatch_and_unselectable_storage() {
 fn each_ordinary_named_table_selects_exactly_one_valid_row() {
     let cluster_id = ClusterId::try_new(CLUSTER).expect("cluster id");
     assert!(matches!(
-        select_namespace_removal(
-            &cluster_id,
-            vec![row(ID_A, named_document("namespaces", "prod"))],
-            &NamespaceRemoveRowRequest { name: "prod".to_owned(), namespace_id: None },
-        ),
-        Ok(NamespaceRemoveRowSelection::Delete { namespace_id, .. }) if namespace_id.as_str() == ID_A
-    ));
-    assert!(matches!(
         select_service_removal(
             &cluster_id,
             vec![row(ID_B, named_document("services", "web"))],
@@ -260,36 +246,40 @@ fn each_ordinary_named_table_selects_exactly_one_valid_row() {
 fn ordinary_shadow_ids_are_sorted_and_an_unqualified_missing_name_refuses() {
     let cluster_id = ClusterId::try_new(CLUSTER).expect("cluster id");
     assert_eq!(
-        select_namespace_removal(
+        select_service_removal(
             &cluster_id,
             vec![
-                row(ID_B, named_document("namespaces", "prod")),
-                row(ID_A, named_document("namespaces", "prod")),
+                row(ID_B, named_document("services", "web")),
+                row(ID_A, named_document("services", "web")),
             ],
-            &NamespaceRemoveRowRequest {
-                name: "prod".to_owned(),
-                namespace_id: None
+            &ServiceRemoveRowRequest {
+                namespace_id: NamespaceRowId::try_new(CLUSTER).expect("namespace id"),
+                name: "web".to_owned(),
+                service_id: None,
             },
         ),
-        Err(NamespaceRemoveRowRefusal::Ambiguous {
-            name: "prod".to_owned(),
-            namespace_ids: vec![
-                NamespaceRowId::try_new(ID_A).expect("id"),
-                NamespaceRowId::try_new(ID_B).expect("id"),
+        Err(ServiceRemoveRowRefusal::Ambiguous {
+            namespace_id: NamespaceRowId::try_new(CLUSTER).expect("namespace id"),
+            name: "web".to_owned(),
+            service_ids: vec![
+                ServiceRowId::try_new(ID_A).expect("id"),
+                ServiceRowId::try_new(ID_B).expect("id"),
             ],
         })
     );
     assert_eq!(
-        select_namespace_removal(
+        select_service_removal(
             &cluster_id,
             Vec::new(),
-            &NamespaceRemoveRowRequest {
-                name: "prod".to_owned(),
-                namespace_id: None
+            &ServiceRemoveRowRequest {
+                namespace_id: NamespaceRowId::try_new(CLUSTER).expect("namespace id"),
+                name: "web".to_owned(),
+                service_id: None,
             },
         ),
-        Err(NamespaceRemoveRowRefusal::NotFound {
-            name: "prod".to_owned()
+        Err(ServiceRemoveRowRefusal::NotFound {
+            namespace_id: NamespaceRowId::try_new(CLUSTER).expect("namespace id"),
+            name: "web".to_owned(),
         })
     );
 
@@ -300,38 +290,6 @@ fn ordinary_shadow_ids_are_sorted_and_an_unqualified_missing_name_refuses() {
 #[test]
 fn every_ordinary_table_selects_a_valid_shadow_by_id_and_fences_raw_id_retries() {
     let cluster_id = ClusterId::try_new(CLUSTER).expect("cluster id");
-    let namespace_id = NamespaceRowId::try_new(ID_B).expect("namespace id");
-    assert!(matches!(
-        select_namespace_removal(
-            &cluster_id,
-            vec![
-                row(ID_A, named_document("namespaces", "prod")),
-                row(ID_B, named_document("namespaces", "prod")),
-            ],
-            &NamespaceRemoveRowRequest {
-                name: "prod".to_owned(),
-                namespace_id: Some(namespace_id),
-            },
-        ),
-        Ok(NamespaceRemoveRowSelection::Delete { namespace_id, .. }) if namespace_id.as_str() == ID_B
-    ));
-    assert_eq!(
-        select_namespace_removal(
-            &cluster_id,
-            vec![row(
-                ID_B,
-                json!({"v": 2, "cluster_id": CLUSTER, "name": "prod"})
-            )],
-            &NamespaceRemoveRowRequest {
-                name: "prod".to_owned(),
-                namespace_id: Some(NamespaceRowId::try_new(ID_B).expect("id")),
-            },
-        ),
-        Err(NamespaceRemoveRowRefusal::StoredRowUnselectable {
-            namespace_id: NamespaceRowId::try_new(ID_B).expect("id"),
-        })
-    );
-
     let service_request = ServiceRemoveRowRequest {
         namespace_id: NamespaceRowId::try_new(CLUSTER).expect("namespace id"),
         name: "web".to_owned(),
@@ -464,22 +422,6 @@ fn qualified_missing_ids_refuse_handles_that_resolve_under_another_id() {
         })
     );
 
-    assert_eq!(
-        select_namespace_removal(
-            &cluster_id,
-            vec![row(ID_B, named_document("namespaces", "prod"))],
-            &NamespaceRemoveRowRequest {
-                name: "prod".to_owned(),
-                namespace_id: Some(NamespaceRowId::try_new(ID_A).expect("requested id")),
-            },
-        ),
-        Err(NamespaceRemoveRowRefusal::IdMismatch {
-            requested: NamespaceRowId::try_new(ID_A).expect("requested id"),
-            found: NamespaceRowId::try_new(ID_B).expect("found id"),
-            name: "prod".to_owned(),
-        })
-    );
-
     let hostname = RouteHostname::try_new("web.example.com").expect("hostname");
     assert_eq!(
         select_route_removal(
@@ -541,27 +483,6 @@ fn qualified_missing_ids_report_every_matching_handle_candidate() {
             peer_ids: vec![
                 PeerId::try_new(ID_B).expect("candidate id"),
                 PeerId::try_new(ID_C).expect("candidate id"),
-            ],
-        })
-    );
-
-    assert_eq!(
-        select_namespace_removal(
-            &cluster_id,
-            vec![
-                row(ID_C, named_document("namespaces", "prod")),
-                row(ID_B, named_document("namespaces", "prod")),
-            ],
-            &NamespaceRemoveRowRequest {
-                name: "prod".to_owned(),
-                namespace_id: Some(NamespaceRowId::try_new(ID_A).expect("requested id")),
-            },
-        ),
-        Err(NamespaceRemoveRowRefusal::Ambiguous {
-            name: "prod".to_owned(),
-            namespace_ids: vec![
-                NamespaceRowId::try_new(ID_B).expect("candidate id"),
-                NamespaceRowId::try_new(ID_C).expect("candidate id"),
             ],
         })
     );
@@ -631,23 +552,6 @@ fn qualified_missing_ids_ignore_unselectable_evidence_under_other_ids() {
         ),
         Ok(PeerRemoveSelection::AlreadyAbsent {
             peer_id: PeerId::try_new(ID_A).expect("requested id"),
-        })
-    );
-
-    assert_eq!(
-        select_namespace_removal(
-            &cluster_id,
-            vec![row(
-                ID_B,
-                json!({"v": 2, "cluster_id": CLUSTER, "name": "prod"}),
-            )],
-            &NamespaceRemoveRowRequest {
-                name: "prod".to_owned(),
-                namespace_id: Some(NamespaceRowId::try_new(ID_A).expect("requested id")),
-            },
-        ),
-        Ok(NamespaceRemoveRowSelection::AlreadyAbsent {
-            namespace_id: NamespaceRowId::try_new(ID_A).expect("requested id"),
         })
     );
 

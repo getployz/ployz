@@ -535,9 +535,12 @@ async fn version_is_success_json_with_the_core_capability_catalog() {
             ApiFeature::Known(KnownApiFeature::MachineUpgrade),
             ApiFeature::Known(KnownApiFeature::MachineRemove),
             ApiFeature::Known(KnownApiFeature::JoinDoor),
+            ApiFeature::Known(KnownApiFeature::NamespacePrimitives),
+            ApiFeature::Known(KnownApiFeature::FirstDeploy),
+            ApiFeature::Known(KnownApiFeature::OperationEvidence),
+            ApiFeature::Known(KnownApiFeature::Logs),
             ApiFeature::Known(KnownApiFeature::Diagnostics),
             ApiFeature::Known(KnownApiFeature::PeerRemove),
-            ApiFeature::Known(KnownApiFeature::NamespaceRemove),
             ApiFeature::Known(KnownApiFeature::ServiceRemove),
             ApiFeature::Known(KnownApiFeature::RouteRemove),
         ]

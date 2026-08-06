@@ -43,6 +43,7 @@ pub(super) async fn handle_machine_upgrade(
     match keeper_request(
         &service.keeper_upgrade_socket_path,
         &UpgradeRequest::Arm {
+            version: request.version.clone(),
             sha256: request.sha256.clone(),
         },
     )
@@ -97,7 +98,7 @@ fn verify_and_stage(
     let verified = verify_candidate(candidate, &request.sha256)?;
     service
         .upgrade_store
-        .stage(&verified)
+        .stage_upgrade_candidate(&verified, &request.version)
         .map_err(staging_refusal)?;
     Ok(())
 }

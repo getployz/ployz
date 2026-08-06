@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use super::artifacts::PloyzdArtifactStore;
+use super::privilege::InstalledRolePrivilege;
 pub use ployz_core::roles::PloyzdRole;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -162,10 +163,12 @@ impl PloyzdRoleUnit {
             }
         };
         let role_security = match self.role {
-            PloyzdRole::Dns => {
-                "DynamicUser=yes\nUser=ployz-dns\nAmbientCapabilities=CAP_NET_BIND_SERVICE\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE\nNoNewPrivileges=yes\n"
+            PloyzdRole::Dns => "DynamicUser=yes\nUser=ployz-dns\nAmbientCapabilities=CAP_NET_BIND_SERVICE\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE\nNoNewPrivileges=yes\n".to_owned(),
+            PloyzdRole::Keeper | PloyzdRole::Api | PloyzdRole::Gateway => {
+                InstalledRolePrivilege::for_role(self.role)
+                    .map(render_installed_role_security)
+                    .unwrap_or_default()
             }
-            PloyzdRole::Keeper | PloyzdRole::Api | PloyzdRole::Gateway => "",
         };
         let on_failure = match self.role {
             PloyzdRole::Keeper => "OnFailure=ployzd-keeper-revert.service",
@@ -190,6 +193,27 @@ impl PloyzdRoleUnit {
             restart,
         )
     }
+}
+
+fn render_installed_role_security(privilege: InstalledRolePrivilege) -> String {
+    let mut rendered = format!(
+        "User={}\nGroup={}\n",
+        privilege.user(),
+        privilege.primary_group()
+    );
+    if !privilege.supplementary_groups().is_empty() {
+        let groups = privilege
+            .supplementary_groups()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(" ");
+        rendered.push_str(&format!("SupplementaryGroups={groups}\n"));
+    }
+    if privilege.no_new_privileges() {
+        rendered.push_str("NoNewPrivileges=yes\n");
+    }
+    rendered
 }
 
 /// The systemd-only emergency rollback handler for a failed upgraded Keeper.

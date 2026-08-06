@@ -204,9 +204,20 @@ fn machine_join_seeds_current_and_renders_systemd_units_from_it() {
     let systemd = directory.path().join("systemd");
     fs::create_dir_all(&systemd).expect("systemd directory");
     let directories = SupervisorDirectories::new(systemd.clone(), directory.path().join("openrc"));
-    let mut runner = RecordingRunner::with_outputs(
-        std::iter::once(output("ID=ubuntu\n")).chain(std::iter::repeat_n(output(""), 8)),
-    );
+    let privilege_commands =
+        crate::api_privilege_install_commands(state.path(), crate::HostPackageFamily::Debian)
+            .expect("privilege install commands");
+    let expected_privilege_calls = privilege_commands
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    const ROLE_UNIT_SUPERVISOR_COMMAND_COUNT: usize = 8;
+    let mut runner = RecordingRunner::with_outputs(std::iter::once(output("ID=ubuntu\n")).chain(
+        std::iter::repeat_n(
+            output(""),
+            privilege_commands.len() + ROLE_UNIT_SUPERVISOR_COMMAND_COUNT,
+        ),
+    ));
     let mut profile = None;
     let mut substrate = LinuxSubstrate::new(state.path(), &mut runner, &mut profile, &directories);
 
@@ -231,6 +242,16 @@ fn machine_join_seeds_current_and_renders_systemd_units_from_it() {
     )));
     assert!(systemd.join("ployzd-keeper-revert.service").exists());
     assert!(!keeper.contains("/usr/local/bin/ployzd"));
+    let [profile_call, remaining_calls @ ..] = runner.calls.as_slice() else {
+        panic!("unit installation must inspect the host profile")
+    };
+    assert_eq!(profile_call, "cat /etc/os-release");
+    assert!(
+        remaining_calls
+            .iter()
+            .take(expected_privilege_calls.len())
+            .eq(expected_privilege_calls.iter())
+    );
 }
 
 #[test]

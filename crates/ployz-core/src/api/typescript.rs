@@ -7,15 +7,22 @@ use serde_json::{Value, json};
 use ts_rs::{Config, Dependency, TS, TypeVisitor};
 
 use super::v2::{
-    API_MAJOR, ApiRefusal, ApiVersion, ContainerLensRow, CorrosionRetryAfterSeconds,
-    KNOWN_API_FEATURES, KnownApiFeature, LensCollection, LensSnapshot, LensWatchEvent,
-    MachineLensRow, MachineRemoveRefusal, MachineRemoveReply, MachineRemoveRequest,
-    MachineStatusLensRow, MachineUpgradeRefusal, MachineUpgradeReply, MachineUpgradeRequest,
-    MachineUpgradeSupervisor, MachineUpgradeUrl, OperationLensRow, ServiceLensRow,
+    API_MAJOR, ApiRefusal, ApiVersion, ContainerLensRow, CorrosionLogsTailLines,
+    CorrosionNamespaceCreateRefusal, CorrosionNamespaceCreateReply,
+    CorrosionNamespaceCreateRequest, CorrosionNamespaceRemoveRefusal,
+    CorrosionNamespaceRemoveReply, CorrosionNamespaceRemoveRequest, CorrosionRetryAfterSeconds,
+    FirstDeployAccepted, FirstDeployRefusal, FirstDeployRequest, HandshakeObservation,
+    HandshakeObservationOutcome, HandshakeObservationUnavailable, KNOWN_API_FEATURES,
+    KnownApiFeature, LensCollection, LensSnapshot, LensWatchEvent, MachineLensRow,
+    MachineRemoveRefusal, MachineRemoveReply, MachineRemoveRequest, MachineStatusLensRow,
+    MachineUpgradeRefusal, MachineUpgradeReply, MachineUpgradeRequest, MachineUpgradeSupervisor,
+    MachineUpgradeUrl, OperationEvidence, OperationEvidenceEvent, OperationEvidenceSequence,
+    OperationLensRow, OperationLookupRefusal, OperationLookupReply, OperationWatchEvent,
+    OperationWatchRefusal, ServiceLensRow, ServiceLogLine, ServiceLogStream,
+    ServiceLogsFollowEvent, ServiceLogsRefusal, ServiceLogsRequest, ServiceLogsTailReply,
 };
 use super::{
-    DoctorDocument, NamedRemovalOutcome, NamespaceRemoveRowRefusal, NamespaceRemoveRowReply,
-    NamespaceRemoveRowRequest, PeerRemoveRefusal, PeerRemoveReply, PeerRemoveRequest,
+    DoctorDocument, NamedRemovalOutcome, PeerRemoveRefusal, PeerRemoveReply, PeerRemoveRequest,
     RouteRemoveRefusal, RouteRemoveReply, RouteRemoveRequest, ServiceRemoveRowRefusal,
     ServiceRemoveRowReply, ServiceRemoveRowRequest, StatusDocument,
 };
@@ -160,9 +167,6 @@ fn collect_v2_contracts(declarations: &mut DeclarationCollector<'_>) {
     declarations.visit::<PeerRemoveRequest>();
     declarations.visit::<PeerRemoveReply>();
     declarations.visit::<PeerRemoveRefusal>();
-    declarations.visit::<NamespaceRemoveRowRequest>();
-    declarations.visit::<NamespaceRemoveRowReply>();
-    declarations.visit::<NamespaceRemoveRowRefusal>();
     declarations.visit::<ServiceRemoveRowRequest>();
     declarations.visit::<ServiceRemoveRowReply>();
     declarations.visit::<ServiceRemoveRowRefusal>();
@@ -198,6 +202,32 @@ fn collect_v2_contracts(declarations: &mut DeclarationCollector<'_>) {
     declarations.visit::<JoinAdmissionRequest>();
     declarations.visit::<JoinAdmissionReply>();
     declarations.visit::<JoinMachineSubstrate>();
+    declarations.visit::<CorrosionNamespaceCreateRequest>();
+    declarations.visit::<CorrosionNamespaceCreateReply>();
+    declarations.visit::<CorrosionNamespaceCreateRefusal>();
+    declarations.visit::<CorrosionNamespaceRemoveRequest>();
+    declarations.visit::<CorrosionNamespaceRemoveReply>();
+    declarations.visit::<CorrosionNamespaceRemoveRefusal>();
+    declarations.visit::<FirstDeployRequest>();
+    declarations.visit::<FirstDeployAccepted>();
+    declarations.visit::<FirstDeployRefusal>();
+    declarations.visit::<OperationLookupReply>();
+    declarations.visit::<OperationLookupRefusal>();
+    declarations.visit::<OperationEvidenceSequence>();
+    declarations.visit::<OperationEvidence>();
+    declarations.visit::<OperationEvidenceEvent>();
+    declarations.visit::<HandshakeObservation>();
+    declarations.visit::<HandshakeObservationUnavailable>();
+    declarations.visit::<HandshakeObservationOutcome>();
+    declarations.visit::<OperationWatchRefusal>();
+    declarations.visit::<OperationWatchEvent>();
+    declarations.visit::<CorrosionLogsTailLines>();
+    declarations.visit::<ServiceLogsRequest>();
+    declarations.visit::<ServiceLogStream>();
+    declarations.visit::<ServiceLogLine>();
+    declarations.visit::<ServiceLogsRefusal>();
+    declarations.visit::<ServiceLogsTailReply>();
+    declarations.visit::<ServiceLogsFollowEvent>();
 }
 
 struct DeclarationCollector<'a> {
@@ -520,6 +550,10 @@ mod tests {
         assert!(generated.contains("export const KNOWN_API_FEATURES = ["));
         assert!(generated.contains("\"v2.founding\","));
         assert!(generated.contains("\"v2.lenses\","));
+        assert!(generated.contains("\"v2.namespace_primitives\","));
+        assert!(generated.contains("\"v2.first_deploy\","));
+        assert!(generated.contains("\"v2.operation_evidence\","));
+        assert!(generated.contains("\"v2.logs\","));
         assert!(generated.contains("\"v2.machine_remove\","));
         assert!(generated.contains("\"v2.peer_remove\","));
         assert!(generated.contains("\"v2.diagnostics\","));
@@ -552,9 +586,6 @@ mod tests {
             "PeerRemoveRequest",
             "PeerRemoveReply",
             "PeerRemoveRefusal",
-            "NamespaceRemoveRowRequest",
-            "NamespaceRemoveRowReply",
-            "NamespaceRemoveRowRefusal",
             "ServiceRemoveRowRequest",
             "ServiceRemoveRowReply",
             "ServiceRemoveRowRefusal",
@@ -568,6 +599,32 @@ mod tests {
             "FoundingResult",
             "FoundingRepairCommand",
             "FoundingRefusal",
+            "CorrosionNamespaceCreateRequest",
+            "CorrosionNamespaceCreateReply",
+            "CorrosionNamespaceCreateRefusal",
+            "CorrosionNamespaceRemoveRequest",
+            "CorrosionNamespaceRemoveReply",
+            "CorrosionNamespaceRemoveRefusal",
+            "FirstDeployRequest",
+            "FirstDeployAccepted",
+            "FirstDeployRefusal",
+            "OperationLookupReply",
+            "OperationLookupRefusal",
+            "OperationEvidenceSequence",
+            "OperationEvidence",
+            "OperationEvidenceEvent",
+            "HandshakeObservation",
+            "HandshakeObservationUnavailable",
+            "HandshakeObservationOutcome",
+            "OperationWatchRefusal",
+            "OperationWatchEvent",
+            "CorrosionLogsTailLines",
+            "ServiceLogsRequest",
+            "ServiceLogStream",
+            "ServiceLogLine",
+            "ServiceLogsRefusal",
+            "ServiceLogsTailReply",
+            "ServiceLogsFollowEvent",
             "MachineRemoveRequest",
             "MachineRemoveReply",
             "MachineRemoveRefusal",
