@@ -19,6 +19,10 @@ use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 
 const MAX_DNS_LABEL_LEN: usize = 63;
 pub const INTERNAL_DNS_SUFFIX: &str = "internal";
+/// Resolver-local proof used by founding and join readiness checks.
+pub const INTERNAL_DNS_READINESS_NAME: &str = "readiness.ployz.internal";
+/// RFC 5737 documentation address reserved for the resolver-local readiness proof.
+pub const INTERNAL_DNS_READINESS_ADDRESS: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 53);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -264,6 +268,32 @@ pub struct InternalServiceNameError {
     pub name: String,
 }
 
+/// A validated, lower-case `<namespace>.internal` container search domain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InternalDnsSearchDomain(String);
+
+impl InternalDnsSearchDomain {
+    /// Builds a search domain from the authoritative human-facing namespace label.
+    pub fn try_from_namespace_label(namespace: &str) -> Result<Self, InternalDnsSearchDomainError> {
+        let domain = format!("{namespace}.{INTERNAL_DNS_SUFFIX}");
+        if namespace.bytes().any(|byte| byte.is_ascii_uppercase()) || !is_dns_label(namespace) {
+            return Err(InternalDnsSearchDomainError { domain });
+        }
+        Ok(Self(domain))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("invalid internal DNS search domain {domain:?}")]
+pub struct InternalDnsSearchDomainError {
+    pub domain: String,
+}
+
 fn is_dns_label(label: &str) -> bool {
     !label.is_empty()
         && label.len() <= MAX_DNS_LABEL_LEN
@@ -386,6 +416,9 @@ pub fn project_internal_dns_rows(
         let Ok(name) = InternalServiceName::try_from_labels(&service.name, namespace_name) else {
             continue;
         };
+        if is_reserved_readiness_record(&name) {
+            continue;
+        }
         records.entry(name).or_default();
     }
     for row in read_rows::<ContainerDocument>(&cluster_id, container_rows).accepted {
@@ -407,6 +440,9 @@ pub fn project_internal_dns_rows(
         let Ok(name) = InternalServiceName::try_from_labels(&service.name, namespace_name) else {
             continue;
         };
+        if is_reserved_readiness_record(&name) {
+            continue;
+        }
         records.entry(name).or_default().push(container.ip);
     }
     for addresses in records.values_mut() {
@@ -416,6 +452,10 @@ pub fn project_internal_dns_rows(
 
     let bind = SocketAddr::from((endpoint_subnet.bridge_gateway_ipv4(), 53));
     Ok(InternalDnsRowProjection { bind, records })
+}
+
+fn is_reserved_readiness_record(name: &InternalServiceName) -> bool {
+    name.as_str() == INTERNAL_DNS_READINESS_NAME
 }
 
 /// Fully-qualified internal service names mapped to their running service

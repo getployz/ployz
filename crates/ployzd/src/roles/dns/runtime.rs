@@ -6,8 +6,8 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
 use ployz_core::network::internal_dns::{
-    InternalDnsRowProjection, InternalDnsRowProjectionInput, InternalServiceName,
-    project_internal_dns_rows,
+    INTERNAL_DNS_READINESS_ADDRESS, INTERNAL_DNS_READINESS_NAME, InternalDnsRowProjection,
+    InternalDnsRowProjectionInput, InternalServiceName, project_internal_dns_rows,
 };
 use tokio::sync::{broadcast, watch};
 use tokio::task::JoinHandle;
@@ -25,8 +25,6 @@ const REFRESH_RETRY_CAP: Duration = Duration::from_secs(5);
 const MAX_CONSECUTIVE_FAILURES: u8 = 8;
 const INVALIDATION_COALESCE: Duration = Duration::from_millis(50);
 const READINESS_TIMEOUT: Duration = Duration::from_secs(2);
-const READINESS_ADDRESS: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 53);
-const READINESS_NAME: &str = "readiness.ployz.internal";
 
 pub async fn run_from_environment() -> Result<(), DnsRoleRuntimeError> {
     let config = DnsRoleConfig::from_environment().map_err(DnsRoleRuntimeError::Configuration)?;
@@ -62,8 +60,7 @@ async fn run_dns_loop(
     resolver: &mut ResolverRuntime,
 ) -> Result<(), DnsRoleRuntimeError> {
     let mut subscriptions = None;
-    let mut retry = RetryDelay::new();
-    let mut consecutive_failures = 0_u8;
+    let mut refresh_retry = RefreshRetry::awaiting_first_projection();
 
     loop {
         if *shutdown.borrow() {
@@ -76,8 +73,7 @@ async fn run_dns_loop(
                 }
                 ShutdownOutcome::Completed(Ok(active)) => subscriptions = Some(active),
                 ShutdownOutcome::Completed(Err(error)) => {
-                    retry_failure(&mut consecutive_failures, &mut retry, &mut shutdown, error)
-                        .await?;
+                    retry_failure(&mut refresh_retry, &mut shutdown, error).await?;
                     continue;
                 }
             }
@@ -90,7 +86,7 @@ async fn run_dns_loop(
             }
             ShutdownOutcome::Completed(Ok(rows)) => rows,
             ShutdownOutcome::Completed(Err(error)) => {
-                retry_failure(&mut consecutive_failures, &mut retry, &mut shutdown, error).await?;
+                retry_failure(&mut refresh_retry, &mut shutdown, error).await?;
                 continue;
             }
         };
@@ -98,8 +94,7 @@ async fn run_dns_loop(
             Ok(projection) => projection,
             Err(error) => {
                 retry_failure(
-                    &mut consecutive_failures,
-                    &mut retry,
+                    &mut refresh_retry,
                     &mut shutdown,
                     DnsRefreshError::Projection(error.to_string()),
                 )
@@ -109,16 +104,14 @@ async fn run_dns_loop(
         };
         if let Err(error) = resolver.apply(projection).await {
             retry_failure(
-                &mut consecutive_failures,
-                &mut retry,
+                &mut refresh_retry,
                 &mut shutdown,
                 DnsRefreshError::Resolver(error),
             )
             .await?;
             continue;
         }
-        consecutive_failures = 0;
-        retry.reset();
+        refresh_retry.record_success();
 
         let Some(active) = subscriptions.as_mut() else {
             continue;
@@ -133,13 +126,12 @@ async fn run_dns_loop(
                 }
                 if let Err(error) = active.drain_ready_invalidations().await {
                     subscriptions = None;
-                    retry_failure(&mut consecutive_failures, &mut retry, &mut shutdown, error)
-                        .await?;
+                    retry_failure(&mut refresh_retry, &mut shutdown, error).await?;
                 }
             }
             ShutdownOutcome::Completed(Err(error)) => {
                 subscriptions = None;
-                retry_failure(&mut consecutive_failures, &mut retry, &mut shutdown, error).await?;
+                retry_failure(&mut refresh_retry, &mut shutdown, error).await?;
             }
         }
     }
@@ -174,7 +166,9 @@ impl ResolverRuntime {
         if let Some(running) = &self.running
             && running.bind == projection.bind
         {
-            running.records.replace(projection.records);
+            running
+                .records
+                .replace(records_with_readiness(projection.records)?);
             return Ok(());
         }
 
@@ -205,12 +199,10 @@ impl RunningResolver {
         bind: SocketAddr,
         records: BTreeMap<InternalServiceName, Vec<Ipv4Addr>>,
     ) -> Result<Self, String> {
-        let readiness_name =
-            InternalServiceName::try_new(READINESS_NAME).map_err(|error| error.to_string())?;
+        let readiness_name = InternalServiceName::try_new(INTERNAL_DNS_READINESS_NAME)
+            .map_err(|error| error.to_string())?;
         let resolver_records = InternalDnsRecords::default();
-        let mut probe_records = records.clone();
-        probe_records.insert(readiness_name.clone(), vec![READINESS_ADDRESS]);
-        resolver_records.replace(probe_records);
+        resolver_records.replace(records_with_readiness(records)?);
         let (shutdown, receiver) = broadcast::channel(1);
         let health = InternalResolverHealth::awaiting_bind();
         let task =
@@ -223,7 +215,7 @@ impl RunningResolver {
             let addresses = query_bound_resolver(bound, &readiness_name)
                 .await
                 .map_err(|error| error.to_string())?;
-            if addresses != [READINESS_ADDRESS] {
+            if addresses != [INTERNAL_DNS_READINESS_ADDRESS] {
                 return Err(
                     "resolver readiness response did not contain its probe address".to_owned(),
                 );
@@ -237,7 +229,6 @@ impl RunningResolver {
             let _ = task.await;
             return Err(error);
         }
-        resolver_records.replace(records);
         tracing::info!(address = %bind, "internal DNS resolver ready");
         Ok(Self {
             bind,
@@ -257,24 +248,69 @@ impl RunningResolver {
     }
 }
 
+fn records_with_readiness(
+    mut records: BTreeMap<InternalServiceName, Vec<Ipv4Addr>>,
+) -> Result<BTreeMap<InternalServiceName, Vec<Ipv4Addr>>, String> {
+    let readiness_name = InternalServiceName::try_new(INTERNAL_DNS_READINESS_NAME)
+        .map_err(|error| error.to_string())?;
+    records.insert(readiness_name, vec![INTERNAL_DNS_READINESS_ADDRESS]);
+    Ok(records)
+}
+
 async fn retry_failure(
-    consecutive_failures: &mut u8,
-    retry: &mut RetryDelay,
+    retry: &mut RefreshRetry,
     shutdown: &mut watch::Receiver<bool>,
     error: impl Into<DnsRefreshError>,
 ) -> Result<(), DnsRoleRuntimeError> {
     let error = error.into();
-    *consecutive_failures = consecutive_failures.saturating_add(1);
-    if *consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
-        return Err(DnsRoleRuntimeError::RefreshExhausted {
-            attempts: *consecutive_failures,
-            detail: error.to_string(),
-        });
-    }
-    let delay = retry.next();
+    let delay = retry.record_failure(&error)?;
     tracing::warn!(error = %error, ?delay, "DNS projection refresh will retry");
     let _ = sleep_or_shutdown(shutdown, delay).await;
     Ok(())
+}
+
+enum RefreshAvailability {
+    AwaitingFirstProjection { consecutive_failures: u8 },
+    ServingLastKnownGood,
+}
+
+struct RefreshRetry {
+    availability: RefreshAvailability,
+    delay: RetryDelay,
+}
+
+impl RefreshRetry {
+    const fn awaiting_first_projection() -> Self {
+        Self {
+            availability: RefreshAvailability::AwaitingFirstProjection {
+                consecutive_failures: 0,
+            },
+            delay: RetryDelay::new(),
+        }
+    }
+
+    fn record_success(&mut self) {
+        self.availability = RefreshAvailability::ServingLastKnownGood;
+        self.delay.reset();
+    }
+
+    fn record_failure(&mut self, error: &DnsRefreshError) -> Result<Duration, DnsRoleRuntimeError> {
+        match &mut self.availability {
+            RefreshAvailability::AwaitingFirstProjection {
+                consecutive_failures,
+            } => {
+                *consecutive_failures = consecutive_failures.saturating_add(1);
+                if *consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+                    return Err(DnsRoleRuntimeError::RefreshExhausted {
+                        attempts: *consecutive_failures,
+                        detail: error.to_string(),
+                    });
+                }
+            }
+            RefreshAvailability::ServingLastKnownGood => {}
+        }
+        Ok(self.delay.next())
+    }
 }
 
 enum ShutdownOutcome<T> {
@@ -402,6 +438,17 @@ mod tests {
         );
     }
 
+    async fn assert_readiness_answer(bind: SocketAddr) {
+        let name = InternalServiceName::try_new(INTERNAL_DNS_READINESS_NAME)
+            .expect("readiness service name");
+        assert_eq!(
+            query_bound_resolver(bind, &name)
+                .await
+                .expect("readiness answer"),
+            [INTERNAL_DNS_READINESS_ADDRESS]
+        );
+    }
+
     #[test]
     fn retry_delay_is_bounded_and_resettable() {
         let mut retry = RetryDelay::new();
@@ -442,11 +489,13 @@ mod tests {
             .await
             .expect("initial publish");
         assert_answer(bind, first).await;
+        assert_readiness_answer(bind).await;
         resolver
             .apply(projection(bind, second))
             .await
             .expect("same-bind replacement");
         assert_answer(bind, second).await;
+        assert_readiness_answer(bind).await;
 
         resolver.stop().await;
     }
@@ -504,12 +553,10 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn retry_budget_returns_a_typed_exhaustion_error() {
         let (_sender, mut shutdown) = watch::channel(false);
-        let mut retry = RetryDelay::new();
-        let mut failures = 0_u8;
+        let mut retry = RefreshRetry::awaiting_first_projection();
 
         for attempt in 1..MAX_CONSECUTIVE_FAILURES {
             retry_failure(
-                &mut failures,
                 &mut retry,
                 &mut shutdown,
                 DnsRefreshError::Projection(format!("failure {attempt}")),
@@ -518,7 +565,6 @@ mod tests {
             .expect("retry remains in budget");
         }
         let error = retry_failure(
-            &mut failures,
             &mut retry,
             &mut shutdown,
             DnsRefreshError::Projection("exhausted".to_owned()),
@@ -531,6 +577,52 @@ mod tests {
             DnsRoleRuntimeError::RefreshExhausted { attempts, detail }
                 if attempts == MAX_CONSECUTIVE_FAILURES && detail.contains("exhausted")
         ));
+    }
+
+    #[tokio::test]
+    async fn last_known_good_survives_the_startup_budget_recovers_and_stops_promptly() {
+        let bind = available_bind().await;
+        let first = Ipv4Addr::new(10, 210, 1, 10);
+        let recovered = Ipv4Addr::new(10, 210, 1, 11);
+        let mut resolver = ResolverRuntime::default();
+        resolver
+            .apply(projection(bind, first))
+            .await
+            .expect("initial projection");
+        let mut retry = RefreshRetry::awaiting_first_projection();
+        retry.record_success();
+
+        for attempt in 1..=usize::from(MAX_CONSECUTIVE_FAILURES) + 2 {
+            retry
+                .record_failure(&DnsRefreshError::Projection(format!("failure {attempt}")))
+                .expect("a serving resolver has no terminal refresh budget");
+        }
+        assert_answer(bind, first).await;
+
+        resolver
+            .apply(projection(bind, recovered))
+            .await
+            .expect("refresh recovers");
+        retry.record_success();
+        assert_answer(bind, recovered).await;
+
+        let (sender, mut shutdown) = watch::channel(false);
+        let task = tokio::spawn(async move {
+            retry_failure(
+                &mut retry,
+                &mut shutdown,
+                DnsRefreshError::Projection("after recovery".to_owned()),
+            )
+            .await
+        });
+        tokio::task::yield_now().await;
+        sender.send(true).expect("shutdown");
+        tokio::time::timeout(Duration::from_millis(100), task)
+            .await
+            .expect("shutdown interrupts last-known-good retry")
+            .expect("retry task")
+            .expect("shutdown is not a refresh failure");
+        resolver.stop().await;
     }
 
     #[tokio::test]

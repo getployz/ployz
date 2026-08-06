@@ -117,7 +117,7 @@ partitioned drivers double-driving is the operator racing themselves,
 caught by the phase-boundary superseded check and swept by the next
 deploy; 0005 (rebuild full views from invalidation) with Corrosion
 subscriptions as the wake signal and re-query as the correctness path;
-0022 (revision entry identity is a versioned per-service digest) with the
+[0022 (revision entry identity is a versioned per-service digest)](0022-namespace-revision-entry-identity-is-a-versioned-per-service-digest.md) with the
 environment contribution as the row model's sha256 fingerprint —
 dictionary exposure of low-entropy values priced in under the membership
 trust ceiling — and the image frame as the digest-pinned reference; the

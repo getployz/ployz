@@ -576,7 +576,7 @@ export type JoinDoorMaterial = { certificate_pem: JoinDoorCertificatePem, privat
 
 export type JoinDoorPrivateKeyPem = Brand<string, "JoinDoorPrivateKeyPem">;
 
-export type JoinDoorRefusal = { "kind": "token_not_found", token_id: TokenId, } | { "kind": "token_expired", token_id: TokenId, expires_at: CorrosionTimestamp, } | { "kind": "token_secret_mismatch", token_id: TokenId, } | { "kind": "invalid_admission", reason: JoinAdmissionValidationError, } | { "kind": "name_conflict", name: string, } | { "kind": "identity_conflict" } | { "kind": "no_reachable_seed" } | { "kind": "endpoint_subnet_exhausted" };
+export type JoinDoorRefusal = { "kind": "token_not_found", token_id: TokenId, } | { "kind": "token_expired", token_id: TokenId, expires_at: CorrosionTimestamp, } | { "kind": "token_secret_mismatch", token_id: TokenId, } | { "kind": "invalid_admission", reason: JoinAdmissionValidationError, } | { "kind": "name_conflict", name: string, } | { "kind": "peer_name_conflict", name: string, } | { "kind": "identity_conflict" } | { "kind": "no_reachable_seed" } | { "kind": "endpoint_subnet_exhausted" };
 
 export type JoinMachineSubstrate = { ployz_version: ExactPloyzVersion, corrosion_version: string, artifacts: Array<InstallArtifactSpec>, };
 
@@ -693,6 +693,12 @@ export type MachineName = Brand<string, "MachineName">;
 export type MachineReadinessCheck = { "state": "confirmed" } | { "state": "missing", reason: FailureMessage, };
 
 export type MachineReadinessEvidence = { heartbeat: MachineReadinessCheck, machine_inspect: MachineReadinessCheck, };
+
+export type MachineRemoveRefusal = { "kind": "not_found", machine_name: MachineName, } | { "kind": "ambiguous", machine_name: MachineName, machine_ids: Array<MachineRowId>, } | { "kind": "id_mismatch", machine_name: MachineName, machine_id: MachineRowId, };
+
+export type MachineRemoveReply = { "kind": "removed", machine_id: MachineRowId, } | { "kind": "already_absent", machine_id: MachineRowId, };
+
+export type MachineRemoveRequest = { machine_name: MachineName, machine_id?: MachineRowId | null, };
 
 export type MachineRowId = Brand<string, "MachineRowId">;
 

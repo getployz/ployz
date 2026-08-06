@@ -40,7 +40,7 @@ use ployz_core::machine::runtime::{
     ContainerHealth, ManagedContainerHealthStatus, ManagedContainerIdentity,
 };
 use ployz_core::network::{
-    EndpointBridgeStatus, INTERNAL_DNS_SUFFIX, MachineEndpointSubnet, endpoint_bridge_gateway_ipv4,
+    EndpointBridgeStatus, MachineEndpointSubnet, endpoint_bridge_gateway_ipv4,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::IpAddr;
@@ -900,14 +900,7 @@ fn create_body(
     // configuration is the upgrade path.
     let dns = endpoint_bridge_gateway_ipv4(endpoint_network_subnet)
         .map(|gateway| vec![gateway.to_string()]);
-    let dns_search = Some(vec![
-        format!(
-            "{}.{}",
-            command.identity.namespace_id.as_str(),
-            INTERNAL_DNS_SUFFIX
-        )
-        .to_ascii_lowercase(),
-    ]);
+    let dns_search = Some(vec![command.dns_search_domain.as_str().to_owned()]);
     ContainerCreateBody {
         image: Some(image),
         env,
@@ -1277,6 +1270,7 @@ mod tests {
                 image: image("ghcr.io/acme/api:rev-2"),
                 runtime: ContainerRuntimeSpec::image_defaults(),
                 provisioned_volumes: Vec::new(),
+                dns_search_domain: dns_search_domain("default"),
                 identity: managed_identity(),
             },
             TEST_ENDPOINT_SUBNET,
@@ -1309,6 +1303,7 @@ mod tests {
                 image: image("registry.example/api:missing"),
                 runtime: ContainerRuntimeSpec::image_defaults(),
                 provisioned_volumes: Vec::new(),
+                dns_search_domain: dns_search_domain("default"),
                 identity: managed_identity(),
             })
             .await
@@ -1326,6 +1321,7 @@ mod tests {
                 image: image("ghcr.io/acme/api:rev-2"),
                 runtime: runtime_spec(),
                 provisioned_volumes: Vec::new(),
+                dns_search_domain: dns_search_domain("default"),
                 identity: managed_identity(),
             },
             TEST_ENDPOINT_SUBNET,
@@ -1341,20 +1337,23 @@ mod tests {
     }
 
     #[test]
-    fn create_body_sets_machine_local_dns_and_namespace_search_domain() {
+    fn create_body_uses_the_human_namespace_label_for_the_dns_search_domain() {
+        let identity = managed_identity();
+        assert_eq!(identity.namespace_id.as_str(), "default");
         let body = create_body(
             CreateManagedContainer {
                 image: image("ghcr.io/acme/api:rev-2"),
                 runtime: ContainerRuntimeSpec::image_defaults(),
                 provisioned_volumes: Vec::new(),
-                identity: managed_identity(),
+                dns_search_domain: dns_search_domain("prod"),
+                identity,
             },
             TEST_ENDPOINT_SUBNET,
         );
         let host = body.host_config.expect("host config exists");
 
         assert_eq!(host.dns, Some(vec!["10.42.7.1".to_owned()]));
-        assert_eq!(host.dns_search, Some(vec!["default.internal".to_owned()]));
+        assert_eq!(host.dns_search, Some(vec!["prod.internal".to_owned()]));
         assert_eq!(host.dns_options, Some(vec!["ndots:1".to_owned()]));
     }
 
@@ -1385,6 +1384,7 @@ mod tests {
                 image: image("ghcr.io/acme/api:rev-2"),
                 runtime,
                 provisioned_volumes: Vec::new(),
+                dns_search_domain: dns_search_domain("default"),
                 identity: managed_identity(),
             },
             TEST_ENDPOINT_SUBNET,
@@ -1418,6 +1418,7 @@ mod tests {
                 image: image("ghcr.io/acme/api:rev-2"),
                 runtime,
                 provisioned_volumes: Vec::new(),
+                dns_search_domain: dns_search_domain("default"),
                 identity: managed_identity(),
             },
             TEST_ENDPOINT_SUBNET,
@@ -1433,6 +1434,7 @@ mod tests {
                 image: image("ghcr.io/acme/api:rev-2"),
                 runtime: ContainerRuntimeSpec::image_defaults(),
                 provisioned_volumes: Vec::new(),
+                dns_search_domain: dns_search_domain("default"),
                 identity: managed_identity(),
             },
             TEST_ENDPOINT_SUBNET,
@@ -1454,6 +1456,7 @@ mod tests {
                 image: image("ghcr.io/acme/api:rev-2"),
                 runtime,
                 provisioned_volumes: Vec::new(),
+                dns_search_domain: dns_search_domain("default"),
                 identity: managed_identity(),
             },
             TEST_ENDPOINT_SUBNET,
@@ -1544,6 +1547,7 @@ mod tests {
                 image: image("ghcr.io/acme/api:rev-2"),
                 runtime: ContainerRuntimeSpec::image_defaults(),
                 provisioned_volumes: Vec::new(),
+                dns_search_domain: dns_search_domain("default"),
                 identity: managed_identity(),
             },
             TEST_ENDPOINT_SUBNET,
@@ -1875,6 +1879,15 @@ mod tests {
             step_id: step_id("run_1"),
             kind: ManagedContainerKind::Service,
         }
+    }
+
+    fn dns_search_domain(
+        namespace: &str,
+    ) -> ployz_core::network::internal_dns::InternalDnsSearchDomain {
+        ployz_core::network::internal_dns::InternalDnsSearchDomain::try_from_namespace_label(
+            namespace,
+        )
+        .expect("valid human namespace label")
     }
 
     fn namespace_id(value: &str) -> ployz_core::ids::NamespaceId {

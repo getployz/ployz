@@ -10,6 +10,7 @@ use ployz_core::machine::{VolumeEnsureFailure, VolumeUsageFacts};
 use std::net::IpAddr;
 
 use ployz_core::machine::runtime::{ManagedContainerHealthStatus, ManagedContainerIdentity};
+use ployz_core::network::internal_dns::InternalDnsSearchDomain;
 use ployz_core::network::{EndpointBridgeStatus, MachineEndpointSubnet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +49,7 @@ pub struct CreateManagedContainer {
     pub image: ImageReference,
     pub runtime: ContainerRuntimeSpec,
     pub provisioned_volumes: Vec<VolumeName>,
+    pub dns_search_domain: InternalDnsSearchDomain,
     pub identity: ManagedContainerIdentity,
 }
 

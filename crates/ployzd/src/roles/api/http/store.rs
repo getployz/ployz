@@ -1196,6 +1196,21 @@ mod tests {
     }
 
     #[test]
+    fn peer_removal_reports_a_stale_exact_document_fence() {
+        let peer_id = PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("peer id");
+        assert_eq!(
+            delete_peer_if_matches_statement(&peer_id, r#"{"name":"observed"}"#.to_owned()),
+            Statement::with_params(
+                "DELETE FROM peers WHERE id = ? AND document = ?",
+                vec![
+                    SqliteParameter::Text(peer_id.as_str().to_owned()),
+                    SqliteParameter::Text(r#"{"name":"observed"}"#.to_owned()),
+                ],
+            )
+        );
+    }
+
+    #[test]
     fn admission_paused_after_validation_cannot_commit_after_token_revoke_or_expiry() {
         let member_id = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
         let token_id = TokenId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAW").expect("token id");

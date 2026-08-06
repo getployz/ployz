@@ -285,7 +285,12 @@ pub enum JoinDoorRefusal {
     #[error(
         "machine name {name:?} is already claimed; run `ployz machine rm {name}` before joining again"
     )]
-    NameConflict { name: String },
+    #[serde(rename = "name_conflict")]
+    MachineNameConflict { name: String },
+    #[error(
+        "peer name {name:?} is already claimed; run `ployz peer rm {name}` before joining again"
+    )]
+    PeerNameConflict { name: String },
     #[error(
         "machine or peer identity is already claimed; run `ployz machine reset` before joining again"
     )]

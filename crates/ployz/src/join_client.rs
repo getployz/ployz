@@ -458,7 +458,7 @@ mod tests {
             second_listener,
             second_acceptor,
             JoinAdmissionReply::Refused {
-                refusal: JoinDoorRefusal::NameConflict {
+                refusal: JoinDoorRefusal::MachineNameConflict {
                     name: "edge-a".to_owned(),
                 },
             },
@@ -478,7 +478,7 @@ mod tests {
         assert!(matches!(
             reply,
             JoinAdmissionReply::Refused {
-                refusal: JoinDoorRefusal::NameConflict { .. }
+                refusal: JoinDoorRefusal::MachineNameConflict { .. }
             }
         ));
         first_task.await.expect("first door task");
@@ -523,12 +523,14 @@ mod tests {
                 }
                 let reply = match expected_kind {
                     "machine" => JoinAdmissionReply::Refused {
-                        refusal: JoinDoorRefusal::NameConflict {
+                        refusal: JoinDoorRefusal::MachineNameConflict {
                             name: "edge-a".to_owned(),
                         },
                     },
                     "peer" => JoinAdmissionReply::Refused {
-                        refusal: JoinDoorRefusal::IdentityConflict,
+                        refusal: JoinDoorRefusal::PeerNameConflict {
+                            name: "operator-laptop".to_owned(),
+                        },
                     },
                     _ => unreachable!("test has exactly two request kinds"),
                 };
@@ -571,7 +573,7 @@ mod tests {
         assert!(matches!(
             machine_error,
             JoinDoorClientError::Refused {
-                refusal: JoinDoorRefusal::NameConflict { .. }
+                refusal: JoinDoorRefusal::MachineNameConflict { .. }
             }
         ));
 
@@ -593,7 +595,7 @@ mod tests {
         assert!(matches!(
             peer_error,
             JoinDoorClientError::Refused {
-                refusal: JoinDoorRefusal::IdentityConflict
+                refusal: JoinDoorRefusal::PeerNameConflict { .. }
             }
         ));
         server.await.expect("door task");
