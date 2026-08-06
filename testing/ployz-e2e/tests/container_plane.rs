@@ -872,7 +872,7 @@ async fn install_outside_server(docker: &Docker, machine: &DindMachine) -> Resul
     .await
     .map_err(|error| error.to_string())?;
     let unit = format!(
-        "[Unit]\nDescription=Controlled outside-prefix HTTP server\n\n[Service]\nType=simple\nExecStart={OUTSIDE_SERVER_PATH}\nRestart=on-failure\n\n[Install]\nWantedBy=multi-user.target\n"
+        "[Unit]\nDescription=Controlled outside-prefix HTTP server\nStartLimitIntervalSec=0\n\n[Service]\nType=simple\nExecStart={OUTSIDE_SERVER_PATH}\nRestart=on-failure\n\n[Install]\nWantedBy=multi-user.target\n"
     );
     write_file_in_container(
         docker,
@@ -1366,7 +1366,7 @@ async fn install_dns_test_tools(docker: &Docker, machine: &DindMachine) -> Resul
     .await
     .map_err(|error| error.to_string())?;
     let upstream_unit = format!(
-        "[Unit]\nDescription=Controlled DNS upstream\n\n[Service]\nType=simple\nExecStart={UPSTREAM_PATH}\nRestart=on-failure\n\n[Install]\nWantedBy=multi-user.target\n"
+        "[Unit]\nDescription=Controlled DNS upstream\nStartLimitIntervalSec=0\n\n[Service]\nType=simple\nExecStart={UPSTREAM_PATH}\nRestart=on-failure\n\n[Install]\nWantedBy=multi-user.target\n"
     );
     write_file_in_container(
         docker,
@@ -1396,7 +1396,7 @@ async fn install_dns_unit(
     machine_id: &str,
 ) -> Result<(), String> {
     let unit = format!(
-        "[Unit]\nDescription=Ployz DNS container-plane test\nAfter=corrosion.service ployz-api.service ployz-test-dns-upstream.service\n\n[Service]\nType=simple\nDynamicUser=yes\nUser=ployz-dns\nAmbientCapabilities=CAP_NET_BIND_SERVICE\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE\nNoNewPrivileges=yes\nEnvironment=PLOYZ_CORROSION_API_ADDR=127.0.0.1:{CORROSION_API_PORT}\nEnvironment=PLOYZ_CORROSION_BEARER_TOKEN={CORROSION_TOKEN}\nEnvironment=PLOYZ_CLUSTER_ID={CLUSTER_ID}\nEnvironment=PLOYZ_MACHINE_ID={machine_id}\nEnvironment=PLOYZ_LOG=debug\nExecStart=/opt/ployz/artifacts/ployzd dns\nRestart=on-failure\nRestartSec=250ms\n\n[Install]\nWantedBy=multi-user.target\n"
+        "[Unit]\nDescription=Ployz DNS container-plane test\nAfter=corrosion.service ployz-api.service ployz-test-dns-upstream.service\nStartLimitIntervalSec=0\n\n[Service]\nType=simple\nDynamicUser=yes\nUser=ployz-dns\nAmbientCapabilities=CAP_NET_BIND_SERVICE\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE\nNoNewPrivileges=yes\nEnvironment=PLOYZ_CORROSION_API_ADDR=127.0.0.1:{CORROSION_API_PORT}\nEnvironment=PLOYZ_CORROSION_BEARER_TOKEN={CORROSION_TOKEN}\nEnvironment=PLOYZ_CLUSTER_ID={CLUSTER_ID}\nEnvironment=PLOYZ_MACHINE_ID={machine_id}\nEnvironment=PLOYZ_LOG=debug\nExecStart=/opt/ployz/artifacts/ployzd dns\nRestart=on-failure\nRestartSec=250ms\n\n[Install]\nWantedBy=multi-user.target\n"
     );
     write_file_in_container(
         docker,
