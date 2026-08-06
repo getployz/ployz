@@ -198,6 +198,7 @@ fn machine_status_lens_row_requires_its_machine_owned_key() {
             .expect("fixture timestamp"),
         mesh: None,
         container_isolation: None,
+        wireguard_handshakes: None,
     };
 
     assert!(MachineStatusLensRow::try_new(machine_id(MACHINE_A), document.clone()).is_ok());

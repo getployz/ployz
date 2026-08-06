@@ -40,6 +40,22 @@ pub enum CorrosionTable {
 }
 
 impl CorrosionTable {
+    /// Every table in schema order.
+    pub const ALL: [Self; 12] = [
+        Self::Cluster,
+        Self::Machines,
+        Self::Peers,
+        Self::Tokens,
+        Self::Namespaces,
+        Self::Services,
+        Self::RouteBindings,
+        Self::Containers,
+        Self::MachineStatus,
+        Self::Operations,
+        Self::CertHoldings,
+        Self::AcmeHttp01,
+    ];
+
     /// Returns the table's exact SQL name.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -716,6 +732,19 @@ pub struct MachineStatusDocument {
     /// `None` denotes a status document written before isolation testimony.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub container_isolation: Option<ContainerIsolationTestimony>,
+    /// `None` denotes a row written before live peer-handshake testimony existed.
+    /// A current writer publishes `Some`, including an empty map on a one-machine roster.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wireguard_handshakes: Option<BTreeMap<MachineRowId, WireGuardHandshakeEvidence>>,
+}
+
+/// The latest WireGuard handshake evidence observed for one remote machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum WireGuardHandshakeEvidence {
+    Never,
+    At { unix_seconds: u64 },
 }
 
 /// Independent host prerequisites for the cgroup isolation wall.

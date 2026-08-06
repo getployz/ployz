@@ -3,6 +3,22 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Corrosion v1.0.0's exact cold-start health error.
+pub const CORROSION_NO_P99_LAG_SAMPLE: &str = "no p99 lag information available";
+
+/// The exact body returned by Corrosion v1.0.0's `/v1/health` endpoint.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CorrosionHealthResponse {
+    Response {
+        gaps: i64,
+        members: i64,
+        p99_lag: f64,
+        queue_size: u64,
+    },
+    Error(String),
+}
+
 /// A value accepted as a positional SQLite statement parameter.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]

@@ -259,6 +259,7 @@ async fn seed_machine_evidence(
         observed_at: timestamp,
         mesh: None,
         container_isolation: None,
+        wireguard_handshakes: None,
     };
     let container = ContainerDocument {
         v: CorrosionDocumentVersion::V1,

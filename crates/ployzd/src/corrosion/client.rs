@@ -4,8 +4,9 @@ use std::time::Duration;
 
 use futures_util::StreamExt;
 use ployz_core::corrosion::{
-    ChangeId, ChangeKind, EndOfQuery, QueryEvent, QueryIdentity, RowId, SqliteValue, Statement,
-    SubscriptionEvent, TransactionResponse, TransactionResult,
+    CORROSION_NO_P99_LAG_SAMPLE, ChangeId, ChangeKind, CorrosionHealthResponse, EndOfQuery,
+    QueryEvent, QueryIdentity, RowId, SqliteValue, Statement, SubscriptionEvent,
+    TransactionResponse, TransactionResult,
 };
 use reqwest::Url;
 use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue};
@@ -221,6 +222,34 @@ impl CorrosionClient {
         Ok(decoded)
     }
 
+    /// Samples the bounded machine-local Corrosion health endpoint.
+    ///
+    pub async fn health(&self) -> Result<CorrosionHealthResponse, CorrosionHealthReadError> {
+        let response = async {
+            let url = self.endpoint(&["v1", "health"])?;
+            let response = self
+                .send_headers(self.authorized(self.http.get(url)))
+                .await?;
+            let status = response.status();
+            let (body, truncated) = self
+                .read_body_capped(response, self.max_error_body_bytes)
+                .await?;
+            Ok::<_, CorrosionClientError>((status, body, truncated))
+        }
+        .await;
+
+        match response {
+            Ok((status, body, truncated)) => {
+                decode_health_response(status.as_u16(), &body, truncated)
+            }
+            Err(
+                CorrosionClientError::RequestTimeout { .. }
+                | CorrosionClientError::Transport { .. },
+            ) => Err(CorrosionHealthReadError::Unavailable),
+            Err(_) => Err(CorrosionHealthReadError::InvalidResponse),
+        }
+    }
+
     pub async fn query(&self, statement: &Statement) -> Result<QueryStream, CorrosionClientError> {
         let url = self.endpoint(&["v1", "queries"])?;
         let response = self
@@ -399,6 +428,26 @@ impl CorrosionClient {
         path.clear().extend(segments);
         drop(path);
         Ok(url)
+    }
+}
+
+fn decode_health_response(
+    status: u16,
+    body: &[u8],
+    truncated: bool,
+) -> Result<CorrosionHealthResponse, CorrosionHealthReadError> {
+    if truncated {
+        return Err(CorrosionHealthReadError::InvalidResponse);
+    }
+    let decoded = serde_json::from_slice::<CorrosionHealthResponse>(body);
+    match (status, decoded) {
+        (200..=299, Ok(response)) => Ok(response),
+        (503, Ok(CorrosionHealthResponse::Error(message)))
+            if message == CORROSION_NO_P99_LAG_SAMPLE =>
+        {
+            Ok(CorrosionHealthResponse::Error(message))
+        }
+        (_, Ok(_)) | (_, Err(_)) => Err(CorrosionHealthReadError::InvalidResponse),
     }
 }
 
@@ -715,4 +764,72 @@ pub enum CorrosionClientError {
         expected: ChangeId,
         actual: ChangeId,
     },
+}
+
+/// A normalized failure to sample the machine-local Corrosion health endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum CorrosionHealthReadError {
+    #[error("Corrosion health is unavailable")]
+    Unavailable,
+    #[error("Corrosion returned an invalid health response")]
+    InvalidResponse,
+}
+
+#[cfg(test)]
+mod health_tests {
+    use ployz_core::corrosion::CorrosionHealthResponse;
+
+    use super::{CorrosionHealthReadError, decode_health_response};
+
+    #[test]
+    fn literal_success_health_response_decodes() {
+        let health = decode_health_response(
+            200,
+            br#"{"response":{"gaps":0,"members":3,"p99_lag":0.125,"queue_size":0}}"#,
+            false,
+        );
+
+        assert_eq!(
+            health,
+            Ok(CorrosionHealthResponse::Response {
+                gaps: 0,
+                members: 3,
+                p99_lag: 0.125,
+                queue_size: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn exact_cold_start_503_is_a_health_reply_not_degradation() {
+        let health = decode_health_response(
+            503,
+            br#"{"error":"no p99 lag information available"}"#,
+            false,
+        );
+
+        assert_eq!(
+            health,
+            Ok(CorrosionHealthResponse::Error(
+                "no p99 lag information available".to_owned()
+            ))
+        );
+    }
+
+    #[test]
+    fn noncanonical_health_errors_and_malformed_successes_are_protocol_failures() {
+        let unexpected = decode_health_response(503, br#"{"error":"database unavailable"}"#, false);
+        let malformed = decode_health_response(200, br#"{"response":{}}"#, false);
+
+        assert_eq!(unexpected, Err(CorrosionHealthReadError::InvalidResponse));
+        assert_eq!(malformed, Err(CorrosionHealthReadError::InvalidResponse));
+    }
+
+    #[test]
+    fn oversized_health_body_is_a_protocol_failure() {
+        assert_eq!(
+            decode_health_response(200, b"{}", true),
+            Err(CorrosionHealthReadError::InvalidResponse)
+        );
+    }
 }
