@@ -1008,11 +1008,19 @@ pub struct CorrosionLogsTailLinesError {
 }
 
 /// A bounded service log request; the server applies its own fixed upper bound.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `tail_lines: None` attaches without replaying any existing lines — the
+/// follow-reconnect form, which still needs to carry the machine selector.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct ServiceLogsRequest {
-    pub tail_lines: CorrosionLogsTailLines,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tail_lines: Option<CorrosionLogsTailLines>,
+    /// Selects the replica hosted by the named machine when the service runs
+    /// containers on more than one machine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine: Option<MachineName>,
 }
 
 /// Docker's stable stdout/stderr distinction.
@@ -1050,8 +1058,17 @@ pub enum ServiceLogsRefusal {
     UnmanagedContainer {
         container_id: ContainerId,
     },
+    /// The service runs containers on more than one machine (or the request's
+    /// machine selector matched none of them); the listed machine names carry
+    /// one entry per container, so stacked replicas repeat their host.
+    MachineSelectorRequired {
+        machines: Vec<MachineName>,
+    },
     RemoteOwner {
         machine_id: MachineRowId,
+        /// `None` when the owning machine's roster row is no longer readable.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        machine_name: Option<MachineName>,
     },
     DriverDark {
         machine_id: MachineRowId,

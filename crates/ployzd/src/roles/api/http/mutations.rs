@@ -544,7 +544,7 @@ fn token_times(ttl_seconds: u32) -> Result<(CorrosionTimestamp, CorrosionTimesta
     Ok((timestamp(now)?, timestamp(expires)?))
 }
 
-fn now_timestamp() -> Result<CorrosionTimestamp, ()> {
+pub(super) fn now_timestamp() -> Result<CorrosionTimestamp, ()> {
     timestamp(OffsetDateTime::now_utc())
 }
 
@@ -591,7 +591,7 @@ where
     }
 }
 
-fn simple_error(status: StatusCode, kind: &'static str) -> Response<HttpBody> {
+pub(super) fn simple_error(status: StatusCode, kind: &'static str) -> Response<HttpBody> {
     json_response(status, format!("{{\"kind\":\"{kind}\"}}").into_bytes())
 }
 

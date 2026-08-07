@@ -21,6 +21,7 @@ mod operation_http;
 mod operation_lifecycle;
 mod operation_proxy;
 mod operation_store;
+mod placement_http;
 mod promotion_store;
 mod removals;
 mod roster;

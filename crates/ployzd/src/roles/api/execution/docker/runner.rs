@@ -24,7 +24,7 @@ use bollard::models::{
     ContainerCreateBody, ContainerInspectResponse, ContainerSummary,
     ContainerSummaryHealthStatusEnum, ContainerSummaryNetworkSettings, ContainerSummaryStateEnum,
     EndpointSettings, HealthConfig, HealthStatusEnum, HostConfig, Mount, MountPoint, MountType,
-    NetworkingConfig, RestartPolicy, RestartPolicyNameEnum,
+    NetworkingConfig, RestartPolicy, RestartPolicyNameEnum, VolumeCreateRequest,
 };
 use bollard::query_parameters::{
     InspectContainerOptions, ListContainersOptionsBuilder, LogsOptionsBuilder,
@@ -122,6 +122,54 @@ impl DockerManagedContainerRunner {
             Err(BollardError::DockerResponseServerError {
                 status_code: 409, ..
             }) => Ok(ployz_core::image::ImageRemoveOutcome::RetainedInUse),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    /// Reports which of the requested named volumes exist locally under
+    /// their deterministic v2 storage names.
+    pub(crate) async fn held_v2_volumes(
+        &self,
+        namespace_id: &NamespaceRowId,
+        volumes: &BTreeSet<VolumeName>,
+    ) -> Result<BTreeSet<VolumeName>, String> {
+        let docker = self.docker().await.map_err(|error| error.to_string())?;
+        let mut held = BTreeSet::new();
+        for volume in volumes {
+            match docker
+                .inspect_volume(&v2_volume_storage_name(namespace_id, volume))
+                .await
+            {
+                Ok(_) => {
+                    held.insert(volume.clone());
+                }
+                Err(error) if is_docker_object_missing(&error) => {}
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        Ok(held)
+    }
+
+    /// Ensures the deterministic v2-named local Docker volume exists before
+    /// a container mounts it.
+    pub(crate) async fn ensure_v2_volume(
+        &self,
+        namespace_id: &NamespaceRowId,
+        volume: &VolumeName,
+    ) -> Result<(), String> {
+        let docker = self.docker().await.map_err(|error| error.to_string())?;
+        let storage_name = v2_volume_storage_name(namespace_id, volume);
+        match docker.inspect_volume(&storage_name).await {
+            Ok(_) => Ok(()),
+            Err(error) if is_docker_object_missing(&error) => docker
+                .create_volume(VolumeCreateRequest {
+                    name: Some(storage_name),
+                    driver: Some("local".to_owned()),
+                    ..Default::default()
+                })
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string()),
             Err(error) => Err(error.to_string()),
         }
     }

@@ -7,7 +7,8 @@ use std::str::FromStr;
 
 use clap::{Args, Parser, Subcommand};
 use ployz_core::corrosion::{
-    AutomaticHostnameMode, CorrosionNamespaceName, CorrosionServiceName, StorageMode,
+    AutomaticHostnameMode, CorrosionNamespaceName, CorrosionServiceName, HostPortBinding,
+    HostPortBindings, HostPortProtocol, ServiceReplicaCount, StorageMode,
 };
 use ployz_core::deploy::{EnvName, EnvValue, ImageReference, ServiceEnvironment};
 use ployz_core::founding::InitStorageChoice;
@@ -19,7 +20,9 @@ use ployz_core::join::{JoinBlob, JoinTokenTtlSeconds};
 use ployz_core::machine::MachineName;
 use ployz_core::network::{DEFAULT_ENDPOINT_SUPERNET, MachineEndpointSupernet, WireGuardPublicKey};
 use ployz_core::operation::RouteHostname;
-use ployz_core::{HealthGatePolicy, MachineUpgradeUrl};
+use ployz_core::{
+    HealthGatePolicy, MachineUpgradeUrl, PinnedMachineNames, RequestedPins, RequestedPlacement,
+};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,6 +80,10 @@ pub struct DeployCommand {
     pub image: ImageReference,
     pub environment: ServiceEnvironment,
     pub health_gate: HealthGatePolicy,
+    /// `None` inherits the service row's placement unchanged.
+    pub placement: Option<RequestedPlacement>,
+    /// `None` inherits the service row's pin set unchanged.
+    pub machines: Option<RequestedPins>,
     pub target: Option<SshTarget>,
 }
 
@@ -102,6 +109,9 @@ pub struct LogsCommand {
     pub service: CorrosionServiceName,
     pub service_id: Option<ServiceRowId>,
     pub tail_lines: ployz_core::CorrosionLogsTailLines,
+    /// Selects the replica hosted by the named machine when the service runs
+    /// containers on more than one machine.
+    pub machine: Option<MachineName>,
     pub follow: bool,
     pub target: Option<SshTarget>,
 }
@@ -449,6 +459,11 @@ pub fn parse_command(args: impl IntoIterator<Item = String>) -> Result<Command, 
             service_id: args.service_id,
             tail_lines: ployz_core::CorrosionLogsTailLines::try_new(args.tail)
                 .map_err(|error| clap_value_error(error.to_string()))?,
+            machine: args
+                .machine
+                .map(MachineName::try_new)
+                .transpose()
+                .map_err(|error| clap_value_error(error.to_string()))?,
             follow: args.follow,
             target: args.target,
         })),
@@ -611,9 +626,37 @@ struct DeployArgs {
     /// Emergency skip: deploy without waiting for the container to prove healthy.
     #[arg(long = "no-health-gate")]
     no_health_gate: bool,
+    /// Service mode: replicated runs a chosen replica count; global runs one
+    /// replica on every eligible machine.
+    #[arg(long, value_enum)]
+    mode: Option<DeployModeArg>,
+    /// Replica count for a replicated service.
+    #[arg(long, value_name = "N")]
+    replicas: Option<u16>,
+    /// Publish a host port into a global service (protocol defaults to tcp).
+    #[arg(
+        short = 'p',
+        long = "publish",
+        value_name = "[HOST:]CONTAINER[/PROTOCOL]"
+    )]
+    publish: Vec<String>,
+    /// Pin placement to a named machine (repeatable); `--machine any` clears
+    /// the pin set.
+    #[arg(long = "machine", value_name = "NAME")]
+    machines: Vec<String>,
     #[arg(long)]
     target: Option<SshTarget>,
 }
+
+/// Service mode requested on the command line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum DeployModeArg {
+    Replicated,
+    Global,
+}
+
+/// The pin-set literal that clears a service's pinned machines.
+const ANY_MACHINE_PIN: &str = "any";
 
 impl DeployArgs {
     fn into_command(self) -> Result<DeployCommand, String> {
@@ -643,9 +686,116 @@ impl DeployArgs {
             } else {
                 HealthGatePolicy::Enforce
             },
+            placement: requested_placement(self.mode, self.replicas, &self.publish)?,
+            machines: requested_pins(self.machines)?,
             target: self.target,
         })
     }
+}
+
+/// Maps the placement flags to a placement request. No flags means `None`:
+/// the deploy inherits the service row's placement unchanged.
+fn requested_placement(
+    mode: Option<DeployModeArg>,
+    replicas: Option<u16>,
+    publish: &[String],
+) -> Result<Option<RequestedPlacement>, String> {
+    let mut bindings = Vec::new();
+    for spec in publish {
+        bindings.push(parse_publish(spec)?);
+    }
+    match mode {
+        Some(DeployModeArg::Global) => {
+            if replicas.is_some() {
+                return Err(
+                    "global runs one replica on every eligible machine; drop --replicas".to_owned(),
+                );
+            }
+            let host_ports =
+                HostPortBindings::try_new(bindings).map_err(|error| error.to_string())?;
+            Ok(Some(RequestedPlacement::Global { host_ports }))
+        }
+        Some(DeployModeArg::Replicated) | None => {
+            if !bindings.is_empty() {
+                return Err(
+                    "published host ports are legal only on global services; expose a replicated service through a route binding"
+                        .to_owned(),
+                );
+            }
+            // A bare `--mode replicated` requests the documented one-replica
+            // default; without any placement flag the row's value is kept.
+            let requested = match replicas {
+                Some(replicas) => Some(replicas),
+                None if mode.is_some() => Some(1),
+                None => None,
+            };
+            match requested {
+                Some(replicas) => {
+                    let replicas = ServiceReplicaCount::try_new(replicas)
+                        .map_err(|error| error.to_string())?;
+                    Ok(Some(RequestedPlacement::Replicated { replicas }))
+                }
+                None => Ok(None),
+            }
+        }
+    }
+}
+
+/// Maps repeated `--machine` flags to a pin request. `any` clears the pin
+/// set and cannot be combined with machine names.
+fn requested_pins(machines: Vec<String>) -> Result<Option<RequestedPins>, String> {
+    if machines.is_empty() {
+        return Ok(None);
+    }
+    let any_count = machines
+        .iter()
+        .filter(|machine| machine.as_str() == ANY_MACHINE_PIN)
+        .count();
+    if any_count > 0 {
+        if any_count < machines.len() {
+            return Err(
+                "--machine any clears the pin set and cannot be combined with machine names"
+                    .to_owned(),
+            );
+        }
+        return Ok(Some(RequestedPins::Any));
+    }
+    let mut names = Vec::new();
+    for machine in machines {
+        names.push(MachineName::try_new(machine).map_err(|error| error.to_string())?);
+    }
+    let names = PinnedMachineNames::try_new(names).map_err(|error| error.to_string())?;
+    Ok(Some(RequestedPins::Machines { names }))
+}
+
+/// Parses one `--publish` value: `[host:]container[/protocol]`, protocol
+/// defaulting to tcp, host defaulting to the container port.
+fn parse_publish(spec: &str) -> Result<HostPortBinding, String> {
+    let (ports, protocol) = match spec.rsplit_once('/') {
+        Some((ports, "tcp")) => (ports, HostPortProtocol::Tcp),
+        Some((ports, "udp")) => (ports, HostPortProtocol::Udp),
+        Some((_, other)) => {
+            return Err(format!(
+                "--publish protocol must be tcp or udp, got {other}"
+            ));
+        }
+        None => (spec, HostPortProtocol::Tcp),
+    };
+    let (host, container) = match ports.split_once(':') {
+        Some((host, container)) => (host, container),
+        None => (ports, ports),
+    };
+    Ok(HostPortBinding {
+        host_port: parse_published_port(host)?,
+        container_port: parse_published_port(container)?,
+        protocol,
+    })
+}
+
+fn parse_published_port(value: &str) -> Result<std::num::NonZeroU16, String> {
+    value
+        .parse::<std::num::NonZeroU16>()
+        .map_err(|_| format!("--publish ports must be between 1 and 65535, got {value:?}"))
 }
 
 #[derive(Debug, Subcommand)]
@@ -713,6 +863,10 @@ struct LogsArgs {
     /// Number of existing lines to print before following.
     #[arg(long, default_value_t = 100)]
     tail: u16,
+    /// Select the replica hosted by this machine when the service runs on
+    /// more than one.
+    #[arg(long = "machine", value_name = "NAME")]
+    machine: Option<String>,
     /// Continue following new log lines.
     #[arg(short = 'f', long)]
     follow: bool,
@@ -1444,9 +1598,130 @@ mod tests {
                 "--follow",
             ])
             .expect("logs"),
-            Command::Logs(LogsCommand { service_id: Some(id), follow: true, .. })
+            Command::Logs(LogsCommand { service_id: Some(id), follow: true, machine: None, .. })
                 if id == service_id
         ));
+        assert!(matches!(
+            parse(&["logs", "web", "--machine", "edge-a"]).expect("logs with machine selector"),
+            Command::Logs(LogsCommand { machine: Some(machine), .. })
+                if machine.as_str() == "edge-a"
+        ));
+    }
+
+    fn parsed_deploy(extra: &[&str]) -> DeployCommand {
+        let mut args = vec!["deploy", "production", "web", "registry.example/web:latest"];
+        args.extend_from_slice(extra);
+        let Command::Deploy(command) = parse(&args).expect("deploy parses") else {
+            panic!("expected deploy");
+        };
+        command
+    }
+
+    #[test]
+    fn deploy_placement_flags_map_to_the_wire_request() {
+        let inherit = parsed_deploy(&[]);
+        assert_eq!(inherit.placement, None);
+        assert_eq!(inherit.machines, None);
+
+        let replicated = parsed_deploy(&["--replicas", "3"]);
+        assert_eq!(
+            replicated.placement,
+            Some(RequestedPlacement::Replicated {
+                replicas: ServiceReplicaCount::try_new(3).expect("replica count"),
+            })
+        );
+
+        let replicated_default = parsed_deploy(&["--mode", "replicated"]);
+        assert_eq!(
+            replicated_default.placement,
+            Some(RequestedPlacement::Replicated {
+                replicas: ServiceReplicaCount::try_new(1).expect("replica count"),
+            })
+        );
+
+        let global = parsed_deploy(&["--mode", "global"]);
+        assert_eq!(
+            global.placement,
+            Some(RequestedPlacement::Global {
+                host_ports: HostPortBindings::default(),
+            })
+        );
+
+        let published =
+            parsed_deploy(&["--mode", "global", "-p", "8080:80", "--publish", "53/udp"]);
+        assert_eq!(
+            published.placement,
+            Some(RequestedPlacement::Global {
+                host_ports: HostPortBindings::try_new([
+                    HostPortBinding {
+                        host_port: std::num::NonZeroU16::new(8080).expect("host port"),
+                        container_port: std::num::NonZeroU16::new(80).expect("container port"),
+                        protocol: HostPortProtocol::Tcp,
+                    },
+                    HostPortBinding {
+                        host_port: std::num::NonZeroU16::new(53).expect("host port"),
+                        container_port: std::num::NonZeroU16::new(53).expect("container port"),
+                        protocol: HostPortProtocol::Udp,
+                    },
+                ])
+                .expect("host ports"),
+            })
+        );
+
+        let pinned = parsed_deploy(&["--machine", "edge-b", "--machine", "edge-a"]);
+        let Some(RequestedPins::Machines { names }) = pinned.machines else {
+            panic!("expected machine pins");
+        };
+        assert_eq!(
+            names.iter().map(MachineName::as_str).collect::<Vec<_>>(),
+            vec!["edge-a", "edge-b"]
+        );
+
+        let unpinned = parsed_deploy(&["--machine", "any"]);
+        assert_eq!(unpinned.machines, Some(RequestedPins::Any));
+    }
+
+    #[test]
+    fn deploy_placement_flag_refusals_never_build_a_request() {
+        for (args, expected) in [
+            (
+                vec!["-p", "8080:80"],
+                "published host ports are legal only on global services",
+            ),
+            (
+                vec!["--mode", "replicated", "-p", "8080:80"],
+                "route binding",
+            ),
+            (
+                vec!["--mode", "global", "--replicas", "2"],
+                "drop --replicas",
+            ),
+            (
+                vec!["--machine", "any", "--machine", "edge-a"],
+                "cannot be combined with machine names",
+            ),
+            (vec!["--replicas", "0"], "at least one replica"),
+            (
+                vec!["--mode", "global", "-p", "0:80"],
+                "between 1 and 65535",
+            ),
+            (
+                vec!["--mode", "global", "-p", "80/sctp"],
+                "protocol must be tcp or udp",
+            ),
+            (
+                vec!["--mode", "global", "-p", "80", "-p", "80"],
+                "published more than once",
+            ),
+        ] {
+            let mut full = vec!["deploy", "production", "web", "registry.example/web:latest"];
+            full.extend_from_slice(&args);
+            let error = parse(&full).expect_err("placement flag combination must refuse");
+            assert!(
+                error.to_string().contains(expected),
+                "{args:?} produced {error}"
+            );
+        }
     }
 
     #[test]

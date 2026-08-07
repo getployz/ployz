@@ -44,7 +44,8 @@ pub async fn execute_to(
     let snapshot = remote.lens(LensCollection::Services).await?;
     let service_id = resolve_service(&snapshot, &command)?;
     let request = ServiceLogsRequest {
-        tail_lines: command.tail_lines,
+        tail_lines: Some(command.tail_lines),
+        machine: command.machine.clone(),
     };
     if !command.follow {
         let tail = remote
@@ -64,12 +65,23 @@ pub async fn execute_to(
     }
 
     let route = service_logs_follow_route(&service_id);
+    // A reconnect keeps its machine selector but replays no existing lines.
+    let reconnect_request = ServiceLogsRequest {
+        tail_lines: None,
+        machine: command.machine.clone(),
+    };
     let mut reconnect_started: Option<Instant> = None;
     let mut reconnect = 0usize;
     let mut pending_gap = false;
     let mut first_attach = true;
     loop {
-        let body = first_attach.then_some(&request);
+        let body = if first_attach {
+            Some(&request)
+        } else if command.machine.is_some() {
+            Some(&reconnect_request)
+        } else {
+            None
+        };
         let attach = remote.request_sse_with_refusal::<
                 ServiceLogsRequest,
                 ServiceLogsFollowEvent,
@@ -313,8 +325,16 @@ pub enum LogsExecutionError {
     ContainerNotFound { service_id: String },
     #[error("container {container_id} is not a managed v2 container")]
     UnmanagedContainer { container_id: String },
-    #[error("service logs are owned by remote machine {machine_id}; log proxying is not available")]
-    RemoteOwner { machine_id: String },
+    #[error(
+        "this service runs containers on machines {machines}; pick one with `ployz logs <service> --machine <machine>`"
+    )]
+    MachineSelectorRequired { machines: String },
+    #[error(
+        "replicas of this service stack on machine {machine}; per-container log selection is not yet supported"
+    )]
+    StackedReplicas { machine: String },
+    #[error("service logs are owned by machine {machine}; point --target at that machine")]
+    RemoteOwner { machine: String },
     #[error("service log driver {machine_id} is dark: {observation}")]
     DriverDark {
         machine_id: String,
@@ -339,8 +359,34 @@ impl From<ServiceLogsRefusal> for LogsExecutionError {
             ServiceLogsRefusal::UnmanagedContainer { container_id } => Self::UnmanagedContainer {
                 container_id: container_id.as_str().to_owned(),
             },
-            ServiceLogsRefusal::RemoteOwner { machine_id } => Self::RemoteOwner {
-                machine_id: machine_id.to_string(),
+            ServiceLogsRefusal::MachineSelectorRequired { machines } => {
+                let distinct = machines
+                    .iter()
+                    .map(|machine| machine.as_str())
+                    .collect::<std::collections::BTreeSet<_>>();
+                match distinct.iter().next() {
+                    // Every entry names the same machine: replicas stack
+                    // there, and no machine selector can split them.
+                    Some(machine) if distinct.len() == 1 && machines.len() > 1 => {
+                        Self::StackedReplicas {
+                            machine: (*machine).to_owned(),
+                        }
+                    }
+                    Some(_) | None => Self::MachineSelectorRequired {
+                        machines: machines
+                            .iter()
+                            .map(|machine| machine.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    },
+                }
+            }
+            ServiceLogsRefusal::RemoteOwner {
+                machine_id,
+                machine_name,
+            } => Self::RemoteOwner {
+                machine: machine_name
+                    .map_or_else(|| machine_id.to_string(), |name| name.as_str().to_owned()),
             },
             ServiceLogsRefusal::DriverDark {
                 machine_id,
@@ -405,6 +451,52 @@ mod tests {
         let output = String::from_utf8(output).expect("utf8");
         assert!(output.starts_with("[stderr] partial evidence\n"));
         assert!(output.ends_with(TAIL_TRUNCATION_LINE));
+    }
+
+    #[test]
+    fn replica_refusals_name_their_resolving_flags() {
+        let name = |value: &str| ployz_core::machine::MachineName::try_new(value).expect("name");
+        let spread = LogsExecutionError::from(ServiceLogsRefusal::MachineSelectorRequired {
+            machines: vec![name("edge-a"), name("edge-b")],
+        });
+        let copy = spread.to_string();
+        assert!(copy.contains("edge-a, edge-b"), "{copy:?}");
+        assert!(copy.contains("--machine <machine>"), "{copy:?}");
+
+        let stacked = LogsExecutionError::from(ServiceLogsRefusal::MachineSelectorRequired {
+            machines: vec![name("edge-a"), name("edge-a")],
+        });
+        let copy = stacked.to_string();
+        assert!(copy.contains("stack on machine edge-a"), "{copy:?}");
+
+        let machine_id = ployz_core::ids::MachineRowId::generate();
+        let remote = LogsExecutionError::from(ServiceLogsRefusal::RemoteOwner {
+            machine_id: machine_id.clone(),
+            machine_name: Some(name("edge-b")),
+        });
+        let copy = remote.to_string();
+        assert!(copy.contains("machine edge-b"), "{copy:?}");
+        assert!(copy.contains("--target"), "{copy:?}");
+
+        let unnamed = LogsExecutionError::from(ServiceLogsRefusal::RemoteOwner {
+            machine_id: machine_id.clone(),
+            machine_name: None,
+        });
+        assert!(unnamed.to_string().contains(&machine_id.to_string()));
+    }
+
+    #[test]
+    fn follow_reconnects_keep_the_machine_selector_without_replaying() {
+        let request = ServiceLogsRequest {
+            tail_lines: None,
+            machine: Some(
+                ployz_core::machine::MachineName::try_new("edge-a").expect("machine name"),
+            ),
+        };
+        assert_eq!(
+            serde_json::to_value(&request).expect("request serializes"),
+            serde_json::json!({ "machine": "edge-a" })
+        );
     }
 
     #[test]

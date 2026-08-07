@@ -1,18 +1,17 @@
 //! Machine-owned status observations and structurally local SQL writes.
 
 use std::collections::BTreeMap;
-use std::fs;
-use std::path::Path;
 
 use ployz_core::corrosion::{
-    ContainerIsolationTestimony, CorrosionDocumentVersion, CorrosionTimestamp, MachineLoadBand,
+    ContainerIsolationTestimony, CorrosionDocumentVersion, CorrosionTimestamp,
     MachineStatusDocument, MeshConvergenceTestimony, SqliteParameter, Statement,
     WireGuardHandshakeEvidence,
 };
 use ployz_core::ids::{ClusterId, MachineRowId};
-use rustix::fs::statvfs;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
+
+use crate::roles::system_observation::{SystemObservation, SystemObservationError};
 
 /// The only constructor for Keeper's machine_status UPSERT.
 ///
@@ -91,93 +90,11 @@ impl LocalMachineStatusWriter {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct SystemObservation {
-    free_disk_bytes: u64,
-    free_memory_bytes: u64,
-    load: MachineLoadBand,
-}
-
-impl SystemObservation {
-    fn read() -> Result<Self, MachineStatusWriteError> {
-        let stat =
-            statvfs(Path::new("/")).map_err(|source| MachineStatusWriteError::Observation {
-                resource: "root filesystem",
-                detail: source.to_string(),
-            })?;
-        let free_disk_bytes = bytes_from_blocks(stat.f_bavail, stat.f_frsize);
-        let meminfo = fs::read_to_string("/proc/meminfo").map_err(|source| {
-            MachineStatusWriteError::Observation {
-                resource: "available memory",
-                detail: source.to_string(),
-            }
-        })?;
-        let free_memory_bytes = mem_available_bytes(&meminfo)?;
-        let loadavg = fs::read_to_string("/proc/loadavg").map_err(|source| {
-            MachineStatusWriteError::Observation {
-                resource: "load average",
-                detail: source.to_string(),
-            }
-        })?;
-        let one_minute = loadavg
-            .split_ascii_whitespace()
-            .next()
-            .ok_or_else(|| MachineStatusWriteError::Observation {
-                resource: "load average",
-                detail: "missing one-minute value".to_owned(),
-            })?
-            .parse::<f64>()
-            .map_err(|source| MachineStatusWriteError::Observation {
-                resource: "load average",
-                detail: source.to_string(),
-            })?;
-        let cpu_count = std::thread::available_parallelism()
-            .map(|count| count.get())
-            .unwrap_or(1) as f64;
-        let normalized = one_minute / cpu_count;
-        let load = if normalized < 0.5 {
-            MachineLoadBand::Idle
-        } else if normalized < 1.0 {
-            MachineLoadBand::Normal
-        } else {
-            MachineLoadBand::Hot
-        };
-        Ok(Self {
-            free_disk_bytes,
-            free_memory_bytes,
-            load,
-        })
+impl From<SystemObservationError> for MachineStatusWriteError {
+    fn from(error: SystemObservationError) -> Self {
+        let SystemObservationError { resource, detail } = error;
+        Self::Observation { resource, detail }
     }
-}
-
-fn mem_available_bytes(meminfo: &str) -> Result<u64, MachineStatusWriteError> {
-    let Some(line) = meminfo
-        .lines()
-        .find(|line| line.starts_with("MemAvailable:"))
-    else {
-        return Err(MachineStatusWriteError::Observation {
-            resource: "available memory",
-            detail: "MemAvailable is absent from /proc/meminfo".to_owned(),
-        });
-    };
-    let fields = line.split_ascii_whitespace().collect::<Vec<_>>();
-    let [_, kibibytes, "kB"] = fields.as_slice() else {
-        return Err(MachineStatusWriteError::Observation {
-            resource: "available memory",
-            detail: "MemAvailable has an unexpected shape".to_owned(),
-        });
-    };
-    kibibytes
-        .parse::<u64>()
-        .map(|value| value.saturating_mul(1_024))
-        .map_err(|source| MachineStatusWriteError::Observation {
-            resource: "available memory",
-            detail: source.to_string(),
-        })
-}
-
-fn bytes_from_blocks(blocks: u64, block_size: u64) -> u64 {
-    u64::try_from(u128::from(blocks).saturating_mul(u128::from(block_size))).unwrap_or(u64::MAX)
 }
 
 pub(super) fn now() -> Result<CorrosionTimestamp, MachineStatusWriteError> {
@@ -207,7 +124,7 @@ pub(super) enum MachineStatusWriteError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::corrosion::BuiltinWireguardKeyMismatch;
+    use ployz_core::corrosion::{BuiltinWireguardKeyMismatch, MachineLoadBand};
     use ployz_core::network::WireGuardPublicKey;
 
     const CLUSTER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -339,14 +256,6 @@ mod tests {
         assert_eq!(
             encoded.get("wireguard_handshakes"),
             Some(&serde_json::json!({}))
-        );
-    }
-
-    #[test]
-    fn reads_mem_available_as_bytes() {
-        assert_eq!(
-            mem_available_bytes("MemTotal: 20 kB\nMemAvailable: 12 kB\n").expect("memory"),
-            12 * 1_024
         );
     }
 }

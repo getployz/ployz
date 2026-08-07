@@ -27,8 +27,8 @@ use ployz_core::{
     OperationEvidence, OperationEvidenceEvent, OperationEvidenceSequence, OperationWatchEvent,
     PLACEMENT_BID_ROUTE, PlacementBid, RequestedPins, RequestedPlacement,
     ServiceContainerObservation, ServiceLogLine, ServiceLogStream, ServiceLogsFollowEvent,
-    ServiceLogsRefusal, SilenceClassification, SilentMachine, V2Method, V2Route, VERSION_ROUTE,
-    lens_route, lens_watch_route, operation_route, operation_watch_route,
+    ServiceLogsRefusal, ServiceLogsRequest, SilenceClassification, SilentMachine, V2Method,
+    V2Route, VERSION_ROUTE, lens_route, lens_watch_route, operation_route, operation_watch_route,
     service_logs_follow_route, service_logs_tail_route,
 };
 use serde_json::json;
@@ -536,6 +536,69 @@ fn log_follow_gap_is_explicit_and_tail_counts_are_bounded() {
     assert!(CorrosionLogsTailLines::try_new(0).is_err());
     assert!(CorrosionLogsTailLines::try_new(CorrosionLogsTailLines::MAX).is_ok());
     assert!(CorrosionLogsTailLines::try_new(CorrosionLogsTailLines::MAX + 1).is_err());
+}
+
+#[test]
+fn log_requests_carry_an_optional_machine_selector_and_replay_free_reconnects() {
+    let machine_name = ployz_core::machine::MachineName::try_new("edge-a").expect("machine name");
+    let selected = ServiceLogsRequest {
+        tail_lines: Some(CorrosionLogsTailLines::try_new(100).expect("tail lines")),
+        machine: Some(machine_name.clone()),
+    };
+    assert_eq!(
+        serde_json::to_value(&selected).expect("request serializes"),
+        json!({ "tail_lines": 100, "machine": "edge-a" })
+    );
+    let encoded = serde_json::to_vec(&selected).expect("request encodes");
+    assert_eq!(
+        serde_json::from_slice::<ServiceLogsRequest>(&encoded).expect("request round-trips"),
+        selected
+    );
+
+    let reconnect = ServiceLogsRequest {
+        tail_lines: None,
+        machine: Some(machine_name.clone()),
+    };
+    assert_eq!(
+        serde_json::to_value(&reconnect).expect("reconnect serializes"),
+        json!({ "machine": "edge-a" })
+    );
+    let pre_selector = serde_json::from_value::<ServiceLogsRequest>(json!({ "tail_lines": 5 }))
+        .expect("pre-selector request decodes");
+    assert_eq!(pre_selector.machine, None);
+
+    let selector_required = ServiceLogsRefusal::MachineSelectorRequired {
+        machines: vec![machine_name.clone(), machine_name.clone()],
+    };
+    assert_eq!(
+        serde_json::to_value(&selector_required).expect("refusal serializes"),
+        json!({ "kind": "machine_selector_required", "machines": ["edge-a", "edge-a"] })
+    );
+    let encoded = serde_json::to_vec(&selector_required).expect("refusal encodes");
+    assert_eq!(
+        serde_json::from_slice::<ServiceLogsRefusal>(&encoded).expect("refusal round-trips"),
+        selector_required
+    );
+
+    let remote_owner = ServiceLogsRefusal::RemoteOwner {
+        machine_id: machine_id(MACHINE_A),
+        machine_name: Some(machine_name),
+    };
+    assert_eq!(
+        serde_json::to_value(&remote_owner).expect("owner refusal serializes"),
+        json!({ "kind": "remote_owner", "machine_id": MACHINE_A, "machine_name": "edge-a" })
+    );
+    let unnamed = serde_json::from_value::<ServiceLogsRefusal>(
+        json!({ "kind": "remote_owner", "machine_id": MACHINE_A }),
+    )
+    .expect("pre-name owner refusal decodes");
+    assert_eq!(
+        unnamed,
+        ServiceLogsRefusal::RemoteOwner {
+            machine_id: machine_id(MACHINE_A),
+            machine_name: None,
+        }
+    );
 }
 
 #[test]
