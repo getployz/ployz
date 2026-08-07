@@ -7,9 +7,12 @@ use ployz_core::corrosion::{
     CorrosionDeployOutcome, CorrosionDeployState, CorrosionOperation, CorrosionOperationState,
     CorrosionTimestamp, OperationDocument,
 };
+use ployz_core::ids::MachineRowId;
+use ployz_core::placement::{PlacementElimination, PlacementEliminationReason, PlacementShortfall};
 use ployz_core::{
     LensCollection, LensSnapshot, OperationEvidence, OperationEvidenceEvent, OperationWatchEvent,
-    OperationWatchRefusal, operation_watch_route,
+    OperationWatchRefusal, PlacementBid, SilenceClassification, SilentMachine,
+    operation_watch_route,
 };
 
 use crate::commands::{OpsCommand, OpsListCommand, OpsWatchCommand};
@@ -178,6 +181,8 @@ where
                                 OperationEvidence::Created
                                 | OperationEvidence::OpClaimWon
                                 | OperationEvidence::OpClaimLost { .. }
+                                | OperationEvidence::PlacementGathered { .. }
+                                | OperationEvidence::PlacementPicked { .. }
                                 | OperationEvidence::DebrisSwept { .. }
                                 | OperationEvidence::PullingImage
                                 | OperationEvidence::ImageResolved
@@ -191,7 +196,8 @@ where
                                 | OperationEvidence::ServiceClaimWon
                                 | OperationEvidence::ServiceClaimLost { .. }
                                 | OperationEvidence::Drained
-                                | OperationEvidence::IncumbentRemoved { .. } => None,
+                                | OperationEvidence::IncumbentRemoved { .. }
+                                | OperationEvidence::Unrecognized => None,
                             };
                             render_evidence(output, &event)?;
                             match terminal {
@@ -270,26 +276,73 @@ fn render_evidence(
         OperationEvidence::Created => "created".to_owned(),
         OperationEvidence::PullingImage => "pulling image".to_owned(),
         OperationEvidence::ImageResolved => "image resolved".to_owned(),
-        OperationEvidence::ContainerCreated { container_id } => {
-            format!("container created {}", container_id.as_str())
+        OperationEvidence::ContainerCreated {
+            container_id,
+            machine,
+        } => {
+            format!(
+                "container created {}{}",
+                container_id.as_str(),
+                on_machine(machine.as_ref())
+            )
         }
-        OperationEvidence::ContainerStarted { container_id } => {
-            format!("container started {}", container_id.as_str())
+        OperationEvidence::ContainerStarted {
+            container_id,
+            machine,
+        } => {
+            format!(
+                "container started {}{}",
+                container_id.as_str(),
+                on_machine(machine.as_ref())
+            )
         }
         OperationEvidence::OpClaimWon => "operation claim won".to_owned(),
         OperationEvidence::OpClaimLost { winner } => format!("operation claim lost to {winner}"),
-        OperationEvidence::DebrisSwept { removed } => {
-            format!("swept {} leftover container(s)", removed.len())
+        OperationEvidence::PlacementGathered { bids, silent } => {
+            render_placement_gathered(bids, silent)
+        }
+        OperationEvidence::PlacementPicked {
+            targets,
+            eliminations,
+            shortfall,
+        } => render_placement_picked(targets, eliminations, shortfall.as_ref()),
+        OperationEvidence::DebrisSwept { removed, machine } => {
+            format!(
+                "swept {} leftover container(s){}",
+                removed.len(),
+                on_machine(machine.as_ref())
+            )
         }
         OperationEvidence::HealthGateSkipped => "health gate skipped".to_owned(),
-        OperationEvidence::IncumbentStopped { container_id } => {
-            format!("incumbent stopped {}", container_id.as_str())
+        OperationEvidence::IncumbentStopped {
+            container_id,
+            machine,
+        } => {
+            format!(
+                "incumbent stopped {}{}",
+                container_id.as_str(),
+                on_machine(machine.as_ref())
+            )
         }
-        OperationEvidence::IncumbentRestarted { container_id } => {
-            format!("incumbent restarted {}", container_id.as_str())
+        OperationEvidence::IncumbentRestarted {
+            container_id,
+            machine,
+        } => {
+            format!(
+                "incumbent restarted {}{}",
+                container_id.as_str(),
+                on_machine(machine.as_ref())
+            )
         }
-        OperationEvidence::IncumbentRemoved { container_id } => {
-            format!("incumbent removed {}", container_id.as_str())
+        OperationEvidence::IncumbentRemoved {
+            container_id,
+            machine,
+        } => {
+            format!(
+                "incumbent removed {}{}",
+                container_id.as_str(),
+                on_machine(machine.as_ref())
+            )
         }
         OperationEvidence::Drained => "drained".to_owned(),
         OperationEvidence::PromotionPrepared => "promotion prepared".to_owned(),
@@ -300,6 +353,7 @@ fn render_evidence(
             let (kind, state) = operation_kind_state(operation);
             format!("terminal {kind} {state}")
         }
+        OperationEvidence::Unrecognized => "unrecognized evidence from a newer daemon".to_owned(),
     };
     writeln!(
         output,
@@ -309,6 +363,87 @@ fn render_evidence(
     )
     .map_err(OpsExecutionError::Output)?;
     output.flush().map_err(OpsExecutionError::Output)
+}
+
+fn on_machine(machine: Option<&MachineRowId>) -> String {
+    machine
+        .map(|machine| format!(" on {machine}"))
+        .unwrap_or_default()
+}
+
+fn render_placement_gathered(bids: &[PlacementBid], silent: &[SilentMachine]) -> String {
+    let bidders = bids
+        .iter()
+        .map(|bid| format!("{} ({})", bid.machine_name.as_str(), bid.machine_id))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut detail = format!("placement bids from {} machine(s): {bidders}", bids.len());
+    if bids.is_empty() {
+        detail = "placement bids from 0 machines".to_owned();
+    }
+    if !silent.is_empty() {
+        let silent = silent
+            .iter()
+            .map(|entry| match &entry.classification {
+                SilenceClassification::ExpectedSilent {
+                    handshake_age_seconds,
+                } => format!(
+                    "{} (expected-silent, handshake {handshake_age_seconds}s)",
+                    entry.machine_id
+                ),
+                SilenceClassification::AnomalousSilent { reason } => {
+                    format!("{} (anomalous-silent: {reason})", entry.machine_id)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        detail.push_str(&format!("; silent: {silent}"));
+    }
+    detail
+}
+
+fn render_placement_picked(
+    targets: &[MachineRowId],
+    eliminations: &[PlacementElimination],
+    shortfall: Option<&PlacementShortfall>,
+) -> String {
+    let picked = targets
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut detail = format!("placement picked {picked}");
+    if !eliminations.is_empty() {
+        let eliminated = eliminations
+            .iter()
+            .map(|elimination| {
+                let reason = match &elimination.reason {
+                    PlacementEliminationReason::Draining => "draining".to_owned(),
+                    PlacementEliminationReason::PlatformUnsupported { architecture } => {
+                        format!("unsupported architecture {architecture}")
+                    }
+                    PlacementEliminationReason::FreeDiskBelowFloor { free_disk_bytes } => {
+                        format!("free disk {free_disk_bytes} bytes below floor")
+                    }
+                    PlacementEliminationReason::VolumeNotHeld { holder } => {
+                        format!("volume held by {holder}")
+                    }
+                    PlacementEliminationReason::OutsidePinSet => "outside pin set".to_owned(),
+                };
+                format!("{} ({reason})", elimination.machine_id)
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        detail.push_str(&format!("; eliminated: {eliminated}"));
+    }
+    if let Some(shortfall) = shortfall {
+        detail.push_str(&format!(
+            "; shortfall: {} requested, {} distinct machine(s)",
+            shortfall.requested.get(),
+            shortfall.placed
+        ));
+    }
+    detail
 }
 
 fn current_timestamp() -> Result<CorrosionTimestamp, OpsExecutionError> {

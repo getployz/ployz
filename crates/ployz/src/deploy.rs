@@ -4,6 +4,7 @@ use std::io::Write as _;
 
 use hyper::Method;
 use ployz_core::deploy::ContainerRuntimeSpec;
+use ployz_core::placement::PlacementEliminationReason;
 use ployz_core::{DEPLOY_ROUTE, DeployAccepted, DeployRefusal, DeployRequest};
 
 use crate::commands::{DeployCommand, OpsWatchCommand};
@@ -54,6 +55,8 @@ fn deploy_request(command: &DeployCommand) -> DeployRequest {
         image: command.image.clone(),
         runtime,
         health_gate: command.health_gate,
+        placement: None,
+        machines: None,
     }
 }
 
@@ -95,8 +98,20 @@ pub enum DeployExecutionError {
         "namespace {namespace_id} has route bindings but no service; run `ployz route rm <hostname>` on each route before deploying"
     )]
     RoutesWithoutServices { namespace_id: String },
-    #[error("the incumbent service is pinned to machine {machine_id}; deploy through that machine")]
-    IncumbentOnAnotherMachine { machine_id: String },
+    #[error("no machine is eligible for placement: {eliminations}")]
+    NoEligibleMachines { eliminations: String },
+    #[error(
+        "volume {volume} exists on multiple machines ({holders}); that is a data fork — pin one holder with `ployz deploy --machine <machine>`"
+    )]
+    VolumeHolderConflict { volume: String, holders: String },
+    #[error(
+        "machines that may hold this service's volumes are unreachable ({machines}); recover them before deploying"
+    )]
+    DarkVolumeHolder { machines: String },
+    #[error("volume services run a single replica; {requested} were requested")]
+    VolumeReplicaLimit { requested: u16 },
+    #[error("machine {machine_name} is not in the roster")]
+    UnknownPinnedMachine { machine_name: String },
     #[error("the required ployz container bridge is unavailable on the driver")]
     BridgeUnavailable,
 }
@@ -143,11 +158,51 @@ impl From<DeployRefusal> for DeployExecutionError {
             DeployRefusal::RoutesWithoutServices { namespace_id } => Self::RoutesWithoutServices {
                 namespace_id: namespace_id.to_string(),
             },
-            DeployRefusal::IncumbentOnAnotherMachine { machine_id } => {
-                Self::IncumbentOnAnotherMachine {
-                    machine_id: machine_id.to_string(),
-                }
-            }
+            DeployRefusal::NoEligibleMachines { eliminations } => Self::NoEligibleMachines {
+                eliminations: eliminations
+                    .into_iter()
+                    .map(|elimination| {
+                        let reason = match elimination.reason {
+                            PlacementEliminationReason::Draining => "draining".to_owned(),
+                            PlacementEliminationReason::PlatformUnsupported { architecture } => {
+                                format!("unsupported architecture {architecture}")
+                            }
+                            PlacementEliminationReason::FreeDiskBelowFloor { free_disk_bytes } => {
+                                format!("free disk {free_disk_bytes} bytes below floor")
+                            }
+                            PlacementEliminationReason::VolumeNotHeld { holder } => {
+                                format!("volume held by {holder}")
+                            }
+                            PlacementEliminationReason::OutsidePinSet => {
+                                "outside pin set".to_owned()
+                            }
+                        };
+                        format!("{} ({reason})", elimination.machine_id)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            },
+            DeployRefusal::VolumeHolderConflict { volume, holders } => Self::VolumeHolderConflict {
+                volume: volume.as_str().to_owned(),
+                holders: holders
+                    .into_iter()
+                    .map(|id| id.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            },
+            DeployRefusal::DarkVolumeHolder { machines } => Self::DarkVolumeHolder {
+                machines: machines
+                    .into_iter()
+                    .map(|id| id.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            },
+            DeployRefusal::VolumeReplicaLimit { requested } => Self::VolumeReplicaLimit {
+                requested: requested.get(),
+            },
+            DeployRefusal::UnknownPinnedMachine { machine_name } => Self::UnknownPinnedMachine {
+                machine_name: machine_name.as_str().to_owned(),
+            },
             DeployRefusal::BridgeUnavailable => Self::BridgeUnavailable,
         }
     }

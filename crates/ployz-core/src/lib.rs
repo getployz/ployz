@@ -23,6 +23,7 @@ pub mod machine;
 pub mod namespace;
 pub mod network;
 pub mod operation;
+pub mod placement;
 pub mod roles;
 pub(crate) mod state_key;
 pub mod storage;

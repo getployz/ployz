@@ -388,7 +388,13 @@ impl DeployTask {
         if !removed.is_empty() {
             self.delete_container_rows(&removed).await;
             self.log
-                .append(self.now()?, OperationEvidence::DebrisSwept { removed })
+                .append(
+                    self.now()?,
+                    OperationEvidence::DebrisSwept {
+                        removed,
+                        machine: None,
+                    },
+                )
                 .await?;
         }
 
@@ -542,6 +548,7 @@ impl DeployTask {
                             self.now()?,
                             OperationEvidence::IncumbentStopped {
                                 container_id: container.container_id.clone(),
+                                machine: None,
                             },
                         )
                         .await?;
@@ -632,6 +639,7 @@ impl DeployTask {
                                 self.now()?,
                                 OperationEvidence::IncumbentStopped {
                                     container_id: container.container_id.clone(),
+                                    machine: None,
                                 },
                             )
                             .await?;
@@ -657,6 +665,7 @@ impl DeployTask {
                         self.now()?,
                         OperationEvidence::IncumbentRemoved {
                             container_id: container.container_id.clone(),
+                            machine: None,
                         },
                     )
                     .await?;
@@ -810,6 +819,7 @@ impl DeployTask {
                 self.now()?,
                 OperationEvidence::ContainerCreated {
                     container_id: container_id.clone(),
+                    machine: None,
                 },
             )
             .await?;
@@ -848,6 +858,7 @@ impl DeployTask {
                 self.now()?,
                 OperationEvidence::ContainerStarted {
                     container_id: container_id.clone(),
+                    machine: None,
                 },
             )
             .await?;
@@ -935,6 +946,7 @@ impl DeployTask {
                         self.now()?,
                         OperationEvidence::IncumbentRestarted {
                             container_id: container.container_id.clone(),
+                            machine: None,
                         },
                     )
                     .await?;
@@ -1112,7 +1124,7 @@ impl DeployTask {
             ServiceLineage {
                 namespace_id: incumbent.document.namespace_id.clone(),
                 name: incumbent.document.name.clone(),
-                placement: incumbent.document.placement,
+                placement: incumbent.document.placement.clone(),
                 pinned_machines: incumbent.document.pinned_machines.clone(),
                 previous_image: Some(incumbent.document.image.clone()),
             },

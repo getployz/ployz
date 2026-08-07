@@ -456,12 +456,16 @@ pub(super) async fn handle_deploy(
         },
         Ok(Err(refusal)) => {
             let status = match refusal {
-                DeployRefusal::NamespaceNotFound { .. } => StatusCode::NOT_FOUND,
+                DeployRefusal::NamespaceNotFound { .. }
+                | DeployRefusal::UnknownPinnedMachine { .. } => StatusCode::NOT_FOUND,
                 DeployRefusal::NamespaceAmbiguous { .. }
                 | DeployRefusal::DifferentService { .. }
                 | DeployRefusal::MultipleServices { .. }
                 | DeployRefusal::RoutesWithoutServices { .. }
-                | DeployRefusal::IncumbentOnAnotherMachine { .. } => StatusCode::CONFLICT,
+                | DeployRefusal::NoEligibleMachines { .. }
+                | DeployRefusal::VolumeHolderConflict { .. }
+                | DeployRefusal::DarkVolumeHolder { .. }
+                | DeployRefusal::VolumeReplicaLimit { .. } => StatusCode::CONFLICT,
                 DeployRefusal::BridgeUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             };
             super::mutations::typed_response(status, &refusal)

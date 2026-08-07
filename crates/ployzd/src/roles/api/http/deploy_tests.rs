@@ -49,7 +49,6 @@ enum Admission {
     RoutesWithoutServices,
     First,
     Redeploy,
-    RedeployElsewhere,
 }
 
 struct FakeStore {
@@ -94,10 +93,6 @@ impl RedeployStore for FakeStore {
             Admission::Redeploy => DeployAdmission::Redeploy {
                 namespace: resolved_namespace(),
                 incumbent: Box::new(incumbent_service(machine_id())),
-            },
-            Admission::RedeployElsewhere => DeployAdmission::Redeploy {
-                namespace: resolved_namespace(),
-                incumbent: Box::new(incumbent_service(other_machine_id())),
             },
         })
     }
@@ -498,10 +493,6 @@ fn machine_id() -> MachineRowId {
     MachineRowId::try_new("01J00000000000000000000012").expect("machine")
 }
 
-fn other_machine_id() -> MachineRowId {
-    MachineRowId::try_new("01J00000000000000000000016").expect("machine")
-}
-
 fn namespace_id() -> NamespaceRowId {
     NamespaceRowId::try_new("01J00000000000000000000013").expect("namespace")
 }
@@ -643,6 +634,8 @@ fn request_with(health_gate: HealthGatePolicy) -> ployz_core::DeployRequest {
         image: ImageReference::try_new("nginx:1.27-alpine").expect("image"),
         runtime,
         health_gate,
+        placement: None,
+        machines: None,
     }
 }
 
@@ -718,12 +711,6 @@ async fn populated_namespace_shapes_refuse_before_effects() {
             Admission::RoutesWithoutServices,
             DeployRefusal::RoutesWithoutServices {
                 namespace_id: namespace_id(),
-            },
-        ),
-        (
-            Admission::RedeployElsewhere,
-            DeployRefusal::IncumbentOnAnotherMachine {
-                machine_id: other_machine_id(),
             },
         ),
     ] {
@@ -1000,9 +987,11 @@ async fn second_deploy_flips_atomically_with_previous_image() {
     assert!(events.contains(&OperationEvidence::Drained));
     assert!(events.contains(&OperationEvidence::IncumbentStopped {
         container_id: ContainerId::try_new("incumbent-1").expect("container"),
+        machine: None,
     }));
     assert!(events.contains(&OperationEvidence::IncumbentRemoved {
         container_id: ContainerId::try_new("incumbent-1").expect("container"),
+        machine: None,
     }));
     assert!(matches!(
         fixture.operations.terminal_state().await,
@@ -1095,9 +1084,11 @@ async fn volume_service_stops_incumbent_only_after_create_and_restarts_on_gate_f
     let events = evidence_kinds(&log).await;
     assert!(events.contains(&OperationEvidence::IncumbentStopped {
         container_id: ContainerId::try_new("incumbent-1").expect("container"),
+        machine: None,
     }));
     assert!(events.contains(&OperationEvidence::IncumbentRestarted {
         container_id: ContainerId::try_new("incumbent-1").expect("container"),
+        machine: None,
     }));
 }
 
@@ -1172,6 +1163,7 @@ async fn sweep_removes_only_foreign_debris_and_their_rows() {
     let events = evidence_kinds(&log).await;
     assert!(events.contains(&OperationEvidence::DebrisSwept {
         removed: vec![ContainerId::try_new("debris-1").expect("container")],
+        machine: None,
     }));
     // The sweep's exact row delete names only the debris row.
     let deleted = fixture.store.deleted.lock().await.clone();

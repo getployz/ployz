@@ -179,27 +179,10 @@ impl DeployDriver {
             DeployAdmission::Redeploy {
                 namespace,
                 incumbent,
-            } => {
-                // This slice commands only the incumbent's own machine.
-                let Some(pinned) = incumbent.document.pinned_machines.iter().next().cloned() else {
-                    return Err(DeployDriverError::Invariant(
-                        "incumbent service pins no machine".to_owned(),
-                    ));
-                };
-                if !incumbent
-                    .document
-                    .pinned_machines
-                    .contains(&self.machine_id)
-                {
-                    return Ok(Err(DeployRefusal::IncumbentOnAnotherMachine {
-                        machine_id: pinned,
-                    }));
-                }
-                DeployPath::Redeploy {
-                    namespace,
-                    incumbent,
-                }
-            }
+            } => DeployPath::Redeploy {
+                namespace,
+                incumbent,
+            },
         };
         if !tokio::time::timeout(self.effect_timeout, self.runtime.bridge_ready())
             .await

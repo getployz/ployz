@@ -525,6 +525,9 @@ impl ApiService {
                 super::operation_http::handle_watch(self, operation_id, &principal, shutdown).await
             }
             V2Route::Deploy => super::operation_http::handle_deploy(self, principal, request).await,
+            V2Route::PlacementBid | V2Route::DeployExecute => {
+                refusal_response(ApiRefusal::UnsupportedRoute)
+            }
             V2Route::ServiceLogsTail(service_id) => {
                 super::service_logs::handle_tail(self, service_id, request, shutdown).await
             }

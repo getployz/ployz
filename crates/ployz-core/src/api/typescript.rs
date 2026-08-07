@@ -11,15 +11,17 @@ use super::v2::{
     CorrosionNamespaceCreateRefusal, CorrosionNamespaceCreateReply,
     CorrosionNamespaceCreateRequest, CorrosionNamespaceRemoveRefusal,
     CorrosionNamespaceRemoveReply, CorrosionNamespaceRemoveRequest, CorrosionRetryAfterSeconds,
-    DeployAccepted, DeployRefusal, DeployRequest, HandshakeObservation,
-    HandshakeObservationOutcome, HandshakeObservationUnavailable, KNOWN_API_FEATURES,
-    KnownApiFeature, LensCollection, LensSnapshot, LensWatchEvent, MachineLensRow,
-    MachineRemoveRefusal, MachineRemoveReply, MachineRemoveRequest, MachineStatusLensRow,
-    MachineUpgradeRefusal, MachineUpgradeReply, MachineUpgradeRequest, MachineUpgradeSupervisor,
-    MachineUpgradeUrl, OperationEvidence, OperationEvidenceEvent, OperationEvidenceSequence,
-    OperationLensRow, OperationLookupRefusal, OperationLookupReply, OperationWatchEvent,
-    OperationWatchRefusal, ServiceLensRow, ServiceLogLine, ServiceLogStream,
-    ServiceLogsFollowEvent, ServiceLogsRefusal, ServiceLogsRequest, ServiceLogsTailReply,
+    DeployAccepted, DeployExecuteOutcome, DeployExecuteRequest, DeployRefusal, DeployRequest,
+    DeployVerb, HandshakeObservation, HandshakeObservationOutcome, HandshakeObservationUnavailable,
+    KNOWN_API_FEATURES, KnownApiFeature, LensCollection, LensSnapshot, LensWatchEvent,
+    MachineLensRow, MachineRemoveRefusal, MachineRemoveReply, MachineRemoveRequest,
+    MachineStatusLensRow, MachineUpgradeRefusal, MachineUpgradeReply, MachineUpgradeRequest,
+    MachineUpgradeSupervisor, MachineUpgradeUrl, OperationEvidence, OperationEvidenceEvent,
+    OperationEvidenceSequence, OperationLensRow, OperationLookupRefusal, OperationLookupReply,
+    OperationWatchEvent, OperationWatchRefusal, PinnedMachineNames, PlacementBid,
+    PlacementBidRequest, RequestedPins, RequestedPlacement, ServiceContainerObservation,
+    ServiceLensRow, ServiceLogLine, ServiceLogStream, ServiceLogsFollowEvent, ServiceLogsRefusal,
+    ServiceLogsRequest, ServiceLogsTailReply, SilenceClassification, SilentMachine,
 };
 use super::{
     DoctorDocument, NamedRemovalOutcome, PeerRemoveRefusal, PeerRemoveReply, PeerRemoveRequest,
@@ -29,8 +31,9 @@ use super::{
 use crate::build::{BuildExecutorEvidence, BuildPlatformExecutorAssignment, BuildSource};
 use crate::corrosion::{
     AcmeHttp01Document, CertHoldingDocument, ClusterDocument, ContainerDocument, CorrosionTable,
-    MachineDocument, MachineStatusDocument, NameClaim, NamespaceDocument, OperationDocument,
-    PeerDocument, Principal, RouteBindingDocument, ServiceDocument, TokenDocument,
+    HostPortBinding, HostPortBindings, HostPortProtocol, MachineDocument, MachineStatusDocument,
+    NameClaim, NamespaceDocument, OperationDocument, PeerDocument, Principal, RouteBindingDocument,
+    ServiceDocument, TokenDocument,
 };
 use crate::deploy::EnvValue;
 use crate::founding::{
@@ -57,6 +60,10 @@ use crate::operation::{
     OperationInterruptionStage, OperationInterruptionUncertainWork,
 };
 use crate::operation_api::OperationApiContract;
+use crate::placement::{
+    PlacementElimination, PlacementEliminationReason, PlacementPick, PlacementRefusal,
+    PlacementShortfall,
+};
 use crate::{
     AcceptedOperation, DeploySubmitError, MAX_LOGS_TAIL_LINES, OperationApiResponse,
     OpsStatusError, OpsStatusRequest,
@@ -209,8 +216,27 @@ fn collect_v2_contracts(declarations: &mut DeclarationCollector<'_>) {
     declarations.visit::<CorrosionNamespaceRemoveReply>();
     declarations.visit::<CorrosionNamespaceRemoveRefusal>();
     declarations.visit::<DeployRequest>();
+    declarations.visit::<RequestedPlacement>();
+    declarations.visit::<RequestedPins>();
+    declarations.visit::<PinnedMachineNames>();
+    declarations.visit::<HostPortProtocol>();
+    declarations.visit::<HostPortBinding>();
+    declarations.visit::<HostPortBindings>();
     declarations.visit::<DeployAccepted>();
     declarations.visit::<DeployRefusal>();
+    declarations.visit::<PlacementBidRequest>();
+    declarations.visit::<PlacementBid>();
+    declarations.visit::<ServiceContainerObservation>();
+    declarations.visit::<DeployExecuteRequest>();
+    declarations.visit::<DeployVerb>();
+    declarations.visit::<DeployExecuteOutcome>();
+    declarations.visit::<PlacementElimination>();
+    declarations.visit::<PlacementEliminationReason>();
+    declarations.visit::<PlacementShortfall>();
+    declarations.visit::<PlacementPick>();
+    declarations.visit::<PlacementRefusal>();
+    declarations.visit::<SilentMachine>();
+    declarations.visit::<SilenceClassification>();
     declarations.visit::<OperationLookupReply>();
     declarations.visit::<OperationLookupRefusal>();
     declarations.visit::<OperationEvidenceSequence>();

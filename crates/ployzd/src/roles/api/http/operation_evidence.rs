@@ -802,6 +802,8 @@ impl LoadedEvidence {
                 OperationEvidence::Created
                 | OperationEvidence::OpClaimWon
                 | OperationEvidence::OpClaimLost { .. }
+                | OperationEvidence::PlacementGathered { .. }
+                | OperationEvidence::PlacementPicked { .. }
                 | OperationEvidence::DebrisSwept { .. }
                 | OperationEvidence::PullingImage
                 | OperationEvidence::ImageResolved
@@ -815,7 +817,8 @@ impl LoadedEvidence {
                 | OperationEvidence::ServiceClaimWon
                 | OperationEvidence::ServiceClaimLost { .. }
                 | OperationEvidence::Drained
-                | OperationEvidence::IncumbentRemoved { .. } => None,
+                | OperationEvidence::IncumbentRemoved { .. }
+                | OperationEvidence::Unrecognized => None,
             });
         let promotion = self.prepared.clone().and_then(|intent| match intent {
             DurablePreparedIntent::FirstDeploy(prepared) => match self.phase {
@@ -844,6 +847,8 @@ impl LoadedEvidence {
                             OperationEvidence::Created
                             | OperationEvidence::OpClaimWon
                             | OperationEvidence::OpClaimLost { .. }
+                            | OperationEvidence::PlacementGathered { .. }
+                            | OperationEvidence::PlacementPicked { .. }
                             | OperationEvidence::DebrisSwept { .. }
                             | OperationEvidence::PullingImage
                             | OperationEvidence::ImageResolved
@@ -856,7 +861,8 @@ impl LoadedEvidence {
                             | OperationEvidence::RowsCommitted
                             | OperationEvidence::Drained
                             | OperationEvidence::IncumbentRemoved { .. }
-                            | OperationEvidence::Terminal { .. } => None,
+                            | OperationEvidence::Terminal { .. }
+                            | OperationEvidence::Unrecognized => None,
                         })
                 }
                 EvidencePhase::Created | EvidencePhase::Executing | EvidencePhase::Terminal => None,
@@ -893,7 +899,9 @@ fn advance_phase(
         ) => Ok(EvidencePhase::Executing),
         (
             EvidencePhase::Executing,
-            OperationEvidence::DebrisSwept { .. }
+            OperationEvidence::PlacementGathered { .. }
+            | OperationEvidence::PlacementPicked { .. }
+            | OperationEvidence::DebrisSwept { .. }
             | OperationEvidence::PullingImage
             | OperationEvidence::ImageResolved
             | OperationEvidence::ContainerCreated { .. }
@@ -902,6 +910,16 @@ fn advance_phase(
             | OperationEvidence::IncumbentStopped { .. }
             | OperationEvidence::IncumbentRestarted { .. },
         ) => Ok(EvidencePhase::Executing),
+        // Evidence written by a newer daemon is informational to this
+        // reader: it never advances or corrupts the recovered phase.
+        (
+            EvidencePhase::Created
+            | EvidencePhase::Executing
+            | EvidencePhase::PromotionPrepared(_)
+            | EvidencePhase::RowsCommitted(_)
+            | EvidencePhase::ClaimDecided,
+            OperationEvidence::Unrecognized,
+        ) => Ok(phase),
         (
             EvidencePhase::RowsCommitted(_),
             OperationEvidence::Drained
@@ -933,6 +951,8 @@ fn advance_phase(
             OperationEvidence::Created
             | OperationEvidence::OpClaimWon
             | OperationEvidence::OpClaimLost { .. }
+            | OperationEvidence::PlacementGathered { .. }
+            | OperationEvidence::PlacementPicked { .. }
             | OperationEvidence::DebrisSwept { .. }
             | OperationEvidence::PullingImage
             | OperationEvidence::ImageResolved
@@ -947,7 +967,8 @@ fn advance_phase(
             | OperationEvidence::ServiceClaimLost { .. }
             | OperationEvidence::Drained
             | OperationEvidence::IncumbentRemoved { .. }
-            | OperationEvidence::Terminal { .. },
+            | OperationEvidence::Terminal { .. }
+            | OperationEvidence::Unrecognized,
         ) => Err(OperationEvidenceError::InvalidEventOrder { line }),
     }
 }
@@ -1723,6 +1744,7 @@ mod tests {
             at("2026-08-05T10:00:04Z"),
             OperationEvidence::IncumbentStopped {
                 container_id: container.clone(),
+                machine: None,
             },
         )
         .await
@@ -1731,6 +1753,7 @@ mod tests {
             at("2026-08-05T10:00:05Z"),
             OperationEvidence::IncumbentRemoved {
                 container_id: container,
+                machine: None,
             },
         )
         .await
