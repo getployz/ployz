@@ -2,16 +2,16 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use ployz_core::corrosion::{
-    CorrosionNamespaceName, CorrosionPromotionRowObservation, CorrosionTable, NameClaim,
-    NamedCorrosionDocument, NamespaceDocument, RouteBindingDocument, ServiceDocument,
-    SqliteParameter, Statement, StoredRow, TransactionResponse, TransactionResult, read_named_rows,
-    read_rows,
+    ContainerDocument, CorrosionNamespaceName, CorrosionPromotionRowObservation,
+    CorrosionServiceName, CorrosionTable, NameClaim, NamedCorrosionDocument, NamespaceDocument,
+    RouteBindingDocument, ServiceDocument, SqliteParameter, Statement, StoredRow,
+    TransactionResponse, TransactionResult, read_named_rows, read_rows,
 };
-use ployz_core::ids::{ClusterId, NamespaceRowId, ServiceRowId};
+use ployz_core::ids::{ClusterId, ContainerId, NamespaceRowId, ServiceRowId};
 
 use crate::corrosion::{CorrosionClient, StoredRowLimit, collect_stored_rows};
 
-use super::operation_evidence::PreparedPromotion;
+use super::operation_evidence::{PreparedPromotion, PreparedRedeployIntent};
 use super::operation_finalizer::{
     PreparedPromotionStore, PromotionClaimOutcome, PromotionFinalizerStoreError,
     PromotionRequestDisposition, PromotionRowsObservation,
@@ -21,26 +21,76 @@ const MAX_SERVICE_CLAIM_ROWS: usize = 10_000;
 const CLAIM_COURTESY_WAIT: Duration = Duration::from_secs(1);
 
 #[derive(Debug)]
-pub(super) struct ResolvedFirstDeployNamespace {
+pub(super) struct ResolvedNamespace {
     pub(super) id: NamespaceRowId,
     pub(super) exact_document: String,
     pub(super) document: NamespaceDocument,
 }
 
+/// One service row with the exact Corrosion document used for conditional writes.
 #[derive(Debug)]
-pub(super) enum FirstDeployNamespaceResolution {
-    Missing,
-    Ambiguous { namespace_ids: Vec<NamespaceRowId> },
-    NotFirst { namespace_id: NamespaceRowId },
-    Ready(ResolvedFirstDeployNamespace),
+pub(super) struct ObservedService {
+    pub(super) id: ServiceRowId,
+    pub(super) exact_document: String,
+    pub(super) document: ServiceDocument,
 }
 
-#[async_trait]
-pub(super) trait FirstDeployPreflightStore: Send + Sync {
-    async fn resolve_empty_namespace(
-        &self,
-        name: &CorrosionNamespaceName,
-    ) -> Result<FirstDeployNamespaceResolution, PromotionFinalizerStoreError>;
+/// One container row with the exact Corrosion document used for exact deletes.
+#[derive(Debug, Clone)]
+pub(super) struct ObservedContainer {
+    pub(super) id: ContainerId,
+    pub(super) exact_document: String,
+    pub(super) document: ContainerDocument,
+}
+
+/// Typed admission triage for one requested (namespace name, service name) deploy.
+///
+/// The deploy driver resolves this once at admission, then carries the exact
+/// documents forward: `FirstDeploy` feeds the existing first-deploy
+/// convergence, `Redeploy` feeds [`CorrosionPreparedPromotionStore::converge_redeploy_rows`]
+/// with the incumbent's exact document as the CAS guard, and every other
+/// variant is a refusal the driver maps to a typed deploy failure.
+#[derive(Debug)]
+pub(super) enum DeployAdmission {
+    /// The namespace exists and holds no services and no route bindings.
+    FirstDeploy {
+        namespace: ResolvedNamespace,
+    },
+    /// The namespace's only service matches the requested name exactly.
+    Redeploy {
+        namespace: ResolvedNamespace,
+        incumbent: Box<ObservedService>,
+    },
+    NamespaceMissing,
+    NamespaceAmbiguous {
+        namespace_ids: Vec<NamespaceRowId>,
+    },
+    /// The namespace holds one service whose name differs from the request;
+    /// deploying a new service into a populated namespace is refused, and the
+    /// incumbent's name lets the caller say which service holds it.
+    DifferentService {
+        namespace_id: NamespaceRowId,
+        incumbent_name: CorrosionServiceName,
+    },
+    /// More than one service occupies the namespace. v2 writes cannot produce
+    /// this today, but the reader stays tolerant of rows it did not write.
+    MultipleServices {
+        namespace_id: NamespaceRowId,
+        service_ids: Vec<ServiceRowId>,
+    },
+    /// Route bindings exist without any service; the namespace is neither
+    /// empty nor redeployable, so admission refuses rather than guesses.
+    RoutesWithoutServices {
+        namespace_id: NamespaceRowId,
+    },
+}
+
+/// A namespace-name lookup shared by first-deploy preflight and admission triage.
+#[derive(Debug)]
+enum NamedNamespace {
+    Missing,
+    Ambiguous { namespace_ids: Vec<NamespaceRowId> },
+    Found(ResolvedNamespace),
 }
 
 /// Corrosion's exact, restart-safe adapter for a prepared service/container promotion.
@@ -49,93 +99,6 @@ pub(super) struct CorrosionPreparedPromotionStore {
     client: CorrosionClient,
     cluster_id: ClusterId,
     claim_courtesy_wait: Duration,
-}
-
-#[async_trait]
-impl FirstDeployPreflightStore for CorrosionPreparedPromotionStore {
-    async fn resolve_empty_namespace(
-        &self,
-        name: &CorrosionNamespaceName,
-    ) -> Result<FirstDeployNamespaceResolution, PromotionFinalizerStoreError> {
-        let rows = self
-            .query_many(
-                Statement::with_params(
-                    "SELECT id, document FROM namespaces WHERE json_extract(document, '$.cluster_id') = ? AND json_extract(document, '$.name') = ?",
-                    vec![
-                        SqliteParameter::Text(self.cluster_id.as_str().to_owned()),
-                        SqliteParameter::Text(name.as_str().to_owned()),
-                    ],
-                ),
-                MAX_SERVICE_CLAIM_ROWS,
-            )
-            .await?;
-        let report = read_named_rows::<NamespaceDocument>(&self.cluster_id, rows);
-        if !report.skipped.is_empty() {
-            return Err(PromotionFinalizerStoreError::Protocol(format!(
-                "namespace lookup contained {} rejected rows",
-                report.skipped.len()
-            )));
-        }
-        if report.accepted.is_empty() {
-            return Ok(FirstDeployNamespaceResolution::Missing);
-        }
-        let mut accepted = report.accepted;
-        accepted.sort_by(|left, right| left.id.cmp(&right.id));
-        if accepted.len() > 1 {
-            let namespace_ids = accepted
-                .into_iter()
-                .map(|row| {
-                    NamespaceRowId::try_new(row.id.into_string()).map_err(|error| {
-                        PromotionFinalizerStoreError::Protocol(format!(
-                            "namespace row id was invalid: {error}"
-                        ))
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            return Ok(FirstDeployNamespaceResolution::Ambiguous { namespace_ids });
-        }
-        let Some(namespace) = accepted.pop() else {
-            return Ok(FirstDeployNamespaceResolution::Missing);
-        };
-        let namespace_id =
-            NamespaceRowId::try_new(namespace.id.into_string()).map_err(|error| {
-                PromotionFinalizerStoreError::Protocol(format!(
-                    "namespace row id was invalid: {error}"
-                ))
-            })?;
-        let services = self.query_many(namespace_has_service_statement(&namespace_id), 1);
-        let routes = self.query_many(namespace_has_route_statement(&namespace_id), 1);
-        let (services, routes) = tokio::try_join!(services, routes)?;
-        let service_report = read_rows::<ServiceDocument>(&self.cluster_id, services);
-        if !service_report.skipped.is_empty() {
-            return Err(PromotionFinalizerStoreError::Protocol(
-                "namespace service lookup contained a rejected row".to_owned(),
-            ));
-        }
-        let route_report = read_rows::<RouteBindingDocument>(&self.cluster_id, routes);
-        if !route_report.skipped.is_empty() {
-            return Err(PromotionFinalizerStoreError::Protocol(
-                "namespace route lookup contained a rejected row".to_owned(),
-            ));
-        }
-        if !service_report.accepted.is_empty() || !route_report.accepted.is_empty() {
-            return Ok(FirstDeployNamespaceResolution::NotFirst { namespace_id });
-        }
-        Ok(FirstDeployNamespaceResolution::Ready(
-            ResolvedFirstDeployNamespace {
-                id: namespace_id,
-                exact_document: namespace.source.document,
-                document: namespace.value,
-            },
-        ))
-    }
-}
-
-fn namespace_has_service_statement(namespace_id: &NamespaceRowId) -> Statement {
-    Statement::with_params(
-        "SELECT id, document FROM services WHERE namespace_id = ? LIMIT 1",
-        vec![SqliteParameter::Text(namespace_id.as_str().to_owned())],
-    )
 }
 
 fn namespace_has_route_statement(namespace_id: &NamespaceRowId) -> Statement {
@@ -196,6 +159,216 @@ impl CorrosionPreparedPromotionStore {
         collect_stored_rows(&mut stream, StoredRowLimit::new(limit))
             .await
             .map_err(|error| PromotionFinalizerStoreError::Protocol(error.to_string()))
+    }
+
+    async fn namespace_named(
+        &self,
+        name: &CorrosionNamespaceName,
+    ) -> Result<NamedNamespace, PromotionFinalizerStoreError> {
+        let rows = self
+            .query_many(
+                Statement::with_params(
+                    "SELECT id, document FROM namespaces WHERE json_extract(document, '$.cluster_id') = ? AND json_extract(document, '$.name') = ?",
+                    vec![
+                        SqliteParameter::Text(self.cluster_id.as_str().to_owned()),
+                        SqliteParameter::Text(name.as_str().to_owned()),
+                    ],
+                ),
+                MAX_SERVICE_CLAIM_ROWS,
+            )
+            .await?;
+        let report = read_named_rows::<NamespaceDocument>(&self.cluster_id, rows);
+        if !report.skipped.is_empty() {
+            return Err(PromotionFinalizerStoreError::Protocol(format!(
+                "namespace lookup contained {} rejected rows",
+                report.skipped.len()
+            )));
+        }
+        let mut accepted = report.accepted;
+        accepted.sort_by(|left, right| left.id.cmp(&right.id));
+        if accepted.len() > 1 {
+            let namespace_ids = accepted
+                .into_iter()
+                .map(|row| {
+                    NamespaceRowId::try_new(row.id.into_string()).map_err(|error| {
+                        PromotionFinalizerStoreError::Protocol(format!(
+                            "namespace row id was invalid: {error}"
+                        ))
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            return Ok(NamedNamespace::Ambiguous { namespace_ids });
+        }
+        let Some(namespace) = accepted.pop() else {
+            return Ok(NamedNamespace::Missing);
+        };
+        let namespace_id =
+            NamespaceRowId::try_new(namespace.id.into_string()).map_err(|error| {
+                PromotionFinalizerStoreError::Protocol(format!(
+                    "namespace row id was invalid: {error}"
+                ))
+            })?;
+        Ok(NamedNamespace::Found(ResolvedNamespace {
+            id: namespace_id,
+            exact_document: namespace.source.document,
+            document: namespace.value,
+        }))
+    }
+
+    /// Classifies a requested (namespace name, service name) deploy at admission.
+    ///
+    /// The deploy driver calls this once before creating rows, then holds the
+    /// returned exact documents: the `Redeploy` incumbent's `exact_document`
+    /// becomes the CAS guard for
+    /// [`CorrosionPreparedPromotionStore::converge_redeploy_rows`].
+    pub(super) async fn resolve_deploy_admission(
+        &self,
+        namespace_name: &CorrosionNamespaceName,
+        service_name: &CorrosionServiceName,
+    ) -> Result<DeployAdmission, PromotionFinalizerStoreError> {
+        let namespace = match self.namespace_named(namespace_name).await? {
+            NamedNamespace::Missing => return Ok(DeployAdmission::NamespaceMissing),
+            NamedNamespace::Ambiguous { namespace_ids } => {
+                return Ok(DeployAdmission::NamespaceAmbiguous { namespace_ids });
+            }
+            NamedNamespace::Found(namespace) => namespace,
+        };
+        let services = self.query_many(
+            namespace_services_statement(&namespace.id),
+            MAX_SERVICE_CLAIM_ROWS,
+        );
+        let routes = self.query_many(namespace_has_route_statement(&namespace.id), 1);
+        let (services, routes) = tokio::try_join!(services, routes)?;
+        let route_report = read_rows::<RouteBindingDocument>(&self.cluster_id, routes);
+        if !route_report.skipped.is_empty() {
+            return Err(PromotionFinalizerStoreError::Protocol(
+                "namespace route lookup contained a rejected row".to_owned(),
+            ));
+        }
+        let services = observed_services(&self.cluster_id, services)?;
+        Ok(classify_deploy_admission(
+            namespace,
+            services,
+            !route_report.accepted.is_empty(),
+            service_name,
+        ))
+    }
+
+    /// Replaces the incumbent service document and inserts the new container
+    /// row in one conditional transaction batch.
+    ///
+    /// The incumbent CAS is the whole guard: statement (a) rewrites the
+    /// service row only while it still holds the exact incumbent document
+    /// serialized at admission, and statement (b) inserts the container row
+    /// only once the service row holds the new document. The write counts are
+    /// a hint; the exact readback is the authority. A `Rejected` disposition
+    /// whose readback is not exact means the incumbent changed underneath the
+    /// driver, which maps it to `SupersededByOperation`.
+    pub(super) async fn converge_redeploy_rows(
+        &self,
+        prepared: &PreparedRedeployIntent,
+    ) -> Result<(PromotionRequestDisposition, PromotionRowsObservation), PromotionFinalizerStoreError>
+    {
+        validate_redeploy_cluster(prepared, &self.cluster_id)?;
+        let statements = redeploy_statements(prepared)?;
+        let disposition = match self.client.execute(&statements).await {
+            Ok(response) => classify_converge_response(&response)?,
+            Err(_) => PromotionRequestDisposition::Uncertain,
+        };
+        let rows = self.observe_redeploy_rows(prepared).await?;
+        Ok((disposition, rows))
+    }
+
+    async fn observe_redeploy_rows(
+        &self,
+        prepared: &PreparedRedeployIntent,
+    ) -> Result<PromotionRowsObservation, PromotionFinalizerStoreError> {
+        let service = self.query_one(CorrosionTable::Services, prepared.service_id.as_str());
+        let container = self.query_one(CorrosionTable::Containers, prepared.container_id.as_str());
+        let (service, container) = tokio::try_join!(service, container)?;
+        Ok(PromotionRowsObservation {
+            service_row: observe_exact_row(service, &prepared.service_document, &self.cluster_id)?,
+            container_row: observe_exact_row(
+                container,
+                &prepared.container_document,
+                &self.cluster_id,
+            )?,
+        })
+    }
+
+    /// Lists every container row currently attributed to `service_id`,
+    /// via the `service_id` generated column, with exact documents so the
+    /// sweep and clean phases can later delete precisely what they observed.
+    pub(super) async fn service_containers(
+        &self,
+        service_id: &ServiceRowId,
+    ) -> Result<Vec<ObservedContainer>, PromotionFinalizerStoreError> {
+        let rows = self
+            .query_many(
+                service_containers_statement(service_id),
+                MAX_SERVICE_CLAIM_ROWS,
+            )
+            .await?;
+        let report = read_rows::<ContainerDocument>(&self.cluster_id, rows);
+        if !report.skipped.is_empty() {
+            return Err(PromotionFinalizerStoreError::Protocol(format!(
+                "service container lookup contained {} rejected rows",
+                report.skipped.len()
+            )));
+        }
+        let mut containers = report
+            .accepted
+            .into_iter()
+            .map(|row| {
+                let id = ContainerId::try_new(row.source.key.clone()).map_err(|error| {
+                    PromotionFinalizerStoreError::Protocol(format!(
+                        "container row id was invalid: {error}"
+                    ))
+                })?;
+                Ok(ObservedContainer {
+                    id,
+                    exact_document: row.source.document,
+                    document: row.value,
+                })
+            })
+            .collect::<Result<Vec<_>, PromotionFinalizerStoreError>>()?;
+        containers.sort_by(|left, right| left.id.cmp(&right.id));
+        Ok(containers)
+    }
+
+    /// Deletes container rows exactly as observed, one `DELETE ... WHERE
+    /// id = ? AND document = ?` per row in a single batch, then rereads each
+    /// row as the authority. A row that is already absent is a success; a row
+    /// whose document changed belongs to another writer and is left alone.
+    pub(super) async fn delete_exact_container_rows(
+        &self,
+        rows: &[ObservedContainer],
+    ) -> Result<Vec<(ContainerId, ContainerRowCleanup)>, PromotionFinalizerStoreError> {
+        if rows.is_empty() {
+            return Ok(Vec::new());
+        }
+        let statements = rows
+            .iter()
+            .map(|row| {
+                exact_delete_statement(
+                    CorrosionTable::Containers,
+                    row.id.as_str(),
+                    row.exact_document.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        if self.client.execute(&statements).await.is_err() {
+            // A lost response is not a failed cleanup. Exact readback is the authority.
+        }
+        let mut outcomes = Vec::with_capacity(rows.len());
+        for row in rows {
+            let observed = self
+                .query_one(CorrosionTable::Containers, row.id.as_str())
+                .await?;
+            let observation = observe_exact_row(observed, &row.document, &self.cluster_id)?;
+            outcomes.push((row.id.clone(), cleanup_from_observation(observation)));
+        }
+        Ok(outcomes)
     }
 
     async fn service_claim_rows(
@@ -426,6 +599,179 @@ fn exact_delete_statement(table: CorrosionTable, id: &str, document: String) -> 
     )
 }
 
+/// Per-row outcome of an exact container-row delete, judged by readback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ContainerRowCleanup {
+    /// The row is gone — deleted now or already absent. Both are success.
+    Removed,
+    /// The exact observed row survived; the delete did not land. Retry.
+    StillPresent,
+    /// Another writer replaced the document; the row is no longer ours to delete.
+    Changed,
+}
+
+fn cleanup_from_observation(observation: CorrosionPromotionRowObservation) -> ContainerRowCleanup {
+    match observation {
+        CorrosionPromotionRowObservation::Absent => ContainerRowCleanup::Removed,
+        CorrosionPromotionRowObservation::Exact => ContainerRowCleanup::StillPresent,
+        CorrosionPromotionRowObservation::Mismatch => ContainerRowCleanup::Changed,
+    }
+}
+
+fn classify_deploy_admission(
+    namespace: ResolvedNamespace,
+    services: Vec<ObservedService>,
+    has_route_bindings: bool,
+    requested: &CorrosionServiceName,
+) -> DeployAdmission {
+    let mut services = services.into_iter();
+    match (services.next(), services.next()) {
+        (None, _) => {
+            if has_route_bindings {
+                DeployAdmission::RoutesWithoutServices {
+                    namespace_id: namespace.id,
+                }
+            } else {
+                DeployAdmission::FirstDeploy { namespace }
+            }
+        }
+        (Some(incumbent), None) => {
+            if incumbent.document.name == *requested {
+                DeployAdmission::Redeploy {
+                    namespace,
+                    incumbent: Box::new(incumbent),
+                }
+            } else {
+                DeployAdmission::DifferentService {
+                    namespace_id: namespace.id,
+                    incumbent_name: incumbent.document.name.clone(),
+                }
+            }
+        }
+        (Some(first), Some(second)) => {
+            let mut service_ids = vec![first.id, second.id];
+            service_ids.extend(services.map(|service| service.id));
+            DeployAdmission::MultipleServices {
+                namespace_id: namespace.id,
+                service_ids,
+            }
+        }
+    }
+}
+
+fn observed_services(
+    cluster_id: &ClusterId,
+    rows: Vec<StoredRow>,
+) -> Result<Vec<ObservedService>, PromotionFinalizerStoreError> {
+    let report = read_rows::<ServiceDocument>(cluster_id, rows);
+    if !report.skipped.is_empty() {
+        return Err(PromotionFinalizerStoreError::Protocol(format!(
+            "namespace service lookup contained {} rejected rows",
+            report.skipped.len()
+        )));
+    }
+    let mut services = report
+        .accepted
+        .into_iter()
+        .map(|row| {
+            let id = ServiceRowId::try_new(row.source.key.clone()).map_err(|error| {
+                PromotionFinalizerStoreError::Protocol(format!(
+                    "service row id was invalid: {error}"
+                ))
+            })?;
+            Ok(ObservedService {
+                id,
+                exact_document: row.source.document,
+                document: row.value,
+            })
+        })
+        .collect::<Result<Vec<_>, PromotionFinalizerStoreError>>()?;
+    services.sort_by(|left, right| left.id.cmp(&right.id));
+    Ok(services)
+}
+
+fn validate_redeploy_cluster(
+    prepared: &PreparedRedeployIntent,
+    expected: &ClusterId,
+) -> Result<(), PromotionFinalizerStoreError> {
+    if &prepared.service_document.cluster_id != expected
+        || &prepared.container_document.cluster_id != expected
+    {
+        return Err(PromotionFinalizerStoreError::Protocol(
+            "prepared redeploy belongs to another cluster".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn redeploy_statements(
+    prepared: &PreparedRedeployIntent,
+) -> Result<[Statement; 2], PromotionFinalizerStoreError> {
+    let service = serde_json::to_string(&prepared.service_document)
+        .map_err(|error| PromotionFinalizerStoreError::Protocol(error.to_string()))?;
+    let container = serde_json::to_string(&prepared.container_document)
+        .map_err(|error| PromotionFinalizerStoreError::Protocol(error.to_string()))?;
+    Ok([
+        incumbent_service_update_statement(
+            prepared.service_id.as_str(),
+            &prepared.exact_incumbent_document,
+            service.clone(),
+        ),
+        redeploy_container_insert_statement(
+            prepared.container_id.as_str(),
+            container,
+            prepared.service_id.as_str(),
+            &service,
+        ),
+    ])
+}
+
+fn incumbent_service_update_statement(
+    service_id: &str,
+    exact_incumbent_document: &str,
+    replacement: String,
+) -> Statement {
+    Statement::with_params(
+        "UPDATE services SET document = ? WHERE id = ? AND document = ?",
+        vec![
+            SqliteParameter::Text(replacement),
+            SqliteParameter::Text(service_id.to_owned()),
+            SqliteParameter::Text(exact_incumbent_document.to_owned()),
+        ],
+    )
+}
+
+fn redeploy_container_insert_statement(
+    container_id: &str,
+    document: String,
+    service_id: &str,
+    exact_service_document: &str,
+) -> Statement {
+    Statement::with_params(
+        "INSERT INTO containers (id, document) SELECT ?, ? WHERE EXISTS (SELECT 1 FROM services WHERE id = ? AND document = ?) ON CONFLICT(id) DO NOTHING",
+        vec![
+            SqliteParameter::Text(container_id.to_owned()),
+            SqliteParameter::Text(document),
+            SqliteParameter::Text(service_id.to_owned()),
+            SqliteParameter::Text(exact_service_document.to_owned()),
+        ],
+    )
+}
+
+fn namespace_services_statement(namespace_id: &NamespaceRowId) -> Statement {
+    Statement::with_params(
+        "SELECT id, document FROM services WHERE namespace_id = ?",
+        vec![SqliteParameter::Text(namespace_id.as_str().to_owned())],
+    )
+}
+
+fn service_containers_statement(service_id: &ServiceRowId) -> Statement {
+    Statement::with_params(
+        "SELECT id, document FROM containers WHERE service_id = ?",
+        vec![SqliteParameter::Text(service_id.as_str().to_owned())],
+    )
+}
+
 fn classify_converge_response(
     response: &TransactionResponse,
 ) -> Result<PromotionRequestDisposition, PromotionFinalizerStoreError> {
@@ -484,13 +830,20 @@ fn transport(error: crate::corrosion::CorrosionClientError) -> PromotionFinalize
 #[cfg(test)]
 mod tests {
     use ployz_core::corrosion::{
-        CorrosionPromotionRowObservation, SqliteParameter, TransactionResult, TransactionSuccess,
+        ContainerDocument, CorrosionPromotionRowObservation, CorrosionServiceName, CorrosionTable,
+        NamespaceDocument, ServiceDocument, SqliteParameter, Statement, TransactionResult,
+        TransactionSuccess,
     };
+    use ployz_core::ids::{ClusterId, ContainerId, NamespaceRowId, ServiceRowId};
 
     use super::{
-        ExactPromotionPair, PromotionRequestDisposition, classify_converge_response,
+        ContainerRowCleanup, DeployAdmission, ExactPromotionPair, ObservedService,
+        PreparedRedeployIntent, PromotionRequestDisposition, ResolvedNamespace,
+        classify_converge_response, classify_deploy_admission, cleanup_from_observation,
         conditional_container_insert_statement, conditional_service_insert_statement,
-        namespace_has_route_statement, namespace_has_service_statement,
+        exact_delete_statement, incumbent_service_update_statement, namespace_has_route_statement,
+        namespace_services_statement, observe_exact_row, redeploy_container_insert_statement,
+        redeploy_statements, service_containers_statement,
     };
 
     fn service_insert(
@@ -662,15 +1015,295 @@ mod tests {
     }
 
     #[test]
-    fn nonempty_namespace_preflight_is_a_bounded_existence_read() {
+    fn admission_classifies_an_empty_namespace_as_first_deploy() {
+        let admission =
+            classify_deploy_admission(namespace_fixture(), Vec::new(), false, &requested("api"));
+        let DeployAdmission::FirstDeploy { namespace } = admission else {
+            panic!("empty namespace must be a first deploy");
+        };
+        assert_eq!(namespace.id, namespace_id());
+    }
+
+    #[test]
+    fn admission_refuses_route_bindings_without_services() {
+        let admission =
+            classify_deploy_admission(namespace_fixture(), Vec::new(), true, &requested("api"));
+        let DeployAdmission::RoutesWithoutServices { namespace_id: id } = admission else {
+            panic!("routes without services must be refused");
+        };
+        assert_eq!(id, namespace_id());
+    }
+
+    #[test]
+    fn admission_classifies_the_matching_sole_incumbent_as_redeploy() {
+        let incumbent = observed_service("01J00000000000000000000014", "api");
+        let admission = classify_deploy_admission(
+            namespace_fixture(),
+            vec![incumbent],
+            true,
+            &requested("api"),
+        );
+        let DeployAdmission::Redeploy { incumbent, .. } = admission else {
+            panic!("matching sole incumbent must be a redeploy");
+        };
+        assert_eq!(incumbent.id.as_str(), "01J00000000000000000000014");
+    }
+
+    #[test]
+    fn admission_refuses_a_namespace_held_by_a_different_service() {
+        let incumbent = observed_service("01J00000000000000000000014", "web");
+        let admission = classify_deploy_admission(
+            namespace_fixture(),
+            vec![incumbent],
+            false,
+            &requested("api"),
+        );
+        let DeployAdmission::DifferentService { incumbent_name, .. } = admission else {
+            panic!("a differently named incumbent must be refused");
+        };
+        assert_eq!(incumbent_name, requested("web"));
+    }
+
+    #[test]
+    fn admission_refuses_multiple_services_in_one_namespace() {
+        let admission = classify_deploy_admission(
+            namespace_fixture(),
+            vec![
+                observed_service("01J00000000000000000000014", "api"),
+                observed_service("01J00000000000000000000016", "web"),
+            ],
+            false,
+            &requested("api"),
+        );
+        let DeployAdmission::MultipleServices { service_ids, .. } = admission else {
+            panic!("multiple services must be refused");
+        };
+        assert_eq!(
+            service_ids,
+            vec![
+                ServiceRowId::try_new("01J00000000000000000000014").expect("service"),
+                ServiceRowId::try_new("01J00000000000000000000016").expect("service"),
+            ]
+        );
+    }
+
+    #[test]
+    fn incumbent_redeploy_cas_compares_the_exact_admission_document() {
+        let statement = incumbent_service_update_statement(
+            "01J00000000000000000000014",
+            r#"{"name":"api", "spacing":"preserved"}"#,
+            r#"{"name":"api","image":"next"}"#.to_owned(),
+        );
+        assert_eq!(
+            statement,
+            Statement::with_params(
+                "UPDATE services SET document = ? WHERE id = ? AND document = ?",
+                vec![
+                    SqliteParameter::Text(r#"{"name":"api","image":"next"}"#.to_owned()),
+                    SqliteParameter::Text("01J00000000000000000000014".to_owned()),
+                    SqliteParameter::Text(r#"{"name":"api", "spacing":"preserved"}"#.to_owned()),
+                ],
+            )
+        );
+    }
+
+    #[test]
+    fn redeploy_container_insert_requires_the_new_service_document() {
+        let Statement::WithParams(sql, parameters) = redeploy_container_insert_statement(
+            "docker-container-1",
+            "container-document".to_owned(),
+            "service",
+            "new-service-document",
+        ) else {
+            panic!("container insert must be parameterized");
+        };
+        assert!(sql.contains("EXISTS (SELECT 1 FROM services WHERE id = ? AND document = ?)"));
+        assert!(sql.contains("ON CONFLICT(id) DO NOTHING"));
+        assert_eq!(
+            parameters.last(),
+            Some(&SqliteParameter::Text("new-service-document".to_owned()))
+        );
+    }
+
+    #[test]
+    fn redeploy_batch_updates_the_incumbent_before_inserting_the_container() {
+        let prepared = prepared_redeploy();
+        let [update, insert] = redeploy_statements(&prepared).expect("statements");
+        let Statement::WithParams(update_sql, update_params) = update else {
+            panic!("update must be parameterized");
+        };
+        assert!(update_sql.starts_with("UPDATE services SET document = ?"));
+        assert_eq!(
+            update_params.last(),
+            Some(&SqliteParameter::Text(
+                prepared.exact_incumbent_document.clone()
+            ))
+        );
+        let Statement::WithParams(insert_sql, _) = insert else {
+            panic!("insert must be parameterized");
+        };
+        assert!(insert_sql.starts_with("INSERT INTO containers"));
+
+        // An incumbent CAS miss with no prior healed write is the rejection the
+        // driver maps to SupersededByOperation.
+        assert_eq!(
+            classify_converge_response(&response(0, 0)).expect("miss"),
+            PromotionRequestDisposition::Rejected
+        );
+    }
+
+    #[test]
+    fn container_cleanup_deletes_the_exact_observed_row() {
+        let Statement::WithParams(sql, parameters) = exact_delete_statement(
+            CorrosionTable::Containers,
+            "docker-container-1",
+            "exact-container-document".to_owned(),
+        ) else {
+            panic!("delete must be parameterized");
+        };
+        assert_eq!(sql, "DELETE FROM containers WHERE id = ? AND document = ?");
+        assert_eq!(
+            parameters,
+            vec![
+                SqliteParameter::Text("docker-container-1".to_owned()),
+                SqliteParameter::Text("exact-container-document".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn deleting_an_already_absent_container_row_is_success() {
+        let observation =
+            observe_exact_row(Vec::new(), &container_document(), &cluster_id()).expect("absent");
+        assert_eq!(observation, CorrosionPromotionRowObservation::Absent);
+        assert_eq!(
+            cleanup_from_observation(observation),
+            ContainerRowCleanup::Removed
+        );
+        assert_eq!(
+            cleanup_from_observation(CorrosionPromotionRowObservation::Exact),
+            ContainerRowCleanup::StillPresent
+        );
+        assert_eq!(
+            cleanup_from_observation(CorrosionPromotionRowObservation::Mismatch),
+            ContainerRowCleanup::Changed
+        );
+    }
+
+    #[test]
+    fn container_and_service_listings_key_on_generated_columns() {
+        let service = ServiceRowId::try_new("01J00000000000000000000014").expect("service");
+        let Statement::WithParams(sql, _) = service_containers_statement(&service) else {
+            panic!("container listing must be parameterized");
+        };
+        assert_eq!(
+            sql,
+            "SELECT id, document FROM containers WHERE service_id = ?"
+        );
+
+        let Statement::WithParams(sql, _) = namespace_services_statement(&namespace_id()) else {
+            panic!("service listing must be parameterized");
+        };
+        assert_eq!(
+            sql,
+            "SELECT id, document FROM services WHERE namespace_id = ?"
+        );
+    }
+
+    fn cluster_id() -> ClusterId {
+        ClusterId::try_new("01J00000000000000000000010").expect("cluster")
+    }
+
+    fn namespace_id() -> NamespaceRowId {
+        NamespaceRowId::try_new("01J00000000000000000000013").expect("namespace")
+    }
+
+    fn requested(name: &str) -> CorrosionServiceName {
+        CorrosionServiceName::try_new(name).expect("service name")
+    }
+
+    fn namespace_fixture() -> ResolvedNamespace {
+        let value = serde_json::json!({
+            "v": 1,
+            "cluster_id": cluster_id(),
+            "written_by": {
+                "kind": "peer",
+                "peer_id": "01J00000000000000000000015"
+            },
+            "written_at": "2026-08-05T10:00:00Z",
+            "name": "production"
+        });
+        let document: NamespaceDocument =
+            serde_json::from_value(value.clone()).expect("namespace document");
+        ResolvedNamespace {
+            id: namespace_id(),
+            exact_document: value.to_string(),
+            document,
+        }
+    }
+
+    fn service_document(name: &str) -> ServiceDocument {
+        serde_json::from_value(serde_json::json!({
+            "v": 1,
+            "cluster_id": cluster_id(),
+            "written_by": {
+                "kind": "peer",
+                "peer_id": "01J00000000000000000000015"
+            },
+            "written_at": "2026-08-05T10:00:00Z",
+            "namespace_id": namespace_id(),
+            "name": name,
+            "image": "ghcr.io/acme/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "env_fingerprints": {},
+            "mode": "replicated",
+            "replicas": 1,
+            "pinned_machines": ["01J00000000000000000000012"],
+            "active_deploy": "01J00000000000000000000011",
+            "previous_image": null,
+            "deployed_at": "2026-08-05T10:00:02Z",
+            "operation_id": "01J00000000000000000000011"
+        }))
+        .expect("service document")
+    }
+
+    fn observed_service(id: &str, name: &str) -> ObservedService {
+        let document = service_document(name);
+        ObservedService {
+            id: ServiceRowId::try_new(id).expect("service id"),
+            exact_document: serde_json::to_string(&document).expect("service json"),
+            document,
+        }
+    }
+
+    fn container_document() -> ContainerDocument {
+        serde_json::from_value(serde_json::json!({
+            "v": 1,
+            "cluster_id": cluster_id(),
+            "machine_id": "01J00000000000000000000012",
+            "service_id": "01J00000000000000000000014",
+            "namespace_id": namespace_id(),
+            "ip": "10.210.20.2",
+            "deploy": "01J00000000000000000000011"
+        }))
+        .expect("container document")
+    }
+
+    fn prepared_redeploy() -> PreparedRedeployIntent {
+        let incumbent = observed_service("01J00000000000000000000014", "api");
+        PreparedRedeployIntent {
+            service_id: incumbent.id,
+            exact_incumbent_document: incumbent.exact_document,
+            service_document: service_document("api"),
+            container_id: ContainerId::try_new("docker-container-1").expect("container id"),
+            container_document: container_document(),
+            health_gate: ployz_core::HealthGatePolicy::Enforce,
+        }
+    }
+
+    #[test]
+    fn route_binding_preflight_is_a_bounded_existence_read() {
         let namespace = ployz_core::ids::NamespaceRowId::try_new("01J00000000000000000000001")
             .expect("namespace");
-        let ployz_core::corrosion::Statement::WithParams(sql, _) =
-            namespace_has_service_statement(&namespace)
-        else {
-            panic!("parameterized statement");
-        };
-        assert!(sql.ends_with("LIMIT 1"));
         let ployz_core::corrosion::Statement::WithParams(route_sql, _) =
             namespace_has_route_statement(&namespace)
         else {

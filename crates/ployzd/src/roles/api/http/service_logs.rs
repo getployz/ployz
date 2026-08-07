@@ -674,6 +674,7 @@ mod tests {
             health_status: None,
             resolved_image_identity: None,
             created_at_unix_seconds: None,
+            named_volume_names: std::collections::BTreeSet::new(),
         }
     }
 

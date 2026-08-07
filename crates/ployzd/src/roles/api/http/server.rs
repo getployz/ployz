@@ -363,7 +363,7 @@ pub(super) struct ApiService {
     pub(super) keeper_upgrade_socket_path: std::path::PathBuf,
     pub(super) upgrade_supervisor: MachineUpgradeSupervisor,
     pub(super) operations: Arc<super::operation_http::OperationRuntime>,
-    pub(super) first_deploy: Option<super::first_deploy::FirstDeployDriver>,
+    pub(super) deploy: Option<super::deploy::DeployDriver>,
     pub(super) container_runner:
         Option<Arc<crate::roles::api::execution::docker::runner::DockerManagedContainerRunner>>,
     lenses: OnceCell<Arc<ApiLenses>>,
@@ -383,7 +383,7 @@ pub(super) struct ApiServiceRuntime {
     pub(super) keeper_upgrade_socket_path: std::path::PathBuf,
     pub(super) upgrade_supervisor: MachineUpgradeSupervisor,
     pub(super) operations: Arc<super::operation_http::OperationRuntime>,
-    pub(super) first_deploy: Option<super::first_deploy::FirstDeployDriver>,
+    pub(super) deploy: Option<super::deploy::DeployDriver>,
     pub(super) container_runner:
         Option<Arc<crate::roles::api::execution::docker::runner::DockerManagedContainerRunner>>,
 }
@@ -405,7 +405,7 @@ impl ApiService {
             keeper_upgrade_socket_path,
             upgrade_supervisor,
             operations,
-            first_deploy,
+            deploy,
             container_runner,
         } = runtime;
         let (lifecycle_sender, lifecycle_failures) = mpsc::unbounded_channel();
@@ -433,7 +433,7 @@ impl ApiService {
             keeper_upgrade_socket_path,
             upgrade_supervisor,
             operations,
-            first_deploy,
+            deploy,
             container_runner,
             lenses,
             lens_lifecycle: lifecycle_sender,
@@ -524,9 +524,7 @@ impl ApiService {
             V2Route::OperationWatch(operation_id) => {
                 super::operation_http::handle_watch(self, operation_id, &principal, shutdown).await
             }
-            V2Route::FirstDeploy => {
-                super::operation_http::handle_first_deploy(self, principal, request).await
-            }
+            V2Route::Deploy => super::operation_http::handle_deploy(self, principal, request).await,
             V2Route::ServiceLogsTail(service_id) => {
                 super::service_logs::handle_tail(self, service_id, request, shutdown).await
             }

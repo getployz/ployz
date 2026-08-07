@@ -349,8 +349,8 @@ async fn bind_api_listener(
         config.keeper_control_socket_path().to_path_buf(),
     )
     .map_err(ApiServerError::OperationHttpClient)?;
-    let first_deploy = if let Some(runner) = container_runner.as_ref() {
-        let driver = super::first_deploy::FirstDeployDriver::new(
+    let deploy = if let Some(runner) = container_runner.as_ref() {
+        let driver = super::deploy::DeployDriver::new(
             config.cluster_id().clone(),
             config.local_machine_id().clone(),
             operations.evidence_directory(),
@@ -361,8 +361,8 @@ async fn bind_api_listener(
                 ),
             ),
             Arc::new(operations.store()),
-            Arc::clone(runner) as Arc<dyn super::first_deploy::FirstDeployRuntime>,
-            Arc::new(super::first_deploy::SystemFirstDeployClock),
+            Arc::clone(runner) as Arc<dyn super::deploy_runtime::DeployRuntime>,
+            Arc::new(super::deploy::SystemDeployClock),
         );
         operations = operations.with_promotion_resumer(Arc::new(driver.clone()));
         Some(driver)
@@ -388,7 +388,7 @@ async fn bind_api_listener(
         keeper_upgrade_socket_path: config.keeper_upgrade_socket_path().to_path_buf(),
         upgrade_supervisor: config.upgrade_supervisor(),
         operations,
-        first_deploy,
+        deploy,
         container_runner,
     };
     Ok((listener, runtime))

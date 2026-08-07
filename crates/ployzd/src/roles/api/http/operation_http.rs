@@ -23,16 +23,16 @@ use ployz_core::corrosion::{
 };
 use ployz_core::ids::{MachineRowId, OperationRowId};
 use ployz_core::{
-    FirstDeployRefusal, FirstDeployRequest, HandshakeObservationOutcome,
-    HandshakeObservationUnavailable, LensCollection, LensSnapshot, OperationEvidence,
-    OperationLookupRefusal, OperationLookupReply, OperationWatchEvent, OperationWatchRefusal,
-    operation_watch_route,
+    DeployRefusal, DeployRequest, HandshakeObservationOutcome, HandshakeObservationUnavailable,
+    LensCollection, LensSnapshot, OperationEvidence, OperationLookupRefusal, OperationLookupReply,
+    OperationWatchEvent, OperationWatchRefusal, operation_watch_route,
 };
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tokio::sync::{Mutex, mpsc, watch};
 use tokio::time::{Instant, MissedTickBehavior};
 
-use super::first_deploy::{AcceptedFirstDeploy, FirstDeployDriver, FirstDeployDriverError};
+use super::deploy::{DeployDriver, DeployDriverError};
+use super::deploy_task::AcceptedDeploy;
 use super::operation_evidence::{
     DEFAULT_MAX_EVIDENCE_LINE_BYTES, DurablePromotionProgress, EvidenceIdentity,
     OperationEvidenceDirectory, OperationEvidenceError, OperationEvidenceFollower,
@@ -75,7 +75,7 @@ pub(super) trait PreparedPromotionResumer: Send + Sync {
 }
 
 #[async_trait]
-impl PreparedPromotionResumer for FirstDeployDriver {
+impl PreparedPromotionResumer for DeployDriver {
     async fn resume_promotion(
         &self,
         operation_id: OperationRowId,
@@ -201,10 +201,10 @@ impl OperationRuntime {
         self.evidence.clone()
     }
 
-    pub(super) async fn spawn_first_deploy(
+    pub(super) async fn spawn_deploy(
         &self,
-        accepted: AcceptedFirstDeploy,
-    ) -> Result<ployz_core::FirstDeployAccepted, FirstDeployAdmissionError> {
+        accepted: AcceptedDeploy,
+    ) -> Result<ployz_core::DeployAccepted, DeployAdmissionError> {
         let reply = accepted.reply.clone();
         let operation_id = reply.operation_id.clone();
         self.register_live_log(operation_id.clone(), accepted.operation_log())
@@ -223,11 +223,11 @@ impl OperationRuntime {
                 let terminal = match accepted.task.run(shutdown).await {
                     Ok(()) => true,
                     Err(error) => {
-                        tracing::error!(operation_id = %task_operation_id, %error, "first deploy task failed");
+                        tracing::error!(operation_id = %task_operation_id, %error, "deploy task failed");
                         match accepted.task.recover_after_error().await {
                             Ok(()) => true,
                             Err(recovery_error) => {
-                                tracing::error!(operation_id = %task_operation_id, %recovery_error, "first deploy task recovery failed");
+                                tracing::error!(operation_id = %task_operation_id, %recovery_error, "deploy task recovery failed");
                                 false
                             }
                         }
@@ -245,15 +245,15 @@ impl OperationRuntime {
             .lock()
             .await
             .take()
-            .ok_or(FirstDeployAdmissionError::LostRejectedTask)?;
+            .ok_or(DeployAdmissionError::LostRejectedTask)?;
         let interruption = accepted.interrupt_unspawned().await;
         match interruption {
             Ok(()) => {
                 self.live_logs.lock().await.remove(&operation_id);
             }
-            Err(error) => return Err(FirstDeployAdmissionError::Interrupt(error)),
+            Err(error) => return Err(DeployAdmissionError::Interrupt(error)),
         }
-        Err(FirstDeployAdmissionError::AdmissionClosed)
+        Err(DeployAdmissionError::AdmissionClosed)
     }
 
     async fn live_log(&self, operation_id: &OperationRowId) -> Option<OperationEvidenceLog> {
@@ -434,38 +434,40 @@ pub(super) async fn handle_lookup(
     }
 }
 
-pub(super) async fn handle_first_deploy(
+pub(super) async fn handle_deploy(
     service: &ApiService,
     principal: Principal,
     request: hyper::Request<hyper::body::Incoming>,
 ) -> Response<HttpBody> {
-    let Some(driver) = service.first_deploy.as_ref() else {
+    let Some(driver) = service.deploy.as_ref() else {
         return super::server::refusal_response(ployz_core::ApiRefusal::UnsupportedRoute);
     };
-    let request: FirstDeployRequest =
-        match super::mutations::decode_request(request.into_body()).await {
-            Ok(request) => request,
-            Err(response) => return response,
-        };
+    let request: DeployRequest = match super::mutations::decode_request(request.into_body()).await {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
     match driver.admit(request, principal).await {
-        Ok(Ok(accepted)) => match service.operations.spawn_first_deploy(accepted).await {
+        Ok(Ok(accepted)) => match service.operations.spawn_deploy(accepted).await {
             Ok(reply) => super::mutations::typed_response(StatusCode::ACCEPTED, &reply),
             Err(error) => {
-                tracing::error!(%error, "first deploy task admission failed after durable acceptance");
+                tracing::error!(%error, "deploy task admission failed after durable acceptance");
                 corrosion_unavailable_response()
             }
         },
         Ok(Err(refusal)) => {
             let status = match refusal {
-                FirstDeployRefusal::NamespaceNotFound { .. } => StatusCode::NOT_FOUND,
-                FirstDeployRefusal::NamespaceAmbiguous { .. }
-                | FirstDeployRefusal::NotFirstDeploy { .. } => StatusCode::CONFLICT,
-                FirstDeployRefusal::BridgeUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+                DeployRefusal::NamespaceNotFound { .. } => StatusCode::NOT_FOUND,
+                DeployRefusal::NamespaceAmbiguous { .. }
+                | DeployRefusal::DifferentService { .. }
+                | DeployRefusal::MultipleServices { .. }
+                | DeployRefusal::RoutesWithoutServices { .. }
+                | DeployRefusal::IncumbentOnAnotherMachine { .. } => StatusCode::CONFLICT,
+                DeployRefusal::BridgeUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             };
             super::mutations::typed_response(status, &refusal)
         }
         Err(error) => {
-            tracing::error!(%error, "first deploy admission failed");
+            tracing::error!(%error, "deploy admission failed");
             corrosion_unavailable_response()
         }
     }
@@ -1189,13 +1191,13 @@ pub(super) enum OperationStartupError {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub(super) enum FirstDeployAdmissionError {
-    #[error("operation task admission closed during first deploy")]
+pub(super) enum DeployAdmissionError {
+    #[error("operation task admission closed during deploy")]
     AdmissionClosed,
-    #[error("rejected first deploy task was lost before terminalization")]
+    #[error("rejected deploy task was lost before terminalization")]
     LostRejectedTask,
-    #[error("rejected first deploy could not be terminalized: {0}")]
-    Interrupt(FirstDeployDriverError),
+    #[error("rejected deploy could not be terminalized: {0}")]
+    Interrupt(DeployDriverError),
 }
 
 #[cfg(test)]

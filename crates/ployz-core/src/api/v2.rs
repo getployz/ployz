@@ -45,8 +45,8 @@ pub const JOIN_ROUTE: &str = "/join";
 pub const NAMESPACE_CREATE_ROUTE: &str = "/namespaces/create";
 /// Stable endpoint for removing one empty namespace authority row.
 pub const NAMESPACE_REMOVE_ROUTE: &str = "/namespaces/remove";
-/// Stable endpoint for submitting the first service in an empty namespace.
-pub const FIRST_DEPLOY_ROUTE: &str = "/deploys/first";
+/// Stable endpoint for submitting one service deploy.
+pub const DEPLOY_ROUTE: &str = "/deploy";
 /// Stable prefix for one operation summary and its driver-local evidence.
 pub const OPERATIONS_ROUTE_PREFIX: &str = "/operations";
 /// Stable prefix for service log access.
@@ -82,8 +82,8 @@ pub enum KnownApiFeature {
     JoinDoor,
     #[serde(rename = "v2.namespace_primitives")]
     NamespacePrimitives,
-    #[serde(rename = "v2.first_deploy")]
-    FirstDeploy,
+    #[serde(rename = "v2.deploy")]
+    Deploy,
     #[serde(rename = "v2.operation_evidence")]
     OperationEvidence,
     #[serde(rename = "v2.logs")]
@@ -111,7 +111,7 @@ impl KnownApiFeature {
             Self::MachineRemove => "v2.machine_remove",
             Self::JoinDoor => "v2.join_door",
             Self::NamespacePrimitives => "v2.namespace_primitives",
-            Self::FirstDeploy => "v2.first_deploy",
+            Self::Deploy => "v2.deploy",
             Self::OperationEvidence => "v2.operation_evidence",
             Self::Logs => "v2.logs",
             Self::Diagnostics => "v2.diagnostics",
@@ -132,7 +132,7 @@ pub const KNOWN_API_FEATURES: &[KnownApiFeature] = &[
     KnownApiFeature::MachineRemove,
     KnownApiFeature::JoinDoor,
     KnownApiFeature::NamespacePrimitives,
-    KnownApiFeature::FirstDeploy,
+    KnownApiFeature::Deploy,
     KnownApiFeature::OperationEvidence,
     KnownApiFeature::Logs,
     KnownApiFeature::Diagnostics,
@@ -348,34 +348,49 @@ pub enum CorrosionNamespaceRemoveRefusal {
     },
 }
 
-/// The complete secret-bearing runtime input for the first service deploy.
+/// Whether a deploy enforces its health gate before promotion.
+///
+/// [`Self::Skip`] is the emergency escape for a service whose incumbent is
+/// already down; the outcome records it as a durable deploy warning.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum HealthGatePolicy {
+    #[default]
+    Enforce,
+    Skip,
+}
+
+/// The complete secret-bearing runtime input for one service deploy.
 ///
 /// Environment values are redacted by their Core value type and are never
 /// copied into durable operation evidence or Corrosion rows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-pub struct FirstDeployRequest {
+pub struct DeployRequest {
     pub namespace_name: CorrosionNamespaceName,
     pub service_name: CorrosionServiceName,
     pub image: ImageReference,
     pub runtime: ContainerRuntimeSpec,
+    #[serde(default)]
+    pub health_gate: HealthGatePolicy,
 }
 
 /// The operation handle returned after the driver durably accepts a deploy.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-pub struct FirstDeployAccepted {
+pub struct DeployAccepted {
     pub operation_id: OperationRowId,
     pub driver_machine_id: MachineRowId,
 }
 
-/// A first deploy refusal produced before any operation or Docker effect.
+/// A deploy refusal produced before any operation or Docker effect.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum FirstDeployRefusal {
+pub enum DeployRefusal {
     NamespaceNotFound {
         namespace_name: CorrosionNamespaceName,
         create_command: String,
@@ -384,13 +399,32 @@ pub enum FirstDeployRefusal {
         namespace_name: CorrosionNamespaceName,
         namespace_ids: Vec<NamespaceRowId>,
     },
-    NotFirstDeploy {
+    /// The namespace's sole service holds a different name; a deploy only
+    /// redeploys the incumbent, and `ployz service remove` frees the namespace.
+    DifferentService {
         namespace_id: NamespaceRowId,
+        incumbent_service_name: CorrosionServiceName,
+    },
+    /// More than one service occupies the namespace; the driver refuses to
+    /// guess which one the deploy replaces.
+    MultipleServices {
+        namespace_id: NamespaceRowId,
+        service_ids: Vec<ServiceRowId>,
+    },
+    /// Route bindings exist without any service, so the namespace is neither
+    /// empty nor redeployable.
+    RoutesWithoutServices {
+        namespace_id: NamespaceRowId,
+    },
+    /// The incumbent service is pinned to another machine; command that
+    /// machine's API to redeploy it.
+    IncumbentOnAnotherMachine {
+        machine_id: MachineRowId,
     },
     BridgeUnavailable,
 }
 
-impl FirstDeployRefusal {
+impl DeployRefusal {
     /// Creates the fixed refusal that hands the operator to the namespace primitive.
     #[must_use]
     pub fn namespace_not_found(namespace_name: CorrosionNamespaceName) -> Self {
@@ -468,14 +502,22 @@ pub struct OperationEvidenceSequenceError;
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OperationEvidence {
     Created,
+    OpClaimWon,
+    OpClaimLost { winner: OperationRowId },
+    DebrisSwept { removed: Vec<ContainerId> },
     PullingImage,
     ImageResolved,
     ContainerCreated { container_id: ContainerId },
     ContainerStarted { container_id: ContainerId },
+    HealthGateSkipped,
+    IncumbentStopped { container_id: ContainerId },
+    IncumbentRestarted { container_id: ContainerId },
     PromotionPrepared,
     RowsCommitted,
-    ClaimWon,
-    ClaimLost { winner: ServiceRowId },
+    ServiceClaimWon,
+    ServiceClaimLost { winner: ServiceRowId },
+    Drained,
+    IncumbentRemoved { container_id: ContainerId },
     Terminal { operation: Box<OperationDocument> },
 }
 
@@ -820,7 +862,7 @@ pub enum V2Route {
     Join,
     NamespaceCreate,
     NamespaceRemove,
-    FirstDeploy,
+    Deploy,
     Operation(OperationRowId),
     OperationWatch(OperationRowId),
     ServiceLogsTail(ServiceRowId),
@@ -887,8 +929,8 @@ impl V2Route {
         if path == NAMESPACE_REMOVE_ROUTE {
             return Some(Self::NamespaceRemove);
         }
-        if path == FIRST_DEPLOY_ROUTE {
-            return Some(Self::FirstDeploy);
+        if path == DEPLOY_ROUTE {
+            return Some(Self::Deploy);
         }
         if path == MACHINE_REMOVE_ROUTE {
             return Some(Self::MachineRemove);
@@ -963,7 +1005,7 @@ impl V2Route {
             Self::Join => JOIN_ROUTE.to_owned(),
             Self::NamespaceCreate => NAMESPACE_CREATE_ROUTE.to_owned(),
             Self::NamespaceRemove => NAMESPACE_REMOVE_ROUTE.to_owned(),
-            Self::FirstDeploy => FIRST_DEPLOY_ROUTE.to_owned(),
+            Self::Deploy => DEPLOY_ROUTE.to_owned(),
             Self::Operation(operation_id) => operation_route(operation_id),
             Self::OperationWatch(operation_id) => operation_watch_route(operation_id),
             Self::ServiceLogsTail(service_id) => service_logs_tail_route(service_id),
@@ -998,7 +1040,7 @@ impl V2Route {
             | Self::Join
             | Self::NamespaceCreate
             | Self::NamespaceRemove
-            | Self::FirstDeploy
+            | Self::Deploy
             | Self::ServiceLogsTail(_)
             | Self::ServiceLogsFollow(_)
             | Self::MachineRemove
@@ -1022,7 +1064,7 @@ impl V2Route {
             Self::MachineRemove => KnownApiFeature::MachineRemove,
             Self::Join => KnownApiFeature::JoinDoor,
             Self::NamespaceCreate | Self::NamespaceRemove => KnownApiFeature::NamespacePrimitives,
-            Self::FirstDeploy => KnownApiFeature::FirstDeploy,
+            Self::Deploy => KnownApiFeature::Deploy,
             Self::Operation(_) | Self::OperationWatch(_) => KnownApiFeature::OperationEvidence,
             Self::ServiceLogsTail(_) | Self::ServiceLogsFollow(_) => KnownApiFeature::Logs,
             Self::Status | Self::Doctor => KnownApiFeature::Diagnostics,
@@ -1045,7 +1087,7 @@ impl V2Route {
             | Self::MachineRemove
             | Self::NamespaceCreate
             | Self::NamespaceRemove
-            | Self::FirstDeploy
+            | Self::Deploy
             | Self::PeerRemove
             | Self::ServiceRemove
             | Self::RouteRemove => matches!(principal, Principal::Peer { .. }),

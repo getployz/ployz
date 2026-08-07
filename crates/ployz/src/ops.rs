@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use ployz_core::corrosion::{
     CorrosionDeployOutcome, CorrosionDeployState, CorrosionOperation, CorrosionOperationState,
-    OperationDocument,
+    CorrosionTimestamp, OperationDocument,
 };
 use ployz_core::{
     LensCollection, LensSnapshot, OperationEvidence, OperationEvidenceEvent, OperationWatchEvent,
@@ -45,9 +45,10 @@ async fn list(command: OpsListCommand) -> Result<String, OpsExecutionError> {
         return Err(OpsExecutionError::WrongLens);
     };
     rows.sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));
+    let now = current_timestamp()?;
     let mut output = String::from("ID\tKIND\tSTATE\tDRIVER\n");
     for row in rows {
-        let (kind, state) = operation_kind_state(&row.document);
+        let (kind, state) = listed_kind_state(&row.document, now);
         output.push_str(row.id.as_str());
         output.push('\t');
         output.push_str(kind);
@@ -175,14 +176,22 @@ where
                                     Some(operation_terminal_succeeded(operation)?)
                                 }
                                 OperationEvidence::Created
+                                | OperationEvidence::OpClaimWon
+                                | OperationEvidence::OpClaimLost { .. }
+                                | OperationEvidence::DebrisSwept { .. }
                                 | OperationEvidence::PullingImage
                                 | OperationEvidence::ImageResolved
                                 | OperationEvidence::ContainerCreated { .. }
                                 | OperationEvidence::ContainerStarted { .. }
+                                | OperationEvidence::HealthGateSkipped
+                                | OperationEvidence::IncumbentStopped { .. }
+                                | OperationEvidence::IncumbentRestarted { .. }
                                 | OperationEvidence::PromotionPrepared
                                 | OperationEvidence::RowsCommitted
-                                | OperationEvidence::ClaimWon
-                                | OperationEvidence::ClaimLost { .. } => None,
+                                | OperationEvidence::ServiceClaimWon
+                                | OperationEvidence::ServiceClaimLost { .. }
+                                | OperationEvidence::Drained
+                                | OperationEvidence::IncumbentRemoved { .. } => None,
                             };
                             render_evidence(output, &event)?;
                             match terminal {
@@ -267,10 +276,26 @@ fn render_evidence(
         OperationEvidence::ContainerStarted { container_id } => {
             format!("container started {}", container_id.as_str())
         }
+        OperationEvidence::OpClaimWon => "operation claim won".to_owned(),
+        OperationEvidence::OpClaimLost { winner } => format!("operation claim lost to {winner}"),
+        OperationEvidence::DebrisSwept { removed } => {
+            format!("swept {} leftover container(s)", removed.len())
+        }
+        OperationEvidence::HealthGateSkipped => "health gate skipped".to_owned(),
+        OperationEvidence::IncumbentStopped { container_id } => {
+            format!("incumbent stopped {}", container_id.as_str())
+        }
+        OperationEvidence::IncumbentRestarted { container_id } => {
+            format!("incumbent restarted {}", container_id.as_str())
+        }
+        OperationEvidence::IncumbentRemoved { container_id } => {
+            format!("incumbent removed {}", container_id.as_str())
+        }
+        OperationEvidence::Drained => "drained".to_owned(),
         OperationEvidence::PromotionPrepared => "promotion prepared".to_owned(),
         OperationEvidence::RowsCommitted => "rows committed".to_owned(),
-        OperationEvidence::ClaimWon => "service claim won".to_owned(),
-        OperationEvidence::ClaimLost { winner } => format!("service claim lost to {winner}"),
+        OperationEvidence::ServiceClaimWon => "service claim won".to_owned(),
+        OperationEvidence::ServiceClaimLost { winner } => format!("service claim lost to {winner}"),
         OperationEvidence::Terminal { operation } => {
             let (kind, state) = operation_kind_state(operation);
             format!("terminal {kind} {state}")
@@ -284,6 +309,29 @@ fn render_evidence(
     )
     .map_err(OpsExecutionError::Output)?;
     output.flush().map_err(OpsExecutionError::Output)
+}
+
+fn current_timestamp() -> Result<CorrosionTimestamp, OpsExecutionError> {
+    let formatted = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .map_err(|error| OpsExecutionError::Clock(error.to_string()))?;
+    CorrosionTimestamp::try_new(formatted)
+        .map_err(|error| OpsExecutionError::Clock(error.to_string()))
+}
+
+/// The listing state: a non-terminal deploy whose driver heartbeat has gone
+/// stale renders `stalled` instead of its stored `created`/`running` state.
+fn listed_kind_state(
+    operation: &OperationDocument,
+    now: CorrosionTimestamp,
+) -> (&'static str, &'static str) {
+    let (kind, state) = operation_kind_state(operation);
+    if matches!(operation.operation(), CorrosionOperation::Deploy { .. })
+        && operation.is_stalled(now)
+    {
+        return (kind, "stalled");
+    }
+    (kind, state)
 }
 
 fn operation_kind_state(operation: &OperationDocument) -> (&'static str, &'static str) {
@@ -374,6 +422,8 @@ pub enum OpsExecutionError {
     StreamDown { last_error: String },
     #[error("cannot write operation progress: {0}")]
     Output(std::io::Error),
+    #[error("cannot read the local clock: {0}")]
+    Clock(String),
     #[error("operation {operation_id} was not found")]
     NotFound { operation_id: String },
     #[error("operation driver is no longer rostered: {detail}")]
@@ -535,6 +585,35 @@ mod tests {
         assert_eq!(rendered.matches("\tterminal deploy completed\n").count(), 1);
     }
 
+    #[test]
+    fn ops_list_renders_stalled_only_for_nonterminal_deploys_with_stale_heartbeats() {
+        let created_at = timestamp("2026-08-05T12:00:00Z");
+        let now = timestamp("2026-08-05T12:05:00Z");
+
+        let stalled = created_deploy(created_at);
+        assert_eq!(listed_kind_state(&stalled, now), ("deploy", "stalled"));
+
+        let running_stalled = created_deploy(created_at)
+            .transition_deploy(CorrosionDeployTransition::Running {
+                started_at: timestamp("2026-08-05T12:00:01Z"),
+            })
+            .expect("running deploy");
+        assert_eq!(
+            listed_kind_state(&running_stalled, now),
+            ("deploy", "stalled")
+        );
+
+        let beating = created_deploy(created_at)
+            .refresh_heartbeat(timestamp("2026-08-05T12:04:30Z"))
+            .expect("nonterminal heartbeat refresh");
+        assert_eq!(listed_kind_state(&beating, now), ("deploy", "created"));
+
+        assert_eq!(
+            listed_kind_state(&completed_deploy(), timestamp("2026-08-06T12:00:00Z")),
+            ("deploy", "completed")
+        );
+    }
+
     #[derive(Clone, Copy)]
     enum StreamEnding {
         Drop,
@@ -602,7 +681,7 @@ mod tests {
         }
     }
 
-    fn completed_deploy() -> OperationDocument {
+    fn created_deploy(created_at: CorrosionTimestamp) -> OperationDocument {
         let service_id =
             ServiceRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAE").expect("service row id");
         OperationDocument::deploy_created(
@@ -613,21 +692,27 @@ mod tests {
                 peer_id: PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAD").expect("peer id"),
             },
             NamespaceRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAF").expect("namespace row id"),
-            CorrosionDeployTargets::try_new(vec![service_id.clone()]).expect("deploy targets"),
-            timestamp("2026-08-05T12:34:54Z"),
+            CorrosionDeployTargets::try_new(vec![service_id]).expect("deploy targets"),
+            created_at,
         )
-        .transition_deploy(CorrosionDeployTransition::Running {
-            started_at: timestamp("2026-08-05T12:34:55Z"),
-        })
-        .expect("running deploy")
-        .transition_deploy(CorrosionDeployTransition::Terminal {
-            completed_at: timestamp("2026-08-05T12:34:56Z"),
-            outcome: CorrosionDeployOutcome::completed(vec![
-                CorrosionDeployServiceResult::completed(service_id),
-            ])
-            .expect("completed deploy outcome"),
-        })
-        .expect("terminal deploy")
+    }
+
+    fn completed_deploy() -> OperationDocument {
+        let service_id =
+            ServiceRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAE").expect("service row id");
+        created_deploy(timestamp("2026-08-05T12:34:54Z"))
+            .transition_deploy(CorrosionDeployTransition::Running {
+                started_at: timestamp("2026-08-05T12:34:55Z"),
+            })
+            .expect("running deploy")
+            .transition_deploy(CorrosionDeployTransition::Terminal {
+                completed_at: timestamp("2026-08-05T12:34:56Z"),
+                outcome: CorrosionDeployOutcome::completed(vec![
+                    CorrosionDeployServiceResult::completed(service_id),
+                ])
+                .expect("completed deploy outcome"),
+            })
+            .expect("terminal deploy")
     }
 
     fn timestamp(value: &str) -> CorrosionTimestamp {

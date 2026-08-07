@@ -11,7 +11,9 @@ use ployz_core::corrosion::{
 use ployz_core::ids::{
     ContainerId, CorrosionUlid, MachineRowId, NamespaceRowId, OperationRowId, ServiceRowId,
 };
-use ployz_core::{OperationEvidence, OperationEvidenceEvent, OperationEvidenceSequence};
+use ployz_core::{
+    HealthGatePolicy, OperationEvidence, OperationEvidenceEvent, OperationEvidenceSequence,
+};
 use serde::{Deserialize, Serialize};
 use tokio::fs::{File, OpenOptions};
 use tokio::io::AsyncWriteExt;
@@ -89,6 +91,64 @@ impl PreparedPromotion {
     }
 }
 
+/// Exact non-secret redeploy intent needed to finish one prepared flip after restart.
+///
+/// The incumbent's exact document is the whole CAS guard for the flip;
+/// `health_gate` survives here so a resumed flip completes with the same
+/// warning shape the live task would have recorded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct PreparedRedeployIntent {
+    pub(super) service_id: ServiceRowId,
+    pub(super) exact_incumbent_document: String,
+    pub(super) service_document: ServiceDocument,
+    pub(super) container_id: ContainerId,
+    pub(super) container_document: ContainerDocument,
+    pub(super) health_gate: HealthGatePolicy,
+}
+
+impl PreparedRedeployIntent {
+    fn is_consistent_with(&self, identity: &EvidenceIdentity) -> bool {
+        let Ok(incumbent) = serde_json::from_str::<ServiceDocument>(&self.exact_incumbent_document)
+        else {
+            return false;
+        };
+        incumbent.cluster_id == self.service_document.cluster_id
+            && incumbent.namespace_id == self.service_document.namespace_id
+            && incumbent.name == self.service_document.name
+            && self.service_document.active_deploy == identity.operation_id
+            && self.service_document.operation_id == identity.operation_id
+            && self.service_document.previous_image.as_ref() == Some(&incumbent.image)
+            && self.container_document.cluster_id == self.service_document.cluster_id
+            && self.container_document.namespace_id == self.service_document.namespace_id
+            && self.container_document.service_id == self.service_id
+            && self.container_document.deploy == identity.operation_id
+            && self.container_document.machine_id == identity.driver_machine_id
+    }
+}
+
+/// The one exact prepared intent a deploy log may carry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DurablePreparedIntent {
+    FirstDeploy(PreparedPromotion),
+    Redeploy(PreparedRedeployIntent),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DurableIntentKind {
+    FirstDeploy,
+    Redeploy,
+}
+
+impl DurablePreparedIntent {
+    const fn kind(&self) -> DurableIntentKind {
+        match self {
+            Self::FirstDeploy(_) => DurableIntentKind::FirstDeploy,
+            Self::Redeploy(_) => DurableIntentKind::Redeploy,
+        }
+    }
+}
+
 /// Restart-safe durable progress after exact promotion intent has been recorded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum DurablePromotionProgress {
@@ -104,6 +164,12 @@ pub(super) enum DurablePromotionProgress {
     ClaimLost {
         prepared: PreparedPromotion,
         winner: ServiceRowId,
+    },
+    RedeployPrepared {
+        prepared: PreparedRedeployIntent,
+    },
+    RedeployRowsCommitted {
+        prepared: PreparedRedeployIntent,
     },
 }
 
@@ -126,6 +192,10 @@ enum EvidenceFrame {
     PromotionPrepared {
         event: DurableEvidenceEvent,
         prepared: Box<PreparedPromotion>,
+    },
+    RedeployPrepared {
+        event: DurableEvidenceEvent,
+        prepared: Box<PreparedRedeployIntent>,
     },
 }
 
@@ -165,12 +235,15 @@ struct WriterState {
     phase: EvidencePhase,
 }
 
+/// The durable phase of one evidence log. Once intent is prepared, the phase
+/// carries its kind, so intent-specific events (the first-deploy service
+/// claim) are legal or illegal purely by phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EvidencePhase {
     Created,
     Executing,
-    PromotionPrepared,
-    RowsCommitted,
+    PromotionPrepared(DurableIntentKind),
+    RowsCommitted(DurableIntentKind),
     ClaimDecided,
     Terminal,
 }
@@ -235,7 +308,7 @@ impl OperationEvidenceLog {
         if !prepared.is_consistent_with(&self.identity) {
             return Err(OperationEvidenceError::InvalidPreparedIntent { line: 0 });
         }
-        let next_phase = advance_phase(state.phase, &OperationEvidence::PromotionPrepared, 0)?;
+        let next_phase = prepared_phase(state.phase, DurableIntentKind::FirstDeploy, 0)?;
         let sequence = OperationEvidenceSequence::try_new(state.next_sequence)
             .map_err(|_| OperationEvidenceError::SequenceExhausted)?;
         let event = OperationEvidenceEvent {
@@ -246,6 +319,39 @@ impl OperationEvidenceLog {
         append_frame(
             &mut state,
             &EvidenceFrame::PromotionPrepared {
+                event: event.clone().into(),
+                prepared: Box::new(prepared),
+            },
+            self.max_line_bytes,
+        )
+        .await?;
+        state.phase = next_phase;
+        self.durable_events.send_replace(sequence.get());
+        Ok(event)
+    }
+
+    /// Stores exact redeploy flip intent privately, giving a resumed redeploy
+    /// a durable shape that can never enter the first-deploy claim branch.
+    pub(super) async fn append_redeploy_prepared(
+        &self,
+        timestamp: CorrosionTimestamp,
+        prepared: PreparedRedeployIntent,
+    ) -> Result<OperationEvidenceEvent, OperationEvidenceError> {
+        let mut state = self.state.lock().await;
+        if !prepared.is_consistent_with(&self.identity) {
+            return Err(OperationEvidenceError::InvalidPreparedIntent { line: 0 });
+        }
+        let next_phase = prepared_phase(state.phase, DurableIntentKind::Redeploy, 0)?;
+        let sequence = OperationEvidenceSequence::try_new(state.next_sequence)
+            .map_err(|_| OperationEvidenceError::SequenceExhausted)?;
+        let event = OperationEvidenceEvent {
+            sequence,
+            timestamp,
+            evidence: OperationEvidence::PromotionPrepared,
+        };
+        append_frame(
+            &mut state,
+            &EvidenceFrame::RedeployPrepared {
                 event: event.clone().into(),
                 prepared: Box::new(prepared),
             },
@@ -502,7 +608,7 @@ impl OperationEvidenceDirectory {
 
 struct LoadedEvidence {
     events: Vec<OperationEvidenceEvent>,
-    prepared: Option<PreparedPromotion>,
+    prepared: Option<DurablePreparedIntent>,
     durable_offset: u64,
     phase: EvidencePhase,
 }
@@ -598,7 +704,7 @@ fn decode_loaded(
                 limit: max_line_bytes,
             });
         }
-        let (event, frame_prepared): (OperationEvidenceEvent, Option<PreparedPromotion>) =
+        let (event, frame_prepared): (OperationEvidenceEvent, Option<DurablePreparedIntent>) =
             match decode_frame(line, line_number)? {
                 EvidenceFrame::Event { event }
                     if matches!(&event.evidence, OperationEvidence::PromotionPrepared) =>
@@ -617,7 +723,26 @@ fn decode_loaded(
                             line: line_number,
                         });
                     }
-                    (event.into(), Some(*prepared))
+                    (
+                        event.into(),
+                        Some(DurablePreparedIntent::FirstDeploy(*prepared)),
+                    )
+                }
+                EvidenceFrame::RedeployPrepared { event, prepared } => {
+                    if !matches!(event.evidence, OperationEvidence::PromotionPrepared) {
+                        return Err(OperationEvidenceError::InvalidPreparedEvent {
+                            line: line_number,
+                        });
+                    }
+                    if !prepared.is_consistent_with(&identity) {
+                        return Err(OperationEvidenceError::InvalidPreparedIntent {
+                            line: line_number,
+                        });
+                    }
+                    (
+                        event.into(),
+                        Some(DurablePreparedIntent::Redeploy(*prepared)),
+                    )
                 }
                 EvidenceFrame::Identity { .. } => {
                     return Err(OperationEvidenceError::RepeatedIdentity { line: line_number });
@@ -638,10 +763,15 @@ fn decode_loaded(
                 return Err(OperationEvidenceError::TerminalDocumentNonterminal);
             }
         }
-        phase = Some(match phase {
-            None if matches!(&event.evidence, OperationEvidence::Created) => EvidencePhase::Created,
-            None => return Err(OperationEvidenceError::MissingCreated),
-            Some(phase) => advance_phase(phase, &event.evidence, line_number)?,
+        phase = Some(match (phase, &frame_prepared) {
+            (None, _) if matches!(&event.evidence, OperationEvidence::Created) => {
+                EvidencePhase::Created
+            }
+            (None, _) => return Err(OperationEvidenceError::MissingCreated),
+            (Some(phase), Some(frame_prepared)) => {
+                prepared_phase(phase, frame_prepared.kind(), line_number)?
+            }
+            (Some(phase), None) => advance_phase(phase, &event.evidence, line_number)?,
         });
         if let Some(frame_prepared) = frame_prepared
             && prepared.replace(frame_prepared).is_some()
@@ -670,44 +800,79 @@ impl LoadedEvidence {
             .find_map(|event| match &event.evidence {
                 OperationEvidence::Terminal { operation } => Some((**operation).clone()),
                 OperationEvidence::Created
+                | OperationEvidence::OpClaimWon
+                | OperationEvidence::OpClaimLost { .. }
+                | OperationEvidence::DebrisSwept { .. }
                 | OperationEvidence::PullingImage
                 | OperationEvidence::ImageResolved
                 | OperationEvidence::ContainerCreated { .. }
                 | OperationEvidence::ContainerStarted { .. }
+                | OperationEvidence::HealthGateSkipped
+                | OperationEvidence::IncumbentStopped { .. }
+                | OperationEvidence::IncumbentRestarted { .. }
                 | OperationEvidence::PromotionPrepared
                 | OperationEvidence::RowsCommitted
-                | OperationEvidence::ClaimWon
-                | OperationEvidence::ClaimLost { .. } => None,
+                | OperationEvidence::ServiceClaimWon
+                | OperationEvidence::ServiceClaimLost { .. }
+                | OperationEvidence::Drained
+                | OperationEvidence::IncumbentRemoved { .. } => None,
             });
-        let promotion = self.prepared.clone().and_then(|prepared| match self.phase {
-            EvidencePhase::PromotionPrepared => {
-                Some(DurablePromotionProgress::PromotionPrepared { prepared })
-            }
-            EvidencePhase::RowsCommitted => {
-                Some(DurablePromotionProgress::RowsCommitted { prepared })
-            }
-            EvidencePhase::ClaimDecided => self.events.iter().rev().find_map(|event| match &event
-                .evidence
-            {
-                OperationEvidence::ClaimWon => Some(DurablePromotionProgress::ClaimWon {
-                    prepared: prepared.clone(),
-                }),
-                OperationEvidence::ClaimLost { winner } => {
-                    Some(DurablePromotionProgress::ClaimLost {
-                        prepared: prepared.clone(),
-                        winner: winner.clone(),
-                    })
+        let promotion = self.prepared.clone().and_then(|intent| match intent {
+            DurablePreparedIntent::FirstDeploy(prepared) => match self.phase {
+                EvidencePhase::PromotionPrepared(_) => {
+                    Some(DurablePromotionProgress::PromotionPrepared { prepared })
                 }
-                OperationEvidence::Created
-                | OperationEvidence::PullingImage
-                | OperationEvidence::ImageResolved
-                | OperationEvidence::ContainerCreated { .. }
-                | OperationEvidence::ContainerStarted { .. }
-                | OperationEvidence::PromotionPrepared
-                | OperationEvidence::RowsCommitted
-                | OperationEvidence::Terminal { .. } => None,
-            }),
-            EvidencePhase::Created | EvidencePhase::Executing | EvidencePhase::Terminal => None,
+                EvidencePhase::RowsCommitted(_) => {
+                    Some(DurablePromotionProgress::RowsCommitted { prepared })
+                }
+                EvidencePhase::ClaimDecided => {
+                    self.events
+                        .iter()
+                        .rev()
+                        .find_map(|event| match &event.evidence {
+                            OperationEvidence::ServiceClaimWon => {
+                                Some(DurablePromotionProgress::ClaimWon {
+                                    prepared: prepared.clone(),
+                                })
+                            }
+                            OperationEvidence::ServiceClaimLost { winner } => {
+                                Some(DurablePromotionProgress::ClaimLost {
+                                    prepared: prepared.clone(),
+                                    winner: winner.clone(),
+                                })
+                            }
+                            OperationEvidence::Created
+                            | OperationEvidence::OpClaimWon
+                            | OperationEvidence::OpClaimLost { .. }
+                            | OperationEvidence::DebrisSwept { .. }
+                            | OperationEvidence::PullingImage
+                            | OperationEvidence::ImageResolved
+                            | OperationEvidence::ContainerCreated { .. }
+                            | OperationEvidence::ContainerStarted { .. }
+                            | OperationEvidence::HealthGateSkipped
+                            | OperationEvidence::IncumbentStopped { .. }
+                            | OperationEvidence::IncumbentRestarted { .. }
+                            | OperationEvidence::PromotionPrepared
+                            | OperationEvidence::RowsCommitted
+                            | OperationEvidence::Drained
+                            | OperationEvidence::IncumbentRemoved { .. }
+                            | OperationEvidence::Terminal { .. } => None,
+                        })
+                }
+                EvidencePhase::Created | EvidencePhase::Executing | EvidencePhase::Terminal => None,
+            },
+            DurablePreparedIntent::Redeploy(prepared) => match self.phase {
+                EvidencePhase::PromotionPrepared(_) => {
+                    Some(DurablePromotionProgress::RedeployPrepared { prepared })
+                }
+                EvidencePhase::RowsCommitted(_) => {
+                    Some(DurablePromotionProgress::RedeployRowsCommitted { prepared })
+                }
+                EvidencePhase::Created
+                | EvidencePhase::Executing
+                | EvidencePhase::ClaimDecided
+                | EvidencePhase::Terminal => None,
+            },
         });
         OperationEvidenceRecovery {
             terminal,
@@ -724,48 +889,83 @@ fn advance_phase(
     match (phase, evidence) {
         (
             EvidencePhase::Created | EvidencePhase::Executing,
-            OperationEvidence::PullingImage
-            | OperationEvidence::ImageResolved
-            | OperationEvidence::ContainerCreated { .. }
-            | OperationEvidence::ContainerStarted { .. },
+            OperationEvidence::OpClaimWon | OperationEvidence::OpClaimLost { .. },
         ) => Ok(EvidencePhase::Executing),
         (
-            EvidencePhase::Created | EvidencePhase::Executing,
-            OperationEvidence::PromotionPrepared,
-        ) => Ok(EvidencePhase::PromotionPrepared),
-        (EvidencePhase::PromotionPrepared, OperationEvidence::RowsCommitted) => {
-            Ok(EvidencePhase::RowsCommitted)
+            EvidencePhase::Executing,
+            OperationEvidence::DebrisSwept { .. }
+            | OperationEvidence::PullingImage
+            | OperationEvidence::ImageResolved
+            | OperationEvidence::ContainerCreated { .. }
+            | OperationEvidence::ContainerStarted { .. }
+            | OperationEvidence::HealthGateSkipped
+            | OperationEvidence::IncumbentStopped { .. }
+            | OperationEvidence::IncumbentRestarted { .. },
+        ) => Ok(EvidencePhase::Executing),
+        (
+            EvidencePhase::RowsCommitted(_),
+            OperationEvidence::Drained
+            | OperationEvidence::IncumbentStopped { .. }
+            | OperationEvidence::IncumbentRemoved { .. },
+        ) => Ok(phase),
+        (EvidencePhase::PromotionPrepared(intent), OperationEvidence::RowsCommitted) => {
+            Ok(EvidencePhase::RowsCommitted(intent))
         }
         (
-            EvidencePhase::RowsCommitted,
-            OperationEvidence::ClaimWon | OperationEvidence::ClaimLost { .. },
+            EvidencePhase::RowsCommitted(DurableIntentKind::FirstDeploy),
+            OperationEvidence::ServiceClaimWon | OperationEvidence::ServiceClaimLost { .. },
         ) => Ok(EvidencePhase::ClaimDecided),
         (
             EvidencePhase::Created
             | EvidencePhase::Executing
-            | EvidencePhase::PromotionPrepared
-            | EvidencePhase::RowsCommitted
+            | EvidencePhase::PromotionPrepared(_)
+            | EvidencePhase::RowsCommitted(_)
             | EvidencePhase::ClaimDecided,
             OperationEvidence::Terminal { .. },
         ) => Ok(EvidencePhase::Terminal),
         (
             EvidencePhase::Created
             | EvidencePhase::Executing
-            | EvidencePhase::PromotionPrepared
-            | EvidencePhase::RowsCommitted
+            | EvidencePhase::PromotionPrepared(_)
+            | EvidencePhase::RowsCommitted(_)
             | EvidencePhase::ClaimDecided
             | EvidencePhase::Terminal,
             OperationEvidence::Created
+            | OperationEvidence::OpClaimWon
+            | OperationEvidence::OpClaimLost { .. }
+            | OperationEvidence::DebrisSwept { .. }
             | OperationEvidence::PullingImage
             | OperationEvidence::ImageResolved
             | OperationEvidence::ContainerCreated { .. }
             | OperationEvidence::ContainerStarted { .. }
+            | OperationEvidence::HealthGateSkipped
+            | OperationEvidence::IncumbentStopped { .. }
+            | OperationEvidence::IncumbentRestarted { .. }
             | OperationEvidence::PromotionPrepared
             | OperationEvidence::RowsCommitted
-            | OperationEvidence::ClaimWon
-            | OperationEvidence::ClaimLost { .. }
+            | OperationEvidence::ServiceClaimWon
+            | OperationEvidence::ServiceClaimLost { .. }
+            | OperationEvidence::Drained
+            | OperationEvidence::IncumbentRemoved { .. }
             | OperationEvidence::Terminal { .. },
         ) => Err(OperationEvidenceError::InvalidEventOrder { line }),
+    }
+}
+
+/// The one legal transition that records prepared intent, entered only from
+/// the executing phase and carrying the intent kind into every later phase.
+fn prepared_phase(
+    phase: EvidencePhase,
+    intent: DurableIntentKind,
+    line: usize,
+) -> Result<EvidencePhase, OperationEvidenceError> {
+    match phase {
+        EvidencePhase::Executing => Ok(EvidencePhase::PromotionPrepared(intent)),
+        EvidencePhase::Created
+        | EvidencePhase::PromotionPrepared(_)
+        | EvidencePhase::RowsCommitted(_)
+        | EvidencePhase::ClaimDecided
+        | EvidencePhase::Terminal => Err(OperationEvidenceError::InvalidEventOrder { line }),
     }
 }
 
@@ -895,6 +1095,68 @@ pub(super) fn prepared_promotion_fixture() -> PreparedPromotion {
         container_id: ContainerId::try_new("docker-container-1").expect("container id"),
         container_document,
         success_result: CorrosionDeployServiceResult::completed(service_id),
+    }
+}
+
+#[cfg(test)]
+pub(super) fn prepared_redeploy_intent_fixture() -> PreparedRedeployIntent {
+    let service_id = ServiceRowId::try_new("01J00000000000000000000014").expect("service");
+    let operation_id = OperationRowId::try_new("01J00000000000000000000011").expect("operation");
+    let incumbent_image =
+        "ghcr.io/acme/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let exact_incumbent_document = serde_json::json!({
+        "v": 1,
+        "cluster_id": "01J00000000000000000000010",
+        "written_by": { "kind": "peer", "peer_id": "01J00000000000000000000015" },
+        "written_at": "2026-08-05T09:00:00Z",
+        "namespace_id": "01J00000000000000000000013",
+        "name": "api",
+        "image": incumbent_image,
+        "env_fingerprints": {},
+        "mode": "replicated",
+        "replicas": 1,
+        "pinned_machines": ["01J00000000000000000000012"],
+        "active_deploy": "01J00000000000000000000009",
+        "previous_image": null,
+        "deployed_at": "2026-08-05T09:00:02Z",
+        "operation_id": "01J00000000000000000000009"
+    })
+    .to_string();
+    let service_document = serde_json::from_value(serde_json::json!({
+        "v": 1,
+        "cluster_id": "01J00000000000000000000010",
+        "written_by": { "kind": "peer", "peer_id": "01J00000000000000000000015" },
+        "written_at": "2026-08-05T10:00:00Z",
+        "namespace_id": "01J00000000000000000000013",
+        "name": "api",
+        "image": "ghcr.io/acme/api@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "env_fingerprints": {},
+        "mode": "replicated",
+        "replicas": 1,
+        "pinned_machines": ["01J00000000000000000000012"],
+        "active_deploy": operation_id,
+        "previous_image": incumbent_image,
+        "deployed_at": "2026-08-05T10:00:02Z",
+        "operation_id": operation_id
+    }))
+    .expect("service document");
+    let container_document = serde_json::from_value(serde_json::json!({
+        "v": 1,
+        "cluster_id": "01J00000000000000000000010",
+        "machine_id": "01J00000000000000000000012",
+        "service_id": service_id,
+        "namespace_id": "01J00000000000000000000013",
+        "ip": "10.210.20.3",
+        "deploy": operation_id
+    }))
+    .expect("container document");
+    PreparedRedeployIntent {
+        service_id,
+        exact_incumbent_document,
+        service_document,
+        container_id: ContainerId::try_new("docker-container-2").expect("container id"),
+        container_document,
+        health_gate: HealthGatePolicy::Enforce,
     }
 }
 
@@ -1038,7 +1300,7 @@ mod tests {
             .expect("create evidence");
         let mut follower = log.follow().await.expect("follow");
 
-        log.append(at("2026-08-05T10:00:01Z"), OperationEvidence::PullingImage)
+        log.append(at("2026-08-05T10:00:01Z"), OperationEvidence::OpClaimWon)
             .await
             .expect("append");
 
@@ -1046,7 +1308,7 @@ mod tests {
         assert_eq!(replay.sequence.get(), 1);
         let next = follower.next().await.expect("next").expect("event");
         assert_eq!(next.sequence.get(), 2);
-        assert_eq!(next.evidence, OperationEvidence::PullingImage);
+        assert_eq!(next.evidence, OperationEvidence::OpClaimWon);
     }
 
     #[tokio::test]
@@ -1064,14 +1326,14 @@ mod tests {
         append_bytes(&path, br#"{"record":"event"#).await;
 
         let log = directory.open(identity).await.expect("repair and open");
-        log.append(at("2026-08-05T10:00:02Z"), OperationEvidence::ImageResolved)
+        log.append(at("2026-08-05T10:00:02Z"), OperationEvidence::OpClaimWon)
             .await
             .expect("append after repair");
         let replay = log.replay_after(0).await.expect("replay");
-        let [_, resolved] = replay.as_slice() else {
-            panic!("Created and ImageResolved expected");
+        let [_, claimed] = replay.as_slice() else {
+            panic!("Created and OpClaimWon expected");
         };
-        assert_eq!(resolved.sequence.get(), 2);
+        assert_eq!(claimed.sequence.get(), 2);
     }
 
     #[tokio::test]
@@ -1113,6 +1375,9 @@ mod tests {
             .create(identity.clone(), at("2026-08-05T10:00:00Z"))
             .await
             .expect("create evidence");
+        log.append(at("2026-08-05T10:00:00Z"), OperationEvidence::OpClaimWon)
+            .await
+            .expect("claim won");
         let prepared = super::prepared_promotion_fixture();
         log.append_promotion_prepared(at("2026-08-05T10:00:01Z"), prepared.clone())
             .await
@@ -1139,6 +1404,9 @@ mod tests {
             )
             .await
             .expect("create evidence");
+        log.append(at("2026-08-05T10:00:00Z"), OperationEvidence::OpClaimWon)
+            .await
+            .expect("claim won");
         let prepared = super::prepared_promotion_fixture();
         log.append_promotion_prepared(at("2026-08-05T10:00:01Z"), prepared.clone())
             .await
@@ -1163,7 +1431,7 @@ mod tests {
         let winner = ServiceRowId::try_new("01J00000000000000000000016").expect("winner");
         log.append(
             at("2026-08-05T10:00:03Z"),
-            OperationEvidence::ClaimLost {
+            OperationEvidence::ServiceClaimLost {
                 winner: winner.clone(),
             },
         )
@@ -1190,6 +1458,9 @@ mod tests {
             )
             .await
             .expect("create evidence");
+        log.append(at("2026-08-05T10:00:00Z"), OperationEvidence::OpClaimWon)
+            .await
+            .expect("claim won");
         log.append_promotion_prepared(
             at("2026-08-05T10:00:01Z"),
             super::prepared_promotion_fixture(),
@@ -1199,9 +1470,12 @@ mod tests {
         log.append(at("2026-08-05T10:00:02Z"), OperationEvidence::RowsCommitted)
             .await
             .expect("rows committed");
-        log.append(at("2026-08-05T10:00:03Z"), OperationEvidence::ClaimWon)
-            .await
-            .expect("claim won");
+        log.append(
+            at("2026-08-05T10:00:03Z"),
+            OperationEvidence::ServiceClaimWon,
+        )
+        .await
+        .expect("claim won");
         assert!(matches!(
             log.recovery_evidence().await.expect("recovery").promotion,
             Some(super::DurablePromotionProgress::ClaimWon { .. })
@@ -1336,7 +1610,7 @@ mod tests {
         let before = tokio::fs::metadata(&path).await.expect("before").len();
         log.state.lock().await.durable_offset = super::MAX_EVIDENCE_FILE_BYTES;
         assert!(matches!(
-            log.append(at("2026-08-05T10:00:01Z"), OperationEvidence::PullingImage)
+            log.append(at("2026-08-05T10:00:01Z"), OperationEvidence::OpClaimWon)
                 .await,
             Err(super::OperationEvidenceError::FileTooLarge { .. })
         ));
@@ -1371,6 +1645,100 @@ mod tests {
                 .await
                 .expect("canonical")
         );
+    }
+
+    #[tokio::test]
+    async fn redeploy_intent_recovers_into_the_redeploy_progress_shapes_only() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let directory = OperationEvidenceDirectory::new(root.path().to_owned(), 16 * 1024);
+        let identity = EvidenceIdentity::new(operation_id(), machine_id());
+        let log = directory
+            .create(identity.clone(), at("2026-08-05T10:00:00Z"))
+            .await
+            .expect("create evidence");
+        log.append(at("2026-08-05T10:00:00Z"), OperationEvidence::OpClaimWon)
+            .await
+            .expect("claim won");
+        let prepared = super::prepared_redeploy_intent_fixture();
+        log.append_redeploy_prepared(at("2026-08-05T10:00:01Z"), prepared.clone())
+            .await
+            .expect("append redeploy prepared");
+        assert!(matches!(
+            log.recovery_evidence().await.expect("recovery").promotion,
+            Some(super::DurablePromotionProgress::RedeployPrepared { prepared: found })
+                if found == prepared
+        ));
+
+        // The first-deploy service-name claim events are illegal after a
+        // redeploy intent; only the flip commit may follow.
+        assert!(matches!(
+            log.append(
+                at("2026-08-05T10:00:02Z"),
+                OperationEvidence::ServiceClaimWon
+            )
+            .await,
+            Err(super::OperationEvidenceError::InvalidEventOrder { .. })
+        ));
+        log.append(at("2026-08-05T10:00:02Z"), OperationEvidence::RowsCommitted)
+            .await
+            .expect("rows committed");
+        drop(log);
+
+        let reopened = directory.open(identity).await.expect("reopen");
+        assert!(matches!(
+            reopened.recovery_evidence().await.expect("recovery").promotion,
+            Some(super::DurablePromotionProgress::RedeployRowsCommitted { prepared: found })
+                if found == prepared
+        ));
+    }
+
+    #[tokio::test]
+    async fn post_flip_cleanup_evidence_stays_in_the_rows_committed_phase() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let directory = OperationEvidenceDirectory::new(root.path().to_owned(), 16 * 1024);
+        let log = directory
+            .create(
+                EvidenceIdentity::new(operation_id(), machine_id()),
+                at("2026-08-05T10:00:00Z"),
+            )
+            .await
+            .expect("create evidence");
+        log.append(at("2026-08-05T10:00:00Z"), OperationEvidence::OpClaimWon)
+            .await
+            .expect("claim won");
+        log.append_redeploy_prepared(
+            at("2026-08-05T10:00:01Z"),
+            super::prepared_redeploy_intent_fixture(),
+        )
+        .await
+        .expect("redeploy prepared");
+        log.append(at("2026-08-05T10:00:02Z"), OperationEvidence::RowsCommitted)
+            .await
+            .expect("rows committed");
+        log.append(at("2026-08-05T10:00:03Z"), OperationEvidence::Drained)
+            .await
+            .expect("drained");
+        let container = ployz_core::ids::ContainerId::try_new("incumbent-1").expect("container");
+        log.append(
+            at("2026-08-05T10:00:04Z"),
+            OperationEvidence::IncumbentStopped {
+                container_id: container.clone(),
+            },
+        )
+        .await
+        .expect("incumbent stopped");
+        log.append(
+            at("2026-08-05T10:00:05Z"),
+            OperationEvidence::IncumbentRemoved {
+                container_id: container,
+            },
+        )
+        .await
+        .expect("incumbent removed");
+        assert!(matches!(
+            log.recovery_evidence().await.expect("recovery").promotion,
+            Some(super::DurablePromotionProgress::RedeployRowsCommitted { .. })
+        ));
     }
 
     #[tokio::test]
