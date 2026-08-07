@@ -650,6 +650,17 @@ fn blue_green_evidence_variants_have_closed_wire_shapes() {
             OperationEvidence::HealthGateSkipped,
             json!({ "kind": "health_gate_skipped" }),
         ),
+        (
+            OperationEvidence::ServiceClaimWon,
+            json!({ "kind": "service_claim_won" }),
+        ),
+        (
+            OperationEvidence::ServiceClaimLost {
+                winner: ployz_core::ids::ServiceRowId::try_new("01J00000000000000000000014")
+                    .expect("service id"),
+            },
+            json!({ "kind": "service_claim_lost", "winner": "01J00000000000000000000014" }),
+        ),
     ] {
         let serialized = serde_json::to_value(&evidence).expect("evidence serializes");
         assert_eq!(serialized, expected);

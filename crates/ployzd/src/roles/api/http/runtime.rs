@@ -361,7 +361,7 @@ async fn bind_api_listener(
                 ),
             ),
             Arc::new(operations.store()),
-            Arc::clone(runner) as Arc<dyn super::deploy::DeployRuntime>,
+            Arc::clone(runner) as Arc<dyn super::deploy_runtime::DeployRuntime>,
             Arc::new(super::deploy::SystemDeployClock),
         );
         operations = operations.with_promotion_resumer(Arc::new(driver.clone()));

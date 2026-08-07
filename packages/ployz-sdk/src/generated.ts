@@ -253,7 +253,7 @@ export type CorrosionDeployServiceResult = { service_id: ServiceRowId, } & ({ "r
 
 export type CorrosionDeployTargets = Array<ServiceRowId>;
 
-export type CorrosionDeployWarning = { "kind": "health_gate_skipped", service_id: ServiceRowId, } | { "kind": "role_observation_incomplete", machine_ids: Array<MachineRowId>, };
+export type CorrosionDeployWarning = { "kind": "health_gate_skipped", service_id: ServiceRowId, } | { "kind": "role_observation_incomplete", machine_ids: Array<MachineRowId>, } | { "kind": "cleanup_incomplete", detail: string, };
 
 export type CorrosionDocumentVersion = SafeInteger<"CorrosionDocumentVersion">;
 
@@ -961,7 +961,7 @@ export type OperationEventReplayPage = { events: Array<ReplayedOperationEvent>, 
 
 export type OperationEventReplayRequest = { operation_id: OperationId, start_sequence: EventSequence, limit: OperationEventReplayLimit, };
 
-export type OperationEvidence = { "kind": "created" } | { "kind": "op_claim_won" } | { "kind": "op_claim_lost", winner: OperationRowId, } | { "kind": "debris_swept", removed: Array<ContainerId>, } | { "kind": "pulling_image" } | { "kind": "image_resolved" } | { "kind": "container_created", container_id: ContainerId, } | { "kind": "container_started", container_id: ContainerId, } | { "kind": "health_gate_skipped" } | { "kind": "incumbent_stopped", container_id: ContainerId, } | { "kind": "incumbent_restarted", container_id: ContainerId, } | { "kind": "promotion_prepared" } | { "kind": "rows_committed" } | { "kind": "claim_won" } | { "kind": "claim_lost", winner: ServiceRowId, } | { "kind": "drained" } | { "kind": "incumbent_removed", container_id: ContainerId, } | { "kind": "terminal", operation: OperationDocument, };
+export type OperationEvidence = { "kind": "created" } | { "kind": "op_claim_won" } | { "kind": "op_claim_lost", winner: OperationRowId, } | { "kind": "debris_swept", removed: Array<ContainerId>, } | { "kind": "pulling_image" } | { "kind": "image_resolved" } | { "kind": "container_created", container_id: ContainerId, } | { "kind": "container_started", container_id: ContainerId, } | { "kind": "health_gate_skipped" } | { "kind": "incumbent_stopped", container_id: ContainerId, } | { "kind": "incumbent_restarted", container_id: ContainerId, } | { "kind": "promotion_prepared" } | { "kind": "rows_committed" } | { "kind": "service_claim_won" } | { "kind": "service_claim_lost", winner: ServiceRowId, } | { "kind": "drained" } | { "kind": "incumbent_removed", container_id: ContainerId, } | { "kind": "terminal", operation: OperationDocument, };
 
 export type OperationEvidenceEvent = { sequence: OperationEvidenceSequence, timestamp: CorrosionTimestamp, evidence: OperationEvidence, };
 

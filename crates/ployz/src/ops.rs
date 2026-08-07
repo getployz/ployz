@@ -188,8 +188,8 @@ where
                                 | OperationEvidence::IncumbentRestarted { .. }
                                 | OperationEvidence::PromotionPrepared
                                 | OperationEvidence::RowsCommitted
-                                | OperationEvidence::ClaimWon
-                                | OperationEvidence::ClaimLost { .. }
+                                | OperationEvidence::ServiceClaimWon
+                                | OperationEvidence::ServiceClaimLost { .. }
                                 | OperationEvidence::Drained
                                 | OperationEvidence::IncumbentRemoved { .. } => None,
                             };
@@ -294,8 +294,8 @@ fn render_evidence(
         OperationEvidence::Drained => "drained".to_owned(),
         OperationEvidence::PromotionPrepared => "promotion prepared".to_owned(),
         OperationEvidence::RowsCommitted => "rows committed".to_owned(),
-        OperationEvidence::ClaimWon => "service claim won".to_owned(),
-        OperationEvidence::ClaimLost { winner } => format!("service claim lost to {winner}"),
+        OperationEvidence::ServiceClaimWon => "service claim won".to_owned(),
+        OperationEvidence::ServiceClaimLost { winner } => format!("service claim lost to {winner}"),
         OperationEvidence::Terminal { operation } => {
             let (kind, state) = operation_kind_state(operation);
             format!("terminal {kind} {state}")

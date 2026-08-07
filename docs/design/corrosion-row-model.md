@@ -82,8 +82,9 @@ runner, the CLI is in one operator's hand.
   may rewrite the document's top-level `heartbeat_at` between summary-state
   writes so readers can judge driver liveness. The heartbeat mutator refuses
   terminal documents and can change no other field, so terminal stays final.
-  `operations.heartbeat_at` and `containers.deploy` ride as generated columns
-  in the DDL.
+  Liveness is judged in Rust from the parsed document; no SQL reader keys on
+  `heartbeat_at`, so it rides only in the document. `containers.deploy` rides
+  as a generated column in the DDL.
 
 ## Uniqueness without a coordinator: optimistic claims
 

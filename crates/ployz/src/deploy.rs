@@ -85,14 +85,14 @@ pub enum DeployExecutionError {
         incumbent_service_name: String,
     },
     #[error(
-        "namespace {namespace_id} holds multiple services ({service_ids}); remove the extras before deploying"
+        "namespace {namespace_id} holds multiple services ({service_ids}); run `ployz service remove <service>` on the extras before deploying"
     )]
     MultipleServices {
         namespace_id: String,
         service_ids: String,
     },
     #[error(
-        "namespace {namespace_id} has route bindings but no service; remove the routes before deploying"
+        "namespace {namespace_id} has route bindings but no service; run `ployz route rm <hostname>` on each route before deploying"
     )]
     RoutesWithoutServices { namespace_id: String },
     #[error("the incumbent service is pinned to machine {machine_id}; deploy through that machine")]

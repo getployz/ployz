@@ -21,6 +21,10 @@ pub mod certificate {
 }
 pub mod corrosion;
 pub mod roles {
+    /// Advertised internal-DNS record TTL. The DNS role serves it on every
+    /// answer, and the deploy drain wait must cover at least this long.
+    pub const DNS_TTL_SECONDS: u32 = 5;
+
     pub mod dns {
         mod config;
         pub mod internal;

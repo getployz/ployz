@@ -31,7 +31,8 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tokio::sync::{Mutex, mpsc, watch};
 use tokio::time::{Instant, MissedTickBehavior};
 
-use super::deploy::{AcceptedDeploy, DeployDriver, DeployDriverError};
+use super::deploy::{DeployDriver, DeployDriverError};
+use super::deploy_task::AcceptedDeploy;
 use super::operation_evidence::{
     DEFAULT_MAX_EVIDENCE_LINE_BYTES, DurablePromotionProgress, EvidenceIdentity,
     OperationEvidenceDirectory, OperationEvidenceError, OperationEvidenceFollower,

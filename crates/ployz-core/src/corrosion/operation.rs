@@ -345,8 +345,18 @@ pub enum CorrosionPromotionRowObservation {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CorrosionDeployWarning {
-    HealthGateSkipped { service_id: ServiceRowId },
-    RoleObservationIncomplete { machine_ids: Vec<MachineRowId> },
+    HealthGateSkipped {
+        service_id: ServiceRowId,
+    },
+    RoleObservationIncomplete {
+        machine_ids: Vec<MachineRowId>,
+    },
+    /// The flip committed but drain or cleanup was skipped or failed, so
+    /// still-routable debris from the old revision may remain until the next
+    /// deploy's sweep collects it.
+    CleanupIncomplete {
+        detail: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

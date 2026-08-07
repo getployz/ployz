@@ -233,15 +233,17 @@ struct WriterState {
     next_sequence: u64,
     durable_offset: u64,
     phase: EvidencePhase,
-    intent: Option<DurableIntentKind>,
 }
 
+/// The durable phase of one evidence log. Once intent is prepared, the phase
+/// carries its kind, so intent-specific events (the first-deploy service
+/// claim) are legal or illegal purely by phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EvidencePhase {
     Created,
     Executing,
-    PromotionPrepared,
-    RowsCommitted,
+    PromotionPrepared(DurableIntentKind),
+    RowsCommitted(DurableIntentKind),
     ClaimDecided,
     Terminal,
 }
@@ -275,13 +277,6 @@ impl OperationEvidenceLog {
                 return Err(OperationEvidenceError::TerminalDocumentNonterminal);
             }
         }
-        if matches!(
-            &evidence,
-            OperationEvidence::ClaimWon | OperationEvidence::ClaimLost { .. }
-        ) && state.intent != Some(DurableIntentKind::FirstDeploy)
-        {
-            return Err(OperationEvidenceError::InvalidEventOrder { line: 0 });
-        }
         let next_phase = advance_phase(state.phase, &evidence, 0)?;
         let sequence = OperationEvidenceSequence::try_new(state.next_sequence)
             .map_err(|_| OperationEvidenceError::SequenceExhausted)?;
@@ -313,7 +308,7 @@ impl OperationEvidenceLog {
         if !prepared.is_consistent_with(&self.identity) {
             return Err(OperationEvidenceError::InvalidPreparedIntent { line: 0 });
         }
-        let next_phase = advance_phase(state.phase, &OperationEvidence::PromotionPrepared, 0)?;
+        let next_phase = prepared_phase(state.phase, DurableIntentKind::FirstDeploy, 0)?;
         let sequence = OperationEvidenceSequence::try_new(state.next_sequence)
             .map_err(|_| OperationEvidenceError::SequenceExhausted)?;
         let event = OperationEvidenceEvent {
@@ -331,7 +326,6 @@ impl OperationEvidenceLog {
         )
         .await?;
         state.phase = next_phase;
-        state.intent = Some(DurableIntentKind::FirstDeploy);
         self.durable_events.send_replace(sequence.get());
         Ok(event)
     }
@@ -347,7 +341,7 @@ impl OperationEvidenceLog {
         if !prepared.is_consistent_with(&self.identity) {
             return Err(OperationEvidenceError::InvalidPreparedIntent { line: 0 });
         }
-        let next_phase = advance_phase(state.phase, &OperationEvidence::PromotionPrepared, 0)?;
+        let next_phase = prepared_phase(state.phase, DurableIntentKind::Redeploy, 0)?;
         let sequence = OperationEvidenceSequence::try_new(state.next_sequence)
             .map_err(|_| OperationEvidenceError::SequenceExhausted)?;
         let event = OperationEvidenceEvent {
@@ -365,7 +359,6 @@ impl OperationEvidenceLog {
         )
         .await?;
         state.phase = next_phase;
-        state.intent = Some(DurableIntentKind::Redeploy);
         self.durable_events.send_replace(sequence.get());
         Ok(event)
     }
@@ -541,7 +534,6 @@ impl OperationEvidenceDirectory {
                 next_sequence: 2,
                 durable_offset,
                 phase: EvidencePhase::Created,
-                intent: None,
             })),
             durable_events,
         })
@@ -579,7 +571,6 @@ impl OperationEvidenceDirectory {
                 next_sequence,
                 durable_offset: loaded.durable_offset,
                 phase: loaded.phase,
-                intent: loaded.prepared.as_ref().map(DurablePreparedIntent::kind),
             })),
             durable_events,
         })
@@ -772,18 +763,15 @@ fn decode_loaded(
                 return Err(OperationEvidenceError::TerminalDocumentNonterminal);
             }
         }
-        if matches!(
-            &event.evidence,
-            OperationEvidence::ClaimWon | OperationEvidence::ClaimLost { .. }
-        ) && prepared.as_ref().map(DurablePreparedIntent::kind)
-            != Some(DurableIntentKind::FirstDeploy)
-        {
-            return Err(OperationEvidenceError::InvalidEventOrder { line: line_number });
-        }
-        phase = Some(match phase {
-            None if matches!(&event.evidence, OperationEvidence::Created) => EvidencePhase::Created,
-            None => return Err(OperationEvidenceError::MissingCreated),
-            Some(phase) => advance_phase(phase, &event.evidence, line_number)?,
+        phase = Some(match (phase, &frame_prepared) {
+            (None, _) if matches!(&event.evidence, OperationEvidence::Created) => {
+                EvidencePhase::Created
+            }
+            (None, _) => return Err(OperationEvidenceError::MissingCreated),
+            (Some(phase), Some(frame_prepared)) => {
+                prepared_phase(phase, frame_prepared.kind(), line_number)?
+            }
+            (Some(phase), None) => advance_phase(phase, &event.evidence, line_number)?,
         });
         if let Some(frame_prepared) = frame_prepared
             && prepared.replace(frame_prepared).is_some()
@@ -824,17 +812,17 @@ impl LoadedEvidence {
                 | OperationEvidence::IncumbentRestarted { .. }
                 | OperationEvidence::PromotionPrepared
                 | OperationEvidence::RowsCommitted
-                | OperationEvidence::ClaimWon
-                | OperationEvidence::ClaimLost { .. }
+                | OperationEvidence::ServiceClaimWon
+                | OperationEvidence::ServiceClaimLost { .. }
                 | OperationEvidence::Drained
                 | OperationEvidence::IncumbentRemoved { .. } => None,
             });
         let promotion = self.prepared.clone().and_then(|intent| match intent {
             DurablePreparedIntent::FirstDeploy(prepared) => match self.phase {
-                EvidencePhase::PromotionPrepared => {
+                EvidencePhase::PromotionPrepared(_) => {
                     Some(DurablePromotionProgress::PromotionPrepared { prepared })
                 }
-                EvidencePhase::RowsCommitted => {
+                EvidencePhase::RowsCommitted(_) => {
                     Some(DurablePromotionProgress::RowsCommitted { prepared })
                 }
                 EvidencePhase::ClaimDecided => {
@@ -842,12 +830,12 @@ impl LoadedEvidence {
                         .iter()
                         .rev()
                         .find_map(|event| match &event.evidence {
-                            OperationEvidence::ClaimWon => {
+                            OperationEvidence::ServiceClaimWon => {
                                 Some(DurablePromotionProgress::ClaimWon {
                                     prepared: prepared.clone(),
                                 })
                             }
-                            OperationEvidence::ClaimLost { winner } => {
+                            OperationEvidence::ServiceClaimLost { winner } => {
                                 Some(DurablePromotionProgress::ClaimLost {
                                     prepared: prepared.clone(),
                                     winner: winner.clone(),
@@ -874,10 +862,10 @@ impl LoadedEvidence {
                 EvidencePhase::Created | EvidencePhase::Executing | EvidencePhase::Terminal => None,
             },
             DurablePreparedIntent::Redeploy(prepared) => match self.phase {
-                EvidencePhase::PromotionPrepared => {
+                EvidencePhase::PromotionPrepared(_) => {
                     Some(DurablePromotionProgress::RedeployPrepared { prepared })
                 }
-                EvidencePhase::RowsCommitted => {
+                EvidencePhase::RowsCommitted(_) => {
                     Some(DurablePromotionProgress::RedeployRowsCommitted { prepared })
                 }
                 EvidencePhase::Created
@@ -915,34 +903,31 @@ fn advance_phase(
             | OperationEvidence::IncumbentRestarted { .. },
         ) => Ok(EvidencePhase::Executing),
         (
-            EvidencePhase::RowsCommitted,
+            EvidencePhase::RowsCommitted(_),
             OperationEvidence::Drained
             | OperationEvidence::IncumbentStopped { .. }
             | OperationEvidence::IncumbentRemoved { .. },
         ) => Ok(phase),
-        (EvidencePhase::Executing, OperationEvidence::PromotionPrepared) => {
-            Ok(EvidencePhase::PromotionPrepared)
-        }
-        (EvidencePhase::PromotionPrepared, OperationEvidence::RowsCommitted) => {
-            Ok(EvidencePhase::RowsCommitted)
+        (EvidencePhase::PromotionPrepared(intent), OperationEvidence::RowsCommitted) => {
+            Ok(EvidencePhase::RowsCommitted(intent))
         }
         (
-            EvidencePhase::RowsCommitted,
-            OperationEvidence::ClaimWon | OperationEvidence::ClaimLost { .. },
+            EvidencePhase::RowsCommitted(DurableIntentKind::FirstDeploy),
+            OperationEvidence::ServiceClaimWon | OperationEvidence::ServiceClaimLost { .. },
         ) => Ok(EvidencePhase::ClaimDecided),
         (
             EvidencePhase::Created
             | EvidencePhase::Executing
-            | EvidencePhase::PromotionPrepared
-            | EvidencePhase::RowsCommitted
+            | EvidencePhase::PromotionPrepared(_)
+            | EvidencePhase::RowsCommitted(_)
             | EvidencePhase::ClaimDecided,
             OperationEvidence::Terminal { .. },
         ) => Ok(EvidencePhase::Terminal),
         (
             EvidencePhase::Created
             | EvidencePhase::Executing
-            | EvidencePhase::PromotionPrepared
-            | EvidencePhase::RowsCommitted
+            | EvidencePhase::PromotionPrepared(_)
+            | EvidencePhase::RowsCommitted(_)
             | EvidencePhase::ClaimDecided
             | EvidencePhase::Terminal,
             OperationEvidence::Created
@@ -958,12 +943,29 @@ fn advance_phase(
             | OperationEvidence::IncumbentRestarted { .. }
             | OperationEvidence::PromotionPrepared
             | OperationEvidence::RowsCommitted
-            | OperationEvidence::ClaimWon
-            | OperationEvidence::ClaimLost { .. }
+            | OperationEvidence::ServiceClaimWon
+            | OperationEvidence::ServiceClaimLost { .. }
             | OperationEvidence::Drained
             | OperationEvidence::IncumbentRemoved { .. }
             | OperationEvidence::Terminal { .. },
         ) => Err(OperationEvidenceError::InvalidEventOrder { line }),
+    }
+}
+
+/// The one legal transition that records prepared intent, entered only from
+/// the executing phase and carrying the intent kind into every later phase.
+fn prepared_phase(
+    phase: EvidencePhase,
+    intent: DurableIntentKind,
+    line: usize,
+) -> Result<EvidencePhase, OperationEvidenceError> {
+    match phase {
+        EvidencePhase::Executing => Ok(EvidencePhase::PromotionPrepared(intent)),
+        EvidencePhase::Created
+        | EvidencePhase::PromotionPrepared(_)
+        | EvidencePhase::RowsCommitted(_)
+        | EvidencePhase::ClaimDecided
+        | EvidencePhase::Terminal => Err(OperationEvidenceError::InvalidEventOrder { line }),
     }
 }
 
@@ -1429,7 +1431,7 @@ mod tests {
         let winner = ServiceRowId::try_new("01J00000000000000000000016").expect("winner");
         log.append(
             at("2026-08-05T10:00:03Z"),
-            OperationEvidence::ClaimLost {
+            OperationEvidence::ServiceClaimLost {
                 winner: winner.clone(),
             },
         )
@@ -1468,9 +1470,12 @@ mod tests {
         log.append(at("2026-08-05T10:00:02Z"), OperationEvidence::RowsCommitted)
             .await
             .expect("rows committed");
-        log.append(at("2026-08-05T10:00:03Z"), OperationEvidence::ClaimWon)
-            .await
-            .expect("claim won");
+        log.append(
+            at("2026-08-05T10:00:03Z"),
+            OperationEvidence::ServiceClaimWon,
+        )
+        .await
+        .expect("claim won");
         assert!(matches!(
             log.recovery_evidence().await.expect("recovery").promotion,
             Some(super::DurablePromotionProgress::ClaimWon { .. })
@@ -1667,8 +1672,11 @@ mod tests {
         // The first-deploy service-name claim events are illegal after a
         // redeploy intent; only the flip commit may follow.
         assert!(matches!(
-            log.append(at("2026-08-05T10:00:02Z"), OperationEvidence::ClaimWon)
-                .await,
+            log.append(
+                at("2026-08-05T10:00:02Z"),
+                OperationEvidence::ServiceClaimWon
+            )
+            .await,
             Err(super::OperationEvidenceError::InvalidEventOrder { .. })
         ));
         log.append(at("2026-08-05T10:00:02Z"), OperationEvidence::RowsCommitted)

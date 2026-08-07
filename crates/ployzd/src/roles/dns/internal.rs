@@ -14,9 +14,9 @@ use tokio::net::UdpSocket;
 use tokio::sync::{broadcast, watch};
 use tokio::task::{JoinHandle, JoinSet};
 
+use crate::roles::DNS_TTL_SECONDS;
+
 const DNS_PORT: u16 = 53;
-/// Advertised record TTL; the deploy drain wait must cover at least this long.
-pub const DNS_TTL_SECONDS: u32 = 5;
 const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(2);
 const BIND_RETRY_INITIAL: Duration = Duration::from_millis(250);
 const BIND_RETRY_CAP: Duration = Duration::from_secs(1);

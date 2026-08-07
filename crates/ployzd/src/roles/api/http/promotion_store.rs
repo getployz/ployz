@@ -11,7 +11,7 @@ use ployz_core::ids::{ClusterId, ContainerId, NamespaceRowId, ServiceRowId};
 
 use crate::corrosion::{CorrosionClient, StoredRowLimit, collect_stored_rows};
 
-use super::operation_evidence::PreparedPromotion;
+use super::operation_evidence::{PreparedPromotion, PreparedRedeployIntent};
 use super::operation_finalizer::{
     PreparedPromotionStore, PromotionClaimOutcome, PromotionFinalizerStoreError,
     PromotionRequestDisposition, PromotionRowsObservation,
@@ -21,7 +21,7 @@ const MAX_SERVICE_CLAIM_ROWS: usize = 10_000;
 const CLAIM_COURTESY_WAIT: Duration = Duration::from_secs(1);
 
 #[derive(Debug)]
-pub(super) struct ResolvedFirstDeployNamespace {
+pub(super) struct ResolvedNamespace {
     pub(super) id: NamespaceRowId,
     pub(super) exact_document: String,
     pub(super) document: NamespaceDocument,
@@ -36,7 +36,7 @@ pub(super) struct ObservedService {
 }
 
 /// One container row with the exact Corrosion document used for exact deletes.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) struct ObservedContainer {
     pub(super) id: ContainerId,
     pub(super) exact_document: String,
@@ -54,11 +54,11 @@ pub(super) struct ObservedContainer {
 pub(super) enum DeployAdmission {
     /// The namespace exists and holds no services and no route bindings.
     FirstDeploy {
-        namespace: ResolvedFirstDeployNamespace,
+        namespace: ResolvedNamespace,
     },
     /// The namespace's only service matches the requested name exactly.
     Redeploy {
-        namespace: ResolvedFirstDeployNamespace,
+        namespace: ResolvedNamespace,
         incumbent: Box<ObservedService>,
     },
     NamespaceMissing,
@@ -90,7 +90,7 @@ pub(super) enum DeployAdmission {
 enum NamedNamespace {
     Missing,
     Ambiguous { namespace_ids: Vec<NamespaceRowId> },
-    Found(ResolvedFirstDeployNamespace),
+    Found(ResolvedNamespace),
 }
 
 /// Corrosion's exact, restart-safe adapter for a prepared service/container promotion.
@@ -208,7 +208,7 @@ impl CorrosionPreparedPromotionStore {
                     "namespace row id was invalid: {error}"
                 ))
             })?;
-        Ok(NamedNamespace::Found(ResolvedFirstDeployNamespace {
+        Ok(NamedNamespace::Found(ResolvedNamespace {
             id: namespace_id,
             exact_document: namespace.source.document,
             document: namespace.value,
@@ -266,7 +266,7 @@ impl CorrosionPreparedPromotionStore {
     /// driver, which maps it to `SupersededByOperation`.
     pub(super) async fn converge_redeploy_rows(
         &self,
-        prepared: &PreparedRedeploy,
+        prepared: &PreparedRedeployIntent,
     ) -> Result<(PromotionRequestDisposition, PromotionRowsObservation), PromotionFinalizerStoreError>
     {
         validate_redeploy_cluster(prepared, &self.cluster_id)?;
@@ -281,7 +281,7 @@ impl CorrosionPreparedPromotionStore {
 
     async fn observe_redeploy_rows(
         &self,
-        prepared: &PreparedRedeploy,
+        prepared: &PreparedRedeployIntent,
     ) -> Result<PromotionRowsObservation, PromotionFinalizerStoreError> {
         let service = self.query_one(CorrosionTable::Services, prepared.service_id.as_str());
         let container = self.query_one(CorrosionTable::Containers, prepared.container_id.as_str());
@@ -599,20 +599,6 @@ fn exact_delete_statement(table: CorrosionTable, id: &str, document: String) -> 
     )
 }
 
-/// Exact non-secret redeploy intent for one incumbent service.
-///
-/// The driver builds the replacement `service_document` itself; the store
-/// treats it as opaque. `exact_incumbent_document` is the incumbent's document
-/// exactly as serialized at admission — the whole CAS guard for this path.
-#[derive(Debug)]
-pub(super) struct PreparedRedeploy {
-    pub(super) service_id: ServiceRowId,
-    pub(super) exact_incumbent_document: String,
-    pub(super) service_document: ServiceDocument,
-    pub(super) container_id: ContainerId,
-    pub(super) container_document: ContainerDocument,
-}
-
 /// Per-row outcome of an exact container-row delete, judged by readback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ContainerRowCleanup {
@@ -633,7 +619,7 @@ fn cleanup_from_observation(observation: CorrosionPromotionRowObservation) -> Co
 }
 
 fn classify_deploy_admission(
-    namespace: ResolvedFirstDeployNamespace,
+    namespace: ResolvedNamespace,
     services: Vec<ObservedService>,
     has_route_bindings: bool,
     requested: &CorrosionServiceName,
@@ -705,7 +691,7 @@ fn observed_services(
 }
 
 fn validate_redeploy_cluster(
-    prepared: &PreparedRedeploy,
+    prepared: &PreparedRedeployIntent,
     expected: &ClusterId,
 ) -> Result<(), PromotionFinalizerStoreError> {
     if &prepared.service_document.cluster_id != expected
@@ -719,7 +705,7 @@ fn validate_redeploy_cluster(
 }
 
 fn redeploy_statements(
-    prepared: &PreparedRedeploy,
+    prepared: &PreparedRedeployIntent,
 ) -> Result<[Statement; 2], PromotionFinalizerStoreError> {
     let service = serde_json::to_string(&prepared.service_document)
         .map_err(|error| PromotionFinalizerStoreError::Protocol(error.to_string()))?;
@@ -852,7 +838,7 @@ mod tests {
 
     use super::{
         ContainerRowCleanup, DeployAdmission, ExactPromotionPair, ObservedService,
-        PreparedRedeploy, PromotionRequestDisposition, ResolvedFirstDeployNamespace,
+        PreparedRedeployIntent, PromotionRequestDisposition, ResolvedNamespace,
         classify_converge_response, classify_deploy_admission, cleanup_from_observation,
         conditional_container_insert_statement, conditional_service_insert_statement,
         exact_delete_statement, incumbent_service_update_statement, namespace_has_route_statement,
@@ -1236,7 +1222,7 @@ mod tests {
         CorrosionServiceName::try_new(name).expect("service name")
     }
 
-    fn namespace_fixture() -> ResolvedFirstDeployNamespace {
+    fn namespace_fixture() -> ResolvedNamespace {
         let value = serde_json::json!({
             "v": 1,
             "cluster_id": cluster_id(),
@@ -1249,7 +1235,7 @@ mod tests {
         });
         let document: NamespaceDocument =
             serde_json::from_value(value.clone()).expect("namespace document");
-        ResolvedFirstDeployNamespace {
+        ResolvedNamespace {
             id: namespace_id(),
             exact_document: value.to_string(),
             document,
@@ -1302,14 +1288,15 @@ mod tests {
         .expect("container document")
     }
 
-    fn prepared_redeploy() -> PreparedRedeploy {
+    fn prepared_redeploy() -> PreparedRedeployIntent {
         let incumbent = observed_service("01J00000000000000000000014", "api");
-        PreparedRedeploy {
+        PreparedRedeployIntent {
             service_id: incumbent.id,
             exact_incumbent_document: incumbent.exact_document,
             service_document: service_document("api"),
             container_id: ContainerId::try_new("docker-container-1").expect("container id"),
             container_document: container_document(),
+            health_gate: ployz_core::HealthGatePolicy::Enforce,
         }
     }
 

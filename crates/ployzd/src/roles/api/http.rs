@@ -6,6 +6,9 @@
 
 mod config;
 mod deploy;
+mod deploy_runtime;
+mod deploy_stores;
+mod deploy_task;
 mod diagnostics;
 mod door;
 mod endpoint_network;

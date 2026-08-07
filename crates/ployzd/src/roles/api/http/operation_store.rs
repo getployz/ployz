@@ -18,7 +18,7 @@ const MAX_NAMESPACE_ROWS: usize = 1_000;
 const MAX_OPERATION_SCAN_ROWS: usize = 10_000;
 
 /// One operation row with the exact Corrosion document used for conditional writes.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) struct ObservedOperation {
     pub(super) id: OperationRowId,
     pub(super) exact_document: String,

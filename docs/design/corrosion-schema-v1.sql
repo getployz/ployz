@@ -149,13 +149,11 @@ CREATE TABLE operations (
     document TEXT NOT NULL DEFAULT '{}',
     kind TEXT GENERATED ALWAYS AS (json_extract(document, '$.kind')) VIRTUAL,
     state TEXT GENERATED ALWAYS AS (json_extract(document, '$.state')) VIRTUAL,
-    machine_id TEXT GENERATED ALWAYS AS (json_extract(document, '$.machine_id')) VIRTUAL,
-    heartbeat_at TEXT GENERATED ALWAYS AS (json_extract(document, '$.heartbeat_at')) VIRTUAL
+    machine_id TEXT GENERATED ALWAYS AS (json_extract(document, '$.machine_id')) VIRTUAL
 );
 CREATE INDEX operations_kind ON operations (kind);
 CREATE INDEX operations_state ON operations (state);
 CREATE INDEX operations_machine_id ON operations (machine_id);
-CREATE INDEX operations_heartbeat_at ON operations (heartbeat_at);
 
 -- Cert possession testimony (unified-cert ticket #792): one row per
 -- (gateway, hostname), written only by that gateway when it issues or
