@@ -27,19 +27,10 @@ pub(super) struct ResolvedFirstDeployNamespace {
     pub(super) document: NamespaceDocument,
 }
 
-#[derive(Debug)]
-pub(super) enum FirstDeployNamespaceResolution {
-    Missing,
-    Ambiguous { namespace_ids: Vec<NamespaceRowId> },
-    NotFirst { namespace_id: NamespaceRowId },
-    Ready(ResolvedFirstDeployNamespace),
-}
-
 /// One service row with the exact Corrosion document used for conditional writes.
 #[derive(Debug)]
 pub(super) struct ObservedService {
     pub(super) id: ServiceRowId,
-    #[cfg_attr(not(test), expect(dead_code))]
     pub(super) exact_document: String,
     pub(super) document: ServiceDocument,
 }
@@ -60,7 +51,6 @@ pub(super) struct ObservedContainer {
 /// with the incumbent's exact document as the CAS guard, and every other
 /// variant is a refusal the driver maps to a typed deploy failure.
 #[derive(Debug)]
-#[expect(dead_code)]
 pub(super) enum DeployAdmission {
     /// The namespace exists and holds no services and no route bindings.
     FirstDeploy {
@@ -103,64 +93,12 @@ enum NamedNamespace {
     Found(ResolvedFirstDeployNamespace),
 }
 
-#[async_trait]
-pub(super) trait FirstDeployPreflightStore: Send + Sync {
-    async fn resolve_empty_namespace(
-        &self,
-        name: &CorrosionNamespaceName,
-    ) -> Result<FirstDeployNamespaceResolution, PromotionFinalizerStoreError>;
-}
-
 /// Corrosion's exact, restart-safe adapter for a prepared service/container promotion.
 #[derive(Clone)]
 pub(super) struct CorrosionPreparedPromotionStore {
     client: CorrosionClient,
     cluster_id: ClusterId,
     claim_courtesy_wait: Duration,
-}
-
-#[async_trait]
-impl FirstDeployPreflightStore for CorrosionPreparedPromotionStore {
-    async fn resolve_empty_namespace(
-        &self,
-        name: &CorrosionNamespaceName,
-    ) -> Result<FirstDeployNamespaceResolution, PromotionFinalizerStoreError> {
-        let namespace = match self.namespace_named(name).await? {
-            NamedNamespace::Missing => return Ok(FirstDeployNamespaceResolution::Missing),
-            NamedNamespace::Ambiguous { namespace_ids } => {
-                return Ok(FirstDeployNamespaceResolution::Ambiguous { namespace_ids });
-            }
-            NamedNamespace::Found(namespace) => namespace,
-        };
-        let services = self.query_many(namespace_has_service_statement(&namespace.id), 1);
-        let routes = self.query_many(namespace_has_route_statement(&namespace.id), 1);
-        let (services, routes) = tokio::try_join!(services, routes)?;
-        let service_report = read_rows::<ServiceDocument>(&self.cluster_id, services);
-        if !service_report.skipped.is_empty() {
-            return Err(PromotionFinalizerStoreError::Protocol(
-                "namespace service lookup contained a rejected row".to_owned(),
-            ));
-        }
-        let route_report = read_rows::<RouteBindingDocument>(&self.cluster_id, routes);
-        if !route_report.skipped.is_empty() {
-            return Err(PromotionFinalizerStoreError::Protocol(
-                "namespace route lookup contained a rejected row".to_owned(),
-            ));
-        }
-        if !service_report.accepted.is_empty() || !route_report.accepted.is_empty() {
-            return Ok(FirstDeployNamespaceResolution::NotFirst {
-                namespace_id: namespace.id,
-            });
-        }
-        Ok(FirstDeployNamespaceResolution::Ready(namespace))
-    }
-}
-
-fn namespace_has_service_statement(namespace_id: &NamespaceRowId) -> Statement {
-    Statement::with_params(
-        "SELECT id, document FROM services WHERE namespace_id = ? LIMIT 1",
-        vec![SqliteParameter::Text(namespace_id.as_str().to_owned())],
-    )
 }
 
 fn namespace_has_route_statement(namespace_id: &NamespaceRowId) -> Statement {
@@ -283,7 +221,6 @@ impl CorrosionPreparedPromotionStore {
     /// returned exact documents: the `Redeploy` incumbent's `exact_document`
     /// becomes the CAS guard for
     /// [`CorrosionPreparedPromotionStore::converge_redeploy_rows`].
-    #[expect(dead_code)]
     pub(super) async fn resolve_deploy_admission(
         &self,
         namespace_name: &CorrosionNamespaceName,
@@ -327,7 +264,6 @@ impl CorrosionPreparedPromotionStore {
     /// a hint; the exact readback is the authority. A `Rejected` disposition
     /// whose readback is not exact means the incumbent changed underneath the
     /// driver, which maps it to `SupersededByOperation`.
-    #[expect(dead_code)]
     pub(super) async fn converge_redeploy_rows(
         &self,
         prepared: &PreparedRedeploy,
@@ -363,7 +299,6 @@ impl CorrosionPreparedPromotionStore {
     /// Lists every container row currently attributed to `service_id`,
     /// via the `service_id` generated column, with exact documents so the
     /// sweep and clean phases can later delete precisely what they observed.
-    #[expect(dead_code)]
     pub(super) async fn service_containers(
         &self,
         service_id: &ServiceRowId,
@@ -405,7 +340,6 @@ impl CorrosionPreparedPromotionStore {
     /// id = ? AND document = ?` per row in a single batch, then rereads each
     /// row as the authority. A row that is already absent is a success; a row
     /// whose document changed belongs to another writer and is left alone.
-    #[expect(dead_code)]
     pub(super) async fn delete_exact_container_rows(
         &self,
         rows: &[ObservedContainer],
@@ -922,8 +856,8 @@ mod tests {
         classify_converge_response, classify_deploy_admission, cleanup_from_observation,
         conditional_container_insert_statement, conditional_service_insert_statement,
         exact_delete_statement, incumbent_service_update_statement, namespace_has_route_statement,
-        namespace_has_service_statement, namespace_services_statement, observe_exact_row,
-        redeploy_container_insert_statement, redeploy_statements, service_containers_statement,
+        namespace_services_statement, observe_exact_row, redeploy_container_insert_statement,
+        redeploy_statements, service_containers_statement,
     };
 
     fn service_insert(
@@ -1380,15 +1314,9 @@ mod tests {
     }
 
     #[test]
-    fn nonempty_namespace_preflight_is_a_bounded_existence_read() {
+    fn route_binding_preflight_is_a_bounded_existence_read() {
         let namespace = ployz_core::ids::NamespaceRowId::try_new("01J00000000000000000000001")
             .expect("namespace");
-        let ployz_core::corrosion::Statement::WithParams(sql, _) =
-            namespace_has_service_statement(&namespace)
-        else {
-            panic!("parameterized statement");
-        };
-        assert!(sql.ends_with("LIMIT 1"));
         let ployz_core::corrosion::Statement::WithParams(route_sql, _) =
             namespace_has_route_statement(&namespace)
         else {

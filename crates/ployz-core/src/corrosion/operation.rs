@@ -273,6 +273,7 @@ pub enum CorrosionDeployServiceFailure {
     ImagePullFailed { message: String },
     ContainerCreateFailed { message: String },
     ContainerStartFailed { message: String },
+    IncumbentStopFailed { message: String },
     HealthGateFailed { message: String },
 }
 

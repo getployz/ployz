@@ -33,7 +33,6 @@ pub(super) enum ConditionalOperationWrite {
 
 /// Outcome of one heartbeat CAS against the driver's own operation row.
 #[derive(Debug)]
-#[expect(dead_code)]
 pub(super) enum HeartbeatWrite {
     /// The row was rewritten. The payload is the refreshed row exactly as
     /// written; the driver replaces its shared handle with it so the next
@@ -142,7 +141,6 @@ impl OperationStore {
     /// [`OperationStore::operation`] and re-check ownership. A terminal
     /// document refuses the refresh with a typed
     /// [`OperationStoreError::Transition`] error.
-    #[expect(dead_code)]
     pub(super) async fn refresh_heartbeat(
         &self,
         observed: &ObservedOperation,
@@ -169,7 +167,6 @@ impl OperationStore {
     /// The SQL bound selects `kind = 'deploy'` in `created`/`running` states;
     /// membership of `service_id` in each deploy's target set is decided in
     /// Rust because targets live inside the document.
-    #[expect(dead_code)]
     pub(super) async fn deploy_claim_candidates(
         &self,
         service_id: &ServiceRowId,
@@ -192,7 +189,6 @@ impl OperationStore {
     ///
     /// Terminal rows matter here: a newer op that terminally recorded itself
     /// superseded by `operation_id` is the one harmless newer row.
-    #[expect(dead_code)]
     pub(super) async fn deploy_takeover_candidates(
         &self,
         operation_id: &OperationRowId,

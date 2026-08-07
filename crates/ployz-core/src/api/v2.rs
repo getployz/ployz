@@ -399,8 +399,27 @@ pub enum DeployRefusal {
         namespace_name: CorrosionNamespaceName,
         namespace_ids: Vec<NamespaceRowId>,
     },
-    NotFirstDeploy {
+    /// The namespace's sole service holds a different name; a deploy only
+    /// redeploys the incumbent, and `ployz service remove` frees the namespace.
+    DifferentService {
         namespace_id: NamespaceRowId,
+        incumbent_service_name: CorrosionServiceName,
+    },
+    /// More than one service occupies the namespace; the driver refuses to
+    /// guess which one the deploy replaces.
+    MultipleServices {
+        namespace_id: NamespaceRowId,
+        service_ids: Vec<ServiceRowId>,
+    },
+    /// Route bindings exist without any service, so the namespace is neither
+    /// empty nor redeployable.
+    RoutesWithoutServices {
+        namespace_id: NamespaceRowId,
+    },
+    /// The incumbent service is pinned to another machine; command that
+    /// machine's API to redeploy it.
+    IncumbentOnAnotherMachine {
+        machine_id: MachineRowId,
     },
     BridgeUnavailable,
 }

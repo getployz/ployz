@@ -281,6 +281,55 @@ impl PromotionFinalizerState {
     }
 }
 
+/// The next step after one redeploy flip attempt, judged by exact readback.
+///
+/// The incumbent CAS is the hard gate: an exact pair is the committed flip, a
+/// service row that no longer matches either document belongs to a rival
+/// deploy, and only transport uncertainty earns a retry before the deadline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum RedeployRowsDecision {
+    Committed,
+    Retry,
+    SupersededByCasMiss,
+    Failure { failure: CorrosionPromotionFailure },
+}
+
+pub(super) fn classify_redeploy_rows(
+    disposition: PromotionRequestDisposition,
+    rows: PromotionRowsObservation,
+    uncertainty_deadline: UncertaintyDeadline,
+) -> RedeployRowsDecision {
+    if rows == PromotionRowsObservation::EXACT {
+        return RedeployRowsDecision::Committed;
+    }
+    match rows.service_row {
+        CorrosionPromotionRowObservation::Exact => match uncertainty_deadline {
+            // The flip landed but the container row has not converged; the
+            // conditional insert heals it on the next attempt.
+            UncertaintyDeadline::Open => RedeployRowsDecision::Retry,
+            UncertaintyDeadline::Reached => RedeployRowsDecision::Failure {
+                failure: CorrosionPromotionFailure::InvariantViolation {
+                    service_row: rows.service_row,
+                    container_row: rows.container_row,
+                },
+            },
+        },
+        CorrosionPromotionRowObservation::Absent | CorrosionPromotionRowObservation::Mismatch => {
+            match disposition {
+                PromotionRequestDisposition::Accepted | PromotionRequestDisposition::Rejected => {
+                    RedeployRowsDecision::SupersededByCasMiss
+                }
+                PromotionRequestDisposition::Uncertain => match uncertainty_deadline {
+                    UncertaintyDeadline::Open => RedeployRowsDecision::Retry,
+                    UncertaintyDeadline::Reached => RedeployRowsDecision::Failure {
+                        failure: CorrosionPromotionFailure::OutcomeUncertain,
+                    },
+                },
+            }
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub(super) enum PromotionFinalizerStoreError {
     #[error("prepared promotion storage transport failed: {0}")]
@@ -295,7 +344,8 @@ mod tests {
 
     use super::{
         PromotionClaimOutcome, PromotionFinalizerDecision, PromotionFinalizerState,
-        PromotionRequestDisposition, PromotionRowsObservation, UncertaintyDeadline,
+        PromotionRequestDisposition, PromotionRowsObservation, RedeployRowsDecision,
+        UncertaintyDeadline, classify_redeploy_rows,
     };
     use crate::roles::api::http::operation_evidence::prepared_promotion_fixture;
 
@@ -369,6 +419,69 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn redeploy_flip_commits_only_on_the_exact_pair() {
+        use ployz_core::corrosion::CorrosionPromotionRowObservation;
+
+        assert_eq!(
+            classify_redeploy_rows(
+                PromotionRequestDisposition::Accepted,
+                PromotionRowsObservation::EXACT,
+                UncertaintyDeadline::Open,
+            ),
+            RedeployRowsDecision::Committed
+        );
+        // A CAS miss with a definite answer is a supersession, not a retry.
+        assert_eq!(
+            classify_redeploy_rows(
+                PromotionRequestDisposition::Rejected,
+                PromotionRowsObservation {
+                    service_row: CorrosionPromotionRowObservation::Mismatch,
+                    container_row: CorrosionPromotionRowObservation::Absent,
+                },
+                UncertaintyDeadline::Open,
+            ),
+            RedeployRowsDecision::SupersededByCasMiss
+        );
+        // Transport uncertainty retries until the deadline, then stays typed.
+        assert_eq!(
+            classify_redeploy_rows(
+                PromotionRequestDisposition::Uncertain,
+                PromotionRowsObservation {
+                    service_row: CorrosionPromotionRowObservation::Mismatch,
+                    container_row: CorrosionPromotionRowObservation::Absent,
+                },
+                UncertaintyDeadline::Open,
+            ),
+            RedeployRowsDecision::Retry
+        );
+        assert!(matches!(
+            classify_redeploy_rows(
+                PromotionRequestDisposition::Uncertain,
+                PromotionRowsObservation {
+                    service_row: CorrosionPromotionRowObservation::Mismatch,
+                    container_row: CorrosionPromotionRowObservation::Absent,
+                },
+                UncertaintyDeadline::Reached,
+            ),
+            RedeployRowsDecision::Failure {
+                failure: CorrosionPromotionFailure::OutcomeUncertain
+            }
+        ));
+        // A flipped service row with a missing container row heals by retry.
+        assert_eq!(
+            classify_redeploy_rows(
+                PromotionRequestDisposition::Accepted,
+                PromotionRowsObservation {
+                    service_row: CorrosionPromotionRowObservation::Exact,
+                    container_row: CorrosionPromotionRowObservation::Absent,
+                },
+                UncertaintyDeadline::Open,
+            ),
+            RedeployRowsDecision::Retry
+        );
     }
 
     #[test]

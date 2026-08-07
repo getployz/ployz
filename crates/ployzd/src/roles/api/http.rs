@@ -5,10 +5,10 @@
 //! environment file rather than an API credential supplied by callers.
 
 mod config;
+mod deploy;
 mod diagnostics;
 mod door;
 mod endpoint_network;
-mod first_deploy;
 mod founding;
 mod join;
 mod mutations;

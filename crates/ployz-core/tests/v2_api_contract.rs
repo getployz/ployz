@@ -314,6 +314,57 @@ fn missing_namespace_refusal_names_the_resolving_primitive() {
 }
 
 #[test]
+fn redeploy_admission_refusals_use_stable_snake_case_wire_names() {
+    let namespace_id = ployz_core::ids::NamespaceRowId::try_new("01J00000000000000000000013")
+        .expect("fixture namespace id");
+    let service_id = ployz_core::ids::ServiceRowId::try_new("01J00000000000000000000014")
+        .expect("fixture service id");
+    let machine_id = ployz_core::ids::MachineRowId::try_new("01J00000000000000000000012")
+        .expect("fixture machine id");
+    assert_eq!(
+        serde_json::to_value(DeployRefusal::DifferentService {
+            namespace_id: namespace_id.clone(),
+            incumbent_service_name: ployz_core::corrosion::CorrosionServiceName::try_new("web")
+                .expect("fixture service name"),
+        })
+        .expect("refusal serializes"),
+        json!({
+            "kind": "different_service",
+            "namespace_id": "01J00000000000000000000013",
+            "incumbent_service_name": "web"
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(DeployRefusal::MultipleServices {
+            namespace_id: namespace_id.clone(),
+            service_ids: vec![service_id],
+        })
+        .expect("refusal serializes"),
+        json!({
+            "kind": "multiple_services",
+            "namespace_id": "01J00000000000000000000013",
+            "service_ids": ["01J00000000000000000000014"]
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(DeployRefusal::RoutesWithoutServices { namespace_id })
+            .expect("refusal serializes"),
+        json!({
+            "kind": "routes_without_services",
+            "namespace_id": "01J00000000000000000000013"
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(DeployRefusal::IncumbentOnAnotherMachine { machine_id })
+            .expect("refusal serializes"),
+        json!({
+            "kind": "incumbent_on_another_machine",
+            "machine_id": "01J00000000000000000000012"
+        })
+    );
+}
+
+#[test]
 fn first_deploy_runtime_debug_redacts_environment_values() {
     let secret = "sentinel-secret-never-in-evidence";
     let mut environment = BTreeMap::new();

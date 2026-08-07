@@ -78,9 +78,25 @@ pub enum DeployExecutionError {
         namespace_ids: String,
     },
     #[error(
-        "namespace {namespace_id} already contains deploy state; this command only deploys the first service"
+        "namespace {namespace_id} is held by service {incumbent_service_name}; deploy that service or run `ployz service remove {incumbent_service_name}` first"
     )]
-    NotFirstDeploy { namespace_id: String },
+    DifferentService {
+        namespace_id: String,
+        incumbent_service_name: String,
+    },
+    #[error(
+        "namespace {namespace_id} holds multiple services ({service_ids}); remove the extras before deploying"
+    )]
+    MultipleServices {
+        namespace_id: String,
+        service_ids: String,
+    },
+    #[error(
+        "namespace {namespace_id} has route bindings but no service; remove the routes before deploying"
+    )]
+    RoutesWithoutServices { namespace_id: String },
+    #[error("the incumbent service is pinned to machine {machine_id}; deploy through that machine")]
+    IncumbentOnAnotherMachine { machine_id: String },
     #[error("the required ployz container bridge is unavailable on the driver")]
     BridgeUnavailable,
 }
@@ -106,9 +122,32 @@ impl From<DeployRefusal> for DeployExecutionError {
                     .collect::<Vec<_>>()
                     .join(", "),
             },
-            DeployRefusal::NotFirstDeploy { namespace_id } => Self::NotFirstDeploy {
+            DeployRefusal::DifferentService {
+                namespace_id,
+                incumbent_service_name,
+            } => Self::DifferentService {
+                namespace_id: namespace_id.to_string(),
+                incumbent_service_name: incumbent_service_name.as_str().to_owned(),
+            },
+            DeployRefusal::MultipleServices {
+                namespace_id,
+                service_ids,
+            } => Self::MultipleServices {
+                namespace_id: namespace_id.to_string(),
+                service_ids: service_ids
+                    .into_iter()
+                    .map(|id| id.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            },
+            DeployRefusal::RoutesWithoutServices { namespace_id } => Self::RoutesWithoutServices {
                 namespace_id: namespace_id.to_string(),
             },
+            DeployRefusal::IncumbentOnAnotherMachine { machine_id } => {
+                Self::IncumbentOnAnotherMachine {
+                    machine_id: machine_id.to_string(),
+                }
+            }
             DeployRefusal::BridgeUnavailable => Self::BridgeUnavailable,
         }
     }
