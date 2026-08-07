@@ -1,4 +1,8 @@
+// Shared with the operation_placement scenario; each test crate compiles the
+// file separately, so liveness is per crate and unused-helper warnings here
+// would be false positives.
 #[path = "operation_deploy/support.rs"]
+#[allow(dead_code)]
 mod support;
 
 use bollard::Docker;
@@ -81,8 +85,11 @@ async fn exercise_operation_deploy(docker: &Docker, cluster: &DindCluster) -> Re
     let [founder, joiner] = cluster.machines() else {
         return Err("operation-deploy proof requires exactly two machines".to_owned());
     };
-    let operator = found_and_join(docker, founder, joiner).await?;
-    let image = start_mutable_registry(docker, founder, joiner).await?;
+    let operator = found_and_join(docker, founder, &[joiner]).await?;
+    let [joined] = operator.joiners.as_slice() else {
+        return Err("operation-deploy proof expects exactly one joined machine".to_owned());
+    };
+    let image = start_mutable_registry(docker, founder, &[joiner]).await?;
     require(
         image.ends_with(":latest") && !image.contains("@sha256:"),
         format!("registry fixture was not a mutable image reference: {image}"),
@@ -103,7 +110,7 @@ async fn exercise_operation_deploy(docker: &Docker, cluster: &DindCluster) -> Re
     let rows = support::wait_for_public_deploy_rows(
         docker,
         founder,
-        &operator.joiner_api_address,
+        &joined.api_address,
         SERVICE,
         &operation_id,
     )
@@ -123,7 +130,7 @@ async fn exercise_operation_deploy(docker: &Docker, cluster: &DindCluster) -> Re
         docker,
         joiner,
         founder,
-        operator.joiner_dns_address,
+        joined.dns_address,
         &hostname,
         rows.container_ip,
         FIRST_BODY,
@@ -144,7 +151,7 @@ async fn exercise_operation_deploy(docker: &Docker, cluster: &DindCluster) -> Re
         docker,
         joiner,
         founder,
-        operator.joiner_dns_address,
+        joined.dns_address,
         &hostname,
         support::RevisionBodies {
             first: FIRST_BODY,
@@ -169,7 +176,7 @@ async fn exercise_operation_deploy(docker: &Docker, cluster: &DindCluster) -> Re
     let second_rows = support::wait_for_public_deploy_rows(
         docker,
         founder,
-        &operator.joiner_api_address,
+        &joined.api_address,
         SERVICE,
         &second_operation_id,
     )
@@ -186,13 +193,13 @@ async fn exercise_operation_deploy(docker: &Docker, cluster: &DindCluster) -> Re
         docker,
         joiner,
         founder,
-        operator.joiner_dns_address,
+        joined.dns_address,
         &hostname,
         second_rows.container_ip,
         SECOND_BODY,
     )
     .await?;
-    support::assert_first_revision_container_is_gone(docker, [founder, joiner], &operation_id)
+    support::assert_first_revision_container_is_gone(docker, &[founder, joiner], &operation_id)
         .await?;
     Ok(())
 }

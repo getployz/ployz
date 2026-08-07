@@ -53,6 +53,16 @@ impl EvidenceIdentity {
     }
 }
 
+/// One replacement container row a prepared deploy intent will write, with
+/// its Docker id. `machine_id` inside the document names the target machine
+/// the container runs on, which may be any accepted roster machine.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct PreparedDeployContainer {
+    pub(super) id: ContainerId,
+    pub(super) document: ContainerDocument,
+}
+
 /// Exact non-secret promotion intent needed to finish one prepared deploy after restart.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -61,8 +71,7 @@ pub(super) struct PreparedPromotion {
     pub(super) exact_namespace_document: String,
     pub(super) service_id: ServiceRowId,
     pub(super) service_document: ServiceDocument,
-    pub(super) container_id: ContainerId,
-    pub(super) container_document: ContainerDocument,
+    pub(super) containers: Vec<PreparedDeployContainer>,
     pub(super) success_result: CorrosionDeployServiceResult,
 }
 
@@ -74,15 +83,16 @@ impl PreparedPromotion {
             return false;
         };
         namespace_document.cluster_id == self.service_document.cluster_id
-            && namespace_document.cluster_id == self.container_document.cluster_id
             && self.service_document.namespace_id == self.namespace_id
             && self.service_document.active_deploy == identity.operation_id
             && self.service_document.operation_id == identity.operation_id
-            && self.container_document.namespace_id == self.namespace_id
-            && self.container_document.service_id == self.service_id
-            && self.container_document.deploy == identity.operation_id
-            && self.container_document.machine_id == identity.driver_machine_id
-            && self.container_document.cluster_id == self.service_document.cluster_id
+            && !self.containers.is_empty()
+            && self.containers.iter().all(|container| {
+                container.document.namespace_id == self.namespace_id
+                    && container.document.service_id == self.service_id
+                    && container.document.deploy == identity.operation_id
+                    && container.document.cluster_id == self.service_document.cluster_id
+            })
             && self.success_result.service_id == self.service_id
             && matches!(
                 &self.success_result.result,
@@ -102,8 +112,7 @@ pub(super) struct PreparedRedeployIntent {
     pub(super) service_id: ServiceRowId,
     pub(super) exact_incumbent_document: String,
     pub(super) service_document: ServiceDocument,
-    pub(super) container_id: ContainerId,
-    pub(super) container_document: ContainerDocument,
+    pub(super) containers: Vec<PreparedDeployContainer>,
     pub(super) health_gate: HealthGatePolicy,
 }
 
@@ -119,11 +128,13 @@ impl PreparedRedeployIntent {
             && self.service_document.active_deploy == identity.operation_id
             && self.service_document.operation_id == identity.operation_id
             && self.service_document.previous_image.as_ref() == Some(&incumbent.image)
-            && self.container_document.cluster_id == self.service_document.cluster_id
-            && self.container_document.namespace_id == self.service_document.namespace_id
-            && self.container_document.service_id == self.service_id
-            && self.container_document.deploy == identity.operation_id
-            && self.container_document.machine_id == identity.driver_machine_id
+            && !self.containers.is_empty()
+            && self.containers.iter().all(|container| {
+                container.document.cluster_id == self.service_document.cluster_id
+                    && container.document.namespace_id == self.service_document.namespace_id
+                    && container.document.service_id == self.service_id
+                    && container.document.deploy == identity.operation_id
+            })
     }
 }
 
@@ -204,25 +215,43 @@ enum EvidenceFrame {
 struct DurableEvidenceEvent {
     sequence: OperationEvidenceSequence,
     timestamp: CorrosionTimestamp,
+    /// The machine the event acts on; `None` when the event names no single
+    /// machine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    machine: Option<MachineRowId>,
     evidence: OperationEvidence,
 }
 
 impl From<OperationEvidenceEvent> for DurableEvidenceEvent {
     fn from(event: OperationEvidenceEvent) -> Self {
+        let OperationEvidenceEvent {
+            sequence,
+            timestamp,
+            machine,
+            evidence,
+        } = event;
         Self {
-            sequence: event.sequence,
-            timestamp: event.timestamp,
-            evidence: event.evidence,
+            sequence,
+            timestamp,
+            machine,
+            evidence,
         }
     }
 }
 
 impl From<DurableEvidenceEvent> for OperationEvidenceEvent {
     fn from(event: DurableEvidenceEvent) -> Self {
+        let DurableEvidenceEvent {
+            sequence,
+            timestamp,
+            machine,
+            evidence,
+        } = event;
         Self {
-            sequence: event.sequence,
-            timestamp: event.timestamp,
-            evidence: event.evidence,
+            sequence,
+            timestamp,
+            machine,
+            evidence,
         }
     }
 }
@@ -259,10 +288,30 @@ pub(super) struct OperationEvidenceLog {
 }
 
 impl OperationEvidenceLog {
-    /// Appends one full frame and exposes it to followers only after `sync_data` succeeds.
+    /// Appends one machine-free frame; the envelope's machine stays `None`.
     pub(super) async fn append(
         &self,
         timestamp: CorrosionTimestamp,
+        evidence: OperationEvidence,
+    ) -> Result<OperationEvidenceEvent, OperationEvidenceError> {
+        self.append_event(timestamp, None, evidence).await
+    }
+
+    /// Appends one frame naming the machine the event acts on.
+    pub(super) async fn append_on(
+        &self,
+        timestamp: CorrosionTimestamp,
+        machine: MachineRowId,
+        evidence: OperationEvidence,
+    ) -> Result<OperationEvidenceEvent, OperationEvidenceError> {
+        self.append_event(timestamp, Some(machine), evidence).await
+    }
+
+    /// Appends one full frame and exposes it to followers only after `sync_data` succeeds.
+    async fn append_event(
+        &self,
+        timestamp: CorrosionTimestamp,
+        machine: Option<MachineRowId>,
         evidence: OperationEvidence,
     ) -> Result<OperationEvidenceEvent, OperationEvidenceError> {
         let mut state = self.state.lock().await;
@@ -283,6 +332,7 @@ impl OperationEvidenceLog {
         let event = OperationEvidenceEvent {
             sequence,
             timestamp,
+            machine,
             evidence,
         };
         append_frame(
@@ -314,6 +364,7 @@ impl OperationEvidenceLog {
         let event = OperationEvidenceEvent {
             sequence,
             timestamp,
+            machine: None,
             evidence: OperationEvidence::PromotionPrepared,
         };
         append_frame(
@@ -347,6 +398,7 @@ impl OperationEvidenceLog {
         let event = OperationEvidenceEvent {
             sequence,
             timestamp,
+            machine: None,
             evidence: OperationEvidence::PromotionPrepared,
         };
         append_frame(
@@ -510,6 +562,7 @@ impl OperationEvidenceDirectory {
             sequence: OperationEvidenceSequence::try_new(1)
                 .map_err(|_| OperationEvidenceError::SequenceExhausted)?,
             timestamp: created_at,
+            machine: None,
             evidence: OperationEvidence::Created,
         };
         let created_line = encode_frame(
@@ -802,6 +855,8 @@ impl LoadedEvidence {
                 OperationEvidence::Created
                 | OperationEvidence::OpClaimWon
                 | OperationEvidence::OpClaimLost { .. }
+                | OperationEvidence::PlacementGathered { .. }
+                | OperationEvidence::PlacementPicked { .. }
                 | OperationEvidence::DebrisSwept { .. }
                 | OperationEvidence::PullingImage
                 | OperationEvidence::ImageResolved
@@ -815,7 +870,8 @@ impl LoadedEvidence {
                 | OperationEvidence::ServiceClaimWon
                 | OperationEvidence::ServiceClaimLost { .. }
                 | OperationEvidence::Drained
-                | OperationEvidence::IncumbentRemoved { .. } => None,
+                | OperationEvidence::IncumbentRemoved { .. }
+                | OperationEvidence::Unrecognized => None,
             });
         let promotion = self.prepared.clone().and_then(|intent| match intent {
             DurablePreparedIntent::FirstDeploy(prepared) => match self.phase {
@@ -844,6 +900,8 @@ impl LoadedEvidence {
                             OperationEvidence::Created
                             | OperationEvidence::OpClaimWon
                             | OperationEvidence::OpClaimLost { .. }
+                            | OperationEvidence::PlacementGathered { .. }
+                            | OperationEvidence::PlacementPicked { .. }
                             | OperationEvidence::DebrisSwept { .. }
                             | OperationEvidence::PullingImage
                             | OperationEvidence::ImageResolved
@@ -856,7 +914,8 @@ impl LoadedEvidence {
                             | OperationEvidence::RowsCommitted
                             | OperationEvidence::Drained
                             | OperationEvidence::IncumbentRemoved { .. }
-                            | OperationEvidence::Terminal { .. } => None,
+                            | OperationEvidence::Terminal { .. }
+                            | OperationEvidence::Unrecognized => None,
                         })
                 }
                 EvidencePhase::Created | EvidencePhase::Executing | EvidencePhase::Terminal => None,
@@ -891,9 +950,16 @@ fn advance_phase(
             EvidencePhase::Created | EvidencePhase::Executing,
             OperationEvidence::OpClaimWon | OperationEvidence::OpClaimLost { .. },
         ) => Ok(EvidencePhase::Executing),
+        // The gather and pick run at admission, before the op claim.
+        (
+            EvidencePhase::Created,
+            OperationEvidence::PlacementGathered { .. } | OperationEvidence::PlacementPicked { .. },
+        ) => Ok(EvidencePhase::Created),
         (
             EvidencePhase::Executing,
-            OperationEvidence::DebrisSwept { .. }
+            OperationEvidence::PlacementGathered { .. }
+            | OperationEvidence::PlacementPicked { .. }
+            | OperationEvidence::DebrisSwept { .. }
             | OperationEvidence::PullingImage
             | OperationEvidence::ImageResolved
             | OperationEvidence::ContainerCreated { .. }
@@ -902,6 +968,17 @@ fn advance_phase(
             | OperationEvidence::IncumbentStopped { .. }
             | OperationEvidence::IncumbentRestarted { .. },
         ) => Ok(EvidencePhase::Executing),
+        // Evidence written by a newer daemon is informational to this
+        // reader: it never advances or corrupts the recovered phase.
+        (
+            EvidencePhase::Created
+            | EvidencePhase::Executing
+            | EvidencePhase::PromotionPrepared(_)
+            | EvidencePhase::RowsCommitted(_)
+            | EvidencePhase::ClaimDecided
+            | EvidencePhase::Terminal,
+            OperationEvidence::Unrecognized,
+        ) => Ok(phase),
         (
             EvidencePhase::RowsCommitted(_),
             OperationEvidence::Drained
@@ -933,6 +1010,8 @@ fn advance_phase(
             OperationEvidence::Created
             | OperationEvidence::OpClaimWon
             | OperationEvidence::OpClaimLost { .. }
+            | OperationEvidence::PlacementGathered { .. }
+            | OperationEvidence::PlacementPicked { .. }
             | OperationEvidence::DebrisSwept { .. }
             | OperationEvidence::PullingImage
             | OperationEvidence::ImageResolved
@@ -1092,8 +1171,10 @@ pub(super) fn prepared_promotion_fixture() -> PreparedPromotion {
         .to_string(),
         service_id: service_id.clone(),
         service_document,
-        container_id: ContainerId::try_new("docker-container-1").expect("container id"),
-        container_document,
+        containers: vec![PreparedDeployContainer {
+            id: ContainerId::try_new("docker-container-1").expect("container id"),
+            document: container_document,
+        }],
         success_result: CorrosionDeployServiceResult::completed(service_id),
     }
 }
@@ -1154,8 +1235,10 @@ pub(super) fn prepared_redeploy_intent_fixture() -> PreparedRedeployIntent {
         service_id,
         exact_incumbent_document,
         service_document,
-        container_id: ContainerId::try_new("docker-container-2").expect("container id"),
-        container_document,
+        containers: vec![PreparedDeployContainer {
+            id: ContainerId::try_new("docker-container-2").expect("container id"),
+            document: container_document,
+        }],
         health_gate: HealthGatePolicy::Enforce,
     }
 }

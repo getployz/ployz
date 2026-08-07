@@ -48,7 +48,7 @@ runner, the CLI is in one operator's hand.
 | `namespaces` | operator | namespace create/rm | `NamespaceRowId` | namespace rm |
 | `services` | operator | deploy promotion | `ServiceRowId` | superseding deploy |
 | `route_bindings` | operator | route attach/detach | `RouteBindingRowId` | route rm |
-| `containers` | machine | the machine running the container | Docker container id | owning machine; `machine rm` |
+| `containers` | machine | the deploy driver, naming the hosting machine in `machine_id` | Docker container id | deploy driver sweep; `machine rm` keys on `machine_id` |
 | `machine_status` | machine | the machine itself | `MachineRowId` | `machine rm` |
 | `operations` | machine | the executing machine | `OperationRowId` | never in v1 (refound compacts) |
 | `cert_holdings` | machine | the holding gateway | `<MachineRowId>:<hostname>` | owning gateway's tick; `machine rm` |

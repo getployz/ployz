@@ -1,29 +1,38 @@
 use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::num::NonZeroU16;
 use std::str::FromStr;
 
 use ployz_core::corrosion::{
     AcceptedRosterPrincipal, CorrosionDocumentVersion, CorrosionNamespaceName, CorrosionTimestamp,
-    MachineLoadBand, MachineStatusDocument, MachineTransport, OperationInitiator,
-    OperatorWriteProvenance, PeerTransport, Principal, SourcePrincipalResolutionError,
+    HostPortBinding, HostPortBindings, HostPortProtocol, MachineLoadBand, MachineStatusDocument,
+    MachineTransport, OperationInitiator, OperatorWriteProvenance, PeerTransport, Principal,
+    ServicePlacement, ServiceReplicaCount, SourcePrincipalResolutionError,
     resolve_source_principal,
 };
 use ployz_core::deploy::{
     ContainerRuntimeSpec, EnvName, EnvValue, ImageReference, ServiceEnvironment,
 };
 use ployz_core::ids::{ClusterId, MachineRowId, OperationRowId, PeerId, ServiceRowId, TokenId};
+use ployz_core::machine::MachineLifecycle;
 use ployz_core::network::{MachineEndpointSubnet, WireGuardPublicKey};
+use ployz_core::placement::{
+    PlacementElimination, PlacementEliminationReason, PlacementMachine, PlacementPick,
+    PlacementRefusal, PlacementShortfall,
+};
 use ployz_core::{
-    API_MAJOR, ApiFeature, ApiRefusal, ApiVersion, CorrosionLogsTailLines, DEPLOY_ROUTE,
-    DeployRefusal, DeployRequest, FOUNDING_ROUTE, HandshakeObservation,
-    HandshakeObservationOutcome, HealthGatePolicy, KNOWN_API_FEATURES, KnownApiFeature,
-    LENS_SNAPSHOT_EVENT, LENS_STATE_EVENT, LENS_TERMINAL_EVENT, LensCollection, LensSnapshot,
-    LensWatchEvent, MachineStatusLensRow, MachineStatusLensRowIdentityError,
-    NAMESPACE_CREATE_ROUTE, NAMESPACE_REMOVE_ROUTE, OperationEvidence, OperationEvidenceEvent,
-    OperationEvidenceSequence, OperationWatchEvent, ServiceLogLine, ServiceLogStream,
-    ServiceLogsFollowEvent, ServiceLogsRefusal, V2Method, V2Route, VERSION_ROUTE, lens_route,
-    lens_watch_route, operation_route, operation_watch_route, service_logs_follow_route,
-    service_logs_tail_route,
+    API_MAJOR, AnomalousSilenceReason, ApiFeature, ApiRefusal, ApiVersion, CorrosionLogsTailLines,
+    DEPLOY_EXECUTE_ROUTE, DEPLOY_ROUTE, DeployExecuteOutcome, DeployExecuteRequest, DeployRefusal,
+    DeployRequest, DeployVerb, FOUNDING_ROUTE, HandshakeObservation, HandshakeObservationOutcome,
+    HealthGatePolicy, KNOWN_API_FEATURES, KnownApiFeature, LENS_SNAPSHOT_EVENT, LENS_STATE_EVENT,
+    LENS_TERMINAL_EVENT, LensCollection, LensSnapshot, LensWatchEvent, MachineStatusLensRow,
+    MachineStatusLensRowIdentityError, NAMESPACE_CREATE_ROUTE, NAMESPACE_REMOVE_ROUTE,
+    OperationEvidence, OperationEvidenceEvent, OperationEvidenceSequence, OperationWatchEvent,
+    PLACEMENT_BID_ROUTE, PlacementBid, RequestedPins, RequestedPlacement,
+    ServiceContainerObservation, ServiceLogLine, ServiceLogStream, ServiceLogsFollowEvent,
+    ServiceLogsRefusal, ServiceLogsRequest, SilenceClassification, SilentMachine, V2Method,
+    V2Route, VERSION_ROUTE, lens_route, lens_watch_route, operation_route, operation_watch_route,
+    service_logs_follow_route, service_logs_tail_route,
 };
 use serde_json::json;
 
@@ -319,8 +328,6 @@ fn redeploy_admission_refusals_use_stable_snake_case_wire_names() {
         .expect("fixture namespace id");
     let service_id = ployz_core::ids::ServiceRowId::try_new("01J00000000000000000000014")
         .expect("fixture service id");
-    let machine_id = ployz_core::ids::MachineRowId::try_new("01J00000000000000000000012")
-        .expect("fixture machine id");
     assert_eq!(
         serde_json::to_value(DeployRefusal::DifferentService {
             namespace_id: namespace_id.clone(),
@@ -354,13 +361,104 @@ fn redeploy_admission_refusals_use_stable_snake_case_wire_names() {
             "namespace_id": "01J00000000000000000000013"
         })
     );
+}
+
+#[test]
+fn placement_refusals_name_the_blocking_machines_and_resolvers() {
+    let machine_id = machine_id(MACHINE_A);
+    let machine_a = PlacementMachine {
+        machine_id: machine_id.clone(),
+        machine_name: ployz_core::machine::MachineName::try_new("edge-a")
+            .expect("fixture machine name"),
+    };
+    let machine_b = PlacementMachine {
+        machine_id: ployz_core::ids::MachineRowId::try_new(MACHINE_B).expect("fixture machine id"),
+        machine_name: ployz_core::machine::MachineName::try_new("edge-b")
+            .expect("fixture machine name"),
+    };
+    let volume = ployz_core::deploy::VolumeName::try_new("data").expect("fixture volume name");
     assert_eq!(
-        serde_json::to_value(DeployRefusal::IncumbentOnAnotherMachine { machine_id })
-            .expect("refusal serializes"),
-        json!({
-            "kind": "incumbent_on_another_machine",
-            "machine_id": "01J00000000000000000000012"
+        serde_json::to_value(DeployRefusal::Placement {
+            refusal: PlacementRefusal::NoEligibleMachines {
+                eliminations: vec![PlacementElimination {
+                    machine_id: machine_id.clone(),
+                    machine_name: machine_a.machine_name.clone(),
+                    reason: PlacementEliminationReason::Draining,
+                }],
+            },
         })
+        .expect("refusal serializes"),
+        json!({
+            "kind": "placement",
+            "refusal": {
+                "kind": "no_eligible_machines",
+                "eliminations": [{
+                    "machine_id": MACHINE_A,
+                    "machine_name": "edge-a",
+                    "reason": { "kind": "draining" }
+                }]
+            }
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(DeployRefusal::Placement {
+            refusal: PlacementRefusal::VolumeHolderConflict {
+                volume: volume.clone(),
+                holders: vec![machine_a.clone(), machine_b.clone()],
+            },
+        })
+        .expect("refusal serializes"),
+        json!({
+            "kind": "placement",
+            "refusal": {
+                "kind": "volume_holder_conflict",
+                "volume": "data",
+                "holders": [
+                    { "machine_id": MACHINE_A, "machine_name": "edge-a" },
+                    { "machine_id": MACHINE_B, "machine_name": "edge-b" }
+                ]
+            }
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(DeployRefusal::Placement {
+            refusal: PlacementRefusal::DarkVolumeHolder {
+                machines: vec![machine_b],
+            },
+        })
+        .expect("refusal serializes"),
+        json!({
+            "kind": "placement",
+            "refusal": {
+                "kind": "dark_volume_holder",
+                "machines": [{ "machine_id": MACHINE_B, "machine_name": "edge-b" }]
+            }
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(DeployRefusal::Placement {
+            refusal: PlacementRefusal::VolumeReplicaLimit {
+                requested: ployz_core::corrosion::ServiceReplicaCount::try_new(3)
+                    .expect("fixture replica count"),
+            },
+        })
+        .expect("refusal serializes"),
+        json!({
+            "kind": "placement",
+            "refusal": { "kind": "volume_replica_limit", "requested": 3 }
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(DeployRefusal::UnknownPinnedMachine {
+            machine_name: ployz_core::machine::MachineName::try_new("edge-a")
+                .expect("fixture machine name"),
+        })
+        .expect("refusal serializes"),
+        json!({ "kind": "unknown_pinned_machine", "machine_name": "edge-a" })
+    );
+    assert_eq!(
+        serde_json::to_value(DeployRefusal::ReplicasOnGlobalService).expect("refusal serializes"),
+        json!({ "kind": "replicas_on_global_service" })
     );
 }
 
@@ -383,6 +481,8 @@ fn first_deploy_runtime_debug_redacts_environment_values() {
             .expect("fixture image reference"),
         runtime,
         health_gate: HealthGatePolicy::Enforce,
+        placement: None,
+        machines: None,
     };
 
     assert!(!format!("{request:?}").contains(secret));
@@ -411,6 +511,7 @@ fn operation_events_require_positive_stable_sequences_and_fixed_timestamps() {
     let event = OperationEvidenceEvent {
         sequence: OperationEvidenceSequence::try_new(1).expect("positive sequence"),
         timestamp: CorrosionTimestamp::try_new("2026-08-05T12:34:56Z").expect("fixture timestamp"),
+        machine: None,
         evidence: OperationEvidence::Created,
     };
     let envelope = OperationWatchEvent::Evidence { event };
@@ -480,6 +581,69 @@ fn log_follow_gap_is_explicit_and_tail_counts_are_bounded() {
     assert!(CorrosionLogsTailLines::try_new(0).is_err());
     assert!(CorrosionLogsTailLines::try_new(CorrosionLogsTailLines::MAX).is_ok());
     assert!(CorrosionLogsTailLines::try_new(CorrosionLogsTailLines::MAX + 1).is_err());
+}
+
+#[test]
+fn log_requests_carry_an_optional_machine_selector_and_replay_free_reconnects() {
+    let machine_name = ployz_core::machine::MachineName::try_new("edge-a").expect("machine name");
+    let selected = ServiceLogsRequest {
+        tail_lines: Some(CorrosionLogsTailLines::try_new(100).expect("tail lines")),
+        machine: Some(machine_name.clone()),
+    };
+    assert_eq!(
+        serde_json::to_value(&selected).expect("request serializes"),
+        json!({ "tail_lines": 100, "machine": "edge-a" })
+    );
+    let encoded = serde_json::to_vec(&selected).expect("request encodes");
+    assert_eq!(
+        serde_json::from_slice::<ServiceLogsRequest>(&encoded).expect("request round-trips"),
+        selected
+    );
+
+    let reconnect = ServiceLogsRequest {
+        tail_lines: None,
+        machine: Some(machine_name.clone()),
+    };
+    assert_eq!(
+        serde_json::to_value(&reconnect).expect("reconnect serializes"),
+        json!({ "machine": "edge-a" })
+    );
+    let pre_selector = serde_json::from_value::<ServiceLogsRequest>(json!({ "tail_lines": 5 }))
+        .expect("pre-selector request decodes");
+    assert_eq!(pre_selector.machine, None);
+
+    let selector_required = ServiceLogsRefusal::MachineSelectorRequired {
+        machines: vec![machine_name.clone(), machine_name.clone()],
+    };
+    assert_eq!(
+        serde_json::to_value(&selector_required).expect("refusal serializes"),
+        json!({ "kind": "machine_selector_required", "machines": ["edge-a", "edge-a"] })
+    );
+    let encoded = serde_json::to_vec(&selector_required).expect("refusal encodes");
+    assert_eq!(
+        serde_json::from_slice::<ServiceLogsRefusal>(&encoded).expect("refusal round-trips"),
+        selector_required
+    );
+
+    let remote_owner = ServiceLogsRefusal::RemoteOwner {
+        machine_id: machine_id(MACHINE_A),
+        machine_name: Some(machine_name),
+    };
+    assert_eq!(
+        serde_json::to_value(&remote_owner).expect("owner refusal serializes"),
+        json!({ "kind": "remote_owner", "machine_id": MACHINE_A, "machine_name": "edge-a" })
+    );
+    let unnamed = serde_json::from_value::<ServiceLogsRefusal>(
+        json!({ "kind": "remote_owner", "machine_id": MACHINE_A }),
+    )
+    .expect("pre-name owner refusal decodes");
+    assert_eq!(
+        unnamed,
+        ServiceLogsRefusal::RemoteOwner {
+            machine_id: machine_id(MACHINE_A),
+            machine_name: None,
+        }
+    );
 }
 
 #[test]
@@ -588,6 +752,404 @@ fn deploy_route_and_feature_use_the_generalized_wire_names() {
         serde_json::to_value(KnownApiFeature::Deploy).expect("feature serializes"),
         json!("v2.deploy")
     );
+}
+
+#[test]
+fn placement_routes_parse_build_and_authorize_only_machines() {
+    let peer = Principal::Peer {
+        peer_id: peer_id(PEER_A),
+    };
+    let machine = Principal::Machine {
+        machine_id: machine_id(MACHINE_A),
+    };
+    let token = Principal::ApiToken {
+        token_id: TokenId::try_new(PEER_B).expect("fixture token id"),
+    };
+
+    for (route, path) in [
+        (V2Route::PlacementBid, PLACEMENT_BID_ROUTE),
+        (V2Route::DeployExecute, DEPLOY_EXECUTE_ROUTE),
+    ] {
+        assert_eq!(route.path(), path);
+        assert_eq!(V2Route::parse(path), Some(route.clone()));
+        assert_eq!(route.method(), V2Method::Post);
+        assert_eq!(route.feature(), KnownApiFeature::Placement);
+        assert!(route.accepts_principal(&machine));
+        assert!(
+            !route.accepts_principal(&peer),
+            "bids and verbs are machine authority; a peer never answers or commands them"
+        );
+        assert!(!route.accepts_principal(&token));
+    }
+    assert_eq!(PLACEMENT_BID_ROUTE, "/deploy/bid");
+    assert_eq!(DEPLOY_EXECUTE_ROUTE, "/deploy/execute");
+    assert_eq!(V2Route::parse("/deploy/bid/extra"), None);
+    assert_eq!(V2Route::parse("/deploy/execute/extra"), None);
+    assert!(KNOWN_API_FEATURES.contains(&KnownApiFeature::Placement));
+    assert_eq!(
+        serde_json::to_value(KnownApiFeature::Placement).expect("feature serializes"),
+        json!("v2.placement")
+    );
+}
+
+#[test]
+fn requested_placement_makes_host_ports_unrepresentable_off_global() {
+    let replicated: RequestedPlacement = serde_json::from_value(json!({
+        "mode": "replicated",
+        "replicas": 2
+    }))
+    .expect("replicated placement deserializes");
+    assert_eq!(
+        replicated,
+        RequestedPlacement::Replicated {
+            replicas: Some(ServiceReplicaCount::try_new(2).expect("fixture replica count")),
+        }
+    );
+    let mode_only: RequestedPlacement = serde_json::from_value(json!({ "mode": "replicated" }))
+        .expect("count-free replicated placement deserializes");
+    assert_eq!(
+        mode_only,
+        RequestedPlacement::Replicated { replicas: None },
+        "a bare mode change keeps the incumbent's replica count"
+    );
+    let count_only: RequestedPlacement = serde_json::from_value(json!({
+        "mode": "replicas",
+        "replicas": 4
+    }))
+    .expect("mode-preserving replica intent deserializes");
+    assert_eq!(
+        count_only,
+        RequestedPlacement::Replicas {
+            replicas: ServiceReplicaCount::try_new(4).expect("fixture replica count"),
+        }
+    );
+    assert!(
+        serde_json::from_value::<RequestedPlacement>(json!({
+            "mode": "replicated",
+            "replicas": 1,
+            "host_ports": [{ "host_port": 53, "container_port": 53, "protocol": "udp" }]
+        }))
+        .is_err(),
+        "a replicated placement can never carry host ports"
+    );
+
+    let global: RequestedPlacement = serde_json::from_value(json!({
+        "mode": "global",
+        "host_ports": [{ "host_port": 53, "container_port": 5353, "protocol": "udp" }]
+    }))
+    .expect("global placement deserializes");
+    let RequestedPlacement::Global { host_ports } = &global else {
+        panic!("global placement expected");
+    };
+    assert_eq!(host_ports.len(), 1);
+
+    let portless: RequestedPlacement =
+        serde_json::from_value(json!({ "mode": "global" })).expect("portless global deserializes");
+    assert_eq!(
+        portless,
+        RequestedPlacement::Global {
+            host_ports: HostPortBindings::default(),
+        }
+    );
+}
+
+#[test]
+fn host_port_sets_refuse_duplicates_per_protocol_and_allow_tcp_udp_reuse() {
+    let port = |value: u16| NonZeroU16::new(value).expect("fixture port");
+    let binding = |host: u16, protocol: HostPortProtocol| HostPortBinding {
+        host_port: port(host),
+        container_port: port(8080),
+        protocol,
+    };
+
+    assert!(
+        HostPortBindings::try_new([
+            binding(53, HostPortProtocol::Tcp),
+            binding(53, HostPortProtocol::Udp),
+        ])
+        .is_ok(),
+        "one host port may forward both TCP and UDP"
+    );
+    assert!(
+        serde_json::from_value::<HostPortBindings>(json!([
+            { "host_port": 53, "container_port": 8080, "protocol": "tcp" },
+            { "host_port": 53, "container_port": 9090, "protocol": "tcp" }
+        ]))
+        .is_err(),
+        "the same host port and protocol can never bind twice"
+    );
+}
+
+#[test]
+fn requested_pins_require_at_least_one_machine_name_or_the_any_clearer() {
+    let pins: RequestedPins = serde_json::from_value(json!({
+        "kind": "machines",
+        "names": ["edge-a", "edge-b"]
+    }))
+    .expect("named pins deserialize");
+    let RequestedPins::Machines { names } = &pins else {
+        panic!("named pins expected");
+    };
+    assert_eq!(names.iter().count(), 2);
+    assert!(
+        serde_json::from_value::<RequestedPins>(json!({ "kind": "machines", "names": [] }))
+            .is_err(),
+        "an empty pin set is expressed as `any`, never an empty list"
+    );
+    assert_eq!(
+        serde_json::from_value::<RequestedPins>(json!({ "kind": "any" }))
+            .expect("any deserializes"),
+        RequestedPins::Any
+    );
+}
+
+#[test]
+fn deploy_requests_without_placement_or_pins_inherit_by_omission() {
+    let request: DeployRequest = serde_json::from_value(json!({
+        "namespace_name": "payments",
+        "service_name": "api",
+        "image": "registry.example/api:latest",
+        "runtime": serde_json::to_value(ContainerRuntimeSpec::image_defaults())
+            .expect("runtime serializes"),
+    }))
+    .expect("request without placement deserializes");
+    assert_eq!(request.placement, None);
+    assert_eq!(request.machines, None);
+    let serialized = serde_json::to_value(&request).expect("request serializes");
+    assert_eq!(serialized.get("placement"), None);
+    assert_eq!(serialized.get("machines"), None);
+}
+
+#[test]
+fn durable_global_placement_reads_rows_written_before_host_ports() {
+    let placement: ServicePlacement =
+        serde_json::from_value(json!({ "mode": "global" })).expect("portless row deserializes");
+    assert_eq!(
+        placement,
+        ServicePlacement::Global {
+            host_ports: HostPortBindings::default(),
+        }
+    );
+    assert_eq!(
+        serde_json::to_value(&placement).expect("placement serializes"),
+        json!({ "mode": "global" }),
+        "an empty port set keeps the pre-placement wire form"
+    );
+}
+
+#[test]
+fn machine_load_bands_order_idle_before_normal_before_hot() {
+    assert!(MachineLoadBand::Idle < MachineLoadBand::Normal);
+    assert!(MachineLoadBand::Normal < MachineLoadBand::Hot);
+}
+
+#[test]
+fn unknown_evidence_kinds_deserialize_as_unrecognized_on_older_readers() {
+    let unknown: OperationEvidence = serde_json::from_value(json!({
+        "kind": "future_evidence_kind",
+        "detail": { "anything": true }
+    }))
+    .expect("unknown evidence kind deserializes");
+    assert_eq!(unknown, OperationEvidence::Unrecognized);
+    assert_eq!(
+        serde_json::to_value(OperationEvidence::Unrecognized).expect("catch-all serializes"),
+        json!({ "kind": "unrecognized" })
+    );
+}
+
+#[test]
+fn the_event_envelope_carries_the_machine_and_defaults_it_to_none() {
+    let event: OperationEvidenceEvent = serde_json::from_value(json!({
+        "sequence": 1,
+        "timestamp": "2026-08-05T12:34:56Z",
+        "evidence": { "kind": "container_created", "container_id": "c0ffee" }
+    }))
+    .expect("machine-free event deserializes");
+    assert_eq!(event.machine, None);
+
+    let placed: OperationEvidenceEvent = serde_json::from_value(json!({
+        "sequence": 2,
+        "timestamp": "2026-08-05T12:34:56Z",
+        "machine": MACHINE_A,
+        "evidence": { "kind": "container_created", "container_id": "c0ffee" }
+    }))
+    .expect("machine-scoped event deserializes");
+    assert_eq!(placed.machine, Some(machine_id(MACHINE_A)));
+    let encoded = serde_json::to_value(&placed).expect("event serializes");
+    assert_eq!(
+        serde_json::from_value::<OperationEvidenceEvent>(encoded).expect("event round-trips"),
+        placed
+    );
+}
+
+#[test]
+fn placement_evidence_replays_the_gather_and_the_pick() {
+    let bid = PlacementBid {
+        machine_id: machine_id(MACHINE_A),
+        machine_name: ployz_core::machine::MachineName::try_new("edge-a")
+            .expect("fixture machine name"),
+        architecture: "x86_64".to_owned(),
+        lifecycle: MachineLifecycle::Active,
+        free_disk_bytes: 10 * 1024 * 1024 * 1024,
+        free_memory_bytes: 2 * 1024 * 1024 * 1024,
+        load: MachineLoadBand::Idle,
+        total_container_count: 3,
+        service_containers: vec![ServiceContainerObservation {
+            container_id: ployz_core::ids::ContainerId::try_new("c0ffee")
+                .expect("fixture container id"),
+            service_id: service_id(MACHINE_B),
+            deploy: operation_id(MACHINE_B),
+            named_volumes: std::collections::BTreeSet::new(),
+        }],
+        volumes_held: std::collections::BTreeSet::new(),
+    };
+    let gathered = OperationEvidence::PlacementGathered {
+        bids: vec![bid],
+        silent: vec![
+            SilentMachine {
+                machine_id: machine_id(MACHINE_B),
+                classification: SilenceClassification::ExpectedSilent {
+                    handshake_age_seconds: 2460,
+                },
+            },
+            SilentMachine {
+                machine_id: machine_id(MACHINE_A),
+                classification: SilenceClassification::AnomalousSilent {
+                    reason: AnomalousSilenceReason::TimedOut,
+                },
+            },
+        ],
+    };
+    let encoded = serde_json::to_value(&gathered).expect("gathered evidence serializes");
+    assert_eq!(
+        serde_json::from_value::<OperationEvidence>(encoded).expect("evidence round-trips"),
+        gathered
+    );
+
+    let picked = OperationEvidence::PlacementPicked {
+        pick: PlacementPick {
+            targets: vec![machine_id(MACHINE_A), machine_id(MACHINE_A)],
+            eliminations: vec![PlacementElimination {
+                machine_id: machine_id(MACHINE_B),
+                machine_name: ployz_core::machine::MachineName::try_new("edge-b")
+                    .expect("fixture machine name"),
+                reason: PlacementEliminationReason::FreeDiskBelowFloor {
+                    free_disk_bytes: 512,
+                },
+            }],
+            shortfall: Some(PlacementShortfall {
+                requested: ServiceReplicaCount::try_new(2).expect("fixture replica count"),
+                placed: 1,
+            }),
+        },
+    };
+    let encoded = serde_json::to_value(&picked).expect("picked evidence serializes");
+    assert_eq!(
+        serde_json::from_value::<OperationEvidence>(encoded).expect("evidence round-trips"),
+        picked
+    );
+}
+
+#[test]
+fn deploy_execute_verbs_bind_their_operation_and_service_identity() {
+    let request = DeployExecuteRequest {
+        operation_id: operation_id(MACHINE_A),
+        namespace_id: ployz_core::ids::NamespaceRowId::try_new("01J00000000000000000000013")
+            .expect("fixture namespace id"),
+        service_id: service_id(MACHINE_B),
+        verb: DeployVerb::StartContainer {
+            container_id: ployz_core::ids::ContainerId::try_new("c0ffee")
+                .expect("fixture container id"),
+        },
+    };
+    let encoded = serde_json::to_value(&request).expect("verb request serializes");
+    assert_eq!(
+        encoded,
+        json!({
+            "operation_id": MACHINE_A,
+            "namespace_id": "01J00000000000000000000013",
+            "service_id": MACHINE_B,
+            "verb": { "kind": "start_container", "container_id": "c0ffee" }
+        })
+    );
+    assert_eq!(
+        serde_json::from_value::<DeployExecuteRequest>(encoded).expect("request round-trips"),
+        request
+    );
+
+    assert_eq!(
+        serde_json::to_value(DeployExecuteOutcome::ClaimNotYetVisible).expect("outcome serializes"),
+        json!({ "kind": "claim_not_yet_visible" }),
+        "replication lag is its own outcome, distinct from every refusal"
+    );
+    assert_eq!(
+        serde_json::to_value(DeployExecuteOutcome::CallerNotDriver {
+            driver: machine_id(MACHINE_A),
+        })
+        .expect("outcome serializes"),
+        json!({ "kind": "caller_not_driver", "driver": MACHINE_A })
+    );
+}
+
+#[test]
+fn create_container_verb_host_ports_default_empty_and_round_trip() {
+    let bare = json!({
+        "kind": "create_container",
+        "image": "registry.example/api@sha256:2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
+        "runtime": serde_json::to_value(ContainerRuntimeSpec::image_defaults())
+            .expect("runtime serializes"),
+        "namespace_name": "payments",
+    });
+    let verb: DeployVerb =
+        serde_json::from_value(bare).expect("verb without host_ports deserializes");
+    let DeployVerb::CreateContainer { host_ports, .. } = &verb else {
+        panic!("create verb expected");
+    };
+    assert!(host_ports.is_empty());
+
+    let published = DeployVerb::CreateContainer {
+        image: ImageReference::try_new("registry.example/api@sha256:2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae")
+            .expect("fixture image reference"),
+        runtime: Box::new(ContainerRuntimeSpec::image_defaults()),
+        namespace_name: ployz_core::corrosion::CorrosionNamespaceName::try_new("payments")
+            .expect("fixture namespace name"),
+        host_ports: ployz_core::corrosion::HostPortBindings::try_new([
+            ployz_core::corrosion::HostPortBinding {
+                protocol: ployz_core::corrosion::HostPortProtocol::Tcp,
+                host_port: std::num::NonZeroU16::new(8443).expect("port"),
+                container_port: std::num::NonZeroU16::new(443).expect("port"),
+            },
+        ])
+        .expect("fixture host ports"),
+    };
+    let encoded = serde_json::to_value(&published).expect("verb serializes");
+    assert_eq!(
+        encoded
+            .get("host_ports")
+            .expect("published ports serialize")
+            .as_array()
+            .expect("port list")
+            .len(),
+        1
+    );
+    assert_eq!(
+        serde_json::from_value::<DeployVerb>(encoded).expect("verb round-trips"),
+        published
+    );
+}
+
+#[test]
+fn deploy_verb_pull_requests_never_debug_print_registry_secrets() {
+    let secret = "sentinel-registry-secret";
+    let verb = DeployVerb::PullImage {
+        image: ImageReference::try_new("registry.example/api@sha256:2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae")
+            .expect("fixture image reference"),
+        credential: Some(
+            ployz_core::image::RegistryCredential::try_basic("robot", secret)
+                .expect("fixture credential"),
+        ),
+    };
+    assert!(!format!("{verb:?}").contains(secret));
 }
 
 #[test]

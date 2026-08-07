@@ -350,19 +350,33 @@ async fn bind_api_listener(
     )
     .map_err(ApiServerError::OperationHttpClient)?;
     let deploy = if let Some(runner) = container_runner.as_ref() {
+        let mesh_client = super::deploy_dispatch::mesh_http_client()
+            .map_err(ApiServerError::OperationHttpClient)?;
         let driver = super::deploy::DeployDriver::new(
             config.cluster_id().clone(),
             config.local_machine_id().clone(),
-            operations.evidence_directory(),
-            Arc::new(
-                super::promotion_store::CorrosionPreparedPromotionStore::new(
+            super::deploy::DeployDriverSeams {
+                evidence: operations.evidence_directory(),
+                store: Arc::new(
+                    super::promotion_store::CorrosionPreparedPromotionStore::new(
+                        corrosion.clone(),
+                        config.cluster_id().clone(),
+                    ),
+                ),
+                operations: Arc::new(operations.store()),
+                runtime: Arc::clone(runner) as Arc<dyn super::deploy_runtime::DeployRuntime>,
+                mesh: Arc::new(super::placement_gather::CorrosionPlacementMesh::new(
                     corrosion.clone(),
                     config.cluster_id().clone(),
-                ),
-            ),
-            Arc::new(operations.store()),
-            Arc::clone(runner) as Arc<dyn super::deploy_runtime::DeployRuntime>,
-            Arc::new(super::deploy::SystemDeployClock),
+                    config.keeper_control_socket_path().to_path_buf(),
+                    listen_addr.port(),
+                    mesh_client.clone(),
+                    Arc::clone(runner),
+                )),
+                verbs: Arc::new(super::deploy_dispatch::MeshVerbClient::new(mesh_client)),
+                api_port: listen_addr.port(),
+                clock: Arc::new(super::deploy::SystemDeployClock),
+            },
         );
         operations = operations.with_promotion_resumer(Arc::new(driver.clone()));
         Some(driver)

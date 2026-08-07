@@ -456,12 +456,14 @@ pub(super) async fn handle_deploy(
         },
         Ok(Err(refusal)) => {
             let status = match refusal {
-                DeployRefusal::NamespaceNotFound { .. } => StatusCode::NOT_FOUND,
+                DeployRefusal::NamespaceNotFound { .. }
+                | DeployRefusal::UnknownPinnedMachine { .. } => StatusCode::NOT_FOUND,
                 DeployRefusal::NamespaceAmbiguous { .. }
                 | DeployRefusal::DifferentService { .. }
                 | DeployRefusal::MultipleServices { .. }
                 | DeployRefusal::RoutesWithoutServices { .. }
-                | DeployRefusal::IncumbentOnAnotherMachine { .. } => StatusCode::CONFLICT,
+                | DeployRefusal::Placement { .. }
+                | DeployRefusal::ReplicasOnGlobalService => StatusCode::CONFLICT,
                 DeployRefusal::BridgeUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             };
             super::mutations::typed_response(status, &refusal)
@@ -1262,6 +1264,7 @@ mod tests {
             event: OperationEvidenceEvent {
                 sequence: OperationEvidenceSequence::try_new(1).expect("sequence"),
                 timestamp: timestamp(),
+                machine: None,
                 evidence,
             },
         })

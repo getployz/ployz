@@ -525,6 +525,13 @@ impl ApiService {
                 super::operation_http::handle_watch(self, operation_id, &principal, shutdown).await
             }
             V2Route::Deploy => super::operation_http::handle_deploy(self, principal, request).await,
+            V2Route::PlacementBid => {
+                super::placement_http::handle_placement_bid(self, request).await
+            }
+            V2Route::DeployExecute => {
+                super::placement_http::handle_deploy_execute(self, principal, request, shutdown)
+                    .await
+            }
             V2Route::ServiceLogsTail(service_id) => {
                 super::service_logs::handle_tail(self, service_id, request, shutdown).await
             }

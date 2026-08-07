@@ -1,15 +1,20 @@
 //! Operation listing and durable evidence attachment.
 
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::time::{Duration, Instant};
 
 use ployz_core::corrosion::{
     CorrosionDeployOutcome, CorrosionDeployState, CorrosionOperation, CorrosionOperationState,
-    CorrosionTimestamp, OperationDocument,
+    CorrosionTimestamp, MachineLoadBand, OperationDocument,
 };
+use ployz_core::ids::MachineRowId;
+use ployz_core::machine::MachineName;
+use ployz_core::placement::{PlacementElimination, PlacementEliminationReason, PlacementShortfall};
 use ployz_core::{
-    LensCollection, LensSnapshot, OperationEvidence, OperationEvidenceEvent, OperationWatchEvent,
-    OperationWatchRefusal, operation_watch_route,
+    AnomalousSilenceReason, LensCollection, LensSnapshot, OperationEvidence,
+    OperationEvidenceEvent, OperationWatchEvent, OperationWatchRefusal, PlacementBid,
+    SilenceClassification, SilentMachine, operation_watch_route,
 };
 
 use crate::commands::{OpsCommand, OpsListCommand, OpsWatchCommand};
@@ -103,6 +108,9 @@ where
     let mut reconnect_started: Option<Instant> = None;
     let mut reconnect = 0usize;
     let mut last_sequence = 0u64;
+    // The wire carries machine row ids; bids in gathered evidence teach the
+    // watcher the human names, so later lines render names instead of ids.
+    let mut machine_names: BTreeMap<MachineRowId, MachineName> = BTreeMap::new();
 
     loop {
         let attach = attach();
@@ -178,6 +186,8 @@ where
                                 OperationEvidence::Created
                                 | OperationEvidence::OpClaimWon
                                 | OperationEvidence::OpClaimLost { .. }
+                                | OperationEvidence::PlacementGathered { .. }
+                                | OperationEvidence::PlacementPicked { .. }
                                 | OperationEvidence::DebrisSwept { .. }
                                 | OperationEvidence::PullingImage
                                 | OperationEvidence::ImageResolved
@@ -191,9 +201,18 @@ where
                                 | OperationEvidence::ServiceClaimWon
                                 | OperationEvidence::ServiceClaimLost { .. }
                                 | OperationEvidence::Drained
-                                | OperationEvidence::IncumbentRemoved { .. } => None,
+                                | OperationEvidence::IncumbentRemoved { .. }
+                                | OperationEvidence::Unrecognized => None,
                             };
-                            render_evidence(output, &event)?;
+                            if let OperationEvidence::PlacementGathered { bids, .. } =
+                                &event.evidence
+                            {
+                                for bid in bids {
+                                    machine_names
+                                        .insert(bid.machine_id.clone(), bid.machine_name.clone());
+                                }
+                            }
+                            render_evidence(output, &event, &machine_names)?;
                             match terminal {
                                 Some(true) => return Ok(()),
                                 Some(false) => {
@@ -265,6 +284,7 @@ async fn wait_to_reconnect(
 fn render_evidence(
     output: &mut impl std::io::Write,
     event: &OperationEvidenceEvent,
+    machine_names: &BTreeMap<MachineRowId, MachineName>,
 ) -> Result<(), OpsExecutionError> {
     let detail = match &event.evidence {
         OperationEvidence::Created => "created".to_owned(),
@@ -278,6 +298,15 @@ fn render_evidence(
         }
         OperationEvidence::OpClaimWon => "operation claim won".to_owned(),
         OperationEvidence::OpClaimLost { winner } => format!("operation claim lost to {winner}"),
+        OperationEvidence::PlacementGathered { bids, silent } => {
+            render_placement_gathered(bids, silent)
+        }
+        OperationEvidence::PlacementPicked { pick } => render_placement_picked(
+            &pick.targets,
+            &pick.eliminations,
+            pick.shortfall.as_ref(),
+            machine_names,
+        ),
         OperationEvidence::DebrisSwept { removed } => {
             format!("swept {} leftover container(s)", removed.len())
         }
@@ -300,15 +329,185 @@ fn render_evidence(
             let (kind, state) = operation_kind_state(operation);
             format!("terminal {kind} {state}")
         }
+        OperationEvidence::Unrecognized => "unrecognized evidence from a newer daemon".to_owned(),
     };
     writeln!(
         output,
-        "{}\t{}\t{detail}",
+        "{}\t{}\t{detail}{}",
         event.sequence.get(),
-        event.timestamp
+        event.timestamp,
+        on_machine(event.machine.as_ref(), machine_names)
     )
     .map_err(OpsExecutionError::Output)?;
     output.flush().map_err(OpsExecutionError::Output)
+}
+
+fn on_machine(
+    machine: Option<&MachineRowId>,
+    machine_names: &BTreeMap<MachineRowId, MachineName>,
+) -> String {
+    machine
+        .map(|machine| format!(" on {}", machine_label(machine, machine_names)))
+        .unwrap_or_default()
+}
+
+/// The machine's human name when a bid taught it, otherwise its row id.
+pub(crate) fn machine_label(
+    machine: &MachineRowId,
+    machine_names: &BTreeMap<MachineRowId, MachineName>,
+) -> String {
+    machine_names
+        .get(machine)
+        .map_or_else(|| machine.to_string(), |name| name.as_str().to_owned())
+}
+
+/// One operator-facing phrase per tier-0 elimination reason.
+pub(crate) fn elimination_reason(reason: &PlacementEliminationReason) -> String {
+    match reason {
+        PlacementEliminationReason::Draining => "draining".to_owned(),
+        PlacementEliminationReason::FreeDiskBelowFloor { free_disk_bytes } => {
+            format!(
+                "free disk below the placement floor ({} free)",
+                format_bytes(*free_disk_bytes)
+            )
+        }
+        PlacementEliminationReason::VolumeNotHeld { holder } => {
+            format!(
+                "does not hold the data volume (held by {})",
+                holder.machine_name.as_str()
+            )
+        }
+        PlacementEliminationReason::OutsidePinSet => "outside the pin set".to_owned(),
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const GIB: u64 = 1024 * 1024 * 1024;
+    const MIB: u64 = 1024 * 1024;
+    if bytes >= GIB {
+        format!("{}.{} GiB", bytes / GIB, (bytes % GIB) * 10 / GIB)
+    } else if bytes >= MIB {
+        format!("{} MiB", bytes / MIB)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+fn handshake_age(seconds: u64) -> String {
+    if seconds < 60 {
+        format!("{seconds}s")
+    } else if seconds < 3600 {
+        format!("{}m", seconds / 60)
+    } else {
+        format!("{}h", seconds / 3600)
+    }
+}
+
+const fn load_band(load: MachineLoadBand) -> &'static str {
+    match load {
+        MachineLoadBand::Idle => "idle",
+        MachineLoadBand::Normal => "normal",
+        MachineLoadBand::Hot => "hot",
+    }
+}
+
+fn render_placement_gathered(bids: &[PlacementBid], silent: &[SilentMachine]) -> String {
+    let mut detail = format!(
+        "placement gathered: {} bid(s), {} silent",
+        bids.len(),
+        silent.len()
+    );
+    for bid in bids {
+        let volumes = if bid.volumes_held.is_empty() {
+            "no volumes".to_owned()
+        } else {
+            format!(
+                "holds {}",
+                bid.volumes_held
+                    .iter()
+                    .map(|volume| volume.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        detail.push_str(&format!(
+            "\n  bid from {}: {}, {} container(s), {volumes}",
+            bid.machine_name.as_str(),
+            load_band(bid.load),
+            bid.total_container_count
+        ));
+    }
+    for entry in silent {
+        let classification = match &entry.classification {
+            SilenceClassification::ExpectedSilent {
+                handshake_age_seconds,
+            } => format!(
+                "expected-silent (handshake {})",
+                handshake_age(*handshake_age_seconds)
+            ),
+            SilenceClassification::AnomalousSilent { reason } => {
+                let reason = match reason {
+                    AnomalousSilenceReason::TransportFailed => "transport failed".to_owned(),
+                    AnomalousSilenceReason::TimedOut => "timed out".to_owned(),
+                    AnomalousSilenceReason::Declined { status } => {
+                        format!("declined with status {status}")
+                    }
+                };
+                format!("anomalous-silent ({reason})")
+            }
+        };
+        detail.push_str(&format!(
+            "\n  no bid from {}: {classification}",
+            entry.machine_id
+        ));
+    }
+    detail
+}
+
+fn render_placement_picked(
+    targets: &[MachineRowId],
+    eliminations: &[PlacementElimination],
+    shortfall: Option<&PlacementShortfall>,
+    machine_names: &BTreeMap<MachineRowId, MachineName>,
+) -> String {
+    // Stacking shows as a replica count: a machine appears once per replica
+    // in the wire's target list, grouped here in first-appearance order.
+    let mut grouped: Vec<(&MachineRowId, usize)> = Vec::new();
+    for target in targets {
+        if let Some(entry) = grouped.iter_mut().find(|(machine, _)| *machine == target) {
+            entry.1 += 1;
+        } else {
+            grouped.push((target, 1));
+        }
+    }
+    let mut detail = format!(
+        "placement picked: {} replica(s) on {} machine(s)",
+        targets.len(),
+        grouped.len()
+    );
+    for (machine, replicas) in grouped {
+        let label = machine_label(machine, machine_names);
+        if replicas > 1 {
+            detail.push_str(&format!("\n  target {label} ({replicas} replicas)"));
+        } else {
+            detail.push_str(&format!("\n  target {label}"));
+        }
+    }
+    for elimination in eliminations {
+        detail.push_str(&format!(
+            "\n  eliminated {}: {}",
+            elimination.machine_name.as_str(),
+            elimination_reason(&elimination.reason)
+        ));
+    }
+    if let Some(shortfall) = shortfall {
+        detail.push_str(&format!(
+            "\n  shortfall: requested {}, placed {}",
+            shortfall.requested.get(),
+            shortfall.placed
+        ));
+    }
+    detail
 }
 
 fn current_timestamp() -> Result<CorrosionTimestamp, OpsExecutionError> {
@@ -586,6 +785,89 @@ mod tests {
     }
 
     #[test]
+    fn placement_gathered_renders_one_line_per_bid_and_silence() {
+        let bid = PlacementBid {
+            machine_id: MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAC").expect("machine id"),
+            machine_name: ployz_core::machine::MachineName::try_new("web-1").expect("name"),
+            architecture: "x86_64".to_owned(),
+            lifecycle: ployz_core::machine::MachineLifecycle::Active,
+            free_disk_bytes: 10 * 1024 * 1024 * 1024,
+            free_memory_bytes: 1024 * 1024 * 1024,
+            load: MachineLoadBand::Idle,
+            total_container_count: 3,
+            service_containers: Vec::new(),
+            volumes_held: [ployz_core::deploy::VolumeName::try_new("data").expect("volume")]
+                .into_iter()
+                .collect(),
+        };
+        let expected = MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAD").expect("machine id");
+        let anomalous = MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAE").expect("machine id");
+        let detail = render_placement_gathered(
+            &[bid],
+            &[
+                SilentMachine {
+                    machine_id: expected.clone(),
+                    classification: SilenceClassification::ExpectedSilent {
+                        handshake_age_seconds: 41 * 60,
+                    },
+                },
+                SilentMachine {
+                    machine_id: anomalous.clone(),
+                    classification: SilenceClassification::AnomalousSilent {
+                        reason: AnomalousSilenceReason::TimedOut,
+                    },
+                },
+            ],
+        );
+        assert!(detail.starts_with("placement gathered: 1 bid(s), 2 silent"));
+        assert!(detail.contains("\n  bid from web-1: idle, 3 container(s), holds data"));
+        assert!(detail.contains(&format!(
+            "\n  no bid from {expected}: expected-silent (handshake 41m)"
+        )));
+        assert!(detail.contains(&format!(
+            "\n  no bid from {anomalous}: anomalous-silent (timed out)"
+        )));
+    }
+
+    #[test]
+    fn placement_picked_groups_stacked_targets_and_names_machines() {
+        let stacked = MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAC").expect("machine id");
+        let single = MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAD").expect("machine id");
+        let eliminated = MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAE").expect("machine id");
+        let names = [
+            (
+                stacked.clone(),
+                ployz_core::machine::MachineName::try_new("web-1").expect("name"),
+            ),
+            (
+                single.clone(),
+                ployz_core::machine::MachineName::try_new("web-2").expect("name"),
+            ),
+        ]
+        .into_iter()
+        .collect::<BTreeMap<_, _>>();
+        let detail = render_placement_picked(
+            &[stacked.clone(), single, stacked],
+            &[PlacementElimination {
+                machine_id: eliminated.clone(),
+                machine_name: ployz_core::machine::MachineName::try_new("web-3").expect("name"),
+                reason: PlacementEliminationReason::Draining,
+            }],
+            Some(&PlacementShortfall {
+                requested: ployz_core::corrosion::ServiceReplicaCount::try_new(3)
+                    .expect("replica count"),
+                placed: 2,
+            }),
+            &names,
+        );
+        assert!(detail.starts_with("placement picked: 3 replica(s) on 2 machine(s)"));
+        assert!(detail.contains("\n  target web-1 (2 replicas)"));
+        assert!(detail.contains("\n  target web-2"));
+        assert!(detail.contains("\n  eliminated web-3: draining"));
+        assert!(detail.contains("\n  shortfall: requested 3, placed 2"));
+    }
+
+    #[test]
     fn ops_list_renders_stalled_only_for_nonterminal_deploys_with_stale_heartbeats() {
         let created_at = timestamp("2026-08-05T12:00:00Z");
         let now = timestamp("2026-08-05T12:05:00Z");
@@ -677,6 +959,7 @@ mod tests {
         OperationEvidenceEvent {
             sequence: OperationEvidenceSequence::try_new(sequence).expect("positive sequence"),
             timestamp: timestamp("2026-08-05T12:34:56Z"),
+            machine: None,
             evidence,
         }
     }

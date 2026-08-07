@@ -12,6 +12,7 @@ use ployz_core::corrosion::{
     read_rows,
 };
 use ployz_core::ids::{ClusterId, ContainerId, MachineRowId, ServiceRowId};
+use ployz_core::machine::MachineName;
 use ployz_core::{
     ServiceLogLine, ServiceLogStream, ServiceLogsFollowEvent, ServiceLogsRefusal,
     ServiceLogsRequest, ServiceLogsTailReply,
@@ -29,6 +30,8 @@ use super::server::{
 };
 
 const MAX_RESOLVED_ROWS: usize = 2;
+// ponytail: bounded replica ceiling; raise when a service legitimately runs more containers.
+const MAX_SERVICE_CONTAINER_ROWS: usize = 64;
 const MAX_LOG_REQUEST_BYTES: usize = 1_024;
 const LOG_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const LOG_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
@@ -45,7 +48,7 @@ pub(super) async fn handle_tail(
         Ok(request) => request,
         Err(response) => return response,
     };
-    let target = match resolve_log_target(service, &service_id).await {
+    let target = match resolve_log_target(service, &service_id, request.machine.as_ref()).await {
         Ok(target) => target,
         Err(response) => return response,
     };
@@ -73,7 +76,7 @@ pub(super) async fn handle_follow(
         Ok(request) => request,
         Err(response) => return response,
     };
-    let target = match resolve_log_target(service, &service_id).await {
+    let target = match resolve_log_target(service, &service_id, request.machine.as_ref()).await {
         Ok(target) => target,
         Err(response) => return response,
     };
@@ -115,6 +118,7 @@ enum LogRequestBody {
 
 struct DecodedLogRequest {
     tail_lines: u16,
+    machine: Option<MachineName>,
 }
 
 async fn decode_log_request(
@@ -125,12 +129,27 @@ async fn decode_log_request(
         .await
         .map_err(log_body_error)?;
     if body.is_empty() && matches!(mode, LogRequestBody::Optional) {
-        return Ok(DecodedLogRequest { tail_lines: 0 });
+        return Ok(DecodedLogRequest {
+            tail_lines: 0,
+            machine: None,
+        });
     }
     let request: ServiceLogsRequest = serde_json::from_slice(&body)
         .map_err(|_| log_request_error(StatusCode::BAD_REQUEST, "invalid_request"))?;
+    let tail_lines = match (request.tail_lines, mode) {
+        (Some(tail_lines), LogRequestBody::Required | LogRequestBody::Optional) => tail_lines.get(),
+        // A follow reconnect attaches without replay but keeps its selector.
+        (None, LogRequestBody::Optional) => 0,
+        (None, LogRequestBody::Required) => {
+            return Err(log_request_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+            ));
+        }
+    };
     Ok(DecodedLogRequest {
-        tail_lines: request.tail_lines.get(),
+        tail_lines,
+        machine: request.machine,
     })
 }
 
@@ -153,13 +172,14 @@ fn log_request_error(status: StatusCode, kind: &'static str) -> Response<HttpBod
 async fn resolve_log_target(
     service: &ApiService,
     service_id: &ServiceRowId,
+    machine: Option<&MachineName>,
 ) -> Result<LocalServiceLogTarget, Response<HttpBody>> {
     let resolver = CorrosionServiceLogResolver::new(
         service.corrosion.clone(),
         service.cluster_id.clone(),
         service.local_machine_id.clone(),
     );
-    match resolver.resolve(service_id).await {
+    match resolver.resolve(service_id, machine).await {
         Ok(Ok(target)) => Ok(target),
         Ok(Err(refusal)) => Err(log_refusal_response(refusal)),
         Err(error) => {
@@ -170,16 +190,18 @@ async fn resolve_log_target(
 }
 
 fn log_refusal_response(refusal: ServiceLogsRefusal) -> Response<HttpBody> {
-    let status =
-        match &refusal {
-            ServiceLogsRefusal::ServiceNotFound { .. }
-            | ServiceLogsRefusal::NoActiveDeploy { .. }
-            | ServiceLogsRefusal::ContainerNotFound { .. } => StatusCode::NOT_FOUND,
-            ServiceLogsRefusal::UnmanagedContainer { .. }
-            | ServiceLogsRefusal::RemoteOwner { .. } => StatusCode::CONFLICT,
-            ServiceLogsRefusal::DriverDark { .. }
-            | ServiceLogsRefusal::RuntimeUnavailable { .. } => StatusCode::SERVICE_UNAVAILABLE,
-        };
+    let status = match &refusal {
+        ServiceLogsRefusal::ServiceNotFound { .. }
+        | ServiceLogsRefusal::NoActiveDeploy { .. }
+        | ServiceLogsRefusal::ContainerNotFound { .. } => StatusCode::NOT_FOUND,
+        ServiceLogsRefusal::UnmanagedContainer { .. }
+        | ServiceLogsRefusal::MachineSelectorRequired { .. }
+        | ServiceLogsRefusal::HostingMachinesUnresolved { .. }
+        | ServiceLogsRefusal::RemoteOwner { .. } => StatusCode::CONFLICT,
+        ServiceLogsRefusal::DriverDark { .. } | ServiceLogsRefusal::RuntimeUnavailable { .. } => {
+            StatusCode::SERVICE_UNAVAILABLE
+        }
+    };
     super::mutations::typed_response(status, &refusal)
 }
 
@@ -245,6 +267,7 @@ impl CorrosionServiceLogResolver {
     pub(super) async fn resolve(
         &self,
         service_id: &ServiceRowId,
+        machine: Option<&MachineName>,
     ) -> Result<Result<LocalServiceLogTarget, ServiceLogsRefusal>, ServiceLogResolveError> {
         let service_rows = self
             .query(
@@ -276,38 +299,73 @@ impl CorrosionServiceLogResolver {
                         SqliteParameter::Text(service.value.active_deploy.as_str().to_owned()),
                     ],
                 ),
-                MAX_RESOLVED_ROWS,
+                MAX_SERVICE_CONTAINER_ROWS,
             )
             .await?;
         let container_report = read_rows::<ContainerDocument>(&self.cluster_id, container_rows);
-        if !container_report.skipped.is_empty() || container_report.accepted.len() > 1 {
+        if !container_report.skipped.is_empty() {
             return Err(ServiceLogResolveError::Protocol(
-                "active deploy container lookup contained rejected or ambiguous rows".to_owned(),
+                "active deploy container lookup contained rejected rows".to_owned(),
             ));
         }
-        let Some(container) = container_report.accepted.into_iter().next() else {
-            return Ok(Err(ServiceLogsRefusal::ContainerNotFound {
-                service_id: service_id.clone(),
-            }));
-        };
-        if container.value.machine_id != self.local_machine_id {
-            return Ok(Err(ServiceLogsRefusal::RemoteOwner {
+        let mut containers = Vec::new();
+        for container in container_report.accepted {
+            let container_id = ContainerId::try_new(container.source.key).map_err(|error| {
+                ServiceLogResolveError::Protocol(format!("container row id was invalid: {error}"))
+            })?;
+            containers.push(ReplicaContainer {
+                container_id,
                 machine_id: container.value.machine_id,
-            }));
+            });
         }
-        let container_id = ContainerId::try_new(container.source.key).map_err(|error| {
-            ServiceLogResolveError::Protocol(format!("container row id was invalid: {error}"))
-        })?;
+        let machine_names = self.machine_names(&containers).await?;
+        let selected = match select_log_container(
+            service_id,
+            &containers,
+            &machine_names,
+            machine,
+            &self.local_machine_id,
+        ) {
+            Ok(selected) => selected,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
         Ok(Ok(LocalServiceLogTarget {
             service_id: service_id.clone(),
             machine_id: self.local_machine_id.clone(),
-            container_id,
+            container_id: selected.container_id.clone(),
             identity: V2ManagedContainerIdentity {
                 namespace_id: service.value.namespace_id,
                 service_id: service_id.clone(),
                 operation_id: service.value.active_deploy,
             },
         }))
+    }
+
+    /// Names for every distinct machine hosting one of this deploy's
+    /// containers, from one accepted-roster read; a machine whose roster row
+    /// is gone or unreadable stays unnamed.
+    async fn machine_names(
+        &self,
+        containers: &[ReplicaContainer],
+    ) -> Result<std::collections::BTreeMap<MachineRowId, MachineName>, ServiceLogResolveError> {
+        if containers.is_empty() {
+            return Ok(std::collections::BTreeMap::new());
+        }
+        let machine_ids: std::collections::BTreeSet<MachineRowId> = containers
+            .iter()
+            .map(|container| container.machine_id.clone())
+            .collect();
+        let roster = super::store::read_accepted_roster(&self.client, &self.cluster_id)
+            .await
+            .map_err(|error| {
+                ServiceLogResolveError::Protocol(format!("accepted roster unavailable: {error}"))
+            })?;
+        Ok(roster
+            .machines
+            .into_iter()
+            .filter(|machine| machine_ids.contains(&machine.id))
+            .map(|machine| (machine.id, machine.document.name))
+            .collect())
     }
 
     async fn query(
@@ -319,6 +377,78 @@ impl CorrosionServiceLogResolver {
         collect_stored_rows(&mut stream, StoredRowLimit::new(limit))
             .await
             .map_err(|error| ServiceLogResolveError::Protocol(error.to_string()))
+    }
+}
+
+/// One accepted container row of the active deploy, keyed by where it runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReplicaContainer {
+    container_id: ContainerId,
+    machine_id: MachineRowId,
+}
+
+/// Picks the one container this machine may serve logs for.
+///
+/// A machine selector narrows the set to its machine; several matching
+/// containers (or a selector matching none) refuse with the full hosting
+/// list, one machine name per container so stacked replicas repeat. A
+/// single match hosted elsewhere refuses as the remote owner.
+fn select_log_container<'containers>(
+    service_id: &ServiceRowId,
+    containers: &'containers [ReplicaContainer],
+    machine_names: &std::collections::BTreeMap<MachineRowId, MachineName>,
+    selector: Option<&MachineName>,
+    local_machine_id: &MachineRowId,
+) -> Result<&'containers ReplicaContainer, ServiceLogsRefusal> {
+    let hosting_machines = || {
+        containers
+            .iter()
+            .filter_map(|container| machine_names.get(&container.machine_id).cloned())
+            .collect::<Vec<_>>()
+    };
+    // A selector refusal must offer at least one name `--machine` accepts;
+    // when no hosting roster row resolved to a name, the ids point at the
+    // machines lens instead of an empty selector list.
+    let selector_refusal = || {
+        let machines = hosting_machines();
+        if machines.is_empty() {
+            return ServiceLogsRefusal::HostingMachinesUnresolved {
+                machine_ids: containers
+                    .iter()
+                    .map(|container| container.machine_id.clone())
+                    .collect(),
+            };
+        }
+        ServiceLogsRefusal::MachineSelectorRequired { machines }
+    };
+    let matching = match selector {
+        Some(selector) => containers
+            .iter()
+            .filter(|container| machine_names.get(&container.machine_id) == Some(selector))
+            .collect::<Vec<_>>(),
+        None => containers.iter().collect::<Vec<_>>(),
+    };
+    match matching.as_slice() {
+        [] => {
+            if selector.is_some() && !containers.is_empty() {
+                return Err(selector_refusal());
+            }
+            Err(ServiceLogsRefusal::ContainerNotFound {
+                service_id: service_id.clone(),
+            })
+        }
+        [container] => {
+            if container.machine_id != *local_machine_id {
+                return Err(ServiceLogsRefusal::RemoteOwner {
+                    machine_id: container.machine_id.clone(),
+                    machine_name: machine_names.get(&container.machine_id).cloned(),
+                });
+            }
+            Ok(container)
+        }
+        // ponytail: stacked replicas on one machine also land here; per-container
+        // log selection is a future ticket.
+        [_, _, ..] => Err(selector_refusal()),
     }
 }
 
@@ -636,10 +766,20 @@ mod tests {
     use ployz_core::ids::{ContainerId, NamespaceRowId, OperationRowId, ServiceRowId};
     use ployz_core::machine::runtime::ContainerHealth;
 
+    use ployz_core::ServiceLogsRefusal;
+    use ployz_core::machine::MachineName;
+
+    use std::time::Duration;
+
+    use bytes::Bytes;
+    use hyper::Response;
+    use ployz_core::ids::{ClusterId, MachineRowId};
+
     use super::{
-        ExistingV2ManagedContainer, LocalServiceLogTarget, LossyServiceLogFollow, RuntimeLogBatch,
-        RuntimeLogFollow, RuntimeLogStream, V2MachineLogReadError, V2MachineLogReader,
-        public_lines, tail_local_service_logs, verify_container_identity,
+        CorrosionServiceLogResolver, ExistingV2ManagedContainer, LocalServiceLogTarget,
+        LossyServiceLogFollow, ReplicaContainer, RuntimeLogBatch, RuntimeLogFollow,
+        RuntimeLogStream, V2MachineLogReadError, V2MachineLogReader, public_lines,
+        select_log_container, tail_local_service_logs, verify_container_identity,
     };
 
     fn service_id(value: &str) -> ServiceRowId {
@@ -676,6 +816,160 @@ mod tests {
             created_at_unix_seconds: None,
             named_volume_names: std::collections::BTreeSet::new(),
         }
+    }
+
+    fn machine_row(value: &str) -> ployz_core::ids::MachineRowId {
+        ployz_core::ids::MachineRowId::try_new(value).expect("machine row id")
+    }
+
+    fn replica(container: &str, machine: &str) -> ReplicaContainer {
+        ReplicaContainer {
+            container_id: ContainerId::try_new(container).expect("container"),
+            machine_id: machine_row(machine),
+        }
+    }
+
+    fn names(
+        entries: &[(&str, &str)],
+    ) -> std::collections::BTreeMap<ployz_core::ids::MachineRowId, MachineName> {
+        entries
+            .iter()
+            .map(|(id, name)| (machine_row(id), MachineName::try_new(*name).expect("name")))
+            .collect()
+    }
+
+    const LOCAL: &str = "01J00000000000000000000005";
+    const REMOTE: &str = "01J00000000000000000000006";
+
+    #[test]
+    fn replicas_on_several_machines_require_a_machine_selector() {
+        let containers = [
+            replica("container-one", LOCAL),
+            replica("container-two", REMOTE),
+        ];
+        let names = names(&[(LOCAL, "edge-a"), (REMOTE, "edge-b")]);
+        let refusal = select_log_container(
+            &service_id("01J00000000000000000000001"),
+            &containers,
+            &names,
+            None,
+            &machine_row(LOCAL),
+        )
+        .expect_err("selector required");
+        let ServiceLogsRefusal::MachineSelectorRequired { machines } = refusal else {
+            panic!("expected machine selector refusal, got {refusal:?}");
+        };
+        assert_eq!(
+            machines,
+            vec![
+                MachineName::try_new("edge-a").expect("name"),
+                MachineName::try_new("edge-b").expect("name"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_machine_selector_picks_the_local_replica() {
+        let containers = [
+            replica("container-one", LOCAL),
+            replica("container-two", REMOTE),
+        ];
+        let names = names(&[(LOCAL, "edge-a"), (REMOTE, "edge-b")]);
+        let selector = MachineName::try_new("edge-a").expect("name");
+        let selected = select_log_container(
+            &service_id("01J00000000000000000000001"),
+            &containers,
+            &names,
+            Some(&selector),
+            &machine_row(LOCAL),
+        )
+        .expect("local replica");
+        assert_eq!(selected.container_id.as_str(), "container-one");
+    }
+
+    #[test]
+    fn a_remote_replica_refuses_with_the_owning_machine_named() {
+        let containers = [replica("container-two", REMOTE)];
+        let names = names(&[(REMOTE, "edge-b")]);
+        let refusal = select_log_container(
+            &service_id("01J00000000000000000000001"),
+            &containers,
+            &names,
+            None,
+            &machine_row(LOCAL),
+        )
+        .expect_err("remote owner");
+        assert_eq!(
+            refusal,
+            ServiceLogsRefusal::RemoteOwner {
+                machine_id: machine_row(REMOTE),
+                machine_name: Some(MachineName::try_new("edge-b").expect("name")),
+            }
+        );
+    }
+
+    #[test]
+    fn a_selector_matching_no_replica_lists_where_the_service_runs() {
+        let containers = [replica("container-two", REMOTE)];
+        let names = names(&[(REMOTE, "edge-b")]);
+        let selector = MachineName::try_new("edge-c").expect("name");
+        let refusal = select_log_container(
+            &service_id("01J00000000000000000000001"),
+            &containers,
+            &names,
+            Some(&selector),
+            &machine_row(LOCAL),
+        )
+        .expect_err("selector miss");
+        assert_eq!(
+            refusal,
+            ServiceLogsRefusal::MachineSelectorRequired {
+                machines: vec![MachineName::try_new("edge-b").expect("name")],
+            }
+        );
+    }
+
+    #[test]
+    fn stacked_replicas_repeat_their_machine_in_the_selector_refusal() {
+        let containers = [
+            replica("container-one", LOCAL),
+            replica("container-two", LOCAL),
+        ];
+        let names = names(&[(LOCAL, "edge-a")]);
+        let selector = MachineName::try_new("edge-a").expect("name");
+        let refusal = select_log_container(
+            &service_id("01J00000000000000000000001"),
+            &containers,
+            &names,
+            Some(&selector),
+            &machine_row(LOCAL),
+        )
+        .expect_err("stacked replicas cannot be disambiguated");
+        assert_eq!(
+            refusal,
+            ServiceLogsRefusal::MachineSelectorRequired {
+                machines: vec![
+                    MachineName::try_new("edge-a").expect("name"),
+                    MachineName::try_new("edge-a").expect("name"),
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn no_containers_at_all_stay_a_container_not_found_refusal() {
+        let refusal = select_log_container(
+            &service_id("01J00000000000000000000001"),
+            &[],
+            &std::collections::BTreeMap::new(),
+            None,
+            &machine_row(LOCAL),
+        )
+        .expect_err("nothing to serve");
+        assert!(matches!(
+            refusal,
+            ServiceLogsRefusal::ContainerNotFound { .. }
+        ));
     }
 
     #[test]
@@ -808,5 +1102,254 @@ mod tests {
         };
         assert_eq!(stdout.stream, ployz_core::ServiceLogStream::Stdout);
         assert_eq!(stderr.stream, ployz_core::ServiceLogStream::Stderr);
+    }
+
+    /// One fake Corrosion query endpoint serving `id, document` rows keyed by
+    /// the statement's `FROM` table, so the resolver's reads run over the
+    /// real wire protocol and column contract.
+    async fn spawn_fake_corrosion(
+        rows_by_table: std::collections::BTreeMap<&'static str, Vec<(String, String)>>,
+    ) -> std::net::SocketAddr {
+        use http_body_util::BodyExt as _;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind fake corrosion");
+        let addr = listener.local_addr().expect("local addr");
+        let rows_by_table = std::sync::Arc::new(rows_by_table);
+        tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let rows_by_table = std::sync::Arc::clone(&rows_by_table);
+                tokio::spawn(async move {
+                    let service = hyper::service::service_fn(
+                        move |request: hyper::Request<hyper::body::Incoming>| {
+                            let rows_by_table = std::sync::Arc::clone(&rows_by_table);
+                            async move {
+                                let body = request
+                                    .into_body()
+                                    .collect()
+                                    .await
+                                    .expect("request body")
+                                    .to_bytes();
+                                let statement: serde_json::Value =
+                                    serde_json::from_slice(&body).expect("statement json");
+                                let sql = match statement.as_str() {
+                                    Some(sql) => sql.to_owned(),
+                                    None => statement
+                                        .get(0)
+                                        .and_then(serde_json::Value::as_str)
+                                        .expect("parameterized sql")
+                                        .to_owned(),
+                                };
+                                let rows = rows_by_table
+                                    .iter()
+                                    .find(|(table, _)| sql.contains(&format!("FROM {table}")))
+                                    .map(|(_, rows)| rows)
+                                    .unwrap_or_else(|| panic!("unexpected query: {sql}"));
+                                let mut ndjson =
+                                    String::from("{\"columns\":[\"id\",\"document\"]}\n");
+                                for (index, (id, document)) in rows.iter().enumerate() {
+                                    ndjson.push_str(
+                                        &serde_json::to_string(&serde_json::json!({
+                                            "row": [index + 1, [id, document]]
+                                        }))
+                                        .expect("row frame"),
+                                    );
+                                    ndjson.push('\n');
+                                }
+                                ndjson.push_str("{\"eoq\":{\"time\":0.0}}\n");
+                                Ok::<_, std::convert::Infallible>(Response::new(
+                                    http_body_util::Full::new(Bytes::from(ndjson))
+                                        .map_err(|never| match never {})
+                                        .boxed(),
+                                ))
+                            }
+                        },
+                    );
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(hyper_util::rt::TokioIo::new(stream), service)
+                        .await;
+                });
+            }
+        });
+        addr
+    }
+
+    fn corrosion_client(addr: std::net::SocketAddr) -> crate::corrosion::CorrosionClient {
+        crate::corrosion::CorrosionClient::new(
+            crate::corrosion::CorrosionClientConfig::new(
+                addr,
+                crate::corrosion::BearerToken::new("test-token").expect("token"),
+                crate::corrosion::CorrosionClientBounds {
+                    connect_timeout: Duration::from_secs(1),
+                    request_timeout: Duration::from_secs(1),
+                    stream_idle_timeout: Duration::from_secs(1),
+                    max_ndjson_frame_bytes: 64 * 1024,
+                    max_error_body_bytes: 1024,
+                },
+            )
+            .expect("config"),
+        )
+        .expect("client")
+    }
+
+    const RESOLVER_CLUSTER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+    const RESOLVER_MACHINE_A: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
+    const RESOLVER_MACHINE_B: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
+    const RESOLVER_PEER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAY";
+    const RESOLVER_SERVICE: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB1";
+    const RESOLVER_NAMESPACE: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB2";
+    const RESOLVER_DEPLOY: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB3";
+
+    fn resolver_cluster_document() -> String {
+        serde_json::json!({
+            "v": 1,
+            "cluster_id": RESOLVER_CLUSTER,
+            "name": "acme-prod",
+            "storage_default": "plain",
+            "hostname_mode": { "mode": "disabled" },
+            "prefix": "10.210.0.0/16",
+            "provider": "builtin_wireguard",
+            "acme_directory_url": "https://acme.example/directory",
+            "acme_contact": null,
+            "written_by": { "kind": "peer", "peer_id": RESOLVER_PEER },
+            "written_at": "2026-08-04T10:00:00Z"
+        })
+        .to_string()
+    }
+
+    fn resolver_machine_document(name: &str, addr_v6: &str) -> String {
+        serde_json::json!({
+            "v": 1,
+            "cluster_id": RESOLVER_CLUSTER,
+            "name": name,
+            "lifecycle": "active",
+            "transport": {
+                "kind": "wireguard",
+                "pubkey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                "addr_v6": addr_v6,
+                "endpoint": null,
+                "subnet_v4": "10.210.20.0/24"
+            },
+            "storage": { "mode": "plain", "reason": { "kind": "default" } },
+            "written_by": { "kind": "peer", "peer_id": RESOLVER_PEER },
+            "written_at": "2026-08-04T10:00:00Z"
+        })
+        .to_string()
+    }
+
+    fn resolver_service_document() -> String {
+        serde_json::json!({
+            "v": 1,
+            "cluster_id": RESOLVER_CLUSTER,
+            "written_by": { "kind": "peer", "peer_id": RESOLVER_PEER },
+            "written_at": "2026-08-04T10:00:00Z",
+            "namespace_id": RESOLVER_NAMESPACE,
+            "name": "api",
+            "image": "registry.example/api:latest",
+            "env_fingerprints": {},
+            "mode": "replicated",
+            "replicas": 2,
+            "pinned_machines": [],
+            "active_deploy": RESOLVER_DEPLOY,
+            "previous_image": null,
+            "deployed_at": "2026-08-04T10:00:00Z",
+            "operation_id": RESOLVER_DEPLOY
+        })
+        .to_string()
+    }
+
+    fn resolver_container_document(machine_id: &str, ip: &str) -> String {
+        serde_json::json!({
+            "v": 1,
+            "cluster_id": RESOLVER_CLUSTER,
+            "machine_id": machine_id,
+            "service_id": RESOLVER_SERVICE,
+            "namespace_id": RESOLVER_NAMESPACE,
+            "ip": ip,
+            "deploy": RESOLVER_DEPLOY
+        })
+        .to_string()
+    }
+
+    fn resolver_rows() -> std::collections::BTreeMap<&'static str, Vec<(String, String)>> {
+        std::collections::BTreeMap::from([
+            (
+                "cluster",
+                vec![(RESOLVER_CLUSTER.to_owned(), resolver_cluster_document())],
+            ),
+            (
+                "machines",
+                vec![
+                    (
+                        RESOLVER_MACHINE_A.to_owned(),
+                        resolver_machine_document("edge-a", "fd00::20"),
+                    ),
+                    (
+                        RESOLVER_MACHINE_B.to_owned(),
+                        resolver_machine_document("edge-b", "fd00::21"),
+                    ),
+                ],
+            ),
+            ("peers", Vec::new()),
+            (
+                "services",
+                vec![(RESOLVER_SERVICE.to_owned(), resolver_service_document())],
+            ),
+            (
+                "containers",
+                vec![
+                    (
+                        "aaaaaaaaaaaa".to_owned(),
+                        resolver_container_document(RESOLVER_MACHINE_A, "10.210.20.9"),
+                    ),
+                    (
+                        "bbbbbbbbbbbb".to_owned(),
+                        resolver_container_document(RESOLVER_MACHINE_B, "10.210.21.9"),
+                    ),
+                ],
+            ),
+        ])
+    }
+
+    #[tokio::test]
+    async fn resolver_names_hosting_machines_through_real_machines_rows() {
+        let addr = spawn_fake_corrosion(resolver_rows()).await;
+        let resolver = CorrosionServiceLogResolver::new(
+            corrosion_client(addr),
+            ClusterId::try_new(RESOLVER_CLUSTER).expect("cluster id"),
+            MachineRowId::try_new(RESOLVER_MACHINE_A).expect("machine id"),
+        );
+        let service_id = ServiceRowId::try_new(RESOLVER_SERVICE).expect("service id");
+
+        let refusal = resolver
+            .resolve(&service_id, None)
+            .await
+            .expect("resolution reads succeed")
+            .expect_err("two hosting machines require a selector");
+        assert_eq!(
+            refusal,
+            ServiceLogsRefusal::MachineSelectorRequired {
+                machines: vec![
+                    MachineName::try_new("edge-a").expect("name"),
+                    MachineName::try_new("edge-b").expect("name"),
+                ],
+            }
+        );
+
+        let selector = MachineName::try_new("edge-a").expect("name");
+        let target = resolver
+            .resolve(&service_id, Some(&selector))
+            .await
+            .expect("resolution reads succeed")
+            .expect("the selector resolves the local replica");
+        assert_eq!(target.container_id.as_str(), "aaaaaaaaaaaa");
+        assert_eq!(
+            target.machine_id,
+            MachineRowId::try_new(RESOLVER_MACHINE_A).expect("machine id")
+        );
     }
 }

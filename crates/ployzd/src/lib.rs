@@ -43,6 +43,7 @@ pub mod roles {
     pub mod api;
     pub(crate) mod handshake_control;
     pub mod keeper;
+    pub(crate) mod system_observation;
     pub(crate) mod upgrade;
 }
 pub mod dispatch;

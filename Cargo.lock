@@ -3287,6 +3287,7 @@ dependencies = [
  "base64",
  "bollard",
  "futures-util",
+ "hyper",
  "ployz",
  "ployz-core",
  "rcgen",

@@ -24,7 +24,7 @@ use bollard::models::{
     ContainerCreateBody, ContainerInspectResponse, ContainerSummary,
     ContainerSummaryHealthStatusEnum, ContainerSummaryNetworkSettings, ContainerSummaryStateEnum,
     EndpointSettings, HealthConfig, HealthStatusEnum, HostConfig, Mount, MountPoint, MountType,
-    NetworkingConfig, RestartPolicy, RestartPolicyNameEnum,
+    NetworkingConfig, PortBinding, PortMap, RestartPolicy, RestartPolicyNameEnum,
 };
 use bollard::query_parameters::{
     InspectContainerOptions, ListContainersOptionsBuilder, LogsOptionsBuilder,
@@ -124,6 +124,40 @@ impl DockerManagedContainerRunner {
             }) => Ok(ployz_core::image::ImageRemoveOutcome::RetainedInUse),
             Err(error) => Err(error.to_string()),
         }
+    }
+
+    /// Reports which of the requested named volumes exist locally under
+    /// their deterministic v2 storage names.
+    pub(crate) async fn held_v2_volumes(
+        &self,
+        namespace_id: &NamespaceRowId,
+        volumes: &BTreeSet<VolumeName>,
+    ) -> Result<BTreeSet<VolumeName>, HeldVolumesError> {
+        let docker = self
+            .docker()
+            .await
+            .map_err(|error| HeldVolumesError::DockerUnavailable {
+                message: error.to_string(),
+            })?;
+        let mut held = BTreeSet::new();
+        for volume in volumes {
+            match docker
+                .inspect_volume(&v2_volume_storage_name(namespace_id, volume))
+                .await
+            {
+                Ok(_) => {
+                    held.insert(volume.clone());
+                }
+                Err(error) if is_docker_object_missing(&error) => {}
+                Err(error) => {
+                    return Err(HeldVolumesError::Inspect {
+                        volume: volume.clone(),
+                        message: error.to_string(),
+                    });
+                }
+            }
+        }
+        Ok(held)
     }
 
     #[cfg(test)]
@@ -1550,6 +1584,16 @@ fn collect_named_volume_names(
     Ok(names)
 }
 
+/// A held-volume inventory failure, split by whether the Docker daemon was
+/// reachable at all or a specific volume inspect failed.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum HeldVolumesError {
+    #[error("docker unavailable: {message}")]
+    DockerUnavailable { message: String },
+    #[error("inspecting volume {volume} failed: {message}", volume = .volume.as_str())]
+    Inspect { volume: VolumeName, message: String },
+}
+
 /// Storage identity of a row-scoped v2 named volume on the local Docker host.
 fn v2_volume_storage_name(namespace_id: &NamespaceRowId, volume_name: &VolumeName) -> String {
     let namespace = namespace_id.as_str();
@@ -1670,6 +1714,7 @@ fn create_body(
         DockerCreateIdentity::Incumbent(identity),
         dns_search_domain,
         endpoint_network_subnet,
+        &ployz_core::corrosion::HostPortBindings::default(),
     )
 }
 
@@ -1682,6 +1727,7 @@ fn create_v2_body(
         runtime,
         dns_search_domain,
         identity,
+        host_ports,
     } = command;
     create_body_for_identity(
         image,
@@ -1689,6 +1735,7 @@ fn create_v2_body(
         DockerCreateIdentity::CorrosionV2 { identity },
         dns_search_domain,
         endpoint_network_subnet,
+        &host_ports,
     )
 }
 
@@ -1723,6 +1770,7 @@ fn create_body_for_identity(
     identity: DockerCreateIdentity,
     dns_search_domain: InternalDnsSearchDomain,
     endpoint_network_subnet: &str,
+    host_ports: &ployz_core::corrosion::HostPortBindings,
 ) -> ContainerCreateBody {
     let image = image.as_str().to_owned();
     let env = if runtime.environment.is_empty() {
@@ -1759,6 +1807,7 @@ fn create_body_for_identity(
     let dns = endpoint_bridge_gateway_ipv4(endpoint_network_subnet)
         .map(|gateway| vec![gateway.to_string()]);
     let dns_search = Some(vec![dns_search_domain.as_str().to_owned()]);
+    let (exposed_ports, port_bindings) = docker_port_publications(host_ports);
     ContainerCreateBody {
         image: Some(image),
         env,
@@ -1767,6 +1816,7 @@ fn create_body_for_identity(
         healthcheck,
         stop_timeout: Some(i64::from(runtime.stop_grace_period.as_seconds())),
         labels: Some(hashmap_from_btree(identity.labels())),
+        exposed_ports,
         host_config: Some(HostConfig {
             network_mode: Some(ENDPOINT_NETWORK_NAME.to_owned()),
             mounts: docker_volume_mounts(&identity, &runtime.volume_mounts),
@@ -1776,6 +1826,7 @@ fn create_body_for_identity(
             memory,
             nano_cpus,
             pids_limit,
+            port_bindings,
             dns,
             dns_search,
             // musl applies the namespace search domain only when a query has fewer dots
@@ -1791,6 +1842,38 @@ fn create_body_for_identity(
         }),
         ..Default::default()
     }
+}
+
+/// Renders host-published ports into Docker's exposed-port and binding maps.
+/// Empty bindings yield `None`, keeping non-publishing creates byte-identical
+/// to the pre-placement body.
+fn docker_port_publications(
+    host_ports: &ployz_core::corrosion::HostPortBindings,
+) -> (Option<Vec<String>>, Option<PortMap>) {
+    if host_ports.is_empty() {
+        return (None, None);
+    }
+    // Exposed ports are keyed by container port, so two host ports
+    // forwarding the same container port share one exposed entry.
+    let mut exposed = std::collections::BTreeSet::new();
+    let mut bindings: PortMap = HashMap::new();
+    for binding in host_ports.iter() {
+        let protocol = match binding.protocol {
+            ployz_core::corrosion::HostPortProtocol::Tcp => "tcp",
+            ployz_core::corrosion::HostPortProtocol::Udp => "udp",
+        };
+        let container_key = format!("{}/{protocol}", binding.container_port);
+        exposed.insert(container_key.clone());
+        bindings
+            .entry(container_key)
+            .or_insert_with(|| Some(Vec::new()))
+            .get_or_insert_with(Vec::new)
+            .push(PortBinding {
+                host_ip: None,
+                host_port: Some(binding.host_port.to_string()),
+            });
+    }
+    (Some(exposed.into_iter().collect()), Some(bindings))
 }
 
 fn docker_volume_mounts(
@@ -2496,6 +2579,7 @@ mod tests {
                 runtime: ContainerRuntimeSpec::image_defaults(),
                 dns_search_domain: dns_search_domain("production"),
                 identity: v2_managed_identity(),
+                host_ports: ployz_core::corrosion::HostPortBindings::default(),
             },
             TEST_ENDPOINT_SUBNET,
         );
@@ -2510,6 +2594,65 @@ mod tests {
         assert_eq!(
             body.host_config.and_then(|config| config.dns_search),
             Some(vec!["production.internal".to_owned()])
+        );
+        // No published ports: the body stays byte-identical to the
+        // pre-placement create.
+        assert_eq!(body.exposed_ports, None);
+    }
+
+    #[test]
+    fn v2_create_body_publishes_host_ports_only_when_bound() {
+        let host_ports = ployz_core::corrosion::HostPortBindings::try_new([
+            ployz_core::corrosion::HostPortBinding {
+                host_port: std::num::NonZeroU16::new(8443).expect("port"),
+                container_port: std::num::NonZeroU16::new(443).expect("port"),
+                protocol: ployz_core::corrosion::HostPortProtocol::Tcp,
+            },
+            ployz_core::corrosion::HostPortBinding {
+                host_port: std::num::NonZeroU16::new(5353).expect("port"),
+                container_port: std::num::NonZeroU16::new(53).expect("port"),
+                protocol: ployz_core::corrosion::HostPortProtocol::Udp,
+            },
+        ])
+        .expect("host ports");
+        let body = create_v2_body(
+            CreateV2ManagedContainer {
+                image: image("ghcr.io/acme/api:rev-2"),
+                runtime: ContainerRuntimeSpec::image_defaults(),
+                dns_search_domain: dns_search_domain("production"),
+                identity: v2_managed_identity(),
+                host_ports,
+            },
+            TEST_ENDPOINT_SUBNET,
+        );
+
+        let exposed = body.exposed_ports.expect("exposed ports");
+        assert_eq!(exposed, vec!["443/tcp".to_owned(), "53/udp".to_owned()]);
+        let bindings = body
+            .host_config
+            .and_then(|config| config.port_bindings)
+            .expect("port bindings");
+        let tcp = bindings
+            .get("443/tcp")
+            .cloned()
+            .flatten()
+            .expect("tcp binding");
+        assert_eq!(
+            tcp.iter()
+                .map(|binding| binding.host_port.clone())
+                .collect::<Vec<_>>(),
+            vec![Some("8443".to_owned())]
+        );
+        let udp = bindings
+            .get("53/udp")
+            .cloned()
+            .flatten()
+            .expect("udp binding");
+        assert_eq!(
+            udp.iter()
+                .map(|binding| binding.host_port.clone())
+                .collect::<Vec<_>>(),
+            vec![Some("5353".to_owned())]
         );
     }
 
@@ -2526,6 +2669,7 @@ mod tests {
                 runtime,
                 dns_search_domain: dns_search_domain("production"),
                 identity: v2_managed_identity(),
+                host_ports: ployz_core::corrosion::HostPortBindings::default(),
             },
             TEST_ENDPOINT_SUBNET,
         );
@@ -2561,6 +2705,7 @@ mod tests {
                 runtime: ContainerRuntimeSpec::image_defaults(),
                 dns_search_domain: dns_search_domain("production"),
                 identity: v2_managed_identity(),
+                host_ports: ployz_core::corrosion::HostPortBindings::default(),
             })
             .await
             .expect("v2 create succeeds");

@@ -22,11 +22,11 @@ use ployz_e2e::dind::{
 };
 
 const CLUSTER_NAME: &str = "dind-operation-deploy";
-const FOUNDER_NAME: &str = "machine-one";
+pub(super) const FOUNDER_NAME: &str = "machine-one";
 const WAIT_BUDGET: Duration = Duration::from_secs(60);
 const WAIT_DELAY: Duration = Duration::from_millis(250);
 const CLI_BUDGET: Duration = Duration::from_secs(180);
-const REGISTRY_PORT: u16 = 5_000;
+pub(super) const REGISTRY_PORT: u16 = 5_000;
 /// Docker label carrying the owning operation row id on every v2-managed
 /// container; mirrors the deploy engine's v2 label codec.
 const OPERATION_ROW_ID_LABEL: &str = "plz.operation_row_id";
@@ -73,10 +73,26 @@ pub(super) struct OperatorFixture {
     _temporary_home: tempfile::TempDir,
     home: PathBuf,
     cli: PathBuf,
-    founder_target: SshTarget,
-    joiner_target: SshTarget,
-    pub(super) joiner_api_address: String,
-    pub(super) joiner_dns_address: Ipv4Addr,
+    pub(super) founder_target: SshTarget,
+    pub(super) founder_machine_id: MachineRowId,
+    pub(super) joiners: Vec<JoinedMachine>,
+}
+
+impl OperatorFixture {
+    /// The operator context store home the shipped CLI reads under `$HOME`.
+    pub(super) fn config_home(&self) -> PathBuf {
+        default_config_home(&self.home)
+    }
+}
+
+/// One joined machine's operator-facing coordinates.
+pub(super) struct JoinedMachine {
+    /// The machine's ployz roster name (its probed hostname).
+    pub(super) name: String,
+    pub(super) machine_id: MachineRowId,
+    pub(super) target: SshTarget,
+    pub(super) api_address: String,
+    pub(super) dns_address: Ipv4Addr,
 }
 
 pub(super) struct PublicDeployRows {
@@ -95,14 +111,13 @@ pub(super) struct RevisionBodies<'a> {
 pub(super) async fn found_and_join(
     docker: &Docker,
     founder: &DindMachine,
-    joiner: &DindMachine,
+    joiners: &[&DindMachine],
 ) -> Result<OperatorFixture, String> {
     install_local_release_channel(docker, founder).await?;
     let temporary_home = tempfile::tempdir().map_err(|error| error.to_string())?;
     let home = temporary_home.path().to_path_buf();
     let config_home = default_config_home(&home);
     let founder_target: SshTarget = format!("root@{}", founder.bridge_ip).parse()?;
-    let joiner_target: SshTarget = format!("root@{}", joiner.bridge_ip).parse()?;
     let operator = SshPeerKey::generate("dind operation operator".to_owned())
         .map_err(|error| error.to_string())?;
     let store = OperatorContextStore::new(&config_home);
@@ -115,72 +130,98 @@ pub(super) async fn found_and_join(
         .persist(&founder_target, handoff.clone(), &operator)
         .map_err(|error| error.to_string())?;
     let cli = artifact_dir().join("ployz");
-    let token = create_join_token(&cli, &home, &founder_target)?;
-    join_machine(docker, joiner, &token).await?;
+    for joiner in joiners {
+        let token = create_join_token(&cli, &home, &founder_target)?;
+        join_machine(docker, joiner, &token).await?;
+    }
 
     let (corrosion_address, corrosion_token) = corrosion_access(docker, founder).await?;
-    let roster = wait_for_roster(docker, founder, &corrosion_address, &corrosion_token, 2).await?;
-    let joiner_document = roster
-        .values()
-        .find(|document| document.name.as_str() != FOUNDER_NAME)
-        .ok_or_else(|| "joined roster omitted the fresh machine".to_owned())?;
-    store
-        .persist_peer_new(&joiner_target, &operator)
-        .map_err(|error| error.to_string())?;
-    store
-        .persist(
-            &joiner_target,
-            SshContextHandoff {
-                cluster_id: handoff.cluster_id,
-                provider: handoff.provider,
-                machine_transport: joiner_document.transport.clone(),
+    let roster = wait_for_roster(
+        docker,
+        founder,
+        &corrosion_address,
+        &corrosion_token,
+        1 + joiners.len(),
+    )
+    .await?;
+    let founder_machine_id = roster
+        .iter()
+        .find(|(_, document)| document.name.as_str() == FOUNDER_NAME)
+        .map(|(id, _)| id.clone())
+        .ok_or_else(|| "joined roster omitted the founder".to_owned())?;
+    let mut joined = Vec::with_capacity(joiners.len());
+    for joiner in joiners {
+        // A joined machine's roster name is its probed hostname, which the
+        // DinD harness sets to the machine container's name.
+        let (machine_id, document) = roster
+            .iter()
+            .find(|(_, document)| document.name.as_str() == joiner.name)
+            .ok_or_else(|| format!("joined roster omitted machine {}", joiner.name))?;
+        let target: SshTarget = format!("root@{}", joiner.bridge_ip).parse()?;
+        store
+            .persist_peer_new(&target, &operator)
+            .map_err(|error| error.to_string())?;
+        store
+            .persist(
+                &target,
+                SshContextHandoff {
+                    cluster_id: handoff.cluster_id.clone(),
+                    provider: handoff.provider,
+                    machine_transport: document.transport.clone(),
+                },
+                &operator,
+            )
+            .map_err(|error| error.to_string())?;
+        let (api_address, dns_address) = match &document.transport {
+            MachineTransport::Wireguard {
+                addr_v6, subnet_v4, ..
+            } => (format!("[{addr_v6}]:2020"), subnet_v4.bridge_gateway_ipv4()),
+            MachineTransport::Tailscale { .. } => {
+                return Err("operation DinD proofs require builtin WireGuard".to_owned());
+            }
+        };
+        wait_for_cli_output(
+            &cli,
+            &home,
+            &["machine", "ls", "--target", target.as_str()],
+            |output| {
+                output.status.success()
+                    && output
+                        .stdout
+                        .windows(FOUNDER_NAME.len())
+                        .any(|window| window == FOUNDER_NAME.as_bytes())
             },
-            &operator,
-        )
-        .map_err(|error| error.to_string())?;
-    let (joiner_api_address, joiner_dns_address) = match &joiner_document.transport {
-        MachineTransport::Wireguard {
-            addr_v6, subnet_v4, ..
-        } => (format!("[{addr_v6}]:2020"), subnet_v4.bridge_gateway_ipv4()),
-        MachineTransport::Tailscale { .. } => {
-            return Err("operation-deploy proof requires builtin WireGuard".to_owned());
-        }
-    };
-    wait_for_cli_output(
-        &cli,
-        &home,
-        &["machine", "ls", "--target", joiner_target.as_str()],
-        |output| {
-            output.status.success()
-                && output
-                    .stdout
-                    .windows(FOUNDER_NAME.len())
-                    .any(|window| window == FOUNDER_NAME.as_bytes())
-        },
-        "joined machine API through its persisted operator context",
-    )?;
+            "joined machine API through its persisted operator context",
+        )?;
+        joined.push(JoinedMachine {
+            name: joiner.name.clone(),
+            machine_id: machine_id.clone(),
+            target,
+            api_address,
+            dns_address,
+        });
+    }
 
     Ok(OperatorFixture {
         _temporary_home: temporary_home,
         home,
         cli,
         founder_target,
-        joiner_target,
-        joiner_api_address,
-        joiner_dns_address,
+        founder_machine_id,
+        joiners: joined,
     })
 }
 
 pub(super) async fn start_mutable_registry(
     docker: &Docker,
     founder: &DindMachine,
-    joiner: &DindMachine,
+    joiners: &[&DindMachine],
 ) -> Result<String, String> {
     let IpAddr::V4(registry_ip) = founder.bridge_ip else {
         return Err("operation-deploy registry requires an IPv4 DinD bridge".to_owned());
     };
     let registry = format!("{registry_ip}:{REGISTRY_PORT}");
-    for machine in [founder, joiner] {
+    for machine in std::iter::once(founder).chain(joiners.iter().copied()) {
         configure_insecure_registry(docker, machine, &registry).await?;
     }
     wait_for_inner_command(
@@ -212,7 +253,9 @@ pub(super) async fn start_mutable_registry(
         ],
     )
     .await?;
-    wait_for_registry(docker, joiner, &registry).await?;
+    for joiner in joiners {
+        wait_for_registry(docker, joiner, &registry).await?;
+    }
 
     let image = format!("{registry}/operation-http:latest");
     exec_ok(
@@ -244,6 +287,30 @@ pub(super) async fn start_mutable_registry(
     Ok(image)
 }
 
+/// Runs the shipped CLI under the fixture's operator home, bounded by the
+/// standard CLI budget.
+pub(super) fn run_cli(operator: &OperatorFixture, args: &[&str]) -> Result<Output, String> {
+    run_cli_bounded(&operator.cli, &operator.home, args)
+}
+
+pub(super) fn create_namespace(
+    operator: &OperatorFixture,
+    namespace: &str,
+    target: &SshTarget,
+) -> Result<(), String> {
+    let created = run_cli(
+        operator,
+        &[
+            "namespace",
+            "create",
+            namespace,
+            "--target",
+            target.as_str(),
+        ],
+    )?;
+    require_success(&created, "namespace create")
+}
+
 pub(super) fn create_namespace_and_deploy(
     operator: &OperatorFixture,
     namespace: &str,
@@ -252,18 +319,8 @@ pub(super) fn create_namespace_and_deploy(
     secret_name: &str,
     secret_value: &str,
 ) -> Result<OperationRowId, String> {
-    let created = run_cli_bounded(
-        &operator.cli,
-        &operator.home,
-        &[
-            "namespace",
-            "create",
-            namespace,
-            "--target",
-            operator.founder_target.as_str(),
-        ],
-    )?;
-    require_success(&created, "namespace create")?;
+    let founder_target = operator.founder_target.clone();
+    create_namespace(operator, namespace, &founder_target)?;
 
     let deploy = spawn_deploy(
         operator,
@@ -327,7 +384,9 @@ pub(super) fn assert_cluster_wide_operation_replay(
     operation_id: &OperationRowId,
     secret_value: &str,
 ) -> Result<String, String> {
-    for target in [&operator.founder_target, &operator.joiner_target] {
+    for target in std::iter::once(&operator.founder_target)
+        .chain(operator.joiners.iter().map(|joined| &joined.target))
+    {
         wait_for_cli_output(
             &operator.cli,
             &operator.home,
@@ -341,6 +400,9 @@ pub(super) fn assert_cluster_wide_operation_replay(
         )?;
     }
 
+    let Some(replay_via) = operator.joiners.first() else {
+        return Err("operation replay requires at least one joined machine".to_owned());
+    };
     let mut replays = Vec::new();
     for _ in 0..2 {
         let replay = run_cli_bounded(
@@ -351,7 +413,7 @@ pub(super) fn assert_cluster_wide_operation_replay(
                 "watch",
                 operation_id.as_str(),
                 "--target",
-                operator.joiner_target.as_str(),
+                replay_via.target.as_str(),
             ],
         )?;
         require_success(&replay, "operation replay through joined machine")?;
@@ -737,11 +799,11 @@ pub(super) async fn watch_cutover_traffic(
 /// operation may survive on any machine.
 pub(super) async fn assert_first_revision_container_is_gone(
     docker: &Docker,
-    machines: [&DindMachine; 2],
+    machines: &[&DindMachine],
     first_operation: &OperationRowId,
 ) -> Result<(), String> {
     let filter = format!("label={OPERATION_ROW_ID_LABEL}={first_operation}");
-    for machine in machines {
+    for machine in machines.iter().copied() {
         let listed = exec_ok(
             docker,
             machine,
@@ -1037,7 +1099,7 @@ async fn wait_for_registry(
     .await
 }
 
-async fn public_lens(
+pub(super) async fn public_lens(
     docker: &Docker,
     requester: &DindMachine,
     api_address: &str,
@@ -1086,6 +1148,10 @@ async fn wait_for_inner_command(
 fn evidence_sequences(output: &str) -> Result<Vec<u64>, String> {
     output
         .lines()
+        // The watch renderer indents multi-line evidence details (placement
+        // bids, targets, eliminations) as continuation lines; only unindented
+        // lines open a durable event and carry its sequence.
+        .filter(|line| !line.starts_with(' '))
         .map(|line| {
             let Some((sequence, _)) = line.split_once('\t') else {
                 return Err(format!(
@@ -1169,7 +1235,7 @@ fn wait_for_child(mut child: Child, budget: Duration) -> Result<Output, String> 
     }
 }
 
-fn require_success(output: &Output, operation: &str) -> Result<(), String> {
+pub(super) fn require_success(output: &Output, operation: &str) -> Result<(), String> {
     require(
         output.status.success(),
         format!(

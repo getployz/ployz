@@ -25,6 +25,7 @@ tokio = { workspace = true, features = ["io-util", "macros", "process", "rt-mult
 uuid.workspace = true
 
 [dev-dependencies]
+hyper.workspace = true
 ployz = { path = "../../crates/ployz" }
 rcgen = { version = "0.14.8", features = ["crypto", "pem"] }
 tempfile = "3"

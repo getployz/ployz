@@ -1,20 +1,28 @@
+use std::collections::{BTreeMap, BTreeSet};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use ployz_core::OperationEvidence;
 use ployz_core::corrosion::{
     CorrosionDeployFailure, CorrosionDeployOutcome, CorrosionDeployServiceResult,
     CorrosionDeployTargets, CorrosionDeployTransition, CorrosionDeployWarning,
     CorrosionDocumentVersion, CorrosionPromotionFailure, CorrosionTimestamp, DeployTakeover,
-    OperationDocument, OperationInitiator, check_deploy_takeover,
+    HostPortBindings, OperationDocument, OperationInitiator, ServicePlacement, ServiceReplicaCount,
+    check_deploy_takeover,
 };
+use ployz_core::deploy::VolumeName;
 use ployz_core::ids::{ClusterId, MachineRowId, OperationRowId, ServiceRowId};
-use ployz_core::{DeployAccepted, DeployRefusal, DeployRequest, HealthGatePolicy};
+use ployz_core::placement::{PlacementPick, PlacementPickInputs, pick_placement};
+use ployz_core::{
+    DeployAccepted, DeployRefusal, DeployRequest, HealthGatePolicy, OperationEvidence,
+    PlacementBidRequest, RequestedPins, RequestedPlacement, ServiceContainerObservation,
+};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tokio::sync::Mutex;
 
 use crate::roles::DNS_TTL_SECONDS;
 
+use super::deploy_dispatch::{DeployVerbClient, machine_socket_addr};
 use super::deploy_runtime::DeployRuntime;
 use super::deploy_stores::{DeployOperationRows, DeployStore};
 use super::deploy_task::{AcceptedDeploy, DeployTask};
@@ -28,6 +36,7 @@ use super::operation_finalizer::{
     UncertaintyDeadline, classify_redeploy_rows,
 };
 use super::operation_store::{ConditionalOperationWrite, ObservedOperation, OperationStoreError};
+use super::placement_gather::{PlacementMesh, PlacementPeer, gather_bids};
 use super::promotion_store::{DeployAdmission, ObservedService, ResolvedNamespace};
 
 const EXTERNAL_EFFECT_TIMEOUT: Duration = Duration::from_secs(60);
@@ -76,10 +85,43 @@ pub(super) struct DeployDriver {
     pub(super) store: Arc<dyn DeployStore>,
     pub(super) operations: Arc<dyn DeployOperationRows>,
     pub(super) runtime: Arc<dyn DeployRuntime>,
+    pub(super) mesh: Arc<dyn PlacementMesh>,
+    pub(super) verbs: Arc<dyn DeployVerbClient>,
+    pub(super) api_port: u16,
     pub(super) clock: Arc<dyn DeployClock>,
     pub(super) effect_timeout: Duration,
     pub(super) claim_courtesy_wait: Duration,
     pub(super) drain_wait: Duration,
+}
+
+/// The placement a deploy task executes: the effective service intent, the
+/// picked target order, and the gather's live picture of the roster.
+#[derive(Clone)]
+pub(super) struct DeployPlacement {
+    /// The effective placement written to the services row at the flip:
+    /// the request's, or the incumbent row's when the deploy carried none.
+    pub(super) placement: ServicePlacement,
+    /// The effective pin set written to the services row at the flip.
+    pub(super) pinned_machines: BTreeSet<MachineRowId>,
+    /// The pick's target order; a machine appears once per replica it hosts.
+    pub(super) targets: Vec<MachineRowId>,
+    /// Mesh addresses for every roster machine, from the admission roster.
+    pub(super) addresses: BTreeMap<MachineRowId, SocketAddr>,
+    /// Service containers each bidding machine reported from live Docker.
+    pub(super) bid_service_containers: BTreeMap<MachineRowId, Vec<ServiceContainerObservation>>,
+    /// Machines that answered the bid fan-out.
+    pub(super) answered: BTreeSet<MachineRowId>,
+}
+
+impl DeployPlacement {
+    /// Host-published ports for this deploy's containers: the global
+    /// variant's bindings, empty for every replicated deploy.
+    pub(super) fn host_ports(&self) -> HostPortBindings {
+        match &self.placement {
+            ServicePlacement::Global { host_ports } => host_ports.clone(),
+            ServicePlacement::Replicated { replicas: _ } => HostPortBindings::default(),
+        }
+    }
 }
 
 /// Which admission case this operation is executing.
@@ -100,17 +142,36 @@ pub(super) enum RedeployFlipEnd {
     Failure { failure: CorrosionPromotionFailure },
 }
 
+/// The construction-time collaborators of a deploy driver, grouped so the
+/// constructor names each seam once.
+pub(super) struct DeployDriverSeams {
+    pub(super) evidence: OperationEvidenceDirectory,
+    pub(super) store: Arc<dyn DeployStore>,
+    pub(super) operations: Arc<dyn DeployOperationRows>,
+    pub(super) runtime: Arc<dyn DeployRuntime>,
+    pub(super) mesh: Arc<dyn PlacementMesh>,
+    pub(super) verbs: Arc<dyn DeployVerbClient>,
+    pub(super) api_port: u16,
+    pub(super) clock: Arc<dyn DeployClock>,
+}
+
 impl DeployDriver {
     #[must_use]
     pub(super) fn new(
         cluster_id: ClusterId,
         machine_id: MachineRowId,
-        evidence: OperationEvidenceDirectory,
-        store: Arc<dyn DeployStore>,
-        operations: Arc<dyn DeployOperationRows>,
-        runtime: Arc<dyn DeployRuntime>,
-        clock: Arc<dyn DeployClock>,
+        seams: DeployDriverSeams,
     ) -> Self {
+        let DeployDriverSeams {
+            evidence,
+            store,
+            operations,
+            runtime,
+            mesh,
+            verbs,
+            api_port,
+            clock,
+        } = seams;
         Self {
             cluster_id,
             machine_id,
@@ -118,6 +179,9 @@ impl DeployDriver {
             store,
             operations,
             runtime,
+            mesh,
+            verbs,
+            api_port,
             clock,
             effect_timeout: EXTERNAL_EFFECT_TIMEOUT,
             claim_courtesy_wait: CLAIM_COURTESY_WAIT,
@@ -179,27 +243,10 @@ impl DeployDriver {
             DeployAdmission::Redeploy {
                 namespace,
                 incumbent,
-            } => {
-                // This slice commands only the incumbent's own machine.
-                let Some(pinned) = incumbent.document.pinned_machines.iter().next().cloned() else {
-                    return Err(DeployDriverError::Invariant(
-                        "incumbent service pins no machine".to_owned(),
-                    ));
-                };
-                if !incumbent
-                    .document
-                    .pinned_machines
-                    .contains(&self.machine_id)
-                {
-                    return Ok(Err(DeployRefusal::IncumbentOnAnotherMachine {
-                        machine_id: pinned,
-                    }));
-                }
-                DeployPath::Redeploy {
-                    namespace,
-                    incumbent,
-                }
-            }
+            } => DeployPath::Redeploy {
+                namespace,
+                incumbent,
+            },
         };
         if !tokio::time::timeout(self.effect_timeout, self.runtime.bridge_ready())
             .await
@@ -217,6 +264,13 @@ impl DeployDriver {
             DeployPath::First { namespace } | DeployPath::Redeploy { namespace, .. } => {
                 namespace.id.clone()
             }
+        };
+        let (placement, gathered, pick) = match self
+            .derive_placement(&request, &path, &namespace_id, &service_id)
+            .await?
+        {
+            Ok(derived) => derived,
+            Err(refusal) => return Ok(Err(refusal)),
         };
         let created_at = self.clock.now().map_err(DeployDriverError::Clock)?;
         let operation = OperationDocument::deploy_created(
@@ -236,6 +290,19 @@ impl DeployDriver {
                 created_at,
             )
             .await?;
+        log.append(
+            self.clock.now().map_err(DeployDriverError::Clock)?,
+            OperationEvidence::PlacementGathered {
+                bids: gathered.bids,
+                silent: gathered.silent,
+            },
+        )
+        .await?;
+        log.append(
+            self.clock.now().map_err(DeployDriverError::Clock)?,
+            OperationEvidence::PlacementPicked { pick },
+        )
+        .await?;
         let row = observed_with(&operation_id, operation.clone())?;
         self.operations
             .insert_created(&operation_id, &operation)
@@ -252,10 +319,138 @@ impl DeployDriver {
                 request,
                 initiator,
                 path,
+                placement,
                 log,
                 row: Arc::new(Mutex::new(row)),
             },
         }))
+    }
+
+    /// Gathers live bids over the roster, resolves the request's placement
+    /// intent against the incumbent row, and runs the deterministic pick.
+    /// Every refusal here happens before any operation or Docker effect.
+    async fn derive_placement(
+        &self,
+        request: &DeployRequest,
+        path: &DeployPath,
+        namespace_id: &ployz_core::ids::NamespaceRowId,
+        service_id: &ServiceRowId,
+    ) -> Result<
+        Result<
+            (
+                DeployPlacement,
+                super::placement_gather::GatheredBids,
+                PlacementPick,
+            ),
+            DeployRefusal,
+        >,
+        DeployDriverError,
+    > {
+        let peers = tokio::time::timeout(self.effect_timeout, self.mesh.roster())
+            .await
+            .map_err(|_| DeployDriverError::Placement("roster read timed out".to_owned()))?
+            .map_err(DeployDriverError::Placement)?;
+        let pinned_machines = match resolve_pins(&request.machines, &peers, path) {
+            Ok(pins) => pins,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let placement = match effective_placement(request, path)? {
+            Ok(placement) => placement,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let volumes: BTreeSet<VolumeName> = request
+            .runtime
+            .volume_mounts
+            .iter()
+            .map(|mount| mount.volume_name.clone())
+            .collect();
+        let active_deploy = match path {
+            DeployPath::First { .. } => None,
+            DeployPath::Redeploy { incumbent, .. } => {
+                Some(incumbent.document.active_deploy.clone())
+            }
+        };
+        let bid_request = PlacementBidRequest {
+            namespace_id: namespace_id.clone(),
+            service_id: service_id.clone(),
+            volumes: volumes.clone(),
+            active_deploy: active_deploy.clone(),
+        };
+        let gathered = tokio::time::timeout(
+            self.effect_timeout,
+            gather_bids(self.mesh.as_ref(), &peers, &self.machine_id, &bid_request),
+        )
+        .await
+        .map_err(|_| DeployDriverError::Placement("bid gather timed out".to_owned()))?;
+        let row_machines = match path {
+            DeployPath::First { .. } => BTreeSet::new(),
+            DeployPath::Redeploy { .. } => {
+                let rows = tokio::time::timeout(
+                    self.effect_timeout,
+                    self.store.service_containers(service_id),
+                )
+                .await
+                .map_err(|_| {
+                    DeployDriverError::Placement("service container rows timed out".to_owned())
+                })??;
+                rows.into_iter()
+                    .map(|row| row.document.machine_id)
+                    .collect()
+            }
+        };
+        let inputs = PlacementPickInputs {
+            placement: placement.clone(),
+            pinned_machines: pinned_machines.clone(),
+            volumes,
+            plausible_volume_holders: row_machines.union(&pinned_machines).cloned().collect(),
+            active_deploy,
+            bids: gathered.bids.clone(),
+            silent_machines: gathered
+                .silent
+                .iter()
+                .filter_map(|silent| {
+                    peers
+                        .iter()
+                        .find(|peer| peer.id == silent.machine_id)
+                        .map(|peer| (silent.machine_id.clone(), peer.name.clone()))
+                })
+                .collect(),
+        };
+        let pick = match pick_placement(&inputs) {
+            Ok(pick) => pick,
+            Err(refusal) => return Ok(Err(DeployRefusal::Placement { refusal })),
+        };
+        let addresses = peers
+            .iter()
+            .map(|peer| {
+                (
+                    peer.id.clone(),
+                    machine_socket_addr(&peer.transport, self.api_port),
+                )
+            })
+            .collect();
+        let bid_service_containers = gathered
+            .bids
+            .iter()
+            .map(|bid| (bid.machine_id.clone(), bid.service_containers.clone()))
+            .collect();
+        let answered = gathered
+            .bids
+            .iter()
+            .map(|bid| bid.machine_id.clone())
+            .collect();
+        Ok(Ok((
+            DeployPlacement {
+                placement,
+                pinned_machines,
+                targets: pick.targets.clone(),
+                addresses,
+                bid_service_containers,
+                answered,
+            },
+            gathered,
+            pick,
+        )))
     }
 
     pub(super) async fn resume_promotion(
@@ -603,6 +798,105 @@ impl DeployDriver {
     }
 }
 
+/// The effective placement: the request's intent resolved against the
+/// incumbent row, or the incumbent's placement unchanged when the deploy
+/// carried none. A first deploy without intent runs one replica.
+fn effective_placement(
+    request: &DeployRequest,
+    path: &DeployPath,
+) -> Result<Result<ServicePlacement, DeployRefusal>, DeployDriverError> {
+    let one_replica = || {
+        ServiceReplicaCount::try_new(1)
+            .map_err(|error| DeployDriverError::Invariant(error.to_string()))
+    };
+    match (&request.placement, path) {
+        // The mode-preserving count change: legal against a replicated
+        // incumbent or a first deploy, refused against a global incumbent
+        // instead of silently unpublishing its host ports.
+        (
+            Some(RequestedPlacement::Replicas { replicas }),
+            DeployPath::Redeploy { incumbent, .. },
+        ) => match &incumbent.document.placement {
+            ServicePlacement::Replicated { replicas: _ } => Ok(Ok(ServicePlacement::Replicated {
+                replicas: *replicas,
+            })),
+            ServicePlacement::Global { host_ports: _ } => {
+                Ok(Err(DeployRefusal::ReplicasOnGlobalService))
+            }
+        },
+        (Some(RequestedPlacement::Replicas { replicas }), DeployPath::First { .. }) => {
+            Ok(Ok(ServicePlacement::Replicated {
+                replicas: *replicas,
+            }))
+        }
+        (
+            Some(RequestedPlacement::Replicated {
+                replicas: Some(replicas),
+            }),
+            _,
+        ) => Ok(Ok(ServicePlacement::Replicated {
+            replicas: *replicas,
+        })),
+        // A count-free replicated intent keeps a replicated incumbent's
+        // count; a first deploy or a global conversion defaults to one.
+        (
+            Some(RequestedPlacement::Replicated { replicas: None }),
+            DeployPath::Redeploy { incumbent, .. },
+        ) => match &incumbent.document.placement {
+            ServicePlacement::Replicated { replicas } => Ok(Ok(ServicePlacement::Replicated {
+                replicas: *replicas,
+            })),
+            ServicePlacement::Global { host_ports: _ } => Ok(Ok(ServicePlacement::Replicated {
+                replicas: one_replica()?,
+            })),
+        },
+        (Some(RequestedPlacement::Replicated { replicas: None }), DeployPath::First { .. }) => {
+            Ok(Ok(ServicePlacement::Replicated {
+                replicas: one_replica()?,
+            }))
+        }
+        (Some(RequestedPlacement::Global { host_ports }), _) => Ok(Ok(ServicePlacement::Global {
+            host_ports: host_ports.clone(),
+        })),
+        (None, DeployPath::Redeploy { incumbent, .. }) => {
+            Ok(Ok(incumbent.document.placement.clone()))
+        }
+        (None, DeployPath::First { .. }) => Ok(Ok(ServicePlacement::Replicated {
+            replicas: one_replica()?,
+        })),
+    }
+}
+
+/// The effective pin set: requested names resolved to roster row ids,
+/// `--machine any` clearing the set, or the incumbent row's pins unchanged.
+fn resolve_pins(
+    machines: &Option<RequestedPins>,
+    peers: &[PlacementPeer],
+    path: &DeployPath,
+) -> Result<BTreeSet<MachineRowId>, DeployRefusal> {
+    match machines {
+        Some(RequestedPins::Machines { names }) => names
+            .iter()
+            .map(|name| {
+                peers
+                    .iter()
+                    .find(|peer| &peer.name == name)
+                    .map(|peer| peer.id.clone())
+                    .ok_or_else(|| DeployRefusal::UnknownPinnedMachine {
+                        machine_name: name.clone(),
+                    })
+            })
+            .collect(),
+        Some(RequestedPins::Any) => Ok(BTreeSet::new()),
+        None => match path {
+            DeployPath::First { .. } => Ok(BTreeSet::new()),
+            DeployPath::Redeploy { incumbent, .. } => {
+                Ok(incumbent.document.pinned_machines.clone())
+            }
+        },
+    }
+}
+
 /// One shared deadline convention for every bounded finalizer loop.
 fn finalizer_deadline(attempts: usize) -> UncertaintyDeadline {
     if attempts >= FINALIZER_ATTEMPTS {
@@ -668,6 +962,8 @@ pub(super) enum DeployDriverError {
     Promotion(#[from] PromotionFinalizerStoreError),
     #[error("timestamp creation failed: {0}")]
     Clock(String),
+    #[error("placement derivation failed: {0}")]
+    Placement(String),
     #[error("deploy invariant failed: {0}")]
     Invariant(String),
 }

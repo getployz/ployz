@@ -6,7 +6,8 @@ use ployz_core::ids::ServiceRowId;
 
 use super::operation_evidence::PreparedPromotion;
 
-/// Exact readback of the two rows in one atomic prepared promotion.
+/// Exact readback of one atomic prepared promotion: the service row plus
+/// the fold of its prepared container rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct PromotionRowsObservation {
     pub(super) service_row: CorrosionPromotionRowObservation,
@@ -148,8 +149,19 @@ impl PromotionFinalizerState {
             };
         }
         if rows != PromotionRowsObservation::ABSENT {
-            let failure = rows.invariant_failure(prepared.service_id.clone());
-            return PromotionFinalizerDecision::Failed { prepared, failure };
+            // A partial landing: some prepared rows are visible and the rest
+            // have not converged. The conditional inserts are idempotent, so
+            // a retry heals the missing rows; only the deadline turns a
+            // still-partial group into a typed invariant failure.
+            return match uncertainty_deadline {
+                UncertaintyDeadline::Open => PromotionFinalizerDecision::RetryRows {
+                    state: Self::PromotionPrepared { prepared },
+                },
+                UncertaintyDeadline::Reached => {
+                    let failure = rows.invariant_failure(prepared.service_id.clone());
+                    PromotionFinalizerDecision::Failed { prepared, failure }
+                }
+            };
         }
         match disposition {
             PromotionRequestDisposition::Rejected | PromotionRequestDisposition::Accepted => {
@@ -366,20 +378,29 @@ mod tests {
     }
 
     #[test]
-    fn partial_pair_is_a_typed_invariant_failure() {
+    fn partial_rows_retry_until_the_deadline_then_fail_typed() {
+        let partial = PromotionRowsObservation {
+            service_row: ployz_core::corrosion::CorrosionPromotionRowObservation::Exact,
+            container_row: ployz_core::corrosion::CorrosionPromotionRowObservation::Absent,
+        };
         let decision = PromotionFinalizerState::PromotionPrepared {
             prepared: prepared_promotion_fixture(),
         }
         .observe_prepared_rows(
             PromotionRequestDisposition::Accepted,
-            PromotionRowsObservation {
-                service_row: ployz_core::corrosion::CorrosionPromotionRowObservation::Exact,
-                container_row: ployz_core::corrosion::CorrosionPromotionRowObservation::Absent,
-            },
+            partial,
             UncertaintyDeadline::Open,
         );
+        let PromotionFinalizerDecision::RetryRows { state } = decision else {
+            panic!("a partial landing heals on retry while the deadline is open");
+        };
+        let decision = state.observe_prepared_rows(
+            PromotionRequestDisposition::Accepted,
+            partial,
+            UncertaintyDeadline::Reached,
+        );
         let PromotionFinalizerDecision::Failed { failure, .. } = decision else {
-            panic!("partial pair must fail");
+            panic!("a still-partial pair at the deadline must fail");
         };
         assert!(matches!(
             failure,

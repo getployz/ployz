@@ -4,11 +4,12 @@ use std::io::Write as _;
 
 use hyper::Method;
 use ployz_core::deploy::ContainerRuntimeSpec;
+use ployz_core::placement::PlacementRefusal;
 use ployz_core::{DEPLOY_ROUTE, DeployAccepted, DeployRefusal, DeployRequest};
 
 use crate::commands::{DeployCommand, OpsWatchCommand};
 use crate::mesh::http::JsonReply;
-use crate::ops::{OpsExecutionError, watch_to};
+use crate::ops::{OpsExecutionError, elimination_reason, watch_to};
 use crate::remote::{OperatorRemote, OperatorRemoteError};
 
 pub async fn execute(command: DeployCommand) -> Result<String, DeployExecutionError> {
@@ -54,6 +55,8 @@ fn deploy_request(command: &DeployCommand) -> DeployRequest {
         image: command.image.clone(),
         runtime,
         health_gate: command.health_gate,
+        placement: command.placement.clone(),
+        machines: command.machines.clone(),
     }
 }
 
@@ -95,8 +98,26 @@ pub enum DeployExecutionError {
         "namespace {namespace_id} has route bindings but no service; run `ployz route rm <hostname>` on each route before deploying"
     )]
     RoutesWithoutServices { namespace_id: String },
-    #[error("the incumbent service is pinned to machine {machine_id}; deploy through that machine")]
-    IncumbentOnAnotherMachine { machine_id: String },
+    #[error(
+        "no machine can host this deploy: {eliminations}; run `ployz status` to inspect the machines"
+    )]
+    NoEligibleMachines { eliminations: String },
+    #[error(
+        "volume {volume} exists on machines {holders}; two copies of a data volume is a fork — pick one holder with `ployz deploy --machine <machine>`"
+    )]
+    VolumeHolderConflict { volume: String, holders: String },
+    #[error(
+        "machine(s) {machines} may hold this service's volumes but did not answer; recover them, or fence a lost machine with `ployz machine remove <machine>` before redeploying"
+    )]
+    DarkVolumeHolder { machines: String },
+    #[error("volume services run exactly one replica; drop --replicas (requested {requested})")]
+    VolumeReplicaLimit { requested: u16 },
+    #[error(
+        "--replicas alone cannot change a global service; convert it with `ployz deploy --mode replicated --replicas <n>`"
+    )]
+    ReplicasOnGlobalService,
+    #[error("machine {machine_name} is not in the roster; run `ployz status` to see the machines")]
+    UnknownPinnedMachine { machine_name: String },
     #[error("the required ployz container bridge is unavailable on the driver")]
     BridgeUnavailable,
 }
@@ -143,12 +164,52 @@ impl From<DeployRefusal> for DeployExecutionError {
             DeployRefusal::RoutesWithoutServices { namespace_id } => Self::RoutesWithoutServices {
                 namespace_id: namespace_id.to_string(),
             },
-            DeployRefusal::IncumbentOnAnotherMachine { machine_id } => {
-                Self::IncumbentOnAnotherMachine {
-                    machine_id: machine_id.to_string(),
+            DeployRefusal::Placement { refusal } => Self::from(refusal),
+            DeployRefusal::ReplicasOnGlobalService => Self::ReplicasOnGlobalService,
+            DeployRefusal::UnknownPinnedMachine { machine_name } => Self::UnknownPinnedMachine {
+                machine_name: machine_name.as_str().to_owned(),
+            },
+            DeployRefusal::BridgeUnavailable => Self::BridgeUnavailable,
+        }
+    }
+}
+
+impl From<PlacementRefusal> for DeployExecutionError {
+    fn from(refusal: PlacementRefusal) -> Self {
+        match refusal {
+            PlacementRefusal::NoEligibleMachines { eliminations } => Self::NoEligibleMachines {
+                eliminations: eliminations
+                    .into_iter()
+                    .map(|elimination| {
+                        format!(
+                            "{} ({})",
+                            elimination.machine_name.as_str(),
+                            elimination_reason(&elimination.reason)
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            },
+            PlacementRefusal::VolumeHolderConflict { volume, holders } => {
+                Self::VolumeHolderConflict {
+                    volume: volume.as_str().to_owned(),
+                    holders: holders
+                        .into_iter()
+                        .map(|holder| holder.machine_name.as_str().to_owned())
+                        .collect::<Vec<_>>()
+                        .join(", "),
                 }
             }
-            DeployRefusal::BridgeUnavailable => Self::BridgeUnavailable,
+            PlacementRefusal::DarkVolumeHolder { machines } => Self::DarkVolumeHolder {
+                machines: machines
+                    .into_iter()
+                    .map(|machine| machine.machine_name.as_str().to_owned())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            },
+            PlacementRefusal::VolumeReplicaLimit { requested } => Self::VolumeReplicaLimit {
+                requested: requested.get(),
+            },
         }
     }
 }
@@ -170,6 +231,8 @@ mod tests {
             image: ImageReference::try_new("registry.example/web:latest").expect("image"),
             environment: ServiceEnvironment::from(BTreeMap::new()),
             health_gate,
+            placement: None,
+            machines: None,
             target: None,
         }
     }
@@ -188,6 +251,104 @@ mod tests {
                 Some(&serde_json::json!("production"))
             );
             assert_eq!(body.get("service_name"), Some(&serde_json::json!("web")));
+        }
+    }
+
+    #[test]
+    fn deploy_request_forwards_placement_and_pins_only_when_commanded() {
+        let inherit = serde_json::to_value(deploy_request(&command(HealthGatePolicy::Enforce)))
+            .expect("deploy request serializes");
+        assert_eq!(inherit.get("placement"), None);
+        assert_eq!(inherit.get("machines"), None);
+
+        let mut placed = command(HealthGatePolicy::Enforce);
+        placed.placement = Some(ployz_core::RequestedPlacement::Replicated {
+            replicas: Some(
+                ployz_core::corrosion::ServiceReplicaCount::try_new(3).expect("replica count"),
+            ),
+        });
+        placed.machines = Some(ployz_core::RequestedPins::Any);
+        let body =
+            serde_json::to_value(deploy_request(&placed)).expect("deploy request serializes");
+        assert_eq!(
+            body.get("placement"),
+            Some(&serde_json::json!({ "mode": "replicated", "replicas": 3 }))
+        );
+        assert_eq!(
+            body.get("machines"),
+            Some(&serde_json::json!({ "kind": "any" }))
+        );
+    }
+
+    #[test]
+    fn placement_refusal_copy_names_each_resolver() {
+        let machine = ployz_core::placement::PlacementMachine {
+            machine_id: ployz_core::ids::MachineRowId::generate(),
+            machine_name: ployz_core::machine::MachineName::try_new("edge-a")
+                .expect("machine name"),
+        };
+        let cases: Vec<(DeployRefusal, &[&str])> = vec![
+            (
+                DeployRefusal::Placement {
+                    refusal: PlacementRefusal::NoEligibleMachines {
+                        eliminations: vec![ployz_core::placement::PlacementElimination {
+                            machine_id: machine.machine_id.clone(),
+                            machine_name: machine.machine_name.clone(),
+                            reason:
+                                ployz_core::placement::PlacementEliminationReason::OutsidePinSet,
+                        }],
+                    },
+                },
+                &[
+                    "no machine can host this deploy",
+                    "edge-a",
+                    "outside the pin set",
+                    "ployz status",
+                ],
+            ),
+            (
+                DeployRefusal::Placement {
+                    refusal: PlacementRefusal::VolumeHolderConflict {
+                        volume: ployz_core::deploy::VolumeName::try_new("data").expect("volume"),
+                        holders: vec![machine.clone()],
+                    },
+                },
+                &["fork", "edge-a", "--machine <machine>"],
+            ),
+            (
+                DeployRefusal::Placement {
+                    refusal: PlacementRefusal::DarkVolumeHolder {
+                        machines: vec![machine.clone()],
+                    },
+                },
+                &["did not answer", "edge-a", "ployz machine remove"],
+            ),
+            (
+                DeployRefusal::Placement {
+                    refusal: PlacementRefusal::VolumeReplicaLimit {
+                        requested: ployz_core::corrosion::ServiceReplicaCount::try_new(3)
+                            .expect("replica count"),
+                    },
+                },
+                &["exactly one replica", "drop --replicas"],
+            ),
+            (
+                DeployRefusal::ReplicasOnGlobalService,
+                &["--replicas alone", "--mode replicated"],
+            ),
+            (
+                DeployRefusal::UnknownPinnedMachine {
+                    machine_name: ployz_core::machine::MachineName::try_new("edge-z")
+                        .expect("machine name"),
+                },
+                &["edge-z", "not in the roster", "ployz status"],
+            ),
+        ];
+        for (refusal, expected) in cases {
+            let copy = DeployExecutionError::from(refusal).to_string();
+            for needle in expected {
+                assert!(copy.contains(needle), "{copy:?} must contain {needle:?}");
+            }
         }
     }
 }

@@ -11,7 +11,9 @@ use ployz_core::ids::{ClusterId, ContainerId, NamespaceRowId, ServiceRowId};
 
 use crate::corrosion::{CorrosionClient, StoredRowLimit, collect_stored_rows};
 
-use super::operation_evidence::{PreparedPromotion, PreparedRedeployIntent};
+use super::operation_evidence::{
+    PreparedDeployContainer, PreparedPromotion, PreparedRedeployIntent,
+};
 use super::operation_finalizer::{
     PreparedPromotionStore, PromotionClaimOutcome, PromotionFinalizerStoreError,
     PromotionRequestDisposition, PromotionRowsObservation,
@@ -122,17 +124,31 @@ impl CorrosionPreparedPromotionStore {
         &self,
         prepared: &PreparedPromotion,
     ) -> Result<PromotionRowsObservation, PromotionFinalizerStoreError> {
-        let service = self.query_one(CorrosionTable::Services, prepared.service_id.as_str());
-        let container = self.query_one(CorrosionTable::Containers, prepared.container_id.as_str());
-        let (service, container) = tokio::try_join!(service, container)?;
+        let service = self
+            .query_one(CorrosionTable::Services, prepared.service_id.as_str())
+            .await?;
         Ok(PromotionRowsObservation {
             service_row: observe_exact_row(service, &prepared.service_document, &self.cluster_id)?,
-            container_row: observe_exact_row(
-                container,
-                &prepared.container_document,
-                &self.cluster_id,
-            )?,
+            container_row: self.observe_container_rows(&prepared.containers).await?,
         })
+    }
+
+    /// Reads every prepared container row concurrently and folds the group
+    /// into one observation: `Exact` only when all rows are exact, `Absent`
+    /// only when all are absent, otherwise `Mismatch`.
+    async fn observe_container_rows(
+        &self,
+        containers: &[PreparedDeployContainer],
+    ) -> Result<CorrosionPromotionRowObservation, PromotionFinalizerStoreError> {
+        let observations =
+            futures_util::future::try_join_all(containers.iter().map(|container| async {
+                let rows = self
+                    .query_one(CorrosionTable::Containers, container.id.as_str())
+                    .await?;
+                observe_exact_row(rows, &container.document, &self.cluster_id)
+            }))
+            .await?;
+        Ok(fold_row_observations(&observations))
     }
 
     async fn query_one(
@@ -272,7 +288,7 @@ impl CorrosionPreparedPromotionStore {
         validate_redeploy_cluster(prepared, &self.cluster_id)?;
         let statements = redeploy_statements(prepared)?;
         let disposition = match self.client.execute(&statements).await {
-            Ok(response) => classify_converge_response(&response)?,
+            Ok(response) => classify_converge_response(&response, prepared.containers.len())?,
             Err(_) => PromotionRequestDisposition::Uncertain,
         };
         let rows = self.observe_redeploy_rows(prepared).await?;
@@ -283,16 +299,12 @@ impl CorrosionPreparedPromotionStore {
         &self,
         prepared: &PreparedRedeployIntent,
     ) -> Result<PromotionRowsObservation, PromotionFinalizerStoreError> {
-        let service = self.query_one(CorrosionTable::Services, prepared.service_id.as_str());
-        let container = self.query_one(CorrosionTable::Containers, prepared.container_id.as_str());
-        let (service, container) = tokio::try_join!(service, container)?;
+        let service = self
+            .query_one(CorrosionTable::Services, prepared.service_id.as_str())
+            .await?;
         Ok(PromotionRowsObservation {
             service_row: observe_exact_row(service, &prepared.service_document, &self.cluster_id)?,
-            container_row: observe_exact_row(
-                container,
-                &prepared.container_document,
-                &self.cluster_id,
-            )?,
+            container_row: self.observe_container_rows(&prepared.containers).await?,
         })
     }
 
@@ -405,7 +417,7 @@ impl PreparedPromotionStore for CorrosionPreparedPromotionStore {
         validate_cluster(prepared, &self.cluster_id)?;
         let statements = converge_statements(prepared)?;
         let disposition = match self.client.execute(&statements).await {
-            Ok(response) => classify_converge_response(&response)?,
+            Ok(response) => classify_converge_response(&response, prepared.containers.len())?,
             Err(_) => PromotionRequestDisposition::Uncertain,
         };
         let rows = self.observe_rows(prepared).await?;
@@ -452,20 +464,21 @@ impl PreparedPromotionStore for CorrosionPreparedPromotionStore {
         validate_cluster(prepared, &self.cluster_id)?;
         let service = serde_json::to_string(&prepared.service_document)
             .map_err(|error| PromotionFinalizerStoreError::Protocol(error.to_string()))?;
-        let container = serde_json::to_string(&prepared.container_document)
-            .map_err(|error| PromotionFinalizerStoreError::Protocol(error.to_string()))?;
-        let statements = [
-            exact_delete_statement(
+        let mut statements = Vec::with_capacity(prepared.containers.len() + 1);
+        for container in &prepared.containers {
+            let document = serde_json::to_string(&container.document)
+                .map_err(|error| PromotionFinalizerStoreError::Protocol(error.to_string()))?;
+            statements.push(exact_delete_statement(
                 CorrosionTable::Containers,
-                prepared.container_id.as_str(),
-                container,
-            ),
-            exact_delete_statement(
-                CorrosionTable::Services,
-                prepared.service_id.as_str(),
-                service,
-            ),
-        ];
+                container.id.as_str(),
+                document,
+            ));
+        }
+        statements.push(exact_delete_statement(
+            CorrosionTable::Services,
+            prepared.service_id.as_str(),
+            service,
+        ));
         if self.client.execute(&statements).await.is_err() {
             // A lost response is not a failed cleanup. Exact readback is the authority.
         }
@@ -478,83 +491,108 @@ fn validate_cluster(
     expected: &ClusterId,
 ) -> Result<(), PromotionFinalizerStoreError> {
     if &prepared.service_document.cluster_id != expected
-        || &prepared.container_document.cluster_id != expected
+        || prepared
+            .containers
+            .iter()
+            .any(|container| &container.document.cluster_id != expected)
     {
         return Err(PromotionFinalizerStoreError::Protocol(
             "prepared promotion belongs to another cluster".to_owned(),
         ));
     }
+    if prepared.containers.is_empty() {
+        return Err(PromotionFinalizerStoreError::Protocol(
+            "prepared promotion carries no container rows".to_owned(),
+        ));
+    }
     Ok(())
+}
+
+/// Serializes the prepared container rows into `(id, exact document)` pairs.
+fn exact_container_pairs(
+    containers: &[PreparedDeployContainer],
+) -> Result<Vec<(String, String)>, PromotionFinalizerStoreError> {
+    containers
+        .iter()
+        .map(|container| {
+            serde_json::to_string(&container.document)
+                .map(|document| (container.id.as_str().to_owned(), document))
+                .map_err(|error| PromotionFinalizerStoreError::Protocol(error.to_string()))
+        })
+        .collect()
 }
 
 fn converge_statements(
     prepared: &PreparedPromotion,
-) -> Result<[Statement; 2], PromotionFinalizerStoreError> {
+) -> Result<Vec<Statement>, PromotionFinalizerStoreError> {
     let service = serde_json::to_string(&prepared.service_document)
         .map_err(|error| PromotionFinalizerStoreError::Protocol(error.to_string()))?;
-    let container = serde_json::to_string(&prepared.container_document)
-        .map_err(|error| PromotionFinalizerStoreError::Protocol(error.to_string()))?;
-    let exact_pair = ExactPromotionPair {
+    let containers = exact_container_pairs(&prepared.containers)?;
+    let exact = ExactPromotionRows {
         namespace_id: prepared.namespace_id.as_str(),
         namespace_document: &prepared.exact_namespace_document,
         service_id: prepared.service_id.as_str(),
         service_document: &service,
-        container_id: prepared.container_id.as_str(),
-        container_document: &container,
+        containers: &containers,
     };
-    Ok([
-        conditional_service_insert_statement(
-            CorrosionTable::Services,
-            prepared.service_id.as_str(),
-            service.clone(),
-            &exact_pair,
-        ),
-        conditional_container_insert_statement(
+    let mut statements = vec![conditional_service_insert_statement(
+        CorrosionTable::Services,
+        prepared.service_id.as_str(),
+        service.clone(),
+        &exact,
+    )];
+    for (container_id, container_document) in &containers {
+        statements.push(conditional_container_insert_statement(
             CorrosionTable::Containers,
-            prepared.container_id.as_str(),
-            container,
+            container_id,
+            container_document.clone(),
             prepared.namespace_id.as_str(),
             &prepared.exact_namespace_document,
             prepared.service_id.as_str(),
             &service,
-        ),
-    ])
+        ));
+    }
+    Ok(statements)
 }
 
-struct ExactPromotionPair<'a> {
+struct ExactPromotionRows<'a> {
     namespace_id: &'a str,
     namespace_document: &'a str,
     service_id: &'a str,
     service_document: &'a str,
-    container_id: &'a str,
-    container_document: &'a str,
+    containers: &'a [(String, String)],
 }
 
 fn conditional_service_insert_statement(
     table: CorrosionTable,
     id: &str,
     document: String,
-    exact: &ExactPromotionPair<'_>,
+    exact: &ExactPromotionRows<'_>,
 ) -> Statement {
-    Statement::with_params(
-        format!(
-            "INSERT INTO {} (id, document) SELECT ?, ? WHERE EXISTS (SELECT 1 FROM namespaces WHERE id = ? AND document = ?) AND NOT EXISTS (SELECT 1 FROM route_bindings WHERE namespace_id = ?) AND NOT EXISTS (SELECT 1 FROM services WHERE namespace_id = ? AND NOT (id = ? AND document = ?)) AND (NOT EXISTS (SELECT 1 FROM containers WHERE id = ?) OR EXISTS (SELECT 1 FROM containers WHERE id = ? AND document = ?)) ON CONFLICT(id) DO NOTHING",
-            table.as_str()
-        ),
-        vec![
-            SqliteParameter::Text(id.to_owned()),
-            SqliteParameter::Text(document),
-            SqliteParameter::Text(exact.namespace_id.to_owned()),
-            SqliteParameter::Text(exact.namespace_document.to_owned()),
-            SqliteParameter::Text(exact.namespace_id.to_owned()),
-            SqliteParameter::Text(exact.namespace_id.to_owned()),
-            SqliteParameter::Text(exact.service_id.to_owned()),
-            SqliteParameter::Text(exact.service_document.to_owned()),
-            SqliteParameter::Text(exact.container_id.to_owned()),
-            SqliteParameter::Text(exact.container_id.to_owned()),
-            SqliteParameter::Text(exact.container_document.to_owned()),
-        ],
-    )
+    let mut sql = format!(
+        "INSERT INTO {} (id, document) SELECT ?, ? WHERE EXISTS (SELECT 1 FROM namespaces WHERE id = ? AND document = ?) AND NOT EXISTS (SELECT 1 FROM route_bindings WHERE namespace_id = ?) AND NOT EXISTS (SELECT 1 FROM services WHERE namespace_id = ? AND NOT (id = ? AND document = ?))",
+        table.as_str()
+    );
+    let mut params = vec![
+        SqliteParameter::Text(id.to_owned()),
+        SqliteParameter::Text(document),
+        SqliteParameter::Text(exact.namespace_id.to_owned()),
+        SqliteParameter::Text(exact.namespace_document.to_owned()),
+        SqliteParameter::Text(exact.namespace_id.to_owned()),
+        SqliteParameter::Text(exact.namespace_id.to_owned()),
+        SqliteParameter::Text(exact.service_id.to_owned()),
+        SqliteParameter::Text(exact.service_document.to_owned()),
+    ];
+    for (container_id, container_document) in exact.containers {
+        sql.push_str(
+            " AND (NOT EXISTS (SELECT 1 FROM containers WHERE id = ?) OR EXISTS (SELECT 1 FROM containers WHERE id = ? AND document = ?))",
+        );
+        params.push(SqliteParameter::Text(container_id.clone()));
+        params.push(SqliteParameter::Text(container_id.clone()));
+        params.push(SqliteParameter::Text(container_document.clone()));
+    }
+    sql.push_str(" ON CONFLICT(id) DO NOTHING");
+    Statement::with_params(sql, params)
 }
 
 fn conditional_container_insert_statement(
@@ -695,10 +733,18 @@ fn validate_redeploy_cluster(
     expected: &ClusterId,
 ) -> Result<(), PromotionFinalizerStoreError> {
     if &prepared.service_document.cluster_id != expected
-        || &prepared.container_document.cluster_id != expected
+        || prepared
+            .containers
+            .iter()
+            .any(|container| &container.document.cluster_id != expected)
     {
         return Err(PromotionFinalizerStoreError::Protocol(
             "prepared redeploy belongs to another cluster".to_owned(),
+        ));
+    }
+    if prepared.containers.is_empty() {
+        return Err(PromotionFinalizerStoreError::Protocol(
+            "prepared redeploy carries no container rows".to_owned(),
         ));
     }
     Ok(())
@@ -706,24 +752,24 @@ fn validate_redeploy_cluster(
 
 fn redeploy_statements(
     prepared: &PreparedRedeployIntent,
-) -> Result<[Statement; 2], PromotionFinalizerStoreError> {
+) -> Result<Vec<Statement>, PromotionFinalizerStoreError> {
     let service = serde_json::to_string(&prepared.service_document)
         .map_err(|error| PromotionFinalizerStoreError::Protocol(error.to_string()))?;
-    let container = serde_json::to_string(&prepared.container_document)
-        .map_err(|error| PromotionFinalizerStoreError::Protocol(error.to_string()))?;
-    Ok([
-        incumbent_service_update_statement(
-            prepared.service_id.as_str(),
-            &prepared.exact_incumbent_document,
-            service.clone(),
-        ),
-        redeploy_container_insert_statement(
-            prepared.container_id.as_str(),
-            container,
+    let containers = exact_container_pairs(&prepared.containers)?;
+    let mut statements = vec![incumbent_service_update_statement(
+        prepared.service_id.as_str(),
+        &prepared.exact_incumbent_document,
+        service.clone(),
+    )];
+    for (container_id, container_document) in containers {
+        statements.push(redeploy_container_insert_statement(
+            &container_id,
+            container_document,
             prepared.service_id.as_str(),
             &service,
-        ),
-    ])
+        ));
+    }
+    Ok(statements)
 }
 
 fn incumbent_service_update_statement(
@@ -772,23 +818,68 @@ fn service_containers_statement(service_id: &ServiceRowId) -> Statement {
     )
 }
 
+/// Classifies one service statement followed by exactly one statement per
+/// prepared container row. Every statement writes zero or one row; any
+/// landed write is an accepted request (missing halves heal on retry), and
+/// all-zero is the definite rejection.
 fn classify_converge_response(
     response: &TransactionResponse,
+    container_count: usize,
 ) -> Result<PromotionRequestDisposition, PromotionFinalizerStoreError> {
-    let [service, container] = response.results.as_slice() else {
-        return Err(PromotionFinalizerStoreError::Protocol(format!(
-            "promotion transaction returned {} results",
-            response.results.len()
-        )));
+    let [service, containers @ ..] = response.results.as_slice() else {
+        return Err(PromotionFinalizerStoreError::Protocol(
+            "promotion transaction returned no results".to_owned(),
+        ));
     };
-    let service = rows_affected(service)?;
-    let container = rows_affected(container)?;
-    match (service, container) {
-        (1, 1) | (1, 0) | (0, 1) => Ok(PromotionRequestDisposition::Accepted),
-        (0, 0) => Ok(PromotionRequestDisposition::Rejected),
-        _ => Err(PromotionFinalizerStoreError::Protocol(format!(
-            "atomic promotion reported invalid write counts: service={service}, container={container}"
-        ))),
+    if containers.len() != container_count {
+        return Err(PromotionFinalizerStoreError::Protocol(format!(
+            "atomic promotion answered {} container statements for {container_count} prepared rows",
+            containers.len()
+        )));
+    }
+    let mut total = rows_affected(service)?;
+    let mut counts = vec![total];
+    for container in containers {
+        let count = rows_affected(container)?;
+        counts.push(count);
+        total += count;
+    }
+    if counts.iter().any(|count| *count > 1) {
+        return Err(PromotionFinalizerStoreError::Protocol(format!(
+            "atomic promotion reported invalid write counts: {counts:?}"
+        )));
+    }
+    if total == 0 {
+        Ok(PromotionRequestDisposition::Rejected)
+    } else {
+        Ok(PromotionRequestDisposition::Accepted)
+    }
+}
+
+/// Folds a group of exact row observations into one: `Exact` only when every
+/// row is exact, `Absent` only when every row is absent, otherwise
+/// `Mismatch` — the group is neither intact nor cleanly gone.
+fn fold_row_observations(
+    observations: &[CorrosionPromotionRowObservation],
+) -> CorrosionPromotionRowObservation {
+    let mut all_exact = true;
+    let mut all_absent = true;
+    for observation in observations {
+        match observation {
+            CorrosionPromotionRowObservation::Exact => all_absent = false,
+            CorrosionPromotionRowObservation::Absent => all_exact = false,
+            CorrosionPromotionRowObservation::Mismatch => {
+                all_exact = false;
+                all_absent = false;
+            }
+        }
+    }
+    if all_exact {
+        CorrosionPromotionRowObservation::Exact
+    } else if all_absent {
+        CorrosionPromotionRowObservation::Absent
+    } else {
+        CorrosionPromotionRowObservation::Mismatch
     }
 }
 
@@ -837,11 +928,12 @@ mod tests {
     use ployz_core::ids::{ClusterId, ContainerId, NamespaceRowId, ServiceRowId};
 
     use super::{
-        ContainerRowCleanup, DeployAdmission, ExactPromotionPair, ObservedService,
-        PreparedRedeployIntent, PromotionRequestDisposition, ResolvedNamespace,
-        classify_converge_response, classify_deploy_admission, cleanup_from_observation,
-        conditional_container_insert_statement, conditional_service_insert_statement,
-        exact_delete_statement, incumbent_service_update_statement, namespace_has_route_statement,
+        ContainerRowCleanup, DeployAdmission, ExactPromotionRows, ObservedService,
+        PreparedDeployContainer, PreparedRedeployIntent, PromotionRequestDisposition,
+        ResolvedNamespace, classify_converge_response, classify_deploy_admission,
+        cleanup_from_observation, conditional_container_insert_statement,
+        conditional_service_insert_statement, exact_delete_statement, fold_row_observations,
+        incumbent_service_update_statement, namespace_has_route_statement,
         namespace_services_statement, observe_exact_row, redeploy_container_insert_statement,
         redeploy_statements, service_containers_statement,
     };
@@ -855,13 +947,12 @@ mod tests {
             ployz_core::corrosion::CorrosionTable::Services,
             "service",
             service_document.to_owned(),
-            &ExactPromotionPair {
+            &ExactPromotionRows {
                 namespace_id: "namespace",
                 namespace_document,
                 service_id: "service",
                 service_document,
-                container_id: "container",
-                container_document,
+                containers: &[("container".to_owned(), container_document.to_owned())],
             },
         )
     }
@@ -937,19 +1028,19 @@ mod tests {
     #[test]
     fn only_an_exact_atomic_pair_is_accepted() {
         assert_eq!(
-            classify_converge_response(&response(1, 1)).expect("accepted"),
+            classify_converge_response(&response(1, 1), 1).expect("accepted"),
             PromotionRequestDisposition::Accepted
         );
         assert_eq!(
-            classify_converge_response(&response(0, 0)).expect("rejected"),
+            classify_converge_response(&response(0, 0), 1).expect("rejected"),
             PromotionRequestDisposition::Rejected
         );
         assert_eq!(
-            classify_converge_response(&response(1, 0)).expect("service healed"),
+            classify_converge_response(&response(1, 0), 1).expect("service healed"),
             PromotionRequestDisposition::Accepted
         );
         assert_eq!(
-            classify_converge_response(&response(0, 1)).expect("container healed"),
+            classify_converge_response(&response(0, 1), 1).expect("container healed"),
             PromotionRequestDisposition::Accepted
         );
         let _ = CorrosionPromotionRowObservation::Exact;
@@ -991,13 +1082,18 @@ mod tests {
     #[test]
     fn exact_half_healing_is_a_valid_accepted_request() {
         assert_eq!(
-            classify_converge_response(&response(1, 0)).expect("heal service half"),
+            classify_converge_response(&response(1, 0), 1).expect("heal service half"),
             PromotionRequestDisposition::Accepted
         );
         assert_eq!(
-            classify_converge_response(&response(0, 1)).expect("heal container half"),
+            classify_converge_response(&response(0, 1), 1).expect("heal container half"),
             PromotionRequestDisposition::Accepted
         );
+    }
+
+    #[test]
+    fn a_response_with_the_wrong_container_statement_count_is_a_protocol_error() {
+        assert!(classify_converge_response(&response(1, 1), 2).is_err());
     }
 
     #[test]
@@ -1128,7 +1224,10 @@ mod tests {
     #[test]
     fn redeploy_batch_updates_the_incumbent_before_inserting_the_container() {
         let prepared = prepared_redeploy();
-        let [update, insert] = redeploy_statements(&prepared).expect("statements");
+        let statements = redeploy_statements(&prepared).expect("statements");
+        let [update, insert] = statements.as_slice() else {
+            panic!("one update and one container insert expected");
+        };
         let Statement::WithParams(update_sql, update_params) = update else {
             panic!("update must be parameterized");
         };
@@ -1147,7 +1246,7 @@ mod tests {
         // An incumbent CAS miss with no prior healed write is the rejection the
         // driver maps to SupersededByOperation.
         assert_eq!(
-            classify_converge_response(&response(0, 0)).expect("miss"),
+            classify_converge_response(&response(0, 0), 1).expect("miss"),
             PromotionRequestDisposition::Rejected
         );
     }
@@ -1294,10 +1393,23 @@ mod tests {
             service_id: incumbent.id,
             exact_incumbent_document: incumbent.exact_document,
             service_document: service_document("api"),
-            container_id: ContainerId::try_new("docker-container-1").expect("container id"),
-            container_document: container_document(),
+            containers: vec![PreparedDeployContainer {
+                id: ContainerId::try_new("docker-container-1").expect("container id"),
+                document: container_document(),
+            }],
             health_gate: ployz_core::HealthGatePolicy::Enforce,
         }
+    }
+
+    #[test]
+    fn container_row_group_folds_to_one_observation() {
+        use CorrosionPromotionRowObservation::{Absent, Exact, Mismatch};
+
+        assert_eq!(fold_row_observations(&[Exact, Exact]), Exact);
+        assert_eq!(fold_row_observations(&[Absent, Absent]), Absent);
+        assert_eq!(fold_row_observations(&[Exact, Absent]), Mismatch);
+        assert_eq!(fold_row_observations(&[Exact, Mismatch]), Mismatch);
+        assert_eq!(fold_row_observations(&[Absent, Mismatch]), Mismatch);
     }
 
     #[test]
