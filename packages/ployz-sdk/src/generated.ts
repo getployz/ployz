@@ -76,6 +76,8 @@ mesh_endpoints: Array<string>,
  */
 endpoint_subnet: MachineEndpointSubnet, wireguard_public_key: WireGuardPublicKey, };
 
+export type AnomalousSilenceReason = { "kind": "transport_failed" } | { "kind": "timed_out" } | { "kind": "declined", status: number, };
+
 export type ApiRefusal = { "kind": "unknown_source", source: string, } | { "kind": "ambiguous_source", source: string, candidate_count: number, } | { "kind": "unsupported_route" } | { "kind": "unsupported_method", method: string, } | { "kind": "missing_cluster" } | { "kind": "invalid_cluster" } | { "kind": "corrosion_unavailable", retry_after_seconds: CorrosionRetryAfterSeconds, };
 
 export type ApiVersion = { major: number, build: string, features: Array<ApiFeature>, };
@@ -332,7 +334,7 @@ export type DeployCleanupFailure = { target: DeployCleanupContainer, message: Fa
 
 export type DeployCompletionOutcome = "completed" | "completed_with_warnings" | "partially_completed" | "partially_completed_with_warnings";
 
-export type DeployExecuteOutcome = { "kind": "service_containers", containers: Array<ServiceContainerObservation>, } | { "kind": "volume_ensured" } | { "kind": "image_pulled" } | { "kind": "container_created", container_id: ContainerId, } | { "kind": "container_started" } | { "kind": "container_stopped" } | { "kind": "health_gated", ip: string, } | { "kind": "container_restarted" } | { "kind": "container_removed" } | { "kind": "caller_not_driver", driver: MachineRowId, } | { "kind": "claim_terminal" } | { "kind": "service_mismatch" } | { "kind": "claim_not_yet_visible" } | { "kind": "failed", diagnostic: string, };
+export type DeployExecuteOutcome = { "kind": "service_containers", containers: Array<ServiceContainerObservation>, } | { "kind": "image_pulled" } | { "kind": "container_created", container_id: ContainerId, } | { "kind": "container_started" } | { "kind": "container_stopped" } | { "kind": "health_gated", ip: string, } | { "kind": "container_removed" } | { "kind": "container_identity_mismatch", actual: V2ManagedContainerIdentity, } | { "kind": "caller_not_driver", driver: MachineRowId, } | { "kind": "claim_terminal" } | { "kind": "service_mismatch" } | { "kind": "claim_not_yet_visible" } | { "kind": "failed", diagnostic: string, };
 
 export type DeployExecuteRequest = { operation_id: OperationRowId, namespace_id: NamespaceRowId, service_id: ServiceRowId, verb: DeployVerb, };
 
@@ -381,7 +383,7 @@ export type DeployPreviewService = { service_id: ServiceId, image: DeployPreview
 
 export type DeployPreviewTarget = { namespace_id: NamespaceId, origin?: DeployOrigin | null, volumes?: { [key in VolumeName]: VolumeSpec }, services: Array<DeployPreviewService>, };
 
-export type DeployRefusal = { "kind": "namespace_not_found", namespace_name: CorrosionNamespaceName, create_command: string, } | { "kind": "namespace_ambiguous", namespace_name: CorrosionNamespaceName, namespace_ids: Array<NamespaceRowId>, } | { "kind": "different_service", namespace_id: NamespaceRowId, incumbent_service_name: CorrosionServiceName, } | { "kind": "multiple_services", namespace_id: NamespaceRowId, service_ids: Array<ServiceRowId>, } | { "kind": "routes_without_services", namespace_id: NamespaceRowId, } | { "kind": "no_eligible_machines", eliminations: Array<PlacementElimination>, } | { "kind": "volume_holder_conflict", volume: VolumeName, holders: Array<MachineRowId>, } | { "kind": "dark_volume_holder", machines: Array<MachineRowId>, } | { "kind": "volume_replica_limit", requested: ServiceReplicaCount, } | { "kind": "unknown_pinned_machine", machine_name: MachineName, } | { "kind": "bridge_unavailable" };
+export type DeployRefusal = { "kind": "namespace_not_found", namespace_name: CorrosionNamespaceName, create_command: string, } | { "kind": "namespace_ambiguous", namespace_name: CorrosionNamespaceName, namespace_ids: Array<NamespaceRowId>, } | { "kind": "different_service", namespace_id: NamespaceRowId, incumbent_service_name: CorrosionServiceName, } | { "kind": "multiple_services", namespace_id: NamespaceRowId, service_ids: Array<ServiceRowId>, } | { "kind": "routes_without_services", namespace_id: NamespaceRowId, } | { "kind": "placement", refusal: PlacementRefusal, } | { "kind": "replicas_on_global_service" } | { "kind": "unknown_pinned_machine", machine_name: MachineName, } | { "kind": "bridge_unavailable" };
 
 export type DeployRequest = { namespace_id: NamespaceId, origin?: DeployOrigin | null, volumes?: { [key in VolumeName]: VolumeSpec }, services: Array<DeployServiceSpec>, };
 
@@ -426,7 +428,7 @@ export type DeploySubmitError = { "error": "reserved_system_namespace", operatio
 
 export type DeploySubmitRequest = { idempotency_key: OperationIdempotencyKey, reservation_id: DeployReservationId, target: DeployRequest, registry_credentials?: { [key in ServiceId]: RegistryCredential }, };
 
-export type DeployVerb = { "kind": "list_service_containers" } | { "kind": "ensure_volume", volume: VolumeName, } | { "kind": "pull_image", image: ImageReference, credential?: RegistryCredential | null, } | { "kind": "create_container", image: ImageReference, runtime: ContainerRuntimeSpec,
+export type DeployVerb = { "kind": "list_service_containers" } | { "kind": "pull_image", image: ImageReference, credential?: RegistryCredential | null, } | { "kind": "create_container", image: ImageReference, runtime: ContainerRuntimeSpec,
 /**
  * The namespace's human name, which derives the container's
  * internal DNS search domain.
@@ -436,7 +438,7 @@ namespace_name: CorrosionNamespaceName,
  * Host-published ports for a global service's container; empty for
  * every replicated create.
  */
-host_ports?: HostPortBindings, } | { "kind": "start_container", container_id: ContainerId, } | { "kind": "stop_container", container_id: ContainerId, } | { "kind": "health_gate", container_id: ContainerId, policy: HealthGatePolicy, } | { "kind": "restart_container", container_id: ContainerId, } | { "kind": "remove_container", container_id: ContainerId, };
+host_ports?: HostPortBindings, } | { "kind": "start_container", container_id: ContainerId, } | { "kind": "stop_container", container_id: ContainerId, expected: V2ManagedContainerIdentity, } | { "kind": "health_gate", container_id: ContainerId, policy: HealthGatePolicy, } | { "kind": "remove_container", container_id: ContainerId, expected: V2ManagedContainerIdentity, };
 
 export type DeployVolumeHandoffApplied = { machine_id: MachineId, volume_names: NonEmptyVolumeNames, superseded: NonEmptyAppliedVolumeHandoffParticipants, };
 
@@ -986,39 +988,14 @@ export type OperationEventReplayPage = { events: Array<ReplayedOperationEvent>, 
 
 export type OperationEventReplayRequest = { operation_id: OperationId, start_sequence: EventSequence, limit: OperationEventReplayLimit, };
 
-export type OperationEvidence = { "kind": "created" } | { "kind": "op_claim_won" } | { "kind": "op_claim_lost", winner: OperationRowId, } | { "kind": "placement_gathered", bids: Array<PlacementBid>, silent: Array<SilentMachine>, } | { "kind": "placement_picked", targets: Array<MachineRowId>, eliminations: Array<PlacementElimination>, shortfall?: PlacementShortfall | null, } | { "kind": "debris_swept", removed: Array<ContainerId>,
-/**
- * `None` denotes evidence written by a pre-placement
- * single-machine driver.
- */
-machine?: MachineRowId | null, } | { "kind": "pulling_image" } | { "kind": "image_resolved" } | { "kind": "container_created", container_id: ContainerId,
-/**
- * `None` denotes evidence written by a pre-placement
- * single-machine driver.
- */
-machine?: MachineRowId | null, } | { "kind": "container_started", container_id: ContainerId,
-/**
- * `None` denotes evidence written by a pre-placement
- * single-machine driver.
- */
-machine?: MachineRowId | null, } | { "kind": "health_gate_skipped" } | { "kind": "incumbent_stopped", container_id: ContainerId,
-/**
- * `None` denotes evidence written by a pre-placement
- * single-machine driver.
- */
-machine?: MachineRowId | null, } | { "kind": "incumbent_restarted", container_id: ContainerId,
-/**
- * `None` denotes evidence written by a pre-placement
- * single-machine driver.
- */
-machine?: MachineRowId | null, } | { "kind": "promotion_prepared" } | { "kind": "rows_committed" } | { "kind": "service_claim_won" } | { "kind": "service_claim_lost", winner: ServiceRowId, } | { "kind": "drained" } | { "kind": "incumbent_removed", container_id: ContainerId,
-/**
- * `None` denotes evidence written by a pre-placement
- * single-machine driver.
- */
-machine?: MachineRowId | null, } | { "kind": "terminal", operation: OperationDocument, } | { "kind": "unrecognized" };
+export type OperationEvidence = { "kind": "created" } | { "kind": "op_claim_won" } | { "kind": "op_claim_lost", winner: OperationRowId, } | { "kind": "placement_gathered", bids: Array<PlacementBid>, silent: Array<SilentMachine>, } | { "kind": "placement_picked", pick: PlacementPick, } | { "kind": "debris_swept", removed: Array<ContainerId>, } | { "kind": "pulling_image" } | { "kind": "image_resolved" } | { "kind": "container_created", container_id: ContainerId, } | { "kind": "container_started", container_id: ContainerId, } | { "kind": "health_gate_skipped" } | { "kind": "incumbent_stopped", container_id: ContainerId, } | { "kind": "incumbent_restarted", container_id: ContainerId, } | { "kind": "promotion_prepared" } | { "kind": "rows_committed" } | { "kind": "service_claim_won" } | { "kind": "service_claim_lost", winner: ServiceRowId, } | { "kind": "drained" } | { "kind": "incumbent_removed", container_id: ContainerId, } | { "kind": "terminal", operation: OperationDocument, } | { "kind": "unrecognized" };
 
-export type OperationEvidenceEvent = { sequence: OperationEvidenceSequence, timestamp: CorrosionTimestamp, evidence: OperationEvidence, };
+export type OperationEvidenceEvent = { sequence: OperationEvidenceSequence, timestamp: CorrosionTimestamp,
+/**
+ * The machine the event acts on; `None` when the event names no single
+ * machine.
+ */
+machine?: MachineRowId | null, evidence: OperationEvidence, };
 
 export type OperationEvidenceSequence = SafeInteger<"OperationEvidenceSequence">;
 
@@ -1100,7 +1077,7 @@ architecture: string, lifecycle: MachineLifecycle, free_disk_bytes: number, free
  */
 total_container_count: number,
 /**
- * This service's own containers from live Docker.
+ * The requested namespace's service containers from live Docker.
  */
 service_containers: Array<ServiceContainerObservation>,
 /**
@@ -1119,13 +1096,15 @@ volumes: Array<VolumeName>,
  */
 active_deploy?: OperationRowId | null, };
 
-export type PlacementElimination = { machine_id: MachineRowId, reason: PlacementEliminationReason, };
+export type PlacementElimination = { machine_id: MachineRowId, machine_name: MachineName, reason: PlacementEliminationReason, };
 
-export type PlacementEliminationReason = { "kind": "draining" } | { "kind": "platform_unsupported", architecture: string, } | { "kind": "free_disk_below_floor", free_disk_bytes: number, } | { "kind": "volume_not_held", holder: MachineRowId, } | { "kind": "outside_pin_set" };
+export type PlacementEliminationReason = { "kind": "draining" } | { "kind": "free_disk_below_floor", free_disk_bytes: number, } | { "kind": "volume_not_held", holder: PlacementMachine, } | { "kind": "outside_pin_set" };
+
+export type PlacementMachine = { machine_id: MachineRowId, machine_name: MachineName, };
 
 export type PlacementPick = { targets: Array<MachineRowId>, eliminations: Array<PlacementElimination>, shortfall?: PlacementShortfall | null, };
 
-export type PlacementRefusal = { "kind": "no_eligible_machines", eliminations: Array<PlacementElimination>, } | { "kind": "volume_holder_conflict", volume: VolumeName, holders: Array<MachineRowId>, } | { "kind": "dark_volume_holder", machines: Array<MachineRowId>, } | { "kind": "volume_replica_limit", requested: ServiceReplicaCount, };
+export type PlacementRefusal = { "kind": "no_eligible_machines", eliminations: Array<PlacementElimination>, } | { "kind": "volume_holder_conflict", volume: VolumeName, holders: Array<PlacementMachine>, } | { "kind": "dark_volume_holder", machines: Array<PlacementMachine>, } | { "kind": "volume_replica_limit", requested: ServiceReplicaCount, };
 
 export type PlacementShortfall = { requested: ServiceReplicaCount,
 /**
@@ -1174,7 +1153,7 @@ export type ReplicatedReplicaSlot = SafeInteger<"ReplicatedReplicaSlot">;
 
 export type RequestedPins = { "kind": "machines", names: PinnedMachineNames, } | { "kind": "any" };
 
-export type RequestedPlacement = { "mode": "replicated", replicas: ServiceReplicaCount, } | { "mode": "global", host_ports?: HostPortBindings, };
+export type RequestedPlacement = { "mode": "replicas", replicas: ServiceReplicaCount, } | { "mode": "replicated", replicas?: ServiceReplicaCount | null, } | { "mode": "global", host_ports?: HostPortBindings, };
 
 export type RetainedArtifact = { "type": "created_container", machine_id: MachineId, container_id: ContainerId, inspect_hint: OperatorHint, } | { "type": "started_container", machine_id: MachineId, container_id: ContainerId, log_hint: OperatorHint, } | { "type": "container_stop_failed", machine_id: MachineId, container_id: ContainerId, message: FailureMessage, inspect_hint: OperatorHint, } | { "type": "volume_owner_stop_uncertain", target: DeployCleanupContainer, prior_state: DeployVolumeHandoffPriorState, uncertainty: DeployVolumeHandoffStopUncertain, } | { "type": "volume_consumer_quiescence_uncertain", target: DeployCleanupContainer, uncertainty: DeployVolumeHandoffStopUncertain, } | { "type": "volume_consumer_start_uncertain", machine_id: MachineId, expected_identity: ManagedContainerIdentity, message: FailureMessage, inspect_hint: OperatorHint, } | { "type": "volume_owner_restoration_unconfirmed", target: DeployCleanupContainer, reason: DeployVolumeHandoffRestorationUnconfirmed, };
 
@@ -1240,9 +1219,13 @@ export type ServiceContainerMembership = "serving_target_member" | "retained_evi
 
 export type ServiceContainerObservation = { container_id: ContainerId,
 /**
+ * The service row id recovered from the container's own identity.
+ */
+service_id: ServiceRowId,
+/**
  * The deploy operation that created the container.
  */
-deploy: OperationRowId, running: boolean,
+deploy: OperationRowId,
 /**
  * Named volumes the container mounts.
  */
@@ -1254,7 +1237,7 @@ export type ServiceDependency = { service_id: ServiceId, condition: DependencyCo
 
 export type ServiceDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, namespace_id: NamespaceRowId, name: CorrosionServiceName, image: ImageReference, env_fingerprints: { [key in string]: Sha256Hex }, pinned_machines: Array<MachineRowId>, active_deploy: OperationRowId, previous_image: ImageReference | null, deployed_at: CorrosionTimestamp, operation_id: OperationRowId, written_by: Principal, written_at: CorrosionTimestamp, } & ({ "mode": "replicated", replicas: ServiceReplicaCount, } | { "mode": "global",
 /**
- * Absent on rows written before global services could publish ports.
+ * Host-published ports; an absent field reads as none published.
  */
 host_ports?: HostPortBindings, });
 
@@ -1282,7 +1265,7 @@ export type ServiceLogStream = "stdout" | "stderr";
 
 export type ServiceLogsFollowEvent = { "kind": "line", log: ServiceLogLine, } | { "kind": "gap" } | { "kind": "terminal", refusal: ServiceLogsRefusal, };
 
-export type ServiceLogsRefusal = { "kind": "service_not_found", service_id: ServiceRowId, } | { "kind": "no_active_deploy", service_id: ServiceRowId, } | { "kind": "container_not_found", service_id: ServiceRowId, } | { "kind": "unmanaged_container", container_id: ContainerId, } | { "kind": "machine_selector_required", machines: Array<MachineName>, } | { "kind": "remote_owner", machine_id: MachineRowId,
+export type ServiceLogsRefusal = { "kind": "service_not_found", service_id: ServiceRowId, } | { "kind": "no_active_deploy", service_id: ServiceRowId, } | { "kind": "container_not_found", service_id: ServiceRowId, } | { "kind": "unmanaged_container", container_id: ContainerId, } | { "kind": "machine_selector_required", machines: Array<MachineName>, } | { "kind": "hosting_machines_unresolved", machine_ids: Array<MachineRowId>, } | { "kind": "remote_owner", machine_id: MachineRowId,
 /**
  * `None` when the owning machine's roster row is no longer readable.
  */
@@ -1331,7 +1314,7 @@ export type ServingTargetEntry = { namespace_id: NamespaceId, service_id: Servic
 
 export type Sha256Hex = Brand<string, "Sha256Hex">;
 
-export type SilenceClassification = { "kind": "expected_silent", handshake_age_seconds: number, } | { "kind": "anomalous_silent", reason: string, };
+export type SilenceClassification = { "kind": "expected_silent", handshake_age_seconds: number, } | { "kind": "anomalous_silent", reason: AnomalousSilenceReason, };
 
 export type SilentMachine = { machine_id: MachineRowId, classification: SilenceClassification, };
 
@@ -1398,6 +1381,8 @@ export type TokenRevokeReply = { token_id: TokenId, };
 export type TokenRevokeRequest = { token_id: TokenId, };
 
 export type UnusableMachine = { machine_id: MachineId, reason: MachineUsabilityReason, };
+
+export type V2ManagedContainerIdentity = { namespace_id: NamespaceRowId, service_id: ServiceRowId, operation_id: OperationRowId, };
 
 export type VerifiedBuildSource = { "source": "git", url: GitRepositoryUrl, commit: GitCommit, subdir?: BuildContextPath | null, } | { "source": "local_snapshot", digest: LocalSnapshotDigest, subdir?: BuildContextPath, };
 
