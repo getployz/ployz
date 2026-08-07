@@ -638,6 +638,10 @@ pub enum DeployVerb {
         /// The namespace's human name, which derives the container's
         /// internal DNS search domain.
         namespace_name: CorrosionNamespaceName,
+        /// Host-published ports for a global service's container; empty for
+        /// every replicated create.
+        #[serde(default, skip_serializing_if = "HostPortBindings::is_empty")]
+        host_ports: HostPortBindings,
     },
     /// Starts a created container, or restarts a stopped incumbent after a
     /// failed cutover gate.

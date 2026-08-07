@@ -1030,6 +1030,53 @@ fn deploy_execute_verbs_bind_their_operation_and_service_identity() {
 }
 
 #[test]
+fn create_container_verb_host_ports_default_empty_and_round_trip() {
+    let bare = json!({
+        "kind": "create_container",
+        "image": "registry.example/api@sha256:2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
+        "runtime": serde_json::to_value(ContainerRuntimeSpec::image_defaults())
+            .expect("runtime serializes"),
+        "namespace_name": "payments",
+    });
+    let verb: DeployVerb =
+        serde_json::from_value(bare).expect("verb without host_ports deserializes");
+    let DeployVerb::CreateContainer { host_ports, .. } = &verb else {
+        panic!("create verb expected");
+    };
+    assert!(host_ports.is_empty());
+
+    let published = DeployVerb::CreateContainer {
+        image: ImageReference::try_new("registry.example/api@sha256:2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae")
+            .expect("fixture image reference"),
+        runtime: Box::new(ContainerRuntimeSpec::image_defaults()),
+        namespace_name: ployz_core::corrosion::CorrosionNamespaceName::try_new("payments")
+            .expect("fixture namespace name"),
+        host_ports: ployz_core::corrosion::HostPortBindings::try_new([
+            ployz_core::corrosion::HostPortBinding {
+                protocol: ployz_core::corrosion::HostPortProtocol::Tcp,
+                host_port: std::num::NonZeroU16::new(8443).expect("port"),
+                container_port: std::num::NonZeroU16::new(443).expect("port"),
+            },
+        ])
+        .expect("fixture host ports"),
+    };
+    let encoded = serde_json::to_value(&published).expect("verb serializes");
+    assert_eq!(
+        encoded
+            .get("host_ports")
+            .expect("published ports serialize")
+            .as_array()
+            .expect("port list")
+            .len(),
+        1
+    );
+    assert_eq!(
+        serde_json::from_value::<DeployVerb>(encoded).expect("verb round-trips"),
+        published
+    );
+}
+
+#[test]
 fn deploy_verb_pull_requests_never_debug_print_registry_secrets() {
     let secret = "sentinel-registry-secret";
     let verb = DeployVerb::PullImage {

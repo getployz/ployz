@@ -39,7 +39,7 @@ use crate::roles::api::runner::{
 use crate::roles::system_observation::SystemObservation;
 
 /// Upper bound on one full bid collection round against local Docker.
-const BID_COLLECTION_TIMEOUT: Duration = Duration::from_secs(10);
+pub(super) const BID_COLLECTION_TIMEOUT: Duration = Duration::from_secs(10);
 /// Per-verb budget mirroring the driver-local external effect timeout.
 const EXECUTE_EFFECT_TIMEOUT: Duration = Duration::from_secs(60);
 /// The long budget for the pull verb, covering the runner's internally
@@ -273,13 +273,16 @@ async fn local_machine(service: &ApiService) -> Result<MachineDocument, Response
         .ok_or_else(|| bid_decline("local machine row is not visible in the accepted roster"))
 }
 
-struct BidIdentity {
-    machine_id: MachineRowId,
-    machine_name: MachineName,
-    lifecycle: MachineLifecycle,
+pub(super) struct BidIdentity {
+    pub(super) machine_id: MachineRowId,
+    pub(super) machine_name: MachineName,
+    pub(super) lifecycle: MachineLifecycle,
 }
 
-async fn collect_bid(
+/// One live bid collection round against local Docker. The responder runs
+/// this for `/deploy/bid`, and the deploy driver reuses it for its own
+/// in-process bid.
+pub(super) async fn collect_bid(
     runner: &dyn PlacementDockerRunner,
     identity: BidIdentity,
     observation: SystemObservation,
@@ -496,6 +499,7 @@ async fn run_verb(
             image,
             runtime,
             namespace_name,
+            host_ports,
         } => {
             bounded(EXECUTE_EFFECT_TIMEOUT, async {
                 let dns_search_domain =
@@ -511,6 +515,7 @@ async fn run_verb(
                             service_id,
                             operation_id,
                         },
+                        host_ports,
                     })
                     .await?;
                 Ok(DeployExecuteOutcome::ContainerCreated { container_id })

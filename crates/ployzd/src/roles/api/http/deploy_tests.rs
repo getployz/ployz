@@ -1,25 +1,35 @@
-use std::collections::BTreeMap;
-use std::net::{IpAddr, Ipv4Addr};
+use std::collections::{BTreeMap, BTreeSet};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use ployz_core::corrosion::{
     ContainerDocument, CorrosionDeployOutcome, CorrosionDeployState, CorrosionDeployWarning,
-    CorrosionNamespaceName, CorrosionServiceName, CorrosionTimestamp, NamespaceDocument,
-    OperationDocument, Principal, ServiceDocument, V2ManagedContainerIdentity,
+    CorrosionNamespaceName, CorrosionServiceName, CorrosionTimestamp, MachineLoadBand,
+    MachineTransport, NamespaceDocument, OperationDocument, Principal, ServiceDocument,
+    ServiceReplicaCount, V2ManagedContainerIdentity,
 };
 use ployz_core::deploy::{ContainerRuntimeSpec, EnvName, EnvValue, ImageReference, VolumeName};
 use ployz_core::ids::{
     ClusterId, ContainerId, MachineRowId, NamespaceRowId, OperationRowId, PeerId, ServiceRowId,
 };
 use ployz_core::machine::runtime::ContainerHealth;
-use ployz_core::{DeployRefusal, HealthGatePolicy, OperationEvidence};
+use ployz_core::machine::{MachineLifecycle, MachineName};
+use ployz_core::network::MachineEndpointSubnet;
+use ployz_core::{
+    DeployExecuteOutcome, DeployExecuteRequest, DeployRefusal, DeployVerb, HealthGatePolicy,
+    OperationEvidence, PlacementBid, PlacementBidRequest, RequestedPins, RequestedPlacement,
+    ServiceContainerObservation,
+};
 use tempfile::TempDir;
 use tokio::sync::{Mutex, watch};
 
-use super::{DEPLOY_DRAIN_WAIT, DNS_TTL_SECONDS, DeployClock, DeployDriver, observed_with};
+use super::{
+    DEPLOY_DRAIN_WAIT, DNS_TTL_SECONDS, DeployClock, DeployDriver, DeployDriverSeams, observed_with,
+};
+use crate::roles::api::http::deploy_dispatch::DeployVerbClient;
 use crate::roles::api::http::deploy_runtime::DeployRuntime;
 use crate::roles::api::http::deploy_stores::{DeployOperationRows, RedeployStore};
 use crate::roles::api::http::deploy_task::DeployHeartbeat;
@@ -33,6 +43,7 @@ use crate::roles::api::http::operation_finalizer::{
 use crate::roles::api::http::operation_store::{
     ConditionalOperationWrite, HeartbeatWrite, ObservedOperation, OperationStoreError,
 };
+use crate::roles::api::http::placement_gather::{PlacementMesh, PlacementPeer};
 use crate::roles::api::http::promotion_store::{
     ContainerRowCleanup, DeployAdmission, ObservedContainer, ObservedService, ResolvedNamespace,
 };
@@ -360,6 +371,7 @@ impl DeployRuntime for FakeRuntime {
         _resolved_image: &ImageReference,
         _namespace: &ResolvedNamespace,
         _identity: V2ManagedContainerIdentity,
+        _host_ports: &ployz_core::corrosion::HostPortBindings,
     ) -> Result<ContainerId, String> {
         self.calls.lock().await.push(RuntimeCall::Create);
         ContainerId::try_new("new-container").map_err(|error| error.to_string())
@@ -424,6 +436,165 @@ impl DeployRuntime for FakeRuntime {
     }
 }
 
+/// The gather mesh: the local machine bids from `FakeRuntime`'s containers,
+/// remote peers answer scripted bids keyed by their Tailscale address.
+struct FakeMesh {
+    peers: Mutex<Vec<PlacementPeer>>,
+    runtime: Arc<FakeRuntime>,
+    local_free_disk: AtomicU64,
+    local_volumes_held: Mutex<BTreeSet<VolumeName>>,
+    remote_bids: Mutex<BTreeMap<Ipv4Addr, PlacementBid>>,
+}
+
+impl FakeMesh {
+    fn new(runtime: Arc<FakeRuntime>) -> Self {
+        Self {
+            peers: Mutex::new(vec![local_peer()]),
+            runtime,
+            local_free_disk: AtomicU64::new(20 * 1024 * 1024 * 1024),
+            local_volumes_held: Mutex::new(BTreeSet::new()),
+            remote_bids: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    async fn add_remote(&self, peer: PlacementPeer, bid: Option<PlacementBid>) {
+        let MachineTransport::Tailscale { ip, .. } = &peer.transport else {
+            panic!("fixture remote peers use tailscale transports");
+        };
+        if let Some(bid) = bid {
+            self.remote_bids.lock().await.insert(*ip, bid);
+        }
+        self.peers.lock().await.push(peer);
+    }
+}
+
+#[async_trait]
+impl PlacementMesh for FakeMesh {
+    async fn roster(&self) -> Result<Vec<PlacementPeer>, String> {
+        Ok(self.peers.lock().await.clone())
+    }
+
+    async fn handshake_age_seconds(&self, _transport: &MachineTransport) -> Option<u64> {
+        Some(1)
+    }
+
+    async fn remote_bid(
+        &self,
+        transport: &MachineTransport,
+        _request: &PlacementBidRequest,
+    ) -> Result<PlacementBid, String> {
+        let MachineTransport::Tailscale { ip, .. } = transport else {
+            return Err("bid transport failed: unexpected transport".to_owned());
+        };
+        self.remote_bids
+            .lock()
+            .await
+            .get(ip)
+            .cloned()
+            .ok_or_else(|| "bid transport failed: connection refused".to_owned())
+    }
+
+    async fn local_bid(
+        &self,
+        peer: &PlacementPeer,
+        request: &PlacementBidRequest,
+    ) -> Result<PlacementBid, String> {
+        let containers = self.runtime.containers.lock().await.clone();
+        let service_containers = containers
+            .iter()
+            .filter(|container| {
+                container.identity.namespace_id == request.namespace_id
+                    && container.identity.service_id == request.service_id
+            })
+            .map(|container| ServiceContainerObservation {
+                container_id: container.container_id.clone(),
+                deploy: container.identity.operation_id.clone(),
+                running: matches!(
+                    container.state,
+                    ExistingManagedContainerState::Running { .. }
+                ),
+                named_volumes: container.named_volume_names.clone(),
+            })
+            .collect();
+        Ok(PlacementBid {
+            machine_id: peer.id.clone(),
+            machine_name: peer.name.clone(),
+            architecture: "x86_64".to_owned(),
+            lifecycle: peer.lifecycle,
+            free_disk_bytes: self.local_free_disk.load(Ordering::SeqCst),
+            free_memory_bytes: 8 * 1024 * 1024 * 1024,
+            load: MachineLoadBand::Idle,
+            total_container_count: containers.len(),
+            service_containers,
+            volumes_held: self.local_volumes_held.lock().await.clone(),
+        })
+    }
+}
+
+/// A scripted `/deploy/execute` client for remote targets.
+struct FakeVerbClient {
+    requests: Mutex<Vec<DeployExecuteRequest>>,
+    created: AtomicUsize,
+    remote_containers: Mutex<Vec<ServiceContainerObservation>>,
+    refuse_with: Mutex<Option<DeployExecuteOutcome>>,
+}
+
+impl FakeVerbClient {
+    fn new() -> Self {
+        Self {
+            requests: Mutex::new(Vec::new()),
+            created: AtomicUsize::new(0),
+            remote_containers: Mutex::new(Vec::new()),
+            refuse_with: Mutex::new(None),
+        }
+    }
+
+    async fn verbs(&self) -> Vec<DeployVerb> {
+        self.requests
+            .lock()
+            .await
+            .iter()
+            .map(|request| request.verb.clone())
+            .collect()
+    }
+}
+
+#[async_trait]
+impl DeployVerbClient for FakeVerbClient {
+    async fn execute(
+        &self,
+        _target: SocketAddr,
+        request: &DeployExecuteRequest,
+        _budget: Duration,
+    ) -> Result<DeployExecuteOutcome, String> {
+        self.requests.lock().await.push(request.clone());
+        if let Some(refusal) = self.refuse_with.lock().await.clone() {
+            return Ok(refusal);
+        }
+        Ok(match &request.verb {
+            DeployVerb::ListServiceContainers => DeployExecuteOutcome::ServiceContainers {
+                containers: self.remote_containers.lock().await.clone(),
+            },
+            DeployVerb::EnsureVolume { .. } => DeployExecuteOutcome::VolumeEnsured,
+            DeployVerb::PullImage { .. } => DeployExecuteOutcome::ImagePulled,
+            DeployVerb::CreateContainer { .. } => {
+                let ordinal = self.created.fetch_add(1, Ordering::SeqCst) + 1;
+                DeployExecuteOutcome::ContainerCreated {
+                    container_id: ContainerId::try_new(format!("remote-{ordinal}"))
+                        .expect("container id"),
+                }
+            }
+            DeployVerb::StartContainer { .. } => DeployExecuteOutcome::ContainerStarted,
+            DeployVerb::StopContainer { .. } => DeployExecuteOutcome::ContainerStopped,
+            DeployVerb::HealthGate { .. } => DeployExecuteOutcome::HealthGated {
+                ip: Ipv4Addr::new(10, 210, 30, 2),
+            },
+            DeployVerb::RestartContainer { .. } => DeployExecuteOutcome::ContainerRestarted,
+            DeployVerb::RemoveContainer { .. } => DeployExecuteOutcome::ContainerRemoved,
+        })
+    }
+}
+
 struct Clock(AtomicUsize);
 
 impl DeployClock for Clock {
@@ -442,6 +613,8 @@ struct Fixture {
     store: Arc<FakeStore>,
     operations: Arc<FakeOperations>,
     runtime: Arc<FakeRuntime>,
+    mesh: Arc<FakeMesh>,
+    verbs: Arc<FakeVerbClient>,
 }
 
 fn fixture(admission: Admission, bridge_ready: bool) -> Fixture {
@@ -466,14 +639,21 @@ fn fixture(admission: Admission, bridge_ready: bool) -> Fixture {
         calls: Mutex::new(Vec::new()),
         health_failure: AtomicBool::new(false),
     });
+    let mesh = Arc::new(FakeMesh::new(Arc::clone(&runtime)));
+    let verbs = Arc::new(FakeVerbClient::new());
     let driver = DeployDriver::new(
         cluster_id(),
         machine_id(),
-        OperationEvidenceDirectory::new(root.path().to_owned(), 16 * 1024),
-        store.clone(),
-        operations.clone(),
-        runtime.clone(),
-        Arc::new(Clock(AtomicUsize::new(0))),
+        DeployDriverSeams {
+            evidence: OperationEvidenceDirectory::new(root.path().to_owned(), 64 * 1024),
+            store: store.clone(),
+            operations: operations.clone(),
+            runtime: runtime.clone(),
+            mesh: mesh.clone(),
+            verbs: verbs.clone(),
+            api_port: 4480,
+            clock: Arc::new(Clock(AtomicUsize::new(0))),
+        },
     )
     .with_waits(Duration::ZERO, Duration::ZERO);
     Fixture {
@@ -482,6 +662,8 @@ fn fixture(admission: Admission, bridge_ready: bool) -> Fixture {
         store,
         operations,
         runtime,
+        mesh,
+        verbs,
     }
 }
 
@@ -491,6 +673,10 @@ fn cluster_id() -> ClusterId {
 
 fn machine_id() -> MachineRowId {
     MachineRowId::try_new("01J00000000000000000000012").expect("machine")
+}
+
+fn remote_machine_id() -> MachineRowId {
+    MachineRowId::try_new("01J00000000000000000000022").expect("machine")
 }
 
 fn namespace_id() -> NamespaceRowId {
@@ -507,6 +693,48 @@ fn incumbent_op() -> OperationRowId {
 
 fn debris_op() -> OperationRowId {
     OperationRowId::try_new("01J00000000000000000000007").expect("operation")
+}
+
+fn local_peer() -> PlacementPeer {
+    PlacementPeer {
+        id: machine_id(),
+        name: MachineName::try_new("driver").expect("name"),
+        lifecycle: MachineLifecycle::Active,
+        transport: MachineTransport::Tailscale {
+            ip: Ipv4Addr::new(100, 64, 0, 1),
+            subnet_v4: MachineEndpointSubnet::try_new("10.210.20.0/24").expect("subnet"),
+        },
+    }
+}
+
+fn remote_peer() -> PlacementPeer {
+    PlacementPeer {
+        id: remote_machine_id(),
+        name: MachineName::try_new("worker-1").expect("name"),
+        lifecycle: MachineLifecycle::Active,
+        transport: MachineTransport::Tailscale {
+            ip: Ipv4Addr::new(100, 64, 0, 2),
+            subnet_v4: MachineEndpointSubnet::try_new("10.210.30.0/24").expect("subnet"),
+        },
+    }
+}
+
+fn remote_bid(volumes_held: &[&str]) -> PlacementBid {
+    PlacementBid {
+        machine_id: remote_machine_id(),
+        machine_name: MachineName::try_new("worker-1").expect("name"),
+        architecture: "x86_64".to_owned(),
+        lifecycle: MachineLifecycle::Active,
+        free_disk_bytes: 20 * 1024 * 1024 * 1024,
+        free_memory_bytes: 8 * 1024 * 1024 * 1024,
+        load: MachineLoadBand::Idle,
+        total_container_count: 0,
+        service_containers: Vec::new(),
+        volumes_held: volumes_held
+            .iter()
+            .map(|name| VolumeName::try_new(*name).expect("volume name"))
+            .collect(),
+    }
 }
 
 fn resolved_namespace() -> ResolvedNamespace {
@@ -639,6 +867,24 @@ fn request_with(health_gate: HealthGatePolicy) -> ployz_core::DeployRequest {
     }
 }
 
+fn spread_request(replicas: u16) -> ployz_core::DeployRequest {
+    let mut request = request();
+    request.placement = Some(RequestedPlacement::Replicated {
+        replicas: ServiceReplicaCount::try_new(replicas).expect("replicas"),
+    });
+    request.machines = Some(RequestedPins::Any);
+    request
+}
+
+fn volume_request() -> ployz_core::DeployRequest {
+    let mut request = request();
+    request.runtime.volume_mounts = vec![ployz_core::deploy::ServiceVolumeMount {
+        volume_name: VolumeName::try_new("data").expect("volume"),
+        target: ployz_core::deploy::ContainerMountPath::try_new("/srv/data").expect("mount"),
+    }];
+    request
+}
+
 fn initiator() -> Principal {
     Principal::Peer {
         peer_id: PeerId::try_new("01J00000000000000000000015").expect("peer"),
@@ -746,6 +992,109 @@ async fn unavailable_bridge_refuses_before_operation_or_docker_effects() {
 }
 
 #[tokio::test]
+async fn unknown_pinned_machine_refuses_at_admission() {
+    let fixture = fixture(Admission::First, true);
+    let mut request = request();
+    request.machines = Some(RequestedPins::Machines {
+        names: ployz_core::PinnedMachineNames::try_new([
+            MachineName::try_new("ghost").expect("name")
+        ])
+        .expect("pins"),
+    });
+    let admission = fixture
+        .driver
+        .admit(request, initiator())
+        .await
+        .expect("admission");
+    let Err(refusal) = admission else {
+        panic!("an unknown pin must refuse");
+    };
+    assert_eq!(
+        refusal,
+        DeployRefusal::UnknownPinnedMachine {
+            machine_name: MachineName::try_new("ghost").expect("name"),
+        }
+    );
+    assert!(fixture.operations.writes.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn pick_refusals_surface_as_typed_deploy_refusals_before_any_operation() {
+    let fixture = fixture(Admission::First, true);
+    // The only bidder reports less free disk than the placement floor.
+    fixture.mesh.local_free_disk.store(1024, Ordering::SeqCst);
+    let admission = fixture
+        .driver
+        .admit(request(), initiator())
+        .await
+        .expect("admission");
+    let Err(DeployRefusal::NoEligibleMachines { eliminations }) = admission else {
+        panic!("an empty survivor set must refuse");
+    };
+    assert_eq!(eliminations.len(), 1);
+    assert!(fixture.operations.writes.lock().await.is_empty());
+    assert_eq!(fixture.runtime.created().await, 0);
+}
+
+#[tokio::test]
+async fn two_visible_volume_holders_refuse_as_a_data_fork() {
+    let fixture = fixture(Admission::Redeploy, true);
+    fixture
+        .mesh
+        .local_volumes_held
+        .lock()
+        .await
+        .insert(VolumeName::try_new("data").expect("volume"));
+    fixture
+        .mesh
+        .add_remote(remote_peer(), Some(remote_bid(&["data"])))
+        .await;
+    let mut request = volume_request();
+    request.machines = Some(RequestedPins::Any);
+    let admission = fixture
+        .driver
+        .admit(request, initiator())
+        .await
+        .expect("admission");
+    let Err(DeployRefusal::VolumeHolderConflict { volume, holders }) = admission else {
+        panic!("two visible holders must refuse");
+    };
+    assert_eq!(volume, VolumeName::try_new("data").expect("volume"));
+    assert_eq!(holders.len(), 2);
+    assert!(fixture.operations.writes.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn a_silent_plausible_volume_holder_refuses_even_with_a_visible_holder() {
+    let fixture = fixture(Admission::Redeploy, true);
+    fixture
+        .mesh
+        .local_volumes_held
+        .lock()
+        .await
+        .insert(VolumeName::try_new("data").expect("volume"));
+    // The remote peer is rostered and pinned but yields no bid.
+    fixture.mesh.add_remote(remote_peer(), None).await;
+    let mut request = volume_request();
+    request.machines = Some(RequestedPins::Machines {
+        names: ployz_core::PinnedMachineNames::try_new([
+            MachineName::try_new("driver").expect("name"),
+            MachineName::try_new("worker-1").expect("name"),
+        ])
+        .expect("pins"),
+    });
+    let admission = fixture
+        .driver
+        .admit(request, initiator())
+        .await
+        .expect("admission");
+    let Err(DeployRefusal::DarkVolumeHolder { machines }) = admission else {
+        panic!("a dark plausible holder must refuse");
+    };
+    assert_eq!(machines, vec![remote_machine_id()]);
+}
+
+#[tokio::test]
 async fn admitted_task_rejected_by_shutdown_terminalizes_without_running() {
     let fixture = fixture(Admission::First, true);
     let accepted = fixture
@@ -807,6 +1156,15 @@ async fn successful_first_deploy_uses_three_row_writes_and_persists_no_secret() 
     assert_eq!(fixture.runtime.created().await, 1);
     let events = evidence_kinds(&log).await;
     assert!(events.contains(&OperationEvidence::OpClaimWon));
+    // The gather and the pick replay from the evidence log.
+    assert!(events.iter().any(
+        |event| matches!(event, OperationEvidence::PlacementGathered { bids, silent }
+                if bids.len() == 1 && silent.is_empty())
+    ));
+    assert!(events.iter().any(
+        |event| matches!(event, OperationEvidence::PlacementPicked { targets, .. }
+                if targets == &vec![machine_id()])
+    ));
     let prepared = fixture
         .store
         .prepared
@@ -818,6 +1176,12 @@ async fn successful_first_deploy_uses_three_row_writes_and_persists_no_secret() 
     assert!(!durable.contains("do-not-persist-this-secret"));
     assert!(durable.contains("DATABASE_PASSWORD"));
     assert!(prepared.service_document.image.pinned_digest().is_some());
+    // First deploys are unpinned unless the request pinned machines.
+    assert!(prepared.service_document.pinned_machines.is_empty());
+    let [container] = prepared.containers.as_slice() else {
+        panic!("one container row expected");
+    };
+    assert_eq!(container.document.machine_id, machine_id());
 }
 
 #[tokio::test]
@@ -980,18 +1344,22 @@ async fn second_deploy_flips_atomically_with_previous_image() {
         intent.service_document.previous_image,
         Some(incumbent_document(machine_id()).image)
     );
-    assert_eq!(intent.container_document.deploy, operation_id);
+    let [container] = intent.containers.as_slice() else {
+        panic!("one container row expected");
+    };
+    assert_eq!(container.document.deploy, operation_id);
+    assert_eq!(container.document.machine_id, machine_id());
     assert_eq!(fixture.store.converge_calls.load(Ordering::SeqCst), 1);
     let events = evidence_kinds(&log).await;
     assert!(events.contains(&OperationEvidence::RowsCommitted));
     assert!(events.contains(&OperationEvidence::Drained));
     assert!(events.contains(&OperationEvidence::IncumbentStopped {
         container_id: ContainerId::try_new("incumbent-1").expect("container"),
-        machine: None,
+        machine: Some(machine_id()),
     }));
     assert!(events.contains(&OperationEvidence::IncumbentRemoved {
         container_id: ContainerId::try_new("incumbent-1").expect("container"),
-        machine: None,
+        machine: Some(machine_id()),
     }));
     assert!(matches!(
         fixture.operations.terminal_state().await,
@@ -1007,6 +1375,174 @@ async fn second_deploy_flips_atomically_with_previous_image() {
             .iter()
             .any(|rows| { rows == &vec![ContainerId::try_new("incumbent-1").expect("container")] })
     );
+}
+
+#[tokio::test]
+async fn redeploy_places_replicas_across_picked_machines() {
+    let fixture = fixture(Admission::Redeploy, true);
+    fixture
+        .mesh
+        .add_remote(remote_peer(), Some(remote_bid(&[])))
+        .await;
+    *fixture.runtime.containers.lock().await =
+        vec![docker_container("incumbent-1", incumbent_op(), &[])];
+    *fixture.store.rows.lock().await = vec![container_row("incumbent-1", incumbent_op())];
+    let accepted = fixture
+        .driver
+        .admit(spread_request(2), initiator())
+        .await
+        .expect("admission")
+        .expect("accepted");
+    let operation_id = accepted.reply.operation_id.clone();
+    let log = accepted.operation_log();
+    let (_shutdown, shutdown) = watch::channel(false);
+    accepted.task.run(shutdown).await.expect("redeploy");
+
+    let intent = fixture
+        .store
+        .redeploy_prepared
+        .lock()
+        .await
+        .clone()
+        .expect("flip intent");
+    // Sticky keeps the incumbent machine first; the second replica spreads.
+    let machines: Vec<MachineRowId> = intent
+        .containers
+        .iter()
+        .map(|container| container.document.machine_id.clone())
+        .collect();
+    assert_eq!(machines, vec![machine_id(), remote_machine_id()]);
+    assert!(
+        intent
+            .containers
+            .iter()
+            .all(|container| container.document.deploy == operation_id)
+    );
+    // The remote replica's endpoint comes from the remote health gate.
+    let [_, remote_container] = intent.containers.as_slice() else {
+        panic!("two container rows expected");
+    };
+    assert_eq!(remote_container.document.ip, Ipv4Addr::new(10, 210, 30, 2));
+    // The effective placement written at the flip carries the request.
+    assert_eq!(
+        intent.service_document.placement,
+        ployz_core::corrosion::ServicePlacement::Replicated {
+            replicas: ServiceReplicaCount::try_new(2).expect("replicas"),
+        }
+    );
+    assert!(intent.service_document.pinned_machines.is_empty());
+    // The remote target was pulled, created, started, and gated over verbs.
+    let verbs = fixture.verbs.verbs().await;
+    assert!(
+        verbs
+            .iter()
+            .any(|verb| matches!(verb, DeployVerb::PullImage { .. }))
+    );
+    assert!(
+        verbs
+            .iter()
+            .any(|verb| matches!(verb, DeployVerb::CreateContainer { .. }))
+    );
+    assert!(
+        verbs
+            .iter()
+            .any(|verb| matches!(verb, DeployVerb::StartContainer { .. }))
+    );
+    assert!(
+        verbs
+            .iter()
+            .any(|verb| matches!(verb, DeployVerb::HealthGate { .. }))
+    );
+    // The local machine is dispatched in-process, never over the mesh.
+    assert_eq!(fixture.runtime.created().await, 1);
+    let events = evidence_kinds(&log).await;
+    assert!(events.contains(&OperationEvidence::ContainerCreated {
+        container_id: ContainerId::try_new("new-container").expect("container"),
+        machine: Some(machine_id()),
+    }));
+    assert!(events.contains(&OperationEvidence::ContainerCreated {
+        container_id: ContainerId::try_new("remote-1").expect("container"),
+        machine: Some(remote_machine_id()),
+    }));
+}
+
+#[tokio::test]
+async fn a_single_visible_volume_holder_pins_the_replacement_to_it() {
+    let fixture = fixture(Admission::Redeploy, true);
+    fixture
+        .mesh
+        .add_remote(remote_peer(), Some(remote_bid(&["data"])))
+        .await;
+    *fixture.runtime.containers.lock().await = Vec::new();
+    let mut request = volume_request();
+    request.machines = Some(RequestedPins::Any);
+    let accepted = fixture
+        .driver
+        .admit(request, initiator())
+        .await
+        .expect("admission")
+        .expect("accepted");
+    let (_shutdown, shutdown) = watch::channel(false);
+    accepted.task.run(shutdown).await.expect("redeploy");
+
+    let intent = fixture
+        .store
+        .redeploy_prepared
+        .lock()
+        .await
+        .clone()
+        .expect("flip intent");
+    let [container] = intent.containers.as_slice() else {
+        panic!("one container row expected");
+    };
+    assert_eq!(container.document.machine_id, remote_machine_id());
+    // The volume holder is the only target: nothing was created locally.
+    assert_eq!(fixture.runtime.created().await, 0);
+}
+
+#[tokio::test]
+async fn an_authorization_refusal_from_a_target_fails_the_operation_typed() {
+    let fixture = fixture(Admission::Redeploy, true);
+    fixture
+        .mesh
+        .add_remote(remote_peer(), Some(remote_bid(&[])))
+        .await;
+    *fixture.runtime.containers.lock().await =
+        vec![docker_container("incumbent-1", incumbent_op(), &[])];
+    *fixture.verbs.refuse_with.lock().await = Some(DeployExecuteOutcome::CallerNotDriver {
+        driver: remote_machine_id(),
+    });
+    let accepted = fixture
+        .driver
+        .admit(spread_request(2), initiator())
+        .await
+        .expect("admission")
+        .expect("accepted");
+    let (_shutdown, shutdown) = watch::channel(false);
+    accepted.task.run(shutdown).await.expect("typed failure");
+
+    assert_eq!(fixture.store.converge_calls.load(Ordering::SeqCst), 0);
+    let CorrosionDeployState::Terminal { outcome, .. } = fixture.operations.terminal_state().await
+    else {
+        panic!("terminal state expected");
+    };
+    let CorrosionDeployOutcome::Failed { failure, .. } = outcome else {
+        panic!("refused verb must fail the operation");
+    };
+    let ployz_core::corrosion::CorrosionDeployFailure::ServiceFailed { failure, .. } = failure
+    else {
+        panic!("service failure expected");
+    };
+    let message = match failure {
+        ployz_core::corrosion::CorrosionDeployServiceFailure::ImagePullFailed { message }
+        | ployz_core::corrosion::CorrosionDeployServiceFailure::ContainerCreateFailed { message }
+        | ployz_core::corrosion::CorrosionDeployServiceFailure::ContainerStartFailed { message }
+        | ployz_core::corrosion::CorrosionDeployServiceFailure::IncumbentStopFailed { message }
+        | ployz_core::corrosion::CorrosionDeployServiceFailure::HealthGateFailed { message } => {
+            message
+        }
+    };
+    assert!(message.contains("not the operation's driver"));
 }
 
 #[tokio::test]
@@ -1084,11 +1620,11 @@ async fn volume_service_stops_incumbent_only_after_create_and_restarts_on_gate_f
     let events = evidence_kinds(&log).await;
     assert!(events.contains(&OperationEvidence::IncumbentStopped {
         container_id: ContainerId::try_new("incumbent-1").expect("container"),
-        machine: None,
+        machine: Some(machine_id()),
     }));
     assert!(events.contains(&OperationEvidence::IncumbentRestarted {
         container_id: ContainerId::try_new("incumbent-1").expect("container"),
-        machine: None,
+        machine: Some(machine_id()),
     }));
 }
 
@@ -1163,7 +1699,7 @@ async fn sweep_removes_only_foreign_debris_and_their_rows() {
     let events = evidence_kinds(&log).await;
     assert!(events.contains(&OperationEvidence::DebrisSwept {
         removed: vec![ContainerId::try_new("debris-1").expect("container")],
-        machine: None,
+        machine: Some(machine_id()),
     }));
     // The sweep's exact row delete names only the debris row.
     let deleted = fixture.store.deleted.lock().await.clone();

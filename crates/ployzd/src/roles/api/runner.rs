@@ -79,6 +79,9 @@ pub struct CreateV2ManagedContainer {
     pub runtime: ContainerRuntimeSpec,
     pub dns_search_domain: InternalDnsSearchDomain,
     pub identity: V2ManagedContainerIdentity,
+    /// Host-published ports for a global service's container; empty for
+    /// every replicated create.
+    pub host_ports: ployz_core::corrosion::HostPortBindings,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

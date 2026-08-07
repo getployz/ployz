@@ -6,6 +6,7 @@
 
 mod config;
 mod deploy;
+mod deploy_dispatch;
 mod deploy_runtime;
 mod deploy_stores;
 mod deploy_task;
@@ -21,6 +22,7 @@ mod operation_http;
 mod operation_lifecycle;
 mod operation_proxy;
 mod operation_store;
+mod placement_gather;
 mod placement_http;
 mod promotion_store;
 mod removals;

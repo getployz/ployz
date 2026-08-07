@@ -42,6 +42,7 @@ pub(super) trait DeployRuntime: Send + Sync {
         resolved_image: &ImageReference,
         namespace: &ResolvedNamespace,
         identity: V2ManagedContainerIdentity,
+        host_ports: &ployz_core::corrosion::HostPortBindings,
     ) -> Result<ContainerId, String>;
     async fn start_container(&self, container_id: &ContainerId) -> Result<(), String>;
     async fn health_gate(
@@ -113,6 +114,7 @@ where
         resolved_image: &ImageReference,
         namespace: &ResolvedNamespace,
         identity: V2ManagedContainerIdentity,
+        host_ports: &ployz_core::corrosion::HostPortBindings,
     ) -> Result<ContainerId, String> {
         let namespace_name = namespace.document.name.clone();
         let dns_search_domain =
@@ -125,6 +127,7 @@ where
             runtime: request.runtime.clone(),
             dns_search_domain,
             identity,
+            host_ports: host_ports.clone(),
         })
         .await
         .map_err(|error| bounded_diagnostic(format!("{error:?}")))

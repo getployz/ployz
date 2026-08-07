@@ -53,6 +53,16 @@ impl EvidenceIdentity {
     }
 }
 
+/// One replacement container row a prepared deploy intent will write, with
+/// its Docker id. `machine_id` inside the document names the target machine
+/// the container runs on, which may be any accepted roster machine.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct PreparedDeployContainer {
+    pub(super) id: ContainerId,
+    pub(super) document: ContainerDocument,
+}
+
 /// Exact non-secret promotion intent needed to finish one prepared deploy after restart.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -61,8 +71,7 @@ pub(super) struct PreparedPromotion {
     pub(super) exact_namespace_document: String,
     pub(super) service_id: ServiceRowId,
     pub(super) service_document: ServiceDocument,
-    pub(super) container_id: ContainerId,
-    pub(super) container_document: ContainerDocument,
+    pub(super) containers: Vec<PreparedDeployContainer>,
     pub(super) success_result: CorrosionDeployServiceResult,
 }
 
@@ -74,15 +83,16 @@ impl PreparedPromotion {
             return false;
         };
         namespace_document.cluster_id == self.service_document.cluster_id
-            && namespace_document.cluster_id == self.container_document.cluster_id
             && self.service_document.namespace_id == self.namespace_id
             && self.service_document.active_deploy == identity.operation_id
             && self.service_document.operation_id == identity.operation_id
-            && self.container_document.namespace_id == self.namespace_id
-            && self.container_document.service_id == self.service_id
-            && self.container_document.deploy == identity.operation_id
-            && self.container_document.machine_id == identity.driver_machine_id
-            && self.container_document.cluster_id == self.service_document.cluster_id
+            && !self.containers.is_empty()
+            && self.containers.iter().all(|container| {
+                container.document.namespace_id == self.namespace_id
+                    && container.document.service_id == self.service_id
+                    && container.document.deploy == identity.operation_id
+                    && container.document.cluster_id == self.service_document.cluster_id
+            })
             && self.success_result.service_id == self.service_id
             && matches!(
                 &self.success_result.result,
@@ -102,8 +112,7 @@ pub(super) struct PreparedRedeployIntent {
     pub(super) service_id: ServiceRowId,
     pub(super) exact_incumbent_document: String,
     pub(super) service_document: ServiceDocument,
-    pub(super) container_id: ContainerId,
-    pub(super) container_document: ContainerDocument,
+    pub(super) containers: Vec<PreparedDeployContainer>,
     pub(super) health_gate: HealthGatePolicy,
 }
 
@@ -119,11 +128,13 @@ impl PreparedRedeployIntent {
             && self.service_document.active_deploy == identity.operation_id
             && self.service_document.operation_id == identity.operation_id
             && self.service_document.previous_image.as_ref() == Some(&incumbent.image)
-            && self.container_document.cluster_id == self.service_document.cluster_id
-            && self.container_document.namespace_id == self.service_document.namespace_id
-            && self.container_document.service_id == self.service_id
-            && self.container_document.deploy == identity.operation_id
-            && self.container_document.machine_id == identity.driver_machine_id
+            && !self.containers.is_empty()
+            && self.containers.iter().all(|container| {
+                container.document.cluster_id == self.service_document.cluster_id
+                    && container.document.namespace_id == self.service_document.namespace_id
+                    && container.document.service_id == self.service_id
+                    && container.document.deploy == identity.operation_id
+            })
     }
 }
 
@@ -897,6 +908,11 @@ fn advance_phase(
             EvidencePhase::Created | EvidencePhase::Executing,
             OperationEvidence::OpClaimWon | OperationEvidence::OpClaimLost { .. },
         ) => Ok(EvidencePhase::Executing),
+        // The gather and pick run at admission, before the op claim.
+        (
+            EvidencePhase::Created,
+            OperationEvidence::PlacementGathered { .. } | OperationEvidence::PlacementPicked { .. },
+        ) => Ok(EvidencePhase::Created),
         (
             EvidencePhase::Executing,
             OperationEvidence::PlacementGathered { .. }
@@ -1113,8 +1129,10 @@ pub(super) fn prepared_promotion_fixture() -> PreparedPromotion {
         .to_string(),
         service_id: service_id.clone(),
         service_document,
-        container_id: ContainerId::try_new("docker-container-1").expect("container id"),
-        container_document,
+        containers: vec![PreparedDeployContainer {
+            id: ContainerId::try_new("docker-container-1").expect("container id"),
+            document: container_document,
+        }],
         success_result: CorrosionDeployServiceResult::completed(service_id),
     }
 }
@@ -1175,8 +1193,10 @@ pub(super) fn prepared_redeploy_intent_fixture() -> PreparedRedeployIntent {
         service_id,
         exact_incumbent_document,
         service_document,
-        container_id: ContainerId::try_new("docker-container-2").expect("container id"),
-        container_document,
+        containers: vec![PreparedDeployContainer {
+            id: ContainerId::try_new("docker-container-2").expect("container id"),
+            document: container_document,
+        }],
         health_gate: HealthGatePolicy::Enforce,
     }
 }

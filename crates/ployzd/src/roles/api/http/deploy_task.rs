@@ -1,9 +1,11 @@
-//! The deploy task: one operation's phase execution against the runtime,
-//! plus its op-row heartbeat.
+//! The deploy task: one operation's phase execution against its picked
+//! target machines, plus its op-row heartbeat.
 //!
 //! The task owns Docker phase ordering, cutover strategy, sweep/cleanup
 //! evidence, and shutdown handling; row convergence and terminalization stay
-//! on the driver it carries.
+//! on the driver it carries. Every Docker effect routes through the
+//! machine-addressed dispatch: local targets hit the local runner, remote
+//! targets get claim-scoped `/deploy/execute` verbs.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::Ipv4Addr;
@@ -15,23 +17,27 @@ use ployz_core::corrosion::{
     CorrosionDeployServiceFailure, CorrosionDeployServiceResult, CorrosionDeployTransition,
     CorrosionDeployWarning, CorrosionDocumentVersion, CorrosionServiceName, CorrosionTimestamp,
     DEPLOY_HEARTBEAT_INTERVAL, DeployClaim, DeployTakeover, OperationInitiator,
-    OperatorWriteProvenance, ServiceDocument, ServicePlacement, ServiceReplicaCount,
-    V2ManagedContainerIdentity, adjudicate_deploy_claim, check_deploy_takeover,
-    fingerprint_env_value,
+    OperatorWriteProvenance, ServiceDocument, V2ManagedContainerIdentity, adjudicate_deploy_claim,
+    check_deploy_takeover, fingerprint_env_value,
 };
+use ployz_core::deploy::VolumeName;
 use ployz_core::ids::{ContainerId, MachineRowId, NamespaceRowId, OperationRowId, ServiceRowId};
 use ployz_core::{DeployAccepted, DeployRequest, HealthGatePolicy};
 use ployz_core::{OperationEvidence, deploy::ImageReference};
 use tokio::sync::{Mutex, watch};
 use tokio::time::MissedTickBehavior;
 
-use crate::roles::api::runner::ExistingV2ManagedContainer;
-
 use super::deploy::{
-    DeployDriver, DeployDriverError, DeployPath, RedeployFlipEnd, cleanup_incomplete, observed_with,
+    DeployDriver, DeployDriverError, DeployPath, DeployPlacement, RedeployFlipEnd,
+    cleanup_incomplete, observed_with,
+};
+use super::deploy_dispatch::{
+    DISPATCH_EFFECT_BUDGET, DISPATCH_PULL_BUDGET, TargetDispatch, VerbScope,
 };
 use super::deploy_runtime::bounded_diagnostic;
-use super::operation_evidence::{OperationEvidenceLog, PreparedPromotion, PreparedRedeployIntent};
+use super::operation_evidence::{
+    OperationEvidenceLog, PreparedDeployContainer, PreparedPromotion, PreparedRedeployIntent,
+};
 use super::operation_finalizer::PromotionFinalizerState;
 use super::operation_store::{ConditionalOperationWrite, HeartbeatWrite, ObservedOperation};
 use super::promotion_store::{ObservedContainer, ObservedService, ResolvedNamespace};
@@ -84,13 +90,28 @@ enum DeployTaskEnd {
 }
 
 /// The identity a prepared deploy's service document descends from: the
-/// first-deploy defaults or the incumbent's own fields.
+/// first-deploy defaults or the incumbent's own fields. Placement and pins
+/// come from the deploy's effective placement, not from lineage.
 struct ServiceLineage {
     namespace_id: NamespaceRowId,
     name: CorrosionServiceName,
-    placement: ServicePlacement,
-    pinned_machines: BTreeSet<MachineRowId>,
     previous_image: Option<ImageReference>,
+}
+
+/// One replacement container this deploy started, bound to the machine that
+/// runs it and the endpoint address its gate returned.
+struct PlacedContainer {
+    machine: MachineRowId,
+    container_id: ContainerId,
+    ip: Ipv4Addr,
+}
+
+/// One live service container observation bound to the machine reporting it.
+struct MachineServiceContainer {
+    machine: MachineRowId,
+    container_id: ContainerId,
+    deploy: OperationRowId,
+    named_volumes: BTreeSet<VolumeName>,
 }
 
 pub(super) struct AcceptedDeploy {
@@ -197,6 +218,7 @@ pub(super) struct DeployTask {
     pub(super) request: DeployRequest,
     pub(super) initiator: OperationInitiator,
     pub(super) path: DeployPath,
+    pub(super) placement: DeployPlacement,
     pub(super) log: OperationEvidenceLog,
     pub(super) row: Arc<Mutex<ObservedOperation>>,
 }
@@ -250,7 +272,8 @@ impl DeployTask {
         self.transition_row(CorrosionDeployTransition::Running { started_at })
             .await?;
         let heartbeat = DeployHeartbeat::spawn(self.driver.clone(), Arc::clone(&self.row));
-        let end = self.run_phases(&mut shutdown, &heartbeat).await;
+        let dispatch = self.dispatch();
+        let end = self.run_phases(&mut shutdown, &heartbeat, &dispatch).await;
         heartbeat.stop().await;
         match end? {
             DeployTaskEnd::FinishFirstDeploy { prepared, warnings } => {
@@ -273,18 +296,53 @@ impl DeployTask {
         }
     }
 
+    fn dispatch(&self) -> TargetDispatch {
+        TargetDispatch::new(
+            self.driver.machine_id.clone(),
+            Arc::clone(&self.driver.runtime),
+            self.driver.effect_timeout,
+            Arc::clone(&self.driver.verbs),
+            self.placement.addresses.clone(),
+            VerbScope {
+                operation_id: self.operation_id.clone(),
+                namespace_id: self.namespace_id(),
+                service_id: self.service_id.clone(),
+            },
+        )
+    }
+
+    fn namespace_id(&self) -> NamespaceRowId {
+        match &self.path {
+            DeployPath::First { namespace } | DeployPath::Redeploy { namespace, .. } => {
+                namespace.id.clone()
+            }
+        }
+    }
+
+    /// The pick's distinct target machines, in pick order.
+    fn distinct_targets(&self) -> Vec<MachineRowId> {
+        let mut seen = BTreeSet::new();
+        self.placement
+            .targets
+            .iter()
+            .filter(|machine| seen.insert((*machine).clone()))
+            .cloned()
+            .collect()
+    }
+
     async fn run_phases(
         &self,
         shutdown: &mut watch::Receiver<bool>,
         heartbeat: &DeployHeartbeat,
+        dispatch: &TargetDispatch,
     ) -> Result<DeployTaskEnd, DeployDriverError> {
         match &self.path {
-            DeployPath::First { namespace } => self.run_first(shutdown, namespace).await,
+            DeployPath::First { namespace } => self.run_first(shutdown, dispatch, namespace).await,
             DeployPath::Redeploy {
                 namespace,
                 incumbent,
             } => {
-                self.run_redeploy(shutdown, heartbeat, namespace, incumbent)
+                self.run_redeploy(shutdown, heartbeat, dispatch, namespace, incumbent)
                     .await
             }
         }
@@ -293,32 +351,30 @@ impl DeployTask {
     async fn run_first(
         &self,
         shutdown: &mut watch::Receiver<bool>,
+        dispatch: &TargetDispatch,
         namespace: &ResolvedNamespace,
     ) -> Result<DeployTaskEnd, DeployDriverError> {
         let mut warnings = Vec::new();
-        let image = match self.acquire_image(shutdown).await? {
+        let image = match self.acquire_image(shutdown, dispatch).await? {
             Ok(image) => image,
             Err(end) => return Ok(end),
         };
         let identity = self.identity(&namespace.id);
-        let container_id = match self
-            .create_container(shutdown, &image, namespace, identity.clone())
+        let created = match self
+            .create_targets(shutdown, dispatch, &image, namespace, &identity)
             .await?
         {
-            Ok(container_id) => container_id,
+            Ok(created) => created,
             Err(end) => return Ok(end),
         };
-        if let Err(end) = self.start_new_container(shutdown, &container_id).await? {
-            return Ok(end);
-        }
-        let ip = match self
-            .health_gate_or_skip(shutdown, &container_id, &identity, &mut warnings)
+        let placed = match self
+            .start_and_gate(shutdown, dispatch, &created, &identity, &mut warnings)
             .await?
         {
-            Ok(ip) => ip,
+            Ok(placed) => placed,
             Err(end) => return Ok(end),
         };
-        let prepared = self.prepared_promotion(namespace, container_id, ip, image)?;
+        let prepared = self.prepared_promotion(namespace, &placed, image)?;
         self.log
             .append_promotion_prepared(self.now()?, prepared.clone())
             .await?;
@@ -332,6 +388,7 @@ impl DeployTask {
         &self,
         shutdown: &mut watch::Receiver<bool>,
         heartbeat: &DeployHeartbeat,
+        dispatch: &TargetDispatch,
         namespace: &ResolvedNamespace,
         incumbent: &ObservedService,
     ) -> Result<DeployTaskEnd, DeployDriverError> {
@@ -339,40 +396,20 @@ impl DeployTask {
         if let Some(end) = self.takeover_boundary(shutdown, heartbeat).await? {
             return Ok(end);
         }
-        let containers = match select_effect(
-            shutdown,
-            self.driver.effect_timeout,
-            self.driver
-                .runtime
-                .service_docker_containers(&self.service_id),
-        )
-        .await
-        {
-            EffectResult::Completed(Ok(containers)) => containers,
-            EffectResult::Completed(Err(message)) => {
-                return Ok(DeployTaskEnd::ServiceFailure {
-                    failure: CorrosionDeployServiceFailure::ContainerCreateFailed {
-                        message: bounded_diagnostic(format!(
-                            "could not list service containers: {message}"
-                        )),
-                    },
-                });
-            }
-            EffectResult::Shutdown | EffectResult::TimedOut => {
-                return Ok(DeployTaskEnd::Interrupted);
-            }
+        let containers = match self.observe_service_containers(shutdown, dispatch).await? {
+            Ok(containers) => containers,
+            Err(end) => return Ok(end),
         };
-        let (incumbents, debris): (Vec<_>, Vec<_>) =
-            containers.into_iter().partition(|container| {
-                container.identity.operation_id == incumbent.document.active_deploy
-            });
-        let debris: Vec<ExistingV2ManagedContainer> = debris
+        let (incumbents, debris): (Vec<_>, Vec<_>) = containers
             .into_iter()
-            .filter(|container| container.identity.operation_id != self.operation_id)
+            .partition(|container| container.deploy == incumbent.document.active_deploy);
+        let debris: Vec<MachineServiceContainer> = debris
+            .into_iter()
+            .filter(|container| container.deploy != self.operation_id)
             .collect();
         let strategy = if incumbents
             .iter()
-            .any(|container| !container.named_volume_names.is_empty())
+            .any(|container| !container.named_volumes.is_empty())
             || !self.request.runtime.volume_mounts.is_empty()
         {
             CutoverStrategy::StopFirst
@@ -382,33 +419,20 @@ impl DeployTask {
 
         // Sweep is best-effort: debris that refuses to die stays for the next
         // deploy's sweep and never fails this operation.
-        let removed = self
-            .stop_then_remove(&debris, CleanupEvidence::Debris)
-            .await?;
-        if !removed.is_empty() {
-            self.delete_container_rows(&removed).await;
-            self.log
-                .append(
-                    self.now()?,
-                    OperationEvidence::DebrisSwept {
-                        removed,
-                        machine: None,
-                    },
-                )
-                .await?;
-        }
+        self.sweep_debris(dispatch, &debris).await?;
 
-        // The replacement is pulled and created before the incumbent is touched.
-        let image = match self.acquire_image(shutdown).await? {
+        // The replacements are pulled and created before any incumbent is
+        // touched.
+        let image = match self.acquire_image(shutdown, dispatch).await? {
             Ok(image) => image,
             Err(end) => return Ok(end),
         };
         let identity = self.identity(&namespace.id);
-        let container_id = match self
-            .create_container(shutdown, &image, namespace, identity.clone())
+        let created = match self
+            .create_targets(shutdown, dispatch, &image, namespace, &identity)
             .await?
         {
-            Ok(container_id) => container_id,
+            Ok(created) => created,
             Err(end) => return Ok(end),
         };
 
@@ -417,20 +441,21 @@ impl DeployTask {
                 self.stop_first_cutover(
                     shutdown,
                     heartbeat,
+                    dispatch,
                     &incumbents,
-                    &container_id,
+                    &created,
                     &identity,
                     &mut warnings,
                 )
                 .await?
             }
             CutoverStrategy::StartFirst => {
-                self.start_first_cutover(shutdown, &container_id, &identity, &mut warnings)
+                self.start_and_gate(shutdown, dispatch, &created, &identity, &mut warnings)
                     .await?
             }
         };
-        let ip = match cutover {
-            Ok(ip) => ip,
+        let placed = match cutover {
+            Ok(placed) => placed,
             Err(end) => return Ok(end),
         };
 
@@ -438,7 +463,7 @@ impl DeployTask {
         if let Some(end) = self.takeover_boundary(shutdown, heartbeat).await? {
             return Ok(end);
         }
-        let intent = self.prepared_redeploy_intent(incumbent, container_id, ip, image)?;
+        let intent = self.prepared_redeploy_intent(incumbent, &placed, image)?;
         self.log
             .append_redeploy_prepared(self.now()?, intent.clone())
             .await?;
@@ -473,7 +498,7 @@ impl DeployTask {
         match strategy {
             CutoverStrategy::StopFirst => {
                 let removed = self
-                    .stop_then_remove(&incumbents, CleanupEvidence::RemoveStopped)
+                    .stop_then_remove(dispatch, &incumbents, CleanupEvidence::RemoveStopped)
                     .await?;
                 if removed.len() < incumbents.len() {
                     warnings.push(cleanup_incomplete(
@@ -495,7 +520,7 @@ impl DeployTask {
                     .append(self.now()?, OperationEvidence::Drained)
                     .await?;
                 let removed = self
-                    .stop_then_remove(&incumbents, CleanupEvidence::StopThenRemove)
+                    .stop_then_remove(dispatch, &incumbents, CleanupEvidence::StopThenRemove)
                     .await?;
                 if removed.len() < incumbents.len() {
                     warnings.push(cleanup_incomplete(
@@ -512,43 +537,158 @@ impl DeployTask {
         Ok(DeployTaskEnd::Completed { warnings })
     }
 
-    /// Stop-first cutover for a volume-holding incumbent: stop it, start the
-    /// replacement, and gate it.
+    /// Lists this service's live containers on every machine that reported
+    /// them in a bid, plus every answering machine named by a container row.
+    async fn observe_service_containers(
+        &self,
+        shutdown: &mut watch::Receiver<bool>,
+        dispatch: &TargetDispatch,
+    ) -> Result<Result<Vec<MachineServiceContainer>, DeployTaskEnd>, DeployDriverError> {
+        let mut machines: BTreeSet<MachineRowId> = self
+            .placement
+            .bid_service_containers
+            .iter()
+            .filter(|(_, containers)| !containers.is_empty())
+            .map(|(machine, _)| machine.clone())
+            .collect();
+        match select_effect(
+            shutdown,
+            self.driver.effect_timeout,
+            self.driver.store.service_containers(&self.service_id),
+        )
+        .await
+        {
+            EffectResult::Completed(Ok(rows)) => {
+                for row in rows {
+                    if self.placement.answered.contains(&row.document.machine_id) {
+                        machines.insert(row.document.machine_id);
+                    }
+                }
+            }
+            EffectResult::Completed(Err(error)) => {
+                return Err(DeployDriverError::Promotion(error));
+            }
+            EffectResult::Shutdown | EffectResult::TimedOut => {
+                return Ok(Err(DeployTaskEnd::Interrupted));
+            }
+        }
+        let mut observed = Vec::new();
+        for machine in machines {
+            match select_effect(
+                shutdown,
+                DISPATCH_EFFECT_BUDGET,
+                dispatch.service_containers(&machine),
+            )
+            .await
+            {
+                EffectResult::Completed(Ok(containers)) => {
+                    observed.extend(containers.into_iter().map(|container| {
+                        MachineServiceContainer {
+                            machine: machine.clone(),
+                            container_id: container.container_id,
+                            deploy: container.deploy,
+                            named_volumes: container.named_volumes,
+                        }
+                    }));
+                }
+                EffectResult::Completed(Err(message)) => {
+                    return Ok(Err(DeployTaskEnd::ServiceFailure {
+                        failure: CorrosionDeployServiceFailure::ContainerCreateFailed {
+                            message: bounded_diagnostic(format!(
+                                "could not list service containers on machine {machine}: {message}"
+                            )),
+                        },
+                    }));
+                }
+                EffectResult::Shutdown | EffectResult::TimedOut => {
+                    return Ok(Err(DeployTaskEnd::Interrupted));
+                }
+            }
+        }
+        Ok(Ok(observed))
+    }
+
+    /// Removes foreign debris wherever it was observed, deleting the matching
+    /// rows and appending one `DebrisSwept` per machine that shed containers.
+    async fn sweep_debris(
+        &self,
+        dispatch: &TargetDispatch,
+        debris: &[MachineServiceContainer],
+    ) -> Result<(), DeployDriverError> {
+        let removed = self
+            .stop_then_remove(dispatch, debris, CleanupEvidence::Debris)
+            .await?;
+        if removed.is_empty() {
+            return Ok(());
+        }
+        self.delete_container_rows(&removed).await;
+        let mut by_machine: BTreeMap<MachineRowId, Vec<ContainerId>> = BTreeMap::new();
+        for container in debris {
+            if removed.contains(&container.container_id) {
+                by_machine
+                    .entry(container.machine.clone())
+                    .or_default()
+                    .push(container.container_id.clone());
+            }
+        }
+        for (machine, removed) in by_machine {
+            self.log
+                .append(
+                    self.now()?,
+                    OperationEvidence::DebrisSwept {
+                        removed,
+                        machine: Some(machine),
+                    },
+                )
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Stop-first cutover for volume-holding incumbents: stop them, start the
+    /// replacements, and gate them.
     ///
     /// The incumbent restart runs only for service failures. A shutdown
     /// interruption after the incumbent stop leaves the service down until
     /// the deploy is re-run: a restart launched during shutdown could not be
     /// awaited to completion, so the interrupted terminal outcome is the
     /// evidence instead.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the cutover names every phase collaborator it threads"
+    )]
     async fn stop_first_cutover(
         &self,
         shutdown: &mut watch::Receiver<bool>,
         heartbeat: &DeployHeartbeat,
-        incumbents: &[ExistingV2ManagedContainer],
-        container_id: &ContainerId,
+        dispatch: &TargetDispatch,
+        incumbents: &[MachineServiceContainer],
+        created: &[(MachineRowId, ContainerId)],
         identity: &V2ManagedContainerIdentity,
         warnings: &mut Vec<CorrosionDeployWarning>,
-    ) -> Result<Result<Ipv4Addr, DeployTaskEnd>, DeployDriverError> {
+    ) -> Result<Result<Vec<PlacedContainer>, DeployTaskEnd>, DeployDriverError> {
         if let Some(end) = self.takeover_boundary(shutdown, heartbeat).await? {
             return Ok(Err(end));
         }
         for container in incumbents {
             match select_effect(
                 shutdown,
-                self.driver.effect_timeout,
-                self.driver
-                    .runtime
-                    .stop_container(&container.container_id, &container.identity),
+                DISPATCH_EFFECT_BUDGET,
+                dispatch.stop_container(
+                    &container.machine,
+                    &container.container_id,
+                    &self.identity_for(&container.deploy),
+                ),
             )
             .await
             {
-                EffectResult::Completed(Ok(_)) => {
+                EffectResult::Completed(Ok(())) => {
                     self.log
                         .append(
                             self.now()?,
                             OperationEvidence::IncumbentStopped {
                                 container_id: container.container_id.clone(),
-                                machine: None,
+                                machine: Some(container.machine.clone()),
                             },
                         )
                         .await?;
@@ -570,43 +710,20 @@ impl DeployTask {
                 EffectResult::Shutdown => return Ok(Err(DeployTaskEnd::Interrupted)),
             }
         }
-        match self.start_new_container(shutdown, container_id).await? {
-            Ok(()) => {}
-            Err(end) => {
-                self.restart_incumbents(incumbents).await?;
-                return Ok(Err(end));
-            }
-        }
         match self
-            .health_gate_or_skip(shutdown, container_id, identity, warnings)
+            .start_and_gate(shutdown, dispatch, created, identity, warnings)
             .await?
         {
-            Ok(ip) => Ok(Ok(ip)),
+            Ok(placed) => Ok(Ok(placed)),
             Err(end) => {
                 // The failed replacement is retained for inspection; only
-                // the incumbent is brought back.
+                // the incumbents are brought back.
                 if matches!(end, DeployTaskEnd::ServiceFailure { .. }) {
-                    self.restart_incumbents(incumbents).await?;
+                    self.restart_incumbents(dispatch, incumbents).await?;
                 }
                 Ok(Err(end))
             }
         }
-    }
-
-    /// Start-first cutover: the incumbent keeps serving while the replacement
-    /// starts and passes its gate.
-    async fn start_first_cutover(
-        &self,
-        shutdown: &mut watch::Receiver<bool>,
-        container_id: &ContainerId,
-        identity: &V2ManagedContainerIdentity,
-        warnings: &mut Vec<CorrosionDeployWarning>,
-    ) -> Result<Result<Ipv4Addr, DeployTaskEnd>, DeployDriverError> {
-        if let Err(end) = self.start_new_container(shutdown, container_id).await? {
-            return Ok(Err(end));
-        }
-        self.health_gate_or_skip(shutdown, container_id, identity, warnings)
-            .await
     }
 
     /// One best-effort stop/remove pass over `containers`, appending the
@@ -615,22 +732,20 @@ impl DeployTask {
     /// ids removed from Docker.
     async fn stop_then_remove(
         &self,
-        containers: &[ExistingV2ManagedContainer],
+        dispatch: &TargetDispatch,
+        containers: &[MachineServiceContainer],
         evidence: CleanupEvidence,
     ) -> Result<Vec<ContainerId>, DeployDriverError> {
         let mut removed = Vec::new();
         for container in containers {
+            let identity = self.identity_for(&container.deploy);
             match evidence {
                 CleanupEvidence::RemoveStopped => {}
                 CleanupEvidence::Debris | CleanupEvidence::StopThenRemove => {
-                    let stopped = tokio::time::timeout(
-                        self.driver.effect_timeout,
-                        self.driver
-                            .runtime
-                            .stop_container(&container.container_id, &container.identity),
-                    )
-                    .await;
-                    if !matches!(stopped, Ok(Ok(_))) {
+                    let stopped = dispatch
+                        .stop_container(&container.machine, &container.container_id, &identity)
+                        .await;
+                    if stopped.is_err() {
                         continue;
                     }
                     if matches!(evidence, CleanupEvidence::StopThenRemove) {
@@ -639,21 +754,17 @@ impl DeployTask {
                                 self.now()?,
                                 OperationEvidence::IncumbentStopped {
                                     container_id: container.container_id.clone(),
-                                    machine: None,
+                                    machine: Some(container.machine.clone()),
                                 },
                             )
                             .await?;
                     }
                 }
             }
-            let removal = tokio::time::timeout(
-                self.driver.effect_timeout,
-                self.driver
-                    .runtime
-                    .remove_container(&container.container_id, &container.identity),
-            )
-            .await;
-            if !matches!(removal, Ok(Ok(()))) {
+            let removal = dispatch
+                .remove_container(&container.machine, &container.container_id, &identity)
+                .await;
+            if removal.is_err() {
                 continue;
             }
             if matches!(
@@ -665,7 +776,7 @@ impl DeployTask {
                         self.now()?,
                         OperationEvidence::IncumbentRemoved {
                             container_id: container.container_id.clone(),
-                            machine: None,
+                            machine: Some(container.machine.clone()),
                         },
                     )
                     .await?;
@@ -735,9 +846,11 @@ impl DeployTask {
         }
     }
 
+    /// Resolves the image locally, then pulls it on every distinct target.
     async fn acquire_image(
         &self,
         shutdown: &mut watch::Receiver<bool>,
+        dispatch: &TargetDispatch,
     ) -> Result<Result<ImageReference, DeployTaskEnd>, DeployDriverError> {
         self.log
             .append(self.now()?, OperationEvidence::PullingImage)
@@ -759,28 +872,34 @@ impl DeployTask {
                 return Ok(Err(DeployTaskEnd::Interrupted));
             }
         };
-        let pull_shutdown = shutdown.clone();
-        match select_effect(
-            shutdown,
-            self.driver.effect_timeout,
-            self.driver.runtime.pull_image(&image, pull_shutdown),
-        )
-        .await
-        {
-            EffectResult::Completed(Ok(())) => {}
-            EffectResult::Completed(Err(message)) => {
-                return Ok(Err(DeployTaskEnd::ServiceFailure {
-                    failure: CorrosionDeployServiceFailure::ImagePullFailed { message },
-                }));
+        for machine in self.distinct_targets() {
+            let pull_shutdown = shutdown.clone();
+            match select_effect(
+                shutdown,
+                DISPATCH_PULL_BUDGET,
+                dispatch.pull_image(&machine, &image, pull_shutdown),
+            )
+            .await
+            {
+                EffectResult::Completed(Ok(())) => {}
+                EffectResult::Completed(Err(message)) => {
+                    return Ok(Err(DeployTaskEnd::ServiceFailure {
+                        failure: CorrosionDeployServiceFailure::ImagePullFailed {
+                            message: bounded_diagnostic(format!(
+                                "pull on machine {machine} failed: {message}"
+                            )),
+                        },
+                    }));
+                }
+                EffectResult::TimedOut => {
+                    return Ok(Err(DeployTaskEnd::ServiceFailure {
+                        failure: CorrosionDeployServiceFailure::ImagePullFailed {
+                            message: format!("image pull timed out on machine {machine}"),
+                        },
+                    }));
+                }
+                EffectResult::Shutdown => return Ok(Err(DeployTaskEnd::Interrupted)),
             }
-            EffectResult::TimedOut => {
-                return Ok(Err(DeployTaskEnd::ServiceFailure {
-                    failure: CorrosionDeployServiceFailure::ImagePullFailed {
-                        message: "image pull timed out".to_owned(),
-                    },
-                }));
-            }
-            EffectResult::Shutdown => return Ok(Err(DeployTaskEnd::Interrupted)),
         }
         self.log
             .append(self.now()?, OperationEvidence::ImageResolved)
@@ -788,165 +907,189 @@ impl DeployTask {
         Ok(Ok(image))
     }
 
-    async fn create_container(
+    /// Creates one container per pick target entry; a machine picked for N
+    /// replicas gets N containers.
+    async fn create_targets(
         &self,
         shutdown: &mut watch::Receiver<bool>,
+        dispatch: &TargetDispatch,
         image: &ImageReference,
         namespace: &ResolvedNamespace,
-        identity: V2ManagedContainerIdentity,
-    ) -> Result<Result<ContainerId, DeployTaskEnd>, DeployDriverError> {
-        let created = select_effect(
-            shutdown,
-            self.driver.effect_timeout,
-            self.driver
-                .runtime
-                .create_container(&self.request, image, namespace, identity),
-        )
-        .await;
-        let container_id = match created {
-            EffectResult::Completed(Ok(container_id)) => container_id,
-            EffectResult::Completed(Err(message)) => {
-                return Ok(Err(DeployTaskEnd::ServiceFailure {
-                    failure: CorrosionDeployServiceFailure::ContainerCreateFailed { message },
-                }));
-            }
-            EffectResult::Shutdown | EffectResult::TimedOut => {
-                return Ok(Err(DeployTaskEnd::Interrupted));
-            }
-        };
-        self.log
-            .append(
-                self.now()?,
-                OperationEvidence::ContainerCreated {
-                    container_id: container_id.clone(),
-                    machine: None,
-                },
+        identity: &V2ManagedContainerIdentity,
+    ) -> Result<Result<Vec<(MachineRowId, ContainerId)>, DeployTaskEnd>, DeployDriverError> {
+        let host_ports = self.placement.host_ports();
+        let mut created = Vec::new();
+        for machine in &self.placement.targets {
+            let outcome = select_effect(
+                shutdown,
+                DISPATCH_EFFECT_BUDGET,
+                dispatch.create_container(
+                    machine,
+                    &self.request,
+                    image,
+                    namespace,
+                    identity.clone(),
+                    &host_ports,
+                ),
             )
-            .await?;
-        Ok(Ok(container_id))
-    }
-
-    async fn start_new_container(
-        &self,
-        shutdown: &mut watch::Receiver<bool>,
-        container_id: &ContainerId,
-    ) -> Result<Result<(), DeployTaskEnd>, DeployDriverError> {
-        match select_effect(
-            shutdown,
-            self.driver.effect_timeout,
-            self.driver.runtime.start_container(container_id),
-        )
-        .await
-        {
-            EffectResult::Completed(Ok(())) => {}
-            EffectResult::Completed(Err(message)) => {
-                return Ok(Err(DeployTaskEnd::ServiceFailure {
-                    failure: CorrosionDeployServiceFailure::ContainerStartFailed { message },
-                }));
-            }
-            EffectResult::TimedOut => {
-                return Ok(Err(DeployTaskEnd::ServiceFailure {
-                    failure: CorrosionDeployServiceFailure::ContainerStartFailed {
-                        message: "container start timed out".to_owned(),
+            .await;
+            let container_id = match outcome {
+                EffectResult::Completed(Ok(container_id)) => container_id,
+                EffectResult::Completed(Err(message)) => {
+                    return Ok(Err(DeployTaskEnd::ServiceFailure {
+                        failure: CorrosionDeployServiceFailure::ContainerCreateFailed {
+                            message: bounded_diagnostic(format!(
+                                "create on machine {machine} failed: {message}"
+                            )),
+                        },
+                    }));
+                }
+                EffectResult::Shutdown | EffectResult::TimedOut => {
+                    return Ok(Err(DeployTaskEnd::Interrupted));
+                }
+            };
+            self.log
+                .append(
+                    self.now()?,
+                    OperationEvidence::ContainerCreated {
+                        container_id: container_id.clone(),
+                        machine: Some(machine.clone()),
                     },
-                }));
-            }
-            EffectResult::Shutdown => return Ok(Err(DeployTaskEnd::Interrupted)),
+                )
+                .await?;
+            created.push((machine.clone(), container_id));
         }
-        self.log
-            .append(
-                self.now()?,
-                OperationEvidence::ContainerStarted {
-                    container_id: container_id.clone(),
-                    machine: None,
-                },
-            )
-            .await?;
-        Ok(Ok(()))
+        Ok(Ok(created))
     }
 
-    async fn health_gate_or_skip(
+    /// Starts and gates every created replacement, in creation order. A
+    /// failed gate on any target fails the operation before the flip; the
+    /// failed container is retained for inspection.
+    async fn start_and_gate(
         &self,
         shutdown: &mut watch::Receiver<bool>,
-        container_id: &ContainerId,
+        dispatch: &TargetDispatch,
+        created: &[(MachineRowId, ContainerId)],
         identity: &V2ManagedContainerIdentity,
         warnings: &mut Vec<CorrosionDeployWarning>,
-    ) -> Result<Result<Ipv4Addr, DeployTaskEnd>, DeployDriverError> {
-        match self.request.health_gate {
-            HealthGatePolicy::Enforce => {
-                match select_effect(
-                    shutdown,
-                    self.driver.effect_timeout,
-                    self.driver.runtime.health_gate(container_id, identity),
-                )
-                .await
-                {
-                    EffectResult::Completed(Ok(ip)) => Ok(Ok(ip)),
-                    EffectResult::Completed(Err(message)) => {
-                        Ok(Err(DeployTaskEnd::ServiceFailure {
-                            failure: CorrosionDeployServiceFailure::HealthGateFailed { message },
-                        }))
-                    }
-                    EffectResult::TimedOut => Ok(Err(DeployTaskEnd::ServiceFailure {
-                        failure: CorrosionDeployServiceFailure::HealthGateFailed {
-                            message: "health gate timed out".to_owned(),
-                        },
-                    })),
-                    EffectResult::Shutdown => Ok(Err(DeployTaskEnd::Interrupted)),
-                }
-            }
-            HealthGatePolicy::Skip => {
-                match select_effect(
-                    shutdown,
-                    self.driver.effect_timeout,
-                    self.driver.runtime.container_ip(container_id, identity),
-                )
-                .await
-                {
-                    EffectResult::Completed(Ok(ip)) => {
-                        self.log
-                            .append(self.now()?, OperationEvidence::HealthGateSkipped)
-                            .await?;
-                        warnings.push(CorrosionDeployWarning::HealthGateSkipped {
-                            service_id: self.service_id.clone(),
-                        });
-                        Ok(Ok(ip))
-                    }
-                    EffectResult::Completed(Err(message)) => {
-                        Ok(Err(DeployTaskEnd::ServiceFailure {
-                            failure: CorrosionDeployServiceFailure::ContainerStartFailed {
-                                message,
-                            },
-                        }))
-                    }
-                    EffectResult::TimedOut => Ok(Err(DeployTaskEnd::ServiceFailure {
+    ) -> Result<Result<Vec<PlacedContainer>, DeployTaskEnd>, DeployDriverError> {
+        let mut placed = Vec::new();
+        for (machine, container_id) in created {
+            match select_effect(
+                shutdown,
+                DISPATCH_EFFECT_BUDGET,
+                dispatch.start_container(machine, container_id),
+            )
+            .await
+            {
+                EffectResult::Completed(Ok(())) => {}
+                EffectResult::Completed(Err(message)) => {
+                    return Ok(Err(DeployTaskEnd::ServiceFailure {
                         failure: CorrosionDeployServiceFailure::ContainerStartFailed {
-                            message: "container endpoint lookup timed out".to_owned(),
+                            message: bounded_diagnostic(format!(
+                                "start on machine {machine} failed: {message}"
+                            )),
                         },
-                    })),
-                    EffectResult::Shutdown => Ok(Err(DeployTaskEnd::Interrupted)),
+                    }));
                 }
+                EffectResult::TimedOut => {
+                    return Ok(Err(DeployTaskEnd::ServiceFailure {
+                        failure: CorrosionDeployServiceFailure::ContainerStartFailed {
+                            message: format!("container start timed out on machine {machine}"),
+                        },
+                    }));
+                }
+                EffectResult::Shutdown => return Ok(Err(DeployTaskEnd::Interrupted)),
+            }
+            self.log
+                .append(
+                    self.now()?,
+                    OperationEvidence::ContainerStarted {
+                        container_id: container_id.clone(),
+                        machine: Some(machine.clone()),
+                    },
+                )
+                .await?;
+            let gated = select_effect(
+                shutdown,
+                DISPATCH_EFFECT_BUDGET,
+                dispatch.health_gate(machine, container_id, identity, self.request.health_gate),
+            )
+            .await;
+            let ip = match (self.request.health_gate, gated) {
+                (_, EffectResult::Completed(Ok(ip))) => ip,
+                (HealthGatePolicy::Enforce, EffectResult::Completed(Err(message))) => {
+                    return Ok(Err(DeployTaskEnd::ServiceFailure {
+                        failure: CorrosionDeployServiceFailure::HealthGateFailed {
+                            message: bounded_diagnostic(format!(
+                                "health gate on machine {machine} failed: {message}"
+                            )),
+                        },
+                    }));
+                }
+                (HealthGatePolicy::Enforce, EffectResult::TimedOut) => {
+                    return Ok(Err(DeployTaskEnd::ServiceFailure {
+                        failure: CorrosionDeployServiceFailure::HealthGateFailed {
+                            message: format!("health gate timed out on machine {machine}"),
+                        },
+                    }));
+                }
+                (HealthGatePolicy::Skip, EffectResult::Completed(Err(message))) => {
+                    return Ok(Err(DeployTaskEnd::ServiceFailure {
+                        failure: CorrosionDeployServiceFailure::ContainerStartFailed {
+                            message: bounded_diagnostic(format!(
+                                "endpoint lookup on machine {machine} failed: {message}"
+                            )),
+                        },
+                    }));
+                }
+                (HealthGatePolicy::Skip, EffectResult::TimedOut) => {
+                    return Ok(Err(DeployTaskEnd::ServiceFailure {
+                        failure: CorrosionDeployServiceFailure::ContainerStartFailed {
+                            message: format!(
+                                "container endpoint lookup timed out on machine {machine}"
+                            ),
+                        },
+                    }));
+                }
+                (_, EffectResult::Shutdown) => return Ok(Err(DeployTaskEnd::Interrupted)),
+            };
+            placed.push(PlacedContainer {
+                machine: machine.clone(),
+                container_id: container_id.clone(),
+                ip,
+            });
+        }
+        match self.request.health_gate {
+            HealthGatePolicy::Enforce => {}
+            HealthGatePolicy::Skip => {
+                self.log
+                    .append(self.now()?, OperationEvidence::HealthGateSkipped)
+                    .await?;
+                warnings.push(CorrosionDeployWarning::HealthGateSkipped {
+                    service_id: self.service_id.clone(),
+                });
             }
         }
+        Ok(Ok(placed))
     }
 
     async fn restart_incumbents(
         &self,
-        incumbents: &[ExistingV2ManagedContainer],
+        dispatch: &TargetDispatch,
+        incumbents: &[MachineServiceContainer],
     ) -> Result<(), DeployDriverError> {
         for container in incumbents {
-            let restarted = tokio::time::timeout(
-                self.driver.effect_timeout,
-                self.driver.runtime.start_container(&container.container_id),
-            )
-            .await;
-            if matches!(restarted, Ok(Ok(()))) {
+            let restarted = dispatch
+                .restart_container(&container.machine, &container.container_id)
+                .await;
+            if restarted.is_ok() {
                 self.log
                     .append(
                         self.now()?,
                         OperationEvidence::IncumbentRestarted {
                             container_id: container.container_id.clone(),
-                            machine: None,
+                            machine: Some(container.machine.clone()),
                         },
                     )
                     .await?;
@@ -1027,6 +1170,16 @@ impl DeployTask {
         }
     }
 
+    /// The Docker identity of a container created by an earlier deploy of
+    /// this service, recovered from its observed deploy operation.
+    fn identity_for(&self, deploy: &OperationRowId) -> V2ManagedContainerIdentity {
+        V2ManagedContainerIdentity {
+            namespace_id: self.namespace_id(),
+            service_id: self.service_id.clone(),
+            operation_id: deploy.clone(),
+        }
+    }
+
     fn env_fingerprints(
         &self,
     ) -> Result<BTreeMap<String, ployz_core::corrosion::Sha256Hex>, DeployDriverError> {
@@ -1043,13 +1196,15 @@ impl DeployTask {
     }
 
     /// The service and container documents every prepared deploy intent
-    /// shares, written from this operation's identity at one timestamp.
+    /// shares, written from this operation's identity at one timestamp. The
+    /// service row carries the effective placement and pins; each container
+    /// row names the machine it runs on and the address its gate returned.
     fn deploy_documents(
         &self,
         lineage: ServiceLineage,
         resolved_image: ImageReference,
-        ip: Ipv4Addr,
-    ) -> Result<(ServiceDocument, ContainerDocument), DeployDriverError> {
+        placed: &[PlacedContainer],
+    ) -> Result<(ServiceDocument, Vec<PreparedDeployContainer>), DeployDriverError> {
         let deployed_at = self.now()?;
         let service_document = ServiceDocument {
             v: CorrosionDocumentVersion::V1,
@@ -1062,53 +1217,52 @@ impl DeployTask {
             name: lineage.name,
             image: resolved_image,
             env_fingerprints: self.env_fingerprints()?,
-            placement: lineage.placement,
-            pinned_machines: lineage.pinned_machines,
+            placement: self.placement.placement.clone(),
+            pinned_machines: self.placement.pinned_machines.clone(),
             active_deploy: self.operation_id.clone(),
             previous_image: lineage.previous_image,
             deployed_at,
             operation_id: self.operation_id.clone(),
         };
-        let container_document = ContainerDocument {
-            v: CorrosionDocumentVersion::V1,
-            cluster_id: self.driver.cluster_id.clone(),
-            machine_id: self.driver.machine_id.clone(),
-            service_id: self.service_id.clone(),
-            namespace_id: lineage.namespace_id,
-            ip,
-            deploy: self.operation_id.clone(),
-        };
-        Ok((service_document, container_document))
+        let containers = placed
+            .iter()
+            .map(|container| PreparedDeployContainer {
+                id: container.container_id.clone(),
+                document: ContainerDocument {
+                    v: CorrosionDocumentVersion::V1,
+                    cluster_id: self.driver.cluster_id.clone(),
+                    machine_id: container.machine.clone(),
+                    service_id: self.service_id.clone(),
+                    namespace_id: lineage.namespace_id.clone(),
+                    ip: container.ip,
+                    deploy: self.operation_id.clone(),
+                },
+            })
+            .collect();
+        Ok((service_document, containers))
     }
 
     fn prepared_promotion(
         &self,
         namespace: &ResolvedNamespace,
-        container_id: ContainerId,
-        ip: Ipv4Addr,
+        placed: &[PlacedContainer],
         resolved_image: ImageReference,
     ) -> Result<PreparedPromotion, DeployDriverError> {
-        let (service_document, container_document) = self.deploy_documents(
+        let (service_document, containers) = self.deploy_documents(
             ServiceLineage {
                 namespace_id: namespace.id.clone(),
                 name: self.request.service_name.clone(),
-                placement: ServicePlacement::Replicated {
-                    replicas: ServiceReplicaCount::try_new(1)
-                        .map_err(|error| DeployDriverError::Invariant(error.to_string()))?,
-                },
-                pinned_machines: BTreeSet::from([self.driver.machine_id.clone()]),
                 previous_image: None,
             },
             resolved_image,
-            ip,
+            placed,
         )?;
         Ok(PreparedPromotion {
             namespace_id: namespace.id.clone(),
             exact_namespace_document: namespace.exact_document.clone(),
             service_id: self.service_id.clone(),
             service_document,
-            container_id,
-            container_document,
+            containers,
             success_result: CorrosionDeployServiceResult::completed(self.service_id.clone()),
         })
     }
@@ -1116,27 +1270,23 @@ impl DeployTask {
     fn prepared_redeploy_intent(
         &self,
         incumbent: &ObservedService,
-        container_id: ContainerId,
-        ip: Ipv4Addr,
+        placed: &[PlacedContainer],
         resolved_image: ImageReference,
     ) -> Result<PreparedRedeployIntent, DeployDriverError> {
-        let (service_document, container_document) = self.deploy_documents(
+        let (service_document, containers) = self.deploy_documents(
             ServiceLineage {
                 namespace_id: incumbent.document.namespace_id.clone(),
                 name: incumbent.document.name.clone(),
-                placement: incumbent.document.placement.clone(),
-                pinned_machines: incumbent.document.pinned_machines.clone(),
                 previous_image: Some(incumbent.document.image.clone()),
             },
             resolved_image,
-            ip,
+            placed,
         )?;
         Ok(PreparedRedeployIntent {
             service_id: self.service_id.clone(),
             exact_incumbent_document: incumbent.exact_document.clone(),
             service_document,
-            container_id,
-            container_document,
+            containers,
             health_gate: self.request.health_gate,
         })
     }
