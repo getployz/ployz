@@ -110,6 +110,9 @@ struct PlacedContainer {
 struct MachineServiceContainer {
     machine: MachineRowId,
     container_id: ContainerId,
+    /// The container's own recovered service row id: the incumbent's for a
+    /// live container, or a failed first attempt's dead id for debris.
+    service_id: ServiceRowId,
     deploy: OperationRowId,
     named_volumes: BTreeSet<VolumeName>,
 }
@@ -336,7 +339,7 @@ impl DeployTask {
         heartbeat: &DeployHeartbeat,
         dispatch: &TargetDispatch,
     ) -> Result<DeployTaskEnd, DeployDriverError> {
-        match &self.path {
+        let end = match &self.path {
             DeployPath::First { namespace } => self.run_first(shutdown, dispatch, namespace).await,
             DeployPath::Redeploy {
                 namespace,
@@ -345,6 +348,10 @@ impl DeployTask {
                 self.run_redeploy(shutdown, heartbeat, dispatch, namespace, incumbent)
                     .await
             }
+        };
+        match end {
+            Ok(end) | Err(PhaseStop::End(end)) => Ok(end),
+            Err(PhaseStop::Driver(error)) => Err(error),
         }
     }
 
@@ -353,27 +360,26 @@ impl DeployTask {
         shutdown: &mut watch::Receiver<bool>,
         dispatch: &TargetDispatch,
         namespace: &ResolvedNamespace,
-    ) -> Result<DeployTaskEnd, DeployDriverError> {
+    ) -> Result<DeployTaskEnd, PhaseStop> {
         let mut warnings = Vec::new();
-        let image = match self.acquire_image(shutdown, dispatch).await? {
-            Ok(image) => image,
-            Err(end) => return Ok(end),
-        };
+        // A first deploy has no incumbent: any existing container of this
+        // service is a failed earlier attempt's debris, swept before new
+        // work begins. Retained-for-inspection only shields a failing
+        // operation's own containers until its next attempt starts.
+        let containers = self.observe_service_containers(shutdown, dispatch).await?;
+        let debris: Vec<MachineServiceContainer> = containers
+            .into_iter()
+            .filter(|container| container.deploy != self.operation_id)
+            .collect();
+        self.sweep_debris(shutdown, dispatch, &debris).await?;
+        let image = self.acquire_image(shutdown, dispatch).await?;
         let identity = self.identity(&namespace.id);
-        let created = match self
+        let created = self
             .create_targets(shutdown, dispatch, &image, namespace, &identity)
-            .await?
-        {
-            Ok(created) => created,
-            Err(end) => return Ok(end),
-        };
-        let placed = match self
+            .await?;
+        let placed = self
             .start_and_gate(shutdown, dispatch, &created, &identity, &mut warnings)
-            .await?
-        {
-            Ok(placed) => placed,
-            Err(end) => return Ok(end),
-        };
+            .await?;
         let prepared = self.prepared_promotion(namespace, &placed, image)?;
         self.log
             .append_promotion_prepared(self.now()?, prepared.clone())
@@ -391,15 +397,10 @@ impl DeployTask {
         dispatch: &TargetDispatch,
         namespace: &ResolvedNamespace,
         incumbent: &ObservedService,
-    ) -> Result<DeployTaskEnd, DeployDriverError> {
+    ) -> Result<DeployTaskEnd, PhaseStop> {
         let mut warnings = Vec::new();
-        if let Some(end) = self.takeover_boundary(shutdown, heartbeat).await? {
-            return Ok(end);
-        }
-        let containers = match self.observe_service_containers(shutdown, dispatch).await? {
-            Ok(containers) => containers,
-            Err(end) => return Ok(end),
-        };
+        self.takeover_boundary(shutdown, heartbeat).await?;
+        let containers = self.observe_service_containers(shutdown, dispatch).await?;
         let (incumbents, debris): (Vec<_>, Vec<_>) = containers
             .into_iter()
             .partition(|container| container.deploy == incumbent.document.active_deploy);
@@ -419,24 +420,17 @@ impl DeployTask {
 
         // Sweep is best-effort: debris that refuses to die stays for the next
         // deploy's sweep and never fails this operation.
-        self.sweep_debris(dispatch, &debris).await?;
+        self.sweep_debris(shutdown, dispatch, &debris).await?;
 
         // The replacements are pulled and created before any incumbent is
         // touched.
-        let image = match self.acquire_image(shutdown, dispatch).await? {
-            Ok(image) => image,
-            Err(end) => return Ok(end),
-        };
+        let image = self.acquire_image(shutdown, dispatch).await?;
         let identity = self.identity(&namespace.id);
-        let created = match self
+        let created = self
             .create_targets(shutdown, dispatch, &image, namespace, &identity)
-            .await?
-        {
-            Ok(created) => created,
-            Err(end) => return Ok(end),
-        };
+            .await?;
 
-        let cutover = match strategy {
+        let placed = match strategy {
             CutoverStrategy::StopFirst => {
                 self.stop_first_cutover(
                     shutdown,
@@ -454,15 +448,9 @@ impl DeployTask {
                     .await?
             }
         };
-        let placed = match cutover {
-            Ok(placed) => placed,
-            Err(end) => return Ok(end),
-        };
 
         // The takeover check always runs immediately before the flip.
-        if let Some(end) = self.takeover_boundary(shutdown, heartbeat).await? {
-            return Ok(end);
-        }
+        self.takeover_boundary(shutdown, heartbeat).await?;
         let intent = self.prepared_redeploy_intent(incumbent, &placed, image)?;
         self.log
             .append_redeploy_prepared(self.now()?, intent.clone())
@@ -498,7 +486,12 @@ impl DeployTask {
         match strategy {
             CutoverStrategy::StopFirst => {
                 let removed = self
-                    .stop_then_remove(dispatch, &incumbents, CleanupEvidence::RemoveStopped)
+                    .stop_then_remove(
+                        shutdown,
+                        dispatch,
+                        &incumbents,
+                        CleanupEvidence::RemoveStopped,
+                    )
                     .await?;
                 if removed.len() < incumbents.len() {
                     warnings.push(cleanup_incomplete(
@@ -520,7 +513,12 @@ impl DeployTask {
                     .append(self.now()?, OperationEvidence::Drained)
                     .await?;
                 let removed = self
-                    .stop_then_remove(dispatch, &incumbents, CleanupEvidence::StopThenRemove)
+                    .stop_then_remove(
+                        shutdown,
+                        dispatch,
+                        &incumbents,
+                        CleanupEvidence::StopThenRemove,
+                    )
                     .await?;
                 if removed.len() < incumbents.len() {
                     warnings.push(cleanup_incomplete(
@@ -543,7 +541,7 @@ impl DeployTask {
         &self,
         shutdown: &mut watch::Receiver<bool>,
         dispatch: &TargetDispatch,
-    ) -> Result<Result<Vec<MachineServiceContainer>, DeployTaskEnd>, DeployDriverError> {
+    ) -> Result<Vec<MachineServiceContainer>, PhaseStop> {
         let mut machines: BTreeSet<MachineRowId> = self
             .placement
             .bid_service_containers
@@ -566,57 +564,51 @@ impl DeployTask {
                 }
             }
             EffectResult::Completed(Err(error)) => {
-                return Err(DeployDriverError::Promotion(error));
+                return Err(PhaseStop::Driver(DeployDriverError::Promotion(error)));
             }
             EffectResult::Shutdown | EffectResult::TimedOut => {
-                return Ok(Err(DeployTaskEnd::Interrupted));
+                return Err(PhaseStop::End(DeployTaskEnd::Interrupted));
             }
         }
         let mut observed = Vec::new();
         for machine in machines {
-            match select_effect(
+            let containers = phase_effect(
                 shutdown,
                 DISPATCH_EFFECT_BUDGET,
                 dispatch.service_containers(&machine),
+                |message| CorrosionDeployServiceFailure::ContainerCreateFailed {
+                    message: bounded_diagnostic(format!(
+                        "could not list service containers on machine {machine}: {message}"
+                    )),
+                },
+                PhaseTimeout::Interrupts,
             )
-            .await
-            {
-                EffectResult::Completed(Ok(containers)) => {
-                    observed.extend(containers.into_iter().map(|container| {
-                        MachineServiceContainer {
-                            machine: machine.clone(),
-                            container_id: container.container_id,
-                            deploy: container.deploy,
-                            named_volumes: container.named_volumes,
-                        }
-                    }));
-                }
-                EffectResult::Completed(Err(message)) => {
-                    return Ok(Err(DeployTaskEnd::ServiceFailure {
-                        failure: CorrosionDeployServiceFailure::ContainerCreateFailed {
-                            message: bounded_diagnostic(format!(
-                                "could not list service containers on machine {machine}: {message}"
-                            )),
-                        },
-                    }));
-                }
-                EffectResult::Shutdown | EffectResult::TimedOut => {
-                    return Ok(Err(DeployTaskEnd::Interrupted));
-                }
-            }
+            .await?;
+            observed.extend(
+                containers
+                    .into_iter()
+                    .map(|container| MachineServiceContainer {
+                        machine: machine.clone(),
+                        container_id: container.container_id,
+                        service_id: container.service_id,
+                        deploy: container.deploy,
+                        named_volumes: container.named_volumes,
+                    }),
+            );
         }
-        Ok(Ok(observed))
+        Ok(observed)
     }
 
     /// Removes foreign debris wherever it was observed, deleting the matching
     /// rows and appending one `DebrisSwept` per machine that shed containers.
     async fn sweep_debris(
         &self,
+        shutdown: &mut watch::Receiver<bool>,
         dispatch: &TargetDispatch,
         debris: &[MachineServiceContainer],
     ) -> Result<(), DeployDriverError> {
         let removed = self
-            .stop_then_remove(dispatch, debris, CleanupEvidence::Debris)
+            .stop_then_remove(shutdown, dispatch, debris, CleanupEvidence::Debris)
             .await?;
         if removed.is_empty() {
             return Ok(());
@@ -633,12 +625,10 @@ impl DeployTask {
         }
         for (machine, removed) in by_machine {
             self.log
-                .append(
+                .append_on(
                     self.now()?,
-                    OperationEvidence::DebrisSwept {
-                        removed,
-                        machine: Some(machine),
-                    },
+                    machine,
+                    OperationEvidence::DebrisSwept { removed },
                 )
                 .await?;
         }
@@ -666,63 +656,50 @@ impl DeployTask {
         created: &[(MachineRowId, ContainerId)],
         identity: &V2ManagedContainerIdentity,
         warnings: &mut Vec<CorrosionDeployWarning>,
-    ) -> Result<Result<Vec<PlacedContainer>, DeployTaskEnd>, DeployDriverError> {
-        if let Some(end) = self.takeover_boundary(shutdown, heartbeat).await? {
-            return Ok(Err(end));
-        }
+    ) -> Result<Vec<PlacedContainer>, PhaseStop> {
+        self.takeover_boundary(shutdown, heartbeat).await?;
         for container in incumbents {
-            match select_effect(
+            phase_effect(
                 shutdown,
                 DISPATCH_EFFECT_BUDGET,
                 dispatch.stop_container(
                     &container.machine,
                     &container.container_id,
-                    &self.identity_for(&container.deploy),
+                    &self.identity_for(container),
                 ),
+                |message| CorrosionDeployServiceFailure::IncumbentStopFailed {
+                    message: bounded_diagnostic(message),
+                },
+                PhaseTimeout::Fails(CorrosionDeployServiceFailure::IncumbentStopFailed {
+                    message: "incumbent stop timed out".to_owned(),
+                }),
             )
-            .await
-            {
-                EffectResult::Completed(Ok(())) => {
-                    self.log
-                        .append(
-                            self.now()?,
-                            OperationEvidence::IncumbentStopped {
-                                container_id: container.container_id.clone(),
-                                machine: Some(container.machine.clone()),
-                            },
-                        )
-                        .await?;
-                }
-                EffectResult::Completed(Err(message)) => {
-                    return Ok(Err(DeployTaskEnd::ServiceFailure {
-                        failure: CorrosionDeployServiceFailure::IncumbentStopFailed {
-                            message: bounded_diagnostic(message),
-                        },
-                    }));
-                }
-                EffectResult::TimedOut => {
-                    return Ok(Err(DeployTaskEnd::ServiceFailure {
-                        failure: CorrosionDeployServiceFailure::IncumbentStopFailed {
-                            message: "incumbent stop timed out".to_owned(),
-                        },
-                    }));
-                }
-                EffectResult::Shutdown => return Ok(Err(DeployTaskEnd::Interrupted)),
-            }
+            .await?;
+            self.log
+                .append_on(
+                    self.now()?,
+                    container.machine.clone(),
+                    OperationEvidence::IncumbentStopped {
+                        container_id: container.container_id.clone(),
+                    },
+                )
+                .await?;
         }
         match self
             .start_and_gate(shutdown, dispatch, created, identity, warnings)
-            .await?
+            .await
         {
-            Ok(placed) => Ok(Ok(placed)),
-            Err(end) => {
+            Ok(placed) => Ok(placed),
+            Err(PhaseStop::End(end)) => {
                 // The failed replacement is retained for inspection; only
                 // the incumbents are brought back.
                 if matches!(end, DeployTaskEnd::ServiceFailure { .. }) {
-                    self.restart_incumbents(dispatch, incumbents).await?;
+                    self.restart_incumbents(shutdown, dispatch, incumbents)
+                        .await?;
                 }
-                Ok(Err(end))
+                Err(PhaseStop::End(end))
             }
+            Err(PhaseStop::Driver(error)) => Err(PhaseStop::Driver(error)),
         }
     }
 
@@ -732,51 +709,69 @@ impl DeployTask {
     /// ids removed from Docker.
     async fn stop_then_remove(
         &self,
+        shutdown: &mut watch::Receiver<bool>,
         dispatch: &TargetDispatch,
         containers: &[MachineServiceContainer],
         evidence: CleanupEvidence,
     ) -> Result<Vec<ContainerId>, DeployDriverError> {
         let mut removed = Vec::new();
         for container in containers {
-            let identity = self.identity_for(&container.deploy);
+            let identity = self.identity_for(container);
             match evidence {
                 CleanupEvidence::RemoveStopped => {}
                 CleanupEvidence::Debris | CleanupEvidence::StopThenRemove => {
-                    let stopped = dispatch
-                        .stop_container(&container.machine, &container.container_id, &identity)
-                        .await;
-                    if stopped.is_err() {
-                        continue;
+                    match select_effect(
+                        shutdown,
+                        DISPATCH_EFFECT_BUDGET,
+                        dispatch.stop_container(
+                            &container.machine,
+                            &container.container_id,
+                            &identity,
+                        ),
+                    )
+                    .await
+                    {
+                        EffectResult::Completed(Ok(())) => {}
+                        EffectResult::Completed(Err(_)) | EffectResult::TimedOut => continue,
+                        // Cleanup is best-effort; shutdown keeps what was
+                        // already removed and leaves the rest to the next
+                        // deploy's sweep.
+                        EffectResult::Shutdown => return Ok(removed),
                     }
                     if matches!(evidence, CleanupEvidence::StopThenRemove) {
                         self.log
-                            .append(
+                            .append_on(
                                 self.now()?,
+                                container.machine.clone(),
                                 OperationEvidence::IncumbentStopped {
                                     container_id: container.container_id.clone(),
-                                    machine: Some(container.machine.clone()),
                                 },
                             )
                             .await?;
                     }
                 }
             }
-            let removal = dispatch
-                .remove_container(&container.machine, &container.container_id, &identity)
-                .await;
-            if removal.is_err() {
-                continue;
+            match select_effect(
+                shutdown,
+                DISPATCH_EFFECT_BUDGET,
+                dispatch.remove_container(&container.machine, &container.container_id, &identity),
+            )
+            .await
+            {
+                EffectResult::Completed(Ok(())) => {}
+                EffectResult::Completed(Err(_)) | EffectResult::TimedOut => continue,
+                EffectResult::Shutdown => return Ok(removed),
             }
             if matches!(
                 evidence,
                 CleanupEvidence::RemoveStopped | CleanupEvidence::StopThenRemove
             ) {
                 self.log
-                    .append(
+                    .append_on(
                         self.now()?,
+                        container.machine.clone(),
                         OperationEvidence::IncumbentRemoved {
                             container_id: container.container_id.clone(),
-                            machine: Some(container.machine.clone()),
                         },
                     )
                     .await?;
@@ -792,9 +787,9 @@ impl DeployTask {
         &self,
         shutdown: &mut watch::Receiver<bool>,
         heartbeat: &DeployHeartbeat,
-    ) -> Result<Option<DeployTaskEnd>, DeployDriverError> {
+    ) -> Result<(), PhaseStop> {
         if heartbeat.superseded() {
-            return Ok(Some(DeployTaskEnd::StopSilently));
+            return Err(PhaseStop::End(DeployTaskEnd::StopSilently));
         }
         let newer = match select_effect(
             shutdown,
@@ -806,9 +801,11 @@ impl DeployTask {
         .await
         {
             EffectResult::Completed(Ok(newer)) => newer,
-            EffectResult::Completed(Err(error)) => return Err(DeployDriverError::Operation(error)),
+            EffectResult::Completed(Err(error)) => {
+                return Err(PhaseStop::Driver(DeployDriverError::Operation(error)));
+            }
             EffectResult::Shutdown | EffectResult::TimedOut => {
-                return Ok(Some(DeployTaskEnd::Interrupted));
+                return Err(PhaseStop::End(DeployTaskEnd::Interrupted));
             }
         };
         if let DeployTakeover::TakenOver { winner } =
@@ -822,7 +819,7 @@ impl DeployTask {
                     },
                 )
                 .await?;
-            return Ok(Some(DeployTaskEnd::Failure {
+            return Err(PhaseStop::End(DeployTaskEnd::Failure {
                 failure: CorrosionDeployFailure::SupersededByOperation { winner },
             }));
         }
@@ -834,15 +831,15 @@ impl DeployTask {
         {
             Ok(Ok(Some(current))) => {
                 if current.document.is_terminal() {
-                    return Ok(Some(DeployTaskEnd::StopSilently));
+                    return Err(PhaseStop::End(DeployTaskEnd::StopSilently));
                 }
                 *self.row.lock().await = current;
-                Ok(None)
+                Ok(())
             }
-            Ok(Ok(None)) => Ok(Some(DeployTaskEnd::StopSilently)),
+            Ok(Ok(None)) => Err(PhaseStop::End(DeployTaskEnd::StopSilently)),
             // A transient read failure never blocks a boundary; the flip CAS
             // remains the hard gate.
-            Ok(Err(_)) | Err(_) => Ok(None),
+            Ok(Err(_)) | Err(_) => Ok(()),
         }
     }
 
@@ -851,60 +848,39 @@ impl DeployTask {
         &self,
         shutdown: &mut watch::Receiver<bool>,
         dispatch: &TargetDispatch,
-    ) -> Result<Result<ImageReference, DeployTaskEnd>, DeployDriverError> {
+    ) -> Result<ImageReference, PhaseStop> {
         self.log
             .append(self.now()?, OperationEvidence::PullingImage)
             .await?;
-        let image = match select_effect(
+        let image = phase_effect(
             shutdown,
             self.driver.effect_timeout,
             self.driver.runtime.resolve_image(&self.request.image),
+            |message| CorrosionDeployServiceFailure::ImagePullFailed { message },
+            PhaseTimeout::Interrupts,
         )
-        .await
-        {
-            EffectResult::Completed(Ok(image)) => image,
-            EffectResult::Completed(Err(message)) => {
-                return Ok(Err(DeployTaskEnd::ServiceFailure {
-                    failure: CorrosionDeployServiceFailure::ImagePullFailed { message },
-                }));
-            }
-            EffectResult::Shutdown | EffectResult::TimedOut => {
-                return Ok(Err(DeployTaskEnd::Interrupted));
-            }
-        };
+        .await?;
         for machine in self.distinct_targets() {
             let pull_shutdown = shutdown.clone();
-            match select_effect(
+            phase_effect(
                 shutdown,
                 DISPATCH_PULL_BUDGET,
                 dispatch.pull_image(&machine, &image, pull_shutdown),
+                |message| CorrosionDeployServiceFailure::ImagePullFailed {
+                    message: bounded_diagnostic(format!(
+                        "pull on machine {machine} failed: {message}"
+                    )),
+                },
+                PhaseTimeout::Fails(CorrosionDeployServiceFailure::ImagePullFailed {
+                    message: format!("image pull timed out on machine {machine}"),
+                }),
             )
-            .await
-            {
-                EffectResult::Completed(Ok(())) => {}
-                EffectResult::Completed(Err(message)) => {
-                    return Ok(Err(DeployTaskEnd::ServiceFailure {
-                        failure: CorrosionDeployServiceFailure::ImagePullFailed {
-                            message: bounded_diagnostic(format!(
-                                "pull on machine {machine} failed: {message}"
-                            )),
-                        },
-                    }));
-                }
-                EffectResult::TimedOut => {
-                    return Ok(Err(DeployTaskEnd::ServiceFailure {
-                        failure: CorrosionDeployServiceFailure::ImagePullFailed {
-                            message: format!("image pull timed out on machine {machine}"),
-                        },
-                    }));
-                }
-                EffectResult::Shutdown => return Ok(Err(DeployTaskEnd::Interrupted)),
-            }
+            .await?;
         }
         self.log
             .append(self.now()?, OperationEvidence::ImageResolved)
             .await?;
-        Ok(Ok(image))
+        Ok(image)
     }
 
     /// Creates one container per pick target entry; a machine picked for N
@@ -916,11 +892,11 @@ impl DeployTask {
         image: &ImageReference,
         namespace: &ResolvedNamespace,
         identity: &V2ManagedContainerIdentity,
-    ) -> Result<Result<Vec<(MachineRowId, ContainerId)>, DeployTaskEnd>, DeployDriverError> {
+    ) -> Result<Vec<(MachineRowId, ContainerId)>, PhaseStop> {
         let host_ports = self.placement.host_ports();
         let mut created = Vec::new();
         for machine in &self.placement.targets {
-            let outcome = select_effect(
+            let container_id = phase_effect(
                 shutdown,
                 DISPATCH_EFFECT_BUDGET,
                 dispatch.create_container(
@@ -931,35 +907,26 @@ impl DeployTask {
                     identity.clone(),
                     &host_ports,
                 ),
+                |message| CorrosionDeployServiceFailure::ContainerCreateFailed {
+                    message: bounded_diagnostic(format!(
+                        "create on machine {machine} failed: {message}"
+                    )),
+                },
+                PhaseTimeout::Interrupts,
             )
-            .await;
-            let container_id = match outcome {
-                EffectResult::Completed(Ok(container_id)) => container_id,
-                EffectResult::Completed(Err(message)) => {
-                    return Ok(Err(DeployTaskEnd::ServiceFailure {
-                        failure: CorrosionDeployServiceFailure::ContainerCreateFailed {
-                            message: bounded_diagnostic(format!(
-                                "create on machine {machine} failed: {message}"
-                            )),
-                        },
-                    }));
-                }
-                EffectResult::Shutdown | EffectResult::TimedOut => {
-                    return Ok(Err(DeployTaskEnd::Interrupted));
-                }
-            };
+            .await?;
             self.log
-                .append(
+                .append_on(
                     self.now()?,
+                    machine.clone(),
                     OperationEvidence::ContainerCreated {
                         container_id: container_id.clone(),
-                        machine: Some(machine.clone()),
                     },
                 )
                 .await?;
             created.push((machine.clone(), container_id));
         }
-        Ok(Ok(created))
+        Ok(created)
     }
 
     /// Starts and gates every created replacement, in creation order. A
@@ -972,87 +939,69 @@ impl DeployTask {
         created: &[(MachineRowId, ContainerId)],
         identity: &V2ManagedContainerIdentity,
         warnings: &mut Vec<CorrosionDeployWarning>,
-    ) -> Result<Result<Vec<PlacedContainer>, DeployTaskEnd>, DeployDriverError> {
+    ) -> Result<Vec<PlacedContainer>, PhaseStop> {
         let mut placed = Vec::new();
         for (machine, container_id) in created {
-            match select_effect(
+            phase_effect(
                 shutdown,
                 DISPATCH_EFFECT_BUDGET,
                 dispatch.start_container(machine, container_id),
+                |message| CorrosionDeployServiceFailure::ContainerStartFailed {
+                    message: bounded_diagnostic(format!(
+                        "start on machine {machine} failed: {message}"
+                    )),
+                },
+                PhaseTimeout::Fails(CorrosionDeployServiceFailure::ContainerStartFailed {
+                    message: format!("container start timed out on machine {machine}"),
+                }),
             )
-            .await
-            {
-                EffectResult::Completed(Ok(())) => {}
-                EffectResult::Completed(Err(message)) => {
-                    return Ok(Err(DeployTaskEnd::ServiceFailure {
-                        failure: CorrosionDeployServiceFailure::ContainerStartFailed {
-                            message: bounded_diagnostic(format!(
-                                "start on machine {machine} failed: {message}"
-                            )),
-                        },
-                    }));
-                }
-                EffectResult::TimedOut => {
-                    return Ok(Err(DeployTaskEnd::ServiceFailure {
-                        failure: CorrosionDeployServiceFailure::ContainerStartFailed {
-                            message: format!("container start timed out on machine {machine}"),
-                        },
-                    }));
-                }
-                EffectResult::Shutdown => return Ok(Err(DeployTaskEnd::Interrupted)),
-            }
+            .await?;
             self.log
-                .append(
+                .append_on(
                     self.now()?,
+                    machine.clone(),
                     OperationEvidence::ContainerStarted {
                         container_id: container_id.clone(),
-                        machine: Some(machine.clone()),
                     },
                 )
                 .await?;
-            let gated = select_effect(
-                shutdown,
-                DISPATCH_EFFECT_BUDGET,
-                dispatch.health_gate(machine, container_id, identity, self.request.health_gate),
-            )
-            .await;
-            let ip = match (self.request.health_gate, gated) {
-                (_, EffectResult::Completed(Ok(ip))) => ip,
-                (HealthGatePolicy::Enforce, EffectResult::Completed(Err(message))) => {
-                    return Ok(Err(DeployTaskEnd::ServiceFailure {
-                        failure: CorrosionDeployServiceFailure::HealthGateFailed {
+            let gate =
+                dispatch.health_gate(machine, container_id, identity, self.request.health_gate);
+            let ip = match self.request.health_gate {
+                HealthGatePolicy::Enforce => {
+                    phase_effect(
+                        shutdown,
+                        DISPATCH_EFFECT_BUDGET,
+                        gate,
+                        |message| CorrosionDeployServiceFailure::HealthGateFailed {
                             message: bounded_diagnostic(format!(
                                 "health gate on machine {machine} failed: {message}"
                             )),
                         },
-                    }));
-                }
-                (HealthGatePolicy::Enforce, EffectResult::TimedOut) => {
-                    return Ok(Err(DeployTaskEnd::ServiceFailure {
-                        failure: CorrosionDeployServiceFailure::HealthGateFailed {
+                        PhaseTimeout::Fails(CorrosionDeployServiceFailure::HealthGateFailed {
                             message: format!("health gate timed out on machine {machine}"),
-                        },
-                    }));
+                        }),
+                    )
+                    .await?
                 }
-                (HealthGatePolicy::Skip, EffectResult::Completed(Err(message))) => {
-                    return Ok(Err(DeployTaskEnd::ServiceFailure {
-                        failure: CorrosionDeployServiceFailure::ContainerStartFailed {
+                HealthGatePolicy::Skip => {
+                    phase_effect(
+                        shutdown,
+                        DISPATCH_EFFECT_BUDGET,
+                        gate,
+                        |message| CorrosionDeployServiceFailure::ContainerStartFailed {
                             message: bounded_diagnostic(format!(
                                 "endpoint lookup on machine {machine} failed: {message}"
                             )),
                         },
-                    }));
-                }
-                (HealthGatePolicy::Skip, EffectResult::TimedOut) => {
-                    return Ok(Err(DeployTaskEnd::ServiceFailure {
-                        failure: CorrosionDeployServiceFailure::ContainerStartFailed {
+                        PhaseTimeout::Fails(CorrosionDeployServiceFailure::ContainerStartFailed {
                             message: format!(
                                 "container endpoint lookup timed out on machine {machine}"
                             ),
-                        },
-                    }));
+                        }),
+                    )
+                    .await?
                 }
-                (_, EffectResult::Shutdown) => return Ok(Err(DeployTaskEnd::Interrupted)),
             };
             placed.push(PlacedContainer {
                 machine: machine.clone(),
@@ -1071,29 +1020,38 @@ impl DeployTask {
                 });
             }
         }
-        Ok(Ok(placed))
+        Ok(placed)
     }
 
     async fn restart_incumbents(
         &self,
+        shutdown: &mut watch::Receiver<bool>,
         dispatch: &TargetDispatch,
         incumbents: &[MachineServiceContainer],
     ) -> Result<(), DeployDriverError> {
         for container in incumbents {
-            let restarted = dispatch
-                .restart_container(&container.machine, &container.container_id)
-                .await;
-            if restarted.is_ok() {
-                self.log
-                    .append(
-                        self.now()?,
-                        OperationEvidence::IncumbentRestarted {
-                            container_id: container.container_id.clone(),
-                            machine: Some(container.machine.clone()),
-                        },
-                    )
-                    .await?;
+            match select_effect(
+                shutdown,
+                DISPATCH_EFFECT_BUDGET,
+                dispatch.start_container(&container.machine, &container.container_id),
+            )
+            .await
+            {
+                EffectResult::Completed(Ok(())) => {}
+                // Restart is best-effort: the interrupted or failed terminal
+                // outcome is the evidence for whatever stayed down.
+                EffectResult::Completed(Err(_)) | EffectResult::TimedOut => continue,
+                EffectResult::Shutdown => return Ok(()),
             }
+            self.log
+                .append_on(
+                    self.now()?,
+                    container.machine.clone(),
+                    OperationEvidence::IncumbentRestarted {
+                        container_id: container.container_id.clone(),
+                    },
+                )
+                .await?;
         }
         Ok(())
     }
@@ -1170,13 +1128,14 @@ impl DeployTask {
         }
     }
 
-    /// The Docker identity of a container created by an earlier deploy of
-    /// this service, recovered from its observed deploy operation.
-    fn identity_for(&self, deploy: &OperationRowId) -> V2ManagedContainerIdentity {
+    /// The Docker identity of an observed container, recovered from its own
+    /// reported service row id and deploy operation so identity guards match
+    /// exactly what was observed.
+    fn identity_for(&self, container: &MachineServiceContainer) -> V2ManagedContainerIdentity {
         V2ManagedContainerIdentity {
             namespace_id: self.namespace_id(),
-            service_id: self.service_id.clone(),
-            operation_id: deploy.clone(),
+            service_id: container.service_id.clone(),
+            operation_id: container.deploy.clone(),
         }
     }
 
@@ -1415,6 +1374,58 @@ enum EffectResult<T> {
     Completed(T),
     Shutdown,
     TimedOut,
+}
+
+/// Why a phase chain stopped early: a task-level end (failure, interruption,
+/// supersession) that terminalizes normally, or a driver error that aborts
+/// the task.
+enum PhaseStop {
+    End(DeployTaskEnd),
+    Driver(DeployDriverError),
+}
+
+impl<Error> From<Error> for PhaseStop
+where
+    DeployDriverError: From<Error>,
+{
+    fn from(error: Error) -> Self {
+        Self::Driver(DeployDriverError::from(error))
+    }
+}
+
+/// How one dispatched phase effect classifies its timeout.
+enum PhaseTimeout {
+    /// The timeout ends the task as interrupted, like shutdown.
+    Interrupts,
+    /// The timeout fails the phase with this prebuilt failure.
+    Fails(CorrosionDeployServiceFailure),
+}
+
+/// One dispatched Docker effect inside a phase: shutdown interrupts the
+/// task, an error fails the phase with the caller's failure shape, and a
+/// timeout is classified by `on_timeout`.
+async fn phase_effect<T>(
+    shutdown: &mut watch::Receiver<bool>,
+    budget: Duration,
+    effect: impl std::future::Future<Output = Result<T, String>>,
+    on_error: impl FnOnce(String) -> CorrosionDeployServiceFailure,
+    on_timeout: PhaseTimeout,
+) -> Result<T, PhaseStop> {
+    match select_effect(shutdown, budget, effect).await {
+        EffectResult::Completed(Ok(value)) => Ok(value),
+        EffectResult::Completed(Err(message)) => {
+            Err(PhaseStop::End(DeployTaskEnd::ServiceFailure {
+                failure: on_error(message),
+            }))
+        }
+        EffectResult::TimedOut => match on_timeout {
+            PhaseTimeout::Fails(failure) => {
+                Err(PhaseStop::End(DeployTaskEnd::ServiceFailure { failure }))
+            }
+            PhaseTimeout::Interrupts => Err(PhaseStop::End(DeployTaskEnd::Interrupted)),
+        },
+        EffectResult::Shutdown => Err(PhaseStop::End(DeployTaskEnd::Interrupted)),
+    }
 }
 
 async fn select_effect<Future, Output>(

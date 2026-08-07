@@ -715,25 +715,35 @@ fn requested_placement(
                 HostPortBindings::try_new(bindings).map_err(|error| error.to_string())?;
             Ok(Some(RequestedPlacement::Global { host_ports }))
         }
-        Some(DeployModeArg::Replicated) | None => {
+        Some(DeployModeArg::Replicated) => {
             if !bindings.is_empty() {
                 return Err(
                     "published host ports are legal only on global services; expose a replicated service through a route binding"
                         .to_owned(),
                 );
             }
-            // A bare `--mode replicated` requests the documented one-replica
-            // default; without any placement flag the row's value is kept.
-            let requested = match replicas {
-                Some(replicas) => Some(replicas),
-                None if mode.is_some() => Some(1),
-                None => None,
-            };
-            match requested {
+            // A count-free `--mode replicated` keeps a replicated incumbent's
+            // count; the server defaults one replica on a first deploy or a
+            // global conversion.
+            let replicas = replicas
+                .map(ServiceReplicaCount::try_new)
+                .transpose()
+                .map_err(|error| error.to_string())?;
+            Ok(Some(RequestedPlacement::Replicated { replicas }))
+        }
+        None => {
+            if !bindings.is_empty() {
+                return Err(
+                    "published host ports are legal only on global services; expose a replicated service through a route binding"
+                        .to_owned(),
+                );
+            }
+            // A bare `--replicas N` is the mode-preserving count change.
+            match replicas {
                 Some(replicas) => {
                     let replicas = ServiceReplicaCount::try_new(replicas)
                         .map_err(|error| error.to_string())?;
-                    Ok(Some(RequestedPlacement::Replicated { replicas }))
+                    Ok(Some(RequestedPlacement::Replicas { replicas }))
                 }
                 None => Ok(None),
             }
@@ -1623,19 +1633,27 @@ mod tests {
         assert_eq!(inherit.placement, None);
         assert_eq!(inherit.machines, None);
 
-        let replicated = parsed_deploy(&["--replicas", "3"]);
+        let count_only = parsed_deploy(&["--replicas", "3"]);
         assert_eq!(
-            replicated.placement,
-            Some(RequestedPlacement::Replicated {
+            count_only.placement,
+            Some(RequestedPlacement::Replicas {
                 replicas: ServiceReplicaCount::try_new(3).expect("replica count"),
-            })
+            }),
+            "a bare --replicas is the mode-preserving count change"
         );
 
-        let replicated_default = parsed_deploy(&["--mode", "replicated"]);
+        let replicated_mode_only = parsed_deploy(&["--mode", "replicated"]);
         assert_eq!(
-            replicated_default.placement,
+            replicated_mode_only.placement,
+            Some(RequestedPlacement::Replicated { replicas: None }),
+            "a count-free mode change never scales the incumbent"
+        );
+
+        let replicated_with_count = parsed_deploy(&["--mode", "replicated", "--replicas", "5"]);
+        assert_eq!(
+            replicated_with_count.placement,
             Some(RequestedPlacement::Replicated {
-                replicas: ServiceReplicaCount::try_new(1).expect("replica count"),
+                replicas: Some(ServiceReplicaCount::try_new(5).expect("replica count")),
             })
         );
 
@@ -1710,7 +1728,7 @@ mod tests {
                 "protocol must be tcp or udp",
             ),
             (
-                vec!["--mode", "global", "-p", "80", "-p", "80"],
+                vec!["--mode", "global", "-p", "80:81", "-p", "80:82"],
                 "published more than once",
             ),
         ] {

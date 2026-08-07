@@ -7,8 +7,8 @@ use serde_json::{Value, json};
 use ts_rs::{Config, Dependency, TS, TypeVisitor};
 
 use super::v2::{
-    API_MAJOR, ApiRefusal, ApiVersion, ContainerLensRow, CorrosionLogsTailLines,
-    CorrosionNamespaceCreateRefusal, CorrosionNamespaceCreateReply,
+    API_MAJOR, AnomalousSilenceReason, ApiRefusal, ApiVersion, ContainerLensRow,
+    CorrosionLogsTailLines, CorrosionNamespaceCreateRefusal, CorrosionNamespaceCreateReply,
     CorrosionNamespaceCreateRequest, CorrosionNamespaceRemoveRefusal,
     CorrosionNamespaceRemoveReply, CorrosionNamespaceRemoveRequest, CorrosionRetryAfterSeconds,
     DeployAccepted, DeployExecuteOutcome, DeployExecuteRequest, DeployRefusal, DeployRequest,
@@ -61,8 +61,8 @@ use crate::operation::{
 };
 use crate::operation_api::OperationApiContract;
 use crate::placement::{
-    PlacementElimination, PlacementEliminationReason, PlacementPick, PlacementRefusal,
-    PlacementShortfall,
+    PlacementElimination, PlacementEliminationReason, PlacementMachine, PlacementPick,
+    PlacementRefusal, PlacementShortfall,
 };
 use crate::{
     AcceptedOperation, DeploySubmitError, MAX_LOGS_TAIL_LINES, OperationApiResponse,
@@ -230,6 +230,7 @@ fn collect_v2_contracts(declarations: &mut DeclarationCollector<'_>) {
     declarations.visit::<DeployExecuteRequest>();
     declarations.visit::<DeployVerb>();
     declarations.visit::<DeployExecuteOutcome>();
+    declarations.visit::<PlacementMachine>();
     declarations.visit::<PlacementElimination>();
     declarations.visit::<PlacementEliminationReason>();
     declarations.visit::<PlacementShortfall>();
@@ -237,6 +238,7 @@ fn collect_v2_contracts(declarations: &mut DeclarationCollector<'_>) {
     declarations.visit::<PlacementRefusal>();
     declarations.visit::<SilentMachine>();
     declarations.visit::<SilenceClassification>();
+    declarations.visit::<AnomalousSilenceReason>();
     declarations.visit::<OperationLookupReply>();
     declarations.visit::<OperationLookupRefusal>();
     declarations.visit::<OperationEvidenceSequence>();

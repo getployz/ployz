@@ -462,10 +462,8 @@ pub(super) async fn handle_deploy(
                 | DeployRefusal::DifferentService { .. }
                 | DeployRefusal::MultipleServices { .. }
                 | DeployRefusal::RoutesWithoutServices { .. }
-                | DeployRefusal::NoEligibleMachines { .. }
-                | DeployRefusal::VolumeHolderConflict { .. }
-                | DeployRefusal::DarkVolumeHolder { .. }
-                | DeployRefusal::VolumeReplicaLimit { .. } => StatusCode::CONFLICT,
+                | DeployRefusal::Placement { .. }
+                | DeployRefusal::ReplicasOnGlobalService => StatusCode::CONFLICT,
                 DeployRefusal::BridgeUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             };
             super::mutations::typed_response(status, &refusal)
@@ -1266,6 +1264,7 @@ mod tests {
             event: OperationEvidenceEvent {
                 sequence: OperationEvidenceSequence::try_new(1).expect("sequence"),
                 timestamp: timestamp(),
+                machine: None,
                 evidence,
             },
         })

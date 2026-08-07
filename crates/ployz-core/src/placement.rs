@@ -12,8 +12,7 @@ use crate::api::v2::PlacementBid;
 use crate::corrosion::{ServicePlacement, ServiceReplicaCount};
 use crate::deploy::VolumeName;
 use crate::ids::{MachineRowId, OperationRowId};
-use crate::image::OciPlatform;
-use crate::machine::MachineLifecycle;
+use crate::machine::{MachineLifecycle, MachineName};
 
 /// Placement never targets a machine reporting less free disk than this
 /// floor. It protects the machine's OS, Docker daemon, and Corrosion replica
@@ -37,14 +36,11 @@ pub struct PlacementPickInputs {
     pub plausible_volume_holders: BTreeSet<MachineRowId>,
     /// The incumbent's active deploy; `None` on a first deploy.
     pub active_deploy: Option<OperationRowId>,
-    /// Platforms the resolved image supports. `None` when the manifest did
-    /// not declare platforms; the platform drop is skipped and a wrong-arch
-    /// machine fails loudly at pull instead.
-    pub platforms: Option<BTreeSet<OciPlatform>>,
     /// The live bids gathered from responding machines.
     pub bids: Vec<PlacementBid>,
-    /// Roster machines that yielded no bid.
-    pub silent_machines: BTreeSet<MachineRowId>,
+    /// Roster machines that yielded no bid, keyed by row id with the human
+    /// name a refusal renders.
+    pub silent_machines: BTreeMap<MachineRowId, MachineName>,
 }
 
 /// The pick's replayable outcome: an ordered target list (a machine appears
@@ -59,6 +55,16 @@ pub struct PlacementPick {
     pub shortfall: Option<PlacementShortfall>,
 }
 
+/// One machine named by a placement outcome, carrying the human name the
+/// `--machine` flag accepts alongside the row id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct PlacementMachine {
+    pub machine_id: MachineRowId,
+    pub machine_name: MachineName,
+}
+
 /// One bidder dropped at tier zero, with the reason it can never host this
 /// deploy's containers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,6 +72,7 @@ pub struct PlacementPick {
 #[serde(deny_unknown_fields)]
 pub struct PlacementElimination {
     pub machine_id: MachineRowId,
+    pub machine_name: MachineName,
     pub reason: PlacementEliminationReason,
 }
 
@@ -75,9 +82,8 @@ pub struct PlacementElimination {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PlacementEliminationReason {
     Draining,
-    PlatformUnsupported { architecture: String },
     FreeDiskBelowFloor { free_disk_bytes: u64 },
-    VolumeNotHeld { holder: MachineRowId },
+    VolumeNotHeld { holder: PlacementMachine },
     OutsidePinSet,
 }
 
@@ -105,10 +111,10 @@ pub enum PlacementRefusal {
     },
     VolumeHolderConflict {
         volume: VolumeName,
-        holders: Vec<MachineRowId>,
+        holders: Vec<PlacementMachine>,
     },
     DarkVolumeHolder {
-        machines: Vec<MachineRowId>,
+        machines: Vec<PlacementMachine>,
     },
     VolumeReplicaLimit {
         requested: ServiceReplicaCount,
@@ -117,9 +123,9 @@ pub enum PlacementRefusal {
 
 /// Derives a deploy's target machine set from live bids.
 ///
-/// Tier order: tier-0 drops (draining, wrong platform, free disk below
-/// [`PLACEMENT_FREE_DISK_FLOOR_BYTES`], not the volume holder, outside the
-/// pin set), then sticky (runs the incumbent's active deploy), then spread
+/// Tier order: tier-0 drops (draining, free disk below
+/// [`PLACEMENT_FREE_DISK_FLOOR_BYTES`], outside the pin set, not the volume
+/// holder), then sticky (runs the incumbent's active deploy), then spread
 /// (fewest total managed containers), then load band (idle before normal
 /// before hot), then lowest machine ULID. Replicas fill round-robin over the
 /// tier-sorted survivors; stacking is allowed and recorded as a shortfall.
@@ -132,33 +138,29 @@ pub fn pick_placement(inputs: &PlacementPickInputs) -> Result<PlacementPick, Pla
         volumes,
         plausible_volume_holders,
         active_deploy,
-        platforms,
         bids,
         silent_machines,
     } = inputs;
 
-    let volume_pin = match placement {
+    let held_volumes = match placement {
         ServicePlacement::Replicated { replicas } => adjudicate_volumes(
             *replicas,
             volumes,
+            pinned_machines,
             plausible_volume_holders,
             bids,
             silent_machines,
         )?,
-        ServicePlacement::Global { host_ports: _ } => None,
+        ServicePlacement::Global { host_ports: _ } => BTreeMap::new(),
     };
 
     let mut eliminations = Vec::new();
     let mut survivors = Vec::new();
     for bid in bids {
-        match tier_zero_drop(
-            bid,
-            pinned_machines,
-            platforms.as_ref(),
-            volume_pin.as_ref(),
-        ) {
+        match tier_zero_drop(bid, pinned_machines, &held_volumes) {
             Some(reason) => eliminations.push(PlacementElimination {
                 machine_id: bid.machine_id.clone(),
+                machine_name: bid.machine_name.clone(),
                 reason,
             }),
             None => survivors.push(bid),
@@ -168,138 +170,140 @@ pub fn pick_placement(inputs: &PlacementPickInputs) -> Result<PlacementPick, Pla
         return Err(PlacementRefusal::NoEligibleMachines { eliminations });
     }
 
-    let targets = match placement {
+    match placement {
         ServicePlacement::Global { host_ports: _ } => {
             survivors.sort_by(|left, right| left.machine_id.cmp(&right.machine_id));
-            return Ok(PlacementPick {
+            Ok(PlacementPick {
                 targets: survivors
                     .into_iter()
                     .map(|bid| bid.machine_id.clone())
                     .collect(),
                 eliminations,
                 shortfall: None,
-            });
+            })
         }
         ServicePlacement::Replicated { replicas } => {
             survivors.sort_by_key(|bid| preference_key(bid, active_deploy.as_ref()));
-            round_robin_fill(&survivors, *replicas)
+            let shortfall =
+                (usize::from(replicas.get()) > survivors.len()).then_some(PlacementShortfall {
+                    requested: *replicas,
+                    placed: survivors.len(),
+                });
+            Ok(PlacementPick {
+                targets: round_robin_fill(&survivors, *replicas),
+                eliminations,
+                shortfall,
+            })
         }
-    };
-    let ServicePlacement::Replicated { replicas } = placement else {
-        unreachable!("global placement returned above");
-    };
-    let shortfall = (usize::from(replicas.get()) > survivors.len()).then_some(PlacementShortfall {
-        requested: *replicas,
-        placed: survivors.len(),
-    });
-    Ok(PlacementPick {
-        targets,
-        eliminations,
-        shortfall,
-    })
+    }
 }
 
-/// Resolves the volume affinity rules for a replicated service. Returns the
-/// single visible holder the pick must pin to, or `None` when the pick runs
-/// normally (no volumes, or a first deploy with no holder anywhere).
+/// Resolves the volume affinity rules for a replicated service. Returns each
+/// held declared volume's single visible holder; an empty map means the pick
+/// runs normally (no volumes, or a first deploy with no holder anywhere).
+/// Tier zero then requires a target to hold every held volume, so a
+/// multi-volume split across machines eliminates every bidder instead of
+/// inventing a fork.
 fn adjudicate_volumes(
     replicas: ServiceReplicaCount,
     volumes: &BTreeSet<VolumeName>,
+    pinned_machines: &BTreeSet<MachineRowId>,
     plausible_volume_holders: &BTreeSet<MachineRowId>,
     bids: &[PlacementBid],
-    silent_machines: &BTreeSet<MachineRowId>,
-) -> Result<Option<MachineRowId>, PlacementRefusal> {
+    silent_machines: &BTreeMap<MachineRowId, MachineName>,
+) -> Result<BTreeMap<VolumeName, PlacementMachine>, PlacementRefusal> {
     if volumes.is_empty() {
-        return Ok(None);
+        return Ok(BTreeMap::new());
     }
     if replicas.get() > 1 {
         return Err(PlacementRefusal::VolumeReplicaLimit {
             requested: replicas,
         });
     }
-    // A silent plausible holder wins over every visible holder: the dark
-    // machine may hold a fork of the data, and a fork deserves a human.
+    // A silent plausible holder wins over every visible holder — and over
+    // any pin: the dark machine may hold a fork of the data, and a fork
+    // deserves a human.
     let dark_holders = plausible_volume_holders
-        .intersection(silent_machines)
-        .cloned()
+        .iter()
+        .filter_map(|machine_id| {
+            silent_machines
+                .get(machine_id)
+                .map(|name| PlacementMachine {
+                    machine_id: machine_id.clone(),
+                    machine_name: name.clone(),
+                })
+        })
         .collect::<Vec<_>>();
     if !dark_holders.is_empty() {
         return Err(PlacementRefusal::DarkVolumeHolder {
             machines: dark_holders,
         });
     }
-    let mut holders_by_volume = BTreeMap::new();
+    // Holders outside a non-empty pin set are OutsidePinSet drops at tier
+    // zero, so counting them here would refuse a fork the pin already
+    // resolves; `--machine <holder>` must remain the conflict's resolver.
+    let mut holders_by_volume: BTreeMap<VolumeName, Vec<PlacementMachine>> = BTreeMap::new();
     for bid in bids {
+        if !pinned_machines.is_empty() && !pinned_machines.contains(&bid.machine_id) {
+            continue;
+        }
         for volume in bid.volumes_held.intersection(volumes) {
             holders_by_volume
                 .entry(volume.clone())
-                .or_insert_with(BTreeSet::new)
-                .insert(bid.machine_id.clone());
+                .or_default()
+                .push(PlacementMachine {
+                    machine_id: bid.machine_id.clone(),
+                    machine_name: bid.machine_name.clone(),
+                });
         }
     }
-    let distinct_holders = holders_by_volume
-        .values()
-        .flatten()
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    if distinct_holders.len() > 1 {
-        let (volume, _) = holders_by_volume
-            .iter()
-            .find(|(_, holders)| !holders.is_empty())
-            .expect("multiple distinct holders imply a held volume");
+    // Two visible holders of the same volume are a data fork: refuse,
+    // naming that volume and exactly its holders.
+    if let Some((volume, holders)) = holders_by_volume
+        .iter()
+        .find(|(_, holders)| holders.len() > 1)
+    {
         return Err(PlacementRefusal::VolumeHolderConflict {
             volume: volume.clone(),
-            holders: distinct_holders.into_iter().collect(),
+            holders: holders.clone(),
         });
     }
-    Ok(distinct_holders.into_iter().next())
+    let mut held = BTreeMap::new();
+    for (volume, holders) in holders_by_volume {
+        let [holder] = holders.as_slice() else {
+            continue;
+        };
+        held.insert(volume, holder.clone());
+    }
+    Ok(held)
 }
 
 fn tier_zero_drop(
     bid: &PlacementBid,
     pinned_machines: &BTreeSet<MachineRowId>,
-    platforms: Option<&BTreeSet<OciPlatform>>,
-    volume_pin: Option<&MachineRowId>,
+    held_volumes: &BTreeMap<VolumeName, PlacementMachine>,
 ) -> Option<PlacementEliminationReason> {
     match bid.lifecycle {
         MachineLifecycle::Draining => return Some(PlacementEliminationReason::Draining),
         MachineLifecycle::Active => {}
-    }
-    if let Some(platforms) = platforms
-        && !supports_platform(platforms, &bid.architecture)
-    {
-        return Some(PlacementEliminationReason::PlatformUnsupported {
-            architecture: bid.architecture.clone(),
-        });
     }
     if bid.free_disk_bytes < PLACEMENT_FREE_DISK_FLOOR_BYTES {
         return Some(PlacementEliminationReason::FreeDiskBelowFloor {
             free_disk_bytes: bid.free_disk_bytes,
         });
     }
-    if let Some(holder) = volume_pin
-        && &bid.machine_id != holder
+    if !pinned_machines.is_empty() && !pinned_machines.contains(&bid.machine_id) {
+        return Some(PlacementEliminationReason::OutsidePinSet);
+    }
+    if let Some((_, holder)) = held_volumes
+        .iter()
+        .find(|(_, holder)| holder.machine_id != bid.machine_id)
     {
         return Some(PlacementEliminationReason::VolumeNotHeld {
             holder: holder.clone(),
         });
     }
-    if !pinned_machines.is_empty() && !pinned_machines.contains(&bid.machine_id) {
-        return Some(PlacementEliminationReason::OutsidePinSet);
-    }
     None
-}
-
-/// A machine supports the image when any declared platform matches its
-/// normalized architecture. A bid architecture that is not a valid OCI
-/// component can never match a declared platform.
-fn supports_platform(platforms: &BTreeSet<OciPlatform>, architecture: &str) -> bool {
-    let Ok(machine) = OciPlatform::try_new("linux", architecture) else {
-        return false;
-    };
-    platforms
-        .iter()
-        .any(|platform| platform.architecture() == machine.architecture())
 }
 
 /// The replicated preference key: sticky bids first, then fewest total

@@ -21,13 +21,15 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use tokio::sync::watch;
 
-use super::{BidIdentity, PlacementDockerRunner, collect_bid, execute_verb};
+use super::super::deploy_runtime::DeployRuntime;
+use super::{BidIdentity, collect_bid, execute_verb};
 use crate::roles::api::http::deploy_stores::DeployOperationRows;
 use crate::roles::api::http::operation_store::{
     ConditionalOperationWrite, HeartbeatWrite, ObservedOperation, OperationStoreError,
 };
 use crate::roles::api::runner::{
     CreateV2ManagedContainer, ExistingManagedContainerState, ExistingV2ManagedContainer,
+    MachineContainerStopOutcome,
 };
 use crate::roles::system_observation::SystemObservation;
 
@@ -185,7 +187,15 @@ impl FakeRunner {
 }
 
 #[async_trait]
-impl PlacementDockerRunner for FakeRunner {
+impl DeployRuntime for FakeRunner {
+    async fn bridge_ready(&self) -> bool {
+        unreachable!("bridge_ready is not exercised by these tests")
+    }
+
+    async fn resolve_image(&self, _image: &ImageReference) -> Result<ImageReference, String> {
+        unreachable!("resolve_image is not exercised by these tests")
+    }
+
     async fn managed_containers(&self) -> Result<Vec<ExistingV2ManagedContainer>, String> {
         self.containers.clone()
     }
@@ -198,14 +208,6 @@ impl PlacementDockerRunner for FakeRunner {
         Ok(self.held.intersection(volumes).cloned().collect())
     }
 
-    async fn ensure_volume(
-        &self,
-        _namespace_id: &NamespaceRowId,
-        _volume: &VolumeName,
-    ) -> Result<(), String> {
-        unreachable!("ensure_volume is not exercised by these tests")
-    }
-
     async fn pull_image(
         &self,
         _image: &ImageReference,
@@ -215,11 +217,11 @@ impl PlacementDockerRunner for FakeRunner {
         unreachable!("pull_image is not exercised by these tests")
     }
 
-    async fn create_container(
+    async fn create_container_command(
         &self,
         _command: CreateV2ManagedContainer,
     ) -> Result<ContainerId, String> {
-        unreachable!("create_container is not exercised by these tests")
+        unreachable!("create_container_command is not exercised by these tests")
     }
 
     async fn start_container(&self, container_id: &ContainerId) -> Result<(), String> {
@@ -234,12 +236,12 @@ impl PlacementDockerRunner for FakeRunner {
         &self,
         container_id: &ContainerId,
         _expected_identity: &V2ManagedContainerIdentity,
-    ) -> Result<(), String> {
+    ) -> Result<MachineContainerStopOutcome, String> {
         self.stopped
             .lock()
             .expect("stopped lock")
             .push(container_id.clone());
-        Ok(())
+        Ok(MachineContainerStopOutcome::StoppedRunning)
     }
 
     async fn remove_container(
@@ -449,16 +451,20 @@ async fn bid_reflects_live_containers_and_held_volumes() {
     assert_eq!(bid.free_memory_bytes, 22);
     assert_eq!(bid.load, MachineLoadBand::Normal);
     assert_eq!(bid.total_container_count, 2);
-    let [observed] = bid.service_containers.as_slice() else {
-        panic!("exactly the service's own container is observed");
+    // The observation scope is the namespace: a sibling service id in the
+    // same namespace (a failed first attempt's dead id) is still reported.
+    let [observed, sibling] = bid.service_containers.as_slice() else {
+        panic!("both namespace containers are observed");
     };
     assert_eq!(observed.container_id.as_str(), "aaaaaaaaaaaa");
+    assert_eq!(observed.service_id, service_id());
     assert_eq!(observed.deploy, operation_id());
-    assert!(observed.running);
     assert_eq!(
         observed.named_volumes,
         BTreeSet::from([VolumeName::try_new("data").expect("volume name")])
     );
+    assert_eq!(sibling.container_id.as_str(), "bbbbbbbbbbbb");
+    assert_eq!(sibling.service_id, other_service_id());
     assert_eq!(
         bid.volumes_held,
         BTreeSet::from([VolumeName::try_new("data").expect("volume name")])
@@ -661,19 +667,27 @@ async fn execute_dispatches_an_authorized_list_verb() {
     let DeployExecuteOutcome::ServiceContainers { containers } = outcome else {
         panic!("authorized list verb answers service containers");
     };
-    let [observed] = containers.as_slice() else {
-        panic!("only the claim's service is listed");
+    let [observed, sibling] = containers.as_slice() else {
+        panic!("every container in the claim's namespace is listed");
     };
     assert_eq!(observed.container_id.as_str(), "aaaaaaaaaaaa");
+    assert_eq!(sibling.container_id.as_str(), "bbbbbbbbbbbb");
+    assert_eq!(sibling.service_id, other_service_id());
 }
 
 #[tokio::test]
-async fn execute_dispatches_an_authorized_start_verb() {
+async fn execute_dispatches_an_authorized_start_verb_for_a_service_scoped_container() {
     let rows = FakeRows::with_candidate(
         operation_id(),
         deploy_claim(driver_machine_id(), service_id(), recent_timestamp()),
     );
-    let runner = FakeRunner::with_containers(Vec::new());
+    let runner = FakeRunner::with_containers(vec![container(
+        "aaaaaaaaaaaa",
+        service_id(),
+        operation_id(),
+        false,
+        &[],
+    )]);
 
     let outcome = execute_verb(
         &rows,
@@ -691,6 +705,38 @@ async fn execute_dispatches_an_authorized_start_verb() {
         runner.started.lock().expect("started lock").as_slice(),
         &[ContainerId::try_new("aaaaaaaaaaaa").expect("container id")]
     );
+}
+
+#[tokio::test]
+async fn start_refuses_a_container_outside_the_verbs_service_scope() {
+    let rows = FakeRows::with_candidate(
+        operation_id(),
+        deploy_claim(driver_machine_id(), service_id(), recent_timestamp()),
+    );
+    let runner = FakeRunner::with_containers(vec![container(
+        "cccccccccccc",
+        other_service_id(),
+        operation_id(),
+        false,
+        &[],
+    )]);
+
+    let outcome = execute_verb(
+        &rows,
+        &runner,
+        &machine_caller(driver_machine_id()),
+        execute_request(DeployVerb::StartContainer {
+            container_id: ContainerId::try_new("cccccccccccc").expect("container id"),
+        }),
+        no_shutdown(),
+    )
+    .await;
+
+    let DeployExecuteOutcome::Failed { diagnostic } = outcome else {
+        panic!("a foreign container is a typed verb failure");
+    };
+    assert!(diagnostic.contains("does not belong"));
+    assert!(runner.started.lock().expect("started lock").is_empty());
 }
 
 #[tokio::test]
@@ -713,14 +759,97 @@ async fn container_verbs_never_touch_another_services_containers() {
         &machine_caller(driver_machine_id()),
         execute_request(DeployVerb::StopContainer {
             container_id: ContainerId::try_new("cccccccccccc").expect("container id"),
+            expected: V2ManagedContainerIdentity {
+                namespace_id: namespace_id(),
+                service_id: service_id(),
+                operation_id: operation_id(),
+            },
         }),
         no_shutdown(),
     )
     .await;
 
-    let DeployExecuteOutcome::Failed { diagnostic } = outcome else {
-        panic!("a foreign container is a typed verb failure");
-    };
-    assert!(diagnostic.contains("does not belong"));
+    assert_eq!(
+        outcome,
+        DeployExecuteOutcome::ContainerIdentityMismatch {
+            actual: V2ManagedContainerIdentity {
+                namespace_id: namespace_id(),
+                service_id: other_service_id(),
+                operation_id: operation_id(),
+            },
+        }
+    );
+    assert!(runner.stopped.lock().expect("stopped lock").is_empty());
+}
+
+#[tokio::test]
+async fn stop_refuses_a_container_a_newer_deploy_already_replaced() {
+    let newer_deploy = OperationRowId::try_new("01J00000000000000000000018").expect("operation id");
+    let rows = FakeRows::with_candidate(
+        operation_id(),
+        deploy_claim(driver_machine_id(), service_id(), recent_timestamp()),
+    );
+    let runner = FakeRunner::with_containers(vec![container(
+        "cccccccccccc",
+        service_id(),
+        newer_deploy.clone(),
+        true,
+        &[],
+    )]);
+
+    let outcome = execute_verb(
+        &rows,
+        &runner,
+        &machine_caller(driver_machine_id()),
+        execute_request(DeployVerb::StopContainer {
+            container_id: ContainerId::try_new("cccccccccccc").expect("container id"),
+            expected: V2ManagedContainerIdentity {
+                namespace_id: namespace_id(),
+                service_id: service_id(),
+                operation_id: operation_id(),
+            },
+        }),
+        no_shutdown(),
+    )
+    .await;
+
+    assert_eq!(
+        outcome,
+        DeployExecuteOutcome::ContainerIdentityMismatch {
+            actual: V2ManagedContainerIdentity {
+                namespace_id: namespace_id(),
+                service_id: service_id(),
+                operation_id: newer_deploy,
+            },
+        }
+    );
+    assert!(runner.stopped.lock().expect("stopped lock").is_empty());
+}
+
+#[tokio::test]
+async fn stop_treats_an_absent_container_as_already_settled() {
+    let rows = FakeRows::with_candidate(
+        operation_id(),
+        deploy_claim(driver_machine_id(), service_id(), recent_timestamp()),
+    );
+    let runner = FakeRunner::with_containers(Vec::new());
+
+    let outcome = execute_verb(
+        &rows,
+        &runner,
+        &machine_caller(driver_machine_id()),
+        execute_request(DeployVerb::StopContainer {
+            container_id: ContainerId::try_new("cccccccccccc").expect("container id"),
+            expected: V2ManagedContainerIdentity {
+                namespace_id: namespace_id(),
+                service_id: service_id(),
+                operation_id: operation_id(),
+            },
+        }),
+        no_shutdown(),
+    )
+    .await;
+
+    assert_eq!(outcome, DeployExecuteOutcome::ContainerStopped);
     assert!(runner.stopped.lock().expect("stopped lock").is_empty());
 }

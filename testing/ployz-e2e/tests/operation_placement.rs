@@ -27,6 +27,7 @@ use ployz_core::deploy::{
     ContainerMountPath, ContainerRuntimeSpec, ImageReference, ServiceVolumeMount, VolumeName,
 };
 use ployz_core::ids::MachineRowId;
+use ployz_core::placement::PlacementRefusal;
 use ployz_core::{DeployRefusal, DeployRequest};
 use ployz_e2e::dind::{
     DindCluster, DindClusterSpec, DindMachine, MachineSpec, artifact_dir, connect_docker,
@@ -602,13 +603,20 @@ async fn exercise_operation_placement(
             ));
         }
     };
-    let DeployRefusal::DarkVolumeHolder { machines } = dark_refusal else {
+    let DeployRefusal::Placement {
+        refusal: PlacementRefusal::DarkVolumeHolder { machines },
+    } = dark_refusal
+    else {
         return Err(format!(
             "expected the dark-holder refusal, got {dark_refusal:?}"
         ));
     };
     require(
-        machines == vec![holder_id.clone()],
+        machines
+            .iter()
+            .map(|machine| machine.machine_id.clone())
+            .collect::<Vec<_>>()
+            == vec![holder_id.clone()],
         format!("dark-holder refusal named {machines:?}, expected {holder_id}"),
     )?;
 

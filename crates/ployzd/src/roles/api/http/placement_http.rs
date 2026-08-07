@@ -6,17 +6,13 @@
 //! registry credentials and environment values pass through to Docker only;
 //! they never reach logs or evidence on this machine.
 
-use std::collections::BTreeSet;
 use std::future::Future;
-use std::net::Ipv4Addr;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use hyper::{Response, StatusCode};
 use ployz_core::corrosion::{
     CorrosionOperation, DeployLiveness, MachineDocument, Principal, V2ManagedContainerIdentity,
 };
-use ployz_core::deploy::{ImageReference, RegistryCredential, VolumeName};
 use ployz_core::ids::{ContainerId, MachineRowId, NamespaceRowId, ServiceRowId};
 use ployz_core::machine::{MachineLifecycle, MachineName};
 use ployz_core::network::internal_dns::InternalDnsSearchDomain;
@@ -31,11 +27,7 @@ use super::deploy_stores::DeployOperationRows;
 use super::mutations::{decode_request, now_timestamp, simple_error, typed_response};
 use super::server::{ApiService, HttpBody, corrosion_unavailable_response, refusal_response};
 use super::store::read_accepted_roster;
-use crate::roles::api::execution::docker::runner::DockerManagedContainerRunner;
-use crate::roles::api::runner::{
-    CreateV2ManagedContainer, ExistingManagedContainerState, ExistingV2ManagedContainer,
-    V2MachineContainerRunner, V2MachineImageRunner,
-};
+use crate::roles::api::runner::{CreateV2ManagedContainer, ExistingV2ManagedContainer};
 use crate::roles::system_observation::SystemObservation;
 
 /// Upper bound on one full bid collection round against local Docker.
@@ -50,148 +42,6 @@ const EXECUTE_PULL_TIMEOUT: Duration = Duration::from_secs(180);
 /// operation lens wait.
 const CLAIM_VISIBILITY_WAIT: Duration = Duration::from_secs(15);
 const CLAIM_VISIBILITY_POLL: Duration = Duration::from_millis(500);
-
-/// The local Docker surface both placement handlers command.
-///
-/// One real implementation adapts the machine's Docker runner; tests fake
-/// the seam so no handler behavior depends on a live daemon.
-#[async_trait]
-pub(super) trait PlacementDockerRunner: Send + Sync {
-    async fn managed_containers(&self) -> Result<Vec<ExistingV2ManagedContainer>, String>;
-    async fn held_volumes(
-        &self,
-        namespace_id: &NamespaceRowId,
-        volumes: &BTreeSet<VolumeName>,
-    ) -> Result<BTreeSet<VolumeName>, String>;
-    async fn ensure_volume(
-        &self,
-        namespace_id: &NamespaceRowId,
-        volume: &VolumeName,
-    ) -> Result<(), String>;
-    async fn pull_image(
-        &self,
-        image: &ImageReference,
-        credential: Option<&RegistryCredential>,
-        shutdown: watch::Receiver<bool>,
-    ) -> Result<(), String>;
-    async fn create_container(
-        &self,
-        command: CreateV2ManagedContainer,
-    ) -> Result<ContainerId, String>;
-    async fn start_container(&self, container_id: &ContainerId) -> Result<(), String>;
-    async fn stop_container(
-        &self,
-        container_id: &ContainerId,
-        expected_identity: &V2ManagedContainerIdentity,
-    ) -> Result<(), String>;
-    async fn remove_container(
-        &self,
-        container_id: &ContainerId,
-        expected_identity: &V2ManagedContainerIdentity,
-    ) -> Result<(), String>;
-    async fn health_gate(
-        &self,
-        container_id: &ContainerId,
-        identity: &V2ManagedContainerIdentity,
-    ) -> Result<Ipv4Addr, String>;
-    async fn container_ip(
-        &self,
-        container_id: &ContainerId,
-        identity: &V2ManagedContainerIdentity,
-    ) -> Result<Ipv4Addr, String>;
-}
-
-#[async_trait]
-impl PlacementDockerRunner for DockerManagedContainerRunner {
-    async fn managed_containers(&self) -> Result<Vec<ExistingV2ManagedContainer>, String> {
-        self.existing_v2_managed_containers()
-            .await
-            .map_err(|error| bounded_diagnostic(format!("{error:?}")))
-    }
-
-    async fn held_volumes(
-        &self,
-        namespace_id: &NamespaceRowId,
-        volumes: &BTreeSet<VolumeName>,
-    ) -> Result<BTreeSet<VolumeName>, String> {
-        self.held_v2_volumes(namespace_id, volumes)
-            .await
-            .map_err(bounded_diagnostic)
-    }
-
-    async fn ensure_volume(
-        &self,
-        namespace_id: &NamespaceRowId,
-        volume: &VolumeName,
-    ) -> Result<(), String> {
-        self.ensure_v2_volume(namespace_id, volume)
-            .await
-            .map_err(bounded_diagnostic)
-    }
-
-    async fn pull_image(
-        &self,
-        image: &ImageReference,
-        credential: Option<&RegistryCredential>,
-        shutdown: watch::Receiver<bool>,
-    ) -> Result<(), String> {
-        self.pull_v2_registry_image(image, credential, shutdown)
-            .await
-            .map_err(|error| bounded_diagnostic(error.to_string()))
-    }
-
-    async fn create_container(
-        &self,
-        command: CreateV2ManagedContainer,
-    ) -> Result<ContainerId, String> {
-        self.create_v2_managed_container(command)
-            .await
-            .map_err(|error| bounded_diagnostic(format!("{error:?}")))
-    }
-
-    async fn start_container(&self, container_id: &ContainerId) -> Result<(), String> {
-        self.start_v2_managed_container(container_id)
-            .await
-            .map_err(|error| bounded_diagnostic(format!("{error:?}")))
-    }
-
-    async fn stop_container(
-        &self,
-        container_id: &ContainerId,
-        expected_identity: &V2ManagedContainerIdentity,
-    ) -> Result<(), String> {
-        self.stop_v2_managed_container(container_id, expected_identity)
-            .await
-            .map(|_| ())
-            .map_err(|error| bounded_diagnostic(format!("{error:?}")))
-    }
-
-    async fn remove_container(
-        &self,
-        container_id: &ContainerId,
-        expected_identity: &V2ManagedContainerIdentity,
-    ) -> Result<(), String> {
-        self.remove_v2_managed_container(container_id, expected_identity)
-            .await
-            .map_err(|error| bounded_diagnostic(format!("{error:?}")))
-    }
-
-    async fn health_gate(
-        &self,
-        container_id: &ContainerId,
-        identity: &V2ManagedContainerIdentity,
-    ) -> Result<Ipv4Addr, String> {
-        DeployRuntime::health_gate(self, container_id, identity).await
-    }
-
-    async fn container_ip(
-        &self,
-        container_id: &ContainerId,
-        identity: &V2ManagedContainerIdentity,
-    ) -> Result<Ipv4Addr, String> {
-        DeployRuntime::container_ip(self, container_id, identity).await
-    }
-}
 
 pub(super) async fn handle_placement_bid(
     service: &ApiService,
@@ -283,7 +133,7 @@ pub(super) struct BidIdentity {
 /// this for `/deploy/bid`, and the deploy driver reuses it for its own
 /// in-process bid.
 pub(super) async fn collect_bid(
-    runner: &dyn PlacementDockerRunner,
+    runner: &dyn DeployRuntime,
     identity: BidIdentity,
     observation: SystemObservation,
     request: &PlacementBidRequest,
@@ -311,11 +161,7 @@ pub(super) async fn collect_bid(
         free_memory_bytes,
         load,
         total_container_count: containers.len(),
-        service_containers: service_observations(
-            containers,
-            &request.namespace_id,
-            &request.service_id,
-        ),
+        service_containers: service_observations(containers, &request.namespace_id),
         volumes_held,
     })
 }
@@ -323,21 +169,14 @@ pub(super) async fn collect_bid(
 fn service_observations(
     containers: Vec<ExistingV2ManagedContainer>,
     namespace_id: &NamespaceRowId,
-    service_id: &ServiceRowId,
 ) -> Vec<ServiceContainerObservation> {
     containers
         .into_iter()
-        .filter(|container| {
-            &container.identity.namespace_id == namespace_id
-                && &container.identity.service_id == service_id
-        })
+        .filter(|container| &container.identity.namespace_id == namespace_id)
         .map(|container| ServiceContainerObservation {
             container_id: container.container_id,
+            service_id: container.identity.service_id,
             deploy: container.identity.operation_id,
-            running: matches!(
-                container.state,
-                ExistingManagedContainerState::Running { .. }
-            ),
             named_volumes: container.named_volume_names,
         })
         .collect()
@@ -345,7 +184,7 @@ fn service_observations(
 
 pub(super) async fn execute_verb(
     rows: &dyn DeployOperationRows,
-    runner: &dyn PlacementDockerRunner,
+    runner: &dyn DeployRuntime,
     caller: &Principal,
     request: DeployExecuteRequest,
     shutdown: watch::Receiver<bool>,
@@ -459,7 +298,7 @@ fn store_failure(error: super::operation_store::OperationStoreError) -> DeployEx
 }
 
 async fn run_verb(
-    runner: &dyn PlacementDockerRunner,
+    runner: &dyn DeployRuntime,
     request: DeployExecuteRequest,
     shutdown: watch::Receiver<bool>,
 ) -> DeployExecuteOutcome {
@@ -474,15 +313,8 @@ async fn run_verb(
             bounded(EXECUTE_EFFECT_TIMEOUT, async {
                 let containers = runner.managed_containers().await?;
                 Ok(DeployExecuteOutcome::ServiceContainers {
-                    containers: service_observations(containers, &namespace_id, &service_id),
+                    containers: service_observations(containers, &namespace_id),
                 })
-            })
-            .await
-        }
-        DeployVerb::EnsureVolume { volume } => {
-            bounded(EXECUTE_EFFECT_TIMEOUT, async {
-                runner.ensure_volume(&namespace_id, &volume).await?;
-                Ok(DeployExecuteOutcome::VolumeEnsured)
             })
             .await
         }
@@ -506,7 +338,7 @@ async fn run_verb(
                     InternalDnsSearchDomain::try_from_namespace_label(namespace_name.as_str())
                         .map_err(|error| bounded_diagnostic(error.to_string()))?;
                 let container_id = runner
-                    .create_container(CreateV2ManagedContainer {
+                    .create_container_command(CreateV2ManagedContainer {
                         image,
                         runtime: *runtime,
                         dns_search_domain,
@@ -524,23 +356,36 @@ async fn run_verb(
         }
         DeployVerb::StartContainer { container_id } => {
             bounded(EXECUTE_EFFECT_TIMEOUT, async {
-                runner.start_container(&container_id).await?;
-                Ok(DeployExecuteOutcome::ContainerStarted)
+                match service_scoped_container(runner, &container_id, &namespace_id, &service_id)
+                    .await?
+                {
+                    Some(container) => {
+                        runner.start_container(&container.container_id).await?;
+                        Ok(DeployExecuteOutcome::ContainerStarted)
+                    }
+                    None => Err("container to start was not found in Docker".to_owned()),
+                }
             })
             .await
         }
-        DeployVerb::StopContainer { container_id } => {
+        DeployVerb::StopContainer {
+            container_id,
+            expected,
+        } => {
             bounded(EXECUTE_EFFECT_TIMEOUT, async {
                 // An absent container needs no stop; the sweep semantics
                 // treat it as already settled.
-                if let Some(container) =
-                    service_scoped_container(runner, &container_id, &namespace_id, &service_id)
-                        .await?
-                {
-                    runner
-                        .stop_container(&container.container_id, &container.identity)
-                        .await?;
+                let Some(container) = find_container(runner, &container_id).await? else {
+                    return Ok(DeployExecuteOutcome::ContainerStopped);
+                };
+                if container.identity != expected {
+                    return Ok(DeployExecuteOutcome::ContainerIdentityMismatch {
+                        actual: container.identity,
+                    });
                 }
+                runner
+                    .stop_container(&container.container_id, &expected)
+                    .await?;
                 Ok(DeployExecuteOutcome::ContainerStopped)
             })
             .await
@@ -565,31 +410,23 @@ async fn run_verb(
             })
             .await
         }
-        DeployVerb::RestartContainer { container_id } => {
-            bounded(EXECUTE_EFFECT_TIMEOUT, async {
-                match service_scoped_container(runner, &container_id, &namespace_id, &service_id)
-                    .await?
-                {
-                    Some(container) => {
-                        runner.start_container(&container.container_id).await?;
-                        Ok(DeployExecuteOutcome::ContainerRestarted)
-                    }
-                    None => Err("container to restart was not found in Docker".to_owned()),
-                }
-            })
-            .await
-        }
-        DeployVerb::RemoveContainer { container_id } => {
+        DeployVerb::RemoveContainer {
+            container_id,
+            expected,
+        } => {
             bounded(EXECUTE_EFFECT_TIMEOUT, async {
                 // Already absent; removal is settled.
-                if let Some(container) =
-                    service_scoped_container(runner, &container_id, &namespace_id, &service_id)
-                        .await?
-                {
-                    runner
-                        .remove_container(&container.container_id, &container.identity)
-                        .await?;
+                let Some(container) = find_container(runner, &container_id).await? else {
+                    return Ok(DeployExecuteOutcome::ContainerRemoved);
+                };
+                if container.identity != expected {
+                    return Ok(DeployExecuteOutcome::ContainerIdentityMismatch {
+                        actual: container.identity,
+                    });
                 }
+                runner
+                    .remove_container(&container.container_id, &expected)
+                    .await?;
                 Ok(DeployExecuteOutcome::ContainerRemoved)
             })
             .await
@@ -597,20 +434,28 @@ async fn run_verb(
     }
 }
 
+/// One Docker listing round resolving a container id to its live managed
+/// container, or `None` when it is absent.
+async fn find_container(
+    runner: &dyn DeployRuntime,
+    container_id: &ContainerId,
+) -> Result<Option<ExistingV2ManagedContainer>, String> {
+    let containers = runner.managed_containers().await?;
+    Ok(containers
+        .into_iter()
+        .find(|container| &container.container_id == container_id))
+}
+
 /// Recovers the container's own Docker identity and refuses containers that
 /// do not belong to the verb's service, so a claim never touches another
 /// service's containers.
 async fn service_scoped_container(
-    runner: &dyn PlacementDockerRunner,
+    runner: &dyn DeployRuntime,
     container_id: &ContainerId,
     namespace_id: &NamespaceRowId,
     service_id: &ServiceRowId,
 ) -> Result<Option<ExistingV2ManagedContainer>, String> {
-    let containers = runner.managed_containers().await?;
-    let Some(container) = containers
-        .into_iter()
-        .find(|container| &container.container_id == container_id)
-    else {
+    let Some(container) = find_container(runner, container_id).await? else {
         return Ok(None);
     };
     if &container.identity.namespace_id != namespace_id

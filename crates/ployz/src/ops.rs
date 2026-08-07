@@ -12,9 +12,9 @@ use ployz_core::ids::MachineRowId;
 use ployz_core::machine::MachineName;
 use ployz_core::placement::{PlacementElimination, PlacementEliminationReason, PlacementShortfall};
 use ployz_core::{
-    LensCollection, LensSnapshot, OperationEvidence, OperationEvidenceEvent, OperationWatchEvent,
-    OperationWatchRefusal, PlacementBid, SilenceClassification, SilentMachine,
-    operation_watch_route,
+    AnomalousSilenceReason, LensCollection, LensSnapshot, OperationEvidence,
+    OperationEvidenceEvent, OperationWatchEvent, OperationWatchRefusal, PlacementBid,
+    SilenceClassification, SilentMachine, operation_watch_route,
 };
 
 use crate::commands::{OpsCommand, OpsListCommand, OpsWatchCommand};
@@ -290,73 +290,35 @@ fn render_evidence(
         OperationEvidence::Created => "created".to_owned(),
         OperationEvidence::PullingImage => "pulling image".to_owned(),
         OperationEvidence::ImageResolved => "image resolved".to_owned(),
-        OperationEvidence::ContainerCreated {
-            container_id,
-            machine,
-        } => {
-            format!(
-                "container created {}{}",
-                container_id.as_str(),
-                on_machine(machine.as_ref(), machine_names)
-            )
+        OperationEvidence::ContainerCreated { container_id } => {
+            format!("container created {}", container_id.as_str())
         }
-        OperationEvidence::ContainerStarted {
-            container_id,
-            machine,
-        } => {
-            format!(
-                "container started {}{}",
-                container_id.as_str(),
-                on_machine(machine.as_ref(), machine_names)
-            )
+        OperationEvidence::ContainerStarted { container_id } => {
+            format!("container started {}", container_id.as_str())
         }
         OperationEvidence::OpClaimWon => "operation claim won".to_owned(),
         OperationEvidence::OpClaimLost { winner } => format!("operation claim lost to {winner}"),
         OperationEvidence::PlacementGathered { bids, silent } => {
             render_placement_gathered(bids, silent)
         }
-        OperationEvidence::PlacementPicked {
-            targets,
-            eliminations,
-            shortfall,
-        } => render_placement_picked(targets, eliminations, shortfall.as_ref(), machine_names),
-        OperationEvidence::DebrisSwept { removed, machine } => {
-            format!(
-                "swept {} leftover container(s){}",
-                removed.len(),
-                on_machine(machine.as_ref(), machine_names)
-            )
+        OperationEvidence::PlacementPicked { pick } => render_placement_picked(
+            &pick.targets,
+            &pick.eliminations,
+            pick.shortfall.as_ref(),
+            machine_names,
+        ),
+        OperationEvidence::DebrisSwept { removed } => {
+            format!("swept {} leftover container(s)", removed.len())
         }
         OperationEvidence::HealthGateSkipped => "health gate skipped".to_owned(),
-        OperationEvidence::IncumbentStopped {
-            container_id,
-            machine,
-        } => {
-            format!(
-                "incumbent stopped {}{}",
-                container_id.as_str(),
-                on_machine(machine.as_ref(), machine_names)
-            )
+        OperationEvidence::IncumbentStopped { container_id } => {
+            format!("incumbent stopped {}", container_id.as_str())
         }
-        OperationEvidence::IncumbentRestarted {
-            container_id,
-            machine,
-        } => {
-            format!(
-                "incumbent restarted {}{}",
-                container_id.as_str(),
-                on_machine(machine.as_ref(), machine_names)
-            )
+        OperationEvidence::IncumbentRestarted { container_id } => {
+            format!("incumbent restarted {}", container_id.as_str())
         }
-        OperationEvidence::IncumbentRemoved {
-            container_id,
-            machine,
-        } => {
-            format!(
-                "incumbent removed {}{}",
-                container_id.as_str(),
-                on_machine(machine.as_ref(), machine_names)
-            )
+        OperationEvidence::IncumbentRemoved { container_id } => {
+            format!("incumbent removed {}", container_id.as_str())
         }
         OperationEvidence::Drained => "drained".to_owned(),
         OperationEvidence::PromotionPrepared => "promotion prepared".to_owned(),
@@ -371,9 +333,10 @@ fn render_evidence(
     };
     writeln!(
         output,
-        "{}\t{}\t{detail}",
+        "{}\t{}\t{detail}{}",
         event.sequence.get(),
-        event.timestamp
+        event.timestamp,
+        on_machine(event.machine.as_ref(), machine_names)
     )
     .map_err(OpsExecutionError::Output)?;
     output.flush().map_err(OpsExecutionError::Output)
@@ -399,15 +362,9 @@ pub(crate) fn machine_label(
 }
 
 /// One operator-facing phrase per tier-0 elimination reason.
-pub(crate) fn elimination_reason(
-    reason: &PlacementEliminationReason,
-    machine_names: &BTreeMap<MachineRowId, MachineName>,
-) -> String {
+pub(crate) fn elimination_reason(reason: &PlacementEliminationReason) -> String {
     match reason {
         PlacementEliminationReason::Draining => "draining".to_owned(),
-        PlacementEliminationReason::PlatformUnsupported { architecture } => {
-            format!("architecture {architecture} does not run this image")
-        }
         PlacementEliminationReason::FreeDiskBelowFloor { free_disk_bytes } => {
             format!(
                 "free disk below the placement floor ({} free)",
@@ -417,7 +374,7 @@ pub(crate) fn elimination_reason(
         PlacementEliminationReason::VolumeNotHeld { holder } => {
             format!(
                 "does not hold the data volume (held by {})",
-                machine_label(holder, machine_names)
+                holder.machine_name.as_str()
             )
         }
         PlacementEliminationReason::OutsidePinSet => "outside the pin set".to_owned(),
@@ -489,6 +446,13 @@ fn render_placement_gathered(bids: &[PlacementBid], silent: &[SilentMachine]) ->
                 handshake_age(*handshake_age_seconds)
             ),
             SilenceClassification::AnomalousSilent { reason } => {
+                let reason = match reason {
+                    AnomalousSilenceReason::TransportFailed => "transport failed".to_owned(),
+                    AnomalousSilenceReason::TimedOut => "timed out".to_owned(),
+                    AnomalousSilenceReason::Declined { status } => {
+                        format!("declined with status {status}")
+                    }
+                };
                 format!("anomalous-silent ({reason})")
             }
         };
@@ -532,8 +496,8 @@ fn render_placement_picked(
     for elimination in eliminations {
         detail.push_str(&format!(
             "\n  eliminated {}: {}",
-            machine_label(&elimination.machine_id, machine_names),
-            elimination_reason(&elimination.reason, machine_names)
+            elimination.machine_name.as_str(),
+            elimination_reason(&elimination.reason)
         ));
     }
     if let Some(shortfall) = shortfall {
@@ -850,7 +814,7 @@ mod tests {
                 SilentMachine {
                     machine_id: anomalous.clone(),
                     classification: SilenceClassification::AnomalousSilent {
-                        reason: "bid timed out".to_owned(),
+                        reason: AnomalousSilenceReason::TimedOut,
                     },
                 },
             ],
@@ -861,7 +825,7 @@ mod tests {
             "\n  no bid from {expected}: expected-silent (handshake 41m)"
         )));
         assert!(detail.contains(&format!(
-            "\n  no bid from {anomalous}: anomalous-silent (bid timed out)"
+            "\n  no bid from {anomalous}: anomalous-silent (timed out)"
         )));
     }
 
@@ -886,6 +850,7 @@ mod tests {
             &[stacked.clone(), single, stacked],
             &[PlacementElimination {
                 machine_id: eliminated.clone(),
+                machine_name: ployz_core::machine::MachineName::try_new("web-3").expect("name"),
                 reason: PlacementEliminationReason::Draining,
             }],
             Some(&PlacementShortfall {
@@ -898,7 +863,7 @@ mod tests {
         assert!(detail.starts_with("placement picked: 3 replica(s) on 2 machine(s)"));
         assert!(detail.contains("\n  target web-1 (2 replicas)"));
         assert!(detail.contains("\n  target web-2"));
-        assert!(detail.contains(&format!("\n  eliminated {eliminated}: draining")));
+        assert!(detail.contains("\n  eliminated web-3: draining"));
         assert!(detail.contains("\n  shortfall: requested 3, placed 2"));
     }
 
@@ -994,6 +959,7 @@ mod tests {
         OperationEvidenceEvent {
             sequence: OperationEvidenceSequence::try_new(sequence).expect("positive sequence"),
             timestamp: timestamp("2026-08-05T12:34:56Z"),
+            machine: None,
             evidence,
         }
     }

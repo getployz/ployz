@@ -560,7 +560,7 @@ pub enum ServicePlacement {
         replicas: ServiceReplicaCount,
     },
     Global {
-        /// Absent on rows written before global services could publish ports.
+        /// Host-published ports; an absent field reads as none published.
         #[serde(default, skip_serializing_if = "HostPortBindings::is_empty")]
         host_ports: HostPortBindings,
     },
@@ -588,18 +588,20 @@ pub struct HostPortBinding {
 }
 
 /// A global service's host-published port set. One host port binds at most
-/// once per protocol; the same number may forward both TCP and UDP.
+/// once per protocol; the same number may forward both TCP and UDP. The set
+/// backing makes equality order-insensitive and collapses an exact repeat of
+/// the same binding.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(type = "Array<HostPortBinding>"))]
 #[serde(try_from = "Vec<HostPortBinding>", into = "Vec<HostPortBinding>")]
-pub struct HostPortBindings(Vec<HostPortBinding>);
+pub struct HostPortBindings(BTreeSet<HostPortBinding>);
 
 impl HostPortBindings {
     pub fn try_new(
         bindings: impl IntoIterator<Item = HostPortBinding>,
     ) -> Result<Self, HostPortBindingsError> {
-        let bindings = bindings.into_iter().collect::<Vec<_>>();
+        let bindings = bindings.into_iter().collect::<BTreeSet<_>>();
         let mut claimed = BTreeSet::new();
         for binding in &bindings {
             if !claimed.insert((binding.protocol, binding.host_port)) {
@@ -617,9 +619,14 @@ impl HostPortBindings {
         self.0.is_empty()
     }
 
+    pub fn iter(&self) -> impl Iterator<Item = &HostPortBinding> {
+        self.0.iter()
+    }
+
+    /// The number of published bindings.
     #[must_use]
-    pub fn as_slice(&self) -> &[HostPortBinding] {
-        &self.0
+    pub fn len(&self) -> usize {
+        self.0.len()
     }
 }
 
@@ -633,7 +640,7 @@ impl TryFrom<Vec<HostPortBinding>> for HostPortBindings {
 
 impl From<HostPortBindings> for Vec<HostPortBinding> {
     fn from(value: HostPortBindings) -> Self {
-        value.0
+        value.0.into_iter().collect()
     }
 }
 
@@ -653,10 +660,20 @@ pub enum HostPortBindingsError {
 pub struct ServiceReplicaCount(NonZeroU16);
 
 impl ServiceReplicaCount {
+    /// The admission ceiling. Every replica costs bounded per-deploy work —
+    /// a placement target, verb dispatches, and evidence lines — so an
+    /// absurd count refuses here instead of exhausting the driver.
+    pub const MAX: u16 = 500;
+
     pub fn try_new(value: u16) -> Result<Self, ServiceReplicaCountError> {
         let Some(value) = NonZeroU16::new(value) else {
             return Err(ServiceReplicaCountError::Zero);
         };
+        if value.get() > Self::MAX {
+            return Err(ServiceReplicaCountError::AboveCeiling {
+                requested: value.get(),
+            });
+        }
         Ok(Self(value))
     }
 
@@ -684,6 +701,11 @@ impl From<ServiceReplicaCount> for u16 {
 pub enum ServiceReplicaCountError {
     #[error("replicated services require at least one replica")]
     Zero,
+    #[error(
+        "replicated services support at most {max} replicas, got {requested}",
+        max = ServiceReplicaCount::MAX
+    )]
+    AboveCeiling { requested: u16 },
 }
 
 /// How a Route Binding reaches the gateway that terminates it.

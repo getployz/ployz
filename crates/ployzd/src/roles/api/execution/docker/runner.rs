@@ -25,7 +25,6 @@ use bollard::models::{
     ContainerSummaryHealthStatusEnum, ContainerSummaryNetworkSettings, ContainerSummaryStateEnum,
     EndpointSettings, HealthConfig, HealthStatusEnum, HostConfig, Mount, MountPoint, MountType,
     NetworkingConfig, PortBinding, PortMap, RestartPolicy, RestartPolicyNameEnum,
-    VolumeCreateRequest,
 };
 use bollard::query_parameters::{
     InspectContainerOptions, ListContainersOptionsBuilder, LogsOptionsBuilder,
@@ -133,8 +132,13 @@ impl DockerManagedContainerRunner {
         &self,
         namespace_id: &NamespaceRowId,
         volumes: &BTreeSet<VolumeName>,
-    ) -> Result<BTreeSet<VolumeName>, String> {
-        let docker = self.docker().await.map_err(|error| error.to_string())?;
+    ) -> Result<BTreeSet<VolumeName>, HeldVolumesError> {
+        let docker = self
+            .docker()
+            .await
+            .map_err(|error| HeldVolumesError::DockerUnavailable {
+                message: error.to_string(),
+            })?;
         let mut held = BTreeSet::new();
         for volume in volumes {
             match docker
@@ -145,34 +149,15 @@ impl DockerManagedContainerRunner {
                     held.insert(volume.clone());
                 }
                 Err(error) if is_docker_object_missing(&error) => {}
-                Err(error) => return Err(error.to_string()),
+                Err(error) => {
+                    return Err(HeldVolumesError::Inspect {
+                        volume: volume.clone(),
+                        message: error.to_string(),
+                    });
+                }
             }
         }
         Ok(held)
-    }
-
-    /// Ensures the deterministic v2-named local Docker volume exists before
-    /// a container mounts it.
-    pub(crate) async fn ensure_v2_volume(
-        &self,
-        namespace_id: &NamespaceRowId,
-        volume: &VolumeName,
-    ) -> Result<(), String> {
-        let docker = self.docker().await.map_err(|error| error.to_string())?;
-        let storage_name = v2_volume_storage_name(namespace_id, volume);
-        match docker.inspect_volume(&storage_name).await {
-            Ok(_) => Ok(()),
-            Err(error) if is_docker_object_missing(&error) => docker
-                .create_volume(VolumeCreateRequest {
-                    name: Some(storage_name),
-                    driver: Some("local".to_owned()),
-                    ..Default::default()
-                })
-                .await
-                .map(|_| ())
-                .map_err(|error| error.to_string()),
-            Err(error) => Err(error.to_string()),
-        }
     }
 
     #[cfg(test)]
@@ -1599,6 +1584,16 @@ fn collect_named_volume_names(
     Ok(names)
 }
 
+/// A held-volume inventory failure, split by whether the Docker daemon was
+/// reachable at all or a specific volume inspect failed.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum HeldVolumesError {
+    #[error("docker unavailable: {message}")]
+    DockerUnavailable { message: String },
+    #[error("inspecting volume {volume} failed: {message}", volume = .volume.as_str())]
+    Inspect { volume: VolumeName, message: String },
+}
+
 /// Storage identity of a row-scoped v2 named volume on the local Docker host.
 fn v2_volume_storage_name(namespace_id: &NamespaceRowId, volume_name: &VolumeName) -> String {
     let namespace = namespace_id.as_str();
@@ -1858,15 +1853,17 @@ fn docker_port_publications(
     if host_ports.is_empty() {
         return (None, None);
     }
-    let mut exposed = Vec::new();
+    // Exposed ports are keyed by container port, so two host ports
+    // forwarding the same container port share one exposed entry.
+    let mut exposed = std::collections::BTreeSet::new();
     let mut bindings: PortMap = HashMap::new();
-    for binding in host_ports.as_slice() {
+    for binding in host_ports.iter() {
         let protocol = match binding.protocol {
             ployz_core::corrosion::HostPortProtocol::Tcp => "tcp",
             ployz_core::corrosion::HostPortProtocol::Udp => "udp",
         };
         let container_key = format!("{}/{protocol}", binding.container_port);
-        exposed.push(container_key.clone());
+        exposed.insert(container_key.clone());
         bindings
             .entry(container_key)
             .or_insert_with(|| Some(Vec::new()))
@@ -1876,7 +1873,7 @@ fn docker_port_publications(
                 host_port: Some(binding.host_port.to_string()),
             });
     }
-    (Some(exposed), Some(bindings))
+    (Some(exposed.into_iter().collect()), Some(bindings))
 }
 
 fn docker_volume_mounts(

@@ -133,24 +133,21 @@ impl CorrosionPreparedPromotionStore {
         })
     }
 
-    /// Reads every prepared container row and folds the group into one
-    /// observation: `Exact` only when all rows are exact, `Absent` only when
-    /// all are absent, otherwise `Mismatch`.
+    /// Reads every prepared container row concurrently and folds the group
+    /// into one observation: `Exact` only when all rows are exact, `Absent`
+    /// only when all are absent, otherwise `Mismatch`.
     async fn observe_container_rows(
         &self,
         containers: &[PreparedDeployContainer],
     ) -> Result<CorrosionPromotionRowObservation, PromotionFinalizerStoreError> {
-        let mut observations = Vec::with_capacity(containers.len());
-        for container in containers {
-            let rows = self
-                .query_one(CorrosionTable::Containers, container.id.as_str())
-                .await?;
-            observations.push(observe_exact_row(
-                rows,
-                &container.document,
-                &self.cluster_id,
-            )?);
-        }
+        let observations =
+            futures_util::future::try_join_all(containers.iter().map(|container| async {
+                let rows = self
+                    .query_one(CorrosionTable::Containers, container.id.as_str())
+                    .await?;
+                observe_exact_row(rows, &container.document, &self.cluster_id)
+            }))
+            .await?;
         Ok(fold_row_observations(&observations))
     }
 
@@ -291,7 +288,7 @@ impl CorrosionPreparedPromotionStore {
         validate_redeploy_cluster(prepared, &self.cluster_id)?;
         let statements = redeploy_statements(prepared)?;
         let disposition = match self.client.execute(&statements).await {
-            Ok(response) => classify_converge_response(&response)?,
+            Ok(response) => classify_converge_response(&response, prepared.containers.len())?,
             Err(_) => PromotionRequestDisposition::Uncertain,
         };
         let rows = self.observe_redeploy_rows(prepared).await?;
@@ -420,7 +417,7 @@ impl PreparedPromotionStore for CorrosionPreparedPromotionStore {
         validate_cluster(prepared, &self.cluster_id)?;
         let statements = converge_statements(prepared)?;
         let disposition = match self.client.execute(&statements).await {
-            Ok(response) => classify_converge_response(&response)?,
+            Ok(response) => classify_converge_response(&response, prepared.containers.len())?,
             Err(_) => PromotionRequestDisposition::Uncertain,
         };
         let rows = self.observe_rows(prepared).await?;
@@ -821,18 +818,25 @@ fn service_containers_statement(service_id: &ServiceRowId) -> Statement {
     )
 }
 
-/// Classifies one service statement followed by one statement per prepared
-/// container row. Every statement writes zero or one row; any landed write is
-/// an accepted request (missing halves heal on retry), and all-zero is the
-/// definite rejection.
+/// Classifies one service statement followed by exactly one statement per
+/// prepared container row. Every statement writes zero or one row; any
+/// landed write is an accepted request (missing halves heal on retry), and
+/// all-zero is the definite rejection.
 fn classify_converge_response(
     response: &TransactionResponse,
+    container_count: usize,
 ) -> Result<PromotionRequestDisposition, PromotionFinalizerStoreError> {
     let [service, containers @ ..] = response.results.as_slice() else {
         return Err(PromotionFinalizerStoreError::Protocol(
             "promotion transaction returned no results".to_owned(),
         ));
     };
+    if containers.len() != container_count {
+        return Err(PromotionFinalizerStoreError::Protocol(format!(
+            "atomic promotion answered {} container statements for {container_count} prepared rows",
+            containers.len()
+        )));
+    }
     let mut total = rows_affected(service)?;
     let mut counts = vec![total];
     for container in containers {
@@ -1024,19 +1028,19 @@ mod tests {
     #[test]
     fn only_an_exact_atomic_pair_is_accepted() {
         assert_eq!(
-            classify_converge_response(&response(1, 1)).expect("accepted"),
+            classify_converge_response(&response(1, 1), 1).expect("accepted"),
             PromotionRequestDisposition::Accepted
         );
         assert_eq!(
-            classify_converge_response(&response(0, 0)).expect("rejected"),
+            classify_converge_response(&response(0, 0), 1).expect("rejected"),
             PromotionRequestDisposition::Rejected
         );
         assert_eq!(
-            classify_converge_response(&response(1, 0)).expect("service healed"),
+            classify_converge_response(&response(1, 0), 1).expect("service healed"),
             PromotionRequestDisposition::Accepted
         );
         assert_eq!(
-            classify_converge_response(&response(0, 1)).expect("container healed"),
+            classify_converge_response(&response(0, 1), 1).expect("container healed"),
             PromotionRequestDisposition::Accepted
         );
         let _ = CorrosionPromotionRowObservation::Exact;
@@ -1078,13 +1082,18 @@ mod tests {
     #[test]
     fn exact_half_healing_is_a_valid_accepted_request() {
         assert_eq!(
-            classify_converge_response(&response(1, 0)).expect("heal service half"),
+            classify_converge_response(&response(1, 0), 1).expect("heal service half"),
             PromotionRequestDisposition::Accepted
         );
         assert_eq!(
-            classify_converge_response(&response(0, 1)).expect("heal container half"),
+            classify_converge_response(&response(0, 1), 1).expect("heal container half"),
             PromotionRequestDisposition::Accepted
         );
+    }
+
+    #[test]
+    fn a_response_with_the_wrong_container_statement_count_is_a_protocol_error() {
+        assert!(classify_converge_response(&response(1, 1), 2).is_err());
     }
 
     #[test]
@@ -1237,7 +1246,7 @@ mod tests {
         // An incumbent CAS miss with no prior healed write is the rejection the
         // driver maps to SupersededByOperation.
         assert_eq!(
-            classify_converge_response(&response(0, 0)).expect("miss"),
+            classify_converge_response(&response(0, 0), 1).expect("miss"),
             PromotionRequestDisposition::Rejected
         );
     }

@@ -1,15 +1,14 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::corrosion::{
     HostPortBindings, MachineLoadBand, ServicePlacement, ServiceReplicaCount,
 };
 use ployz_core::deploy::VolumeName;
 use ployz_core::ids::{ContainerId, MachineRowId, OperationRowId};
-use ployz_core::image::OciPlatform;
-use ployz_core::machine::MachineLifecycle;
+use ployz_core::machine::{MachineLifecycle, MachineName};
 use ployz_core::placement::{
-    PLACEMENT_FREE_DISK_FLOOR_BYTES, PlacementEliminationReason, PlacementPickInputs,
-    PlacementRefusal, pick_placement,
+    PLACEMENT_FREE_DISK_FLOOR_BYTES, PlacementEliminationReason, PlacementMachine,
+    PlacementPickInputs, PlacementRefusal, pick_placement,
 };
 use ployz_core::{PlacementBid, ServiceContainerObservation};
 
@@ -20,6 +19,23 @@ const ACTIVE_DEPLOY: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAD";
 
 fn machine(value: &str) -> MachineRowId {
     MachineRowId::try_new(value).expect("fixture machine id")
+}
+
+fn machine_name(machine_id: &str) -> MachineName {
+    let name = match machine_id {
+        MACHINE_A => "machine-a",
+        MACHINE_B => "machine-b",
+        MACHINE_C => "machine-c",
+        other => panic!("no fixture name for machine {other}"),
+    };
+    MachineName::try_new(name).expect("fixture machine name")
+}
+
+fn placement_machine(machine_id: &str) -> PlacementMachine {
+    PlacementMachine {
+        machine_id: machine(machine_id),
+        machine_name: machine_name(machine_id),
+    }
 }
 
 fn operation(value: &str) -> OperationRowId {
@@ -34,10 +50,17 @@ fn replicas(value: u16) -> ServiceReplicaCount {
     ServiceReplicaCount::try_new(value).expect("fixture replica count")
 }
 
+fn silent(machine_ids: &[&str]) -> BTreeMap<MachineRowId, MachineName> {
+    machine_ids
+        .iter()
+        .map(|machine_id| (machine(machine_id), machine_name(machine_id)))
+        .collect()
+}
+
 fn bid(machine_id: &str) -> PlacementBid {
     PlacementBid {
         machine_id: machine(machine_id),
-        machine_name: ployz_core::machine::MachineName::try_new("edge").expect("fixture name"),
+        machine_name: machine_name(machine_id),
         architecture: "x86_64".to_owned(),
         lifecycle: MachineLifecycle::Active,
         free_disk_bytes: 100 * PLACEMENT_FREE_DISK_FLOOR_BYTES,
@@ -52,8 +75,9 @@ fn bid(machine_id: &str) -> PlacementBid {
 fn service_container(deploy: &str) -> ServiceContainerObservation {
     ServiceContainerObservation {
         container_id: ContainerId::try_new("c0ffee").expect("fixture container id"),
+        service_id: ployz_core::ids::ServiceRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAE")
+            .expect("fixture service id"),
         deploy: operation(deploy),
-        running: true,
         named_volumes: BTreeSet::new(),
     }
 }
@@ -67,9 +91,8 @@ fn inputs(bids: Vec<PlacementBid>) -> PlacementPickInputs {
         volumes: BTreeSet::new(),
         plausible_volume_holders: BTreeSet::new(),
         active_deploy: None,
-        platforms: None,
         bids,
-        silent_machines: BTreeSet::new(),
+        silent_machines: BTreeMap::new(),
     }
 }
 
@@ -83,6 +106,7 @@ fn a_draining_machine_is_dropped_at_tier_zero() {
         panic!("exactly one elimination expected");
     };
     assert_eq!(elimination.machine_id, machine(MACHINE_A));
+    assert_eq!(elimination.machine_name, machine_name(MACHINE_A));
     assert_eq!(elimination.reason, PlacementEliminationReason::Draining);
 }
 
@@ -100,35 +124,6 @@ fn a_machine_below_the_free_disk_floor_is_dropped_at_tier_zero() {
         PlacementEliminationReason::FreeDiskBelowFloor {
             free_disk_bytes: PLACEMENT_FREE_DISK_FLOOR_BYTES - 1,
         }
-    );
-}
-
-#[test]
-fn a_wrong_architecture_machine_is_dropped_only_when_platforms_are_known() {
-    let mut arm = bid(MACHINE_A);
-    arm.architecture = "aarch64".to_owned();
-    let mut with_platforms = inputs(vec![arm.clone(), bid(MACHINE_B)]);
-    with_platforms.platforms = Some(BTreeSet::from([
-        OciPlatform::try_new("linux", "amd64").expect("fixture platform")
-    ]));
-    let pick = pick_placement(&with_platforms).expect("pick succeeds");
-    assert_eq!(pick.targets, vec![machine(MACHINE_B)]);
-    let [elimination] = pick.eliminations.as_slice() else {
-        panic!("exactly one elimination expected");
-    };
-    assert_eq!(
-        elimination.reason,
-        PlacementEliminationReason::PlatformUnsupported {
-            architecture: "aarch64".to_owned(),
-        }
-    );
-
-    let unknown_manifest = inputs(vec![arm, bid(MACHINE_B)]);
-    let pick = pick_placement(&unknown_manifest).expect("pick succeeds");
-    assert_eq!(
-        pick.targets,
-        vec![machine(MACHINE_A)],
-        "an undeclared manifest skips the platform drop and lets the pull fail loudly"
     );
 }
 
@@ -164,7 +159,7 @@ fn zero_eligible_bidders_is_the_only_capacity_refusal_and_names_every_drop() {
 fn a_fully_dark_pin_set_refuses_with_no_eligible_machines() {
     let mut pinned = inputs(Vec::new());
     pinned.pinned_machines = BTreeSet::from([machine(MACHINE_A)]);
-    pinned.silent_machines = BTreeSet::from([machine(MACHINE_A)]);
+    pinned.silent_machines = silent(&[MACHINE_A]);
     let refusal = pick_placement(&pinned).expect_err("pick refuses");
     assert_eq!(
         refusal,
@@ -290,7 +285,7 @@ fn a_single_visible_volume_holder_pins_the_pick_to_it() {
         assert_eq!(
             elimination.reason,
             PlacementEliminationReason::VolumeNotHeld {
-                holder: machine(MACHINE_B),
+                holder: placement_machine(MACHINE_B),
             }
         );
     }
@@ -317,8 +312,70 @@ fn two_visible_holders_are_a_data_fork_and_refuse_with_both_named() {
         refusal,
         PlacementRefusal::VolumeHolderConflict {
             volume: volume("data"),
-            holders: vec![machine(MACHINE_A), machine(MACHINE_B)],
+            holders: vec![placement_machine(MACHINE_A), placement_machine(MACHINE_B)],
         }
+    );
+}
+
+#[test]
+fn a_pin_on_one_of_two_visible_holders_resolves_the_fork_instead_of_refusing() {
+    let mut left = bid(MACHINE_A);
+    left.volumes_held = BTreeSet::from([volume("data")]);
+    let mut right = bid(MACHINE_B);
+    right.volumes_held = BTreeSet::from([volume("data")]);
+    let mut pinned = inputs(vec![left, right]);
+    pinned.volumes = BTreeSet::from([volume("data")]);
+    pinned.pinned_machines = BTreeSet::from([machine(MACHINE_B)]);
+    let pick = pick_placement(&pinned).expect("the pin adjudicates the fork");
+    assert_eq!(pick.targets, vec![machine(MACHINE_B)]);
+    let [elimination] = pick.eliminations.as_slice() else {
+        panic!("exactly one elimination expected");
+    };
+    assert_eq!(elimination.machine_id, machine(MACHINE_A));
+    assert_eq!(
+        elimination.reason,
+        PlacementEliminationReason::OutsidePinSet,
+        "the unpinned holder is a pin drop, not false fork evidence"
+    );
+}
+
+#[test]
+fn a_multi_volume_split_refuses_as_no_eligible_machines_never_as_a_fork() {
+    let mut left = bid(MACHINE_A);
+    left.volumes_held = BTreeSet::from([volume("data")]);
+    let mut right = bid(MACHINE_B);
+    right.volumes_held = BTreeSet::from([volume("cache")]);
+    let mut split = inputs(vec![left, right]);
+    split.volumes = BTreeSet::from([volume("data"), volume("cache")]);
+    let refusal = pick_placement(&split).expect_err("pick refuses");
+    let PlacementRefusal::NoEligibleMachines { eliminations } = refusal else {
+        panic!("a split across machines is a capacity refusal, never a fork");
+    };
+    assert_eq!(eliminations.len(), 2);
+    for elimination in &eliminations {
+        assert!(matches!(
+            elimination.reason,
+            PlacementEliminationReason::VolumeNotHeld { .. }
+        ));
+    }
+}
+
+#[test]
+fn a_forked_volume_among_several_names_the_forked_volume_and_only_its_holders() {
+    let mut left = bid(MACHINE_A);
+    left.volumes_held = BTreeSet::from([volume("cache"), volume("data")]);
+    let mut right = bid(MACHINE_B);
+    right.volumes_held = BTreeSet::from([volume("data")]);
+    let mut forked = inputs(vec![left, right, bid(MACHINE_C)]);
+    forked.volumes = BTreeSet::from([volume("cache"), volume("data")]);
+    let refusal = pick_placement(&forked).expect_err("pick refuses");
+    assert_eq!(
+        refusal,
+        PlacementRefusal::VolumeHolderConflict {
+            volume: volume("data"),
+            holders: vec![placement_machine(MACHINE_A), placement_machine(MACHINE_B)],
+        },
+        "the single-holder volume never appears in the fork evidence"
     );
 }
 
@@ -329,14 +386,33 @@ fn a_silent_plausible_holder_refuses_even_when_a_visible_holder_answered() {
     let mut dark = inputs(vec![visible_holder]);
     dark.volumes = BTreeSet::from([volume("data")]);
     dark.plausible_volume_holders = BTreeSet::from([machine(MACHINE_A), machine(MACHINE_B)]);
-    dark.silent_machines = BTreeSet::from([machine(MACHINE_B)]);
+    dark.silent_machines = silent(&[MACHINE_B]);
     let refusal = pick_placement(&dark).expect_err("pick refuses");
     assert_eq!(
         refusal,
         PlacementRefusal::DarkVolumeHolder {
-            machines: vec![machine(MACHINE_B)],
+            machines: vec![placement_machine(MACHINE_B)],
         },
         "the dark machine may hold a fork, which deserves a human over any visible holder"
+    );
+}
+
+#[test]
+fn a_dark_plausible_holder_refuses_even_when_a_pin_excludes_it() {
+    let mut visible_holder = bid(MACHINE_A);
+    visible_holder.volumes_held = BTreeSet::from([volume("data")]);
+    let mut dark = inputs(vec![visible_holder]);
+    dark.volumes = BTreeSet::from([volume("data")]);
+    dark.pinned_machines = BTreeSet::from([machine(MACHINE_A)]);
+    dark.plausible_volume_holders = BTreeSet::from([machine(MACHINE_A), machine(MACHINE_B)]);
+    dark.silent_machines = silent(&[MACHINE_B]);
+    let refusal = pick_placement(&dark).expect_err("pick refuses");
+    assert_eq!(
+        refusal,
+        PlacementRefusal::DarkVolumeHolder {
+            machines: vec![placement_machine(MACHINE_B)],
+        },
+        "the dark-holder check ignores pins: possible data loss outranks operator intent"
     );
 }
 
@@ -382,7 +458,7 @@ fn global_volume_services_run_no_holder_rules() {
     };
     global.volumes = BTreeSet::from([volume("data")]);
     global.plausible_volume_holders = BTreeSet::from([machine(MACHINE_C)]);
-    global.silent_machines = BTreeSet::from([machine(MACHINE_C)]);
+    global.silent_machines = silent(&[MACHINE_C]);
     let pick = pick_placement(&global).expect("pick succeeds");
     assert_eq!(
         pick.targets,

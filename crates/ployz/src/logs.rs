@@ -333,6 +333,10 @@ pub enum LogsExecutionError {
         "replicas of this service stack on machine {machine}; per-container log selection is not yet supported"
     )]
     StackedReplicas { machine: String },
+    #[error(
+        "the hosting machines' roster rows could not be resolved to names (machine ids {machine_ids}); run `ployz status` to inspect the roster"
+    )]
+    HostingMachinesUnresolved { machine_ids: String },
     #[error("service logs are owned by machine {machine}; point --target at that machine")]
     RemoteOwner { machine: String },
     #[error("service log driver {machine_id} is dark: {observation}")]
@@ -379,6 +383,15 @@ impl From<ServiceLogsRefusal> for LogsExecutionError {
                             .collect::<Vec<_>>()
                             .join(", "),
                     },
+                }
+            }
+            ServiceLogsRefusal::HostingMachinesUnresolved { machine_ids } => {
+                Self::HostingMachinesUnresolved {
+                    machine_ids: machine_ids
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", "),
                 }
             }
             ServiceLogsRefusal::RemoteOwner {

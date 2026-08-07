@@ -85,6 +85,7 @@ pub(super) struct MeshVerbClient {
 }
 
 impl MeshVerbClient {
+    #[must_use]
     pub(super) fn new(client: reqwest::Client) -> Self {
         Self { client }
     }
@@ -143,6 +144,7 @@ pub(super) struct TargetDispatch {
 }
 
 impl TargetDispatch {
+    #[must_use]
     pub(super) fn new(
         local_machine: MachineRowId,
         local: Arc<dyn DeployRuntime>,
@@ -171,29 +173,20 @@ impl TargetDispatch {
     ) -> Result<Vec<ServiceContainerObservation>, String> {
         if self.is_local(machine) {
             let containers = self
-                .bounded_local(self.local.service_docker_containers(&self.scope.service_id))
+                .bounded_local(
+                    self.local
+                        .namespace_docker_containers(&self.scope.namespace_id),
+                )
                 .await??;
             return Ok(containers.into_iter().map(observation_from).collect());
         }
-        match self
+        let outcome = self
             .execute_remote(machine, DeployVerb::ListServiceContainers)
-            .await?
-        {
-            DeployExecuteOutcome::ServiceContainers { containers } => Ok(containers),
-            other @ DeployExecuteOutcome::VolumeEnsured
-            | other @ DeployExecuteOutcome::ImagePulled
-            | other @ DeployExecuteOutcome::ContainerCreated { .. }
-            | other @ DeployExecuteOutcome::ContainerStarted
-            | other @ DeployExecuteOutcome::ContainerStopped
-            | other @ DeployExecuteOutcome::HealthGated { .. }
-            | other @ DeployExecuteOutcome::ContainerRestarted
-            | other @ DeployExecuteOutcome::ContainerRemoved
-            | other @ DeployExecuteOutcome::CallerNotDriver { .. }
-            | other @ DeployExecuteOutcome::ClaimTerminal
-            | other @ DeployExecuteOutcome::ServiceMismatch
-            | other @ DeployExecuteOutcome::ClaimNotYetVisible
-            | other @ DeployExecuteOutcome::Failed { .. } => Err(unexpected_reply("list", &other)),
-        }
+            .await?;
+        let DeployExecuteOutcome::ServiceContainers { containers } = outcome else {
+            return Err(unexpected_reply("list", &outcome));
+        };
+        Ok(containers)
     }
 
     pub(super) async fn pull_image(
@@ -204,12 +197,15 @@ impl TargetDispatch {
     ) -> Result<(), String> {
         if self.is_local(machine) {
             return self
-                .bounded_local_with(REMOTE_PULL_TIMEOUT, self.local.pull_image(image, shutdown))
+                .bounded_local_with(
+                    REMOTE_PULL_TIMEOUT,
+                    self.local.pull_image(image, None, shutdown),
+                )
                 .await?;
         }
         // Registry credentials would forward inside the verb here; the deploy
         // request carries none until the registry facade lands.
-        match self
+        let outcome = self
             .execute_remote(
                 machine,
                 DeployVerb::PullImage {
@@ -217,23 +213,11 @@ impl TargetDispatch {
                     credential: None,
                 },
             )
-            .await?
-        {
-            DeployExecuteOutcome::ImagePulled => Ok(()),
-            other @ DeployExecuteOutcome::ServiceContainers { .. }
-            | other @ DeployExecuteOutcome::VolumeEnsured
-            | other @ DeployExecuteOutcome::ContainerCreated { .. }
-            | other @ DeployExecuteOutcome::ContainerStarted
-            | other @ DeployExecuteOutcome::ContainerStopped
-            | other @ DeployExecuteOutcome::HealthGated { .. }
-            | other @ DeployExecuteOutcome::ContainerRestarted
-            | other @ DeployExecuteOutcome::ContainerRemoved
-            | other @ DeployExecuteOutcome::CallerNotDriver { .. }
-            | other @ DeployExecuteOutcome::ClaimTerminal
-            | other @ DeployExecuteOutcome::ServiceMismatch
-            | other @ DeployExecuteOutcome::ClaimNotYetVisible
-            | other @ DeployExecuteOutcome::Failed { .. } => Err(unexpected_reply("pull", &other)),
-        }
+            .await?;
+        let DeployExecuteOutcome::ImagePulled = outcome else {
+            return Err(unexpected_reply("pull", &outcome));
+        };
+        Ok(())
     }
 
     pub(super) async fn create_container(
@@ -253,7 +237,7 @@ impl TargetDispatch {
                 )
                 .await?;
         }
-        match self
+        let outcome = self
             .execute_remote(
                 machine,
                 DeployVerb::CreateContainer {
@@ -263,27 +247,16 @@ impl TargetDispatch {
                     host_ports: host_ports.clone(),
                 },
             )
-            .await?
-        {
-            DeployExecuteOutcome::ContainerCreated { container_id } => Ok(container_id),
-            other @ DeployExecuteOutcome::ServiceContainers { .. }
-            | other @ DeployExecuteOutcome::VolumeEnsured
-            | other @ DeployExecuteOutcome::ImagePulled
-            | other @ DeployExecuteOutcome::ContainerStarted
-            | other @ DeployExecuteOutcome::ContainerStopped
-            | other @ DeployExecuteOutcome::HealthGated { .. }
-            | other @ DeployExecuteOutcome::ContainerRestarted
-            | other @ DeployExecuteOutcome::ContainerRemoved
-            | other @ DeployExecuteOutcome::CallerNotDriver { .. }
-            | other @ DeployExecuteOutcome::ClaimTerminal
-            | other @ DeployExecuteOutcome::ServiceMismatch
-            | other @ DeployExecuteOutcome::ClaimNotYetVisible
-            | other @ DeployExecuteOutcome::Failed { .. } => {
-                Err(unexpected_reply("create", &other))
-            }
-        }
+            .await?;
+        let DeployExecuteOutcome::ContainerCreated { container_id } = outcome else {
+            return Err(unexpected_reply("create", &outcome));
+        };
+        Ok(container_id)
     }
 
+    /// Starts a created container, or restarts a stopped incumbent after a
+    /// failed cutover gate. Both arms scope-check the container against the
+    /// verb's service before starting it.
     pub(super) async fn start_container(
         &self,
         machine: &MachineRowId,
@@ -291,72 +264,33 @@ impl TargetDispatch {
     ) -> Result<(), String> {
         if self.is_local(machine) {
             return self
-                .bounded_local(self.local.start_container(container_id))
+                .bounded_local(async {
+                    let containers = self
+                        .local
+                        .namespace_docker_containers(&self.scope.namespace_id)
+                        .await?;
+                    if !containers.iter().any(|container| {
+                        &container.container_id == container_id
+                            && container.identity.service_id == self.scope.service_id
+                    }) {
+                        return Err("container to start was not found in Docker".to_owned());
+                    }
+                    self.local.start_container(container_id).await
+                })
                 .await?;
         }
-        match self
+        let outcome = self
             .execute_remote(
                 machine,
                 DeployVerb::StartContainer {
                     container_id: container_id.clone(),
                 },
             )
-            .await?
-        {
-            DeployExecuteOutcome::ContainerStarted => Ok(()),
-            other @ DeployExecuteOutcome::ServiceContainers { .. }
-            | other @ DeployExecuteOutcome::VolumeEnsured
-            | other @ DeployExecuteOutcome::ImagePulled
-            | other @ DeployExecuteOutcome::ContainerCreated { .. }
-            | other @ DeployExecuteOutcome::ContainerStopped
-            | other @ DeployExecuteOutcome::HealthGated { .. }
-            | other @ DeployExecuteOutcome::ContainerRestarted
-            | other @ DeployExecuteOutcome::ContainerRemoved
-            | other @ DeployExecuteOutcome::CallerNotDriver { .. }
-            | other @ DeployExecuteOutcome::ClaimTerminal
-            | other @ DeployExecuteOutcome::ServiceMismatch
-            | other @ DeployExecuteOutcome::ClaimNotYetVisible
-            | other @ DeployExecuteOutcome::Failed { .. } => Err(unexpected_reply("start", &other)),
-        }
-    }
-
-    /// Restarts a stopped incumbent after a failed cutover gate.
-    pub(super) async fn restart_container(
-        &self,
-        machine: &MachineRowId,
-        container_id: &ContainerId,
-    ) -> Result<(), String> {
-        if self.is_local(machine) {
-            return self
-                .bounded_local(self.local.start_container(container_id))
-                .await?;
-        }
-        match self
-            .execute_remote(
-                machine,
-                DeployVerb::RestartContainer {
-                    container_id: container_id.clone(),
-                },
-            )
-            .await?
-        {
-            DeployExecuteOutcome::ContainerRestarted => Ok(()),
-            other @ DeployExecuteOutcome::ServiceContainers { .. }
-            | other @ DeployExecuteOutcome::VolumeEnsured
-            | other @ DeployExecuteOutcome::ImagePulled
-            | other @ DeployExecuteOutcome::ContainerCreated { .. }
-            | other @ DeployExecuteOutcome::ContainerStarted
-            | other @ DeployExecuteOutcome::ContainerStopped
-            | other @ DeployExecuteOutcome::HealthGated { .. }
-            | other @ DeployExecuteOutcome::ContainerRemoved
-            | other @ DeployExecuteOutcome::CallerNotDriver { .. }
-            | other @ DeployExecuteOutcome::ClaimTerminal
-            | other @ DeployExecuteOutcome::ServiceMismatch
-            | other @ DeployExecuteOutcome::ClaimNotYetVisible
-            | other @ DeployExecuteOutcome::Failed { .. } => {
-                Err(unexpected_reply("restart", &other))
-            }
-        }
+            .await?;
+        let DeployExecuteOutcome::ContainerStarted = outcome else {
+            return Err(unexpected_reply("start", &outcome));
+        };
+        Ok(())
     }
 
     pub(super) async fn stop_container(
@@ -371,30 +305,19 @@ impl TargetDispatch {
                 .await?
                 .map(|_| ());
         }
-        match self
+        let outcome = self
             .execute_remote(
                 machine,
                 DeployVerb::StopContainer {
                     container_id: container_id.clone(),
+                    expected: expected_identity.clone(),
                 },
             )
-            .await?
-        {
-            DeployExecuteOutcome::ContainerStopped => Ok(()),
-            other @ DeployExecuteOutcome::ServiceContainers { .. }
-            | other @ DeployExecuteOutcome::VolumeEnsured
-            | other @ DeployExecuteOutcome::ImagePulled
-            | other @ DeployExecuteOutcome::ContainerCreated { .. }
-            | other @ DeployExecuteOutcome::ContainerStarted
-            | other @ DeployExecuteOutcome::HealthGated { .. }
-            | other @ DeployExecuteOutcome::ContainerRestarted
-            | other @ DeployExecuteOutcome::ContainerRemoved
-            | other @ DeployExecuteOutcome::CallerNotDriver { .. }
-            | other @ DeployExecuteOutcome::ClaimTerminal
-            | other @ DeployExecuteOutcome::ServiceMismatch
-            | other @ DeployExecuteOutcome::ClaimNotYetVisible
-            | other @ DeployExecuteOutcome::Failed { .. } => Err(unexpected_reply("stop", &other)),
-        }
+            .await?;
+        let DeployExecuteOutcome::ContainerStopped = outcome else {
+            return Err(unexpected_reply("stop", &outcome));
+        };
+        Ok(())
     }
 
     pub(super) async fn remove_container(
@@ -408,32 +331,19 @@ impl TargetDispatch {
                 .bounded_local(self.local.remove_container(container_id, expected_identity))
                 .await?;
         }
-        match self
+        let outcome = self
             .execute_remote(
                 machine,
                 DeployVerb::RemoveContainer {
                     container_id: container_id.clone(),
+                    expected: expected_identity.clone(),
                 },
             )
-            .await?
-        {
-            DeployExecuteOutcome::ContainerRemoved => Ok(()),
-            other @ DeployExecuteOutcome::ServiceContainers { .. }
-            | other @ DeployExecuteOutcome::VolumeEnsured
-            | other @ DeployExecuteOutcome::ImagePulled
-            | other @ DeployExecuteOutcome::ContainerCreated { .. }
-            | other @ DeployExecuteOutcome::ContainerStarted
-            | other @ DeployExecuteOutcome::ContainerStopped
-            | other @ DeployExecuteOutcome::HealthGated { .. }
-            | other @ DeployExecuteOutcome::ContainerRestarted
-            | other @ DeployExecuteOutcome::CallerNotDriver { .. }
-            | other @ DeployExecuteOutcome::ClaimTerminal
-            | other @ DeployExecuteOutcome::ServiceMismatch
-            | other @ DeployExecuteOutcome::ClaimNotYetVisible
-            | other @ DeployExecuteOutcome::Failed { .. } => {
-                Err(unexpected_reply("remove", &other))
-            }
-        }
+            .await?;
+        let DeployExecuteOutcome::ContainerRemoved = outcome else {
+            return Err(unexpected_reply("remove", &outcome));
+        };
+        Ok(())
     }
 
     pub(super) async fn health_gate(
@@ -455,7 +365,7 @@ impl TargetDispatch {
                 }
             };
         }
-        match self
+        let outcome = self
             .execute_remote(
                 machine,
                 DeployVerb::HealthGate {
@@ -463,25 +373,11 @@ impl TargetDispatch {
                     policy,
                 },
             )
-            .await?
-        {
-            DeployExecuteOutcome::HealthGated { ip } => Ok(ip),
-            other @ DeployExecuteOutcome::ServiceContainers { .. }
-            | other @ DeployExecuteOutcome::VolumeEnsured
-            | other @ DeployExecuteOutcome::ImagePulled
-            | other @ DeployExecuteOutcome::ContainerCreated { .. }
-            | other @ DeployExecuteOutcome::ContainerStarted
-            | other @ DeployExecuteOutcome::ContainerStopped
-            | other @ DeployExecuteOutcome::ContainerRestarted
-            | other @ DeployExecuteOutcome::ContainerRemoved
-            | other @ DeployExecuteOutcome::CallerNotDriver { .. }
-            | other @ DeployExecuteOutcome::ClaimTerminal
-            | other @ DeployExecuteOutcome::ServiceMismatch
-            | other @ DeployExecuteOutcome::ClaimNotYetVisible
-            | other @ DeployExecuteOutcome::Failed { .. } => {
-                Err(unexpected_reply("health gate", &other))
-            }
-        }
+            .await?;
+        let DeployExecuteOutcome::HealthGated { ip } = outcome else {
+            return Err(unexpected_reply("health gate", &outcome));
+        };
+        Ok(ip)
     }
 
     /// Bounds a local runner effect with the driver's local effect budget, so
@@ -517,12 +413,10 @@ impl TargetDispatch {
         let budget = match &verb {
             DeployVerb::PullImage { .. } => REMOTE_PULL_TIMEOUT,
             DeployVerb::ListServiceContainers
-            | DeployVerb::EnsureVolume { .. }
             | DeployVerb::CreateContainer { .. }
             | DeployVerb::StartContainer { .. }
             | DeployVerb::StopContainer { .. }
             | DeployVerb::HealthGate { .. }
-            | DeployVerb::RestartContainer { .. }
             | DeployVerb::RemoveContainer { .. } => REMOTE_EFFECT_TIMEOUT,
         };
         let request = DeployExecuteRequest {
@@ -560,17 +454,21 @@ impl TargetDispatch {
                         "machine {machine} refused the verb: it does not match the operation's service"
                     ));
                 }
+                DeployExecuteOutcome::ContainerIdentityMismatch { actual } => {
+                    return Err(format!(
+                        "machine {machine} refused the verb: the live container belongs to operation {}",
+                        actual.operation_id
+                    ));
+                }
                 DeployExecuteOutcome::Failed { diagnostic } => {
                     return Err(format!("machine {machine}: {diagnostic}"));
                 }
                 DeployExecuteOutcome::ServiceContainers { .. }
-                | DeployExecuteOutcome::VolumeEnsured
                 | DeployExecuteOutcome::ImagePulled
                 | DeployExecuteOutcome::ContainerCreated { .. }
                 | DeployExecuteOutcome::ContainerStarted
                 | DeployExecuteOutcome::ContainerStopped
                 | DeployExecuteOutcome::HealthGated { .. }
-                | DeployExecuteOutcome::ContainerRestarted
                 | DeployExecuteOutcome::ContainerRemoved => return Ok(outcome),
             }
         }
@@ -580,11 +478,8 @@ impl TargetDispatch {
 fn observation_from(container: ExistingV2ManagedContainer) -> ServiceContainerObservation {
     ServiceContainerObservation {
         container_id: container.container_id,
+        service_id: container.identity.service_id,
         deploy: container.identity.operation_id,
-        running: matches!(
-            container.state,
-            crate::roles::api::runner::ExistingManagedContainerState::Running { .. }
-        ),
         named_volumes: container.named_volume_names,
     }
 }
@@ -611,7 +506,6 @@ mod tests {
     use tokio::sync::{Mutex, watch};
 
     use super::super::deploy_runtime::DeployRuntime;
-    use super::super::promotion_store::ResolvedNamespace;
     use super::{
         CLAIM_RETRY_ATTEMPTS, CLAIM_RETRY_WINDOW, DISPATCH_EFFECT_BUDGET, DISPATCH_PULL_BUDGET,
         DeployVerbClient, REMOTE_EFFECT_TIMEOUT, REMOTE_PULL_TIMEOUT, TargetDispatch, VerbScope,
@@ -635,18 +529,15 @@ mod tests {
         async fn pull_image(
             &self,
             _image: &ImageReference,
+            _credential: Option<&ployz_core::deploy::RegistryCredential>,
             _shutdown: watch::Receiver<bool>,
         ) -> Result<(), String> {
             Ok(())
         }
 
-        async fn create_container(
+        async fn create_container_command(
             &self,
-            _request: &ployz_core::DeployRequest,
-            _resolved_image: &ImageReference,
-            _namespace: &ResolvedNamespace,
-            _identity: V2ManagedContainerIdentity,
-            _host_ports: &ployz_core::corrosion::HostPortBindings,
+            _command: crate::roles::api::runner::CreateV2ManagedContainer,
         ) -> Result<ContainerId, String> {
             ContainerId::try_new("local-container").map_err(|error| error.to_string())
         }
@@ -672,11 +563,31 @@ mod tests {
             Ok(Ipv4Addr::new(10, 210, 20, 2))
         }
 
-        async fn service_docker_containers(
+        async fn managed_containers(&self) -> Result<Vec<ExistingV2ManagedContainer>, String> {
+            Ok(vec![ExistingV2ManagedContainer {
+                container_id: container(),
+                identity: V2ManagedContainerIdentity {
+                    namespace_id: NamespaceRowId::try_new("01J00000000000000000000013")
+                        .expect("namespace"),
+                    service_id: ServiceRowId::try_new("01J00000000000000000000014")
+                        .expect("service"),
+                    operation_id: OperationRowId::try_new("01J00000000000000000000011")
+                        .expect("operation"),
+                },
+                state: crate::roles::api::runner::ExistingManagedContainerState::StartableStopped,
+                health_status: None,
+                resolved_image_identity: None,
+                created_at_unix_seconds: None,
+                named_volume_names: std::collections::BTreeSet::new(),
+            }])
+        }
+
+        async fn held_volumes(
             &self,
-            _service_id: &ServiceRowId,
-        ) -> Result<Vec<ExistingV2ManagedContainer>, String> {
-            Ok(Vec::new())
+            _namespace_id: &NamespaceRowId,
+            _volumes: &std::collections::BTreeSet<ployz_core::deploy::VolumeName>,
+        ) -> Result<std::collections::BTreeSet<ployz_core::deploy::VolumeName>, String> {
+            Ok(std::collections::BTreeSet::new())
         }
 
         async fn stop_container(

@@ -215,25 +215,43 @@ enum EvidenceFrame {
 struct DurableEvidenceEvent {
     sequence: OperationEvidenceSequence,
     timestamp: CorrosionTimestamp,
+    /// The machine the event acts on; `None` when the event names no single
+    /// machine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    machine: Option<MachineRowId>,
     evidence: OperationEvidence,
 }
 
 impl From<OperationEvidenceEvent> for DurableEvidenceEvent {
     fn from(event: OperationEvidenceEvent) -> Self {
+        let OperationEvidenceEvent {
+            sequence,
+            timestamp,
+            machine,
+            evidence,
+        } = event;
         Self {
-            sequence: event.sequence,
-            timestamp: event.timestamp,
-            evidence: event.evidence,
+            sequence,
+            timestamp,
+            machine,
+            evidence,
         }
     }
 }
 
 impl From<DurableEvidenceEvent> for OperationEvidenceEvent {
     fn from(event: DurableEvidenceEvent) -> Self {
+        let DurableEvidenceEvent {
+            sequence,
+            timestamp,
+            machine,
+            evidence,
+        } = event;
         Self {
-            sequence: event.sequence,
-            timestamp: event.timestamp,
-            evidence: event.evidence,
+            sequence,
+            timestamp,
+            machine,
+            evidence,
         }
     }
 }
@@ -270,10 +288,30 @@ pub(super) struct OperationEvidenceLog {
 }
 
 impl OperationEvidenceLog {
-    /// Appends one full frame and exposes it to followers only after `sync_data` succeeds.
+    /// Appends one machine-free frame; the envelope's machine stays `None`.
     pub(super) async fn append(
         &self,
         timestamp: CorrosionTimestamp,
+        evidence: OperationEvidence,
+    ) -> Result<OperationEvidenceEvent, OperationEvidenceError> {
+        self.append_event(timestamp, None, evidence).await
+    }
+
+    /// Appends one frame naming the machine the event acts on.
+    pub(super) async fn append_on(
+        &self,
+        timestamp: CorrosionTimestamp,
+        machine: MachineRowId,
+        evidence: OperationEvidence,
+    ) -> Result<OperationEvidenceEvent, OperationEvidenceError> {
+        self.append_event(timestamp, Some(machine), evidence).await
+    }
+
+    /// Appends one full frame and exposes it to followers only after `sync_data` succeeds.
+    async fn append_event(
+        &self,
+        timestamp: CorrosionTimestamp,
+        machine: Option<MachineRowId>,
         evidence: OperationEvidence,
     ) -> Result<OperationEvidenceEvent, OperationEvidenceError> {
         let mut state = self.state.lock().await;
@@ -294,6 +332,7 @@ impl OperationEvidenceLog {
         let event = OperationEvidenceEvent {
             sequence,
             timestamp,
+            machine,
             evidence,
         };
         append_frame(
@@ -325,6 +364,7 @@ impl OperationEvidenceLog {
         let event = OperationEvidenceEvent {
             sequence,
             timestamp,
+            machine: None,
             evidence: OperationEvidence::PromotionPrepared,
         };
         append_frame(
@@ -358,6 +398,7 @@ impl OperationEvidenceLog {
         let event = OperationEvidenceEvent {
             sequence,
             timestamp,
+            machine: None,
             evidence: OperationEvidence::PromotionPrepared,
         };
         append_frame(
@@ -521,6 +562,7 @@ impl OperationEvidenceDirectory {
             sequence: OperationEvidenceSequence::try_new(1)
                 .map_err(|_| OperationEvidenceError::SequenceExhausted)?,
             timestamp: created_at,
+            machine: None,
             evidence: OperationEvidence::Created,
         };
         let created_line = encode_frame(
@@ -933,7 +975,8 @@ fn advance_phase(
             | EvidencePhase::Executing
             | EvidencePhase::PromotionPrepared(_)
             | EvidencePhase::RowsCommitted(_)
-            | EvidencePhase::ClaimDecided,
+            | EvidencePhase::ClaimDecided
+            | EvidencePhase::Terminal,
             OperationEvidence::Unrecognized,
         ) => Ok(phase),
         (
@@ -983,8 +1026,7 @@ fn advance_phase(
             | OperationEvidence::ServiceClaimLost { .. }
             | OperationEvidence::Drained
             | OperationEvidence::IncumbentRemoved { .. }
-            | OperationEvidence::Terminal { .. }
-            | OperationEvidence::Unrecognized,
+            | OperationEvidence::Terminal { .. },
         ) => Err(OperationEvidenceError::InvalidEventOrder { line }),
     }
 }
@@ -1764,7 +1806,6 @@ mod tests {
             at("2026-08-05T10:00:04Z"),
             OperationEvidence::IncumbentStopped {
                 container_id: container.clone(),
-                machine: None,
             },
         )
         .await
@@ -1773,7 +1814,6 @@ mod tests {
             at("2026-08-05T10:00:05Z"),
             OperationEvidence::IncumbentRemoved {
                 container_id: container,
-                machine: None,
             },
         )
         .await

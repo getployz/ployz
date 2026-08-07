@@ -6,12 +6,13 @@ use ployz_core::corrosion::{
     AcmeHttp01Document, AutomaticHostnameMode, CertHoldingDocument, ClusterDocument,
     ContainerDocument, CorrosionBasicOperation, CorrosionDeployTargets, CorrosionDocument,
     CorrosionDocumentVersion, CorrosionNamespaceName, CorrosionServiceName, CorrosionTable,
-    CorrosionTimestamp, IngressMode, MachineDocument, MachineLoadBand, MachineStatusDocument,
-    MachineStorageIneligibleReason, MachineStorageSelection, MachineStorageSelectionReason,
-    MachineTransport, MeshProvider, NameClaim, NamedCorrosionDocument, NamespaceDocument,
-    OperationDocument, OperationInitiator, OperatorWriteProvenance, PeerDocument, PeerTransport,
-    RouteBindingDocument, ServiceDocument, ServicePlacement, ServiceReplicaCount, Sha256Hex,
-    StorageMode, TokenDocument, fingerprint_env_value,
+    CorrosionTimestamp, HostPortBinding, HostPortBindings, HostPortProtocol, IngressMode,
+    MachineDocument, MachineLoadBand, MachineStatusDocument, MachineStorageIneligibleReason,
+    MachineStorageSelection, MachineStorageSelectionReason, MachineTransport, MeshProvider,
+    NameClaim, NamedCorrosionDocument, NamespaceDocument, OperationDocument, OperationInitiator,
+    OperatorWriteProvenance, PeerDocument, PeerTransport, RouteBindingDocument, ServiceDocument,
+    ServicePlacement, ServiceReplicaCount, Sha256Hex, StorageMode, TokenDocument,
+    fingerprint_env_value,
 };
 use ployz_core::deploy::{EnvValue, ImageReference};
 use ployz_core::ids::{
@@ -705,4 +706,35 @@ fn acme_http01_document() -> AcmeHttp01Document {
         key_authorization: "public-acme-key-authorization".to_owned(),
         created_at: timestamp("2026-08-04T10:09:00Z"),
     }
+}
+
+#[test]
+fn replica_counts_refuse_zero_and_anything_above_the_admission_ceiling() {
+    assert!(ServiceReplicaCount::try_new(0).is_err());
+    assert!(ServiceReplicaCount::try_new(1).is_ok());
+    assert!(ServiceReplicaCount::try_new(ServiceReplicaCount::MAX).is_ok());
+    assert!(ServiceReplicaCount::try_new(ServiceReplicaCount::MAX + 1).is_err());
+}
+
+#[test]
+fn host_port_bindings_compare_order_insensitively_and_collapse_exact_repeats() {
+    let dns = HostPortBinding {
+        host_port: std::num::NonZeroU16::new(53).expect("port"),
+        container_port: std::num::NonZeroU16::new(5353).expect("port"),
+        protocol: HostPortProtocol::Udp,
+    };
+    let web = HostPortBinding {
+        host_port: std::num::NonZeroU16::new(443).expect("port"),
+        container_port: std::num::NonZeroU16::new(8443).expect("port"),
+        protocol: HostPortProtocol::Tcp,
+    };
+    assert_eq!(
+        HostPortBindings::try_new([dns, web]).expect("bindings"),
+        HostPortBindings::try_new([web, dns, web]).expect("bindings"),
+    );
+    let conflicting = HostPortBinding {
+        container_port: std::num::NonZeroU16::new(9443).expect("port"),
+        ..web
+    };
+    assert!(HostPortBindings::try_new([web, conflicting]).is_err());
 }

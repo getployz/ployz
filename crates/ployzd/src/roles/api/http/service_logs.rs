@@ -196,6 +196,7 @@ fn log_refusal_response(refusal: ServiceLogsRefusal) -> Response<HttpBody> {
         | ServiceLogsRefusal::ContainerNotFound { .. } => StatusCode::NOT_FOUND,
         ServiceLogsRefusal::UnmanagedContainer { .. }
         | ServiceLogsRefusal::MachineSelectorRequired { .. }
+        | ServiceLogsRefusal::HostingMachinesUnresolved { .. }
         | ServiceLogsRefusal::RemoteOwner { .. } => StatusCode::CONFLICT,
         ServiceLogsRefusal::DriverDark { .. } | ServiceLogsRefusal::RuntimeUnavailable { .. } => {
             StatusCode::SERVICE_UNAVAILABLE
@@ -341,35 +342,30 @@ impl CorrosionServiceLogResolver {
     }
 
     /// Names for every distinct machine hosting one of this deploy's
-    /// containers; a machine whose roster row is gone stays unnamed.
+    /// containers, from one accepted-roster read; a machine whose roster row
+    /// is gone or unreadable stays unnamed.
     async fn machine_names(
         &self,
         containers: &[ReplicaContainer],
     ) -> Result<std::collections::BTreeMap<MachineRowId, MachineName>, ServiceLogResolveError> {
-        let mut names = std::collections::BTreeMap::new();
-        for container in containers {
-            if names.contains_key(&container.machine_id) {
-                continue;
-            }
-            let machine_rows = self
-                .query(
-                    Statement::with_params(
-                        "SELECT id, name FROM machines WHERE id = ?",
-                        vec![SqliteParameter::Text(
-                            container.machine_id.as_str().to_owned(),
-                        )],
-                    ),
-                    MAX_RESOLVED_ROWS,
-                )
-                .await?;
-            let Some(row) = machine_rows.into_iter().next() else {
-                continue;
-            };
-            if let Ok(name) = MachineName::try_new(row.document) {
-                names.insert(container.machine_id.clone(), name);
-            }
+        if containers.is_empty() {
+            return Ok(std::collections::BTreeMap::new());
         }
-        Ok(names)
+        let machine_ids: std::collections::BTreeSet<MachineRowId> = containers
+            .iter()
+            .map(|container| container.machine_id.clone())
+            .collect();
+        let roster = super::store::read_accepted_roster(&self.client, &self.cluster_id)
+            .await
+            .map_err(|error| {
+                ServiceLogResolveError::Protocol(format!("accepted roster unavailable: {error}"))
+            })?;
+        Ok(roster
+            .machines
+            .into_iter()
+            .filter(|machine| machine_ids.contains(&machine.id))
+            .map(|machine| (machine.id, machine.document.name))
+            .collect())
     }
 
     async fn query(
@@ -410,6 +406,21 @@ fn select_log_container<'containers>(
             .filter_map(|container| machine_names.get(&container.machine_id).cloned())
             .collect::<Vec<_>>()
     };
+    // A selector refusal must offer at least one name `--machine` accepts;
+    // when no hosting roster row resolved to a name, the ids point at the
+    // machines lens instead of an empty selector list.
+    let selector_refusal = || {
+        let machines = hosting_machines();
+        if machines.is_empty() {
+            return ServiceLogsRefusal::HostingMachinesUnresolved {
+                machine_ids: containers
+                    .iter()
+                    .map(|container| container.machine_id.clone())
+                    .collect(),
+            };
+        }
+        ServiceLogsRefusal::MachineSelectorRequired { machines }
+    };
     let matching = match selector {
         Some(selector) => containers
             .iter()
@@ -420,9 +431,7 @@ fn select_log_container<'containers>(
     match matching.as_slice() {
         [] => {
             if selector.is_some() && !containers.is_empty() {
-                return Err(ServiceLogsRefusal::MachineSelectorRequired {
-                    machines: hosting_machines(),
-                });
+                return Err(selector_refusal());
             }
             Err(ServiceLogsRefusal::ContainerNotFound {
                 service_id: service_id.clone(),
@@ -439,9 +448,7 @@ fn select_log_container<'containers>(
         }
         // ponytail: stacked replicas on one machine also land here; per-container
         // log selection is a future ticket.
-        [_, _, ..] => Err(ServiceLogsRefusal::MachineSelectorRequired {
-            machines: hosting_machines(),
-        }),
+        [_, _, ..] => Err(selector_refusal()),
     }
 }
 
@@ -762,11 +769,17 @@ mod tests {
     use ployz_core::ServiceLogsRefusal;
     use ployz_core::machine::MachineName;
 
+    use std::time::Duration;
+
+    use bytes::Bytes;
+    use hyper::Response;
+    use ployz_core::ids::{ClusterId, MachineRowId};
+
     use super::{
-        ExistingV2ManagedContainer, LocalServiceLogTarget, LossyServiceLogFollow, ReplicaContainer,
-        RuntimeLogBatch, RuntimeLogFollow, RuntimeLogStream, V2MachineLogReadError,
-        V2MachineLogReader, public_lines, select_log_container, tail_local_service_logs,
-        verify_container_identity,
+        CorrosionServiceLogResolver, ExistingV2ManagedContainer, LocalServiceLogTarget,
+        LossyServiceLogFollow, ReplicaContainer, RuntimeLogBatch, RuntimeLogFollow,
+        RuntimeLogStream, V2MachineLogReadError, V2MachineLogReader, public_lines,
+        select_log_container, tail_local_service_logs, verify_container_identity,
     };
 
     fn service_id(value: &str) -> ServiceRowId {
@@ -1089,5 +1102,254 @@ mod tests {
         };
         assert_eq!(stdout.stream, ployz_core::ServiceLogStream::Stdout);
         assert_eq!(stderr.stream, ployz_core::ServiceLogStream::Stderr);
+    }
+
+    /// One fake Corrosion query endpoint serving `id, document` rows keyed by
+    /// the statement's `FROM` table, so the resolver's reads run over the
+    /// real wire protocol and column contract.
+    async fn spawn_fake_corrosion(
+        rows_by_table: std::collections::BTreeMap<&'static str, Vec<(String, String)>>,
+    ) -> std::net::SocketAddr {
+        use http_body_util::BodyExt as _;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind fake corrosion");
+        let addr = listener.local_addr().expect("local addr");
+        let rows_by_table = std::sync::Arc::new(rows_by_table);
+        tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let rows_by_table = std::sync::Arc::clone(&rows_by_table);
+                tokio::spawn(async move {
+                    let service = hyper::service::service_fn(
+                        move |request: hyper::Request<hyper::body::Incoming>| {
+                            let rows_by_table = std::sync::Arc::clone(&rows_by_table);
+                            async move {
+                                let body = request
+                                    .into_body()
+                                    .collect()
+                                    .await
+                                    .expect("request body")
+                                    .to_bytes();
+                                let statement: serde_json::Value =
+                                    serde_json::from_slice(&body).expect("statement json");
+                                let sql = match statement.as_str() {
+                                    Some(sql) => sql.to_owned(),
+                                    None => statement
+                                        .get(0)
+                                        .and_then(serde_json::Value::as_str)
+                                        .expect("parameterized sql")
+                                        .to_owned(),
+                                };
+                                let rows = rows_by_table
+                                    .iter()
+                                    .find(|(table, _)| sql.contains(&format!("FROM {table}")))
+                                    .map(|(_, rows)| rows)
+                                    .unwrap_or_else(|| panic!("unexpected query: {sql}"));
+                                let mut ndjson =
+                                    String::from("{\"columns\":[\"id\",\"document\"]}\n");
+                                for (index, (id, document)) in rows.iter().enumerate() {
+                                    ndjson.push_str(
+                                        &serde_json::to_string(&serde_json::json!({
+                                            "row": [index + 1, [id, document]]
+                                        }))
+                                        .expect("row frame"),
+                                    );
+                                    ndjson.push('\n');
+                                }
+                                ndjson.push_str("{\"eoq\":{\"time\":0.0}}\n");
+                                Ok::<_, std::convert::Infallible>(Response::new(
+                                    http_body_util::Full::new(Bytes::from(ndjson))
+                                        .map_err(|never| match never {})
+                                        .boxed(),
+                                ))
+                            }
+                        },
+                    );
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(hyper_util::rt::TokioIo::new(stream), service)
+                        .await;
+                });
+            }
+        });
+        addr
+    }
+
+    fn corrosion_client(addr: std::net::SocketAddr) -> crate::corrosion::CorrosionClient {
+        crate::corrosion::CorrosionClient::new(
+            crate::corrosion::CorrosionClientConfig::new(
+                addr,
+                crate::corrosion::BearerToken::new("test-token").expect("token"),
+                crate::corrosion::CorrosionClientBounds {
+                    connect_timeout: Duration::from_secs(1),
+                    request_timeout: Duration::from_secs(1),
+                    stream_idle_timeout: Duration::from_secs(1),
+                    max_ndjson_frame_bytes: 64 * 1024,
+                    max_error_body_bytes: 1024,
+                },
+            )
+            .expect("config"),
+        )
+        .expect("client")
+    }
+
+    const RESOLVER_CLUSTER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+    const RESOLVER_MACHINE_A: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
+    const RESOLVER_MACHINE_B: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
+    const RESOLVER_PEER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAY";
+    const RESOLVER_SERVICE: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB1";
+    const RESOLVER_NAMESPACE: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB2";
+    const RESOLVER_DEPLOY: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB3";
+
+    fn resolver_cluster_document() -> String {
+        serde_json::json!({
+            "v": 1,
+            "cluster_id": RESOLVER_CLUSTER,
+            "name": "acme-prod",
+            "storage_default": "plain",
+            "hostname_mode": { "mode": "disabled" },
+            "prefix": "10.210.0.0/16",
+            "provider": "builtin_wireguard",
+            "acme_directory_url": "https://acme.example/directory",
+            "acme_contact": null,
+            "written_by": { "kind": "peer", "peer_id": RESOLVER_PEER },
+            "written_at": "2026-08-04T10:00:00Z"
+        })
+        .to_string()
+    }
+
+    fn resolver_machine_document(name: &str, addr_v6: &str) -> String {
+        serde_json::json!({
+            "v": 1,
+            "cluster_id": RESOLVER_CLUSTER,
+            "name": name,
+            "lifecycle": "active",
+            "transport": {
+                "kind": "wireguard",
+                "pubkey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                "addr_v6": addr_v6,
+                "endpoint": null,
+                "subnet_v4": "10.210.20.0/24"
+            },
+            "storage": { "mode": "plain", "reason": { "kind": "default" } },
+            "written_by": { "kind": "peer", "peer_id": RESOLVER_PEER },
+            "written_at": "2026-08-04T10:00:00Z"
+        })
+        .to_string()
+    }
+
+    fn resolver_service_document() -> String {
+        serde_json::json!({
+            "v": 1,
+            "cluster_id": RESOLVER_CLUSTER,
+            "written_by": { "kind": "peer", "peer_id": RESOLVER_PEER },
+            "written_at": "2026-08-04T10:00:00Z",
+            "namespace_id": RESOLVER_NAMESPACE,
+            "name": "api",
+            "image": "registry.example/api:latest",
+            "env_fingerprints": {},
+            "mode": "replicated",
+            "replicas": 2,
+            "pinned_machines": [],
+            "active_deploy": RESOLVER_DEPLOY,
+            "previous_image": null,
+            "deployed_at": "2026-08-04T10:00:00Z",
+            "operation_id": RESOLVER_DEPLOY
+        })
+        .to_string()
+    }
+
+    fn resolver_container_document(machine_id: &str, ip: &str) -> String {
+        serde_json::json!({
+            "v": 1,
+            "cluster_id": RESOLVER_CLUSTER,
+            "machine_id": machine_id,
+            "service_id": RESOLVER_SERVICE,
+            "namespace_id": RESOLVER_NAMESPACE,
+            "ip": ip,
+            "deploy": RESOLVER_DEPLOY
+        })
+        .to_string()
+    }
+
+    fn resolver_rows() -> std::collections::BTreeMap<&'static str, Vec<(String, String)>> {
+        std::collections::BTreeMap::from([
+            (
+                "cluster",
+                vec![(RESOLVER_CLUSTER.to_owned(), resolver_cluster_document())],
+            ),
+            (
+                "machines",
+                vec![
+                    (
+                        RESOLVER_MACHINE_A.to_owned(),
+                        resolver_machine_document("edge-a", "fd00::20"),
+                    ),
+                    (
+                        RESOLVER_MACHINE_B.to_owned(),
+                        resolver_machine_document("edge-b", "fd00::21"),
+                    ),
+                ],
+            ),
+            ("peers", Vec::new()),
+            (
+                "services",
+                vec![(RESOLVER_SERVICE.to_owned(), resolver_service_document())],
+            ),
+            (
+                "containers",
+                vec![
+                    (
+                        "aaaaaaaaaaaa".to_owned(),
+                        resolver_container_document(RESOLVER_MACHINE_A, "10.210.20.9"),
+                    ),
+                    (
+                        "bbbbbbbbbbbb".to_owned(),
+                        resolver_container_document(RESOLVER_MACHINE_B, "10.210.21.9"),
+                    ),
+                ],
+            ),
+        ])
+    }
+
+    #[tokio::test]
+    async fn resolver_names_hosting_machines_through_real_machines_rows() {
+        let addr = spawn_fake_corrosion(resolver_rows()).await;
+        let resolver = CorrosionServiceLogResolver::new(
+            corrosion_client(addr),
+            ClusterId::try_new(RESOLVER_CLUSTER).expect("cluster id"),
+            MachineRowId::try_new(RESOLVER_MACHINE_A).expect("machine id"),
+        );
+        let service_id = ServiceRowId::try_new(RESOLVER_SERVICE).expect("service id");
+
+        let refusal = resolver
+            .resolve(&service_id, None)
+            .await
+            .expect("resolution reads succeed")
+            .expect_err("two hosting machines require a selector");
+        assert_eq!(
+            refusal,
+            ServiceLogsRefusal::MachineSelectorRequired {
+                machines: vec![
+                    MachineName::try_new("edge-a").expect("name"),
+                    MachineName::try_new("edge-b").expect("name"),
+                ],
+            }
+        );
+
+        let selector = MachineName::try_new("edge-a").expect("name");
+        let target = resolver
+            .resolve(&service_id, Some(&selector))
+            .await
+            .expect("resolution reads succeed")
+            .expect("the selector resolves the local replica");
+        assert_eq!(target.container_id.as_str(), "aaaaaaaaaaaa");
+        assert_eq!(
+            target.machine_id,
+            MachineRowId::try_new(RESOLVER_MACHINE_A).expect("machine id")
+        );
     }
 }

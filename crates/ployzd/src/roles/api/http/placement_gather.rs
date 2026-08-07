@@ -18,8 +18,8 @@ use ployz_core::ids::{ClusterId, MachineRowId};
 use ployz_core::machine::{MachineLifecycle, MachineName};
 use ployz_core::network::MAX_HEALTHY_WIREGUARD_HANDSHAKE_AGE_SECONDS;
 use ployz_core::{
-    HandshakeObservation, HandshakeObservationOutcome, PlacementBid, PlacementBidRequest,
-    SilenceClassification, SilentMachine, V2Route,
+    AnomalousSilenceReason, HandshakeObservation, HandshakeObservationOutcome, PlacementBid,
+    PlacementBidRequest, SilenceClassification, SilentMachine, V2Route,
 };
 use tokio::sync::watch;
 
@@ -65,18 +65,18 @@ pub(super) trait PlacementMesh: Send + Sync {
         &self,
         transport: &MachineTransport,
         request: &PlacementBidRequest,
-    ) -> Result<PlacementBid, String>;
+    ) -> Result<PlacementBid, AnomalousSilenceReason>;
     async fn local_bid(
         &self,
         peer: &PlacementPeer,
         request: &PlacementBidRequest,
-    ) -> Result<PlacementBid, String>;
+    ) -> Result<PlacementBid, AnomalousSilenceReason>;
 }
 
 enum BidOutcome {
     Bid(Box<PlacementBid>),
     ExpectedSilent { handshake_age_seconds: u64 },
-    AnomalousSilent { reason: String },
+    AnomalousSilent { reason: AnomalousSilenceReason },
 }
 
 /// Fans the bid request out over the roster and classifies every machine as
@@ -153,6 +153,7 @@ pub(super) struct CorrosionPlacementMesh {
 }
 
 impl CorrosionPlacementMesh {
+    #[must_use]
     pub(super) fn new(
         corrosion: CorrosionClient,
         cluster_id: ClusterId,
@@ -219,7 +220,7 @@ impl PlacementMesh for CorrosionPlacementMesh {
         &self,
         transport: &MachineTransport,
         request: &PlacementBidRequest,
-    ) -> Result<PlacementBid, String> {
+    ) -> Result<PlacementBid, AnomalousSilenceReason> {
         let target = machine_socket_addr(transport, self.api_port);
         let url = format!("http://{target}{}", V2Route::PlacementBid.path());
         let response = self
@@ -229,26 +230,37 @@ impl PlacementMesh for CorrosionPlacementMesh {
             .json(request)
             .send()
             .await
-            .map_err(|error| format!("bid transport failed: {error}"))?;
+            .map_err(|error| {
+                tracing::warn!(%target, error = %error, "placement bid transport failed");
+                if error.is_timeout() {
+                    AnomalousSilenceReason::TimedOut
+                } else {
+                    AnomalousSilenceReason::TransportFailed
+                }
+            })?;
         let status = response.status();
         if status != StatusCode::OK.as_u16() {
-            let body = response.text().await.unwrap_or_default();
-            let body = body.chars().take(256).collect::<String>();
-            return Err(format!("bid declined with status {status}: {body}"));
+            tracing::warn!(%target, %status, "placement bid declined");
+            return Err(AnomalousSilenceReason::Declined {
+                status: status.as_u16(),
+            });
         }
-        response
-            .json::<PlacementBid>()
-            .await
-            .map_err(|error| format!("bid reply was invalid: {error}"))
+        response.json::<PlacementBid>().await.map_err(|error| {
+            tracing::warn!(%target, error = %error, "placement bid reply was invalid");
+            AnomalousSilenceReason::TransportFailed
+        })
     }
 
     async fn local_bid(
         &self,
         peer: &PlacementPeer,
         request: &PlacementBidRequest,
-    ) -> Result<PlacementBid, String> {
-        let observation = SystemObservation::read().map_err(|error| error.to_string())?;
-        tokio::time::timeout(
+    ) -> Result<PlacementBid, AnomalousSilenceReason> {
+        let observation = SystemObservation::read().map_err(|error| {
+            tracing::warn!(error = %error, "local bid observation failed");
+            AnomalousSilenceReason::TransportFailed
+        })?;
+        let collected = tokio::time::timeout(
             BID_COLLECTION_TIMEOUT,
             collect_bid(
                 self.runner.as_ref(),
@@ -262,7 +274,11 @@ impl PlacementMesh for CorrosionPlacementMesh {
             ),
         )
         .await
-        .map_err(|_| "local bid collection timed out".to_owned())?
+        .map_err(|_| AnomalousSilenceReason::TimedOut)?;
+        collected.map_err(|diagnostic| {
+            tracing::warn!(diagnostic, "local bid collection failed");
+            AnomalousSilenceReason::TransportFailed
+        })
     }
 }
 
@@ -276,7 +292,9 @@ mod tests {
     use ployz_core::ids::{MachineRowId, NamespaceRowId, ServiceRowId};
     use ployz_core::machine::{MachineLifecycle, MachineName};
     use ployz_core::network::MachineEndpointSubnet;
-    use ployz_core::{PlacementBid, PlacementBidRequest, SilenceClassification};
+    use ployz_core::{
+        AnomalousSilenceReason, PlacementBid, PlacementBidRequest, SilenceClassification,
+    };
 
     use super::{GatheredBids, PlacementMesh, PlacementPeer, gather_bids};
 
@@ -355,26 +373,22 @@ mod tests {
             &self,
             transport: &MachineTransport,
             _request: &PlacementBidRequest,
-        ) -> Result<PlacementBid, String> {
+        ) -> Result<PlacementBid, AnomalousSilenceReason> {
             self.remote_calls.fetch_add(1, Ordering::SeqCst);
             let MachineTransport::Tailscale { ip, .. } = transport else {
-                return Err("unexpected transport".to_owned());
+                return Err(AnomalousSilenceReason::TransportFailed);
             };
             let Some((peer, script)) = self
                 .peers
                 .iter()
                 .find(|(peer, _)| matches!(&peer.transport, MachineTransport::Tailscale { ip: peer_ip, .. } if peer_ip == ip))
             else {
-                return Err("unknown peer".to_owned());
+                return Err(AnomalousSilenceReason::TransportFailed);
             };
             match script {
                 PeerScript::Bids => Ok(bid(peer.id.as_str(), peer.name.as_str())),
-                PeerScript::TransportFails => {
-                    Err("bid transport failed: connect refused".to_owned())
-                }
-                PeerScript::Declines => {
-                    Err("bid declined with status 503: {\"kind\":\"bid_unavailable\"}".to_owned())
-                }
+                PeerScript::TransportFails => Err(AnomalousSilenceReason::TransportFailed),
+                PeerScript::Declines => Err(AnomalousSilenceReason::Declined { status: 503 }),
                 PeerScript::HandshakeStale { .. } => {
                     panic!("stale-handshake peers must never be dialled")
                 }
@@ -385,7 +399,7 @@ mod tests {
             &self,
             peer: &PlacementPeer,
             _request: &PlacementBidRequest,
-        ) -> Result<PlacementBid, String> {
+        ) -> Result<PlacementBid, AnomalousSilenceReason> {
             Ok(bid(peer.id.as_str(), peer.name.as_str()))
         }
     }
@@ -452,27 +466,21 @@ mod tests {
         ]);
         let gathered = run(&mesh, "01J00000000000000000000001").await;
         assert_eq!(gathered.bids.len(), 1);
-        assert_eq!(gathered.silent.len(), 2);
         let classifications: Vec<_> = gathered
             .silent
             .iter()
-            .map(|silent| &silent.classification)
+            .map(|silent| silent.classification.clone())
             .collect();
-        assert!(classifications.iter().all(|classification| matches!(
-            classification,
-            SilenceClassification::AnomalousSilent { .. }
-        )));
-        assert!(
-            gathered
-                .silent
-                .iter()
-                .any(|silent| matches!(&silent.classification, SilenceClassification::AnomalousSilent { reason } if reason.contains("transport failed")))
-        );
-        assert!(
-            gathered
-                .silent
-                .iter()
-                .any(|silent| matches!(&silent.classification, SilenceClassification::AnomalousSilent { reason } if reason.contains("declined with status 503")))
+        assert_eq!(
+            classifications,
+            vec![
+                SilenceClassification::AnomalousSilent {
+                    reason: AnomalousSilenceReason::TransportFailed,
+                },
+                SilenceClassification::AnomalousSilent {
+                    reason: AnomalousSilenceReason::Declined { status: 503 },
+                },
+            ]
         );
     }
 

@@ -16,11 +16,14 @@ use ployz_core::deploy::{
 use ployz_core::ids::{ClusterId, MachineRowId, OperationRowId, PeerId, ServiceRowId, TokenId};
 use ployz_core::machine::MachineLifecycle;
 use ployz_core::network::{MachineEndpointSubnet, WireGuardPublicKey};
-use ployz_core::placement::{PlacementElimination, PlacementEliminationReason, PlacementShortfall};
+use ployz_core::placement::{
+    PlacementElimination, PlacementEliminationReason, PlacementMachine, PlacementPick,
+    PlacementRefusal, PlacementShortfall,
+};
 use ployz_core::{
-    API_MAJOR, ApiFeature, ApiRefusal, ApiVersion, CorrosionLogsTailLines, DEPLOY_EXECUTE_ROUTE,
-    DEPLOY_ROUTE, DeployExecuteOutcome, DeployExecuteRequest, DeployRefusal, DeployRequest,
-    DeployVerb, FOUNDING_ROUTE, HandshakeObservation, HandshakeObservationOutcome,
+    API_MAJOR, AnomalousSilenceReason, ApiFeature, ApiRefusal, ApiVersion, CorrosionLogsTailLines,
+    DEPLOY_EXECUTE_ROUTE, DEPLOY_ROUTE, DeployExecuteOutcome, DeployExecuteRequest, DeployRefusal,
+    DeployRequest, DeployVerb, FOUNDING_ROUTE, HandshakeObservation, HandshakeObservationOutcome,
     HealthGatePolicy, KNOWN_API_FEATURES, KnownApiFeature, LENS_SNAPSHOT_EVENT, LENS_STATE_EVENT,
     LENS_TERMINAL_EVENT, LensCollection, LensSnapshot, LensWatchEvent, MachineStatusLensRow,
     MachineStatusLensRowIdentityError, NAMESPACE_CREATE_ROUTE, NAMESPACE_REMOVE_ROUTE,
@@ -363,50 +366,87 @@ fn redeploy_admission_refusals_use_stable_snake_case_wire_names() {
 #[test]
 fn placement_refusals_name_the_blocking_machines_and_resolvers() {
     let machine_id = machine_id(MACHINE_A);
-    let other = ployz_core::ids::MachineRowId::try_new(MACHINE_B).expect("fixture machine id");
+    let machine_a = PlacementMachine {
+        machine_id: machine_id.clone(),
+        machine_name: ployz_core::machine::MachineName::try_new("edge-a")
+            .expect("fixture machine name"),
+    };
+    let machine_b = PlacementMachine {
+        machine_id: ployz_core::ids::MachineRowId::try_new(MACHINE_B).expect("fixture machine id"),
+        machine_name: ployz_core::machine::MachineName::try_new("edge-b")
+            .expect("fixture machine name"),
+    };
     let volume = ployz_core::deploy::VolumeName::try_new("data").expect("fixture volume name");
     assert_eq!(
-        serde_json::to_value(DeployRefusal::NoEligibleMachines {
-            eliminations: vec![PlacementElimination {
-                machine_id: machine_id.clone(),
-                reason: PlacementEliminationReason::Draining,
-            }],
+        serde_json::to_value(DeployRefusal::Placement {
+            refusal: PlacementRefusal::NoEligibleMachines {
+                eliminations: vec![PlacementElimination {
+                    machine_id: machine_id.clone(),
+                    machine_name: machine_a.machine_name.clone(),
+                    reason: PlacementEliminationReason::Draining,
+                }],
+            },
         })
         .expect("refusal serializes"),
         json!({
-            "kind": "no_eligible_machines",
-            "eliminations": [{
-                "machine_id": MACHINE_A,
-                "reason": { "kind": "draining" }
-            }]
+            "kind": "placement",
+            "refusal": {
+                "kind": "no_eligible_machines",
+                "eliminations": [{
+                    "machine_id": MACHINE_A,
+                    "machine_name": "edge-a",
+                    "reason": { "kind": "draining" }
+                }]
+            }
         })
     );
     assert_eq!(
-        serde_json::to_value(DeployRefusal::VolumeHolderConflict {
-            volume: volume.clone(),
-            holders: vec![machine_id.clone(), other.clone()],
+        serde_json::to_value(DeployRefusal::Placement {
+            refusal: PlacementRefusal::VolumeHolderConflict {
+                volume: volume.clone(),
+                holders: vec![machine_a.clone(), machine_b.clone()],
+            },
         })
         .expect("refusal serializes"),
         json!({
-            "kind": "volume_holder_conflict",
-            "volume": "data",
-            "holders": [MACHINE_A, MACHINE_B]
+            "kind": "placement",
+            "refusal": {
+                "kind": "volume_holder_conflict",
+                "volume": "data",
+                "holders": [
+                    { "machine_id": MACHINE_A, "machine_name": "edge-a" },
+                    { "machine_id": MACHINE_B, "machine_name": "edge-b" }
+                ]
+            }
         })
     );
     assert_eq!(
-        serde_json::to_value(DeployRefusal::DarkVolumeHolder {
-            machines: vec![other],
+        serde_json::to_value(DeployRefusal::Placement {
+            refusal: PlacementRefusal::DarkVolumeHolder {
+                machines: vec![machine_b],
+            },
         })
         .expect("refusal serializes"),
-        json!({ "kind": "dark_volume_holder", "machines": [MACHINE_B] })
+        json!({
+            "kind": "placement",
+            "refusal": {
+                "kind": "dark_volume_holder",
+                "machines": [{ "machine_id": MACHINE_B, "machine_name": "edge-b" }]
+            }
+        })
     );
     assert_eq!(
-        serde_json::to_value(DeployRefusal::VolumeReplicaLimit {
-            requested: ployz_core::corrosion::ServiceReplicaCount::try_new(3)
-                .expect("fixture replica count"),
+        serde_json::to_value(DeployRefusal::Placement {
+            refusal: PlacementRefusal::VolumeReplicaLimit {
+                requested: ployz_core::corrosion::ServiceReplicaCount::try_new(3)
+                    .expect("fixture replica count"),
+            },
         })
         .expect("refusal serializes"),
-        json!({ "kind": "volume_replica_limit", "requested": 3 })
+        json!({
+            "kind": "placement",
+            "refusal": { "kind": "volume_replica_limit", "requested": 3 }
+        })
     );
     assert_eq!(
         serde_json::to_value(DeployRefusal::UnknownPinnedMachine {
@@ -415,6 +455,10 @@ fn placement_refusals_name_the_blocking_machines_and_resolvers() {
         })
         .expect("refusal serializes"),
         json!({ "kind": "unknown_pinned_machine", "machine_name": "edge-a" })
+    );
+    assert_eq!(
+        serde_json::to_value(DeployRefusal::ReplicasOnGlobalService).expect("refusal serializes"),
+        json!({ "kind": "replicas_on_global_service" })
     );
 }
 
@@ -467,6 +511,7 @@ fn operation_events_require_positive_stable_sequences_and_fixed_timestamps() {
     let event = OperationEvidenceEvent {
         sequence: OperationEvidenceSequence::try_new(1).expect("positive sequence"),
         timestamp: CorrosionTimestamp::try_new("2026-08-05T12:34:56Z").expect("fixture timestamp"),
+        machine: None,
         evidence: OperationEvidence::Created,
     };
     let envelope = OperationWatchEvent::Evidence { event };
@@ -710,7 +755,7 @@ fn deploy_route_and_feature_use_the_generalized_wire_names() {
 }
 
 #[test]
-fn placement_routes_parse_build_and_authorize_like_machine_surfaces() {
+fn placement_routes_parse_build_and_authorize_only_machines() {
     let peer = Principal::Peer {
         peer_id: peer_id(PEER_A),
     };
@@ -730,7 +775,10 @@ fn placement_routes_parse_build_and_authorize_like_machine_surfaces() {
         assert_eq!(route.method(), V2Method::Post);
         assert_eq!(route.feature(), KnownApiFeature::Placement);
         assert!(route.accepts_principal(&machine));
-        assert!(route.accepts_principal(&peer));
+        assert!(
+            !route.accepts_principal(&peer),
+            "bids and verbs are machine authority; a peer never answers or commands them"
+        );
         assert!(!route.accepts_principal(&token));
     }
     assert_eq!(PLACEMENT_BID_ROUTE, "/deploy/bid");
@@ -754,7 +802,25 @@ fn requested_placement_makes_host_ports_unrepresentable_off_global() {
     assert_eq!(
         replicated,
         RequestedPlacement::Replicated {
-            replicas: ServiceReplicaCount::try_new(2).expect("fixture replica count"),
+            replicas: Some(ServiceReplicaCount::try_new(2).expect("fixture replica count")),
+        }
+    );
+    let mode_only: RequestedPlacement = serde_json::from_value(json!({ "mode": "replicated" }))
+        .expect("count-free replicated placement deserializes");
+    assert_eq!(
+        mode_only,
+        RequestedPlacement::Replicated { replicas: None },
+        "a bare mode change keeps the incumbent's replica count"
+    );
+    let count_only: RequestedPlacement = serde_json::from_value(json!({
+        "mode": "replicas",
+        "replicas": 4
+    }))
+    .expect("mode-preserving replica intent deserializes");
+    assert_eq!(
+        count_only,
+        RequestedPlacement::Replicas {
+            replicas: ServiceReplicaCount::try_new(4).expect("fixture replica count"),
         }
     );
     assert!(
@@ -775,7 +841,7 @@ fn requested_placement_makes_host_ports_unrepresentable_off_global() {
     let RequestedPlacement::Global { host_ports } = &global else {
         panic!("global placement expected");
     };
-    assert_eq!(host_ports.as_slice().len(), 1);
+    assert_eq!(host_ports.len(), 1);
 
     let portless: RequestedPlacement =
         serde_json::from_value(json!({ "mode": "global" })).expect("portless global deserializes");
@@ -892,35 +958,27 @@ fn unknown_evidence_kinds_deserialize_as_unrecognized_on_older_readers() {
 }
 
 #[test]
-fn per_container_evidence_written_before_placement_defaults_its_machine() {
-    let evidence: OperationEvidence = serde_json::from_value(json!({
-        "kind": "container_created",
-        "container_id": "c0ffee"
+fn the_event_envelope_carries_the_machine_and_defaults_it_to_none() {
+    let event: OperationEvidenceEvent = serde_json::from_value(json!({
+        "sequence": 1,
+        "timestamp": "2026-08-05T12:34:56Z",
+        "evidence": { "kind": "container_created", "container_id": "c0ffee" }
     }))
-    .expect("pre-placement evidence deserializes");
-    let OperationEvidence::ContainerCreated {
-        container_id,
-        machine,
-    } = &evidence
-    else {
-        panic!("container-created evidence expected");
-    };
-    assert_eq!(container_id.as_str(), "c0ffee");
-    assert_eq!(machine, &None);
+    .expect("machine-free event deserializes");
+    assert_eq!(event.machine, None);
 
-    let placed: OperationEvidence = serde_json::from_value(json!({
-        "kind": "container_created",
-        "container_id": "c0ffee",
-        "machine": MACHINE_A
+    let placed: OperationEvidenceEvent = serde_json::from_value(json!({
+        "sequence": 2,
+        "timestamp": "2026-08-05T12:34:56Z",
+        "machine": MACHINE_A,
+        "evidence": { "kind": "container_created", "container_id": "c0ffee" }
     }))
-    .expect("placed evidence deserializes");
+    .expect("machine-scoped event deserializes");
+    assert_eq!(placed.machine, Some(machine_id(MACHINE_A)));
+    let encoded = serde_json::to_value(&placed).expect("event serializes");
     assert_eq!(
-        placed,
-        OperationEvidence::ContainerCreated {
-            container_id: ployz_core::ids::ContainerId::try_new("c0ffee")
-                .expect("fixture container id"),
-            machine: Some(machine_id(MACHINE_A)),
-        }
+        serde_json::from_value::<OperationEvidenceEvent>(encoded).expect("event round-trips"),
+        placed
     );
 }
 
@@ -939,8 +997,8 @@ fn placement_evidence_replays_the_gather_and_the_pick() {
         service_containers: vec![ServiceContainerObservation {
             container_id: ployz_core::ids::ContainerId::try_new("c0ffee")
                 .expect("fixture container id"),
+            service_id: service_id(MACHINE_B),
             deploy: operation_id(MACHINE_B),
-            running: true,
             named_volumes: std::collections::BTreeSet::new(),
         }],
         volumes_held: std::collections::BTreeSet::new(),
@@ -957,7 +1015,7 @@ fn placement_evidence_replays_the_gather_and_the_pick() {
             SilentMachine {
                 machine_id: machine_id(MACHINE_A),
                 classification: SilenceClassification::AnomalousSilent {
-                    reason: "bid request timed out".to_owned(),
+                    reason: AnomalousSilenceReason::TimedOut,
                 },
             },
         ],
@@ -969,17 +1027,21 @@ fn placement_evidence_replays_the_gather_and_the_pick() {
     );
 
     let picked = OperationEvidence::PlacementPicked {
-        targets: vec![machine_id(MACHINE_A), machine_id(MACHINE_A)],
-        eliminations: vec![PlacementElimination {
-            machine_id: machine_id(MACHINE_B),
-            reason: PlacementEliminationReason::FreeDiskBelowFloor {
-                free_disk_bytes: 512,
-            },
-        }],
-        shortfall: Some(PlacementShortfall {
-            requested: ServiceReplicaCount::try_new(2).expect("fixture replica count"),
-            placed: 1,
-        }),
+        pick: PlacementPick {
+            targets: vec![machine_id(MACHINE_A), machine_id(MACHINE_A)],
+            eliminations: vec![PlacementElimination {
+                machine_id: machine_id(MACHINE_B),
+                machine_name: ployz_core::machine::MachineName::try_new("edge-b")
+                    .expect("fixture machine name"),
+                reason: PlacementEliminationReason::FreeDiskBelowFloor {
+                    free_disk_bytes: 512,
+                },
+            }],
+            shortfall: Some(PlacementShortfall {
+                requested: ServiceReplicaCount::try_new(2).expect("fixture replica count"),
+                placed: 1,
+            }),
+        },
     };
     let encoded = serde_json::to_value(&picked).expect("picked evidence serializes");
     assert_eq!(
@@ -1126,29 +1188,23 @@ fn blue_green_evidence_variants_have_closed_wire_shapes() {
         (
             OperationEvidence::DebrisSwept {
                 removed: vec![container_id.clone()],
-                machine: None,
             },
             json!({ "kind": "debris_swept", "removed": ["c0ffee"] }),
         ),
         (
             OperationEvidence::IncumbentStopped {
                 container_id: container_id.clone(),
-                machine: None,
             },
             json!({ "kind": "incumbent_stopped", "container_id": "c0ffee" }),
         ),
         (
             OperationEvidence::IncumbentRestarted {
                 container_id: container_id.clone(),
-                machine: None,
             },
             json!({ "kind": "incumbent_restarted", "container_id": "c0ffee" }),
         ),
         (
-            OperationEvidence::IncumbentRemoved {
-                container_id,
-                machine: None,
-            },
+            OperationEvidence::IncumbentRemoved { container_id },
             json!({ "kind": "incumbent_removed", "container_id": "c0ffee" }),
         ),
         (OperationEvidence::Drained, json!({ "kind": "drained" })),

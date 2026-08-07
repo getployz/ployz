@@ -7,12 +7,12 @@ use ployz_core::corrosion::{
     CorrosionDeployFailure, CorrosionDeployOutcome, CorrosionDeployServiceResult,
     CorrosionDeployTargets, CorrosionDeployTransition, CorrosionDeployWarning,
     CorrosionDocumentVersion, CorrosionPromotionFailure, CorrosionTimestamp, DeployTakeover,
-    OperationDocument, OperationInitiator, ServicePlacement, ServiceReplicaCount,
+    HostPortBindings, OperationDocument, OperationInitiator, ServicePlacement, ServiceReplicaCount,
     check_deploy_takeover,
 };
 use ployz_core::deploy::VolumeName;
 use ployz_core::ids::{ClusterId, MachineRowId, OperationRowId, ServiceRowId};
-use ployz_core::placement::{PlacementPickInputs, PlacementRefusal, pick_placement};
+use ployz_core::placement::{PlacementPick, PlacementPickInputs, pick_placement};
 use ployz_core::{
     DeployAccepted, DeployRefusal, DeployRequest, HealthGatePolicy, OperationEvidence,
     PlacementBidRequest, RequestedPins, RequestedPlacement, ServiceContainerObservation,
@@ -116,12 +116,10 @@ pub(super) struct DeployPlacement {
 impl DeployPlacement {
     /// Host-published ports for this deploy's containers: the global
     /// variant's bindings, empty for every replicated deploy.
-    pub(super) fn host_ports(&self) -> ployz_core::corrosion::HostPortBindings {
+    pub(super) fn host_ports(&self) -> HostPortBindings {
         match &self.placement {
             ServicePlacement::Global { host_ports } => host_ports.clone(),
-            ServicePlacement::Replicated { replicas: _ } => {
-                ployz_core::corrosion::HostPortBindings::default()
-            }
+            ServicePlacement::Replicated { replicas: _ } => HostPortBindings::default(),
         }
     }
 }
@@ -267,7 +265,7 @@ impl DeployDriver {
                 namespace.id.clone()
             }
         };
-        let (placement, gathered) = match self
+        let (placement, gathered, pick) = match self
             .derive_placement(&request, &path, &namespace_id, &service_id)
             .await?
         {
@@ -302,11 +300,7 @@ impl DeployDriver {
         .await?;
         log.append(
             self.clock.now().map_err(DeployDriverError::Clock)?,
-            OperationEvidence::PlacementPicked {
-                targets: placement.targets.clone(),
-                eliminations: gathered.eliminations,
-                shortfall: gathered.shortfall,
-            },
+            OperationEvidence::PlacementPicked { pick },
         )
         .await?;
         let row = observed_with(&operation_id, operation.clone())?;
@@ -341,8 +335,17 @@ impl DeployDriver {
         path: &DeployPath,
         namespace_id: &ployz_core::ids::NamespaceRowId,
         service_id: &ServiceRowId,
-    ) -> Result<Result<(DeployPlacement, PlacementEvidence), DeployRefusal>, DeployDriverError>
-    {
+    ) -> Result<
+        Result<
+            (
+                DeployPlacement,
+                super::placement_gather::GatheredBids,
+                PlacementPick,
+            ),
+            DeployRefusal,
+        >,
+        DeployDriverError,
+    > {
         let peers = tokio::time::timeout(self.effect_timeout, self.mesh.roster())
             .await
             .map_err(|_| DeployDriverError::Placement("roster read timed out".to_owned()))?
@@ -351,7 +354,10 @@ impl DeployDriver {
             Ok(pins) => pins,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        let placement = effective_placement(request, path)?;
+        let placement = match effective_placement(request, path)? {
+            Ok(placement) => placement,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
         let volumes: BTreeSet<VolumeName> = request
             .runtime
             .volume_mounts
@@ -370,8 +376,12 @@ impl DeployDriver {
             volumes: volumes.clone(),
             active_deploy: active_deploy.clone(),
         };
-        let gathered =
-            gather_bids(self.mesh.as_ref(), &peers, &self.machine_id, &bid_request).await;
+        let gathered = tokio::time::timeout(
+            self.effect_timeout,
+            gather_bids(self.mesh.as_ref(), &peers, &self.machine_id, &bid_request),
+        )
+        .await
+        .map_err(|_| DeployDriverError::Placement("bid gather timed out".to_owned()))?;
         let row_machines = match path {
             DeployPath::First { .. } => BTreeSet::new(),
             DeployPath::Redeploy { .. } => {
@@ -394,19 +404,21 @@ impl DeployDriver {
             volumes,
             plausible_volume_holders: row_machines.union(&pinned_machines).cloned().collect(),
             active_deploy,
-            // The pull path resolves a digest, not a manifest platform list;
-            // a wrong-arch machine fails loudly at pull instead.
-            platforms: None,
             bids: gathered.bids.clone(),
             silent_machines: gathered
                 .silent
                 .iter()
-                .map(|silent| silent.machine_id.clone())
+                .filter_map(|silent| {
+                    peers
+                        .iter()
+                        .find(|peer| peer.id == silent.machine_id)
+                        .map(|peer| (silent.machine_id.clone(), peer.name.clone()))
+                })
                 .collect(),
         };
         let pick = match pick_placement(&inputs) {
             Ok(pick) => pick,
-            Err(refusal) => return Ok(Err(placement_refusal(refusal))),
+            Err(refusal) => return Ok(Err(DeployRefusal::Placement { refusal })),
         };
         let addresses = peers
             .iter()
@@ -436,12 +448,8 @@ impl DeployDriver {
                 bid_service_containers,
                 answered,
             },
-            PlacementEvidence {
-                bids: gathered.bids,
-                silent: gathered.silent,
-                eliminations: pick.eliminations,
-                shortfall: pick.shortfall,
-            },
+            gathered,
+            pick,
         )))
     }
 
@@ -790,36 +798,72 @@ impl DeployDriver {
     }
 }
 
-/// The gather-and-pick record appended to the operation's evidence log, so
-/// the pick replays exactly from JSONL.
-struct PlacementEvidence {
-    bids: Vec<ployz_core::PlacementBid>,
-    silent: Vec<ployz_core::SilentMachine>,
-    eliminations: Vec<ployz_core::placement::PlacementElimination>,
-    shortfall: Option<ployz_core::placement::PlacementShortfall>,
-}
-
-/// The effective placement: the request's intent, or the incumbent row's
-/// when the deploy carried none. A first deploy without intent runs one
-/// replica.
+/// The effective placement: the request's intent resolved against the
+/// incumbent row, or the incumbent's placement unchanged when the deploy
+/// carried none. A first deploy without intent runs one replica.
 fn effective_placement(
     request: &DeployRequest,
     path: &DeployPath,
-) -> Result<ServicePlacement, DeployDriverError> {
+) -> Result<Result<ServicePlacement, DeployRefusal>, DeployDriverError> {
+    let one_replica = || {
+        ServiceReplicaCount::try_new(1)
+            .map_err(|error| DeployDriverError::Invariant(error.to_string()))
+    };
     match (&request.placement, path) {
-        (Some(RequestedPlacement::Replicated { replicas }), _) => {
-            Ok(ServicePlacement::Replicated {
+        // The mode-preserving count change: legal against a replicated
+        // incumbent or a first deploy, refused against a global incumbent
+        // instead of silently unpublishing its host ports.
+        (
+            Some(RequestedPlacement::Replicas { replicas }),
+            DeployPath::Redeploy { incumbent, .. },
+        ) => match &incumbent.document.placement {
+            ServicePlacement::Replicated { replicas: _ } => Ok(Ok(ServicePlacement::Replicated {
                 replicas: *replicas,
-            })
+            })),
+            ServicePlacement::Global { host_ports: _ } => {
+                Ok(Err(DeployRefusal::ReplicasOnGlobalService))
+            }
+        },
+        (Some(RequestedPlacement::Replicas { replicas }), DeployPath::First { .. }) => {
+            Ok(Ok(ServicePlacement::Replicated {
+                replicas: *replicas,
+            }))
         }
-        (Some(RequestedPlacement::Global { host_ports }), _) => Ok(ServicePlacement::Global {
+        (
+            Some(RequestedPlacement::Replicated {
+                replicas: Some(replicas),
+            }),
+            _,
+        ) => Ok(Ok(ServicePlacement::Replicated {
+            replicas: *replicas,
+        })),
+        // A count-free replicated intent keeps a replicated incumbent's
+        // count; a first deploy or a global conversion defaults to one.
+        (
+            Some(RequestedPlacement::Replicated { replicas: None }),
+            DeployPath::Redeploy { incumbent, .. },
+        ) => match &incumbent.document.placement {
+            ServicePlacement::Replicated { replicas } => Ok(Ok(ServicePlacement::Replicated {
+                replicas: *replicas,
+            })),
+            ServicePlacement::Global { host_ports: _ } => Ok(Ok(ServicePlacement::Replicated {
+                replicas: one_replica()?,
+            })),
+        },
+        (Some(RequestedPlacement::Replicated { replicas: None }), DeployPath::First { .. }) => {
+            Ok(Ok(ServicePlacement::Replicated {
+                replicas: one_replica()?,
+            }))
+        }
+        (Some(RequestedPlacement::Global { host_ports }), _) => Ok(Ok(ServicePlacement::Global {
             host_ports: host_ports.clone(),
-        }),
-        (None, DeployPath::Redeploy { incumbent, .. }) => Ok(incumbent.document.placement.clone()),
-        (None, DeployPath::First { .. }) => Ok(ServicePlacement::Replicated {
-            replicas: ServiceReplicaCount::try_new(1)
-                .map_err(|error| DeployDriverError::Invariant(error.to_string()))?,
-        }),
+        })),
+        (None, DeployPath::Redeploy { incumbent, .. }) => {
+            Ok(Ok(incumbent.document.placement.clone()))
+        }
+        (None, DeployPath::First { .. }) => Ok(Ok(ServicePlacement::Replicated {
+            replicas: one_replica()?,
+        })),
     }
 }
 
@@ -850,24 +894,6 @@ fn resolve_pins(
                 Ok(incumbent.document.pinned_machines.clone())
             }
         },
-    }
-}
-
-/// Maps the pure pick's refusal onto the deploy's admission refusal surface.
-fn placement_refusal(refusal: PlacementRefusal) -> DeployRefusal {
-    match refusal {
-        PlacementRefusal::NoEligibleMachines { eliminations } => {
-            DeployRefusal::NoEligibleMachines { eliminations }
-        }
-        PlacementRefusal::VolumeHolderConflict { volume, holders } => {
-            DeployRefusal::VolumeHolderConflict { volume, holders }
-        }
-        PlacementRefusal::DarkVolumeHolder { machines } => {
-            DeployRefusal::DarkVolumeHolder { machines }
-        }
-        PlacementRefusal::VolumeReplicaLimit { requested } => {
-            DeployRefusal::VolumeReplicaLimit { requested }
-        }
     }
 }
 
