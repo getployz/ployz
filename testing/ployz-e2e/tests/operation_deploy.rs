@@ -20,6 +20,8 @@ const NAMESPACE: &str = "production";
 const SERVICE: &str = "web";
 const SECRET_NAME: &str = "OPERATION_E2E_SECRET";
 const SECRET_VALUE: &str = "sentinel-operation-e2e-secret";
+const FIRST_BODY: &str = "Welcome to nginx";
+const SECOND_BODY: &str = "ployz-operation-second-revision";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn first_deploy_is_observable_and_reachable_from_a_joined_machine() {
@@ -116,15 +118,81 @@ async fn exercise_operation_deploy(docker: &Docker, cluster: &DindCluster) -> Re
         SECRET_VALUE,
         &expected_fingerprint,
     )?;
+    let hostname = format!("{SERVICE}.{NAMESPACE}.internal");
     assert_dns_and_http(
         docker,
         joiner,
         founder,
         operator.joiner_dns_address,
-        SERVICE,
-        NAMESPACE,
+        &hostname,
         rows.container_ip,
+        FIRST_BODY,
     )
     .await?;
+
+    // Second deploy of the same incumbent: revision-gated blue/green cutover.
+    support::push_second_revision(docker, founder, &image, SECOND_BODY).await?;
+    let deploy = support::spawn_deploy(
+        &operator,
+        NAMESPACE,
+        SERVICE,
+        &image,
+        SECRET_NAME,
+        SECRET_VALUE,
+    )?;
+    let deploy_output = support::watch_cutover_traffic(
+        docker,
+        joiner,
+        founder,
+        operator.joiner_dns_address,
+        &hostname,
+        support::RevisionBodies {
+            first: FIRST_BODY,
+            second: SECOND_BODY,
+        },
+        deploy,
+    )
+    .await?;
+    let second_operation_id =
+        support::parse_deploy_operation(&deploy_output, "second deploy", SECRET_VALUE)?;
+    let replay =
+        assert_cluster_wide_operation_replay(&operator, &second_operation_id, SECRET_VALUE)?;
+    support::assert_replay_orders_cutover_evidence(&replay)?;
+    assert_driver_local_evidence_is_secret_free(
+        docker,
+        founder,
+        &second_operation_id,
+        SECRET_VALUE,
+    )
+    .await?;
+
+    let second_rows = support::wait_for_public_deploy_rows(
+        docker,
+        founder,
+        &operator.joiner_api_address,
+        SERVICE,
+        &second_operation_id,
+    )
+    .await?;
+    assert_public_rows_are_digest_pinned_and_secret_free(
+        &second_rows,
+        &image,
+        SECRET_NAME,
+        SECRET_VALUE,
+        &expected_fingerprint,
+    )?;
+    support::assert_cutover_rows(&second_rows, &rows, &second_operation_id)?;
+    assert_dns_and_http(
+        docker,
+        joiner,
+        founder,
+        operator.joiner_dns_address,
+        &hostname,
+        second_rows.container_ip,
+        SECOND_BODY,
+    )
+    .await?;
+    support::assert_first_revision_container_is_gone(docker, [founder, joiner], &operation_id)
+        .await?;
     Ok(())
 }
