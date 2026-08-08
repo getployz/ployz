@@ -4,8 +4,6 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/lib.sh
 source "${ROOT_DIR}/scripts/lib.sh"
-# shellcheck source=config/railpack-pins.env
-source "${ROOT_DIR}/config/railpack-pins.env"
 
 ARTIFACT_DIR="${PLOYZ_DEV_ARTIFACT_DIR:-${PLOYZ_DIND_TARGET_DIR:-/tmp/ployz-dind-machine-target}/release}"
 OUTPUT_ROOT="${PLOYZ_DEV_RELEASE_DIR:-${ROOT_DIR}/dist/dev-releases}"
@@ -33,22 +31,15 @@ platform="$(docker_platform "${PLOYZ_DIND_PLATFORM:-}")"
 case "${platform}" in
   linux/amd64)
     platform_slug="linux-amd64"
-    railpack_archive_name="${RAILPACK_AMD64_ARCHIVE}"
-    railpack_archive_sha256="${RAILPACK_AMD64_ARCHIVE_SHA256}"
     ;;
   linux/arm64)
     platform_slug="linux-arm64"
-    railpack_archive_name="${RAILPACK_ARM64_ARCHIVE}"
-    railpack_archive_sha256="${RAILPACK_ARM64_ARCHIVE_SHA256}"
     ;;
   *)
     echo "local release bundles support linux/amd64 and linux/arm64, got ${platform}" >&2
     exit 1
     ;;
 esac
-railpack_version="${RAILPACK_VERSION}"
-railpack_url="https://github.com/railwayapp/railpack/releases/download/${railpack_version}/${railpack_archive_name}"
-
 if [ "${PLOYZ_DEV_SKIP_BUILD:-0}" != "1" ]; then
   PLOYZ_DIND_PLATFORM="${platform}" \
     PLOYZ_DIND_CARGO_INCREMENTAL=1 \
@@ -62,29 +53,12 @@ for artifact in "${ARTIFACTS[@]}"; do
   fi
 done
 
-work_dir="$(mktemp -d)"
-cleanup() {
-  rm -rf "${work_dir}"
-}
-trap cleanup EXIT
-railpack_archive="${work_dir}/${railpack_archive_name}"
-curl --fail --location --silent --show-error "${railpack_url}" --output "${railpack_archive}"
-actual_railpack_sha256="$(sha256_of "${railpack_archive}")"
-if [ "${actual_railpack_sha256}" != "${railpack_archive_sha256}" ]; then
-  echo "Railpack release archive has SHA-256 ${actual_railpack_sha256}, expected ${railpack_archive_sha256}" >&2
-  exit 1
-fi
-tar -xzf "${railpack_archive}" -C "${work_dir}" railpack
-railpack_source="${work_dir}/railpack"
-
 content_hash="$({
   for artifact in "${ARTIFACTS[@]}"; do
     printf '%s %s\n' "${artifact}" "$(sha256_of "${ARTIFACT_DIR}/${artifact}")"
   done
   printf 'ployz.sh %s\n' "$(sha256_of "${ROOT_DIR}/scripts/ployz.sh")"
   printf 'platform %s\n' "${platform_slug}"
-  printf 'railpack-version %s\n' "${railpack_version}"
-  printf 'railpack-sha256 %s\n' "$(sha256_of "${railpack_source}")"
 } | sha256_stdin)"
 version="dev-${content_hash:0:16}"
 remote_dir="/var/lib/ployz/dev-releases/${version}"
@@ -97,7 +71,6 @@ for artifact in "${ARTIFACTS[@]}"; do
   install -m 0755 "${ARTIFACT_DIR}/${artifact}" "${staging_dir}/${artifact}"
 done
 install -m 0755 "${ROOT_DIR}/scripts/ployz.sh" "${staging_dir}/ployz.sh"
-install -m 0755 "${railpack_source}" "${staging_dir}/railpack"
 
 {
   printf 'PLOYZ_VERSION=%s\n' "${version}"
@@ -113,9 +86,6 @@ install -m 0755 "${railpack_source}" "${staging_dir}/railpack"
     printf '%s_URL=%s/%s\n' "${key}" "${remote_dir}" "${artifact}"
     printf '%s_SHA256=%s\n' "${key}" "$(sha256_of "${staging_dir}/${artifact}")"
   done
-  printf 'PLOYZ_RAILPACK_VERSION=%s\n' "${railpack_version}"
-  printf 'PLOYZ_RAILPACK_URL=%s/%s\n' "${remote_dir}" railpack
-  printf 'PLOYZ_RAILPACK_SHA256=%s\n' "$(sha256_of "${staging_dir}/railpack")"
 } > "${staging_dir}/release.env"
 
 cat > "${staging_dir}/install.sh" <<EOF

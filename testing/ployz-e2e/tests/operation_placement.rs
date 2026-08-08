@@ -1,6 +1,6 @@
 //! Three-machine public-seam proof of placement bids: spread, sticky,
 //! pins with loud stacking and shortfall, `--machine any`, global mode with
-//! host-published ports, volume affinity, and the typed placement refusals.
+//! host-published ports, and volume affinity.
 
 #[path = "operation_placement/support.rs"]
 mod support;
@@ -10,8 +10,8 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::num::NonZeroU16;
 
 use bollard::Docker;
-use ployz::commands::SshTarget;
 use ployz::mesh::http::JsonReply;
+use ployz_core::DeployRequest;
 use ployz_core::HealthGatePolicy;
 use ployz_core::corrosion::{
     CorrosionNamespaceName, CorrosionServiceName, HostPortBinding, HostPortBindings,
@@ -21,12 +21,10 @@ use ployz_core::deploy::{
     ContainerMountPath, ContainerRuntimeSpec, ImageReference, ServiceVolumeMount, VolumeName,
 };
 use ployz_core::ids::MachineRowId;
-use ployz_core::placement::PlacementRefusal;
-use ployz_core::{DeployRefusal, DeployRequest};
 use ployz_e2e::dind as deploy_support;
 use ployz_e2e::dind::{
     DindCluster, DindClusterSpec, DindMachine, MachineSpec, artifact_dir, connect_docker,
-    e2e_enabled, exec_ok, keep_requested, machine_image, require,
+    e2e_enabled, keep_requested, machine_image, require,
 };
 
 use support::require_contains;
@@ -41,7 +39,6 @@ const VOLUME_NAMESPACE: &str = "storage";
 const VOLUME_SERVICE: &str = "vol";
 const VOLUME_FIRST_BODY: &str = "ployz-placement-volume-first";
 const VOLUME_SECOND_BODY: &str = "ployz-placement-volume-second";
-const PINNED_NAMESPACE: &str = "pinned";
 const PUBLISHED_HOST_PORT: u16 = 8_088;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -101,12 +98,11 @@ async fn placement_bids_drive_spread_sticky_pins_global_and_volume_affinity() {
     result.unwrap_or_else(|error| panic!("operation-placement proof failed: {error}"));
 }
 
-/// One cluster member the scenario can address by roster id, ployz machine
-/// name, operator SSH target, and DinD container.
+/// One cluster member the scenario can address by roster id, name, and DinD
+/// container.
 struct Member<'a> {
     id: MachineRowId,
     name: String,
-    target: SshTarget,
     machine: &'a DindMachine,
 }
 
@@ -141,19 +137,16 @@ async fn exercise_operation_placement(
         Member {
             id: operator.founder_machine_id.clone(),
             name: deploy_support::FOUNDER_NAME.to_owned(),
-            target: founder_target.clone(),
             machine: m1,
         },
         Member {
             id: j1.machine_id.clone(),
             name: j1.name.clone(),
-            target: j1.target.clone(),
             machine: m2,
         },
         Member {
             id: j2.machine_id.clone(),
             name: j2.name.clone(),
-            target: j2.target.clone(),
             machine: m3,
         },
     ];
@@ -576,74 +569,6 @@ async fn exercise_operation_placement(
         ),
     )?;
 
-    // Dark plausible holder: with the holder's daemon stopped, the volume
-    // redeploy is a typed refusal naming the dark machine.
-    exec_ok(
-        docker,
-        holder.machine,
-        &["systemctl", "stop", "ployzd-api.service"],
-    )
-    .await?;
-    let live = members
-        .iter()
-        .find(|member| member.id != *holder_id)
-        .ok_or_else(|| "no live machine remains beside the holder".to_owned())?;
-    let dark_reply = support::mesh_deploy(&config_home, &live.target, &volume_request).await?;
-    let dark_refusal = match dark_reply {
-        JsonReply::Refused(refusal) => refusal,
-        JsonReply::Success(accepted) => {
-            return Err(format!(
-                "dark-holder volume deploy was accepted as {}",
-                accepted.operation_id
-            ));
-        }
-    };
-    let DeployRefusal::Placement {
-        refusal: PlacementRefusal::DarkVolumeHolder { machines },
-    } = dark_refusal
-    else {
-        return Err(format!(
-            "expected the dark-holder refusal, got {dark_refusal:?}"
-        ));
-    };
-    require(
-        machines
-            .iter()
-            .map(|machine| machine.machine_id.clone())
-            .collect::<Vec<_>>()
-            == vec![holder_id.clone()],
-        format!("dark-holder refusal named {machines:?}, expected {holder_id}"),
-    )?;
-
-    // Zero eligible bidders: a pin set holding only the dark machine leaves
-    // no survivor; the refusal names each elimination.
-    deploy_support::create_namespace(&operator, PINNED_NAMESPACE, &live.target)?;
-    let zero_bidders = deploy_support::run_cli(
-        &operator,
-        &[
-            "deploy",
-            PINNED_NAMESPACE,
-            "sink",
-            &image,
-            "--machine",
-            &holder.name,
-            "--target",
-            live.target.as_str(),
-        ],
-    )?;
-    require(
-        !zero_bidders.status.success(),
-        "a deploy pinned to a dark machine must be refused".to_owned(),
-    )?;
-    require_contains(
-        "zero-bidder refusal",
-        &String::from_utf8_lossy(&zero_bidders.stderr),
-        &["no machine can host this deploy", "outside the pin set"],
-    )?;
-    require(
-        !String::from_utf8_lossy(&zero_bidders.stdout).contains("accepted operation"),
-        "a refused deploy must not accept an operation".to_owned(),
-    )?;
     Ok(())
 }
 
@@ -687,6 +612,7 @@ fn volume_deploy_request(image: &str) -> Result<DeployRequest, String> {
         service_name: CorrosionServiceName::try_new(VOLUME_SERVICE)
             .map_err(|error| error.to_string())?,
         image: ImageReference::try_new(image).map_err(|error| error.to_string())?,
+        credential: None,
         runtime,
         health_gate: HealthGatePolicy::Enforce,
         placement: None,

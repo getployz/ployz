@@ -61,8 +61,9 @@ pub(super) async fn handle_removal(
         | V2Route::NamespaceCreate
         | V2Route::NamespaceRemove
         | V2Route::Deploy
-        | V2Route::PlacementBid
-        | V2Route::DeployExecute
+        | V2Route::DeployInspect
+        | V2Route::DeployPrepare
+        | V2Route::DeployRetire
         | V2Route::Operation(_)
         | V2Route::OperationWatch(_)
         | V2Route::ServiceLogsTail(_)

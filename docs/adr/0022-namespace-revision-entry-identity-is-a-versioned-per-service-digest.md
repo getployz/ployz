@@ -1,5 +1,7 @@
 # Namespace Revision Entry Identity Is A Versioned Per-Service Digest
 
+> Superseded for current v2 by [ADR 0041](0041-preferred-controller-serializes-cluster-mutations.md), whose serving projection uses the service's active deploy id; the revision-entry digest model below is historical.
+
 Container replacement is decided by an opaque, versioned SHA-256 identity,
 not by ad hoc field-by-field comparisons. The identity is scoped by namespace
 and service, so otherwise-identical services cannot share a replacement key
@@ -13,8 +15,9 @@ The currently implemented canonical encodings are namespace revision entry v11
 tag. Entry v11 covers namespace id, service id, the final image reference, and
 the create-time runtime shape: command, entrypoint, stop grace period, volume
 mounts, healthcheck, restart policy, canonicalized capability additions and
-drops, resource limits, and the environment contribution. Its pushed-image
-form also covers the platform-independent image index identity. It deliberately
+drops, resource limits, and the environment contribution. The removed
+pushed-image form also covered the platform-independent image index identity. It
+deliberately
 excludes service mode and replica count, pre-start hooks, dependencies, route
 targets, and routed endpoint ports; those can change reconciliation without
 changing an individual container's create-time shape. In particular, endpoint

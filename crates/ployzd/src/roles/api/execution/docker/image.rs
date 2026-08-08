@@ -16,7 +16,7 @@ const REGISTRY_RETRY_DELAYS: [Duration; 2] = [Duration::from_millis(250), Durati
 const V2_IMAGE_PULL_TIMEOUT: Duration = Duration::from_secs(60);
 
 impl DockerManagedContainerRunner {
-    pub(super) async fn resolve_registry_reference(
+    pub(crate) async fn resolve_registry_image(
         &self,
         reference: &ImageReference,
         credential: Option<&RegistryCredential>,
@@ -220,8 +220,7 @@ mod tests {
     use super::*;
     use crate::roles::api::execution::docker::test_support::{image, runner_with_responses};
     use crate::roles::api::runner::{
-        MachineContainerRunner, MachineRegistryImageResolveError, V2MachineImagePullError,
-        V2MachineImageRunner,
+        MachineRegistryImageResolveError, V2MachineImagePullError, V2MachineImageRunner,
     };
 
     fn open_shutdown() -> (

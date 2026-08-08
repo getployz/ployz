@@ -356,6 +356,22 @@ pub(super) async fn insert_token(
     Ok(())
 }
 
+pub(super) async fn insert_document<Document>(
+    corrosion: &CorrosionClient,
+    table: CorrosionTable,
+    id: &str,
+    document: &Document,
+) -> Result<(), MutationStoreError>
+where
+    Document: Serialize + ?Sized,
+{
+    let document = encode_document(table, document)?;
+    corrosion
+        .execute(&[insert_statement(table, id, document)])
+        .await?;
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TokenAuthorizedInsert {
     Inserted,
@@ -618,6 +634,7 @@ fn ensure_named_removal_table(table: CorrosionTable, id: &str) -> Result<(), Mut
         | CorrosionTable::MachineStatus
         | CorrosionTable::GatewayObservations
         | CorrosionTable::Operations
+        | CorrosionTable::Controller
         | CorrosionTable::CertHoldings
         | CorrosionTable::AcmeHttp01 => Err(MutationStoreError::UnexpectedWriteResult {
             table,
@@ -643,6 +660,7 @@ fn ensure_exact_row_removal_table(
         | CorrosionTable::MachineStatus
         | CorrosionTable::GatewayObservations
         | CorrosionTable::Operations
+        | CorrosionTable::Controller
         | CorrosionTable::CertHoldings
         | CorrosionTable::AcmeHttp01 => Err(MutationStoreError::UnexpectedWriteResult {
             table,
@@ -884,7 +902,8 @@ fn delete_testimony_for_machine_statement(
         | CorrosionTable::Namespaces
         | CorrosionTable::Services
         | CorrosionTable::RouteBindings
-        | CorrosionTable::Operations => {
+        | CorrosionTable::Operations
+        | CorrosionTable::Controller => {
             unreachable!("only machine-authority testimony tables are removable")
         }
     }

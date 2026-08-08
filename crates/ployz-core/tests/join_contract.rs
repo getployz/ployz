@@ -1,7 +1,6 @@
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::str::FromStr;
 
-use ployz_core::build::railpack_pins;
 use ployz_core::corrosion::{
     AutomaticHostnameMode, ClusterDocument, CorrosionDocumentVersion, CorrosionTimestamp,
     MachineDocument, MachineStorageSelection, MachineStorageSelectionReason, MachineTransport,
@@ -115,16 +114,12 @@ fn install_artifact(name: &str, install_path: &str) -> InstallArtifactSpec {
 }
 
 fn required_install_artifacts() -> Vec<InstallArtifactSpec> {
-    let railpack_install_path = railpack_pins()
-        .expect("checked-in Railpack pins")
-        .install_path();
     [
         "/usr/local/bin/ployzd",
         "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
         "/usr/local/bin/ployz-ebpf-ctl",
         "/usr/local/bin/corrosion",
         "/usr/local/lib/ployz/corrosion-schema-v1.sql",
-        railpack_install_path,
     ]
     .into_iter()
     .enumerate()
@@ -570,13 +565,13 @@ fn endpoint_set_refuses_port_zero_without_mutating_the_machine() {
 }
 
 #[test]
-fn machine_substrate_requires_each_exact_install_destination_once() {
+fn machine_substrate_requires_exact_destinations_and_ignores_extras() {
     let version = || ExactPloyzVersion::try_new("0.1.0").expect("exact version");
     let valid = JoinMachineSubstrate::try_new(version(), "0.3.1", required_install_artifacts())
         .expect("complete substrate");
     assert_eq!(valid.ployz_version().as_str(), "0.1.0");
     assert_eq!(valid.corrosion_version(), "0.3.1");
-    assert_eq!(valid.artifacts().len(), 6);
+    assert_eq!(valid.artifacts().len(), 5);
     let mut incomplete_wire = serde_json::to_value(&valid).expect("substrate serializes");
     let serde_json::Value::Object(ref mut fields) = incomplete_wire else {
         panic!("substrate serializes as an object")
@@ -608,14 +603,23 @@ fn machine_substrate_requires_each_exact_install_destination_once() {
         })
     );
 
-    let mut unknown = required_install_artifacts();
-    unknown.push(install_artifact("unknown", "/usr/local/bin/unknown"));
-    assert_eq!(
-        JoinMachineSubstrate::try_new(version(), "0.3.1", unknown),
-        Err(JoinAcceptanceValidationError::UnknownInstallArtifact {
-            install_path: "/usr/local/bin/unknown".to_owned(),
-        })
-    );
+    let mut legacy = required_install_artifacts();
+    legacy.push(install_artifact(
+        "legacy-railpack",
+        "/usr/local/lib/ployz/railpack/v0.31.0/railpack",
+    ));
+    let legacy = serde_json::from_value::<JoinMachineSubstrate>(serde_json::json!({
+        "ployz_version": version(),
+        "corrosion_version": "0.3.1",
+        "artifacts": legacy,
+    }))
+    .expect("extra artifacts in legacy JSON are inert");
+    assert_eq!(legacy.artifacts().len(), 6);
+    let executable = legacy.artifacts_by_kind().collect::<Vec<_>>();
+    assert_eq!(executable.len(), 5);
+    assert!(executable.into_iter().all(|(_, artifact)| {
+        artifact.install_path.as_str() != "/usr/local/lib/ployz/railpack/v0.31.0/railpack"
+    }));
 }
 
 #[test]

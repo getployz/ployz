@@ -22,7 +22,7 @@ use crate::corrosion::{
     collect_stored_rows,
 };
 use crate::roles::api::execution::docker::runner::DockerManagedContainerRunner;
-use crate::roles::api::runner::{MachineContainerRunner, MachineEndpointNetworkError};
+use crate::roles::api::runner::MachineEndpointNetworkError;
 
 use super::config::{ApiRoleMode, BootstrapSecret};
 use super::roster::corrosion_unavailable_refusal;

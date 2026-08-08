@@ -2,26 +2,21 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::Serialize;
-use serde_json::{Value, json};
 use ts_rs::{Config, Dependency, TS, TypeVisitor};
 
 use super::v2::{
-    API_MAJOR, AnomalousSilenceReason, ApiRefusal, ApiVersion, ContainerLensRow,
-    CorrosionLogsTailLines, CorrosionNamespaceCreateRefusal, CorrosionNamespaceCreateReply,
+    API_MAJOR, ApiRefusal, ApiVersion, ContainerLensRow, CorrosionLogsTailLines,
+    CorrosionNamespaceCreateRefusal, CorrosionNamespaceCreateReply,
     CorrosionNamespaceCreateRequest, CorrosionNamespaceRemoveRefusal,
     CorrosionNamespaceRemoveReply, CorrosionNamespaceRemoveRequest, CorrosionRetryAfterSeconds,
-    DeployAccepted, DeployExecuteOutcome, DeployExecuteRequest, DeployRefusal, DeployRequest,
-    DeployVerb, HandshakeObservation, HandshakeObservationOutcome, HandshakeObservationUnavailable,
-    KNOWN_API_FEATURES, KnownApiFeature, LensCollection, LensSnapshot, LensWatchEvent,
-    MachineLensRow, MachineRemoveRefusal, MachineRemoveReply, MachineRemoveRequest,
-    MachineStatusLensRow, MachineUpgradeRefusal, MachineUpgradeReply, MachineUpgradeRequest,
-    MachineUpgradeSupervisor, MachineUpgradeUrl, OperationEvidence, OperationEvidenceEvent,
-    OperationEvidenceSequence, OperationLensRow, OperationLookupRefusal, OperationLookupReply,
-    OperationWatchEvent, OperationWatchRefusal, PinnedMachineNames, PlacementBid,
-    PlacementBidRequest, RequestedPins, RequestedPlacement, ServiceContainerObservation,
-    ServiceLensRow, ServiceLogLine, ServiceLogStream, ServiceLogsFollowEvent, ServiceLogsRefusal,
-    ServiceLogsRequest, ServiceLogsTailReply, SilenceClassification, SilentMachine,
+    DeployAccepted, DeployRefusal, DeployRequest, KNOWN_API_FEATURES, KnownApiFeature,
+    LensCollection, LensSnapshot, LensWatchEvent, MachineLensRow, MachineRemoveRefusal,
+    MachineRemoveReply, MachineRemoveRequest, MachineStatusLensRow, MachineUpgradeRefusal,
+    MachineUpgradeReply, MachineUpgradeRequest, MachineUpgradeSupervisor, MachineUpgradeUrl,
+    OperationLensRow, OperationLookupRefusal, OperationLookupReply, OperationWatchEvent,
+    OperationWatchRefusal, PinnedMachineNames, PlacementBid, RequestedPins, RequestedPlacement,
+    ServiceContainerObservation, ServiceLensRow, ServiceLogLine, ServiceLogStream,
+    ServiceLogsFollowEvent, ServiceLogsRefusal, ServiceLogsRequest, ServiceLogsTailReply,
 };
 use super::{
     DoctorDocument, NamedRemovalOutcome, PeerRemoveRefusal, PeerRemoveReply, PeerRemoveRequest,
@@ -29,45 +24,27 @@ use super::{
     RouteRemoveRefusal, RouteRemoveReply, RouteRemoveRequest, ServiceRemoveRowRefusal,
     ServiceRemoveRowReply, ServiceRemoveRowRequest, StatusDocument,
 };
-use crate::build::{BuildExecutorEvidence, BuildPlatformExecutorAssignment, BuildSource};
 use crate::corrosion::{
     AcmeHttp01Document, CertHoldingDocument, ClusterDocument, ContainerDocument, CorrosionTable,
     GatewayObservationDocument, HostPortBinding, HostPortBindings, HostPortProtocol,
     MachineDocument, MachineStatusDocument, NameClaim, NamespaceDocument, OperationDocument,
     PeerDocument, Principal, RouteBindingDocument, ServiceDocument, TokenDocument,
 };
-use crate::deploy::EnvValue;
+use crate::deploy::{EnvName, EnvValue};
 use crate::founding::{
     FoundingDriverEnrollment, FoundingRefusal, FoundingRepairCommand, FoundingRequest,
     FoundingResult, FoundingRow, FoundingValidationError,
 };
-use crate::ids::{
-    MachineRowId, NamespaceRowId, OperationId, OperationRowId, RouteBindingRowId, ServiceRowId,
-};
-use crate::install::{
-    AbsoluteInstallPath, ExactPloyzVersion, HostPortAssurance, InstallArtifactSource,
-    InstallArtifactSpec, InstallArtifactVersion, InstallSha256Digest, ReleasePlatformFailure,
-};
+use crate::ids::{MachineRowId, NamespaceRowId, OperationRowId, RouteBindingRowId, ServiceRowId};
 use crate::join::{
     JoinAdmissionReply, JoinAdmissionRequest, JoinMachineSubstrate, MachineEndpointSetRefusal,
     MachineEndpointSetReply, MachineEndpointSetRequest, TokenCreateRefusal, TokenCreateReply,
     TokenCreateRequest, TokenListReply, TokenListRequest, TokenRevokeRefusal, TokenRevokeReply,
     TokenRevokeRequest,
 };
-use crate::machine::roles::{GatewayRole, InstallRolePolicy};
-use crate::operation::{
-    EventSequence, MAX_OPERATION_EVENT_REPLAY_LIMIT, OperationEventReplayLimit,
-    OperationEventReplayPage, OperationEventReplayRequest, OperationInterruptionNextAction,
-    OperationInterruptionStage, OperationInterruptionUncertainWork,
-};
-use crate::operation_api::OperationApiContract;
 use crate::placement::{
     PlacementElimination, PlacementEliminationReason, PlacementMachine, PlacementPick,
     PlacementRefusal, PlacementShortfall,
-};
-use crate::{
-    AcceptedOperation, DeploySubmitError, MAX_LOGS_TAIL_LINES, OperationApiResponse,
-    OpsStatusError, OpsStatusRequest,
 };
 
 /// Generate the complete TypeScript API contract from the Rust domain types.
@@ -80,12 +57,6 @@ pub fn api_typescript() -> String {
     output.push_str(
         "export type SafeInteger<B extends string> = Brand<number, `safe_integer:${B}`>;\n\n",
     );
-    output.push_str(&format!(
-        "export const MAX_OPERATION_EVENT_REPLAY_LIMIT = {MAX_OPERATION_EVENT_REPLAY_LIMIT} as const;\n\n"
-    ));
-    output.push_str(&format!(
-        "export const MAX_LOGS_TAIL_LINES = {MAX_LOGS_TAIL_LINES} as const;\n\n"
-    ));
     output.push_str(&format!(
         "export const API_MAJOR = {API_MAJOR} as const;\n\n"
     ));
@@ -100,36 +71,15 @@ pub fn api_typescript() -> String {
     output.push_str("export type OperationInitiator = Principal;\n\n");
 
     let mut declarations = DeclarationCollector::new(&config);
-    collect_operation_contracts(&mut declarations);
     collect_corrosion_contracts(&mut declarations);
     collect_v2_contracts(&mut declarations);
-    declarations.visit::<OperationApiResponse<AcceptedOperation, DeploySubmitError>>();
 
-    // Some domain types use explicit TypeScript representations. The representation is the
-    // public contract, but ts-rs cannot discover the referenced declarations from a string.
-    declarations.visit::<BuildSource>();
+    // `ServiceEnvironment` uses an explicit record representation, so ts-rs cannot discover
+    // the branded key and value declarations from it.
+    declarations.visit::<EnvName>();
     declarations.visit::<EnvValue>();
-    declarations.visit::<OperationInterruptionStage>();
-    declarations.visit::<OperationInterruptionUncertainWork>();
-    declarations.visit::<OperationInterruptionNextAction>();
-    declarations.declare::<BuildExecutorEvidence>();
-    declarations.visit::<BuildPlatformExecutorAssignment>();
-
-    // These transport-neutral install primitives are part of the public contract even though
-    // not all of them currently appear in an operation request.
-    declarations.visit::<AbsoluteInstallPath>();
-    declarations.visit::<ExactPloyzVersion>();
-    declarations.visit::<InstallArtifactSource>();
-    declarations.visit::<InstallArtifactSpec>();
-    declarations.visit::<InstallArtifactVersion>();
-    declarations.visit::<InstallSha256Digest>();
-    declarations.visit::<ReleasePlatformFailure>();
-    declarations.visit::<GatewayRole>();
-    declarations.visit::<HostPortAssurance>();
-    declarations.visit::<InstallRolePolicy>();
 
     declarations.write_to(&mut output);
-    push_operation_api_contracts(&mut output, &config);
     strip_trailing_whitespace(&output)
 }
 
@@ -230,29 +180,16 @@ fn collect_v2_contracts(declarations: &mut DeclarationCollector<'_>) {
     declarations.visit::<HostPortBindings>();
     declarations.visit::<DeployAccepted>();
     declarations.visit::<DeployRefusal>();
-    declarations.visit::<PlacementBidRequest>();
     declarations.visit::<PlacementBid>();
     declarations.visit::<ServiceContainerObservation>();
-    declarations.visit::<DeployExecuteRequest>();
-    declarations.visit::<DeployVerb>();
-    declarations.visit::<DeployExecuteOutcome>();
     declarations.visit::<PlacementMachine>();
     declarations.visit::<PlacementElimination>();
     declarations.visit::<PlacementEliminationReason>();
     declarations.visit::<PlacementShortfall>();
     declarations.visit::<PlacementPick>();
     declarations.visit::<PlacementRefusal>();
-    declarations.visit::<SilentMachine>();
-    declarations.visit::<SilenceClassification>();
-    declarations.visit::<AnomalousSilenceReason>();
     declarations.visit::<OperationLookupReply>();
     declarations.visit::<OperationLookupRefusal>();
-    declarations.visit::<OperationEvidenceSequence>();
-    declarations.visit::<OperationEvidence>();
-    declarations.visit::<OperationEvidenceEvent>();
-    declarations.visit::<HandshakeObservation>();
-    declarations.visit::<HandshakeObservationUnavailable>();
-    declarations.visit::<HandshakeObservationOutcome>();
     declarations.visit::<OperationWatchRefusal>();
     declarations.visit::<OperationWatchEvent>();
     declarations.visit::<CorrosionLogsTailLines>();
@@ -281,16 +218,6 @@ impl<'a> DeclarationCollector<'a> {
         }
     }
 
-    fn declare<T: TS + 'static>(&mut self) {
-        let name = T::name(self.config);
-        if !self.declared.insert(name.clone()) {
-            return;
-        }
-
-        T::visit_dependencies(self);
-        self.declarations.insert(name, T::decl(self.config));
-    }
-
     fn write_to(self, output: &mut String) {
         for declaration in self.declarations.into_values() {
             output.push_str("export ");
@@ -317,229 +244,26 @@ impl TypeVisitor for DeclarationCollector<'_> {
     }
 }
 
-fn collect_operation_contracts(declarations: &mut DeclarationCollector<'_>) {
-    macro_rules! collect {
-        ($( $marker:ident => $contract:tt ),+ $(,)?) => {
-            $(collect_operation_contract::<crate::operation_api::$marker>(declarations);)+
-        };
-    }
-    crate::operation_api_contracts!(collect);
-}
-
-fn collect_operation_contract<C>(declarations: &mut DeclarationCollector<'_>)
-where
-    C: OperationApiContract,
-    C::Request: TS + 'static,
-    C::Success: TS + 'static,
-    C::Error: TS + 'static,
-{
-    declarations.visit::<C::Request>();
-    declarations.visit::<C::Success>();
-    declarations.visit::<C::Error>();
-}
-
-fn push_operation_api_contracts(output: &mut String, config: &Config) {
-    macro_rules! push_aliases {
-        ($( $marker:ident => $contract:tt ),+ $(,)?) => {
-            $(push_operation_api_aliases_for::<crate::operation_api::$marker>(output, config);)+
-        };
-    }
-    crate::operation_api_contracts!(push_aliases);
-
-    output.push_str("export const OPERATION_API_CONTRACTS = [\n");
-    macro_rules! push_rows {
-        ($( $marker:ident => $contract:tt ),+ $(,)?) => {
-            $(push_operation_api_contract_row_for::<crate::operation_api::$marker>(output, config);)+
-        };
-    }
-    crate::operation_api_contracts!(push_rows);
-    output.push_str("] as const;\n\n");
-    output.push_str(
-        "export type PloyzApiEndpoint = (typeof OPERATION_API_CONTRACTS)[number][\"name\"];\n\n",
-    );
-
-    output.push_str("export type OperationApiRequestByEndpoint = {\n");
-    macro_rules! push_request_map {
-        ($( $marker:ident => $contract:tt ),+ $(,)?) => {
-            $(push_operation_api_request_map_row_for::<crate::operation_api::$marker>(output, config);)+
-        };
-    }
-    crate::operation_api_contracts!(push_request_map);
-    output.push_str("};\n\n");
-
-    output.push_str("export type OperationApiResponseByEndpoint = {\n");
-    macro_rules! push_response_map {
-        ($( $marker:ident => $contract:tt ),+ $(,)?) => {
-            $(push_operation_api_response_map_row_for::<crate::operation_api::$marker>(output);)+
-        };
-    }
-    crate::operation_api_contracts!(push_response_map);
-    output.push_str("};\n");
-}
-
-fn push_operation_api_aliases_for<C>(output: &mut String, config: &Config)
-where
-    C: OperationApiContract,
-    C::Request: TS,
-    C::Success: TS,
-    C::Error: TS,
-{
-    if let Some(alias) = C::REQUEST_ALIAS {
-        output.push_str(&format!(
-            "export type {} = {};\n\n",
-            alias,
-            C::Request::name(config)
-        ));
-    }
-    output.push_str(&format!(
-        "export type {} = OperationApiResponse<{}, {}>;\n\n",
-        C::RESPONSE_ALIAS,
-        C::Success::name(config),
-        C::Error::name(config)
-    ));
-}
-
-fn push_operation_api_contract_row_for<C>(output: &mut String, config: &Config)
-where
-    C: OperationApiContract,
-    C::Request: TS,
-    C::Success: TS,
-    C::Error: TS,
-{
-    output.push_str(&format!(
-        "  {{ name: \"{}\", request: \"{}\", success: \"{}\", error: \"{}\", response: \"{}\" }},\n",
-        C::ENDPOINT.name(),
-        operation_api_request_name_for::<C>(config),
-        C::Success::name(config),
-        C::Error::name(config),
-        C::RESPONSE_ALIAS,
-    ));
-}
-
-fn push_operation_api_request_map_row_for<C>(output: &mut String, config: &Config)
-where
-    C: OperationApiContract,
-    C::Request: TS,
-{
-    output.push_str(&format!(
-        "  \"{}\": {};\n",
-        C::ENDPOINT.name(),
-        operation_api_request_name_for::<C>(config),
-    ));
-}
-
-fn push_operation_api_response_map_row_for<C>(output: &mut String)
-where
-    C: OperationApiContract,
-{
-    output.push_str(&format!(
-        "  \"{}\": {};\n",
-        C::ENDPOINT.name(),
-        C::RESPONSE_ALIAS,
-    ));
-}
-
-fn operation_api_request_name_for<C>(config: &Config) -> String
-where
-    C: OperationApiContract,
-    C::Request: TS,
-{
-    C::REQUEST_ALIAS.map_or_else(|| C::Request::name(config), str::to_owned)
-}
-
-/// Representative serialized values used to detect accidental API drift.
-#[must_use]
-pub fn api_operation_contract_fixture() -> Value {
-    let operation_id = OperationId::try_new("op_123").expect("valid operation id");
-    let start_sequence = EventSequence::try_new(1).expect("valid event sequence");
-    let accepted = AcceptedOperation {
-        operation_id: operation_id.clone(),
-        start_sequence,
-    };
-    let watch_request = OperationEventReplayRequest {
-        operation_id: operation_id.clone(),
-        start_sequence,
-        limit: OperationEventReplayLimit::try_new(100).expect("valid replay limit"),
-    };
-
-    json!({
-        "accepted_operation": value(accepted),
-        "ops_status_request": value(OpsStatusRequest {
-            operation_id: operation_id.clone(),
-        }),
-        "ops_status_error": value(OpsStatusError::NoSuchOperation {
-            operation_id,
-        }),
-        "ops_watch_request": value(watch_request),
-        "operation_event_replay_page": value(OperationEventReplayPage::caught_up(Vec::new())),
-    })
-}
-
-fn value<T: Serialize>(value: T) -> Value {
-    serde_json::to_value(value).expect("operation contract fixture value serializes")
-}
-
 fn strip_trailing_whitespace(value: &str) -> String {
     let mut stripped = String::with_capacity(value.len());
     for line in value.lines() {
         stripped.push_str(line.trim_end());
         stripped.push('\n');
     }
+    stripped.truncate(stripped.trim_end().len());
+    stripped.push('\n');
     stripped
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::operation_api::OperationApiEndpoint;
-
-    #[test]
-    fn generated_contract_contains_no_transport_metadata() {
-        let generated = api_typescript();
-        let registry = generated
-            .split_once("export const OPERATION_API_CONTRACTS = [")
-            .and_then(|(_, contracts)| contracts.split_once("] as const;"))
-            .map(|(contracts, _)| contracts)
-            .expect("operation API contract registry");
-
-        assert!(generated.contains("name: \"deploy.submit\""));
-        assert!(!registry.contains("subject:"));
-        assert!(!registry.contains("execution:"));
-
-        let rows = registry
-            .lines()
-            .filter(|line| line.trim_start().starts_with("{ name:"))
-            .collect::<Vec<_>>();
-        assert_eq!(rows.len(), OperationApiEndpoint::ALL.len());
-        for endpoint in OperationApiEndpoint::ALL {
-            let name = format!("name: \"{}\"", endpoint.name());
-            assert_eq!(
-                rows.iter().filter(|row| row.contains(&name)).count(),
-                1,
-                "endpoint {} must have one generated contract row",
-                endpoint.name()
-            );
-        }
-    }
 
     #[test]
     fn generated_contract_declares_types_referenced_by_explicit_representations() {
         let generated = api_typescript();
 
-        for name in [
-            "BuildSource",
-            "EnvValue",
-            "OperationInterruptionStage",
-            "OperationInterruptionUncertainWork",
-            "OperationInterruptionNextAction",
-            "BuildExecutorEvidence",
-            "BuildPlatformExecutorAssignment",
-        ] {
-            assert!(
-                generated.contains(&format!("export type {name} =")),
-                "missing declaration for {name}"
-            );
-        }
+        assert!(generated.contains("export type EnvValue ="));
     }
 
     #[test]
@@ -586,7 +310,7 @@ mod tests {
         assert!(generated.contains("\"v2.lenses\","));
         assert!(generated.contains("\"v2.namespace_primitives\","));
         assert!(generated.contains("\"v2.deploy\","));
-        assert!(generated.contains("\"v2.operation_evidence\","));
+        assert!(generated.contains("\"v2.operation_status\","));
         assert!(generated.contains("\"v2.logs\","));
         assert!(generated.contains("\"v2.machine_remove\","));
         assert!(generated.contains("\"v2.peer_remove\","));
@@ -644,12 +368,6 @@ mod tests {
             "DeployRefusal",
             "OperationLookupReply",
             "OperationLookupRefusal",
-            "OperationEvidenceSequence",
-            "OperationEvidence",
-            "OperationEvidenceEvent",
-            "HandshakeObservation",
-            "HandshakeObservationUnavailable",
-            "HandshakeObservationOutcome",
             "OperationWatchRefusal",
             "OperationWatchEvent",
             "CorrosionLogsTailLines",
@@ -685,24 +403,5 @@ mod tests {
                 "local-only declaration leaked: {local_only}"
             );
         }
-    }
-
-    #[test]
-    fn accepted_operation_fixture_is_transport_neutral() {
-        let fixture = api_operation_contract_fixture();
-        let accepted = fixture
-            .get("accepted_operation")
-            .and_then(Value::as_object)
-            .expect("accepted operation fixture");
-
-        assert_eq!(
-            accepted,
-            json!({
-                "operation_id": "op_123",
-                "start_sequence": "1",
-            })
-            .as_object()
-            .expect("expected accepted operation object")
-        );
     }
 }

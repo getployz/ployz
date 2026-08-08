@@ -573,9 +573,9 @@ enum CommandCli {
         #[command(subcommand)]
         command: NamespaceCli,
     },
-    /// Deploy the first service in an empty namespace.
+    /// Deploy or update the sole service in a namespace.
     Deploy(DeployArgs),
-    /// List operations or watch durable operation evidence.
+    /// List or watch coarse deploy-operation state.
     Ops {
         #[command(subcommand)]
         command: OpsCli,
@@ -837,7 +837,7 @@ fn parse_published_port(value: &str) -> Result<std::num::NonZeroU16, String> {
 enum OpsCli {
     /// List converged operation summaries.
     List(OpsListArgs),
-    /// Replay and follow one operation's durable evidence.
+    /// Watch one deploy operation's coarse state.
     Watch(OpsWatchArgs),
 }
 

@@ -1,5 +1,4 @@
 use bollard::Docker;
-use ployz_core::build::railpack_pins;
 use ployz_core::corrosion::derive_builtin_wireguard_member;
 use ployz_core::ids::ClusterId;
 use ployz_core::install::{
@@ -350,7 +349,7 @@ async fn render_installed_join_substrate(
     docker: &Docker,
     machine: &DindMachine,
 ) -> Result<String, String> {
-    let artifacts = join_substrate_artifacts()?;
+    let artifacts = FIXED_JOIN_SUBSTRATE_ARTIFACTS;
     let mut digests = Vec::with_capacity(artifacts.len());
     for (artifact, _) in artifacts {
         let source = format!("/opt/ployz/artifacts/{artifact}");
@@ -365,7 +364,7 @@ async fn render_installed_join_substrate(
 }
 
 fn join_substrate_from_digests(digests: &[String]) -> Result<JoinMachineSubstrate, String> {
-    let artifact_contract = join_substrate_artifacts()?;
+    let artifact_contract = FIXED_JOIN_SUBSTRATE_ARTIFACTS;
     if digests.len() != artifact_contract.len() {
         return Err(format!(
             "join substrate requires {} artifact digests, got {}",
@@ -388,13 +387,6 @@ fn join_substrate_from_digests(digests: &[String]) -> Result<JoinMachineSubstrat
     .map_err(|error| error.to_string())
 }
 
-fn join_substrate_artifacts() -> Result<Vec<(&'static str, &'static str)>, String> {
-    let mut artifacts = FIXED_JOIN_SUBSTRATE_ARTIFACTS.to_vec();
-    let railpack = railpack_pins().map_err(|error| error.to_string())?;
-    artifacts.push(("railpack", railpack.install_path()));
-    Ok(artifacts)
-}
-
 fn fixture_install_artifact(
     artifact: &str,
     install_path: &str,
@@ -402,7 +394,6 @@ fn fixture_install_artifact(
 ) -> Result<InstallArtifactSpec, String> {
     let version = match artifact {
         "corrosion" | "corrosion-schema-v1.sql" => CORROSION_VERSION,
-        "railpack" => "0.31.0",
         _ => env!("CARGO_PKG_VERSION"),
     };
     Ok(InstallArtifactSpec {
@@ -754,9 +745,7 @@ mod tests {
         assert!(door.private_key.contains("BEGIN PRIVATE KEY"));
         assert!(door.certificate.contains("BEGIN CERTIFICATE"));
         assert_eq!(door.fingerprint.trim().len(), 64);
-        let digests = (0..join_substrate_artifacts()
-            .expect("checked-in Railpack pins")
-            .len())
+        let digests = (0..FIXED_JOIN_SUBSTRATE_ARTIFACTS.len())
             .map(|index| format!("{index:02x}").repeat(32))
             .collect::<Vec<_>>();
         join_substrate_from_digests(&digests).expect("schema-valid complete join substrate");

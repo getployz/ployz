@@ -11,7 +11,8 @@ use ployz_core::corrosion::{
 use ployz_core::deploy::ZfsPoolName;
 use ployz_core::founding::MINIMUM_ZFS_MEMORY_BYTES;
 use ployz_core::join::{
-    JOIN_DOOR_PORT, JoinBlob, JoinStorageChoice, JoinStorageFacts, ValidatedMachineJoinAccepted,
+    JOIN_DOOR_PORT, JoinArtifactKind, JoinBlob, JoinStorageChoice, JoinStorageFacts,
+    ValidatedMachineJoinAccepted,
 };
 use ployz_core::machine::MachineName;
 use ployz_core::operation::FailureMessage;
@@ -345,10 +346,11 @@ impl LinuxMachineJoinHostEffects {
         let schema = accepted
             .accepted()
             .substrate
-            .artifacts()
-            .iter()
-            .find(|artifact| artifact.install_path.as_str().contains("corrosion-schema"))
-            .ok_or_else(|| failure("accepted substrate has no Corrosion schema artifact"))?;
+            .artifacts_by_kind()
+            .find_map(|(kind, artifact)| {
+                (kind == JoinArtifactKind::CorrosionSchema).then_some(artifact)
+            })
+            .expect("validated substrate contains the Corrosion schema artifact");
         let subscriptions = self.state.path().join("subscriptions");
         fs::create_dir_all(&subscriptions).map_err(failure)?;
         let corrosion = render_corrosion_config(

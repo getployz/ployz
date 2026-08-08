@@ -46,12 +46,8 @@ pub enum JoinAcceptanceValidationError {
     CorrosionSeedDoesNotMatchMachine,
     #[error("accepted machine substrate has no exact Corrosion version")]
     MissingCorrosionVersion,
-    #[error("accepted machine substrate cannot validate the Railpack install path: {detail}")]
-    InvalidRailpackPins { detail: String },
     #[error("accepted machine substrate is missing install artifact {install_path:?}")]
     MissingInstallArtifact { install_path: String },
     #[error("accepted machine substrate repeats install artifact {install_path:?}")]
     DuplicateInstallArtifact { install_path: String },
-    #[error("accepted machine substrate names unknown install artifact {install_path:?}")]
-    UnknownInstallArtifact { install_path: String },
 }

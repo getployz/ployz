@@ -61,7 +61,6 @@ fn bid(machine_id: &str) -> PlacementBid {
     PlacementBid {
         machine_id: machine(machine_id),
         machine_name: machine_name(machine_id),
-        architecture: "x86_64".to_owned(),
         lifecycle: MachineLifecycle::Active,
         free_disk_bytes: 100 * PLACEMENT_FREE_DISK_FLOOR_BYTES,
         free_memory_bytes: 8 * 1024 * 1024 * 1024,

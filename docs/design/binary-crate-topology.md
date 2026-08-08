@@ -36,7 +36,7 @@ boundary (#784).
 
 ## The crate map
 
-Six product crates. Boundaries exist to keep the two expensive-to-rebuild
+Five product crates. Boundaries exist to keep the two expensive-to-rebuild
 crates cheap: `core` is upstream of everything (a rebuild cascades to all), and
 `ployzd` is the downstream tail. A crate boundary shields both from churn in a
 concern that isn't theirs. We keep only boundaries that pay for themselves; we
@@ -52,7 +52,6 @@ crates/
   ployz-host-runner   privileged machine-local imperative effects
                       (ZFS, firewall, command exec, identity mint,
                       content-addressed artifact staging, one-shot join).
-  ployz-build-executor  Dockerfile/Railpack execution mechanics. Unchanged.
   ployz-telemetry     sentry/posthog. Unchanged.
 ebpf/{common,control,program}   unchanged
 testing/{ployz-test-support,ployz-e2e}
@@ -106,10 +105,8 @@ in sync.
 
 ## SDK generation and transport
 
-- **Types**: `ts-rs`, unchanged mechanism. The `export-typescript` and
-  `export-operation-contract` bins move from the deleted `ployz-nats` crate into
-  `core` as `[[bin]]` targets under `--features ts`. `pnpm check:generated`
-  survives as the diff-gate.
+- **Types**: `ts-rs`, unchanged mechanism. The `export-typescript` bin lives in
+  Core behind `--features ts`; `pnpm check:generated` is the diff gate.
 - **Runtime transport**: a thin hand-written client — `fetch()` for
   request/reply, `EventSource` for SSE progress. The `@nats-io/transport-node`
   dependency is dropped. No OpenAPI toolchain, no generated client: the wire is
@@ -142,8 +139,8 @@ Four rules, three of them ~free because they reuse decided machinery:
 3. **Cloud holds the down-adapters, keyed by cluster major.** Stripe's
    ordered-transform-modules idea, living in Cloud/SDK instead of the cluster.
    Built only when a second major exists — YAGNI until then.
-4. **The contract fixture is the tripwire.** `check:generated` already snapshots
-   the contract + operation fixture: additive change grows it (fine), a
+4. **The generated SDK diff is the tripwire.** `check:generated` regenerates
+   the public v2 types: additive change grows them (fine), a
    rename/remove diffs an existing entry and forces a conscious major bump.
 
 Both directions fall out: Cloud-newer-than-cluster forms old-shape requests via
@@ -175,7 +172,7 @@ ployzd/control/sequencer           2.3k   no sequencer, no admission (#782/#785)
 ployzd/control/intent              2.6k   intent files -> Corrosion rows (#785)
 ployzd/control/projection          2.8k   projection -> rows watched live (#785)
 ployzd/control/role_client         1.8k   NATS RPC -> HTTP/JSON
-ployzd/control/operation_evidence  5.6k   -> <=3 rows + local JSONL (#783)
+ployzd/control/operation_evidence  5.6k   -> coarse operation rows (#888)
 ployzd/control/operations         ~21k    sequencer-driven -> imperative ops (heavy rewrite)
 ployzd/roles/machine              ~22k    NATS services -> HTTP api fold + keeper (heavy rewrite)
 host-runner (dead per #784)        4.8k   founder/cloud bootstrap, promote/demote,

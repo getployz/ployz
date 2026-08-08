@@ -192,7 +192,7 @@ jobs:
             /tmp/ployz-dind-ebpf-target
             /tmp/ployz-dind-cargo-registry
             /tmp/ployz-dind-cargo-git
-          key: ployz-release-${{ matrix.slug }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'crates/**/*.rs', 'ebpf/**/Cargo.lock', 'ebpf/**/Cargo.toml', 'ebpf/**/*.rs', 'config/railpack-pins.env', 'corrosion-release.json', 'docs/design/corrosion-schema-v1.sql', 'scripts/build-dind-machine-image.sh', 'scripts/build-ebpf-bytecode.sh', 'scripts/lib.sh') }}
+          key: ployz-release-${{ matrix.slug }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'crates/**/*.rs', 'ebpf/**/Cargo.lock', 'ebpf/**/Cargo.toml', 'ebpf/**/*.rs', 'corrosion-release.json', 'docs/design/corrosion-schema-v1.sql', 'scripts/build-dind-machine-image.sh', 'scripts/build-ebpf-bytecode.sh', 'scripts/lib.sh') }}
           restore-keys: ployz-release-${{ matrix.slug }}-
       - name: Restore macOS build cache
         if: startsWith(matrix.platform, 'darwin/')
@@ -209,25 +209,7 @@ jobs:
           PLOYZ_RELEASE_SKIP_BUILD: ${{ steps.linux-cache.outputs.cache-hit == 'true' && '1' || '0' }}
           PLOYZ_RELEASE_VERSION: ${{ inputs.tag }}
           PLOYZ_RELEASE_PLATFORM: ${{ matrix.platform }}
-        run: |
-          source config/railpack-pins.env
-          case "${PLOYZ_RELEASE_PLATFORM}" in
-            linux/amd64)
-              railpack_archive="${RAILPACK_AMD64_ARCHIVE}"
-              railpack_sha256="${RAILPACK_AMD64_ARCHIVE_SHA256}"
-              ;;
-            linux/arm64)
-              railpack_archive="${RAILPACK_ARM64_ARCHIVE}"
-              railpack_sha256="${RAILPACK_ARM64_ARCHIVE_SHA256}"
-              ;;
-            *)
-              exec bash scripts/package-release.sh
-              ;;
-          esac
-          export PLOYZ_RAILPACK_VERSION="${RAILPACK_VERSION}"
-          export PLOYZ_RAILPACK_ARCHIVE_URL="https://github.com/railwayapp/railpack/releases/download/${RAILPACK_VERSION}/${railpack_archive}"
-          export PLOYZ_RAILPACK_ARCHIVE_SHA256="${railpack_sha256}"
-          bash scripts/package-release.sh
+        run: bash scripts/package-release.sh
       - name: Repair Linux cache ownership
         if: always() && startsWith(matrix.platform, 'linux/')
         run: |

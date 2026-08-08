@@ -8,8 +8,8 @@ use std::net::Ipv4Addr;
 
 use crate::corrosion::{
     ClusterDocument, ContainerDocument, CorrosionNamespaceName, CorrosionServiceName,
-    CorrosionTimestamp, HostPortBindings, MachineDocument, MachineLoadBand, MachineStatusDocument,
-    NamespaceDocument, OperationDocument, Principal, ServiceDocument, ServiceReplicaCount,
+    HostPortBindings, MachineDocument, MachineLoadBand, MachineStatusDocument, NamespaceDocument,
+    OperationDocument, Principal, ServiceDocument, ServiceReplicaCount,
     SourcePrincipalResolutionError, V2ManagedContainerIdentity,
 };
 use crate::deploy::{ContainerRuntimeSpec, ImageReference, RegistryCredential, VolumeName};
@@ -17,8 +17,8 @@ use crate::ids::{
     ContainerId, MachineRowId, NamespaceRowId, OperationRowId, ServiceRowId, TokenId,
 };
 use crate::install::{InstallArtifactVersion, InstallSha256Digest};
+use crate::machine::runtime::ManagedContainerHealthStatus;
 use crate::machine::{MachineLifecycle, MachineName};
-use crate::placement::{PlacementPick, PlacementRefusal};
 
 /// The only supported major version of the v2 HTTP contract.
 pub const API_MAJOR: u16 = 1;
@@ -52,11 +52,13 @@ pub const NAMESPACE_CREATE_ROUTE: &str = "/namespaces/create";
 pub const NAMESPACE_REMOVE_ROUTE: &str = "/namespaces/remove";
 /// Stable endpoint for submitting one service deploy.
 pub const DEPLOY_ROUTE: &str = "/deploy";
-/// Stable endpoint for gathering the answering machine's live placement bid.
-pub const PLACEMENT_BID_ROUTE: &str = "/deploy/bid";
-/// Stable endpoint for executing one deploy verb under a live deploy claim.
-pub const DEPLOY_EXECUTE_ROUTE: &str = "/deploy/execute";
-/// Stable prefix for one operation summary and its driver-local evidence.
+/// Stable endpoint for inspecting one target host before deploy planning.
+pub const DEPLOY_INSPECT_ROUTE: &str = "/deploy/inspect";
+/// Stable endpoint for preparing exact replicas on one target host.
+pub const DEPLOY_PREPARE_ROUTE: &str = "/deploy/prepare";
+/// Stable endpoint for retiring exact observed containers on one target host.
+pub const DEPLOY_RETIRE_ROUTE: &str = "/deploy/retire";
+/// Stable prefix for one coarse operation summary and its watch stream.
 pub const OPERATIONS_ROUTE_PREFIX: &str = "/operations";
 /// Stable prefix for service log access.
 pub const SERVICE_LOGS_ROUTE_PREFIX: &str = "/services";
@@ -95,10 +97,8 @@ pub enum KnownApiFeature {
     NamespacePrimitives,
     #[serde(rename = "v2.deploy")]
     Deploy,
-    #[serde(rename = "v2.placement")]
-    Placement,
-    #[serde(rename = "v2.operation_evidence")]
-    OperationEvidence,
+    #[serde(rename = "v2.operation_status")]
+    OperationStatus,
     #[serde(rename = "v2.logs")]
     Logs,
     #[serde(rename = "v2.diagnostics")]
@@ -127,8 +127,7 @@ impl KnownApiFeature {
             Self::JoinDoor => "v2.join_door",
             Self::NamespacePrimitives => "v2.namespace_primitives",
             Self::Deploy => "v2.deploy",
-            Self::Placement => "v2.placement",
-            Self::OperationEvidence => "v2.operation_evidence",
+            Self::OperationStatus => "v2.operation_status",
             Self::Logs => "v2.logs",
             Self::Diagnostics => "v2.diagnostics",
             Self::PeerRemove => "v2.peer_remove",
@@ -139,7 +138,7 @@ impl KnownApiFeature {
     }
 }
 
-/// Every capability this version of Core knows how to name.
+/// Every capability this API version knows how to name.
 pub const KNOWN_API_FEATURES: &[KnownApiFeature] = &[
     KnownApiFeature::Founding,
     KnownApiFeature::Lenses,
@@ -150,8 +149,7 @@ pub const KNOWN_API_FEATURES: &[KnownApiFeature] = &[
     KnownApiFeature::JoinDoor,
     KnownApiFeature::NamespacePrimitives,
     KnownApiFeature::Deploy,
-    KnownApiFeature::Placement,
-    KnownApiFeature::OperationEvidence,
+    KnownApiFeature::OperationStatus,
     KnownApiFeature::Logs,
     KnownApiFeature::Diagnostics,
     KnownApiFeature::PeerRemove,
@@ -175,7 +173,7 @@ impl From<KnownApiFeature> for ApiFeature {
 }
 
 impl ApiFeature {
-    /// Creates an additive capability name not yet known by this Core version.
+    /// Creates an additive capability name not yet known by this API version.
     #[must_use]
     pub fn other(name: impl Into<String>) -> Self {
         Self::Other(name.into())
@@ -276,7 +274,7 @@ pub fn operation_route(operation_id: &OperationRowId) -> String {
     format!("{OPERATIONS_ROUTE_PREFIX}/{operation_id}")
 }
 
-/// Builds the full-replay-then-follow route for one operation's evidence.
+/// Builds the coarse-state watch route for one deploy operation.
 #[must_use]
 pub fn operation_watch_route(operation_id: &OperationRowId) -> String {
     format!("{}/watch", operation_route(operation_id))
@@ -382,7 +380,7 @@ pub enum HealthGatePolicy {
 
 /// The complete secret-bearing runtime input for one service deploy.
 ///
-/// Environment values are redacted by their Core value type and are never
+/// Environment values are redacted by their value type and are never
 /// copied into durable operation evidence or Corrosion rows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -391,6 +389,10 @@ pub struct DeployRequest {
     pub namespace_name: CorrosionNamespaceName,
     pub service_name: CorrosionServiceName,
     pub image: ImageReference,
+    /// A deploy-scoped pull credential. It may enter node-local workflow
+    /// history, but is never copied into Corrosion or operation rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<RegistryCredential>,
     pub runtime: ContainerRuntimeSpec,
     #[serde(default)]
     pub health_gate: HealthGatePolicy,
@@ -480,7 +482,7 @@ pub enum PinnedMachineNamesError {
     Empty,
 }
 
-/// The operation handle returned after the driver durably accepts a deploy.
+/// The operation handle returned after the controller accepts a deploy.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
@@ -502,35 +504,6 @@ pub enum DeployRefusal {
         namespace_name: CorrosionNamespaceName,
         namespace_ids: Vec<NamespaceRowId>,
     },
-    /// The namespace's sole service holds a different name; a deploy only
-    /// redeploys the incumbent, and `ployz service remove` frees the namespace.
-    DifferentService {
-        namespace_id: NamespaceRowId,
-        incumbent_service_name: CorrosionServiceName,
-    },
-    /// More than one service occupies the namespace; the driver refuses to
-    /// guess which one the deploy replaces.
-    MultipleServices {
-        namespace_id: NamespaceRowId,
-        service_ids: Vec<ServiceRowId>,
-    },
-    /// Route bindings exist without any service, so the namespace is neither
-    /// empty nor redeployable.
-    RoutesWithoutServices {
-        namespace_id: NamespaceRowId,
-    },
-    /// The deterministic pick refused to derive any target set.
-    Placement {
-        refusal: PlacementRefusal,
-    },
-    /// A bare replica-count change cannot apply to a global service; the
-    /// converting command is an explicit `--mode replicated` deploy.
-    ReplicasOnGlobalService,
-    /// A requested pin names no accepted roster machine.
-    UnknownPinnedMachine {
-        machine_name: MachineName,
-    },
-    BridgeUnavailable,
 }
 
 impl DeployRefusal {
@@ -545,21 +518,6 @@ impl DeployRefusal {
     }
 }
 
-/// Mesh-authenticated request for one machine's live placement bid.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct PlacementBidRequest {
-    pub namespace_id: NamespaceRowId,
-    pub service_id: ServiceRowId,
-    /// The service's declared named volumes; the reply reports which of
-    /// these the answering machine holds.
-    pub volumes: BTreeSet<VolumeName>,
-    /// The incumbent's active deploy; `None` on a first deploy.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub active_deploy: Option<OperationRowId>,
-}
-
 /// One machine's live placement testimony, gathered at point of use and
 /// never stored.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -568,8 +526,6 @@ pub struct PlacementBidRequest {
 pub struct PlacementBid {
     pub machine_id: MachineRowId,
     pub machine_name: MachineName,
-    /// The machine's reported CPU architecture, e.g. `x86_64`.
-    pub architecture: String,
     pub lifecycle: MachineLifecycle,
     pub free_disk_bytes: u64,
     pub free_memory_bytes: u64,
@@ -603,115 +559,124 @@ pub struct ServiceContainerObservation {
     pub named_volumes: BTreeSet<VolumeName>,
 }
 
-/// One deploy verb the driver commands on a target machine. Every verb is
-/// bound to its operation and service so the responder can authorize it
-/// against the live deploy claim on its own replica.
+/// One target host's normalized live Docker observation for deploy planning.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct DeployExecuteRequest {
-    pub operation_id: OperationRowId,
-    pub namespace_id: NamespaceRowId,
-    pub service_id: ServiceRowId,
-    pub verb: DeployVerb,
+pub struct DeployContainerObservation {
+    pub container_id: ContainerId,
+    pub identity: V2ManagedContainerIdentity,
+    pub state: DeployContainerState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health: Option<ManagedContainerHealthStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_image_identity: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub named_volumes: BTreeSet<VolumeName>,
 }
 
-/// The Docker effect a deploy verb performs, mirroring the driver's local
-/// deploy runtime surface.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum DeployVerb {
-    /// Lists this service's containers from live Docker.
-    ListServiceContainers,
-    /// Pulls the exact resolved image, forwarding the driver's registry
-    /// credential. The credential never reaches evidence or logs.
-    PullImage {
-        image: ImageReference,
+/// The deploy-relevant state of one observed container.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DeployContainerState {
+    Running {
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        credential: Option<RegistryCredential>,
+        ip: Option<Ipv4Addr>,
     },
-    /// Creates this operation's container from the resolved image and the
-    /// request's runtime spec.
-    CreateContainer {
-        image: ImageReference,
-        runtime: Box<ContainerRuntimeSpec>,
-        /// The namespace's human name, which derives the container's
-        /// internal DNS search domain.
-        namespace_name: CorrosionNamespaceName,
-        /// Host-published ports for a global service's container; empty for
-        /// every replicated create.
-        #[serde(default, skip_serializing_if = "HostPortBindings::is_empty")]
-        host_ports: HostPortBindings,
-    },
-    /// Starts a created container, or restarts a stopped incumbent after a
-    /// failed cutover gate. The responder refuses a container outside the
-    /// verb's service scope.
-    StartContainer { container_id: ContainerId },
-    /// Stops the container only while its live Docker identity still matches
-    /// `expected`; a newer deploy's container refuses instead of stopping.
-    StopContainer {
-        container_id: ContainerId,
-        expected: V2ManagedContainerIdentity,
-    },
-    /// Polls the started container to a health verdict, or resolves only
-    /// its endpoint when the deploy skips the gate.
-    HealthGate {
-        container_id: ContainerId,
-        policy: HealthGatePolicy,
-    },
-    /// Removes the container only while its live Docker identity still
-    /// matches `expected`; a newer deploy's container refuses instead of
-    /// being removed.
-    RemoveContainer {
-        container_id: ContainerId,
-        expected: V2ManagedContainerIdentity,
-    },
+    Stopped,
+    /// Paused, restarting, stopping, dead, or otherwise not safely reusable.
+    Indeterminate,
 }
 
-/// The typed outcome of one deploy verb.
-///
-/// [`Self::ClaimNotYetVisible`] is replication lag, not a refusal: the
-/// responder's replica has not converged on the operation row yet, and the
-/// driver retries within a bounded budget.
+/// Machine-authenticated request for fresh target-host deploy facts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum DeployExecuteOutcome {
-    ServiceContainers {
-        containers: Vec<ServiceContainerObservation>,
+pub struct DeployInspectRequest {
+    pub appointment_id: crate::corrosion::ControllerAppointmentId,
+    pub namespace_id: NamespaceRowId,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub volumes: BTreeSet<VolumeName>,
+}
+
+/// Fresh target-host deploy facts or one bounded local failure.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DeployInspectOutcome {
+    Inspected {
+        bridge_ready: bool,
+        containers: Vec<DeployContainerObservation>,
+        volumes_held: BTreeSet<VolumeName>,
     },
-    ImagePulled,
-    ContainerCreated {
-        container_id: ContainerId,
+    Failed {},
+}
+
+/// One exact desired replica on the answering target host.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeployDesiredReplica {
+    pub identity: V2ManagedContainerIdentity,
+    #[serde(default, skip_serializing_if = "HostPortBindings::is_empty")]
+    pub host_ports: HostPortBindings,
+}
+
+/// One exact observed container that a deploy may stop or remove.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeployObservedContainer {
+    pub container_id: ContainerId,
+    pub identity: V2ManagedContainerIdentity,
+}
+
+/// One target host's complete service preparation request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeployPrepareRequest {
+    pub appointment_id: crate::corrosion::ControllerAppointmentId,
+    /// Stable node-local workflow identity; every replica must carry it.
+    pub operation_id: OperationRowId,
+    pub namespace_name: CorrosionNamespaceName,
+    pub image: ImageReference,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<RegistryCredential>,
+    pub runtime: ContainerRuntimeSpec,
+    pub health_gate: HealthGatePolicy,
+    pub replicas: Vec<DeployDesiredReplica>,
+    /// The only prior deploy generation this workflow may stop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predecessor_deploy: Option<OperationRowId>,
+}
+
+/// One exact replica prepared and creation-gated on its target host.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeployPreparedReplica {
+    pub container_id: ContainerId,
+    pub identity: V2ManagedContainerIdentity,
+    pub ip: Ipv4Addr,
+}
+
+/// The terminal answer from one target-host preparation attempt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DeployPrepareOutcome {
+    Prepared {
+        /// The canonical digest-pinned image used for every returned replica.
+        image: ImageReference,
+        replicas: Vec<DeployPreparedReplica>,
     },
-    ContainerStarted,
-    ContainerStopped,
-    HealthGated {
-        #[cfg_attr(feature = "ts", ts(type = "string"))]
-        ip: Ipv4Addr,
-    },
-    ContainerRemoved,
-    /// The live container's recovered Docker identity does not match the
-    /// verb's expected identity; the verb refused rather than touch another
-    /// deploy's container.
-    ContainerIdentityMismatch {
-        actual: V2ManagedContainerIdentity,
-    },
-    /// The calling machine is not the driver recorded on the operation.
-    CallerNotDriver {
-        driver: MachineRowId,
-    },
-    /// The operation is terminal; no further verbs may act under it.
-    ClaimTerminal,
-    /// The verb's namespace or service does not match the operation's
-    /// target.
-    ServiceMismatch,
-    ClaimNotYetVisible,
-    /// The verb ran and failed; the diagnostic is redaction-safe.
-    Failed {
-        diagnostic: String,
-    },
+    Refused {},
+    Failed {},
+}
+
+/// Machine-authenticated request to retire exact observed containers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeployRetireRequest {
+    pub appointment_id: crate::corrosion::ControllerAppointmentId,
+    /// Stable node-local workflow identity for this cleanup request.
+    pub operation_id: OperationRowId,
+    pub containers: Vec<DeployObservedContainer>,
+}
+
+/// The terminal answer from one target-host retirement attempt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DeployRetireOutcome {
+    Retired,
+    Refused {},
+    Failed {},
 }
 
 /// One operation summary returned by its row id.
@@ -731,226 +696,21 @@ pub enum OperationLookupRefusal {
     NotFound { operation_id: OperationRowId },
 }
 
-/// A positive, stable sequence in one operation's durable evidence file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "ts",
-    ts(type = "SafeInteger<\"OperationEvidenceSequence\">")
-)]
-#[serde(try_from = "u64", into = "u64")]
-pub struct OperationEvidenceSequence(u64);
-
-impl OperationEvidenceSequence {
-    pub fn try_new(value: u64) -> Result<Self, OperationEvidenceSequenceError> {
-        if value == 0 {
-            return Err(OperationEvidenceSequenceError);
-        }
-        Ok(Self(value))
-    }
-
-    #[must_use]
-    pub const fn get(self) -> u64 {
-        self.0
-    }
-}
-
-impl TryFrom<u64> for OperationEvidenceSequence {
-    type Error = OperationEvidenceSequenceError;
-
-    fn try_from(value: u64) -> Result<Self, Self::Error> {
-        Self::try_new(value)
-    }
-}
-
-impl From<OperationEvidenceSequence> for u64 {
-    fn from(value: OperationEvidenceSequence) -> Self {
-        value.get()
-    }
-}
-
-/// Sequence zero cannot identify a durable operation event.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("operation evidence sequence must be positive")]
-pub struct OperationEvidenceSequenceError;
-
-/// Typed, redaction-safe progress recorded in driver-local JSONL evidence.
-///
-/// [`Self::Unrecognized`] is the additive-skew catch-all: a reader older
-/// than the writing daemon deserializes any future evidence kind into it
-/// instead of failing the replay.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum OperationEvidence {
-    Created,
-    OpClaimWon,
-    OpClaimLost {
-        winner: OperationRowId,
-    },
-    /// The bids and silences a placement gather observed; together with
-    /// [`Self::PlacementPicked`] it replays the pick from JSONL.
-    PlacementGathered {
-        bids: Vec<PlacementBid>,
-        silent: Vec<SilentMachine>,
-    },
-    PlacementPicked {
-        pick: PlacementPick,
-    },
-    DebrisSwept {
-        removed: Vec<ContainerId>,
-    },
-    PullingImage,
-    ImageResolved,
-    ContainerCreated {
-        container_id: ContainerId,
-    },
-    ContainerStarted {
-        container_id: ContainerId,
-    },
-    HealthGateSkipped,
-    IncumbentStopped {
-        container_id: ContainerId,
-    },
-    IncumbentRestarted {
-        container_id: ContainerId,
-    },
-    PromotionPrepared,
-    RowsCommitted,
-    ServiceClaimWon,
-    ServiceClaimLost {
-        winner: ServiceRowId,
-    },
-    Drained,
-    IncumbentRemoved {
-        container_id: ContainerId,
-    },
-    Terminal {
-        operation: Box<OperationDocument>,
-    },
-    #[serde(other)]
-    Unrecognized,
-}
-
-/// One roster machine that yielded no placement bid, with why its silence
-/// was expected or alarming.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct SilentMachine {
-    pub machine_id: MachineRowId,
-    pub classification: SilenceClassification,
-}
-
-/// Whether a machine's placement silence was already explained by its stale
-/// WireGuard handshake, or is the alarming kind.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum SilenceClassification {
-    /// The peer's handshake was already stale, so it was skipped without
-    /// burning the RPC timeout.
-    ExpectedSilent { handshake_age_seconds: u64 },
-    /// A fresh peer that did not yield a bid.
-    AnomalousSilent { reason: AnomalousSilenceReason },
-}
-
-/// Why a fresh peer yielded no bid.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum AnomalousSilenceReason {
-    /// The bid transport failed before a well-formed reply arrived.
-    TransportFailed,
-    /// The bid did not complete within its bounded budget.
-    TimedOut,
-    /// The responder answered a non-OK status instead of a bid.
-    Declined { status: u16 },
-}
-
-/// One durable operation detail event. Sequences start at one for every attach.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct OperationEvidenceEvent {
-    pub sequence: OperationEvidenceSequence,
-    pub timestamp: CorrosionTimestamp,
-    /// The machine the event acts on; `None` when the event names no single
-    /// machine.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub machine: Option<MachineRowId>,
-    pub evidence: OperationEvidence,
-}
-
-/// A fixed point-of-use WireGuard handshake observation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
-pub enum HandshakeObservation {
-    Ago {
-        observed_at: CorrosionTimestamp,
-        age_seconds: u64,
-    },
-    Never {
-        observed_at: CorrosionTimestamp,
-    },
-}
-
-/// Why a point-of-use handshake observation could not be obtained.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum HandshakeObservationUnavailable {
-    OwnerNotRostered,
-    PeerAbsent,
-    UnsupportedProvider,
-    KeeperUnavailable,
-    KeeperTimedOut,
-    KeeperProtocol,
-}
-
-/// Either a real fixed observation or an explicit reason it is unavailable.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum HandshakeObservationOutcome {
-    Observed {
-        observation: HandshakeObservation,
-    },
-    Unavailable {
-        reason: HandshakeObservationUnavailable,
-    },
-}
-
-/// A typed refusal to replay or follow one operation's driver-local detail.
+/// A typed refusal to follow one coarse operation row.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OperationWatchRefusal {
-    NotFound {
-        operation_id: OperationRowId,
-    },
-    OwnerNoLongerRostered {
-        operation: OperationLookupReply,
-        observation: HandshakeObservationOutcome,
-    },
-    DriverDark {
-        operation: OperationLookupReply,
-        observation: HandshakeObservationOutcome,
-    },
-    DetailUnavailable {
-        operation: OperationLookupReply,
-    },
-    ProxyLoop,
+    NotFound { operation_id: OperationRowId },
 }
 
-/// The public SSE envelope for full replay followed by live operation detail.
+/// A snapshot followed by coarse Corrosion row changes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OperationWatchEvent {
-    Evidence { event: OperationEvidenceEvent },
-    Terminal { refusal: Box<OperationWatchRefusal> },
+    State { operation: OperationLookupReply },
+    Terminal { operation: OperationLookupReply },
 }
 
 impl OperationWatchEvent {
@@ -958,7 +718,7 @@ impl OperationWatchEvent {
     #[must_use]
     pub const fn event_name(&self) -> &'static str {
         match self {
-            Self::Evidence { .. } => "evidence",
+            Self::State { .. } => "state",
             Self::Terminal { .. } => "terminal",
         }
     }
@@ -1076,10 +836,6 @@ pub enum ServiceLogsRefusal {
         /// `None` when the owning machine's roster row is no longer readable.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         machine_name: Option<MachineName>,
-    },
-    DriverDark {
-        machine_id: MachineRowId,
-        observation: HandshakeObservationOutcome,
     },
     RuntimeUnavailable {
         machine_id: MachineRowId,
@@ -1237,8 +993,9 @@ pub enum V2Route {
     NamespaceCreate,
     NamespaceRemove,
     Deploy,
-    PlacementBid,
-    DeployExecute,
+    DeployInspect,
+    DeployPrepare,
+    DeployRetire,
     Operation(OperationRowId),
     OperationWatch(OperationRowId),
     ServiceLogsTail(ServiceRowId),
@@ -1261,6 +1018,27 @@ pub enum V2Method {
 }
 
 impl V2Route {
+    /// Whether this request changes cluster truth and therefore belongs on the
+    /// preferred controller. Target-local host effects are deliberately not
+    /// included.
+    #[must_use]
+    pub const fn is_controller_mutation(&self) -> bool {
+        matches!(
+            self,
+            Self::TokenCreate
+                | Self::TokenRevoke(_)
+                | Self::MachineEndpointSet
+                | Self::MachineRemove
+                | Self::NamespaceCreate
+                | Self::NamespaceRemove
+                | Self::Deploy
+                | Self::PeerRemove
+                | Self::ServiceRemove
+                | Self::RouteRemove
+                | Self::RouteAttach
+        )
+    }
+
     /// Parses an exact v2 route path. Query strings are not part of a route.
     #[must_use]
     pub fn parse(path: &str) -> Option<Self> {
@@ -1312,11 +1090,14 @@ impl V2Route {
         if path == DEPLOY_ROUTE {
             return Some(Self::Deploy);
         }
-        if path == PLACEMENT_BID_ROUTE {
-            return Some(Self::PlacementBid);
+        if path == DEPLOY_INSPECT_ROUTE {
+            return Some(Self::DeployInspect);
         }
-        if path == DEPLOY_EXECUTE_ROUTE {
-            return Some(Self::DeployExecute);
+        if path == DEPLOY_PREPARE_ROUTE {
+            return Some(Self::DeployPrepare);
+        }
+        if path == DEPLOY_RETIRE_ROUTE {
+            return Some(Self::DeployRetire);
         }
         if path == MACHINE_REMOVE_ROUTE {
             return Some(Self::MachineRemove);
@@ -1392,8 +1173,9 @@ impl V2Route {
             Self::NamespaceCreate => NAMESPACE_CREATE_ROUTE.to_owned(),
             Self::NamespaceRemove => NAMESPACE_REMOVE_ROUTE.to_owned(),
             Self::Deploy => DEPLOY_ROUTE.to_owned(),
-            Self::PlacementBid => PLACEMENT_BID_ROUTE.to_owned(),
-            Self::DeployExecute => DEPLOY_EXECUTE_ROUTE.to_owned(),
+            Self::DeployInspect => DEPLOY_INSPECT_ROUTE.to_owned(),
+            Self::DeployPrepare => DEPLOY_PREPARE_ROUTE.to_owned(),
+            Self::DeployRetire => DEPLOY_RETIRE_ROUTE.to_owned(),
             Self::Operation(operation_id) => operation_route(operation_id),
             Self::OperationWatch(operation_id) => operation_watch_route(operation_id),
             Self::ServiceLogsTail(service_id) => service_logs_tail_route(service_id),
@@ -1430,8 +1212,9 @@ impl V2Route {
             | Self::NamespaceCreate
             | Self::NamespaceRemove
             | Self::Deploy
-            | Self::PlacementBid
-            | Self::DeployExecute
+            | Self::DeployInspect
+            | Self::DeployPrepare
+            | Self::DeployRetire
             | Self::ServiceLogsTail(_)
             | Self::ServiceLogsFollow(_)
             | Self::MachineRemove
@@ -1456,9 +1239,10 @@ impl V2Route {
             Self::MachineRemove => KnownApiFeature::MachineRemove,
             Self::Join => KnownApiFeature::JoinDoor,
             Self::NamespaceCreate | Self::NamespaceRemove => KnownApiFeature::NamespacePrimitives,
-            Self::Deploy => KnownApiFeature::Deploy,
-            Self::PlacementBid | Self::DeployExecute => KnownApiFeature::Placement,
-            Self::Operation(_) | Self::OperationWatch(_) => KnownApiFeature::OperationEvidence,
+            Self::Deploy | Self::DeployInspect | Self::DeployPrepare | Self::DeployRetire => {
+                KnownApiFeature::Deploy
+            }
+            Self::Operation(_) | Self::OperationWatch(_) => KnownApiFeature::OperationStatus,
             Self::ServiceLogsTail(_) | Self::ServiceLogsFollow(_) => KnownApiFeature::Logs,
             Self::Status | Self::Doctor => KnownApiFeature::Diagnostics,
             Self::PeerRemove => KnownApiFeature::PeerRemove,
@@ -1473,7 +1257,7 @@ impl V2Route {
     pub const fn accepts_principal(&self, principal: &Principal) -> bool {
         match self {
             Self::Join => matches!(principal, Principal::ApiToken { .. }),
-            Self::PlacementBid | Self::DeployExecute => {
+            Self::DeployInspect | Self::DeployPrepare | Self::DeployRetire => {
                 matches!(principal, Principal::Machine { .. })
             }
             Self::TokenCreate

@@ -2,14 +2,9 @@
 //! literal does not satisfy the id's invariants.
 
 use ployz_core::ids::{
-    CertId, ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
-    OperationId, ServiceId, StepId,
+    ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId, StepId,
 };
-use ployz_core::machine::{JoinTokenExpiresAt, JoinTokenRedeemedAt, MachineName, RawJoinToken};
-use ployz_core::operation::{
-    CancellationReason, EventSequence, FailureMessage, OperationEventRecordedAtUnixMs,
-    OperationEventReplayLimit, OperationIdempotencyKey, RouteHostname, RoutePort,
-};
+use ployz_core::operation::{RouteHostname, RoutePort};
 
 #[must_use]
 pub fn machine_id(value: &str) -> MachineId {
@@ -27,18 +22,8 @@ pub fn namespace_id(value: &str) -> NamespaceId {
 }
 
 #[must_use]
-pub fn idempotency_key(value: &str) -> OperationIdempotencyKey {
-    OperationIdempotencyKey::try_new(value).expect("valid idempotency key")
-}
-
-#[must_use]
 pub fn service_id(value: &str) -> ServiceId {
     ServiceId::try_new(value).expect("valid service id")
-}
-
-#[must_use]
-pub fn namespace_revision_id(value: &str) -> NamespaceRevisionId {
-    NamespaceRevisionId::try_new(value).expect("valid namespace revision id")
 }
 
 #[must_use]
@@ -57,31 +42,6 @@ pub fn step_id(value: &str) -> StepId {
 }
 
 #[must_use]
-pub fn cert_id(value: &str) -> CertId {
-    CertId::try_new(value).expect("valid cert id")
-}
-
-#[must_use]
-pub fn machine_name(value: &str) -> MachineName {
-    MachineName::try_new(value).expect("valid machine name")
-}
-
-#[must_use]
-pub fn raw_join_token(value: &str) -> RawJoinToken {
-    RawJoinToken::try_new(value).expect("valid raw join token")
-}
-
-#[must_use]
-pub fn join_token_expires_at(value: u64) -> JoinTokenExpiresAt {
-    JoinTokenExpiresAt::try_new(value).expect("valid join token expiry")
-}
-
-#[must_use]
-pub fn join_token_redeemed_at(value: u64) -> JoinTokenRedeemedAt {
-    JoinTokenRedeemedAt::try_new(value).expect("valid join time")
-}
-
-#[must_use]
 pub fn route_hostname(value: &str) -> RouteHostname {
     RouteHostname::try_new(value).expect("valid route hostname")
 }
@@ -89,29 +49,4 @@ pub fn route_hostname(value: &str) -> RouteHostname {
 #[must_use]
 pub fn route_port(value: u16) -> RoutePort {
     RoutePort::try_new(value).expect("valid route port")
-}
-
-#[must_use]
-pub fn event_sequence(value: u64) -> EventSequence {
-    EventSequence::try_new(value).expect("valid event sequence")
-}
-
-#[must_use]
-pub fn operation_event_recorded_at(value: u64) -> OperationEventRecordedAtUnixMs {
-    OperationEventRecordedAtUnixMs::try_new(value).expect("valid operation event timestamp")
-}
-
-#[must_use]
-pub fn event_replay_limit(value: u16) -> OperationEventReplayLimit {
-    OperationEventReplayLimit::try_new(value).expect("valid event replay limit")
-}
-
-#[must_use]
-pub fn failure_message(value: &str) -> FailureMessage {
-    FailureMessage::try_new(value).expect("valid failure message")
-}
-
-#[must_use]
-pub fn cancellation_reason(value: &str) -> CancellationReason {
-    CancellationReason::try_new(value).expect("valid cancellation reason")
 }

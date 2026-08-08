@@ -665,7 +665,6 @@ fn query_token_environment_and_artifact_contracts_are_exact() {
             ArtifactKind::EbpfCtl,
             ArtifactKind::Corrosion,
             ArtifactKind::CorrosionSchema,
-            ArtifactKind::Railpack,
         ]
     );
 }

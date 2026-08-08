@@ -4,7 +4,7 @@ use std::str::FromStr;
 
 use ployz_core::corrosion::{
     AcmeHttp01Document, AutomaticHostnameMode, CertHoldingDocument, ClusterDocument,
-    ContainerDocument, CorrosionBasicOperation, CorrosionDeployTargets, CorrosionDocument,
+    ContainerDocument, ControllerAppointmentId, ControllerDocument, CorrosionDocument,
     CorrosionDocumentVersion, CorrosionNamespaceName, CorrosionServiceName, CorrosionTable,
     CorrosionTimestamp, GatewayObservationDocument, GatewayProjectionAggregateFailure,
     GatewayProjectionInputKind, GatewayRouteAvailability, GatewayRouteObservation,
@@ -16,7 +16,7 @@ use ployz_core::corrosion::{
     PloyzDnsTargetState, RouteBindingDocument, ServiceDocument, ServicePlacement,
     ServiceReplicaCount, Sha256Hex, StorageMode, TokenDocument, fingerprint_env_value,
 };
-use ployz_core::deploy::{EnvValue, ImageReference};
+use ployz_core::deploy::{EnvValue, ImageReference, ReplicaSlot};
 use ployz_core::ids::{
     ClusterId, CorrosionUlid, MachineId, MachineRowId, NamespaceId, NamespaceRowId, OperationId,
     OperationRowId, PeerId, RouteBindingRowId, ServiceId, ServiceRowId, TokenId,
@@ -444,7 +444,7 @@ fn generated_column_json_paths_match_typed_documents() {
             CorrosionTable::Containers,
             &["machine_id", "service_id", "namespace_id"],
         ),
-        (CorrosionTable::Operations, &["kind", "state", "machine_id"]),
+        (CorrosionTable::Operations, &["machine_id"]),
         (
             CorrosionTable::CertHoldings,
             &["hostname", "machine_id", "expires_at"],
@@ -500,42 +500,12 @@ fn named_documents_expose_scope_aware_claims() {
 }
 
 #[test]
-fn every_corrosion_operation_variant_roundtrips_without_flattened_key_collisions() {
-    let initiator = || OperationInitiator::Peer {
-        peer_id: PeerId::try_new(ULID_B).expect("peer id"),
-    };
-    let basic = |operation| {
-        OperationDocument::basic_created(
-            version(),
-            cluster_id(),
-            machine_id(),
-            initiator(),
-            operation,
-            timestamp("2026-08-04T10:00:00Z"),
-        )
-    };
-    let variants = vec![
-        basic(CorrosionBasicOperation::Build {
-            service_id: service_id(),
-        }),
-        operation_document(),
-        basic(CorrosionBasicOperation::MachineAdd {
-            target_machine_id: machine_id(),
-        }),
-        basic(CorrosionBasicOperation::MachineRemove {
-            target_machine_id: machine_id(),
-        }),
-        basic(CorrosionBasicOperation::Recovery {
-            target_machine_id: machine_id(),
-        }),
-    ];
-
-    for document in variants {
-        let encoded = serde_json::to_string(&document).expect("operation document serializes");
-        let decoded = serde_json::from_str::<OperationDocument>(&encoded)
-            .expect("operation document round-trips");
-        assert_eq!(decoded, document);
-    }
+fn deploy_operation_roundtrips_without_flattened_key_collisions() {
+    let document = operation_document();
+    let encoded = serde_json::to_string(&document).expect("operation document serializes");
+    let decoded = serde_json::from_str::<OperationDocument>(&encoded)
+        .expect("operation document round-trips");
+    assert_eq!(decoded, document);
 }
 
 struct DocumentFixture {
@@ -564,6 +534,7 @@ fn document_fixtures() -> Vec<DocumentFixture> {
         fixture(namespace_document()),
         fixture(service_document()),
         fixture(route_binding_document()),
+        fixture(controller_document()),
         fixture(container_document()),
         fixture(machine_status_document()),
         fixture(gateway_observation_document()),
@@ -582,6 +553,7 @@ fn deserialize_fixture(table: CorrosionTable, value: Value) {
         CorrosionTable::Namespaces => deserialize::<NamespaceDocument>(value),
         CorrosionTable::Services => deserialize::<ServiceDocument>(value),
         CorrosionTable::RouteBindings => deserialize::<RouteBindingDocument>(value),
+        CorrosionTable::Controller => deserialize::<ControllerDocument>(value),
         CorrosionTable::Containers => deserialize::<ContainerDocument>(value),
         CorrosionTable::MachineStatus => deserialize::<MachineStatusDocument>(value),
         CorrosionTable::GatewayObservations => deserialize::<GatewayObservationDocument>(value),
@@ -647,6 +619,15 @@ fn cluster_document() -> ClusterDocument {
         provider: MeshProvider::BuiltinWireguard,
         acme_directory_url: "https://acme.example/directory".to_owned(),
         acme_contact: Some("mailto:ops@example.com".to_owned()),
+    }
+}
+
+fn controller_document() -> ControllerDocument {
+    ControllerDocument {
+        v: version(),
+        cluster_id: cluster_id(),
+        preferred_machine_id: machine_id(),
+        appointment_id: ControllerAppointmentId::try_new(ULID_B).expect("appointment id"),
     }
 }
 
@@ -751,6 +732,7 @@ fn container_document() -> ContainerDocument {
         machine_id: machine_id(),
         service_id: service_id(),
         namespace_id: namespace_id(),
+        replica_slot: ReplicaSlot::Global,
         ip: Ipv4Addr::new(10, 210, 20, 2),
         deploy: operation_id(),
     }
@@ -809,7 +791,7 @@ fn operation_document() -> OperationDocument {
             peer_id: PeerId::try_new(ULID_B).expect("peer id"),
         },
         namespace_id(),
-        CorrosionDeployTargets::try_new(vec![service_id()]).expect("deploy targets"),
+        service_id(),
         timestamp("2026-08-04T10:00:00Z"),
     )
 }

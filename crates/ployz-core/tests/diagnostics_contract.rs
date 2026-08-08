@@ -230,6 +230,7 @@ fn corrosion_table_catalog_covers_every_diagnostic_table_in_schema_order() {
             "namespaces",
             "services",
             "route_bindings",
+            "controller",
             "containers",
             "machine_status",
             "gateway_observations",

@@ -282,7 +282,6 @@ pub enum MachineJoinFailure {
 pub(crate) mod tests {
     use std::net::SocketAddr;
 
-    use ployz_core::build::railpack_pins;
     use ployz_core::corrosion::{
         AutomaticHostnameMode, ClusterDocument, CorrosionDocumentVersion, CorrosionTimestamp,
         MachineDocument, MachineStorageSelection, MachineStorageSelectionReason, MachineTransport,
@@ -655,9 +654,6 @@ pub(crate) mod tests {
                     "/usr/local/bin/ployz-ebpf-ctl",
                     "/usr/local/bin/corrosion",
                     "/usr/local/lib/ployz/corrosion-schema-v1.sql",
-                    railpack_pins()
-                        .expect("checked-in Railpack pins")
-                        .install_path(),
                 ]
                 .into_iter()
                 .enumerate()

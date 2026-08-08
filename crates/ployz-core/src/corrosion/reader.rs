@@ -265,6 +265,12 @@ where
                 return Err(skipped(source, RowSkipReason::InvalidRowId { error }));
             }
         }
+        CorrosionTable::Controller => {
+            let expected = value.cluster_id().as_str().to_owned();
+            if source.key != expected {
+                return Err(skipped(source, RowSkipReason::InvalidRowKey { expected }));
+            }
+        }
         CorrosionTable::CertHoldings => {
             let expected = fields
                 .get("machine_id")

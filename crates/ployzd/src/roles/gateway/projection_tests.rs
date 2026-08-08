@@ -385,6 +385,7 @@ fn container(
         machine_id: machine_id(),
         service_id: service_id(service_id_value),
         namespace_id: namespace_id(namespace_id_value),
+        replica_slot: ployz_core::deploy::ReplicaSlot::Global,
         ip: Ipv4Addr::from(ip),
         deploy: operation_id(deploy),
     }

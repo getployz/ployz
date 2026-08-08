@@ -12,7 +12,7 @@ use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, UtcOffset};
 
 use crate::certificate::{MANAGED_LEASE_DOMAIN_SUFFIX, ManagedLeaseName};
-use crate::deploy::{EnvValue, ImageReference};
+use crate::deploy::{EnvValue, ImageReference, ReplicaSlot};
 use crate::ids::{
     ClusterId, MachineRowId, NamespaceRowId, OperationRowId, RouteBindingRowId, ServiceRowId,
 };
@@ -21,8 +21,9 @@ use crate::machine::{GatewayProcessHealth, GatewayServingStatus, MachineLifecycl
 use crate::network::{MachineEndpointSubnet, MachineEndpointSupernet, WireGuardPublicKey};
 use crate::operation::{RouteHostname, RoutePort};
 
+use super::controller::ControllerAppointmentId;
 use super::mesh::{BuiltinWireguardKeyMismatch, BuiltinWireguardMemberAddress};
-use super::operation::{CorrosionOperation, validate_operation_document};
+use super::operation::CorrosionDeployState;
 use super::principal::OperationInitiator;
 
 /// A table in the additive Corrosion schema.
@@ -37,6 +38,7 @@ pub enum CorrosionTable {
     Namespaces,
     Services,
     RouteBindings,
+    Controller,
     Containers,
     MachineStatus,
     GatewayObservations,
@@ -47,7 +49,7 @@ pub enum CorrosionTable {
 
 impl CorrosionTable {
     /// Every table in schema order.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Cluster,
         Self::Machines,
         Self::Peers,
@@ -55,6 +57,7 @@ impl CorrosionTable {
         Self::Namespaces,
         Self::Services,
         Self::RouteBindings,
+        Self::Controller,
         Self::Containers,
         Self::MachineStatus,
         Self::GatewayObservations,
@@ -74,6 +77,7 @@ impl CorrosionTable {
             Self::Namespaces => "namespaces",
             Self::Services => "services",
             Self::RouteBindings => "route_bindings",
+            Self::Controller => "controller",
             Self::Containers => "containers",
             Self::MachineStatus => "machine_status",
             Self::GatewayObservations => "gateway_observations",
@@ -760,10 +764,9 @@ pub enum HostPortBindingsError {
 pub struct ServiceReplicaCount(NonZeroU16);
 
 impl ServiceReplicaCount {
-    /// The admission ceiling. Every replica costs bounded per-deploy work —
-    /// a placement target, verb dispatches, and evidence lines — so an
-    /// absurd count refuses here instead of exhausting the driver.
-    pub const MAX: u16 = 500;
+    /// The small-cluster ceiling keeps one serial node preparation inside its
+    /// fixed activity deadline.
+    pub const MAX: u16 = 8;
 
     pub fn try_new(value: u16) -> Result<Self, ServiceReplicaCountError> {
         let Some(value) = NonZeroU16::new(value) else {
@@ -1062,6 +1065,16 @@ pub struct RouteBindingDocument {
     pub ingress_mode: IngressMode,
 }
 
+/// The cluster's current preferred-controller appointment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ControllerDocument {
+    pub v: CorrosionDocumentVersion,
+    pub cluster_id: ClusterId,
+    pub preferred_machine_id: MachineRowId,
+    pub appointment_id: ControllerAppointmentId,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ContainerDocument {
@@ -1070,9 +1083,17 @@ pub struct ContainerDocument {
     pub machine_id: MachineRowId,
     pub service_id: ServiceRowId,
     pub namespace_id: NamespaceRowId,
+    /// Stable replica identity used to authorize logs and exact retirement.
+    /// Rows written before replica slots existed represented global services.
+    #[serde(default = "global_replica_slot")]
+    pub replica_slot: ReplicaSlot,
     #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub ip: Ipv4Addr,
     pub deploy: OperationRowId,
+}
+
+const fn global_replica_slot() -> ReplicaSlot {
+    ReplicaSlot::Global
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1315,81 +1336,19 @@ pub enum MeshConvergenceTestimony {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct OperationDocument {
     pub v: CorrosionDocumentVersion,
     pub cluster_id: ClusterId,
     pub machine_id: MachineRowId,
+    pub initiator: OperationInitiator,
+    pub namespace_id: NamespaceRowId,
+    pub service_id: ServiceRowId,
+    pub created_at: CorrosionTimestamp,
     #[serde(flatten)]
     #[cfg_attr(feature = "ts", ts(flatten))]
-    operation: CorrosionOperation,
-    pub initiator: OperationInitiator,
-    /// The driver's latest liveness beat. `None` denotes a row written before
-    /// heartbeats existed; readers fall back to the state's `created_at`.
-    /// Mutation goes through [`Self::refresh_heartbeat`] only.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    heartbeat_at: Option<CorrosionTimestamp>,
-}
-
-impl OperationDocument {
-    pub(super) fn from_parts(
-        v: CorrosionDocumentVersion,
-        cluster_id: ClusterId,
-        machine_id: MachineRowId,
-        initiator: OperationInitiator,
-        operation: CorrosionOperation,
-        heartbeat_at: Option<CorrosionTimestamp>,
-    ) -> Self {
-        Self {
-            v,
-            cluster_id,
-            machine_id,
-            operation,
-            initiator,
-            heartbeat_at,
-        }
-    }
-
-    #[must_use]
-    pub fn operation(&self) -> &CorrosionOperation {
-        &self.operation
-    }
-
-    #[must_use]
-    pub fn heartbeat_at(&self) -> Option<CorrosionTimestamp> {
-        self.heartbeat_at
-    }
-}
-
-#[derive(Deserialize)]
-struct OperationDocumentRepresentation {
-    v: CorrosionDocumentVersion,
-    cluster_id: ClusterId,
-    machine_id: MachineRowId,
-    #[serde(flatten)]
-    operation: CorrosionOperation,
-    initiator: OperationInitiator,
-    #[serde(default)]
-    heartbeat_at: Option<CorrosionTimestamp>,
-}
-
-impl<'de> Deserialize<'de> for OperationDocument {
-    fn deserialize<Deserializer>(deserializer: Deserializer) -> Result<Self, Deserializer::Error>
-    where
-        Deserializer: serde::Deserializer<'de>,
-    {
-        let representation = OperationDocumentRepresentation::deserialize(deserializer)?;
-        validate_operation_document(&representation.operation).map_err(serde::de::Error::custom)?;
-        Ok(Self::from_parts(
-            representation.v,
-            representation.cluster_id,
-            representation.machine_id,
-            representation.initiator,
-            representation.operation,
-            representation.heartbeat_at,
-        ))
-    }
+    pub(super) state: CorrosionDeployState,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1449,6 +1408,7 @@ corrosion_document!(TokenDocument, CorrosionTable::Tokens);
 corrosion_document!(NamespaceDocument, CorrosionTable::Namespaces);
 corrosion_document!(ServiceDocument, CorrosionTable::Services);
 corrosion_document!(RouteBindingDocument, CorrosionTable::RouteBindings);
+corrosion_document!(ControllerDocument, CorrosionTable::Controller);
 corrosion_document!(ContainerDocument, CorrosionTable::Containers);
 corrosion_document!(MachineStatusDocument, CorrosionTable::MachineStatus);
 corrosion_document!(
@@ -1465,6 +1425,7 @@ ordinary_corrosion_document!(
     NamespaceDocument,
     ServiceDocument,
     RouteBindingDocument,
+    ControllerDocument,
     ContainerDocument,
     MachineStatusDocument,
     GatewayObservationDocument,

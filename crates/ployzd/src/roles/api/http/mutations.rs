@@ -26,8 +26,9 @@ use serde::de::DeserializeOwned;
 use time::format_description::well_known::Rfc3339;
 use time::{Duration as TimeDuration, OffsetDateTime};
 
-use super::operation_store::{
-    NamespaceClaim, NamespaceDeleteOutcome, ObservedNamespace, OperationStore, OperationStoreError,
+use super::namespace_store::{
+    NamespaceCreateOutcome, NamespaceDeleteOutcome, NamespaceStore, NamespaceStoreError,
+    ObservedNamespace,
 };
 use super::roster::corrosion_unavailable_refusal;
 use super::server::{
@@ -115,8 +116,9 @@ pub(super) async fn handle_mutation(
         | V2Route::Join
         | V2Route::MachineUpgrade
         | V2Route::Deploy
-        | V2Route::PlacementBid
-        | V2Route::DeployExecute
+        | V2Route::DeployInspect
+        | V2Route::DeployPrepare
+        | V2Route::DeployRetire
         | V2Route::Operation(_)
         | V2Route::OperationWatch(_)
         | V2Route::ServiceLogsTail(_)
@@ -157,16 +159,16 @@ async fn namespace_create(
         },
         name: request.namespace_name,
     };
-    let store = OperationStore::new(service.corrosion.clone(), service.cluster_id.clone());
-    match store.create_namespace(&namespace_id, &document).await {
-        Ok(NamespaceClaim::Claimed { namespace_id }) => typed_response(
+    let store = NamespaceStore::new(service.corrosion.clone(), service.cluster_id.clone());
+    match store.create(&namespace_id, &document).await {
+        Ok(NamespaceCreateOutcome::Created { namespace_id }) => typed_response(
             StatusCode::OK,
             &CorrosionNamespaceCreateReply {
                 namespace_id,
                 document,
             },
         ),
-        Ok(NamespaceClaim::Lost { winner }) => typed_response(
+        Ok(NamespaceCreateOutcome::NameUnavailable { winner }) => typed_response(
             StatusCode::CONFLICT,
             &CorrosionNamespaceCreateRefusal::NameAlreadyClaimed {
                 namespace_name: document.name,
@@ -181,8 +183,8 @@ async fn namespace_remove(
     service: &ApiService,
     request: CorrosionNamespaceRemoveRequest,
 ) -> Response<HttpBody> {
-    let store = OperationStore::new(service.corrosion.clone(), service.cluster_id.clone());
-    let mut candidates = match store.namespaces_named(&request.namespace_name).await {
+    let store = NamespaceStore::new(service.corrosion.clone(), service.cluster_id.clone());
+    let mut candidates = match store.named(&request.namespace_name).await {
         Ok(candidates) => candidates,
         Err(error) => return operation_store_failure("resolve namespace removal", error),
     };
@@ -191,7 +193,7 @@ async fn namespace_remove(
             .iter()
             .any(|candidate| &candidate.id == namespace_id)
     {
-        match store.namespace(namespace_id).await {
+        match store.by_id(namespace_id).await {
             Ok(Some(namespace)) if namespace.document.name == request.namespace_name => {
                 candidates.push(namespace);
             }
@@ -218,7 +220,7 @@ async fn namespace_remove(
         Err(refusal) => return namespace_remove_refusal_response(refusal),
     };
     let namespace_id = selected.id.clone();
-    match store.delete_namespace_if_empty(&selected).await {
+    match store.delete_if_empty(&selected).await {
         Ok(NamespaceDeleteOutcome::Removed) => typed_response(
             StatusCode::OK,
             &CorrosionNamespaceRemoveReply::Removed { namespace_id },
@@ -601,7 +603,7 @@ fn store_failure(action: &'static str, error: MutationStoreError) -> Response<Ht
     refusal_response(corrosion_unavailable_refusal())
 }
 
-fn operation_store_failure(action: &'static str, error: OperationStoreError) -> Response<HttpBody> {
+fn operation_store_failure(action: &'static str, error: NamespaceStoreError) -> Response<HttpBody> {
     tracing::warn!(%action, error = %error, "API mutation could not reach durable Corrosion state");
     refusal_response(corrosion_unavailable_refusal())
 }

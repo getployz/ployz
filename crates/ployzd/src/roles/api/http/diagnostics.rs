@@ -163,6 +163,7 @@ async fn read_doctor_rows(
         namespaces,
         services,
         route_bindings,
+        controller,
         containers,
         machine_status,
         gateway_observations,
@@ -177,6 +178,7 @@ async fn read_doctor_rows(
     let namespaces = query_rows(corrosion, namespaces);
     let services = query_rows(corrosion, services);
     let route_bindings = query_rows(corrosion, route_bindings);
+    let controller = query_rows(corrosion, controller);
     let containers = query_rows(corrosion, containers);
     let machine_status = query_rows(corrosion, machine_status);
     let gateway_observations = query_rows(corrosion, gateway_observations);
@@ -191,6 +193,7 @@ async fn read_doctor_rows(
         namespaces,
         services,
         route_bindings,
+        controller,
         containers,
         machine_status,
         gateway_observations,
@@ -205,6 +208,7 @@ async fn read_doctor_rows(
         namespaces,
         services,
         route_bindings,
+        controller,
         containers,
         machine_status,
         gateway_observations,
@@ -221,6 +225,7 @@ async fn read_doctor_rows(
         namespaces,
         services,
         route_bindings,
+        controller,
         containers,
         machine_status,
         gateway_observations,
@@ -262,7 +267,7 @@ async fn query_rows(
     .map_err(DiagnosticsReadError::from)
 }
 
-fn doctor_statements() -> [Statement; 13] {
+fn doctor_statements() -> [Statement; 14] {
     CorrosionTable::ALL.map(select_all)
 }
 
@@ -287,6 +292,7 @@ fn select_all(table: CorrosionTable) -> Statement {
         | CorrosionTable::Namespaces
         | CorrosionTable::Services
         | CorrosionTable::RouteBindings
+        | CorrosionTable::Controller
         | CorrosionTable::Containers
         | CorrosionTable::Operations
         | CorrosionTable::CertHoldings

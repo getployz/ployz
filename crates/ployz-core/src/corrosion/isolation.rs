@@ -160,6 +160,7 @@ mod tests {
                 machine_id: MachineRowId::try_new(MACHINE).expect("machine"),
                 service_id: ServiceRowId::try_new(SERVICE).expect("service"),
                 namespace_id: NamespaceRowId::try_new(namespace).expect("namespace"),
+                replica_slot: crate::deploy::ReplicaSlot::Global,
                 ip: ip.parse().expect("ip"),
                 deploy: OperationRowId::try_new(DEPLOY).expect("deploy"),
             },

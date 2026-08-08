@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use ployz_core::corrosion::V2ManagedContainerIdentity;
+use ployz_core::deploy::ReplicaSlot;
 use ployz_core::ids::{NamespaceRowId, OperationRowId, ServiceRowId};
 
 use super::{
@@ -9,7 +10,7 @@ use super::{
 };
 
 #[test]
-fn v2_identity_round_trips_without_incumbent_revision_or_step_labels() {
+fn v2_identity_round_trips_with_its_replica_slot() {
     let identity = v2_identity();
     let labels = render(&identity);
 
@@ -18,7 +19,7 @@ fn v2_identity_round_trips_without_incumbent_revision_or_step_labels() {
         labels.get(IDENTITY_SCHEMA_LABEL).map(String::as_str),
         Some(V2_IDENTITY_SCHEMA)
     );
-    assert_eq!(labels.len(), 5);
+    assert_eq!(labels.len(), 6);
     assert_eq!(parse(&labels), Ok(identity));
 }
 
@@ -68,5 +69,6 @@ fn v2_identity() -> V2ManagedContainerIdentity {
         namespace_id: NamespaceRowId::try_new("01K00000000000000000000001").expect("namespace"),
         service_id: ServiceRowId::try_new("01K00000000000000000000002").expect("service"),
         operation_id: OperationRowId::try_new("01K00000000000000000000003").expect("operation"),
+        replica_slot: ReplicaSlot::Global,
     }
 }

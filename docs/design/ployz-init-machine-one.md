@@ -100,10 +100,8 @@ $ ployz init root@203.0.113.7
   seam. Question and flag arrive together, additively.
 - Flag-only, never asked: cluster name (default: machine-one hostname;
   rename later), machine name (hostname), WG endpoint (auto-detect) and
-  port. Not init surface at all: ACME CA/contact and the BuildKit GC
-  cap are cluster-row/daemon.json fields with defaults, mutated by
-  settings commands — cheap to change later, so by this section's own
-  lens they get no flag. Constants: `.internal`
+  port. ACME CA/contact is not init surface; it has a default and can be
+  changed later. Constants: `.internal`
   (non-Ployz names forward upstream, so GCP's `.internal` still
   resolves), gateway ports, the derived ULA plane.
 
@@ -261,7 +259,7 @@ Keeper's never-fold-an-empty-roster guard is safe on machine one).
   5  storage prep per resolved answer (zfs dataset root + docker
      drop-in | plain)
   6  write configs: corrosion (bind ULA, exact pin), daemon.json
-     (insecure-registries mesh prefix + BuildKit GC cap), identity file
+     (insecure-registries mesh prefix), identity file
   7  write + enable per-role units; start keeper → wg0 up (own addr,
      no peers) → corrosion → api → gateway → dns
   8  write initial rows through the live api:

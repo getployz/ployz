@@ -38,8 +38,3 @@ doctest = false
 name = "export-typescript"
 path = "src/bin/export-typescript.rs"
 required-features = ["ts"]
-
-[[bin]]
-name = "export-operation-contract"
-path = "src/bin/export-operation-contract.rs"
-required-features = ["ts"]

@@ -1,4 +1,4 @@
-//! Machine state and machine-add operation policy.
+//! Machine identity, state, lifecycle, and testimony.
 
 mod dataplane_admission;
 pub mod lifecycle;
@@ -12,9 +12,7 @@ pub use dataplane_admission::{
     validate_declared_local_machine, validate_declared_machine, validate_placement_machine_peers,
     validate_target_machine,
 };
-pub use lifecycle::{
-    DataplaneUnavailableReason, MachineLifecycle, MachineUsabilityReason, placement_rejection,
-};
+pub use lifecycle::MachineLifecycle;
 pub use roles::{GatewayRole, InstallRolePolicy};
 pub use rpc::{MachineRpcResponder, MachineRpcResponse};
 pub use runtime::*;
@@ -25,15 +23,13 @@ pub use testimony::{
     MachineEndpointObservation,
 };
 
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::fmt;
 
-use crate::ids::{MachineId, OperationId, SubjectToken, SubjectTokenError};
-use crate::intent::{ActiveMachineState, StagedMachineDataplaneState};
-use crate::operation::{
-    FailureMessage, MachineAddOperationState, MachineAddOperationStateName, OperationIdempotencyKey,
-};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+use crate::ids::{MachineId, SubjectToken, SubjectTokenError};
+use crate::operation::FailureMessage;
 use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -141,57 +137,6 @@ impl IssuedJoinToken {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FirstMachineActivationPlan {
-    pub operation_id: OperationId,
-    pub idempotency_key: OperationIdempotencyKey,
-    pub name: MachineName,
-}
-
-pub fn plan_first_machine_activation(
-    machine_id: &MachineId,
-) -> Result<FirstMachineActivationPlan, SubjectTokenError> {
-    Ok(FirstMachineActivationPlan {
-        operation_id: OperationId::try_new(format!("op_init_{}", machine_id.as_str()))?,
-        idempotency_key: OperationIdempotencyKey::try_new(format!(
-            "idem_init_{}",
-            machine_id.as_str()
-        ))?,
-        name: MachineName::try_new(machine_id.as_str())?,
-    })
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-#[derive(thiserror::Error)]
-pub enum MachineAddFailure {
-    #[error("join token is invalid")]
-    InvalidJoinToken,
-    #[error("join token expired at unix second {}", .expired_at.unix_seconds())]
-    JoinTokenExpired { expired_at: JoinTokenExpiresAt },
-    #[error("machine bootstrap failed: {message}")]
-    BootstrapFailed { message: FailureMessage },
-    #[error("machine bootstrap release platform failed: {failure:?}")]
-    ReleasePlatform {
-        failure: crate::install::ReleasePlatformFailure,
-    },
-    #[error("machine readiness failed: {evidence}")]
-    ReadinessFailed { evidence: MachineReadinessEvidence },
-    #[error("dataplane projection admission failed for {}: {}", .evidence.machine_id.as_str(), .evidence.reason)]
-    DataplaneProjectionAdmissionFailed {
-        evidence: DataplaneProjectionAdmissionEvidence,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct DataplaneProjectionAdmissionEvidence {
-    pub machine_id: MachineId,
-    pub reason: DataplaneProjectionAdmissionFailure,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
@@ -287,115 +232,6 @@ impl fmt::Display for DataplaneProjectionAdmissionFailure {
                 "peer {} handshake is {observed_age_seconds}s old",
                 peer_machine_id.as_str()
             ),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MachineTransitionRejected {
-    pub current: MachineAddOperationStateName,
-}
-
-pub fn redeem_pending_join_token(
-    join_token: &IssuedJoinToken,
-    presented: &JoinTokenFingerprint,
-    now: JoinTokenRedeemedAt,
-) -> Result<JoinTokenRedeemedAt, MachineAddFailure> {
-    if !join_token.matches(presented) {
-        return Err(MachineAddFailure::InvalidJoinToken);
-    }
-
-    if join_token.expires_at.unix_seconds() <= now.unix_seconds() {
-        return Err(MachineAddFailure::JoinTokenExpired {
-            expired_at: join_token.expires_at,
-        });
-    }
-
-    Ok(now)
-}
-
-pub fn active_machine_from_completed_add(
-    name: MachineName,
-    roles: InstallRolePolicy,
-    staged: StagedMachineDataplaneState,
-    operation: MachineAddOperationState,
-) -> Result<ActiveMachineState, MachineTransitionRejected> {
-    let MachineAddOperationState::Completed = operation else {
-        return Err(MachineTransitionRejected {
-            current: operation.name(),
-        });
-    };
-
-    let StagedMachineDataplaneState {
-        operation_id,
-        machine_id,
-        endpoint_subnet,
-        mesh_endpoints,
-        wireguard_public_key,
-    } = staged;
-    Ok(ActiveMachineState {
-        lifecycle: MachineLifecycle::Active,
-        machine_id,
-        name,
-        activated_by: operation_id,
-        roles,
-        control_endpoints: Vec::new(),
-        mesh_endpoints,
-        endpoint_subnet,
-        wireguard_public_key,
-    })
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct MachineReadinessEvidence {
-    pub heartbeat: MachineReadinessCheck,
-    pub machine_inspect: MachineReadinessCheck,
-}
-
-impl fmt::Display for MachineReadinessEvidence {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let Self {
-            heartbeat,
-            machine_inspect,
-        } = self;
-        write!(
-            formatter,
-            "heartbeat {heartbeat}; machine inspect {machine_inspect}"
-        )
-    }
-}
-
-impl MachineReadinessEvidence {
-    #[must_use]
-    pub fn confirmed() -> Self {
-        Self {
-            heartbeat: MachineReadinessCheck::Confirmed,
-            machine_inspect: MachineReadinessCheck::Confirmed,
-        }
-    }
-
-    #[must_use]
-    pub const fn is_confirmed(&self) -> bool {
-        matches!(self.heartbeat, MachineReadinessCheck::Confirmed)
-            && matches!(self.machine_inspect, MachineReadinessCheck::Confirmed)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
-pub enum MachineReadinessCheck {
-    Confirmed,
-    Missing { reason: FailureMessage },
-}
-
-impl fmt::Display for MachineReadinessCheck {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Confirmed => formatter.write_str("confirmed"),
-            Self::Missing { reason } => write!(formatter, "missing ({reason})"),
         }
     }
 }

@@ -5,32 +5,29 @@
 //! environment file rather than an API credential supplied by callers.
 
 mod config;
-mod deploy;
-mod deploy_dispatch;
-mod deploy_runtime;
-mod deploy_stores;
-mod deploy_task;
+mod controller;
+mod controller_forwarding;
+mod deploy_controller;
+mod deploy_effect_http;
+mod deploy_effects;
+mod deploy_hosts;
 mod diagnostics;
 mod door;
 mod endpoint_network;
 mod founding;
 mod join;
 mod mutations;
-mod operation_evidence;
-mod operation_finalizer;
+mod namespace_store;
+mod node_workflows;
 mod operation_http;
-mod operation_lifecycle;
-mod operation_proxy;
-mod operation_store;
-mod placement_gather;
-mod placement_http;
-mod promotion_store;
 mod removals;
 mod roster;
 mod routes;
 mod runtime;
 mod server;
 mod service_logs;
+mod simple_deploy;
+mod simple_deploy_store;
 mod store;
 mod upgrade;
 

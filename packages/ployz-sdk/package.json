@@ -20,8 +20,7 @@
   },
   "scripts": {
     "generate:types": "cargo run -p ployz-core --features ts --bin export-typescript > src/generated.ts",
-    "generate:fixture": "cargo run -p ployz-core --features ts --bin export-operation-contract > test/fixtures/operation-contract.json",
-    "check:generated": "pnpm generate:types && pnpm generate:fixture && git diff --exit-code -- src/generated.ts test/fixtures/operation-contract.json",
+    "check:generated": "pnpm generate:types && git diff --exit-code -- src/generated.ts",
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types --test test/*.test.ts"
   },

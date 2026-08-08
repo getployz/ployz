@@ -147,7 +147,6 @@ pub fn namespace_revision_entry_id_for(
     namespace_id: &NamespaceId,
     service_id: &ServiceId,
     image: &ImageReference,
-    image_source: &ImageSource,
     runtime: &ContainerRuntimeSpec,
     environment_key: &EnvironmentRevisionKey,
 ) -> NamespaceRevisionEntryId {
@@ -164,16 +163,6 @@ pub fn namespace_revision_entry_id_for(
     );
     hash_frame(&mut hasher, "service_id", service_id.as_str().as_bytes());
     hash_frame(&mut hasher, "image", image.as_str().as_bytes());
-    match image_source {
-        ImageSource::Registry => {}
-        ImageSource::PushedToSeed(receipt) => {
-            hash_frame(
-                &mut hasher,
-                "index_digest",
-                receipt.index_digest().as_str().as_bytes(),
-            );
-        }
-    }
     hash_runtime_spec(&mut hasher, runtime);
     hash_environment_identity(&mut hasher, environment_key, &runtime.environment);
     let digest = hasher.finalize();
@@ -193,7 +182,6 @@ pub(super) fn namespace_revision_entry_id_without_environment_for(
         namespace_id,
         &service.service_id,
         &service.image,
-        &service.image_source,
         &service.runtime,
         &EnvironmentRevisionKey([0; 32]),
     ))
@@ -204,10 +192,8 @@ fn hash_runtime_spec(hasher: &mut Sha256, runtime: &ContainerRuntimeSpec) {
         command,
         entrypoint,
         environment: _,
-        stop_grace_period,
         volume_mounts,
         healthcheck,
-        restart_policy,
         cap_add,
         cap_drop,
         resources,
@@ -234,11 +220,6 @@ fn hash_runtime_spec(hasher: &mut Sha256, runtime: &ContainerRuntimeSpec) {
         None => hash_frame(hasher, "entrypoint", b"none"),
     }
 
-    hash_frame(
-        hasher,
-        "stop_grace_period",
-        stop_grace_period.as_seconds().to_string().as_bytes(),
-    );
     for mount in volume_mounts {
         hash_frame(hasher, "volume_name", mount.volume_name.as_str().as_bytes());
         hash_frame(hasher, "volume_target", mount.target.as_str().as_bytes());
@@ -251,11 +232,6 @@ fn hash_runtime_spec(hasher: &mut Sha256, runtime: &ContainerRuntimeSpec) {
         }
         None => hash_frame(hasher, "healthcheck", b"none"),
     }
-    hash_frame(
-        hasher,
-        "restart_policy",
-        restart_policy.as_docker_name().as_bytes(),
-    );
     for capability in canonical_capabilities(cap_add) {
         hash_frame(hasher, "cap_add", capability.as_str().as_bytes());
     }
@@ -429,7 +405,6 @@ mod tests {
         let service = DeployServiceSpec {
             service_id: ServiceId::try_new("api").expect("service"),
             image: ImageReference::try_new("ghcr.io/acme/api:current").expect("image"),
-            image_source: ImageSource::Registry,
             mode: ServiceMode::Global,
             keep: None,
             runtime: ContainerRuntimeSpec::image_defaults(),
@@ -451,7 +426,6 @@ mod tests {
         let mut service = DeployServiceSpec {
             service_id: ServiceId::try_new("api").expect("service"),
             image: ImageReference::try_new("ghcr.io/acme/api:current").expect("image"),
-            image_source: ImageSource::Registry,
             mode: ServiceMode::Global,
             keep: None,
             runtime: ContainerRuntimeSpec::image_defaults(),

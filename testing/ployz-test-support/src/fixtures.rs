@@ -68,7 +68,6 @@ pub fn deploy_target(service: &str) -> DeployRequest {
             keep: None,
             service_id: service_id(service),
             image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
-            image_source: ployz_core::deploy::ImageSource::Registry,
             mode: ployz_core::deploy::ServiceMode::Replicated {
                 replicas: ReplicaCount::try_new(1).expect("valid replica count"),
             },

@@ -74,8 +74,7 @@ pub const API_GROUP: UnixGroup = UnixGroup::PloyzApi;
 pub const CONTROL_GROUP: UnixGroup = UnixGroup::PloyzControl;
 pub const DOCKER_GROUP: UnixGroup = UnixGroup::Docker;
 
-pub const API_EVIDENCE_DIRECTORY: &str = "api/evidence";
-pub const API_LEASE_DIRECTORY: &str = "api/lease";
+pub const API_WORKFLOW_DIRECTORY: &str = "api/workflows";
 /// Verified candidates awaiting Keeper adoption into the root-owned live artifact store.
 pub const API_UPGRADE_STAGING_DIRECTORY: &str = "api/upgrade-staging";
 pub const UPGRADE_RUNTIME_DIRECTORY: &str = "/run/ployz";
@@ -375,15 +374,7 @@ impl ApiRuntimeAccessMatrix {
         }));
         entries.extend([
             ApiRuntimeAccessEntry::new(
-                state.join(API_EVIDENCE_DIRECTORY),
-                UnixUser::PloyzApi,
-                UnixGroup::PloyzApi,
-                0o750,
-                ApiRuntimeAccess::ReadWriteDirectory,
-                InstallDisposition::EnsureDirectory,
-            ),
-            ApiRuntimeAccessEntry::new(
-                state.join(API_LEASE_DIRECTORY),
+                state.join(API_WORKFLOW_DIRECTORY),
                 UnixUser::PloyzApi,
                 UnixGroup::PloyzApi,
                 0o700,

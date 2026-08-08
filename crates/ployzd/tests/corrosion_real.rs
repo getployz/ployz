@@ -18,14 +18,14 @@ use ployz_core::corrosion::{
     OperationDocument, PeerDocument, RouteBindingDocument, ServiceDocument, SqliteParameter,
     SqliteValue, Statement, TokenDocument, read_named_rows,
 };
-use ployz_core::ids::{ClusterId, CorrosionUlid, MachineRowId};
+use ployz_core::ids::{ClusterId, MachineRowId};
 use ployz_core::{
     API_MAJOR, ApiFeature, ApiVersion, DoctorDocument, KnownApiFeature, StatusBarrier,
     StatusDocument,
 };
 use ployzd::corrosion::{
-    BearerToken, CorrosionClient, CorrosionClientBounds, CorrosionClientConfig, NameClaimOutcome,
-    QueryStreamEvent, SubscriptionStream, SubscriptionStreamEvent,
+    BearerToken, CorrosionClient, CorrosionClientBounds, CorrosionClientConfig, QueryStreamEvent,
+    SubscriptionStream, SubscriptionStreamEvent,
 };
 use ployzd::roles::api::http::{ApiRoleConfig, ApiServer};
 use serde_json::{Value, json};
@@ -39,8 +39,7 @@ const CLUSTER_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const ROW_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
 const SECOND_ROW_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
 const RESUME_ROW_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAY";
-const RACE_LOWER_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAZ";
-const RACE_HIGHER_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB0";
+const OPERATION_ROW_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAZ";
 const API_CLUSTER_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB1";
 const API_MACHINE_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB2";
 const API_BUILD: &str = "pinned-corrosion-api-version-test";
@@ -238,55 +237,6 @@ async fn exercise_contract(client: &CorrosionClient) -> Result<(), String> {
         event => return Err(format!("resumed subscription returned {event:?}")),
     }
     drop(resumed);
-
-    let race_document = serde_json::from_value::<NamespaceDocument>(json!({
-        "v": 1,
-        "cluster_id": CLUSTER_ID,
-        "name": "race",
-        "written_by": {"kind": "peer", "peer_id": ROW_ID},
-        "written_at": "2026-08-04T10:00:00Z"
-    }))
-    .map_err(|error| error.to_string())?;
-    let lower_id = CorrosionUlid::try_new(RACE_LOWER_ID).map_err(|error| error.to_string())?;
-    let higher_id = CorrosionUlid::try_new(RACE_HIGHER_ID).map_err(|error| error.to_string())?;
-    let (lower, higher) = tokio::join!(
-        client.claim_named(lower_id.clone(), &race_document),
-        client.claim_named(higher_id.clone(), &race_document),
-    );
-    match lower.map_err(|error| error.to_string())? {
-        NameClaimOutcome::Claimed { id, .. } if id == lower_id => {}
-        NameClaimOutcome::Claimed { id, .. } => {
-            return Err(format!("lower claim reported unexpected winner {id}"));
-        }
-        NameClaimOutcome::Lost { winner, .. } => {
-            return Err(format!("lower claim lost to {}", winner.id));
-        }
-    }
-    match higher.map_err(|error| error.to_string())? {
-        NameClaimOutcome::Lost { id, winner, .. } if id == higher_id && winner.id == lower_id => {}
-        NameClaimOutcome::Lost { id, winner, .. } => {
-            return Err(format!(
-                "claim {id} lost to unexpected winner {}",
-                winner.id
-            ));
-        }
-        NameClaimOutcome::Claimed { id, .. } => {
-            return Err(format!("higher claim {id} won"));
-        }
-    }
-    let (_, values) = query_one(
-        client,
-        &Statement::with_params(
-            "SELECT id, document FROM namespaces WHERE name = ?",
-            vec![SqliteParameter::Text("race".to_owned())],
-        ),
-    )
-    .await?;
-    if values.first() != Some(&SqliteValue::Text(RACE_LOWER_ID.to_owned())) {
-        return Err(format!(
-            "claim cleanup retained the wrong namespace row: {values:?}"
-        ));
-    }
 
     Ok(())
 }
@@ -601,7 +551,7 @@ fn fixtures() -> Result<Vec<Fixture>, String> {
     let machine_id = ROW_ID;
     let namespace_id = SECOND_ROW_ID;
     let service_id = RESUME_ROW_ID;
-    let operation_id = RACE_LOWER_ID;
+    let operation_id = OPERATION_ROW_ID;
     let base = |name: &str| {
         json!({
             "v": 1,
@@ -783,18 +733,13 @@ fn fixtures() -> Result<Vec<Fixture>, String> {
                 "v": 1,
                 "cluster_id": CLUSTER_ID,
                 "machine_id": machine_id,
-                "kind": "deploy",
                 "namespace_id": namespace_id,
-                "service_ids": [service_id],
+                "service_id": service_id,
                 "initiator": {"kind": "peer", "peer_id": ROW_ID},
                 "state": "created",
                 "created_at": "2026-08-04T10:00:00Z"
             }),
-            vec![
-                column("kind", "deploy"),
-                column("state", "created"),
-                column("machine_id", machine_id),
-            ],
+            vec![column("machine_id", machine_id)],
         )?,
         fixture::<CertHoldingDocument>(
             CorrosionTable::CertHoldings,

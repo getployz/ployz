@@ -109,7 +109,7 @@ pub struct ApiServer {
 impl ApiServer {
     /// Binds the authenticated mesh API and the complete public join door.
     pub async fn bind(config: ApiRoleConfig) -> Result<Self, ApiServerError> {
-        let (listener, runtime) = bind_api_listener(&config).await?;
+        let (listener, runtime) = bind_api_listener(&config, true).await?;
         let join_door = Arc::new(JoinDoorRuntime::bind(&config).await?);
         Ok(Self::from_validated_listener(listener, join_door, runtime))
     }
@@ -119,7 +119,7 @@ impl ApiServer {
     pub async fn bind_without_join_door_for_integration_test(
         config: ApiRoleConfig,
     ) -> Result<Self, ApiServerError> {
-        let (listener, runtime) = bind_api_listener(&config).await?;
+        let (listener, runtime) = bind_api_listener(&config, false).await?;
         let join_door = Arc::new(JoinDoorRuntime::DoorlessIntegrationFixture);
         Ok(Self::from_validated_listener(listener, join_door, runtime))
     }
@@ -151,20 +151,18 @@ impl ApiServer {
         } = self;
         let (shutdown_tx, _) = watch::channel(false);
         let (endpoint_failure_tx, mut endpoint_failures) = mpsc::unbounded_channel();
-        let endpoint_task = service.lenses().map(|lenses| {
-            let Some(runner) = service.container_runner.clone() else {
-                unreachable!("ordinary API service has a roster-backed container runner")
-            };
+        let endpoint_task = service.lenses().and_then(|lenses| {
+            let runner = service.container_runner.clone()?;
             let updates = lenses.watch(LensCollection::Machines).subscribe();
             let local_machine_id = service.local_machine_id.clone();
             let shutdown = shutdown_tx.subscribe();
-            tokio::spawn(async move {
+            Some(tokio::spawn(async move {
                 if let Err(error) =
                     endpoint_network::run(updates, local_machine_id, runner, shutdown).await
                 {
                     let _ = endpoint_failure_tx.send(error);
                 }
-            })
+            }))
         });
         let mut connections = JoinSet::new();
         let join_connection_slots = Arc::new(Semaphore::new(MAX_JOIN_DOOR_CONNECTIONS));
@@ -275,7 +273,6 @@ impl ApiServer {
             }
         };
 
-        service.shutdown_operations().await;
         if tokio::time::timeout(SERVER_SHUTDOWN_GRACE, drain_connections(&mut connections))
             .await
             .is_err()
@@ -311,6 +308,7 @@ async fn wait_for_accept_retry(retry_at: Option<Instant>) {
 
 async fn bind_api_listener(
     config: &ApiRoleConfig,
+    enable_host_effects: bool,
 ) -> Result<(TcpListener, ApiServiceRuntime), ApiServerError> {
     let listen_addr = config.listen_addr();
     let corrosion = CorrosionClient::new(config.corrosion().clone())
@@ -335,72 +333,76 @@ async fn bind_api_listener(
             listen_addr,
             source,
         })?;
-    let container_runner = local_machine.as_ref().map(|machine| {
-        let subnet = match &machine.transport {
-            MachineTransport::Wireguard { subnet_v4, .. }
-            | MachineTransport::Tailscale { subnet_v4, .. } => subnet_v4,
-        };
-        Arc::new(endpoint_network::runner_for_subnet(subnet))
+    let container_runner = local_machine
+        .as_ref()
+        .filter(|_| enable_host_effects)
+        .map(|machine| {
+            let subnet = match &machine.transport {
+                MachineTransport::Wireguard { subnet_v4, .. }
+                | MachineTransport::Tailscale { subnet_v4, .. } => subnet_v4,
+            };
+            Arc::new(endpoint_network::runner_for_subnet(subnet))
+        });
+    let deploy_effects = container_runner.as_ref().map(|runner| {
+        Arc::new(super::deploy_effects::DeployHostEffects::new(Arc::clone(
+            runner,
+        )))
     });
-    let mut operations = super::operation_http::OperationRuntime::new(
+    let controller = Arc::new(super::controller::ControllerStore::new(
         corrosion.clone(),
         config.cluster_id().clone(),
-        config.evidence_directory().to_path_buf(),
-        config.keeper_control_socket_path().to_path_buf(),
-    )
-    .map_err(ApiServerError::OperationHttpClient)?;
-    let deploy = if let Some(runner) = container_runner.as_ref() {
-        let mesh_client = super::deploy_dispatch::mesh_http_client()
-            .map_err(ApiServerError::OperationHttpClient)?;
-        let routes = Arc::new(
-            super::routes::CorrosionDeployRouteBindings::new(
-                corrosion.clone(),
-                config.cluster_id().clone(),
-                config.local_machine_id().clone(),
-                config.lease_worker_origin().clone(),
-                config.lease_token_path().to_path_buf(),
-            )
-            .map_err(ApiServerError::LeaseClient)?,
-        );
-        let driver = super::deploy::DeployDriver::new(
+        config.local_machine_id().clone(),
+    ));
+    let controller_forwarder = Arc::new(
+        super::controller_forwarding::ControllerForwarder::new(
+            corrosion.clone(),
             config.cluster_id().clone(),
             config.local_machine_id().clone(),
-            super::deploy::DeployDriverSeams {
-                evidence: operations.evidence_directory(),
-                store: Arc::new(
-                    super::promotion_store::CorrosionPreparedPromotionStore::new(
-                        corrosion.clone(),
-                        config.cluster_id().clone(),
-                    ),
-                ),
-                operations: Arc::new(operations.store()),
-                runtime: Arc::clone(runner) as Arc<dyn super::deploy_runtime::DeployRuntime>,
-                mesh: Arc::new(super::placement_gather::CorrosionPlacementMesh::new(
-                    corrosion.clone(),
-                    config.cluster_id().clone(),
-                    config.keeper_control_socket_path().to_path_buf(),
-                    listen_addr.port(),
-                    mesh_client.clone(),
-                    Arc::clone(runner),
-                )),
-                verbs: Arc::new(super::deploy_dispatch::MeshVerbClient::new(mesh_client)),
-                routes,
-                api_port: listen_addr.port(),
-                clock: Arc::new(super::deploy::SystemDeployClock),
-            },
-        );
-        operations = operations.with_promotion_resumer(Arc::new(driver.clone()));
-        Some(driver)
-    } else {
-        None
-    };
-    let operations = Arc::new(operations);
-    if matches!(config.mode(), ApiRoleMode::Ordinary) {
-        operations
-            .recover_startup(config.local_machine_id())
+            listen_addr.port(),
+            Arc::clone(&controller),
+        )
+        .map_err(ApiServerError::MeshHttpClient)?,
+    );
+    let controller_lock = Arc::new(tokio::sync::Mutex::new(()));
+    let node_workflows = match &deploy_effects {
+        Some(effects) => Some(Arc::new(
+            super::node_workflows::NodeWorkflows::open(
+                config.workflow_directory(),
+                Arc::clone(effects),
+            )
             .await
-            .map_err(|error| ApiServerError::OperationStartup(error.to_string()))?;
-    }
+            .map_err(|error| ApiServerError::NodeWorkflows(error.to_string()))?,
+        )),
+        None => None,
+    };
+    let (simple_deploy_store, simple_deploy) = match (&deploy_effects, &node_workflows) {
+        (Some(effects), Some(workflows)) => {
+            let store = Arc::new(super::simple_deploy_store::CorrosionSimpleDeployStore::new(
+                corrosion.clone(),
+                config.cluster_id().clone(),
+            ));
+            let hosts = Arc::new(
+                super::deploy_hosts::MeshDeployHosts::new(
+                    config.local_machine_id().clone(),
+                    config.cluster_id().clone(),
+                    listen_addr.port(),
+                    corrosion.clone(),
+                    Arc::clone(&controller),
+                    Arc::clone(effects),
+                    Arc::clone(workflows),
+                )
+                .map_err(ApiServerError::MeshHttpClient)?,
+            );
+            let deploy = Arc::new(super::simple_deploy::SimpleDeploy::new(
+                config.local_machine_id().clone(),
+                store.clone(),
+                hosts,
+            ));
+            (Some(store), Some(deploy))
+        }
+        (None, None) => (None, None),
+        _ => unreachable!("host effects and node workflows are created together"),
+    };
     let runtime = ApiServiceRuntime {
         corrosion,
         cluster_id: config.cluster_id().clone(),
@@ -412,8 +414,13 @@ async fn bind_api_listener(
         upgrade_store: config.upgrade_store().clone(),
         keeper_upgrade_socket_path: config.keeper_upgrade_socket_path().to_path_buf(),
         upgrade_supervisor: config.upgrade_supervisor(),
-        operations,
-        deploy,
+        controller,
+        controller_forwarder,
+        controller_lock,
+        simple_deploy,
+        simple_deploy_store,
+        deploy_effects,
+        node_workflows,
         container_runner,
     };
     Ok((listener, runtime))
@@ -591,12 +598,10 @@ async fn wait_for_process_shutdown() {
 pub enum ApiServerError {
     #[error("could not build the local Corrosion client: {0}")]
     CorrosionClientConfiguration(crate::corrosion::CorrosionClientConfigError),
-    #[error("could not build the operation owner HTTP client: {0}")]
-    OperationHttpClient(reqwest::Error),
-    #[error("could not build the managed lease client: {0}")]
-    LeaseClient(crate::lease::LeaseClientError),
-    #[error("operation startup recovery failed: {0}")]
-    OperationStartup(String),
+    #[error("could not build the bounded mesh HTTP client: {0}")]
+    MeshHttpClient(reqwest::Error),
+    #[error("could not open node-local durable workflows: {0}")]
+    NodeWorkflows(String),
     #[error(transparent)]
     ListenerIdentity(ApiListenerValidationError),
     #[error(transparent)]

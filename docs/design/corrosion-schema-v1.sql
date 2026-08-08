@@ -16,7 +16,7 @@
 -- canonical ULIDs: exactly 26 uppercase Crockford Base32 characters. Human
 -- names are lookup handles, never references. The v1 types are ClusterId,
 -- MachineRowId, PeerId, TokenId, NamespaceRowId, ServiceRowId, OperationRowId,
--- and RouteBindingRowId.
+-- RouteBindingRowId, and ControllerAppointmentId.
 --
 -- No v2 product writer ships an earlier document shape. Required v1 fields
 -- are part of this contract without a compatibility or migration layer.
@@ -69,8 +69,9 @@ CREATE TABLE tokens (
 );
 CREATE INDEX tokens_kind ON tokens (kind);
 
--- Namespace registry. PK = NamespaceRowId, a canonical ULID; name uniqueness
--- is a wait-for-quiet claim with the lowest-ULID reader rule as backstop.
+-- Namespace registry. PK = NamespaceRowId, a canonical ULID. The preferred
+-- controller serializes healthy writes; split writers may both succeed, and
+-- readers select the lowest ULID while retaining other rows as repair evidence.
 CREATE TABLE namespaces (
     id TEXT NOT NULL PRIMARY KEY,
     document TEXT NOT NULL DEFAULT '{}',
@@ -94,8 +95,8 @@ CREATE INDEX services_name ON services (name);
 -- Hostname → service + endpoint port. PK is RouteBindingRowId; service_id is
 -- ServiceRowId and namespace_id is NamespaceRowId.
 -- Route Binding Identity means detach + recreate is a new identity even for
--- the same hostname. Hostname uniqueness = wait-for-quiet claim + lowest-ULID
--- rule.
+-- the same hostname. Healthy writes are controller-serialized; split writers
+-- may both succeed, and readers select the lowest ULID while retaining shadows.
 CREATE TABLE route_bindings (
     id TEXT NOT NULL PRIMARY KEY,
     document TEXT NOT NULL DEFAULT '{}',
@@ -107,11 +108,21 @@ CREATE INDEX route_bindings_hostname ON route_bindings (hostname);
 CREATE INDEX route_bindings_service_id ON route_bindings (service_id);
 CREATE INDEX route_bindings_namespace_id ON route_bindings (namespace_id);
 
--- ─── Machine authority (exactly one writing machine per row) ────────────────
+-- Advisory preferred-controller appointment. Exactly one row per cluster;
+-- PK = ClusterId. The document carries preferred_machine_id, an opaque
+-- appointment_id, and no timestamp. The appointment is neither a lease nor a
+-- fencing token.
+CREATE TABLE controller (
+    id TEXT NOT NULL PRIMARY KEY,
+    document TEXT NOT NULL DEFAULT '{}'
+);
 
--- Redacted runtime testimony: one row per running Ployz-managed container,
--- written only by the machine running it. Never carries env or command
--- lines. PK = Docker's own container id (random, never reused).
+-- ─── Command-authored serving state ────────────────────────────────────────
+
+-- Committed serving projection: one row per Ployz-managed container published
+-- by the preferred controller after the target node prepares it. Never carries
+-- env or command lines. PK = Docker's own container id (random, never reused).
+-- Docker remains execution reality and is inspected again for later commands.
 -- Documents carry `ip` (bridge IPv4) and `deploy` (revision): DNS serves
 -- A records from ip gated on the service's active_deploy, and Keeper
 -- builds the namespace-isolation map from ip — the container-plane
@@ -130,6 +141,8 @@ CREATE INDEX containers_service_id ON containers (service_id);
 CREATE INDEX containers_namespace_id ON containers (namespace_id);
 CREATE INDEX containers_deploy ON containers (deploy);
 
+-- ─── Machine authority (exactly one writing machine per row) ────────────────
+
 -- Slow-changing per-machine testimony: versions, arch, capacity. One row
 -- per machine, PK = MachineRowId. Never liveness — liveness is WG
 -- last-handshake age at the point of use, never stored truth.
@@ -146,22 +159,24 @@ CREATE TABLE gateway_observations (
     document TEXT NOT NULL DEFAULT '{}'
 );
 
--- Operation summaries (evidence ticket #783): one row per OperationRowId, at
--- most three
--- summary-state writes — created, optional running, terminal. Written only
--- by the executing machine; the terminal write is final. Heartbeat refreshes
--- rewrite only the document's top-level heartbeat_at between those writes
--- and never touch a terminal row. Detail is driver-local JSONL, never rows.
+-- ─── Controller-authored public command summaries ──────────────────────────
+
+-- Coarse deploy summaries: one row per OperationRowId, moving only from
+-- created to terminal (completed, failed, or interrupted). The document also
+-- carries cluster_id, machine_id, initiator, namespace_id, service_id, and
+-- timestamps. A crash may leave a created row; no replacement resumes or
+-- rewrites it. There are no running snapshots, resubmit flags, heartbeats,
+-- claims, step events, or replay-journal rows. Node-local Duroxide history is
+-- private executor state, not part of this public table. State is not indexed;
+-- current readers fetch by row id or scan the coarse lens.
 CREATE TABLE operations (
     id TEXT NOT NULL PRIMARY KEY,
     document TEXT NOT NULL DEFAULT '{}',
-    kind TEXT GENERATED ALWAYS AS (json_extract(document, '$.kind')) VIRTUAL,
-    state TEXT GENERATED ALWAYS AS (json_extract(document, '$.state')) VIRTUAL,
     machine_id TEXT GENERATED ALWAYS AS (json_extract(document, '$.machine_id')) VIRTUAL
 );
-CREATE INDEX operations_kind ON operations (kind);
-CREATE INDEX operations_state ON operations (state);
 CREATE INDEX operations_machine_id ON operations (machine_id);
+
+-- ─── Machine authority (continued) ─────────────────────────────────────────
 
 -- Cert possession testimony (unified-cert ticket #792): one row per
 -- (gateway, hostname), written only by that gateway when it issues or

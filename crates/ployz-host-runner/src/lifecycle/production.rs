@@ -158,8 +158,7 @@ impl<'a, R: HostRunnerCommandRunner> LinuxSubstrate<'a, R> {
             ArtifactKind::EbpfBytecode
             | ArtifactKind::EbpfCtl
             | ArtifactKind::Corrosion
-            | ArtifactKind::CorrosionSchema
-            | ArtifactKind::Railpack => {
+            | ArtifactKind::CorrosionSchema => {
                 install_verified_artifact(&verified, &target).map_err(failure)?;
             }
         }

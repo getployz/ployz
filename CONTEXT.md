@@ -1,59 +1,61 @@
 # Ployz
 
-Ployz is a small-cluster orchestration core for deploying and operating services through explicit, bounded operations. Shared runtime bootstrap terms are canonical here and mirrored in the [Ployz Cloud glossary](../ployz-cloud/CONTEXT.md) for Cloud product language.
+Ployz is a small-cluster orchestrator for deploying and operating services through explicit, bounded commands. Shared runtime bootstrap terms are canonical here and mirrored in the [Ployz Cloud glossary](../ployz-cloud/CONTEXT.md) for Cloud product language.
 
 ## Language
 
+Current v2 is deliberately narrower than some retained product vocabulary: a namespace admits one service; deploy accepts one typed service request using a prebuilt registry image; only deploy creates public Operation rows; and there is no namespace-revision, phase, dependency, or hook planner. Entries describing those removed models are historical or target vocabulary, not claims about current implementation.
+
 **Namespace**:
-A deploy environment containing the running and desired services that are planned together. A deploy to a namespace observes the current runtime state, compares it with the full desired state for that namespace, and computes the operations needed to remove, update, start, or leave services.
+A named deploy boundary. Current v2 admits one service per namespace. A deploy observes its Corrosion rows and live target-host Docker state, prepares the desired replicas, commits the serving rows, and retires obsolete containers.
 _Avoid_: Environment
 
 **Namespace Revision**:
-The internal normalized service graph for a namespace at a point in time. Ployz derives a namespace revision from deploy input so it can plan, label service containers, record evidence, and advance serving targets.
+A historical target-model term for a normalized service graph. Current v2 has no Namespace Revision planner or persisted revision document; the service row's `active_deploy` selects the serving container generation.
 _Avoid_: User-supplied revision, service revision, active state
 
 **Namespace Revision Entry**:
-One service's normalized desired definition inside a namespace revision. A namespace revision entry can satisfy its declared Service Mode only through service containers that are equivalent to that entry.
+A historical target-model term for one service inside a Namespace Revision. It is not a current v2 wire or persistence type.
 _Avoid_: Service revision, service-equivalence identity, container spec hash
 
 **Namespace Revision Entry Identity**:
-The stable identity of one namespace revision entry, derived per service so that two services never share an identity even if their container shape is otherwise identical. It is a versioned digest so a future change to which fields it covers is a deliberate, detectable version bump rather than silent drift. It covers only fields that require a new service container, currently service id and image reference; it excludes replica count, route bindings, and routed endpoint port, since a routed endpoint port change is satisfied by an endpoint reroute instead of container replacement.
-_Avoid_: Container spec hash, service fingerprint, target revision
+A historical versioned digest from the removed planner. Current v2 container identity is namespace id, service id, deploy Operation id, and replica slot; serving selects the service's `active_deploy`.
+_Avoid_: Current serving generation, target revision
 
 **Endpoint Reroute**:
-A route-level deploy effect that changes where traffic for a service lands without recreating its containers. A routed endpoint port change commits new route state during the deploy; gateway upstream matching dials a container's observed IP on the route's endpoint port rather than requiring the container's own declared port to match, so containers stay usable by namespace revision entry identity.
-_Avoid_: Container replacement, in-place update, machine-local override, per-container planning outcome
+A standalone Route Binding mutation that changes the endpoint port without recreating service containers. Gateways dial a selected container's observed IP on the binding's port.
+_Avoid_: Container replacement, deploy phase, machine-local override
 
 **Service Container Shape**:
-The planned target-specific runtime shape for service containers that can satisfy one namespace revision entry on a compatible machine. It includes the namespace revision entry, target platform, and planned resolved image identity.
-_Avoid_: Namespace revision entry, route binding, machine observation
+The caller-supplied runtime settings used by a target node when it creates a service container. The target node resolves the requested image to a digest during prepare; all selected targets must report the same resolved identity before commit.
+_Avoid_: Route binding, machine observation, controller-resolved image
 
 **Serving Target**:
-The current serveable service set for a namespace. It tells gateways which services and namespace revision entries are eligible to serve when combined with route bindings and runtime observations.
-_Avoid_: Active service, active revision, completed phase pointer
+The `active_deploy` on a service row. Gateways combine it with Route Bindings and container rows and serve only containers whose deploy id matches it.
+_Avoid_: Namespace revision entry, completed phase pointer
 
 **Phase**:
-A topological layer of services whose dependencies are satisfied at the same point in a deploy. Services in a phase start only after every dependency phase's services pass their required creation gates; serveability advances per service.
+A historical target-model layer derived from service dependencies. Current v2 deploy has no phases.
 _Avoid_: Manual phase, route promotion phase
 
 **Service Dependency**:
-A typed deploy-input relationship requiring one service's phase to promote before another service can start. Service dependencies derive phases and carry a Dependency Condition; they are not durable workflow state.
+A historical target-model relationship between services. Current v2 admits one service per namespace and does not accept dependencies.
 _Avoid_: Workflow dependency, runtime dependency, Compose condition
 
 **Dependency Condition**:
-The minimum gate a Service Dependency requires: started or healthy. A dependency's own creation gate still completes before its phase promotes, so started never bypasses a configured healthcheck; healthy requires an executable healthcheck.
-_Avoid_: Compose lifecycle condition, completion dependency, readiness policy
+A historical target-model gate on a Service Dependency. It is not part of current v2 deploy input.
+_Avoid_: Current health gate, readiness policy
 
 **Pre-Start Hook**:
-A one-off command attached to a service that runs before starting new service containers for that service when the deploy plan includes run or replace work. It must complete successfully before the deploy phase can continue; on failure, the hook container is retained as failed deploy evidence.
-_Avoid_: Post-start hook, Compose completed service, job service
+A historical target-model command run before service containers. Current v2 deploy does not accept or execute hooks.
+_Avoid_: Current deploy step, job service
 
 **Hook Container**:
-A one-off service-derived container created to run a pre-start hook. Hook containers are operation evidence, not service containers that can satisfy a Service Mode or be served by routes.
+A historical container kind for Pre-Start Hooks. Current v2 creates only service containers.
 _Avoid_: Job service, replica, sidecar
 
 **Route Binding**:
-An external hostname bound to one service id and internal endpoint port inside a namespace. Hostnames are unique across Route Bindings; gateways provide fixed HTTPS entry and HTTP redirect/validation behavior, so public listener ports are not binding input. A route binding can exist even when its service is absent from the current serving target; the binding is valid route state, while serving is a projection result. A deploy manifest may include route bindings as a convenience; future route operations will update the same route binding state independently of deploy manifests.
+A Corrosion row binding an external hostname to one service id and internal endpoint port inside a namespace. Standalone preferred-controller commands attach and remove bindings. Deploy only inserts a missing deterministic automatic port-80 binding; it does not reconcile a manifest route set. Gateways keep binding state separate from container state and return unavailable when no active-deploy container can serve it.
 _Avoid_: Active route, the route (as if a service has at most one), deploy-owned route
 
 **Route Binding Identity**:
@@ -204,28 +206,40 @@ Certificate material an operator provides directly rather than material Ployz ob
 _Avoid_: Certificate provider, custom certificate, BYO issuer, ACME account swap, renewable certificate
 
 **Operation**:
-A user-visible record of a bounded command attempt. It explains what was attempted and what the attempt reported, but future planning uses live runtime state rather than the operation record.
+A user-visible coarse record of one deploy attempt. Current v2 writes only Created and Terminal snapshots; terminal is Completed (possibly with warnings), Failed, or Interrupted. A controller crash may leave Created forever, and no replacement resumes or projects it. Other glossary uses of “operation” name explicit commands or future product behavior, not additional current `OperationDocument` variants.
 _Avoid_: Workflow, source of truth
 
+**Preferred Controller**:
+The machine currently named by the cluster's advisory Controller Appointment. It serializes cluster mutations with ordinary in-process exclusion in the healthy case; overlapping mutations may be refused as busy. It is not authoritative storage, a consensus leader, or a durable workflow owner.
+_Avoid_: Core, leader, primary truth, scheduler
+
+**Controller Appointment**:
+The singleton Corrosion row naming a Preferred Controller with an opaque appointment identity. It has no timestamp, lease, term, heartbeat, fencing token, or quorum meaning. A follower may replace it immediately after one hard connect failure; timeouts and HTTP or protocol responses do not replace it. Partitions may create competing appointments and Corrosion's ordinary LWW convergence selects one row.
+_Avoid_: Election term, lease, leadership epoch, fencing token
+
+**Node Workflow Runtime**:
+The private Duroxide and SQLite runtime on each machine. It records only that machine's host-local prepare and retire steps so they can resume after a local daemon crash. It does not schedule cluster work, elect the Preferred Controller, or transfer history between machines.
+_Avoid_: Distributed workflow engine, controller queue, cluster truth
+
 **Deploy**:
-An attempt to make one namespace match one namespace revision. A deploy observes live runtime state, compares it with the desired namespace revision, and applies the planned changes phase by phase.
-_Avoid_: Service deploy
+A bounded attempt to create or update the sole service in a namespace. The Preferred Controller observes Corrosion and target-host Docker, computes placement, asks nodes to prepare exact replicas, commits serving rows after an immediate appointment recheck, then asks nodes to retire obsolete identities. The commit is not appointment-conditional, so stale or partitioned commits remain possible and are repaired by retrying from reality.
+_Avoid_: Distributed workflow, namespace revision reconciliation
 
 **Deploy Outcome**:
-The terminal result of a namespace deploy attempt. It describes whether the namespace deploy fully completed, completed with warnings, partially completed through one or more phases, failed before useful namespace progress, or was cancelled.
-_Avoid_: Service result, operation status
+The terminal result of a current v2 deploy: Completed with optional warnings, Failed with one typed coarse failure, or Interrupted. There is no partial, cancelled, per-phase, or per-service outcome.
+_Avoid_: Progress state, resubmit instruction
 
 **Service Deploy Result**:
-The result for one service within a namespace deploy attempt. It lets a service be completed, failed, skipped, unchanged, or removed inside a deploy whose namespace-level outcome may be different.
-_Avoid_: Deploy outcome, service status, active service
+A historical target-model result for one service inside a multi-service deploy. Current v2 has no separate Service Deploy Result because a deploy contains exactly one service.
+_Avoid_: Current deploy outcome, service status
 
 **Deploy Input**:
-The caller-provided input for a deploy, such as Compose YAML, a cloud-generated payload, or an SDK request. Ployz turns deploy input into an internal namespace revision before planning. Deploy input may include route bindings as a convenience so one manifest can update service containers and route state together, but routes are not owned by deploys and will be updatable independently.
-_Avoid_: Desired state
+The typed current-v2 request for one service: namespace and service names, a prebuilt registry image reference, optional pull credential, runtime shape, health-gate policy, placement, and machine pins. It contains no source build, Compose document, dependency, hook, phase, or route set.
+_Avoid_: Source build request, namespace revision
 
 **Resolved Image Identity**:
-The exact image identity selected during deploy planning for a service container, such as an immutable digest. Execution uses the planned resolved image identity; machines do not resolve mutable image references after planning. Heterogeneous targets may require platform-specific resolved image identities.
-_Avoid_: Latest tag, requested image, background refresh
+The digest-pinned image identity returned by a target node after it resolves and pulls the requested registry reference during prepare. The controller requires all selected targets to report the same identity before committing.
+_Avoid_: Controller-resolved image, requested tag, background refresh
 
 **Cloud Deploy Payload**:
 The typed deploy input submitted by Ployz Cloud or another SDK client. It is the first deploy input source for Ployz.
@@ -234,15 +248,9 @@ _Avoid_: Compose project
 **Deploy Preview**:
 Superseded by ADR 0040 (no preview, no receipts); see git history.
 
-**Pending Build Image**:
-Superseded by ADR 0040; see git history.
-
-**Build Platform Requirement**:
-Superseded by ADR 0040; see git history.
-
 **Deploy Plan**:
-The authoritative, phase-ordered plan created by a Deploy from fresh runtime testimony and concrete image identities. It is limited to platforms covered by each service image.
-_Avoid_: Deploy Preview, Cloud workflow plan, stored desired state
+The ephemeral placement and bounded effect set the Preferred Controller computes from fresh Corrosion rows and target-host reality. It is not phase-ordered, persisted, resumed, or authoritative after the attempt ends.
+_Avoid_: Deploy Preview, workflow history, stored desired state
 
 **Compose Adapter**:
 A future adapter that translates Docker Compose input into deploy input for one namespace. The adapter preserves familiar Compose concepts without making Compose the core domain model.
@@ -288,7 +296,7 @@ Durable state outside cluster intent, owned by a machine or role process, that c
 _Avoid_: Cache
 
 **Runtime State**:
-The observed condition of a namespace at planning time, including service containers, health, machine availability, volumes, gateway observations, and certificate readiness. Runtime state is an input to deploy planning; it is not desired state or operation history.
+The fresh Corrosion rows and target-host inspection used by one command, including service/container rows, accepted machines, machine status, live Docker containers, health, bridge readiness, and relevant volumes. It is an input to planning, not desired state or operation history.
 _Avoid_: Live state, stored truth
 
 **Operation Runtime Snapshot**:
@@ -300,72 +308,80 @@ A read-side or data-plane view built from durable control-plane state and fresh 
 _Avoid_: Mutating operation snapshot, live RPC requirement, hidden reconciliation
 
 **Managed Container Identity**:
-The single record of what a managed container is and where it came from: its namespace, service, and namespace revision entry identity, plus the operation, step, and container kind that created it. It is rendered into Docker labels as recovery evidence, reported in machine observations, sent in machine run commands, and compared for cleanup fencing - one struct everywhere, so the copies cannot drift.
-_Avoid_: Label set, container spec, flattened identity fields
+The exact current-v2 identity rendered into Docker labels and carried through host requests and inspection: namespace row id, service row id, deploy Operation id, and replica slot. Retirement refuses when the observed identity differs.
+_Avoid_: Namespace revision entry, workflow step id, flattened identity fields
 
 **Container Provenance**:
-The half of a managed container identity stamped by the executing operation rather than derived from deploy input: the operation id and step id that created the container. Provenance is never consumed apart from the full identity; it is a named concept, not a separate type.
-_Avoid_: Audit trail, creation metadata
+The deploy Operation id within Managed Container Identity. Current v2 has no separate provenance type or workflow step id.
+_Avoid_: Audit trail, workflow history
 
 **Service Container**:
 A Docker container that belongs to a service in a namespace. Service containers are runtime evidence for planning and inspection, but they are not the canonical service definition.
 _Avoid_: Replica as container identity
 
 **Replica**:
-A desired capacity slot for a service in a namespace revision. A replica can be satisfied by a usable service container, but it is not itself a specific container.
+A desired capacity slot for the namespace's sole service: either a numbered replicated slot or the global slot on one eligible machine. The slot participates in Managed Container Identity; it is not a Docker container id.
 _Avoid_: Container
 
 **Usable Service Container**:
-A service container that can satisfy a desired replica. It is running, valid for the intended placement, and equivalent to the desired service definition for that replica by namespace revision entry identity. A container passes its healthcheck once, at first creation, and only when the service defines one; reuse by a later deploy never re-runs that gate. Route endpoint port changes never affect usability: they are route state, satisfied by an endpoint reroute during the deploy, not by container replacement.
+A running service container with the exact Managed Container Identity expected by the current attempt. It passes its one-time creation gate when prepared, unless the caller explicitly skips that gate. Gateways additionally require its deploy id to equal the service's `active_deploy`.
 _Avoid_: Running container
 
 **Container Replacement**:
-A deploy action that creates a new service container for a desired replica and retires an existing service container that no longer satisfies that replica. A container replacement uses an update order to decide whether the new or old container moves first.
+A deploy that prepares a new Operation-id generation, commits it as active, and then retires obsolete exact identities. When named volumes make overlap unsafe, the target stops the accepted predecessor generation before starting the replacement.
 _Avoid_: In-place update
 
 **Update Order**:
-The replacement mode for a service container update. `start-first` starts and health-checks the new service container before stopping the old one; `stop-first` stops the old service container before starting the new one when overlap is unsafe.
-_Avoid_: Replacement order, rollout mode
+Not caller-selectable in current v2. Stateless replacements prepare before the serving commit and retire afterward; volume-bearing replacements may stop the accepted predecessor before starting the candidate.
+_Avoid_: Configurable rollout mode, update strategy
 
 **Stop Grace Period**:
-A bounded time allowed for an old service container to exit after Ployz asks it to stop. In `start-first` updates, new service containers are started and promoted before old service containers receive the stop signal; the stop grace period comes from service configuration and defaults to 10 seconds.
+A fixed 10-second Docker container stop timeout set when current-v2 service containers are created. It is not deploy input or per-service policy.
 _Avoid_: Drain period, gateway consensus, cutover wait
 
 **Promotion**:
-Updating the serving target after a phase succeeds. Promotion makes the phase's services eligible for gateway serving, even if individual gateways report convergence later.
-_Avoid_: Route cutover stage
+The Preferred Controller's service-row commit that sets `active_deploy` after all selected target nodes prepare successfully. It is not a separate phase or workflow step.
+_Avoid_: Phase promotion, route cutover stage
 
 **Gateway Convergence**:
 A gateway's observed application of the current serving target and route bindings. Gateway convergence is diagnostic feedback after promotion, not a prerequisite for deploy success.
 _Avoid_: Cutover confirmation
 
 **Role Observation Window**:
-A bounded warning-only period during coordination steps such as routed service promotion or serving unpublish where Ployz observes whether role processes relevant to that step report the expected applied state. It lasts for at least its configured minimum duration even if role processes converge early, and missing convergence creates warning evidence rather than operation quorum.
-_Avoid_: Gateway gate, role quorum, membership wait, reconciliation wait
+A historical planner mechanism for warning-only convergence observation. Current v2 deploy does not wait on a role observation window.
+_Avoid_: Current deploy gate, role quorum
 
 **Namespace Lock**:
-Superseded by ADR 0040 (the deploy op row is an optimistic claim); see git history.
+No durable object. In the healthy case the Preferred Controller's single
+in-process lock serializes namespace mutations. A partitioned competing
+Controller Appointment may race, which is an accepted limitation repaired by
+re-observing Runtime State and retrying.
+_Avoid_: Distributed lock, lease, operation claim
 
 **Atomic Resource Claim**:
-Superseded by ADR 0040 (LWW rows admit no compare-and-set; claims are optimistic); see git history.
+Superseded by ADR 0041. Preferred-controller serialization replaces distributed
+operation claims; data-safety checks live at the exact host effect that needs
+them.
 
 **Machine Substrate Lock**:
 Superseded by ADR 0040; see git history.
 
 **Resource Busy**:
-An API rejection meaning a command cannot start because a required resource is held by a live optimistic claim. A resource busy rejection does not create an operation record.
-_Avoid_: Failed operation
+An API rejection meaning the Preferred Controller is already executing another
+cluster mutation. There is no durable queue or claim to inspect; the caller may
+retry after observing current state.
+_Avoid_: Lock owner, queued operation
 
 **Failed Deploy Evidence**:
 Runtime material retained after a failed deploy attempt so the failure can be inspected. It can include stopped service containers, container IDs, machine IDs, logs, labels, and failure details.
 _Avoid_: Garbage, orphan
 
 **Cleanup**:
-Explicit removal of runtime material that is outside the desired namespace revision. Cleanup happens after service phases in a deploy or through another named operation, not through a hidden background reconciler.
+The best-effort post-commit retirement of exact obsolete container identities on their owning nodes. Failure becomes a deploy warning; the next command observes reality again. There is no hidden background reconciler.
 _Avoid_: Garbage collection
 
 **Service**:
-A named workload inside a namespace. A service's desired definition belongs to a namespace revision, and its runtime presence is one or more service containers.
+A named workload represented by one Corrosion service row and one active deploy generation. Current v2 allows one service per namespace; its runtime presence is the matching container rows and live Docker containers.
 _Avoid_: Cluster-global service
 
 **Service Mode**:
@@ -433,12 +449,12 @@ The machine-local agent that converges one machine's substrate toward the rows i
 _Avoid_: Host runner, updater, reconciler for anything but its own machine, agent as a second domain entity
 
 **Worker**:
-The role process that executes workload effects on one machine: builds, images, service containers, volumes, endpoints, and logs. Worker owns the containers, where Keeper owns the host and its network; the split follows privilege, so anything needing the host network namespace or a host capability is Keeper's. Worker does the work an operation ordered; it never decides what belongs on the machine.
+The role process that executes workload effects on one machine: registry images, service containers, volumes, endpoints, and logs. It does not build source images. Worker owns the containers, where Keeper owns the host and its network; it executes controller requests and never decides cluster intent.
 _Avoid_: Machine role, machine daemon, executor as cluster authority
 
 **Machine Capability**:
-An operator-selected outcome for one machine. The current capabilities are running applications, building images, and egress. Capabilities are the operator-facing primitive; there are no named capability profiles, because a profile set that needs a custom escape hatch is presentation over these same choices. Removing a capability from a machine that is still using it is rejected until the machine is drained.
-_Avoid_: Profile, preset, general purpose, edge, role as a user-facing choice
+A target-model operator-facing selection for host features. Current v2 has no source-build capability and does not expose a build worker.
+_Avoid_: Build worker, profile, preset
 
 **Machine Identity**:
 The stable, non-reused identity of an accepted machine. Machine identity owns credentials, endpoint subnet assignment, observations, and operation history.

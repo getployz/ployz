@@ -339,11 +339,6 @@ pub enum LogsExecutionError {
     HostingMachinesUnresolved { machine_ids: String },
     #[error("service logs are owned by machine {machine}; point --target at that machine")]
     RemoteOwner { machine: String },
-    #[error("service log driver {machine_id} is dark: {observation}")]
-    DriverDark {
-        machine_id: String,
-        observation: String,
-    },
     #[error("service log runtime is unavailable on machine {machine_id}")]
     RuntimeUnavailable { machine_id: String },
 }
@@ -400,13 +395,6 @@ impl From<ServiceLogsRefusal> for LogsExecutionError {
             } => Self::RemoteOwner {
                 machine: machine_name
                     .map_or_else(|| machine_id.to_string(), |name| name.as_str().to_owned()),
-            },
-            ServiceLogsRefusal::DriverDark {
-                machine_id,
-                observation,
-            } => Self::DriverDark {
-                machine_id: machine_id.to_string(),
-                observation: format!("{observation:?}"),
             },
             ServiceLogsRefusal::RuntimeUnavailable { machine_id } => Self::RuntimeUnavailable {
                 machine_id: machine_id.to_string(),
