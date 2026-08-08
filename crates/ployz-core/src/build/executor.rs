@@ -297,67 +297,6 @@ impl BuildExecutorAssignments {
     pub fn iter(&self) -> impl Iterator<Item = &BuildPlatformExecutorAssignment> {
         self.0.iter()
     }
-
-    pub(crate) fn insert(
-        &mut self,
-        target: &BuildTarget,
-        requested_platforms: &super::BuildPlatforms,
-        assignment: BuildPlatformExecutorAssignment,
-    ) -> Result<(), BuildExecutorAssignmentsError> {
-        if !requested_platforms.contains(&assignment.platform) {
-            return Err(BuildExecutorAssignmentsError::UnrequestedPlatform);
-        }
-        if self
-            .0
-            .iter()
-            .any(|placed| placed.platform == assignment.platform)
-        {
-            return Err(BuildExecutorAssignmentsError::DuplicatePlatform);
-        }
-        if !assignment_matches_target(target, &assignment.executor) {
-            return Err(BuildExecutorAssignmentsError::TargetMismatch);
-        }
-        self.0.push(assignment);
-        Ok(())
-    }
-
-    #[must_use]
-    pub(crate) fn matches(
-        &self,
-        platform: &OciPlatform,
-        executor: &BuildExecutorAssignment,
-    ) -> bool {
-        self.0
-            .iter()
-            .any(|placed| placed.platform == *platform && placed.executor == *executor)
-    }
-
-    #[must_use]
-    pub(crate) fn is_complete(&self, platforms: &super::BuildPlatforms) -> bool {
-        self.len() == platforms.iter().len()
-            && platforms
-                .iter()
-                .all(|platform| self.0.iter().any(|placed| placed.platform == *platform))
-    }
-
-    #[must_use]
-    pub(crate) fn contains_executor(&self, executor: &BuildExecutorAssignment) -> bool {
-        self.0
-            .iter()
-            .any(|assignment| assignment.executor == *executor)
-    }
-
-    #[must_use]
-    pub(crate) fn matches_contract(
-        &self,
-        target: &BuildTarget,
-        platforms: &super::BuildPlatforms,
-    ) -> bool {
-        self.0.iter().all(|assignment| {
-            platforms.contains(&assignment.platform)
-                && assignment_matches_target(target, &assignment.executor)
-        })
-    }
 }
 
 impl TryFrom<Vec<BuildPlatformExecutorAssignment>> for BuildExecutorAssignments {
@@ -395,10 +334,6 @@ pub enum BuildExecutorAssignmentsError {
     DuplicatePlatform,
     #[error("build executor assignments mix targets or external pools")]
     HeterogeneousTarget,
-    #[error("build executor assignment targets an unrequested platform")]
-    UnrequestedPlatform,
-    #[error("build executor assignment does not match the requested build target")]
-    TargetMismatch,
 }
 
 fn same_target(left: &BuildExecutorAssignment, right: &BuildExecutorAssignment) -> bool {
@@ -412,21 +347,6 @@ fn same_target(left: &BuildExecutorAssignment, right: &BuildExecutorAssignment) 
         | (BuildExecutorAssignment::External { .. }, BuildExecutorAssignment::Cluster { .. }) => {
             false
         }
-    }
-}
-
-fn assignment_matches_target(target: &BuildTarget, assignment: &BuildExecutorAssignment) -> bool {
-    match (target, assignment) {
-        (BuildTarget::Cluster, BuildExecutorAssignment::Cluster { .. }) => true,
-        (
-            BuildTarget::External { pool_id },
-            BuildExecutorAssignment::External {
-                pool_id: assignment_pool_id,
-                ..
-            },
-        ) => pool_id == assignment_pool_id,
-        (BuildTarget::Cluster, BuildExecutorAssignment::External { .. })
-        | (BuildTarget::External { .. }, BuildExecutorAssignment::Cluster { .. }) => false,
     }
 }
 
@@ -1374,54 +1294,17 @@ mod tests {
     }
 
     #[test]
-    fn executor_assignments_use_a_transparent_array_and_own_placement_checks() {
-        let requested =
-            super::super::BuildPlatforms::try_new([platform("amd64"), platform("arm64")])
-                .expect("platforms");
-        let machine_a = cluster_assignment();
-        let machine_b = BuildExecutorAssignment::Cluster {
-            machine_id: MachineId::try_new("machine-b").expect("machine"),
-        };
-        let mut assignments = BuildExecutorAssignments::empty();
-
-        assignments
-            .insert(
-                &BuildTarget::Cluster,
-                &requested,
-                placed("amd64", machine_a.clone()),
-            )
-            .expect("first placement");
-        assert!(!assignments.is_complete(&requested));
-        assert!(assignments.matches(&platform("amd64"), &machine_a));
-        assert!(!assignments.matches(&platform("amd64"), &machine_b));
-        assert!(
-            assignments
-                .insert(
-                    &BuildTarget::Cluster,
-                    &requested,
-                    placed("amd64", machine_b.clone()),
-                )
-                .is_err()
-        );
-        assert!(
-            assignments
-                .insert(
-                    &BuildTarget::Cluster,
-                    &requested,
-                    placed("riscv64", machine_b.clone()),
-                )
-                .is_err()
-        );
-        assignments
-            .insert(
-                &BuildTarget::Cluster,
-                &requested,
-                placed("arm64", machine_b),
-            )
-            .expect("second placement");
-        assert!(assignments.is_complete(&requested));
-        assert!(assignments.contains_executor(&machine_a));
-
+    fn executor_assignments_use_a_transparent_array() {
+        let assignments = BuildExecutorAssignments::try_from(vec![
+            placed("amd64", cluster_assignment()),
+            placed(
+                "arm64",
+                BuildExecutorAssignment::Cluster {
+                    machine_id: MachineId::try_new("machine-b").expect("machine"),
+                },
+            ),
+        ])
+        .expect("assignments");
         let encoded = serde_json::to_value(&assignments).expect("encode assignments");
         assert!(encoded.is_array());
         assert_eq!(

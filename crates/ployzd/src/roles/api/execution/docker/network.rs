@@ -10,7 +10,7 @@ use bollard::query_parameters::{
 use ployz_core::network::{EndpointBridgeStatus, MachineEndpointSubnet};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use super::labels::MANAGED_LABEL;
+use super::v2_labels::MANAGED_LABEL;
 use crate::roles::api::runner::{
     MachineContainerCreateError, MachineEndpointNetworkConvergenceError,
     MachineEndpointNetworkConvergenceOutcome, MachineEndpointNetworkError,

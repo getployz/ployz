@@ -14,7 +14,6 @@ ts = ["dep:ts-rs"]
 
 [dependencies]
 base64 = "0.22"
-hmac.workspace = true
 ipnet = { version = "2", features = ["serde"] }
 serde.workspace = true
 serde_json.workspace = true
@@ -27,9 +26,6 @@ ulid.workspace = true
 url = "2"
 uuid.workspace = true
 
-[dev-dependencies]
-ployz-test-support.workspace = true
-
 [lib]
 path = "src/lib.rs"
 doctest = false
@@ -37,9 +33,4 @@ doctest = false
 [[bin]]
 name = "export-typescript"
 path = "src/bin/export-typescript.rs"
-required-features = ["ts"]
-
-[[bin]]
-name = "export-operation-contract"
-path = "src/bin/export-operation-contract.rs"
 required-features = ["ts"]

@@ -20,8 +20,7 @@ use tokio::sync::watch;
 use crate::roles::api::execution::docker::runner::DockerManagedContainerRunner;
 use crate::roles::api::runner::{
     CreateV2ManagedContainer, ExistingManagedContainerState, ExistingV2ManagedContainer,
-    MachineContainerRunner, MachineContainerStopOutcome, V2MachineContainerRunner,
-    V2MachineImageRunner,
+    MachineContainerStopOutcome, V2MachineContainerRunner, V2MachineImageRunner,
 };
 
 use super::promotion_store::ResolvedNamespace;

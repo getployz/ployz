@@ -50,7 +50,6 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 rtnetlink.workspace = true
 
 [dev-dependencies]
-ployz-test-support.workspace = true
 rcgen = { version = "0.14.8", features = ["crypto", "pem"] }
 sha2.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "test-util"] }

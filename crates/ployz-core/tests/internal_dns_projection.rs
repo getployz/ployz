@@ -1,26 +1,12 @@
 use std::collections::BTreeMap;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{Ipv4Addr, SocketAddr};
 
-use base64::Engine as _;
 use ployz_core::corrosion::StoredRow;
-use ployz_core::ids::{ClusterId, MachineId, MachineRowId, NamespaceId, ServiceId};
-use ployz_core::ingress::{AutomaticHostnameConfiguration, PloyzDnsTargetIntent};
-use ployz_core::intent::{ActiveMachineState, IntentSnapshot};
-use ployz_core::machine::MachineName;
-use ployz_core::machine::runtime::{
-    ContainerRuntimeState, MachineContainerObservationSnapshot, MachineFactsSnapshot,
-    ManagedContainerKind,
-};
-use ployz_core::machine::{InstallRolePolicy, MachineLifecycle};
-use ployz_core::network::MachineEndpointSubnet;
+use ployz_core::ids::{ClusterId, MachineRowId};
 use ployz_core::network::internal_dns::{
     INTERNAL_DNS_READINESS_NAME, InternalDnsRowProjectionError, InternalDnsRowProjectionInput,
-    InternalDnsSearchDomain, InternalServiceName, internal_dns_records, project_internal_dns_rows,
+    InternalDnsSearchDomain, InternalServiceName, project_internal_dns_rows,
 };
-use ployz_test_support::fixtures::serving_target_entry;
-use ployz_test_support::ids::{machine_id, operation_id};
-use ployz_test_support::{containers, fixtures};
-use sha2::{Digest, Sha256};
 
 const CLUSTER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const LOCAL_MACHINE: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
@@ -159,98 +145,6 @@ fn internal_dns_search_domain_uses_the_human_namespace_label() {
 }
 
 #[test]
-fn internal_dns_projection_returns_sorted_unique_running_service_ipv4_addresses() {
-    let observations = [
-        containers::observation("machine_a", "ctr_1")
-            .with(containers::identity("db").namespace("default"))
-            .running_at(IpAddr::V4(Ipv4Addr::new(10, 198, 2, 8)))
-            .build(),
-        containers::observation("machine_a", "ctr_2")
-            .with(containers::identity("db").namespace("default"))
-            .running_at(IpAddr::V4(Ipv4Addr::new(10, 198, 1, 9)))
-            .build(),
-        containers::observation("machine_a", "ctr_3")
-            .with(containers::identity("db").namespace("default"))
-            .running_at(IpAddr::V4(Ipv4Addr::new(10, 198, 2, 8)))
-            .build(),
-        containers::observation("machine_a", "ctr_job")
-            .with(
-                containers::identity("db")
-                    .namespace("default")
-                    .kind(ManagedContainerKind::Job),
-            )
-            .running_at(IpAddr::V4(Ipv4Addr::new(10, 198, 3, 10)))
-            .build(),
-        ployz_core::machine::ManagedContainerObservation {
-            state: ContainerRuntimeState::Exited,
-            ..containers::observation("machine_a", "ctr_exited")
-                .with(containers::identity("db").namespace("default"))
-                .build()
-        },
-    ];
-    let machine_id = MachineId::try_new("machine_a").expect("machine id");
-    let facts = MachineFactsSnapshot::try_new(
-        machine_id.clone(),
-        MachineContainerObservationSnapshot::try_new(machine_id, observations)
-            .expect("container facts"),
-        None,
-        ployz_test_support::fixtures::test_disk_space(),
-        None,
-        ployz_core::image::OciPlatform::current(),
-        1,
-    )
-    .expect("machine facts");
-    let name = InternalServiceName::try_from_ids(
-        &ServiceId::try_new("db").expect("service id"),
-        &NamespaceId::try_new("default").expect("namespace id"),
-    )
-    .expect("internal service name");
-
-    assert_eq!(
-        internal_dns_records(&intent(["machine_a"], "entry_test"), &[facts]),
-        BTreeMap::from([(
-            name,
-            vec![Ipv4Addr::new(10, 198, 1, 9), Ipv4Addr::new(10, 198, 2, 8)]
-        )])
-    );
-}
-
-#[test]
-fn internal_dns_projection_excludes_facts_from_removed_machines() {
-    let facts = machine_facts(
-        "machine_removed",
-        [containers::observation("machine_removed", "ctr_1")
-            .with(containers::identity("db"))
-            .running_at(IpAddr::V4(Ipv4Addr::new(10, 198, 2, 8)))],
-    );
-
-    assert_eq!(
-        internal_dns_records(&intent(["machine_a"], "entry_test"), &[facts]),
-        BTreeMap::new()
-    );
-}
-
-#[test]
-fn internal_dns_projection_excludes_retained_failed_and_old_revision_containers() {
-    let facts = machine_facts(
-        "machine_a",
-        [
-            containers::observation("machine_a", "ctr_failed")
-                .with(containers::identity("db").entry("entry_failed"))
-                .running_at(IpAddr::V4(Ipv4Addr::new(10, 198, 2, 7))),
-            containers::observation("machine_a", "ctr_old")
-                .with(containers::identity("db").entry("entry_old"))
-                .running_at(IpAddr::V4(Ipv4Addr::new(10, 198, 2, 8))),
-        ],
-    );
-
-    assert_eq!(
-        internal_dns_records(&intent(["machine_a"], "entry_current"), &[facts]),
-        BTreeMap::new()
-    );
-}
-
-#[test]
 fn internal_service_name_deserialization_rejects_invalid_names() {
     let error = serde_json::from_str::<InternalServiceName>("\"db.internal\"")
         .expect_err("missing namespace is invalid");
@@ -259,83 +153,11 @@ fn internal_service_name_deserialization_rejects_invalid_names() {
 }
 
 #[test]
-fn internal_service_name_from_ids_rejects_dns_labels_over_63_bytes() {
-    let service_id = ServiceId::try_new("s".repeat(64)).expect("service id");
-    let namespace_id = NamespaceId::try_new("default").expect("namespace id");
-
-    assert!(InternalServiceName::try_from_ids(&service_id, &namespace_id).is_err());
-}
-
-#[test]
-fn internal_service_name_from_ids_rejects_noncanonical_service_id_case() {
-    let service_id = ServiceId::try_new("Database").expect("service id");
-    let namespace_id = NamespaceId::try_new("default").expect("namespace id");
-
-    assert!(InternalServiceName::try_from_ids(&service_id, &namespace_id).is_err());
-}
-
-#[test]
-fn internal_service_name_from_ids_rejects_noncanonical_namespace_id_case() {
-    let service_id = ServiceId::try_new("database").expect("service id");
-    let namespace_id = NamespaceId::try_new("Default").expect("namespace id");
-
-    assert!(InternalServiceName::try_from_ids(&service_id, &namespace_id).is_err());
-}
-
-#[test]
 fn internal_service_name_query_parsing_canonicalizes_ascii_case() {
     let name = InternalServiceName::try_new("Database.Default.INTERNAL")
         .expect("operator query is case-insensitive");
 
     assert_eq!(name.as_str(), "database.default.internal");
-}
-
-fn intent<const N: usize>(machines: [&str; N], entry: &str) -> IntentSnapshot {
-    IntentSnapshot {
-        active_machines: machines.into_iter().map(active_machine).collect(),
-        dataplane_projection: ployz_core::network::DataplaneProjection::try_new(Vec::new(), None)
-            .expect("empty projection"),
-        route_bindings: Vec::new(),
-        serving_target_entries: vec![serving_target_entry("db", entry)],
-        volume_pins: Vec::new(),
-        automatic_hostname_configuration: AutomaticHostnameConfiguration::Ployz,
-        ployz_dns_target: PloyzDnsTargetIntent::Enabled,
-        active_certificates: Vec::new(),
-    }
-}
-
-fn active_machine(id: &str) -> ActiveMachineState {
-    ActiveMachineState {
-        machine_id: machine_id(id),
-        name: MachineName::try_new(id).expect("machine name"),
-        activated_by: operation_id(&format!("op_{id}")),
-        roles: InstallRolePolicy::install_all(),
-        lifecycle: MachineLifecycle::Active,
-        control_endpoints: Vec::new(),
-        mesh_endpoints: Vec::new(),
-        endpoint_subnet: MachineEndpointSubnet::try_new("10.198.0.0/24")
-            .expect("valid endpoint subnet"),
-        wireguard_public_key: ployz_core::network::WireGuardPublicKey::try_new(
-            base64::engine::general_purpose::STANDARD.encode(Sha256::digest(id)),
-        )
-        .expect("public key"),
-    }
-}
-
-fn machine_facts(
-    machine: &str,
-    observations: impl IntoIterator<Item = containers::ManagedContainerObservationBuilder>,
-) -> MachineFactsSnapshot {
-    MachineFactsSnapshot::try_new(
-        machine_id(machine),
-        containers::snapshot(machine, observations),
-        None,
-        fixtures::test_disk_space(),
-        None,
-        ployz_core::image::OciPlatform::current(),
-        1,
-    )
-    .expect("machine facts")
 }
 
 fn cluster_id() -> ClusterId {

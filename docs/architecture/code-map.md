@@ -75,8 +75,7 @@ program-workspace shape.
 [`crates/ployz-core/`](../../crates/ployz-core/) owns typed ids, Corrosion row
 documents, HTTP request/reply and SSE event shapes, operation states, and domain
 policy shared by callers and responders. TypeScript derives and the
-`export-typescript` / `export-operation-contract` bins live here behind the
-`ts` feature.
+`export-typescript` bin live here behind the `ts` feature.
 
 Core does not own process wiring, concrete HTTP servers or clients, Corrosion
 process supervision, Docker clients, filesystem adapters, or CLI presentation.
@@ -129,10 +128,9 @@ telemetry adapters. It must not become a domain or orchestration dependency.
 [`ebpf/control/`](../../ebpf/control/) owns the userspace controller, and
 [`ebpf/program/`](../../ebpf/program/) is the separately built eBPF workspace.
 
-[`testing/ployz-test-support/`](../../testing/ployz-test-support/) owns reusable
-test helpers. [`testing/ployz-e2e/`](../../testing/ployz-e2e/) owns black-box and
-DinD harness code. [`testing/corrosion-spike/`](../../testing/corrosion-spike/)
-is the manual upstream Corrosion certification harness, not a workspace crate.
+[`testing/ployz-e2e/`](../../testing/ployz-e2e/) owns black-box and DinD harness
+code. [`testing/corrosion-spike/`](../../testing/corrosion-spike/) is the manual
+upstream Corrosion certification harness, not a workspace crate.
 
 ## Where does this change go?
 
