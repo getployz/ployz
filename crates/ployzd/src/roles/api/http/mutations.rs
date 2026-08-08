@@ -126,6 +126,7 @@ pub(super) async fn handle_mutation(
         | V2Route::PeerRemove
         | V2Route::ServiceRemove
         | V2Route::RouteRemove
+        | V2Route::RouteAttach
         | V2Route::Lens(_)
         | V2Route::LensWatch(_) => refusal_response(ApiRefusal::UnsupportedRoute),
     }

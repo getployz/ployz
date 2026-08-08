@@ -4,7 +4,7 @@ use ployz_core::corrosion::{
     AutomaticHostnameMode, ClusterDocument, CorrosionDocumentVersion, CorrosionTimestamp,
     MachineDocument, MachineStorageIneligibleReason, MachineStorageSelection,
     MachineStorageSelectionReason, MachineTransport, MeshProvider, OperationInitiator,
-    OperatorWriteProvenance, PeerDocument, PeerTransport, StorageMode,
+    OperatorWriteProvenance, PeerDocument, PeerTransport, PloyzDnsTargetState, StorageMode,
     derive_builtin_wireguard_member,
 };
 use ployz_core::founding::{
@@ -75,6 +75,7 @@ fn founding_request(driver: FoundingDriverEnrollment) -> FoundingRequest {
             name: "ares".to_owned(),
             storage_default: StorageMode::Plain,
             hostname_mode: AutomaticHostnameMode::Ployz,
+            ployz_dns_target: PloyzDnsTargetState::Pending,
             prefix: MachineEndpointSupernet::default_v1(),
             provider: MeshProvider::BuiltinWireguard,
             acme_directory_url: "https://acme.example/directory".to_owned(),

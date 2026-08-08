@@ -70,6 +70,8 @@ pub const PEER_REMOVE_ROUTE: &str = "/peers/remove";
 pub const SERVICE_REMOVE_ROW_ROUTE: &str = "/services/remove";
 /// Stable endpoint for removing one valid route-binding row.
 pub const ROUTE_REMOVE_ROUTE: &str = "/routes/remove";
+/// Stable endpoint for attaching one hostname to one service row.
+pub const ROUTE_ATTACH_ROUTE: &str = "/routes/attach";
 
 /// A capability understood by this version of the public API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -107,6 +109,8 @@ pub enum KnownApiFeature {
     ServiceRemove,
     #[serde(rename = "v2.route_remove")]
     RouteRemove,
+    #[serde(rename = "v2.route_attach")]
+    RouteAttach,
 }
 
 impl KnownApiFeature {
@@ -130,6 +134,7 @@ impl KnownApiFeature {
             Self::PeerRemove => "v2.peer_remove",
             Self::ServiceRemove => "v2.service_remove",
             Self::RouteRemove => "v2.route_remove",
+            Self::RouteAttach => "v2.route_attach",
         }
     }
 }
@@ -152,6 +157,7 @@ pub const KNOWN_API_FEATURES: &[KnownApiFeature] = &[
     KnownApiFeature::PeerRemove,
     KnownApiFeature::ServiceRemove,
     KnownApiFeature::RouteRemove,
+    KnownApiFeature::RouteAttach,
 ];
 
 /// An advertised capability, including names added by a newer machine.
@@ -1242,6 +1248,7 @@ pub enum V2Route {
     PeerRemove,
     ServiceRemove,
     RouteRemove,
+    RouteAttach,
     Lens(LensCollection),
     LensWatch(LensCollection),
 }
@@ -1286,6 +1293,9 @@ impl V2Route {
         }
         if path == ROUTE_REMOVE_ROUTE {
             return Some(Self::RouteRemove);
+        }
+        if path == ROUTE_ATTACH_ROUTE {
+            return Some(Self::RouteAttach);
         }
         if path == MACHINE_ENDPOINT_ROUTE_PREFIX {
             return Some(Self::MachineEndpointSet);
@@ -1393,6 +1403,7 @@ impl V2Route {
             Self::PeerRemove => PEER_REMOVE_ROUTE.to_owned(),
             Self::ServiceRemove => SERVICE_REMOVE_ROW_ROUTE.to_owned(),
             Self::RouteRemove => ROUTE_REMOVE_ROUTE.to_owned(),
+            Self::RouteAttach => ROUTE_ATTACH_ROUTE.to_owned(),
             Self::Lens(collection) => lens_route(*collection),
             Self::LensWatch(collection) => lens_watch_route(*collection),
         }
@@ -1427,6 +1438,7 @@ impl V2Route {
             | Self::PeerRemove
             | Self::ServiceRemove
             | Self::RouteRemove => V2Method::Post,
+            Self::RouteAttach => V2Method::Post,
         }
     }
 
@@ -1452,6 +1464,7 @@ impl V2Route {
             Self::PeerRemove => KnownApiFeature::PeerRemove,
             Self::ServiceRemove => KnownApiFeature::ServiceRemove,
             Self::RouteRemove => KnownApiFeature::RouteRemove,
+            Self::RouteAttach => KnownApiFeature::RouteAttach,
         }
     }
 
@@ -1475,6 +1488,7 @@ impl V2Route {
             | Self::PeerRemove
             | Self::ServiceRemove
             | Self::RouteRemove => matches!(principal, Principal::Peer { .. }),
+            Self::RouteAttach => matches!(principal, Principal::Peer { .. }),
             Self::Version
             | Self::Founding
             | Self::Operation(_)
@@ -1663,7 +1677,7 @@ pub struct OperationLensRow {
 #[serde(tag = "collection", rename_all = "snake_case")]
 pub enum LensSnapshot {
     Machines {
-        cluster: ClusterDocument,
+        cluster: Box<ClusterDocument>,
         rows: Vec<MachineLensRow>,
     },
     Services {

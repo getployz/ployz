@@ -42,6 +42,43 @@ fn founding_environment_has_the_public_join_door_settings() {
 }
 
 #[test]
+fn founding_gateway_environment_contains_only_its_runtime_contract() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let state = FoundingStateDirectory::initialize(directory.path().join("state"))
+        .expect("state initializes");
+    let prepared = prepare_plain_founding(
+        &state,
+        fixture_artifacts(),
+        RecordingRunner {
+            calls: Vec::new(),
+            allow_facts: true,
+        },
+    );
+
+    let environment = String::from_utf8(
+        prepared
+            .effects
+            .gateway_env_contents()
+            .expect("gateway environment renders"),
+    )
+    .expect("gateway environment is UTF-8");
+    assert_eq!(environment.lines().count(), 5, "{environment}");
+    for name in [
+        "PLOYZ_CORROSION_API_ADDR=",
+        "PLOYZ_CORROSION_BEARER_TOKEN=",
+        "PLOYZ_CLUSTER_ID=",
+        "PLOYZ_MACHINE_ID=",
+        "PLOYZ_GATEWAY_LISTEN_ADDR=0.0.0.0:80",
+    ] {
+        assert!(environment.lines().any(|line| line.starts_with(name)));
+    }
+    assert!(environment.lines().any(|line| {
+        line == format!("PLOYZ_MACHINE_ID={}", prepared.request.request().machine_id)
+    }));
+    assert!(!environment.contains("PLOYZ_API_"));
+}
+
+#[test]
 fn founding_persists_the_complete_join_substrate_contract() {
     let directory = tempfile::tempdir().expect("tempdir");
     let state = FoundingStateDirectory::initialize(directory.path().join("state"))

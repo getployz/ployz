@@ -616,6 +616,7 @@ fn ensure_named_removal_table(table: CorrosionTable, id: &str) -> Result<(), Mut
         | CorrosionTable::Tokens
         | CorrosionTable::Containers
         | CorrosionTable::MachineStatus
+        | CorrosionTable::GatewayObservations
         | CorrosionTable::Operations
         | CorrosionTable::CertHoldings
         | CorrosionTable::AcmeHttp01 => Err(MutationStoreError::UnexpectedWriteResult {
@@ -640,6 +641,7 @@ fn ensure_exact_row_removal_table(
         | CorrosionTable::Tokens
         | CorrosionTable::Containers
         | CorrosionTable::MachineStatus
+        | CorrosionTable::GatewayObservations
         | CorrosionTable::Operations
         | CorrosionTable::CertHoldings
         | CorrosionTable::AcmeHttp01 => Err(MutationStoreError::UnexpectedWriteResult {
@@ -851,10 +853,11 @@ fn delete_token_statement(token_id: &TokenId) -> Statement {
     delete_statement(CorrosionTable::Tokens, token_id.as_str())
 }
 
-fn machine_removal_statements(machine_id: &MachineRowId) -> [Statement; 5] {
+fn machine_removal_statements(machine_id: &MachineRowId) -> [Statement; 6] {
     [
         delete_statement(CorrosionTable::Machines, machine_id.as_str()),
         delete_testimony_for_machine_statement(CorrosionTable::MachineStatus, machine_id),
+        delete_testimony_for_machine_statement(CorrosionTable::GatewayObservations, machine_id),
         delete_testimony_for_machine_statement(CorrosionTable::Containers, machine_id),
         delete_testimony_for_machine_statement(CorrosionTable::CertHoldings, machine_id),
         delete_testimony_for_machine_statement(CorrosionTable::AcmeHttp01, machine_id),
@@ -867,6 +870,7 @@ fn delete_testimony_for_machine_statement(
 ) -> Statement {
     match table {
         CorrosionTable::MachineStatus
+        | CorrosionTable::GatewayObservations
         | CorrosionTable::Containers
         | CorrosionTable::CertHoldings
         | CorrosionTable::AcmeHttp01 => Statement::with_params(
@@ -1108,6 +1112,10 @@ mod tests {
                 ),
                 Statement::with_params(
                     "DELETE FROM machine_status WHERE machine_id = ?",
+                    vec![parameter.clone()],
+                ),
+                Statement::with_params(
+                    "DELETE FROM gateway_observations WHERE machine_id = ?",
                     vec![parameter.clone()],
                 ),
                 Statement::with_params(

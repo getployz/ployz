@@ -25,15 +25,16 @@ use super::v2::{
 };
 use super::{
     DoctorDocument, NamedRemovalOutcome, PeerRemoveRefusal, PeerRemoveReply, PeerRemoveRequest,
+    RouteAttachOutcome, RouteAttachRefusal, RouteAttachReply, RouteAttachRequest,
     RouteRemoveRefusal, RouteRemoveReply, RouteRemoveRequest, ServiceRemoveRowRefusal,
     ServiceRemoveRowReply, ServiceRemoveRowRequest, StatusDocument,
 };
 use crate::build::{BuildExecutorEvidence, BuildPlatformExecutorAssignment, BuildSource};
 use crate::corrosion::{
     AcmeHttp01Document, CertHoldingDocument, ClusterDocument, ContainerDocument, CorrosionTable,
-    HostPortBinding, HostPortBindings, HostPortProtocol, MachineDocument, MachineStatusDocument,
-    NameClaim, NamespaceDocument, OperationDocument, PeerDocument, Principal, RouteBindingDocument,
-    ServiceDocument, TokenDocument,
+    GatewayObservationDocument, HostPortBinding, HostPortBindings, HostPortProtocol,
+    MachineDocument, MachineStatusDocument, NameClaim, NamespaceDocument, OperationDocument,
+    PeerDocument, Principal, RouteBindingDocument, ServiceDocument, TokenDocument,
 };
 use crate::deploy::EnvValue;
 use crate::founding::{
@@ -150,6 +151,7 @@ fn collect_corrosion_contracts(declarations: &mut DeclarationCollector<'_>) {
     declarations.visit::<RouteBindingDocument>();
     declarations.visit::<ContainerDocument>();
     declarations.visit::<MachineStatusDocument>();
+    declarations.visit::<GatewayObservationDocument>();
     declarations.visit::<OperationDocument>();
     declarations.visit::<CertHoldingDocument>();
     declarations.visit::<AcmeHttp01Document>();
@@ -180,6 +182,10 @@ fn collect_v2_contracts(declarations: &mut DeclarationCollector<'_>) {
     declarations.visit::<RouteRemoveRequest>();
     declarations.visit::<RouteRemoveReply>();
     declarations.visit::<RouteRemoveRefusal>();
+    declarations.visit::<RouteAttachRequest>();
+    declarations.visit::<RouteAttachReply>();
+    declarations.visit::<RouteAttachOutcome>();
+    declarations.visit::<RouteAttachRefusal>();
     declarations.visit::<FoundingDriverEnrollment>();
     declarations.visit::<FoundingRequest>();
     declarations.visit::<FoundingRow>();

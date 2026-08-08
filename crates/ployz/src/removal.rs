@@ -8,7 +8,7 @@ use ployz_core::{
     ServiceRemoveRowRequest,
 };
 
-use crate::commands::{PeerCommand, RouteCommand, ServiceCommand};
+use crate::commands::{PeerCommand, RouteRemoveCommand, ServiceCommand};
 use crate::init::ssh::shell_quote;
 use crate::mesh::http::JsonReply;
 use crate::remote::{OperatorRemote, OperatorRemoteError};
@@ -62,8 +62,9 @@ pub async fn execute_service(command: ServiceCommand) -> Result<String, RemovalE
     }
 }
 
-pub async fn execute_route(command: RouteCommand) -> Result<String, RemovalExecutionError> {
-    let RouteCommand::Remove(command) = command;
+pub async fn execute_route_remove(
+    command: RouteRemoveCommand,
+) -> Result<String, RemovalExecutionError> {
     let remote = OperatorRemote::load(command.target.as_ref())?;
     let handle = command.hostname.as_str().to_owned();
     let reply = remote

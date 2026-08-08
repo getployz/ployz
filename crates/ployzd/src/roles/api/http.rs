@@ -27,6 +27,7 @@ mod placement_http;
 mod promotion_store;
 mod removals;
 mod roster;
+mod routes;
 mod runtime;
 mod server;
 mod service_logs;

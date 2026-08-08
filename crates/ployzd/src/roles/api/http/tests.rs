@@ -544,6 +544,7 @@ async fn version_is_success_json_with_the_core_capability_catalog() {
             ApiFeature::Known(KnownApiFeature::PeerRemove),
             ApiFeature::Known(KnownApiFeature::ServiceRemove),
             ApiFeature::Known(KnownApiFeature::RouteRemove),
+            ApiFeature::Known(KnownApiFeature::RouteAttach),
         ]
     );
 }

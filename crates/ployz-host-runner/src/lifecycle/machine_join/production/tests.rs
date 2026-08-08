@@ -176,6 +176,103 @@ fn dns_activation_is_systemd_only_and_enables_then_restarts_the_unit() {
 }
 
 #[test]
+fn gateway_activation_enables_restarts_and_verifies_both_supervisors() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let state = MachineJoinStateDirectory::initialize(directory.path()).expect("state");
+    let directories = SupervisorDirectories::new(
+        directory.path().join("systemd"),
+        directory.path().join("openrc"),
+    );
+    let mut systemd_runner =
+        RecordingRunner::with_outputs([output(""), output(""), output(""), output("")]);
+    let mut systemd_profile = Some(
+        crate::detect_host_platform("ID=ubuntu\nVERSION_ID=24.04\n").expect("systemd profile"),
+    );
+
+    LinuxSubstrate::new(
+        state.path(),
+        &mut systemd_runner,
+        &mut systemd_profile,
+        &directories,
+    )
+    .enable_start_and_verify_gateway()
+    .expect("systemd Gateway activation succeeds");
+    assert_eq!(
+        systemd_runner.calls,
+        [
+            "systemctl daemon-reload",
+            "systemctl enable ployzd-gateway.service",
+            "systemctl restart ployzd-gateway.service",
+            "systemctl is-active --quiet ployzd-gateway.service",
+        ]
+    );
+
+    let mut openrc_runner = RecordingRunner::with_outputs([output(""), output(""), output("")]);
+    let mut openrc_profile =
+        Some(crate::detect_host_platform("ID=alpine\nVERSION_ID=3.22\n").expect("OpenRC profile"));
+    LinuxSubstrate::new(
+        state.path(),
+        &mut openrc_runner,
+        &mut openrc_profile,
+        &directories,
+    )
+    .enable_start_and_verify_gateway()
+    .expect("OpenRC Gateway activation succeeds");
+    assert_eq!(
+        openrc_runner.calls,
+        [
+            "rc-update add ployzd-gateway default",
+            "rc-service ployzd-gateway restart",
+            "rc-service ployzd-gateway status",
+        ]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn joined_machine_writes_a_private_gateway_scoped_environment() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let (directory, state, _prepared, accepted) = validated_fixture();
+    let effects = LinuxMachineJoinHostEffects {
+        state: state.clone(),
+        runner: SystemHostRunnerCommandRunner::default(),
+        profile: None,
+        supervisor_directories: SupervisorDirectories::new(
+            directory.path().join("systemd"),
+            directory.path().join("openrc"),
+        ),
+    };
+    let MachineTransport::Wireguard { addr_v6, .. } =
+        &accepted.accepted().machine.document.transport
+    else {
+        panic!("fixture uses WireGuard")
+    };
+
+    effects
+        .write_environment(&accepted, *addr_v6, "secret")
+        .expect("environments write");
+    let path = state.path().join(GATEWAY_ENV_FILE);
+    let contents = fs::read_to_string(&path).expect("gateway environment");
+    assert_eq!(
+        contents,
+        format!(
+            "PLOYZ_CORROSION_API_ADDR=127.0.0.1:8080\nPLOYZ_CORROSION_BEARER_TOKEN=secret\nPLOYZ_CLUSTER_ID={}\nPLOYZ_MACHINE_ID={}\nPLOYZ_GATEWAY_LISTEN_ADDR=0.0.0.0:80\n",
+            accepted.accepted().cluster.cluster_id,
+            accepted.accepted().machine.machine_id,
+        )
+    );
+    assert_eq!(
+        fs::metadata(path)
+            .expect("gateway environment metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+}
+
+#[test]
 fn joined_corrosion_waits_for_keeper_owned_wireguard_on_boot() {
     let (_, systemd_unit) = crate::lifecycle::production::corrosion_unit(
         SupervisorBackend::Systemd,
@@ -205,7 +302,7 @@ fn machine_join_seeds_current_and_renders_systemd_units_from_it() {
     fs::create_dir_all(&systemd).expect("systemd directory");
     let directories = SupervisorDirectories::new(systemd.clone(), directory.path().join("openrc"));
     let privilege_commands =
-        crate::api_privilege_install_commands(state.path(), crate::HostPackageFamily::Debian)
+        crate::installed_role_privilege_commands(state.path(), crate::HostPackageFamily::Debian)
             .expect("privilege install commands");
     let expected_privilege_calls = privilege_commands
         .iter()

@@ -517,6 +517,7 @@ impl ApiService {
             V2Route::PeerRemove | V2Route::ServiceRemove | V2Route::RouteRemove => {
                 super::removals::handle_removal(self, route, request).await
             }
+            V2Route::RouteAttach => super::routes::handle_attach(self, principal, request).await,
             V2Route::MachineUpgrade => super::upgrade::handle_machine_upgrade(self, request).await,
             V2Route::Operation(operation_id) => {
                 super::operation_http::handle_lookup(self, operation_id).await

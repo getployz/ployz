@@ -40,7 +40,10 @@ pub(super) fn machines_snapshot(
     }
     rows.sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));
 
-    Ok(LensSnapshot::Machines { cluster, rows })
+    Ok(LensSnapshot::Machines {
+        cluster: Box::new(cluster),
+        rows,
+    })
 }
 
 pub(super) fn services_snapshot(

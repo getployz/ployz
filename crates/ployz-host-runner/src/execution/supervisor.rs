@@ -266,24 +266,36 @@ fn render_openrc(
 ) -> Result<RenderedSupervisorUnit, SupervisorUnitFileError> {
     let target = spec.target();
     let file_name = openrc_service_name(&target);
-    let (description, command, args, environment_file, dependencies, command_user) = match spec {
-        SupervisorUnitSpec::PloyzdRole {
-            role,
-            artifact_store,
-            environment_file,
-        } => (
-            format!("Ployz {}", role.as_str()),
-            artifact_store.current_path(),
-            (*role).argv(),
-            Some(environment_file.path()),
-            match role {
-                PloyzdRole::Api => "need net docker",
-                PloyzdRole::Keeper | PloyzdRole::Gateway | PloyzdRole::Dns => "need net",
-            },
-            InstalledRolePrivilege::for_role(*role)
-                .map(|privilege| format!("{}:{}", privilege.user(), privilege.primary_group())),
-        ),
-    };
+    let (description, command, args, environment_file, dependencies, command_user, gateway_source) =
+        match spec {
+            SupervisorUnitSpec::PloyzdRole {
+                role,
+                artifact_store,
+                environment_file,
+            } => {
+                let gateway_source =
+                    (*role == PloyzdRole::Gateway).then(|| artifact_store.current_path());
+                (
+                    format!("Ployz {}", role.as_str()),
+                    if *role == PloyzdRole::Gateway {
+                        PathBuf::from("/run/ployz-gateway/ployzd")
+                    } else {
+                        artifact_store.current_path()
+                    },
+                    (*role).argv(),
+                    Some(environment_file.clone()),
+                    match role {
+                        PloyzdRole::Api => "need net docker",
+                        PloyzdRole::Gateway => "need net ployz-corrosion",
+                        PloyzdRole::Keeper | PloyzdRole::Dns => "need net",
+                    },
+                    InstalledRolePrivilege::for_role(*role).map(|privilege| {
+                        format!("{}:{}", privilege.user(), privilege.primary_group())
+                    }),
+                    gateway_source,
+                )
+            }
+        };
     let command = shell_double_quote(&command.display().to_string())?;
     let command_args = shell_double_quote(&args.join(" "))?;
     let mut contents = format!(
@@ -299,10 +311,21 @@ fn render_openrc(
             shell_double_quote(&command_user)?
         ));
     }
+    if gateway_source.is_some() {
+        contents.push_str("\ncapabilities=\"^cap_net_bind_service\"\n");
+    }
     if let Some(environment_file) = environment_file {
-        let environment_file = shell_double_quote(&environment_file.display().to_string())?;
+        let environment_file = shell_double_quote(&environment_file.path().display().to_string())?;
+        let gateway_prepare = if let Some(source) = gateway_source {
+            let source = shell_double_quote(&source.display().to_string())?;
+            format!(
+                "    install -d -o root -g root -m 0755 /run/ployz-gateway\n    install -o root -g root -m 0755 {source} /run/ployz-gateway/ployzd\n"
+            )
+        } else {
+            String::new()
+        };
         contents.push_str(&format!(
-            "\nstart_pre() {{\n    set -a\n    . {}\n    set +a\n}}\n",
+            "\nstart_pre() {{\n{gateway_prepare}    set -a\n    . {}\n    set +a\n}}\n",
             environment_file
         ));
     }

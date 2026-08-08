@@ -11,7 +11,7 @@ use defguard_wireguard_rs::key::Key;
 use ployz_core::corrosion::{
     AutomaticHostnameMode, ClusterDocument, CorrosionDocumentVersion, CorrosionTimestamp,
     MachineDocument, MachineTransport, MeshProvider, OperationInitiator, OperatorWriteProvenance,
-    PeerDocument, PeerTransport, StorageMode, derive_builtin_wireguard_member,
+    PeerDocument, PeerTransport, PloyzDnsTargetState, StorageMode, derive_builtin_wireguard_member,
 };
 use ployz_core::deploy::ZfsPoolName;
 use ployz_core::founding::{
@@ -56,6 +56,7 @@ const JOIN_SUBSTRATE_FILE: &str = "join-substrate.json";
 const JOIN_SUBSTRATE_PATH: &str = "/var/lib/ployz/join-substrate.json";
 const BOOTSTRAP_CREDENTIAL_FILE: &str = "bootstrap-credential";
 const ENV_FILE: &str = "ployzd.env";
+const GATEWAY_ENV_FILE: &str = "ployz-gateway.env";
 const CORROSION_CONFIG_FILE: &str = "corrosion.toml";
 const CORROSION_TOKEN_FILE: &str = "corrosion-token";
 const API_PORT: u16 = 2_020;
@@ -303,6 +304,12 @@ pub fn prepare_linux_founding<R: HostRunnerCommandRunner>(
         },
         written_at: input.written_at,
     };
+    let ployz_dns_target = match &input.hostname_mode {
+        AutomaticHostnameMode::Ployz => PloyzDnsTargetState::Pending,
+        AutomaticHostnameMode::Custom { .. } | AutomaticHostnameMode::Disabled => {
+            PloyzDnsTargetState::Disabled
+        }
+    };
     let driver = build_driver(&cluster_id, &provenance, input.driver);
     let request = FoundingRequest {
         cluster_id: cluster_id.clone(),
@@ -313,6 +320,7 @@ pub fn prepare_linux_founding<R: HostRunnerCommandRunner>(
             name: input.cluster_name,
             storage_default: storage.mode,
             hostname_mode: input.hostname_mode,
+            ployz_dns_target,
             prefix: input.prefix,
             provider: MeshProvider::BuiltinWireguard,
             acme_directory_url: input.acme_directory_url,

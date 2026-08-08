@@ -353,8 +353,8 @@ mod tests {
     use ployz_core::corrosion::{
         AutomaticHostnameMode, ClusterDocument, CorrosionDocumentVersion, CorrosionTimestamp,
         MachineDocument, MachineStorageSelection, MachineStorageSelectionReason, MachineTransport,
-        MeshProvider, OperationInitiator, OperatorWriteProvenance, StorageMode,
-        derive_builtin_wireguard_member,
+        MeshProvider, OperationInitiator, OperatorWriteProvenance, PloyzDnsTargetState,
+        StorageMode, derive_builtin_wireguard_member,
     };
     use ployz_core::founding::{FoundingDriverEnrollment, FoundingRequest};
     use ployz_core::ids::{ClusterId, MachineRowId};
@@ -383,6 +383,7 @@ mod tests {
                 name: "ares".to_owned(),
                 storage_default: StorageMode::Plain,
                 hostname_mode: AutomaticHostnameMode::Ployz,
+                ployz_dns_target: PloyzDnsTargetState::Pending,
                 prefix: MachineEndpointSupernet::default_v1(),
                 provider: MeshProvider::BuiltinWireguard,
                 acme_directory_url: "https://acme.example/directory".to_owned(),
@@ -498,7 +499,7 @@ mod tests {
     async fn public_fold_and_ordinary_route_refusal_prove_readiness() {
         let request = request();
         let lens = LensSnapshot::Machines {
-            cluster: request.cluster.clone(),
+            cluster: Box::new(request.cluster.clone()),
             rows: vec![ployz_core::MachineLensRow {
                 id: request.machine_id.clone(),
                 document: request.machine.clone(),

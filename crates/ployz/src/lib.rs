@@ -14,6 +14,7 @@ pub mod namespace;
 pub mod ops;
 pub mod remote;
 pub mod removal;
+pub mod route;
 pub mod token;
 
 pub use join_client::{JoinDoorClient, JoinDoorClientError};

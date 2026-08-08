@@ -18,14 +18,14 @@ base64 = "0.22"
 bollard = { version = "0.21.0", default-features = false, features = ["pipe"] }
 futures-util.workspace = true
 ployz-core.workspace = true
+ployz = { path = "../../crates/ployz" }
 serde.workspace = true
 serde_json.workspace = true
+tempfile = "3"
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "process", "rt-multi-thread", "time"] }
 uuid.workspace = true
 
 [dev-dependencies]
 hyper.workspace = true
-ployz = { path = "../../crates/ployz" }
 rcgen = { version = "0.14.8", features = ["crypto", "pem"] }
-tempfile = "3"

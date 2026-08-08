@@ -556,6 +556,7 @@ mod tests {
                 name: "ares".to_owned(),
                 storage_default: StorageMode::Plain,
                 hostname_mode: AutomaticHostnameMode::Ployz,
+                ployz_dns_target: ployz_core::corrosion::PloyzDnsTargetState::Pending,
                 prefix: MachineEndpointSupernet::default_v1(),
                 provider: MeshProvider::BuiltinWireguard,
                 acme_directory_url: "https://acme.example/directory".to_owned(),

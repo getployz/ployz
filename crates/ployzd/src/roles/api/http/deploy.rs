@@ -38,6 +38,7 @@ use super::operation_finalizer::{
 use super::operation_store::{ConditionalOperationWrite, ObservedOperation, OperationStoreError};
 use super::placement_gather::{PlacementMesh, PlacementPeer, gather_bids};
 use super::promotion_store::{DeployAdmission, ObservedService, ResolvedNamespace};
+use super::routes::DeployRouteBindings;
 
 const EXTERNAL_EFFECT_TIMEOUT: Duration = Duration::from_secs(60);
 const FINALIZER_ATTEMPTS: usize = 3;
@@ -87,6 +88,7 @@ pub(super) struct DeployDriver {
     pub(super) runtime: Arc<dyn DeployRuntime>,
     pub(super) mesh: Arc<dyn PlacementMesh>,
     pub(super) verbs: Arc<dyn DeployVerbClient>,
+    pub(super) routes: Arc<dyn DeployRouteBindings>,
     pub(super) api_port: u16,
     pub(super) clock: Arc<dyn DeployClock>,
     pub(super) effect_timeout: Duration,
@@ -151,6 +153,7 @@ pub(super) struct DeployDriverSeams {
     pub(super) runtime: Arc<dyn DeployRuntime>,
     pub(super) mesh: Arc<dyn PlacementMesh>,
     pub(super) verbs: Arc<dyn DeployVerbClient>,
+    pub(super) routes: Arc<dyn DeployRouteBindings>,
     pub(super) api_port: u16,
     pub(super) clock: Arc<dyn DeployClock>,
 }
@@ -169,6 +172,7 @@ impl DeployDriver {
             runtime,
             mesh,
             verbs,
+            routes,
             api_port,
             clock,
         } = seams;
@@ -181,6 +185,7 @@ impl DeployDriver {
             runtime,
             mesh,
             verbs,
+            routes,
             api_port,
             clock,
             effect_timeout: EXTERNAL_EFFECT_TIMEOUT,
@@ -510,6 +515,23 @@ impl DeployDriver {
         prepared: PreparedRedeployIntent,
     ) -> Result<(), DeployDriverError> {
         let service_id = prepared.service_id.clone();
+        if let Err(error) = self
+            .routes
+            .ensure(
+                &prepared.service_document.namespace_id,
+                &service_id,
+                &prepared.service_document.name,
+                prepared.service_document.provenance.clone(),
+            )
+            .await
+        {
+            let outcome = CorrosionDeployOutcome::failed(
+                vec![CorrosionDeployServiceResult::skipped(service_id.clone())],
+                error.into_deploy_failure(service_id),
+            )
+            .map_err(|error| DeployDriverError::Invariant(error.to_string()))?;
+            return self.terminalize(log, row, outcome).await;
+        }
         match self
             .converge_redeploy(&prepared, operation_id, &service_id)
             .await?
@@ -616,7 +638,7 @@ impl DeployDriver {
         log: &OperationEvidenceLog,
         mut state: PromotionFinalizerState,
         row: &Arc<Mutex<ObservedOperation>>,
-        warnings: Vec<CorrosionDeployWarning>,
+        mut warnings: Vec<CorrosionDeployWarning>,
     ) -> Result<(), DeployDriverError> {
         let mut attempts = 0;
         loop {
@@ -715,6 +737,19 @@ impl DeployDriver {
                     attempts = 0;
                 }
                 PromotionFinalizerDecision::Succeeded { prepared } => {
+                    if let Err(error) = self
+                        .routes
+                        .ensure(
+                            &prepared.service_document.namespace_id,
+                            &prepared.service_id,
+                            &prepared.service_document.name,
+                            prepared.service_document.provenance.clone(),
+                        )
+                        .await
+                    {
+                        let service_id = prepared.service_id.clone();
+                        warnings.push(error.into_deploy_warning(service_id));
+                    }
                     let results = vec![prepared.success_result];
                     let outcome = if warnings.is_empty() {
                         CorrosionDeployOutcome::completed(results)

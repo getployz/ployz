@@ -4,7 +4,11 @@ use serde::{Deserialize, Serialize};
 
 use super::document::{CorrosionDocumentVersion, CorrosionTimestamp, OperationDocument};
 use super::principal::OperationInitiator;
-use crate::ids::{ClusterId, MachineRowId, NamespaceRowId, OperationRowId, ServiceRowId};
+use crate::api::RouteRemoveRequest;
+use crate::ids::{
+    ClusterId, MachineRowId, NamespaceRowId, OperationRowId, RouteBindingRowId, ServiceRowId,
+};
+use crate::operation::RouteHostname;
 
 /// Operation kind, target, and the only state type legal for that kind.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -298,6 +302,10 @@ pub enum CorrosionDeployFailure {
         service_id: ServiceRowId,
         failure: CorrosionPromotionFailure,
     },
+    AutomaticRoute {
+        service_id: ServiceRowId,
+        failure: CorrosionAutomaticRouteFailure,
+    },
     Superseded {
         service_id: ServiceRowId,
         winner: ServiceRowId,
@@ -306,6 +314,28 @@ pub enum CorrosionDeployFailure {
         winner: OperationRowId,
     },
     Interrupted,
+}
+
+/// Stable terminal classes for automatic Route Binding work at a deploy's
+/// promotion boundary. Adapter detail is deliberately excluded from durable
+/// evidence; a hostname collision retains the exact primitive that resolves it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CorrosionAutomaticRouteFailure {
+    HostnameCollision {
+        hostname: RouteHostname,
+        route_id: RouteBindingRowId,
+        remove: RouteRemoveRequest,
+    },
+    NamespaceUnavailable {
+        namespace_id: NamespaceRowId,
+    },
+    NoRosterEndpoints,
+    AllocationUnsettled,
+    AllocationDisabled,
+    InvalidHostname,
+    Unavailable,
 }
 
 /// Why driver-local detail could not safely resume a nonterminal operation.
@@ -356,6 +386,13 @@ pub enum CorrosionDeployWarning {
     /// deploy's sweep collects it.
     CleanupIncomplete {
         detail: String,
+    },
+    /// The service promotion committed, but its automatic route could not be
+    /// activated. The service remains active and a later deploy may retry the
+    /// binding.
+    AutomaticRouteActivation {
+        service_id: ServiceRowId,
+        failure: CorrosionAutomaticRouteFailure,
     },
 }
 
@@ -1166,6 +1203,7 @@ fn is_terminal_superseded_by(document: &OperationDocument, winner: &OperationRow
             | CorrosionDeployFailure::NamespaceChanged { .. }
             | CorrosionDeployFailure::EvidenceLost { .. }
             | CorrosionDeployFailure::Promotion { .. }
+            | CorrosionDeployFailure::AutomaticRoute { .. }
             | CorrosionDeployFailure::Superseded { .. }
             | CorrosionDeployFailure::Interrupted => false,
         },

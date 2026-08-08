@@ -2,9 +2,8 @@
 
 //! Ployz daemon roles and transport-free runtime mechanics.
 //!
-//! Role selection is explicit and unavailable roles return a typed startup
-//! error. Cluster storage and transport are outside the mechanics retained
-//! here.
+//! Role selection is explicit and startup failures remain typed. Cluster
+//! storage and transport adapters stay behind their owning daemon roles.
 
 mod adapters {
     pub(crate) mod atomic_file;
@@ -20,6 +19,7 @@ pub mod certificate {
     pub use material::{CertificateMaterialError, prepare_custom_certificate};
 }
 pub mod corrosion;
+pub(crate) mod lease;
 pub mod roles {
     /// Advertised internal-DNS record TTL. The DNS role serves it on every
     /// answer, and the deploy drain wait must cover at least this long.
@@ -34,11 +34,13 @@ pub mod roles {
         pub use runtime::{DnsRoleRuntimeError, run_from_environment};
     }
     pub mod gateway {
-        #[path = "source/certificate_store.rs"]
-        pub mod certificate_store;
-        pub mod pingora;
-        pub mod projection;
-        pub mod route_table;
+        mod config;
+        mod observation;
+        pub(crate) mod pingora;
+        pub(crate) mod projection;
+        mod runtime;
+        mod source;
+        pub use runtime::{GatewayRoleRuntimeError, run_from_environment};
     }
     pub mod api;
     pub(crate) mod handshake_control;

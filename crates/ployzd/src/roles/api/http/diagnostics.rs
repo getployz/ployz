@@ -165,6 +165,7 @@ async fn read_doctor_rows(
         route_bindings,
         containers,
         machine_status,
+        gateway_observations,
         operations,
         cert_holdings,
         acme_http01,
@@ -178,6 +179,7 @@ async fn read_doctor_rows(
     let route_bindings = query_rows(corrosion, route_bindings);
     let containers = query_rows(corrosion, containers);
     let machine_status = query_rows(corrosion, machine_status);
+    let gateway_observations = query_rows(corrosion, gateway_observations);
     let operations = query_rows(corrosion, operations);
     let cert_holdings = query_rows(corrosion, cert_holdings);
     let acme_http01 = query_rows(corrosion, acme_http01);
@@ -191,6 +193,7 @@ async fn read_doctor_rows(
         route_bindings,
         containers,
         machine_status,
+        gateway_observations,
         operations,
         cert_holdings,
         acme_http01,
@@ -204,6 +207,7 @@ async fn read_doctor_rows(
         route_bindings,
         containers,
         machine_status,
+        gateway_observations,
         operations,
         cert_holdings,
         acme_http01,
@@ -219,6 +223,7 @@ async fn read_doctor_rows(
         route_bindings,
         containers,
         machine_status,
+        gateway_observations,
         operations,
         cert_holdings,
         acme_http01,
@@ -257,7 +262,7 @@ async fn query_rows(
     .map_err(DiagnosticsReadError::from)
 }
 
-fn doctor_statements() -> [Statement; 12] {
+fn doctor_statements() -> [Statement; 13] {
     CorrosionTable::ALL.map(select_all)
 }
 
@@ -272,9 +277,9 @@ fn select_cluster(cluster_id: &ClusterId) -> Statement {
 
 fn select_all(table: CorrosionTable) -> Statement {
     match table {
-        CorrosionTable::MachineStatus => {
-            Statement::simple("SELECT machine_id AS id, document FROM machine_status")
-        }
+        CorrosionTable::MachineStatus | CorrosionTable::GatewayObservations => Statement::simple(
+            format!("SELECT machine_id AS id, document FROM {}", table.as_str()),
+        ),
         CorrosionTable::Cluster
         | CorrosionTable::Machines
         | CorrosionTable::Peers

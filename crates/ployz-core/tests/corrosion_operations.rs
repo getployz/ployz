@@ -1,17 +1,20 @@
+use ployz_core::RouteRemoveRequest;
 use ployz_core::corrosion::{
-    CorrosionBasicOperation, CorrosionBasicTransition, CorrosionDeployCancellationReason,
-    CorrosionDeployFailure, CorrosionDeployOutcome, CorrosionDeployOutcomeError,
-    CorrosionDeployServiceFailure, CorrosionDeployServiceResult, CorrosionDeployState,
-    CorrosionDeployTargets, CorrosionDeployTransition, CorrosionDocumentVersion,
-    CorrosionEvidenceLossReason, CorrosionOperation, CorrosionOperationFailure,
-    CorrosionOperationState, CorrosionPromotionFailure, CorrosionPromotionRowObservation,
-    CorrosionTimestamp, DEPLOY_CLAIM_STALE_AFTER, DEPLOY_HEARTBEAT_INTERVAL, DeployClaim,
-    DeployLiveness, DeployTakeover, OperationDocument, OperationInitiator, adjudicate_deploy_claim,
-    check_deploy_takeover,
+    CorrosionAutomaticRouteFailure, CorrosionBasicOperation, CorrosionBasicTransition,
+    CorrosionDeployCancellationReason, CorrosionDeployFailure, CorrosionDeployOutcome,
+    CorrosionDeployOutcomeError, CorrosionDeployServiceFailure, CorrosionDeployServiceResult,
+    CorrosionDeployState, CorrosionDeployTargets, CorrosionDeployTransition,
+    CorrosionDocumentVersion, CorrosionEvidenceLossReason, CorrosionOperation,
+    CorrosionOperationFailure, CorrosionOperationState, CorrosionPromotionFailure,
+    CorrosionPromotionRowObservation, CorrosionTimestamp, DEPLOY_CLAIM_STALE_AFTER,
+    DEPLOY_HEARTBEAT_INTERVAL, DeployClaim, DeployLiveness, DeployTakeover, OperationDocument,
+    OperationInitiator, adjudicate_deploy_claim, check_deploy_takeover,
 };
 use ployz_core::ids::{
-    ClusterId, MachineRowId, NamespaceRowId, OperationRowId, PeerId, ServiceRowId,
+    ClusterId, MachineRowId, NamespaceRowId, OperationRowId, PeerId, RouteBindingRowId,
+    ServiceRowId,
 };
+use ployz_core::operation::RouteHostname;
 use serde_json::json;
 
 const CLUSTER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -233,6 +236,37 @@ fn deploy_recovery_failures_have_closed_durable_wire_shapes() {
                 "kind": "invariant_violation",
                 "service_row": "exact",
                 "container_row": "mismatch"
+            }
+        })
+    );
+}
+
+#[test]
+fn automatic_route_collision_preserves_the_exact_removal_handoff() {
+    let hostname = RouteHostname::try_new("web.example.com").expect("hostname");
+    let route_id = RouteBindingRowId::try_new(CLUSTER).expect("route id");
+    let failure = CorrosionDeployFailure::AutomaticRoute {
+        service_id: service_id(),
+        failure: CorrosionAutomaticRouteFailure::HostnameCollision {
+            hostname: hostname.clone(),
+            route_id: route_id.clone(),
+            remove: RouteRemoveRequest {
+                hostname,
+                route_id: Some(route_id),
+            },
+        },
+    };
+
+    assert_eq!(
+        serde_json::to_value(failure).expect("automatic route failure JSON"),
+        json!({
+            "kind": "automatic_route",
+            "service_id": SERVICE,
+            "failure": {
+                "kind": "hostname_collision",
+                "hostname": "web.example.com",
+                "route_id": CLUSTER,
+                "remove": {"hostname": "web.example.com", "route_id": CLUSTER}
             }
         })
     );

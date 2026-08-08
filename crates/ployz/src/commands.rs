@@ -19,7 +19,7 @@ use ployz_core::install::{ExactPloyzVersion, InstallSha256Digest};
 use ployz_core::join::{JoinBlob, JoinTokenTtlSeconds};
 use ployz_core::machine::MachineName;
 use ployz_core::network::{DEFAULT_ENDPOINT_SUPERNET, MachineEndpointSupernet, WireGuardPublicKey};
-use ployz_core::operation::RouteHostname;
+use ployz_core::operation::{RouteHostname, RoutePort};
 use ployz_core::{
     HealthGatePolicy, MachineUpgradeUrl, PinnedMachineNames, RequestedPins, RequestedPlacement,
 };
@@ -131,7 +131,19 @@ pub struct ServiceRemoveCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RouteCommand {
+    Attach(RouteAttachCommand),
     Remove(RouteRemoveCommand),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouteAttachCommand {
+    pub hostname: RouteHostname,
+    pub namespace: CorrosionNamespaceName,
+    pub namespace_id: Option<NamespaceRowId>,
+    pub service: CorrosionServiceName,
+    pub service_id: Option<ServiceRowId>,
+    pub endpoint_port: RoutePort,
+    pub target: Option<SshTarget>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -483,6 +495,19 @@ pub fn parse_command(args: impl IntoIterator<Item = String>) -> Result<Command, 
             }),
         })),
         CommandCli::Route { command } => Ok(Command::Route(match command {
+            RouteCli::Attach(args) => RouteCommand::Attach(RouteAttachCommand {
+                hostname: RouteHostname::try_new(args.hostname)
+                    .map_err(|error| clap_value_error(error.to_string()))?,
+                namespace: CorrosionNamespaceName::try_new(args.namespace)
+                    .map_err(|error| clap_value_error(error.to_string()))?,
+                namespace_id: args.namespace_id,
+                service: CorrosionServiceName::try_new(args.service)
+                    .map_err(|error| clap_value_error(error.to_string()))?,
+                service_id: args.service_id,
+                endpoint_port: RoutePort::try_new(args.port)
+                    .map_err(|error| clap_value_error(error.to_string()))?,
+                target: args.target,
+            }),
             RouteCli::Remove(args) => RouteCommand::Remove(RouteRemoveCommand {
                 hostname: RouteHostname::try_new(args.hostname)
                     .map_err(|error| clap_value_error(error.to_string()))?,
@@ -843,9 +868,28 @@ struct ServiceRemoveArgs {
 
 #[derive(Debug, Subcommand)]
 enum RouteCli {
+    /// Attach one hostname to a named service.
+    Attach(RouteAttachArgs),
     /// Remove one route-binding row, refusing ambiguous hostnames unless an id is supplied.
     #[command(name = "rm")]
     Remove(RouteRemoveArgs),
+}
+
+#[derive(Debug, Args)]
+struct RouteAttachArgs {
+    hostname: String,
+    #[arg(long)]
+    namespace: String,
+    #[arg(long)]
+    service: String,
+    #[arg(long)]
+    port: u16,
+    #[arg(long)]
+    namespace_id: Option<NamespaceRowId>,
+    #[arg(long)]
+    service_id: Option<ServiceRowId>,
+    #[arg(long)]
+    target: Option<SshTarget>,
 }
 
 #[derive(Debug, Args)]
@@ -1357,6 +1401,55 @@ mod tests {
             })) if namespace_id.as_str() == id
         ));
         assert!(parse(&["service", "rm", "web"]).is_err());
+    }
+
+    #[test]
+    fn parses_route_attach_with_named_and_optional_exact_selectors() {
+        let id = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+        assert_eq!(
+            parse(&[
+                "route",
+                "attach",
+                "WEB.EXAMPLE.COM",
+                "--namespace",
+                "production",
+                "--service",
+                "web",
+                "--port",
+                "8080",
+                "--namespace-id",
+                id,
+                "--service-id",
+                id,
+            ])
+            .expect("route attach parses"),
+            Command::Route(RouteCommand::Attach(RouteAttachCommand {
+                hostname: RouteHostname::try_new("web.example.com").expect("hostname"),
+                namespace: CorrosionNamespaceName::try_new("production").expect("namespace"),
+                namespace_id: Some(NamespaceRowId::try_new(id).expect("namespace id")),
+                service: CorrosionServiceName::try_new("web").expect("service"),
+                service_id: Some(ServiceRowId::try_new(id).expect("service id")),
+                endpoint_port: RoutePort::try_new(8080).expect("port"),
+                target: None,
+            }))
+        );
+        assert!(
+            parse(&[
+                "route",
+                "attach",
+                "web.example.com",
+                "--namespace",
+                "production",
+                "--service",
+                "web",
+                "--port",
+                "8080",
+                "--ingress",
+                "cloudflare-tunnel",
+            ])
+            .is_err(),
+            "unshipped ingress modes are not a CLI surface"
+        );
     }
 
     #[test]

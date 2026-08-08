@@ -98,7 +98,7 @@ impl PloyzdRoleUnit {
         environment_file: &PloyzdRoleEnvironmentFile,
     ) -> Result<Self, SupervisorUnitFileError> {
         let (exec_start, executable_access) = match role {
-            PloyzdRole::Dns => {
+            PloyzdRole::Gateway | PloyzdRole::Dns => {
                 let source = artifact_store.current_path();
                 let Some(source) = source.to_str() else {
                     return Err(SupervisorUnitFileError::UnsupportedExecToken {
@@ -110,16 +110,15 @@ impl PloyzdRoleUnit {
                         value: source.to_owned(),
                     });
                 }
-                let bind = render_exec_token(format!("{source}:/run/ployz-dns/ployzd"))?;
+                let runtime_role = role.as_str();
+                let runtime_binary = format!("/run/ployz-{runtime_role}/ployzd");
+                let bind = render_exec_token(format!("{source}:{runtime_binary}"))?;
                 (
-                    render_exec_start(
-                        Path::new("/run/ployz-dns/ployzd"),
-                        [role.as_str().to_owned()],
-                    )?,
-                    format!("RuntimeDirectory=ployz-dns\nBindReadOnlyPaths={bind}\n"),
+                    render_exec_start(Path::new(&runtime_binary), [role.as_str().to_owned()])?,
+                    format!("RuntimeDirectory=ployz-{runtime_role}\nBindReadOnlyPaths={bind}\n"),
                 )
             }
-            PloyzdRole::Keeper | PloyzdRole::Api | PloyzdRole::Gateway => (
+            PloyzdRole::Keeper | PloyzdRole::Api => (
                 render_exec_start(&artifact_store.current_path(), [role.as_str().to_owned()])?,
                 String::new(),
             ),
@@ -158,13 +157,23 @@ impl PloyzdRoleUnit {
                 "network-online.target docker.service ployz-corrosion.service ployzd-api.service",
                 "network-online.target docker.service ployz-corrosion.service ployzd-api.service",
             ),
-            PloyzdRole::Keeper | PloyzdRole::Gateway => {
-                ("network-online.target", "network-online.target")
-            }
+            PloyzdRole::Gateway => (
+                "network-online.target ployz-corrosion.service",
+                "network-online.target ployz-corrosion.service",
+            ),
+            PloyzdRole::Keeper => ("network-online.target", "network-online.target"),
         };
         let role_security = match self.role {
+            PloyzdRole::Gateway => {
+                let privilege = InstalledRolePrivilege::for_role(self.role)
+                    .expect("Gateway has an installed privilege contract");
+                format!(
+                    "{}AmbientCapabilities=CAP_NET_BIND_SERVICE\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE\n",
+                    render_installed_role_security(privilege)
+                )
+            }
             PloyzdRole::Dns => "DynamicUser=yes\nUser=ployz-dns\nAmbientCapabilities=CAP_NET_BIND_SERVICE\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE\nNoNewPrivileges=yes\n".to_owned(),
-            PloyzdRole::Keeper | PloyzdRole::Api | PloyzdRole::Gateway => {
+            PloyzdRole::Keeper | PloyzdRole::Api => {
                 InstalledRolePrivilege::for_role(self.role)
                     .map(render_installed_role_security)
                     .unwrap_or_default()

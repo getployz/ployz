@@ -5,6 +5,7 @@ mod evidence;
 mod exec;
 mod founding;
 mod machine;
+mod operation;
 
 pub use cluster::{DindCluster, DindClusterSpec, DindRunId, sweep_managed_resources};
 pub use evidence::{capture_machine_evidence, evidence_dir};
@@ -16,6 +17,15 @@ pub use founding::{
     install_local_release_channel, render_release_manifest, require, write_release_manifest,
 };
 pub use machine::{DindMachine, MachineSpec, assert_keeper_isolation_root};
+pub use operation::{
+    FOUNDER_NAME, JoinedMachine, OperatorFixture, REGISTRY_PORT,
+    assert_cluster_wide_operation_replay, assert_dns_and_http,
+    assert_driver_local_evidence_is_secret_free, assert_first_revision_container_is_gone,
+    assert_gateway_http, create_namespace, create_namespace_and_deploy, fetch_gateway_http,
+    found_and_join, found_and_join_with_service_urls, gateway_status, parse_deploy_operation,
+    public_lens, push_second_revision, require_success, run_cli, spawn_deploy,
+    start_mutable_registry, wait_for_gateway_status,
+};
 
 use bollard::Docker;
 use std::env;

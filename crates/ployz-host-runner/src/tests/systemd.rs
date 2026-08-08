@@ -98,6 +98,45 @@ fn dns_unit_runs_as_a_dynamic_user_with_only_the_port_53_capability() {
 }
 
 #[test]
+fn gateway_unit_runs_as_the_installed_account_with_only_the_bind_capability() {
+    let rendered = PloyzdRoleUnit::new(PloyzdRole::Gateway, &artifact_store(), &gateway_env())
+        .expect("gateway unit is valid")
+        .render();
+
+    for directive in [
+        "User=ployz-gateway",
+        "Group=ployz-gateway",
+        "NoNewPrivileges=yes",
+        "AmbientCapabilities=CAP_NET_BIND_SERVICE",
+        "CapabilityBoundingSet=CAP_NET_BIND_SERVICE",
+        "RuntimeDirectory=ployz-gateway",
+        "BindReadOnlyPaths=/var/lib/ployz/current:/run/ployz-gateway/ployzd",
+        "EnvironmentFile=/etc/ployz/ployz-gateway.env",
+        "ExecStart=/run/ployz-gateway/ployzd gateway",
+    ] {
+        assert!(
+            rendered.lines().any(|line| line == directive),
+            "missing {directive:?} in {rendered:?}"
+        );
+    }
+    assert_eq!(rendered.matches("CAP_NET_BIND_SERVICE").count(), 2);
+    assert!(
+        rendered.contains(
+            "After=network-online.target ployz-corrosion.service\nWants=network-online.target ployz-corrosion.service\n"
+        ),
+        "{rendered}"
+    );
+    for forbidden in [
+        "DynamicUser=",
+        "SupplementaryGroups=",
+        "docker",
+        "NET_ADMIN",
+    ] {
+        assert!(!rendered.contains(forbidden), "{forbidden}: {rendered}");
+    }
+}
+
+#[test]
 fn keeper_revert_unit_uses_only_fixed_system_commands() {
     let rendered = PloyzdKeeperRevertUnit::new(artifact_store())
         .render()
@@ -131,10 +170,10 @@ fn role_units_quote_stable_paths_that_need_systemd_escaping() {
         PloyzdArtifactStore::new(PathBuf::from("/opt/Ployz Tools")).expect("absolute state path");
 
     assert_eq!(
-        PloyzdRoleUnit::new(PloyzdRole::Gateway, &store, &role_env())
+        PloyzdRoleUnit::new(PloyzdRole::Gateway, &store, &gateway_env())
             .expect("spaced path can be quoted")
             .render(),
-        "[Unit]\nDescription=Ployz gateway\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=exec\nEnvironmentFile=/etc/ployz/ployzd.env\nExecStart=\"/opt/Ployz Tools/current\" gateway\nTimeoutStopSec=10s\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n"
+        "[Unit]\nDescription=Ployz gateway\nAfter=network-online.target ployz-corrosion.service\nWants=network-online.target ployz-corrosion.service\n\n[Service]\nType=exec\nUser=ployz-gateway\nGroup=ployz-gateway\nNoNewPrivileges=yes\nAmbientCapabilities=CAP_NET_BIND_SERVICE\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE\nRuntimeDirectory=ployz-gateway\nBindReadOnlyPaths=\"/opt/Ployz Tools/current:/run/ployz-gateway/ployzd\"\nEnvironmentFile=/etc/ployz/ployz-gateway.env\nExecStart=/run/ployz-gateway/ployzd gateway\nTimeoutStopSec=10s\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n"
     );
 }
 
@@ -145,4 +184,9 @@ fn artifact_store() -> PloyzdArtifactStore {
 fn role_env() -> PloyzdRoleEnvironmentFile {
     PloyzdRoleEnvironmentFile::new(PathBuf::from("/etc/ployz/ployzd.env"))
         .expect("valid role environment path")
+}
+
+fn gateway_env() -> PloyzdRoleEnvironmentFile {
+    PloyzdRoleEnvironmentFile::new(PathBuf::from("/etc/ployz/ployz-gateway.env"))
+        .expect("valid Gateway environment path")
 }

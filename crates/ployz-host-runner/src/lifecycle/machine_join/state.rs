@@ -520,6 +520,7 @@ pub enum MachineJoinMilestone {
     KeeperStarted,
     ApiStarted,
     EndpointNetworkReady,
+    GatewayStarted,
     DnsStarted,
     DnsReady,
     Ready,
@@ -527,7 +528,7 @@ pub enum MachineJoinMilestone {
 }
 
 impl MachineJoinMilestone {
-    pub const ORDERED: [Self; 16] = [
+    pub const ORDERED: [Self; 17] = [
         Self::Artifacts,
         Self::Storage,
         Self::Docker,
@@ -540,6 +541,7 @@ impl MachineJoinMilestone {
         Self::KeeperStarted,
         Self::ApiStarted,
         Self::EndpointNetworkReady,
+        Self::GatewayStarted,
         Self::DnsStarted,
         Self::DnsReady,
         Self::Ready,
@@ -562,6 +564,7 @@ impl MachineJoinMilestone {
             Self::KeeperStarted => "10-keeper-started",
             Self::ApiStarted => "11-api-started",
             Self::EndpointNetworkReady => "14-endpoint-network-ready",
+            Self::GatewayStarted => "17-gateway-started",
             Self::DnsStarted => "15-dns-started",
             Self::DnsReady => "16-dns-ready",
             Self::Ready => "12-ready",
