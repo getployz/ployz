@@ -79,6 +79,7 @@ pub struct OperatorFixture {
 
 impl OperatorFixture {
     /// The operator context store home the shipped CLI reads under `$HOME`.
+    #[must_use]
     pub fn config_home(&self) -> PathBuf {
         default_config_home(&self.home)
     }
