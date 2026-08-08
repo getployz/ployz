@@ -520,6 +520,7 @@ impl DeployDriver {
             .ensure(
                 &prepared.service_document.namespace_id,
                 &service_id,
+                &prepared.service_document.name,
                 prepared.service_document.provenance.clone(),
             )
             .await
@@ -637,7 +638,7 @@ impl DeployDriver {
         log: &OperationEvidenceLog,
         mut state: PromotionFinalizerState,
         row: &Arc<Mutex<ObservedOperation>>,
-        warnings: Vec<CorrosionDeployWarning>,
+        mut warnings: Vec<CorrosionDeployWarning>,
     ) -> Result<(), DeployDriverError> {
         let mut attempts = 0;
         loop {
@@ -741,17 +742,13 @@ impl DeployDriver {
                         .ensure(
                             &prepared.service_document.namespace_id,
                             &prepared.service_id,
+                            &prepared.service_document.name,
                             prepared.service_document.provenance.clone(),
                         )
                         .await
                     {
                         let service_id = prepared.service_id.clone();
-                        let outcome = CorrosionDeployOutcome::failed(
-                            vec![CorrosionDeployServiceResult::skipped(service_id.clone())],
-                            error.into_deploy_failure(service_id),
-                        )
-                        .map_err(|error| DeployDriverError::Invariant(error.to_string()))?;
-                        return self.terminalize(log, row, outcome).await;
+                        warnings.push(error.into_deploy_warning(service_id));
                     }
                     let results = vec![prepared.success_result];
                     let outcome = if warnings.is_empty() {

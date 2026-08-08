@@ -259,7 +259,7 @@ export type CorrosionDeployServiceResult = { service_id: ServiceRowId, } & ({ "r
 
 export type CorrosionDeployTargets = Array<ServiceRowId>;
 
-export type CorrosionDeployWarning = { "kind": "health_gate_skipped", service_id: ServiceRowId, } | { "kind": "role_observation_incomplete", machine_ids: Array<MachineRowId>, } | { "kind": "cleanup_incomplete", detail: string, };
+export type CorrosionDeployWarning = { "kind": "health_gate_skipped", service_id: ServiceRowId, } | { "kind": "role_observation_incomplete", machine_ids: Array<MachineRowId>, } | { "kind": "cleanup_incomplete", detail: string, } | { "kind": "automatic_route_activation", service_id: ServiceRowId, failure: CorrosionAutomaticRouteFailure, };
 
 export type CorrosionDocumentVersion = SafeInteger<"CorrosionDocumentVersion">;
 
@@ -295,7 +295,7 @@ export type CorrosionRetryAfterSeconds = SafeInteger<"CorrosionRetryAfterSeconds
 
 export type CorrosionServiceName = Brand<string, "CorrosionServiceName">;
 
-export type CorrosionTable = "cluster" | "machines" | "peers" | "tokens" | "namespaces" | "services" | "route_bindings" | "containers" | "machine_status" | "operations" | "cert_holdings" | "acme_http01";
+export type CorrosionTable = "cluster" | "machines" | "peers" | "tokens" | "namespaces" | "services" | "route_bindings" | "containers" | "machine_status" | "gateway_observations" | "operations" | "cert_holdings" | "acme_http01";
 
 export type CorrosionTimestamp = Brand<string, "CorrosionTimestamp">;
 
@@ -531,11 +531,25 @@ export type FoundingValidationError = { "kind": "cluster_key_mismatch", key: Clu
 
 export type GatewayHttpFailure = { "failure": "proxy", message: string, };
 
+export type GatewayObservationDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, machine_id: MachineRowId, observed_at: CorrosionTimestamp, listen_addr: string, serving: GatewayServingStatus, routes: Array<GatewayRouteObservation>, aggregate_failures: Array<GatewayProjectionAggregateFailure>, process_health: GatewayProcessHealth, };
+
 export type GatewayProcessAttempt = { "status": "current", route_count: number, } | { "status": "serving_last_known_good", route_count: number, message: string, } | { "status": "failed", message: string, };
 
 export type GatewayProcessHealth = { last_attempt: GatewayProcessAttempt | null, consecutive_failures: number, last_http_failure: GatewayHttpFailure | null, consecutive_http_failures: number, last_watch_failure: GatewayWatchFailure | null, consecutive_watch_failures: number, last_status_publish_failure: GatewayStatusPublishFailure | null, consecutive_status_publish_failures: number, };
 
+export type GatewayProjectionAggregateFailure = { input: GatewayProjectionInputKind, rejected_rows: number, };
+
+export type GatewayProjectionInputKind = "cluster" | "machines" | "services" | "route_bindings" | "containers";
+
 export type GatewayRole = "install" | "skip";
+
+export type GatewayRouteAvailability = { "state": "serving", upstream_count: number, } | { "state": "unavailable", reason: GatewayRouteUnavailableReason, };
+
+export type GatewayRouteObservation = { route_binding_id: RouteBindingRowId, hostname: RouteHostname, } & ({ "outcome": "applied", availability: GatewayRouteAvailability, } | { "outcome": "failed", failure: GatewayRouteProjectionFailure, });
+
+export type GatewayRouteProjectionFailure = { "failure": "shadowed", winner_route_binding_id: RouteBindingRowId, } | { "failure": "unsupported_ingress_mode", ingress_mode: IngressMode, };
+
+export type GatewayRouteUnavailableReason = "service_missing" | "service_namespace_mismatch" | "no_upstream";
 
 export type GatewayServingStatus = "current" | "last_known_good" | "unavailable";
 
@@ -1166,7 +1180,7 @@ export type RosterMemberId = { "kind": "machine", machine_id: MachineRowId, } | 
 
 export type RouteAttachOutcome = "attached" | "already_attached";
 
-export type RouteAttachRefusal = { "kind": "namespace_not_found", namespace_name: CorrosionNamespaceName, } | { "kind": "namespace_ambiguous", namespace_name: CorrosionNamespaceName, namespace_ids: Array<NamespaceRowId>, } | { "kind": "namespace_id_mismatch", namespace_name: CorrosionNamespaceName, requested: NamespaceRowId, found: NamespaceRowId, } | { "kind": "namespace_identity_mismatch", namespace_id: NamespaceRowId, requested_name: CorrosionNamespaceName, found_name: CorrosionNamespaceName, } | { "kind": "namespace_stored_row_unselectable", namespace_id: NamespaceRowId, } | { "kind": "service_not_found", namespace_id: NamespaceRowId, service_name: CorrosionServiceName, } | { "kind": "service_ambiguous", namespace_id: NamespaceRowId, service_name: CorrosionServiceName, service_ids: Array<ServiceRowId>, } | { "kind": "service_id_mismatch", namespace_id: NamespaceRowId, service_name: CorrosionServiceName, requested: ServiceRowId, found: ServiceRowId, } | { "kind": "service_identity_mismatch", service_id: ServiceRowId, requested_namespace_id: NamespaceRowId, requested_name: CorrosionServiceName, found_namespace_id: NamespaceRowId, found_name: CorrosionServiceName, } | { "kind": "service_stored_row_unselectable", service_id: ServiceRowId, } | { "kind": "hostname_already_attached", hostname: RouteHostname, route_id: RouteBindingRowId, remove: RouteRemoveRequest, };
+export type RouteAttachRefusal = { "kind": "unsupported_ingress_mode", requested: IngressMode, } | { "kind": "namespace_not_found", namespace_name: CorrosionNamespaceName, } | { "kind": "namespace_ambiguous", namespace_name: CorrosionNamespaceName, namespace_ids: Array<NamespaceRowId>, } | { "kind": "namespace_id_mismatch", namespace_name: CorrosionNamespaceName, requested: NamespaceRowId, found: NamespaceRowId, } | { "kind": "namespace_identity_mismatch", namespace_id: NamespaceRowId, requested_name: CorrosionNamespaceName, found_name: CorrosionNamespaceName, } | { "kind": "namespace_stored_row_unselectable", namespace_id: NamespaceRowId, } | { "kind": "service_not_found", namespace_id: NamespaceRowId, service_name: CorrosionServiceName, } | { "kind": "service_ambiguous", namespace_id: NamespaceRowId, service_name: CorrosionServiceName, service_ids: Array<ServiceRowId>, } | { "kind": "service_id_mismatch", namespace_id: NamespaceRowId, service_name: CorrosionServiceName, requested: ServiceRowId, found: ServiceRowId, } | { "kind": "service_identity_mismatch", service_id: ServiceRowId, requested_namespace_id: NamespaceRowId, requested_name: CorrosionServiceName, found_namespace_id: NamespaceRowId, found_name: CorrosionServiceName, } | { "kind": "service_stored_row_unselectable", service_id: ServiceRowId, } | { "kind": "hostname_already_attached", hostname: RouteHostname, route_id: RouteBindingRowId, remove: RouteRemoveRequest, };
 
 export type RouteAttachReply = { route_id: RouteBindingRowId, outcome: RouteAttachOutcome, };
 

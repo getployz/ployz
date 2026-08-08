@@ -6,10 +6,11 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use ployz_core::corrosion::{
-    ContainerDocument, CorrosionDeployOutcome, CorrosionDeployState, CorrosionDeployWarning,
-    CorrosionNamespaceName, CorrosionServiceName, CorrosionTimestamp, MachineLoadBand,
-    MachineTransport, NamespaceDocument, OperationDocument, Principal, ServiceDocument,
-    ServiceReplicaCount, V2ManagedContainerIdentity,
+    ContainerDocument, CorrosionAutomaticRouteFailure, CorrosionDeployFailure,
+    CorrosionDeployOutcome, CorrosionDeployServiceResultKind, CorrosionDeployState,
+    CorrosionDeployWarning, CorrosionNamespaceName, CorrosionServiceName, CorrosionTimestamp,
+    MachineLoadBand, MachineTransport, NamespaceDocument, OperationDocument, Principal,
+    ServiceDocument, ServiceReplicaCount, V2ManagedContainerIdentity,
 };
 use ployz_core::deploy::{ContainerRuntimeSpec, EnvName, EnvValue, ImageReference, VolumeName};
 use ployz_core::ids::{
@@ -630,6 +631,7 @@ struct Fixture {
 struct RecordingRoutes {
     checks: AtomicUsize,
     ensures: AtomicUsize,
+    fail_ensure: AtomicBool,
 }
 
 #[async_trait]
@@ -638,6 +640,8 @@ impl crate::roles::api::http::routes::DeployRouteBindings for RecordingRoutes {
         &self,
         _namespace_id: &NamespaceRowId,
         _service_id: &ServiceRowId,
+        _service_name: &CorrosionServiceName,
+        _provenance: ployz_core::corrosion::OperatorWriteProvenance,
     ) -> Result<(), crate::roles::api::http::routes::AutomaticRouteBindingError> {
         self.checks.fetch_add(1, Ordering::SeqCst);
         Ok(())
@@ -647,9 +651,15 @@ impl crate::roles::api::http::routes::DeployRouteBindings for RecordingRoutes {
         &self,
         _namespace_id: &NamespaceRowId,
         _service_id: &ServiceRowId,
+        _service_name: &CorrosionServiceName,
         _provenance: ployz_core::corrosion::OperatorWriteProvenance,
     ) -> Result<(), crate::roles::api::http::routes::AutomaticRouteBindingError> {
         self.ensures.fetch_add(1, Ordering::SeqCst);
+        if self.fail_ensure.load(Ordering::SeqCst) {
+            return Err(
+                crate::roles::api::http::routes::AutomaticRouteBindingError::AllocationUnsettled,
+            );
+        }
         Ok(())
     }
 }
@@ -681,6 +691,7 @@ fn fixture(admission: Admission, bridge_ready: bool) -> Fixture {
     let routes = Arc::new(RecordingRoutes {
         checks: AtomicUsize::new(0),
         ensures: AtomicUsize::new(0),
+        fail_ensure: AtomicBool::new(false),
     });
     let driver = DeployDriver::new(
         cluster_id(),
@@ -1243,6 +1254,39 @@ async fn successful_first_deploy_uses_three_row_writes_and_persists_no_secret() 
 }
 
 #[tokio::test]
+async fn first_deploy_route_activation_failure_completes_the_active_service_with_a_warning() {
+    let fixture = fixture(Admission::First, true);
+    fixture.routes.fail_ensure.store(true, Ordering::SeqCst);
+    let accepted = fixture
+        .driver
+        .admit(request(), initiator())
+        .await
+        .expect("admission")
+        .expect("accepted");
+    let (_shutdown, shutdown) = watch::channel(false);
+    accepted.task.run(shutdown).await.expect("deploy");
+
+    let CorrosionDeployState::Terminal { outcome, .. } = fixture.operations.terminal_state().await
+    else {
+        panic!("terminal state expected");
+    };
+    let CorrosionDeployOutcome::CompletedWithWarnings { results, warnings } = outcome else {
+        panic!("committed service must complete with route warning");
+    };
+    let [result] = results.as_slice() else {
+        panic!("one service result expected");
+    };
+    assert_eq!(result.result, CorrosionDeployServiceResultKind::Completed);
+    assert!(matches!(
+        warnings.as_slice(),
+        [CorrosionDeployWarning::AutomaticRouteActivation {
+            service_id,
+            failure: CorrosionAutomaticRouteFailure::AllocationUnsettled,
+        }] if service_id == &result.service_id
+    ));
+}
+
+#[tokio::test]
 async fn exhausted_claim_adjudication_retries_three_times_then_terminalizes() {
     let fixture = fixture(Admission::First, true);
     fixture
@@ -1433,6 +1477,38 @@ async fn second_deploy_flips_atomically_with_previous_image() {
             .iter()
             .any(|rows| { rows == &vec![ContainerId::try_new("incumbent-1").expect("container")] })
     );
+}
+
+#[tokio::test]
+async fn redeploy_route_failure_before_the_flip_remains_a_typed_failure() {
+    let fixture = fixture(Admission::Redeploy, true);
+    fixture.routes.fail_ensure.store(true, Ordering::SeqCst);
+    *fixture.runtime.containers.lock().await =
+        vec![docker_container("incumbent-1", incumbent_op(), &[])];
+    *fixture.store.rows.lock().await = vec![container_row("incumbent-1", incumbent_op())];
+    let accepted = fixture
+        .driver
+        .admit(request(), initiator())
+        .await
+        .expect("admission")
+        .expect("accepted");
+    let (_shutdown, shutdown) = watch::channel(false);
+    accepted.task.run(shutdown).await.expect("typed terminal");
+
+    assert_eq!(fixture.store.converge_calls.load(Ordering::SeqCst), 0);
+    assert!(matches!(
+        fixture.operations.terminal_state().await,
+        CorrosionDeployState::Terminal {
+            outcome: CorrosionDeployOutcome::Failed {
+                failure: CorrosionDeployFailure::AutomaticRoute {
+                    failure: CorrosionAutomaticRouteFailure::AllocationUnsettled,
+                    ..
+                },
+                ..
+            },
+            ..
+        }
+    ));
 }
 
 #[tokio::test]
@@ -1916,6 +1992,58 @@ async fn stale_heartbeat_over_a_terminal_row_raises_the_superseded_flag() {
     tokio::time::sleep(ployz_core::corrosion::DEPLOY_HEARTBEAT_INTERVAL * 2).await;
     assert!(heartbeat.superseded());
     heartbeat.stop().await;
+}
+
+#[tokio::test]
+async fn resumed_committed_first_deploy_route_failure_is_a_completion_warning() {
+    let fixture = fixture(Admission::First, true);
+    fixture.routes.fail_ensure.store(true, Ordering::SeqCst);
+    let operation_id = OperationRowId::try_new("01J00000000000000000000011").expect("op");
+    let (_, document) = claim_candidate("01J00000000000000000000011", "2026-08-05T10:00:00Z");
+    *fixture.operations.operation.lock().await = Some(document);
+    let directory =
+        OperationEvidenceDirectory::new(fixture._root.path().join("first-resume"), 16 * 1024);
+    let log = directory
+        .create(
+            crate::roles::api::http::operation_evidence::EvidenceIdentity::new(
+                operation_id.clone(),
+                machine_id(),
+            ),
+            CorrosionTimestamp::try_new("2026-08-05T10:00:00Z").expect("timestamp"),
+        )
+        .await
+        .expect("create evidence");
+
+    fixture
+        .driver
+        .resume_promotion(
+            operation_id,
+            log,
+            crate::roles::api::http::operation_evidence::DurablePromotionProgress::ClaimWon {
+                prepared: crate::roles::api::http::operation_evidence::prepared_promotion_fixture(),
+            },
+        )
+        .await
+        .expect("resume");
+
+    let CorrosionDeployState::Terminal { outcome, .. } = fixture.operations.terminal_state().await
+    else {
+        panic!("terminal state expected");
+    };
+    let CorrosionDeployOutcome::CompletedWithWarnings { results, warnings } = outcome else {
+        panic!("committed recovery must complete with warnings");
+    };
+    assert!(matches!(
+        results.as_slice(),
+        [result] if result.result == CorrosionDeployServiceResultKind::Completed
+    ));
+    assert!(matches!(
+        warnings.as_slice(),
+        [CorrosionDeployWarning::AutomaticRouteActivation {
+            failure: CorrosionAutomaticRouteFailure::AllocationUnsettled,
+            ..
+        }]
+    ));
 }
 
 #[tokio::test]

@@ -387,6 +387,13 @@ pub enum CorrosionDeployWarning {
     CleanupIncomplete {
         detail: String,
     },
+    /// The service promotion committed, but its automatic route could not be
+    /// activated. The service remains active and a later deploy may retry the
+    /// binding.
+    AutomaticRouteActivation {
+        service_id: ServiceRowId,
+        failure: CorrosionAutomaticRouteFailure,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

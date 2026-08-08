@@ -326,6 +326,7 @@ impl LinuxMachineJoinHostEffects {
             &format!("127.0.0.1:{CORROSION_API_PORT}"),
             corrosion_token,
             accepted.accepted().cluster.cluster_id.as_str(),
+            accepted.accepted().machine.machine_id.as_str(),
         )?;
         write_durable_file(
             self.state.path(),

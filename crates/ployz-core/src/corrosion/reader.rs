@@ -289,6 +289,24 @@ where
                 return Err(skipped(source, RowSkipReason::InvalidRowKey { expected }));
             }
         }
+        CorrosionTable::GatewayObservations => {
+            let expected = fields
+                .get("machine_id")
+                .and_then(Value::as_str)
+                .and_then(|value| MachineRowId::try_new(value.to_owned()).ok())
+                .map(|machine_id| machine_id.as_str().to_owned());
+            let Some(expected) = expected else {
+                return Err(skipped(
+                    source,
+                    RowSkipReason::Malformed(MalformedDocument::InvalidPayload {
+                        message: "gateway observation machine identity is invalid".to_owned(),
+                    }),
+                ));
+            };
+            if source.key != expected {
+                return Err(skipped(source, RowSkipReason::InvalidRowKey { expected }));
+            }
+        }
         CorrosionTable::Containers | CorrosionTable::AcmeHttp01 => {}
     }
 

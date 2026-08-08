@@ -211,7 +211,7 @@ impl<'a, R: HostRunnerCommandRunner> LinuxSubstrate<'a, R> {
         &mut self,
         environment: &PloyzdRoleEnvironmentFile,
     ) -> Result<(), FailureMessage> {
-        self.install_api_privilege_substrate()?;
+        self.install_role_privilege_substrate()?;
         let backend = self.supervisor()?;
         let artifact_store = PloyzdArtifactStore::new(self.state.to_path_buf()).map_err(failure)?;
         match backend.ployzd_upgrade_rollback() {
@@ -234,10 +234,17 @@ impl<'a, R: HostRunnerCommandRunner> LinuxSubstrate<'a, R> {
             PloyzdRole::Gateway,
             PloyzdRole::Dns,
         ] {
+            let role_environment = match role {
+                PloyzdRole::Gateway => {
+                    PloyzdRoleEnvironmentFile::new(self.state.join("ployz-gateway.env"))
+                        .map_err(failure)?
+                }
+                PloyzdRole::Keeper | PloyzdRole::Api | PloyzdRole::Dns => environment.clone(),
+            };
             let spec = SupervisorUnitSpec::PloyzdRole {
                 role,
                 artifact_store: artifact_store.clone(),
-                environment_file: environment.clone(),
+                environment_file: role_environment,
             };
             let rendered = backend.render(&spec).map_err(failure)?;
             write_durable_file(
@@ -260,9 +267,9 @@ impl<'a, R: HostRunnerCommandRunner> LinuxSubstrate<'a, R> {
         Ok(())
     }
 
-    pub(super) fn install_api_privilege_substrate(&mut self) -> Result<(), FailureMessage> {
+    pub(super) fn install_role_privilege_substrate(&mut self) -> Result<(), FailureMessage> {
         let package_family = self.profile()?.package_family();
-        let commands = crate::api_privilege_install_commands(self.state, package_family)?;
+        let commands = crate::installed_role_privilege_commands(self.state, package_family)?;
         for command in commands {
             let args = command
                 .args()

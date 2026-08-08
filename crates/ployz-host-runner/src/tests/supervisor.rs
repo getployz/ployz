@@ -67,7 +67,8 @@ fn openrc_gateway_uses_scoped_environment_runtime_copy_and_bind_capability() {
         role: PloyzdRole::Gateway,
         artifact_store: PloyzdArtifactStore::new("/var/lib/ployz".into())
             .expect("absolute artifact-store state"),
-        environment_file: PloyzdRoleEnvironmentFile::default_path(),
+        environment_file: PloyzdRoleEnvironmentFile::new("/etc/ployz/ployz-gateway.env".into())
+            .expect("Gateway environment path"),
     };
 
     let rendered = SupervisorBackend::OpenRc

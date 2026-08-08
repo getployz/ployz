@@ -1,16 +1,23 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::str::FromStr;
 
 use ployz_core::corrosion::{
-    ContainerDocument, CorrosionDocumentVersion, CorrosionServiceName, CorrosionTimestamp,
-    IngressMode, OperationInitiator, OperatorWriteProvenance, RouteBindingDocument,
-    ServiceDocument, ServicePlacement, ServiceReplicaCount, Sha256Hex, StoredRow,
+    AutomaticHostnameMode, ClusterDocument, ContainerDocument, CorrosionDocumentVersion,
+    CorrosionServiceName, CorrosionTimestamp, GatewayProjectionInputKind, GatewayRouteAvailability,
+    GatewayRouteProjectionFailure, GatewayRouteProjectionOutcome, GatewayRouteUnavailableReason,
+    IngressMode, MachineDocument, MachineStorageIneligibleReason, MachineStorageSelection,
+    MachineStorageSelectionReason, MachineTransport, MeshProvider, OperationInitiator,
+    OperatorWriteProvenance, PloyzDnsTargetState, RouteBindingDocument, ServiceDocument,
+    ServicePlacement, ServiceReplicaCount, Sha256Hex, StorageMode, StoredRow,
 };
 use ployz_core::deploy::ImageReference;
 use ployz_core::ids::{
     ClusterId, MachineRowId, NamespaceRowId, OperationRowId, PeerId, ServiceRowId,
 };
 use ployz_core::ingress::RouteBindingOrigin;
+use ployz_core::machine::{MachineLifecycle, MachineName};
+use ployz_core::network::{MachineEndpointSubnet, MachineEndpointSupernet, WireGuardPublicKey};
 use ployz_core::operation::{RouteHostname, RoutePort};
 
 use super::{GatewayProjectionInput, GatewayUpstream, project_gateway_rows};
@@ -50,7 +57,7 @@ fn direct_route_joins_only_exact_active_deploy_containers() {
         ],
     ));
 
-    let [route] = projection.routes.as_slice() else {
+    let [route] = projection.projection.routes.as_slice() else {
         panic!("projection must contain exactly one route");
     };
     assert_eq!(
@@ -88,13 +95,13 @@ fn active_deploy_flip_replaces_the_whole_route_upstream_set() {
         containers,
     ));
 
-    let [blue_route] = blue.routes.as_slice() else {
+    let [blue_route] = blue.projection.routes.as_slice() else {
         panic!("blue projection must contain exactly one route");
     };
     let [blue_upstream] = blue_route.upstreams.as_slice() else {
         panic!("blue route must contain exactly one upstream");
     };
-    let [green_route] = green.routes.as_slice() else {
+    let [green_route] = green.projection.routes.as_slice() else {
         panic!("green projection must contain exactly one route");
     };
     let [green_upstream] = green_route.upstreams.as_slice() else {
@@ -105,7 +112,7 @@ fn active_deploy_flip_replaces_the_whole_route_upstream_set() {
 }
 
 #[test]
-fn lowest_ulid_direct_binding_wins_and_non_direct_bindings_are_not_routes() {
+fn every_valid_binding_has_an_outcome_and_unsupported_routes_are_not_served() {
     let mut higher = route(IngressMode::Direct, SERVICE);
     higher.endpoint_port = RoutePort::try_new(9090).expect("port");
     let projection = project_gateway_rows(input(
@@ -124,14 +131,37 @@ fn lowest_ulid_direct_binding_wins_and_non_direct_bindings_are_not_routes() {
         )],
     ));
 
-    let [route] = projection.routes.as_slice() else {
-        panic!("projection must contain exactly one route");
+    let [route] = projection.projection.routes.as_slice() else {
+        panic!("projection must contain only the winning direct route");
     };
     let [upstream] = route.upstreams.as_slice() else {
         panic!("route must contain exactly one upstream");
     };
     assert_eq!(route.id.as_str(), ROUTE_LOW);
     assert_eq!(upstream.address.port(), 8080);
+    assert_eq!(projection.route_observations.len(), 3);
+    assert!(
+        projection
+            .route_observations
+            .iter()
+            .any(|observation| matches!(
+                observation.outcome,
+                GatewayRouteProjectionOutcome::Failed {
+                    failure: GatewayRouteProjectionFailure::Shadowed { .. }
+                }
+            ))
+    );
+    assert!(
+        projection
+            .route_observations
+            .iter()
+            .any(|observation| matches!(
+                observation.outcome,
+                GatewayRouteProjectionOutcome::Failed {
+                    failure: GatewayRouteProjectionFailure::UnsupportedIngressMode { .. }
+                }
+            ))
+    );
 }
 
 #[test]
@@ -145,10 +175,21 @@ fn accepted_route_without_an_exact_service_remains_known_but_empty() {
         Vec::new(),
     ));
 
-    let [route] = projection.routes.as_slice() else {
+    let [route] = projection.projection.routes.as_slice() else {
         panic!("projection must contain exactly one route");
     };
     assert!(route.upstreams.is_empty());
+    let [observation] = projection.route_observations.as_slice() else {
+        panic!("known route must have exactly one observation");
+    };
+    assert!(matches!(
+        observation.outcome,
+        GatewayRouteProjectionOutcome::Applied {
+            availability: GatewayRouteAvailability::Unavailable {
+                reason: GatewayRouteUnavailableReason::ServiceMissing
+            }
+        }
+    ));
 }
 
 #[test]
@@ -164,7 +205,67 @@ fn malformed_foreign_and_newer_rows_are_ignored_tolerantly() {
         vec![StoredRow::new("container", r#"{"v":2}"#)],
     ));
 
-    assert!(projection.routes.is_empty());
+    assert!(projection.projection.routes.is_empty());
+    assert!(projection.aggregate_failures.iter().any(|failure| {
+        failure.input == GatewayProjectionInputKind::Services && failure.rejected_rows == 1
+    }));
+    assert!(projection.aggregate_failures.iter().any(|failure| {
+        failure.input == GatewayProjectionInputKind::RouteBindings && failure.rejected_rows == 2
+    }));
+    assert!(projection.aggregate_failures.iter().any(|failure| {
+        failure.input == GatewayProjectionInputKind::Containers && failure.rejected_rows == 1
+    }));
+}
+
+#[test]
+fn upstreams_require_current_roster_identity_but_draining_is_serveable() {
+    let foreign_machine = "01ARZ3NDEKTSV4RRFFQ69G5FB3";
+    let mut draining = machine();
+    draining.lifecycle = MachineLifecycle::Draining;
+    let mut foreign_container = container(SERVICE, NAMESPACE, DEPLOY_GREEN, [10, 20, 0, 4]);
+    foreign_container.machine_id = machine_id_for(foreign_machine);
+    let mut input = input(
+        vec![stored(SERVICE, &service(DEPLOY_GREEN))],
+        vec![stored(ROUTE_LOW, &route(IngressMode::Direct, SERVICE))],
+        vec![
+            stored(
+                "draining",
+                &container(SERVICE, NAMESPACE, DEPLOY_GREEN, [10, 20, 0, 3]),
+            ),
+            stored("not-in-roster", &foreign_container),
+        ],
+    );
+    input.machines = vec![stored(MACHINE, &draining)];
+
+    let projection = project_gateway_rows(input);
+    let [route] = projection.projection.routes.as_slice() else {
+        panic!("projection must contain exactly one route");
+    };
+    let [upstream] = route.upstreams.as_slice() else {
+        panic!("only the draining current-roster machine must remain");
+    };
+    assert_eq!(upstream.container_key, "draining");
+}
+
+#[test]
+fn accepted_service_without_current_upstream_is_visibly_unavailable() {
+    let projection = project_gateway_rows(input(
+        vec![stored(SERVICE, &service(DEPLOY_GREEN))],
+        vec![stored(ROUTE_LOW, &route(IngressMode::Direct, SERVICE))],
+        Vec::new(),
+    ));
+
+    let [observation] = projection.route_observations.as_slice() else {
+        panic!("route must have exactly one observation");
+    };
+    assert!(matches!(
+        observation.outcome,
+        GatewayRouteProjectionOutcome::Applied {
+            availability: GatewayRouteAvailability::Unavailable {
+                reason: GatewayRouteUnavailableReason::NoUpstream
+            }
+        }
+    ));
 }
 
 fn input(
@@ -174,9 +275,52 @@ fn input(
 ) -> GatewayProjectionInput {
     GatewayProjectionInput {
         cluster_id: cluster_id(),
+        cluster: vec![stored(CLUSTER, &cluster())],
+        machines: vec![stored(MACHINE, &machine())],
         services,
         route_bindings,
         containers,
+    }
+}
+
+fn cluster() -> ClusterDocument {
+    ClusterDocument {
+        v: CorrosionDocumentVersion::V1,
+        cluster_id: cluster_id(),
+        provenance: provenance(),
+        name: "test-cluster".to_owned(),
+        storage_default: StorageMode::Plain,
+        hostname_mode: AutomaticHostnameMode::Custom {
+            suffix: RouteHostname::try_new("example.com").expect("hostname suffix"),
+        },
+        ployz_dns_target: PloyzDnsTargetState::Disabled,
+        prefix: MachineEndpointSupernet::try_new("10.20.0.0/16").expect("supernet"),
+        provider: MeshProvider::BuiltinWireguard,
+        acme_directory_url: "https://acme.example/directory".to_owned(),
+        acme_contact: None,
+    }
+}
+
+fn machine() -> MachineDocument {
+    MachineDocument {
+        v: CorrosionDocumentVersion::V1,
+        cluster_id: cluster_id(),
+        provenance: provenance(),
+        name: MachineName::try_new("edge-a").expect("machine name"),
+        lifecycle: MachineLifecycle::Active,
+        transport: MachineTransport::Wireguard {
+            pubkey: WireGuardPublicKey::try_new("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+                .expect("public key"),
+            addr_v6: Ipv6Addr::from_str("fd00::20").expect("IPv6"),
+            endpoint: Some(SocketAddr::from(([192, 0, 2, 10], 51820))),
+            subnet_v4: MachineEndpointSubnet::try_new("10.20.0.0/24").expect("subnet"),
+        },
+        storage: MachineStorageSelection {
+            mode: StorageMode::Plain,
+            reason: MachineStorageSelectionReason::Ineligible {
+                reason: MachineStorageIneligibleReason::LowRam,
+            },
+        },
     }
 }
 
@@ -263,7 +407,11 @@ fn operation_id(value: &str) -> OperationRowId {
 }
 
 fn machine_id() -> MachineRowId {
-    MachineRowId::try_new(MACHINE).expect("machine")
+    machine_id_for(MACHINE)
+}
+
+fn machine_id_for(value: &str) -> MachineRowId {
+    MachineRowId::try_new(value).expect("machine")
 }
 
 fn timestamp() -> CorrosionTimestamp {

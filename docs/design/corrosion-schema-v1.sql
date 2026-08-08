@@ -138,6 +138,14 @@ CREATE TABLE machine_status (
     document TEXT NOT NULL DEFAULT '{}'
 );
 
+-- Per-route gateway projection and process-health testimony. One row per
+-- gateway process owner, PK = MachineRowId. This diagnostic feedback never
+-- decides deploy success or cluster truth.
+CREATE TABLE gateway_observations (
+    machine_id TEXT NOT NULL PRIMARY KEY,
+    document TEXT NOT NULL DEFAULT '{}'
+);
+
 -- Operation summaries (evidence ticket #783): one row per OperationRowId, at
 -- most three
 -- summary-state writes — created, optional running, terminal. Written only

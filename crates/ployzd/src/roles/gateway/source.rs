@@ -18,16 +18,26 @@ const MAX_COALESCED_INVALIDATIONS: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum GatewayInput {
+    Cluster,
+    Machines,
     Services,
     RouteBindings,
     Containers,
 }
 
 impl GatewayInput {
-    const ALL: [Self; 3] = [Self::Services, Self::RouteBindings, Self::Containers];
+    const ALL: [Self; 5] = [
+        Self::Cluster,
+        Self::Machines,
+        Self::Services,
+        Self::RouteBindings,
+        Self::Containers,
+    ];
 
     const fn table(self) -> CorrosionTable {
         match self {
+            Self::Cluster => CorrosionTable::Cluster,
+            Self::Machines => CorrosionTable::Machines,
             Self::Services => CorrosionTable::Services,
             Self::RouteBindings => CorrosionTable::RouteBindings,
             Self::Containers => CorrosionTable::Containers,
@@ -35,18 +45,28 @@ impl GatewayInput {
     }
 
     fn statement(self, cluster_id: &ClusterId) -> Statement {
-        Statement::with_params(
-            format!(
-                "SELECT id, document FROM {} WHERE json_extract(document, '$.cluster_id') = ?",
-                self.table().as_str()
+        match self {
+            Self::Cluster => Statement::with_params(
+                "SELECT id, document FROM cluster WHERE id = ?",
+                vec![SqliteParameter::Text(cluster_id.as_str().to_owned())],
             ),
-            vec![SqliteParameter::Text(cluster_id.as_str().to_owned())],
-        )
+            Self::Machines | Self::Services | Self::RouteBindings | Self::Containers => {
+                Statement::with_params(
+                    format!(
+                        "SELECT id, document FROM {} WHERE json_extract(document, '$.cluster_id') = ?",
+                        self.table().as_str()
+                    ),
+                    vec![SqliteParameter::Text(cluster_id.as_str().to_owned())],
+                )
+            }
+        }
     }
 }
 
 #[derive(Debug)]
 pub(super) struct GatewayRows {
+    pub cluster: Vec<StoredRow>,
+    pub machines: Vec<StoredRow>,
     pub services: Vec<StoredRow>,
     pub route_bindings: Vec<StoredRow>,
     pub containers: Vec<StoredRow>,
@@ -86,10 +106,19 @@ impl CorrosionGatewaySource {
 
     pub(super) async fn query_rows(&self) -> Result<GatewayRows, GatewaySourceError> {
         tokio::time::timeout(REFRESH_DEADLINE, async {
+            let (cluster, machines, services, route_bindings, containers) = tokio::try_join!(
+                self.query(GatewayInput::Cluster),
+                self.query(GatewayInput::Machines),
+                self.query(GatewayInput::Services),
+                self.query(GatewayInput::RouteBindings),
+                self.query(GatewayInput::Containers),
+            )?;
             Ok(GatewayRows {
-                services: self.query(GatewayInput::Services).await?,
-                route_bindings: self.query(GatewayInput::RouteBindings).await?,
-                containers: self.query(GatewayInput::Containers).await?,
+                cluster,
+                machines,
+                services,
+                route_bindings,
+                containers,
             })
         })
         .await

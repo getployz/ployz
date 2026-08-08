@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use crate::execution::{
     API_GROUP, API_USER, ApiRuntimeAccessMatrix, CONTROL_GROUP, HostPackageFamily,
     HostRunnerCommandOutput, HostRunnerCommandRunner, InstalledIdentity, SupervisorDirectories,
-    UnixGroup, api_privilege_install_commands, migrate_existing_systemd_api_privileges,
+    UnixGroup, installed_role_privilege_commands, migrate_existing_systemd_api_privileges,
 };
 use ployz_core::operation::FailureMessage;
 
@@ -165,7 +165,7 @@ fn current_root_layout_migrates_once_and_stable_units_remain_rollback_compatible
         std::fs::read_to_string(state.join("ployz-gateway.env")).expect("gateway environment");
     assert_eq!(
         gateway_environment,
-        "PLOYZ_CORROSION_API_ADDR=127.0.0.1:8080\nPLOYZ_CORROSION_BEARER_TOKEN=secret\nPLOYZ_CLUSTER_ID=01ARZ3NDEKTSV4RRFFQ69G5FAV\nPLOYZ_GATEWAY_LISTEN_ADDR=0.0.0.0:80\n"
+        "PLOYZ_CORROSION_API_ADDR=127.0.0.1:8080\nPLOYZ_CORROSION_BEARER_TOKEN=secret\nPLOYZ_CLUSTER_ID=01ARZ3NDEKTSV4RRFFQ69G5FAV\nPLOYZ_MACHINE_ID=01ARZ3NDEKTSV4RRFFQ69G5FAW\nPLOYZ_GATEWAY_LISTEN_ADDR=0.0.0.0:80\n"
     );
     let reload = runner
         .calls
@@ -215,10 +215,10 @@ fn current_root_layout_migrates_once_and_stable_units_remain_rollback_compatible
 #[test]
 fn account_and_path_install_commands_are_idempotent_and_platform_specific() {
     let systemd =
-        api_privilege_install_commands(Path::new("/var/lib/ployz"), HostPackageFamily::Debian)
+        installed_role_privilege_commands(Path::new("/var/lib/ployz"), HostPackageFamily::Debian)
             .expect("systemd-host plan");
     let openrc =
-        api_privilege_install_commands(Path::new("/var/lib/ployz"), HostPackageFamily::Alpine)
+        installed_role_privilege_commands(Path::new("/var/lib/ployz"), HostPackageFamily::Alpine)
             .expect("OpenRC-host plan");
     let systemd = systemd.iter().map(ToString::to_string).collect::<Vec<_>>();
     let openrc = openrc.iter().map(ToString::to_string).collect::<Vec<_>>();

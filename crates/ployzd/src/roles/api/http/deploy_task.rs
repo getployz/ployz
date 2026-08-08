@@ -383,7 +383,15 @@ impl DeployTask {
         if let Err(error) = self
             .driver
             .routes
-            .check(&namespace.id, &self.service_id)
+            .check(
+                &namespace.id,
+                &self.service_id,
+                &self.request.service_name,
+                OperatorWriteProvenance {
+                    written_by: self.initiator.clone(),
+                    written_at: self.now()?,
+                },
+            )
             .await
         {
             return Err(PhaseStop::End(DeployTaskEnd::Failure {
@@ -468,6 +476,7 @@ impl DeployTask {
             .ensure(
                 &intent.service_document.namespace_id,
                 &self.service_id,
+                &self.request.service_name,
                 intent.service_document.provenance.clone(),
             )
             .await

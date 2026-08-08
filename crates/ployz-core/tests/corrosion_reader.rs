@@ -1,7 +1,7 @@
 use ployz_core::corrosion::{
-    CertHoldingDocument, ClusterDocument, ContainerDocument, MachineDocument,
-    MachineStatusDocument, MalformedDocument, MeshProvider, NamespaceDocument, RowSkipReason,
-    StoredRow, read_named_roster_rows, read_named_rows, read_roster_rows, read_rows,
+    CertHoldingDocument, ClusterDocument, ContainerDocument, GatewayObservationDocument,
+    MachineDocument, MachineStatusDocument, MalformedDocument, MeshProvider, NamespaceDocument,
+    RowSkipReason, StoredRow, read_named_roster_rows, read_named_rows, read_roster_rows, read_rows,
 };
 use ployz_core::ids::ClusterId;
 use serde_json::json;
@@ -373,6 +373,51 @@ fn ordinary_reader_accepts_a_natural_container_row_key() {
     assert!(matches!(
         report.accepted.as_slice(),
         [accepted] if accepted.source.key == "docker-container-id"
+    ));
+}
+
+#[test]
+fn gateway_observation_key_must_equal_its_machine_identity() {
+    let document = json!({
+        "v": 1,
+        "cluster_id": CLUSTER_ID,
+        "machine_id": LOWER_ROW_ID,
+        "observed_at": "2026-08-08T00:00:00Z",
+        "listen_addr": "0.0.0.0:80",
+        "serving": "current",
+        "routes": [],
+        "aggregate_failures": [],
+        "process_health": {
+            "last_attempt": null,
+            "consecutive_failures": 0,
+            "last_http_failure": null,
+            "consecutive_http_failures": 0,
+            "last_watch_failure": null,
+            "consecutive_watch_failures": 0,
+            "last_status_publish_failure": null,
+            "consecutive_status_publish_failures": 0
+        }
+    })
+    .to_string();
+    let report = read_rows::<GatewayObservationDocument>(
+        &cluster_id(),
+        [
+            StoredRow::new(LOWER_ROW_ID, document.clone()),
+            StoredRow::new(HIGHER_ROW_ID, document),
+        ],
+    );
+
+    assert!(matches!(
+        report.accepted.as_slice(),
+        [accepted] if accepted.source.key == LOWER_ROW_ID
+    ));
+    assert!(matches!(
+        report.skipped.as_slice(),
+        [skipped]
+            if matches!(
+                &skipped.reason,
+                RowSkipReason::InvalidRowKey { expected } if expected == LOWER_ROW_ID
+            )
     ));
 }
 

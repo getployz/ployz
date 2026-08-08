@@ -257,8 +257,9 @@ fn joined_machine_writes_a_private_gateway_scoped_environment() {
     assert_eq!(
         contents,
         format!(
-            "PLOYZ_CORROSION_API_ADDR=127.0.0.1:8080\nPLOYZ_CORROSION_BEARER_TOKEN=secret\nPLOYZ_CLUSTER_ID={}\nPLOYZ_GATEWAY_LISTEN_ADDR=0.0.0.0:80\n",
-            accepted.accepted().cluster.cluster_id
+            "PLOYZ_CORROSION_API_ADDR=127.0.0.1:8080\nPLOYZ_CORROSION_BEARER_TOKEN=secret\nPLOYZ_CLUSTER_ID={}\nPLOYZ_MACHINE_ID={}\nPLOYZ_GATEWAY_LISTEN_ADDR=0.0.0.0:80\n",
+            accepted.accepted().cluster.cluster_id,
+            accepted.accepted().machine.machine_id,
         )
     );
     assert_eq!(
@@ -301,7 +302,7 @@ fn machine_join_seeds_current_and_renders_systemd_units_from_it() {
     fs::create_dir_all(&systemd).expect("systemd directory");
     let directories = SupervisorDirectories::new(systemd.clone(), directory.path().join("openrc"));
     let privilege_commands =
-        crate::api_privilege_install_commands(state.path(), crate::HostPackageFamily::Debian)
+        crate::installed_role_privilege_commands(state.path(), crate::HostPackageFamily::Debian)
             .expect("privilege install commands");
     let expected_privilege_calls = privilege_commands
         .iter()

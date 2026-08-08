@@ -163,8 +163,8 @@ async fn authenticated_doctor_performs_one_read_only_sweep_of_every_table() {
     let queries = corrosion.queries();
     assert_eq!(
         queries.len(),
-        15,
-        "three auth reads plus twelve doctor reads"
+        16,
+        "three auth reads plus thirteen doctor reads"
     );
     assert!(queries.iter().all(|query| query.starts_with("SELECT ")));
     let [_, _, _, doctor_queries @ ..] = queries.as_slice() else {
@@ -172,8 +172,8 @@ async fn authenticated_doctor_performs_one_read_only_sweep_of_every_table() {
     };
     for table in CorrosionTable::ALL {
         let expected = match table {
-            CorrosionTable::MachineStatus => {
-                "SELECT machine_id AS id, document FROM machine_status".to_owned()
+            CorrosionTable::MachineStatus | CorrosionTable::GatewayObservations => {
+                format!("SELECT machine_id AS id, document FROM {}", table.as_str())
             }
             CorrosionTable::Cluster
             | CorrosionTable::Machines

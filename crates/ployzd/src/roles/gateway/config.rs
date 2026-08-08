@@ -4,13 +4,14 @@ use std::env;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use ployz_core::ids::ClusterId;
+use ployz_core::ids::{ClusterId, MachineRowId};
 
 use crate::corrosion::{BearerToken, CorrosionClientBounds, CorrosionClientConfig};
 
 const CORROSION_API_ADDR_ENV: &str = "PLOYZ_CORROSION_API_ADDR";
 const CORROSION_BEARER_TOKEN_ENV: &str = "PLOYZ_CORROSION_BEARER_TOKEN";
 const CLUSTER_ID_ENV: &str = "PLOYZ_CLUSTER_ID";
+const MACHINE_ID_ENV: &str = "PLOYZ_MACHINE_ID";
 const GATEWAY_LISTEN_ADDR_ENV: &str = "PLOYZ_GATEWAY_LISTEN_ADDR";
 const DEFAULT_GATEWAY_LISTEN_ADDR: &str = "0.0.0.0:80";
 
@@ -24,6 +25,7 @@ const CORROSION_MAX_ERROR_BODY_BYTES: usize = 65_536;
 pub struct GatewayRoleConfig {
     corrosion: CorrosionClientConfig,
     cluster_id: ClusterId,
+    local_machine_id: MachineRowId,
     listen_addr: SocketAddr,
 }
 
@@ -46,6 +48,10 @@ impl GatewayRoleConfig {
                     detail: error.to_string(),
                 }
             })?;
+        let local_machine_id = MachineRowId::try_new(required_environment(MACHINE_ID_ENV)?)
+            .map_err(|error| GatewayRoleConfigError::InvalidMachineId {
+                detail: error.to_string(),
+            })?;
         let listen_addr = optional_environment(GATEWAY_LISTEN_ADDR_ENV)?
             .unwrap_or_else(|| DEFAULT_GATEWAY_LISTEN_ADDR.to_owned())
             .parse::<SocketAddr>()
@@ -53,18 +59,25 @@ impl GatewayRoleConfig {
                 name: GATEWAY_LISTEN_ADDR_ENV,
                 detail: error.to_string(),
             })?;
-        Ok(Self::new(corrosion, cluster_id, listen_addr))
+        Ok(Self::new(
+            corrosion,
+            cluster_id,
+            local_machine_id,
+            listen_addr,
+        ))
     }
 
     #[must_use]
     pub const fn new(
         corrosion: CorrosionClientConfig,
         cluster_id: ClusterId,
+        local_machine_id: MachineRowId,
         listen_addr: SocketAddr,
     ) -> Self {
         Self {
             corrosion,
             cluster_id,
+            local_machine_id,
             listen_addr,
         }
     }
@@ -77,6 +90,11 @@ impl GatewayRoleConfig {
     #[must_use]
     pub const fn cluster_id(&self) -> &ClusterId {
         &self.cluster_id
+    }
+
+    #[must_use]
+    pub const fn local_machine_id(&self) -> &MachineRowId {
+        &self.local_machine_id
     }
 
     #[must_use]
@@ -119,6 +137,8 @@ pub enum GatewayRoleConfigError {
     InvalidSocketAddress { name: &'static str, detail: String },
     #[error("PLOYZ_CLUSTER_ID is invalid: {detail}")]
     InvalidClusterId { detail: String },
+    #[error("PLOYZ_MACHINE_ID is invalid: {detail}")]
+    InvalidMachineId { detail: String },
     #[error(transparent)]
     CorrosionConfiguration(crate::corrosion::CorrosionClientConfigError),
 }
@@ -136,6 +156,7 @@ mod tests {
             SocketAddr::from(([0, 0, 0, 0], 80))
         );
         assert_eq!(GATEWAY_LISTEN_ADDR_ENV, "PLOYZ_GATEWAY_LISTEN_ADDR");
+        assert_eq!(MACHINE_ID_ENV, "PLOYZ_MACHINE_ID");
         assert_eq!(
             corrosion_bounds(),
             CorrosionClientBounds {

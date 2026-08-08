@@ -62,16 +62,19 @@ fn founding_gateway_environment_contains_only_its_runtime_contract() {
             .expect("gateway environment renders"),
     )
     .expect("gateway environment is UTF-8");
-    assert_eq!(environment.lines().count(), 4, "{environment}");
+    assert_eq!(environment.lines().count(), 5, "{environment}");
     for name in [
         "PLOYZ_CORROSION_API_ADDR=",
         "PLOYZ_CORROSION_BEARER_TOKEN=",
         "PLOYZ_CLUSTER_ID=",
+        "PLOYZ_MACHINE_ID=",
         "PLOYZ_GATEWAY_LISTEN_ADDR=0.0.0.0:80",
     ] {
         assert!(environment.lines().any(|line| line.starts_with(name)));
     }
-    assert!(!environment.contains("PLOYZ_MACHINE_ID="));
+    assert!(environment.lines().any(|line| {
+        line == format!("PLOYZ_MACHINE_ID={}", prepared.request.request().machine_id)
+    }));
     assert!(!environment.contains("PLOYZ_API_"));
 }
 

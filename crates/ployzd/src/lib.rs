@@ -35,6 +35,7 @@ pub mod roles {
     }
     pub mod gateway {
         mod config;
+        mod observation;
         pub(crate) mod pingora;
         pub(crate) mod projection;
         mod runtime;

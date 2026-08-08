@@ -78,6 +78,7 @@ impl<R: HostRunnerCommandRunner> LinuxFoundingHostEffects<R> {
             &format!("127.0.0.1:{CORROSION_API_PORT}"),
             &self.corrosion_token,
             self.request.request().cluster_id.as_str(),
+            self.request.request().machine_id.as_str(),
         )
     }
 }

@@ -1,18 +1,20 @@
-#[path = "operation_deploy/support.rs"]
-#[allow(dead_code)]
-mod support;
-
 use std::time::{Duration, Instant};
 
 use bollard::Docker;
-use ployz_core::corrosion::{IngressMode, RouteBindingDocument, SqliteValue};
-use ployz_core::ids::RouteBindingRowId;
+use ployz_core::corrosion::{
+    GatewayObservationDocument, GatewayRouteAvailability, GatewayRouteProjectionOutcome,
+    IngressMode, RouteBindingDocument, SqliteValue,
+};
+use ployz_core::ids::{MachineRowId, RouteBindingRowId};
 use ployz_core::ingress::RouteBindingOrigin;
+use ployz_core::machine::GatewayServingStatus;
 use ployz_e2e::dind::{
     DindCluster, DindClusterSpec, DindMachine, MachineSpec, artifact_dir, connect_docker,
-    corrosion_access, corrosion_query, e2e_enabled, exec_ok, keep_requested, machine_image,
-    require,
+    corrosion_access, corrosion_query, create_namespace_and_deploy, e2e_enabled, exec_ok,
+    found_and_join_with_service_urls, keep_requested, machine_image, require, run_cli,
+    start_mutable_registry, wait_for_gateway_status,
 };
+use ployz_e2e::dind::{OperatorFixture, assert_gateway_http};
 
 const NAMESPACE: &str = "production";
 const SERVICE: &str = "web";
@@ -20,7 +22,7 @@ const SECRET_NAME: &str = "GATEWAY_E2E_SECRET";
 const SECRET_VALUE: &str = "gateway-e2e-sentinel";
 const BODY: &str = "Welcome to nginx";
 const DISABLED_HOSTNAME: &str = "explicit.example.test";
-const MANAGED_HOSTNAME: &str = "production.brisk-river-x7f3.up.ployz.app";
+const MANAGED_HOSTNAME: &str = "web.brisk-river-x7f3.up.ployz.app";
 const LEASE_STUB_ORIGIN: &str = "http://127.0.0.1:18080";
 const WAIT_BUDGET: Duration = Duration::from_secs(60);
 const WAIT_DELAY: Duration = Duration::from_millis(250);
@@ -101,10 +103,9 @@ async fn exercise_one_mode(docker: &Docker, mode: GatewayMode) {
 }
 
 async fn exercise_disabled(docker: &Docker, machine: &DindMachine) -> Result<(), String> {
-    let operator =
-        support::found_and_join_with_service_urls(docker, machine, &[], "disabled").await?;
-    let image = support::start_mutable_registry(docker, machine, &[]).await?;
-    support::create_namespace_and_deploy(
+    let operator = found_and_join_with_service_urls(docker, machine, &[], "disabled").await?;
+    let image = start_mutable_registry(docker, machine, &[]).await?;
+    create_namespace_and_deploy(
         &operator,
         NAMESPACE,
         SERVICE,
@@ -118,8 +119,16 @@ async fn exercise_disabled(docker: &Docker, machine: &DindMachine) -> Result<(),
     )?;
 
     let first = attach_route(&operator, DISABLED_HOSTNAME)?;
-    support::assert_gateway_http(docker, machine, DISABLED_HOSTNAME, BODY).await?;
-    let removed = support::run_cli(
+    assert_gateway_http(docker, machine, DISABLED_HOSTNAME, BODY).await?;
+    wait_for_applied_observation(
+        docker,
+        machine,
+        &operator.founder_machine_id,
+        &first,
+        DISABLED_HOSTNAME,
+    )
+    .await?;
+    let removed = run_cli(
         &operator,
         &[
             "route",
@@ -135,18 +144,18 @@ async fn exercise_disabled(docker: &Docker, machine: &DindMachine) -> Result<(),
         removed.status.success(),
         format!("route rm failed: {removed:?}"),
     )?;
-    support::wait_for_gateway_status(docker, machine, DISABLED_HOSTNAME, 404).await?;
+    wait_for_gateway_status(docker, machine, DISABLED_HOSTNAME, 404).await?;
 
     let second = attach_route(&operator, DISABLED_HOSTNAME)?;
     require(
         first != second,
         format!("reattach reused removed route identity {first}"),
     )?;
-    support::assert_gateway_http(docker, machine, DISABLED_HOSTNAME, BODY).await
+    assert_gateway_http(docker, machine, DISABLED_HOSTNAME, BODY).await
 }
 
 async fn exercise_managed(docker: &Docker, machine: &DindMachine) -> Result<(), String> {
-    let operator = support::found_and_join_with_service_urls(docker, machine, &[], "ployz").await?;
+    let operator = found_and_join_with_service_urls(docker, machine, &[], "ployz").await?;
     start_lease_stub(docker, machine).await?;
     exec_ok(
         docker,
@@ -161,8 +170,8 @@ async fn exercise_managed(docker: &Docker, machine: &DindMachine) -> Result<(), 
     )
     .await?;
 
-    let image = support::start_mutable_registry(docker, machine, &[]).await?;
-    support::create_namespace_and_deploy(
+    let image = start_mutable_registry(docker, machine, &[]).await?;
+    create_namespace_and_deploy(
         &operator,
         NAMESPACE,
         SERVICE,
@@ -171,7 +180,7 @@ async fn exercise_managed(docker: &Docker, machine: &DindMachine) -> Result<(), 
         SECRET_VALUE,
     )?;
     let routes = wait_for_route_rows(docker, machine, 1).await?;
-    let [(_, route)] = routes.as_slice() else {
+    let [(route_id, route)] = routes.as_slice() else {
         return Err(format!(
             "managed deploy produced the wrong routes: {routes:?}"
         ));
@@ -182,7 +191,15 @@ async fn exercise_managed(docker: &Docker, machine: &DindMachine) -> Result<(), 
             && route.ingress_mode == IngressMode::Direct,
         format!("managed deploy attached the wrong hostname: {route:?}"),
     )?;
-    support::assert_gateway_http(docker, machine, MANAGED_HOSTNAME, BODY).await?;
+    assert_gateway_http(docker, machine, MANAGED_HOSTNAME, BODY).await?;
+    wait_for_applied_observation(
+        docker,
+        machine,
+        &operator.founder_machine_id,
+        route_id,
+        MANAGED_HOSTNAME,
+    )
+    .await?;
 
     let request = exec_ok(docker, machine, &["cat", "/run/ployz-lease-request.json"])
         .await?
@@ -198,11 +215,8 @@ async fn exercise_managed(docker: &Docker, machine: &DindMachine) -> Result<(), 
     )
 }
 
-fn attach_route(
-    operator: &support::OperatorFixture,
-    hostname: &str,
-) -> Result<RouteBindingRowId, String> {
-    let output = support::run_cli(
+fn attach_route(operator: &OperatorFixture, hostname: &str) -> Result<RouteBindingRowId, String> {
+    let output = run_cli(
         operator,
         &[
             "route",
@@ -273,6 +287,64 @@ async fn route_rows(
             Ok((id, document))
         })
         .collect()
+}
+
+async fn wait_for_applied_observation(
+    docker: &Docker,
+    machine: &DindMachine,
+    machine_id: &MachineRowId,
+    route_id: &RouteBindingRowId,
+    hostname: &str,
+) -> Result<(), String> {
+    let (address, token) = corrosion_access(docker, machine).await?;
+    let query = format!(
+        "SELECT document FROM gateway_observations WHERE machine_id = '{}'",
+        machine_id.as_str()
+    );
+    let deadline = Instant::now() + WAIT_BUDGET;
+    let mut last = String::from("gateway observation was not queried");
+    while Instant::now() < deadline {
+        match corrosion_query(docker, machine, &address, &token, &query).await {
+            Ok(rows) => match rows.as_slice() {
+                [row] => {
+                    let [SqliteValue::Text(document)] = row.as_slice() else {
+                        last = format!("gateway observation query returned invalid row: {row:?}");
+                        tokio::time::sleep(WAIT_DELAY).await;
+                        continue;
+                    };
+                    let observation: GatewayObservationDocument = serde_json::from_str(document)
+                        .map_err(|error| format!("gateway observation was invalid: {error}"))?;
+                    let applied = observation.routes.iter().any(|route| {
+                        route.route_binding_id == *route_id
+                            && route.hostname.as_str() == hostname
+                            && matches!(
+                                route.outcome,
+                                GatewayRouteProjectionOutcome::Applied {
+                                    availability: GatewayRouteAvailability::Serving {
+                                        upstream_count: 1..
+                                    }
+                                }
+                            )
+                    });
+                    if observation.machine_id == *machine_id
+                        && observation.serving == GatewayServingStatus::Current
+                        && applied
+                    {
+                        return Ok(());
+                    }
+                    last =
+                        format!("gateway observation had not applied the route: {observation:?}");
+                }
+                [] => last = "gateway observation row was absent".to_owned(),
+                rows => last = format!("gateway observation query returned invalid rows: {rows:?}"),
+            },
+            Err(error) => last = error,
+        }
+        tokio::time::sleep(WAIT_DELAY).await;
+    }
+    Err(format!(
+        "gateway did not publish a current applied observation for {hostname}: {last}"
+    ))
 }
 
 async fn start_lease_stub(docker: &Docker, machine: &DindMachine) -> Result<(), String> {

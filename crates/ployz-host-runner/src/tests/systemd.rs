@@ -99,7 +99,7 @@ fn dns_unit_runs_as_a_dynamic_user_with_only_the_port_53_capability() {
 
 #[test]
 fn gateway_unit_runs_as_the_installed_account_with_only_the_bind_capability() {
-    let rendered = PloyzdRoleUnit::new(PloyzdRole::Gateway, &artifact_store(), &role_env())
+    let rendered = PloyzdRoleUnit::new(PloyzdRole::Gateway, &artifact_store(), &gateway_env())
         .expect("gateway unit is valid")
         .render();
 
@@ -170,7 +170,7 @@ fn role_units_quote_stable_paths_that_need_systemd_escaping() {
         PloyzdArtifactStore::new(PathBuf::from("/opt/Ployz Tools")).expect("absolute state path");
 
     assert_eq!(
-        PloyzdRoleUnit::new(PloyzdRole::Gateway, &store, &role_env())
+        PloyzdRoleUnit::new(PloyzdRole::Gateway, &store, &gateway_env())
             .expect("spaced path can be quoted")
             .render(),
         "[Unit]\nDescription=Ployz gateway\nAfter=network-online.target ployz-corrosion.service\nWants=network-online.target ployz-corrosion.service\n\n[Service]\nType=exec\nUser=ployz-gateway\nGroup=ployz-gateway\nNoNewPrivileges=yes\nAmbientCapabilities=CAP_NET_BIND_SERVICE\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE\nRuntimeDirectory=ployz-gateway\nBindReadOnlyPaths=\"/opt/Ployz Tools/current:/run/ployz-gateway/ployzd\"\nEnvironmentFile=/etc/ployz/ployz-gateway.env\nExecStart=/run/ployz-gateway/ployzd gateway\nTimeoutStopSec=10s\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n"
@@ -184,4 +184,9 @@ fn artifact_store() -> PloyzdArtifactStore {
 fn role_env() -> PloyzdRoleEnvironmentFile {
     PloyzdRoleEnvironmentFile::new(PathBuf::from("/etc/ployz/ployzd.env"))
         .expect("valid role environment path")
+}
+
+fn gateway_env() -> PloyzdRoleEnvironmentFile {
+    PloyzdRoleEnvironmentFile::new(PathBuf::from("/etc/ployz/ployz-gateway.env"))
+        .expect("valid Gateway environment path")
 }

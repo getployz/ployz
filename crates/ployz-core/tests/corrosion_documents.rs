@@ -6,13 +6,15 @@ use ployz_core::corrosion::{
     AcmeHttp01Document, AutomaticHostnameMode, CertHoldingDocument, ClusterDocument,
     ContainerDocument, CorrosionBasicOperation, CorrosionDeployTargets, CorrosionDocument,
     CorrosionDocumentVersion, CorrosionNamespaceName, CorrosionServiceName, CorrosionTable,
-    CorrosionTimestamp, HostPortBinding, HostPortBindings, HostPortProtocol, IngressMode,
-    MachineDocument, MachineLoadBand, MachineStatusDocument, MachineStorageIneligibleReason,
-    MachineStorageSelection, MachineStorageSelectionReason, MachineTransport, MeshProvider,
-    NameClaim, NamedCorrosionDocument, NamespaceDocument, OperationDocument, OperationInitiator,
-    OperatorWriteProvenance, PeerDocument, PeerTransport, PloyzDnsTargetState,
-    RouteBindingDocument, ServiceDocument, ServicePlacement, ServiceReplicaCount, Sha256Hex,
-    StorageMode, TokenDocument, fingerprint_env_value,
+    CorrosionTimestamp, GatewayObservationDocument, GatewayProjectionAggregateFailure,
+    GatewayProjectionInputKind, GatewayRouteAvailability, GatewayRouteObservation,
+    GatewayRouteProjectionOutcome, HostPortBinding, HostPortBindings, HostPortProtocol,
+    IngressMode, MachineDocument, MachineLoadBand, MachineStatusDocument,
+    MachineStorageIneligibleReason, MachineStorageSelection, MachineStorageSelectionReason,
+    MachineTransport, MeshProvider, NameClaim, NamedCorrosionDocument, NamespaceDocument,
+    OperationDocument, OperationInitiator, OperatorWriteProvenance, PeerDocument, PeerTransport,
+    PloyzDnsTargetState, RouteBindingDocument, ServiceDocument, ServicePlacement,
+    ServiceReplicaCount, Sha256Hex, StorageMode, TokenDocument, fingerprint_env_value,
 };
 use ployz_core::deploy::{EnvValue, ImageReference};
 use ployz_core::ids::{
@@ -20,7 +22,10 @@ use ployz_core::ids::{
     OperationRowId, PeerId, RouteBindingRowId, ServiceId, ServiceRowId, TokenId,
 };
 use ployz_core::ingress::RouteBindingOrigin;
-use ployz_core::machine::{MachineLifecycle, MachineName};
+use ployz_core::machine::{
+    GatewayProcessAttempt, GatewayProcessHealth, GatewayServingStatus, MachineLifecycle,
+    MachineName,
+};
 use ployz_core::network::{MachineEndpointSubnet, MachineEndpointSupernet, WireGuardPublicKey};
 use ployz_core::operation::{RouteHostname, RoutePort};
 use serde::de::DeserializeOwned;
@@ -259,7 +264,7 @@ fn allocated_ployz_dns_target_requires_the_managed_suffix() {
 }
 
 #[test]
-fn cluster_documents_reject_dns_target_states_that_conflict_with_hostname_mode() {
+fn automatic_hostname_configuration_and_dns_target_are_independent_except_ployz_dependency() {
     let mut cluster = serde_json::to_value(cluster_document()).expect("cluster JSON");
     set_json_field(&mut cluster, "hostname_mode", json!({"mode": "ployz"}));
     set_json_field(
@@ -275,7 +280,32 @@ fn cluster_documents_reject_dns_target_states_that_conflict_with_hostname_mode()
         "ployz_dns_target",
         json!({"state": "pending"}),
     );
-    assert!(serde_json::from_value::<ClusterDocument>(cluster).is_err());
+    let custom_pending = serde_json::from_value::<ClusterDocument>(cluster)
+        .expect("custom namespace keeps an independent pending target");
+    serde_json::to_value(custom_pending).expect("custom pending cluster serializes");
+
+    let mut cluster = serde_json::to_value(cluster_document()).expect("cluster JSON");
+    set_json_field(&mut cluster, "hostname_mode", json!({"mode": "disabled"}));
+    set_json_field(
+        &mut cluster,
+        "ployz_dns_target",
+        json!({
+            "state": "allocated",
+            "hostname": "brisk-river-x7f3.up.ployz.app",
+            "acquired_by": "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+        }),
+    );
+    let disabled_allocated = serde_json::from_value::<ClusterDocument>(cluster)
+        .expect("disabled automatic hostnames retain the independent DNS target");
+    serde_json::to_value(disabled_allocated).expect("disabled allocated cluster serializes");
+
+    let mut directly_invalid = cluster_document();
+    directly_invalid.hostname_mode = AutomaticHostnameMode::Ployz;
+    directly_invalid.ployz_dns_target = PloyzDnsTargetState::Disabled;
+    assert!(
+        serde_json::to_value(directly_invalid).is_err(),
+        "direct construction cannot serialize a genuinely invalid dependency"
+    );
 }
 
 fn set_json_field(value: &mut Value, field: &str, replacement: Value) {
@@ -354,6 +384,7 @@ fn every_corrosion_document_timestamp_serializes_in_canonical_utc() {
         (CorrosionTable::Tokens, &["created_at", "expires_at"][..]),
         (CorrosionTable::Services, &["deployed_at"]),
         (CorrosionTable::MachineStatus, &["observed_at"]),
+        (CorrosionTable::GatewayObservations, &["observed_at"]),
         (CorrosionTable::Operations, &["created_at"]),
         (CorrosionTable::CertHoldings, &["issued_at", "expires_at"]),
         (CorrosionTable::AcmeHttp01, &["created_at"]),
@@ -535,6 +566,7 @@ fn document_fixtures() -> Vec<DocumentFixture> {
         fixture(route_binding_document()),
         fixture(container_document()),
         fixture(machine_status_document()),
+        fixture(gateway_observation_document()),
         fixture(operation_document()),
         fixture(cert_holding_document()),
         fixture(acme_http01_document()),
@@ -552,6 +584,7 @@ fn deserialize_fixture(table: CorrosionTable, value: Value) {
         CorrosionTable::RouteBindings => deserialize::<RouteBindingDocument>(value),
         CorrosionTable::Containers => deserialize::<ContainerDocument>(value),
         CorrosionTable::MachineStatus => deserialize::<MachineStatusDocument>(value),
+        CorrosionTable::GatewayObservations => deserialize::<GatewayObservationDocument>(value),
         CorrosionTable::Operations => deserialize::<OperationDocument>(value),
         CorrosionTable::CertHoldings => deserialize::<CertHoldingDocument>(value),
         CorrosionTable::AcmeHttp01 => deserialize::<AcmeHttp01Document>(value),
@@ -738,6 +771,32 @@ fn machine_status_document() -> MachineStatusDocument {
         mesh: None,
         container_isolation: None,
         wireguard_handshakes: None,
+    }
+}
+
+fn gateway_observation_document() -> GatewayObservationDocument {
+    GatewayObservationDocument {
+        v: version(),
+        cluster_id: cluster_id(),
+        machine_id: machine_id(),
+        observed_at: timestamp("2026-08-04T10:06:00Z"),
+        listen_addr: SocketAddr::from(([0, 0, 0, 0], 80)),
+        serving: GatewayServingStatus::Current,
+        routes: vec![GatewayRouteObservation {
+            route_binding_id: RouteBindingRowId::try_new(ULID_B).expect("route id"),
+            hostname: RouteHostname::try_new("api.example.com").expect("hostname"),
+            outcome: GatewayRouteProjectionOutcome::Applied {
+                availability: GatewayRouteAvailability::Serving { upstream_count: 2 },
+            },
+        }],
+        aggregate_failures: vec![GatewayProjectionAggregateFailure {
+            input: GatewayProjectionInputKind::Containers,
+            rejected_rows: 1,
+        }],
+        process_health: GatewayProcessHealth {
+            last_attempt: Some(GatewayProcessAttempt::Current { route_count: 1 }),
+            ..GatewayProcessHealth::default()
+        },
     }
 }
 

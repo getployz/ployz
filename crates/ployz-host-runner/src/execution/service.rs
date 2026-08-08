@@ -81,18 +81,6 @@ impl PloyzdRoleEnvironmentFile {
     pub fn path(&self) -> &Path {
         &self.path
     }
-
-    pub fn for_role(&self, role: PloyzdRole) -> Result<Self, SupervisorUnitFileError> {
-        if role != PloyzdRole::Gateway {
-            return Ok(self.clone());
-        }
-        let Some(parent) = self.path.parent() else {
-            return Err(SupervisorUnitFileError::UnsupportedEnvironmentFilePath {
-                value: self.path.clone(),
-            });
-        };
-        Self::new(parent.join("ployz-gateway.env"))
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,7 +127,7 @@ impl PloyzdRoleUnit {
             role,
             exec_start,
             executable_access,
-            environment_file: environment_file.for_role(role)?,
+            environment_file: environment_file.clone(),
         })
     }
 

@@ -50,6 +50,9 @@ pub struct RouteAttachReply {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RouteAttachRefusal {
+    UnsupportedIngressMode {
+        requested: IngressMode,
+    },
     NamespaceNotFound {
         namespace_name: CorrosionNamespaceName,
     },

@@ -11,9 +11,14 @@ use tokio::sync::{oneshot, watch};
 use crate::corrosion::CorrosionClient;
 
 use super::config::{GatewayRoleConfig, GatewayRoleConfigError};
+use super::observation::GatewayObservationPublisher;
 use super::pingora::{PingoraRouteRegistry, PloyzGatewayProxy};
-use super::projection::{GatewayProjectionInput, project_gateway_rows};
+use super::projection::{GatewayFold, GatewayProjectionInput, project_gateway_rows};
 use super::source::{CorrosionGatewaySource, GatewayRows, GatewaySourceError};
+use ployz_core::machine::{
+    GatewayProcessAttempt, GatewayProcessHealth, GatewayServingStatus, GatewayStatusPublishFailure,
+    GatewayWatchFailure,
+};
 
 const REFRESH_RETRY_INITIAL: Duration = Duration::from_millis(250);
 const REFRESH_RETRY_CAP: Duration = Duration::from_secs(5);
@@ -25,13 +30,19 @@ pub async fn run_from_environment() -> Result<(), GatewayRoleRuntimeError> {
         GatewayRoleConfig::from_environment().map_err(GatewayRoleRuntimeError::Configuration)?;
     let client = CorrosionClient::new(config.corrosion().clone())
         .map_err(GatewayRoleRuntimeError::CorrosionConfiguration)?;
-    let source = CorrosionGatewaySource::new(client, config.cluster_id().clone());
+    let source = CorrosionGatewaySource::new(client.clone(), config.cluster_id().clone());
+    let publisher = GatewayObservationPublisher::new(
+        client,
+        config.cluster_id().clone(),
+        config.local_machine_id().clone(),
+        config.listen_addr(),
+    );
     let (shutdown_tx, shutdown) = watch::channel(false);
     let signal = tokio::spawn(async move {
         wait_for_process_shutdown().await;
         let _ = shutdown_tx.send(true);
     });
-    let result = run_gateway(config, source, shutdown).await;
+    let result = run_gateway(config, source, publisher, shutdown).await;
     signal.abort();
     let _ = signal.await;
     result
@@ -40,6 +51,7 @@ pub async fn run_from_environment() -> Result<(), GatewayRoleRuntimeError> {
 async fn run_gateway(
     config: GatewayRoleConfig,
     source: CorrosionGatewaySource,
+    publisher: GatewayObservationPublisher,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), GatewayRoleRuntimeError> {
     let registry = PingoraRouteRegistry::new();
@@ -47,6 +59,7 @@ async fn run_gateway(
     let mut projection_task = tokio::spawn(run_projection_loop(
         config.cluster_id().clone(),
         source,
+        publisher,
         registry.clone(),
         shutdown.clone(),
         ready_tx,
@@ -103,12 +116,15 @@ async fn run_listener(
 async fn run_projection_loop(
     cluster_id: ployz_core::ids::ClusterId,
     source: CorrosionGatewaySource,
+    publisher: GatewayObservationPublisher,
     registry: PingoraRouteRegistry,
     mut shutdown: watch::Receiver<bool>,
     ready: oneshot::Sender<()>,
 ) -> Result<(), GatewayRoleRuntimeError> {
     let mut subscriptions = None;
     let mut retry = RefreshRetry::new();
+    let mut health = GatewayHealth::default();
+    let mut last_fold = None;
     let mut ready = Some(ready);
 
     loop {
@@ -120,7 +136,16 @@ async fn run_projection_loop(
                 ShutdownOutcome::Stopped => return Ok(()),
                 ShutdownOutcome::Completed(Ok(active)) => subscriptions = Some(active),
                 ShutdownOutcome::Completed(Err(error)) => {
-                    retry_failure(&mut retry, &mut shutdown, error).await?;
+                    refresh_failure(
+                        &mut retry,
+                        &mut health,
+                        &publisher,
+                        last_fold.as_ref(),
+                        RefreshFailurePhase::WatchOpen,
+                        &mut shutdown,
+                        error,
+                    )
+                    .await?;
                     continue;
                 }
             }
@@ -130,11 +155,30 @@ async fn run_projection_loop(
             ShutdownOutcome::Stopped => return Ok(()),
             ShutdownOutcome::Completed(Ok(rows)) => rows,
             ShutdownOutcome::Completed(Err(error)) => {
-                retry_failure(&mut retry, &mut shutdown, error).await?;
+                refresh_failure(
+                    &mut retry,
+                    &mut health,
+                    &publisher,
+                    last_fold.as_ref(),
+                    RefreshFailurePhase::Query,
+                    &mut shutdown,
+                    error,
+                )
+                .await?;
                 continue;
             }
         };
-        registry.replace_projection(&project_rows(cluster_id.clone(), rows));
+        let fold = project_rows(cluster_id.clone(), rows);
+        registry.replace_projection(&fold.projection);
+        health.record_current(fold.projection.routes.len());
+        publish_health(
+            &publisher,
+            GatewayServingStatus::Current,
+            &fold,
+            &mut health,
+        )
+        .await;
+        last_fold = Some(fold);
         retry.record_success();
         if let Some(ready) = ready.take() {
             let _ = ready.send(());
@@ -151,38 +195,170 @@ async fn run_projection_loop(
                 }
                 if let Err(error) = active.drain_ready_invalidations().await {
                     subscriptions = None;
-                    retry_failure(&mut retry, &mut shutdown, error).await?;
+                    refresh_failure(
+                        &mut retry,
+                        &mut health,
+                        &publisher,
+                        last_fold.as_ref(),
+                        RefreshFailurePhase::WatchEnded,
+                        &mut shutdown,
+                        error,
+                    )
+                    .await?;
                 }
             }
             ShutdownOutcome::Completed(Err(error)) => {
                 subscriptions = None;
-                retry_failure(&mut retry, &mut shutdown, error).await?;
+                refresh_failure(
+                    &mut retry,
+                    &mut health,
+                    &publisher,
+                    last_fold.as_ref(),
+                    RefreshFailurePhase::WatchEnded,
+                    &mut shutdown,
+                    error,
+                )
+                .await?;
             }
         }
     }
 }
 
-fn project_rows(
-    cluster_id: ployz_core::ids::ClusterId,
-    rows: GatewayRows,
-) -> super::projection::GatewayProjection {
+fn project_rows(cluster_id: ployz_core::ids::ClusterId, rows: GatewayRows) -> GatewayFold {
     project_gateway_rows(GatewayProjectionInput {
         cluster_id,
+        cluster: rows.cluster,
+        machines: rows.machines,
         services: rows.services,
         route_bindings: rows.route_bindings,
         containers: rows.containers,
     })
 }
 
-async fn retry_failure(
+async fn refresh_failure(
     retry: &mut RefreshRetry,
+    health: &mut GatewayHealth,
+    publisher: &GatewayObservationPublisher,
+    last_fold: Option<&GatewayFold>,
+    phase: RefreshFailurePhase,
     shutdown: &mut watch::Receiver<bool>,
     error: GatewaySourceError,
 ) -> Result<(), GatewayRoleRuntimeError> {
+    let message = error.to_string();
+    health.record_refresh_failure(
+        last_fold.map_or(0, |fold| fold.projection.routes.len()),
+        last_fold.is_some(),
+        phase,
+        message.clone(),
+    );
+    let empty = GatewayFold::default();
+    let fold = last_fold.unwrap_or(&empty);
+    publish_health(
+        publisher,
+        if last_fold.is_some() {
+            GatewayServingStatus::LastKnownGood
+        } else {
+            GatewayServingStatus::Unavailable
+        },
+        fold,
+        health,
+    )
+    .await;
     let delay = retry.record_failure(&error)?;
     tracing::warn!(error = %error, ?delay, "gateway projection refresh will retry");
     let _ = sleep_or_shutdown(shutdown, delay).await;
     Ok(())
+}
+
+async fn publish_health(
+    publisher: &GatewayObservationPublisher,
+    serving: GatewayServingStatus,
+    fold: &GatewayFold,
+    health: &mut GatewayHealth,
+) {
+    match publisher
+        .publish(
+            serving,
+            &fold.route_observations,
+            &fold.aggregate_failures,
+            &health.process,
+        )
+        .await
+    {
+        Ok(()) => health.record_publish_success(),
+        Err(error) => {
+            let message = error.to_string();
+            health.record_publish_failure(message.clone());
+            tracing::warn!(error = %message, "Gateway Observation publication failed");
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum RefreshFailurePhase {
+    Query,
+    WatchOpen,
+    WatchEnded,
+}
+
+#[derive(Default)]
+struct GatewayHealth {
+    process: GatewayProcessHealth,
+}
+
+impl GatewayHealth {
+    fn record_current(&mut self, route_count: usize) {
+        self.process.last_attempt = Some(GatewayProcessAttempt::Current { route_count });
+        self.process.consecutive_failures = 0;
+        self.process.consecutive_watch_failures = 0;
+    }
+
+    fn record_refresh_failure(
+        &mut self,
+        route_count: usize,
+        serving_last_known_good: bool,
+        phase: RefreshFailurePhase,
+        message: String,
+    ) {
+        self.process.last_attempt = Some(if serving_last_known_good {
+            GatewayProcessAttempt::ServingLastKnownGood {
+                route_count,
+                message: message.clone(),
+            }
+        } else {
+            GatewayProcessAttempt::Failed {
+                message: message.clone(),
+            }
+        });
+        self.process.consecutive_failures = self.process.consecutive_failures.saturating_add(1);
+        match phase {
+            RefreshFailurePhase::Query => {}
+            RefreshFailurePhase::WatchOpen => {
+                self.process.last_watch_failure = Some(GatewayWatchFailure::Open { message });
+                self.process.consecutive_watch_failures =
+                    self.process.consecutive_watch_failures.saturating_add(1);
+            }
+            RefreshFailurePhase::WatchEnded => {
+                self.process.last_watch_failure =
+                    Some(GatewayWatchFailure::Ended { source: message });
+                self.process.consecutive_watch_failures =
+                    self.process.consecutive_watch_failures.saturating_add(1);
+            }
+        }
+    }
+
+    fn record_publish_failure(&mut self, message: String) {
+        self.process.last_status_publish_failure =
+            Some(GatewayStatusPublishFailure::Write { message });
+        self.process.consecutive_status_publish_failures = self
+            .process
+            .consecutive_status_publish_failures
+            .saturating_add(1);
+    }
+
+    fn record_publish_success(&mut self) {
+        self.process.consecutive_status_publish_failures = 0;
+    }
 }
 
 struct RefreshRetry {
@@ -338,5 +514,41 @@ mod tests {
     #[test]
     fn refresh_coalescing_never_exceeds_one_hundred_milliseconds() {
         assert!(INVALIDATION_COALESCE <= Duration::from_millis(100));
+    }
+
+    #[test]
+    fn health_retains_publish_evidence_and_distinguishes_current_lkg_and_unavailable() {
+        let mut health = GatewayHealth::default();
+        health.record_refresh_failure(
+            0,
+            false,
+            RefreshFailurePhase::WatchOpen,
+            "cold failure".to_owned(),
+        );
+        assert!(matches!(
+            health.process.last_attempt,
+            Some(GatewayProcessAttempt::Failed { .. })
+        ));
+
+        health.record_current(3);
+        health.record_publish_failure("write failed".to_owned());
+        assert_eq!(health.process.consecutive_status_publish_failures, 1);
+        health.record_publish_success();
+        assert_eq!(health.process.consecutive_status_publish_failures, 0);
+        assert!(matches!(
+            health.process.last_status_publish_failure,
+            Some(GatewayStatusPublishFailure::Write { .. })
+        ));
+
+        health.record_refresh_failure(
+            3,
+            true,
+            RefreshFailurePhase::WatchEnded,
+            "watch ended".to_owned(),
+        );
+        assert!(matches!(
+            health.process.last_attempt,
+            Some(GatewayProcessAttempt::ServingLastKnownGood { route_count: 3, .. })
+        ));
     }
 }

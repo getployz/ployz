@@ -13,9 +13,11 @@ use time::{OffsetDateTime, UtcOffset};
 
 use crate::certificate::{MANAGED_LEASE_DOMAIN_SUFFIX, ManagedLeaseName};
 use crate::deploy::{EnvValue, ImageReference};
-use crate::ids::{ClusterId, MachineRowId, NamespaceRowId, OperationRowId, ServiceRowId};
+use crate::ids::{
+    ClusterId, MachineRowId, NamespaceRowId, OperationRowId, RouteBindingRowId, ServiceRowId,
+};
 use crate::ingress::RouteBindingOrigin;
-use crate::machine::{MachineLifecycle, MachineName};
+use crate::machine::{GatewayProcessHealth, GatewayServingStatus, MachineLifecycle, MachineName};
 use crate::network::{MachineEndpointSubnet, MachineEndpointSupernet, WireGuardPublicKey};
 use crate::operation::{RouteHostname, RoutePort};
 
@@ -37,6 +39,7 @@ pub enum CorrosionTable {
     RouteBindings,
     Containers,
     MachineStatus,
+    GatewayObservations,
     Operations,
     CertHoldings,
     AcmeHttp01,
@@ -44,7 +47,7 @@ pub enum CorrosionTable {
 
 impl CorrosionTable {
     /// Every table in schema order.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Cluster,
         Self::Machines,
         Self::Peers,
@@ -54,6 +57,7 @@ impl CorrosionTable {
         Self::RouteBindings,
         Self::Containers,
         Self::MachineStatus,
+        Self::GatewayObservations,
         Self::Operations,
         Self::CertHoldings,
         Self::AcmeHttp01,
@@ -72,6 +76,7 @@ impl CorrosionTable {
             Self::RouteBindings => "route_bindings",
             Self::Containers => "containers",
             Self::MachineStatus => "machine_status",
+            Self::GatewayObservations => "gateway_observations",
             Self::Operations => "operations",
             Self::CertHoldings => "cert_holdings",
             Self::AcmeHttp01 => "acme_http01",
@@ -834,9 +839,9 @@ pub struct OperatorWriteProvenance {
     pub written_at: CorrosionTimestamp,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(try_from = "ClusterDocumentWire", into = "ClusterDocumentWire")]
+#[serde(try_from = "ClusterDocumentWire")]
 pub struct ClusterDocument {
     pub v: CorrosionDocumentVersion,
     pub cluster_id: ClusterId,
@@ -851,6 +856,31 @@ pub struct ClusterDocument {
     pub provider: MeshProvider,
     pub acme_directory_url: String,
     pub acme_contact: Option<String>,
+}
+
+impl ClusterDocument {
+    fn validate(&self) -> Result<(), ClusterDocumentError> {
+        if matches!(self.hostname_mode, AutomaticHostnameMode::Ployz)
+            && matches!(self.ployz_dns_target, PloyzDnsTargetState::Disabled)
+        {
+            return Err(ClusterDocumentError::PloyzModeRequiresDnsTarget);
+        }
+        Ok(())
+    }
+}
+
+impl Serialize for ClusterDocument {
+    fn serialize<Serializer>(
+        &self,
+        serializer: Serializer,
+    ) -> Result<Serializer::Ok, Serializer::Error>
+    where
+        Serializer: serde::Serializer,
+    {
+        self.validate()
+            .map_err(<Serializer::Error as serde::ser::Error>::custom)?;
+        ClusterDocumentWire::from(self.clone()).serialize(serializer)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -889,24 +919,7 @@ impl TryFrom<ClusterDocumentWire> for ClusterDocument {
         } = value;
         let ployz_dns_target =
             ployz_dns_target.unwrap_or_else(|| PloyzDnsTargetState::legacy_default(&hostname_mode));
-        match (&hostname_mode, &ployz_dns_target) {
-            (
-                AutomaticHostnameMode::Ployz,
-                PloyzDnsTargetState::Pending | PloyzDnsTargetState::Allocated { .. },
-            )
-            | (
-                AutomaticHostnameMode::Disabled | AutomaticHostnameMode::Custom { .. },
-                PloyzDnsTargetState::Disabled,
-            ) => {}
-            (AutomaticHostnameMode::Ployz, PloyzDnsTargetState::Disabled) => {
-                return Err(ClusterDocumentError::PloyzModeRequiresDnsTarget);
-            }
-            (
-                AutomaticHostnameMode::Disabled | AutomaticHostnameMode::Custom { .. },
-                PloyzDnsTargetState::Pending | PloyzDnsTargetState::Allocated { .. },
-            ) => return Err(ClusterDocumentError::NonPloyzModeCannotUseDnsTarget),
-        }
-        Ok(Self {
+        let document = Self {
             v,
             cluster_id,
             provenance,
@@ -918,7 +931,9 @@ impl TryFrom<ClusterDocumentWire> for ClusterDocument {
             provider,
             acme_directory_url,
             acme_contact,
-        })
+        };
+        document.validate()?;
+        Ok(document)
     }
 }
 
@@ -926,8 +941,6 @@ impl TryFrom<ClusterDocumentWire> for ClusterDocument {
 pub enum ClusterDocumentError {
     #[error("Ployz automatic hostnames require a pending or allocated Ployz DNS target")]
     PloyzModeRequiresDnsTarget,
-    #[error("disabled and custom automatic hostnames require the Ployz DNS target to be disabled")]
-    NonPloyzModeCannotUseDnsTarget,
 }
 
 impl From<ClusterDocument> for ClusterDocumentWire {
@@ -1086,6 +1099,96 @@ pub struct MachineStatusDocument {
     /// A current writer publishes `Some`, including an empty map on a one-machine roster.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wireguard_handshakes: Option<BTreeMap<MachineRowId, WireGuardHandshakeEvidence>>,
+}
+
+/// Machine-owned testimony from one gateway process.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct GatewayObservationDocument {
+    pub v: CorrosionDocumentVersion,
+    pub cluster_id: ClusterId,
+    pub machine_id: MachineRowId,
+    pub observed_at: CorrosionTimestamp,
+    pub listen_addr: SocketAddr,
+    pub serving: GatewayServingStatus,
+    pub routes: Vec<GatewayRouteObservation>,
+    pub aggregate_failures: Vec<GatewayProjectionAggregateFailure>,
+    pub process_health: GatewayProcessHealth,
+}
+
+/// The latest local result for one valid Route Binding row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct GatewayRouteObservation {
+    pub route_binding_id: RouteBindingRowId,
+    pub hostname: RouteHostname,
+    #[serde(flatten)]
+    #[cfg_attr(feature = "ts", ts(flatten))]
+    pub outcome: GatewayRouteProjectionOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum GatewayRouteProjectionOutcome {
+    Applied {
+        availability: GatewayRouteAvailability,
+    },
+    Failed {
+        failure: GatewayRouteProjectionFailure,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum GatewayRouteAvailability {
+    Serving {
+        upstream_count: usize,
+    },
+    Unavailable {
+        reason: GatewayRouteUnavailableReason,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum GatewayRouteUnavailableReason {
+    ServiceMissing,
+    ServiceNamespaceMismatch,
+    NoUpstream,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "failure", rename_all = "snake_case")]
+pub enum GatewayRouteProjectionFailure {
+    Shadowed {
+        winner_route_binding_id: RouteBindingRowId,
+    },
+    UnsupportedIngressMode {
+        ingress_mode: IngressMode,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum GatewayProjectionInputKind {
+    Cluster,
+    Machines,
+    Services,
+    RouteBindings,
+    Containers,
+}
+
+/// Aggregate evidence for rejected input rows that have no usable typed identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct GatewayProjectionAggregateFailure {
+    pub input: GatewayProjectionInputKind,
+    pub rejected_rows: usize,
 }
 
 /// The latest WireGuard handshake evidence observed for one remote machine.
@@ -1348,6 +1451,10 @@ corrosion_document!(ServiceDocument, CorrosionTable::Services);
 corrosion_document!(RouteBindingDocument, CorrosionTable::RouteBindings);
 corrosion_document!(ContainerDocument, CorrosionTable::Containers);
 corrosion_document!(MachineStatusDocument, CorrosionTable::MachineStatus);
+corrosion_document!(
+    GatewayObservationDocument,
+    CorrosionTable::GatewayObservations
+);
 corrosion_document!(OperationDocument, CorrosionTable::Operations);
 corrosion_document!(CertHoldingDocument, CorrosionTable::CertHoldings);
 corrosion_document!(AcmeHttp01Document, CorrosionTable::AcmeHttp01);
@@ -1360,6 +1467,7 @@ ordinary_corrosion_document!(
     RouteBindingDocument,
     ContainerDocument,
     MachineStatusDocument,
+    GatewayObservationDocument,
     OperationDocument,
     CertHoldingDocument,
     AcmeHttp01Document,

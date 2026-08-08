@@ -8,7 +8,7 @@ use std::str::FromStr;
 use clap::{Args, Parser, Subcommand};
 use ployz_core::corrosion::{
     AutomaticHostnameMode, CorrosionNamespaceName, CorrosionServiceName, HostPortBinding,
-    HostPortBindings, HostPortProtocol, IngressMode, ServiceReplicaCount, StorageMode,
+    HostPortBindings, HostPortProtocol, ServiceReplicaCount, StorageMode,
 };
 use ployz_core::deploy::{EnvName, EnvValue, ImageReference, ServiceEnvironment};
 use ployz_core::founding::InitStorageChoice;
@@ -143,7 +143,6 @@ pub struct RouteAttachCommand {
     pub service: CorrosionServiceName,
     pub service_id: Option<ServiceRowId>,
     pub endpoint_port: RoutePort,
-    pub ingress_mode: IngressMode,
     pub target: Option<SshTarget>,
 }
 
@@ -507,7 +506,6 @@ pub fn parse_command(args: impl IntoIterator<Item = String>) -> Result<Command, 
                 service_id: args.service_id,
                 endpoint_port: RoutePort::try_new(args.port)
                     .map_err(|error| clap_value_error(error.to_string()))?,
-                ingress_mode: args.ingress.into(),
                 target: args.target,
             }),
             RouteCli::Remove(args) => RouteCommand::Remove(RouteRemoveCommand {
@@ -886,31 +884,12 @@ struct RouteAttachArgs {
     service: String,
     #[arg(long)]
     port: u16,
-    #[arg(long, value_enum, default_value = "direct")]
-    ingress: IngressModeArg,
     #[arg(long)]
     namespace_id: Option<NamespaceRowId>,
     #[arg(long)]
     service_id: Option<ServiceRowId>,
     #[arg(long)]
     target: Option<SshTarget>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-enum IngressModeArg {
-    Direct,
-    CloudflareTunnel,
-    TailscaleFunnel,
-}
-
-impl From<IngressModeArg> for IngressMode {
-    fn from(value: IngressModeArg) -> Self {
-        match value {
-            IngressModeArg::Direct => Self::Direct,
-            IngressModeArg::CloudflareTunnel => Self::CloudflareTunnel,
-            IngressModeArg::TailscaleFunnel => Self::TailscaleFunnel,
-        }
-    }
 }
 
 #[derive(Debug, Args)]
@@ -1438,8 +1417,6 @@ mod tests {
                 "web",
                 "--port",
                 "8080",
-                "--ingress",
-                "cloudflare-tunnel",
                 "--namespace-id",
                 id,
                 "--service-id",
@@ -1453,9 +1430,25 @@ mod tests {
                 service: CorrosionServiceName::try_new("web").expect("service"),
                 service_id: Some(ServiceRowId::try_new(id).expect("service id")),
                 endpoint_port: RoutePort::try_new(8080).expect("port"),
-                ingress_mode: IngressMode::CloudflareTunnel,
                 target: None,
             }))
+        );
+        assert!(
+            parse(&[
+                "route",
+                "attach",
+                "web.example.com",
+                "--namespace",
+                "production",
+                "--service",
+                "web",
+                "--port",
+                "8080",
+                "--ingress",
+                "cloudflare-tunnel",
+            ])
+            .is_err(),
+            "unshipped ingress modes are not a CLI surface"
         );
     }
 

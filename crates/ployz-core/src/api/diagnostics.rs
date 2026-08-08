@@ -9,11 +9,12 @@ use serde_json::Value;
 use super::MachineLensRow;
 use crate::corrosion::{
     AcmeHttp01Document, CORROSION_NO_P99_LAG_SAMPLE, CertHoldingDocument, ClusterDocument,
-    ContainerDocument, CorrosionDocument, CorrosionHealthResponse, CorrosionTable, MachineDocument,
-    MachineStatusDocument, MachineTransport, MalformedDocument, MeshProvider, NameClaim,
-    NamespaceDocument, OperationDocument, PeerDocument, Principal, RouteBindingDocument,
-    RowSkipReason, ServiceDocument, ShadowConflict, SkippedRow, StoredRow, TokenDocument,
-    WireGuardHandshakeEvidence, read_named_roster_rows, read_named_rows, read_rows,
+    ContainerDocument, CorrosionDocument, CorrosionHealthResponse, CorrosionTable,
+    GatewayObservationDocument, MachineDocument, MachineStatusDocument, MachineTransport,
+    MalformedDocument, MeshProvider, NameClaim, NamespaceDocument, OperationDocument, PeerDocument,
+    Principal, RouteBindingDocument, RowSkipReason, ServiceDocument, ShadowConflict, SkippedRow,
+    StoredRow, TokenDocument, WireGuardHandshakeEvidence, read_named_roster_rows, read_named_rows,
+    read_rows,
 };
 use crate::ids::{ClusterId, CorrosionUlid, MachineRowId, PeerId, TokenId};
 use crate::machine::MachineName;
@@ -327,13 +328,14 @@ pub struct DoctorRawRows {
     pub route_bindings: Vec<StoredRow>,
     pub containers: Vec<StoredRow>,
     pub machine_status: Vec<StoredRow>,
+    pub gateway_observations: Vec<StoredRow>,
     pub operations: Vec<StoredRow>,
     pub cert_holdings: Vec<StoredRow>,
     pub acme_http01: Vec<StoredRow>,
 }
 
 impl DoctorRawRows {
-    /// Creates an explicit empty sweep containing all twelve tables.
+    /// Creates an explicit empty sweep containing every Corrosion table.
     #[must_use]
     pub const fn empty() -> Self {
         Self {
@@ -346,6 +348,7 @@ impl DoctorRawRows {
             route_bindings: Vec::new(),
             containers: Vec::new(),
             machine_status: Vec::new(),
+            gateway_observations: Vec::new(),
             operations: Vec::new(),
             cert_holdings: Vec::new(),
             acme_http01: Vec::new(),
@@ -363,6 +366,7 @@ impl DoctorRawRows {
             CorrosionTable::RouteBindings => &self.route_bindings,
             CorrosionTable::Containers => &self.containers,
             CorrosionTable::MachineStatus => &self.machine_status,
+            CorrosionTable::GatewayObservations => &self.gateway_observations,
             CorrosionTable::Operations => &self.operations,
             CorrosionTable::CertHoldings => &self.cert_holdings,
             CorrosionTable::AcmeHttp01 => &self.acme_http01,
@@ -370,7 +374,7 @@ impl DoctorRawRows {
     }
 }
 
-/// Accepted cluster context and the raw twelve-table sweep for `doctor`.
+/// Accepted cluster context and the complete raw-table sweep for `doctor`.
 #[derive(Debug, Clone)]
 pub struct DoctorProjectionInput {
     pub cluster: ClusterDocument,
@@ -676,6 +680,7 @@ fn supported_version(table: CorrosionTable) -> u32 {
         CorrosionTable::RouteBindings => RouteBindingDocument::SUPPORTED_VERSION.get(),
         CorrosionTable::Containers => ContainerDocument::SUPPORTED_VERSION.get(),
         CorrosionTable::MachineStatus => MachineStatusDocument::SUPPORTED_VERSION.get(),
+        CorrosionTable::GatewayObservations => GatewayObservationDocument::SUPPORTED_VERSION.get(),
         CorrosionTable::Operations => OperationDocument::SUPPORTED_VERSION.get(),
         CorrosionTable::CertHoldings => CertHoldingDocument::SUPPORTED_VERSION.get(),
         CorrosionTable::AcmeHttp01 => AcmeHttp01Document::SUPPORTED_VERSION.get(),
@@ -816,6 +821,7 @@ fn extract_authorship(
             ),
         CorrosionTable::Containers
         | CorrosionTable::MachineStatus
+        | CorrosionTable::GatewayObservations
         | CorrosionTable::Operations
         | CorrosionTable::CertHoldings
         | CorrosionTable::AcmeHttp01 => fields

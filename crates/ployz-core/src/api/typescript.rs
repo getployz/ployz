@@ -32,9 +32,9 @@ use super::{
 use crate::build::{BuildExecutorEvidence, BuildPlatformExecutorAssignment, BuildSource};
 use crate::corrosion::{
     AcmeHttp01Document, CertHoldingDocument, ClusterDocument, ContainerDocument, CorrosionTable,
-    HostPortBinding, HostPortBindings, HostPortProtocol, MachineDocument, MachineStatusDocument,
-    NameClaim, NamespaceDocument, OperationDocument, PeerDocument, Principal, RouteBindingDocument,
-    ServiceDocument, TokenDocument,
+    GatewayObservationDocument, HostPortBinding, HostPortBindings, HostPortProtocol,
+    MachineDocument, MachineStatusDocument, NameClaim, NamespaceDocument, OperationDocument,
+    PeerDocument, Principal, RouteBindingDocument, ServiceDocument, TokenDocument,
 };
 use crate::deploy::EnvValue;
 use crate::founding::{
@@ -151,6 +151,7 @@ fn collect_corrosion_contracts(declarations: &mut DeclarationCollector<'_>) {
     declarations.visit::<RouteBindingDocument>();
     declarations.visit::<ContainerDocument>();
     declarations.visit::<MachineStatusDocument>();
+    declarations.visit::<GatewayObservationDocument>();
     declarations.visit::<OperationDocument>();
     declarations.visit::<CertHoldingDocument>();
     declarations.visit::<AcmeHttp01Document>();

@@ -53,6 +53,20 @@ fn route_attach_request_carries_named_and_optional_exact_id_selectors() {
 }
 
 #[test]
+fn non_direct_ingress_has_a_typed_attach_refusal() {
+    assert_eq!(
+        serde_json::to_value(RouteAttachRefusal::UnsupportedIngressMode {
+            requested: IngressMode::CloudflareTunnel,
+        })
+        .expect("refusal"),
+        serde_json::json!({
+            "kind": "unsupported_ingress_mode",
+            "requested": "cloudflare_tunnel"
+        })
+    );
+}
+
+#[test]
 fn route_attach_reply_distinguishes_new_and_identical_existing_bindings() {
     let route_id = RouteBindingRowId::try_new(ID).expect("route id");
 

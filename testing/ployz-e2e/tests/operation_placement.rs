@@ -2,12 +2,6 @@
 //! pins with loud stacking and shortfall, `--machine any`, global mode with
 //! host-published ports, volume affinity, and the typed placement refusals.
 
-// Shared with the operation_deploy scenario; each test crate compiles the
-// file separately, so liveness is per crate and unused-helper warnings here
-// would be false positives.
-#[path = "operation_deploy/support.rs"]
-#[allow(dead_code)]
-mod deploy_support;
 #[path = "operation_placement/support.rs"]
 mod support;
 
@@ -29,6 +23,7 @@ use ployz_core::deploy::{
 use ployz_core::ids::MachineRowId;
 use ployz_core::placement::PlacementRefusal;
 use ployz_core::{DeployRefusal, DeployRequest};
+use ployz_e2e::dind as deploy_support;
 use ployz_e2e::dind::{
     DindCluster, DindClusterSpec, DindMachine, MachineSpec, artifact_dir, connect_docker,
     e2e_enabled, exec_ok, keep_requested, machine_image, require,

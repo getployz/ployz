@@ -273,7 +273,6 @@ fn render_openrc(
                 artifact_store,
                 environment_file,
             } => {
-                let role_environment = environment_file.for_role(*role)?;
                 let gateway_source =
                     (*role == PloyzdRole::Gateway).then(|| artifact_store.current_path());
                 (
@@ -284,7 +283,7 @@ fn render_openrc(
                         artifact_store.current_path()
                     },
                     (*role).argv(),
-                    Some(role_environment),
+                    Some(environment_file.clone()),
                     match role {
                         PloyzdRole::Api => "need net docker",
                         PloyzdRole::Gateway => "need net ployz-corrosion",

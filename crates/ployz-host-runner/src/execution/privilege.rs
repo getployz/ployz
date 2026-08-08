@@ -504,7 +504,7 @@ impl fmt::Display for PrivilegeInstallCommand {
     }
 }
 
-pub fn api_privilege_install_commands(
+pub fn installed_role_privilege_commands(
     state: &Path,
     package_family: HostPackageFamily,
 ) -> Result<Vec<PrivilegeInstallCommand>, FailureMessage> {
@@ -557,10 +557,16 @@ pub fn migrate_existing_systemd_api_privileges(
         PloyzdRole::Gateway,
         PloyzdRole::Dns,
     ] {
+        let role_environment = match role {
+            PloyzdRole::Gateway => {
+                PloyzdRoleEnvironmentFile::new(state.join("ployz-gateway.env")).map_err(failure)?
+            }
+            PloyzdRole::Keeper | PloyzdRole::Api | PloyzdRole::Dns => environment.clone(),
+        };
         let spec = SupervisorUnitSpec::PloyzdRole {
             role,
             artifact_store: artifact_store.clone(),
-            environment_file: environment.clone(),
+            environment_file: role_environment,
         };
         let rendered = SupervisorBackend::Systemd.render(&spec).map_err(failure)?;
         let path = systemd_directory.join(rendered.file_name());
@@ -581,7 +587,7 @@ pub fn migrate_existing_systemd_api_privileges(
         }
     }
 
-    let mut commands = api_privilege_install_commands(state, profile.package_family())?;
+    let mut commands = installed_role_privilege_commands(state, profile.package_family())?;
     commands.extend(matrix.existing_socket_migration_commands()?);
     run_commands(runner, &commands)?;
 
@@ -772,11 +778,13 @@ pub fn gateway_environment_contents(
     corrosion_api_addr: &str,
     corrosion_bearer_token: &str,
     cluster_id: &str,
+    machine_id: &str,
 ) -> Result<Vec<u8>, FailureMessage> {
     for (name, value) in [
         ("PLOYZ_CORROSION_API_ADDR", corrosion_api_addr),
         ("PLOYZ_CORROSION_BEARER_TOKEN", corrosion_bearer_token),
         ("PLOYZ_CLUSTER_ID", cluster_id),
+        ("PLOYZ_MACHINE_ID", machine_id),
     ] {
         if value.is_empty() || value.bytes().any(|byte| byte.is_ascii_control()) {
             return Err(failure(format!(
@@ -785,7 +793,7 @@ pub fn gateway_environment_contents(
         }
     }
     Ok(format!(
-        "PLOYZ_CORROSION_API_ADDR={corrosion_api_addr}\nPLOYZ_CORROSION_BEARER_TOKEN={corrosion_bearer_token}\nPLOYZ_CLUSTER_ID={cluster_id}\nPLOYZ_GATEWAY_LISTEN_ADDR=0.0.0.0:80\n"
+        "PLOYZ_CORROSION_API_ADDR={corrosion_api_addr}\nPLOYZ_CORROSION_BEARER_TOKEN={corrosion_bearer_token}\nPLOYZ_CLUSTER_ID={cluster_id}\nPLOYZ_MACHINE_ID={machine_id}\nPLOYZ_GATEWAY_LISTEN_ADDR=0.0.0.0:80\n"
     )
     .into_bytes())
 }
@@ -802,6 +810,7 @@ fn gateway_environment_from_shared(
     let mut api_addr = None;
     let mut token = None;
     let mut cluster_id = None;
+    let mut machine_id = None;
     for line in contents.lines() {
         let Some((name, value)) = line.split_once('=') else {
             continue;
@@ -810,6 +819,7 @@ fn gateway_environment_from_shared(
             "PLOYZ_CORROSION_API_ADDR" => &mut api_addr,
             "PLOYZ_CORROSION_BEARER_TOKEN" => &mut token,
             "PLOYZ_CLUSTER_ID" => &mut cluster_id,
+            "PLOYZ_MACHINE_ID" => &mut machine_id,
             _ => continue,
         };
         if slot.replace(value).is_some() {
@@ -818,12 +828,14 @@ fn gateway_environment_from_shared(
             )));
         }
     }
-    let (Some(api_addr), Some(token), Some(cluster_id)) = (api_addr, token, cluster_id) else {
+    let (Some(api_addr), Some(token), Some(cluster_id), Some(machine_id)) =
+        (api_addr, token, cluster_id, machine_id)
+    else {
         return Err(failure(
-            "existing ployzd environment lacks gateway Corrosion or cluster settings",
+            "existing ployzd environment lacks gateway Corrosion, cluster, or machine settings",
         ));
     };
-    gateway_environment_contents(api_addr, token, cluster_id)
+    gateway_environment_contents(api_addr, token, cluster_id, machine_id)
 }
 
 fn shell(script: &'static str) -> PrivilegeInstallCommand {
