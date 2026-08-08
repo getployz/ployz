@@ -423,6 +423,7 @@ async fn assert_gateway_privileges(docker: &Docker, machine: &DindMachine) -> Re
                 "PLOYZ_CORROSION_API_ADDR",
                 "PLOYZ_CORROSION_BEARER_TOKEN",
                 "PLOYZ_CLUSTER_ID",
+                "PLOYZ_MACHINE_ID",
                 "PLOYZ_GATEWAY_LISTEN_ADDR",
             ],
         format!("gateway environment has a broader contract than required: {names:?}"),
