@@ -72,6 +72,14 @@ impl<R: HostRunnerCommandRunner> LinuxFoundingHostEffects<R> {
         }
         Ok(env.into_bytes())
     }
+
+    pub(super) fn gateway_env_contents(&self) -> Result<Vec<u8>, FailureMessage> {
+        crate::gateway_environment_contents(
+            &format!("127.0.0.1:{CORROSION_API_PORT}"),
+            &self.corrosion_token,
+            self.request.request().cluster_id.as_str(),
+        )
+    }
 }
 
 impl<R: HostRunnerCommandRunner> FoundingHostEffects for LinuxFoundingHostEffects<R> {
@@ -227,6 +235,12 @@ impl<R: HostRunnerCommandRunner> FoundingHostEffects for LinuxFoundingHostEffect
             FileMode::Secret0600,
             &self.env_contents(true)?,
         )?;
+        write_durable_file(
+            self.state.path(),
+            GATEWAY_ENV_FILE,
+            FileMode::Secret0600,
+            &self.gateway_env_contents()?,
+        )?;
         merge_docker_daemon_config(&request.cluster.prefix)
     }
 
@@ -284,6 +298,10 @@ impl<R: HostRunnerCommandRunner> FoundingHostEffects for LinuxFoundingHostEffect
 
     fn start_api_with_bootstrap(&mut self) -> Result<(), FailureMessage> {
         self.restart_role(PloyzdRole::Api)
+    }
+
+    fn enable_and_start_gateway(&mut self) -> Result<(), FailureMessage> {
+        self.substrate().enable_start_and_verify_gateway()
     }
 
     fn enable_and_start_dns(&mut self) -> Result<(), FailureMessage> {

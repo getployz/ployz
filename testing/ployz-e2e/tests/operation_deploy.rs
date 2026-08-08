@@ -17,7 +17,7 @@ use support::{
     assert_cluster_wide_operation_replay, assert_dns_and_http,
     assert_driver_local_evidence_is_secret_free,
     assert_public_rows_are_digest_pinned_and_secret_free, create_namespace_and_deploy,
-    found_and_join, start_mutable_registry,
+    start_mutable_registry,
 };
 
 const NAMESPACE: &str = "production";
@@ -26,6 +26,7 @@ const SECRET_NAME: &str = "OPERATION_E2E_SECRET";
 const SECRET_VALUE: &str = "sentinel-operation-e2e-secret";
 const FIRST_BODY: &str = "Welcome to nginx";
 const SECOND_BODY: &str = "ployz-operation-second-revision";
+const PUBLIC_HOSTNAME: &str = "production.apps.example.test";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn first_deploy_is_observable_and_reachable_from_a_joined_machine() {
@@ -85,7 +86,13 @@ async fn exercise_operation_deploy(docker: &Docker, cluster: &DindCluster) -> Re
     let [founder, joiner] = cluster.machines() else {
         return Err("operation-deploy proof requires exactly two machines".to_owned());
     };
-    let operator = found_and_join(docker, founder, &[joiner]).await?;
+    let operator = support::found_and_join_with_service_urls(
+        docker,
+        founder,
+        &[joiner],
+        "custom:apps.example.test",
+    )
+    .await?;
     let [joined] = operator.joiners.as_slice() else {
         return Err("operation-deploy proof expects exactly one joined machine".to_owned());
     };
@@ -136,6 +143,7 @@ async fn exercise_operation_deploy(docker: &Docker, cluster: &DindCluster) -> Re
         FIRST_BODY,
     )
     .await?;
+    support::assert_gateway_http(docker, joiner, PUBLIC_HOSTNAME, FIRST_BODY).await?;
 
     // Second deploy of the same incumbent: revision-gated blue/green cutover.
     support::push_second_revision(docker, founder, &image, SECOND_BODY).await?;
@@ -147,15 +155,18 @@ async fn exercise_operation_deploy(docker: &Docker, cluster: &DindCluster) -> Re
         SECRET_NAME,
         SECRET_VALUE,
     )?;
-    let deploy_output = support::watch_cutover_traffic(
+    let deploy_output = support::watch_gateway_cutover_traffic(
         docker,
         joiner,
-        founder,
-        joined.dns_address,
-        &hostname,
-        support::RevisionBodies {
-            first: FIRST_BODY,
-            second: SECOND_BODY,
+        support::GatewayCutover {
+            api_address: &joined.api_address,
+            service_name: SERVICE,
+            first_operation: &operation_id,
+            hostname: PUBLIC_HOSTNAME,
+            bodies: support::RevisionBodies {
+                first: FIRST_BODY,
+                second: SECOND_BODY,
+            },
         },
         deploy,
     )

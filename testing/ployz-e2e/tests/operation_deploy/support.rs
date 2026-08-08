@@ -113,6 +113,15 @@ pub(super) async fn found_and_join(
     founder: &DindMachine,
     joiners: &[&DindMachine],
 ) -> Result<OperatorFixture, String> {
+    found_and_join_with_service_urls(docker, founder, joiners, "disabled").await
+}
+
+pub(super) async fn found_and_join_with_service_urls(
+    docker: &Docker,
+    founder: &DindMachine,
+    joiners: &[&DindMachine],
+    service_urls: &str,
+) -> Result<OperatorFixture, String> {
     install_local_release_channel(docker, founder).await?;
     let temporary_home = tempfile::tempdir().map_err(|error| error.to_string())?;
     let home = temporary_home.path().to_path_buf();
@@ -125,7 +134,7 @@ pub(super) async fn found_and_join(
         .persist_peer_new(&founder_target, &operator)
         .map_err(|error| error.to_string())?;
 
-    let handoff = run_founding(docker, founder, &operator).await?;
+    let handoff = run_founding(docker, founder, &operator, service_urls).await?;
     store
         .persist(&founder_target, handoff.clone(), &operator)
         .map_err(|error| error.to_string())?;
@@ -726,6 +735,198 @@ pub(super) async fn assert_dns_and_http(
     )
 }
 
+/// Waits for the local gateway projection and proves that the Host header is
+/// routed to the expected active service revision.
+pub(super) async fn assert_gateway_http(
+    docker: &Docker,
+    gateway: &DindMachine,
+    hostname: &str,
+    expected_body: &str,
+) -> Result<(), String> {
+    let deadline = Instant::now() + WAIT_BUDGET;
+    let mut last = String::from("gateway was not queried");
+    while Instant::now() < deadline {
+        match fetch_gateway_http(docker, gateway, hostname).await {
+            Ok(body) if body.contains(expected_body) => return Ok(()),
+            Ok(body) => last = format!("served an unexpected successful body: {body:?}"),
+            Err(error) => last = error,
+        }
+        tokio::time::sleep(WAIT_DELAY).await;
+    }
+    Err(format!(
+        "gateway did not serve {expected_body:?} for {hostname}: {last}"
+    ))
+}
+
+/// Continuously samples the gateway while the active-deploy row flips. Every
+/// request must complete successfully; the first body cannot return after the
+/// flip, and the second cannot appear before it.
+pub(super) struct GatewayCutover<'a> {
+    pub api_address: &'a str,
+    pub service_name: &'a str,
+    pub first_operation: &'a OperationRowId,
+    pub hostname: &'a str,
+    pub bodies: RevisionBodies<'a>,
+}
+
+pub(super) async fn watch_gateway_cutover_traffic(
+    docker: &Docker,
+    gateway: &DindMachine,
+    cutover: GatewayCutover<'_>,
+    deploy: Child,
+) -> Result<Output, String> {
+    let deadline = Instant::now() + CLI_BUDGET;
+    let mut deploy = Some(deploy);
+    let mut deploy_output = None;
+    let mut served_first = false;
+    let mut served_second = false;
+    while deploy_output.is_none() || !served_second {
+        if Instant::now() >= deadline {
+            if let Some(mut child) = deploy.take() {
+                let _ = child.kill();
+            }
+            return Err(format!(
+                "gateway cutover did not complete within {CLI_BUDGET:?}: deploy_finished={} served_first={served_first} served_second={served_second}",
+                deploy_output.is_some(),
+            ));
+        }
+        if let Some(mut child) = deploy.take() {
+            if child
+                .try_wait()
+                .map_err(|error| format!("could not poll second deploy: {error}"))?
+                .is_some()
+            {
+                let output = child
+                    .wait_with_output()
+                    .map_err(|error| format!("could not collect second deploy output: {error}"))?;
+                require_success(&output, "second deploy")?;
+                deploy_output = Some(output);
+            } else {
+                deploy = Some(child);
+            }
+        }
+
+        let active_before =
+            active_deploy(docker, gateway, cutover.api_address, cutover.service_name).await?;
+        let body = fetch_gateway_http(docker, gateway, cutover.hostname)
+            .await
+            .map_err(|error| format!("gateway request failed during cutover: {error}"))?;
+        let active_after =
+            active_deploy(docker, gateway, cutover.api_address, cutover.service_name).await?;
+        let definitely_before_flip =
+            active_before == *cutover.first_operation && active_after == *cutover.first_operation;
+        let definitely_after_flip =
+            active_before != *cutover.first_operation && active_after != *cutover.first_operation;
+        if body.contains(cutover.bodies.second) {
+            require(
+                !definitely_before_flip,
+                format!("second revision served before active_deploy flipped: {body}"),
+            )?;
+            served_second = true;
+        } else if body.contains(cutover.bodies.first) {
+            require(
+                !definitely_after_flip && !served_second,
+                format!("first revision served after active_deploy flipped: {body}"),
+            )?;
+            served_first = true;
+        } else {
+            return Err(format!(
+                "gateway cutover served an unexpected successful body: {body}"
+            ));
+        }
+        tokio::time::sleep(WAIT_DELAY).await;
+    }
+    require(
+        served_first,
+        "the first revision never served during the gateway cutover window",
+    )?;
+    deploy_output.ok_or_else(|| "second deploy output was not collected".to_owned())
+}
+
+async fn active_deploy(
+    docker: &Docker,
+    requester: &DindMachine,
+    api_address: &str,
+    service_name: &str,
+) -> Result<OperationRowId, String> {
+    let snapshot = public_lens(docker, requester, api_address, LensCollection::Services).await?;
+    let LensSnapshot::Services { rows } = snapshot else {
+        return Err("services route returned another lens collection".to_owned());
+    };
+    rows.into_iter()
+        .find(|row| row.document.name.as_str() == service_name)
+        .map(|row| row.document.active_deploy)
+        .ok_or_else(|| format!("services lens omitted {service_name}"))
+}
+
+pub(super) async fn gateway_status(
+    docker: &Docker,
+    gateway: &DindMachine,
+    hostname: &str,
+) -> Result<(u16, String), String> {
+    let output = exec_ok(
+        docker,
+        gateway,
+        &[
+            "curl",
+            "--noproxy",
+            "*",
+            "--silent",
+            "--show-error",
+            "--max-time",
+            "5",
+            "--header",
+            &format!("Host: {hostname}"),
+            "--write-out",
+            "\n%{http_code}",
+            "http://127.0.0.1/",
+        ],
+    )
+    .await?;
+    let Some((body, status)) = output.stdout.rsplit_once('\n') else {
+        return Err(format!("gateway response omitted status: {output:?}"));
+    };
+    let status = status
+        .trim()
+        .parse::<u16>()
+        .map_err(|error| format!("gateway returned invalid status {status:?}: {error}"))?;
+    Ok((status, body.to_owned()))
+}
+
+pub(super) async fn wait_for_gateway_status(
+    docker: &Docker,
+    gateway: &DindMachine,
+    hostname: &str,
+    expected_status: u16,
+) -> Result<String, String> {
+    let deadline = Instant::now() + WAIT_BUDGET;
+    let mut last = String::from("gateway was not queried");
+    while Instant::now() < deadline {
+        match gateway_status(docker, gateway, hostname).await {
+            Ok((status, body)) if status == expected_status => return Ok(body),
+            Ok((status, body)) => last = format!("HTTP {status}: {body}"),
+            Err(error) => last = error,
+        }
+        tokio::time::sleep(WAIT_DELAY).await;
+    }
+    Err(format!(
+        "gateway did not return HTTP {expected_status} for {hostname}: {last}"
+    ))
+}
+
+async fn fetch_gateway_http(
+    docker: &Docker,
+    gateway: &DindMachine,
+    hostname: &str,
+) -> Result<String, String> {
+    let (status, body) = gateway_status(docker, gateway, hostname).await?;
+    require(
+        (200..300).contains(&status),
+        format!("gateway returned HTTP {status}: {body}"),
+    )?;
+    Ok(body)
+}
+
 /// Observes service traffic while the spawned second deploy runs: the first
 /// revision's body must keep serving until the response flips to the second
 /// revision, and no other body may ever appear. Connect-level failures are
@@ -891,6 +1092,7 @@ async fn run_founding(
     docker: &Docker,
     machine: &DindMachine,
     operator: &SshPeerKey,
+    service_urls: &str,
 ) -> Result<SshContextHandoff, String> {
     let endpoint = SocketAddr::new(machine.bridge_ip, DEFAULT_WIREGUARD_LISTEN_PORT);
     let manifest = format!("file://{RELEASE_MANIFEST}");
@@ -904,7 +1106,7 @@ async fn run_founding(
         "--container-network".to_owned(),
         "10.210.0.0/16".to_owned(),
         "--service-urls".to_owned(),
-        "disabled".to_owned(),
+        service_urls.to_owned(),
         "--cluster-name".to_owned(),
         CLUSTER_NAME.to_owned(),
         "--machine-name".to_owned(),

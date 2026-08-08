@@ -5,6 +5,17 @@ use ployz_core::certificate::{
 };
 
 #[test]
+fn lease_bearer_tokens_are_redacted_from_debug_and_validation_errors() {
+    let token = LeaseBearerToken::try_new("lease_token_123").expect("token");
+    assert_eq!(format!("{token:?}"), "LeaseBearerToken(\"[REDACTED]\")");
+
+    let secret = "secret!must-not-leak";
+    let error = LeaseBearerToken::try_new(secret).expect_err("invalid token");
+    assert!(!format!("{error:?}").contains(secret));
+    assert!(!error.to_string().contains(secret));
+}
+
+#[test]
 fn managed_lease_name_accepts_random_slug_label() {
     let lease = ManagedLeaseName::try_new("brisk-river-x7f3").expect("valid lease name");
 

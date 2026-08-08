@@ -41,6 +41,8 @@ const BOOTSTRAP_SECRET_ENV: &str = "PLOYZ_API_BOOTSTRAP_SECRET";
 const UPGRADE_STATE_DIR_ENV: &str = "PLOYZ_UPGRADE_STATE_DIR";
 const UPGRADE_SOCKET_PATH_ENV: &str = "PLOYZ_UPGRADE_SOCKET_PATH";
 const CONTROL_SOCKET_PATH_ENV: &str = "PLOYZ_CONTROL_SOCKET_PATH";
+const LEASE_WORKER_ORIGIN_ENV: &str = "PLOYZ_LEASE_WORKER_ORIGIN";
+const API_LEASE_TOKEN_PATH_ENV: &str = "PLOYZ_API_LEASE_TOKEN_PATH";
 const SUPERVISOR_BACKEND_ENV: &str = "PLOYZ_SUPERVISOR_BACKEND";
 const MAX_BOOTSTRAP_SECRET_BYTES: usize = 4_096;
 const BOOTSTRAP_SECRET_DOMAIN: &[u8] = b"ployz-api-founding-v1";
@@ -53,6 +55,7 @@ const DEFAULT_CORROSION_GOSSIP_PORT: u16 = 8_787;
 const DEFAULT_UPGRADE_STATE_DIR: &str = "/var/lib/ployz";
 const DEFAULT_UPGRADE_SOCKET_PATH: &str = "/run/ployz/keeper-upgrade.sock";
 const DEFAULT_SUPERVISOR_BACKEND: &str = "systemd";
+const DEFAULT_API_LEASE_TOKEN_PATH: &str = "/var/lib/ployz/api/lease/managed-lease-token";
 
 type BootstrapMac = Hmac<Sha256>;
 
@@ -79,6 +82,8 @@ struct ApiRoleDetails {
     upgrade: ApiUpgradeConfig,
     evidence_directory: PathBuf,
     keeper_control_socket_path: PathBuf,
+    lease_worker_origin: crate::lease::LeaseWorkerOrigin,
+    lease_token_path: PathBuf,
 }
 
 impl JoinDoorConfig {
@@ -202,6 +207,8 @@ pub struct ApiRoleConfig {
     upgrade: ApiUpgradeConfig,
     evidence_directory: PathBuf,
     keeper_control_socket_path: PathBuf,
+    lease_worker_origin: crate::lease::LeaseWorkerOrigin,
+    lease_token_path: PathBuf,
 }
 
 impl ApiRoleConfig {
@@ -290,6 +297,18 @@ impl ApiRoleConfig {
         let evidence_directory = upgrade_state.join(API_EVIDENCE_DIRECTORY);
         let keeper_control_socket_path =
             optional_path_environment(CONTROL_SOCKET_PATH_ENV, CONTROL_SOCKET_PATH)?;
+        let lease_worker_origin = match env::var(LEASE_WORKER_ORIGIN_ENV) {
+            Ok(value) => crate::lease::LeaseWorkerOrigin::try_new(value)
+                .map_err(ApiRoleConfigError::LeaseWorkerOrigin)?,
+            Err(env::VarError::NotPresent) => crate::lease::LeaseWorkerOrigin::default_worker(),
+            Err(env::VarError::NotUnicode(_)) => {
+                return Err(ApiRoleConfigError::NonUnicodeEnvironment {
+                    name: LEASE_WORKER_ORIGIN_ENV,
+                });
+            }
+        };
+        let lease_token_path =
+            optional_path_environment(API_LEASE_TOKEN_PATH_ENV, DEFAULT_API_LEASE_TOKEN_PATH)?;
 
         let mode = match env::var(BOOTSTRAP_SECRET_ENV) {
             Ok(value) => ApiRoleMode::Founding(BootstrapSecret::new(value.as_bytes())?),
@@ -322,6 +341,8 @@ impl ApiRoleConfig {
                 upgrade,
                 evidence_directory,
                 keeper_control_socket_path,
+                lease_worker_origin,
+                lease_token_path,
             },
         )
     }
@@ -391,6 +412,8 @@ impl ApiRoleConfig {
                 evidence_directory: PathBuf::from(DEFAULT_UPGRADE_STATE_DIR)
                     .join(API_EVIDENCE_DIRECTORY),
                 keeper_control_socket_path: PathBuf::from(CONTROL_SOCKET_PATH),
+                lease_worker_origin: crate::lease::LeaseWorkerOrigin::default_worker(),
+                lease_token_path: PathBuf::from(DEFAULT_API_LEASE_TOKEN_PATH),
             },
         )
     }
@@ -409,6 +432,8 @@ impl ApiRoleConfig {
             upgrade,
             evidence_directory,
             keeper_control_socket_path,
+            lease_worker_origin,
+            lease_token_path,
         } = details;
         if listen_addr.ip().is_unspecified() {
             return Err(ApiRoleConfigError::WildcardListenAddress { listen_addr });
@@ -419,6 +444,7 @@ impl ApiRoleConfig {
         validate_absolute_path(API_JOIN_SUBSTRATE_PATH_ENV, &door.substrate_path)?;
         validate_absolute_path(UPGRADE_STATE_DIR_ENV, &evidence_directory)?;
         validate_absolute_path(CONTROL_SOCKET_PATH_ENV, &keeper_control_socket_path)?;
+        validate_absolute_path(API_LEASE_TOKEN_PATH_ENV, &lease_token_path)?;
         if door.corrosion_gossip_port == 0 {
             return Err(ApiRoleConfigError::ZeroCorrosionGossipPort);
         }
@@ -435,6 +461,8 @@ impl ApiRoleConfig {
             upgrade,
             evidence_directory,
             keeper_control_socket_path,
+            lease_worker_origin,
+            lease_token_path,
         })
     }
 
@@ -521,6 +549,16 @@ impl ApiRoleConfig {
     #[must_use]
     pub(super) fn keeper_control_socket_path(&self) -> &Path {
         &self.keeper_control_socket_path
+    }
+
+    #[must_use]
+    pub(super) fn lease_worker_origin(&self) -> &crate::lease::LeaseWorkerOrigin {
+        &self.lease_worker_origin
+    }
+
+    #[must_use]
+    pub(super) fn lease_token_path(&self) -> &Path {
+        &self.lease_token_path
     }
 }
 
@@ -695,6 +733,8 @@ pub enum ApiRoleConfigError {
     UpgradeStore(#[source] ArtifactStoreError),
     #[error("PLOYZ_SUPERVISOR_BACKEND must be systemd or openrc, got {value:?}")]
     InvalidUpgradeSupervisor { value: String },
+    #[error("invalid PLOYZ_LEASE_WORKER_ORIGIN: {0}")]
+    LeaseWorkerOrigin(#[source] crate::lease::LeaseWorkerOriginError),
 }
 
 #[cfg(test)]

@@ -10,9 +10,9 @@ use ployz_core::corrosion::{
     MachineDocument, MachineLoadBand, MachineStatusDocument, MachineStorageIneligibleReason,
     MachineStorageSelection, MachineStorageSelectionReason, MachineTransport, MeshProvider,
     NameClaim, NamedCorrosionDocument, NamespaceDocument, OperationDocument, OperationInitiator,
-    OperatorWriteProvenance, PeerDocument, PeerTransport, RouteBindingDocument, ServiceDocument,
-    ServicePlacement, ServiceReplicaCount, Sha256Hex, StorageMode, TokenDocument,
-    fingerprint_env_value,
+    OperatorWriteProvenance, PeerDocument, PeerTransport, PloyzDnsTargetState,
+    RouteBindingDocument, ServiceDocument, ServicePlacement, ServiceReplicaCount, Sha256Hex,
+    StorageMode, TokenDocument, fingerprint_env_value,
 };
 use ployz_core::deploy::{EnvValue, ImageReference};
 use ployz_core::ids::{
@@ -214,6 +214,75 @@ fn cluster_and_machine_documents_enforce_container_prefix_shapes() {
         .and_then(|transport| transport.get_mut("subnet_v4"))
         .expect("machine subnet") = json!("10.210.20.0/25");
     assert!(serde_json::from_value::<MachineDocument>(machine).is_err());
+}
+
+#[test]
+fn legacy_cluster_documents_derive_their_dns_target_from_hostname_mode() {
+    let mut managed = serde_json::to_value(cluster_document()).expect("cluster JSON");
+    set_json_field(&mut managed, "hostname_mode", json!({"mode": "ployz"}));
+    managed
+        .as_object_mut()
+        .expect("cluster object")
+        .remove("ployz_dns_target");
+    let managed = serde_json::from_value::<ClusterDocument>(managed).expect("legacy managed row");
+    assert_eq!(managed.ployz_dns_target, PloyzDnsTargetState::Pending);
+
+    let mut custom = serde_json::to_value(cluster_document()).expect("cluster JSON");
+    custom
+        .as_object_mut()
+        .expect("cluster object")
+        .remove("ployz_dns_target");
+    let custom = serde_json::from_value::<ClusterDocument>(custom).expect("legacy custom row");
+    assert_eq!(custom.ployz_dns_target, PloyzDnsTargetState::Disabled);
+}
+
+#[test]
+fn allocated_ployz_dns_target_requires_the_managed_suffix() {
+    let mut cluster = serde_json::to_value(cluster_document()).expect("cluster JSON");
+    set_json_field(&mut cluster, "hostname_mode", json!({"mode": "ployz"}));
+    set_json_field(
+        &mut cluster,
+        "ployz_dns_target",
+        json!({
+            "state": "allocated",
+            "hostname": "brisk-river-x7f3.up.ployz.app",
+            "acquired_by": "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+        }),
+    );
+    serde_json::from_value::<ClusterDocument>(cluster.clone()).expect("managed target");
+
+    *cluster
+        .get_mut("ployz_dns_target")
+        .and_then(|target| target.get_mut("hostname"))
+        .expect("allocated hostname") = json!("tenant.example.com");
+    assert!(serde_json::from_value::<ClusterDocument>(cluster).is_err());
+}
+
+#[test]
+fn cluster_documents_reject_dns_target_states_that_conflict_with_hostname_mode() {
+    let mut cluster = serde_json::to_value(cluster_document()).expect("cluster JSON");
+    set_json_field(&mut cluster, "hostname_mode", json!({"mode": "ployz"}));
+    set_json_field(
+        &mut cluster,
+        "ployz_dns_target",
+        json!({"state": "disabled"}),
+    );
+    assert!(serde_json::from_value::<ClusterDocument>(cluster).is_err());
+
+    let mut cluster = serde_json::to_value(cluster_document()).expect("cluster JSON");
+    set_json_field(
+        &mut cluster,
+        "ployz_dns_target",
+        json!({"state": "pending"}),
+    );
+    assert!(serde_json::from_value::<ClusterDocument>(cluster).is_err());
+}
+
+fn set_json_field(value: &mut Value, field: &str, replacement: Value) {
+    value
+        .as_object_mut()
+        .expect("JSON object")
+        .insert(field.to_owned(), replacement);
 }
 
 #[test]
@@ -540,6 +609,7 @@ fn cluster_document() -> ClusterDocument {
         hostname_mode: AutomaticHostnameMode::Custom {
             suffix: RouteHostname::try_new("apps.example.com").expect("suffix"),
         },
+        ployz_dns_target: PloyzDnsTargetState::Disabled,
         prefix: MachineEndpointSupernet::try_new("10.210.0.0/16").expect("prefix"),
         provider: MeshProvider::BuiltinWireguard,
         acme_directory_url: "https://acme.example/directory".to_owned(),

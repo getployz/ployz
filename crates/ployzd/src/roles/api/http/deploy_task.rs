@@ -380,6 +380,16 @@ impl DeployTask {
         let placed = self
             .start_and_gate(shutdown, dispatch, &created, &identity, &mut warnings)
             .await?;
+        if let Err(error) = self
+            .driver
+            .routes
+            .check(&namespace.id, &self.service_id)
+            .await
+        {
+            return Err(PhaseStop::End(DeployTaskEnd::Failure {
+                failure: error.into_deploy_failure(self.service_id.clone()),
+            }));
+        }
         let prepared = self.prepared_promotion(namespace, &placed, image)?;
         self.log
             .append_promotion_prepared(self.now()?, prepared.clone())
@@ -452,6 +462,20 @@ impl DeployTask {
         // The takeover check always runs immediately before the flip.
         self.takeover_boundary(shutdown, heartbeat).await?;
         let intent = self.prepared_redeploy_intent(incumbent, &placed, image)?;
+        if let Err(error) = self
+            .driver
+            .routes
+            .ensure(
+                &intent.service_document.namespace_id,
+                &self.service_id,
+                intent.service_document.provenance.clone(),
+            )
+            .await
+        {
+            return Ok(DeployTaskEnd::Failure {
+                failure: error.into_deploy_failure(self.service_id.clone()),
+            });
+        }
         self.log
             .append_redeploy_prepared(self.now()?, intent.clone())
             .await?;

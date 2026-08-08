@@ -25,6 +25,7 @@ use super::v2::{
 };
 use super::{
     DoctorDocument, NamedRemovalOutcome, PeerRemoveRefusal, PeerRemoveReply, PeerRemoveRequest,
+    RouteAttachOutcome, RouteAttachRefusal, RouteAttachReply, RouteAttachRequest,
     RouteRemoveRefusal, RouteRemoveReply, RouteRemoveRequest, ServiceRemoveRowRefusal,
     ServiceRemoveRowReply, ServiceRemoveRowRequest, StatusDocument,
 };
@@ -180,6 +181,10 @@ fn collect_v2_contracts(declarations: &mut DeclarationCollector<'_>) {
     declarations.visit::<RouteRemoveRequest>();
     declarations.visit::<RouteRemoveReply>();
     declarations.visit::<RouteRemoveRefusal>();
+    declarations.visit::<RouteAttachRequest>();
+    declarations.visit::<RouteAttachReply>();
+    declarations.visit::<RouteAttachOutcome>();
+    declarations.visit::<RouteAttachRefusal>();
     declarations.visit::<FoundingDriverEnrollment>();
     declarations.visit::<FoundingRequest>();
     declarations.visit::<FoundingRow>();

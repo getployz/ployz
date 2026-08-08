@@ -67,6 +67,7 @@ pub(super) async fn handle_removal(
         | V2Route::OperationWatch(_)
         | V2Route::ServiceLogsTail(_)
         | V2Route::ServiceLogsFollow(_)
+        | V2Route::RouteAttach
         | V2Route::LensWatch(_) => refusal_response(ployz_core::ApiRefusal::UnsupportedRoute),
     }
 }

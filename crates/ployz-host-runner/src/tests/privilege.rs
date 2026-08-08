@@ -47,6 +47,7 @@ fn api_access_matrix_is_narrow_and_excludes_an_unrelated_identity() {
         "/var/lib/ployz/door.fingerprint root:ployz-api 0640",
         "/var/lib/ployz/join-substrate.json root:ployz-api 0640",
         "/var/lib/ployz/api/evidence ployz-api:ployz-api 0750",
+        "/var/lib/ployz/api/lease ployz-api:ployz-api 0700",
         "/var/lib/ployz/api/upgrade-staging ployz-api:ployz-control 0770",
         "/var/run/docker.sock root:docker 0660",
         "/run/ployz root:ployz-control 0750",
@@ -123,6 +124,11 @@ fn current_root_layout_migrates_once_and_stable_units_remain_rollback_compatible
     let systemd = root.path().join("systemd");
     std::fs::create_dir_all(&state).expect("state directory");
     std::fs::create_dir_all(&systemd).expect("systemd directory");
+    std::fs::write(
+        state.join("ployzd.env"),
+        "PLOYZ_MACHINE_ID=01ARZ3NDEKTSV4RRFFQ69G5FAW\nPLOYZ_CORROSION_API_ADDR=127.0.0.1:8080\nPLOYZ_CORROSION_BEARER_TOKEN=secret\nPLOYZ_CLUSTER_ID=01ARZ3NDEKTSV4RRFFQ69G5FAV\nPLOYZ_API_LISTEN_ADDR=[::1]:2020\n",
+    )
+    .expect("legacy shared environment");
     for role in ["keeper", "api", "gateway", "dns"] {
         std::fs::write(
             systemd.join(format!("ployzd-{role}.service")),
@@ -144,6 +150,23 @@ fn current_root_layout_migrates_once_and_stable_units_remain_rollback_compatible
         "{api}"
     );
     assert!(api.contains(&format!("ExecStart={}/current api", state.display())));
+    let gateway = std::fs::read_to_string(systemd.join("ployzd-gateway.service"))
+        .expect("migrated Gateway unit");
+    assert!(gateway.contains("User=ployz-gateway\nGroup=ployz-gateway\n"));
+    assert!(gateway.contains(&format!(
+        "BindReadOnlyPaths={}/current:/run/ployz-gateway/ployzd",
+        state.display()
+    )));
+    assert!(gateway.contains(&format!(
+        "EnvironmentFile={}/ployz-gateway.env",
+        state.display()
+    )));
+    let gateway_environment =
+        std::fs::read_to_string(state.join("ployz-gateway.env")).expect("gateway environment");
+    assert_eq!(
+        gateway_environment,
+        "PLOYZ_CORROSION_API_ADDR=127.0.0.1:8080\nPLOYZ_CORROSION_BEARER_TOKEN=secret\nPLOYZ_CLUSTER_ID=01ARZ3NDEKTSV4RRFFQ69G5FAV\nPLOYZ_GATEWAY_LISTEN_ADDR=0.0.0.0:80\n"
+    );
     let reload = runner
         .calls
         .iter()
@@ -208,7 +231,27 @@ fn account_and_path_install_commands_are_idempotent_and_platform_specific() {
     assert!(
         systemd
             .iter()
+            .any(|command| command.contains("groupadd --system ployz-gateway"))
+    );
+    assert!(
+        systemd
+            .iter()
+            .any(|command| command.contains("useradd --system --gid ployz-gateway"))
+    );
+    assert!(
+        systemd
+            .iter()
             .any(|command| command.contains("useradd --system"))
+    );
+    assert!(
+        openrc
+            .iter()
+            .any(|command| command.contains("addgroup -S ployz-gateway"))
+    );
+    assert!(
+        openrc
+            .iter()
+            .any(|command| command.contains("-G ployz-gateway ployz-gateway"))
     );
     assert!(
         systemd
@@ -237,6 +280,9 @@ fn account_and_path_install_commands_are_idempotent_and_platform_specific() {
         }));
         assert!(commands.iter().any(|command| {
             command == "install -d -o root -g ployz-control -m 0750 /run/ployz-control"
+        }));
+        assert!(commands.iter().any(|command| {
+            command == "install -d -o ployz-api -g ployz-api -m 0700 /var/lib/ployz/api/lease"
         }));
         assert!(
             commands

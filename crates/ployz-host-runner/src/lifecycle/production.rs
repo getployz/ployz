@@ -285,6 +285,13 @@ impl<'a, R: HostRunnerCommandRunner> LinuxSubstrate<'a, R> {
         self.run_supervisor(SupervisorChange::Restart, &target)
     }
 
+    pub(super) fn enable_start_and_verify_gateway(&mut self) -> Result<(), FailureMessage> {
+        let target = SupervisorUnitTarget::PloyzdRole(PloyzdRole::Gateway);
+        self.run_supervisor(SupervisorChange::Enable, &target)?;
+        self.run_supervisor(SupervisorChange::Restart, &target)?;
+        self.wait_for_role(PloyzdRole::Gateway, "Gateway")
+    }
+
     pub(super) fn await_endpoint_network_gateway(
         &mut self,
         expected: Ipv4Addr,

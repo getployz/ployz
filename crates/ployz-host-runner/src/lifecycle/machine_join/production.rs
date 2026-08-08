@@ -45,6 +45,7 @@ const DOOR_KEY_FILE: &str = "door.key";
 const DOOR_CERTIFICATE_FILE: &str = "door.crt";
 const DOOR_FINGERPRINT_FILE: &str = "door.fingerprint";
 const ENV_FILE: &str = "ployzd.env";
+const GATEWAY_ENV_FILE: &str = "ployz-gateway.env";
 const CORROSION_CONFIG_FILE: &str = "corrosion.toml";
 const CORROSION_TOKEN_FILE: &str = "corrosion-token";
 const BOOTSTRAP_SEED_FILE: &str = "join-bootstrap-seed.json";
@@ -320,6 +321,17 @@ impl LinuxMachineJoinHostEffects {
             ENV_FILE,
             FileMode::Secret0600,
             env.as_bytes(),
+        )?;
+        let gateway_environment = crate::gateway_environment_contents(
+            &format!("127.0.0.1:{CORROSION_API_PORT}"),
+            corrosion_token,
+            accepted.accepted().cluster.cluster_id.as_str(),
+        )?;
+        write_durable_file(
+            self.state.path(),
+            GATEWAY_ENV_FILE,
+            FileMode::Secret0600,
+            &gateway_environment,
         )
     }
 
@@ -764,6 +776,13 @@ impl LinuxMachineJoinHostEffects {
         self.substrate().enable_and_start_dns()
     }
 
+    fn ensure_gateway_started(
+        &mut self,
+        _accepted: &ValidatedMachineJoinAccepted,
+    ) -> Result<(), FailureMessage> {
+        self.substrate().enable_start_and_verify_gateway()
+    }
+
     fn await_dns_ready(
         &mut self,
         accepted: &ValidatedMachineJoinAccepted,
@@ -826,6 +845,7 @@ impl MachineJoinHostEffects for LinuxMachineJoinHostEffects {
             super::MachineJoinMilestone::EndpointNetworkReady => {
                 self.await_endpoint_network(accepted)
             }
+            super::MachineJoinMilestone::GatewayStarted => self.ensure_gateway_started(accepted),
             super::MachineJoinMilestone::DnsStarted => self.ensure_dns_started(accepted),
             super::MachineJoinMilestone::DnsReady => self.await_dns_ready(accepted),
             super::MachineJoinMilestone::Ready => self.await_machine_ready(accepted),

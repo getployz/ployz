@@ -293,11 +293,20 @@ impl From<ManagedLeaseAcquisitionId> for String {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(type = "Brand<string, \"LeaseBearerToken\">"))]
 #[serde(try_from = "String", into = "String")]
 pub struct LeaseBearerToken(String);
+
+impl std::fmt::Debug for LeaseBearerToken {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_tuple("LeaseBearerToken")
+            .field(&"[REDACTED]")
+            .finish()
+    }
+}
 
 impl LeaseBearerToken {
     pub fn try_new(value: impl Into<String>) -> Result<Self, ManagedLeaseError> {
@@ -310,7 +319,7 @@ impl LeaseBearerToken {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
         {
-            return Err(ManagedLeaseError::InvalidBearerToken { value });
+            return Err(ManagedLeaseError::InvalidBearerToken);
         }
 
         Ok(Self(value))
@@ -486,7 +495,7 @@ pub enum ManagedLeaseError {
     #[error("lease bearer token is empty")]
     EmptyBearerToken,
     #[error("lease bearer token is malformed")]
-    InvalidBearerToken { value: String },
+    InvalidBearerToken,
     #[error("managed lease expiry must be after issue time")]
     EmptyOrInvertedLease {
         issued_at: LeaseIssuedAt,

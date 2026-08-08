@@ -62,6 +62,34 @@ fn openrc_api_service_keeps_environment_and_docker_dependencies() {
 }
 
 #[test]
+fn openrc_gateway_uses_scoped_environment_runtime_copy_and_bind_capability() {
+    let spec = SupervisorUnitSpec::PloyzdRole {
+        role: PloyzdRole::Gateway,
+        artifact_store: PloyzdArtifactStore::new("/var/lib/ployz".into())
+            .expect("absolute artifact-store state"),
+        environment_file: PloyzdRoleEnvironmentFile::default_path(),
+    };
+
+    let rendered = SupervisorBackend::OpenRc
+        .render(&spec)
+        .expect("OpenRC gateway service renders");
+    let contents = rendered.contents();
+
+    assert_eq!(rendered.file_name(), "ployzd-gateway");
+    assert!(contents.contains("command=\"/run/ployz-gateway/ployzd\""));
+    assert!(contents.contains("command_user=\"ployz-gateway:ployz-gateway\""));
+    assert!(contents.contains("capabilities=\"^cap_net_bind_service\""));
+    assert!(contents.contains(". \"/etc/ployz/ployz-gateway.env\""));
+    assert!(contents.contains("install -d -o root -g root -m 0755 /run/ployz-gateway"));
+    assert!(contents.contains(
+        "install -o root -g root -m 0755 \"/var/lib/ployz/current\" /run/ployz-gateway/ployzd"
+    ));
+    assert!(!contents.contains("install -o ployz-gateway"));
+    assert!(!contents.contains(". \"/etc/ployz/ployzd.env\""));
+    assert!(!contents.contains("command=\"/var/lib/ployz/current\""));
+}
+
+#[test]
 fn openrc_kill_sets_the_service_context_for_supervise_daemon() {
     let role = PloyzdRole::Api;
 

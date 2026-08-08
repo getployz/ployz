@@ -11,6 +11,7 @@ use std::num::NonZeroU16;
 use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, UtcOffset};
 
+use crate::certificate::{MANAGED_LEASE_DOMAIN_SUFFIX, ManagedLeaseName};
 use crate::deploy::{EnvValue, ImageReference};
 use crate::ids::{ClusterId, MachineRowId, NamespaceRowId, OperationRowId, ServiceRowId};
 use crate::ingress::RouteBindingOrigin;
@@ -400,6 +401,100 @@ pub enum AutomaticHostnameMode {
     Custom { suffix: RouteHostname },
 }
 
+/// Durable state of the cluster's Ployz-managed DNS target allocation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(tag = "state", rename_all = "snake_case"))]
+#[serde(try_from = "PloyzDnsTargetStateWire", into = "PloyzDnsTargetStateWire")]
+pub enum PloyzDnsTargetState {
+    Disabled,
+    Pending,
+    Allocated {
+        hostname: RouteHostname,
+        acquired_by: MachineRowId,
+    },
+}
+
+impl PloyzDnsTargetState {
+    /// Derives the state represented by cluster rows written before the target
+    /// field existed.
+    #[must_use]
+    pub const fn legacy_default(hostname_mode: &AutomaticHostnameMode) -> Self {
+        match hostname_mode {
+            AutomaticHostnameMode::Ployz => Self::Pending,
+            AutomaticHostnameMode::Disabled | AutomaticHostnameMode::Custom { .. } => {
+                Self::Disabled
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+enum PloyzDnsTargetStateWire {
+    Disabled,
+    Pending,
+    Allocated {
+        hostname: RouteHostname,
+        acquired_by: MachineRowId,
+    },
+}
+
+impl TryFrom<PloyzDnsTargetStateWire> for PloyzDnsTargetState {
+    type Error = PloyzDnsTargetStateError;
+
+    fn try_from(value: PloyzDnsTargetStateWire) -> Result<Self, Self::Error> {
+        match value {
+            PloyzDnsTargetStateWire::Disabled => Ok(Self::Disabled),
+            PloyzDnsTargetStateWire::Pending => Ok(Self::Pending),
+            PloyzDnsTargetStateWire::Allocated {
+                hostname,
+                acquired_by,
+            } => {
+                let managed_suffix = format!(".{MANAGED_LEASE_DOMAIN_SUFFIX}");
+                let Some(lease_name) = hostname.as_str().strip_suffix(&managed_suffix) else {
+                    return Err(PloyzDnsTargetStateError::InvalidAllocatedHostname {
+                        hostname: hostname.as_str().to_owned(),
+                    });
+                };
+                if ManagedLeaseName::try_new(lease_name).is_err() {
+                    return Err(PloyzDnsTargetStateError::InvalidAllocatedHostname {
+                        hostname: hostname.as_str().to_owned(),
+                    });
+                }
+                Ok(Self::Allocated {
+                    hostname,
+                    acquired_by,
+                })
+            }
+        }
+    }
+}
+
+impl From<PloyzDnsTargetState> for PloyzDnsTargetStateWire {
+    fn from(value: PloyzDnsTargetState) -> Self {
+        match value {
+            PloyzDnsTargetState::Disabled => Self::Disabled,
+            PloyzDnsTargetState::Pending => Self::Pending,
+            PloyzDnsTargetState::Allocated {
+                hostname,
+                acquired_by,
+            } => Self::Allocated {
+                hostname,
+                acquired_by,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum PloyzDnsTargetStateError {
+    #[error(
+        "allocated Ployz DNS target must be one lease beneath .{MANAGED_LEASE_DOMAIN_SUFFIX}: {hostname}"
+    )]
+    InvalidAllocatedHostname { hostname: String },
+}
+
 /// Mesh implementation fixed for the life of a cluster.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -741,6 +836,7 @@ pub struct OperatorWriteProvenance {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(try_from = "ClusterDocumentWire", into = "ClusterDocumentWire")]
 pub struct ClusterDocument {
     pub v: CorrosionDocumentVersion,
     pub cluster_id: ClusterId,
@@ -750,10 +846,119 @@ pub struct ClusterDocument {
     pub name: String,
     pub storage_default: StorageMode,
     pub hostname_mode: AutomaticHostnameMode,
+    pub ployz_dns_target: PloyzDnsTargetState,
     pub prefix: MachineEndpointSupernet,
     pub provider: MeshProvider,
     pub acme_directory_url: String,
     pub acme_contact: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ClusterDocumentWire {
+    v: CorrosionDocumentVersion,
+    cluster_id: ClusterId,
+    #[serde(flatten)]
+    provenance: OperatorWriteProvenance,
+    name: String,
+    storage_default: StorageMode,
+    hostname_mode: AutomaticHostnameMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ployz_dns_target: Option<PloyzDnsTargetState>,
+    prefix: MachineEndpointSupernet,
+    provider: MeshProvider,
+    acme_directory_url: String,
+    acme_contact: Option<String>,
+}
+
+impl TryFrom<ClusterDocumentWire> for ClusterDocument {
+    type Error = ClusterDocumentError;
+
+    fn try_from(value: ClusterDocumentWire) -> Result<Self, Self::Error> {
+        let ClusterDocumentWire {
+            v,
+            cluster_id,
+            provenance,
+            name,
+            storage_default,
+            hostname_mode,
+            ployz_dns_target,
+            prefix,
+            provider,
+            acme_directory_url,
+            acme_contact,
+        } = value;
+        let ployz_dns_target =
+            ployz_dns_target.unwrap_or_else(|| PloyzDnsTargetState::legacy_default(&hostname_mode));
+        match (&hostname_mode, &ployz_dns_target) {
+            (
+                AutomaticHostnameMode::Ployz,
+                PloyzDnsTargetState::Pending | PloyzDnsTargetState::Allocated { .. },
+            )
+            | (
+                AutomaticHostnameMode::Disabled | AutomaticHostnameMode::Custom { .. },
+                PloyzDnsTargetState::Disabled,
+            ) => {}
+            (AutomaticHostnameMode::Ployz, PloyzDnsTargetState::Disabled) => {
+                return Err(ClusterDocumentError::PloyzModeRequiresDnsTarget);
+            }
+            (
+                AutomaticHostnameMode::Disabled | AutomaticHostnameMode::Custom { .. },
+                PloyzDnsTargetState::Pending | PloyzDnsTargetState::Allocated { .. },
+            ) => return Err(ClusterDocumentError::NonPloyzModeCannotUseDnsTarget),
+        }
+        Ok(Self {
+            v,
+            cluster_id,
+            provenance,
+            name,
+            storage_default,
+            hostname_mode,
+            ployz_dns_target,
+            prefix,
+            provider,
+            acme_directory_url,
+            acme_contact,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ClusterDocumentError {
+    #[error("Ployz automatic hostnames require a pending or allocated Ployz DNS target")]
+    PloyzModeRequiresDnsTarget,
+    #[error("disabled and custom automatic hostnames require the Ployz DNS target to be disabled")]
+    NonPloyzModeCannotUseDnsTarget,
+}
+
+impl From<ClusterDocument> for ClusterDocumentWire {
+    fn from(value: ClusterDocument) -> Self {
+        let ClusterDocument {
+            v,
+            cluster_id,
+            provenance,
+            name,
+            storage_default,
+            hostname_mode,
+            ployz_dns_target,
+            prefix,
+            provider,
+            acme_directory_url,
+            acme_contact,
+        } = value;
+        Self {
+            v,
+            cluster_id,
+            provenance,
+            name,
+            storage_default,
+            hostname_mode,
+            ployz_dns_target: Some(ployz_dns_target),
+            prefix,
+            provider,
+            acme_directory_url,
+            acme_contact,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -17,6 +17,7 @@ use super::{
 pub enum UnixUser {
     Root,
     PloyzApi,
+    PloyzGateway,
     Unrelated,
 }
 
@@ -26,6 +27,7 @@ impl UnixUser {
         match self {
             Self::Root => "root",
             Self::PloyzApi => "ployz-api",
+            Self::PloyzGateway => "ployz-gateway",
             Self::Unrelated => "nobody",
         }
     }
@@ -41,6 +43,7 @@ impl fmt::Display for UnixUser {
 pub enum UnixGroup {
     Root,
     PloyzApi,
+    PloyzGateway,
     PloyzControl,
     Docker,
     Unrelated,
@@ -52,6 +55,7 @@ impl UnixGroup {
         match self {
             Self::Root => "root",
             Self::PloyzApi => "ployz-api",
+            Self::PloyzGateway => "ployz-gateway",
             Self::PloyzControl => "ployz-control",
             Self::Docker => "docker",
             Self::Unrelated => "nogroup",
@@ -71,6 +75,7 @@ pub const CONTROL_GROUP: UnixGroup = UnixGroup::PloyzControl;
 pub const DOCKER_GROUP: UnixGroup = UnixGroup::Docker;
 
 pub const API_EVIDENCE_DIRECTORY: &str = "api/evidence";
+pub const API_LEASE_DIRECTORY: &str = "api/lease";
 /// Verified candidates awaiting Keeper adoption into the root-owned live artifact store.
 pub const API_UPGRADE_STAGING_DIRECTORY: &str = "api/upgrade-staging";
 pub const UPGRADE_RUNTIME_DIRECTORY: &str = "/run/ployz";
@@ -111,7 +116,13 @@ impl InstalledRolePrivilege {
                 supplementary_groups: API_SUPPLEMENTARY_GROUPS,
                 no_new_privileges: true,
             }),
-            PloyzdRole::Gateway | PloyzdRole::Dns => None,
+            PloyzdRole::Gateway => Some(Self {
+                user: UnixUser::PloyzGateway,
+                primary_group: UnixGroup::PloyzGateway,
+                supplementary_groups: &[],
+                no_new_privileges: true,
+            }),
+            PloyzdRole::Dns => None,
         }
     }
 
@@ -372,6 +383,14 @@ impl ApiRuntimeAccessMatrix {
                 InstallDisposition::EnsureDirectory,
             ),
             ApiRuntimeAccessEntry::new(
+                state.join(API_LEASE_DIRECTORY),
+                UnixUser::PloyzApi,
+                UnixGroup::PloyzApi,
+                0o700,
+                ApiRuntimeAccess::ReadWriteDirectory,
+                InstallDisposition::EnsureDirectory,
+            ),
+            ApiRuntimeAccessEntry::new(
                 state.join(API_UPGRADE_STAGING_DIRECTORY),
                 UnixUser::PloyzApi,
                 UnixGroup::PloyzControl,
@@ -523,6 +542,13 @@ pub fn migrate_existing_systemd_api_privileges(
     let matrix = ApiRuntimeAccessMatrix::for_state(state);
     let artifact_store = PloyzdArtifactStore::new(state.to_path_buf()).map_err(failure)?;
     let environment = PloyzdRoleEnvironmentFile::new(state.join("ployzd.env")).map_err(failure)?;
+    let gateway_environment = gateway_environment_from_shared(&environment)?;
+    write_durable_file(
+        state,
+        "ployz-gateway.env",
+        FileMode::Secret0600,
+        &gateway_environment,
+    )?;
     let systemd_directory = directories.directory(SupervisorBackend::Systemd);
     let mut expected_units = Vec::new();
     for role in [
@@ -641,9 +667,13 @@ fn account_commands(package_family: HostPackageFamily) -> Vec<PrivilegeInstallCo
     match package_family {
         HostPackageFamily::Alpine => vec![
             shell("getent group ployz-api >/dev/null || addgroup -S ployz-api"),
+            shell("getent group ployz-gateway >/dev/null || addgroup -S ployz-gateway"),
             shell("getent group ployz-control >/dev/null || addgroup -S ployz-control"),
             shell(
                 "getent passwd ployz-api >/dev/null || adduser -S -D -H -h /nonexistent -s /sbin/nologin -G ployz-api ployz-api",
+            ),
+            shell(
+                "getent passwd ployz-gateway >/dev/null || adduser -S -D -H -h /nonexistent -s /sbin/nologin -G ployz-gateway ployz-gateway",
             ),
             shell(
                 "id -nG ployz-api | tr ' ' '\\n' | grep -Fxq docker || addgroup ployz-api docker",
@@ -652,9 +682,13 @@ fn account_commands(package_family: HostPackageFamily) -> Vec<PrivilegeInstallCo
                 "id -nG ployz-api | tr ' ' '\\n' | grep -Fxq ployz-control || addgroup ployz-api ployz-control",
             ),
             PrivilegeInstallCommand::new("passwd", ["-l", API_USER.as_str()]),
+            PrivilegeInstallCommand::new("passwd", ["-l", "ployz-gateway"]),
             shell("test \"$(id -gn ployz-api)\" = ployz-api"),
             shell(
                 "getent passwd ployz-api | awk -F: '$1 == \"ployz-api\" && $6 == \"/nonexistent\" && $7 == \"/sbin/nologin\" { found = 1 } END { exit !found }'",
+            ),
+            shell(
+                "getent passwd ployz-gateway | awk -F: '$1 == \"ployz-gateway\" && $6 == \"/nonexistent\" && $7 == \"/sbin/nologin\" { found = 1 } END { exit !found }'",
             ),
             verify_supplementary_groups(),
         ],
@@ -663,9 +697,13 @@ fn account_commands(package_family: HostPackageFamily) -> Vec<PrivilegeInstallCo
         | HostPackageFamily::Arch
         | HostPackageFamily::Suse => vec![
             shell("getent group ployz-api >/dev/null || groupadd --system ployz-api"),
+            shell("getent group ployz-gateway >/dev/null || groupadd --system ployz-gateway"),
             shell("getent group ployz-control >/dev/null || groupadd --system ployz-control"),
             shell(
                 "getent passwd ployz-api >/dev/null || useradd --system --gid ployz-api --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin ployz-api",
+            ),
+            shell(
+                "getent passwd ployz-gateway >/dev/null || useradd --system --gid ployz-gateway --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin ployz-gateway",
             ),
             PrivilegeInstallCommand::new(
                 "usermod",
@@ -684,6 +722,19 @@ fn account_commands(package_family: HostPackageFamily) -> Vec<PrivilegeInstallCo
                 ["--groups", "docker,ployz-control", API_USER.as_str()],
             ),
             PrivilegeInstallCommand::new("usermod", ["--lock", API_USER.as_str()]),
+            PrivilegeInstallCommand::new(
+                "usermod",
+                [
+                    "--gid",
+                    "ployz-gateway",
+                    "--home",
+                    "/nonexistent",
+                    "--shell",
+                    "/usr/sbin/nologin",
+                    "ployz-gateway",
+                ],
+            ),
+            PrivilegeInstallCommand::new("usermod", ["--lock", "ployz-gateway"]),
             verify_supplementary_groups(),
         ],
     }
@@ -708,7 +759,71 @@ fn account_verification_commands(
         shell(
             "passwd -S ployz-api | awk '$1 == \"ployz-api\" && ($2 == \"L\" || $2 == \"LK\") { found = 1 } END { exit !found }'",
         ),
+        shell_owned(format!(
+            "gateway_gid=\"$(getent group ployz-gateway | cut -d: -f3)\" && test -n \"$gateway_gid\" && getent passwd ployz-gateway | awk -F: -v gid=\"$gateway_gid\" -v shell=\"{shell_path}\" '$1 == \"ployz-gateway\" && $4 == gid && $6 == \"/nonexistent\" && $7 == shell {{ found = 1 }} END {{ exit !found }}'"
+        )),
+        shell(
+            "passwd -S ployz-gateway | awk '$1 == \"ployz-gateway\" && ($2 == \"L\" || $2 == \"LK\") { found = 1 } END { exit !found }'",
+        ),
     ]
+}
+
+pub fn gateway_environment_contents(
+    corrosion_api_addr: &str,
+    corrosion_bearer_token: &str,
+    cluster_id: &str,
+) -> Result<Vec<u8>, FailureMessage> {
+    for (name, value) in [
+        ("PLOYZ_CORROSION_API_ADDR", corrosion_api_addr),
+        ("PLOYZ_CORROSION_BEARER_TOKEN", corrosion_bearer_token),
+        ("PLOYZ_CLUSTER_ID", cluster_id),
+    ] {
+        if value.is_empty() || value.bytes().any(|byte| byte.is_ascii_control()) {
+            return Err(failure(format!(
+                "{name} cannot be rendered into the gateway environment"
+            )));
+        }
+    }
+    Ok(format!(
+        "PLOYZ_CORROSION_API_ADDR={corrosion_api_addr}\nPLOYZ_CORROSION_BEARER_TOKEN={corrosion_bearer_token}\nPLOYZ_CLUSTER_ID={cluster_id}\nPLOYZ_GATEWAY_LISTEN_ADDR=0.0.0.0:80\n"
+    )
+    .into_bytes())
+}
+
+fn gateway_environment_from_shared(
+    environment: &PloyzdRoleEnvironmentFile,
+) -> Result<Vec<u8>, FailureMessage> {
+    let contents = fs::read_to_string(environment.path()).map_err(|error| {
+        failure(format!(
+            "failed to read existing ployzd environment {}: {error}",
+            environment.path().display()
+        ))
+    })?;
+    let mut api_addr = None;
+    let mut token = None;
+    let mut cluster_id = None;
+    for line in contents.lines() {
+        let Some((name, value)) = line.split_once('=') else {
+            continue;
+        };
+        let slot = match name {
+            "PLOYZ_CORROSION_API_ADDR" => &mut api_addr,
+            "PLOYZ_CORROSION_BEARER_TOKEN" => &mut token,
+            "PLOYZ_CLUSTER_ID" => &mut cluster_id,
+            _ => continue,
+        };
+        if slot.replace(value).is_some() {
+            return Err(failure(format!(
+                "existing ployzd environment contains duplicate {name}"
+            )));
+        }
+    }
+    let (Some(api_addr), Some(token), Some(cluster_id)) = (api_addr, token, cluster_id) else {
+        return Err(failure(
+            "existing ployzd environment lacks gateway Corrosion or cluster settings",
+        ));
+    };
+    gateway_environment_contents(api_addr, token, cluster_id)
 }
 
 fn shell(script: &'static str) -> PrivilegeInstallCommand {

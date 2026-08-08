@@ -233,6 +233,7 @@ async fn assert_runtime(
             "ployzd-keeper.service",
             "ployz-corrosion.service",
             "ployzd-api.service",
+            "ployzd-gateway.service",
             "ployzd-dns.service",
         ],
     )
@@ -250,25 +251,13 @@ async fn assert_runtime(
         &["test", "-f", "/etc/systemd/system/ployzd-dns.service"],
     )
     .await?;
-    let gateway_disabled = exec_in_container(
+    exec_ok(
         docker,
-        &machine.container_id,
+        machine,
         &["systemctl", "is-enabled", "ployzd-gateway.service"],
     )
-    .await
-    .map_err(|error| error.to_string())?;
-    require(
-        !gateway_disabled.success() && gateway_disabled.stdout.trim() == "disabled",
-        format!("unfinished gateway role was enabled: {gateway_disabled:?}"),
-    )?;
-    let inactive = exec_in_container(
-        docker,
-        &machine.container_id,
-        &["systemctl", "is-active", "ployzd-gateway.service"],
-    )
-    .await
-    .map_err(|error| error.to_string())?;
-    require(!inactive.success(), "unfinished gateway role was started")?;
+    .await?;
+    assert_gateway_privileges(docker, machine).await?;
     exec_ok(
         docker,
         machine,
@@ -377,6 +366,67 @@ async fn assert_runtime(
         format!("/version returned the wrong API major: {version}"),
     )?;
     assert_founding_route_disabled(docker, machine, &api_address).await
+}
+
+async fn assert_gateway_privileges(docker: &Docker, machine: &DindMachine) -> Result<(), String> {
+    let properties = exec_ok(
+        docker,
+        machine,
+        &[
+            "systemctl",
+            "show",
+            "ployzd-gateway.service",
+            "--property=User",
+            "--property=Group",
+            "--property=NoNewPrivileges",
+            "--property=AmbientCapabilities",
+            "--property=CapabilityBoundingSet",
+            "--property=SupplementaryGroups",
+        ],
+    )
+    .await?
+    .stdout;
+    for expected in [
+        "User=ployz-gateway",
+        "Group=ployz-gateway",
+        "NoNewPrivileges=yes",
+        "AmbientCapabilities=cap_net_bind_service",
+        "CapabilityBoundingSet=cap_net_bind_service",
+        "SupplementaryGroups=",
+    ] {
+        require(
+            properties.lines().any(|line| line == expected),
+            format!("gateway unit omitted {expected:?}: {properties}"),
+        )?;
+    }
+
+    let unit = exec_ok(
+        docker,
+        machine,
+        &["systemctl", "cat", "ployzd-gateway.service"],
+    )
+    .await?
+    .stdout;
+    require(
+        unit.lines()
+            .any(|line| line == "EnvironmentFile=/var/lib/ployz/ployz-gateway.env"),
+        format!("gateway unit does not use its scoped environment: {unit}"),
+    )?;
+    let environment = read_file(docker, machine, "/var/lib/ployz/ployz-gateway.env").await?;
+    let names = environment
+        .lines()
+        .filter_map(|line| line.split_once('=').map(|(name, _)| name))
+        .collect::<Vec<_>>();
+    require(
+        names
+            == [
+                "PLOYZ_CORROSION_API_ADDR",
+                "PLOYZ_CORROSION_BEARER_TOKEN",
+                "PLOYZ_CLUSTER_ID",
+                "PLOYZ_GATEWAY_LISTEN_ADDR",
+            ],
+        format!("gateway environment has a broader contract than required: {names:?}"),
+    )
 }
 
 async fn assert_machines_lens(

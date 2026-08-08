@@ -352,6 +352,16 @@ async fn bind_api_listener(
     let deploy = if let Some(runner) = container_runner.as_ref() {
         let mesh_client = super::deploy_dispatch::mesh_http_client()
             .map_err(ApiServerError::OperationHttpClient)?;
+        let routes = Arc::new(
+            super::routes::CorrosionDeployRouteBindings::new(
+                corrosion.clone(),
+                config.cluster_id().clone(),
+                config.local_machine_id().clone(),
+                config.lease_worker_origin().clone(),
+                config.lease_token_path().to_path_buf(),
+            )
+            .map_err(ApiServerError::LeaseClient)?,
+        );
         let driver = super::deploy::DeployDriver::new(
             config.cluster_id().clone(),
             config.local_machine_id().clone(),
@@ -374,6 +384,7 @@ async fn bind_api_listener(
                     Arc::clone(runner),
                 )),
                 verbs: Arc::new(super::deploy_dispatch::MeshVerbClient::new(mesh_client)),
+                routes,
                 api_port: listen_addr.port(),
                 clock: Arc::new(super::deploy::SystemDeployClock),
             },
@@ -582,6 +593,8 @@ pub enum ApiServerError {
     CorrosionClientConfiguration(crate::corrosion::CorrosionClientConfigError),
     #[error("could not build the operation owner HTTP client: {0}")]
     OperationHttpClient(reqwest::Error),
+    #[error("could not build the managed lease client: {0}")]
+    LeaseClient(crate::lease::LeaseClientError),
     #[error("operation startup recovery failed: {0}")]
     OperationStartup(String),
     #[error(transparent)]

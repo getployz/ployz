@@ -624,6 +624,34 @@ struct Fixture {
     runtime: Arc<FakeRuntime>,
     mesh: Arc<FakeMesh>,
     verbs: Arc<FakeVerbClient>,
+    routes: Arc<RecordingRoutes>,
+}
+
+struct RecordingRoutes {
+    checks: AtomicUsize,
+    ensures: AtomicUsize,
+}
+
+#[async_trait]
+impl crate::roles::api::http::routes::DeployRouteBindings for RecordingRoutes {
+    async fn check(
+        &self,
+        _namespace_id: &NamespaceRowId,
+        _service_id: &ServiceRowId,
+    ) -> Result<(), crate::roles::api::http::routes::AutomaticRouteBindingError> {
+        self.checks.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    async fn ensure(
+        &self,
+        _namespace_id: &NamespaceRowId,
+        _service_id: &ServiceRowId,
+        _provenance: ployz_core::corrosion::OperatorWriteProvenance,
+    ) -> Result<(), crate::roles::api::http::routes::AutomaticRouteBindingError> {
+        self.ensures.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
 }
 
 fn fixture(admission: Admission, bridge_ready: bool) -> Fixture {
@@ -650,6 +678,10 @@ fn fixture(admission: Admission, bridge_ready: bool) -> Fixture {
     });
     let mesh = Arc::new(FakeMesh::new(Arc::clone(&runtime)));
     let verbs = Arc::new(FakeVerbClient::new());
+    let routes = Arc::new(RecordingRoutes {
+        checks: AtomicUsize::new(0),
+        ensures: AtomicUsize::new(0),
+    });
     let driver = DeployDriver::new(
         cluster_id(),
         machine_id(),
@@ -660,6 +692,7 @@ fn fixture(admission: Admission, bridge_ready: bool) -> Fixture {
             runtime: runtime.clone(),
             mesh: mesh.clone(),
             verbs: verbs.clone(),
+            routes: routes.clone(),
             api_port: 4480,
             clock: Arc::new(Clock(AtomicUsize::new(0))),
         },
@@ -673,6 +706,7 @@ fn fixture(admission: Admission, bridge_ready: bool) -> Fixture {
         runtime,
         mesh,
         verbs,
+        routes,
     }
 }
 
@@ -1176,6 +1210,8 @@ async fn successful_first_deploy_uses_three_row_writes_and_persists_no_secret() 
         ]
     );
     assert_eq!(fixture.runtime.created().await, 1);
+    assert_eq!(fixture.routes.checks.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.routes.ensures.load(Ordering::SeqCst), 1);
     let events = evidence_kinds(&log).await;
     assert!(events.contains(&OperationEvidence::OpClaimWon));
     // The gather and the pick replay from the evidence log.
@@ -1372,6 +1408,8 @@ async fn second_deploy_flips_atomically_with_previous_image() {
     assert_eq!(container.document.deploy, operation_id);
     assert_eq!(container.document.machine_id, machine_id());
     assert_eq!(fixture.store.converge_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.routes.checks.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.routes.ensures.load(Ordering::SeqCst), 1);
     let events = evidence_kinds(&log).await;
     assert!(events.contains(&OperationEvidence::RowsCommitted));
     assert!(events.contains(&OperationEvidence::Drained));

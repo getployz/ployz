@@ -90,6 +90,7 @@ pub enum FoundingStep {
     AwaitDriverPeerConvergence,
     ReportDriverEnrolled,
     AwaitEndpointNetwork,
+    StartGateway,
     StartDns,
     VerifyDnsReadiness,
     VerifyBootstrapReadiness,
@@ -285,6 +286,12 @@ pub async fn found_machine_one_with_progress(
     .await?;
     run_host_step(
         state,
+        FoundingMilestone::GatewayStarted,
+        FoundingStep::StartGateway,
+        || host.enable_and_start_gateway(),
+    )?;
+    run_host_step(
+        state,
         FoundingMilestone::DnsStarted,
         FoundingStep::StartDns,
         || host.enable_and_start_dns(),
@@ -405,7 +412,7 @@ mod tests {
         AutomaticHostnameMode, ClusterDocument, CorrosionDocumentVersion, CorrosionTimestamp,
         MachineDocument, MachineStorageSelection, MachineStorageSelectionReason, MachineTransport,
         MeshProvider, OperationInitiator, OperatorWriteProvenance, PeerDocument, PeerTransport,
-        StorageMode, derive_builtin_wireguard_member,
+        PloyzDnsTargetState, StorageMode, derive_builtin_wireguard_member,
     };
     use ployz_core::founding::{FoundingDriverEnrollment, FoundingRepairCommand, FoundingRequest};
     use ployz_core::ids::{ClusterId, MachineRowId, PeerId};
@@ -479,6 +486,9 @@ mod tests {
         }
         fn start_api_with_bootstrap(&mut self) -> Result<(), FailureMessage> {
             self.record("bootstrap_api")
+        }
+        fn enable_and_start_gateway(&mut self) -> Result<(), FailureMessage> {
+            self.record("gateway_started")
         }
         fn enable_and_start_dns(&mut self) -> Result<(), FailureMessage> {
             self.record("dns_started")
@@ -568,7 +578,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn founding_starts_dns_only_after_the_endpoint_network_is_ready() {
+    async fn founding_starts_gateway_and_dns_only_after_the_endpoint_network_is_ready() {
         let directory = tempfile::tempdir().expect("tempdir");
         let state = FoundingStateDirectory::open(directory.path()).expect("state directory");
         let request = request(CLUSTER);
@@ -595,6 +605,7 @@ mod tests {
                 "keeper",
                 "corrosion",
                 "bootstrap_api",
+                "gateway_started",
                 "dns_started",
                 "dns_ready",
                 "remove_bootstrap",
@@ -675,6 +686,7 @@ mod tests {
                 "keeper",
                 "corrosion",
                 "bootstrap_api",
+                "gateway_started",
                 "dns_started",
                 "dns_ready",
                 "remove_bootstrap",
@@ -696,7 +708,11 @@ mod tests {
             .expect_err("DNS readiness fails");
 
         assert_eq!(failure.step(), Some(FoundingStep::VerifyDnsReadiness));
-        assert!(first_host.calls.ends_with(&["dns_started", "dns_ready"]));
+        assert!(
+            first_host
+                .calls
+                .ends_with(&["gateway_started", "dns_started", "dns_ready"])
+        );
 
         let mut resumed_host = recording_host(None);
         let mut resumed_control = recording_control(None);
@@ -863,6 +879,7 @@ mod tests {
                 name: "ares".to_owned(),
                 storage_default: StorageMode::Plain,
                 hostname_mode: AutomaticHostnameMode::Disabled,
+                ployz_dns_target: PloyzDnsTargetState::Disabled,
                 prefix: MachineEndpointSupernet::default_v1(),
                 provider: MeshProvider::BuiltinWireguard,
                 acme_directory_url: "https://acme.example/directory".to_owned(),

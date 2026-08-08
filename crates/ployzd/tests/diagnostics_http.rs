@@ -14,7 +14,7 @@ use ployz_core::corrosion::{
     AutomaticHostnameMode, ClusterDocument, CorrosionDocumentVersion, CorrosionTable,
     CorrosionTimestamp, MachineDocument, MachineStorageSelection, MachineStorageSelectionReason,
     MachineTransport, MeshProvider, OperationInitiator, OperatorWriteProvenance, PeerDocument,
-    PeerTransport, Statement, StorageMode, StoredRow,
+    PeerTransport, PloyzDnsTargetState, Statement, StorageMode, StoredRow,
 };
 use ployz_core::ids::{ClusterId, MachineRowId};
 use ployz_core::machine::{MachineLifecycle, MachineName};
@@ -464,6 +464,7 @@ fn cluster_document() -> ClusterDocument {
         name: "diagnostics".to_owned(),
         storage_default: StorageMode::Plain,
         hostname_mode: AutomaticHostnameMode::Ployz,
+        ployz_dns_target: PloyzDnsTargetState::Pending,
         prefix: MachineEndpointSupernet::default_v1(),
         provider: MeshProvider::Tailscale,
         acme_directory_url: "https://acme.invalid/directory".to_owned(),
