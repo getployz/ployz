@@ -55,7 +55,7 @@ crates/
   ployz-build-executor  Dockerfile/Railpack execution mechanics. Unchanged.
   ployz-telemetry     sentry/posthog. Unchanged.
 ebpf/{common,control,program}   unchanged
-testing/{ployz-test-support,ployz-e2e}
+testing/ployz-e2e
 ```
 
 `ployzd` lands at ~35–50k after the collapse (the NATS/sequencer/intent
@@ -106,10 +106,9 @@ in sync.
 
 ## SDK generation and transport
 
-- **Types**: `ts-rs`, unchanged mechanism. The `export-typescript` and
-  `export-operation-contract` bins move from the deleted `ployz-nats` crate into
-  `core` as `[[bin]]` targets under `--features ts`. `pnpm check:generated`
-  survives as the diff-gate.
+- **Types**: `ts-rs`, unchanged mechanism. The `export-typescript` bin lives in
+  `core` as a `[[bin]]` target under `--features ts`. `pnpm check:generated`
+  is the diff-gate.
 - **Runtime transport**: a thin hand-written client — `fetch()` for
   request/reply, `EventSource` for SSE progress. The `@nats-io/transport-node`
   dependency is dropped. No OpenAPI toolchain, no generated client: the wire is
@@ -142,8 +141,8 @@ Four rules, three of them ~free because they reuse decided machinery:
 3. **Cloud holds the down-adapters, keyed by cluster major.** Stripe's
    ordered-transform-modules idea, living in Cloud/SDK instead of the cluster.
    Built only when a second major exists — YAGNI until then.
-4. **The contract fixture is the tripwire.** `check:generated` already snapshots
-   the contract + operation fixture: additive change grows it (fine), a
+4. **The generated contract is the tripwire.** `check:generated` snapshots the
+   V2 TypeScript contract: additive change grows it (fine), while a
    rename/remove diffs an existing entry and forces a conscious major bump.
 
 Both directions fall out: Cloud-newer-than-cluster forms old-shape requests via

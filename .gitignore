@@ -13,8 +13,6 @@ npm-debug.log*
 skills-lock.json
 .env.targets
 ebpf/program/target/
-legacy/target/
-legacy/ebpf/target/
 .idea/
 .lab/
 .e2e-artifacts/
@@ -23,13 +21,9 @@ e2e-artifacts/
 .payload-cache/
 packaging/e2e/preloaded-images/*
 !packaging/e2e/preloaded-images/.gitkeep
-legacy/packaging/e2e/preloaded-images/*
-!legacy/packaging/e2e/preloaded-images/.gitkeep
 lab/lab.env
 ployz-sh/.wrangler/
 ployz-sh/dist/
-legacy/ployz-sh/.wrangler/
-legacy/ployz-sh/dist/
 docs/review.md
 generated/
 tigerbeetle/

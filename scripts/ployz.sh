@@ -396,9 +396,4 @@ if [ "$install_build_executor" -eq 1 ]; then
   echo "ready for Build Executor enrollment"
 else
   echo "run: sudo ployz init"
-  if [ -n "${release_tag:-}" ]; then
-    echo "update existing substrate: sudo ployz host substrate-update --version $release_tag"
-  else
-    echo "update existing substrate: sudo ployz host substrate-update --version <release-tag>"
-  fi
 fi

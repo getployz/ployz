@@ -37,20 +37,6 @@ pub enum MachineUsabilityReason {
         expected: crate::deploy::ZfsPoolName,
         reported: crate::deploy::ZfsPoolName,
     },
-    DataplaneUnavailable {
-        reason: DataplaneUnavailableReason,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum DataplaneUnavailableReason {
-    NotDeclared,
-    TestimonyMissing,
-    Admission {
-        failure: super::DataplaneProjectionAdmissionFailure,
-    },
 }
 
 #[must_use]

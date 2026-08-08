@@ -2,17 +2,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
 
-use crate::ids::{MachineId, NamespaceId, ServiceId};
-use crate::machine::rpc::{MachineRpcResponder, MachineRpcResponse};
-use crate::operation::FailureMessage;
+use crate::ids::{NamespaceId, ServiceId};
 use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 
-pub const IMAGE_MESH_REGISTRY_PORT: u16 = 5000;
 pub const IMAGE_BLOB_CHUNK_MAX_BYTES: usize = 512 * 1024;
-pub const IMAGE_BLOB_PUSH_ACTION_HEADER: &str = "ployz-image-push-action";
-pub const IMAGE_BLOB_PUSH_UPLOAD_ID_HEADER: &str = "ployz-image-upload-id";
-pub const IMAGE_BLOB_PUSH_OFFSET_HEADER: &str = "ployz-image-offset";
-pub const IMAGE_BLOB_PUSH_ACTION_CHUNK: &str = "chunk";
 pub const OCI_IMAGE_MANIFEST_MEDIA_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
 pub const OCI_IMAGE_CONFIG_MEDIA_TYPE: &str = "application/vnd.oci.image.config.v1+json";
 pub const OCI_IMAGE_LAYER_GZIP_MEDIA_TYPE: &str = "application/vnd.oci.image.layer.v1.tar+gzip";
@@ -77,7 +70,7 @@ pub enum OciDigestError {
 }
 
 /// One deploy-scoped registry credential. It may cross the operator and
-/// machine RPC boundaries, but it is never part of deploy intent or evidence.
+/// machine HTTP boundaries, but it is never part of deploy intent or evidence.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -278,47 +271,17 @@ pub enum ImageRepositoryError {
     Invalid { value: String },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct ImageUploadId(String);
-
-impl ImageUploadId {
-    pub fn try_new(value: impl Into<String>) -> Result<Self, ImageUploadIdError> {
-        let value = value.into();
-        if value.is_empty()
-            || !value
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-        {
-            return Err(ImageUploadIdError::Invalid { value });
-        }
-        Ok(Self(value))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
+positive_u64_wire_newtype! {
+    /// The machine-reported containerd lease expiration for pushed image content.
+    pub struct ImageContentLeaseExpiresAt;
+    ts_brand: "Brand<string, \"ImageContentLeaseExpiresAt\">";
+    accessor: unix_seconds;
+    error: ImageContentLeaseTimestampError;
 }
 
-impl TryFrom<String> for ImageUploadId {
-    type Error = ImageUploadIdError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::try_new(value)
-    }
-}
-
-impl From<ImageUploadId> for String {
-    fn from(value: ImageUploadId) -> Self {
-        value.0
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum ImageUploadIdError {
-    #[error("image upload id {value:?} is invalid")]
-    Invalid { value: String },
+positive_u64_wire_error! {
+    pub enum ImageContentLeaseTimestampError;
+    noun: "image content lease timestamp";
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -442,317 +405,9 @@ mod oci_platform_tests {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ImageBlobCheckRequest {
-    pub digests: Vec<OciDigest>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ImageBlobCheckOk {
-    pub machine_id: MachineId,
-    pub present: Vec<OciDigest>,
-}
-
-impl MachineRpcResponder for ImageBlobCheckOk {
-    fn responder_machine_id(&self) -> &MachineId {
-        let Self { machine_id, .. } = self;
-        machine_id
-    }
-}
-
-pub type ImageBlobCheckResponse = MachineRpcResponse<ImageBlobCheckOk, ImageRpcDomainError>;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ImageBlobPushRequest {
-    Begin { digest: OciDigest, total_size: u64 },
-    Commit { upload_id: ImageUploadId },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ImageBlobPushOutcome {
-    Begun {
-        upload_id: ImageUploadId,
-    },
-    Retained {
-        digest: OciDigest,
-        size: u64,
-        lease_expires_at: ImageContentLeaseExpiresAt,
-    },
-    ChunkAccepted {
-        upload_id: ImageUploadId,
-    },
-    Committed {
-        digest: OciDigest,
-        size: u64,
-        lease_expires_at: ImageContentLeaseExpiresAt,
-    },
-}
-
-positive_u64_wire_newtype! {
-    /// The machine-reported containerd lease expiration for pushed image content.
-    pub struct ImageContentLeaseExpiresAt;
-    ts_brand: "Brand<string, \"ImageContentLeaseExpiresAt\">";
-    accessor: unix_seconds;
-    error: ImageContentLeaseTimestampError;
-}
-
-positive_u64_wire_error! {
-    pub enum ImageContentLeaseTimestampError;
-    noun: "image content lease timestamp";
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ImageBlobPushOk {
-    pub machine_id: MachineId,
-    pub outcome: ImageBlobPushOutcome,
-}
-
-impl MachineRpcResponder for ImageBlobPushOk {
-    fn responder_machine_id(&self) -> &MachineId {
-        let Self { machine_id, .. } = self;
-        machine_id
-    }
-}
-
-pub type ImageBlobPushResponse = MachineRpcResponse<ImageBlobPushOk, ImageRpcDomainError>;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ImageManifestPushRequest {
-    pub manifest_bytes: Vec<u8>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ImageManifestPushOk {
-    pub machine_id: MachineId,
-    pub manifest_digest: OciDigest,
-    pub image_id: OciDigest,
-    pub platform: OciPlatform,
-    pub lease_expires_at: ImageContentLeaseExpiresAt,
-}
-
-impl MachineRpcResponder for ImageManifestPushOk {
-    fn responder_machine_id(&self) -> &MachineId {
-        let Self { machine_id, .. } = self;
-        machine_id
-    }
-}
-
-pub type ImageManifestPushResponse = MachineRpcResponse<ImageManifestPushOk, ImageRpcDomainError>;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ImageEnsureRequest {
-    Start {
-        owner: crate::machine::runtime::ManagedContainerIdentity,
-        source: ImageEnsureSource,
-    },
-    Status {
-        owner: crate::machine::runtime::ManagedContainerIdentity,
-    },
-    Cancel {
-        owner: crate::machine::runtime::ManagedContainerIdentity,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ImageEnsureSource {
-    Registry {
-        reference: crate::deploy::ImageReference,
-        platform: OciPlatform,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        credential: Option<crate::deploy::RegistryCredential>,
-    },
-    MeshSeed {
-        seed_host: std::net::Ipv4Addr,
-        repository: ImageRepository,
-        manifest_digest: OciDigest,
-        image_id: OciDigest,
-        platform: OciPlatform,
-    },
-    LocalSeed {
-        repository: ImageRepository,
-        manifest_digest: OciDigest,
-        image_id: OciDigest,
-        platform: OciPlatform,
-    },
-}
-
-impl ImageEnsureSource {
-    #[must_use]
-    pub fn reference(&self) -> String {
-        match self {
-            Self::Registry { reference, .. } => reference.as_str().to_owned(),
-            Self::MeshSeed {
-                seed_host,
-                repository,
-                manifest_digest,
-                ..
-            } => format!("{seed_host}:{IMAGE_MESH_REGISTRY_PORT}/{repository}@{manifest_digest}"),
-            Self::LocalSeed {
-                repository,
-                manifest_digest,
-                ..
-            } => format!("127.0.0.1:{IMAGE_MESH_REGISTRY_PORT}/{repository}@{manifest_digest}"),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ImageEnsureStatus {
-    Accepted,
-    Running {
-        progress_sequence: u64,
-    },
-    Completed {
-        reference: crate::deploy::ImageReference,
-    },
-    Failed {
-        failure: ImageEnsureFailure,
-    },
-    Cancelled,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "failure", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ImageEnsureFailure {
-    PullFailed {
-        message: crate::operation::FailureMessage,
-    },
-    Stalled {
-        timeout_millis: u64,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ImageEnsureOk {
-    pub machine_id: MachineId,
-    pub ensure_status: ImageEnsureStatus,
-}
-
-impl MachineRpcResponder for ImageEnsureOk {
-    fn responder_machine_id(&self) -> &MachineId {
-        let Self { machine_id, .. } = self;
-        machine_id
-    }
-}
-
-pub type ImageEnsureResponse = MachineRpcResponse<ImageEnsureOk, ImageRpcDomainError>;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ImageRemoveRequest {
-    pub operation_id: crate::ids::OperationId,
-    pub image_identity: OciDigest,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ImageRemoveOutcome {
-    Removed,
-    AlreadyAbsent,
-    RetainedInUse,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ImageRemoveOk {
-    pub machine_id: MachineId,
-    pub outcome: ImageRemoveOutcome,
-}
-
-impl MachineRpcResponder for ImageRemoveOk {
-    fn responder_machine_id(&self) -> &MachineId {
-        let Self {
-            machine_id,
-            outcome: _,
-        } = self;
-        machine_id
-    }
-}
-
-pub type ImageRemoveResponse = MachineRpcResponse<ImageRemoveOk, ImageRemoveDomainError>;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ImageRemoveDomainError {
-    InvalidRequest { message: FailureMessage },
-    RemoveFailed { message: FailureMessage },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ImageRpcDomainError {
-    InvalidRequest {
-        message: FailureMessage,
-    },
-    UploadNotFound {
-        upload_id: ImageUploadId,
-    },
-    OffsetMismatch {
-        expected: u64,
-        actual: u64,
-    },
-    ChunkTooLarge {
-        size: u64,
-        maximum: u64,
-    },
-    ChunkOutOfBounds {
-        total_size: u64,
-        offset: u64,
-        size: u64,
-    },
-    UploadBusy {
-        maximum: u16,
-    },
-    ServiceUnavailable {
-        message: FailureMessage,
-    },
-    ImageMissing {
-        digest: OciDigest,
-    },
-    DigestMismatch {
-        expected: OciDigest,
-        actual: OciDigest,
-    },
-    ConfigMismatch {
-        expected: OciDigest,
-        actual: OciDigest,
-    },
-    PlatformMismatch {
-        expected: OciPlatform,
-        actual: OciPlatform,
-    },
-    StorageFailed {
-        message: FailureMessage,
-    },
-    ImageEnsureConflict {
-        owner: Box<crate::machine::runtime::ManagedContainerIdentity>,
-    },
-    ImageEnsureNotFound {
-        owner: Box<crate::machine::runtime::ManagedContainerIdentity>,
-    },
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        ImageEnsureFailure, ImageEnsureRequest, ImageEnsureSource, ImageEnsureStatus,
-        ImageRepository, OciDigest,
-    };
-    use crate::deploy::ImageReference;
-    use crate::ids::{NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId, StepId};
-    use crate::machine::runtime::{ManagedContainerIdentity, ManagedContainerKind};
-    use crate::operation::FailureMessage;
+    use super::OciDigest;
 
     #[test]
     fn oci_digest_accepts_a_canonical_sha256_digest() {
@@ -776,82 +431,5 @@ mod tests {
         for value in values {
             assert!(OciDigest::try_new(value).is_err());
         }
-    }
-
-    #[test]
-    fn image_ensure_actions_round_trip_and_reject_unknown_fields() {
-        let identity = owner();
-        let actions = [
-            ImageEnsureRequest::Start {
-                owner: identity.clone(),
-                source: ImageEnsureSource::Registry {
-                    reference: ImageReference::try_new("registry.example/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").expect("image"),
-                    platform: super::OciPlatform::try_new("linux", "amd64").expect("platform"),
-                    credential: None,
-                },
-            },
-            ImageEnsureRequest::Status { owner: identity.clone() },
-            ImageEnsureRequest::Cancel { owner: identity },
-        ];
-        for action in actions {
-            let json = serde_json::to_value(&action).expect("serialize");
-            assert_eq!(
-                serde_json::from_value::<ImageEnsureRequest>(json).expect("deserialize"),
-                action
-            );
-        }
-        assert!(
-            serde_json::from_value::<ImageEnsureRequest>(
-                serde_json::json!({"action":"status","owner":owner(),"unexpected":true})
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn image_ensure_terminal_statuses_round_trip() {
-        let statuses = [
-            ImageEnsureStatus::Completed { reference: ImageReference::try_new("registry.example/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").expect("image") },
-            ImageEnsureStatus::Failed { failure: ImageEnsureFailure::PullFailed { message: FailureMessage::try_new("pull failed").expect("message") } },
-            ImageEnsureStatus::Failed { failure: ImageEnsureFailure::Stalled { timeout_millis: 30_000 } },
-            ImageEnsureStatus::Cancelled,
-        ];
-        for status in statuses {
-            let json = serde_json::to_value(&status).expect("serialize");
-            assert_eq!(
-                serde_json::from_value::<ImageEnsureStatus>(json).expect("deserialize"),
-                status
-            );
-        }
-    }
-
-    fn owner() -> ManagedContainerIdentity {
-        ManagedContainerIdentity {
-            namespace_id: NamespaceId::try_new("default").expect("namespace"),
-            service_id: ServiceId::try_new("api").expect("service"),
-            namespace_revision_entry_id: NamespaceRevisionEntryId::try_new("entry_a")
-                .expect("entry"),
-            operation_id: OperationId::try_new("operation_a").expect("operation"),
-            step_id: StepId::try_new("run_1").expect("step"),
-            kind: ManagedContainerKind::Service,
-        }
-    }
-
-    #[test]
-    fn repository_rejects_path_traversal() {
-        assert!(ImageRepository::try_new("team/../api").is_err());
-    }
-
-    #[test]
-    fn service_repository_is_valid_and_case_sensitive_for_all_valid_ids() {
-        let namespace = NamespaceId::try_new("Prod-East").expect("valid namespace id");
-        let uppercase = ServiceId::try_new("API_v2").expect("valid service id");
-        let lowercase = ServiceId::try_new("api_v2").expect("valid service id");
-
-        let uppercase = ImageRepository::for_service(&namespace, &uppercase);
-        let lowercase = ImageRepository::for_service(&namespace, &lowercase);
-
-        assert!(ImageRepository::try_new(uppercase.as_str()).is_ok());
-        assert_ne!(uppercase, lowercase);
     }
 }

@@ -1,53 +1,29 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import {
-  MAX_OPERATION_EVENT_REPLAY_LIMIT,
-  OPERATION_API_CONTRACTS,
-  eventSequence,
-  operationEventReplayLimit,
-  operationId,
+  API_MAJOR,
+  KNOWN_API_FEATURES,
+  imageReference,
+  machineName,
+  routeHostname,
+  routePort,
 } from "../src/index.ts";
 
-const fixturePath = join(
-  dirname(fileURLToPath(import.meta.url)),
-  "fixtures",
-  "operation-contract.json",
-);
-
-test("generated registry describes transport-neutral operation endpoints", () => {
-  assert.ok(OPERATION_API_CONTRACTS.some(({ name }) => name === "deploy.submit"));
-  for (const contract of OPERATION_API_CONTRACTS) {
-    assert.equal("subject" in contract, false);
-    assert.equal("execution" in contract, false);
-  }
+test("generated contract exposes the V2 API", () => {
+  assert.equal(API_MAJOR, 1);
+  assert.ok(KNOWN_API_FEATURES.includes("v2.deploy"));
+  assert.ok(KNOWN_API_FEATURES.includes("v2.operation_evidence"));
 });
 
-test("operation primitives enforce the Rust wire constraints", () => {
-  assert.equal(operationId("op_123"), "op_123");
-  assert.equal(eventSequence(42n), "42");
-  assert.equal(
-    operationEventReplayLimit(MAX_OPERATION_EVENT_REPLAY_LIMIT),
-    MAX_OPERATION_EVENT_REPLAY_LIMIT,
-  );
+test("live primitive helpers enforce the Rust wire constraints", () => {
+  assert.equal(machineName("worker_1"), "worker_1");
+  assert.equal(imageReference("registry.example/app:latest"), "registry.example/app:latest");
+  assert.equal(routeHostname("App.Example.com"), "app.example.com");
+  assert.equal(routePort(8080), 8080);
 
-  assert.throws(() => operationId("bad.id"), RangeError);
-  assert.throws(() => eventSequence(0), RangeError);
-  assert.throws(
-    () => operationEventReplayLimit(MAX_OPERATION_EVENT_REPLAY_LIMIT + 1),
-    RangeError,
-  );
-});
-
-test("representative fixture remains transport neutral", () => {
-  const fixture = JSON.parse(readFileSync(fixturePath, "utf8")) as Record<string, unknown>;
-
-  assert.deepEqual(fixture.accepted_operation, {
-    operation_id: "op_123",
-    start_sequence: "1",
-  });
-  assert.equal("operation_subject" in fixture, false);
+  assert.throws(() => machineName("bad.name"), RangeError);
+  assert.throws(() => imageReference("bad image"), RangeError);
+  assert.throws(() => routeHostname("-bad.example.com"), RangeError);
+  assert.throws(() => routePort(0), RangeError);
 });

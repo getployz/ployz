@@ -5,7 +5,6 @@ members = [
     "ebpf/common",
     "ebpf/control",
     "crates/ployz-host-runner",
-    "testing/ployz-test-support",
     "testing/ployz-e2e",
     "crates/ployzd",
     "crates/ployz",
@@ -39,7 +38,6 @@ defguard_wireguard_rs = "0.10"
 ployz-core = { path = "crates/ployz-core" }
 ployz-build-executor = { path = "crates/ployz-build-executor" }
 ployz-host-runner = { path = "crates/ployz-host-runner" }
-ployz-test-support = { path = "testing/ployz-test-support" }
 ployz-telemetry = { path = "crates/ployz-telemetry" }
 posthog-rs = { version = "0.19", default-features = false }
 rtnetlink = "0.21"

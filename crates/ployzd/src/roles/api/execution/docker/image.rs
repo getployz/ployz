@@ -69,6 +69,14 @@ impl DockerManagedContainerRunner {
 }
 
 impl V2MachineImageRunner for DockerManagedContainerRunner {
+    async fn resolve_registry_image(
+        &self,
+        reference: &ImageReference,
+        credential: Option<&RegistryCredential>,
+    ) -> Result<OciDigest, MachineRegistryImageResolveError> {
+        self.resolve_registry_reference(reference, credential).await
+    }
+
     async fn pull_v2_registry_image(
         &self,
         reference: &ImageReference,
@@ -220,8 +228,7 @@ mod tests {
     use super::*;
     use crate::roles::api::execution::docker::test_support::{image, runner_with_responses};
     use crate::roles::api::runner::{
-        MachineContainerRunner, MachineRegistryImageResolveError, V2MachineImagePullError,
-        V2MachineImageRunner,
+        MachineRegistryImageResolveError, V2MachineImagePullError, V2MachineImageRunner,
     };
 
     fn open_shutdown() -> (

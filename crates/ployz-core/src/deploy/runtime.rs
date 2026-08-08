@@ -473,6 +473,15 @@ impl From<LinuxCapability> for String {
     }
 }
 
+/// Returns capabilities in the stable order used for Docker configuration.
+#[must_use]
+pub fn canonical_capabilities(capabilities: &[LinuxCapability]) -> Vec<&LinuxCapability> {
+    let mut capabilities = capabilities.iter().collect::<Vec<_>>();
+    capabilities.sort();
+    capabilities.dedup();
+    capabilities
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum LinuxCapabilityError {
     #[error("Linux capability must not be empty")]
