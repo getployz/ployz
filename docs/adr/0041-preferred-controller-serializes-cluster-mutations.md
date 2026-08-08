@@ -91,9 +91,10 @@ not add quorum or fencing to disguise it.
 
 The only cluster-wide brake blocks an isolated member:
 
-- a one-machine roster may operate when that machine is visible;
-- a roster with two or more machines requires the controller to see at least
-  two Corrosion members.
+- one- and two-machine rosters may operate after the local roster query
+  succeeds;
+- a roster with three or more machines requires Corrosion health to report at
+  least one other visible member.
 
 This is deliberately not majority quorum. Equal partitions may both operate.
 Immediate appointment rechecks reduce stale commits after convergence but
@@ -102,10 +103,18 @@ Concurrent namespace or route writes may therefore both report success. Named
 row readers select the lowest canonical ULID after convergence; other valid
 rows remain `doctor`-visible shadows until explicit removal.
 
-Volume-bearing deploys add a data-safety check at the effect boundary: every
-accepted machine must answer fresh inspection, and each target serializes its
-own mutations and refuses an unexpected active holder. This is not distributed
-volume fencing.
+Named-volume support is intentionally one-shot. A namespace may receive its
+first volume-bearing service deploy, but a later volume-bearing deploy is
+refused synchronously while that service row exists. Replicated volume services
+are limited to one replica; global mode still means one independent local
+volume per machine. A target also refuses a different deploy generation already
+present in that namespace, and the controller refuses debris reported by any
+responding machine, so a failed first attempt is not silently mounted beside a
+retry. There is no holder discovery, affinity, handoff, migration, or
+distributed volume fencing; an operator must remove the service row and its
+local runtime explicitly before starting over. Because the service row does not
+retain a runtime declaration, a later request that omits all mounts is treated
+as a stateless replacement and may leave the old local volume behind.
 
 ## Failure and recovery
 

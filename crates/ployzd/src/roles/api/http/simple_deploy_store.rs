@@ -7,11 +7,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use async_trait::async_trait;
 use ployz_core::corrosion::{
-    AutomaticHostnameMode, ClusterDocument, ContainerDocument, ControllerDocument,
-    CorrosionDocumentVersion, CorrosionHealthResponse, CorrosionTable, IngressMode,
-    MachineDocument, MachineStatusDocument, NamespaceDocument, OperationDocument,
-    OperatorWriteProvenance, PloyzDnsTargetState, RouteBindingDocument, ServiceDocument,
-    SqliteParameter, Statement, StoredRow, read_named_roster_rows, read_named_rows, read_rows,
+    AutomaticHostnameMode, ClusterDocument, ControllerDocument, CorrosionDocumentVersion,
+    CorrosionTable, IngressMode, MachineDocument, MachineStatusDocument, NamespaceDocument,
+    OperationDocument, OperatorWriteProvenance, PloyzDnsTargetState, RouteBindingDocument,
+    ServiceDocument, SqliteParameter, Statement, StoredRow, read_named_roster_rows,
+    read_named_rows, read_rows,
 };
 use ployz_core::ids::{
     ClusterId, MachineRowId, NamespaceRowId, OperationRowId, RouteBindingRowId, ServiceRowId,
@@ -73,7 +73,7 @@ impl CorrosionSimpleDeployStore {
                 .iter()
                 .filter_map(|row| NamespaceRowId::try_new(row.id.as_str().to_owned()).ok())
                 .collect::<BTreeSet<_>>();
-            for shadow in report.shadows {
+            for shadow in &report.shadows {
                 if let Ok(id) = NamespaceRowId::try_new(shadow.winner.id.as_str().to_owned()) {
                     namespace_ids.insert(id);
                 }
@@ -85,6 +85,22 @@ impl CorrosionSimpleDeployStore {
                 namespace_name: request.namespace_name.clone(),
                 namespace_ids: namespace_ids.into_iter().collect(),
             }));
+        }
+        if !request.runtime.volume_mounts.is_empty() {
+            let [namespace] = report.accepted.as_slice() else {
+                return Err("namespace preflight lost its single accepted row".to_owned());
+            };
+            let namespace_id = NamespaceRowId::try_new(namespace.id.as_str().to_owned())
+                .map_err(|error| error.to_string())?;
+            let services = self
+                .query(
+                    namespace_rows(CorrosionTable::Services, &namespace_id),
+                    MAX_DEPLOY_ROWS,
+                )
+                .await?;
+            if !decode_services(&self.cluster_id, services)?.is_empty() {
+                return Ok(Err(DeployRefusal::NamedVolumeRedeployUnsupported));
+            }
         }
         Ok(Ok(()))
     }
@@ -133,48 +149,29 @@ impl SimpleDeployStore for CorrosionSimpleDeployStore {
             namespace_rows(CorrosionTable::Services, &namespace.id),
             MAX_DEPLOY_ROWS,
         );
-        let containers = self.query(
-            all_cluster_rows(CorrosionTable::Containers, &self.cluster_id),
-            MAX_DEPLOY_ROWS,
-        );
         let routes = self.query(
             all_cluster_rows(CorrosionTable::RouteBindings, &self.cluster_id),
             MAX_DEPLOY_ROWS,
         );
-        let health = async {
-            self.corrosion
-                .health()
-                .await
-                .map_err(|error| error.to_string())
-        };
-        let (cluster, machines, statuses, services, containers, routes, health) = tokio::try_join!(
-            cluster, machines, statuses, services, containers, routes, health
-        )
-        .map_err(|error| error.to_string())?;
+        let (cluster, machines, statuses, services, routes) =
+            tokio::try_join!(cluster, machines, statuses, services, routes)
+                .map_err(|error| error.to_string())?;
 
         let cluster = decode_cluster(&self.cluster_id, cluster)?;
         let services = decode_services(&self.cluster_id, services)?;
-        let all_containers = decode_containers(&self.cluster_id, containers)?;
         // `ponytail:` leave a pending Ployz DNS target as an explicit refusal;
         // restore allocation only when cluster-local lease ownership is required.
         let (automatic_route, routes_without_service) =
             desired_routes(&cluster, command, &namespace.id, &services, routes)?;
-        let roster = decode_roster(&cluster, machines, statuses, &all_containers)?;
-        let visible_members = visible_members(health)?;
-        let container_rows = all_containers
-            .into_iter()
-            .filter(|container| container.namespace_id == namespace.id)
-            .collect();
+        let roster = decode_roster(&cluster, machines, statuses)?;
 
         Ok(DeployReality {
             namespace_id: namespace.id,
             namespace: namespace.document,
             services,
-            container_rows,
             automatic_route,
             routes_without_service,
             roster,
-            visible_members,
         })
     }
 
@@ -274,17 +271,6 @@ fn decode_services(
         .collect::<Result<Vec<_>, String>>()?;
     services.sort_by(|left, right| left.id.cmp(&right.id));
     Ok(services)
-}
-
-fn decode_containers(
-    cluster_id: &ClusterId,
-    rows: Vec<StoredRow>,
-) -> Result<Vec<ContainerDocument>, String> {
-    let report = read_rows::<ContainerDocument>(cluster_id, rows);
-    if !report.skipped.is_empty() {
-        return Err("container lookup contained a rejected row".to_owned());
-    }
-    Ok(report.accepted.into_iter().map(|row| row.value).collect())
 }
 
 fn desired_routes(
@@ -408,7 +394,6 @@ fn decode_roster(
     cluster: &ClusterDocument,
     machine_rows: Vec<StoredRow>,
     status_rows: Vec<StoredRow>,
-    containers: &[ContainerDocument],
 ) -> Result<Vec<DeployRosterMachine>, String> {
     let machines = read_named_roster_rows::<MachineDocument>(cluster, machine_rows);
     let statuses = read_rows::<MachineStatusDocument>(&cluster.cluster_id, status_rows);
@@ -417,12 +402,6 @@ fn decode_roster(
         if row.source.key == row.value.machine_id.as_str() {
             status_by_machine.insert(row.value.machine_id.clone(), row.value);
         }
-    }
-    let mut container_counts = BTreeMap::<MachineRowId, usize>::new();
-    for container in containers {
-        *container_counts
-            .entry(container.machine_id.clone())
-            .or_default() += 1;
     }
     let mut roster = machines
         .accepted
@@ -434,9 +413,7 @@ fn decode_roster(
                 .remove(&id)
                 .map(|status| DeployMachineStatus {
                     free_disk_bytes: status.free_disk_bytes,
-                    free_memory_bytes: status.free_memory_bytes,
                     load: status.load,
-                    total_container_count: container_counts.get(&id).copied().unwrap_or(0),
                 });
             Ok(DeployRosterMachine {
                 id,
@@ -448,16 +425,6 @@ fn decode_roster(
         .collect::<Result<Vec<_>, String>>()?;
     roster.sort_by(|left, right| left.id.cmp(&right.id));
     Ok(roster)
-}
-
-fn visible_members(health: CorrosionHealthResponse) -> Result<usize, String> {
-    match health {
-        CorrosionHealthResponse::Response { members, .. } => usize::try_from(members)
-            .map_err(|_| format!("Corrosion health returned negative member count {members}")),
-        CorrosionHealthResponse::Error(message) => {
-            Err(format!("Corrosion health reported an error: {message}"))
-        }
-    }
 }
 
 fn commit_statements(commit: &DeployCommit) -> Result<Vec<Statement>, String> {

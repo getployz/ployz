@@ -8,17 +8,16 @@ use std::net::Ipv4Addr;
 
 use crate::corrosion::{
     ClusterDocument, ContainerDocument, CorrosionNamespaceName, CorrosionServiceName,
-    HostPortBindings, MachineDocument, MachineLoadBand, MachineStatusDocument, NamespaceDocument,
-    OperationDocument, Principal, ServiceDocument, ServiceReplicaCount,
-    SourcePrincipalResolutionError, V2ManagedContainerIdentity,
+    HostPortBindings, MachineDocument, MachineStatusDocument, NamespaceDocument, OperationDocument,
+    Principal, ServiceDocument, ServiceReplicaCount, SourcePrincipalResolutionError,
+    V2ManagedContainerIdentity,
 };
-use crate::deploy::{ContainerRuntimeSpec, ImageReference, RegistryCredential, VolumeName};
+use crate::deploy::{ContainerRuntimeSpec, ImageReference, RegistryCredential};
 use crate::ids::{
     ContainerId, MachineRowId, NamespaceRowId, OperationRowId, ServiceRowId, TokenId,
 };
 use crate::install::{InstallArtifactVersion, InstallSha256Digest};
-use crate::machine::runtime::ManagedContainerHealthStatus;
-use crate::machine::{MachineLifecycle, MachineName};
+use crate::machine::MachineName;
 
 /// The only supported major version of the v2 HTTP contract.
 pub const API_MAJOR: u16 = 1;
@@ -58,8 +57,6 @@ pub const DEPLOY_INSPECT_ROUTE: &str = "/deploy/inspect";
 pub const DEPLOY_PREPARE_ROUTE: &str = "/deploy/prepare";
 /// Stable endpoint for retiring exact observed containers on one target host.
 pub const DEPLOY_RETIRE_ROUTE: &str = "/deploy/retire";
-/// Stable prefix for one coarse operation summary and its watch stream.
-pub const OPERATIONS_ROUTE_PREFIX: &str = "/operations";
 /// Stable prefix for service log access.
 pub const SERVICE_LOGS_ROUTE_PREFIX: &str = "/services";
 /// The stable endpoint for the cheap cluster diagnostics projection.
@@ -266,18 +263,6 @@ pub fn lens_watch_route(collection: LensCollection) -> String {
 #[must_use]
 pub fn token_revoke_route(token_id: &TokenId) -> String {
     format!("{TOKEN_REVOKE_ROUTE_PREFIX}/{token_id}")
-}
-
-/// Builds the exact summary route for one operation row.
-#[must_use]
-pub fn operation_route(operation_id: &OperationRowId) -> String {
-    format!("{OPERATIONS_ROUTE_PREFIX}/{operation_id}")
-}
-
-/// Builds the coarse-state watch route for one deploy operation.
-#[must_use]
-pub fn operation_watch_route(operation_id: &OperationRowId) -> String {
-    format!("{}/watch", operation_route(operation_id))
 }
 
 /// Builds the bounded log-tail route for one service row.
@@ -504,6 +489,7 @@ pub enum DeployRefusal {
         namespace_name: CorrosionNamespaceName,
         namespace_ids: Vec<NamespaceRowId>,
     },
+    NamedVolumeRedeployUnsupported,
 }
 
 impl DeployRefusal {
@@ -518,81 +504,10 @@ impl DeployRefusal {
     }
 }
 
-/// One machine's live placement testimony, gathered at point of use and
-/// never stored.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct PlacementBid {
-    pub machine_id: MachineRowId,
-    pub machine_name: MachineName,
-    pub lifecycle: MachineLifecycle,
-    pub free_disk_bytes: u64,
-    pub free_memory_bytes: u64,
-    pub load: MachineLoadBand,
-    /// Every managed container on the machine, across all services.
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
-    pub total_container_count: usize,
-    /// The requested namespace's service containers from live Docker.
-    pub service_containers: Vec<ServiceContainerObservation>,
-    /// The requested declared volumes the machine holds.
-    pub volumes_held: BTreeSet<VolumeName>,
-}
-
-/// One live Docker observation of a container in the requested namespace.
-///
-/// The scope is the namespace, not the service row id: a namespace admits
-/// one service, and a failed first deploy's containers carry a generated
-/// service row id that never reached a row, so only the namespace names
-/// them for the next attempt's sweep.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct ServiceContainerObservation {
-    pub container_id: ContainerId,
-    /// The service row id recovered from the container's own identity.
-    pub service_id: ServiceRowId,
-    /// The deploy operation that created the container.
-    pub deploy: OperationRowId,
-    /// Named volumes the container mounts.
-    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
-    pub named_volumes: BTreeSet<VolumeName>,
-}
-
-/// One target host's normalized live Docker observation for deploy planning.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeployContainerObservation {
-    pub container_id: ContainerId,
-    pub identity: V2ManagedContainerIdentity,
-    pub state: DeployContainerState,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub health: Option<ManagedContainerHealthStatus>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resolved_image_identity: Option<String>,
-    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
-    pub named_volumes: BTreeSet<VolumeName>,
-}
-
-/// The deploy-relevant state of one observed container.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum DeployContainerState {
-    Running {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        ip: Option<Ipv4Addr>,
-    },
-    Stopped,
-    /// Paused, restarting, stopping, dead, or otherwise not safely reusable.
-    Indeterminate,
-}
-
 /// Machine-authenticated request for fresh target-host deploy facts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeployInspectRequest {
     pub appointment_id: crate::corrosion::ControllerAppointmentId,
-    pub namespace_id: NamespaceRowId,
-    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
-    pub volumes: BTreeSet<VolumeName>,
 }
 
 /// Fresh target-host deploy facts or one bounded local failure.
@@ -601,8 +516,7 @@ pub struct DeployInspectRequest {
 pub enum DeployInspectOutcome {
     Inspected {
         bridge_ready: bool,
-        containers: Vec<DeployContainerObservation>,
-        volumes_held: BTreeSet<VolumeName>,
+        containers: Vec<DeployObservedContainer>,
     },
     Failed {},
 }
@@ -635,9 +549,6 @@ pub struct DeployPrepareRequest {
     pub runtime: ContainerRuntimeSpec,
     pub health_gate: HealthGatePolicy,
     pub replicas: Vec<DeployDesiredReplica>,
-    /// The only prior deploy generation this workflow may stop.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub predecessor_deploy: Option<OperationRowId>,
 }
 
 /// One exact replica prepared and creation-gated on its target host.
@@ -677,51 +588,6 @@ pub enum DeployRetireOutcome {
     Retired,
     Refused {},
     Failed {},
-}
-
-/// One operation summary returned by its row id.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct OperationLookupReply {
-    pub operation_id: OperationRowId,
-    pub operation: OperationDocument,
-}
-
-/// A typed refusal to resolve one operation summary row.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum OperationLookupRefusal {
-    NotFound { operation_id: OperationRowId },
-}
-
-/// A typed refusal to follow one coarse operation row.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum OperationWatchRefusal {
-    NotFound { operation_id: OperationRowId },
-}
-
-/// A snapshot followed by coarse Corrosion row changes.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum OperationWatchEvent {
-    State { operation: OperationLookupReply },
-    Terminal { operation: OperationLookupReply },
-}
-
-impl OperationWatchEvent {
-    /// Returns the stable SSE event name for this envelope.
-    #[must_use]
-    pub const fn event_name(&self) -> &'static str {
-        match self {
-            Self::State { .. } => "state",
-            Self::Terminal { .. } => "terminal",
-        }
-    }
 }
 
 /// A positive, bounded line count for one v2 log tail.
@@ -996,8 +862,6 @@ pub enum V2Route {
     DeployInspect,
     DeployPrepare,
     DeployRetire,
-    Operation(OperationRowId),
-    OperationWatch(OperationRowId),
     ServiceLogsTail(ServiceRowId),
     ServiceLogsFollow(ServiceRowId),
     Status,
@@ -1109,22 +973,6 @@ impl V2Route {
         {
             return Some(Self::TokenRevoke(token_id));
         }
-        if let Some(operation_path) = path
-            .strip_prefix(OPERATIONS_ROUTE_PREFIX)
-            .and_then(|suffix| suffix.strip_prefix('/'))
-        {
-            let mut segments = operation_path.split('/');
-            let operation_id = segments
-                .next()
-                .and_then(|id| OperationRowId::try_new(id).ok())?;
-            return match segments.next() {
-                None => Some(Self::Operation(operation_id)),
-                Some("watch") if segments.next().is_none() => {
-                    Some(Self::OperationWatch(operation_id))
-                }
-                Some(_) => None,
-            };
-        }
         if let Some(service_path) = path
             .strip_prefix(SERVICE_LOGS_ROUTE_PREFIX)
             .and_then(|suffix| suffix.strip_prefix('/'))
@@ -1176,8 +1024,6 @@ impl V2Route {
             Self::DeployInspect => DEPLOY_INSPECT_ROUTE.to_owned(),
             Self::DeployPrepare => DEPLOY_PREPARE_ROUTE.to_owned(),
             Self::DeployRetire => DEPLOY_RETIRE_ROUTE.to_owned(),
-            Self::Operation(operation_id) => operation_route(operation_id),
-            Self::OperationWatch(operation_id) => operation_watch_route(operation_id),
             Self::ServiceLogsTail(service_id) => service_logs_tail_route(service_id),
             Self::ServiceLogsFollow(service_id) => service_logs_follow_route(service_id),
             Self::Status => STATUS_ROUTE.to_owned(),
@@ -1195,13 +1041,9 @@ impl V2Route {
     #[must_use]
     pub const fn method(&self) -> V2Method {
         match self {
-            Self::Version
-            | Self::Operation(_)
-            | Self::OperationWatch(_)
-            | Self::Status
-            | Self::Doctor
-            | Self::Lens(_)
-            | Self::LensWatch(_) => V2Method::Get,
+            Self::Version | Self::Status | Self::Doctor | Self::Lens(_) | Self::LensWatch(_) => {
+                V2Method::Get
+            }
             Self::Founding
             | Self::TokenCreate
             | Self::TokenList
@@ -1242,7 +1084,6 @@ impl V2Route {
             Self::Deploy | Self::DeployInspect | Self::DeployPrepare | Self::DeployRetire => {
                 KnownApiFeature::Deploy
             }
-            Self::Operation(_) | Self::OperationWatch(_) => KnownApiFeature::OperationStatus,
             Self::ServiceLogsTail(_) | Self::ServiceLogsFollow(_) => KnownApiFeature::Logs,
             Self::Status | Self::Doctor => KnownApiFeature::Diagnostics,
             Self::PeerRemove => KnownApiFeature::PeerRemove,
@@ -1275,8 +1116,6 @@ impl V2Route {
             Self::RouteAttach => matches!(principal, Principal::Peer { .. }),
             Self::Version
             | Self::Founding
-            | Self::Operation(_)
-            | Self::OperationWatch(_)
             | Self::ServiceLogsTail(_)
             | Self::ServiceLogsFollow(_)
             | Self::Status

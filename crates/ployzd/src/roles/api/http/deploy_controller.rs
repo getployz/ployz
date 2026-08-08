@@ -66,7 +66,8 @@ pub(super) async fn handle(
 fn deploy_refusal(refusal: DeployRefusal) -> Response<HttpBody> {
     let status = match &refusal {
         DeployRefusal::NamespaceNotFound { .. } => StatusCode::NOT_FOUND,
-        DeployRefusal::NamespaceAmbiguous { .. } => StatusCode::CONFLICT,
+        DeployRefusal::NamespaceAmbiguous { .. }
+        | DeployRefusal::NamedVolumeRedeployUnsupported => StatusCode::CONFLICT,
     };
     super::mutations::typed_response(status, &refusal)
 }

@@ -119,8 +119,6 @@ pub(super) async fn handle_mutation(
         | V2Route::DeployInspect
         | V2Route::DeployPrepare
         | V2Route::DeployRetire
-        | V2Route::Operation(_)
-        | V2Route::OperationWatch(_)
         | V2Route::ServiceLogsTail(_)
         | V2Route::ServiceLogsFollow(_)
         | V2Route::Status

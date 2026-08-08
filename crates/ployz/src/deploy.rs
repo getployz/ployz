@@ -80,6 +80,10 @@ pub enum DeployExecutionError {
         namespace_name: String,
         namespace_ids: String,
     },
+    #[error(
+        "named-volume redeploy is unsupported; remove the service row and local runtime explicitly before deploying again"
+    )]
+    NamedVolumeRedeployUnsupported,
 }
 
 impl From<DeployRefusal> for DeployExecutionError {
@@ -103,6 +107,7 @@ impl From<DeployRefusal> for DeployExecutionError {
                     .collect::<Vec<_>>()
                     .join(", "),
             },
+            DeployRefusal::NamedVolumeRedeployUnsupported => Self::NamedVolumeRedeployUnsupported,
         }
     }
 }
@@ -170,6 +175,16 @@ mod tests {
         assert_eq!(
             body.get("machines"),
             Some(&serde_json::json!({ "kind": "any" }))
+        );
+    }
+
+    #[test]
+    fn named_volume_redeploy_refusal_is_explicit_about_manual_cleanup() {
+        let refusal = DeployRefusal::NamedVolumeRedeployUnsupported;
+
+        assert_eq!(
+            DeployExecutionError::from(refusal).to_string(),
+            "named-volume redeploy is unsupported; remove the service row and local runtime explicitly before deploying again"
         );
     }
 }

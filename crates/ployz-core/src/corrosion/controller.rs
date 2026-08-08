@@ -19,8 +19,8 @@ pub fn owns_current_controller_appointment(
 ///
 /// `visible_members` includes the answering machine.
 ///
-/// `ponytail:` this blocks isolated nodes only; require quorum if split
-/// execution becomes unsafe.
+/// `ponytail:` two-node splits are accepted; larger rosters only block a node
+/// that cannot see any peer.
 #[must_use]
 pub const fn controller_visibility_allows_work(
     accepted_roster_members: usize,
@@ -28,7 +28,7 @@ pub const fn controller_visibility_allows_work(
 ) -> bool {
     match accepted_roster_members {
         0 => false,
-        1 => visible_members >= 1,
+        1 | 2 => true,
         _ => visible_members >= 2,
     }
 }

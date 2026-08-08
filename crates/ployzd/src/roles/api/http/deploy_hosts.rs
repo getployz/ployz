@@ -76,24 +76,19 @@ impl MeshDeployHosts {
         {
             Ok(true) => Ok(()),
             Ok(false) => Err(DeployHostError::StaleController),
-            Err(error) => Err(DeployHostError::Failed(error.to_string())),
+            Err(_) => Err(DeployHostError::Failed),
         }
     }
 
     async fn target(&self, machine_id: &MachineRowId) -> Result<SocketAddr, DeployHostError> {
         let roster = read_accepted_roster(&self.corrosion, &self.cluster_id)
             .await
-            .map_err(|error| DeployHostError::Failed(error.to_string()))?;
+            .map_err(|_| DeployHostError::Failed)?;
         let machine = roster
             .machines
             .into_iter()
             .find(|machine| &machine.id == machine_id)
-            .ok_or_else(|| {
-                DeployHostError::Failed(format!(
-                    "target machine {} is not in the accepted roster",
-                    machine_id
-                ))
-            })?;
+            .ok_or(DeployHostError::Failed)?;
         Ok(machine_socket_addr(
             &machine.document.transport,
             self.api_port,
@@ -119,21 +114,14 @@ impl MeshDeployHosts {
             .json(request)
             .send()
             .await
-            .map_err(|error| {
-                DeployHostError::Failed(format!("target host request failed: {error}"))
-            })?;
+            .map_err(|_| DeployHostError::Failed)?;
         if response.status() == StatusCode::CONFLICT.as_u16() {
             return Err(DeployHostError::StaleController);
         }
         if response.status() != StatusCode::OK.as_u16() {
-            return Err(DeployHostError::Failed(format!(
-                "target host answered status {}",
-                response.status()
-            )));
+            return Err(DeployHostError::Failed);
         }
-        decode_bounded(response)
-            .await
-            .map_err(DeployHostError::Failed)
+        decode_bounded(response).await
     }
 }
 
@@ -192,23 +180,24 @@ impl DeployHosts for MeshDeployHosts {
     }
 }
 
-async fn decode_bounded<Reply>(response: reqwest::Response) -> Result<Reply, String>
+async fn decode_bounded<Reply>(response: reqwest::Response) -> Result<Reply, DeployHostError>
 where
     Reply: serde::de::DeserializeOwned,
 {
     let mut stream = response.bytes_stream();
     let mut body = Vec::new();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|error| format!("target host reply failed: {error}"))?;
-        let Some(total) = body.len().checked_add(chunk.len()) else {
-            return Err("target host reply was too large".to_owned());
-        };
+        let chunk = chunk.map_err(|_| DeployHostError::Failed)?;
+        let total = body
+            .len()
+            .checked_add(chunk.len())
+            .ok_or(DeployHostError::Failed)?;
         if total > MAX_REPLY_BYTES {
-            return Err("target host reply was too large".to_owned());
+            return Err(DeployHostError::Failed);
         }
         body.extend_from_slice(&chunk);
     }
-    serde_json::from_slice(&body).map_err(|error| format!("target host reply was invalid: {error}"))
+    serde_json::from_slice(&body).map_err(|_| DeployHostError::Failed)
 }
 
 pub(super) fn machine_socket_addr(transport: &MachineTransport, api_port: u16) -> SocketAddr {

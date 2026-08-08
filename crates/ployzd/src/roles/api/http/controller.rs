@@ -45,13 +45,18 @@ impl ControllerStore {
         decode_controller_rows(&self.cluster_id, rows)
     }
 
-    /// Samples local Corrosion health and applies the isolated-member brake.
+    /// Applies the isolated-member brake when the roster has multiple nodes.
     pub(super) async fn has_work_visibility(
         &self,
         accepted_roster_members: usize,
     ) -> Result<bool, ControllerStoreError> {
-        let health = self.corrosion.health().await?;
-        work_visibility(accepted_roster_members, health)
+        match accepted_roster_members {
+            0 => Ok(false),
+            1 | 2 => Ok(true),
+            _ => {
+                multi_node_work_visibility(accepted_roster_members, self.corrosion.health().await?)
+            }
+        }
     }
 
     /// Creates the first appointment without replacing a row won by a racer.
@@ -109,15 +114,10 @@ impl ControllerStore {
         &self,
         accepted_roster_members: usize,
     ) -> Result<(), ControllerStoreError> {
-        let health = self.corrosion.health().await?;
-        let visible_members = visible_members(health)?;
-        if controller_visibility_allows_work(accepted_roster_members, visible_members) {
+        if self.has_work_visibility(accepted_roster_members).await? {
             Ok(())
         } else {
-            Err(ControllerStoreError::InsufficientVisibility {
-                accepted_roster_members,
-                visible_members,
-            })
+            Err(ControllerStoreError::InsufficientVisibility)
         }
     }
 
@@ -137,7 +137,7 @@ impl ControllerStore {
     }
 }
 
-fn work_visibility(
+fn multi_node_work_visibility(
     accepted_roster_members: usize,
     health: CorrosionHealthResponse,
 ) -> Result<bool, ControllerStoreError> {
@@ -149,8 +149,15 @@ fn work_visibility(
 
 fn visible_members(health: CorrosionHealthResponse) -> Result<usize, ControllerStoreError> {
     match health {
-        CorrosionHealthResponse::Response { members, .. } => usize::try_from(members)
-            .map_err(|_| ControllerStoreError::InvalidVisibleMemberCount { members }),
+        CorrosionHealthResponse::Response { members, .. } => {
+            let peers = usize::try_from(members)
+                .map_err(|_| ControllerStoreError::InvalidVisibleMemberCount { members })?;
+            // Corrosion reports other visible agents; the answering node is
+            // also visible to itself.
+            peers
+                .checked_add(1)
+                .ok_or(ControllerStoreError::InvalidVisibleMemberCount { members })
+        }
         CorrosionHealthResponse::Error(message) => {
             Err(ControllerStoreError::HealthReportedError { message })
         }
@@ -233,13 +240,8 @@ pub(super) enum ControllerStoreError {
         "local Corrosion controller query returned invalid rows ({accepted} accepted, {skipped} skipped)"
     )]
     InvalidControllerRows { accepted: usize, skipped: usize },
-    #[error(
-        "controller work requires more visibility ({visible_members} visible of {accepted_roster_members} accepted roster members)"
-    )]
-    InsufficientVisibility {
-        accepted_roster_members: usize,
-        visible_members: usize,
-    },
+    #[error("controller work requires another visible roster member")]
+    InsufficientVisibility,
     #[error("could not encode the controller appointment: {0}")]
     Encode(#[from] serde_json::Error),
     #[error("the controller appointment write was not visible on readback")]
@@ -248,6 +250,9 @@ pub(super) enum ControllerStoreError {
 
 #[cfg(test)]
 mod tests {
+    use std::net::{Ipv4Addr, TcpListener};
+    use std::time::Duration;
+
     use ployz_core::corrosion::{
         ControllerAppointmentId, ControllerDocument, CorrosionDocumentVersion,
         CorrosionHealthResponse, SqliteParameter, Statement, StoredRow,
@@ -255,8 +260,12 @@ mod tests {
     use ployz_core::ids::{ClusterId, MachineRowId};
 
     use super::{
-        ControllerStoreError, decode_controller_rows, failover_appointment_statement,
-        initial_appointment_statement, select_controller, work_visibility,
+        ControllerStore, ControllerStoreError, decode_controller_rows,
+        failover_appointment_statement, initial_appointment_statement, multi_node_work_visibility,
+        select_controller,
+    };
+    use crate::corrosion::{
+        BearerToken, CorrosionClient, CorrosionClientBounds, CorrosionClientConfig,
     };
 
     const CLUSTER_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -287,18 +296,49 @@ mod tests {
     }
 
     #[test]
-    fn health_members_drive_only_the_isolated_member_brake() {
-        assert!(work_visibility(1, health(1)).expect("singleton visibility"));
-        assert!(!work_visibility(3, health(1)).expect("isolated visibility"));
-        assert!(work_visibility(200, health(2)).expect("two visible members"));
+    fn health_members_drive_only_the_three_plus_node_isolation_brake() {
+        assert!(!multi_node_work_visibility(3, health(0)).expect("isolated visibility"));
+        assert!(multi_node_work_visibility(200, health(1)).expect("two visible members"));
         assert!(matches!(
-            work_visibility(3, health(-1)),
+            multi_node_work_visibility(3, health(-1)),
             Err(ControllerStoreError::InvalidVisibleMemberCount { members: -1 })
         ));
         assert!(matches!(
-            work_visibility(3, CorrosionHealthResponse::Error("cold".to_owned())),
+            multi_node_work_visibility(3, CorrosionHealthResponse::Error("cold".to_owned())),
             Err(ControllerStoreError::HealthReportedError { message }) if message == "cold"
         ));
+    }
+
+    #[tokio::test]
+    async fn small_cluster_visibility_does_not_wait_for_corrosion_health() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("test listener");
+        let config = CorrosionClientConfig::new(
+            listener.local_addr().expect("test listener address"),
+            BearerToken::new("test-token").expect("bearer token"),
+            CorrosionClientBounds {
+                connect_timeout: Duration::from_millis(10),
+                request_timeout: Duration::from_millis(10),
+                stream_idle_timeout: Duration::from_millis(10),
+                max_ndjson_frame_bytes: 1_024,
+                max_error_body_bytes: 1_024,
+            },
+        )
+        .expect("Corrosion client config");
+        let store = ControllerStore::new(
+            CorrosionClient::new(config).expect("Corrosion client"),
+            cluster_id(),
+            MachineRowId::try_new(MACHINE_ID).expect("machine id"),
+        );
+
+        for roster_members in [1, 2] {
+            assert!(
+                store
+                    .has_work_visibility(roster_members)
+                    .await
+                    .is_ok_and(|allowed| allowed)
+            );
+        }
+        drop(listener);
     }
 
     #[test]

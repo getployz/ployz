@@ -1,14 +1,17 @@
 //! Coarse operation listing and watching.
 
+use std::time::Duration;
+
 use ployz_core::corrosion::{CorrosionDeployOutcome, CorrosionDeployState, OperationDocument};
 use ployz_core::{
-    LensCollection, LensSnapshot, OperationLookupReply, OperationWatchEvent, OperationWatchRefusal,
-    operation_watch_route,
+    ApiRefusal, LensCollection, LensSnapshot, LensWatchEvent, OperationLensRow, lens_watch_route,
 };
 
 use crate::commands::{OpsCommand, OpsListCommand, OpsWatchCommand};
 use crate::mesh::http::{DEFAULT_MESH_SSE_IDLE_TIMEOUT, MAX_MESH_SSE_FRAME_BYTES, SseReply};
 use crate::remote::{OperatorRemote, OperatorRemoteError};
+
+const OPERATION_APPEAR_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub async fn execute(command: OpsCommand) -> Result<String, OpsExecutionError> {
     match command {
@@ -46,9 +49,9 @@ pub async fn watch_to(
 ) -> Result<(), OpsExecutionError> {
     let remote = OperatorRemote::load(command.target.as_ref())?;
     let reply = remote
-        .request_sse_with_refusal::<(), OperationWatchEvent, OperationWatchRefusal>(
+        .request_sse_with_refusal::<(), LensWatchEvent, ApiRefusal>(
             hyper::Method::GET,
-            &operation_watch_route(&command.operation_id),
+            &lens_watch_route(LensCollection::Operations),
             None,
             DEFAULT_MESH_SSE_IDLE_TIMEOUT,
             MAX_MESH_SSE_FRAME_BYTES,
@@ -56,19 +59,23 @@ pub async fn watch_to(
         .await?;
     let mut stream = match reply {
         SseReply::Stream(stream) => stream,
-        SseReply::Refused(OperationWatchRefusal::NotFound { operation_id }) => {
-            return Err(OpsExecutionError::NotFound {
-                operation_id: operation_id.to_string(),
-            });
-        }
+        SseReply::Refused(refusal) => return Err(OpsExecutionError::LensRefused { refusal }),
     };
+    let appear_by = tokio::time::Instant::now() + OPERATION_APPEAR_TIMEOUT;
+    let mut appeared = false;
     let mut last = None;
     loop {
-        let Some(envelope) = stream
-            .next_event()
-            .await
-            .map_err(OperatorRemoteError::from)?
-        else {
+        let next = stream.next_event();
+        let next = if appeared {
+            next.await
+        } else {
+            tokio::time::timeout_at(appear_by, next)
+                .await
+                .map_err(|_| OpsExecutionError::NotFound {
+                    operation_id: command.operation_id.to_string(),
+                })?
+        };
+        let Some(envelope) = next.map_err(OperatorRemoteError::from)? else {
             return Err(OpsExecutionError::StreamEnded);
         };
         let expected = envelope.data.event_name();
@@ -78,32 +85,44 @@ pub async fn watch_to(
                 found: envelope.event,
             });
         }
-        let (operation, terminal) = match envelope.data {
-            OperationWatchEvent::State { operation } => (operation, false),
-            OperationWatchEvent::Terminal { operation } => (operation, true),
+        let snapshot = match envelope.data {
+            LensWatchEvent::Snapshot { snapshot } | LensWatchEvent::State { snapshot } => snapshot,
+            LensWatchEvent::Terminal { refusal } => {
+                return Err(OpsExecutionError::LensRefused { refusal });
+            }
         };
+        let LensSnapshot::Operations { rows } = snapshot else {
+            return Err(OpsExecutionError::WrongLens);
+        };
+        let Some(operation) = rows
+            .into_iter()
+            .find(|operation| operation.id == command.operation_id)
+        else {
+            continue;
+        };
+        appeared = true;
         let rendered = render_operation(&operation);
         if last.as_deref() != Some(rendered.as_str()) {
             writeln!(output, "{rendered}").map_err(OpsExecutionError::Output)?;
             last = Some(rendered);
         }
-        if terminal {
-            return if operation_terminal_succeeded(&operation.operation) {
+        if operation.document.is_terminal() {
+            return if operation_terminal_succeeded(&operation.document) {
                 Ok(())
             } else {
                 Err(OpsExecutionError::OperationFailed {
-                    state: operation_state(&operation.operation),
+                    state: operation_state(&operation.document),
                 })
             };
         }
     }
 }
 
-fn render_operation(operation: &OperationLookupReply) -> String {
+fn render_operation(operation: &OperationLensRow) -> String {
     format!(
         "{} deploy {}",
-        operation.operation_id,
-        operation_state(&operation.operation)
+        operation.id,
+        operation_state(&operation.document)
     )
 }
 
@@ -145,6 +164,8 @@ pub enum OpsExecutionError {
     },
     #[error("operation stream ended before a terminal row")]
     StreamEnded,
+    #[error("operations lens stopped: {refusal:?}")]
+    LensRefused { refusal: ApiRefusal },
     #[error("cannot write operation status: {0}")]
     Output(std::io::Error),
     #[error("operation {operation_id} was not found")]

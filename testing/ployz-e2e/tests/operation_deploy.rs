@@ -5,11 +5,11 @@ use bollard::Docker;
 use ployz_core::corrosion::fingerprint_env_value;
 use ployz_core::deploy::EnvValue;
 use ployz_e2e::dind::{
-    DindCluster, DindClusterSpec, MachineSpec, artifact_dir, assert_cluster_wide_operation_replay,
-    assert_dns_and_http, assert_driver_local_evidence_is_secret_free,
+    DindCluster, DindClusterSpec, MachineSpec, artifact_dir,
+    assert_cluster_wide_operation_terminal, assert_dns_and_http,
     assert_first_revision_container_is_gone, assert_gateway_http, connect_docker,
     create_namespace_and_deploy, e2e_enabled, found_and_join_with_service_urls, keep_requested,
-    machine_image, parse_deploy_operation, push_second_revision, require, spawn_deploy,
+    machine_image, parse_deploy_operation, push_second_revision, require, run_cli,
     start_mutable_registry,
 };
 
@@ -101,9 +101,7 @@ async fn exercise_operation_deploy(docker: &Docker, cluster: &DindCluster) -> Re
         SECRET_NAME,
         SECRET_VALUE,
     )?;
-    assert_cluster_wide_operation_replay(&operator, &operation_id, SECRET_VALUE)?;
-    assert_driver_local_evidence_is_secret_free(docker, founder, &operation_id, SECRET_VALUE)
-        .await?;
+    assert_cluster_wide_operation_terminal(&operator, &operation_id)?;
 
     let rows = support::wait_for_public_deploy_rows(
         docker,
@@ -136,44 +134,25 @@ async fn exercise_operation_deploy(docker: &Docker, cluster: &DindCluster) -> Re
     .await?;
     assert_gateway_http(docker, joiner, PUBLIC_HOSTNAME, FIRST_BODY).await?;
 
-    // Second deploy of the same incumbent: revision-gated blue/green cutover.
+    // A second deploy re-resolves the mutable tag and converges the gateway.
     push_second_revision(docker, founder, &image, SECOND_BODY).await?;
-    let deploy = spawn_deploy(
+    let environment = format!("{SECRET_NAME}={SECRET_VALUE}");
+    let deploy_output = run_cli(
         &operator,
-        NAMESPACE,
-        SERVICE,
-        &image,
-        SECRET_NAME,
-        SECRET_VALUE,
+        &[
+            "deploy",
+            NAMESPACE,
+            SERVICE,
+            &image,
+            "--env",
+            &environment,
+            "--target",
+            operator.founder_target.as_str(),
+        ],
     )?;
-    let deploy_output = support::watch_gateway_cutover_traffic(
-        docker,
-        joiner,
-        support::GatewayCutover {
-            api_address: &joined.api_address,
-            service_name: SERVICE,
-            first_operation: &operation_id,
-            hostname: PUBLIC_HOSTNAME,
-            bodies: support::RevisionBodies {
-                first: FIRST_BODY,
-                second: SECOND_BODY,
-            },
-        },
-        deploy,
-    )
-    .await?;
     let second_operation_id =
         parse_deploy_operation(&deploy_output, "second deploy", SECRET_VALUE)?;
-    let replay =
-        assert_cluster_wide_operation_replay(&operator, &second_operation_id, SECRET_VALUE)?;
-    support::assert_replay_orders_cutover_evidence(&replay)?;
-    assert_driver_local_evidence_is_secret_free(
-        docker,
-        founder,
-        &second_operation_id,
-        SECRET_VALUE,
-    )
-    .await?;
+    assert_cluster_wide_operation_terminal(&operator, &second_operation_id)?;
 
     let second_rows = support::wait_for_public_deploy_rows(
         docker,
@@ -191,6 +170,7 @@ async fn exercise_operation_deploy(docker: &Docker, cluster: &DindCluster) -> Re
         &expected_fingerprint,
     )?;
     support::assert_cutover_rows(&second_rows, &rows, &second_operation_id)?;
+    assert_gateway_http(docker, joiner, PUBLIC_HOSTNAME, SECOND_BODY).await?;
     assert_dns_and_http(
         docker,
         joiner,

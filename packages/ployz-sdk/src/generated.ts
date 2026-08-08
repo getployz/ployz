@@ -88,7 +88,7 @@ export type ContainerRuntimeSpec = { command: ContainerCommand | null, entrypoin
 
 export type CorrosionBootstrapFacts = { seed_gossip_address: string, };
 
-export type CorrosionDeployFailure = { "kind": "different_service", incumbent_name: CorrosionServiceName, } | { "kind": "multiple_services" } | { "kind": "routes_without_service" } | { "kind": "replicas_on_global_service" } | { "kind": "unknown_pinned_machine", machine_name: MachineName, } | { "kind": "insufficient_controller_visibility", accepted_members: number, visible_members: number, } | { "kind": "volume_roster_not_inspectable", machines: Array<MachineRowId>, } | { "kind": "placement", refusal: PlacementRefusal, } | { "kind": "prepare_failed", machine_id: MachineRowId, } | { "kind": "prepare_refused", machine_id: MachineRowId, } | { "kind": "prepared_replica_mismatch", machine_id: MachineRowId, } | { "kind": "resolved_image_mismatch" } | { "kind": "runtime_reality_unavailable" };
+export type CorrosionDeployFailure = { "kind": "different_service", incumbent_name: CorrosionServiceName, } | { "kind": "multiple_services" } | { "kind": "routes_without_service" } | { "kind": "replicas_on_global_service" } | { "kind": "unknown_pinned_machine", machine_name: MachineName, } | { "kind": "placement", refusal: PlacementRefusal, } | { "kind": "prepare_failed", machine_id: MachineRowId, } | { "kind": "prepare_refused", machine_id: MachineRowId, } | { "kind": "prepared_replica_mismatch", machine_id: MachineRowId, } | { "kind": "resolved_image_mismatch" } | { "kind": "runtime_reality_unavailable" };
 
 export type CorrosionDeployOutcome = { "kind": "completed", warnings?: Array<CorrosionDeployWarning>, } | { "kind": "failed", failure: CorrosionDeployFailure, } | { "kind": "interrupted" };
 
@@ -124,7 +124,7 @@ export type CorrosionUlid = Brand<string, "CorrosionUlid">;
 
 export type DeployAccepted = { operation_id: OperationRowId, driver_machine_id: MachineRowId, };
 
-export type DeployRefusal = { "kind": "namespace_not_found", namespace_name: CorrosionNamespaceName, create_command: string, } | { "kind": "namespace_ambiguous", namespace_name: CorrosionNamespaceName, namespace_ids: Array<NamespaceRowId>, };
+export type DeployRefusal = { "kind": "namespace_not_found", namespace_name: CorrosionNamespaceName, create_command: string, } | { "kind": "namespace_ambiguous", namespace_name: CorrosionNamespaceName, namespace_ids: Array<NamespaceRowId>, } | { "kind": "named_volume_redeploy_unsupported" };
 
 export type DeployRequest = { namespace_name: CorrosionNamespaceName, service_name: CorrosionServiceName, image: ImageReference,
 /**
@@ -390,15 +390,7 @@ export type OperationDocument = { v: CorrosionDocumentVersion, cluster_id: Clust
 
 export type OperationLensRow = { id: OperationRowId, document: OperationDocument, };
 
-export type OperationLookupRefusal = { "kind": "not_found", operation_id: OperationRowId, };
-
-export type OperationLookupReply = { operation_id: OperationRowId, operation: OperationDocument, };
-
 export type OperationRowId = Brand<string, "OperationRowId">;
-
-export type OperationWatchEvent = { "kind": "state", operation: OperationLookupReply, } | { "kind": "terminal", operation: OperationLookupReply, };
-
-export type OperationWatchRefusal = { "kind": "not_found", operation_id: OperationRowId, };
 
 export type PeerDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, name: string, transport: PeerTransport, written_by: Principal, written_at: CorrosionTimestamp, };
 
@@ -420,35 +412,11 @@ export type PidsLimit = SafeInteger<"PidsLimit">;
 
 export type PinnedMachineNames = Array<MachineName>;
 
-export type PlacementBid = { machine_id: MachineRowId, machine_name: MachineName, lifecycle: MachineLifecycle, free_disk_bytes: number, free_memory_bytes: number, load: MachineLoadBand,
-/**
- * Every managed container on the machine, across all services.
- */
-total_container_count: number,
-/**
- * The requested namespace's service containers from live Docker.
- */
-service_containers: Array<ServiceContainerObservation>,
-/**
- * The requested declared volumes the machine holds.
- */
-volumes_held: Array<VolumeName>, };
-
 export type PlacementElimination = { machine_id: MachineRowId, machine_name: MachineName, reason: PlacementEliminationReason, };
 
-export type PlacementEliminationReason = { "kind": "draining" } | { "kind": "free_disk_below_floor", free_disk_bytes: number, } | { "kind": "volume_not_held", holder: PlacementMachine, } | { "kind": "outside_pin_set" };
+export type PlacementEliminationReason = { "kind": "draining" } | { "kind": "free_disk_below_floor", free_disk_bytes: number, } | { "kind": "outside_pin_set" };
 
-export type PlacementMachine = { machine_id: MachineRowId, machine_name: MachineName, };
-
-export type PlacementPick = { targets: Array<MachineRowId>, eliminations: Array<PlacementElimination>, shortfall?: PlacementShortfall | null, };
-
-export type PlacementRefusal = { "kind": "no_eligible_machines", eliminations: Array<PlacementElimination>, } | { "kind": "volume_holder_conflict", volume: VolumeName, holders: Array<PlacementMachine>, } | { "kind": "dark_volume_holder", machines: Array<PlacementMachine>, } | { "kind": "volume_replica_limit", requested: ServiceReplicaCount, };
-
-export type PlacementShortfall = { requested: ServiceReplicaCount,
-/**
- * Distinct machines the replicas landed on.
- */
-placed: number, };
+export type PlacementRefusal = { "kind": "no_eligible_machines", eliminations: Array<PlacementElimination>, } | { "kind": "volume_replica_limit", requested: ServiceReplicaCount, };
 
 export type PloyzDnsTargetState = { "state": "disabled" } | { "state": "pending" } | { "state": "allocated", hostname: RouteHostname, acquired_by: MachineRowId, };
 
@@ -495,20 +463,6 @@ export type RouteRemoveRefusal = { "kind": "not_found", hostname: RouteHostname,
 export type RouteRemoveReply = { route_id: RouteBindingRowId, outcome: NamedRemovalOutcome, };
 
 export type RouteRemoveRequest = { hostname: RouteHostname, route_id: RouteBindingRowId | null, };
-
-export type ServiceContainerObservation = { container_id: ContainerId,
-/**
- * The service row id recovered from the container's own identity.
- */
-service_id: ServiceRowId,
-/**
- * The deploy operation that created the container.
- */
-deploy: OperationRowId,
-/**
- * Named volumes the container mounts.
- */
-named_volumes?: Array<VolumeName>, };
 
 export type ServiceDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, namespace_id: NamespaceRowId, name: CorrosionServiceName, image: ImageReference, env_fingerprints: { [key in string]: Sha256Hex }, pinned_machines: Array<MachineRowId>, active_deploy: OperationRowId, previous_image: ImageReference | null, deployed_at: CorrosionTimestamp, operation_id: OperationRowId, written_by: Principal, written_at: CorrosionTimestamp, } & ({ "mode": "replicated", replicas: ServiceReplicaCount, } | { "mode": "global",
 /**

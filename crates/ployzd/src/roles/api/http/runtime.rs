@@ -16,7 +16,6 @@ use ployz_core::join::{JoinDoorMaterial, JoinMachineSubstrate};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Semaphore, mpsc, watch};
 use tokio::task::JoinSet;
-use tokio::time::Instant;
 use tokio_rustls::TlsAcceptor;
 
 use super::config::{ApiRoleConfig, ApiRoleConfigError, ApiRoleMode};
@@ -30,9 +29,6 @@ const SERVER_SHUTDOWN_GRACE: Duration = Duration::from_secs(8);
 const HTTP_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_JOIN_SUBSTRATE_BYTES: usize = 1024 * 1024;
 const MAX_JOIN_DOOR_CONNECTIONS: usize = 256;
-const LISTENER_ACCEPT_MAX_CONSECUTIVE_FAILURES: u32 = 8;
-const LISTENER_ACCEPT_INITIAL_BACKOFF: Duration = Duration::from_millis(100);
-const LISTENER_ACCEPT_MAX_BACKOFF: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
 pub(super) struct JoinDoorAdmission {
@@ -166,10 +162,6 @@ impl ApiServer {
         });
         let mut connections = JoinSet::new();
         let join_connection_slots = Arc::new(Semaphore::new(MAX_JOIN_DOOR_CONNECTIONS));
-        let mut api_accept_failures = 0;
-        let mut join_accept_failures = 0;
-        let mut api_accept_retry_at = None;
-        let mut join_accept_retry_at = None;
         let stop = await_server_stop_with_endpoint(
             shutdown,
             &mut lifecycle_failures,
@@ -189,45 +181,29 @@ impl ApiServer {
                             ApiServerServeError::EndpointNetworkConvergence { detail } => {
                                 tracing::error!(%detail, "API endpoint-network convergence failed; stopping API role for supervisor restart");
                             }
-                            ApiServerServeError::ListenerAcceptExhausted { listener, detail } => {
-                                tracing::error!(?listener, %detail, "API listener accept recovery exhausted; stopping API role for supervisor restart");
+                            ApiServerServeError::ListenerAcceptFailed { listener, detail } => {
+                                tracing::error!(?listener, %detail, "API listener accept failed; stopping API role for supervisor restart");
                             }
                         }
                     }
                     let _ = shutdown_tx.send(true);
                     break result;
                 }
-                () = wait_for_accept_retry(api_accept_retry_at), if api_accept_retry_at.is_some() => {
-                    api_accept_retry_at = None;
-                }
-                () = wait_for_accept_retry(join_accept_retry_at), if join_accept_retry_at.is_some() => {
-                    join_accept_retry_at = None;
-                }
-                accepted = listener.accept(), if api_accept_retry_at.is_none() => match accepted {
+                accepted = listener.accept() => match accepted {
                     Ok((stream, peer)) => {
-                        api_accept_failures = 0;
                         let service = Arc::clone(&service);
                         let shutdown = shutdown_tx.subscribe();
                         connections.spawn(async move {
                             serve_connection(stream, peer, service, shutdown).await;
                         });
                     }
-                    Err(error) => {
-                        api_accept_failures += 1;
-                        if api_accept_failures >= LISTENER_ACCEPT_MAX_CONSECUTIVE_FAILURES {
-                            break Err(ApiServerServeError::ListenerAcceptExhausted {
-                                listener: ApiListenerKind::MeshApi,
-                                detail: error.to_string(),
-                            });
-                        }
-                        let delay = listener_accept_backoff(api_accept_failures);
-                        tracing::warn!(error = %error, attempt = api_accept_failures, ?delay, "API listener accept failed");
-                        api_accept_retry_at = Some(Instant::now() + delay);
-                    }
+                    Err(error) => break Err(ApiServerServeError::ListenerAcceptFailed {
+                        listener: ApiListenerKind::MeshApi,
+                        detail: error.to_string(),
+                    }),
                 },
-                accepted = join_door.accept(), if join_accept_retry_at.is_none() => match accepted {
+                accepted = join_door.accept() => match accepted {
                     Ok(JoinDoorConnection { stream, peer, acceptor }) => {
-                        join_accept_failures = 0;
                         match Arc::clone(&join_connection_slots).try_acquire_owned() {
                             Ok(permit) => {
                                 let service = Arc::clone(&service);
@@ -252,18 +228,10 @@ impl ApiServer {
                             }
                         }
                     }
-                    Err(error) => {
-                        join_accept_failures += 1;
-                        if join_accept_failures >= LISTENER_ACCEPT_MAX_CONSECUTIVE_FAILURES {
-                            break Err(ApiServerServeError::ListenerAcceptExhausted {
-                                listener: ApiListenerKind::JoinDoor,
-                                detail: error.to_string(),
-                            });
-                        }
-                        let delay = listener_accept_backoff(join_accept_failures);
-                        tracing::warn!(error = %error, attempt = join_accept_failures, ?delay, "join door listener accept failed");
-                        join_accept_retry_at = Some(Instant::now() + delay);
-                    }
+                    Err(error) => break Err(ApiServerServeError::ListenerAcceptFailed {
+                        listener: ApiListenerKind::JoinDoor,
+                        detail: error.to_string(),
+                    }),
                 },
                 Some(result) = connections.join_next(), if !connections.is_empty() => {
                     if let Err(error) = result {
@@ -290,20 +258,6 @@ impl ApiServer {
         }
         serve_result
     }
-}
-
-fn listener_accept_backoff(consecutive_failures: u32) -> Duration {
-    let shift = consecutive_failures.saturating_sub(1).min(31);
-    LISTENER_ACCEPT_INITIAL_BACKOFF
-        .saturating_mul(1_u32 << shift)
-        .min(LISTENER_ACCEPT_MAX_BACKOFF)
-}
-
-async fn wait_for_accept_retry(retry_at: Option<Instant>) {
-    let Some(retry_at) = retry_at else {
-        pending().await
-    };
-    tokio::time::sleep_until(retry_at).await;
 }
 
 async fn bind_api_listener(
@@ -355,8 +309,6 @@ async fn bind_api_listener(
     ));
     let controller_forwarder = Arc::new(
         super::controller_forwarding::ControllerForwarder::new(
-            corrosion.clone(),
-            config.cluster_id().clone(),
             config.local_machine_id().clone(),
             listen_addr.port(),
             Arc::clone(&controller),
@@ -631,8 +583,8 @@ pub enum ApiServerServeError {
     LensRecoveryExhausted { collection: LensCollection },
     #[error("API endpoint-network convergence failed: {detail}")]
     EndpointNetworkConvergence { detail: String },
-    #[error("{listener:?} listener exhausted accept recovery: {detail}")]
-    ListenerAcceptExhausted {
+    #[error("{listener:?} listener accept failed: {detail}")]
+    ListenerAcceptFailed {
         listener: ApiListenerKind,
         detail: String,
     },
@@ -664,13 +616,5 @@ mod tests {
         let runtime = JoinDoorRuntime::DoorlessIntegrationFixture;
 
         assert!(runtime.admission().is_none());
-    }
-
-    #[test]
-    fn listener_accept_backoff_is_bounded_and_increasing() {
-        assert_eq!(listener_accept_backoff(1), Duration::from_millis(100));
-        assert_eq!(listener_accept_backoff(2), Duration::from_millis(200));
-        assert_eq!(listener_accept_backoff(8), Duration::from_secs(5));
-        assert_eq!(listener_accept_backoff(u32::MAX), Duration::from_secs(5));
     }
 }

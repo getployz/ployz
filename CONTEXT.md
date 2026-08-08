@@ -296,7 +296,7 @@ Durable state outside cluster intent, owned by a machine or role process, that c
 _Avoid_: Cache
 
 **Runtime State**:
-The fresh Corrosion rows and target-host inspection used by one command, including service/container rows, accepted machines, machine status, live Docker containers, health, bridge readiness, and relevant volumes. It is an input to planning, not desired state or operation history.
+The fresh Corrosion rows and target-host inspection used by one command, including service/container rows, accepted machines, machine status, live Docker containers, health, and bridge readiness. It is an input to planning, not desired state or operation history.
 _Avoid_: Live state, stored truth
 
 **Operation Runtime Snapshot**:
@@ -328,11 +328,11 @@ A running service container with the exact Managed Container Identity expected b
 _Avoid_: Running container
 
 **Container Replacement**:
-A deploy that prepares a new Operation-id generation, commits it as active, and then retires obsolete exact identities. When named volumes make overlap unsafe, the target stops the accepted predecessor generation before starting the replacement.
+A stateless deploy that prepares a new Operation-id generation, commits it as active, and then retires obsolete exact identities. Current v2 refuses volume-bearing replacement instead of implementing volume handoff.
 _Avoid_: In-place update
 
 **Update Order**:
-Not caller-selectable in current v2. Stateless replacements prepare before the serving commit and retire afterward; volume-bearing replacements may stop the accepted predecessor before starting the candidate.
+Not caller-selectable in current v2. Stateless replacements prepare before the serving commit and retire afterward. Volume-bearing replacements are unsupported.
 _Avoid_: Configurable rollout mode, update strategy
 
 **Stop Grace Period**:
@@ -389,7 +389,7 @@ The declared placement shape for a service. `replicated` means Ployz should run 
 _Avoid_: Scheduling type, replica mode
 
 **Volume**:
-Durable or host-backed storage that can be mounted into a service container. Volumes are part of deploy planning because they can constrain placement and update order.
+Durable or host-backed storage that can be mounted into a service container. Current v2 creates named volumes only on a service's first deploy: replicated mode allows one replica, while global mode creates one independent local volume per machine. A later volume-bearing deploy is refused until the operator explicitly removes both the service row and its local runtime; Ployz performs no holder discovery, affinity, or handoff. A later request with no mounts is treated as stateless and may leave the old local volume behind because the service row does not retain runtime declarations.
 _Avoid_: Disk, mount as storage identity
 
 **Provisioned Volume**:

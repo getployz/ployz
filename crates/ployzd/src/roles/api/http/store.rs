@@ -7,10 +7,10 @@ pub(super) use error::MutationStoreError;
 use serde::Serialize;
 
 use ployz_core::corrosion::{
-    AcceptedRow, ClusterDocument, CorrosionTable, MachineDocument, NamedReadReport,
-    OperatorWriteProvenance, PeerDocument, ShadowConflict, SkippedRow, SqliteParameter, Statement,
-    StoredRow, TokenDocument, TransactionResponse, TransactionResult, read_named_roster_rows,
-    read_rows,
+    AcceptedRosterPrincipal, AcceptedRow, ClusterDocument, CorrosionTable, MachineDocument,
+    NamedReadReport, OperatorWriteProvenance, PeerDocument, ShadowConflict, SkippedRow,
+    SqliteParameter, Statement, StoredRow, TokenDocument, TransactionResponse, TransactionResult,
+    read_named_roster_rows, read_rows,
 };
 use ployz_core::ids::{ClusterId, MachineRowId, PeerId, TokenId};
 
@@ -31,6 +31,21 @@ pub(super) struct AcceptedRoster {
 }
 
 impl AcceptedRoster {
+    pub(super) fn principals(&self) -> Vec<AcceptedRosterPrincipal> {
+        self.machines
+            .iter()
+            .map(|machine| {
+                AcceptedRosterPrincipal::machine(
+                    machine.id.clone(),
+                    machine.document.transport.clone(),
+                )
+            })
+            .chain(self.peers.iter().map(|peer| {
+                AcceptedRosterPrincipal::peer(peer.id.clone(), peer.document.transport.clone())
+            }))
+            .collect()
+    }
+
     /// Returns whether an exact machine row id exists in this stored roster,
     /// including entries the reader excluded from cluster truth.
     pub(super) fn contains_stored_machine_id(&self, machine_id: &MachineRowId) -> bool {
@@ -704,11 +719,14 @@ fn one_cluster_row(
     cluster_id: &ClusterId,
     rows: Vec<StoredRow>,
 ) -> Result<AcceptedRow<ClusterDocument>, MutationStoreError> {
+    if rows.is_empty() {
+        return Err(MutationStoreError::MissingCluster);
+    }
     let mut accepted = read_rows::<ClusterDocument>(cluster_id, rows)
         .accepted
         .into_iter();
     let Some(row) = accepted.next() else {
-        return Err(MutationStoreError::MissingCluster);
+        return Err(MutationStoreError::InvalidCluster);
     };
     if accepted.next().is_some() || row.source.key != cluster_id.as_str() {
         return Err(MutationStoreError::InvalidCluster);

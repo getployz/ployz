@@ -493,14 +493,14 @@ impl ApiService {
             parse_route(request.method(), request.uri().path()),
             Ok(V2Route::Status)
         );
-        let principal = match resolve_peer_principal(
+        let (principal, roster) = match resolve_peer_principal(
             &self.corrosion,
             &self.cluster_id,
             source_from_peer(peer, &request),
         )
         .await
         {
-            Ok(principal) => principal,
+            Ok(authenticated) => authenticated,
             Err(PeerPrincipalError::EmptyAcceptedRoster { .. }) if is_status_request => {
                 return super::diagnostics::status_response(self).await;
             }
@@ -521,7 +521,7 @@ impl ApiService {
         let (principal, appointment_id, request) = if route.is_controller_mutation() {
             match self
                 .controller_forwarder
-                .route(&route, principal, request)
+                .route(&route, &roster, principal, request)
                 .await
             {
                 super::controller_forwarding::MutationRouting::Local(admitted) => (
@@ -568,12 +568,6 @@ impl ApiService {
             }
             V2Route::RouteAttach => super::routes::handle_attach(self, principal, request).await,
             V2Route::MachineUpgrade => super::upgrade::handle_machine_upgrade(self, request).await,
-            V2Route::Operation(operation_id) => {
-                super::operation_http::handle_lookup(self, operation_id).await
-            }
-            V2Route::OperationWatch(operation_id) => {
-                super::operation_http::handle_watch(self, operation_id, shutdown).await
-            }
             V2Route::Deploy => {
                 let Some(appointment_id) = appointment_id else {
                     unreachable!("controller mutations carry an appointment")

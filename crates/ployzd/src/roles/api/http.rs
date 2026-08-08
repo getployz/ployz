@@ -19,7 +19,6 @@ mod join;
 mod mutations;
 mod namespace_store;
 mod node_workflows;
-mod operation_http;
 mod removals;
 mod roster;
 mod routes;

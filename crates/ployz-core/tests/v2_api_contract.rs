@@ -6,16 +6,14 @@ use std::str::FromStr;
 use ployz_core::corrosion::{
     AcceptedRosterPrincipal, CorrosionDocumentVersion, CorrosionNamespaceName, CorrosionTimestamp,
     HostPortBinding, HostPortBindings, HostPortProtocol, MachineLoadBand, MachineStatusDocument,
-    MachineTransport, OperationDocument, OperationInitiator, OperatorWriteProvenance,
-    PeerTransport, Principal, ServicePlacement, ServiceReplicaCount,
-    SourcePrincipalResolutionError, resolve_source_principal,
+    MachineTransport, OperationInitiator, OperatorWriteProvenance, PeerTransport, Principal,
+    ServicePlacement, ServiceReplicaCount, SourcePrincipalResolutionError,
+    resolve_source_principal,
 };
 use ployz_core::deploy::{
     ContainerRuntimeSpec, EnvName, EnvValue, ImageReference, ServiceEnvironment,
 };
-use ployz_core::ids::{
-    ClusterId, MachineRowId, NamespaceRowId, OperationRowId, PeerId, ServiceRowId, TokenId,
-};
+use ployz_core::ids::{ClusterId, MachineRowId, PeerId, ServiceRowId, TokenId};
 use ployz_core::network::{MachineEndpointSubnet, WireGuardPublicKey};
 use ployz_core::{
     API_MAJOR, ApiFeature, ApiRefusal, ApiVersion, CorrosionLogsTailLines, DEPLOY_INSPECT_ROUTE,
@@ -23,10 +21,9 @@ use ployz_core::{
     FOUNDING_ROUTE, HealthGatePolicy, KNOWN_API_FEATURES, KnownApiFeature, LENS_SNAPSHOT_EVENT,
     LENS_STATE_EVENT, LENS_TERMINAL_EVENT, LensCollection, LensSnapshot, LensWatchEvent,
     MachineStatusLensRow, MachineStatusLensRowIdentityError, NAMESPACE_CREATE_ROUTE,
-    NAMESPACE_REMOVE_ROUTE, OperationLookupReply, OperationWatchEvent, RequestedPins,
-    RequestedPlacement, ServiceLogLine, ServiceLogStream, ServiceLogsFollowEvent,
-    ServiceLogsRefusal, ServiceLogsRequest, V2Method, V2Route, VERSION_ROUTE, lens_route,
-    lens_watch_route, operation_route, operation_watch_route, service_logs_follow_route,
+    NAMESPACE_REMOVE_ROUTE, RequestedPins, RequestedPlacement, ServiceLogLine, ServiceLogStream,
+    ServiceLogsFollowEvent, ServiceLogsRefusal, ServiceLogsRequest, V2Method, V2Route,
+    VERSION_ROUTE, lens_route, lens_watch_route, service_logs_follow_route,
     service_logs_tail_route,
 };
 use serde_json::json;
@@ -38,10 +35,6 @@ const PEER_B: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAY";
 
 fn machine_id(value: &str) -> MachineRowId {
     MachineRowId::try_new(value).expect("fixture machine id")
-}
-
-fn operation_id(value: &str) -> OperationRowId {
-    OperationRowId::try_new(value).expect("fixture operation id")
 }
 
 fn service_id(value: &str) -> ServiceRowId {
@@ -207,7 +200,6 @@ fn duplicate_accepted_addresses_fail_closed_as_ambiguous() {
 
 #[test]
 fn v2_routes_have_exact_paths_methods_features_and_principals() {
-    let operation_id = operation_id(MACHINE_A);
     let service_id = service_id(MACHINE_B);
     let peer = Principal::Peer {
         peer_id: peer_id(PEER_A),
@@ -242,20 +234,6 @@ fn v2_routes_have_exact_paths_methods_features_and_principals() {
             false,
         ),
         (
-            V2Route::Operation(operation_id.clone()),
-            operation_route(&operation_id),
-            V2Method::Get,
-            KnownApiFeature::OperationStatus,
-            true,
-        ),
-        (
-            V2Route::OperationWatch(operation_id.clone()),
-            operation_watch_route(&operation_id),
-            V2Method::Get,
-            KnownApiFeature::OperationStatus,
-            true,
-        ),
-        (
             V2Route::ServiceLogsTail(service_id.clone()),
             service_logs_tail_route(&service_id),
             V2Method::Post,
@@ -281,12 +259,6 @@ fn v2_routes_have_exact_paths_methods_features_and_principals() {
         assert!(!route.accepts_principal(&token));
     }
 
-    assert_eq!(V2Route::parse("/operations"), None);
-    assert_eq!(V2Route::parse("/operations/not-a-row-id"), None);
-    assert_eq!(
-        V2Route::parse(&format!("{}/again", operation_watch_route(&operation_id))),
-        None
-    );
     assert_eq!(V2Route::parse("/services/not-a-row-id/logs"), None);
 }
 
@@ -314,6 +286,15 @@ fn missing_namespace_refusal_names_the_resolving_primitive() {
             "namespace_name": "payments",
             "create_command": "ployz namespace create payments"
         })
+    );
+}
+
+#[test]
+fn named_volume_redeploy_refusal_is_a_small_stable_contract() {
+    assert_eq!(
+        serde_json::to_value(DeployRefusal::NamedVolumeRedeployUnsupported)
+            .expect("refusal serializes"),
+        json!({ "kind": "named_volume_redeploy_unsupported" })
     );
 }
 
@@ -348,33 +329,6 @@ fn first_deploy_runtime_debug_redacts_environment_values() {
             .pointer("/runtime/environment/TOKEN")
             .and_then(serde_json::Value::as_str),
         Some(secret)
-    );
-}
-
-#[test]
-fn operation_watch_events_carry_one_coarse_row_snapshot() {
-    let operation = OperationDocument::deploy_created(
-        CorrosionDocumentVersion::V1,
-        ClusterId::try_new(MACHINE_A).expect("cluster"),
-        machine_id(MACHINE_A),
-        Principal::Peer {
-            peer_id: peer_id(PEER_A),
-        },
-        NamespaceRowId::try_new(MACHINE_B).expect("namespace"),
-        service_id(MACHINE_B),
-        CorrosionTimestamp::try_new("2026-08-05T12:34:56Z").expect("timestamp"),
-    );
-    let envelope = OperationWatchEvent::State {
-        operation: OperationLookupReply {
-            operation_id: operation_id(MACHINE_A),
-            operation,
-        },
-    };
-    assert_eq!(envelope.event_name(), "state");
-    let encoded = serde_json::to_vec(&envelope).expect("event encodes");
-    assert_eq!(
-        serde_json::from_slice::<OperationWatchEvent>(&encoded).expect("event round-trips"),
-        envelope
     );
 }
 

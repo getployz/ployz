@@ -95,10 +95,11 @@ fn ownership_requires_both_the_preferred_machine_and_exact_appointment() {
 }
 
 #[test]
-fn visibility_brake_blocks_only_zero_rosters_and_isolated_multi_machine_members() {
+fn visibility_brake_applies_only_to_isolated_members_of_three_plus_rosters() {
     assert!(!controller_visibility_allows_work(0, 0));
-    assert!(controller_visibility_allows_work(1, 1));
-    assert!(!controller_visibility_allows_work(2, 1));
-    assert!(controller_visibility_allows_work(2, 2));
+    assert!(controller_visibility_allows_work(1, 0));
+    assert!(controller_visibility_allows_work(2, 0));
+    assert!(!controller_visibility_allows_work(3, 1));
+    assert!(controller_visibility_allows_work(3, 2));
     assert!(controller_visibility_allows_work(200, 2));
 }

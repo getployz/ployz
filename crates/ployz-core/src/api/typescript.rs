@@ -13,10 +13,9 @@ use super::v2::{
     LensCollection, LensSnapshot, LensWatchEvent, MachineLensRow, MachineRemoveRefusal,
     MachineRemoveReply, MachineRemoveRequest, MachineStatusLensRow, MachineUpgradeRefusal,
     MachineUpgradeReply, MachineUpgradeRequest, MachineUpgradeSupervisor, MachineUpgradeUrl,
-    OperationLensRow, OperationLookupRefusal, OperationLookupReply, OperationWatchEvent,
-    OperationWatchRefusal, PinnedMachineNames, PlacementBid, RequestedPins, RequestedPlacement,
-    ServiceContainerObservation, ServiceLensRow, ServiceLogLine, ServiceLogStream,
-    ServiceLogsFollowEvent, ServiceLogsRefusal, ServiceLogsRequest, ServiceLogsTailReply,
+    OperationLensRow, PinnedMachineNames, RequestedPins, RequestedPlacement, ServiceLensRow,
+    ServiceLogLine, ServiceLogStream, ServiceLogsFollowEvent, ServiceLogsRefusal,
+    ServiceLogsRequest, ServiceLogsTailReply,
 };
 use super::{
     DoctorDocument, NamedRemovalOutcome, PeerRemoveRefusal, PeerRemoveReply, PeerRemoveRequest,
@@ -42,10 +41,7 @@ use crate::join::{
     TokenCreateRequest, TokenListReply, TokenListRequest, TokenRevokeRefusal, TokenRevokeReply,
     TokenRevokeRequest,
 };
-use crate::placement::{
-    PlacementElimination, PlacementEliminationReason, PlacementMachine, PlacementPick,
-    PlacementRefusal, PlacementShortfall,
-};
+use crate::placement::{PlacementElimination, PlacementEliminationReason, PlacementRefusal};
 /// Generate the complete TypeScript API contract from the Rust domain types.
 #[must_use]
 pub fn api_typescript() -> String {
@@ -179,18 +175,9 @@ fn collect_v2_contracts(declarations: &mut DeclarationCollector<'_>) {
     declarations.visit::<HostPortBindings>();
     declarations.visit::<DeployAccepted>();
     declarations.visit::<DeployRefusal>();
-    declarations.visit::<PlacementBid>();
-    declarations.visit::<ServiceContainerObservation>();
-    declarations.visit::<PlacementMachine>();
     declarations.visit::<PlacementElimination>();
     declarations.visit::<PlacementEliminationReason>();
-    declarations.visit::<PlacementShortfall>();
-    declarations.visit::<PlacementPick>();
     declarations.visit::<PlacementRefusal>();
-    declarations.visit::<OperationLookupReply>();
-    declarations.visit::<OperationLookupRefusal>();
-    declarations.visit::<OperationWatchRefusal>();
-    declarations.visit::<OperationWatchEvent>();
     declarations.visit::<CorrosionLogsTailLines>();
     declarations.visit::<ServiceLogsRequest>();
     declarations.visit::<ServiceLogStream>();
@@ -371,10 +358,6 @@ mod tests {
             "DeployRequest",
             "DeployAccepted",
             "DeployRefusal",
-            "OperationLookupReply",
-            "OperationLookupRefusal",
-            "OperationWatchRefusal",
-            "OperationWatchEvent",
             "CorrosionLogsTailLines",
             "ServiceLogsRequest",
             "ServiceLogStream",

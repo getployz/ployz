@@ -148,8 +148,8 @@ upstream Corrosion certification harness, not a workspace crate.
 
 ## Test and verification map
 
-Use the lowest level that proves the changed seam, then run the final gates in
-[`AGENTS.md`](../../AGENTS.md).
+Use the lowest level that proves the changed seam, then run the relevant gates
+from [`.github/workflows/pr.yml`](../../.github/workflows/pr.yml).
 
 | Level | Location | Use it when |
 | --- | --- | --- |

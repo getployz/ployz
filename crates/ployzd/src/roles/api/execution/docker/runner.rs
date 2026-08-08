@@ -18,8 +18,8 @@ use bollard::errors::Error as BollardError;
 use bollard::models::{
     ContainerCreateBody, ContainerSummary, ContainerSummaryHealthStatusEnum,
     ContainerSummaryNetworkSettings, ContainerSummaryStateEnum, EndpointSettings, HealthConfig,
-    HostConfig, Mount, MountPoint, MountType, NetworkingConfig, PortBinding, PortMap,
-    RestartPolicy, RestartPolicyNameEnum,
+    HostConfig, Mount, MountType, NetworkingConfig, PortBinding, PortMap, RestartPolicy,
+    RestartPolicyNameEnum,
 };
 use bollard::query_parameters::{
     CreateContainerOptionsBuilder, InspectContainerOptions, ListContainersOptionsBuilder,
@@ -37,7 +37,7 @@ use ployz_core::network::internal_dns::InternalDnsSearchDomain;
 use ployz_core::network::{
     EndpointBridgeStatus, MachineEndpointSubnet, endpoint_bridge_gateway_ipv4,
 };
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -150,97 +150,6 @@ impl DockerManagedContainerRunner {
             resolve_wireguard_mtu(self.endpoint_mtu_policy, &self.endpoint_wg_ifname).await;
         read_endpoint_network_status(docker, expected, &self.endpoint_bridge_ifname, endpoint_mtu)
             .await
-    }
-    /// Reports which of the requested named volumes exist locally under
-    /// their deterministic v2 storage names.
-    pub(crate) async fn held_v2_volumes(
-        &self,
-        namespace_id: &NamespaceRowId,
-        volumes: &BTreeSet<VolumeName>,
-    ) -> Result<BTreeSet<VolumeName>, HeldVolumesError> {
-        let docker = self
-            .docker()
-            .await
-            .map_err(|error| HeldVolumesError::DockerUnavailable {
-                message: error.to_string(),
-            })?;
-        let mut held = BTreeSet::new();
-        for volume in volumes {
-            match docker
-                .inspect_volume(&v2_volume_storage_name(namespace_id, volume))
-                .await
-            {
-                Ok(_) => {
-                    held.insert(volume.clone());
-                }
-                Err(error) if is_docker_object_missing(&error) => {}
-                Err(error) => {
-                    return Err(HeldVolumesError::Inspect {
-                        volume: volume.clone(),
-                        message: error.to_string(),
-                    });
-                }
-            }
-        }
-        Ok(held)
-    }
-
-    /// Active containers, managed or foreign, mounting any requested v2
-    /// named-volume storage. Only Docker's positive created/exited states are
-    /// treated as quiescent.
-    pub(crate) async fn active_v2_volume_users(
-        &self,
-        namespace_id: &NamespaceRowId,
-        volumes: &BTreeSet<VolumeName>,
-    ) -> Result<BTreeSet<ContainerId>, String> {
-        if volumes.is_empty() {
-            return Ok(BTreeSet::new());
-        }
-        let wanted = volumes
-            .iter()
-            .map(|volume| v2_volume_storage_name(namespace_id, volume))
-            .collect::<BTreeSet<_>>();
-        let docker = self.docker().await.map_err(|error| error.to_string())?;
-        let summaries = docker
-            .list_containers(Some(ListContainersOptionsBuilder::new().all(true).build()))
-            .await
-            .map_err(|error| error.to_string())?;
-        let mut users = BTreeSet::new();
-        for summary in summaries {
-            if matches!(
-                summary.state,
-                Some(ContainerSummaryStateEnum::CREATED | ContainerSummaryStateEnum::EXITED)
-            ) {
-                continue;
-            }
-            let mounts = summary
-                .mounts
-                .as_deref()
-                .ok_or_else(|| "Docker container summary omitted mounts".to_owned())?;
-            let mut uses_requested_volume = false;
-            for mount in mounts {
-                let Some(kind) = mount.typ.as_deref() else {
-                    return Err("Docker container summary mount omitted its type".to_owned());
-                };
-                if kind != "volume" {
-                    continue;
-                }
-                let Some(name) = mount.name.as_deref().filter(|name| !name.is_empty()) else {
-                    return Err(
-                        "Docker container summary named-volume mount omitted its name".to_owned(),
-                    );
-                };
-                uses_requested_volume |= wanted.contains(name);
-            }
-            if !uses_requested_volume {
-                continue;
-            }
-            let id = summary
-                .id
-                .ok_or_else(|| "Docker container summary omitted its id".to_owned())?;
-            users.insert(ContainerId::try_new(id).map_err(|error| error.to_string())?);
-        }
-        Ok(users)
     }
 
     #[cfg(test)]
@@ -510,8 +419,7 @@ impl V2MachineContainerRunner for DockerManagedContainerRunner {
                 container_id: container_id.clone(),
                 message: error.to_string(),
             })?;
-        // Volumes are never removed with their container: a superseded
-        // incumbent's data must survive for the successor to mount.
+        // Volumes are never removed with their container.
         let options = RemoveContainerOptionsBuilder::new().force(true).build();
         match docker
             .remove_container(container_id.as_str(), Some(options))
@@ -1062,45 +970,6 @@ fn docker_container_state(
     }
 }
 
-fn v2_named_volume_names_from_mounts(
-    mounts: &[MountPoint],
-    namespace_id: &NamespaceRowId,
-) -> Result<BTreeSet<VolumeName>, String> {
-    collect_named_volume_names(mounts, |name| {
-        v2_volume_name_from_storage_name(name, namespace_id)
-    })
-}
-
-fn collect_named_volume_names(
-    mounts: &[MountPoint],
-    parse: impl Fn(&str) -> Result<VolumeName, String>,
-) -> Result<BTreeSet<VolumeName>, String> {
-    let mut names = BTreeSet::new();
-    for mount in mounts {
-        let Some(kind) = mount.typ.as_deref() else {
-            return Err("Docker inspect mount omitted its type".to_owned());
-        };
-        if kind != "volume" {
-            continue;
-        }
-        let Some(name) = mount.name.as_deref().filter(|name| !name.is_empty()) else {
-            return Err("Docker inspect named-volume mount omitted its name".to_owned());
-        };
-        names.insert(parse(name)?);
-    }
-    Ok(names)
-}
-
-/// A held-volume inventory failure, split by whether the Docker daemon was
-/// reachable at all or a specific volume inspect failed.
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum HeldVolumesError {
-    #[error("docker unavailable: {message}")]
-    DockerUnavailable { message: String },
-    #[error("inspecting volume {volume} failed: {message}", volume = .volume.as_str())]
-    Inspect { volume: VolumeName, message: String },
-}
-
 /// Storage identity of a row-scoped v2 named volume on the local Docker host.
 fn v2_volume_storage_name(namespace_id: &NamespaceRowId, volume_name: &VolumeName) -> String {
     let namespace = namespace_id.as_str();
@@ -1110,22 +979,6 @@ fn v2_volume_storage_name(namespace_id: &NamespaceRowId, volume_name: &VolumeNam
         volume_name.as_str().len(),
         volume_name.as_str()
     )
-}
-
-/// Decodes a v2 storage name back to its volume name, accepting only names
-/// that re-render byte-for-byte for the expected namespace row.
-fn v2_volume_name_from_storage_name(
-    storage_name: &str,
-    namespace_id: &NamespaceRowId,
-) -> Result<VolumeName, String> {
-    let namespace = namespace_id.as_str();
-    let prefix = format!("ployz-v2-n{}-{namespace}-v", namespace.len());
-    let volume_name = storage_name
-        .strip_prefix(prefix.as_str())
-        .and_then(|rest| rest.split_once('-'))
-        .and_then(|(_, name)| VolumeName::try_new(name).ok())
-        .filter(|name| v2_volume_storage_name(namespace_id, name) == storage_name);
-    volume_name.ok_or_else(|| format!("invalid v2 Docker named-volume identity `{storage_name}`"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -1389,13 +1242,6 @@ fn existing_v2_container_from_summary(
         .and_then(docker_health_status);
     let identity = v2_labels::parse(&btree_from_hashmap(labels))
         .map_err(DockerManagedContainerSummaryError::InvalidV2Labels)?;
-    let mounts = summary
-        .mounts
-        .as_deref()
-        .ok_or(DockerManagedContainerSummaryError::MissingMounts)?;
-    let named_volume_names = v2_named_volume_names_from_mounts(mounts, &identity.namespace_id)
-        .map_err(DockerManagedContainerSummaryError::InvalidNamedVolumeMounts)?;
-
     Ok(ExistingV2ManagedContainer {
         container_id: ContainerId::try_new(id)
             .map_err(DockerManagedContainerSummaryError::InvalidContainerId)?,
@@ -1404,7 +1250,6 @@ fn existing_v2_container_from_summary(
         health_status: health_status.or_else(|| summary.status.as_deref().and_then(status_health)),
         resolved_image_identity: summary.image_id,
         created_at_unix_seconds: summary.created,
-        named_volume_names,
     })
 }
 
@@ -1476,10 +1321,6 @@ enum DockerManagedContainerSummaryError {
     InvalidContainerId(SubjectTokenError),
     #[error("managed Docker container has invalid v2 labels: {0:?}")]
     InvalidV2Labels(V2ManagedContainerLabelError),
-    #[error("managed Docker container is missing mounts")]
-    MissingMounts,
-    #[error("managed Docker container has invalid named-volume mounts: {0}")]
-    InvalidNamedVolumeMounts(String),
 }
 
 fn hashmap_from_btree(map: BTreeMap<String, String>) -> HashMap<String, String> {
@@ -2097,101 +1938,7 @@ mod tests {
                 health_status: None,
                 resolved_image_identity: Some("sha256:resolved".to_owned()),
                 created_at_unix_seconds: Some(42),
-                named_volume_names: BTreeSet::new(),
             }
-        );
-    }
-
-    #[test]
-    fn v2_summary_maps_mounts_to_named_volumes_and_surfaces_running_state() {
-        let identity = v2_managed_identity();
-        let data = VolumeName::try_new("data").expect("volume");
-        let logs = VolumeName::try_new("logs").expect("volume");
-        let summary = ContainerSummary {
-            id: Some("0123456789abcdef".to_owned()),
-            labels: Some(hashmap_from_btree(v2_labels::render(&identity))),
-            state: Some(ContainerSummaryStateEnum::RUNNING),
-            mounts: Some(vec![
-                MountPoint {
-                    typ: Some("volume".to_owned()),
-                    name: Some(v2_volume_storage_name(&identity.namespace_id, &logs)),
-                    ..Default::default()
-                },
-                MountPoint {
-                    typ: Some("bind".to_owned()),
-                    name: Some("host-path".to_owned()),
-                    ..Default::default()
-                },
-                MountPoint {
-                    typ: Some("volume".to_owned()),
-                    name: Some(v2_volume_storage_name(&identity.namespace_id, &data)),
-                    ..Default::default()
-                },
-            ]),
-            ..Default::default()
-        };
-
-        let existing = existing_v2_container_from_summary(summary).expect("summary parses");
-
-        assert_eq!(existing.named_volume_names, BTreeSet::from([data, logs]));
-        assert!(matches!(
-            existing.state,
-            ExistingManagedContainerState::Running { .. }
-        ));
-    }
-
-    #[test]
-    fn v2_summary_without_mounts_is_not_empty_volume_testimony() {
-        let summary = ContainerSummary {
-            id: Some("0123456789abcdef".to_owned()),
-            labels: Some(hashmap_from_btree(
-                v2_labels::render(&v2_managed_identity()),
-            )),
-            state: Some(ContainerSummaryStateEnum::RUNNING),
-            ..Default::default()
-        };
-
-        assert_eq!(
-            existing_v2_container_from_summary(summary),
-            Err(DockerManagedContainerSummaryError::MissingMounts)
-        );
-    }
-
-    #[test]
-    fn v2_named_volume_testimony_rejects_legacy_and_cross_namespace_storage_names() {
-        let identity = v2_managed_identity();
-        let volume = VolumeName::try_new("data").expect("volume");
-        let other_namespace =
-            ployz_core::ids::NamespaceRowId::try_new("01K00000000000000000000009")
-                .expect("namespace row");
-
-        for storage_name in [
-            "data".to_owned(),
-            "ployz-n7-default-v4-data".to_owned(),
-            v2_volume_storage_name(&other_namespace, &volume),
-        ] {
-            let error = v2_named_volume_names_from_mounts(
-                &[MountPoint {
-                    typ: Some("volume".to_owned()),
-                    name: Some(storage_name.clone()),
-                    ..Default::default()
-                }],
-                &identity.namespace_id,
-            )
-            .expect_err("invalid physical identity must fail testimony");
-            assert!(error.contains(&storage_name), "{error}");
-        }
-    }
-
-    #[test]
-    fn v2_volume_storage_names_round_trip_only_for_their_namespace_row() {
-        let identity = v2_managed_identity();
-        let volume = VolumeName::try_new("pg-data").expect("volume");
-        let storage_name = v2_volume_storage_name(&identity.namespace_id, &volume);
-
-        assert_eq!(
-            v2_volume_name_from_storage_name(&storage_name, &identity.namespace_id),
-            Ok(volume)
         );
     }
 

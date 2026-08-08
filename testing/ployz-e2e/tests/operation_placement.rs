@@ -1,6 +1,6 @@
 //! Three-machine public-seam proof of placement bids: spread, sticky,
 //! pins with loud stacking and shortfall, `--machine any`, global mode with
-//! host-published ports, and volume affinity.
+//! host-published ports, and the deliberately narrow named-volume support.
 
 #[path = "operation_placement/support.rs"]
 mod support;
@@ -11,7 +11,6 @@ use std::num::NonZeroU16;
 
 use bollard::Docker;
 use ployz::mesh::http::JsonReply;
-use ployz_core::DeployRequest;
 use ployz_core::HealthGatePolicy;
 use ployz_core::corrosion::{
     CorrosionNamespaceName, CorrosionServiceName, HostPortBinding, HostPortBindings,
@@ -21,13 +20,12 @@ use ployz_core::deploy::{
     ContainerMountPath, ContainerRuntimeSpec, ImageReference, ServiceVolumeMount, VolumeName,
 };
 use ployz_core::ids::MachineRowId;
+use ployz_core::{DeployRefusal, DeployRequest};
 use ployz_e2e::dind as deploy_support;
 use ployz_e2e::dind::{
     DindCluster, DindClusterSpec, DindMachine, MachineSpec, artifact_dir, connect_docker,
     e2e_enabled, keep_requested, machine_image, require,
 };
-
-use support::require_contains;
 
 const NAMESPACE: &str = "production";
 const SERVICE: &str = "web";
@@ -38,11 +36,10 @@ const SECOND_BODY: &str = "ployz-placement-second-revision";
 const VOLUME_NAMESPACE: &str = "storage";
 const VOLUME_SERVICE: &str = "vol";
 const VOLUME_FIRST_BODY: &str = "ployz-placement-volume-first";
-const VOLUME_SECOND_BODY: &str = "ployz-placement-volume-second";
 const PUBLISHED_HOST_PORT: u16 = 8_088;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn placement_bids_drive_spread_sticky_pins_global_and_volume_affinity() {
+async fn placement_bids_drive_spread_sticky_pins_global_and_one_shot_volumes() {
     if !e2e_enabled() {
         eprintln!("skipping operation-placement DinD proof; set PLOYZ_DIND_E2E=1 to enable it");
         return;
@@ -154,8 +151,7 @@ async fn exercise_operation_placement(
     let hostname = format!("{SERVICE}.{NAMESPACE}.internal");
     deploy_support::create_namespace(&operator, NAMESPACE, &founder_target)?;
 
-    // Two replicas spread across two distinct machines; the driver gathers a
-    // bid from every roster machine including itself.
+    // Two replicas spread across two distinct machines.
     let spread = deploy_support::run_cli(
         &operator,
         &[
@@ -172,15 +168,6 @@ async fn exercise_operation_placement(
         ],
     )?;
     let spread_op = deploy_support::parse_deploy_operation(&spread, "spread deploy", SECRET_VALUE)?;
-    require_contains(
-        "spread deploy progress",
-        &String::from_utf8_lossy(&spread.stdout),
-        &[
-            "placement gathered: 3 bid(s), 0 silent",
-            "placement picked: 2 replica(s) on 2 machine(s)",
-            "terminal deploy completed",
-        ],
-    )?;
     let spread_rows =
         support::wait_for_placed_rows(docker, m1, &j1.api_address, SERVICE, &spread_op, 2).await?;
     let spread_set = distinct_machines(&spread_rows);
@@ -198,26 +185,7 @@ async fn exercise_operation_placement(
         FIRST_BODY,
     )
     .await?;
-    let replay =
-        deploy_support::assert_cluster_wide_operation_replay(&operator, &spread_op, SECRET_VALUE)?;
-    require_contains(
-        "spread replay",
-        &replay,
-        &[
-            "placement gathered: 3 bid(s), 0 silent",
-            "placement picked: 2 replica(s) on 2 machine(s)",
-        ],
-    )?;
-    deploy_support::assert_driver_local_evidence_is_secret_free(
-        docker,
-        m1,
-        &spread_op,
-        SECRET_VALUE,
-    )
-    .await?;
-    for non_driver in [m2, m3] {
-        support::assert_machine_evidence_is_secret_free(docker, non_driver, SECRET_VALUE).await?;
-    }
+    deploy_support::assert_cluster_wide_operation_terminal(&operator, &spread_op)?;
 
     // A flag-less redeploy of a new revision sticks to the incumbent machines.
     deploy_support::push_second_revision(docker, m1, &image, SECOND_BODY).await?;
@@ -235,11 +203,6 @@ async fn exercise_operation_placement(
         ],
     )?;
     let sticky_op = deploy_support::parse_deploy_operation(&sticky, "sticky deploy", SECRET_VALUE)?;
-    require_contains(
-        "sticky deploy progress",
-        &String::from_utf8_lossy(&sticky.stdout),
-        &["placement picked: 2 replica(s) on 2 machine(s)"],
-    )?;
     let sticky_rows =
         support::wait_for_placed_rows(docker, m1, &j1.api_address, SERVICE, &sticky_op, 2).await?;
     require(
@@ -262,9 +225,8 @@ async fn exercise_operation_placement(
     deploy_support::assert_first_revision_container_is_gone(docker, &[m1, m2, m3], &spread_op)
         .await?;
 
-    // Three replicas over a two-machine pin set: the third machine is
-    // eliminated for the pin, replicas stack 2+1, and the shortfall is loud.
-    let [pin_a, pin_b, unpinned] = &members;
+    // Three replicas over a two-machine pin set stack 2+1.
+    let [pin_a, pin_b, _] = &members;
     let pinned = deploy_support::run_cli(
         &operator,
         &[
@@ -285,16 +247,6 @@ async fn exercise_operation_placement(
         ],
     )?;
     let pinned_op = deploy_support::parse_deploy_operation(&pinned, "pinned deploy", SECRET_VALUE)?;
-    require_contains(
-        "pinned deploy progress",
-        &String::from_utf8_lossy(&pinned.stdout),
-        &[
-            "placement picked: 3 replica(s) on 2 machine(s)",
-            "(2 replicas)",
-            &format!("eliminated {}: outside the pin set", unpinned.name),
-            "shortfall: requested 3, placed 2",
-        ],
-    )?;
     let pinned_rows =
         support::wait_for_placed_rows(docker, m1, &j1.api_address, SERVICE, &pinned_op, 3).await?;
     let pin_ids = [pin_a.id.clone(), pin_b.id.clone()]
@@ -337,16 +289,6 @@ async fn exercise_operation_placement(
         ],
     )?;
     let any_op = deploy_support::parse_deploy_operation(&any, "unpinned deploy", SECRET_VALUE)?;
-    let any_stdout = String::from_utf8_lossy(&any.stdout).into_owned();
-    require_contains(
-        "unpinned deploy progress",
-        &any_stdout,
-        &["placement picked: 3 replica(s) on 3 machine(s)"],
-    )?;
-    require(
-        !any_stdout.contains("shortfall:"),
-        format!("full spread reported a shortfall: {any_stdout}"),
-    )?;
     let any_rows =
         support::wait_for_placed_rows(docker, m1, &j1.api_address, SERVICE, &any_op, 3).await?;
     require(
@@ -378,10 +320,13 @@ async fn exercise_operation_placement(
         !publish_refused.status.success(),
         "publishing a host port off-global must fail".to_owned(),
     )?;
-    require_contains(
-        "off-global publish refusal",
-        &String::from_utf8_lossy(&publish_refused.stderr),
-        &["published host ports are legal only on global services"],
+    require(
+        String::from_utf8_lossy(&publish_refused.stderr)
+            .contains("published host ports are legal only on global services"),
+        format!(
+            "off-global publish refusal was unclear: {}",
+            String::from_utf8_lossy(&publish_refused.stderr)
+        ),
     )?;
     require(
         !String::from_utf8_lossy(&publish_refused.stdout).contains("accepted operation"),
@@ -408,11 +353,6 @@ async fn exercise_operation_placement(
         ],
     )?;
     let global_op = deploy_support::parse_deploy_operation(&global, "global deploy", SECRET_VALUE)?;
-    require_contains(
-        "global deploy progress",
-        &String::from_utf8_lossy(&global.stdout),
-        &["placement picked: 3 replica(s) on 3 machine(s)"],
-    )?;
     let global_rows =
         support::wait_for_placed_rows(docker, m1, &j1.api_address, SERVICE, &global_op, 3).await?;
     require(
@@ -471,25 +411,6 @@ async fn exercise_operation_placement(
                 return Err(format!("first volume deploy was refused: {refusal:?}"));
             }
         };
-    let first_volume_watch = deploy_support::run_cli(
-        &operator,
-        &[
-            "ops",
-            "watch",
-            first_volume.operation_id.as_str(),
-            "--target",
-            founder_target.as_str(),
-        ],
-    )?;
-    deploy_support::require_success(&first_volume_watch, "first volume deploy watch")?;
-    require_contains(
-        "first volume deploy progress",
-        &String::from_utf8_lossy(&first_volume_watch.stdout),
-        &[
-            "placement picked: 1 replica(s) on 1 machine(s)",
-            "terminal deploy completed",
-        ],
-    )?;
     let volume_rows = support::wait_for_placed_rows(
         docker,
         m1,
@@ -517,57 +438,32 @@ async fn exercise_operation_placement(
         )?;
     }
 
-    // One visible holder: the redeploy pins to it and the other machines
-    // are eliminated for not holding the data volume.
-    deploy_support::push_second_revision(docker, m1, &volume_image, VOLUME_SECOND_BODY).await?;
-    let second_volume =
-        match support::mesh_deploy(&config_home, &founder_target, &volume_request).await? {
-            JsonReply::Success(accepted) => accepted,
-            JsonReply::Refused(refusal) => {
-                return Err(format!(
-                    "holder-pinned volume deploy was refused: {refusal:?}"
-                ));
-            }
-        };
-    let second_volume_watch = deploy_support::run_cli(
-        &operator,
-        &[
-            "ops",
-            "watch",
-            second_volume.operation_id.as_str(),
-            "--target",
-            founder_target.as_str(),
-        ],
-    )?;
-    deploy_support::require_success(&second_volume_watch, "holder-pinned volume deploy watch")?;
-    require_contains(
-        "holder-pinned volume deploy progress",
-        &String::from_utf8_lossy(&second_volume_watch.stdout),
-        &[
-            "placement picked: 1 replica(s) on 1 machine(s)",
-            "does not hold the data volume",
-            "terminal deploy completed",
-        ],
-    )?;
-    let second_volume_rows = support::wait_for_placed_rows(
+    // Ployz deliberately has no volume migration or handoff protocol. A
+    // volume-bearing redeploy is refused before an operation or host effect.
+    match support::mesh_deploy(&config_home, &founder_target, &volume_request).await? {
+        JsonReply::Refused(DeployRefusal::NamedVolumeRedeployUnsupported) => {}
+        JsonReply::Success(accepted) => {
+            return Err(format!(
+                "volume redeploy unexpectedly created operation {}",
+                accepted.operation_id
+            ));
+        }
+        JsonReply::Refused(refusal) => {
+            return Err(format!(
+                "volume redeploy returned the wrong refusal: {refusal:?}"
+            ));
+        }
+    }
+    assert_replicas_serve(
         docker,
-        m1,
-        &j1.api_address,
-        VOLUME_SERVICE,
-        &second_volume.operation_id,
-        1,
+        &members,
+        m2,
+        j1.dns_address,
+        &format!("{VOLUME_SERVICE}.{VOLUME_NAMESPACE}.internal"),
+        &volume_rows,
+        VOLUME_FIRST_BODY,
     )
     .await?;
-    require(
-        matches!(
-            second_volume_rows.containers.as_slice(),
-            [(machine, _)] if machine == holder_id
-        ),
-        format!(
-            "volume redeploy left the holder {}: {:?}",
-            holder.name, second_volume_rows.containers
-        ),
-    )?;
 
     Ok(())
 }

@@ -13,20 +13,22 @@ use ployz_core::corrosion::{
     CorrosionDeployOutcome, CorrosionDeployWarning, CorrosionDocumentVersion, CorrosionTimestamp,
     HostPortBindings, MachineLoadBand, NamespaceDocument, OperationDocument, OperationInitiator,
     OperatorWriteProvenance, RouteBindingDocument, ServiceDocument, ServicePlacement,
-    ServiceReplicaCount, V2ManagedContainerIdentity, controller_visibility_allows_work,
-    fingerprint_env_value, owns_current_controller_appointment,
+    ServiceReplicaCount, V2ManagedContainerIdentity, fingerprint_env_value,
+    owns_current_controller_appointment,
 };
-use ployz_core::deploy::{ReplicaSlot, ReplicatedReplicaSlot, VolumeName};
+use ployz_core::deploy::{ReplicaSlot, ReplicatedReplicaSlot};
 use ployz_core::ids::{
     ContainerId, MachineRowId, NamespaceRowId, OperationRowId, RouteBindingRowId, ServiceRowId,
 };
 use ployz_core::machine::{MachineLifecycle, MachineName};
-use ployz_core::placement::{PlacementPickInputs, PlacementRefusal, pick_placement};
+use ployz_core::placement::{
+    PlacementBid, PlacementPickInputs, PlacementRefusal, ServiceContainerObservation,
+    pick_placement,
+};
 use ployz_core::{
-    DeployContainerObservation, DeployDesiredReplica, DeployInspectOutcome, DeployInspectRequest,
-    DeployObservedContainer, DeployPrepareOutcome, DeployPrepareRequest, DeployPreparedReplica,
-    DeployRequest, DeployRetireOutcome, DeployRetireRequest, HealthGatePolicy, PlacementBid,
-    RequestedPins, RequestedPlacement, ServiceContainerObservation,
+    DeployDesiredReplica, DeployInspectOutcome, DeployInspectRequest, DeployObservedContainer,
+    DeployPrepareOutcome, DeployPrepareRequest, DeployPreparedReplica, DeployRequest,
+    DeployRetireOutcome, DeployRetireRequest, HealthGatePolicy, RequestedPins, RequestedPlacement,
 };
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
@@ -58,7 +60,7 @@ pub(super) trait DeployHosts: Send + Sync {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum DeployHostError {
     StaleController,
-    Failed(String),
+    Failed,
 }
 
 /// Row reads and writes kept behind one deploy-shaped seam.
@@ -84,15 +86,12 @@ pub(super) struct DeployReality {
     pub(super) namespace_id: NamespaceRowId,
     pub(super) namespace: NamespaceDocument,
     pub(super) services: Vec<ObservedServiceRow>,
-    pub(super) container_rows: Vec<ContainerDocument>,
     /// A deterministic automatic route needed by this deploy, if any.
     pub(super) automatic_route: Option<DesiredRouteRow>,
     /// True only when an observed route already occupies an otherwise empty
     /// namespace. A merely planned automatic route does not set this flag.
     pub(super) routes_without_service: bool,
     pub(super) roster: Vec<DeployRosterMachine>,
-    /// Current Corrosion health membership, including this machine.
-    pub(super) visible_members: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -112,18 +111,14 @@ pub(super) struct DeployRosterMachine {
     pub(super) id: MachineRowId,
     pub(super) name: MachineName,
     pub(super) lifecycle: MachineLifecycle,
-    /// Missing status makes the machine ineligible for placement, but a
-    /// successful host inspection still proves it inspectable for the volume
-    /// safety rule.
+    /// Missing status makes the machine ineligible for placement.
     pub(super) status: Option<DeployMachineStatus>,
 }
 
 #[derive(Debug, Clone)]
 pub(super) struct DeployMachineStatus {
     pub(super) free_disk_bytes: u64,
-    pub(super) free_memory_bytes: u64,
     pub(super) load: MachineLoadBand,
-    pub(super) total_container_count: usize,
 }
 
 /// One admitted controller command. Target hosts persist their own coarse
@@ -201,49 +196,33 @@ impl SimpleDeploy {
         if let Some(failure) = context.admission_failure {
             return self.fail(command, &created, failure).await;
         }
-        if !controller_visibility_allows_work(
-            context.reality.roster.len(),
-            context.reality.visible_members,
-        ) {
-            let accepted_members = context.reality.roster.len();
-            let visible_members = context.reality.visible_members;
-            return self
-                .fail(
-                    command,
-                    &created,
-                    CorrosionDeployFailure::InsufficientControllerVisibility {
-                        accepted_members,
-                        visible_members,
-                    },
-                )
-                .await;
-        }
-
-        let volumes = requested_volumes(&command.request);
         let Some(inspections) = self
-            .inspect_roster(&context.reality, &volumes, &command.appointment_id)
+            .inspect_roster(&context.reality, &command.appointment_id)
             .await
         else {
             return self.interrupt(command, &created).await;
         };
-
-        if !volumes.is_empty() {
-            let missing = context
-                .reality
-                .roster
-                .iter()
-                .filter(|machine| !inspections.contains_key(&machine.id))
-                .map(|machine| machine.id.clone())
-                .collect::<Vec<_>>();
-            if !missing.is_empty() {
-                return self
-                    .fail(
-                        command,
-                        &created,
-                        CorrosionDeployFailure::VolumeRosterNotInspectable { machines: missing },
-                    )
-                    .await;
-            }
+        if !command.request.runtime.volume_mounts.is_empty()
+            && let Some(machine_id) = context.reality.roster.iter().find_map(|machine| {
+                inspections.get(&machine.id).and_then(|inspection| {
+                    inspection
+                        .containers
+                        .iter()
+                        .any(|container| {
+                            container.identity.namespace_id == context.reality.namespace_id
+                                && container.identity.operation_id != command.operation_id
+                        })
+                        .then(|| machine.id.clone())
+                })
+            })
+        {
+            return self
+                .fail(
+                    command,
+                    &created,
+                    CorrosionDeployFailure::PrepareRefused { machine_id },
+                )
+                .await;
         }
 
         let placement = match derive_placement(&command.request, &context, &inspections) {
@@ -271,22 +250,6 @@ impl SimpleDeploy {
             if !self.appointment_is_current(command).await? {
                 return self.interrupt(command, &created).await;
             }
-            let predecessor_deploy = if volumes.is_empty() {
-                Ok(None)
-            } else {
-                inspections.get(&machine_id).map_or(Ok(None), |inspection| {
-                    predecessor_deploy(&inspection.containers, &replicas)
-                })
-            };
-            let Ok(predecessor_deploy) = predecessor_deploy else {
-                return self
-                    .fail(
-                        command,
-                        &created,
-                        CorrosionDeployFailure::PrepareRefused { machine_id },
-                    )
-                    .await;
-            };
             let request = DeployPrepareRequest {
                 appointment_id: command.appointment_id.clone(),
                 operation_id: command.operation_id.clone(),
@@ -296,7 +259,6 @@ impl SimpleDeploy {
                 runtime: command.request.runtime.clone(),
                 health_gate: command.request.health_gate,
                 replicas: replicas.clone(),
-                predecessor_deploy,
             };
             let outcome = self.hosts.prepare(&machine_id, request).await;
             let (image, replicas) = match outcome {
@@ -313,7 +275,7 @@ impl SimpleDeploy {
                 Err(DeployHostError::StaleController) => {
                     return self.interrupt(command, &created).await;
                 }
-                Ok(DeployPrepareOutcome::Failed { .. }) | Err(DeployHostError::Failed(_)) => {
+                Ok(DeployPrepareOutcome::Failed { .. }) | Err(DeployHostError::Failed) => {
                     return self
                         .fail(
                             command,
@@ -404,15 +366,12 @@ impl SimpleDeploy {
     async fn inspect_roster(
         &self,
         reality: &DeployReality,
-        volumes: &BTreeSet<VolumeName>,
         appointment_id: &ControllerAppointmentId,
     ) -> Option<BTreeMap<MachineRowId, HostInspection>> {
         let mut inspections = BTreeMap::new();
         for machine in &reality.roster {
             let request = DeployInspectRequest {
                 appointment_id: appointment_id.clone(),
-                namespace_id: reality.namespace_id.clone(),
-                volumes: volumes.clone(),
             };
             let outcome = self.hosts.inspect(&machine.id, request).await;
             match outcome {
@@ -420,18 +379,16 @@ impl SimpleDeploy {
                 Ok(DeployInspectOutcome::Inspected {
                     bridge_ready,
                     containers,
-                    volumes_held,
                 }) => {
                     inspections.insert(
                         machine.id.clone(),
                         HostInspection {
                             bridge_ready,
                             containers,
-                            volumes_held,
                         },
                     );
                 }
-                Ok(DeployInspectOutcome::Failed { .. }) | Err(DeployHostError::Failed(_)) => {}
+                Ok(DeployInspectOutcome::Failed { .. }) | Err(DeployHostError::Failed) => {}
             }
         }
         Some(inspections)
@@ -455,7 +412,7 @@ impl SimpleDeploy {
                         && container.identity.service_id == context.service_id
                         && !keep.contains(&(machine_id.clone(), container.container_id.clone()))
                 })
-                .map(observed_container)
+                .cloned()
                 .collect::<Vec<_>>();
             if containers.is_empty() {
                 continue;
@@ -613,8 +570,7 @@ fn unknown_pin(request: &DeployRequest, reality: &DeployReality) -> Option<Corro
 #[derive(Debug, Clone)]
 struct HostInspection {
     bridge_ready: bool,
-    containers: Vec<DeployContainerObservation>,
-    volumes_held: BTreeSet<VolumeName>,
+    containers: Vec<DeployObservedContainer>,
 }
 
 struct EffectivePlacement {
@@ -630,24 +586,19 @@ fn derive_placement(
 ) -> Result<EffectivePlacement, PlacementRefusal> {
     let placement = effective_placement(request, context);
     let pinned_machines = resolve_pins(request, context);
-    let volumes = requested_volumes(request);
     let active_deploy = context
         .incumbent
         .as_ref()
         .map(|service| service.document.active_deploy.clone());
     let mut bids = Vec::new();
-    let mut silent_machines = BTreeMap::new();
     for machine in &context.reality.roster {
         let Some(inspection) = inspections.get(&machine.id) else {
-            silent_machines.insert(machine.id.clone(), machine.name.clone());
             continue;
         };
         let Some(status) = &machine.status else {
-            silent_machines.insert(machine.id.clone(), machine.name.clone());
             continue;
         };
         if !inspection.bridge_ready {
-            silent_machines.insert(machine.id.clone(), machine.name.clone());
             continue;
         }
         bids.push(PlacementBid {
@@ -655,42 +606,28 @@ fn derive_placement(
             machine_name: machine.name.clone(),
             lifecycle: machine.lifecycle,
             free_disk_bytes: status.free_disk_bytes,
-            free_memory_bytes: status.free_memory_bytes,
             load: status.load,
-            total_container_count: status.total_container_count,
+            total_container_count: inspection.containers.len(),
             service_containers: inspection
                 .containers
                 .iter()
                 .map(|container| ServiceContainerObservation {
-                    container_id: container.container_id.clone(),
-                    service_id: container.identity.service_id.clone(),
                     deploy: container.identity.operation_id.clone(),
-                    named_volumes: container.named_volumes.clone(),
                 })
                 .collect(),
-            volumes_held: inspection.volumes_held.clone(),
         });
     }
-    let plausible_volume_holders = context
-        .reality
-        .container_rows
-        .iter()
-        .map(|container| container.machine_id.clone())
-        .chain(pinned_machines.iter().cloned())
-        .collect();
     let pick = pick_placement(&PlacementPickInputs {
         placement: placement.clone(),
         pinned_machines: pinned_machines.clone(),
-        volumes,
-        plausible_volume_holders,
+        has_named_volumes: !request.runtime.volume_mounts.is_empty(),
         active_deploy,
         bids,
-        silent_machines,
     })?;
     Ok(EffectivePlacement {
         placement,
         pinned_machines,
-        targets: pick.targets,
+        targets: pick,
     })
 }
 
@@ -741,15 +678,6 @@ fn resolve_pins(request: &DeployRequest, context: &DeployContext) -> BTreeSet<Ma
             .map(|service| service.document.pinned_machines.clone())
             .unwrap_or_default(),
     }
-}
-
-fn requested_volumes(request: &DeployRequest) -> BTreeSet<VolumeName> {
-    request
-        .runtime
-        .volume_mounts
-        .iter()
-        .map(|mount| mount.volume_name.clone())
-        .collect()
 }
 
 #[derive(Clone)]
@@ -822,40 +750,6 @@ fn replicas_for(
         .filter(|replica| &replica.machine_id == machine_id)
         .map(|replica| replica.desired.clone())
         .collect()
-}
-
-fn predecessor_deploy(
-    containers: &[DeployContainerObservation],
-    desired: &[DeployDesiredReplica],
-) -> Result<Option<OperationRowId>, ()> {
-    let Some(target) = desired.first().map(|replica| &replica.identity) else {
-        return Ok(None);
-    };
-    let mut predecessors = containers
-        .iter()
-        .filter(|container| {
-            container.identity.namespace_id == target.namespace_id
-                && container.identity.service_id == target.service_id
-                && !desired
-                    .iter()
-                    .any(|replica| replica.identity == container.identity)
-        })
-        .map(|container| &container.identity.operation_id);
-    let Some(first) = predecessors.next() else {
-        return Ok(None);
-    };
-    if predecessors.any(|operation_id| operation_id != first) {
-        Err(())
-    } else {
-        Ok(Some(first.clone()))
-    }
-}
-
-fn observed_container(container: &DeployContainerObservation) -> DeployObservedContainer {
-    DeployObservedContainer {
-        container_id: container.container_id.clone(),
-        identity: container.identity.clone(),
-    }
 }
 
 fn prepared_matches(prepared: &[DeployPreparedReplica], desired: &[DeployDesiredReplica]) -> bool {
@@ -999,9 +893,7 @@ mod tests {
 
     struct FakeHosts {
         calls: Mutex<Vec<HostCall>>,
-        missing_inspections: Mutex<BTreeSet<MachineRowId>>,
         stale_prepare: AtomicBool,
-        observations: BTreeMap<MachineRowId, Vec<DeployContainerObservation>>,
         next_container: AtomicUsize,
     }
 
@@ -1016,17 +908,9 @@ mod tests {
                 .lock()
                 .await
                 .push(HostCall::Inspect(machine_id.clone()));
-            if self.missing_inspections.lock().await.contains(machine_id) {
-                return Err(DeployHostError::Failed("unreachable".to_owned()));
-            }
             Ok(DeployInspectOutcome::Inspected {
                 bridge_ready: true,
-                containers: self
-                    .observations
-                    .get(machine_id)
-                    .cloned()
-                    .unwrap_or_default(),
-                volumes_held: BTreeSet::new(),
+                containers: Vec::new(),
             })
         }
 
@@ -1043,11 +927,11 @@ mod tests {
                 return Err(DeployHostError::StaleController);
             }
             let digest = OciDigest::try_new(format!("sha256:{}", "c".repeat(64)))
-                .map_err(|error| DeployHostError::Failed(error.to_string()))?;
+                .map_err(|_| DeployHostError::Failed)?;
             let image = request
                 .image
                 .with_digest(&digest)
-                .map_err(|error| DeployHostError::Failed(error.to_string()))?;
+                .map_err(|_| DeployHostError::Failed)?;
             let replicas = request
                 .replicas
                 .into_iter()
@@ -1055,7 +939,7 @@ mod tests {
                     let number = self.next_container.fetch_add(1, Ordering::SeqCst);
                     Ok(DeployPreparedReplica {
                         container_id: ContainerId::try_new(format!("prepared-{number}"))
-                            .map_err(|error| DeployHostError::Failed(error.to_string()))?,
+                            .map_err(|_| DeployHostError::Failed)?,
                         identity: desired.identity,
                         ip: Ipv4Addr::new(10, 210, 20, 2),
                     })
@@ -1085,7 +969,7 @@ mod tests {
         machines: Vec<MachineRowId>,
     }
 
-    fn fixture(roster_members: usize, visible_members: usize) -> Fixture {
+    fn fixture(roster_members: usize) -> Fixture {
         let cluster_id = ClusterId::try_new("01J00000000000000000000001").expect("cluster");
         let machine_ids = [
             "01J00000000000000000000002",
@@ -1125,9 +1009,7 @@ mod tests {
                 lifecycle: MachineLifecycle::Active,
                 status: Some(DeployMachineStatus {
                     free_disk_bytes: 10 * 1024 * 1024 * 1024,
-                    free_memory_bytes: 1024 * 1024 * 1024,
                     load: MachineLoadBand::Idle,
-                    total_container_count: 0,
                 }),
             })
             .collect();
@@ -1135,11 +1017,9 @@ mod tests {
             namespace_id: namespace_id.clone(),
             namespace,
             services: Vec::new(),
-            container_rows: Vec::new(),
             automatic_route: None,
             routes_without_service: false,
             roster,
-            visible_members,
         };
         let store = Arc::new(FakeStore {
             controller: Mutex::new(ControllerDocument {
@@ -1154,9 +1034,7 @@ mod tests {
         });
         let hosts = Arc::new(FakeHosts {
             calls: Mutex::new(Vec::new()),
-            missing_inspections: Mutex::new(BTreeSet::new()),
             stale_prepare: AtomicBool::new(false),
-            observations: BTreeMap::new(),
             next_container: AtomicUsize::new(1),
         });
         let request = DeployRequest {
@@ -1187,7 +1065,7 @@ mod tests {
 
     #[tokio::test]
     async fn singleton_deploy_flips_one_stable_replica_and_finishes() {
-        let fixture = fixture(1, 1);
+        let fixture = fixture(1);
         let namespace_id = fixture.store.reality.lock().await.namespace_id.clone();
         let [machine_id] = fixture.machines.as_slice() else {
             panic!("singleton fixture must have one machine")
@@ -1224,7 +1102,7 @@ mod tests {
 
     #[tokio::test]
     async fn foreign_appointment_interrupts_before_any_host_effect() {
-        let fixture = fixture(1, 1);
+        let fixture = fixture(1);
         fixture.store.controller.lock().await.appointment_id =
             ControllerAppointmentId::try_new("01J00000000000000000000009").expect("appointment");
 
@@ -1254,7 +1132,7 @@ mod tests {
 
     #[tokio::test]
     async fn target_observing_a_foreign_appointment_interrupts_the_deploy() {
-        let fixture = fixture(1, 1);
+        let fixture = fixture(1);
         fixture.hosts.stale_prepare.store(true, Ordering::SeqCst);
 
         let outcome = fixture
@@ -1264,152 +1142,5 @@ mod tests {
             .expect("deploy");
 
         assert!(matches!(outcome, CorrosionDeployOutcome::Interrupted));
-    }
-
-    #[tokio::test]
-    async fn isolated_member_of_multi_node_roster_fails_before_inspection() {
-        let fixture = fixture(2, 1);
-
-        let outcome = fixture
-            .executor
-            .run(&fixture.command)
-            .await
-            .expect("deploy");
-
-        assert!(!outcome.is_success());
-        assert!(fixture.hosts.calls.lock().await.is_empty());
-        let operation = fixture
-            .store
-            .operation
-            .lock()
-            .await
-            .clone()
-            .expect("operation");
-        assert!(matches!(
-            operation.deploy_state(),
-            CorrosionDeployState::Terminal {
-                outcome: CorrosionDeployOutcome::Failed {
-                    failure: CorrosionDeployFailure::InsufficientControllerVisibility {
-                        accepted_members: 2,
-                        visible_members: 1,
-                    },
-                    ..
-                },
-                ..
-            }
-        ));
-    }
-
-    #[tokio::test]
-    async fn named_volume_requires_every_roster_machine_to_be_inspectable() {
-        let mut fixture = fixture(2, 2);
-        let [_, missing_machine] = fixture.machines.as_slice() else {
-            panic!("two-machine fixture must have two machines")
-        };
-        fixture
-            .hosts
-            .missing_inspections
-            .lock()
-            .await
-            .insert(missing_machine.clone());
-        fixture.command.request.runtime.volume_mounts =
-            vec![ployz_core::deploy::ServiceVolumeMount {
-                volume_name: VolumeName::try_new("data").expect("volume"),
-                target: ployz_core::deploy::ContainerMountPath::try_new("/srv/data")
-                    .expect("mount"),
-            }];
-
-        let outcome = fixture
-            .executor
-            .run(&fixture.command)
-            .await
-            .expect("deploy");
-
-        assert!(!outcome.is_success());
-        assert!(
-            fixture
-                .hosts
-                .calls
-                .lock()
-                .await
-                .iter()
-                .all(|call| matches!(call, HostCall::Inspect(_)))
-        );
-        let operation = fixture
-            .store
-            .operation
-            .lock()
-            .await
-            .clone()
-            .expect("operation");
-        assert!(matches!(
-            operation.deploy_state(),
-            CorrosionDeployState::Terminal {
-                outcome: CorrosionDeployOutcome::Failed {
-                    failure: CorrosionDeployFailure::VolumeRosterNotInspectable { .. },
-                    ..
-                },
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn predecessor_deploy_requires_one_service_generation() {
-        let namespace_id =
-            NamespaceRowId::try_new("01J00000000000000000000001").expect("namespace");
-        let service_id = ServiceRowId::try_new("01J00000000000000000000002").expect("service");
-        let current = OperationRowId::try_new("01J00000000000000000000003").expect("operation");
-        let predecessor = OperationRowId::try_new("01J00000000000000000000004").expect("operation");
-        let debris = OperationRowId::try_new("01J00000000000000000000005").expect("operation");
-        let desired_identity = V2ManagedContainerIdentity {
-            namespace_id: namespace_id.clone(),
-            service_id: service_id.clone(),
-            operation_id: current,
-            replica_slot: ReplicaSlot::Replicated {
-                number: ReplicatedReplicaSlot::try_new(1).expect("slot"),
-            },
-        };
-        let predecessor_identity = V2ManagedContainerIdentity {
-            operation_id: predecessor.clone(),
-            ..desired_identity.clone()
-        };
-        let debris_identity = V2ManagedContainerIdentity {
-            operation_id: debris,
-            ..desired_identity.clone()
-        };
-        let observation = |container_id: &str, identity| DeployContainerObservation {
-            container_id: ContainerId::try_new(container_id).expect("container"),
-            identity,
-            state: ployz_core::DeployContainerState::Stopped,
-            health: None,
-            resolved_image_identity: None,
-            named_volumes: BTreeSet::new(),
-        };
-        let desired = vec![DeployDesiredReplica {
-            identity: desired_identity.clone(),
-            host_ports: HostPortBindings::default(),
-        }];
-
-        assert_eq!(
-            predecessor_deploy(
-                &[
-                    observation("desired", desired_identity),
-                    observation("predecessor", predecessor_identity.clone()),
-                ],
-                &desired,
-            ),
-            Ok(Some(predecessor))
-        );
-        assert_eq!(
-            predecessor_deploy(
-                &[
-                    observation("predecessor", predecessor_identity),
-                    observation("debris", debris_identity),
-                ],
-                &desired,
-            ),
-            Err(())
-        );
     }
 }

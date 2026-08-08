@@ -9,7 +9,7 @@ use ployz_core::V2Route;
 use ployz_core::corrosion::{
     ControllerAppointmentId, ControllerDocument, Principal, owns_current_controller_appointment,
 };
-use ployz_core::ids::{ClusterId, MachineRowId, PeerId};
+use ployz_core::ids::{MachineRowId, PeerId};
 
 use super::controller::ControllerStore;
 use super::deploy_hosts::machine_socket_addr;
@@ -17,8 +17,7 @@ use super::server::{
     BoundedBodyError, HttpBody, corrosion_unavailable_response, json_response, read_bounded_body,
     refusal_response,
 };
-use super::store::{AcceptedRoster, read_accepted_roster};
-use crate::corrosion::CorrosionClient;
+use super::store::AcceptedRoster;
 
 const FORWARDED_PEER_HEADER: &str = "x-ployz-forwarded-peer";
 const APPOINTMENT_HEADER: &str = "x-ployz-controller-appointment";
@@ -40,8 +39,6 @@ pub(super) enum MutationRouting {
 
 /// One-hop forwarding to the controller named by Corrosion.
 pub(super) struct ControllerForwarder {
-    corrosion: CorrosionClient,
-    cluster_id: ClusterId,
     local_machine_id: MachineRowId,
     api_port: u16,
     controller: Arc<ControllerStore>,
@@ -50,8 +47,6 @@ pub(super) struct ControllerForwarder {
 
 impl ControllerForwarder {
     pub(super) fn new(
-        corrosion: CorrosionClient,
-        cluster_id: ClusterId,
         local_machine_id: MachineRowId,
         api_port: u16,
         controller: Arc<ControllerStore>,
@@ -63,8 +58,6 @@ impl ControllerForwarder {
             .no_proxy()
             .build()?;
         Ok(Self {
-            corrosion,
-            cluster_id,
             local_machine_id,
             api_port,
             controller,
@@ -75,12 +68,13 @@ impl ControllerForwarder {
     pub(super) async fn route(
         &self,
         route: &V2Route,
+        roster: &AcceptedRoster,
         principal: Principal,
         request: hyper::Request<hyper::body::Incoming>,
     ) -> MutationRouting {
         match principal {
-            Principal::Machine { .. } => self.accept_forwarded(principal, request).await,
-            Principal::Peer { peer_id } => self.route_peer(route, peer_id, request).await,
+            Principal::Machine { .. } => self.accept_forwarded(roster, request).await,
+            Principal::Peer { peer_id } => self.route_peer(route, roster, peer_id, request).await,
             Principal::ApiToken { .. } => MutationRouting::Forwarded(refusal_response(
                 ployz_core::ApiRefusal::UnsupportedRoute,
             )),
@@ -89,24 +83,14 @@ impl ControllerForwarder {
 
     async fn accept_forwarded(
         &self,
-        principal: Principal,
+        roster: &AcceptedRoster,
         request: hyper::Request<hyper::body::Incoming>,
     ) -> MutationRouting {
         let (peer_id, appointment_id) = match forwarded_headers(&request) {
             Some(headers) => headers,
             None => return unsupported(),
         };
-        let Principal::Machine { .. } = principal else {
-            return unsupported();
-        };
-        let roster = match read_accepted_roster(&self.corrosion, &self.cluster_id).await {
-            Ok(roster) => roster,
-            Err(error) => {
-                tracing::warn!(%error, "could not authorize forwarded controller mutation");
-                return unavailable();
-            }
-        };
-        if !accepts_machine(&roster, &self.local_machine_id) {
+        if !accepts_machine(roster, &self.local_machine_id) {
             return unavailable();
         }
         if !roster.peers.iter().any(|peer| peer.id == peer_id) {
@@ -144,20 +128,14 @@ impl ControllerForwarder {
     async fn route_peer(
         &self,
         route: &V2Route,
+        roster: &AcceptedRoster,
         peer_id: PeerId,
         request: hyper::Request<hyper::body::Incoming>,
     ) -> MutationRouting {
-        let roster = match read_accepted_roster(&self.corrosion, &self.cluster_id).await {
-            Ok(roster) => roster,
-            Err(error) => {
-                tracing::warn!(%error, "could not read roster for controller routing");
-                return unavailable();
-            }
-        };
-        if !accepts_machine(&roster, &self.local_machine_id) {
+        if !accepts_machine(roster, &self.local_machine_id) {
             return unavailable();
         }
-        let current = match self.current_or_initial(&roster).await {
+        let current = match self.current_or_initial(roster).await {
             Ok(current) => current,
             Err(response) => return MutationRouting::Forwarded(response),
         };

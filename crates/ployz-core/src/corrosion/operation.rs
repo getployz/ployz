@@ -70,15 +70,6 @@ pub enum CorrosionDeployFailure {
     UnknownPinnedMachine {
         machine_name: crate::machine::MachineName,
     },
-    InsufficientControllerVisibility {
-        #[cfg_attr(feature = "ts", ts(type = "number"))]
-        accepted_members: usize,
-        #[cfg_attr(feature = "ts", ts(type = "number"))]
-        visible_members: usize,
-    },
-    VolumeRosterNotInspectable {
-        machines: Vec<MachineRowId>,
-    },
     Placement {
         refusal: PlacementRefusal,
     },
