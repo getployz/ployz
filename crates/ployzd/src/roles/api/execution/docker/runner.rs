@@ -151,7 +151,6 @@ impl DockerManagedContainerRunner {
         read_endpoint_network_status(docker, expected, &self.endpoint_bridge_ifname, endpoint_mtu)
             .await
     }
-
     /// Reports which of the requested named volumes exist locally under
     /// their deterministic v2 storage names.
     pub(crate) async fn held_v2_volumes(
@@ -539,7 +538,6 @@ fn v2_container_name(identity: &V2ManagedContainerIdentity) -> String {
         identity.service_id.as_str()
     )
 }
-
 impl V2MachineLogReader for DockerManagedContainerRunner {
     async fn tail_v2_container_logs(
         &self,
@@ -2169,7 +2167,7 @@ mod tests {
 
         for storage_name in [
             "data".to_owned(),
-            volume.stable_storage_name(&namespace_id("default")),
+            "ployz-n7-default-v4-data".to_owned(),
             v2_volume_storage_name(&other_namespace, &volume),
         ] {
             let error = v2_named_volume_names_from_mounts(
@@ -2385,7 +2383,6 @@ mod tests {
             "plz-01K00000000000000000000003-01K00000000000000000000002-2"
         );
     }
-
     fn v2_managed_identity() -> V2ManagedContainerIdentity {
         V2ManagedContainerIdentity {
             namespace_id: ployz_core::ids::NamespaceRowId::try_new("01K00000000000000000000001")
@@ -2405,10 +2402,6 @@ mod tests {
             namespace,
         )
         .expect("valid human namespace label")
-    }
-
-    fn namespace_id(value: &str) -> ployz_core::ids::NamespaceId {
-        ployz_core::ids::NamespaceId::try_new(value).expect("valid namespace id")
     }
 
     fn container_id(value: &str) -> ContainerId {

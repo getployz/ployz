@@ -69,6 +69,14 @@ impl DockerManagedContainerRunner {
 }
 
 impl V2MachineImageRunner for DockerManagedContainerRunner {
+    async fn resolve_registry_image(
+        &self,
+        reference: &ImageReference,
+        credential: Option<&RegistryCredential>,
+    ) -> Result<OciDigest, MachineRegistryImageResolveError> {
+        DockerManagedContainerRunner::resolve_registry_image(self, reference, credential).await
+    }
+
     async fn pull_v2_registry_image(
         &self,
         reference: &ImageReference,

@@ -54,7 +54,7 @@ crates/
                       content-addressed artifact staging, one-shot join).
   ployz-telemetry     sentry/posthog. Unchanged.
 ebpf/{common,control,program}   unchanged
-testing/{ployz-test-support,ployz-e2e}
+testing/ployz-e2e
 ```
 
 `ployzd` lands at ~35–50k after the collapse (the NATS/sequencer/intent

@@ -3448,9 +3448,7 @@ name = "ployz-core"
 version = "0.1.0"
 dependencies = [
  "base64",
- "hmac",
  "ipnet",
- "ployz-test-support",
  "semver",
  "serde",
  "serde_json",
@@ -3540,14 +3538,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ployz-test-support"
-version = "0.1.0"
-dependencies = [
- "ployz-core",
- "tokio",
-]
-
-[[package]]
 name = "ployzd"
 version = "0.1.0"
 dependencies = [
@@ -3570,7 +3560,6 @@ dependencies = [
  "ployz-ebpf-common",
  "ployz-host-runner",
  "ployz-telemetry",
- "ployz-test-support",
  "rcgen",
  "reqwest",
  "rtnetlink",

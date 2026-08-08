@@ -14,7 +14,6 @@ ts = ["dep:ts-rs"]
 
 [dependencies]
 base64 = "0.22"
-hmac.workspace = true
 ipnet = { version = "2", features = ["serde"] }
 serde.workspace = true
 serde_json.workspace = true
@@ -26,9 +25,6 @@ ts-rs = { workspace = true, optional = true }
 ulid.workspace = true
 url = "2"
 uuid.workspace = true
-
-[dev-dependencies]
-ployz-test-support.workspace = true
 
 [lib]
 path = "src/lib.rs"

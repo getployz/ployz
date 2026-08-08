@@ -12,12 +12,6 @@ nonempty_text_newtype! {
     error: NonEmptyTextError;
 }
 
-nonempty_text_newtype! {
-    pub struct OperatorHint;
-    ts_brand: "Brand<string, \"OperatorHint\">";
-    error: NonEmptyTextError;
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum NonEmptyTextError {
     #[error("text must not be empty")]

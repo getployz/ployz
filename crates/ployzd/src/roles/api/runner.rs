@@ -293,6 +293,12 @@ pub trait V2MachineContainerRunner {
 
 /// Exact-pinned image acquisition owned by the v2 operation driver.
 pub trait V2MachineImageRunner {
+    fn resolve_registry_image(
+        &self,
+        reference: &ImageReference,
+        credential: Option<&RegistryCredential>,
+    ) -> impl Future<Output = Result<OciDigest, MachineRegistryImageResolveError>> + Send;
+
     fn pull_v2_registry_image(
         &self,
         reference: &ImageReference,

@@ -6,36 +6,12 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::ids::CertId;
-use crate::install::{AbsoluteInstallPath, InstallSha256Digest};
+use crate::install::InstallSha256Digest;
 use crate::operation::RouteHostname;
-use crate::state_key::id_prefixed_state_key;
 use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 
-pub const CERT_STATE_PREFIX: &str = "certs";
-pub const ACME_LOCK_PREFIX: &str = "acme";
-pub const ACME_CHALLENGE_PREFIX: &str = "acme.challenges";
 pub const MANAGED_LEASE_DOMAIN_SUFFIX: &str = "up.ployz.app";
 pub const DEFAULT_LEASE_WORKER_URL: &str = "https://dns.ployz.app";
-
-mod custom_bundle;
-mod gateway_rpc;
-
-pub use crate::operation::CertificateProvisionFailure;
-pub use custom_bundle::{
-    ActiveCertState, CustomCertBundle, CustomCertBundleError, custom_bundle_digest,
-};
-pub use gateway_rpc::{
-    CertificateArtifactPushOk, CertificateArtifactPushRequest, CertificateArtifactPushResponse,
-    CertificateArtifactRemoveOk, CertificateArtifactRemoveRequest,
-    CertificateArtifactRemoveResponse, CertificateArtifactStatusOk,
-    CertificateArtifactStatusRequest, CertificateArtifactStatusResponse,
-    CertificateChallengeApplicationStatus, CertificateChallengeApplyRequest,
-    CertificateChallengeApplyResponse, CertificateChallengeMutationOk,
-    CertificateChallengeRemoveRequest, CertificateChallengeRemoveResponse,
-    CertificateChallengeStatusOk, CertificateChallengeStatusRequest,
-    CertificateChallengeStatusResponse, GatewayCertificateRpcError,
-};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -82,11 +58,6 @@ impl ManagedLeaseAddressSet {
     pub const fn ipv6(&self) -> &BTreeSet<Ipv6Addr> {
         &self.ipv6
     }
-}
-
-fn two_thirds_due(issued_at: u64, expires_at: u64, now_seconds: u64) -> bool {
-    now_seconds
-        >= issued_at.saturating_add(expires_at.saturating_sub(issued_at).saturating_mul(2) / 3)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -509,10 +480,6 @@ pub enum ManagedLeaseError {
     Digest(#[from] crate::install::InstallContractError),
 }
 
-id_prefixed_state_key! { pub struct CertStateKey; prefix: CERT_STATE_PREFIX; fn from_cert_id(&CertId); }
-id_prefixed_state_key! { pub struct AcmeLockKey; prefix: ACME_LOCK_PREFIX; fn from_cert_id(&CertId); }
-id_prefixed_state_key! { pub struct AcmeChallengeStateKey; prefix: ACME_CHALLENGE_PREFIX; fn from_cert_id(&CertId); }
-
 /// ACME HTTP-01 challenge evidence value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -598,54 +565,6 @@ pub enum AcmeChallengeError {
     TokenValueMismatch {
         token: AcmeChallengeToken,
         value: AcmeChallengeValue,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct CertValidityWindow {
-    pub not_before: CertValidAt,
-    pub not_after: CertValidAt,
-}
-
-impl CertValidityWindow {
-    pub fn try_new(
-        not_before: CertValidAt,
-        not_after: CertValidAt,
-    ) -> Result<Self, CertValidityError> {
-        if not_before >= not_after {
-            return Err(CertValidityError::EmptyOrInverted {
-                not_before,
-                not_after,
-            });
-        }
-
-        Ok(Self {
-            not_before,
-            not_after,
-        })
-    }
-}
-
-positive_u64_wire_newtype! {
-    pub struct CertValidAt;
-    ts_brand: "Brand<string, \"CertValidAt\">";
-    accessor: unix_seconds;
-    error: CertValidAtError;
-}
-
-positive_u64_wire_error! {
-    pub enum CertValidAtError;
-    noun: "certificate validity timestamp";
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum CertValidityError {
-    #[error("certificate validity window must end after it starts")]
-    EmptyOrInverted {
-        not_before: CertValidAt,
-        not_after: CertValidAt,
     },
 }
 
@@ -745,71 +664,6 @@ impl From<AcmeChallengeValue> for String {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(type = "Brand<string, \"CertBundleRef\">"))]
-#[serde(try_from = "String", into = "String")]
-pub struct CertBundleRef(String);
-
-impl CertBundleRef {
-    pub fn try_new(value: impl Into<String>) -> Result<Self, CertTextError> {
-        let value = validated_visible_ascii(value.into(), "cert bundle reference")?;
-        validate_artifact_ref(&value)?;
-
-        Ok(Self(value))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    pub fn for_bundle(
-        digest: &InstallSha256Digest,
-        path: &AbsoluteInstallPath,
-    ) -> Result<Self, CertTextError> {
-        Self::try_new(format!("sha256:{}:{}", digest.as_str(), path.as_str()))
-    }
-
-    pub fn artifact_parts(
-        &self,
-    ) -> Result<(InstallSha256Digest, AbsoluteInstallPath), CertTextError> {
-        let Some(rest) = self.0.strip_prefix("sha256:") else {
-            return Err(CertTextError::InvalidBundleRef {
-                value: self.0.clone(),
-            });
-        };
-        let Some((digest, path)) = rest.split_once(':') else {
-            return Err(CertTextError::InvalidBundleRef {
-                value: self.0.clone(),
-            });
-        };
-        let digest =
-            InstallSha256Digest::try_new(digest).map_err(|_| CertTextError::InvalidBundleRef {
-                value: self.0.clone(),
-            })?;
-        let path =
-            AbsoluteInstallPath::try_new(path).map_err(|_| CertTextError::InvalidBundleRef {
-                value: self.0.clone(),
-            })?;
-        Ok((digest, path))
-    }
-}
-
-impl TryFrom<String> for CertBundleRef {
-    type Error = CertTextError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::try_new(value)
-    }
-}
-
-impl From<CertBundleRef> for String {
-    fn from(value: CertBundleRef) -> Self {
-        value.0
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum CertTextError {
     #[error("{field} is empty")]
@@ -822,8 +676,6 @@ pub enum CertTextError {
     InvalidAcmeToken { value: String },
     #[error("ACME challenge value is invalid: {value}")]
     InvalidAcmeChallengeValue { value: String },
-    #[error("cert bundle reference is invalid: {value}")]
-    InvalidBundleRef { value: String },
 }
 
 fn validated_visible_ascii(value: String, field: &'static str) -> Result<String, CertTextError> {
@@ -856,28 +708,6 @@ fn validate_acme_key_authorization(value: &str) -> Result<(), CertTextError> {
         || !thumbprint.bytes().all(is_base64_url_byte)
     {
         return Err(CertTextError::InvalidAcmeChallengeValue {
-            value: value.to_owned(),
-        });
-    }
-
-    Ok(())
-}
-
-fn validate_artifact_ref(value: &str) -> Result<(), CertTextError> {
-    let Some(rest) = value.strip_prefix("sha256:") else {
-        return Err(CertTextError::InvalidBundleRef {
-            value: value.to_owned(),
-        });
-    };
-    let Some((digest, path)) = rest.split_once(':') else {
-        return Err(CertTextError::InvalidBundleRef {
-            value: value.to_owned(),
-        });
-    };
-
-    if InstallSha256Digest::try_new(digest).is_err() || AbsoluteInstallPath::try_new(path).is_err()
-    {
-        return Err(CertTextError::InvalidBundleRef {
             value: value.to_owned(),
         });
     }
@@ -934,49 +764,5 @@ mod tests {
                 "2001:db8::8".parse::<Ipv6Addr>().expect("IPv6"),
             ]
         );
-    }
-
-    #[test]
-    fn custom_certificate_renews_at_two_thirds_of_validity() {
-        let active = ActiveCertState {
-            cert_id: CertId::try_new("cert_example").expect("cert id"),
-            hostname: RouteHostname::try_new("example.com").expect("hostname"),
-            bundle_ref: CertBundleRef::try_new(format!(
-                "sha256:{}:/var/lib/ployz/certificates/example.bundle",
-                "a".repeat(64)
-            ))
-            .expect("bundle ref"),
-            validity: CertValidityWindow::try_new(
-                CertValidAt::try_new(1_000).expect("not before"),
-                CertValidAt::try_new(1_300).expect("not after"),
-            )
-            .expect("validity"),
-        };
-
-        assert!(!active.needs_renewal(1_199));
-        assert!(active.needs_renewal(1_200));
-    }
-
-    #[test]
-    fn custom_certificate_is_usable_only_inside_its_validity_window() {
-        let active = ActiveCertState {
-            cert_id: CertId::try_new("cert_example").expect("cert id"),
-            hostname: RouteHostname::try_new("example.com").expect("hostname"),
-            bundle_ref: CertBundleRef::try_new(format!(
-                "sha256:{}:/var/lib/ployz/certificates/example.bundle",
-                "a".repeat(64)
-            ))
-            .expect("bundle ref"),
-            validity: CertValidityWindow::try_new(
-                CertValidAt::try_new(1_000).expect("not before"),
-                CertValidAt::try_new(1_300).expect("not after"),
-            )
-            .expect("validity"),
-        };
-
-        assert!(!active.is_usable_at(999));
-        assert!(active.is_usable_at(1_000));
-        assert!(active.is_usable_at(1_299));
-        assert!(!active.is_usable_at(1_300));
     }
 }

@@ -129,10 +129,9 @@ telemetry adapters. It must not become a domain or orchestration dependency.
 [`ebpf/control/`](../../ebpf/control/) owns the userspace controller, and
 [`ebpf/program/`](../../ebpf/program/) is the separately built eBPF workspace.
 
-[`testing/ployz-test-support/`](../../testing/ployz-test-support/) owns reusable
-test helpers. [`testing/ployz-e2e/`](../../testing/ployz-e2e/) owns black-box and
-DinD harness code. [`testing/corrosion-spike/`](../../testing/corrosion-spike/)
-is the manual upstream Corrosion certification harness, not a workspace crate.
+[`testing/ployz-e2e/`](../../testing/ployz-e2e/) owns black-box and DinD harness
+code. [`testing/corrosion-spike/`](../../testing/corrosion-spike/) is the manual
+upstream Corrosion certification harness, not a workspace crate.
 
 ## Where does this change go?
 

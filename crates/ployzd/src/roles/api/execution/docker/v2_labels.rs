@@ -6,7 +6,7 @@ use ployz_core::corrosion::V2ManagedContainerIdentity;
 use ployz_core::deploy::{ReplicaSlot, ReplicatedReplicaSlot};
 use ployz_core::ids::{CorrosionUlidError, NamespaceRowId, OperationRowId, ServiceRowId};
 
-use super::labels::MANAGED_LABEL;
+pub(super) const MANAGED_LABEL: &str = "plz.managed";
 
 pub const IDENTITY_SCHEMA_LABEL: &str = "plz.identity_schema";
 pub const V2_IDENTITY_SCHEMA: &str = "corrosion_v2";

@@ -61,7 +61,7 @@ pub enum OciDigestError {
 }
 
 /// One deploy-scoped registry credential. It may cross the operator and
-/// machine RPC boundaries, but it is never part of deploy intent or evidence.
+/// machine HTTP boundaries, but it is never part of deploy intent or evidence.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -311,14 +311,6 @@ mod oci_platform_tests {
             OciPlatform::try_new("linux", "amd64").expect("platform")
         );
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ImageRemoveOutcome {
-    Removed,
-    AlreadyAbsent,
-    RetainedInUse,
 }
 
 #[cfg(test)]

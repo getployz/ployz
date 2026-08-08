@@ -46,7 +46,6 @@ use crate::placement::{
     PlacementElimination, PlacementEliminationReason, PlacementMachine, PlacementPick,
     PlacementRefusal, PlacementShortfall,
 };
-
 /// Generate the complete TypeScript API contract from the Rust domain types.
 #[must_use]
 pub fn api_typescript() -> String {
@@ -250,7 +249,8 @@ fn strip_trailing_whitespace(value: &str) -> String {
         stripped.push_str(line.trim_end());
         stripped.push('\n');
     }
-    stripped.truncate(stripped.trim_end().len());
+    let content_len = stripped.trim_end_matches('\n').len();
+    stripped.truncate(content_len);
     stripped.push('\n');
     stripped
 }
@@ -263,7 +263,12 @@ mod tests {
     fn generated_contract_declares_types_referenced_by_explicit_representations() {
         let generated = api_typescript();
 
-        assert!(generated.contains("export type EnvValue ="));
+        for name in ["EnvName", "EnvValue"] {
+            assert!(
+                generated.contains(&format!("export type {name} =")),
+                "missing declaration for {name}"
+            );
+        }
     }
 
     #[test]
