@@ -33,8 +33,16 @@ use std::time::Duration;
 
 const CLUSTER_NAME: &str = "dind-token-door";
 const FOUNDER_NAME: &str = "machine-one";
+const OPERATOR_PEER_NAME: &str = "dind-operator";
 const WAIT_BUDGET: Duration = Duration::from_secs(60);
 const WAIT_DELAY: Duration = Duration::from_millis(250);
+
+#[test]
+fn peer_fixture_names_are_valid() {
+    for name in [OPERATOR_PEER_NAME, admission::ROAMING_PEER_NAME] {
+        SshPeerKey::generate(name.to_owned()).expect("DinD peer fixture name must be valid");
+    }
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn public_token_door_grows_and_repairs_the_cluster() {
@@ -95,7 +103,7 @@ async fn exercise_token_door(docker: &Docker, cluster: &DindCluster) -> Result<(
     let config_home = default_config_home(temporary_home.path());
     let target: SshTarget = format!("root@{}", founder.bridge_ip).parse()?;
     let operator =
-        SshPeerKey::generate("dind operator".to_owned()).map_err(|error| error.to_string())?;
+        SshPeerKey::generate(OPERATOR_PEER_NAME.to_owned()).map_err(|error| error.to_string())?;
     operator
         .persist_new(&config_home, &target)
         .map_err(|error| error.to_string())?;
@@ -163,9 +171,15 @@ async fn exercise_token_door(docker: &Docker, cluster: &DindCluster) -> Result<(
         "live token list omitted the created token",
     )?;
 
-    assert_wrong_door_fingerprint_is_rejected(&blob).await?;
-    assert_foreign_machine_refuses(docker, foreign, &blob).await?;
-    join_fresh_machine(docker, joiner, &blob).await?;
+    assert_wrong_door_fingerprint_is_rejected(&blob)
+        .await
+        .map_err(|error| format!("wrong-fingerprint refusal failed: {error}"))?;
+    assert_foreign_machine_refuses(docker, foreign, &blob)
+        .await
+        .map_err(|error| format!("foreign-machine refusal failed: {error}"))?;
+    join_fresh_machine(docker, joiner, &blob)
+        .await
+        .map_err(|error| format!("initial machine join failed: {error}"))?;
     let roster = wait_for_machine_roster(store, 2).await?;
     let founder_row = roster
         .values()
@@ -193,11 +207,18 @@ async fn exercise_token_door(docker: &Docker, cluster: &DindCluster) -> Result<(
         &blob,
         joiner_row,
     )
-    .await?;
+    .await
+    .map_err(|error| format!("machine repair flow failed: {error}"))?;
 
-    admit_roaming_peer_and_assert_no_subnet(store, &blob).await?;
-    admit_concurrent_machines_with_distinct_subnets(&blob).await?;
-    assert_revoked_and_expired_refusals(store, &cli, temporary_home.path(), blob, token_id).await?;
+    admit_roaming_peer_and_assert_no_subnet(store, &blob)
+        .await
+        .map_err(|error| format!("roaming-peer admission failed: {error}"))?;
+    admit_concurrent_machines_with_distinct_subnets(&blob)
+        .await
+        .map_err(|error| format!("concurrent-machine admission failed: {error}"))?;
+    assert_revoked_and_expired_refusals(store, &cli, temporary_home.path(), blob, token_id)
+        .await
+        .map_err(|error| format!("revoked/expired token checks failed: {error}"))?;
 
     refound_cluster(
         RefoundContext {
@@ -213,4 +234,5 @@ async fn exercise_token_door(docker: &Docker, cluster: &DindCluster) -> Result<(
         &repaired_joiner,
     )
     .await
+    .map_err(|error| format!("cluster refounding failed: {error}"))
 }

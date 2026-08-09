@@ -71,10 +71,7 @@ pub(super) async fn handle_join(
                 return response;
             }
         }
-        match Arc::clone(&service.controller_lock).try_lock_owned() {
-            Ok(guard) => Some(guard),
-            Err(_) => return super::deploy_controller::controller_busy(),
-        }
+        Some(Arc::clone(&service.controller_lock).lock_owned().await)
     };
     let body = match read_bounded_join_body(request.into_body()).await {
         Ok(body) => body,
@@ -312,7 +309,7 @@ async fn reuse_machine(
                 "an existing machine row was classified as a create",
             ));
         }
-        Err(_) => return Err(JoinDoorRefusal::IdentityConflict.into()),
+        Err(_) => return Err(machine_name_conflict(request.name.as_str()).into()),
     }
     let Some(accepted) = roster
         .machines
@@ -344,7 +341,7 @@ fn ensure_machine_matches(
         Ok(JoinAdmissionWrite::Create) => Err(AdmissionError::Invariant(
             "an accepted machine row was classified as a create",
         )),
-        Err(_) => Err(JoinDoorRefusal::IdentityConflict.into()),
+        Err(_) => Err(machine_name_conflict(request.name.as_str()).into()),
     }
 }
 
@@ -455,7 +452,7 @@ fn reuse_peer(
                 "an existing peer row was classified as a create",
             ));
         }
-        Err(_) => return Err(JoinDoorRefusal::IdentityConflict.into()),
+        Err(_) => return Err(peer_name_conflict(request.name.as_str()).into()),
     }
     let Some(accepted) = roster
         .peers
@@ -485,7 +482,7 @@ fn ensure_peer_matches(
         Ok(JoinAdmissionWrite::Create) => Err(AdmissionError::Invariant(
             "an accepted peer row was classified as a create",
         )),
-        Err(_) => Err(JoinDoorRefusal::IdentityConflict.into()),
+        Err(_) => Err(peer_name_conflict(request.name.as_str()).into()),
     }
 }
 

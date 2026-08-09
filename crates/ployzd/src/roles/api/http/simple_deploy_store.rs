@@ -72,7 +72,10 @@ impl SimpleDeployStore for CorrosionSimpleDeployStore {
     async fn observe(&self, command: &DeployCommand) -> Result<DeployReality, DeployStartError> {
         let matching_namespaces = self
             .query(
-                namespace_named(&self.cluster_id, &command.request.namespace_name),
+                select_by_id(
+                    CorrosionTable::Namespaces,
+                    command.request.namespace_name.as_str(),
+                ),
                 MAX_DEPLOY_ROWS,
             )
             .await?;
@@ -514,19 +517,6 @@ fn select_by_id(table: CorrosionTable, id: &str) -> Statement {
     )
 }
 
-fn namespace_named(
-    cluster_id: &ClusterName,
-    namespace_name: &ployz_core::corrosion::CorrosionNamespaceName,
-) -> Statement {
-    Statement::with_params(
-        "SELECT id, document FROM namespaces WHERE json_extract(document, '$.cluster_id') = ? AND name = ?",
-        vec![
-            SqliteParameter::Text(cluster_id.as_str().to_owned()),
-            SqliteParameter::Text(namespace_name.as_str().to_owned()),
-        ],
-    )
-}
-
 fn cluster_rows(table: CorrosionTable) -> Statement {
     Statement::simple(format!("SELECT id, document FROM {}", table.as_str()))
 }
@@ -573,20 +563,15 @@ mod tests {
     const NAMESPACE_B: &str = "staging";
 
     #[test]
-    fn namespace_lookup_is_parameterized_and_bounded_by_name() {
+    fn namespace_lookup_uses_the_canonical_name_as_its_primary_key() {
         let name = CorrosionNamespaceName::try_new("production").expect("namespace name");
-        let Statement::WithParams(sql, params) = namespace_named(&cluster_id(), &name) else {
+        let Statement::WithParams(sql, params) =
+            select_by_id(CorrosionTable::Namespaces, name.as_str())
+        else {
             panic!("namespace lookup must be parameterized");
         };
-        assert!(sql.contains("name = ?"));
-        assert!(!sql.contains("production"));
-        assert_eq!(
-            params,
-            vec![
-                SqliteParameter::Text(CLUSTER.to_owned()),
-                SqliteParameter::Text("production".to_owned()),
-            ]
-        );
+        assert_eq!(sql, "SELECT id, document FROM namespaces WHERE id = ?");
+        assert_eq!(params, vec![SqliteParameter::Text("production".to_owned())]);
     }
 
     #[test]

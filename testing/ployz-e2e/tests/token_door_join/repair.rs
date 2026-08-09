@@ -76,7 +76,9 @@ pub(super) async fn repair_contaminated_and_wiped_machine(
     assert_workload_survived(context.docker, context.joiner).await?;
 
     let fresh_blob = create_join_blob(context.cli, context.home, "repair-reset")?;
-    join_fresh_machine(context.docker, context.joiner, &fresh_blob).await?;
+    join_fresh_machine(context.docker, context.joiner, &fresh_blob)
+        .await
+        .map_err(|error| format!("reset machine rejoin failed: {error}"))?;
     let rejoined =
         wait_for_machine_named(context.store, initial_row.document.name.as_str()).await?;
     require(
@@ -92,7 +94,9 @@ pub(super) async fn repair_contaminated_and_wiped_machine(
     wait_for_removal(context.store, context.founder, &rejoined, None).await?;
 
     let replacement_blob = create_join_blob(context.cli, context.home, "repair-replacement")?;
-    join_fresh_machine(context.docker, context.joiner, &replacement_blob).await?;
+    join_fresh_machine(context.docker, context.joiner, &replacement_blob)
+        .await
+        .map_err(|error| format!("wiped machine replacement join failed: {error}"))?;
     let replacement =
         wait_for_machine_named(context.store, rejoined.document.name.as_str()).await?;
     require(
@@ -139,7 +143,9 @@ pub(super) async fn refound_cluster(
     require_success(&endpoint_set, "refounded machine endpoint set")?;
 
     let blob = create_join_blob(context.cli, context.home, "refound")?;
-    join_fresh_machine(context.docker, context.joiner, &blob).await?;
+    join_fresh_machine(context.docker, context.joiner, &blob)
+        .await
+        .map_err(|error| format!("refounded cluster join failed: {error}"))?;
     let (corrosion_address, corrosion_token) =
         ployz_e2e::dind::corrosion_access(context.docker, context.founder).await?;
     let store = CorrosionAccess {

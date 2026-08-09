@@ -2,6 +2,8 @@ use super::fixture::{
     CorrosionAccess, corrosion_transaction, extract_join_blob, extract_token_id, machine_subnet,
     require_success, run_cli, wait_for_command,
 };
+
+pub(super) const ROAMING_PEER_NAME: &str = "roaming-peer";
 use super::{WAIT_BUDGET, WAIT_DELAY};
 use bollard::Docker;
 use ployz::JoinDoorClient;
@@ -219,7 +221,7 @@ pub(super) async fn admit_roaming_peer_and_assert_no_subnet(
     blob: &JoinBlob,
 ) -> Result<(), String> {
     let peer =
-        SshPeerKey::generate("roaming peer".to_owned()).map_err(|error| error.to_string())?;
+        SshPeerKey::generate(ROAMING_PEER_NAME.to_owned()).map_err(|error| error.to_string())?;
     let request = PeerJoinRequest {
         name: peer.peer_id.clone(),
         public_key: peer.public_key.clone(),

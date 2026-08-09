@@ -17,7 +17,7 @@ use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 use tokio::io::AsyncReadExt as _;
 
-const PEER_NAME: &str = "dind laptop";
+const PEER_NAME: &str = "dind-laptop";
 const CLUSTER_NAME: &str = "dind-laptop-dial";
 const MACHINE_NAME: &str = "machine-one";
 const STATUS_READY_TIMEOUT: Duration = Duration::from_secs(45);

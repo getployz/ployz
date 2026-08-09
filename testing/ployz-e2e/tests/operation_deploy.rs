@@ -8,8 +8,8 @@ use ployz_e2e::dind::{
     DindCluster, DindClusterSpec, MachineSpec, artifact_dir,
     assert_cluster_wide_operation_terminal, assert_dns_and_http,
     assert_first_revision_container_is_gone, assert_gateway_http, connect_docker,
-    create_namespace_and_deploy, e2e_enabled, found_and_join_with_service_urls, keep_requested,
-    machine_image, parse_deploy_operation, push_second_revision, require, run_cli,
+    create_namespace_and_deploy, deploy_namespace, e2e_enabled, found_and_join_with_service_urls,
+    image_service_request, keep_requested, machine_image, push_second_revision, require,
     start_mutable_registry,
 };
 
@@ -21,7 +21,6 @@ const SECRET_NAME: &str = "OPERATION_E2E_SECRET";
 const SECRET_VALUE: &str = "sentinel-operation-e2e-secret";
 const FIRST_BODY: &str = "Welcome to nginx";
 const SECOND_BODY: &str = "ployz-operation-second-revision";
-const PUBLIC_HOSTNAME: &str = "web.apps.example.test";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn first_deploy_is_observable_and_reachable_from_a_joined_machine() {
@@ -101,7 +100,7 @@ async fn exercise_operation_deploy(docker: &Docker, cluster: &DindCluster) -> Re
         SECRET_NAME,
         SECRET_VALUE,
     )?;
-    assert_cluster_wide_operation_terminal(&operator, &operation_id)?;
+    assert_cluster_wide_operation_terminal(&operator, NAMESPACE, &operation_id)?;
 
     let rows = support::wait_for_public_deploy_rows(
         docker,
@@ -122,6 +121,7 @@ async fn exercise_operation_deploy(docker: &Docker, cluster: &DindCluster) -> Re
         &expected_fingerprint,
     )?;
     let hostname = format!("{SERVICE}.{NAMESPACE}.internal");
+    let public_hostname = format!("{SERVICE}.{NAMESPACE}.apps.example.test");
     assert_dns_and_http(
         docker,
         joiner,
@@ -132,27 +132,20 @@ async fn exercise_operation_deploy(docker: &Docker, cluster: &DindCluster) -> Re
         FIRST_BODY,
     )
     .await?;
-    assert_gateway_http(docker, joiner, PUBLIC_HOSTNAME, FIRST_BODY).await?;
+    assert_gateway_http(docker, joiner, &public_hostname, FIRST_BODY).await?;
 
     // A second deploy re-resolves the mutable tag and converges the gateway.
     push_second_revision(docker, founder, &image, SECOND_BODY).await?;
-    let environment = format!("{SECRET_NAME}={SECRET_VALUE}");
-    let deploy_output = run_cli(
+    let second_service = image_service_request(SERVICE, &image, SECRET_NAME, SECRET_VALUE)?;
+    let second_operation_id = deploy_namespace(
         &operator,
-        &[
-            "deploy",
-            NAMESPACE,
-            SERVICE,
-            &image,
-            "--env",
-            &environment,
-            "--target",
-            operator.founder_target.as_str(),
-        ],
+        NAMESPACE,
+        "release-2",
+        &[second_service],
+        "second deploy",
+        SECRET_VALUE,
     )?;
-    let second_operation_id =
-        parse_deploy_operation(&deploy_output, "second deploy", SECRET_VALUE)?;
-    assert_cluster_wide_operation_terminal(&operator, &second_operation_id)?;
+    assert_cluster_wide_operation_terminal(&operator, NAMESPACE, &second_operation_id)?;
 
     let second_rows = support::wait_for_public_deploy_rows(
         docker,
@@ -170,7 +163,7 @@ async fn exercise_operation_deploy(docker: &Docker, cluster: &DindCluster) -> Re
         &expected_fingerprint,
     )?;
     support::assert_cutover_rows(&second_rows, &rows, &second_operation_id)?;
-    assert_gateway_http(docker, joiner, PUBLIC_HOSTNAME, SECOND_BODY).await?;
+    assert_gateway_http(docker, joiner, &public_hostname, SECOND_BODY).await?;
     assert_dns_and_http(
         docker,
         joiner,

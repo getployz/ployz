@@ -21,9 +21,9 @@ pub use operation::{
     FOUNDER_NAME, JoinedMachine, OperatorFixture, REGISTRY_PORT,
     assert_cluster_wide_operation_terminal, assert_dns_and_http,
     assert_first_revision_container_is_gone, assert_gateway_http, create_namespace,
-    create_namespace_and_deploy, fetch_gateway_http, found_and_join,
-    found_and_join_with_service_urls, gateway_status, parse_deploy_operation, public_lens,
-    push_second_revision, require_success, run_cli, start_mutable_registry,
+    create_namespace_and_deploy, deploy_namespace, fetch_gateway_http, found_and_join,
+    found_and_join_with_service_urls, gateway_status, image_service_request, parse_accepted_deploy,
+    public_lens, push_second_revision, require_success, run_cli, start_mutable_registry,
     wait_for_gateway_status,
 };
 
