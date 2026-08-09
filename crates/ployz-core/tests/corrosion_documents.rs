@@ -13,8 +13,8 @@ use ployz_core::corrosion::{
     MachineStorageIneligibleReason, MachineStorageSelection, MachineStorageSelectionReason,
     MachineTransport, MeshProvider, NameClaim, NamedCorrosionDocument, NamespaceDocument,
     OperationDocument, OperationInitiator, OperatorWriteProvenance, PeerDocument, PeerTransport,
-    PloyzDnsTargetState, RouteBindingDocument, ServiceDocument, ServicePlacement,
-    ServiceReplicaCount, Sha256Hex, StorageMode, TokenDocument, fingerprint_env_value,
+    RouteBindingDocument, ServiceDocument, ServicePlacement, ServiceReplicaCount, Sha256Hex,
+    StorageMode, TokenDocument, fingerprint_env_value,
 };
 use ployz_core::deploy::{EnvValue, ImageReference, ReplicaSlot};
 use ployz_core::ids::{
@@ -222,90 +222,23 @@ fn cluster_and_machine_documents_enforce_container_prefix_shapes() {
 }
 
 #[test]
-fn legacy_cluster_documents_derive_their_dns_target_from_hostname_mode() {
-    let mut managed = serde_json::to_value(cluster_document()).expect("cluster JSON");
-    set_json_field(&mut managed, "hostname_mode", json!({"mode": "ployz"}));
-    managed
-        .as_object_mut()
-        .expect("cluster object")
-        .remove("ployz_dns_target");
-    let managed = serde_json::from_value::<ClusterDocument>(managed).expect("legacy managed row");
-    assert_eq!(managed.ployz_dns_target, PloyzDnsTargetState::Pending);
-
-    let mut custom = serde_json::to_value(cluster_document()).expect("cluster JSON");
-    custom
-        .as_object_mut()
-        .expect("cluster object")
-        .remove("ployz_dns_target");
-    let custom = serde_json::from_value::<ClusterDocument>(custom).expect("legacy custom row");
-    assert_eq!(custom.ployz_dns_target, PloyzDnsTargetState::Disabled);
-}
-
-#[test]
-fn allocated_ployz_dns_target_requires_the_managed_suffix() {
+fn legacy_ployz_hostname_mode_becomes_disabled() {
     let mut cluster = serde_json::to_value(cluster_document()).expect("cluster JSON");
     set_json_field(&mut cluster, "hostname_mode", json!({"mode": "ployz"}));
-    set_json_field(
-        &mut cluster,
-        "ployz_dns_target",
-        json!({
-            "state": "allocated",
-            "hostname": "brisk-river-x7f3.up.ployz.app",
-            "acquired_by": "01ARZ3NDEKTSV4RRFFQ69G5FAV"
-        }),
-    );
-    serde_json::from_value::<ClusterDocument>(cluster.clone()).expect("managed target");
-
-    *cluster
-        .get_mut("ployz_dns_target")
-        .and_then(|target| target.get_mut("hostname"))
-        .expect("allocated hostname") = json!("tenant.example.com");
-    assert!(serde_json::from_value::<ClusterDocument>(cluster).is_err());
-}
-
-#[test]
-fn automatic_hostname_configuration_and_dns_target_are_independent_except_ployz_dependency() {
-    let mut cluster = serde_json::to_value(cluster_document()).expect("cluster JSON");
-    set_json_field(&mut cluster, "hostname_mode", json!({"mode": "ployz"}));
-    set_json_field(
-        &mut cluster,
-        "ployz_dns_target",
-        json!({"state": "disabled"}),
-    );
-    assert!(serde_json::from_value::<ClusterDocument>(cluster).is_err());
-
-    let mut cluster = serde_json::to_value(cluster_document()).expect("cluster JSON");
     set_json_field(
         &mut cluster,
         "ployz_dns_target",
         json!({"state": "pending"}),
     );
-    let custom_pending = serde_json::from_value::<ClusterDocument>(cluster)
-        .expect("custom namespace keeps an independent pending target");
-    serde_json::to_value(custom_pending).expect("custom pending cluster serializes");
 
-    let mut cluster = serde_json::to_value(cluster_document()).expect("cluster JSON");
-    set_json_field(&mut cluster, "hostname_mode", json!({"mode": "disabled"}));
-    set_json_field(
-        &mut cluster,
-        "ployz_dns_target",
-        json!({
-            "state": "allocated",
-            "hostname": "brisk-river-x7f3.up.ployz.app",
-            "acquired_by": "01ARZ3NDEKTSV4RRFFQ69G5FAV"
-        }),
+    let cluster = serde_json::from_value::<ClusterDocument>(cluster).expect("legacy cluster");
+    assert_eq!(cluster.hostname_mode, AutomaticHostnameMode::Disabled);
+    let canonical = serde_json::to_value(cluster).expect("canonical cluster");
+    assert_eq!(
+        canonical.get("hostname_mode"),
+        Some(&json!({"mode": "disabled"}))
     );
-    let disabled_allocated = serde_json::from_value::<ClusterDocument>(cluster)
-        .expect("disabled automatic hostnames retain the independent DNS target");
-    serde_json::to_value(disabled_allocated).expect("disabled allocated cluster serializes");
-
-    let mut directly_invalid = cluster_document();
-    directly_invalid.hostname_mode = AutomaticHostnameMode::Ployz;
-    directly_invalid.ployz_dns_target = PloyzDnsTargetState::Disabled;
-    assert!(
-        serde_json::to_value(directly_invalid).is_err(),
-        "direct construction cannot serialize a genuinely invalid dependency"
-    );
+    assert!(canonical.get("ployz_dns_target").is_none());
 }
 
 fn set_json_field(value: &mut Value, field: &str, replacement: Value) {
@@ -614,7 +547,6 @@ fn cluster_document() -> ClusterDocument {
         hostname_mode: AutomaticHostnameMode::Custom {
             suffix: RouteHostname::try_new("apps.example.com").expect("suffix"),
         },
-        ployz_dns_target: PloyzDnsTargetState::Disabled,
         prefix: MachineEndpointSupernet::try_new("10.210.0.0/16").expect("prefix"),
         provider: MeshProvider::BuiltinWireguard,
         acme_directory_url: "https://acme.example/directory".to_owned(),

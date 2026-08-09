@@ -27,8 +27,9 @@ use ployz_core::placement::{
 };
 use ployz_core::{
     DeployDesiredReplica, DeployInspectOutcome, DeployInspectRequest, DeployObservedContainer,
-    DeployPrepareOutcome, DeployPrepareRequest, DeployPreparedReplica, DeployRequest,
-    DeployRetireOutcome, DeployRetireRequest, HealthGatePolicy, RequestedPins, RequestedPlacement,
+    DeployPrepareOutcome, DeployPrepareRequest, DeployPreparedReplica, DeployRefusal,
+    DeployRequest, DeployRetireOutcome, DeployRetireRequest, HealthGatePolicy, RequestedPins,
+    RequestedPlacement,
 };
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
@@ -68,7 +69,7 @@ pub(super) enum DeployHostError {
 pub(super) trait SimpleDeployStore: Send + Sync {
     async fn controller(&self) -> Result<ControllerDocument, String>;
 
-    async fn observe(&self, command: &DeployCommand) -> Result<DeployReality, String>;
+    async fn observe(&self, command: &DeployCommand) -> Result<DeployReality, DeployStartError>;
 
     async fn write_operation(
         &self,
@@ -131,6 +132,24 @@ pub(super) struct DeployCommand {
     pub(super) appointment_id: ControllerAppointmentId,
 }
 
+#[derive(Debug)]
+pub(super) enum DeployStartError {
+    Refused(DeployRefusal),
+    Unavailable(String),
+}
+
+impl From<String> for DeployStartError {
+    fn from(error: String) -> Self {
+        Self::Unavailable(error)
+    }
+}
+
+pub(super) struct StartedDeploy {
+    command: DeployCommand,
+    context: DeployContext,
+    created: OperationDocument,
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct DeployCommit {
     pub(super) service_id: ServiceRowId,
@@ -169,11 +188,11 @@ impl SimpleDeploy {
         }
     }
 
-    pub(super) async fn run(
+    pub(super) async fn start(
         &self,
-        command: &DeployCommand,
-    ) -> Result<CorrosionDeployOutcome, String> {
-        let reality = self.store.observe(command).await?;
+        command: DeployCommand,
+    ) -> Result<StartedDeploy, DeployStartError> {
+        let reality = self.store.observe(&command).await?;
         let context = classify_service(&command.request, reality)?;
         let created_at = now()?;
         let created = OperationDocument::deploy_created(
@@ -188,6 +207,23 @@ impl SimpleDeploy {
         self.store
             .write_operation(&command.operation_id, &created)
             .await?;
+        Ok(StartedDeploy {
+            command,
+            context,
+            created,
+        })
+    }
+
+    pub(super) async fn run(
+        &self,
+        started: StartedDeploy,
+    ) -> Result<CorrosionDeployOutcome, String> {
+        let StartedDeploy {
+            command,
+            context,
+            created,
+        } = started;
+        let command = &command;
 
         if !self.appointment_is_current(command).await? {
             return self.interrupt(command, &created).await;
@@ -865,7 +901,10 @@ mod tests {
             Ok(self.controller.lock().await.clone())
         }
 
-        async fn observe(&self, _command: &DeployCommand) -> Result<DeployReality, String> {
+        async fn observe(
+            &self,
+            _command: &DeployCommand,
+        ) -> Result<DeployReality, DeployStartError> {
             Ok(self.reality.lock().await.clone())
         }
 
@@ -1072,11 +1111,24 @@ mod tests {
         };
         let machine_id = machine_id.clone();
 
-        let outcome = fixture
+        let started = fixture
             .executor
-            .run(&fixture.command)
+            .start(fixture.command.clone())
             .await
-            .expect("deploy");
+            .expect("start deploy");
+        assert!(matches!(
+            fixture
+                .store
+                .operation
+                .lock()
+                .await
+                .as_ref()
+                .expect("created operation")
+                .deploy_state(),
+            CorrosionDeployState::Created
+        ));
+        assert!(fixture.hosts.calls.lock().await.is_empty());
+        let outcome = fixture.executor.run(started).await.expect("deploy");
 
         assert!(outcome.is_success());
         let commits = fixture.store.commits.lock().await;
@@ -1106,11 +1158,12 @@ mod tests {
         fixture.store.controller.lock().await.appointment_id =
             ControllerAppointmentId::try_new("01J00000000000000000000009").expect("appointment");
 
-        let outcome = fixture
+        let started = fixture
             .executor
-            .run(&fixture.command)
+            .start(fixture.command.clone())
             .await
-            .expect("deploy");
+            .expect("start deploy");
+        let outcome = fixture.executor.run(started).await.expect("deploy");
 
         assert!(!outcome.is_success());
         assert!(fixture.hosts.calls.lock().await.is_empty());
@@ -1135,11 +1188,12 @@ mod tests {
         let fixture = fixture(1);
         fixture.hosts.stale_prepare.store(true, Ordering::SeqCst);
 
-        let outcome = fixture
+        let started = fixture
             .executor
-            .run(&fixture.command)
+            .start(fixture.command.clone())
             .await
-            .expect("deploy");
+            .expect("start deploy");
+        let outcome = fixture.executor.run(started).await.expect("deploy");
 
         assert!(matches!(outcome, CorrosionDeployOutcome::Interrupted));
     }

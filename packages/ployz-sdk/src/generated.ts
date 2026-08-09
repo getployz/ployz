@@ -41,7 +41,7 @@ export type ApiRefusal = { "kind": "unknown_source", source: string, } | { "kind
 
 export type ApiVersion = { major: number, build: string, features: Array<ApiFeature>, };
 
-export type AutomaticHostnameMode = { "mode": "disabled" } | { "mode": "ployz" } | { "mode": "custom", suffix: RouteHostname, };
+export type AutomaticHostnameMode = { "mode": "disabled" } | { "mode": "custom", suffix: RouteHostname, };
 
 export type BuiltinWireguardKeyMismatch = { "kind": "local_public_key", machine_id: MachineRowId, stored: WireGuardPublicKey, local: WireGuardPublicKey, } | { "kind": "stored_ipv6_address", member_id: RosterMemberId, stored: string, derived: BuiltinWireguardMemberAddress, };
 
@@ -49,7 +49,7 @@ export type BuiltinWireguardMemberAddress = string;
 
 export type CertHoldingDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, machine_id: MachineRowId, hostname: RouteHostname, fingerprint: Sha256Hex, issued_at: CorrosionTimestamp, expires_at: CorrosionTimestamp, };
 
-export type ClusterDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, name: string, storage_default: StorageMode, hostname_mode: AutomaticHostnameMode, ployz_dns_target: PloyzDnsTargetState, prefix: MachineEndpointSupernet, provider: MeshProvider, acme_directory_url: string, acme_contact: string | null, written_by: Principal, written_at: CorrosionTimestamp, };
+export type ClusterDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterId, name: string, storage_default: StorageMode, hostname_mode: AutomaticHostnameMode, prefix: MachineEndpointSupernet, provider: MeshProvider, acme_directory_url: string, acme_contact: string | null, written_by: Principal, written_at: CorrosionTimestamp, };
 
 export type ClusterId = Brand<string, "ClusterId">;
 
@@ -417,8 +417,6 @@ export type PlacementElimination = { machine_id: MachineRowId, machine_name: Mac
 export type PlacementEliminationReason = { "kind": "draining" } | { "kind": "free_disk_below_floor", free_disk_bytes: number, } | { "kind": "outside_pin_set" };
 
 export type PlacementRefusal = { "kind": "no_eligible_machines", eliminations: Array<PlacementElimination>, } | { "kind": "volume_replica_limit", requested: ServiceReplicaCount, };
-
-export type PloyzDnsTargetState = { "state": "disabled" } | { "state": "pending" } | { "state": "allocated", hostname: RouteHostname, acquired_by: MachineRowId, };
 
 export type Principal = { "kind": "machine", machine_id: MachineRowId, } | { "kind": "peer", peer_id: PeerId, } | { "kind": "api_token", token_id: TokenId, };
 

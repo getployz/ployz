@@ -71,19 +71,15 @@ The single cluster-wide canonical hostname suffix from which automatic hostname 
 _Avoid_: Automatic domain, public URL mode, per-route namespace
 
 **Automatic Hostname Configuration**:
-The durable operator decision selecting no automatic hostnames, the Ployz Automatic Hostname Namespace, or one custom Automatic Hostname Namespace. Selection does not wait for external readiness; lease allocation, DNS observations, certificate progress, and gateway synchronization remain separate.
+The durable operator decision selecting no automatic hostnames or one custom Automatic Hostname Namespace. Disabled is the default; Ployz does not allocate or own a managed public suffix.
 _Avoid_: Public URL mode, namespace readiness, DNS provider mode
-
-**Ployz DNS Target**:
-The allocated `<lease>.up.ployz.app` hostname that publishes the cluster's Ingress Endpoint Projection and provides stable CNAME indirection. It is independently enabled and may remain available when automatic hostnames are disabled; the Ployz namespace requires it, while custom-namespace dependencies are never inferred.
-_Avoid_: Application URL, automatic namespace, DNS provider mode
 
 **Automatic Hostname Label**:
 The caller-supplied single lowercase DNS label combined with the Automatic Hostname Namespace to form a generated Route Binding hostname directly beneath that namespace. It is 1–63 ASCII letters, digits, or hyphens without an edge hyphen; an identical request reuses its Route Binding, while Ployz never rewrites invalid input or collisions.
 _Avoid_: Service label, generated prefix, collision suffix
 
 **Automatic Hostname Verification**:
-A point-of-use check that a concrete generated hostname reaches Ployz. DNS preflight produces warning evidence, while successful exact-certificate issuance is the hard reachability proof for a custom automatic hostname.
+A point-of-use check that a concrete generated hostname reaches the cluster. DNS preflight produces warning evidence, while successful exact-certificate issuance is the hard reachability proof for a custom automatic hostname.
 _Avoid_: DNS ownership, namespace health, stored verification, direct-address requirement
 
 **Automatic Route Activation**:
@@ -192,10 +188,6 @@ _Avoid_: Silent auth, iframe auth, dashboard bypass
 **Active Certificate**:
 A valid certificate that Ployz has obtained and every currently publishable gateway can use. Domain-backed Route Bindings require one before attachment; expiry makes only the dependent Route Projection unavailable while other routes continue serving.
 _Avoid_: Pending certificate
-
-**Ployz Wildcard Certificate**:
-The wildcard certificate owned by the Ployz Automatic Hostname Namespace and shared by its generated Route Bindings. Switching away retires it without disabling the Ployz DNS Target; after control-plane loss it is recovered from its issuing service.
-_Avoid_: Route certificate, custom wildcard, cluster certificate
 
 **Exact Route Certificate**:
 The exact-hostname certificate owned by one custom generated Route Binding. Failed provisional material is cleaned and detachment ends its lifecycle; gateway copies keep serving through control-plane loss but never restore authority, so it is reissued rather than recovered.

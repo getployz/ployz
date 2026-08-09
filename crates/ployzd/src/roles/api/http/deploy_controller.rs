@@ -8,7 +8,7 @@ use ployz_core::ids::OperationRowId;
 use ployz_core::{DeployAccepted, DeployRefusal, DeployRequest};
 
 use super::server::{ApiService, HttpBody, corrosion_unavailable_response, refusal_response};
-use super::simple_deploy::DeployCommand;
+use super::simple_deploy::{DeployCommand, DeployStartError};
 
 pub(super) async fn handle(
     service: &ApiService,
@@ -16,21 +16,13 @@ pub(super) async fn handle(
     appointment_id: ControllerAppointmentId,
     request: hyper::Request<hyper::body::Incoming>,
 ) -> Response<HttpBody> {
-    let (Some(deploy), Some(store)) = (&service.simple_deploy, &service.simple_deploy_store) else {
+    let Some(deploy) = &service.simple_deploy else {
         return refusal_response(ployz_core::ApiRefusal::UnsupportedRoute);
     };
     let request: DeployRequest = match super::mutations::decode_request(request.into_body()).await {
         Ok(request) => request,
         Err(response) => return response,
     };
-    match store.preflight_namespace(&request).await {
-        Ok(Ok(())) => {}
-        Ok(Err(refusal)) => return deploy_refusal(refusal),
-        Err(error) => {
-            tracing::warn!(%error, "deploy namespace preflight failed");
-            return corrosion_unavailable_response();
-        }
-    }
     let permit = match Arc::clone(&service.controller_lock).try_lock_owned() {
         Ok(permit) => permit,
         Err(_) => return controller_busy(),
@@ -42,15 +34,24 @@ pub(super) async fn handle(
         initiator: principal,
         appointment_id,
     };
+    let started = match deploy.start(command).await {
+        Ok(started) => started,
+        Err(DeployStartError::Refused(refusal)) => return deploy_refusal(refusal),
+        Err(DeployStartError::Unavailable(error)) => {
+            tracing::warn!(%error, "deploy admission failed");
+            return corrosion_unavailable_response();
+        }
+    };
     let deploy = Arc::clone(deploy);
+    let task_operation_id = operation_id.clone();
     tokio::spawn(async move {
         let _permit = permit;
-        match deploy.run(&command).await {
+        match deploy.run(started).await {
             Ok(outcome) => {
-                tracing::info!(operation_id = %command.operation_id, ?outcome, "deploy attempt finished");
+                tracing::info!(operation_id = %task_operation_id, ?outcome, "deploy attempt finished");
             }
             Err(error) => {
-                tracing::warn!(operation_id = %command.operation_id, %error, "deploy attempt ended before a coarse terminal row");
+                tracing::warn!(operation_id = %task_operation_id, %error, "deploy attempt ended without a coarse terminal row");
             }
         }
     });

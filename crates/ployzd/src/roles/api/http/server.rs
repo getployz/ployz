@@ -366,8 +366,6 @@ pub(super) struct ApiService {
     pub(super) controller_forwarder: Arc<super::controller_forwarding::ControllerForwarder>,
     pub(super) controller_lock: Arc<Mutex<()>>,
     pub(super) simple_deploy: Option<Arc<super::simple_deploy::SimpleDeploy>>,
-    pub(super) simple_deploy_store:
-        Option<Arc<super::simple_deploy_store::CorrosionSimpleDeployStore>>,
     pub(super) deploy_effects: Option<Arc<super::deploy_effects::DeployHostEffects>>,
     pub(super) node_workflows: Option<Arc<super::node_workflows::NodeWorkflows>>,
     pub(super) container_runner:
@@ -392,8 +390,6 @@ pub(super) struct ApiServiceRuntime {
     pub(super) controller_forwarder: Arc<super::controller_forwarding::ControllerForwarder>,
     pub(super) controller_lock: Arc<Mutex<()>>,
     pub(super) simple_deploy: Option<Arc<super::simple_deploy::SimpleDeploy>>,
-    pub(super) simple_deploy_store:
-        Option<Arc<super::simple_deploy_store::CorrosionSimpleDeployStore>>,
     pub(super) deploy_effects: Option<Arc<super::deploy_effects::DeployHostEffects>>,
     pub(super) node_workflows: Option<Arc<super::node_workflows::NodeWorkflows>>,
     pub(super) container_runner:
@@ -420,7 +416,6 @@ impl ApiService {
             controller_forwarder,
             controller_lock,
             simple_deploy,
-            simple_deploy_store,
             deploy_effects,
             node_workflows,
             container_runner,
@@ -453,7 +448,6 @@ impl ApiService {
             controller_forwarder,
             controller_lock,
             simple_deploy,
-            simple_deploy_store,
             deploy_effects,
             node_workflows,
             container_runner,

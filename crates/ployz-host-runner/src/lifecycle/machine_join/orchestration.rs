@@ -285,8 +285,8 @@ pub(crate) mod tests {
     use ployz_core::corrosion::{
         AutomaticHostnameMode, ClusterDocument, CorrosionDocumentVersion, CorrosionTimestamp,
         MachineDocument, MachineStorageSelection, MachineStorageSelectionReason, MachineTransport,
-        MeshProvider, OperationInitiator, OperatorWriteProvenance, PloyzDnsTargetState,
-        StorageMode, derive_builtin_wireguard_member,
+        MeshProvider, OperationInitiator, OperatorWriteProvenance, StorageMode,
+        derive_builtin_wireguard_member,
     };
     use ployz_core::ids::{ClusterId, MachineRowId, TokenId};
     use ployz_core::install::{
@@ -590,7 +590,6 @@ pub(crate) mod tests {
             name: "acme".to_owned(),
             storage_default: StorageMode::Plain,
             hostname_mode: AutomaticHostnameMode::Disabled,
-            ployz_dns_target: PloyzDnsTargetState::Disabled,
             prefix: MachineEndpointSupernet::try_new("10.210.0.0/16").expect("prefix"),
             provider: MeshProvider::BuiltinWireguard,
             acme_directory_url: "https://acme.invalid/directory".to_owned(),

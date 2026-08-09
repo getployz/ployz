@@ -327,7 +327,7 @@ async fn bind_api_listener(
         )),
         None => None,
     };
-    let (simple_deploy_store, simple_deploy) = match (&deploy_effects, &node_workflows) {
+    let simple_deploy = match (&deploy_effects, &node_workflows) {
         (Some(effects), Some(workflows)) => {
             let store = Arc::new(super::simple_deploy_store::CorrosionSimpleDeployStore::new(
                 corrosion.clone(),
@@ -350,9 +350,9 @@ async fn bind_api_listener(
                 store.clone(),
                 hosts,
             ));
-            (Some(store), Some(deploy))
+            Some(deploy)
         }
-        (None, None) => (None, None),
+        (None, None) => None,
         _ => unreachable!("host effects and node workflows are created together"),
     };
     let runtime = ApiServiceRuntime {
@@ -370,7 +370,6 @@ async fn bind_api_listener(
         controller_forwarder,
         controller_lock,
         simple_deploy,
-        simple_deploy_store,
         deploy_effects,
         node_workflows,
         container_runner,

@@ -4,8 +4,8 @@ use std::str::FromStr;
 use ployz_core::corrosion::{
     AutomaticHostnameMode, ClusterDocument, CorrosionDocumentVersion, CorrosionTimestamp,
     MachineDocument, MachineStorageSelection, MachineStorageSelectionReason, MachineTransport,
-    MeshProvider, OperationInitiator, OperatorWriteProvenance, PeerTransport, PloyzDnsTargetState,
-    Sha256Hex, StorageMode, TokenDocument, derive_builtin_wireguard_member,
+    MeshProvider, OperationInitiator, OperatorWriteProvenance, PeerTransport, Sha256Hex,
+    StorageMode, TokenDocument, derive_builtin_wireguard_member,
 };
 use ployz_core::ids::{ClusterId, MachineRowId, PeerId, TokenId};
 use ployz_core::install::{
@@ -75,7 +75,6 @@ fn cluster() -> ClusterDocument {
         name: "acme".to_owned(),
         storage_default: StorageMode::Plain,
         hostname_mode: AutomaticHostnameMode::Disabled,
-        ployz_dns_target: PloyzDnsTargetState::Disabled,
         prefix: MachineEndpointSupernet::try_new("10.210.0.0/16").expect("fixture prefix"),
         provider: MeshProvider::BuiltinWireguard,
         acme_directory_url: "https://acme.invalid/directory".to_owned(),

@@ -8,8 +8,8 @@ use ployz_core::corrosion::{
     GatewayRouteProjectionFailure, GatewayRouteProjectionOutcome, GatewayRouteUnavailableReason,
     IngressMode, MachineDocument, MachineStorageIneligibleReason, MachineStorageSelection,
     MachineStorageSelectionReason, MachineTransport, MeshProvider, OperationInitiator,
-    OperatorWriteProvenance, PloyzDnsTargetState, RouteBindingDocument, ServiceDocument,
-    ServicePlacement, ServiceReplicaCount, Sha256Hex, StorageMode, StoredRow,
+    OperatorWriteProvenance, RouteBindingDocument, ServiceDocument, ServicePlacement,
+    ServiceReplicaCount, Sha256Hex, StorageMode, StoredRow,
 };
 use ployz_core::deploy::ImageReference;
 use ployz_core::ids::{
@@ -293,7 +293,6 @@ fn cluster() -> ClusterDocument {
         hostname_mode: AutomaticHostnameMode::Custom {
             suffix: RouteHostname::try_new("example.com").expect("hostname suffix"),
         },
-        ployz_dns_target: PloyzDnsTargetState::Disabled,
         prefix: MachineEndpointSupernet::try_new("10.20.0.0/16").expect("supernet"),
         provider: MeshProvider::BuiltinWireguard,
         acme_directory_url: "https://acme.example/directory".to_owned(),

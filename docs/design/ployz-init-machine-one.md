@@ -84,14 +84,13 @@ $ ployz init root@203.0.113.7
     each machine takes a /24 (~250 machines); must not collide with your LAN;
     changing later means renumbering every machine
 
-? service URLs        [ployz — instant *.<cluster>.ployz.app]
-    ployz     managed wildcard; deploys get HTTPS URLs immediately
+? service URLs        [disabled]
     custom    your domain — point *.suffix at the cluster, certs via ACME
     disabled  routes only when you attach them explicitly
 ```
 
 - **Service URLs** is the incumbent `AutomaticHostnameConfiguration`
-  enum (`Disabled | Ployz | Custom{suffix}`), asked at init instead of
+  enum (`Disabled | Custom{suffix}`), asked at init instead of
   buried.
 - **Mesh provider** joins the wizard only when Tailscale ships — a
   question whose second answer does not work cannot ship. Until then
@@ -270,9 +269,7 @@ Keeper's never-fold-an-empty-roster guard is safe on machine one).
  10  enroll the driver: write its peers row (pubkey arrives over the
      driver's own channel: ssh | `--cloud-token`); Keeper converges
      the WG peer from the row — one writer of WG state
- 11  if service URLs = ployz: reserve the managed wildcard, point it
-     at this machine
- 12  verify: trivial Corrosion query + barrier ready + /version
+ 11  verify: trivial Corrosion query + barrier ready + /version
      answers → print summary + next step (`ployz token create`)
 ```
 

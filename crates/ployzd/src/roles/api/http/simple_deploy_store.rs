@@ -6,10 +6,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use async_trait::async_trait;
+use ployz_core::DeployRefusal;
 use ployz_core::corrosion::{
     AutomaticHostnameMode, ClusterDocument, ControllerDocument, CorrosionDocumentVersion,
-    CorrosionTable, IngressMode, MachineDocument, MachineStatusDocument, NamespaceDocument,
-    OperationDocument, OperatorWriteProvenance, PloyzDnsTargetState, RouteBindingDocument,
+    CorrosionNamespaceName, CorrosionTable, IngressMode, MachineDocument, MachineStatusDocument,
+    NamespaceDocument, OperationDocument, OperatorWriteProvenance, RouteBindingDocument,
     ServiceDocument, SqliteParameter, Statement, StoredRow, read_named_roster_rows,
     read_named_rows, read_rows,
 };
@@ -18,14 +19,13 @@ use ployz_core::ids::{
 };
 use ployz_core::ingress::{AutomaticHostnameLabel, RouteBindingOrigin};
 use ployz_core::operation::{RouteHostname, RoutePort};
-use ployz_core::{DeployRefusal, DeployRequest};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 use crate::corrosion::{CorrosionClient, StoredRowLimit, collect_stored_rows};
 
 use super::simple_deploy::{
     DeployCommand, DeployCommit, DeployMachineStatus, DeployReality, DeployRosterMachine,
-    DesiredRouteRow, ObservedServiceRow, SimpleDeployStore,
+    DeployStartError, DesiredRouteRow, ObservedServiceRow, SimpleDeployStore,
 };
 
 const MAX_SINGLETON_ROWS: usize = 2;
@@ -44,65 +44,6 @@ impl CorrosionSimpleDeployStore {
             corrosion,
             cluster_id,
         }
-    }
-
-    /// Resolves only the public namespace admission that must precede an
-    /// operation id. All later refusals are coarse terminal operation results.
-    pub(super) async fn preflight_namespace(
-        &self,
-        request: &DeployRequest,
-    ) -> Result<Result<(), DeployRefusal>, String> {
-        let rows = self
-            .query(
-                namespace_named(&self.cluster_id, &request.namespace_name),
-                MAX_DEPLOY_ROWS,
-            )
-            .await?;
-        let report = read_named_rows::<NamespaceDocument>(&self.cluster_id, rows);
-        if !report.skipped.is_empty() {
-            return Err("namespace lookup contained a rejected row".to_owned());
-        }
-        if report.accepted.is_empty() {
-            return Ok(Err(DeployRefusal::namespace_not_found(
-                request.namespace_name.clone(),
-            )));
-        }
-        if !report.shadows.is_empty() || report.accepted.len() > 1 {
-            let mut namespace_ids = report
-                .accepted
-                .iter()
-                .filter_map(|row| NamespaceRowId::try_new(row.id.as_str().to_owned()).ok())
-                .collect::<BTreeSet<_>>();
-            for shadow in &report.shadows {
-                if let Ok(id) = NamespaceRowId::try_new(shadow.winner.id.as_str().to_owned()) {
-                    namespace_ids.insert(id);
-                }
-                if let Ok(id) = NamespaceRowId::try_new(shadow.loser.id.as_str().to_owned()) {
-                    namespace_ids.insert(id);
-                }
-            }
-            return Ok(Err(DeployRefusal::NamespaceAmbiguous {
-                namespace_name: request.namespace_name.clone(),
-                namespace_ids: namespace_ids.into_iter().collect(),
-            }));
-        }
-        if !request.runtime.volume_mounts.is_empty() {
-            let [namespace] = report.accepted.as_slice() else {
-                return Err("namespace preflight lost its single accepted row".to_owned());
-            };
-            let namespace_id = NamespaceRowId::try_new(namespace.id.as_str().to_owned())
-                .map_err(|error| error.to_string())?;
-            let services = self
-                .query(
-                    namespace_rows(CorrosionTable::Services, &namespace_id),
-                    MAX_DEPLOY_ROWS,
-                )
-                .await?;
-            if !decode_services(&self.cluster_id, services)?.is_empty() {
-                return Ok(Err(DeployRefusal::NamedVolumeRedeployUnsupported));
-            }
-        }
-        Ok(Ok(()))
     }
 
     async fn query(&self, statement: Statement, limit: usize) -> Result<Vec<StoredRow>, String> {
@@ -130,14 +71,18 @@ impl SimpleDeployStore for CorrosionSimpleDeployStore {
             .ok_or_else(|| "preferred controller row is missing".to_owned())
     }
 
-    async fn observe(&self, command: &DeployCommand) -> Result<DeployReality, String> {
+    async fn observe(&self, command: &DeployCommand) -> Result<DeployReality, DeployStartError> {
         let matching_namespaces = self
             .query(
                 namespace_named(&self.cluster_id, &command.request.namespace_name),
-                MAX_SINGLETON_ROWS,
+                MAX_DEPLOY_ROWS,
             )
             .await?;
-        let namespace = decode_namespace(&self.cluster_id, matching_namespaces)?;
+        let namespace = decode_namespace(
+            &self.cluster_id,
+            &command.request.namespace_name,
+            matching_namespaces,
+        )?;
 
         let cluster = self.query(
             select_by_id(CorrosionTable::Cluster, self.cluster_id.as_str()),
@@ -159,8 +104,11 @@ impl SimpleDeployStore for CorrosionSimpleDeployStore {
 
         let cluster = decode_cluster(&self.cluster_id, cluster)?;
         let services = decode_services(&self.cluster_id, services)?;
-        // `ponytail:` leave a pending Ployz DNS target as an explicit refusal;
-        // restore allocation only when cluster-local lease ownership is required.
+        if !command.request.runtime.volume_mounts.is_empty() && !services.is_empty() {
+            return Err(DeployStartError::Refused(
+                DeployRefusal::NamedVolumeRedeployUnsupported,
+            ));
+        }
         let (automatic_route, routes_without_service) =
             desired_routes(&cluster, command, &namespace.id, &services, routes)?;
         let roster = decode_roster(&cluster, machines, statuses)?;
@@ -206,19 +154,44 @@ struct ResolvedNamespace {
 
 fn decode_namespace(
     cluster_id: &ClusterId,
+    namespace_name: &CorrosionNamespaceName,
     rows: Vec<StoredRow>,
-) -> Result<ResolvedNamespace, String> {
+) -> Result<ResolvedNamespace, DeployStartError> {
     let report = read_named_rows::<NamespaceDocument>(cluster_id, rows);
-    if !report.skipped.is_empty() || !report.shadows.is_empty() || report.accepted.len() != 1 {
-        return Err(format!(
-            "namespace lookup must contain exactly one valid row (accepted {}, skipped {}, shadowed {})",
-            report.accepted.len(),
-            report.skipped.len(),
-            report.shadows.len(),
+    if !report.skipped.is_empty() {
+        return Err(DeployStartError::Unavailable(
+            "namespace lookup contained a rejected row".to_owned(),
+        ));
+    }
+    if report.accepted.is_empty() && report.shadows.is_empty() {
+        return Err(DeployStartError::Refused(
+            DeployRefusal::namespace_not_found(namespace_name.clone()),
+        ));
+    }
+    if !report.shadows.is_empty() || report.accepted.len() != 1 {
+        let mut namespace_ids = report
+            .accepted
+            .iter()
+            .filter_map(|row| NamespaceRowId::try_new(row.id.as_str().to_owned()).ok())
+            .collect::<BTreeSet<_>>();
+        for shadow in &report.shadows {
+            if let Ok(id) = NamespaceRowId::try_new(shadow.winner.id.as_str().to_owned()) {
+                namespace_ids.insert(id);
+            }
+            if let Ok(id) = NamespaceRowId::try_new(shadow.loser.id.as_str().to_owned()) {
+                namespace_ids.insert(id);
+            }
+        }
+        return Err(DeployStartError::Refused(
+            DeployRefusal::NamespaceAmbiguous {
+                namespace_name: namespace_name.clone(),
+                namespace_ids: namespace_ids.into_iter().collect(),
+            },
         ));
     }
     let row = report.accepted.into_iter().next().expect("length checked");
-    let id = NamespaceRowId::try_new(row.id.into_string()).map_err(|error| error.to_string())?;
+    let id = NamespaceRowId::try_new(row.id.into_string())
+        .map_err(|error| DeployStartError::Unavailable(error.to_string()))?;
     Ok(ResolvedNamespace {
         id,
         document: row.value,
@@ -302,9 +275,9 @@ fn desired_routes(
     };
     let mut planned = None;
     if let Some(service_id) = automatic_service_id
-        && let Some(suffix) = automatic_suffix(&cluster.hostname_mode, &cluster.ployz_dns_target)?
+        && let AutomaticHostnameMode::Custom { suffix } = &cluster.hostname_mode
     {
-        let hostname = automatic_hostname(&command.request.service_name, &suffix)?;
+        let hostname = automatic_hostname(&command.request.service_name, suffix)?;
         match report
             .accepted
             .iter()
@@ -345,25 +318,6 @@ fn desired_routes(
         }
     }
     Ok((planned, route_without_service))
-}
-
-fn automatic_suffix(
-    mode: &AutomaticHostnameMode,
-    target: &PloyzDnsTargetState,
-) -> Result<Option<RouteHostname>, String> {
-    match (mode, target) {
-        (AutomaticHostnameMode::Disabled, _) => Ok(None),
-        (AutomaticHostnameMode::Custom { suffix }, _) => Ok(Some(suffix.clone())),
-        (AutomaticHostnameMode::Ployz, PloyzDnsTargetState::Allocated { hostname, .. }) => {
-            Ok(Some(hostname.clone()))
-        }
-        (AutomaticHostnameMode::Ployz, PloyzDnsTargetState::Pending) => {
-            Err("Ployz DNS target allocation is still pending".to_owned())
-        }
-        (AutomaticHostnameMode::Ployz, PloyzDnsTargetState::Disabled) => {
-            Err("Ployz DNS target allocation is disabled".to_owned())
-        }
-    }
 }
 
 fn automatic_hostname(
@@ -584,11 +538,20 @@ mod tests {
     #[test]
     fn namespace_decode_rejects_missing_malformed_and_duplicate_claims() {
         let cluster = cluster_id();
-        assert!(decode_namespace(&cluster, Vec::new()).is_err());
-        assert!(decode_namespace(&cluster, vec![StoredRow::new(NAMESPACE_A, "not json")]).is_err());
+        let name = CorrosionNamespaceName::try_new("production").expect("namespace name");
+        assert!(decode_namespace(&cluster, &name, Vec::new()).is_err());
         assert!(
             decode_namespace(
                 &cluster,
+                &name,
+                vec![StoredRow::new(NAMESPACE_A, "not json")]
+            )
+            .is_err()
+        );
+        assert!(
+            decode_namespace(
+                &cluster,
+                &name,
                 vec![
                     namespace_row(NAMESPACE_A, "production"),
                     namespace_row(NAMESPACE_B, "production"),
@@ -597,8 +560,12 @@ mod tests {
             .is_err()
         );
 
-        let resolved = decode_namespace(&cluster, vec![namespace_row(NAMESPACE_A, "production")])
-            .expect("one exact namespace");
+        let resolved = decode_namespace(
+            &cluster,
+            &name,
+            vec![namespace_row(NAMESPACE_A, "production")],
+        )
+        .expect("one exact namespace");
         assert_eq!(resolved.id.as_str(), NAMESPACE_A);
     }
 
@@ -632,27 +599,6 @@ mod tests {
             &service_id,
             &hostname,
         ));
-
-        let allocated = PloyzDnsTargetState::Allocated {
-            hostname: suffix.clone(),
-            acquired_by: MachineRowId::try_new("01J00000000000000000000004").expect("machine id"),
-        };
-        assert_eq!(
-            automatic_suffix(&AutomaticHostnameMode::Ployz, &allocated).expect("allocated suffix"),
-            Some(suffix.clone())
-        );
-        assert!(
-            automatic_suffix(&AutomaticHostnameMode::Ployz, &PloyzDnsTargetState::Pending,)
-                .is_err()
-        );
-        assert_eq!(
-            automatic_suffix(
-                &AutomaticHostnameMode::Disabled,
-                &PloyzDnsTargetState::Pending,
-            )
-            .expect("disabled has no route"),
-            None
-        );
     }
 
     fn cluster_id() -> ClusterId {

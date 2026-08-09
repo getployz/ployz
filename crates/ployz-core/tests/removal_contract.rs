@@ -1,6 +1,6 @@
 use ployz_core::corrosion::{
     AutomaticHostnameMode, ClusterDocument, CorrosionDocumentVersion, CorrosionTimestamp,
-    MeshProvider, OperatorWriteProvenance, PloyzDnsTargetState, Principal, StorageMode, StoredRow,
+    MeshProvider, OperatorWriteProvenance, Principal, StorageMode, StoredRow,
 };
 use ployz_core::ids::{ClusterId, NamespaceRowId, PeerId, RouteBindingRowId, ServiceRowId};
 use ployz_core::network::MachineEndpointSupernet;
@@ -32,7 +32,6 @@ fn cluster() -> ClusterDocument {
         name: "acme".to_owned(),
         storage_default: StorageMode::Plain,
         hostname_mode: AutomaticHostnameMode::Disabled,
-        ployz_dns_target: PloyzDnsTargetState::Disabled,
         prefix: MachineEndpointSupernet::try_new("10.210.0.0/16").expect("supernet"),
         provider: MeshProvider::BuiltinWireguard,
         acme_directory_url: "https://acme.example/directory".to_owned(),
