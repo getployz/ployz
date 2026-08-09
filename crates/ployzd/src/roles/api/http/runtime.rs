@@ -146,6 +146,13 @@ impl ApiServer {
             mut lifecycle_failures,
         } = self;
         let (shutdown_tx, _) = watch::channel(false);
+        let controller_kernel_task = matches!(&service.mode, ApiRoleMode::Ordinary).then(|| {
+            let kernel = super::controller_kernel::ControllerKernel::new(
+                service.corrosion.clone(),
+                Arc::clone(&service.controller),
+            );
+            tokio::spawn(kernel.run(shutdown_tx.subscribe()))
+        });
         let (endpoint_failure_tx, mut endpoint_failures) = mpsc::unbounded_channel();
         let endpoint_task = service.lenses().and_then(|lenses| {
             let runner = service.container_runner.clone()?;
@@ -241,6 +248,8 @@ impl ApiServer {
             }
         };
 
+        let _ = shutdown_tx.send(true);
+
         if tokio::time::timeout(SERVER_SHUTDOWN_GRACE, drain_connections(&mut connections))
             .await
             .is_err()
@@ -251,6 +260,9 @@ impl ApiServer {
         if let Some(endpoint_task) = endpoint_task {
             endpoint_task.abort();
             let _ = endpoint_task.await;
+        }
+        if let Some(controller_kernel_task) = controller_kernel_task {
+            let _ = controller_kernel_task.await;
         }
         match Arc::try_unwrap(service) {
             Ok(service) => service.shutdown().await,

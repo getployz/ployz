@@ -7,6 +7,7 @@
 mod config;
 mod controller;
 mod controller_forwarding;
+mod controller_kernel;
 mod deploy_controller;
 mod deploy_effect_http;
 mod deploy_effects;

@@ -16,17 +16,23 @@ store. There is no consensus leader, quorum, sequencer, claim service, or NATS.
 
 ## Controller appointment
 
-The `controller` row contains the preferred machine id and an opaque
-appointment id. It has no term, lease, heartbeat, expiry, timestamp, or fencing
-meaning.
+The `controller` row contains the preferred machine name, a monotonic revision,
+and `heartbeat_at`. Every ordinary API process runs the same fixed five-second
+poll. The named machine refreshes the timestamp while it passes the visibility
+brake. A follower may replace an appointment after its heartbeat is more than
+30 seconds old; the write compares both the exact observed revision and machine.
+The first visible machine may similarly create revision one when the row is
+absent. Corrosion LWW resolves concurrent writes.
 
-The first API machine to handle a mutation may create the row. A follower may
-replace it immediately after one hard connection failure to the current
-preferred machine. Timeouts, HTTP responses, and protocol failures do not
-trigger replacement. Corrosion LWW resolves concurrent replacements.
+The timestamp is weak wall-clock evidence, not a term, lease, expiry guarantee,
+or fencing token. Forwarding failures return unavailable and never elect; this
+leaves the single polling loop as the only appointment-change path. In
+particular, an API listener failure is not detected while the same process can
+still refresh Corrosion. That rare failure waits for process restart or operator
+intervention.
 
 The appointment is advisory. Work is admitted against the exact machine and
-opaque appointment id currently visible. A deploy rechecks that identity before
+revision currently visible. A deploy rechecks that identity before
 dispatching more host work and once immediately before committing cluster rows.
 The commit itself is an ordinary unconditional Corrosion transaction. This
 narrows the everyday race but is not fencing: a stale or partitioned controller
@@ -119,8 +125,8 @@ as a stateless replacement and may leave the old local volume behind.
 ## Failure and recovery
 
 Controller loss abandons its in-memory attempt. A replacement takes a new
-appointment and later caller retries observe Corrosion and hosts. No controller
-history is recovered or migrated.
+appointment after the old heartbeat is stale, and later caller retries observe
+Corrosion and hosts. No controller history is recovered or migrated.
 
 A deploy acceptance response may be returned before its first coarse Operation
 row is written. Losing the controller in that window leaves no operation row;

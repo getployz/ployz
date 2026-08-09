@@ -1,22 +1,26 @@
+use std::time::Duration;
+
 use ployz_core::corrosion::{
-    ControllerAppointmentId, ControllerDocument, CorrosionDocument, CorrosionDocumentVersion,
-    CorrosionTable, RowSkipReason, StoredRow, controller_visibility_allows_work,
-    owns_current_controller_appointment, read_rows,
+    ControllerDocument, ControllerRevision, CorrosionDocument, CorrosionDocumentVersion,
+    CorrosionTable, CorrosionTimestamp, RowSkipReason, StoredRow, controller_heartbeat_is_stale,
+    controller_visibility_allows_work, owns_current_controller_appointment, read_rows,
 };
-use ployz_core::ids::{ClusterId, MachineRowId};
+use ployz_core::ids::{ClusterName, MachineName};
 use serde_json::json;
 
 const CLUSTER_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const MACHINE_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
-const APPOINTMENT_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
+const APPOINTMENT_ID: u64 = 7;
 const OTHER_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAY";
+const HEARTBEAT_AT: &str = "2026-08-09T12:00:00Z";
 
 fn controller_document() -> ControllerDocument {
     ControllerDocument {
         v: CorrosionDocumentVersion::V1,
-        cluster_id: ClusterId::try_new(CLUSTER_ID).expect("cluster id"),
-        preferred_machine_id: MachineRowId::try_new(MACHINE_ID).expect("machine id"),
-        appointment_id: ControllerAppointmentId::try_new(APPOINTMENT_ID).expect("appointment id"),
+        cluster_id: ClusterName::try_new(CLUSTER_ID).expect("cluster id"),
+        preferred_machine_id: MachineName::try_new(MACHINE_ID).expect("machine id"),
+        appointment_id: ControllerRevision::try_new(APPOINTMENT_ID).expect("appointment id"),
+        heartbeat_at: CorrosionTimestamp::try_new(HEARTBEAT_AT).expect("heartbeat timestamp"),
     }
 }
 
@@ -34,7 +38,8 @@ fn controller_document_is_the_single_cluster_keyed_controller_row() {
             "v": 1,
             "cluster_id": CLUSTER_ID,
             "preferred_machine_id": MACHINE_ID,
-            "appointment_id": APPOINTMENT_ID
+            "appointment_id": APPOINTMENT_ID,
+            "heartbeat_at": "2026-08-09T12:00:00.000000000Z"
         })
     );
     assert_eq!(
@@ -44,7 +49,7 @@ fn controller_document_is_the_single_cluster_keyed_controller_row() {
     );
 
     let report = read_rows::<ControllerDocument>(
-        &ClusterId::try_new(CLUSTER_ID).expect("cluster id"),
+        &ClusterName::try_new(CLUSTER_ID).expect("cluster id"),
         [
             StoredRow::new(CLUSTER_ID, encoded.to_string()),
             StoredRow::new(MACHINE_ID, encoded.to_string()),
@@ -62,22 +67,38 @@ fn controller_document_is_the_single_cluster_keyed_controller_row() {
 }
 
 #[test]
-fn controller_appointment_ids_are_opaque_canonical_ulids() {
-    let appointment =
-        ControllerAppointmentId::try_new(APPOINTMENT_ID).expect("canonical appointment id");
+fn controller_rows_without_a_heartbeat_are_immediately_stale() {
+    let legacy = serde_json::from_value::<ControllerDocument>(json!({
+        "v": 1,
+        "cluster_id": CLUSTER_ID,
+        "preferred_machine_id": MACHINE_ID,
+        "appointment_id": APPOINTMENT_ID
+    }))
+    .expect("legacy controller document");
 
-    assert_eq!(appointment.as_str(), APPOINTMENT_ID);
-    assert!(ControllerAppointmentId::try_new("first-appointment").is_err());
-    assert!(ControllerAppointmentId::try_new(APPOINTMENT_ID.to_ascii_lowercase()).is_err());
+    assert!(controller_heartbeat_is_stale(
+        CorrosionTimestamp::try_new("2026-08-09T12:00:00Z").expect("current timestamp"),
+        legacy.heartbeat_at,
+        Duration::from_secs(30),
+    ));
+}
+
+#[test]
+fn controller_revisions_are_positive_and_monotonic() {
+    let appointment = ControllerRevision::try_new(APPOINTMENT_ID).expect("controller revision");
+
+    assert_eq!(appointment.get(), APPOINTMENT_ID);
+    assert_eq!(appointment.next().expect("next revision").get(), 8);
+    assert!(ControllerRevision::try_new(0).is_err());
 }
 
 #[test]
 fn ownership_requires_both_the_preferred_machine_and_exact_appointment() {
     let document = controller_document();
-    let preferred = MachineRowId::try_new(MACHINE_ID).expect("preferred machine id");
-    let appointment = ControllerAppointmentId::try_new(APPOINTMENT_ID).expect("appointment id");
-    let other = MachineRowId::try_new(OTHER_ID).expect("other machine id");
-    let stale = ControllerAppointmentId::try_new(OTHER_ID).expect("stale appointment id");
+    let preferred = MachineName::try_new(MACHINE_ID).expect("preferred machine id");
+    let appointment = ControllerRevision::try_new(APPOINTMENT_ID).expect("appointment id");
+    let other = MachineName::try_new(OTHER_ID).expect("other machine id");
+    let stale = ControllerRevision::try_new(8).expect("stale appointment id");
 
     assert!(owns_current_controller_appointment(
         &document,
@@ -91,6 +112,30 @@ fn ownership_requires_both_the_preferred_machine_and_exact_appointment() {
     ));
     assert!(!owns_current_controller_appointment(
         &document, &preferred, &stale
+    ));
+}
+
+#[test]
+fn heartbeat_expires_only_after_the_timeout() {
+    let heartbeat =
+        CorrosionTimestamp::try_new("2026-08-09T12:00:00Z").expect("heartbeat timestamp");
+    let timeout = Duration::from_secs(30);
+
+    for fresh_now in [
+        "2026-08-09T11:59:59Z",
+        "2026-08-09T12:00:00Z",
+        "2026-08-09T12:00:30Z",
+    ] {
+        assert!(!controller_heartbeat_is_stale(
+            CorrosionTimestamp::try_new(fresh_now).expect("current timestamp"),
+            heartbeat,
+            timeout,
+        ));
+    }
+    assert!(controller_heartbeat_is_stale(
+        CorrosionTimestamp::try_new("2026-08-09T12:00:31Z").expect("current timestamp"),
+        heartbeat,
+        timeout,
     ));
 }
 

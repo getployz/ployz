@@ -38,7 +38,7 @@ Classify state before choosing a module or store:
 | Operator decision | the operator command stream owns one Corrosion config row | typed row readers in `ployz-core`; the API fold validates and writes through the bounded Corrosion client |
 | Machine testimony | exactly one machine owns its status row | typed row readers; freshness stays visible and is never promoted into authority |
 | Wake signal | nobody owns truth in a subscription notification | re-query the scoped rows; a notification is invalidation, never an authoritative delta |
-| Controller appointment | API admission writes one advisory Corrosion row | followers forward to its machine; a new appointment starts from current rows and host reality |
+| Controller appointment | every ordinary API process polls one advisory Corrosion row; the named machine refreshes its heartbeat | followers forward to its machine; after a stale heartbeat, a visible follower conditionally replaces the exact observed revision and starts from current rows and host reality |
 | Operation summary | the preferred controller writes coarse Corrosion snapshots | typed operation queries and lens invalidation/re-query from any machine |
 | Controller execution | the appointed API process owns one in-memory mutation lock | overlapping mutations may be refused as busy; controller loss leaves nothing to migrate |
 | Node workflow history | each execution node owns one private Duroxide SQLite database | resume host-local prepare/retire work on that same node; never cluster truth or controller state |
@@ -90,7 +90,8 @@ API, Gateway, and DNS process implementations. Keep role entrypoints small.
 Transport adapters may call domain policy; domain policy must not import role
 wiring.
 
-The API role owns controller forwarding and in-memory mutation serialization.
+The API role owns controller forwarding, the fixed controller heartbeat loop,
+and in-memory mutation serialization.
 Every API node also owns its private Duroxide/SQLite runtime for local deploy
 prepare and retire effects. Do not put controller admission or cross-node
 orchestration into that runtime.

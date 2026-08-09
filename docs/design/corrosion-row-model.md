@@ -31,10 +31,11 @@ Deliberately outside Corrosion:
 > never machine-vs-operator.
 
 The singleton `controller` row is the named exception introduced by ADR 0041.
-Any API machine that passes the visibility brake may replace it immediately
-after one hard connect failure. Timeouts, HTTP responses, and protocol failures
-do not replace it. Its LWW result is an advisory appointment, not product intent
-or runtime truth.
+Every ordinary API process polls it. The named machine refreshes its heartbeat;
+after the heartbeat is stale, any API machine that passes the visibility brake
+may conditionally replace the exact observed revision and machine. Forwarding
+failures do not replace it. Its LWW result is an advisory appointment, not
+product intent or runtime truth.
 
 Operator authority means a machine writes only while executing the
 operator's explicit command; Keeper and background loops never touch
@@ -53,7 +54,7 @@ runner, the CLI is in one operator's hand.
 | `namespaces` | operator | namespace create/rm | `NamespaceRowId` | namespace rm |
 | `services` | operator | deploy promotion | `ServiceRowId` | superseding deploy |
 | `route_bindings` | operator | route attach/detach | `RouteBindingRowId` | route rm |
-| `controller` | API machines | initialization or visible replacement after one hard connect failure | `ClusterId` | replaced by the next appointment |
+| `controller` | API machines | initialization, heartbeat by the named machine, or visible replacement after heartbeat expiry | cluster name | replaced by the next appointment |
 | `containers` | deploy command stream | preferred controller after target prepare, naming the host in `machine_id` | Docker container id | superseding deploy; `machine rm` keys on `machine_id` |
 | `machine_status` | machine | the machine itself | `MachineRowId` | `machine rm` |
 | `operations` | controller appointment | the preferred controller executing a deploy | `OperationRowId` | never in v1 (refound compacts) |
@@ -153,8 +154,9 @@ it cannot win a name or subnet claim and shadow a valid row.
   provenance makes the document unparseable, so readers skip and surface it
   rather than invent attribution.
 - **Controller appointment provenance is structural.** The `controller` row
-  carries only the preferred machine id and opaque appointment id. It is
-  infrastructure coordination rather than an operator decision.
+  carries the preferred machine name, monotonic revision, and last heartbeat
+  time. It is infrastructure coordination rather than an operator decision;
+  the heartbeat provides weak failure detection, not authority or fencing.
 - **One timestamp type everywhere.** Every Corrosion document time, including
   operation state times, testimony observations, token lifetime, deploy time,
   certificate issue and expiry, and operator `written_at`, is a

@@ -1,11 +1,11 @@
 //! Corrosion-backed preferred-controller appointment access.
 
 use ployz_core::corrosion::{
-    ControllerAppointmentId, ControllerDocument, CorrosionDocumentVersion, CorrosionHealthResponse,
-    CorrosionTable, SqliteParameter, Statement, StoredRow, controller_visibility_allows_work,
-    owns_current_controller_appointment, read_rows,
+    ControllerDocument, ControllerRevision, CorrosionDocumentVersion, CorrosionHealthResponse,
+    CorrosionTable, CorrosionTimestamp, SqliteParameter, Statement, StoredRow,
+    controller_visibility_allows_work, owns_current_controller_appointment, read_rows,
 };
-use ployz_core::ids::{ClusterId, MachineRowId};
+use ployz_core::ids::{ClusterName, MachineName};
 
 use crate::corrosion::{
     CorrosionClient, CorrosionClientError, CorrosionHealthReadError, StoredRowCollectionError,
@@ -17,21 +17,29 @@ const MAX_CONTROLLER_ROWS: usize = 2;
 /// Access to this cluster's singleton preferred-controller row.
 pub(super) struct ControllerStore {
     corrosion: CorrosionClient,
-    cluster_id: ClusterId,
-    local_machine_id: MachineRowId,
+    cluster_id: ClusterName,
+    local_machine_id: MachineName,
 }
 
 impl ControllerStore {
     pub(super) fn new(
         corrosion: CorrosionClient,
-        cluster_id: ClusterId,
-        local_machine_id: MachineRowId,
+        cluster_id: ClusterName,
+        local_machine_id: MachineName,
     ) -> Self {
         Self {
             corrosion,
             cluster_id,
             local_machine_id,
         }
+    }
+
+    pub(super) const fn cluster_id(&self) -> &ClusterName {
+        &self.cluster_id
+    }
+
+    pub(super) const fn local_machine_id(&self) -> &MachineName {
+        &self.local_machine_id
     }
 
     /// Reads the current appointment, if this cluster has one.
@@ -66,44 +74,64 @@ impl ControllerStore {
     pub(super) async fn initial_self_appointment(
         &self,
         accepted_roster_members: usize,
+        now: CorrosionTimestamp,
     ) -> Result<ControllerDocument, ControllerStoreError> {
         if let Some(current) = self.current().await? {
             return Ok(current);
         }
         self.require_work_visibility(accepted_roster_members)
             .await?;
-        let appointment = self.new_appointment();
+        let appointment = self.new_appointment(ControllerRevision::INITIAL, now);
         self.corrosion
             .execute(&[initial_appointment_statement(&appointment)?])
             .await?;
         self.readback_after_write().await
     }
 
-    /// Replaces the row after the caller has independently decided to fail over.
-    ///
-    /// The replacement applies only while the exact failed appointment is
-    /// still current. The returned row makes a concurrent winner visible.
-    pub(super) async fn appoint_self_after_failover_decision(
+    /// Refreshes the exact locally-owned appointment.
+    pub(super) async fn heartbeat(
         &self,
         accepted_roster_members: usize,
-        failed_appointment_id: &ControllerAppointmentId,
+        current: &ControllerDocument,
+        now: CorrosionTimestamp,
     ) -> Result<ControllerDocument, ControllerStoreError> {
         self.require_work_visibility(accepted_roster_members)
             .await?;
-        let appointment = self.new_appointment();
+        if current.preferred_machine_id != self.local_machine_id {
+            return Err(ControllerStoreError::NotLocalAppointment);
+        }
+        let mut appointment = current.clone();
+        appointment.heartbeat_at = now;
         self.corrosion
-            .execute(&[failover_appointment_statement(
-                &appointment,
-                failed_appointment_id,
-            )?])
+            .execute(&[replace_appointment_statement(&appointment, current)?])
             .await?;
         self.readback_after_write().await
     }
 
-    /// Re-reads Corrosion and checks this machine's exact opaque appointment.
+    /// Replaces an exact stale appointment with this machine as controller.
+    pub(super) async fn appoint_self_if_current_is_stale(
+        &self,
+        accepted_roster_members: usize,
+        current: &ControllerDocument,
+        now: CorrosionTimestamp,
+    ) -> Result<ControllerDocument, ControllerStoreError> {
+        self.require_work_visibility(accepted_roster_members)
+            .await?;
+        let next = current
+            .appointment_id
+            .next()
+            .map_err(|_| ControllerStoreError::RevisionExhausted)?;
+        let appointment = self.new_appointment(next, now);
+        self.corrosion
+            .execute(&[replace_appointment_statement(&appointment, current)?])
+            .await?;
+        self.readback_after_write().await
+    }
+
+    /// Re-reads Corrosion and checks this machine's exact appointment revision.
     pub(super) async fn exact_local_appointment_is_current(
         &self,
-        appointment_id: &ControllerAppointmentId,
+        appointment_id: &ControllerRevision,
     ) -> Result<bool, ControllerStoreError> {
         Ok(self.current().await?.is_some_and(|controller| {
             owns_current_controller_appointment(&controller, &self.local_machine_id, appointment_id)
@@ -121,12 +149,17 @@ impl ControllerStore {
         }
     }
 
-    fn new_appointment(&self) -> ControllerDocument {
+    fn new_appointment(
+        &self,
+        appointment_id: ControllerRevision,
+        heartbeat_at: CorrosionTimestamp,
+    ) -> ControllerDocument {
         ControllerDocument {
             v: CorrosionDocumentVersion::V1,
             cluster_id: self.cluster_id.clone(),
             preferred_machine_id: self.local_machine_id.clone(),
-            appointment_id: ControllerAppointmentId::generate(),
+            appointment_id,
+            heartbeat_at,
         }
     }
 
@@ -165,7 +198,7 @@ fn visible_members(health: CorrosionHealthResponse) -> Result<usize, ControllerS
 }
 
 fn decode_controller_rows(
-    cluster_id: &ClusterId,
+    cluster_id: &ClusterName,
     rows: Vec<StoredRow>,
 ) -> Result<Option<ControllerDocument>, ControllerStoreError> {
     let report = read_rows::<ControllerDocument>(cluster_id, rows);
@@ -178,7 +211,7 @@ fn decode_controller_rows(
     Ok(report.accepted.into_iter().next().map(|row| row.value))
 }
 
-fn select_controller(cluster_id: &ClusterId) -> Statement {
+fn select_controller(cluster_id: &ClusterName) -> Statement {
     Statement::with_params(
         format!(
             "SELECT id, document FROM {} WHERE id = ?",
@@ -194,16 +227,18 @@ fn initial_appointment_statement(
     appointment_statement(document, "ON CONFLICT(id) DO NOTHING")
 }
 
-fn failover_appointment_statement(
-    document: &ControllerDocument,
-    failed_appointment_id: &ControllerAppointmentId,
+fn replace_appointment_statement(
+    replacement: &ControllerDocument,
+    current: &ControllerDocument,
 ) -> Result<Statement, serde_json::Error> {
     Ok(Statement::with_params(
-        "UPDATE controller SET document = ? WHERE id = ? AND json_extract(document, '$.appointment_id') = ?",
+        "UPDATE controller SET document = ? WHERE id = ? AND CAST(json_extract(document, '$.appointment_id') AS TEXT) = ? AND json_extract(document, '$.preferred_machine_id') = ? AND COALESCE(json_extract(document, '$.heartbeat_at'), '1970-01-01T00:00:00.000000000Z') = ?",
         vec![
-            SqliteParameter::Text(serde_json::to_string(document)?),
-            SqliteParameter::Text(document.cluster_id.as_str().to_owned()),
-            SqliteParameter::Text(failed_appointment_id.as_str().to_owned()),
+            SqliteParameter::Text(serde_json::to_string(replacement)?),
+            SqliteParameter::Text(replacement.cluster_id.as_str().to_owned()),
+            SqliteParameter::Text(current.appointment_id.get().to_string()),
+            SqliteParameter::Text(current.preferred_machine_id.as_str().to_owned()),
+            SqliteParameter::Text(current.heartbeat_at.to_string()),
         ],
     ))
 }
@@ -242,10 +277,14 @@ pub(super) enum ControllerStoreError {
     InvalidControllerRows { accepted: usize, skipped: usize },
     #[error("controller work requires another visible roster member")]
     InsufficientVisibility,
+    #[error("cannot heartbeat an appointment owned by another machine")]
+    NotLocalAppointment,
     #[error("could not encode the controller appointment: {0}")]
     Encode(#[from] serde_json::Error),
     #[error("the controller appointment write was not visible on readback")]
     WriteNotVisible,
+    #[error("the controller revision counter is exhausted")]
+    RevisionExhausted,
 }
 
 #[cfg(test)]
@@ -254,14 +293,14 @@ mod tests {
     use std::time::Duration;
 
     use ployz_core::corrosion::{
-        ControllerAppointmentId, ControllerDocument, CorrosionDocumentVersion,
-        CorrosionHealthResponse, SqliteParameter, Statement, StoredRow,
+        ControllerDocument, ControllerRevision, CorrosionDocumentVersion, CorrosionHealthResponse,
+        CorrosionTimestamp, SqliteParameter, Statement, StoredRow,
     };
-    use ployz_core::ids::{ClusterId, MachineRowId};
+    use ployz_core::ids::{ClusterName, MachineName};
 
     use super::{
         ControllerStore, ControllerStoreError, decode_controller_rows,
-        failover_appointment_statement, initial_appointment_statement, multi_node_work_visibility,
+        initial_appointment_statement, multi_node_work_visibility, replace_appointment_statement,
         select_controller,
     };
     use crate::corrosion::{
@@ -270,19 +309,21 @@ mod tests {
 
     const CLUSTER_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
     const MACHINE_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
-    const APPOINTMENT_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
+    const APPOINTMENT_ID: u64 = 7;
 
-    fn cluster_id() -> ClusterId {
-        ClusterId::try_new(CLUSTER_ID).expect("cluster id")
+    fn cluster_id() -> ClusterName {
+        ClusterName::try_new(CLUSTER_ID).expect("cluster id")
     }
 
     fn document() -> ControllerDocument {
         ControllerDocument {
             v: CorrosionDocumentVersion::V1,
             cluster_id: cluster_id(),
-            preferred_machine_id: MachineRowId::try_new(MACHINE_ID).expect("machine id"),
-            appointment_id: ControllerAppointmentId::try_new(APPOINTMENT_ID)
-                .expect("appointment id"),
+            preferred_machine_id: MachineName::try_new(MACHINE_ID).expect("machine id"),
+            appointment_id: ControllerRevision::try_new(APPOINTMENT_ID)
+                .expect("appointment revision"),
+            heartbeat_at: CorrosionTimestamp::try_new("2026-08-09T12:00:00Z")
+                .expect("heartbeat timestamp"),
         }
     }
 
@@ -327,7 +368,7 @@ mod tests {
         let store = ControllerStore::new(
             CorrosionClient::new(config).expect("Corrosion client"),
             cluster_id(),
-            MachineRowId::try_new(MACHINE_ID).expect("machine id"),
+            MachineName::try_new(MACHINE_ID).expect("machine id"),
         );
 
         for roster_members in [1, 2] {
@@ -363,7 +404,7 @@ mod tests {
     }
 
     #[test]
-    fn appointment_statements_keep_initial_and_explicit_failover_distinct() {
+    fn appointment_statements_keep_initial_and_exact_replacement_distinct() {
         let Statement::WithParams(select, select_params) = select_controller(&cluster_id()) else {
             panic!("controller select must be parameterized")
         };
@@ -378,32 +419,51 @@ mod tests {
         else {
             panic!("initial appointment must be parameterized")
         };
-        let failed = ControllerAppointmentId::generate();
-        let Statement::WithParams(failover, failover_params) =
-            failover_appointment_statement(&document(), &failed).expect("failover statement")
+        let previous = document();
+        let mut replacement = previous.clone();
+        replacement.appointment_id = previous.appointment_id.next().expect("next revision");
+        let Statement::WithParams(replace, replace_params) =
+            replace_appointment_statement(&replacement, &previous).expect("replace statement")
         else {
-            panic!("failover appointment must be parameterized")
+            panic!("replacement appointment must be parameterized")
         };
         assert!(initial.ends_with("ON CONFLICT(id) DO NOTHING"));
-        assert!(failover.starts_with("UPDATE controller SET document = ?"));
-        assert!(failover.contains("json_extract(document, '$.appointment_id') = ?"));
+        assert!(replace.starts_with("UPDATE controller SET document = ?"));
+        assert!(replace.contains("json_extract(document, '$.appointment_id') AS TEXT"));
+        assert!(replace.contains("json_extract(document, '$.preferred_machine_id') = ?"));
+        assert!(replace.contains("json_extract(document, '$.heartbeat_at')"));
         let [initial_cluster, _] = initial_params.as_slice() else {
             panic!("initial appointment must have two parameters")
         };
-        let [_, failover_cluster, failed_appointment] = failover_params.as_slice() else {
-            panic!("failover appointment must have three parameters")
+        let [
+            _,
+            replace_cluster,
+            previous_revision,
+            previous_machine,
+            previous_heartbeat,
+        ] = replace_params.as_slice()
+        else {
+            panic!("replacement appointment must have five parameters")
         };
         assert_eq!(
             initial_cluster,
             &SqliteParameter::Text(CLUSTER_ID.to_owned())
         );
         assert_eq!(
-            failover_cluster,
+            replace_cluster,
             &SqliteParameter::Text(CLUSTER_ID.to_owned())
         );
         assert_eq!(
-            failed_appointment,
-            &SqliteParameter::Text(failed.as_str().to_owned())
+            previous_revision,
+            &SqliteParameter::Text(APPOINTMENT_ID.to_string())
+        );
+        assert_eq!(
+            previous_machine,
+            &SqliteParameter::Text(MACHINE_ID.to_owned())
+        );
+        assert_eq!(
+            previous_heartbeat,
+            &SqliteParameter::Text("2026-08-09T12:00:00.000000000Z".to_owned())
         );
     }
 }

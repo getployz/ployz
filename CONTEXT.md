@@ -206,7 +206,7 @@ The machine currently named by the cluster's advisory Controller Appointment. It
 _Avoid_: Core, leader, primary truth, scheduler
 
 **Controller Appointment**:
-The singleton Corrosion row naming a Preferred Controller with an opaque appointment identity. It has no timestamp, lease, term, heartbeat, fencing token, or quorum meaning. A follower may replace it immediately after one hard connect failure; timeouts and HTTP or protocol responses do not replace it. Partitions may create competing appointments and Corrosion's ordinary LWW convergence selects one row.
+The singleton Corrosion row naming a Preferred Controller by machine name, a non-random revision, and its last heartbeat time. Every ordinary API node polls the row; the named node refreshes it and a visible follower may conditionally replace an appointment after its heartbeat is stale. The heartbeat is weak liveness evidence, not a lease, term, fencing token, or quorum claim; partitions may create competing appointments and Corrosion's ordinary convergence selects one row.
 _Avoid_: Election term, lease, leadership epoch, fencing token
 
 **Node Workflow Runtime**:

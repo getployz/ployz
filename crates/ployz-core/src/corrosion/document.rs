@@ -20,7 +20,7 @@ use crate::machine::{GatewayProcessHealth, GatewayServingStatus, MachineLifecycl
 use crate::network::{MachineEndpointSubnet, MachineEndpointSupernet, WireGuardPublicKey};
 use crate::operation::{RouteHostname, RoutePort};
 
-use super::controller::ControllerAppointmentId;
+use super::controller::ControllerRevision;
 use super::mesh::{BuiltinWireguardKeyMismatch, BuiltinWireguardMemberAddress};
 use super::operation::CorrosionDeployState;
 use super::principal::OperationInitiator;
@@ -859,9 +859,16 @@ pub struct RouteBindingDocument {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ControllerDocument {
     pub v: CorrosionDocumentVersion,
-    pub cluster_id: ClusterId,
-    pub preferred_machine_id: MachineRowId,
-    pub appointment_id: ControllerAppointmentId,
+    pub cluster_id: ClusterName,
+    pub preferred_machine_id: MachineName,
+    pub appointment_id: ControllerRevision,
+    #[serde(default = "ancient_controller_heartbeat")]
+    pub heartbeat_at: CorrosionTimestamp,
+}
+
+fn ancient_controller_heartbeat() -> CorrosionTimestamp {
+    CorrosionTimestamp::try_new("1970-01-01T00:00:00Z")
+        .expect("the Unix epoch is a valid Corrosion timestamp")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
